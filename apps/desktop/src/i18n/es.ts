@@ -4654,6 +4654,7 @@ export const esOverrides = {
     openPreview: 'Abrir vista previa',
     openInBrowser: 'Abrir en el navegador',
     openInExternal: 'Abrir externamente',
+    imageFailed: 'No se pudo mostrar esta imagen. Es posible que el archivo se haya movido, renombrado o eliminado.',
     popIn: 'Acoplar',
     popOut: 'Desacoplar',
     linkHint: '⌘/Ctrl-clic para acceder al panel de vista previa',

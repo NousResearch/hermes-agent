@@ -3351,6 +3351,7 @@ export const ruOverrides = {
     largeTitle: 'Этот файл большой',
     largeBody: (label, size) => `${label} — ${size}. Hermes покажет только первые 512 КБ.`,
     previewAnyway: 'Предпросмотр всё равно',
+    imageFailed: 'Не удалось отобразить изображение. Файл мог быть перемещён, переименован или удалён.',
     truncated: 'Показаны первые 512 КБ.',
     noInlineTitle: 'Нет inline-предпросмотра',
     noInlineBody: mimeType => `${mimeType || 'Этот тип файла'} всё равно можно прикрепить как контекст.`,

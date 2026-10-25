@@ -3666,6 +3666,7 @@ catalog: CatalogTranslations
     missingTarget: string
     missingTitle: string
     missingBody: (label: string) => string
+    imageFailed: string
     opening: string
     hide: string
     openPreview: string

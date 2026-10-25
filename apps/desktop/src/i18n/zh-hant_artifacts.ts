@@ -70,6 +70,7 @@ export const zhHantArtifacts = {
     openPreview: '開啟預覽',
     openInBrowser: '在瀏覽器中開啟',
     openInExternal: '在外部開啟',
+    imageFailed: '圖片未能顯示，檔案可能已被移動、重新命名或刪除。',
     popIn: '彈回',
     popOut: '彈出',
     linkHint: '⌘/Ctrl+點擊在預覽窗格開啟',

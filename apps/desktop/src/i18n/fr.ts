@@ -4678,6 +4678,7 @@ export const frOverrides = {
     openPreview: "Ouvrir l'aperçu",
     openInBrowser: 'Ouvrir dans le navigateur',
     openInExternal: 'Ouvrir dans une application externe',
+    imageFailed: "Impossible d'afficher cette image. Le fichier a peut-être été déplacé, renommé ou supprimé.",
     popIn: 'Réintégrer',
     popOut: 'Détacher',
     linkHint: "⌘/Ctrl-clic pour le panneau d'aperçu",

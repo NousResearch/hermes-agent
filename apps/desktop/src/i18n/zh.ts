@@ -4091,6 +4091,7 @@ export const zhOverrides = {
     openPreview: '打开预览',
     openInBrowser: '在浏览器中打开',
     openInExternal: '在外部打开',
+    imageFailed: '图片未能显示，文件可能已被移动、重命名或删除。',
     popIn: '弹回',
     popOut: '弹出',
     linkHint: '⌘/Ctrl+点击在预览面板打开',

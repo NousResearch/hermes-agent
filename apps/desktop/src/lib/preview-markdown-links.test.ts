@@ -4,10 +4,13 @@ import { describe, expect, it } from 'vitest'
 import {
   findPreviewHeading,
   isPreviewFileHref,
+  localImageSrcPath,
   noteDirectory,
   previewHeadingSlug,
   rehypePreviewHeadingIds,
-  remarkPreviewFileLinks
+  rehypePreviewImagePaths,
+  remarkPreviewFileLinks,
+  rewriteLocalImageSrc
 } from './preview-markdown-links'
 
 describe('previewHeadingSlug', () => {
@@ -97,6 +100,70 @@ describe('noteDirectory', () => {
     expect(noteDirectory('C:\\vault\\index.md')).toBe('C:\\vault')
     expect(noteDirectory('index.md')).toBeUndefined()
     expect(noteDirectory(undefined)).toBeUndefined()
+  })
+})
+
+describe('rewriteLocalImageSrc', () => {
+  it('resolves note-relative paths against the note directory', () => {
+    expect(rewriteLocalImageSrc('docs/img.png', '/work/notes')).toBe('/work/notes/docs/img.png')
+    expect(rewriteLocalImageSrc('./img.png', '/work/notes')).toBe('/work/notes/img.png')
+    expect(rewriteLocalImageSrc('../shared/img.png', '/work/notes')).toBe('/work/shared/img.png')
+    expect(rewriteLocalImageSrc('/abs/img.png', '/work/notes')).toBe('/abs/img.png')
+    expect(rewriteLocalImageSrc('docs/my shot.png', '/work/notes')).toBe('/work/notes/docs/my%20shot.png')
+    expect(rewriteLocalImageSrc('docs/my%20shot.png', '/work/notes')).toBe('/work/notes/docs/my%20shot.png')
+  })
+
+  it('leaves web and inline sources for the hardener to handle', () => {
+    expect(rewriteLocalImageSrc('https://example.com/x.png', '/work/notes')).toBeNull()
+    expect(rewriteLocalImageSrc('data:image/png;base64,AAAA', '/work/notes')).toBeNull()
+    expect(rewriteLocalImageSrc('~/shots/img.png', '/work/notes')).toBeNull()
+    expect(rewriteLocalImageSrc('docs/img.png')).toBeNull()
+  })
+
+  it('marks Windows paths so the hardener keeps them', () => {
+    expect(rewriteLocalImageSrc('C:\\shots\\a.png', 'C:\\vault')).toBe('/C:/shots/a.png')
+    expect(rewriteLocalImageSrc('file:///C:/shots/a.png', undefined)).toBe('/C:/shots/a.png')
+    expect(rewriteLocalImageSrc('file:///Users/mac/a.png', undefined)).toBe('/Users/mac/a.png')
+  })
+})
+
+describe('localImageSrcPath', () => {
+  it('restores the readable path behind a rewritten src', () => {
+    expect(localImageSrcPath('/work/notes/docs/img.png')).toBe('/work/notes/docs/img.png')
+    expect(localImageSrcPath('/work/notes/docs/my%20shot.png')).toBe('/work/notes/docs/my shot.png')
+    expect(localImageSrcPath('/C:/shots/a.png')).toBe('C:/shots/a.png')
+  })
+
+  it('returns null for sources an img element loads directly', () => {
+    expect(localImageSrcPath('https://example.com/x.png')).toBeNull()
+    expect(localImageSrcPath('data:image/png;base64,AAAA')).toBeNull()
+    expect(localImageSrcPath('')).toBeNull()
+  })
+})
+
+describe('rehypePreviewImagePaths', () => {
+  it('rewrites img srcs and touches nothing else', () => {
+    const tree = {
+      children: [
+        {
+          children: [
+            { properties: { src: 'docs/img.png' }, tagName: 'img', type: 'element' },
+            { properties: { href: 'docs/other.md' }, tagName: 'a', type: 'element' }
+          ],
+          tagName: 'p',
+          type: 'element'
+        }
+      ],
+      type: 'root'
+    }
+
+    rehypePreviewImagePaths('/vault/notes')(tree)
+
+    const [paragraph] = tree.children
+    const [img, anchor] = paragraph.children
+
+    expect(img.properties).toEqual({ src: '/vault/notes/docs/img.png' })
+    expect(anchor.properties).toEqual({ href: 'docs/other.md' })
   })
 })
 

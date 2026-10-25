@@ -68,6 +68,7 @@ export const arArtifacts = {
     openPreview: 'فتح المعاينة',
     openInBrowser: 'فتح في المتصفح',
     openInExternal: 'فتح في الخارج',
+    imageFailed: 'تعذّر عرض هذه الصورة. ربما تم نقل الملف أو إعادة تسميته أو حذفه.',
     popIn: 'إدخال',
     popOut: 'إخراج',
     linkHint: '⌘/Ctrl-نقر لجزء المعاينة',

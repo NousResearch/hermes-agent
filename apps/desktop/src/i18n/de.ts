@@ -4670,6 +4670,7 @@ export const deOverrides = {
     openPreview: 'Vorschau öffnen',
     openInBrowser: 'Im Browser öffnen',
     openInExternal: 'In externem Programm öffnen',
+    imageFailed: 'Dieses Bild konnte nicht angezeigt werden. Die Datei wurde möglicherweise verschoben, umbenannt oder gelöscht.',
     popIn: 'Eindocken',
     popOut: 'Abdocken',
     linkHint: '⌘/Strg-Klick für das Vorschau-Fenster',

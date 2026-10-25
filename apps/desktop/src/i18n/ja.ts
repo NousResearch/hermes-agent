@@ -3090,6 +3090,7 @@ export const jaOverrides = {
     openPreview: 'プレビューを開く',
     openInBrowser: 'ブラウザで開く',
     openInExternal: '外部で開く',
+    imageFailed: '画像を表示できませんでした。ファイルが移動・改名・削除された可能性があります。',
     popIn: 'ポップイン',
     popOut: 'ポップアウト',
     linkHint: '⌘/Ctrl+クリックでプレビューペイン',

@@ -1,10 +1,16 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { readDesktopFileDataUrl } from '@/lib/desktop-fs'
 import { setAlwaysExternalLinks } from '@/store/external-links'
 import { $previewTabs } from '@/store/preview'
 
 import { MarkdownPreview } from './preview-file'
+
+vi.mock('@/lib/desktop-fs', async n => ({
+  ...(await n<Record<string, unknown>>()),
+  readDesktopFileDataUrl: vi.fn()
+}))
 
 // Behavior tests for the .md file preview renderer: input markdown goes
 // through normalizeFilePreviewMath -> Streamdown (+ KaTeX math plugin) and must
@@ -43,6 +49,44 @@ describe('MarkdownPreview', () => {
     const img = container.querySelector('img')
     expect(img?.getAttribute('alt')).toBe('a chart')
     expect(img?.getAttribute('src')).toBe('https://example.com/chart.png')
+  })
+
+  it('renders a note-relative image through the file bridge instead of blocking it', async () => {
+    vi.mocked(readDesktopFileDataUrl).mockResolvedValue('data:image/png;base64,AAAA')
+
+    const { container } = render(
+      <MarkdownPreview filePath="/work/notes/README.md" text={'![shot](docs/screenshot.png)'} />
+    )
+
+    await waitFor(() => {
+      expect(container.querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,AAAA')
+    })
+    expect(vi.mocked(readDesktopFileDataUrl)).toHaveBeenCalledWith('/work/notes/docs/screenshot.png')
+    expect(screen.queryByText(/blocked/i)).toBeNull()
+  })
+
+  it('rewrites raw-HTML image srcs the same way', async () => {
+    vi.mocked(readDesktopFileDataUrl).mockResolvedValue('data:image/png;base64,BBBB')
+
+    const { container } = render(
+      <MarkdownPreview filePath="/work/notes/README.md" text={'<img src="images/pic.png" alt="pic" width="300">'} />
+    )
+
+    await waitFor(() => {
+      expect(container.querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,BBBB')
+    })
+    expect(vi.mocked(readDesktopFileDataUrl)).toHaveBeenCalledWith('/work/notes/images/pic.png')
+    expect(screen.queryByText(/blocked/i)).toBeNull()
+  })
+
+  it('says so when a local image cannot be read', async () => {
+    vi.mocked(readDesktopFileDataUrl).mockRejectedValue(new Error('ENOENT'))
+    render(<MarkdownPreview filePath="/work/notes/README.md" text={'![gone](docs/gone.png)'} />)
+
+    await waitFor(() => {
+      expect(screen.queryByText(/could not be displayed/i)).not.toBeNull()
+    })
+    expect(screen.queryByText(/blocked/i)).toBeNull()
   })
 
   it('opens an https link in the in-app browser instead of a blank window', async () => {

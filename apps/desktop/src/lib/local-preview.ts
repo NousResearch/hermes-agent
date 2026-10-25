@@ -60,7 +60,7 @@ function extension(value: string) {
 
 // Collapses `.`/`..` so a note's `../other.md` lands on the sibling, not on a
 // path the fs bridge rejects. Never climbs above the root of `base`.
-function joinPath(base: string, rel: string) {
+export function joinPath(base: string, rel: string) {
   if (!base) {
     return rel
   }

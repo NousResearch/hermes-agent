@@ -42,8 +42,10 @@ import { shikiLanguageForFilename } from '@/lib/markdown-code'
 import { normalizeFilePreviewMath } from '@/lib/markdown-preprocess'
 import {
   decodeHashFragment,
+  localImageSrcPath,
   noteDirectory,
   rehypePreviewHeadingIds,
+  rehypePreviewImagePaths,
   remarkPreviewFileLinks,
   scrollPreviewHeading
 } from '@/lib/preview-markdown-links'
@@ -391,11 +393,64 @@ function MarkdownTable({ className, ...rest }: ComponentProps<'table'>) {
 }
 
 function MarkdownImage({ alt, src, ...rest }: ComponentProps<'img'>) {
+  const localPath = useMemo(() => (src ? localImageSrcPath(src) : null), [src])
+  const [state, setState] = useState<{ dataUrl?: string; failed?: boolean }>({})
+  const { t } = useI18n()
+
+  useEffect(() => {
+    if (!localPath) {
+      return
+    }
+
+    let active = true
+
+    setState({})
+
+    readDesktopFileDataUrl(localPath)
+      .then(dataUrl => {
+        if (active) {
+          setState({ dataUrl })
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setState({ failed: true })
+        }
+      })
+
+    return () => {
+      active = false
+    }
+  }, [localPath])
+
+  if (!src) {
+    return null
+  }
+
+  if (!localPath) {
+    return (
+      <img
+        alt={alt ?? ''}
+        className="my-3 max-h-96 w-auto max-w-full rounded-lg border border-border object-contain shadow-sm"
+        src={src}
+        {...rest}
+      />
+    )
+  }
+
+  if (state.failed) {
+    return <span className="my-2 block text-sm text-muted-foreground">{t.preview.imageFailed}</span>
+  }
+
+  if (!state.dataUrl) {
+    return <div aria-hidden className="my-3 h-48 w-full max-w-2xl animate-pulse rounded-lg border border-border bg-muted/30" />
+  }
+
   return (
     <img
       alt={alt ?? ''}
       className="my-3 max-h-96 w-auto max-w-full rounded-lg border border-border object-contain shadow-sm"
-      src={src}
+      src={state.dataUrl}
       {...rest}
     />
   )
@@ -485,10 +540,23 @@ const MARKDOWN_COMPONENTS = {
 
 // Passing either plugin list REPLACES Streamdown's defaults, so both spread them.
 const PREVIEW_REMARK_PLUGINS = [...Object.values(defaultRemarkPlugins), remarkPreviewFileLinks]
-const PREVIEW_REHYPE_PLUGINS = [...Object.values(defaultRehypePlugins), rehypePreviewHeadingIds]
+
+/** Same hardener Streamdown ships with, plus the image-path rewrite that must
+ *  run before it (the hardener blocks bare relative `src`s outright). The
+ *  rewrite travels as a `[plugin, baseDir]` tuple on purpose: Streamdown's
+ *  processor cache keys plugin arrays by function name only, so a bound
+ *  closure would freeze the first render's baseDir into every later document;
+ *  tuple parameters do enter the cache key. */
+function previewRehypePlugins(baseDir?: string) {
+  const { raw, sanitize, harden } = defaultRehypePlugins
+  const imagePaths: [typeof rehypePreviewImagePaths, string | undefined] = [rehypePreviewImagePaths, baseDir]
+
+  return [raw, sanitize, imagePaths, harden, rehypePreviewHeadingIds]
+}
 
 export function MarkdownPreview({ filePath, text }: { filePath?: string; text: string }) {
   const mathText = useMemo(() => normalizeFilePreviewMath(text), [text])
+  const rehypePlugins = useMemo(() => previewRehypePlugins(noteDirectory(filePath)), [filePath])
 
   return (
     <PreviewNoteContext.Provider value={filePath}>
@@ -503,7 +571,7 @@ export function MarkdownPreview({ filePath, text }: { filePath?: string; text: s
           mode="static"
           parseIncompleteMarkdown={false}
           plugins={{ math: previewMathPlugin }}
-          rehypePlugins={PREVIEW_REHYPE_PLUGINS}
+          rehypePlugins={rehypePlugins}
           remarkPlugins={PREVIEW_REMARK_PLUGINS}
         >
           {mathText}

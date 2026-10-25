@@ -4253,6 +4253,7 @@ export const en: Translations = {
     openPreview: 'Open preview',
     openInBrowser: 'Open in browser',
     openInExternal: 'Open in external',
+    imageFailed: 'This image could not be displayed. The file may have been moved, renamed, or deleted.',
     popIn: 'Pop in',
     popOut: 'Pop out',
     linkHint: '⌘/Ctrl-click for preview pane',

@@ -84,7 +84,16 @@ class FakeTerminal {
 
   scrollToBottom() {}
 
-  open() {}
+  // xterm mounts its hidden input textarea inside the host; ChatPage wires
+  // its IME listeners to it, and keydowns must be able to reach it.
+  textarea: HTMLTextAreaElement | undefined;
+
+  open(host: HTMLElement) {
+    const textarea = document.createElement("textarea");
+    textarea.className = "xterm-helper-textarea";
+    host.appendChild(textarea);
+    this.textarea = textarea;
+  }
 
   paste() {}
 
@@ -408,6 +417,36 @@ describe("ChatPage", () => {
       expect(paste.defaultPrevented).toBe(true);
     } finally {
       pasteSpy.mockRestore();
+    }
+  });
+
+  // Android IMEs (Gboard, SwiftKey, Samsung Keyboard) report every key as a
+  // keydown with keyCode 229 / key "Process". xterm handles those keys from
+  // its own keydown listener on the hidden textarea (CompositionHelper diffs
+  // the textarea), so the #52111 guard on the terminal host may shield the
+  // React root from the event but must not stop it before the textarea.
+  it("lets a keyCode-229 keydown reach the xterm textarea while shielding the React root", async () => {
+    const host = await renderChat();
+    const textarea = host.querySelector("textarea")!;
+    const seenByTextarea = vi.fn();
+    const seenByReactRoot = vi.fn();
+    textarea.addEventListener("keydown", seenByTextarea, true);
+    container.addEventListener("keydown", seenByReactRoot);
+    try {
+      const keydown = new KeyboardEvent("keydown", {
+        bubbles: true,
+        cancelable: true,
+        key: "Process",
+        keyCode: 229,
+      });
+      await act(async () => {
+        textarea.dispatchEvent(keydown);
+      });
+      expect(seenByTextarea).toHaveBeenCalledTimes(1);
+      expect(seenByReactRoot).not.toHaveBeenCalled();
+    } finally {
+      textarea.removeEventListener("keydown", seenByTextarea, true);
+      container.removeEventListener("keydown", seenByReactRoot);
     }
   });
 

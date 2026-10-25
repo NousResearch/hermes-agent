@@ -321,6 +321,9 @@ class SessionPersistenceMixin:
             return False
         try:
             for key, entry_json in loader(scope=self._routing_scope()).items():
+                if self._names_unregistered_platform(entry_json):
+                    self._lazy("_deferred_routing", dict)[key] = entry_json
+                    continue
                 entry = self._routing_entry_from_json(key, entry_json)
                 if entry is not None:
                     self._entries[key] = entry
@@ -341,6 +344,34 @@ class SessionPersistenceMixin:
             logger.warning("Skipping invalid routing entry %r: %s", key, e)
         return None
 
+    @staticmethod
+    def _names_unregistered_platform(entry_json: str) -> bool:
+        """True when a row's origin names a platform that is not registered yet: plugin platform
+        adapters register after the gateway loads the routing index at startup."""
+        from gateway.config import Platform
+        try:
+            name = json.loads(entry_json)["origin"]["platform"]
+        except (ValueError, KeyError, TypeError):
+            return False
+        if not isinstance(name, str) or not name.strip():
+            return False
+        try:
+            Platform(name)
+        except ValueError:
+            return True
+        return False
+
+    def _adopt_deferred_routing_locked(self) -> None:
+        """Load deferred rows whose platform has registered since. Lock held."""
+        deferred = getattr(self, "_deferred_routing", None)
+        for key, entry_json in list((deferred or {}).items()):
+            if self._names_unregistered_platform(entry_json):
+                continue
+            del deferred[key]
+            entry = self._routing_entry_from_json(key, entry_json)
+            if entry is not None:
+                self._entries.setdefault(key, entry)
+
     def _ensure_loaded_locked(self) -> None:
         """Load the routing index (lock held). state.db ``gateway_routing`` is primary;
         sessions.json is the legacy import for keys the DB lacks (persisted on the next _save).
@@ -351,6 +382,7 @@ class SessionPersistenceMixin:
         """
         if self._loaded:
             self._reconcile_recovered_routing_locked()
+            self._adopt_deferred_routing_locked()
             return
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         db_load_succeeded = self._load_routing_rows_locked()
@@ -387,7 +419,8 @@ class SessionPersistenceMixin:
             imported = 0
             for key, entry_data in data.items():
                 # "_"-prefixed keys are sentinels (e.g. "_README"), not entries.
-                if key.startswith("_") or key in self._entries:
+                if key.startswith("_") or key in self._entries or key in getattr(
+                        self, "_deferred_routing", ()):
                     continue
                 if not isinstance(entry_data, dict):  # corrupt file must not abort the whole load
                     logger.warning(
@@ -551,7 +584,11 @@ class SessionPersistenceMixin:
     def _snapshot_routing_locked(self) -> tuple[dict[str, Any], int]:
         """Capture immutable routing data and a monotonic generation."""
         self._reconcile_recovered_routing_locked()
-        return self._entries_as_dicts(), self._next_routing_generation_locked()
+        data = self._entries_as_dicts()
+        # Deferred rows are not in _entries; the scoped replace would delete them.
+        for key, entry_json in (getattr(self, "_deferred_routing", None) or {}).items():
+            data.setdefault(key, json.loads(entry_json))
+        return data, self._next_routing_generation_locked()
 
     def _persist_routing_data(self, data: dict[str, Any], generation: int) -> None:
         """Serialize all whole-index writers through one durable write lock."""

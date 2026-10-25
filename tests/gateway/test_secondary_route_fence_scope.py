@@ -70,7 +70,7 @@ async def _delete(served, ref):
 async def _prune(served, ref):
     from gateway.session_prune import _apply
     served.alpha.db.end_session(ref.session_id, 'test')
-    await _apply(served.alpha, {'older_than_days': None}, None)  # the owner-run `hermes sessions prune`
+    await _apply(served.alpha, 'filters', {'older_than_days': None})  # the owner-run `hermes sessions prune`
 
 
 def _entry(key, sid):
@@ -198,7 +198,7 @@ async def test_a_shared_fence_an_earlier_release_wrote_still_guards_every_route(
         with store._lock:
             store._save()
         assert key not in _durable(store)
-        assert key not in json.loads((store.sessions_dir / 'sessions.json').read_text())
+        assert key not in json.loads((store.sessions_dir / 'sessions.json').read_text(encoding='utf-8-sig'))
         store._save_sessions_json({key: store._entries.pop(key).to_dict()})  # an earlier release's unfiltered mirror
         with store._lock:
             store._import_legacy_sessions_json(True)
@@ -207,7 +207,7 @@ async def test_a_shared_fence_an_earlier_release_wrote_still_guards_every_route(
 
 
 def _mirror(store):
-    return json.loads((store.sessions_dir / 'sessions.json').read_text())
+    return json.loads((store.sessions_dir / 'sessions.json').read_text(encoding='utf-8-sig'))
 
 
 def _restart(store):

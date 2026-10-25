@@ -135,3 +135,58 @@ async def test_owner_prune_is_local_operator_only(owned_store, grant):
         await connection.close()
     assert refused['error']['message'] == 'permission_denied', refused
     assert owned_store.db.get_session('old-cli') is not None
+
+
+@pytest.mark.asyncio
+async def test_dashboard_bulk_deletes_under_the_live_owner_are_applied_by_the_owner(owned_store, monkeypatch):
+    """A standalone dashboard beside a running gateway (Docker compose, a service gateway): its
+    offline maintenance reservation always loses to the owner, so bulk delete, "Delete empty" and
+    prune answered "Exclusive maintenance refused" (#138915). The owner applies them via session.prune."""
+    from hermes_cli import gateway_client, gateway_runtime, web_server_sessions
+    from hermes_cli.gateway_client import rpc_error
+    from hermes_cli.web_models import BulkDeleteSessions, SessionPrune
+    from hermes_cli.web_routers import sessions as routes
+    store = owned_store
+    for sid in ('empty-1', 'empty-2', 'picked'):
+        store.db.create_session(sid, 'cli')
+        store.db.end_session(sid, 'user_exit')
+    store.db.append_message('picked', 'user', 'hand-picked for bulk delete')
+
+    @asynccontextmanager
+    async def owner_socket(*_args, **_kwargs):
+        connection = _connection(store.authority, operator=True)
+
+        async def rpc(method, _timeout=None, **params):
+            frame = await connection.dispatch({'id': 1, 'method': method, 'params': params})
+            if 'error' in frame:
+                raise rpc_error(frame['error'])
+            return frame['result']
+        try:
+            yield SimpleNamespace(rpc=rpc)
+        finally:
+            await connection.close()
+
+    def offline(*_args, **_kwargs):
+        raise AssertionError('offline store maintenance while a live owner serves the home')
+
+    monkeypatch.setattr(gateway_runtime, 'discover_gateway_endpoint',
+                        lambda home, **_: gateway_runtime.GatewayDiscovery('ready', endpoint=object()))
+    monkeypatch.setattr(gateway_client, 'connect_gateway', owner_socket)
+    monkeypatch.setattr(web_server_sessions, '_with_session_maintenance', offline)
+    monkeypatch.setattr('hermes_state._default_db_path', lambda: str(store.path))
+    request = SimpleNamespace(
+        state=SimpleNamespace(native_http_principal=None, session=SimpleNamespace(
+            user_id='user-a', provider='oidc', issuer='https://idp.example')),
+        app=SimpleNamespace(state=SimpleNamespace(auth_required=True, session_authority=None, gateway_runner=None)))
+
+    assert await routes.delete_empty_sessions_endpoint(request, None) == {'ok': True, 'deleted': 2}
+    pruned = await routes.prune_sessions_endpoint(SessionPrune(source='cron', older_than_days=90), request)
+    assert pruned == {'ok': True, 'removed': 1, 'skipped_open': 0}
+    picked = await routes.bulk_delete_sessions_endpoint(BulkDeleteSessions(ids=['picked', 'gone']), request)
+    assert picked == {'ok': True, 'deleted': 1, 'skipped_active': []}
+    db = store.db
+    assert db.get_session('empty-1') is None and db.get_session('empty-2') is None
+    assert db.get_session('old-cron') is None and db.get_session('picked') is None
+    assert db.get_session('old-cli') is not None and db.get_session('fresh-cli') is not None
+    # The owner retired what it deleted from its own memory (routes, live sessions).
+    assert set(store.retired) == {'empty-1', 'empty-2', 'old-cron', 'picked'}

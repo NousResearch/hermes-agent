@@ -37764,7 +37764,7 @@
       },
       "SessionPruneParams": {
         "additionalProperties": false,
-        "description": "Exactly one of ``filters`` (``SessionDB.prune_sessions`` keyword filters, as\n``hermes sessions prune`` builds them) or ``never_active_days`` (``--never-active``).",
+        "description": "Exactly one of ``filters`` (``SessionDB.prune_sessions`` keyword filters, as\n``hermes sessions prune`` builds them), ``never_active_days`` (``--never-active``),\n``empty`` (the dashboard's \"Delete empty\") or ``ids`` (the dashboard's bulk delete, at most 500).",
         "properties": {
           "filters": {
             "anyOf": [
@@ -37790,6 +37790,33 @@
             ],
             "default": null,
             "title": "Never Active Days"
+          },
+          "empty": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Empty"
+          },
+          "ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Ids"
           }
         },
         "title": "SessionPruneParams",
@@ -37825,6 +37852,21 @@
             ],
             "default": null,
             "title": "Skipped"
+          },
+          "skipped_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Skipped Ids"
           }
         },
         "required": [
@@ -48075,7 +48117,7 @@
     },
     {
       "name": "session.prune",
-      "summary": "Local operator only: the owner deletes the ended sessions `hermes sessions prune` selected, skipping busy sessions and retained reset owners.",
+      "summary": "Local operator only: the owner deletes what `hermes sessions prune` or a dashboard bulk delete selected, skipping busy sessions and retained reset owners.",
       "params": [
         {
           "name": "params",

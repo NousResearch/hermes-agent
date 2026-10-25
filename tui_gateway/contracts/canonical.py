@@ -111,21 +111,25 @@ canonical_method("session.mutate", params=SessionMutateParams, result=SessionMut
 
 class SessionPruneParams(Params):
     """Exactly one of ``filters`` (``SessionDB.prune_sessions`` keyword filters, as
-    ``hermes sessions prune`` builds them) or ``never_active_days`` (``--never-active``)."""
+    ``hermes sessions prune`` builds them), ``never_active_days`` (``--never-active``),
+    ``empty`` (the dashboard's "Delete empty") or ``ids`` (the dashboard's bulk delete, at most 500)."""
 
     filters: dict[str, JsonValue] | None = None
     never_active_days: float | None = None
+    empty: bool | None = None
+    ids: list[str] | None = None
 
 
 class SessionPruneResult(Result):
     deleted: int
     routing_deleted: int | None = None
     skipped: int | None = None
+    skipped_ids: list[str] | None = None
 
 
 canonical_method("session.prune", params=SessionPruneParams, result=SessionPruneResult,
-                 doc="Local operator only: the owner deletes the ended sessions `hermes sessions prune` "
-                     "selected, skipping busy sessions and retained reset owners.")
+                 doc="Local operator only: the owner deletes what `hermes sessions prune` or a dashboard bulk "
+                     "delete selected, skipping busy sessions and retained reset owners.")
 
 
 class CommandObserveParams(Params):

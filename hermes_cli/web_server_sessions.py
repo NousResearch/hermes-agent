@@ -194,11 +194,21 @@ async def _mutate_via_gateway_owner(profile, actor, params):
     dies on a bare 409 (#138915). The owner exposes the same revision-fenced
     verb over the control socket; with no discoverable owner return None so the
     caller falls back to the offline store.
+    """
+    call = {key: params[key] for key in
+            ('session_id', 'request_id', 'expected_revision', 'operation', 'payload') if key in params}
+    if params.get('expected_generation') is not None:
+        call['expected_generation'] = params['expected_generation']
+    return await _owner_rpc(profile, actor, 'session.mutate', call)
+
+
+async def _owner_rpc(profile, actor, method, call, **rpc_options):
+    """One RPC on the live gateway owner of *profile*'s home; None when no owner is discoverable.
 
     A dial, mint or RPC that dies on an endpoint discovery just identified is
     not owner-less (a slow first dial, or an owner restart between discovery
     and mint): the offline reservation would only lose to that same owner and
-    answer with the bare 409 this forward exists to remove, so every transport
+    answer with the bare 409 the forward exists to remove, so every transport
     failure surfaces a retryable 503. Only the owner's refusal frame
     (``GatewayRPCError``) is passed on as a verdict.
 
@@ -226,13 +236,9 @@ async def _mutate_via_gateway_owner(profile, actor, params):
         # identified as this profile's owner, never on the dashboard launch home's.
         from dataclasses import replace
         endpoint = replace(endpoint, control_home=str(home.expanduser().resolve()))
-    call = {key: params[key] for key in
-            ('session_id', 'request_id', 'expected_revision', 'operation', 'payload') if key in params}
-    if params.get('expected_generation') is not None:
-        call['expected_generation'] = params['expected_generation']
     try:
         async with connect_gateway(endpoint=endpoint, subject=actor.subject) as client:
-            return await client.rpc('session.mutate', **call)
+            return await client.rpc(method, **rpc_options, **call)
     except GatewayRPCError:
         # The owner's own refusal frame: a verdict the caller maps to the direct path's status.
         raise
@@ -241,6 +247,28 @@ async def _mutate_via_gateway_owner(profile, actor, params):
         # control socket that refuses the mint after a restart (DiscoveryError), a raw socket error
         # or a timeout. Retrying is safe because the request reuses its request_id.
         raise HTTPException(status_code=503, detail='owner_unreachable') from exc
+
+
+async def _bulk_via_gateway_owner(request, profile, params):
+    """Standalone bulk deletes (bulk-delete, delete empty, prune) run as the live owner's ``session.prune``.
+
+    Their offline path takes the exclusive-maintenance reservation, which always loses to a
+    running gateway, so on the two-process setup (Docker compose, a dashboard beside a service
+    gateway) every bulk delete answered "Exclusive maintenance refused" (#138915). None when this
+    process composes its own gateway or no owner serves the home: the caller keeps its offline path.
+    """
+    from fastapi import HTTPException
+    from hermes_cli.gateway_client import GatewayClientError
+    from hermes_cli.sessions_owner import PRUNE_RPC_TIMEOUT
+
+    state = request.app.state
+    if getattr(state, 'session_authority', None) is not None or getattr(state, 'gateway_runner', None) is not None:
+        return None
+    _, actor = _session_mutation_context(request, profile)
+    try:
+        return await _owner_rpc(profile, actor, 'session.prune', params, _timeout=PRUNE_RPC_TIMEOUT)
+    except GatewayClientError as exc:
+        raise HTTPException(status_code=_MUTATION_REFUSAL_STATUS.get(str(exc), 409), detail=str(exc)) from exc
 
 
 # One reason -> HTTP status map for a session mutation refusal, shared by the direct path
@@ -315,7 +343,8 @@ def _with_session_maintenance(profile, operation, *args):
             return operation(*args)
     except OwnershipConflict as exc:
         # uvicorn runs at log_level=warning, so a handled 4xx leaves no server-side trace and the
-        # refusal reads as a UI bug (#138915). Bulk store maintenance has no owner verb: name it.
+        # refusal reads as a UI bug (#138915). Bulk deletes reach a live owner first
+        # (_bulk_via_gateway_owner); what still lands here has no owner verb: name it.
         _log.warning('session write refused for %s: %s', home, exc)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 

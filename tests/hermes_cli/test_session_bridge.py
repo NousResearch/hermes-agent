@@ -23,7 +23,7 @@ def _submit(store: bridge.BridgeStore, **overrides):
         "source_session_id": "voice-session",
         "authorization_ref": "direct-operator-request:2026-10-25",
         "backend": "claude",
-        "kind": "question",
+        "kind": "snapshot_question",
         "target_session_id": str(uuid.uuid4()),
         "prompt": "What conclusion did you reach?",
     }
@@ -141,13 +141,13 @@ def test_expired_lease_fails_closed_without_duplicate_backend_work(tmp_path: Pat
         store.finish(request.correlation_id, first.lease_token, result="old")
 
 
-def test_question_commands_use_fresh_disposable_sessions(tmp_path: Path, monkeypatch):
+def test_snapshot_question_commands_use_fresh_disposable_sessions(tmp_path: Path, monkeypatch):
     target = str(uuid.uuid4())
     request = bridge.BridgeRequest(
         correlation_id=str(uuid.uuid4()), idempotency_key="i", requester_principal="p",
         source_session_id="s", authorization_ref="a", owner_uid=bridge.BridgeStore._uid(),
         profile_scope="/profile", ingress={"kind": "test"},
-        backend="claude", kind="question",
+        backend="claude", kind="snapshot_question",
         target_session_id=target, prompt="question", status="running", attempt=1,
         lease_owner="w", lease_token=str(uuid.uuid4()), lease_expires_at=time.time() + 30,
         cancel_requested=False, result=None, result_session_id=None, error=None, usage=None,
@@ -241,13 +241,45 @@ def test_snapshot_bounds_source_and_escapes_delimiter_breakout(tmp_path: Path, m
     assert "\\u003c/untrusted_transcript_json\\u003e" in prompt
 
 
+def test_active_questions_fail_closed_without_complete_transport(tmp_path: Path, monkeypatch):
+    store = bridge.BridgeStore(tmp_path / "bridge.db")
+    monkeypatch.setattr(bridge, "live_question_capability", lambda backend: {
+        "reason": f"{backend} lacks correlated answer return and cancellation",
+    })
+    for backend in ("codex", "claude"):
+        with pytest.raises(bridge.BridgeError, match=f"active {backend} session questions.*correlated"):
+            _submit(store, backend=backend, kind="question")
+
+
+def test_legacy_queued_active_question_fails_before_backend_dispatch(tmp_path: Path, monkeypatch):
+    store = bridge.BridgeStore(tmp_path / "bridge.db")
+    target = str(uuid.uuid4())
+    with store._connect() as conn:
+        now = time.time()
+        correlation = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO bridge_requests (correlation_id,idempotency_key,requester_principal,"
+            "source_session_id,authorization_ref,owner_uid,profile_scope,request_digest,backend,kind,"
+            "target_session_id,prompt,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (correlation, "legacy", "operator", "voice", "grant", store._uid(), store.profile_scope,
+             "digest", "claude", "question", target, "question", "queued", now, now),
+        )
+    monkeypatch.setattr(bridge, "live_question_capability", lambda backend: {
+        "reason": "no complete transport",
+    })
+    monkeypatch.setattr(bridge, "_command", lambda *args: pytest.fail("backend was dispatched"))
+    final = bridge.run_once(store, "worker")
+    assert final and final.status == "failed"
+    assert "active claude session questions are unavailable" in final.error
+
+
 def test_codex_snapshot_questions_fail_closed(tmp_path: Path):
     store = bridge.BridgeStore(tmp_path / "bridge.db")
     with pytest.raises(bridge.BridgeError, match="cannot structurally disable tools"):
-        _submit(store, backend="codex")
+        _submit(store, backend="codex", kind="snapshot_question")
 
 
-def test_question_result_requires_distinct_disposable_session(tmp_path: Path):
+def test_snapshot_question_result_requires_distinct_disposable_session(tmp_path: Path):
     store = bridge.BridgeStore(tmp_path / "bridge.db")
     request = _submit(store, backend="claude")
     claim = store.claim("worker")
@@ -405,8 +437,18 @@ def test_persisted_backend_errors_are_redacted(tmp_path: Path):
 
 def test_capabilities_admit_missing_current_voice_connector(monkeypatch):
     monkeypatch.setattr(bridge.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(bridge, "_probe_cli_help", lambda backend, *args: (
+        "--thread --message" if backend == "codex" else
+        "--json" if args == ("agents",) else "--remote-control --resume"
+    ))
     value = bridge.capabilities()
     assert value["codex"]["available"] and value["claude"]["available"]
+    assert value["codex"]["live_question"]["session_enqueue"] is True
+    assert value["codex"]["live_question"]["authentication_verified"] is False
+    assert value["codex"]["live_question"]["correlated_answer_return"] is False
+    assert value["codex"]["live_question"]["available"] is False
+    assert value["claude"]["live_question"]["read_only_inventory"] is True
+    assert value["claude"]["live_question"]["session_enqueue"] is False
     assert value["voice_connector"]["available"] is False
     assert "no callable local ingress" in value["voice_connector"]["reason"]
 
@@ -465,7 +507,7 @@ def test_session_bridge_parser_requires_provenance_fields():
         "session-bridge", "submit", "--idempotency-key", "turn-1",
         "--requester", "operator", "--source-session", "voice-1",
         "--authorization-ref", "direct-request", "--backend", "claude",
-        "--kind", "question", "--target-session", str(uuid.uuid4()),
+        "--kind", "snapshot_question", "--target-session", str(uuid.uuid4()),
         "--prompt", "question",
     ])
     assert args.func.__name__ == "cmd_session_bridge"

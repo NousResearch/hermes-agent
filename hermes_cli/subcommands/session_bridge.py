@@ -63,7 +63,12 @@ def build_session_bridge_parser(subparsers) -> None:
     submit.add_argument("--source-session", required=True)
     submit.add_argument("--authorization-ref", required=True)
     submit.add_argument("--backend", required=True, choices=("codex", "claude"))
-    submit.add_argument("--kind", required=True, choices=("question", "investigation"))
+    submit.add_argument(
+        "--kind", required=True,
+        choices=("question", "snapshot_question", "investigation"),
+        help=("question requires a complete live-session transport and currently fails closed; "
+              "snapshot_question asks a fresh read-only process over bounded transcript evidence"),
+    )
     submit.add_argument("--target-session")
     submit.add_argument("--prompt", required=True)
 

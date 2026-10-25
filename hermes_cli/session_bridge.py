@@ -1,10 +1,12 @@
-"""Persisted, correlation-safe ingress for bounded session questions.
+"""Persisted, correlation-safe ingress for bounded session work.
 
 This is an edge adapter, not an agent tool.  A trusted local surface records
 the human authorization and requester identity, then a short-lived worker
-claims one request.  Context questions copy a bounded user/assistant transcript
-into a fresh disposable session.  The source session never receives a second
-writer and its instructions are treated as untrusted quoted evidence.
+claims one request.  Snapshot questions explicitly copy a bounded
+user/assistant transcript into a fresh disposable session.  They are not
+presented as questions to the live session.  Active-session questions fail
+closed until a transport supplies authenticated enqueue, correlated answer
+return, and cancellation without adding a second writer.
 
 Prompts and results are sensitive local data.  They remain plaintext in the
 profile-owned 0600 SQLite spool so a trusted local caller can retrieve them.
@@ -33,7 +35,7 @@ from hermes_cli._subprocess_compat import kill_process_tree, windows_detach_pope
 
 
 _BACKENDS = {"codex", "claude"}
-_KINDS = {"question", "investigation"}
+_KINDS = {"question", "snapshot_question", "investigation"}
 _FINAL = {"completed", "failed", "cancelled"}
 _MAX_PROMPT = 32_000
 _POLL_SECONDS = 0.1
@@ -233,7 +235,13 @@ class BridgeStore:
             raise ValueError(f"kind must be one of {sorted(_KINDS)}")
         if kind == "question":
             target_session_id = _uuid(target_session_id, "target_session_id")
-            if backend == "codex":
+            capability = live_question_capability(backend)
+            raise BridgeError(
+                f"active {backend} session questions are unavailable: {capability['reason']}"
+            )
+        elif kind == "snapshot_question":
+            target_session_id = _uuid(target_session_id, "target_session_id")
+            if backend != "claude":
                 raise BridgeError(
                     "Codex snapshot questions are unavailable because its CLI cannot structurally disable tools; "
                     "use the authenticated Codex app session-message path"
@@ -404,18 +412,94 @@ class BridgeStore:
             return self._row(final)
 
 
+def _probe_cli_help(backend: str, *arguments: str) -> str:
+    """Read a CLI's advertised protocol without opening or messaging a session."""
+    executable = shutil.which(backend)
+    if not executable or sys.platform.startswith("win"):
+        return ""
+    try:
+        result = subprocess.run(
+            [executable, *arguments, "--help"], capture_output=True, text=True,
+            timeout=5, env=_subscription_child_env(backend),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return result.stdout + "\n" + result.stderr if result.returncode == 0 else ""
+
+
+def live_question_capability(backend: str) -> dict[str, Any]:
+    """Describe only documented local protocols; never infer support from session files.
+
+    A usable bridge requires authenticated delivery, answer return and
+    cancellation.  Delivery-only commands are
+    reported because they are useful evidence, but are deliberately not called:
+    once queued, Hermes could neither cancel the turn nor correlate its answer.
+    """
+    if backend not in _BACKENDS:
+        raise ValueError(f"unknown backend {backend!r}")
+    if sys.platform.startswith("win") or not shutil.which(backend):
+        return {
+            "available": False, "protocol": None, "session_enqueue": False,
+            "authentication_verified": False,
+            "correlated_answer_return": False, "cancel_after_dispatch": False,
+            "reason": f"the {backend} CLI is unavailable on this host",
+        }
+    if backend == "codex":
+        help_text = _probe_cli_help("codex", "queue")
+        enqueue = all(flag in help_text for flag in ("--thread", "--message"))
+        return {
+            "available": False,
+            "protocol": "codex-cli-queue" if enqueue else None,
+            "session_enqueue": enqueue,
+            "authentication_verified": False,
+            "correlated_answer_return": False,
+            "cancel_after_dispatch": False,
+            "reason": (
+                "Codex CLI advertises delivery to an existing thread, but no machine-readable "
+                "correlated answer or cancellation protocol; the authenticated Codex app "
+                "send/read/wait path is not callable from Hermes"
+                if enqueue else
+                "this Codex CLI does not advertise the existing-thread queue protocol"
+            ),
+        }
+    agents_help = _probe_cli_help("claude", "agents")
+    root_help = _probe_cli_help("claude")
+    inventory = "--json" in agents_help
+    remote_control = "--remote-control" in root_help
+    return {
+        "available": False,
+        "protocol": "claude-background-inventory" if inventory else None,
+        "session_enqueue": False,
+        "authentication_verified": False,
+        "correlated_answer_return": False,
+        "cancel_after_dispatch": False,
+        "read_only_inventory": inventory,
+        "interactive_remote_control": remote_control,
+        "reason": (
+            "Claude CLI advertises background-session inventory/attach and interactive remote "
+            "control, but no scriptable queue or correlated answer protocol for an already-active "
+            "session; --resume may create a copy when that session is running"
+        ),
+    }
+
+
 def capabilities() -> dict[str, dict[str, Any]]:
     platform_ok = not sys.platform.startswith("win")
+    codex_live = live_question_capability("codex")
+    claude_live = live_question_capability("claude")
     return {
         "codex": {
             "available": platform_ok and bool(shutil.which("codex")),
-            "question_mode": "unavailable-use-authenticated-app-session-message",
+            "question_mode": "unavailable",
+            "live_question": codex_live,
             "mutates_target": False,
             "result_transport": "subprocess-jsonl",
         },
         "claude": {
             "available": platform_ok and bool(shutil.which("claude")),
-            "question_mode": "fresh-session-transcript-snapshot",
+            "question_mode": "unavailable",
+            "snapshot_question_mode": "fresh-session-transcript-snapshot-explicit",
+            "live_question": claude_live,
             "mutates_target": False,
             "result_transport": "subprocess-json",
         },
@@ -675,7 +759,12 @@ def _snapshot_text(request: BridgeRequest) -> tuple[str, dict[str, Any]]:
 
 
 def _execution_prompt(request: BridgeRequest) -> tuple[str, dict[str, Any] | None]:
-    if request.kind != "question":
+    if request.kind == "question":
+        capability = live_question_capability(request.backend)
+        raise BridgeError(
+            f"active {request.backend} session questions are unavailable: {capability['reason']}"
+        )
+    if request.kind != "snapshot_question":
         return request.prompt, None
     snapshot, provenance = _snapshot_text(request)
     encoded_snapshot = json.dumps(snapshot, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
@@ -710,7 +799,7 @@ def _parse_backend_result(request: BridgeRequest, stdout: str, output_path: Path
         if not isinstance(result, str) or not result.strip():
             raise BridgeError("Claude returned no final result")
         session_id = payload.get("session_id")
-        if request.kind == "question" and (
+        if request.kind == "snapshot_question" and (
             not isinstance(session_id, str) or not session_id.strip() or session_id == request.target_session_id
         ):
             raise BridgeError("Claude did not prove a distinct disposable result session")
@@ -732,7 +821,7 @@ def _parse_backend_result(request: BridgeRequest, stdout: str, output_path: Path
         candidate = event.get("thread_id") or event.get("session_id")
         if isinstance(candidate, str):
             session_id = candidate
-    if request.kind == "question" and (
+    if request.kind == "snapshot_question" and (
         not isinstance(session_id, str) or not session_id.strip() or session_id == request.target_session_id
     ):
         raise BridgeError("Codex did not prove a distinct disposable result session")

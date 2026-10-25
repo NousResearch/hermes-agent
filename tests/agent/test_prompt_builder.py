@@ -650,9 +650,19 @@ class TestStripYamlFrontmatter:
 
 class TestEnvironmentHints:
 
-
-
-
+    def test_build_environment_hints_on_wsl(self, monkeypatch):
+        """Plain WSL (no container) still gets the /mnt/ guidance — the container
+        branch must not swallow the legitimate WSL case. Regression for #24370."""
+        import agent.prompt_builder as _pb
+        monkeypatch.setattr(_pb, "is_wsl", lambda: True)
+        monkeypatch.setattr(_pb, "is_container", lambda: False)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "/mnt/" in result
+        assert "WSL" in result
+        # WSL block still carries the always-on host info ahead of it.
+        assert "User home directory:" in result
 
     def test_build_environment_hints_suppresses_host_on_docker_backend(self, monkeypatch):
         """Docker/remote backends must hide host info — the agent can only touch the backend.
@@ -663,6 +673,7 @@ class TestEnvironmentHints:
         """
         import agent.prompt_builder as _pb
         monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(_pb, "is_container", lambda: False)
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         # Force the probe to fail so we exercise the static fallback path
         # deterministically (the live probe would try to spin up docker).
@@ -682,6 +693,7 @@ class TestEnvironmentHints:
         (the daemon launch dir). Regression for #24882/#24969/#27383/#29265."""
         import agent.prompt_builder as _pb
         monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(_pb, "is_container", lambda: False)
         monkeypatch.delenv("TERMINAL_ENV", raising=False)
         configured = tmp_path / "workspace"
         configured.mkdir()
@@ -912,8 +924,44 @@ class TestEnvironmentHints:
         # The factual host block must still come first.
         assert result.index("Host:") < result.index("OpenShell")
 
+    def test_build_environment_hints_container_in_wsl(self, monkeypatch):
+        """Container on a WSL host: the hint must carry the operational constraints from
+        #24370 — /mnt/c/ unavailable unless bind-mounted, no wslpath — and the plain
+        WSL guidance (which promises /mnt/c/ access) must be excluded."""
+        import agent.prompt_builder as _pb
+        from agent.prompt_builder import WSL_ENVIRONMENT_HINT
+        monkeypatch.setattr(_pb, "is_wsl", lambda: True)
+        monkeypatch.setattr(_pb, "is_container", lambda: True)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        # Container-on-WSL is named...
+        assert "container" in result.lower()
+        assert "WSL" in result
+        # ...with the strict warning text the issue requires:
+        assert "/mnt/c/" in result          # mentioned, but as unavailable
+        assert "bind-mount" in result
+        assert "wslpath" in result
+        # The plain-WSL guidance must NOT be injected alongside it.
+        assert WSL_ENVIRONMENT_HINT not in result
+        assert "typically at" not in result  # /mnt/c/Users/<username>/ promise from the WSL hint
 
-
+    def test_build_environment_hints_container_not_wsl(self, monkeypatch):
+        """Container without WSL: neither WSL hint may appear (is_wsl() alone must not
+        trigger one), but the local host block is still emitted."""
+        import agent.prompt_builder as _pb
+        from agent.prompt_builder import WSL_ENVIRONMENT_HINT
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(_pb, "is_container", lambda: True)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert WSL_ENVIRONMENT_HINT not in result
+        assert "bind-mount" not in result
+        assert "wslpath" not in result
+        assert "/mnt/c/" not in result
+        # Host info is still emitted (local backend detected).
+        assert "User home directory:" in result
 
 
 # =========================================================================

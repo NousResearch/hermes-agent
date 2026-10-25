@@ -43,7 +43,7 @@ class TestAgentSessionsApiRouting:
         a._app.client.agents_sessions_setStatus.assert_called_once_with(
             channel_id="C123",
             thread_ts="parent_ts",
-            status="is thinking...",
+            status="processing",
         )
         a._app.client.assistant_threads_setStatus.assert_not_called()
 
@@ -60,7 +60,7 @@ class TestAgentSessionsApiRouting:
         a._app.client.agents_sessions_setStatus.assert_called_once_with(
             channel_id="C123",
             thread_ts="parent_ts",
-            status="",
+            status="active",
         )
         a._app.client.assistant_threads_setStatus.assert_not_called()
 
@@ -78,3 +78,34 @@ class TestAgentSessionsApiRouting:
             title="Summarize the incident",
         )
         a._app.client.assistant_threads_setTitle.assert_not_called()
+
+
+class _LegacyOnlyClient:
+    """A real (non-mock) client WITHOUT ``agents_sessions_setStatus``: every attribute access
+    yields a fresh bound method, as on slack-sdk's ``AsyncWebClient``."""
+
+    def __init__(self):
+        self.calls = []
+
+    async def assistant_threads_setStatus(self, **kwargs):
+        self.calls.append(kwargs)
+
+
+class TestLegacyOnlyClient:
+    """The SDK advertises the sessions API but this client lacks it: the legacy endpoint
+    gets the original free text and the ``""`` clear, never lifecycle values."""
+
+    @pytest.mark.asyncio
+    async def test_thread_status_sends_free_text_then_empty_clear(self):
+        _slack_mod._AGENT_SESSIONS_SUPPORTED = True
+        a = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake-token"))
+        a._app = MagicMock()
+        a._app.client = _LegacyOnlyClient()
+        a.config.typing_status_text = "is digging in..."
+        md = {"thread_id": "1761299999.000001", "slack_team_id": "T1"}
+        await a.send_typing("C123", metadata=md)
+        await a.stop_typing("C123", metadata=md)
+        assert a._app.client.calls == [
+            {"channel_id": "C123", "thread_ts": "1761299999.000001", "status": "is digging in..."},
+            {"channel_id": "C123", "thread_ts": "1761299999.000001", "status": ""},
+        ]

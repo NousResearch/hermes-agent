@@ -291,13 +291,15 @@ def _sdk_supports_agent_sessions() -> bool:
     return _AGENT_SESSIONS_SUPPORTED
 
 
-def _session_status_method(client: Any):
-    """Return the status setter: Agent Sessions API when available, else legacy."""
+def _session_status_method(client: Any) -> tuple[Callable[..., Any], bool]:
+    """Return ``(setter, uses_sessions)``: Agent Sessions API when available, else legacy.
+    The flag is explicit because every attribute access builds a new bound method, so
+    the caller cannot tell which endpoint it got by identity."""
     if _sdk_supports_agent_sessions():
         method = getattr(client, "agents_sessions_setStatus", None)
         if method is not None:
-            return method
-    return client.assistant_threads_setStatus
+            return method, True
+    return client.assistant_threads_setStatus, False
 
 
 def _session_title_method(client: Any):
@@ -2766,12 +2768,31 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _set_thread_status(
         self, chat_id: str, team_id: str, thread_ts: str, status: str, fail_label: str) -> None:
-        """``assistant.threads.setStatus`` (empty ``status`` clears); failures are debug-logged."""
+        """Set/clear the thread status line; failures are debug-logged.
+
+        The endpoint is chosen first, then the payload. ``agents.sessions.setStatus``
+        (slack-sdk >= 3.44.0, the only API that works in Slack session channels) takes
+        lifecycle values: any non-empty status is ``processing``, an empty clear is
+        ``active``. ``assistant.threads.setStatus`` takes the free text / ``""`` clear.
+        When the sessions API rejects the call (no session scope, session-less channel)
+        the legacy endpoint is tried once with the original text.
+        """
+        client = self._get_client(chat_id, team_id=team_id)
+        set_status, uses_sessions = _session_status_method(client)
+        payload = ("processing" if status else "active") if uses_sessions else status
         try:
-            _set_status = _session_status_method(self._get_client(chat_id, team_id=team_id))
-            await _set_status(channel_id=chat_id, thread_ts=thread_ts, status=status)
+            await set_status(channel_id=chat_id, thread_ts=thread_ts, status=payload)
         except Exception as e:
-            logger.debug("[Slack] assistant.threads.setStatus %s: %s", fail_label, e)
+            if not uses_sessions:
+                logger.debug("[Slack] assistant.threads.setStatus %s: %s", fail_label, e,
+                             exc_info=True)
+                return
+            try:
+                await client.assistant_threads_setStatus(
+                    channel_id=chat_id, thread_ts=thread_ts, status=status)
+            except Exception as e2:
+                logger.debug("[Slack] assistant.threads.setStatus %s: %s (agents.sessions: %s)",
+                             fail_label, e2, e, exc_info=True)
 
     @staticmethod
     def _default_status_text(started: Optional[float]) -> str:

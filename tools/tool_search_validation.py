@@ -205,6 +205,231 @@ def _is_valid_calls_batch(obj: Any) -> bool:
     return all(isinstance(e, dict) and isinstance(e.get("name"), str) and e["name"].strip() for e in obj)
 
 
+def _entry_args_dict(entry: Any) -> Optional[dict[str, Any]]:
+    """The entry's ``arguments`` as a dict (a JSON string is parsed, ``None``/blank
+    means ``{}``), or ``None`` when the value is not an object (after parsing)."""
+    if not isinstance(entry, dict):
+        return None
+    raw = entry.get("arguments")
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+    return raw if isinstance(raw, dict) else None
+
+
+def _schema_params_of(name: str) -> tuple[Optional[dict], Optional[list]]:
+    """``(properties, required)`` of a registered tool's parameter schema;
+    ``(None, None)`` when the tool or its schema is unavailable (callers fail open)."""
+    try:
+        from tools.registry import registry
+        schema = registry.get_schema(name)
+    except Exception:
+        return None, None
+    if not isinstance(schema, dict):
+        return None, None
+    fn = schema.get("function") if schema.get("type") == "function" else schema
+    params = fn.get("parameters") if isinstance(fn, dict) else None
+    if not isinstance(params, dict):
+        return None, None
+    props = params.get("properties") if isinstance(params.get("properties"), dict) else None
+    required = params.get("required") if isinstance(params.get("required"), list) else None
+    return props, required
+
+
+def _entry_consistent_with(name: str, args: dict[str, Any]) -> bool:
+    """True when *args* fits *name*'s schema: every key is a declared property AND
+    every declared required parameter is present. Fails OPEN (True) when the schema
+    is unavailable — the parse gate then carries the whole no-guess burden."""
+    props, required = _schema_params_of(name)
+    if props is None:
+        return True
+    if set(args) - set(props):
+        return False
+    if required is not None and not set(required) <= set(args):
+        return False
+    return True
+
+
+def _resolve_entry_name(args: dict[str, Any]) -> tuple[Optional[str], list[str]]:
+    """Name resolution for a nameless entry: the UNIQUE registered non-bridge tool
+    whose parameter schema fits the entry's keys — every key a declared property,
+    every declared required parameter present. Uniqueness across ALL registered
+    tools (not just deferrable ones) is what keeps this no-guess: a task-card
+    session that defers core tools (read_file/terminal/session_search/... in the
+    effective defer list) routes them through tool_call, so a nameless
+    ``{"command": ...}`` entry must be recoverable exactly like a nameless MCP
+    entry (measured 10-25, rowids 612161/613854/613927). Tools with no required
+    parameters can match too — the measured {query} case is genuinely ambiguous
+    between session_search (required=[]) and x_search (required=[query]) and must
+    be rejected with BOTH named, not silently assigned to one. An empty key set
+    never matches (the original "empty fingerprint fits too many" invariant).
+    A resolved name the session cannot reach is still refused downstream by
+    ``resolve_underlying_call``'s effective-defer gate, so registry generosity
+    costs nothing.
+    """
+    if not args:
+        return None, []
+    try:
+        from tools.registry import registry
+        known = registry.get_all_tool_names()
+    except Exception:
+        return None, []
+    keys = frozenset(args)
+    candidates: list[str] = []
+    for cand in known:
+        if cand in BRIDGE_TOOL_NAMES:
+            continue
+        props, required = _schema_params_of(cand)
+        if not props:
+            continue
+        if set(keys) - set(props):
+            continue
+        req = set(required) if isinstance(required, list) else set()
+        if req - set(keys):
+            continue
+        candidates.append(cand)
+    if len(candidates) == 1:
+        return candidates[0], candidates
+    return None, candidates
+
+
+def _resolve_entry_name_with_move(args: dict[str, Any]) -> tuple[Optional[str], list[str], bool]:
+    """_resolve_entry_name, plus a name LIFT: when the arguments carry a ``name`` key
+    whose value is a registered tool and args-minus-that-key fit its schema, the value
+    is the tool the entry meant — lift it to entry level. Measured 10-25 (rowids
+    613854/613927/585819): Qwen3.8-27B wrote the name INSIDE arguments and dropped the
+    arguments closer (``{"arguments": {"command": ..., "name": "terminal"}}``), so the
+    entry parsed nameless with the tool name trapped one level too deep. A direct
+    fingerprint and a lifted value naming DIFFERENT tools is two readings -> None."""
+    name, candidates = _resolve_entry_name(args)
+    lifted: Optional[str] = None
+    value = args.get("name")
+    if isinstance(value, str) and value.strip():
+        value = value.strip()
+        if value not in BRIDGE_TOOL_NAMES:
+            try:
+                from tools.registry import registry
+                registered = value in registry.get_all_tool_names()
+            except Exception:
+                registered = False
+            if registered:
+                reduced = {k: v for k, v in args.items() if k != "name"}
+                if _entry_consistent_with(value, reduced):
+                    lifted = value
+    if name is not None:
+        if lifted is not None and lifted != name:
+            return None, candidates + [lifted], False
+        return name, candidates, False
+    if lifted is not None:
+        if candidates:
+            # An ambiguous direct fingerprint AND a lift are two (or more)
+            # readings — the lift must not win silently (measured 10-25
+            # adversarial review: {name} key sets fingerprint several
+            # no-required tools, so {"name": X} would otherwise always lift).
+            return None, candidates + [lifted], False
+        return lifted, [lifted], True
+    return None, candidates, False
+
+
+def _finalize_entry(entry: Any, assigned_name: Optional[str] = None) -> Optional[dict[str, Any]]:
+    """A raw parsed entry into ``{"name", "arguments"}`` — or None when the name
+    cannot be established without a guess. A nameless entry resolves via
+    :func:`_resolve_entry_name_with_move` (unique match only, including the lift).
+    ``assigned_name`` is a name the caller already arbitrated for a nameless entry
+    (the dangle repair); stray entry-level keys (legal only as name/arguments) are
+    then folded into arguments — but only when they fit that tool's schema."""
+    if not isinstance(entry, dict):
+        return None
+    args = _entry_args_dict(entry)
+    if args is None:
+        return None
+    strays = {k: v for k, v in entry.items() if k not in ("name", "arguments")}
+    name = str(entry.get("name") or "").strip()
+    if not name and assigned_name is not None:
+        name = assigned_name
+    if name:
+        if name in BRIDGE_TOOL_NAMES:
+            return None
+        if strays:
+            merged = dict(args)
+            merged.update(strays)
+            if not _entry_consistent_with(name, merged):
+                return None  # strays don't belong to this tool -> no silent fold
+            args = merged
+        return {"name": name, "arguments": args}
+    resolved, _cands, moved = _resolve_entry_name_with_move(args)
+    if resolved is None:
+        return None
+    if moved:
+        args = {k: v for k, v in args.items() if k != "name"}
+    if strays:
+        merged = dict(args)
+        merged.update(strays)
+        if not _entry_consistent_with(resolved, merged):
+            return None
+        args = merged
+    return {"name": resolved, "arguments": args}
+
+
+def _canonical_batch(entries: Any, assigned: Optional[tuple[int, str]] = None) -> Optional[str]:
+    """Canonical JSON of a fully-resolved batch, or None when ANY entry is
+    unresolvable — the no-guess gate every tail repair runs through. ``assigned``
+    is ``(index, name)``: a dangle name the caller is testing on one nameless
+    entry. Two repairs that parse to different names/args yield different
+    canonical forms and both survive -> the caller sees >1 and rejects."""
+    if not isinstance(entries, list) or not entries:
+        return None
+    finalized: list[dict[str, Any]] = []
+    for i, e in enumerate(entries):
+        a = assigned[1] if assigned is not None and assigned[0] == i else None
+        f = _finalize_entry(e, a)
+        if f is None:
+            return None
+        finalized.append(f)
+    return json.dumps(finalized, sort_keys=True, ensure_ascii=False)
+
+
+def _collect_tail_closer_run(text: str, max_k: int = 5, max_suffix: int = 2,
+                             want_list: bool = True) -> dict[str, str]:
+    """EVERY ``(canonical result, repaired text)`` pair reachable by dropping k
+    trailing close brackets (``k <= max_k``; the run must be pure ``}]``) and
+    appending at most ``max_suffix`` closers. Supersedes the old valid-prefix +
+    stray-tail cut (``k=0, suffix=''``) and the bounded tail appender (``k=0``)
+    with a name-aware gate: each candidate must re-parse to a list of dict
+    entries (``want_list``) or a dict, and every entry must resolve to a name
+    without a guess (:func:`_canonical_batch`) — so a corrupted tail cannot be
+    "completed" into a plausible-but-wrong batch. Measured 10-25 family: the
+    entry's closing ``}`` drifted to ``]`` (or vanished) and 1-3 surplus closers
+    piled up at the batch tail, with the entry(s) nameless.
+    """
+    found: dict[str, str] = {}
+    n = len(text)
+    for k in range(max_k + 1):
+        if k and any(ch not in "]}" for ch in text[n - k:]):
+            break  # the trailing run is shorter than k — larger k cannot work
+        head = text[:n - k]
+        for depth in range(max_suffix + 1):
+            for suffix in itertools.product("]}", repeat=depth):
+                cand = head + "".join(suffix)
+                try:
+                    obj = json.loads(cand)
+                except json.JSONDecodeError:
+                    continue
+                if want_list:
+                    canon = _canonical_batch(obj)
+                else:
+                    if not isinstance(obj, dict):
+                        continue
+                    canon = json.dumps(obj, sort_keys=True, ensure_ascii=False)
+                if canon:
+                    found.setdefault(canon, cand)
+    return found
+
+
 def _repair_single_char_edit(text: str) -> Optional[str]:
     """Recover a stringified ``tool_call`` batch that needs exactly one character
     fixed: a missing or misplaced bracket/quote-escape, or one missing comma.
@@ -418,6 +643,237 @@ def _recover_missing_name_entry(text: str) -> tuple[Optional[list[dict[str, Any]
         "tool_search returned. The call was NOT made; retry with 'name'." + detail)
 
 
+_DANGLE_TEACH = (
+    "A 'name' field landed OUTSIDE its entry — after the entry (or the whole batch) "
+    "had already closed. Every call must be one object carrying BOTH fields inside "
+    "it: {\"name\": \"<tool>\", \"arguments\": {...}}. The call was NOT made; retry "
+    "with each name inside its own entry object.")
+
+
+def _find_dangling_name(text: str) -> Optional[tuple[str, int]]:
+    """Locate the measured dangle: a ``"name"`` KEY at bracket depth 0 or 1 (root or
+    array level — never inside an entry object) whose string value is followed by
+    NOTHING but close brackets. Returns ``(value, key_position)`` or None. Valid
+    JSON cannot hold a key-value pair at array/root level, so this only matches
+    corrupted text; the closers-only tail anchors the match to the actual end.
+    """
+    in_str = False
+    esc = False
+    depth = 0
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            i += 1
+            continue
+        if ch == '"':
+            in_str = True  # the scanner re-enters string state on the key itself
+            if depth <= 1 and text.startswith('"name"', i):
+                j = i + len('"name"')
+                while j < n and text[j] == " ":
+                    j += 1
+                if j < n and text[j] == ":":
+                    j += 1
+                    while j < n and text[j] == " ":
+                        j += 1
+                    if j < n and text[j] == '"':
+                        k = j + 1
+                        esc2 = False
+                        closed = False
+                        while k < n:
+                            if esc2:
+                                esc2 = False
+                            elif text[k] == "\\":
+                                esc2 = True
+                            elif text[k] == '"':
+                                closed = True
+                                break
+                            k += 1
+                        if closed and all(c in "]}" for c in text[k + 1:]):
+                            return text[j + 1:k], i
+            i += 1
+            continue
+        if ch in "{[":
+            depth += 1
+        elif ch in "}]":
+            depth -= 1
+        i += 1
+    return None
+
+
+def _repair_dangling_name(text: str) -> tuple[Optional[list[dict[str, Any]]], Optional[str]]:
+    """The 10-25 measured shape (rowids 612161/612965/582641): an entry's
+    ``"name"`` leaked out of its entry object — emitted at array level
+    (``...}, "name": "X"}]``, the entry having closed one brace too early) or
+    after the batch's own close (``...]}, "name": "X"}]``). Recovery is a semantic
+    reconstruction, not a text edit:
+
+    1. the dangle value X is located (:func:`_find_dangling_name`);
+    2. the prefix before X's key is repaired with the bounded k-run — its last
+       entry usually dropped (or drifted) a closer at the same time;
+    3. X is attached to the ONE nameless entry whose arguments (+ stray
+       entry-level keys, which legally belong nowhere) fit X's schema; every
+       other nameless entry resolves by unique fingerprint / name lift;
+    4. only when exactly one final batch survives ALL of that is it returned.
+
+    Returns ``(entries, None)`` on rescue; ``(None, teach)`` when the shape is
+    recognized but the assignment is not unique (or fits nowhere); ``(None, None)``
+    when no dangle applies.
+    """
+    hit = _find_dangling_name(text)
+    if hit is None:
+        return None, None
+    x_name, key_pos = hit
+    # A dangle naming a tool that cannot be dispatched (typo, unregistered,
+    # or a bridge name) is not a name-position slip — refuse to "recover"
+    # it: other strategies or the plain rejection handle the text, and an
+    # unregistered name must never ride into a sibling-valid batch.
+    try:
+        from tools.registry import registry
+        if x_name in BRIDGE_TOOL_NAMES or x_name not in registry.get_all_tool_names():
+            return None, None
+    except Exception:
+        pass
+    prefix = text[:key_pos]
+    comma = re.search(r",\s*$", prefix)
+    if comma:
+        prefix = prefix[:comma.start()]
+    cands = _collect_tail_closer_run(prefix)
+    if not cands:
+        return None, _DANGLE_TEACH
+    finals: dict[str, list[dict[str, Any]]] = {}
+    for _canon, fixed in cands.items():
+        obj = json.loads(fixed)
+        nameless_idx = [i for i, e in enumerate(obj)
+                        if isinstance(e, dict) and not str(e.get("name") or "").strip()]
+        if not nameless_idx:
+            continue  # X fits nowhere
+        targets: list[int] = []
+        for i in nameless_idx:
+            e = obj[i]
+            args = _entry_args_dict(e)
+            if args is None:
+                continue
+            strays = {k: v for k, v in e.items() if k not in ("name", "arguments")}
+            merged = dict(args)
+            merged.update(strays)
+            if _entry_consistent_with(x_name, merged):
+                targets.append(i)
+        if len(targets) != 1:
+            continue  # X fits several (or zero) entries -> this reading is a guess
+        canon = _canonical_batch(obj, (targets[0], x_name))
+        if canon:
+            finals.setdefault(canon, json.loads(canon))
+    if len(finals) == 1:
+        return next(iter(finals.values())), None
+    return None, _DANGLE_TEACH
+
+
+def _deescape_structural(seg: str) -> Optional[str]:
+    """Inverse of the model's over-escape on a STRUCTURAL region (keys, values,
+    delimiters): ``\\"`` -> ``"`` and ``\\\\`` -> ``\\``. Any other escape means the
+    region boundary was mis-guessed -> None, which rejects that candidate."""
+    out: list[str] = []
+    i = 0
+    n = len(seg)
+    while i < n:
+        ch = seg[i]
+        if ch == "\\":
+            if i + 1 >= n:
+                return None
+            nxt = seg[i + 1]
+            if nxt == "\\":
+                out.append("\\")
+            elif nxt == '"':
+                out.append('"')
+            else:
+                return None
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _repair_escape_drift(text: str) -> Optional[str]:
+    """The 10-25 measured shape (rowid 613401): a string value that itself quotes
+    nested quotes was opened with an ESCAPED quote (``\"`` where the raw ``"``
+    belongs) — and the model then kept escaping every quote until the structure
+    resumed raw, so the tail reads ``\", \"title\": \"...\"}], \"context_id\": ...``.
+    The parse dies "Expecting value" at the first out-of-string backslash.
+
+    The drift region runs from that backslash to the next RAW quote. Inside it,
+    every escaped quote is a candidate boundary for the value's over-escaped close:
+    an even backslash run ends the value with a raw close (the run's pairs are
+    literal backslashes in the value); an odd run is the over-escaped close itself
+    (all but the final backslash are value content). Everything between the close
+    and the region end is structural and must de-escape cleanly.
+
+    Measured 10-25 (rowid 613401): several boundaries can re-parse — a LATER one
+    lets the value swallow a span that is itself complete key-value structure
+    (the model's over-escaped ``", "title": "..."`` reads as value text). The
+    intended close is the EARLIEST boundary whose candidate re-parses to a fully
+    resolvable batch: inner boundaries fail to parse (the swallowed span leaves
+    raw unquoted structure), and any later survivor converts more bytes from
+    structure into value text — a strictly larger deviation. Boundaries are
+    walked in ascending order, so the first success is the answer; no success
+    means the drift is not this shape (or is ambiguous beyond recovery).
+    """
+    in_str = False
+    esc = False
+    s: Optional[int] = None
+    for i, ch in enumerate(text):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        elif ch == "\\":
+            s = i
+            break
+        elif ch == '"':
+            in_str = True
+    if s is None or s + 1 >= len(text) or text[s + 1] != '"':
+        return None
+    e: Optional[int] = None
+    for j in range(s, len(text)):
+        if text[j] == '"' and (j == 0 or text[j - 1] != "\\"):
+            e = j
+            break
+    if e is None or e <= s + 1:
+        return None
+    q = s + 1
+    while q < e:
+        if text[q] == '"':
+            run = 0
+            t = q - 1
+            while t >= s and text[t] == "\\":
+                run += 1
+                t -= 1
+            if run:
+                value = text[s + 2:q] if run % 2 == 0 else text[s + 2:q - 1]
+                structural = _deescape_structural(text[q + 1:e])
+                if structural is not None:
+                    cand = text[:s] + '"' + value + '"' + structural + text[e:]
+                    try:
+                        obj = json.loads(cand)
+                    except json.JSONDecodeError:
+                        obj = None
+                    if obj is not None and _canonical_batch(obj):
+                        return cand  # earliest winning boundary
+        q += 1
+    return None
+
+
 def _repair_malformed_calls_string(text: str) -> Optional[str]:
     """Recover a stringified ``tool_call`` batch from the small-model tail-bracket
     malformations measured on long Qwen3.8-27B turns. Five bounded strategies,
@@ -523,17 +979,48 @@ def normalize_tool_call_entries(args: dict[str, Any]) -> tuple[list[dict[str, An
         try:
             raw_calls = json.loads(raw_calls)
         except json.JSONDecodeError as e:
-            # Small-model structural slips in the stringified batch envelope:
-            # adjacent close brackets out of order, a trailing run of stray
-            # close brackets, or one surplus close bracket (each shape measured
-            # on long Qwen3.8-27B turns; see _repair_malformed_calls_string).
+            # Small-model structural slips in the stringified batch envelope
+            # (measured on long Qwen3.8-27B turns). Five bounded no-guess repairs,
+            # in order — each accepted ONLY when exactly one valid reading
+            # survives (re-parse + every entry resolvable to a name):
+            #   1. adjacent close brackets out of order, a trailing run of stray
+            #      close brackets, one surplus close bracket, a single-char edit,
+            #      missing tail closers — _repair_malformed_calls_string;
+            #   2. a "name" dangle outside its entry (array or root level) —
+            #      _repair_dangling_name (semantic re-attachment);
+            #   3. the tail closer run mangled with nameless entries —
+            #      _collect_tail_closer_run (drop k trailing closers, append <=2);
+            #   4. escape drift in a value with nested quotes — _repair_escape_drift;
+            #   5. one entry that dropped BOTH its name and its closing brace —
+            #      _recover_missing_name_entry (carries the targeted teaching).
+            recovered_obj: Any = None
             repaired = _repair_malformed_calls_string(raw_calls)
             if repaired is not None:
                 try:
-                    raw_calls = json.loads(repaired)
+                    recovered_obj = json.loads(repaired)
                     logger.info("tool_call 'calls' recovered a malformed-tail slip")
-                except json.JSONDecodeError as e2:
-                    return [], f"tool_call 'calls' is not valid JSON: {e2}"
+                except json.JSONDecodeError:
+                    recovered_obj = None
+            if recovered_obj is None:
+                recovered, targeted = _repair_dangling_name(raw_calls)
+                if recovered is not None:
+                    logger.info("tool_call 'calls' recovered a dangling-name slip")
+                    return recovered, None
+                if targeted is not None:
+                    return [], targeted
+            if recovered_obj is None:
+                found = _collect_tail_closer_run(raw_calls)
+                if len(found) == 1:
+                    repaired = next(iter(found.values()))
+                    recovered_obj = json.loads(repaired)
+                    logger.info("tool_call 'calls' recovered a tail-closer-run slip")
+            if recovered_obj is None:
+                repaired = _repair_escape_drift(raw_calls)
+                if repaired is not None:
+                    recovered_obj = json.loads(repaired)
+                    logger.info("tool_call 'calls' recovered an escape-drift slip")
+            if recovered_obj is not None:
+                raw_calls = recovered_obj
             else:
                 recovered, targeted = _recover_missing_name_entry(raw_calls)
                 if recovered is not None:
@@ -562,22 +1049,35 @@ def normalize_tool_call_entries(args: dict[str, Any]) -> tuple[list[dict[str, An
             try:
                 raw_args = json.loads(raw_args)
             except json.JSONDecodeError as e:
-                return [], f"tool_call calls[{position}].arguments is not valid JSON: {e}"
+                # Measured 10-24 backlog (mv2e5ly1bah9we, 4/5 attempts): the stringified
+                # arguments object carries one surplus tail closer ("...plan...]}}").
+                # Bounded k-run completion; accepted only on the UNIQUE reading.
+                found = _collect_tail_closer_run(raw_args, max_k=3, max_suffix=1, want_list=False)
+                if len(found) == 1:
+                    raw_args = json.loads(next(iter(found.values())))
+                    logger.info("tool_call calls[%d].arguments recovered a tail-closer slip", position)
+                else:
+                    return [], f"tool_call calls[{position}].arguments is not valid JSON: {e}"
         if not isinstance(raw_args, dict):
             return [], f"tool_call calls[{position}].arguments must be an object"
         name = str(raw.get("name") or "").strip()
         if not name:
             # Measured 10-24 shape (session mvm57ofwgwwvvu, 8/8 attempts): a small model
             # omits "name" on the single-entry batch. Recover it when the argument
-            # fingerprint is UNIQUE across the registered deferrable tools; otherwise
-            # teach the retry the exact shape instead of an opaque JSON error.
-            resolved, candidates = _resolve_entry_name_from_args(raw_args)
+            # fingerprint is UNIQUE across the registered deferrable tools — or across
+            # all registered tools (stage 2: sessions that defer core tools route them
+            # through this bridge too) — or by lifting a "name" key the model trapped
+            # inside arguments. Otherwise teach the retry the exact shape instead of an
+            # opaque JSON error.
+            resolved, candidates, moved = _resolve_entry_name_with_move(raw_args)
             if resolved:
-                logger.info("tool_call calls[%d] 'name' recovered by unique schema match: %s",
-                            position, resolved)
+                if moved:
+                    raw_args = {k: v for k, v in raw_args.items() if k != "name"}
+                logger.info("tool_call calls[%d] 'name' recovered by unique schema match: %s%s",
+                            position, resolved, " (lifted out of arguments)" if moved else "")
                 name = resolved
             else:
-                hint = (" Closest matches: " + ", ".join(candidates) + " — pick the one you mean.") if candidates else ""
+                hint = (f" Closest matches: {', '.join(candidates)} — pick the one you mean.") if candidates else ""
                 return [], (
                     f"tool_call calls[{position}] requires a 'name' (the exact tool name to "
                     f"invoke): each entry must be {{\"name\": \"<tool name>\", \"arguments\": "

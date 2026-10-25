@@ -64,6 +64,27 @@ def test_a_foreground_terminal_call_keeps_its_environment_past_the_lifetime(env)
     assert env.cleaned
 
 
+def test_overlapping_calls_hold_the_env_until_the_last_exits_then_idle_a_full_lifetime(env, monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(time, "time", lambda: now[0])
+    monkeypatch.setattr(tt, "_calls_in_flight", {})
+    tt._last_activity["default"] = now[0]
+
+    def kept_after_sweep_at(t):
+        now[0] = t
+        _cleanup_inactive_envs(lifetime_seconds=300)
+        return tt._active_environments.get("default") is env
+
+    with tt._call_in_flight("default"):
+        with tt._call_in_flight("default"):
+            now[0] = 1400
+        assert kept_after_sweep_at(1800)  # still held by the other call
+        now[0] = 1900
+    assert kept_after_sweep_at(1900)  # the last exit restarted the countdown
+    assert kept_after_sweep_at(2200)
+    assert not kept_after_sweep_at(2201) and env.cleaned
+
+
 def test_a_remote_execute_code_call_keeps_its_environment_past_the_lifetime(env, monkeypatch):
     from tools import code_kernel_remote
 

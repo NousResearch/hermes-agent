@@ -40,29 +40,27 @@ def _claimed_running(conn, *, pid: int, started_at, max_runtime=None) -> str:
     return tid
 
 
-def test_recycled_pid_is_reclaimed_without_being_signalled(board):
-    """Our own live PID with a foreign fingerprint models a post-reboot recycle: the claim is released
-    (dead worker), no signal is sent, and max-runtime enforcement does not SIGTERM the stranger either."""
+def test_legacy_start_only_fingerprint_is_held_without_signal(board):
+    """A start-only fingerprint lacks a boot witness, so it cannot authorize release or signalling."""
     conn = board
     killed = []
     stranger_fingerprint = 1  # no live process started at tick 1
     tid = _claimed_running(conn, pid=os.getpid(), started_at=stranger_fingerprint, max_runtime=1)
 
-    assert kbd._worker_alive(os.getpid(), stranger_fingerprint) is False
-    assert tid in kbd.enforce_max_runtime(conn, signal_fn=lambda pid, sig: killed.append((pid, sig)))
+    assert kbd._worker_alive(os.getpid(), stranger_fingerprint) is True
+    assert tid not in kbd.enforce_max_runtime(conn, signal_fn=lambda pid, sig: killed.append((pid, sig)))
     assert killed == []
     task = kb.get_task(conn, tid)
-    assert task.status == "ready" and task.worker_pid is None
+    assert task.status == "running" and task.worker_pid == os.getpid()
 
     tid2 = _claimed_running(conn, pid=os.getpid(), started_at=stranger_fingerprint)
-    assert kb.release_stale_claims(conn, signal_fn=lambda pid, sig: killed.append((pid, sig))) == 1
+    assert kb.release_stale_claims(conn, signal_fn=lambda pid, sig: killed.append((pid, sig))) == 0
     assert killed == []
-    assert kb.get_task(conn, tid2).status == "ready"
+    assert kb.get_task(conn, tid2).status == "running"
 
 
-def test_matching_fingerprint_keeps_the_live_worker(board):
-    """The same PID with ITS OWN fingerprint (recorded at spawn) is our worker: the expired claim is
-    extended rather than reclaimed, and the timeout path signals it."""
+def test_legacy_matching_start_only_fingerprint_keeps_without_signal(board):
+    """Even a matching start-only legacy value lacks boot identity and never authorizes a signal."""
     from gateway.status import get_process_start_time
 
     conn = board
@@ -77,7 +75,7 @@ def test_matching_fingerprint_keeps_the_live_worker(board):
     with kb.write_txn(conn):
         conn.execute("UPDATE tasks SET max_runtime_seconds = 1 WHERE id = ?", (tid,))
     kbd.enforce_max_runtime(conn, signal_fn=lambda pid, sig: killed.append((pid, sig)))
-    assert killed and killed[0] == (os.getpid(), signal.SIGTERM)
+    assert killed == []
 
 
 def test_same_pid_and_start_tick_on_another_boot_is_foreign(board, monkeypatch):
@@ -136,8 +134,8 @@ def test_unverified_fingerprint_capture_never_authorizes_a_signal(board, monkeyp
     assert kb.release_stale_claims(conn, signal_fn=sig) == 0
     assert killed == []
     assert kb.get_task(conn, tid).status == "running"
-    # An explicit operator reclaim releases the claim (human override) but still sends nothing.
-    assert kb.reclaim_task(conn, tid, reason="operator", signal_fn=sig) is True
+    # An explicit operator reclaim also holds the claim while identity is unverified.
+    assert kb.reclaim_task(conn, tid, reason="operator", signal_fn=sig) is False
     assert killed == []
 
     # The process is gone (a dead PID): the row is reclaimed like any dead worker, still no signal.

@@ -5,12 +5,40 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import json
+import sys
 import threading
 from types import SimpleNamespace
 
 import pytest
 
 pytest.importorskip("nemo_relay")
+
+# relay_runtime drives the 0.9+ plugin-host API (initialize(additional_plugins_toml=...)), and
+# pyproject only requires nemo-relay>=0.10 on python>=3.14. A venv created before that marker
+# can still hold an orphaned older wheel: the import above succeeds, but plugin initialization
+# fails at runtime and these tests die on it. The wheel exposes no __version__, so gate on the
+# distribution metadata instead. On python>=3.14 the pin is mandatory, so an old version falls
+# through and fails loudly there instead of skipping.
+_skip_reason = None
+try:
+    from importlib.metadata import PackageNotFoundError, version as _dist_version
+
+    from packaging.version import InvalidVersion, Version
+
+    try:
+        _relay_version = Version(_dist_version("nemo-relay"))
+    except (PackageNotFoundError, InvalidVersion):
+        _relay_version = None
+    if _relay_version is not None and _relay_version < Version("0.10") and sys.version_info < (3, 14):
+        _skip_reason = (
+            f"nemo-relay {_relay_version} is older than the pyproject pin (>=0.10): stale wheel"
+            " predating the python>=3.14 marker -- uninstall it or run python>=3.14"
+        )
+except ImportError:
+    pass  # no metadata or no packaging: keep the pre-existing importorskip behavior
+
+if _skip_reason is not None:
+    pytest.skip(_skip_reason, allow_module_level=True)
 
 from agent import relay_llm, relay_runtime
 

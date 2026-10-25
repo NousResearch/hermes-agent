@@ -162,11 +162,11 @@ class GatewaySessionStore:
         """``session.create`` with the launch policy (and ``title``: the owner's resolve -> create ->
         title step); adopts and returns the new session id. ``record_cwd=False`` (``/new``,
         ``--create-if-missing``) leaves the row's cwd empty, as main's explicit creates did."""
-        from agent.session_source import CLI_FAMILY_SOURCES, session_source_for
+        from agent.session_source import CLI_FAMILY_SOURCES, create_surface, session_source_for
         params = _creation_policy(launch or {})
         params["cwd"] = os.path.realpath(os.getenv("TERMINAL_CWD") or os.getcwd())
         # Main's row label: ``cli``, ``oneshot`` for a finite -q/-Q run, or an explicit --source.
-        params["source"] = session_source_for("cli")
+        params["source"] = create_surface(session_source_for("cli"))
         # Main's row stamp (run_agent._launch_cwd_for_session): this process's cwd (``-w`` never
         # chdirs, so the repo root), only for a CLI-family label on a local terminal backend.
         local = (os.getenv("TERMINAL_ENV") or "local").strip().lower() in ("", "local")

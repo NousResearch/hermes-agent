@@ -964,37 +964,6 @@ def _parse_docker_volume_mounts() -> list[tuple[Path, Path]]:
     return mounts
 
 
-def _docker_sandbox_dir_candidates(session_key: str = "") -> list[str]:
-    """Candidate host sandbox dir names for the delivering session, best first. Mirrors
-    ``_resolve_container_task_id`` (tools/terminal_tool.py): containers are PROFILE-scoped
-    (``default``, else ``profile:<name>``); legacy ``session:<key>`` sandboxes stay as a fallback.
-    The key is passed explicitly because delivery runs after the turn's contextvars were cleared.
-
-    Takes the key explicitly because the delivery pipeline runs after ``_handle_message_with_agent`` cleared
-    the turn's session contextvars (#93950) — an ambient lookup here would silently collapse onto
-    ``default`` and miss the session's real sandbox.
-    """
-    try:
-        from tools.environments.path_utils import sanitize_task_id_for_path
-    except Exception:
-        return ["default"]
-    try:
-        from hermes_cli.profiles import get_active_profile_name
-        profile = get_active_profile_name() or "default"
-    except Exception:
-        profile = "default"
-    candidates: list[str] = []
-    # Explicit trusted-profiles opt-in: one shared container identity.
-    if shared := _tenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip():
-        candidates.append(sanitize_task_id_for_path(f"shared:{shared}"))
-    if profile != "default":
-        candidates.append(sanitize_task_id_for_path(f"profile:{profile}"))
-    candidates.append("default")
-    if session_key:  # bug-window legacy layout: per-session sandboxes
-        candidates.append(sanitize_task_id_for_path(f"session:{session_key}"))
-    return candidates
-
-
 _TRUTHY = {"1", "true", "yes", "on"}
 
 
@@ -1005,35 +974,6 @@ def _docker_env_active() -> bool:
 def _docker_persistent_active() -> bool:
     """Docker backend with persistent containers (the default) enabled."""
     return _docker_env_active() and _tenv("TERMINAL_CONTAINER_PERSISTENT", "true").strip().lower() in _TRUTHY
-
-
-def _docker_persistent_sandbox_roots(session_key: str, leaf: str) -> list[Path]:
-    """Existing ``<sandbox>/docker/<candidate>/<leaf>`` host dirs in candidate order;
-    the translator tries each until the file resolves. Empty unless Docker + persistent."""
-    if not _docker_persistent_active():
-        return []
-    try:
-        from tools.environments.base import get_sandbox_dir
-        base = get_sandbox_dir() / "docker"
-        return [cand for name in _docker_sandbox_dir_candidates(session_key)
-                if (cand := (base / name / leaf).resolve(strict=False)).is_dir()]
-    except Exception:
-        return []
-
-
-def _default_docker_workspace_host_roots(session_key: str = "") -> list[Path]:
-    """Existing host candidates for ``/workspace``: the explicit cwd mount
-    (``TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE``) if set, else the persistent sandbox layouts."""
-    if not _docker_persistent_active():
-        return []
-    if _tenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").strip().lower() in _TRUTHY:
-        cwd = _tenv("TERMINAL_CWD") or os.getcwd()
-        try:
-            host = Path(os.path.expanduser(cwd)).resolve(strict=False)
-        except (OSError, RuntimeError, ValueError):
-            return []
-        return [host] if host.is_dir() else []
-    return _docker_persistent_sandbox_roots(session_key, "workspace")
 
 
 def _cache_dir_container_mounts() -> list[tuple[Path, Path]]:
@@ -1063,9 +1003,15 @@ def _warn_unresolved_docker_media(candidate: Path, session_key: str, reason: str
                    f", session_key={session_key}" if session_key else "")
 
 
-def _translate_docker_container_media_path(candidate: Path, session_key: str = "", *, quiet: bool = False) -> Optional[Path]:
+def _translate_docker_container_media_path(
+    candidate: Path, session_key: str = "", workspace_key: str = "", *, quiet: bool = False,
+) -> Optional[Path]:
     """Container-absolute path -> host path via longest-prefix match over ``docker_volumes``, the
-    auto-mounted cache dirs (``/root/.hermes/...``), persistent ``/workspace`` and ``/root``."""
+    auto-mounted cache dirs (``/root/.hermes/...``), persistent ``/workspace`` and ``/root``.
+
+    ``workspace_key`` is the 16-hex digest of one session's host cwd. It selects that
+    session's ``<base>:ws:<digest>`` sandbox and is empty for MEDIA delivery.
+    """
     if not candidate.as_posix().startswith("/"):  # POSIX even on Windows gateways (not is_absolute)
         return None
     # In-process gateways (Desktop, `hermes serve`) may not have bridged terminal.* config into
@@ -1073,17 +1019,24 @@ def _translate_docker_container_media_path(candidate: Path, session_key: str = "
     with contextlib.suppress(Exception):
         from tools.terminal_tool import _ensure_terminal_env_bridged
         _ensure_terminal_env_bridged()
+    from gateway.platforms.docker_media_paths import (
+        _default_docker_workspace_host_roots, _docker_persistent_sandbox_roots,
+    )
     mounts = [*_parse_docker_volume_mounts(), *_cache_dir_container_mounts()]
     mounted = {c.as_posix() for _, c in mounts}
-    # Synthetic /workspace mounts: profile-scoped layout first, then legacy per-session.
+    # Synthetic /workspace mounts: this session's workspace sandbox, then the
+    # shared profile layout, then the legacy per-session dir.
     if "/workspace" not in mounted:
-        mounts.extend((root, Path("/workspace")) for root in _default_docker_workspace_host_roots(session_key))
+        mounts.extend(
+            (root, Path("/workspace"))
+            for root in _default_docker_workspace_host_roots(session_key, workspace_key))
     # Synthetic /root mounts catch stray home writes (/root/out.png; cache mounts are longer
     # prefixes). /root/.hermes/* that missed a cache mount is the container's credential surface —
     # translating it via the home mount would dodge the host denylist.
     if "/root" not in mounted and not candidate.as_posix().startswith("/root/.hermes"):
         mounts.extend(
-            (root, Path("/root")) for root in _docker_persistent_sandbox_roots(session_key, "home"))
+            (root, Path("/root"))
+            for root in _docker_persistent_sandbox_roots(session_key, "home", workspace_key))
     if not mounts:
         _warn_unresolved_docker_media(candidate, session_key, "no sandbox mounts resolved", quiet)
         return None

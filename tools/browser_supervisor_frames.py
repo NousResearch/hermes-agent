@@ -36,6 +36,10 @@ class FrameInfo:
     is_oopif: bool
     cdp_session_id: Optional[str] = None
     name: str = ""
+    # CDP changes this for every committed document navigation, even when an
+    # OOPIF keeps its frame id and target session.  It is internal route
+    # provenance, not model-facing frame-tree metadata.
+    loader_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         d = {"frame_id": self.frame_id, "url": self.url, "origin": self.origin, "is_oopif": self.is_oopif}
@@ -46,6 +50,112 @@ class FrameInfo:
 
 class FrameTrackingMixin:
     """Frame-tree bookkeeping for ``CDPSupervisor`` (event handlers run on its loop)."""
+
+    async def _select_child_document(self, sid: str, accept: str, *, timeout: float) -> Optional[dict[str, Any]]:
+        """Select one owned OOPIF and bind its session, loader and isolated principal."""
+        from websockets.exceptions import WebSocketException
+
+        # A vault form may live in a cross-origin OOPIF. Only
+        # inspect frame ids returned by THIS top-level page's
+        # frame tree: arbitrary attached iframe targets must
+        # never become a credential destination.
+        tree = await self._cdp("Page.getFrameTree", session_id=sid, timeout=timeout)
+
+        def _child_ids(node: Dict[str, Any]) -> dict[str, None]:
+            ids: dict[str, None] = {}
+            for child in node.get("childFrames") or []:
+                child_frame = child.get("frame") or {}
+                frame_id = str(child_frame.get("id") or "")
+                if frame_id:
+                    ids[frame_id] = None
+                ids.update(_child_ids(child))
+            return ids
+
+        top_tree = (tree.get("result") or {}).get("frameTree") or {}
+        top_frame_id = str((top_tree.get("frame") or {}).get("id") or "")
+        frame_ids_by_owner = _child_ids(top_tree)
+        # Chrome's top-level Page.getFrameTree omits remote
+        # OOPIFs on some versions.  Page.frameAttached is
+        # delivered on the top session before Target attaches
+        # the OOPIF, so use only its descendants of this exact
+        # top frame—not every attached iframe target.
+        with self._state_lock:
+            all_frames = dict(self._frames)
+
+        def _belongs_to_selected_page(candidate_id: str) -> bool:
+            seen = set()
+            current = all_frames.get(candidate_id)
+            while current and current.parent_frame_id and current.frame_id not in seen:
+                seen.add(current.frame_id)
+                if current.parent_frame_id == top_frame_id:
+                    return True
+                current = all_frames.get(current.parent_frame_id)
+            return False
+
+        for candidate_id in all_frames:
+            if _belongs_to_selected_page(candidate_id):
+                frame_ids_by_owner.setdefault(candidate_id, None)
+        frame_ids = list(frame_ids_by_owner)
+        child_session = None
+        child_origin = ""
+        with self._state_lock:
+            frames = {fid: self._frames.get(fid) for fid in frame_ids}
+        for frame_id in frame_ids:
+            frame = frames.get(frame_id)
+            if frame is None or not frame.is_oopif or not frame.cdp_session_id:
+                continue
+            child_tree = await self._cdp(
+                "Page.getFrameTree", session_id=frame.cdp_session_id, timeout=timeout,
+            )
+            child_root = ((child_tree.get("result") or {}).get("frameTree") or {}).get("frame") or {}
+            loader_id = str(child_root.get("loaderId") or "")
+            # Bind the route to the selected OOPIF document;
+            # missing/changed loader provenance fails closed.
+            if str(child_root.get("id") or "") != frame_id or not loader_id:
+                continue
+            with self._state_lock:
+                current = self._frames.get(frame_id)
+                if current is None or current.cdp_session_id != frame.cdp_session_id:
+                    continue
+                self._frames[frame_id] = replace(current, loader_id=loader_id)
+            child_probe = await self._cdp(
+                "Runtime.evaluate", {"expression": accept, "returnByValue": True},
+                session_id=frame.cdp_session_id, timeout=timeout,
+            )
+            if child_probe.get("result", {}).get("result", {}).get("value"):
+                # The effective principal can be opaque despite
+                # an HTTPS location/securityOrigin. Probe in an
+                # isolated world so page code cannot replace
+                # self.origin to grant itself vault authority.
+                try:
+                    world = await self._cdp(
+                        "Page.createIsolatedWorld", {"frameId": frame_id, "worldName": "hermes-vault-origin"},
+                        session_id=frame.cdp_session_id, timeout=timeout,
+                    )
+                    origin_probe = await self._cdp(
+                        "Runtime.evaluate", {"expression": "self.origin", "returnByValue": True,
+                                             "contextId": world["result"]["executionContextId"]},
+                        session_id=frame.cdp_session_id, timeout=timeout,
+                    )
+                    child_origin = str(origin_probe.get("result", {}).get("result", {}).get("value") or "")
+                except (KeyError, TypeError, RuntimeError, TimeoutError, WebSocketException):
+                    # Failed provenance cannot become a request
+                    # to try another credential destination.
+                    child_origin = ""
+                # Even an empty origin selects this document;
+                # the vault refuses it without sibling fallback.
+                child_session = frame.cdp_session_id
+                child_loader_id = loader_id
+                break
+        if child_session is None:
+            return None
+        with self._state_lock:
+            frame = self._frames.get(frame_id)
+        if frame is None or frame.cdp_session_id != child_session:
+            return None
+        return {"frame_origin": child_origin,
+                "route": {"page_session_id": sid, "frame_id": frame_id,
+                          "frame_session_id": child_session, "frame_loader_id": child_loader_id}}
 
     async def _enable_page_domains(self, session_id: Optional[str], *, timeout: float) -> None:
         """Page.enable + Runtime.enable + nested auto-attach on one session."""
@@ -75,6 +185,7 @@ class FrameTrackingMixin:
                 origin=str(frame.get("securityOrigin") or frame.get("origin") or ""),
                 parent_frame_id=frame.get("parentId") or old.parent_frame_id, is_oopif=old.is_oopif,
                 cdp_session_id=old.cdp_session_id, name=str(frame.get("name") or old.name),
+                loader_id=str(frame.get("loaderId") or ""),
             )
 
     def _on_frame_detached(self, params: dict[str, Any], session_id: Optional[str]) -> None:

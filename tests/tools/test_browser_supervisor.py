@@ -33,12 +33,28 @@ import base64
 import json
 import os
 import shutil
+import ssl
 import subprocess
 import tempfile
 import time
 from pathlib import Path
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
+
+
+def _find_chrome() -> str:
+    for candidate in ("google-chrome", "chromium", "chromium-browser"):
+        path = shutil.which(candidate)
+        if path:
+            return path
+    # macOS app bundles do not put a google-chrome shim on PATH.
+    macos_chrome = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+    if macos_chrome.is_file() and os.access(macos_chrome, os.X_OK):
+        return str(macos_chrome)
+    pytest.skip("no Chrome binary found")
 
 
 pytestmark = [
@@ -48,18 +64,11 @@ pytestmark = [
         reason="real-browser E2E: set HERMES_E2E_BROWSER=1 to opt in",
     ),
     pytest.mark.skipif(
-        not shutil.which("google-chrome") and not shutil.which("chromium"),
+        not shutil.which("google-chrome") and not shutil.which("chromium")
+        and not Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome").is_file(),
         reason="Chrome/Chromium not installed",
     ),
 ]
-
-
-def _find_chrome() -> str:
-    for candidate in ("google-chrome", "chromium", "chromium-browser"):
-        path = shutil.which(candidate)
-        if path:
-            return path
-    pytest.skip("no Chrome binary found")
 
 
 @pytest.fixture
@@ -84,6 +93,11 @@ def chrome_cdp(tmp_path):
             "--headless=new",
             "--disable-gpu",
             "--site-per-process",  # force OOPIFs for cross-origin iframes
+            "--host-resolver-rules=MAP *.test 127.0.0.1",
+            "--no-proxy-server",  # local fixtures must not inherit the host's proxy
+            # The .test TLD is HSTS-preloaded.  This temporary, test-only
+            # profile accepts the fixture's ephemeral self-signed certificate.
+            "--ignore-certificate-errors",
         ],
         stdout=subprocess.DEVNULL,
         stderr=stderr,
@@ -202,6 +216,109 @@ def _fire_on_page(cdp_url: str, expression: str) -> None:
 
 
 @pytest.fixture
+def cross_site_pages():
+    """Three HTTPS DNS sites on loopback; Chrome's site isolation sees real OOPIFs."""
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_GET(self):  # noqa: N802
+            if self.path in {"/rp-sandbox", "/rp-sandbox-spoof"}:
+                child_path = "login-spoof" if self.path.endswith("-spoof") else "login"
+                body = ("<!doctype html><iframe id=idp sandbox='allow-scripts allow-forms' "
+                        "src='https://idp.test:%d/%s'></iframe>" % (server.server_port, child_path))
+            elif self.path in {"/rp", "/rp-idp"}:
+                evil = ("<iframe id=evil src='https://evil.test:%d/login'></iframe>" % server.server_port
+                        if self.path == "/rp" else "")
+                body = ("<!doctype html>" + evil
+                        + "<iframe id=idp src='https://idp.test:%d/login'></iframe>" % server.server_port)
+            elif self.path.startswith("/bridge?port="):
+                ipv6_port = int(self.path.split("=", 1)[1])
+                body = f"<iframe src='https://[::1]:{ipv6_port}/login'></iframe>"
+            else:
+                body = "<input type=password id=password>"
+                if self.path == "/login-spoof":
+                    body += "<script>self.origin = location.origin</script>"
+            self.send_response(200); self.send_header("Content-Type", "text/html"); self.end_headers()
+            self.wfile.write(body.encode())
+
+    with tempfile.TemporaryDirectory(prefix="hermes-oopif-cert-") as cert_dir:
+        cert = Path(cert_dir) / "cert.pem"
+        key = Path(cert_dir) / "key.pem"
+        subprocess.run(
+            ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+             "-subj", "/CN=rp.test", "-keyout", str(key), "-out", str(cert)],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        tls.load_cert_chain(certfile=cert, keyfile=key)
+        server.socket = tls.wrap_socket(server.socket, server_side=True)
+        thread = __import__("threading").Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield server.server_port
+        finally:
+            server.shutdown(); thread.join(timeout=3)
+
+
+def _navigate(cdp_url: str, url: str) -> str:
+    import websockets as _ws_mod
+    async def run():
+        async with _ws_mod.connect(cdp_url) as ws:
+            await ws.send(json.dumps({"id": 1, "method": "Target.getTargets"}))
+            while (m := json.loads(await ws.recv())).get("id") != 1: pass
+            page = next(t for t in m["result"]["targetInfos"] if t.get("type") == "page")
+            await ws.send(json.dumps({"id": 2, "method": "Target.attachToTarget", "params": {"targetId": page["targetId"], "flatten": True}}))
+            while (m := json.loads(await ws.recv())).get("id") != 2: pass
+            await ws.send(json.dumps({"id": 3, "method": "Page.navigate", "params": {"url": url}, "sessionId": m["result"]["sessionId"]}))
+            while (m := json.loads(await ws.recv())).get("id") != 3: pass
+            return page["targetId"]
+    return asyncio.run(run())
+
+
+def _top_frame_tree(cdp_url: str, target_id: str) -> dict:
+    """Return the selected top page's CDP frame tree for OOPIF provenance."""
+    import websockets as _ws_mod
+
+    async def run():
+        async with _ws_mod.connect(cdp_url) as ws:
+            await ws.send(json.dumps({"id": 1, "method": "Target.getTargets"}))
+            while (m := json.loads(await ws.recv())).get("id") != 1:
+                pass
+            await ws.send(json.dumps({"id": 2, "method": "Target.attachToTarget", "params": {"targetId": target_id, "flatten": True}}))
+            while (m := json.loads(await ws.recv())).get("id") != 2:
+                pass
+            session_id = m["result"]["sessionId"]
+            await ws.send(json.dumps({"id": 3, "method": "Page.enable", "sessionId": session_id}))
+            while (m := json.loads(await ws.recv())).get("id") != 3:
+                pass
+            await ws.send(json.dumps({"id": 4, "method": "Page.getFrameTree", "sessionId": session_id}))
+            while (m := json.loads(await ws.recv())).get("id") != 4:
+                pass
+            return m["result"]["frameTree"]
+
+    return asyncio.run(run())
+
+
+def _top_body(cdp_url: str, target_id: str) -> str:
+    """Read fixture DOM only; production writes remain supervisor-routed."""
+    import websockets as _ws_mod
+
+    async def run():
+        async with _ws_mod.connect(cdp_url) as ws:
+            await ws.send(json.dumps({"id": 1, "method": "Target.attachToTarget", "params": {"targetId": target_id, "flatten": True}}))
+            while (m := json.loads(await ws.recv())).get("id") != 1:
+                pass
+            await ws.send(json.dumps({"id": 2, "method": "Runtime.evaluate", "params": {"expression": "document.body ? document.body.innerHTML : ''", "returnByValue": True}, "sessionId": m["result"]["sessionId"]}))
+            while (m := json.loads(await ws.recv())).get("id") != 2:
+                pass
+            return str(m["result"]["result"]["value"])
+
+    return asyncio.run(run())
+
+
+@pytest.fixture
 def supervisor_registry():
     """Yield the global registry and tear down any supervisors after the test."""
     from tools.browser_supervisor import SUPERVISOR_REGISTRY
@@ -236,6 +353,192 @@ def test_supervisor_start_and_snapshot(chrome_cdp, supervisor_registry):
     assert snap.pending_dialogs == ()
     # At minimum a top frame should exist after the navigate.
     assert snap.frame_tree.get("top") is not None
+
+
+def test_cross_site_frames_are_real_oopifs(chrome_cdp, supervisor_registry, cross_site_pages):
+    """The rp/idp/evil fixture proves CDP child targets, not port-only iframes."""
+    cdp_url, _port = chrome_cdp
+    supervisor = supervisor_registry.get_or_start(task_id="pytest-oopif", cdp_url=cdp_url)
+    target_id = _navigate(cdp_url, f"https://rp.test:{cross_site_pages}/rp")
+    body = _top_body(cdp_url, target_id)
+    assert 'id="evil"' in body, body
+    deadline = time.monotonic() + 5
+    frames = []
+    top_frame_id = ""
+    while time.monotonic() < deadline:
+        with supervisor._state_lock:
+            frames = list(supervisor._frames.values())
+        top_frame_id = str((_top_frame_tree(cdp_url, target_id).get("frame") or {}).get("id") or "")
+        top_children = [f for f in frames if f.parent_frame_id == top_frame_id and f.is_oopif and f.cdp_session_id]
+        if len(top_children) == 2 and all(f.is_oopif and f.cdp_session_id for f in top_children):
+            break
+        time.sleep(.1)
+    # Frame events may retain provisional local records after the OOPIF swap.
+    # Verify the two live remote documents, including their CDP identity.
+    children = [f for f in frames if f.parent_frame_id == top_frame_id and f.is_oopif and f.cdp_session_id]
+    assert len(children) == 2, [
+        (f.frame_id, f.origin, f.url, f.is_oopif, f.cdp_session_id)
+        for f in frames
+    ]
+    assert all(f.is_oopif and f.cdp_session_id for f in children)
+    live_frames = [_top_frame_tree(cdp_url, f.frame_id)["frame"] for f in children]
+    assert {f["id"] for f in live_frames} == {f.frame_id for f in children}
+    assert {f["parentId"] for f in live_frames} == {top_frame_id}
+    assert {f["securityOrigin"] for f in live_frames} == {
+        f"https://idp.test:{cross_site_pages}", f"https://evil.test:{cross_site_pages}",
+    }
+    snapshot = supervisor.snapshot().frame_tree
+    assert snapshot["top"]["frame_id"] == top_frame_id
+    assert {child["frame_id"] for child in snapshot["children"]} >= {f.frame_id for f in children}
+
+
+def test_browser_vault_fill_uses_real_oopif_route(chrome_cdp, supervisor_registry, cross_site_pages):
+    """The production vault path fills only an approved OOPIF, via its CDP route."""
+    from tools import browser_vault_tool
+
+    cdp_url, _port = chrome_cdp
+    task_id = "pytest-live-vault"
+    supervisor = supervisor_registry.get_or_start(task_id=task_id, cdp_url=cdp_url)
+    _navigate(cdp_url, f"https://rp.test:{cross_site_pages}/rp-idp")
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        with supervisor._state_lock:
+            if any(f.is_oopif and f.cdp_session_id for f in supervisor._frames.values()):
+                break
+        time.sleep(.1)
+    top_origin = f"https://rp.test:{cross_site_pages}"
+    child_origin = f"https://idp.test:{cross_site_pages}"
+    canary = "oopif-test-canary"
+    meta = SimpleNamespace(
+        id="live-login", kind="login", origin=top_origin,
+        allowed_origins=[top_origin], label="Live OOPIF test", has_otp=False,
+    )
+
+    class Backend:
+        name, display_name, needs_unlock = "test", "Test", False
+
+        def is_unlocked(self):
+            return True
+
+        def get_meta(self, handle):
+            return meta if handle == meta.id else None
+
+        def resolve_password(self, handle):
+            assert handle == meta.id
+            return canary
+
+    with patch("agent.vault_backends.backend_for_handle", return_value=Backend()), \
+         patch("tools.approval_prompt.request_elicitation_consent", return_value="accept") as consent:
+        result = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id=task_id))
+
+    assert result["success"] is True and result["filled_fields"] == 1, result
+    assert canary not in json.dumps(result)
+    assert consent.call_count == 1
+    assert top_origin in consent.call_args.args[0] and child_origin in consent.call_args.args[0]
+    with supervisor._state_lock:
+        child = next(f for f in supervisor._frames.values() if f.is_oopif and f.cdp_session_id)
+        route = {"page_session_id": supervisor._page_session_id, "frame_id": child.frame_id,
+                 "frame_session_id": child.cdp_session_id, "frame_loader_id": child.loader_id}
+    check = supervisor.evaluate_runtime(
+        "document.querySelector('#password').value === 'oopif-test-canary'", route=route,
+    )
+    assert check == {"ok": True, "result": True, "result_type": "boolean"}
+
+
+@pytest.mark.parametrize("spoof_origin", [False, True])
+def test_browser_vault_rejects_real_sandboxed_oopif(chrome_cdp, supervisor_registry, cross_site_pages, spoof_origin):
+    """An opaque document must not obtain consent or receive a password."""
+    from tools import browser_vault_tool
+    from unittest.mock import Mock
+
+    cdp_url, _port = chrome_cdp
+    task_id = "pytest-live-vault-sandbox"
+    supervisor = supervisor_registry.get_or_start(task_id=task_id, cdp_url=cdp_url)
+    path = "rp-sandbox-spoof" if spoof_origin else "rp-sandbox"
+    target_id = _navigate(cdp_url, f"https://rp.test:{cross_site_pages}/{path}")
+    body = _top_body(cdp_url, target_id)
+    assert 'sandbox="allow-scripts allow-forms"' in body, body[:1000]
+    deadline = time.monotonic() + 5
+    child = None
+    while time.monotonic() < deadline:
+        with supervisor._state_lock:
+            child = next((f for f in supervisor._frames.values() if f.is_oopif and f.cdp_session_id), None)
+        if child is not None and 'id="password"' in _top_body(cdp_url, child.frame_id):
+            break
+        time.sleep(.1)
+    assert child is not None
+    top_origin = f"https://rp.test:{cross_site_pages}"
+    meta = SimpleNamespace(id="sandbox-login", kind="login", origin=top_origin,
+                           allowed_origins=[top_origin], label="Sandbox", has_otp=False)
+    backend = Mock(needs_unlock=False, name="test-backend")
+    backend.name = "test"
+    backend.get_meta.return_value = meta
+    backend.resolve_password.return_value = "must-not-be-resolved"
+    with patch("agent.vault_backends.backend_for_handle", return_value=backend), \
+         patch("tools.approval_prompt.request_elicitation_consent", return_value="accept") as consent, \
+         patch.object(browser_vault_tool, "_eval_js_in_route", wraps=browser_vault_tool._eval_js_in_route) as inspect, \
+         patch.object(browser_vault_tool, "_eval_js_secret", wraps=browser_vault_tool._eval_js_secret) as fill:
+        result = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id=task_id))
+    assert result.get("error_type") == "invalid_frame_origin", (result, _top_frame_tree(cdp_url, child.frame_id))
+    consent.assert_not_called()
+    backend.resolve_password.assert_not_called()
+    inspect.assert_not_called()
+    fill.assert_not_called()
+    with supervisor._state_lock:
+        child = supervisor._frames[child.frame_id]
+        route = {"page_session_id": supervisor._page_session_id, "frame_id": child.frame_id,
+                 "frame_session_id": child.cdp_session_id, "frame_loader_id": child.loader_id}
+    witness = supervisor.evaluate_runtime(
+        "JSON.stringify({origin: self.origin, locationOrigin: location.origin, value: document.querySelector('#password').value})",
+        route=route,
+    )
+    assert witness["ok"], witness
+    observed = json.loads(witness["result"])
+    assert observed["origin"] == (observed["locationOrigin"] if spoof_origin else "null"), observed
+    assert observed["value"] == "", observed
+
+
+def test_browser_vault_decline_never_resolves_real_evil_oopif(chrome_cdp, supervisor_registry, cross_site_pages):
+    """An evil first OOPIF cannot trigger resolution or cause a fallback fill."""
+    from tools import browser_vault_tool
+
+    cdp_url, _port = chrome_cdp
+    task_id = "pytest-live-vault-decline"
+    supervisor = supervisor_registry.get_or_start(task_id=task_id, cdp_url=cdp_url)
+    _navigate(cdp_url, f"https://rp.test:{cross_site_pages}/rp")
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        with supervisor._state_lock:
+            if len([f for f in supervisor._frames.values() if f.is_oopif and f.cdp_session_id]) == 2:
+                break
+        time.sleep(.1)
+    top_origin = f"https://rp.test:{cross_site_pages}"
+    meta = SimpleNamespace(id="declined-login", kind="login", origin=top_origin,
+                           allowed_origins=[top_origin], label="Declined", has_otp=False)
+    resolved = False
+
+    class Backend:
+        name, display_name, needs_unlock = "test", "Test", False
+
+        def is_unlocked(self):
+            return True
+
+        def get_meta(self, handle):
+            return meta if handle == meta.id else None
+
+        def resolve_password(self, handle):
+            nonlocal resolved
+            resolved = True
+            return "must-not-be-resolved"
+
+    with patch("agent.vault_backends.backend_for_handle", return_value=Backend()), \
+         patch("tools.approval_prompt.request_elicitation_consent", return_value="decline") as consent:
+        result = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id=task_id))
+
+    assert result["error_type"] == "cross_origin_declined"
+    assert resolved is False
+    assert consent.call_count == 1
+    assert f"https://evil.test:{cross_site_pages}" in consent.call_args.args[0]
 
 
 def test_main_frame_alert_detection_and_dismiss(chrome_cdp, supervisor_registry):
@@ -322,3 +625,102 @@ def test_evaluate_runtime_unserializable_value(chrome_cdp, supervisor_registry):
     out = supervisor.evaluate_runtime("Infinity")
     assert out["ok"] is True
     assert out["result"] == "Infinity"
+
+
+@pytest.fixture
+def ipv6_pages(cross_site_pages):
+    """IPv6 loopback RP, with a cross-site bridge back to a same-origin OOPIF."""
+    import socket
+    import threading
+
+    class Server(ThreadingHTTPServer):
+        address_family = socket.AF_INET6
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_GET(self):  # noqa: N802
+            if self.path == "/same":
+                body = f"<iframe src='https://idp.test:{cross_site_pages}/bridge?port={server.server_port}'></iframe>"
+            elif self.path == "/cross":
+                body = f"<iframe src='https://idp.test:{cross_site_pages}/login'></iframe>"
+            else:
+                body = "<input type=password id=password>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(body.encode())
+
+    with tempfile.TemporaryDirectory(prefix="hermes-ipv6-cert-") as cert_dir:
+        cert, key = Path(cert_dir) / "cert.pem", Path(cert_dir) / "key.pem"
+        subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+                        "-subj", "/CN=localhost", "-keyout", str(key), "-out", str(cert)],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        server = Server(("::1", 0), Handler)
+        tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        tls.load_cert_chain(cert, key)
+        server.socket = tls.wrap_socket(server.socket, server_side=True)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield server.server_port
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+
+
+@pytest.mark.parametrize(("same_origin", "mapped"), [(False, False), (True, False), (False, True)])
+def test_ipv6_stored_binding_fills_selected_real_oopif(
+    chrome_cdp, supervisor_registry, cross_site_pages, ipv6_pages, tmp_path, same_origin, mapped,
+):
+    from agent.vault_store import VaultStore
+    from tools import browser_vault_tool
+
+    cdp_url, _port = chrome_cdp
+    task_id = "pytest-ipv6-vault"
+    supervisor = supervisor_registry.get_or_start(task_id=task_id, cdp_url=cdp_url)
+    top_origin = (f"https://[::ffff:7f00:1]:{cross_site_pages}" if mapped
+                  else f"https://[::1]:{ipv6_pages}")
+    saved_url = (f"https://[0:0:0:0:0:ffff:127.0.0.1]:{cross_site_pages}/login" if mapped
+                 else f"https://[0:0:0:0:0:0:0:1]:{ipv6_pages}/login")
+    child_origin = top_origin if same_origin else f"https://idp.test:{cross_site_pages}"
+    _navigate(cdp_url, top_origin + ("/rp-idp" if mapped else "/same" if same_origin else "/cross"))
+    deadline = time.monotonic() + 10
+    focused = {}
+    while time.monotonic() < deadline:
+        focused = supervisor.focus_page(top_origin, accept=browser_vault_tool._TAB_PROBES["login"])
+        if focused.get("route"):
+            break
+        time.sleep(.1)
+    assert focused.get("ok") and focused.get("frame_origin") == child_origin, focused
+    route = focused["route"]
+    with supervisor._state_lock:
+        selected = supervisor._frames[route["frame_id"]]
+    assert selected.is_oopif and selected.cdp_session_id == route["frame_session_id"]
+    assert supervisor.evaluate_runtime("location.origin", route=route)["result"] == child_origin
+    # Real encrypted save/reload and the production LocalLoginBackend handle path.
+    store = VaultStore(tmp_path / "ipv6-vault")
+    meta = store.add_item("login", "IPv6 fixture", {"identifier_type": "email", "identifier": "ipv6@example.test", "password": "ipv6-browser-canary"},
+                          origin=saved_url)
+    reloaded = VaultStore(tmp_path / "ipv6-vault")
+    assert reloaded.get_meta(meta.id).origin == top_origin
+    with patch("agent.vault_store.get_vault_store", return_value=reloaded), \
+         patch.object(supervisor, "evaluate_runtime", wraps=supervisor.evaluate_runtime) as evaluation, \
+         patch("tools.approval_prompt.request_elicitation_consent", return_value="accept") as consent:
+        result = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id=task_id))
+    assert result.get("success") and result["filled_fields"] == 1, result
+    assert "ipv6-browser-canary" not in json.dumps(result)
+    assert consent.call_count == (0 if same_origin else 1)
+    if not same_origin:
+        assert top_origin in consent.call_args.args[0] and child_origin in consent.call_args.args[0]
+    # focus_page may replace the attached session; verify the actual write route
+    # still names the initially selected frame and document, then read that sink.
+    write_route = evaluation.call_args.kwargs["route"]
+    assert write_route["frame_id"] == route["frame_id"]
+    assert write_route["frame_loader_id"] == route["frame_loader_id"]
+    check = supervisor.evaluate_runtime(
+        "document.querySelector('#password').value === 'ipv6-browser-canary'", route=write_route,
+    )
+    assert check == {"ok": True, "result": True, "result_type": "boolean"}

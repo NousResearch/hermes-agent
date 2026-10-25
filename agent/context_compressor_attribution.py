@@ -85,8 +85,8 @@ class AuxRouteAttributionMixin:
             self._last_attempt_failure_class = failure_class
 
     def _record_summary_failure_policy(self, error: Exception) -> bool:
-        """Retain an exhausted chain's access abort without relabeling its final error."""
-        from agent.context_compressor import _is_summary_access_or_quota_error
+        """Retain access/network aborts without relabeling the final wire error."""
+        from agent.context_compressor import _classify_summary_failure, _is_summary_access_or_quota_error
 
         access_error = _is_summary_access_or_quota_error(error)
         if access_error:
@@ -95,4 +95,6 @@ class AuxRouteAttributionMixin:
         policy_access_error = policy_error is not None and _is_summary_access_or_quota_error(policy_error)
         if policy_access_error:
             self._last_summary_auth_failure = True
+        if policy_error is not None and _classify_summary_failure(policy_error).streaming_closed:
+            self._last_summary_network_failure = True
         return access_error or policy_access_error

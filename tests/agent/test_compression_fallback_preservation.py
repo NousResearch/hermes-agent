@@ -12,14 +12,16 @@ from agent.context_compressor import ContextCompressor
 from agent.conversation_compression_diagnostics import _emit_compression_auth_hint
 
 
-@pytest.mark.parametrize("primary_status,fallback_status", [(401, 429), (429, 401)])
+@pytest.mark.parametrize("primary_status,fallback_status", [
+    (401, 429), (429, 401), ("network", 429), ("timeout", 429), (429, "network"),
+])
 def test_exhausted_fallback_preserves_transcript_and_reports_final_route(
     tmp_path, monkeypatch, primary_status, fallback_status,
 ):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("OPENROUTER_API_KEY", "primary-key")
     (tmp_path / "config.yaml").write_text(
-        "auxiliary:\n  compression:\n    provider: openrouter\n    model: main-B\n"
+        "auxiliary:\n  transient_retries: 0\n  compression:\n    provider: openrouter\n    model: main-B\n"
         "    fallback_chain:\n      - provider: custom\n        model: main-B\n"
         "        base_url: https://fallback.example/v1\n        api_key: fallback-key\n"
     )
@@ -28,6 +30,10 @@ def test_exhausted_fallback_preserves_transcript_and_reports_final_route(
     def handle(request):
         wire.append((request.url.host, json.loads(request.content)["model"]))
         status = primary_status if request.url.host == "openrouter.ai" else fallback_status
+        if status == "network":
+            raise httpx.ConnectError("connection refused", request=request)
+        if status == "timeout":
+            raise httpx.ReadTimeout("request timed out", request=request)
         return httpx.Response(status, request=request, json={
             "error": {"message": "invalid credential" if status == 401 else "rate limit exceeded"},
         })
@@ -52,7 +58,8 @@ def test_exhausted_fallback_preserves_transcript_and_reports_final_route(
         assert compressed == messages
         assert comp._last_compress_aborted
         assert comp.compression_count == 0
-        assert comp._last_attempt_failure_class == ("auth" if fallback_status == 401 else "other")
+        expected_class = {401: "auth", 429: "other", "network": "network"}[fallback_status]
+        assert comp._last_attempt_failure_class == expected_class
         warnings = []
         _emit_compression_auth_hint(SimpleNamespace(context_compressor=comp, _emit_warning=warnings.append))
         rendered = "\n".join(warnings)
@@ -60,5 +67,8 @@ def test_exhausted_fallback_preserves_transcript_and_reports_final_route(
         assert "openrouter.ai" not in rendered
         if fallback_status == 429:
             assert "auth/permission" not in rendered
+            assert "could not be reached" not in rendered
+        if primary_status in ("network", "timeout"):
+            assert comp._last_summary_network_failure
     finally:
         aux._client_cache.clear()

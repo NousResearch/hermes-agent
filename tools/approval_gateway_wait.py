@@ -228,6 +228,12 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         try:
             notify_cb(dict(entry.data))
             approval_published()
+            # Bounded delivery trace (#138133): the notifier completed without raising, which is
+            # the last record the wait side has of the prompt until it settles. Correlation only —
+            # never the command text or chat identifiers.
+            logger.info(
+                "Approval prompt handed to gateway notifier (request_id=%s, session=%s, surface=%s)",
+                entry.data.get("request_id"), session_key, surface)
         except Exception as exc:
             logger.warning("Gateway approval notify failed: %s", exc)
             _drop_entry("notify_failed")
@@ -251,4 +257,9 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         resolved = state != "timeout" or choice is not None
         extra = {"cancelled": cancelled} if cancelled else {}
         human.outcome = _hook_choice(resolved, choice, extra)
+        # Bounded settle trace (#138133): without this, a timeout that nobody answered leaves no
+        # gateway-side record of how the wait ended — only the BLOCKED text the agent sees.
+        logger.info(
+            "Approval wait ended (state=%s, resolved=%s, choice=%s, request_id=%s, session=%s)",
+            state, resolved, choice, entry.data.get("request_id"), session_key)
         return _finish(payload, resolved, choice, entry.reason, **extra)

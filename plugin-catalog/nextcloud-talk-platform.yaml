@@ -1,6 +1,6 @@
 name: nextcloud-talk-platform
 repo: https://github.com/smilinTux/hermes-nextcloud-talk
-sha: 165dc6f32dbe4d3390613c01e9b94c3810328914
+sha: 03f27203fd983d4714891302c49f06b404c4b02f
 description: >-
   Nextcloud Talk platform adapter for Hermes Agent, in two modes behind one
   plugin: a webhook bot (Nextcloud Talk Bot API, HMAC-SHA256 signed, with
@@ -16,7 +16,7 @@ maintainer: smilinTux
 tier: community
 category: platform
 docs_url: https://github.com/smilinTux/hermes-nextcloud-talk#readme
-version: "1.4.2"
+version: "1.4.3"
 readme: true
 capabilities:
   provides_tools: []

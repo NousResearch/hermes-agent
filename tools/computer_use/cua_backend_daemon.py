@@ -78,6 +78,23 @@ def _embedded_daemon_spawn_command(driver_cmd: str, serve_args: list[str], *, pl
     _validate_cua_driver_app_signature(resolved_app)
     return ["/usr/bin/open", "-n", "-g", "-a", resolved_app, "--args", *serve_args]
 
+def _socket_on_windows_side(command: Optional[str]) -> bool:
+    """Whether the processes that will receive ``--socket`` (``serve``/``status``/``mcp``/``stop`` are all the
+    same driver) run on Windows and thus need a named pipe rather than a Unix socket file.
+
+    Native Windows always does. A POSIX host still can, because WSL runs a Windows driver through interop
+    (``/mnt/c/.../cua-driver.exe``, or the ``C:\\...`` its manifest reports); such a process cannot open a
+    ``.sock`` and answers ``os error 123`` instead (NousResearch/hermes-agent#80227)."""
+    return sys.platform == "win32" or _driver.cua_driver_command_is_windows(command)
+
+_WINDOWS_PIPE_PREFIX = "\\\\.\\pipe\\"
+
+def _windows_pipe_path(token: str) -> str:
+    return f"{_WINDOWS_PIPE_PREFIX}hermes-cua-{token}"
+
+def _unix_socket_path(token: str) -> str:
+    return os.path.join(tempfile.gettempdir(), f"hc-{token}.sock")
+
 def _wait_or_kill(process: Any) -> None:
     """Wait 5s for a graceful exit, then terminate (2s), then kill."""
     try:
@@ -102,6 +119,12 @@ class _EmbeddedCuaDaemon:
     (bounding an approval-bypassed run). Mandatory for ``bounded``, optional everywhere else."""
 
     _START_TIMEOUT_SECONDS = 15.0
+    # A driver on the far side of the WSL interop boundary is started as a fresh Windows process per call:
+    # measured on the reporting host at 1.9-2.8s for a `status --socket` probe and 4.1-5.3s for `serve` to
+    # answer at all. The native budgets (2.0s probe, 3.0s stop, 15.0s start) are sized for a local process
+    # and would report a healthy daemon as unreachable.
+    _CROSS_OS_CALL_TIMEOUT_SECONDS = 15.0
+    _CROSS_OS_START_TIMEOUT_SECONDS = 60.0
 
     def __init__(self, driver_cmd: str, permission_mode: str, capability_manifest: Optional[str] = None) -> None:
         if permission_mode not in {"unrestricted", "bounded"}:
@@ -125,9 +148,27 @@ class _EmbeddedCuaDaemon:
         self._process: Any = None
         self._owns_runtime = self._running = False
         self._stderr_tail: deque[str] = deque(maxlen=20)
-        token = uuid.uuid4().hex[:12]
-        self.socket_path = (rf"\\.\pipe\hermes-cua-{token}" if sys.platform == "win32"
-                            else os.path.join(tempfile.gettempdir(), f"hc-{token}.sock"))
+        self._socket_token = uuid.uuid4().hex[:12]
+        self.socket_path = self._socket_path_for(_socket_on_windows_side(driver_cmd))
+
+    def _socket_path_for(self, windows_side: bool) -> str:
+        """The private daemon's socket, named for the OS that has to open it: a named pipe on Windows, a Unix
+        socket otherwise. ``--socket`` is only ever handed to the driver's own processes, so the transport
+        follows the driver's OS rather than the host's — for a Windows driver under WSL that is the difference
+        between a working daemon and ``os error 123``. ``start`` re-derives this once the command is resolved."""
+        return _windows_pipe_path(self._socket_token) if windows_side else _unix_socket_path(self._socket_token)
+
+    def _driver_via_interop(self) -> bool:
+        """True when the driver runs on Windows while Hermes does not (WSL interop): every driver call then
+        crosses an OS boundary as a fresh Windows process launch, so its latency is not a local one."""
+        return sys.platform != "win32" and _socket_on_windows_side(self._command)
+
+    def _driver_call_timeout(self, native: float) -> float:
+        """Budget for one driver call (readiness probe, graceful stop): the native value for a local process."""
+        return self._CROSS_OS_CALL_TIMEOUT_SECONDS if self._driver_via_interop() else native
+
+    def _start_timeout(self) -> float:
+        return self._CROSS_OS_START_TIMEOUT_SECONDS if self._driver_via_interop() else self._START_TIMEOUT_SECONDS
 
     def child_env(self) -> dict[str, str]:
         env = {**_cb().cua_driver_child_env(), "CUA_DRIVER_PERMISSION_MODE": self.permission_mode}
@@ -166,6 +207,9 @@ class _EmbeddedCuaDaemon:
         if not driver_cmd:
             raise RuntimeError(_driver.cua_driver_install_hint())
         self._command, self._mcp_args = _driver._resolve_mcp_invocation(driver_cmd)
+        # Only now is the driver's OS known: an empty override resolves to PM's binary, and a Windows manifest
+        # command replaces the POSIX path we started from. The socket must match the process that receives it.
+        self.socket_path = self._socket_path_for(_socket_on_windows_side(self._command))
         env = self._sanitized_env()
         command = _embedded_daemon_spawn_command(self._command, self._serve_args(), platform=sys.platform)
         self._process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -173,11 +217,14 @@ class _EmbeddedCuaDaemon:
                                          env=env)
         self._owns_runtime = True
         threading.Thread(target=self._drain_stderr, args=(self._process,), name="hermes-cua-daemon-stderr", daemon=True).start()
-        deadline = time.monotonic() + self._START_TIMEOUT_SECONDS
+        deadline = time.monotonic() + self._start_timeout()
         while time.monotonic() < deadline:
             return_code = self._process.poll()
             # `open` exits 0 once LaunchServices took the request: on macOS only a non-zero exit means the daemon died.
             if return_code is not None and (sys.platform != "darwin" or return_code != 0):
+                # Release the failed launch exactly like the timeout path below, so a startup failure never
+                # leaves the dead handle or the runtime ownership (and the socket it implies) behind.
+                self.stop()
                 self._startup_failure("embedded cua-driver exited during startup", "no diagnostic output")
             if self._socket_ready(env):
                 self._running = True
@@ -191,7 +238,8 @@ class _EmbeddedCuaDaemon:
 
     def _socket_ready(self, env: dict[str, str]) -> bool:
         """``cua-driver status --socket`` exits 0 once the private daemon accepts connections."""
-        probe = _cb()._run_quiet([self._command, "status", "--socket", self.socket_path], timeout=2.0, env=env, swallow=_QUIET_ERRORS)
+        probe = _cb()._run_quiet([self._command, "status", "--socket", self.socket_path],
+                                 timeout=self._driver_call_timeout(2.0), env=env, swallow=_QUIET_ERRORS)
         return probe is not None and probe.returncode == 0
 
     def proxy_invocation(self) -> tuple[str, list[str]]:
@@ -203,10 +251,13 @@ class _EmbeddedCuaDaemon:
         process, self._process = self._process, None
         owns_runtime, self._owns_runtime, self._running = self._owns_runtime, False, False
         if owns_runtime:
-            _cb()._run_quiet([self._command, "stop", "--socket", self.socket_path], timeout=3.0, stdout=subprocess.DEVNULL,
+            _cb()._run_quiet([self._command, "stop", "--socket", self.socket_path], timeout=self._driver_call_timeout(3.0),
+                             stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL, env=self._sanitized_env(), swallow=_QUIET_ERRORS)
         if process is not None:
             _wait_or_kill(process)
-        if sys.platform != "win32" and os.path.exists(self.socket_path):
+        # A named pipe belongs to the driver that created it; only a filesystem socket is ours to unlink.
+        if (sys.platform != "win32" and not self.socket_path.startswith(_WINDOWS_PIPE_PREFIX)
+                and os.path.exists(self.socket_path)):
             with contextlib.suppress(OSError):
                 os.remove(self.socket_path)

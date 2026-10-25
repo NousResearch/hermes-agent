@@ -117,6 +117,29 @@ def _same_inode(left, right) -> bool:
     return (left.st_dev, left.st_ino) == (right.st_dev, right.st_ino)
 
 
+def _holder_description(home: Path) -> str:
+    """Name the last owner recorded in *home*'s ``gateway.lock``, for the refusal text.
+
+    The refusal is what a crash-looping supervisor and the dashboard's 409 report, so it says who
+    to look at: an unattributed "already owns" leaves the operator guessing between a gateway, a
+    maintenance reservation and a stale record, and those need opposite responses.
+
+    It is the last RECORDED owner, not a proven holder: ``release`` unlocks without clearing the
+    record, so a live process that already gave the home up still appears here, and ``_live_pid_from_record``
+    only rejects a dead PID or a start-time mismatch. The flock stays the authority; this is advisory
+    text for an operator, read on the losing side only.
+    """
+    from gateway.status import _live_pid_from_record, _read_gateway_lock_record
+    record = _read_gateway_lock_record(Path(home) / 'gateway.lock')
+    if not record:
+        return 'unidentified: the lock record is empty or unreadable (the holder is mid-acquire)'
+    pid = _live_pid_from_record(record)
+    if pid is None:
+        return 'unidentified: the lock record names no live process (stale record, or mid-acquire)'
+    purpose = record.get('purpose')
+    return f'last recorded owner: pid {pid}' + (f', purpose {purpose}' if purpose else '')
+
+
 def _open_lock(path: Path) -> int:
     """Descriptor for *path*, replacing a provably stale inode this user cannot use once."""
     try:
@@ -165,7 +188,9 @@ class ProfileOwnership:
                     handle = os.fdopen(fd, 'r+', encoding='utf-8')  # windows-footgun: ok — write-only
                     try:
                         if not _try_acquire_file_lock(handle) or not _still_names(path, handle.fileno()):
-                            raise OwnershipConflict(f'Gateway runtime already owns profile {home}')
+                            raise OwnershipConflict(
+                                f'Gateway runtime already owns profile {home} '
+                                f'({_holder_description(home)})')
                         record = {**_build_pid_record(), 'hermes_home': str(home)}
                         if purpose:
                             record['purpose'] = purpose

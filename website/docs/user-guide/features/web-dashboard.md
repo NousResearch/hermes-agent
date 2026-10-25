@@ -556,8 +556,11 @@ indefinitely (a few hundred bytes per executed turn).
 (non-dry-run) and `POST /api/sessions/owner-backfill` rewrite many rows at once and
 bypass the per-session revision fence, so they are **offline maintenance**: they take the
 profile's exclusive `gateway.lock`. While that profile's gateway is running they return
-`409` with `Exclusive maintenance refused: Gateway runtime already owns profile <home>.
-Drain and stop the gateway, then retry.` and change nothing. Stop the gateway
+`409` with `Exclusive maintenance refused: Gateway runtime already owns profile <home>
+(<last recorded owner: pid <pid>[, purpose <purpose>]> | <unidentified: …>). Drain and stop the
+gateway, then retry.` and change nothing — match the stable prefix, not the whole sentence, because
+the parenthetical names whichever process last wrote the lock record (or says `unidentified` when
+the record is empty, torn, or names no live process). Stop the gateway
 (`hermes gateway stop`), run the maintenance call, then start it again. `dry_run` prune
 and every read endpoint keep working against a live gateway. The Desktop's one-shot legacy
 owner backfill treats this `409` as the steady state of an attached gateway (like a backend

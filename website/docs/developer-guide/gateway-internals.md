@@ -436,6 +436,58 @@ Service persistence is separately opt-in during setup. Imports and noninteractiv
 setup do not install a missing service based on an imported preference. See
 [optional service installation](#optional-service-installation).
 
+## `hermes gateway attach`
+
+`hermes gateway attach --json` is the public attach step for a local client that has its own UI
+and dials the gateway itself. It runs `hermes_cli/gateway_runtime_attach.py::attach_gateway`, the
+same function behind the Ink TUI's `ui-tui/scripts/gateway_bootstrap.py`, so both clients get the
+same discovery, start, recovery and verdicts.
+
+| Flag | Meaning |
+|------|---------|
+| (none) | Discover the owner that serves the active profile. Never start one. |
+| `--start` | Ensure the owner, as `ensure` does (a client's first launch). |
+| `--recover` | Discover; when the owner is not ready (it crashed, ended by its idle exit, was stopped, or an older Hermes's gateway answers), ensure it. Bound how often a client uses this, as Ink does with `OWNER_RECOVERY_LIMIT`, so a crash-looping owner is not restarted without pause. |
+| `--timeout S` | Start deadline for `--start`/`--recover` (default `60`). Discovery and the ticket mint each add at most 5 seconds. `--start` and `--recover` are mutually exclusive. |
+
+When no service is installed, `attach` starts an unmanaged gateway with the idle exit: it stops
+itself once no client, adapter or job needs it, and the next `attach --start` starts a new one. An
+installed service that `attach` starts keeps running, as with `ensure`. A restart's after-turn
+wait (`draining`/`restart_wait`) is attachable, so a client can still answer a parked prompt.
+Launch policy (model, provider, toolsets, cwd, Kanban board) belongs in `session.create`; the
+command removes those variables from its own environment before it can start a daemon.
+
+Success (exit `0`) prints one JSON line: `ensure`'s fields (`state`, `reason_code`, `detail`,
+`endpoint`, `client_code_sha`) plus:
+
+```json
+{"url": "ws://127.0.0.1:<port>/api/ws", "protocol": "hermes-gateway-v1",
+ "protocols": ["hermes-gateway-v1", "hermes-gateway-ticket.<ticket>"], "ticket": "<ticket>"}
+```
+
+`endpoint` holds `profile_id`, `instance_id`, `capabilities`, `code_sha` and the other discovery
+fields. Dial `url` with `protocols` as the WebSocket subprotocols, from loopback, with **no
+`Origin` header**, and check that the server selected `protocol`. Then speak `hermes-gateway-v1`:
+`runtime.describe` for the owner's `session.create` contract, then `session.create` or
+`session.resume`. When `client_code_sha` and `endpoint.code_sha` differ, the gateway outlived
+`hermes update`: restart it (`hermes gateway restart`) rather than keep attaching to old code.
+
+The ticket is the WebSocket's only credential. It is minted by the control socket's
+`session-ticket` verb (purpose `interactive`, scope `profile`) over the same-user socket, or the
+SID-checked named pipe on Windows; a profile served by the default multiplexer gets its ticket
+from the multiplexer's control socket. It is single-use, bound to the caller's profile and that
+owner's `instance_id`, and expires after 30 seconds. `attach` prints it to stdout for the calling
+process only; it never logs it. Run `attach` again for each new connection and each reconnect.
+
+With no owner to attach, the JSON adds `message` and has no `url` or `ticket`. `message` is
+the verdict Ink shows: `gateway <state>: <reason_code>` (`not ready` when there is no code),
+then one `gateway <state>: …` line per line of the refusal's remedy, or a failed start's
+redacted output. The same text goes to stderr. The exit code is `ensure`'s for that verdict. When
+the owner was attachable but no ticket could be minted (it went away, or refused the grant), the
+verdict is `inaccessible`/`ticket_unavailable` (exit `7`) with the bounded cause, or the local
+repair command, in `detail`; run `attach` again. Invalid arguments exit `2` with `ensure`'s
+`invalid_invocation` line.
+
 ## Architecture Overview
 
 ```text

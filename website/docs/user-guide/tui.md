@@ -290,18 +290,18 @@ See [Sessions](sessions.md) for lifecycle, search, compression, and export.
 
 ## How the TUI talks to its gateway
 
-By default the TUI spawns its own in-process gateway, so each TUI instance is self-contained — there's nothing to configure.
+By default the TUI attaches to the profile's shared gateway, the same process that serves `hermes chat`, the Desktop app and your messaging platforms. When no gateway is running, the TUI starts one; a gateway started this way stops itself after it has been idle for a while. The TUI connects to it over a local WebSocket (`/api/ws`) that speaks the `hermes-gateway-v1` protocol, with a single-use ticket from the attach step. There is nothing to configure. Other local programs attach the same way with [`hermes gateway attach --json`](../reference/cli-commands.md#local-runtime-discovery-and-startup).
 
-You may see a `HERMES_TUI_GATEWAY_URL` env var referenced in the codebase or logs. This is an **internal wiring detail of the web dashboard**, not a user-facing remote-attach knob. When you open the dashboard's "Chat" tab (`hermes dashboard` → `/chat`), the dashboard's web server spawns an embedded TUI child process and injects `HERMES_TUI_GATEWAY_URL` so that child attaches to the dashboard's own in-process `tui_gateway` over a loopback WebSocket (`/api/ws`). The `/api/ws` endpoint exists only inside the dashboard server (`hermes_cli/web_server.py`) and is bound to that process's lifetime and auth.
+You may see a `HERMES_TUI_GATEWAY_URL` env var referenced in the codebase or logs. This is an **internal wiring detail of the web dashboard**, not a user-facing remote-attach knob. When you open the dashboard's "Chat" tab (`hermes dashboard` → `/chat`), the dashboard's web server spawns an embedded TUI child process and injects `HERMES_TUI_GATEWAY_URL` so that child attaches to the dashboard's own in-process `tui_gateway` over a loopback WebSocket (`/api/ws`). That endpoint lives in the dashboard server (`hermes_cli/web_server.py`) and is bound to that process's lifetime and auth.
 
-There is no general "point any TUI at any standalone gateway port" mode. In particular, the OpenAI-compatible API server (`hermes gateway` / the `api_server` platform) does **not** serve `/api/ws` — it's the model-backend surface (`/v1/chat/completions`, `/v1/models`, …) and deliberately does not expose the TUI's JSON-RPC control channel. Setting `HERMES_TUI_GATEWAY_URL` to that port will 404.
+There is no general "point any TUI at any gateway port" mode: the gateway's own `/api/ws` admits only a loopback client holding a single-use ticket from the attach step. In particular, the OpenAI-compatible API server (`hermes gateway` / the `api_server` platform) does **not** serve `/api/ws` — it's the model-backend surface (`/v1/chat/completions`, `/v1/models`, …) and deliberately does not expose the TUI's JSON-RPC control channel. Setting `HERMES_TUI_GATEWAY_URL` to that port will 404.
 
 ### If the connection drops
 
-- **Spawned gateway (default):** when the gateway process dies mid-session the TUI says *Hermes stopped unexpectedly — restarting and reopening your chat*, respawns it (bounded to a few attempts per minute) and reopens the same saved session. The reply that was in flight is lost with the process.
-- **Attached gateway (dashboard chat):** when only the WebSocket drops the TUI says *Connection to Hermes lost — reconnecting and reopening your chat…*, reconnects with growing backoff and reattaches to the same session — including a reply that is still streaming on the backend. Nothing is resubmitted.
+- **The WebSocket drops:** the TUI says *Connection to Hermes lost — reconnecting and reopening your chat…*, reconnects with growing backoff and reattaches to the same session — including a reply that is still streaming on the gateway. Nothing is resubmitted.
+- **The gateway is gone** (a crash, its idle exit, `hermes gateway stop`): the TUI starts it again, at most a few times per minute, and reopens the same saved session. A reply that was in flight when the gateway crashed is lost with it.
 
-If you want multiple surfaces to share one set of sessions, use the shared `~/.hermes/state.db` (see [Sessions](sessions.md)) or the web dashboard's embedded chat (see [Web Dashboard](features/web-dashboard.md#chat)) — not a hand-set gateway URL.
+The TUI, `hermes chat`, the Desktop app and your messaging platforms already share the profile's gateway and its sessions (see [Sessions](sessions.md)); a hand-set gateway URL adds nothing.
 
 ## Reverting to the classic CLI
 

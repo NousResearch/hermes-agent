@@ -316,6 +316,7 @@ Subcommands:
 |------------|-------------|
 | `run` | Run the gateway in the foreground. Recommended for WSL, Docker, and Termux. |
 | `ensure` | Discover or request a local session runtime without installing a service or replacing an existing owner. Emits JSON; see below. |
+| `attach` | Give a local client the gateway's WebSocket URL and one single-use session ticket for this profile. Emits JSON; see below. |
 | `start` | Start the installed systemd/launchd background service. |
 | `stop` | Stop the service (or foreground process). |
 | `restart` | Restart the service. |
@@ -364,6 +365,21 @@ service. Exit `0` means ready; any other code is a refusal or a deadline, never 
 to start a replacement. Service identity checks, the home-permission policy behind
 `unsafe_control_permissions`, and every exit code:
 [Gateway internals: `hermes gateway ensure`](../developer-guide/gateway-internals.md#hermes-gateway-ensure).
+
+`hermes gateway attach [--json] [--start] [--recover] [--timeout 60]` is the attach step for a
+local client that dials the gateway itself (a third-party chat UI, for example). It prints
+`ensure`'s JSON plus, once the gateway is attachable, `url` (`ws://127.0.0.1:<port>/api/ws`),
+`protocol` (`hermes-gateway-v1`), `protocols` (the WebSocket subprotocols to dial with) and
+`ticket`. The ticket is single-use, bound to the active profile, and expires 30 seconds after it
+is minted; it goes to stdout for the calling process only and is never logged. A plain call only
+discovers the gateway; `--start` starts it when none serves the profile; `--recover` discovers
+first and starts (or replaces an older Hermes's gateway) only when it is not ready. An unmanaged
+gateway that `attach` starts (no service installed) stops itself once it has been idle for a while.
+With no gateway to attach,
+the JSON carries `message` (the `gateway <state>: <reason>` lines, with the remedy when there is
+one), the same text goes to stderr, and the exit code is `ensure`'s for that verdict. The Ink TUI
+attaches through the same code. Details and the dial rules:
+[Gateway internals: `hermes gateway attach`](../developer-guide/gateway-internals.md#hermes-gateway-attach).
 
 ## `hermes lsp`
 

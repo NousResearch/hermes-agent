@@ -412,6 +412,8 @@ class GatewayAdapterLifecycleMixin:
                 )
                 self._ensure_reconnect_watcher_running()
                 return
+            if self._park_last_fatal_platform(adapter):
+                return
             self._exit_reason = adapter.fatal_error_message or "All messaging adapters disconnected"
             if adapter.fatal_error_retryable:
                 self._exit_with_failure = True

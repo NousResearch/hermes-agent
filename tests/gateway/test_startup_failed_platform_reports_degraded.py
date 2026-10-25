@@ -9,6 +9,7 @@ the same way.
 """
 import logging
 import time
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -78,6 +79,27 @@ def _runner(monkeypatch, tmp_path, platforms, create_adapter) -> GatewayRunner:
     return runner
 
 
+class _LostMidRunAdapter(_HealthyAdapter):
+    """Connects, then loses the bot mid-run non-retryably (token revoked, conflict retries spent)."""
+
+    async def fail(self, code: str) -> None:
+        self._set_fatal_error(code, "Telegram rejected the bot token.", retryable=False)
+        await self._notify_fatal_error()
+
+
+async def _start_then_lose_the_only_platform(monkeypatch, tmp_path, code):
+    adapter = _LostMidRunAdapter()
+    runner = _runner(
+        monkeypatch, tmp_path, {Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")},
+        lambda platform, platform_config: adapter,
+    )
+    assert await runner.start() is True
+    real_stop, stop = runner.stop, AsyncMock()
+    runner.stop = stop
+    await adapter.fail(code)
+    return runner, stop, real_stop
+
+
 def _runner_with_one_parked_platform(monkeypatch, tmp_path) -> GatewayRunner:
     return _runner(
         monkeypatch, tmp_path,
@@ -140,6 +162,45 @@ async def test_sole_parked_platform_keeps_the_gateway_up_degraded(monkeypatch, t
         assert state["platforms"]["api_server"]["error_code"] == "api_server_port_in_use"
     finally:
         await runner.stop()
+
+
+@pytest.mark.asyncio
+async def test_last_platform_lost_non_retryably_mid_run_keeps_the_gateway_up_degraded(
+    monkeypatch, tmp_path, caplog
+):
+    """The mid-run twin of the all-fatal startup case: a revoked token on the only platform parks it
+    and the gateway stays up ``degraded`` for local clients and cron instead of stopping."""
+    with caplog.at_level(logging.ERROR):
+        _, stop, real_stop = await _start_then_lose_the_only_platform(
+            monkeypatch, tmp_path, "telegram_auth_error"
+        )
+    try:
+        stop.assert_not_awaited()
+        assert any(
+            record.levelno >= logging.ERROR and "telegram" in record.getMessage()
+            and "hermes gateway restart" in record.getMessage()
+            for record in caplog.records
+        )
+        assert await flush_runtime_status_async()
+        state = read_runtime_status()
+        assert state["gateway_state"] == "degraded"
+        assert state["platforms"]["telegram"]["state"] == "fatal"
+        assert state["platforms"]["telegram"]["error_code"] == "telegram_auth_error"
+    finally:
+        await real_stop()
+
+
+@pytest.mark.asyncio
+async def test_mid_run_ownership_conflict_on_the_last_platform_still_stops(monkeypatch, tmp_path):
+    """Protection: another gateway owning the token mid-run keeps today's clean stop."""
+    runner, stop, real_stop = await _start_then_lose_the_only_platform(
+        monkeypatch, tmp_path, "telegram_token_lock"
+    )
+    try:
+        stop.assert_awaited()
+        assert runner._exit_with_failure is False
+    finally:
+        await real_stop()
 
 
 @pytest.mark.asyncio

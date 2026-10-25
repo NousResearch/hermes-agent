@@ -98,6 +98,22 @@ class GatewayStartupMixin:
     def _serving_state(self) -> str:
         return "degraded" if self._startup_parked_platforms else "running"
 
+    def _park_last_fatal_platform(self, adapter) -> bool:
+        """Mid-run twin of the all-fatal startup case: the last platform failed non-retryably, so park it
+        and stay up degraded for local clients and cron. Return False when the gateway must stop instead
+        (retryable, or another gateway owns the token/profile)."""
+        if adapter.fatal_error_retryable or is_global_startup_conflict(adapter.fatal_error_code):
+            return False
+        self._startup_parked_platforms = True
+        self._update_runtime_status(self._serving_state())
+        logger.error(
+            "%s is parked after a non-retryable error (fix it, then `hermes gateway restart`). The gateway "
+            "is DEGRADED — it serves local clients and cron with no messaging platform. %s: %s",
+            adapter.platform.value, adapter.fatal_error_code or "unknown",
+            adapter.fatal_error_message or "unknown error",
+        )
+        return True
+
     async def _run_startup_resume_event(
         self, adapter: BasePlatformAdapter, event: MessageEvent, session_key: str,
     ) -> None:

@@ -531,6 +531,22 @@ def test_a_sandbox_backend_sends_the_host_launch_dir_not_its_terminal_cwd(store,
     assert [p for m, p in client.calls if m == "session.create"][-1]["cwd"] == str(tmp_path.resolve())
 
 
+def test_a_mounting_docker_backend_sends_the_w_worktree_not_the_launch_dir(store, monkeypatch, tmp_path):
+    """``-w`` puts its host worktree in TERMINAL_CWD without a chdir. A docker backend mounting the
+    session cwd at ``/workspace`` would otherwise mount the original checkout, so the tools edit it
+    instead of the isolated tree."""
+    db, client = store
+    repo, tree = tmp_path / "repo", tmp_path / "repo" / ".worktrees" / "wt"
+    tree.mkdir(parents=True)
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("TERMINAL_CWD", str(tree))
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "true")
+    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
+    db.create({"toolsets": ["file"]})
+    assert [p for m, p in client.calls if m == "session.create"][-1]["cwd"] == str(tree.resolve())
+
+
 def test_explicit_reasoning_max_turns_and_checkpoints_reach_session_create(store, monkeypatch):
     """Main's HermesCLI built AIAgent with the run's `--reasoning`, `--max-turns` and `--checkpoints`;
     the gateway now builds the agent, so `session.create` must carry them or the run silently uses

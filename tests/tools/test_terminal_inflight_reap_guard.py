@@ -30,7 +30,7 @@ class _ReapingEnv:
     def execute(self, command, cwd=None, timeout=None, **kwargs):
         _sweep_after_long_call()
         self.cleaned_mid_call = self.cleaned
-        return {"output": "hi", "returncode": 0}
+        return {"output": "OK", "returncode": 0}
 
 
 def _sweep_after_long_call():
@@ -64,9 +64,17 @@ def test_a_foreground_terminal_call_keeps_its_environment_past_the_lifetime(env)
     assert env.cleaned
 
 
-def test_a_remote_execute_code_call_keeps_its_environment_past_the_lifetime(env):
-    code_execution_tool._execute_remote("print(1)", "session-42", None)
+def test_a_remote_execute_code_call_keeps_its_environment_past_the_lifetime(env, monkeypatch):
+    from tools import code_kernel_remote
 
+    def run_cell(code, *, env, **kwargs):
+        env.execute("python3 cell.py")
+        return {"status": "success", "stdout": "1\n"}
+
+    monkeypatch.setattr(code_kernel_remote, "execute_in_remote_kernel", run_cell)
+    result = json.loads(code_execution_tool._execute_remote("print(1)", "session-42", None))
+
+    assert result["status"] == "success" and result["output"] == "1\n"
     assert env.cleaned_mid_call is False
     assert tt._active_environments["default"] is env
 

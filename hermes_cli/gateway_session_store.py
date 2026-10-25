@@ -487,11 +487,12 @@ def _creation_policy(launch):
 
 
 def _launch_cwd():
-    """``session.create``'s ``cwd``: a host folder, which the owner checks on its own host. Only a local
-    backend's TERMINAL_CWD is one; a docker/ssh ``terminal.cwd`` names a path inside the sandbox, so
-    those send the launch dir and the backend keeps its own cwd (``terminal_uses_host_cwd``)."""
-    local = (os.getenv("TERMINAL_ENV") or "local").strip().lower() in ("", "local")
-    return os.path.realpath((os.getenv("TERMINAL_CWD") if local else None) or os.getcwd())
+    """``session.create``'s ``cwd``: a host folder, which the owner checks on its own host. TERMINAL_CWD
+    when it is one (a local backend's cwd, or the ``-w`` worktree a mounting docker backend works in);
+    a docker/ssh ``terminal.cwd`` that names a path inside the sandbox sends the launch dir instead and
+    the backend keeps its own cwd (``terminal_uses_host_cwd``)."""
+    terminal_cwd = os.getenv("TERMINAL_CWD")
+    return os.path.realpath(terminal_cwd if terminal_cwd and os.path.isdir(terminal_cwd) else os.getcwd())
 
 
 def _classic_only_policy(launch):

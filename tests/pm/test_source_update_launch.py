@@ -620,7 +620,9 @@ def test_failed_sync_attempt_is_counted_like_a_failed_tail(source_launch, tmp_pa
     def _uv_venv_fails(*args, **kwargs):
         raise RuntimeError("venv: uv venv failed: ")
 
-    monkeypatch.setattr(venv_sync, "_sync_source_dependencies", _uv_venv_fails)
+    # The budget lives in the wrapper now: patch the inner sync so the counting
+    # wrapper is exercised end to end.
+    monkeypatch.setattr(venv_sync, "_sync_source_dependencies_uncounted", _uv_venv_fails)
     with pytest.raises(RuntimeError, match="uv venv failed"):
         venv_sync.prepare_launch(root, [])
     assert _completion_attempts_path(root).read_text(encoding="utf-8").strip() == "1", (
@@ -636,3 +638,115 @@ def test_failed_sync_attempt_is_counted_like_a_failed_tail(source_launch, tmp_pa
     may_retry, attempts, _backoff = venv_sync.completion_retry_state(root)
     assert (may_retry, attempts) == (False, 2)
 
+
+@pytest.mark.platforms("posix")
+def test_raising_dependency_sync_consumes_the_completion_retry_budget(
+    source_launch,
+    monkeypatch,
+    capsys,
+):
+    """A completion path that dies *before* the tail — the dependency sync raising — must
+    spend the same retry budget as a failed tail.
+
+    A single unreadable side-environment record can make ``pm.sync_venv`` raise on every
+    launch, so ``source-completion-attempts`` is never written and a multi-minute sync
+    runs (holding the update lock) on every boot, on every data root, forever.
+    """
+    import pm as pm_module
+    from hermes_cli.venv_sync import (
+        COMPLETION_RETRY_MAX_ATTEMPTS,
+        _completion_attempts_path,
+        arm_completion,
+        completion_pending_path,
+    )
+
+    root, _store_python, _ = source_launch
+    pm.sync_venv(["all"], explicit=True, project_root=root)
+    arm_completion(root)
+    lock = root / "uv.lock"
+    lock.write_bytes(lock.read_bytes() + b"\n# hand edit after the recorded sync\n")
+    assert not pm.venv_is_current(project_root=root)
+
+    synced: list[int] = []
+
+    def raising_sync(*args, **kwargs):
+        synced.append(1)
+        raise InstallError("venv", f"invalid environment selection: {root}")
+
+    monkeypatch.setattr(pm_module, "sync_venv", raising_sync)
+    record = _completion_attempts_path(root)
+    for expected in range(1, COMPLETION_RETRY_MAX_ATTEMPTS + 1):
+        with pytest.raises(InstallError, match="invalid environment selection"):
+            venv_sync.prepare_launch(root, [])
+        assert record.read_text(encoding="utf-8").strip() == str(expected), (
+            "a sync failure before the tail must count against the completion budget"
+        )
+        assert completion_pending_path(root).is_file(), "the owed update is still recorded"
+        # Age the record past the backoff window so the next launch is allowed to try.
+        os.utime(record, (1.0, 1.0))
+    assert len(synced) == COMPLETION_RETRY_MAX_ATTEMPTS
+
+    # Past the cap the launch must not take the update lock for another doomed sync;
+    # it keeps the marker, stays usable, and points the operator at `hermes update`.
+    capsys.readouterr()
+    before = len(synced)
+    assert venv_sync.prepare_launch(root, []) is not None
+    assert len(synced) == before, "a capped completion path re-ran the doomed sync"
+    err = capsys.readouterr().err
+    assert "could not be finished automatically" in err
+    assert "hermes update" in err
+    assert record.read_text(encoding="utf-8").strip() == str(COMPLETION_RETRY_MAX_ATTEMPTS)
+    assert completion_pending_path(root).is_file()
+
+
+@pytest.mark.platforms("posix")
+def test_borrowed_launch_sync_failure_is_bounded(
+    source_launch, tmp_path, monkeypatch, capsys
+):
+    """A borrowing data root (a profile, a per-task home) syncs the shared checkout itself.
+
+    That sync is a completion path too: when it raises it must be counted and stop
+    self-starting past the cap, instead of taking the checkout's update lock before
+    every single boot of that root.
+    """
+    import pm as pm_module
+    from pm import environments
+    from hermes_cli.venv_sync import (
+        COMPLETION_RETRY_MAX_ATTEMPTS,
+        _completion_attempts_path,
+    )
+
+    root, _store_python, _ = source_launch
+    owner = tmp_path / "owner-home"
+    owner.mkdir()
+    monkeypatch.setattr(environments, "owning_home_root", lambda project_root: owner)
+    pm.sync_venv(["all"], explicit=True, project_root=root)
+    lock = root / "uv.lock"
+    lock.write_bytes(lock.read_bytes() + b"\n# hand edit after the recorded sync\n")
+    assert not pm.venv_is_current(project_root=root)
+
+    synced: list[int] = []
+
+    def raising_sync(*args, **kwargs):
+        synced.append(1)
+        raise InstallError("venv", f"invalid environment selection: {root}")
+
+    monkeypatch.setattr(pm_module, "sync_venv", raising_sync)
+    record = _completion_attempts_path(root)
+
+    with pytest.raises(InstallError, match="invalid environment selection"):
+        venv_sync.prepare_launch(root, [])
+    assert record.read_text(encoding="utf-8").strip() == "1"
+
+    record.write_text(f"{COMPLETION_RETRY_MAX_ATTEMPTS}\n", encoding="utf-8")
+    os.utime(record, (1.0, 1.0))
+    capsys.readouterr()
+    before = len(synced)
+    with pytest.raises(RuntimeError, match="dependency sync for this data root failed"):
+        venv_sync.prepare_launch(root, [])
+    assert len(synced) == before, (
+        "a capped borrowing launch synced under the update lock again"
+    )
+    err = capsys.readouterr().err
+    assert "could not be finished automatically" in err
+    assert "hermes update" in err

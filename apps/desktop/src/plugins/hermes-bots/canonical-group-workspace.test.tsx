@@ -384,6 +384,43 @@ it('keeps automatic preview downloads bounded and never requests one file twice 
   await screen.findByRole('img', { name: 'shot-0.png' })
 })
 
+it('starts waiting previews in order as downloads succeed or fail, never more than two at once', async () => {
+  Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:preview') })
+  Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() })
+  const image = (n: number) => ({ attachment_id: `img-${n}`, kind: 'image', name: `shot-${n}.png`, mime: 'image/png', size: 1 })
+  const events = Array.from({ length: 6 }, (_, n) => ({ seq: n + 1, room_id: 'drain', event_id: `e${n}`, kind: 'message.member', payload: { attachments: [image(n)] } }))
+  const held = new Map<string, (ok: boolean) => void>()
+  let running = 0
+  let peak = 0
+  request.mockImplementation(async (_route, method, params) => roomReads([], events)(method)
+    ?? (method === 'groups.attachment.download' ? new Promise((resolve, reject) => {
+      peak = Math.max(peak, ++running)
+      held.set(params.attachment_id, ok => {
+        running--
+
+        if (ok) {resolve({ ...image(Number(params.attachment_id.slice(4))), data_base64: 'QQ==' })} else {reject(new Error('gone'))}
+      })
+    }) : {}))
+  const observers: IntersectionObserverCallback[] = []
+  vi.stubGlobal('IntersectionObserver', class { constructor(callback: IntersectionObserverCallback) { observers.push(callback) } observe() {} disconnect() {} })
+  const downloads = () => request.mock.calls.filter(c => c[1] === 'groups.attachment.download').map(c => c[2].attachment_id)
+  const settle = (outcomes: Record<string, boolean>) => act(async () => { Object.entries(outcomes).forEach(([id, ok]) => held.get(id)?.(ok)) })
+  render(<CanonicalGroupWorkspace binding={{ connectionId: 'remote', profile: 'team', roomId: 'drain' }} />)
+  await waitFor(() => expect(observers).toHaveLength(6))
+
+  // Every preview stays in view, so four wait behind the first two.
+  for (const callback of observers) {act(() => callback([{ isIntersecting: true }] as IntersectionObserverEntry[], {} as IntersectionObserver))}
+  await waitFor(() => expect(downloads()).toEqual(['img-0', 'img-1']))
+  // A finished and a failed download each hand their slot to the next waiting preview.
+  await settle({ 'img-0': true, 'img-1': false })
+  await waitFor(() => expect(downloads()).toEqual(['img-0', 'img-1', 'img-2', 'img-3']))
+  await settle({ 'img-3': false, 'img-2': true })
+  await waitFor(() => expect(downloads()).toEqual(['img-0', 'img-1', 'img-2', 'img-3', 'img-4', 'img-5']))
+  await settle({ 'img-4': true, 'img-5': true })
+  await screen.findByRole('img', { name: 'shot-5.png' })
+  expect(peak).toBe(2)
+})
+
 it('uploads a file pasted while another upload runs once that one finishes, instead of dropping it', async () => {
   let release!: () => void
   const receipt = (params: Record<string, string>) => ({ attachment_id: `att-${params.name}`, kind: params.kind, name: params.name, mime: params.mime, size: 1 })

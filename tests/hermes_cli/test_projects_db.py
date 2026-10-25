@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 
 import pytest
 
@@ -53,6 +54,22 @@ def test_create_get_list(conn):
     # Lookup by slug too.
     assert pdb.get_project(conn, "hermes-agent").id == pid
     assert len(pdb.list_projects(conn)) == 1
+
+
+def test_delete_rolls_back_project_and_selection_together(conn, tmp_path):
+    pid = pdb.create_project(conn, name="Selected", folders=[str(tmp_path)])
+    pdb.set_active(conn, pid)
+    before = pdb.get_project(conn, pid).to_dict()
+    conn.execute(
+        "CREATE TEMP TRIGGER refuse_selection_delete BEFORE DELETE ON project_meta "
+        "BEGIN SELECT RAISE(ABORT, 'selection delete failed'); END"
+    )
+
+    with pytest.raises(sqlite3.IntegrityError, match="selection delete failed"):
+        pdb.delete_project(conn, pid)
+
+    assert pdb.get_project(conn, pid).to_dict() == before
+    assert pdb.get_active_id(conn) == pid
 
 
 

@@ -135,38 +135,96 @@ def _credential_store_scope_label() -> str:
     return f"[profile '{get_active_profile_name() or 'default'}', HERMES_HOME {get_hermes_home()}]"
 
 
+def _host_config_layers(home) -> dict:
+    # Same layers the host gateway's own loader reads: routes pinned in the managed scope
+    # (/etc/hermes/config.yaml) never reached a raw user-file read (#121212).
+    from gateway.config_loader import read_yaml_layers
+    return read_yaml_layers(_sched.Path(home).expanduser())
+
+
+def _read_profile_routes(home) -> list:
+    """``profile_routes`` (top-level or nested ``gateway.``) of one home's config layers, or ``None``."""
+    raw = _host_config_layers(home)
+    routes_raw = raw.get("profile_routes")
+    if routes_raw is None and isinstance(raw.get("gateway"), dict):
+        routes_raw = raw["gateway"].get("profile_routes")
+    return routes_raw if isinstance(routes_raw, list) else None
+
+
+def _is_multiplex_host_config(home) -> bool:
+    raw = _host_config_layers(home)
+    gateway = raw.get("gateway") if isinstance(raw.get("gateway"), dict) else {}
+    return bool(gateway.get("multiplex_profiles", raw.get("multiplex_profiles")))
+
+
+def _same_home(left, right) -> bool:
+    return (
+        _sched.Path(left).expanduser().resolve(strict=False)
+        == _sched.Path(right).expanduser().resolve(strict=False)
+    )
+
+
+def _route_host_home(current_home):
+    """Home of the multiplex host that serves ``current_home``, or ``None`` if it IS the host.
+
+    The host is not necessarily the default root: a multiplexer may be launched by a named profile,
+    whose ``profile_routes`` then live in ``<root>/profiles/<host>/config.yaml``. Resolution order:
+
+    1. this process's own launch home, when this process holds the gateway runtime lock and that home
+       is configured to multiplex (the host's own ticker and delivery drain — no self-dial);
+    2. the live host gateway that publishes ``current_home``'s profile in its served set;
+    3. the default root (pre-existing behaviour; fails closed when it carries no routes).
+    """
+    from hermes_constants import get_default_hermes_root, get_routing_process_hermes_home
+
+    process_home = get_routing_process_hermes_home()
+    try:
+        from gateway.status import owns_gateway_runtime_lock
+        in_host_gateway = owns_gateway_runtime_lock()
+    except Exception:
+        in_host_gateway = False
+    if in_host_gateway and not _same_home(process_home, current_home):
+        try:
+            if _is_multiplex_host_config(process_home):
+                return process_home
+        except Exception:
+            logger.debug("process-home multiplex check failed", exc_info=True)
+
+    try:
+        from gateway.host_attach import host_gateway_serving, profile_name_for_home
+        host = host_gateway_serving(profile_name_for_home(current_home))
+    except Exception:
+        logger.debug("live host gateway probe failed", exc_info=True)
+        host = None
+    if host is not None:
+        return None if _same_home(host.home, current_home) else host.home
+
+    primary_home = get_default_hermes_root()
+    return None if _same_home(primary_home, current_home) else primary_home
+
+
 def _primary_profile_routes_for_current_home() -> list:
-    """Primary gateway ``profile_routes`` targeting the profile being served; ``[]`` if this IS the
-    primary home. Satellite crons are ticked and delivered by the primary gateway (a satellite
-    holding its own token is a ``duplicate_credential`` fatal). Reads the primary home's YAML
-    layers (user file + managed-scope overlay, top-level or nested ``gateway.``) through the same
+    """Host gateway ``profile_routes`` targeting the profile being served; ``[]`` if this IS the
+    host home. Satellite crons are ticked and delivered by the multiplex host gateway (a satellite
+    holding its own token is a ``duplicate_credential`` fatal). The host is the live multiplexer
+    serving this profile — which may be a NAMED profile, not the default root — see
+    ``_route_host_home``. Reads the host home's YAML layers (user file + managed-scope overlay) through the same
     loader ``load_gateway_config()`` uses, without bridging platform config into this process.
     Shared by preflight rescue and delivery-time resolution so they cannot drift.
 
-    Under ``gateway.multiplex_profiles`` a satellite profile's cron jobs are ticked by the primary gateway's
-    in-process ticker (#69377) and delivered through the primary gateway's live adapters — the satellite
+    Under ``gateway.multiplex_profiles`` a satellite profile's cron jobs are ticked by the host gateway's
+    in-process ticker (#69377) and delivered through the host gateway's live adapters — the satellite
     home never holds the platform credentials itself (giving it a token of its own is a
     ``duplicate_credential`` fatal).
     """
     try:
-        from hermes_constants import get_default_hermes_root, get_hermes_home
-        primary_home = get_default_hermes_root()
+        from hermes_constants import get_hermes_home
         current_home = _sched.Path(get_hermes_home())
-        if (
-            primary_home.expanduser().resolve(strict=False)
-            == current_home.expanduser().resolve(strict=False)
-        ):
-            return []  # this IS the primary home — nothing to consult
-
-        # Same layers the primary gateway's own loader reads: routes pinned in the managed scope
-        # (/etc/hermes/config.yaml) never reached the raw user-file read (#121212), so preflight
-        # false-blocked and routed delivery failed closed on centrally-managed installs.
-        from gateway.config_loader import read_yaml_layers
-        layered = read_yaml_layers(primary_home.expanduser())
-        routes_raw = layered.get("profile_routes")
-        if routes_raw is None and isinstance(layered.get("gateway"), dict):
-            routes_raw = layered["gateway"].get("profile_routes")
-        if not isinstance(routes_raw, list):
+        host_home = _route_host_home(current_home)
+        if host_home is None:
+            return []  # this IS the host home — nothing to consult
+        routes_raw = _read_profile_routes(host_home)
+        if routes_raw is None:
             return []
 
         from gateway.profile_routing import parse_profile_routes
@@ -176,7 +234,7 @@ def _primary_profile_routes_for_current_home() -> list:
             if route.enabled and profile_matches_home(route.profile)
         ]
     except Exception:
-        logger.debug("primary-gateway profile-route lookup unavailable", exc_info=True)
+        logger.debug("host-gateway profile-route lookup unavailable", exc_info=True)
         return []
 
 
@@ -193,22 +251,31 @@ def _delivery_platform_routed_from_primary_gateway(platform_name: str) -> bool:
 
 
 class SharedRouteAdapters:
-    """Read-only adapter map for a credentialless satellite profile. ``get(platform, target)``
-    resolves the PRIMARY adapter iff the inbound route matcher (``ProfileRoute.matches``) accepts
-    the target; anything else (unmatched target, disabled route, other profile, or target-less
+    """Read-only adapter map for a satellite profile. ``get(platform, target)`` resolves the
+    PRIMARY adapter iff the inbound route matcher (``ProfileRoute.matches``) accepts the target;
+    anything else (unmatched target, disabled route, other profile, or target-less
     ``get(platform)``) is a miss — fail closed, never the default bot.
+
+    ``own_adapters`` are the satellite's OWN live adapters (a mixed satellite may run its own bot
+    on one platform and rely on host routes for another). A platform present there is ALWAYS
+    served by the satellite's own adapter, never the host bot; host routes only fill platforms
+    the satellite lacks.
 
     See #101113.
     """
 
-    def __init__(self, primary_adapters, routes) -> None:
+    def __init__(self, primary_adapters, routes, own_adapters=None) -> None:
         self._primary = dict(primary_adapters or {})
         self._routes = list(routes or [])
+        self.own_adapters = dict(own_adapters or {})
 
     def __bool__(self) -> bool:
-        return bool(self._primary) and bool(self._routes)
+        return bool(self.own_adapters) or (bool(self._primary) and bool(self._routes))
 
     def get(self, platform, target=None, default=None):
+        own = self.own_adapters.get(platform)
+        if own is not None:
+            return own
         if not target:
             return default
         adapter = self._primary.get(platform)
@@ -231,6 +298,24 @@ class SharedRouteAdapters:
             ):
                 return adapter
         return default
+
+
+def satellite_delivery_adapters(own_adapters, primary_adapters, routes=None):
+    """Delivery adapter view for a multiplexed satellite profile (the ticker and the restart-safe
+    drain both use this so they cannot drift). Call inside the satellite's profile scope when
+    ``routes`` is omitted: they are the live host's ``profile_routes`` targeting this profile.
+
+    Returns ``own_adapters`` unchanged when there is nothing to route through the host (no primary
+    adapters or no routes); otherwise a ``SharedRouteAdapters`` that serves the satellite's own
+    platforms from its own adapters and the rest only through exact enabled host routes.
+    """
+    if not primary_adapters:
+        return own_adapters
+    if routes is None:
+        routes = _primary_profile_routes_for_current_home()
+    if not routes:
+        return own_adapters
+    return SharedRouteAdapters(primary_adapters, routes, own_adapters)
 
 
 def _preflight_check_delivery(job: dict) -> Optional[str]:

@@ -143,6 +143,26 @@ def test_refresh_renews_only_the_expired_token_and_that_account_reports_usage(po
     assert "2 of 2 accounts ready" in text
 
 
+def test_refresh_renews_a_benched_account_and_keeps_its_cooldown(pool_home, capsys, monkeypatch):
+    # A capped account idles until its weekly reset, so its token expires while it is benched.
+    reset_at = time.time() + 2 * 24 * 3600
+    benched = _seat(2, "idle-access-token", expires_in_s=-3600, last_status="exhausted",
+                    last_status_at=time.time() - 3600, last_error_code=429, last_error_reset_at=reset_at)
+    pool_home({"anthropic": [_TWO_SEATS[0], benched]})
+    monkeypatch.setattr("agent.anthropic_credentials.refresh_anthropic_oauth_pure",
+                        lambda refresh_token, *, use_json=False: {
+                            "access_token": "renewed-access-token", "refresh_token": "refresh-2-next",
+                            "expires_at_ms": int(time.time() * 1000) + 3600_000})
+
+    code, text, _ = _usage_cmd(capsys, "--refresh")
+
+    stored = json.loads((Path(os.environ["HERMES_HOME"]) / "auth.json").read_text())["credential_pool"]["anthropic"]
+    assert code == 0
+    assert stored[1]["access_token"] == "renewed-access-token"
+    assert (stored[1]["last_status"], stored[1]["last_error_reset_at"]) == ("exhausted", reset_at)
+    assert "token expired" not in text
+
+
 def test_refresh_leaves_the_pool_alone_when_no_token_has_expired(pool_home, capsys):
     # An elapsed cooldown is what a session's pre-request sweep would clear and persist.
     rested = _seat(2, "rested-access-token", expires_in_s=3 * 3600,

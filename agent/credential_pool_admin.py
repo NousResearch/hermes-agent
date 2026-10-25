@@ -33,6 +33,17 @@ class CredentialPoolAdminMixin:
             self._replace_entry(entry, cleared)
             self._persist(status_cleared_ids=[cleared.id])
             return cleared
+
+    def renew_token(self, credential_id: str) -> Optional[PooledCredential]:
+        """Refresh the target's expiring access token and keep its cooldown: reads such as
+        ``hermes usage --refresh`` need a live token, and a live grant says nothing about quota.
+        Returns the entry (unchanged when its token is still fresh), None when the refresh failed."""
+        with self._lock:
+            entry = self._find(lambda e: e.id == credential_id)
+            if entry is None or not self._entry_needs_refresh(entry):
+                return entry
+            return self._refresh_entry(entry, force=False, clear_status=False)
+
     def reset_statuses(self) -> int:
         """Clear exhaustion state on every entry. Returns how many were cleared.
 

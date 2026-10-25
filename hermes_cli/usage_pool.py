@@ -23,12 +23,12 @@ def fetch_pool_accounts(provider: str, *, refresh_expired: bool = False) -> Opti
     single-account path.
 
     Each account is read with its own token and never refreshed on failure. *refresh_expired* first
-    runs the pool's pre-request refresh (``CredentialPool.reclaim``, what ``select()`` runs) for each
-    live entry whose access token has expired, so it reports usage instead of a 401."""
+    renews every live entry's expiring access token, benched ones included (an account capped until
+    its weekly reset idles longer than its token lives), so it reports usage instead of a 401.
+    The renewal keeps each entry's cooldown: a read never returns a capped account to rotation."""
     from agent.account_usage import fetch_account_usage
     from agent.account_usage_cache import has_account_usage
     from agent.credential_pool import STATUS_DEAD, load_pool
-    from agent.credential_pool_timestamps import token_expires_at
     from hermes_cli.auth import read_credential_pool
     from hermes_cli.inventory import pool_usage_accounts
 
@@ -36,11 +36,9 @@ def fetch_pool_accounts(provider: str, *, refresh_expired: bool = False) -> Opti
         return None
     if refresh_expired:
         pool = load_pool(provider)
-        now = time.time()
         for entry in pool.entries():
-            expires = token_expires_at(entry)
-            if entry.last_status != STATUS_DEAD and expires is not None and expires <= now:
-                pool.reclaim(entry.id)
+            if entry.last_status != STATUS_DEAD:
+                pool.renew_token(entry.id)
     requests: list[dict] = []
     pool_usage_accounts(provider, requests)
     with ThreadPoolExecutor(max_workers=_FETCH_WORKERS) as workers:

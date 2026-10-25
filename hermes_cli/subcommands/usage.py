@@ -121,6 +121,6 @@ def build_usage_parser(subparsers) -> None:
              "{\"providers\": [one document per provider]}")
     usage_parser.add_argument(
         "--refresh", action="store_true",
-        help="First refresh the expired access tokens of pooled accounts (the refresh a session runs "
-             "before a request), so idle accounts report usage instead of an auth error")
+        help="First renew the expired access tokens of pooled accounts, capped ones included, so idle "
+             "accounts report usage instead of an auth error; a capped account stays benched")
     usage_parser.set_defaults(func=cmd_usage)

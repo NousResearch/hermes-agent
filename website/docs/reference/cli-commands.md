@@ -725,7 +725,7 @@ expired`. `--refresh` first refreshes those tokens the way a session does before
 | `--provider NAME` | Provider to query (default: the configured `model.provider`). Supported: `openai-codex`, `anthropic`, `openrouter`. |
 | `--json` | Print one JSON document instead of the human-readable block. |
 | `--all` | Also show every other pooled provider that reports usage. With `--json`, prints `{"providers": [...]}`, one document per provider. |
-| `--refresh` | Refresh the expired access tokens of pooled accounts before fetching their usage. |
+| `--refresh` | Renew the expired access tokens of pooled accounts before fetching their usage, capped accounts included. A capped account keeps its cooldown. |
 
 Credentials resolve exactly as they do for `/usage` in a session with no live agent (the auth store, then
 the credential pool); the command never adds or refreshes a credential it would not use for chat. Pooled

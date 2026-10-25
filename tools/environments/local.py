@@ -589,7 +589,34 @@ def _prepend_missing_path_entries(existing_path: str, dirs: list[str]) -> str:
     return os.pathsep.join([*missing, *entries]) if missing else existing_path
 
 
+# Short TTL: these lookups hit the filesystem (realpath/stat) on every terminal call, yet
+# only change when a profile switches or a managed runtime is installed mid-process.
+_PATH_MEMO_TTL_S = 30.0
+_path_memo: dict = {}
+_path_memo_lock = threading.Lock()
+
+
+def _memo_path(kind: str, key: str, compute):
+    from hermes_constants import get_hermes_home
+    full = (kind, key, str(get_hermes_home()))
+    now = time.monotonic()
+    with _path_memo_lock:
+        hit = _path_memo.get(full)
+        if hit is not None and now - hit[0] < _PATH_MEMO_TTL_S:
+            return hit[1]
+    value = compute()
+    with _path_memo_lock:
+        if len(_path_memo) > 256:
+            _path_memo.clear()
+        _path_memo[full] = (now, value)
+    return value
+
+
 def _user_tools_first(existing_path: str) -> str:
+    return _memo_path("user_tools_first", existing_path, lambda: _user_tools_first_uncached(existing_path))
+
+
+def _user_tools_first_uncached(existing_path: str) -> str:
     """*existing_path* with the user's tools before Hermes's (``pm.user_facing``) and, on
     Windows, Git Bash's dirs first. They go first even when already listed: they are store
     dirs that now sit behind the user's entries, and a non-login ``bash -c`` needs its
@@ -682,6 +709,10 @@ def _prepend_hermes_bin_dir(existing_path: str) -> str:
 
 
 def _managed_runtime_path_entries() -> list[str]:
+    return list(_memo_path("managed_runtime", "", _managed_runtime_path_entries_uncached))
+
+
+def _managed_runtime_path_entries_uncached() -> list[str]:
     """Return existing Hermes-managed runtime dirs for the terminal subshell PATH.
 
     The terminal tool spawns a subshell whose PATH is the agent process's PATH
@@ -695,9 +726,9 @@ def _managed_runtime_path_entries() -> list[str]:
       and nothing has ever put that directory on PATH, so an install whose only
       uv is the managed one looks uv-less to both the agent and the model.
 
-    Resolved per call rather than cached in a module constant because
-    ``get_hermes_home()`` is profile-scoped and a managed runtime can appear
-    mid-process (a lazy pm install, a first browser install).
+    Memoised per ``get_hermes_home()`` for ``_PATH_MEMO_TTL_S`` only: the home is
+    profile-scoped and a managed runtime can appear mid-process (a lazy pm install,
+    a first browser install).
     """
     try:
         import pm

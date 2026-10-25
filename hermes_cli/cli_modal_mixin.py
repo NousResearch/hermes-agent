@@ -1036,7 +1036,8 @@ class CLIModalMixin:
             state = self._clarify_state
             self._clarify_teardown()
             state["response_queue"].put(None)
-        elif method == "sudo" and self._sudo_state:
+        elif method in ("sudo", "vault.unlock_prompt", "vault.save_login", "vault.code") and self._sudo_state:
+            # The vault prompts reuse the sudo panel's state and queue; "" ends them as declined.
             self._sudo_state["response_queue"].put("")
         elif method == "secret" and getattr(self, "_secret_state", None):
             self._cancel_secret_capture()

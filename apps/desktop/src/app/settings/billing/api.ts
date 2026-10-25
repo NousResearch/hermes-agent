@@ -57,6 +57,8 @@ export interface BillingApi {
   scheduleSubscriptionChange: (tierId: string) => Promise<BillingResult<BillingMutationResponse>>
   stepUp: (sessionId?: string) => Promise<BillingResult<BillingMutationResponse>>
   updateAutoReload: (input: UpdateAutoReloadInput) => Promise<BillingResult<BillingMutationResponse>>
+  /** Window plans: "Keep going on credits" (billing.keep_going_on_credits). */
+  updateKeepGoingOnCredits: (enabled: boolean) => Promise<BillingResult<BillingMutationResponse>>
 }
 
 interface RefusalRecord {
@@ -174,7 +176,9 @@ export const createBillingApi = (requestGateway: BillingRequestGateway): Billing
       enabled: input.enabled,
       ...(input.threshold_usd !== undefined ? { threshold: input.threshold_usd } : {}),
       ...(input.reload_to_usd !== undefined ? { top_up_amount: input.reload_to_usd } : {})
-    })
+    }),
+  updateKeepGoingOnCredits: enabled =>
+    callBilling<BillingMutationResponse>(requestGateway, 'billing.keep_going_on_credits', { enabled })
 })
 
 // An override for the gateway-backed api — DEV fixtures provide a simulated

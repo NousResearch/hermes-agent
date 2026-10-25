@@ -30,15 +30,17 @@ BUILTIN_PREFIXES = frozenset({"diff", "staged", "file", "folder", "git", "url"})
 _context_reference_providers: dict[str, ContextReferenceProvider] = {}
 
 
+@dataclass(slots=True)
 class ContextCompletionItem:
-    """A single autocomplete result from a context reference provider."""
+    """A single autocomplete result from a context reference provider (a dataclass, so it crosses
+    the plugin-host wire as data)."""
 
-    __slots__ = ("display", "meta", "text")
+    text: str
+    display: str = ""
+    meta: str = ""
 
-    def __init__(self, text: str, display: str = "", meta: str = "") -> None:
-        self.text = text
-        self.display = display or text
-        self.meta = meta
+    def __post_init__(self) -> None:
+        self.display = self.display or self.text
 
 
 class ContextReferenceProvider(ABC):

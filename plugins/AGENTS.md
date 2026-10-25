@@ -125,6 +125,10 @@ Invariants:
   adapter objects). The runtime refusal and the static audit (`plugin_isolation_audit.py`, shown by
   `hermes plugins validate/show`) both read it; `evals/plugin_isolation/audit_catalog.py` re-measures
   the catalog.
+- **Values keep the provider ABC's declared types across the wire:** JSON carries dicts, lists and
+  scalars, so `plugin_host_wire.restore` rebuilds arguments (child) and results (parent) from the ABC's
+  annotations (`FetchResult`, `Path`, enums, a returned engine as a proxy). A value a core consumer
+  type-checks must be a dataclass annotated on the ABC method, or it arrives as `Record`/`Opaque`.
 - **A host never spawns a host** (`HERMES_PLUGIN_HOST_PROCESS=1` makes `isolation_mode()` in-process
   there) and must not start while a module import holds its lock (model-provider discovery is the
   known case).

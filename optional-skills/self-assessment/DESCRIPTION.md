@@ -1,0 +1,1 @@
+Self-assessment skills for evaluating your Hermes agent's capabilities across multiple dimensions.

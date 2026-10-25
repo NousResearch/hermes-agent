@@ -1,3 +1,4 @@
+// Shared by ru.ts and its sibling overlays.
 // RU_PLURAL: (count, one, few, many) — русские формы сущ. падежа
 // RU_NOUN: (count, one, few, many) — формы род. множественного
 // count может быть number или string (часть подписей en.ts передаёт строки)

@@ -2316,7 +2316,7 @@ def _extend_run_claim(conn: sqlite3.Connection, task_id: str, expires: int) -> O
 def release_stale_claims(
     conn: sqlite3.Connection, *, signal_fn=None, failure_limit: Optional[int] = None,
 ) -> int:
-    """Reclaim ``running`` tasks whose claim expired; returns the count reclaimed.
+    """Reclaim expired claims on ``running`` or ``ready`` tasks; returns the count reclaimed.
 
     Every reclaim that actually releases a claim is a non-success attempt and
     is booked through ``_record_task_failure`` (#111306): a claim that expired
@@ -2349,7 +2349,7 @@ def release_stale_claims(
         "SELECT id, claim_lock, worker_pid, worker_started_at, claim_expires, last_heartbeat_at, "
         "       assignee "
         "FROM tasks "
-        "WHERE status = 'running' AND claim_expires IS NOT NULL "
+        "WHERE status IN ('running', 'ready') AND claim_expires IS NOT NULL "
         "  AND claim_expires < ?", (now,),
     ).fetchall()
     from hermes_cli.kanban_owner_recovery import owner_reclaim_blocked, owner_reclaim_blocked_after_kill
@@ -2386,7 +2386,7 @@ def release_stale_claims(
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "
-                "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
+                "WHERE id = ? AND status IN ('running', 'ready') AND claim_lock IS ? "
                 "AND claim_expires IS NOT NULL AND claim_expires < ? "
                 # A worker that registered its own pid since the SELECT keeps its claim.
                 "AND worker_pid IS ?",
@@ -2449,7 +2449,7 @@ def _extend_live_stale_claim(conn: sqlite3.Connection, row: sqlite3.Row, now: in
     with write_txn(conn):
         cur = conn.execute(
             "UPDATE tasks SET claim_expires = ? "
-            "WHERE id = ? AND status = 'running' "
+            "WHERE id = ? AND status IN ('running', 'ready') "
             "  AND claim_lock IS ? "
             "  AND claim_expires IS NOT NULL "
             "  AND claim_expires < ?", (new_expires, row["id"], row["claim_lock"], now),

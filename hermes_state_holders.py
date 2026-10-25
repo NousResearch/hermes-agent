@@ -583,7 +583,7 @@ def in_process_state_db_holders(
 
 
 def held_store_refusal(db_path: Path, *, command: str, force_hint: Optional[str] = "--force") -> Optional[str]:
-    """Operator-facing refusal for structural maintenance (VACUUM, index rebuild, bulk delete) while another
+    """Operator-facing refusal for structural maintenance (VACUUM and index rebuild) while another
     process holds ``db_path`` or a WAL sidecar; ``None`` when the store is provably quiet.
 
     Running ``hermes sessions optimize-storage`` underneath a fleet of live gateways put every agent into

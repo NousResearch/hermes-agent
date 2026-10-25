@@ -176,9 +176,8 @@ def session_inventory(authority, policy, agent, cwd):
             from tools.mcp_tool_discovery import get_mcp_status
             info["mcp_servers"] = get_mcp_status()
     with contextlib.suppress(Exception):
-        from hermes_cli import __release_date__
-        from hermes_cli.version_info import get_version_info
-        info.update(version=get_version_info().base_version, release_date=__release_date__)
+        from hermes_cli.version_info import get_release_date, get_version_info
+        info.update(version=get_version_info().base_version, release_date=get_release_date())
     with contextlib.suppress(Exception):
         from hermes_cli.banner import get_update_result
         from hermes_cli.config import recommended_update_command

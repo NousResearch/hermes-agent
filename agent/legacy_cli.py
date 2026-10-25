@@ -27,13 +27,14 @@ from typing import Callable, List, Optional
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    from hermes_cli import __release_date__, __version__
+    from hermes_cli import __version__
+    from hermes_cli.version_info import get_release_date
 
     parser = argparse.ArgumentParser(
         prog="hermes-agent",
         description="Legacy single-query Hermes Agent runner. For the full CLI use `hermes`.",
     )
-    parser.add_argument("--version", action="version", version=f"Hermes Agent v{__version__} ({__release_date__})")
+    parser.add_argument("--version", action="version", version=f"Hermes Agent v{__version__} ({get_release_date()})")
     parser.add_argument("prompt", nargs="*", help="query to run (same as --query)")
     parser.add_argument("--query", "-q", help="natural-language query to run")
     parser.add_argument("--model", default="", help="model id (provider/model)")

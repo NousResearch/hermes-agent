@@ -152,6 +152,13 @@ def test_a_new_lease_for_the_same_agent_drops_the_old_one(executor, consented):
 # ── 4. expiry, turn movement, prompt cap ─────────────────────────────────────────────────
 
 
+def test_many_live_sessions_keep_their_tokens(executor, consented):
+    """A busy gateway finishing many turns at once must not revoke a live session's token."""
+    parents = [_agent(session_id=f"sess-{i}") for i in range(40)]
+    tokens = [issue_side_question_token(parent, [], "turn-1") for parent in parents]
+    assert _ctx(consented, "next-prompt").side_question(tokens[0], "q") == "answer for next-prompt"
+
+
 def test_expired_lease_is_none(executor, consented, monkeypatch):
     agent = _agent()  # the lease holds its parent weakly
     token = issue_side_question_token(agent, [], "turn-1")
@@ -238,9 +245,9 @@ def test_post_llm_call_hook_redeems_its_token_end_to_end(monkeypatch):
     side_question_lease._leases.clear()
 
 
-def test_side_request_fires_auxiliary_hooks_not_turn_request_hooks(monkeypatch):
-    """Turn-scoped observers (``pre/post_api_request``) see only the turn's own request; the
-    side request reports through ``pre/post_auxiliary_call`` with ``aux_task='side_question'``."""
+def _observed_turn_with_side_question(monkeypatch, side_reply) -> list[dict]:
+    """Run a real turn whose granted ``observer`` plugin asks a side question and records every
+    request event; ``side_reply`` is what the provider returns to the side request."""
     from run_agent import AIAgent
 
     events = Path(os.environ["HERMES_HOME"]) / "events.jsonl"
@@ -252,7 +259,8 @@ def test_side_request_fires_auxiliary_hooks_not_turn_request_hooks(monkeypatch):
         "import json, pathlib\n\n"
         f"EVENTS = pathlib.Path({str(events)!r})\n\n"
         "def _log(name, **kw):\n"
-        "    row = {'event': name, 'aux_task': kw.get('aux_task'), 'usage': kw.get('usage')}\n"
+        "    row = {'event': name, 'aux_task': kw.get('aux_task'), 'usage': kw.get('usage'),\n"
+        "           'error_type': kw.get('error_type')}\n"
         "    with EVENTS.open('a') as fh:\n"
         "        fh.write(json.dumps(row, default=str) + '\\n')\n\n"
         "def register(ctx):\n"
@@ -267,9 +275,9 @@ def test_side_request_fires_auxiliary_hooks_not_turn_request_hooks(monkeypatch):
 
     usage = SimpleNamespace(prompt_tokens=900, completion_tokens=7, total_tokens=907)
     replies = [
-        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=text, tool_calls=None),
-                                                 finish_reason="stop")], model="test/model", usage=usage)
-        for text in ("The answer is 42.", "Ask why it is 42.")
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="The answer is 42.", tool_calls=None),
+                                                 finish_reason="stop")], model="test/model", usage=usage),
+        side_reply,
     ]
     client = MagicMock()
     client.chat.completions.create.side_effect = lambda **kw: replies.pop(0)
@@ -285,11 +293,27 @@ def test_side_request_fires_auxiliary_hooks_not_turn_request_hooks(monkeypatch):
         parent._cached_system_prompt = "You are helpful."
         parent.skip_background_review = True
         parent.run_conversation("what is the answer?")
-
-    rows = [json.loads(line) for line in events.read_text().splitlines()]
+    side_question_lease._leases.clear()
     assert replies == []  # the side request was sent
+    return [json.loads(line) for line in events.read_text().splitlines()]
+
+
+def test_side_request_fires_auxiliary_hooks_not_turn_request_hooks(monkeypatch):
+    """Turn-scoped observers (``pre/post_api_request``) see only the turn's own request; the
+    side request reports through ``pre/post_auxiliary_call`` with ``aux_task='side_question'``."""
+    usage = SimpleNamespace(prompt_tokens=900, completion_tokens=7, total_tokens=907)
+    rows = _observed_turn_with_side_question(monkeypatch, SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="Ask why it is 42.", tool_calls=None),
+                                 finish_reason="stop")], model="test/model", usage=usage))
     assert [r["event"] for r in rows] == [
         "pre_api_request", "post_api_request", "pre_auxiliary_call", "post_auxiliary_call"]
     assert rows[2]["aux_task"] == rows[3]["aux_task"] == "side_question"
-    assert rows[3]["usage"]["output_tokens"] == 7
-    side_question_lease._leases.clear()
+    assert rows[3]["usage"]["output_tokens"] == 7 and rows[3]["error_type"] is None
+
+
+def test_unreadable_side_reply_still_closes_the_auxiliary_pair(monkeypatch):
+    """A reply that fails after the provider returned (no choices) reports its error in
+    ``post_auxiliary_call`` instead of leaving the observer's request open."""
+    rows = _observed_turn_with_side_question(monkeypatch, SimpleNamespace(choices=[], model="test/model", usage=None))
+    assert [r["event"] for r in rows][-2:] == ["pre_auxiliary_call", "post_auxiliary_call"]
+    assert rows[-1]["error_type"]

@@ -583,8 +583,10 @@ capabilities:
 The text of the agent's reply, or `None`. `None` means the call was
 refused or failed: a Mixture-of-Agents runtime, an agent-as-provider
 runtime (ACP, external-process providers, the Codex app-server), a
-request that carries provider-executed (server-side) tools, a
-timeout, a provider error, or an empty reply. There are no retries
+session whose model changed since the turn (a voice-chat turn routed to
+`auxiliary.voice_chat` switches back right after it), a request that
+carries provider-executed (server-side) tools, a timeout, a provider
+error, or an empty reply. There are no retries
 and no fallback model.
 
 The call never runs a tool (tool calls in the reply are dropped) and

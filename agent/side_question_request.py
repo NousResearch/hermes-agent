@@ -44,7 +44,15 @@ class SideQuestionCapture:
     tools: list[dict[str, Any]]
     session_id: str
     turn_id: str
+    runtime: tuple  # runtime_key(parent) at capture
     context: contextvars.Context = field(repr=False)
+
+
+def runtime_key(agent: Any) -> tuple:
+    """What decides which model the fork talks to and how: a turn routed elsewhere (voice chat)
+    restores the main runtime after ``post_llm_call``, and the captured prompt must not go out
+    on it."""
+    return tuple(getattr(agent, name, None) for name in ("model", "provider", "base_url", "api_mode", "reasoning_config"))
 
 
 @dataclass
@@ -81,11 +89,12 @@ def has_server_side_tools(api_kwargs: dict[str, Any]) -> bool:
     with a non-client ``type`` (transports rewrite client tools, e.g. Codex/xAI swap a client
     ``web_search`` for ``{"type": "web_search"}``), OpenAI ``web_search_options``, or an
     OpenRouter plugin other than a routing-only one."""
-    for tool in api_kwargs.get("tools") or ():
+    extra_body = api_kwargs.get("extra_body") if isinstance(api_kwargs.get("extra_body"), dict) else {}
+    # ``request_overrides`` land in extra_body, whose ``tools`` the SDK merge sends over the top level.
+    for tool in [*(api_kwargs.get("tools") or ()), *(extra_body.get("tools") or ())]:
         tool_type = tool.get("type") if isinstance(tool, dict) else None
         if tool_type and tool_type not in _CLIENT_TOOL_TYPES:
             return True
-    extra_body = api_kwargs.get("extra_body") if isinstance(api_kwargs.get("extra_body"), dict) else {}
     if "web_search_options" in api_kwargs or "web_search_options" in extra_body:
         return True
     plugins = [*(api_kwargs.get("plugins") or ()), *(extra_body.get("plugins") or ())]
@@ -156,6 +165,8 @@ def _send(fork: Any, capture: SideQuestionCapture, prompt: str, audit: _Audit) -
         api_mode=str(fork.api_mode or ""), streaming=False,
     )
     api_start_time = time.time()
+    # One hook bracket around the whole attempt: a reply that fails after the provider returned
+    # (accounting, normalization) still closes the observer's pre_auxiliary_call with its error.
     try:
         verdict = perform_api_call(
             fork, api_kwargs=built.api_kwargs, _original_api_kwargs=built._original_api_kwargs,
@@ -163,27 +174,27 @@ def _send(fork: Any, capture: SideQuestionCapture, prompt: str, audit: _Audit) -
             _retry=TurnRetryState(), thinking_spinner=None, retry_count=0, api_call_count=1,
             api_request_id=api_request_id, effective_task_id=task_id, turn_id=turn_id, interrupted=False,
         )
+        response = None if verdict.action == "break" else verdict.response
+        if response is not None:
+            record_response_usage(
+                fork, response, messages=messages, api_call_count=1,
+                api_duration=time.time() - api_start_time, compression_attempts=0, max_compression_attempts=0,
+            )
+            assistant_message = normalize_response_for_agent(fork, response)
+            # The reply is in the transport's native shape: observers get the normalized view.
+            normalized = (assistant_message, assistant_message.finish_reason,
+                          fork._usage_summary_for_api_request_hook(response))
     except BaseException as exc:
         finish_aux_call_hooks(hooks, error=exc)
         relay_llm.complete_logical_call(api_request_id, outcome="failed")
         raise
-    if verdict.action == "break" or verdict.response is None:
-        finish_aux_call_hooks(hooks)
+    if response is None:
+        finish_aux_call_hooks(hooks, error=InterruptedError("side question cancelled"))
         relay_llm.complete_logical_call(api_request_id, outcome="cancelled")
         audit.outcome = "error"
         return None
-    response = verdict.response
-    record_response_usage(
-        fork, response, messages=messages, api_call_count=1, api_duration=time.time() - api_start_time,
-        compression_attempts=0, max_compression_attempts=0,
-    )
     relay_llm.complete_logical_call(api_request_id, outcome="success")
-    assistant_message = normalize_response_for_agent(fork, response)
-    # The reply is in the transport's native shape: hand the observers the normalized view.
-    finish_aux_call_hooks(hooks, response, normalized=(
-        assistant_message, assistant_message.finish_reason,
-        fork._usage_summary_for_api_request_hook(response),
-    ))
+    finish_aux_call_hooks(hooks, response, normalized=normalized)
     return assistant_message
 
 
@@ -230,6 +241,9 @@ def ask_text_only(
     timer = None
     try:
         fork = _build_fork(parent, capture)
+        if runtime_key(parent) != capture.runtime:
+            audit.outcome = "refused:runtime_changed"
+            return None
 
         def _on_timeout() -> None:
             timed_out.set()

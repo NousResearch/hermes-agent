@@ -17,11 +17,10 @@ import secrets
 import threading
 import time
 import weakref
-from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from agent.side_question_request import SideQuestionCapture, ask_text_only
+from agent.side_question_request import SideQuestionCapture, ask_text_only, runtime_key
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +29,6 @@ LEASE_TTL_SECONDS = 60.0
 MAX_PROMPT_CHARS = 4096
 DEFAULT_TIMEOUT_SECONDS = 15.0
 MAX_TIMEOUT_SECONDS = 60.0
-# One live lease per active session agent; the bound only caps leaked parents' references.
-_MAX_LEASES = 32
 
 
 @dataclass(frozen=True)
@@ -40,7 +37,7 @@ class _Lease:
     expires_at: float
 
 
-_leases: OrderedDict[str, _Lease] = OrderedDict()
+_leases: dict[str, _Lease] = {}
 _lock = threading.Lock()
 
 
@@ -78,16 +75,16 @@ def issue_side_question_token(agent: Any, messages: list[dict[str, Any]], turn_i
         tools=copy.deepcopy(agent.tools or []),
         session_id=agent.session_id,
         turn_id=turn_id,
+        runtime=runtime_key(agent),
         context=contextvars.copy_context(),
     )
     token = secrets.token_urlsafe(24)
     now = time.monotonic()
     with _lock:
-        # Drop this agent's older leases (a new turn) and every expired one (each holds a transcript).
+        # Drop this agent's older leases (a new turn) and every expired or orphaned one (each holds
+        # a transcript), so the table holds at most one lease per live session agent.
         _purge_locked(now, agent)
         _leases[token] = _Lease(capture, now + LEASE_TTL_SECONDS)
-        while len(_leases) > _MAX_LEASES:
-            _leases.popitem(last=False)
     return token
 
 

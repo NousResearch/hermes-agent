@@ -374,6 +374,17 @@ def test_agent_as_provider_is_refused(provider, issued):
     assert len(provider.requests) == sent
 
 
+def test_runtime_changed_since_the_turn_is_refused(provider, issued):
+    """A turn routed to another model (voice chat) restores the main runtime after
+    ``post_llm_call``: the captured prompt must never go out on a different model."""
+    parent = _make_parent()
+    _run_parent_turn(parent, provider, tool_round=False)
+    parent.model = "other/model"
+    sent = len(provider.requests)
+    assert redeem_side_question(issued[-1], SIDE_PROMPT, plugin_id="next-prompt") is None
+    assert len(provider.requests) == sent
+
+
 def test_server_side_tool_in_final_request_is_refused(provider, issued, monkeypatch):
     parent = _make_parent()
     _run_parent_turn(parent, provider, tool_round=False)
@@ -399,6 +410,9 @@ def test_server_side_tool_in_final_request_is_refused(provider, issued, monkeypa
     ({"extra_body": {"plugins": [{"id": "pareto-router", "min_coding_score": 0.5}]}}, False),
     ({"extra_body": {"plugins": [{"id": "web"}]}}, True),
     ({"web_search_options": {}}, True),
+    # request_overrides land in extra_body, whose ``tools`` the SDK merge sends over the top level.
+    ({"extra_body": {"tools": [{"type": "web_search"}]}}, True),
+    ({"extra_body": {"tools": [{"type": "function", "function": {"name": "x"}}]}}, False),
 ])
 def test_server_side_tool_predicate(api_kwargs, server_side):
     from agent.side_question_request import has_server_side_tools

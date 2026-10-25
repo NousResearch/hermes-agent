@@ -2863,7 +2863,9 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # This is the final pre-spawn boundary: restart-safe wrapping and environment construction
     # have succeeded, but no child or model request exists yet.
     from agent.subscription_capacity_runtime import (
-        CAPACITY_LEASE_ENV, prepare_kanban_worker_capacity, release_prepared_capacity,
+        CAPACITY_LEASE_ENV, SubscriptionCapacityUnavailable, bind_prepared_capacity,
+        prepare_kanban_worker_capacity,
+        release_prepared_capacity,
     )
     capacity_payload = prepare_kanban_worker_capacity(
         task, shared_root=_kb.kanban_home(), profile_home=profile_home,
@@ -2896,11 +2898,47 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
             log_f.close()
         release_prepared_capacity(capacity_payload)
         raise
+    if capacity_payload and not bind_prepared_capacity(capacity_payload, proc.pid):
+        # The envelope alone is never authority: the dispatcher must register the exact Popen PID.
+        # Contain a child that could not be registered before publishing it as a successful spawn.
+        # If the OS will not prove death, retain the lease and publish the PID so normal hard-death
+        # recovery owns it; the unbound child itself fails every provider boundary closed.
+        if _terminate_unbound_capacity_worker(proc):
+            if log_f is not None:
+                log_f.close()
+            release_prepared_capacity(capacity_payload)
+            raise SubscriptionCapacityUnavailable(
+                "subscription capacity worker PID binding failed; spawned child was terminated"
+            )
+        print(
+            f"warning: capacity binding failed for worker {proc.pid}; lease retained for recovery",
+            file=sys.stderr,
+        )
     # Intentionally NOT closing log_f: the child keeps writing after return;
     # the OS-level FD stays open in the child until it exits.
     if _kb._IS_WINDOWS:
         _live_worker_procs[proc.pid] = proc
     return proc.pid
+
+
+def _terminate_unbound_capacity_worker(proc: Any, *, timeout: float = 5.0) -> bool:
+    """Terminate an unbound child and return only when its death is proven by ``Popen``."""
+    try:
+        proc.terminate()
+    except (OSError, ProcessLookupError):
+        pass
+    try:
+        proc.wait(timeout=timeout)
+    except (subprocess.TimeoutExpired, OSError):
+        try:
+            proc.kill()
+        except (OSError, ProcessLookupError):
+            pass
+        try:
+            proc.wait(timeout=timeout)
+        except (subprocess.TimeoutExpired, OSError):
+            return proc.poll() is not None
+    return proc.poll() is not None
 
 
 # ---------------------------------------------------------------------------

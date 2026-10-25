@@ -11,15 +11,18 @@ import tomllib
 import pytest
 
 from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER, KANBAN_ENV_KEYS, non_dispatcher_owned_context
+from agent.subscription_capacity_runtime import CAPACITY_LEASE_ENV
 from agent.transports import codex_app_server as cas
 from hermes_cli.codex_runtime_plugin_migration import migrate
 
 
 class _RecordingPopen:
     commands: list[list[str]] = []
+    environments: list[dict[str, str]] = []
 
     def __init__(self, cmd, *args, **kwargs):
         type(self).commands.append(list(cmd))
+        type(self).environments.append(dict(kwargs.get("env") or {}))
         self.stdin = self.stdout = self.stderr = None
         self.pid = 1
         self.returncode = None
@@ -41,8 +44,10 @@ class _RecordingPopen:
 def launch(monkeypatch, tmp_path):
     """Return ``launch(env) -> list[str]`` of the ``mcp_servers.*`` overrides in the worker argv."""
     _RecordingPopen.commands = []
+    _RecordingPopen.environments = []
     monkeypatch.setattr(subprocess, "Popen", _RecordingPopen)
-    for key in (*KANBAN_ENV_KEYS, DELEGATED_CHILD_ENV_MARKER, "HERMES_KANBAN_DB", "HERMES_KANBAN_BOARD"):
+    for key in (*KANBAN_ENV_KEYS, CAPACITY_LEASE_ENV, DELEGATED_CHILD_ENV_MARKER,
+                "HERMES_KANBAN_DB", "HERMES_KANBAN_BOARD"):
         monkeypatch.delenv(key, raising=False)
 
     def _launch(env: dict[str, str]) -> list[str]:
@@ -85,3 +90,13 @@ def test_only_dispatcher_owned_workers_get_mcp_overrides(launch):
     assert launch({}) == []
     with non_dispatcher_owned_context():
         assert launch({"HERMES_KANBAN_TASK": "11111111-1111-4111-8111-111111111111"}) == []
+
+
+def test_capacity_authority_is_never_forwarded_to_mcp_server(launch):
+    overrides = launch({
+        "HERMES_KANBAN_TASK": "11111111-1111-4111-8111-111111111111",
+        "HERMES_KANBAN_RUN_ID": "42",
+        CAPACITY_LEASE_ENV: "copied-envelope",
+    })
+    assert not any(CAPACITY_LEASE_ENV in value for value in overrides)
+    assert CAPACITY_LEASE_ENV not in _RecordingPopen.environments[-1]

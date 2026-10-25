@@ -22,10 +22,11 @@ DELEGATED_CHILD_ENV_MARKER = "HERMES_DELEGATED_CHILD_CONTEXT"
 KANBAN_ENV_KEYS: tuple[str, ...] = (
     "HERMES_KANBAN_TASK", "HERMES_KANBAN_RUN_ID", "HERMES_KANBAN_CLAIM_LOCK",
     "HERMES_KANBAN_GOAL_MODE", "HERMES_KANBAN_GOAL_MAX_TURNS",
-    # A subscription capacity lease belongs only to the dispatcher-owned worker. Descendants
-    # receive neither authority nor a share of its reservation.
-    "HERMES_SUBSCRIPTION_CAPACITY_LEASE",
 )
+
+# Capacity authority is deliberately separate from board identity.  Board context is forwarded to
+# the managed MCP server; the lease must never be forwarded to a tool server or any descendant.
+CAPACITY_AUTH_ENV_KEYS: tuple[str, ...] = ("HERMES_SUBSCRIPTION_CAPACITY_LEASE",)
 
 
 @contextmanager
@@ -115,7 +116,7 @@ def scrub_kanban_env(env: Mapping[str, str] | MutableMapping[str, str]) -> dict[
     path-valued marker is kept (a grandchild that moved HERMES_HOME must not re-fence
     onto its scratch root and unfence the real one).
     """
-    cleaned = {k: v for k, v in env.items() if k not in KANBAN_ENV_KEYS}
+    cleaned = {k: v for k, v in env.items() if k not in (*KANBAN_ENV_KEYS, *CAPACITY_AUTH_ENV_KEYS)}
     inherited = str(env.get(DELEGATED_CHILD_ENV_MARKER) or "")
     cleaned[DELEGATED_CHILD_ENV_MARKER] = inherited if inherited and inherited != "1" else _fenced_kanban_root()
     return cleaned
@@ -162,6 +163,8 @@ def delegated_child_subprocess_env(
     Dispatcher workers and supervised tool transports grant their own explicit scope.
     """
     if not (is_delegated_child_process_context() or os.environ.get("HERMES_KANBAN_TASK")
-            or (env and (env.get("HERMES_KANBAN_TASK") or env.get(DELEGATED_CHILD_ENV_MARKER)))):
+            or any(os.environ.get(key) for key in CAPACITY_AUTH_ENV_KEYS)
+            or (env and (env.get("HERMES_KANBAN_TASK") or env.get(DELEGATED_CHILD_ENV_MARKER)
+                         or any(env.get(key) for key in CAPACITY_AUTH_ENV_KEYS)))):
         return None if env is None else dict(env)
     return scrub_kanban_env(os.environ if env is None else env)

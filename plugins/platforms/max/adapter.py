@@ -219,8 +219,10 @@ class MaxAdapter(BasePlatformAdapter):
         user_name = sender.get("name") or sender.get("first_name") or user_id
         chat_type_raw = recipient.get("chat_type") or "dialog"
         chat_type = "dm" if chat_type_raw == "dialog" else "group"
-        # dialogs route by user_id (no distinct chat_id there); groups/channels have chat_id.
-        chat_id = str(recipient.get("chat_id") or user_id)
+        # Dialogs: POST /messages addresses the human by sender.user_id — recipient.chat_id in a
+        # dialog Update is MAX's internal dialog id, NOT a valid ?user_id= value (sending to it
+        # 404s with "dialog.not.found"). Only groups/channels route by recipient.chat_id.
+        chat_id = str(recipient.get("chat_id")) if chat_type == "group" and recipient.get("chat_id") else user_id
         source = self.build_source(
             chat_id=chat_id, chat_name=user_name, chat_type=chat_type,
             user_id=user_id, user_name=user_name, message_id=msg_id)

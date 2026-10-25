@@ -219,6 +219,14 @@ def _record_completion_attempt(root: Path, *, failed: bool) -> None:
         pass  # a read-only install state degrades to unbounded retries, never blocks boot
 
 
+def _completion_exhausted_message(attempts: int) -> str:
+    """The one operator remedy for a completion path that has given up self-starting."""
+    return (
+        f"hermes: a source update could not be finished automatically "
+        f"({attempts} attempts); run `hermes update` from a shell to finish it"
+    )
+
+
 def completion_retry_state(project_root: Path, *, now=None) -> tuple[bool, int, int]:
     """``(may_retry_now, attempts, backoff_seconds)`` for the owed tail.
 
@@ -401,11 +409,7 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
         # The tail has failed often enough that every relaunch re-running it
         # does more harm than good (#122206: "every launch burns ~4 minutes").
         # Leave the marker for an explicit `hermes update`; say so once.
-        print(
-            f"hermes: a source update could not be finished automatically "
-            f"({_attempts} attempts); run `hermes update` from a shell to finish it",
-            file=sys.stderr, flush=True,
-        )
+        print(_completion_exhausted_message(_attempts), file=sys.stderr, flush=True)
     elif not _may_retry:
         # Backoff window not yet elapsed: skip this launch's retry without
         # noise (the record's age tracks the wait), leaving the marker armed.
@@ -477,6 +481,24 @@ def _prepare_borrowed_launch(root: Path, owner: Path, *, current: bool) -> Path 
     from hermes_cli.update_lock import UpdateLock
 
     if not current:
+        # This root's own sync obeys the same completion budget as the owner's tail:
+        # a sync that raises *before* the tail (a bad side-environment record, a
+        # broken lock) happens on every launch of this root unless the failure is
+        # recorded, and each attempt holds the checkout's update lock for minutes.
+        may_retry, attempts, backoff = completion_retry_state(root)
+        if not may_retry:
+            if attempts >= COMPLETION_RETRY_MAX_ATTEMPTS:
+                print(
+                    _completion_exhausted_message(attempts), file=sys.stderr, flush=True
+                )
+                raise RuntimeError(
+                    f"dependency sync for this data root failed {attempts} times; "
+                    "run `hermes update` from a shell to finish it"
+                )
+            raise RuntimeError(
+                f"dependency sync for this data root failed {attempts} times; "
+                f"next attempt in {backoff}s"
+            )
         lock = UpdateLock(install_root=root, checkout_first=False)  # R6, as in prepare_launch
         if not lock.acquire():
             raise RuntimeError("an update is still running; wait for it to exit, then relaunch Hermes")
@@ -487,6 +509,9 @@ def _prepare_borrowed_launch(root: Path, owner: Path, *, current: bool) -> Path 
         if not pm.venv_is_current(project_root=root):
             # Relaunching would land back here and sync again, forever.
             raise RuntimeError("dependency sync left this install out of date")
+        # The sync is this root's whole obligation (the checkout's tail belongs to the
+        # owner), so a committed generation ends the streak.
+        _record_completion_attempt(root, failed=False)
     python = resolve_store_python(root)
     if python is None:
         raise RuntimeError("source update has no managed Python; run `hermes pm install`")
@@ -510,6 +535,9 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
         completed = _tree_matches_completed_stamp(root)
         # ponytail: commit-only match; a product dir deleted by hand is rebuilt on demand
         # by its own entry point (the TUI/web freshness gates), not here.
+        # The sync counts its own failures (#139132): a persistently broken uv/venv
+        # burns the completion budget instead of re-arming the marker on every launch;
+        # a user's Ctrl+C must not burn the budget, so only real errors count.
         _sync_source_dependencies(root, arm=not completed)
         if completed:
             clear_completion(root)
@@ -559,7 +587,30 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
     clear_completion(root)
 
 
-def _sync_source_dependencies(root: Path, *, arm: bool, borrowed_from: Path | None = None) -> None:
+def _sync_source_dependencies(
+    root: Path, *, arm: bool, borrowed_from: Path | None = None
+) -> None:
+    """Sync dependencies under the completion budget; *arm* also owes the tail afterwards.
+
+    Every failure here — a foreign-owned venv, a tool sync, ``pm.sync_venv`` raising
+    before the tail runs — consumes a completion attempt. Without that, a sync that
+    raises (an unreadable side-environment record, a broken lock) re-runs a
+    multi-minute install on every launch, forever, holding the update lock while it
+    does: #122206's shape one stage before the tail the cap was written for.
+    """
+    try:
+        _sync_source_dependencies_uncounted(root, arm=arm, borrowed_from=borrowed_from)
+    except Exception:
+        _record_completion_attempt(root, failed=True)
+        raise
+
+
+def _sync_source_dependencies_uncounted(
+    root: Path,
+    *,
+    arm: bool,
+    borrowed_from: Path | None = None,
+) -> None:
     """Commit the tree's dependency generation; *arm* also owes the tail afterwards.
 
     *borrowed_from* names the data root that owns the checkout when this one only borrows

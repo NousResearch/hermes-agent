@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
+from hermes_cli.github_api import captured_gh_cli_token
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -143,8 +144,12 @@ def _probe_gh_cli_token() -> Optional[str]:
         except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
             logger.debug("gh CLI token lookup failed (%s): %s", gh_path, exc)
             continue
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
+        if result.returncode == 0:
+            # A wrapper ahead of gh on PATH can print its own lines around the token;
+            # only a token-shaped line may become the credential (#138444).
+            token = captured_gh_cli_token(result.stdout)
+            if token:
+                return token
     return None
 
 

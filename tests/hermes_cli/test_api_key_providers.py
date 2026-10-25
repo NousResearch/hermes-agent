@@ -208,7 +208,7 @@ class TestResolveApiKeyProviderCredentials:
 
         class _Result:
             returncode = 0
-            stdout = "gh-cli-secret\n"
+            stdout = "gho_cliSecretProbe12345\n"
 
         def _fake_run(cmd, **kwargs):
             calls.append(cmd)
@@ -216,8 +216,24 @@ class TestResolveApiKeyProviderCredentials:
 
         monkeypatch.setattr("hermes_cli.copilot_auth.subprocess.run", _fake_run)
 
-        assert _try_gh_cli_token() == "gh-cli-secret"
+        assert _try_gh_cli_token() == "gho_cliSecretProbe12345"
         assert calls == [[str(gh), "auth", "token"]]
+
+    def test_try_gh_cli_token_drops_wrapper_noise_from_the_capture(self, monkeypatch):
+        # Regression for #138444: a wrapper ahead of gh on PATH can print its own
+        # lines around the token; only a token-shaped line may become the credential.
+        from hermes_cli.copilot_auth import _invalidate_gh_cli_token_cache
+
+        _invalidate_gh_cli_token_cache()
+        monkeypatch.setattr("hermes_cli.copilot_auth._gh_cli_candidates", lambda: ["/usr/bin/gh"])
+
+        class _Result:
+            returncode = 0
+            stdout = ("mise ~/.config/mise/config.toml tools: gh@2.102.0\n"
+                      "gho_cliSecretProbe12345\n")
+
+        monkeypatch.setattr("hermes_cli.copilot_auth.subprocess.run", lambda cmd, **kwargs: _Result())
+        assert _try_gh_cli_token() == "gho_cliSecretProbe12345"
 
 
     def test_resolve_stepfun_with_key(self, monkeypatch):

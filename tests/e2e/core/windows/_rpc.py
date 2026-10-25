@@ -24,7 +24,7 @@ class StdioGateway:
             [sys.executable, "-m", "tui_gateway.entry"], cwd=home.project, env=home.env(),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
-        self._frames: "queue.Queue[bytes | None]" = queue.Queue()
+        self._frames: queue.Queue[bytes | None] = queue.Queue()
         self._stderr: list[bytes] = []
         self.events: list[dict[str, Any]] = []
         self._responses: dict[str, dict[str, Any]] = {}

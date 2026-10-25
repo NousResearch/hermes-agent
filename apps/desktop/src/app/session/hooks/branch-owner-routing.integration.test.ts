@@ -87,8 +87,7 @@ describe('branch owner routing (real router, faked transport)', () => {
         return { connectionId, mode: 'remote', profile }
       },
       getGatewayWsUrlFor: async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
-        `ws://${connectionId}/gateway?profile=${profile}`,
-      touchBackend: async () => undefined
+        `ws://${connectionId}/gateway?profile=${profile}`
     }
   })
 

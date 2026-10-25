@@ -57,13 +57,13 @@ concurrency:
 jobs:
   generate-patch:
     name: Generate eslint --fix patch
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     outputs:
       has-fixes: ${{ steps.produce-patch.outputs.has-fixes }}
     # No permissions override → inherits workflow-level contents: read.
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
 
       - name: Set up locked Node and npm
         id: node
@@ -131,17 +131,18 @@ jobs:
   apply-patch:
     name: Apply patch
     needs: generate-patch
-    # Only the canonical repo has the bot app and PR-creation permission.
-    # Forks still run the normal JS checks; this publisher cannot open its bot PR there.
+    # Skip entirely when generate-patch found no fixes — saves a runner,
+    # avoids a redundant checkout/download, and keeps the job graph honest.
+    # Forks still run normal checks, but cannot publish the bot PR.
     if: github.repository == 'NousResearch/hermes-agent' && needs.generate-patch.outputs.has-fixes == 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     environment: trusted-automation
     permissions:
       contents: write # needed to push to bot/js-autofix
       pull-requests: write # needed for PR creation + auto-merge
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
 
       - name: Get GitHub App token
         id: app-token

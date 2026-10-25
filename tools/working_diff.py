@@ -28,7 +28,7 @@ _MODE_ARGS = {
 VALID_MODES = tuple(_MODE_ARGS)
 
 
-def _run(args: List[str], cwd: str, timeout: int = _GIT_TIMEOUT):
+def _run(args: list[str], cwd: str, timeout: int = _GIT_TIMEOUT):
     """Run git, returning (returncode, stdout). Never raises on git failure.
 
     Hardened against a malicious repo's ``.git/config`` (GHSA-7x36-8jrh-v4pw):
@@ -46,18 +46,19 @@ def _run(args: List[str], cwd: str, timeout: int = _GIT_TIMEOUT):
         cwd=cwd, capture_output=True, text=True, timeout=timeout,
         encoding="utf-8", errors="replace",
         stdin=subprocess.DEVNULL, env=env,
+        check=False,
     )
     return proc.returncode, proc.stdout
 
 
-def _untracked_files(cwd: str) -> List[str]:
+def _untracked_files(cwd: str) -> list[str]:
     code, out = _run(["ls-files", "--others", "--exclude-standard"], cwd)
     return [line for line in out.splitlines() if line.strip()] if code == 0 else []
 
 
-def _untracked_diff(cwd: str, files: List[str]) -> str:
+def _untracked_diff(cwd: str, files: list[str]) -> str:
     """Render untracked files as new-file diffs via ``git diff --no-index``."""
-    chunks: List[str] = []
+    chunks: list[str] = []
     for rel in files[:_MAX_UNTRACKED_FILES]:
         with suppress(subprocess.TimeoutExpired, OSError):
             # --no-index exits 1 when the files differ — that's the success
@@ -73,7 +74,7 @@ def _untracked_diff(cwd: str, files: List[str]) -> str:
 
 
 def collect_working_diff(cwd: str, mode: str = "working",
-                         paths: List[str] | None = None) -> Dict:
+                         paths: list[str] | None = None) -> dict:
     """Collect a git diff of the working directory.
 
     Returns ``{"success", "stat", "diff", "untracked", "empty"}`` on success or

@@ -80,7 +80,6 @@ def _adapter():
 async def _open_turn_draft(a, chat_id="D01", draft_id=7):
     """Open a live draft the way a streaming turn does."""
     await a.send_draft(chat_id, draft_id, "streaming partial…")
-    key = a._draft_key(chat_id, None)
     candidates = [k for k in a._open_draft_by_chat if k.startswith(f"{chat_id}:")]
     assert candidates, "test setup: draft did not arm interception"
     return candidates[0]

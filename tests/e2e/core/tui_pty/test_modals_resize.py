@@ -41,7 +41,7 @@ TOKEN = r"\b(?:c1|a1|t1)w\d{3}\b"
 CELLS = [
     "clarify_card_survives_resize", "clarify_answer_reaches_tool", "clarify_tool_call_rendered_once",
     "clarify_answer_not_a_user_turn",
-    "approval_card_survives_resize", "approval_deny_honoured",
+    "approval_card_survives_resize", "approval_deny_honoured", "prompts_resize_without_detach_error",
     "tool_output_reaches_model_in_order", "tool_output_rendered_once",
     "transcript_ledger", "exits_clean",
 ]
@@ -67,6 +67,11 @@ def _typed(content) -> object:
     API-only first-contact onboarding note (``\\n\\n[System note: ...]``, never persisted), which is
     per-turn context riding the user turn, not a second user turn."""
     return content.split("\n\n[System note: ", 1)[0] if isinstance(content, str) else content
+
+
+# describeRpcError's copy for a 4001 "session not found": a resize while a prompt is open is not
+# a detach, so the transcript must never claim the chat lost its backend.
+DETACHED_RE = re.compile(r"no\s+longer\s+attached\s+to\s+the\s+backend")
 
 
 def _visible_once(tui: TmuxTui, needles: list[str]) -> str:
@@ -135,6 +140,11 @@ def _scenario(root, victim) -> object:
         if not victim.exists():
             problem += " / the dangerous command ran before anyone answered"
         cells.add("approval_card_survives_resize", problem, tui.dump())
+        # Scrollback + screen: covers the clarify card's resizes as well as this one's.
+        n = len(DETACHED_RE.findall(tui.text()))
+        cells.add("prompts_resize_without_detach_error",
+                  f"'no longer attached' error printed {n}x across the prompts' resizes" if n else "",
+                  tui.dump())
         tui.key("4")
         tui.wait_replies(2)
         denied = _tool_results(llm)[-1]

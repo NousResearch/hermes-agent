@@ -13,21 +13,29 @@ name: E2E Desktop core
 
 on:
   workflow_call:
+    inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  group: e2e-desktop-core-${{ github.ref }}
-  cancel-in-progress: true
+  group: e2e-desktop-core-${{ inputs.commit != '' && github.run_id || github.ref }}
+  # A stable run is on the default branch. It must not queue behind or cancel a push.
+  cancel-in-progress: ${{ inputs.commit == '' }}
 
 jobs:
   core:
     name: Desktop core E2E (Linux)
-    runs-on: ubuntu-latest-32-core
+    runs-on: blacksmith-32vcpu-ubuntu-2404
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        with:
+          ref: ${{ inputs.commit }}
 
       - name: Install system dependencies for Electron
         run: |
@@ -45,11 +53,14 @@ jobs:
           extras: '[]'
           test-environment: 'true'
 
-      # Full npm ci (not --ignore-scripts): electron's postinstall downloads
-      # the binary we launch.
+      # Native addons still need lifecycle scripts. Electron 42 requires
+      # explicit binary preparation before the native fixtures launch.
       - uses: ./.github/actions/retry
         with:
           command: npm ci
+
+      - name: Prepare locked Electron runtime
+        run: node scripts/build/electron-runtime.mjs --source .
 
       - name: Build the desktop app
         working-directory: apps/desktop
@@ -57,8 +68,8 @@ jobs:
         run: npm run build
 
       # Package the Linux app the way users get it (electron-builder --dir; no
-      # installer formats, no publish). Reuses the npm-installed Electron dist,
-      # so no download. packaged-smoke.spec.ts asserts the asarUnpack contract
+      # installer formats, no publish). The packaging preparer acquires its
+      # pinned archive separately. packaged-smoke.spec.ts asserts the asarUnpack contract
       # on this output (#121097) and boots the packaged binary to a first chat.
       - name: Package the desktop app (electron-builder --dir)
         working-directory: apps/desktop

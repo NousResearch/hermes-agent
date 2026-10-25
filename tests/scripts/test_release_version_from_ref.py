@@ -1,6 +1,6 @@
 """A ref names a version, and the next version is derived, never read from the tree.
 
-Derivation reads the published stable head, or the seed ``0.21.4`` before one
+Derivation reads the published stable head, or the seed ``0.21.5`` before one
 exists. Attempt refs number attempts within a version and never move the line.
 """
 import json
@@ -9,7 +9,7 @@ import pytest
 
 from scripts.releases.versioning import derive_next_version, next_attempt, tag_record, version_from_tag
 
-SEED = "0.21.4"
+SEED = "0.21.5"
 
 
 def test_final_tag_is_its_version():
@@ -83,7 +83,7 @@ def test_canary_compares_equal_to_its_stable():
 
 
 def test_empty_head_seeds_the_line():
-    assert derive_next_version(published=None, bump="patch") == "0.21.5"
+    assert derive_next_version(published=None, bump="patch") == "0.21.6"
     assert derive_next_version(published=None, bump="minor") == "0.22.0"
     assert derive_next_version(published=None, bump="major") == "1.0.0"
 

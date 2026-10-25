@@ -89,7 +89,7 @@ def _quant_label(filename: str) -> str:
 
 def repo_files(repo: str) -> list[HFFileGroup]:
     """The servable GGUFs in a repo, grouped: split parts collapse into one entry (first part is
-    what llama.cpp loads); mmproj/draft companions are excluded. Largest quant first."""
+    what llama.cpp loads); mmproj/draft/MTP-head companions are excluded. Largest quant first."""
     url = f"{_HF}/api/models/{urllib.parse.quote(repo)}/tree/main?recursive=true"
     files = _get_json(url)
 
@@ -100,7 +100,8 @@ def repo_files(repo: str) -> list[HFFileGroup]:
         if not path.lower().endswith(".gguf"):
             continue
         name = path.rsplit("/", 1)[-1].lower()
-        if name.startswith(("mmproj", "dspark")) or "draft" in name:
+        # An MTP head (unsloth's mtp-<model>-<quant>.gguf) drafts for its model; it cannot serve.
+        if name.startswith(("mmproj", "dspark", "mtp-")) or "draft" in name:
             continue
         size = int(f.get("size") or 0)
         m = _SPLIT_RE.search(path)

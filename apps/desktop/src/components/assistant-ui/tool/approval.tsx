@@ -276,7 +276,7 @@ const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }
     }
   }, [])
 
-  // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
+  // false when the backend won't honor a permanent allow → hide "Always allow".
   const allowPermanent = request.allowPermanent !== false
   const choices = request.choices ?? (request.smartDenied ? ['once', 'deny'] : undefined)
   const allowSession = choices ? choices.includes('session') : true

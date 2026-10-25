@@ -13,7 +13,6 @@ import errno
 import fcntl  # windows-footgun: ok — POSIX-only module by design (see docstring)
 import math
 import os
-import select
 import signal
 import struct
 import sys
@@ -90,6 +89,17 @@ def _process_group_exists(pgid: int) -> bool:
     return True
 
 
+def _psutil_alive(proc) -> bool:
+    """Best-effort 'is this psutil Process still alive' for the shutdown cadence;
+    zombies count as dead and it never raises."""
+    try:
+        import psutil  # type: ignore
+
+        return proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE
+    except Exception:
+        return False
+
+
 class PtyBridge:
     """Thin wrapper around ``ptyprocess.PtyProcess`` for byte streaming. Not thread-safe: owned by
     the WebSocket handler that spawned it; reads run in an executor thread, writes are awaited on
@@ -97,7 +107,9 @@ class PtyBridge:
     WebSocket task, never the dashboard event loop.
     """
 
-    def __init__(self, proc: "ptyprocess.PtyProcess"):  # type: ignore[name-defined]
+    _waiter = None  # FdWaiter for the master; None until __init__ registers it
+
+    def __init__(self, proc: ptyprocess.PtyProcess):  # type: ignore[name-defined]
         self._proc = proc
         self._fd: int = proc.fd
         self._closed = False
@@ -108,6 +120,11 @@ class PtyBridge:
         except OSError:
             self._pgid = None
         os.set_blocking(self._fd, False)
+        # A selector, never select.select() (ValueError at fd >= FD_SETSIZE, #94928) or poll()
+        # (macOS poll() reports a PTY master as POLLNVAL, so read() would spin).
+        from tools.environments.fd_wait import open_fd_waiter
+
+        self._waiter = open_fd_waiter(self._fd)
 
     @classmethod
     def is_available(cls) -> bool:
@@ -117,7 +134,7 @@ class PtyBridge:
     @classmethod
     def spawn(
         cls, argv: Sequence[str], *, cwd: Optional[str] = None, env: Optional[dict] = None, cols: int = 80, rows: int = 24
-    ) -> "PtyBridge":
+    ) -> PtyBridge:
         """Spawn ``argv`` behind a new PTY and return a bridge."""
         if not _PTY_AVAILABLE:
             if sys.platform.startswith("win"):
@@ -138,7 +155,11 @@ class PtyBridge:
         # every OS app-switch).
         spawn_env[PTY_HOST_ENV] = PTY_HOST_DASHBOARD
         proc = ptyprocess.PtyProcess.spawn(list(argv), cwd=cwd, env=spawn_env, dimensions=(rows, cols))  # type: ignore[union-attr]
-        return cls(proc)
+        try:
+            return cls(proc)
+        except OSError:  # no safe readiness wait for the master (fd_wait): don't leak the child
+            proc.close(force=True)
+            raise
 
     @property
     def pid(self) -> int:
@@ -155,11 +176,11 @@ class PtyBridge:
 
         ``b""`` = nothing yet; ``None`` = EOF / closed (also after :meth:`close`).
         """
-        if self._closed:
+        if self._closed or self._waiter is None:
             return None
         try:
-            readable, _, _ = select.select([self._fd], [], [], timeout)
-        except (OSError, ValueError):
+            readable = self._waiter.wait(timeout)
+        except (OSError, ValueError):  # close() raced this read
             return None
         if not readable:
             return b""
@@ -170,7 +191,7 @@ class PtyBridge:
             if exc.errno in {errno.EIO, errno.EBADF}:
                 return None
             # The fd is deliberately non-blocking. Readiness can disappear
-            # between select() and os.read() when close/output races occur.
+            # between the readiness check and os.read() when close/output races occur.
             if exc.errno in {errno.EAGAIN, errno.EWOULDBLOCK}:
                 return b""
             raise
@@ -191,7 +212,7 @@ class PtyBridge:
             loop.add_writer(self._fd, _mark_ready)
             await asyncio.wait_for(ready, timeout=timeout)
             return not self._closed
-        except (asyncio.TimeoutError, OSError, ValueError):
+        except (TimeoutError, OSError, ValueError):
             return False
         finally:
             try:
@@ -260,8 +281,7 @@ class PtyBridge:
         # exit (and a SIGHUP save outlasts the grace) until someone drains the master. The drain
         # task no longer consumes the output, so read and drop while waiting.
         try:
-            readable, _, _ = select.select([self._fd], [], [], timeout)
-            if readable and os.read(self._fd, 65536):
+            if self._waiter is not None and self._waiter.wait(timeout) and os.read(self._fd, 65536):
                 return
         except (OSError, ValueError):
             pass
@@ -284,6 +304,22 @@ class PtyBridge:
 
         pgid = self._pgid
         leader_was_alive = self._proc.isalive()
+        # No group signal is safe for a shared-group child, so its descendants must be
+        # snapshotted BEFORE the parent is signalled: once the parent exits they reparent
+        # and psutil can no longer find them (process_registry._terminate_host_pid). The sweep below then kills them individually
+        # so a SIGHUP-ignoring helper cannot keep the PTY slave open (#76759).
+        non_leader_descendants: list = []
+        if pgid is not None and pgid != self._proc.pid:
+            # Not a group leader: the child shares OUR process group, so killpg would
+            # take the TUI down with it. Signal the child directly instead.
+            if leader_was_alive:
+                try:
+                    import psutil  # type: ignore
+
+                    non_leader_descendants = psutil.Process(self._proc.pid).children(recursive=True)
+                except Exception:
+                    non_leader_descendants = []
+            pgid = None
 
         # Signal the whole process group, not just the PTY leader: the dashboard TUI starts helper
         # children (e.g. the Python slash worker) and killing only the leader strands them.
@@ -319,13 +355,39 @@ class PtyBridge:
                 except OSError:
                     break  # ESRCH: the group is empty
                 self._wait_for_group_exit(pgid, grace if sig == signal.SIGHUP else 0.5)  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
+        elif non_leader_descendants:
+            # The shared-group branch: the helpers-outlive-leader sweep above cannot run
+            # (no killpg is safe), so end the snapshotted descendants individually. The main
+            # loop above signalled only the child PID, so the descendants got no SIGHUP —
+            # send it now and allow the helper grace, then SIGKILL survivors: a helper
+            # saving state on SIGHUP still finishes, and one that ignores SIGHUP cannot
+            # outlive the close (mirrors the group sweep's leader-dead cadence, #76759).
+            grace = _helper_shutdown_grace()
+            for sig in (signal.SIGHUP, signal.SIGKILL):  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
+                for child in non_leader_descendants:
+                    try:
+                        if sig == signal.SIGHUP:  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
+                            child.send_signal(sig)
+                        else:
+                            child.kill()
+                    except Exception:
+                        pass  # already gone; psutil raises NoSuchProcess/Zombie
+                if sig == signal.SIGHUP:  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
+                    deadline = time.monotonic() + grace
+                    while any(_psutil_alive(c) for c in non_leader_descendants) and time.monotonic() < deadline:
+                        self._discard_output(0.02)
 
         try:
             self._proc.close(force=True)
         except Exception:
             pass
+        self._close_waiter()
 
-    def __enter__(self) -> "PtyBridge":
+    def _close_waiter(self) -> None:
+        if self._waiter is not None:
+            self._waiter.close()
+
+    def __enter__(self) -> PtyBridge:
         return self
 
     def __exit__(self, *_exc) -> None:

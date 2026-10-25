@@ -3,7 +3,7 @@ import { computed } from 'nanostores'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
-import { chatMessageText, collectUnspokenTurnSpeech } from '@/lib/chat-messages'
+import { chatMessageText, collectUnspokenTurnSpeech, lastTextPartText } from '@/lib/chat-messages'
 import { triggerHaptic } from '@/lib/haptics'
 import {
   adoptSpokenReplySession,
@@ -145,6 +145,7 @@ export function useComposerVoice({
     return {
       id: last.id,
       pending: Boolean(last.pending),
+      segmentText: lastTextPartText(last),
       text,
       turnKey: assistantTurnKey(sessionId, messages, last.id)
     }
@@ -178,7 +179,7 @@ export function useComposerVoice({
     triggerHaptic('submit')
     resetBrowseState(sessionId)
     clearDraft()
-    await onSubmit(text)
+    await onSubmit(text, { voiceTurn: true })
   }
 
   /** A GPT-Live delegation → Hermes turn. The bubble and the persisted row are

@@ -11,6 +11,7 @@ import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
 import { FloatBox } from './appChrome.js'
 import { BillingOverlay } from './billingOverlay.js'
 import { ConnectionSetupOverlay } from './connectionSetupOverlay.js'
+import { ConnectorsOverlay } from './connectorsOverlay.js'
 import { SecretPrompt, SudoPrompt, VaultCodePrompt, VaultSaveLoginPrompt, VaultUnlockPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
 import { OverlayHint } from './overlayControls.js'
@@ -346,6 +347,22 @@ export function FloatingOverlays({
       render: width => (
         <FloatBox color={theme.color.border}>
           <PluginsHub gw={gw} maxWidth={width} onClose={() => patchOverlayState({ pluginsHub: false })} t={theme} />
+        </FloatBox>
+      )
+    })
+  }
+
+  if (overlay.connectors) {
+    widgets.push({
+      id: 'connectors',
+      render: width => (
+        <FloatBox color={theme.color.border}>
+          <ConnectorsOverlay
+            gw={gw}
+            maxWidth={width}
+            onClose={() => patchOverlayState({ connectors: false })}
+            t={theme}
+          />
         </FloatBox>
       )
     })

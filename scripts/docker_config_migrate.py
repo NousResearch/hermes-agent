@@ -9,12 +9,11 @@ from typing import Iterable
 
 from hermes_cli.config import (
     InvalidUserConfigError,
-    _read_config_version_stamp,
-    check_config_version,
     get_config_path,
     get_env_path,
     migrate_config,
 )
+from hermes_cli.config_version_stamp import check_config_version, read_config_version_stamp, stamp_missing_config
 from hermes_cli.config_backups import backup_config, list_config_backups
 from hermes_cli.config_migrations import (
     SUPPORT_FLOOR_VERSION,
@@ -51,9 +50,11 @@ def main() -> int:
 
     # Strict read: malformed YAML or a non-mapping root is left alone with a warning and the
     # boot continues, instead of running the backup/migrate dance that migrate_config() would
-    # refuse anyway.
+    # refuse anyway. A missing config.yaml reads as current, so its legacy browser settings get their
+    # first stamp before that read.
+    stamp_missing_config()
     try:
-        stamp, latest_ver = _read_config_version_stamp(raise_on_parse_error=True)
+        stamp, latest_ver = read_config_version_stamp(raise_on_parse_error=True)
     except InvalidUserConfigError as exc:
         print(f"[config-migrate] WARNING: {exc}; leaving config.yaml untouched", file=sys.stderr)
         return 0

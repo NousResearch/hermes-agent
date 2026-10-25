@@ -40,7 +40,7 @@ pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell var
 MANUAL = "approvals:\n  mode: manual\n  timeout: 120\n"
 
 # name -> command template; ``{X}`` is the victim dir, relative to the terminal's cwd.
-VARIANTS: Dict[str, str] = {
+VARIANTS: dict[str, str] = {
     "plain": "rm -rf {X}",
     "quoted": "'r''m' -rf {X}",
     "double_quoted": '"rm" -rf {X}',
@@ -70,7 +70,7 @@ VARIANTS: Dict[str, str] = {
 
 # Detector misses confirmed live on origin/main: variant -> (pattern, "#issue symptom"), gated with
 # ``known_gate(..., raises=BoundaryBreach)``. None today.
-KNOWN: Dict[str, tuple[str, str]] = {}
+KNOWN: dict[str, tuple[str, str]] = {}
 
 CONTROL = "touch benign_marker"
 
@@ -78,10 +78,10 @@ CONTROL = "touch benign_marker"
 # --- CLI ------------------------------------------------------------------------------------------
 
 
-def _tool_results(requests: list[dict]) -> Dict[str, Dict[str, Any]]:
+def _tool_results(requests: list[dict]) -> dict[str, dict[str, Any]]:
     """command -> parsed tool result the agent sent back to the provider (last request wins)."""
-    commands: Dict[str, str] = {}
-    results: Dict[str, Dict[str, Any]] = {}
+    commands: dict[str, str] = {}
+    results: dict[str, dict[str, Any]] = {}
     for body in requests:
         for msg in body.get("messages", []):
             for call in msg.get("tool_calls") or []:
@@ -92,7 +92,7 @@ def _tool_results(requests: list[dict]) -> Dict[str, Dict[str, Any]]:
     return results
 
 
-def _parse_tool_content(content: str) -> Dict[str, Any]:
+def _parse_tool_content(content: str) -> dict[str, Any]:
     """The terminal tool's JSON payload; the loop may append plain-text notes after it."""
     text = content if isinstance(content, str) else json.dumps(content)
     try:
@@ -111,7 +111,7 @@ def _plant(root: Path) -> Path:
     return victims
 
 
-def _single_query_run(root: Path, single_query_mode: str) -> Dict[str, Any]:
+def _single_query_run(root: Path, single_query_mode: str) -> dict[str, Any]:
     """One ``hermes chat -q`` whose model calls ``terminal`` once per variant, then the control."""
     home, victims = root / "home", _plant(root)
     script: list[Any] = [ToolCall("terminal", {"command": t.format(X=n)}) for n, t in VARIANTS.items()]
@@ -169,7 +169,7 @@ def test_cli_dangerous_variant_blocked_without_approval(cli_deny, variant):
 
 # --- Gateway --------------------------------------------------------------------------------------
 
-_CMD = re.compile(r"<<CMD>>(.*?)<<END>>", re.S)
+_CMD = re.compile(r"<<CMD>>(.*?)<<END>>", re.DOTALL)
 PLATFORM = "fk_ap"
 
 
@@ -178,7 +178,7 @@ class ScriptedModel:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self.results: Dict[str, Dict[str, Any]] = {}
+        self.results: dict[str, dict[str, Any]] = {}
 
     def __call__(self, record: dict):
         msgs = record["body"]["messages"]
@@ -241,7 +241,7 @@ class Chat:
                    proc=self.gw.proc, log=self.gw.log)
         _pending(self, victim, command)
 
-    def wait_result(self, command: str) -> Dict[str, Any]:
+    def wait_result(self, command: str) -> dict[str, Any]:
         wait_until(lambda: command in self.model.results, f"tool result for {command!r}", timeout=60,
                    proc=self.gw.proc, log=self.gw.log)
         self.gw.wait_idle([self.chat_id], f"{self.chat_id} idle")
@@ -266,7 +266,7 @@ def _pending(chat: Chat, victim: Path, command: str) -> None:
     assert chat.blocked_on_approval(), f"{chat.chat_id} is no longer waiting on its approval: {chat.texts()}"
 
 
-def _denied(victim: Path, result: Dict[str, Any]) -> None:
+def _denied(victim: Path, result: dict[str, Any]) -> None:
     if not (victim / "keep.txt").exists() or result.get("exit_code") == 0:
         raise BoundaryBreach(f"denied command ran: {result}")
     assert result.get("status") == "blocked", result

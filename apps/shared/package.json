@@ -16,11 +16,13 @@
     "./i18n": "./src/i18n.ts",
     "./json-rpc-channel": "./src/json-rpc-channel.ts",
     "./model-search-text": "./src/model-search-text.ts",
+    "./plan-usage": "./src/plan-usage.ts",
     "./reasoning-effort": "./src/reasoning-effort.ts",
     "./reconnect-backoff": "./src/reconnect-backoff.ts",
     "./skin": "./src/skin.ts",
     "./slash": "./src/slash.ts",
-    "./theme-presets": "./src/theme-presets.ts"
+    "./theme-presets": "./src/theme-presets.ts",
+    "./usage-tick": "./src/usage-tick.ts"
   },
   "types": "./src/index.ts",
   "scripts": {

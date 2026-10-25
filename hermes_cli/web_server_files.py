@@ -105,7 +105,35 @@ def _fs_path(raw_path: str, *, cwd: str | None = None, decode_fallback: bool = T
         raise HTTPException(status_code=400, detail="Invalid path")
 
 
-def _translate_agent_path(candidate: Path) -> Path | None:
+_WORKSPACE_KEY_RE = re.compile(r"^[0-9a-f]{16}$")
+
+
+def _session_workspace_key(session_id: str, cwd: str | None) -> str:
+    """16-hex digest of this session's per-workspace Docker sandbox, or ``""``.
+
+    The live override is the key the container was created under. After that
+    binding is gone, the session row's host cwd hashes to the same digest.
+    ``/workspace`` and ``/root`` are container paths, not host workspaces.
+    """
+    from tools.terminal_tool import resolve_task_overrides, workspace_key_for
+
+    key = resolve_task_overrides(session_id).get("workspace_key")
+    if isinstance(key, str) and _WORKSPACE_KEY_RE.fullmatch(key):
+        return key
+    host = (cwd or "").strip()
+    if not host or "\0" in host or _is_container_cwd(host):
+        return ""
+    expanded = os.path.expanduser(host)
+    if not os.path.isdir(expanded):
+        return ""
+    return workspace_key_for(expanded)
+
+
+def _is_container_cwd(host: str) -> bool:
+    return any(host == root or host.startswith(root + "/") for root in ("/workspace", "/root"))
+
+
+def _translate_agent_path(candidate: Path, workspace_key: str = "") -> Path | None:
     """One translation attempt under whatever scope is bound; None off the docker backend.
 
     The gate keeps a local-backend gateway with leftover ``docker_volumes`` from serving
@@ -117,7 +145,7 @@ def _translate_agent_path(candidate: Path) -> Path | None:
     _ensure_terminal_env_bridged()
     if not _docker_env_active():
         return None
-    return _translate_docker_container_media_path(candidate, quiet=True)
+    return _translate_docker_container_media_path(candidate, quiet=True, workspace_key=workspace_key)
 
 
 @contextmanager
@@ -155,7 +183,9 @@ def _agent_path_scope(profile_home: Path | None = None) -> Iterator[None]:
             reset_hermes_home_override(home_token)
 
 
-def _agent_container_path(raw: str, *, profile_home: Path | None = None) -> Path | None:
+def _agent_container_path(
+    raw: str, *, profile_home: Path | None = None, workspace_key: str = "",
+) -> Path | None:
     """Map an agent-visible container path to its host bind mount, or None.
 
     Docker agents emit container paths (``/workspace/...``, ``/root/...``) in
@@ -181,12 +211,12 @@ def _agent_container_path(raw: str, *, profile_home: Path | None = None) -> Path
 
         candidate = Path(raw)
         with _agent_path_scope(profile_home):
-            translated = _translate_agent_path(candidate)
+            translated = _translate_agent_path(candidate, workspace_key)
             if translated is not None or get_terminal_scope() is not None:
                 return translated
             token = set_terminal_scope(build_profile_terminal_scope(get_hermes_home()))
             try:
-                return _translate_agent_path(candidate)
+                return _translate_agent_path(candidate, workspace_key)
             finally:
                 reset_terminal_scope(token)
     except Exception:  # fail open: translation is additive, the host path still serves
@@ -199,6 +229,7 @@ SANDBOX_NOT_FOUND = "File not found on the gateway host: the path may live insid
 
 def _agent_fs_path(
     raw_path: str, *, cwd: str | None = None, profile_home: Path | None = None,
+    workspace_key: str = "",
 ) -> Path:
     """``_fs_path`` for agent-facing reads; container paths resolve to their host
     mount, so callers' boundary guards see the real host target.
@@ -213,9 +244,9 @@ def _agent_fs_path(
         host = _fs_path(raw_path, cwd=cwd)
         if os.access(host, os.R_OK):
             return host
-        translated = _agent_container_path(raw, profile_home=profile_home)
+        translated = _agent_container_path(raw, profile_home=profile_home, workspace_key=workspace_key)
         return translated if translated is not None else host
-    translated = _agent_container_path(raw, profile_home=profile_home)
+    translated = _agent_container_path(raw, profile_home=profile_home, workspace_key=workspace_key)
     if translated is not None:
         return translated
     if _is_unmapped_container_path(raw, profile_home=profile_home):

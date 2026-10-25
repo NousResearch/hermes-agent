@@ -2485,9 +2485,9 @@ DEFAULT_CONFIG = {
         },
         "onepassword": {
             "enabled": False,  # When false, the op CLI is never invoked.
+            "share_process_token": False,  # Operator-managed only; requires absolute binary_path + restart.
             "env": {},  # env-var name → op://vault/item/field; each resolved with one `op read`.
-            # Account shorthand / sign-in address for `op read --account`; empty = default.
-            "account": "",
+            "account": "",  # op --account shorthand / sign-in address; empty = default.
             # Env var holding a service-account token for headless auth (exported to op as
             # OP_SERVICE_ACCOUNT_TOKEN). Unset = interactive/desktop op session.
             "service_account_token_env": "OP_SERVICE_ACCOUNT_TOKEN",

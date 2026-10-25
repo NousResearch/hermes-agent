@@ -2364,6 +2364,9 @@ updates:
 #     account: ""                                   # op --account shorthand; "" = default
 #     service_account_token_env: OP_SERVICE_ACCOUNT_TOKEN  # headless auth; unset = desktop session
 #     binary_path: ""                               # "" = resolve op via PATH; else absolute path
+#     # Operator-managed config.yaml ONLY; profile config cannot authorize sharing.
+#     # Requires an absolute operator binary_path and a process restart.
+#     share_process_token: false
 #     cache_ttl_seconds: 300                        # 0 disables BOTH cache layers
 #     override_existing: true                       # resolved values win over existing env
 #

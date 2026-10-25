@@ -46,6 +46,39 @@ If the token is reachable only through an interactive shell (`op signin`, `OP_SE
 
 ## Setup
 
+### Sharing a launcher token with routed profiles
+
+Cold-profile hydration normally authenticates from that profile's `.env` or
+`.op.env`. To let routed profiles use an operator-injected process token, an
+administrator may opt in through the **operator-managed** `config.yaml`
+(`/etc/hermes/config.yaml`, or the directory selected by the launcher's
+`HERMES_MANAGED_DIR`):
+
+```yaml
+secrets:
+  onepassword:
+    share_process_token: true
+    binary_path: /absolute/path/to/op
+```
+
+The default is `false`. A profile's own `config.yaml` cannot authorize this.
+Protect the managed directory and the approved executable from profile writers.
+Hermes captures this policy and the executable's canonical path before loading
+dotenv files; restart after changing either. The profile's executable must resolve
+to that same path, which Hermes then executes directly even if the original
+symlink changes.
+
+Only the exact bundled 1Password source using the default
+`OP_SERVICE_ACCOUNT_TOKEN` name may receive the process token. Sharing is refused
+when `OP_CONNECT_HOST` is present in the process or profile fetch environment,
+or the token name has been owned by a launch dotenv file or another secret source.
+Profile `.env` values (including empty values) take precedence over `.op.env`,
+and both take precedence over sharing. The shared token exists only in that
+source's individual fetch environment: it is excluded from the common source
+mapping, profile snapshots, scoped `get_secret()` reads and tool environments.
+Bitwarden, command sources, plugin replacements and subclasses keep using their
+profile-local credentials and cannot receive this shared process token.
+
 ### 1. Install and sign in to `op`
 
 Follow the [1Password CLI getting-started guide](https://developer.1password.com/docs/cli/get-started/). Verify it works:

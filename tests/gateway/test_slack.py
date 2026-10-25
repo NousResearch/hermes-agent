@@ -196,6 +196,9 @@ def adapter():
     # Mock the Slack app client
     a._app = MagicMock()
     a._app.client = AsyncMock()
+    a._app.client.conversations_replies = AsyncMock(
+        return_value={"ok": True, "messages": [], "has_more": False},
+    )
     a._app.client.users_info = AsyncMock(
         return_value={
             "user": {
@@ -506,6 +509,9 @@ class TestSlackConnectCleanup:
 
         # Simulate state left over from a prior connect() call.
         first_handler = AsyncMock()
+        first_handler.client = SimpleNamespace(
+            current_session_monitor=None, message_processor=None, message_receiver=None,
+        )
         first_handler.close_async = AsyncMock()
         adapter._handler = first_handler
 
@@ -2790,6 +2796,9 @@ class TestThreadReplyHandling:
         a = SlackAdapter(config)
         a._app = MagicMock()
         a._app.client = AsyncMock()
+        a._app.client.conversations_replies = AsyncMock(
+            return_value={"ok": True, "messages": [], "has_more": False},
+        )
         a._app.client.users_info = AsyncMock(
             return_value={
                 "user": {
@@ -3013,6 +3022,9 @@ class TestAssistantThreadLifecycle:
         a = SlackAdapter(config)
         a._app = MagicMock()
         a._app.client = AsyncMock()
+        a._app.client.conversations_replies = AsyncMock(
+            return_value={"ok": True, "messages": [], "has_more": False},
+        )
         a._app.client.users_info = AsyncMock(
             return_value={
                 "user": {
@@ -4365,6 +4377,21 @@ class TestEnsureDmConversation:
         adapter._app.client.conversations_open.assert_awaited_once_with(
             users="U123ABCDEF"
         )
+
+    @pytest.mark.asyncio
+    async def test_user_prefixed_target_resolves_like_bare_user_id(self, adapter):
+        """``user:U...`` is what ``tools.send_message_targets`` emits for every ``slack:U...``
+        reference. The standalone cron transport opens it; the live adapter must too, or a
+        gateway-served cron job with ``deliver: slack:U...`` fails at chat.postMessage."""
+        adapter._app.client.conversations_open = AsyncMock(
+            return_value={"ok": True, "channel": {"id": "D999NEW"}}
+        )
+
+        prefixed = await adapter._ensure_dm_conversation("user:U123ABCDEF")
+        bare = await adapter._ensure_dm_conversation("U123ABCDEF")
+
+        assert prefixed == bare == "D999NEW"
+        adapter._app.client.conversations_open.assert_awaited_once_with(users="U123ABCDEF")
 
     @pytest.mark.asyncio
     async def test_conversation_ids_pass_through(self, adapter):

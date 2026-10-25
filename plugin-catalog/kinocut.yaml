@@ -4,23 +4,7 @@ repo: https://github.com/KyaniteLabs/kinocut
 sha: 31ddab08a99e09fb50e0855c61e1627d02050ac1
 subdir: plugins/kinocut
 version: "1.16.7"
-description: >-
-  Guardrailed local video editing: Kinocut's MCP server plus two workflow skills
-  (editing and short-form repurposing). Trim, caption, reformat and check quality
-  with local FFmpeg. Portable Agent Plugins v1 configuration and skills, no plugin
-  code. Requires uv and FFmpeg on PATH; launches uvx kinocut==1.16.4 over stdio.
-  First launch downloads Kinocut and dependencies from PyPI. URL inputs download
-  the requested media; font and model-weight features fetch assets from GitHub.
-  Explicit Revideo dependency installation runs npm ci and may download renderer
-  dependencies. Local FFmpeg editing and color grading need no account or API key.
-  Kinocut's optional vision calls default off and require explicit configuration:
-  legacy product descriptions use an Anthropic-compatible endpoint, while
-  sampled-frame QC uses Anthropic. The README explains how to use the host's image
-  model instead, including local models. Revideo and Hyperframes telemetry default
-  off. Unverified Hyperframes browser previews and Docker renders require explicit
-  telemetry consent. Hyperframes capture/snapshots disable implicit model analysis.
-  These controls are not a network sandbox; see the plugin README for configuration
-  and remaining network use.
+description: "Guardrailed local video editing: Kinocut's MCP server plus two workflow skills (editing and short-form repurposing). Trim, caption, reformat and check quality with local FFmpeg. Portable Agent Plugins v1 configuration and skills, no plugin code. Requires uv and FFmpeg on PATH; launches uvx kinocut==1.16.4 over stdio. First launch downloads Kinocut and dependencies from PyPI. URL inputs download the requested media; font and model-weight features fetch assets from GitHub. Explicit Revideo dependency installation runs npm ci and may download renderer dependencies. Local FFmpeg editing and color grading need no account or API key. Kinocut's optional vision calls default off and require explicit configuration: legacy product descriptions use an Anthropic-compatible endpoint, while sampled-frame QC uses Anthropic. The README explains how to use the host's image model instead, including local models. Revideo and Hyperframes telemetry default off. Unverified Hyperframes browser previews and Docker renders require explicit telemetry consent. Hyperframes capture/snapshots disable implicit model analysis. These controls are not a network sandbox; see the plugin README for configuration and remaining network use. Disclosure — launches `uvx kinocut==1.16.4` over stdio, which downloads Kinocut and its dependencies from PyPI on first launch; edits and writes local video files with FFmpeg; URL inputs download the requested media, font and model-weight features fetch assets from GitHub, and an explicit Revideo install runs `npm ci`; optional vision features (off by default) send selected images or sampled frames to an Anthropic-compatible endpoint or Anthropic; Revideo and Hyperframes telemetry stay off unless the operator enables them."
 maintainer: KyaniteLabs
 tier: community
 category: tools

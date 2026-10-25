@@ -304,6 +304,7 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
       onDoubleClick={collapsedNotice ? undefined : onDoubleClick}
       ref={enterRef}
     >
+      <h2 className="sr-only">{t.assistant.thread.assistantMessageHeading}</h2>
       {collapsedNotice ?? (
         <>
           <div

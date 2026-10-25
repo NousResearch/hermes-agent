@@ -3915,6 +3915,9 @@ catalog: CatalogTranslations
       moreActions: string
       branchNewChat: string
       react: string
+      /** Screen-reader-only headings for moving between messages. */
+      userMessageHeading: string
+      assistantMessageHeading: string
       dismissError: string
       responseStopped: string
       /** Layer titles for the structured error card (agent/error_surface.py).

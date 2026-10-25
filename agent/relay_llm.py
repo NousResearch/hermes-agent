@@ -8,6 +8,7 @@ import contextvars
 import inspect
 import json
 import logging
+import threading
 from collections.abc import Callable, Iterator
 from functools import partial
 from types import SimpleNamespace
@@ -25,6 +26,10 @@ _LogicalCall = tuple[relay_runtime.RelayTurnContext, Any, str]
 # Bound for awaiting a Relay stream's aclose() on the private loop: a wedged
 # close must not hang the worker thread or hold the runtime lease forever.
 _ACLOSE_TIMEOUT = 10.0
+# Bound for waiting out an in-flight off-loop provider read before closing the raw
+# stream on cancellation: to_thread cancellation never stops a started read, and
+# closing a generator while its next() is still executing raises ValueError.
+_PROVIDER_READ_DRAIN_TIMEOUT = 5.0
 
 
 # api_mode -> (Relay operation name, codec class name on ``relay.codecs``)
@@ -289,12 +294,17 @@ def _aclose_on_loop(loop: asyncio.AbstractEventLoop, stream: Any) -> bool:
     return True
 
 
-def _next_provider_chunk(callback: Callable[..., Any], raw_iterator: Any) -> tuple[Any, bool]:
+def _next_provider_chunk(
+    callback: Callable[..., Any], raw_iterator: Any, read_done: threading.Event
+) -> tuple[Any, bool]:
     """Read one synchronous provider chunk without leaking StopIteration through a Future."""
     try:
         return callback(next, raw_iterator), False
     except StopIteration:
         return None, True
+    finally:
+        # The worker no longer owns the iterator; the cancellation path may close it.
+        read_done.set()
 
 
 class ManagedLlmStream(Iterator[Any]):
@@ -349,6 +359,7 @@ class ManagedLlmStream(Iterator[Any]):
         """Relay's provider callback: run the factory and yield JSON-encoded chunks."""
         run_callback = attempt.run_callback
         raw_stream = None
+        read_done = threading.Event()
         try:
             raw_stream = run_callback(self._stream_factory, attempt.provider_request(next_request))
             predicate = self._completed_response_predicate
@@ -363,7 +374,9 @@ class ManagedLlmStream(Iterator[Any]):
                 # Off the loop: Relay pulls the next provider chunk before it hands over the
                 # current one, so a blocking read here withholds each chunk until the provider
                 # sends the next. Text vanishes for every provider pause and a steer aborts it.
-                chunk, exhausted = await asyncio.to_thread(_next_provider_chunk, run_callback, raw_iterator)
+                read_done = threading.Event()
+                chunk, exhausted = await asyncio.to_thread(
+                    _next_provider_chunk, run_callback, raw_iterator, read_done)
                 if exhausted:
                     break
                 if self._accept_chunk is not None and not run_callback(self._accept_chunk, chunk):
@@ -379,7 +392,16 @@ class ManagedLlmStream(Iterator[Any]):
             close = getattr(raw_stream, "close", None)
             if callable(close):
                 try:
-                    run_callback(close)
+                    # Cancellation leaves the off-loop worker inside next(); closing the raw
+                    # stream then races the executing generator. Drain the read first and
+                    # abandon the close (rather than raise) when the provider stays blocked.
+                    if read_done.wait(_PROVIDER_READ_DRAIN_TIMEOUT):
+                        run_callback(close)
+                    else:
+                        logger.warning(
+                            "Provider read still blocked after %ss; abandoning raw stream close",
+                            _PROVIDER_READ_DRAIN_TIMEOUT,
+                        )
                 except BaseException as exc:
                     self._close_error = exc
                     raise

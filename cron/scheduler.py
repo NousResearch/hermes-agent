@@ -988,7 +988,9 @@ def _latest_executions_for_releasable_claims() -> dict:
         return {}
     try:
         from cron.executions import latest_executions as _latest_execs
-        return _latest_execs(candidates)
+
+        # FIX-2075: skip traces are never the claim's own terminal row.
+        return _latest_execs(candidates, exclude_fire_skips=True)
     except Exception:
         return {}
 
@@ -4271,15 +4273,17 @@ def _record_inflight_skip(job: dict, job_label: str) -> None:
     """
     slot = job.get("_scheduled_instant") or job.get("next_run_at")
     logger.warning(
-        "Job '%s' already running — skipping; scheduled slot %s consumed without dispatch (FIX-2075)",
+        "Job '%s' already running — skipping; scheduled slot %s consumed without a run (FIX-2075)",
         job_label, slot)
     try:
+        from cron.executions import FIRE_SKIP_ERROR_PREFIX
+
         execution = create_execution(
             job["id"], source="builtin", scheduled_instant=job.get("_scheduled_instant"))
         finish_execution(
             execution["id"], success=False, error=(
-                f"Fire skipped: previous run still in flight (in-flight dedup guard); "
-                f"scheduled slot {slot} was consumed without dispatch (FIX-2075)."))
+                f"{FIRE_SKIP_ERROR_PREFIX} previous run still in flight (in-flight dedup guard); "
+                f"scheduled slot {slot} was consumed without a run (FIX-2075)."))
     except Exception as exc:
         logger.warning(
             "Job '%s': could not record the in-flight skip in the ledger: %s", job_label, exc)

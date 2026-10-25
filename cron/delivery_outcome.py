@@ -32,7 +32,7 @@ def _settle_job_record(job_id: str, execution_id: str, delivery_error: Optional[
     from cron.executions import latest_execution
     from cron.jobs import _with_job, save_jobs
 
-    latest = latest_execution(job_id)
+    latest = latest_execution(job_id, exclude_fire_skips=True)
     if latest is None or latest.get("id") != execution_id:
         return False
 

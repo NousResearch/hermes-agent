@@ -1962,7 +1962,7 @@ def list_jobs(include_disabled: bool = False) -> list[dict[str, Any]]:
     try:
         from cron.executions import latest_executions
 
-        latest = latest_executions([job.get("id", "") for job in jobs])
+        latest = latest_executions([job.get("id", "") for job in jobs], exclude_fire_skips=True)
     except Exception:
         latest = {}
     for job in jobs:

@@ -33,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 import cron.jobs as jobs_mod
 
 LOCAL_TZ = datetime.now().astimezone().tzinfo
-CRON_SCHEDULE = {"kind": "cron", "expr": "40 * * * *"}  # hourly :40 -> grace 900s
+CRON_SCHEDULE = {"kind": "cron", "expr": "40 * * * *"}  # hourly :40 -> grace = 1800s (period//2, clamped [120s, 2h])
 
 
 def _iso(dt: datetime) -> str:
@@ -114,11 +114,23 @@ class TestAdvanceAfterRunSlotGuard:
         assert job["next_run_at"] == _at(22, 40, 0)
 
     def test_stale_slot_beyond_grace_is_recomputed(self):
-        # Slot an hour past (120-min cadence floor -> grace here is 900s for
-        # hourly): fast-forward policy applies, recompute wins.
-        job = {"schedule": CRON_SCHEDULE, "next_run_at": _at(21, 40, 0)}
+        # Slot an hour and ten minutes past (grace for hourly cron is 1800s):
+        # fast-forward policy applies, recompute wins.
+        job = {"schedule": CRON_SCHEDULE, "next_run_at": _at(21, 10, 0)}
         jobs_mod._advance_after_run(job, _at(22, 40, 18))
         assert _instant(job["next_run_at"]) == _instant(_at(23, 40, 0))
+
+    def test_slot_at_exact_grace_boundary_is_kept(self):
+        # elapsed == grace (1800s): the window is inclusive, keep the slot.
+        job = {"schedule": CRON_SCHEDULE, "next_run_at": _at(21, 10, 0)}
+        jobs_mod._advance_after_run(job, _at(21, 40, 0))
+        assert job["next_run_at"] == _at(21, 10, 0)
+
+    def test_slot_one_second_past_grace_is_recomputed(self):
+        # elapsed == grace + 1s: outside the window, recompute wins.
+        job = {"schedule": CRON_SCHEDULE, "next_run_at": _at(21, 9, 59)}
+        jobs_mod._advance_after_run(job, _at(21, 40, 0))
+        assert _instant(job["next_run_at"]) == _instant(_at(22, 40, 0))
 
     def test_far_future_stored_slot_is_recomputed(self):
         # Stored slot AHEAD of the natural next lattice point (drift / direct
@@ -253,3 +265,32 @@ class TestInflightSkipLedgerRow:
         rows = _ledger_rows(job_id)
         assert all(r["error"] is None or "Fire skipped" not in r["error"] for r in rows)
         assert job_id not in sched.get_running_job_ids()
+
+    def test_skip_row_does_not_shadow_live_run(self, cron_store):
+        """Consumer regression: a terminal skip trace is newer than a live
+        'running' row of the same job — latest-row consumers (ownership,
+        delivery settlement, list display) must still see the live attempt."""
+        from cron import executions as exec_mod
+
+        job = jobs_mod.create_job(prompt="long run", schedule="40 * * * *")
+        job_id = job["id"]
+        live = exec_mod.create_execution(job_id, source="builtin")
+        assert exec_mod.mark_execution_running(live["id"]) is not None
+        slot = _at(23, 40, 0)
+        skip = exec_mod.create_execution(job_id, source="builtin", scheduled_instant=slot)
+        exec_mod.finish_execution(
+            skip["id"], success=False,
+            error=f"{exec_mod.FIRE_SKIP_ERROR_PREFIX} previous run still in flight "
+                  f"(in-flight dedup guard); scheduled slot {slot} was consumed without a run.")
+        try:
+            assert exec_mod.latest_execution(job_id, exclude_fire_skips=True)["id"] == live["id"]
+            inflight = exec_mod.live_inflight_execution(job_id)
+            assert inflight is not None and inflight["id"] == live["id"], (
+                "ownership query shadowed by the skip trace (FIX-2075 regression)")
+            assert exec_mod.latest_executions(
+                [job_id], exclude_fire_skips=True)[job_id]["id"] == live["id"]
+            # History consumers keep the full picture — the trace stays visible:
+            all_rows = exec_mod.list_executions(job_id=job_id)
+            assert {r["id"] for r in all_rows} == {live["id"], skip["id"]}
+        finally:
+            exec_mod.finish_execution(live["id"], success=True)

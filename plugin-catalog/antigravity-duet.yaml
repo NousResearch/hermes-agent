@@ -1,6 +1,6 @@
 name: antigravity-duet
 repo: https://github.com/benfirad/hermes-plugin-antigravity-duet
-sha: 2cc0bfad54ffcd8db939feecdfc52f342fd7700b
+sha: 1d62edd550051178dcd2b19e3c19d195e24f3b44
 title: Antigravity Duet / Duffy Queue & Ruflo Swarm Bridge
 description: >-
   Autonomous background task queue (Duet / Duffy Do-For-You worker) with Human-in-the-Loop

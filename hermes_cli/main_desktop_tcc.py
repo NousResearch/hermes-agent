@@ -12,6 +12,30 @@ import tempfile
 from pathlib import Path
 
 
+# OpenSSL 1.1.x's `req` appends `-addext` on top of the default `x509_extensions = v3_ca` its
+# toolchain config sets, so `basicConstraints` lands in the certificate twice; macOS Security then
+# refuses it as an "Unknown critical cert extension" and `codesign --sign` reports "no identity
+# found". Pointing `req` at this minimal config suppresses the default extension list, leaving the
+# `-addext` copies as the only ones. It must NOT be handed to LibreSSL (the macOS system
+# `openssl`): LibreSSL rejects a config that does not carry its own objects table with "no objects
+# specified in config file".
+_OPENSSL_REQ_CONFIG = "[req]\ndistinguished_name=dn\nprompt=no\n[dn]\n"
+
+
+def _openssl_duplicates_default_extensions(openssl: str) -> bool:
+    """True for the OpenSSL 1.1.x `req`, where `-addext` extensions merge with the toolchain
+    default `x509_extensions` instead of replacing it. OpenSSL 3 replaces that list, and LibreSSL
+    builds it from `-addext` alone, so both already emit a single copy. Never raises."""
+    try:
+        version = subprocess.run(
+            [openssl, "version"], capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+            timeout=10,
+        ).stdout or ""
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return version.startswith("OpenSSL 1.1")
+
+
 def _macos_codesigning_identity_valid(security: str, identity: str) -> bool:
     """True when `identity` is among VALID (``-v``) code-signing identities — the plain listing also
     shows untrusted certs codesign refuses. Idempotency probe + postcondition. Never raises."""
@@ -22,7 +46,19 @@ def _macos_codesigning_identity_valid(security: str, identity: str) -> bool:
     except Exception:
         return False
 
-    return f'"{identity}"' in (result.stdout or "")
+    needle = f'"{identity}"'
+    for line in (result.stdout or "").splitlines():
+        if needle not in line:
+            continue
+        # A listing macOS considers unusable is still under the ``-v`` heading with the
+        # reason annotated in parentheses, e.g.
+        #   ``1) 42E4EA04... "Hermes Local Signing" (Unknown critical cert extension)``
+        # — the name is present but ``codesign --sign`` refuses it, so a bare
+        # name-in-output match reports success for an identity that cannot sign.
+        if line.rstrip().endswith(")"):
+            continue
+        return True
+    return False
 
 
 def _macos_create_signing_identity(
@@ -33,17 +69,20 @@ def _macos_create_signing_identity(
         key = tmp_dir / "sign.key"
         crt = tmp_dir / "sign.crt"
         p12 = tmp_dir / "sign.p12"
-        subprocess.run(
-            [
-                openssl, "req", "-x509", "-newkey", "rsa:2048",
-                "-keyout", str(key), "-out", str(crt),
-                "-days", "3650", "-nodes",
-                "-subj", f"/CN={identity}",
-                "-addext", "basicConstraints=critical,CA:TRUE",
-                "-addext", "keyUsage=critical,digitalSignature,keyCertSign",
-                "-addext", "extendedKeyUsage=codeSigning",
-            ],
-            capture_output=True, check=True)
+        req_args = [
+            openssl, "req", "-x509", "-newkey", "rsa:2048",
+            "-keyout", str(key), "-out", str(crt),
+            "-days", "3650", "-nodes",
+            "-subj", f"/CN={identity}",
+            "-addext", "basicConstraints=critical,CA:TRUE",
+            "-addext", "keyUsage=critical,digitalSignature,keyCertSign",
+            "-addext", "extendedKeyUsage=codeSigning",
+        ]
+        if _openssl_duplicates_default_extensions(openssl):
+            req_config = tmp_dir / "openssl.cnf"
+            req_config.write_text(_OPENSSL_REQ_CONFIG, encoding="utf-8")
+            req_args += ["-config", str(req_config)]
+        subprocess.run(req_args, capture_output=True, check=True, timeout=120)
 
         # OpenSSL 3 defaults to AES/SHA-2 PKCS#12 that `security import` rejects
         # with "MAC verification failed". `-legacy` restores the accepted

@@ -826,3 +826,56 @@ class TestTwoFactor:
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval):
             out = json.loads(browser_vault_tool.browser_vault_enter_code(task_id="t"))
         assert out["error_type"] == "no_code_field"
+
+
+class TestSmsCodeSource:
+    def test_extract_code_needs_a_code_word_and_handles_google_prefix(self):
+        from agent.vault_sms import extract_code
+
+        assert extract_code("G-482913 is your Google verification code.") == "482913"
+        assert extract_code("Your code is 7391") == "7391"
+        assert extract_code("Your order #123456 has shipped") is None
+
+    def test_newest_inbound_code_after_since(self, tmp_path):
+        import sqlite3
+        from agent.vault_sms import APPLE_EPOCH, newest_message_code
+
+        db = tmp_path / "chat.db"
+        conn = sqlite3.connect(db)
+        conn.execute("create table message (text text, date integer, is_from_me integer)")
+        now = 1_800_000_000
+        for text, age, mine in [("old code 111111", 600, 0), ("my code 222222", 10, 1), ("Your code is 333333", 20, 0)]:
+            conn.execute("insert into message values (?,?,?)", (text, (now - age - APPLE_EPOCH) * 1_000_000_000, mine))
+        conn.commit(); conn.close()
+        assert newest_message_code(now - 60, str(db)) == "333333"
+        assert newest_message_code(now + 1, str(db)) is None
+
+    def test_enter_code_uses_sms_and_never_asks_the_user(self, store):
+        from agent.vault_backends import unlock as unlock_mod
+        from tools import browser_vault_tool
+
+        asked = []
+        unlock_mod.set_code_prompt_callback(lambda site, hint: asked.append(site) or "000000")
+        boxes = [{"index": 0, "type": "text", "name": "otp", "label": "Code", "autocomplete": "one-time-code"}]
+        seen = {}
+        fake_eval = lambda t, e: {"success": True, "result": json.dumps(boxes) if "querySelectorAll" in e else "https://acme.test/2fa"}
+
+        def fake_secret(t, e):
+            seen["expr"] = e
+            return {"success": True, "result": json.dumps({"filled": 1})}
+
+        with patch.object(browser_vault_tool, "_sms_code_if_configured", return_value="654321"), \
+             patch.object(browser_vault_tool, "_focus_bound_origin", lambda *a, **k: None), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_secret):
+            raw = browser_vault_tool.browser_vault_enter_code(task_id="t")
+        unlock_mod.set_code_prompt_callback(None)
+        out = json.loads(raw)
+        assert out["success"] and out["source"] == "sms" and asked == []
+        assert "654321" not in raw and "654321" in seen["expr"]
+
+    def test_unset_source_is_off(self):
+        from tools import browser_vault_tool
+
+        with patch("hermes_cli.config.read_raw_config_readonly", return_value={}):
+            assert browser_vault_tool._sms_code_if_configured() is None

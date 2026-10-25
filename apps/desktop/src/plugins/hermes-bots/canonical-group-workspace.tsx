@@ -40,8 +40,8 @@ const sameGroupPayload = (payload: Record<string, unknown>, text: string, attach
 const sameLog = (current: readonly { seq: number }[], next: readonly { seq: number }[]) =>
   current.length === next.length && current.at(-1)?.seq === next.at(-1)?.seq
 
-const canSendNow = (gate: { restored: boolean; busy: boolean; uploading: boolean; pending: boolean; draft: string; attachments: number; driver: boolean }) =>
-  gate.restored && !gate.busy && !gate.uploading && gate.driver && (gate.pending || !!gate.draft.trim() || gate.attachments > 0)
+const canSendNow = (gate: { restored: boolean; busy: boolean; stopping: boolean; uploading: boolean; pending: boolean; draft: string; attachments: number; driver: boolean }) =>
+  gate.restored && !gate.busy && !gate.stopping && !gate.uploading && gate.driver && (gate.pending || !!gate.draft.trim() || gate.attachments > 0)
 
 // Both groups.send dispatchers mark a refusal raised before the user event committed (and only
 // that) `admitted: false`: proof that this request posted nothing. A reason or code alone is not:
@@ -317,7 +317,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   }
 
   const send = () => {
-    if (!restored || busyRef.current || uploading || !state?.driver_status || (!pending && !draft.trim() && !attachments.length)) {return}
+    // A Stop still fencing behind the last Send would cancel this one too: it waits until Stop is done.
+    if (!restored || busyRef.current || stopPending.current || uploading || !state?.driver_status || (!pending && !draft.trim() && !attachments.length)) {return}
     stopIntent.current = null
     setSendHint('')
     setNotice('')
@@ -432,7 +433,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     if (!composerLocked && offersGroupMethod(methods, 'groups.attachment.upload')) {uploader.current?.upload(files)}
   }
 
-  const canSend = canSendNow({ restored, busy, uploading, pending: !!pending, draft, attachments: attachments.length, driver: !!driver })
+  const canSend = canSendNow({ restored, busy, stopping, uploading, pending: !!pending, draft, attachments: attachments.length, driver: !!driver })
 
   return <section className="flex h-full min-h-0">
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">

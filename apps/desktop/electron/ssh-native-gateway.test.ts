@@ -5,6 +5,7 @@ import { afterEach, expect, test } from 'vitest'
 
 import { localGatewayDial, nativeGatewayHttpHeaders, restartBoundGateway } from './local-gateway'
 import { closeGatewayTicketBridges } from './local-gateway-python'
+import { createPrimaryRemoteConnection } from './primary-backend-startup'
 import { backendOwnedByApp } from './quit-guard'
 import type { SshConnection } from './ssh-connection'
 import { connectNativeSshGateway, remoteTicketCommand } from './ssh-native-gateway'
@@ -104,6 +105,11 @@ test('native SSH reuses the owner, routes fresh tickets privately, and disposes 
     throw new Error('Expected native SSH descriptor')
   }
 
+  const primary = createPrimaryRemoteConnection({ ...connection, authMode: 'native', remoteProfile: 'writer' }, [], {})
+  expect(primary.gatewayEndpoint).toBe(connection.gatewayEndpoint)
+  expect(primary.remoteProfile).toBe('writer')
+  expect(primary.authMode).toBe('native')
+
   expect(f.forwards).toEqual([[23456, 12345]])
   expect(f.commands.some(command => command.includes(' serve '))).toBe(false)
   expect(f.helper.requests).toHaveLength(0)
@@ -117,7 +123,7 @@ test('native SSH reuses the owner, routes fresh tickets privately, and disposes 
   })
 
   await localGatewayDial({
-    ensure: async () => connection,
+    ensure: async () => primary,
     forget: () => undefined,
     launchHome: '/not-the-remote-home',
     profile: 'default',

@@ -1,6 +1,7 @@
 import { expect, test } from 'vitest'
 
 import { localGatewayDial, nativeGatewayHttpHeaders } from './local-gateway'
+import { createPrimaryRemoteConnection } from './primary-backend-startup'
 import { pickLocalPort, SshConnection } from './ssh-connection'
 import { connectNativeSshGateway } from './ssh-native-gateway'
 
@@ -37,7 +38,7 @@ test.runIf(Boolean(process.env.HERMES_SSH_LIVE_HOST))(
 
       // Match the desktop socket factory: credentials stay in the private subprotocol, not the URL.
       await localGatewayDial({
-        ensure: async () => connection!,
+        ensure: async () => createPrimaryRemoteConnection({ ...connection!, authMode: 'native' }, [], {}),
         forget: () => undefined,
         launchHome: '/not-a-remote-filesystem',
         profile: 'default',

@@ -1,5 +1,6 @@
 import { runBackendStartStep } from './backend-start-cancellation'
 import type { FirstRunSetupDecision } from './first-run-setup-gate'
+import type { GatewayEndpoint } from './local-gateway'
 
 export interface PrimaryBackendStartupOptions<Backend, RuntimeBackend, Remote, Connection, Attached> {
   assertCurrentAttempt: () => void
@@ -29,11 +30,13 @@ export type PrimaryBackendStartupResult<RuntimeBackend, Connection, Attached = n
   | { kind: 'remote'; connection: Connection }
 
 interface ResolvedPrimaryRemote {
-  authMode?: 'oauth' | 'token'
+  authMode?: 'oauth' | 'token' | 'native'
+  gatewayEndpoint?: GatewayEndpoint
   baseUrl: string
   connectionId?: string
   headers?: Record<string, string>
   remoteHermesVersion?: string
+  remoteProfile?: string
   remoteHost?: string
   remoteKind?: 'cloud' | 'ssh' | 'url'
   source?: string
@@ -68,6 +71,8 @@ export function createPrimaryRemoteConnection<State extends object>(
     remoteHost: remote.remoteHost,
     remoteKind: remote.remoteKind,
     remoteHermesVersion: remote.remoteHermesVersion,
+    ...(remote.gatewayEndpoint ? { gatewayEndpoint: remote.gatewayEndpoint } : {}),
+    ...(remote.remoteProfile ? { remoteProfile: remote.remoteProfile } : {}),
     ...(remote.connectionId ? { connectionId: remote.connectionId } : {}),
     ...(remote.ssh ? { ssh: remote.ssh } : {}),
     // fetchJsonForBackend reads descriptor.headers for every REST call; the

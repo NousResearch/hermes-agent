@@ -1380,13 +1380,20 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         for current in [agent] if agent is not None else list(agents.values()):
             if final:
                 agents.pop(id(current), None)
-                delivered, undelivered = take_outcome(current)
-            else:
-                delivered, undelivered = take_delivered(current), []
-            for carried in delivered:
-                await self._settle_carried_completion(carried, "complete")
-            for carried, _text in undelivered:
-                await self._settle_carried_completion(carried, "defer")
+            # Settling an outcome can register a new carry: run_turn settles while the agent slot is
+            # still held, so a delivery landing now sees that agent and re-registers. Drain until
+            # quiet, bounded so a hot queue still ends.
+            for _ in range(64):
+                if final:
+                    delivered, undelivered = take_outcome(current)
+                else:
+                    delivered, undelivered = take_delivered(current), []
+                if not delivered and not undelivered:
+                    break
+                for carried in delivered:
+                    await self._settle_carried_completion(carried, "complete")
+                for carried, _text in undelivered:
+                    await self._settle_carried_completion(carried, "defer")
 
     async def _settle_carried_completion(self, carried: CarriedCompletion, operation: str) -> None:
         from tools.process_registry import process_registry as _pr

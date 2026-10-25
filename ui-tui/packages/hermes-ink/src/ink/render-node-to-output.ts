@@ -11,6 +11,7 @@ import renderBorder from './render-border.js'
 import type { Screen } from './screen.js'
 import { squashTextNodesToSegments, type StyledSegment } from './squash-text-nodes.js'
 import type { Color } from './styles.js'
+import { sanitizeOsc8Url } from './termio/osc.js'
 import { isXtermJs } from './terminal.js'
 import { widestLine } from './widest-line.js'
 import wrapText from './wrap-text.js'
@@ -243,7 +244,7 @@ const OSC = '\u001B]'
 const BEL = '\u0007'
 
 function wrapWithOsc8Link(text: string, url: string): string {
-  return `${OSC}8;;${url}${BEL}${text}${OSC}8;;${BEL}`
+  return `${OSC}8;;${sanitizeOsc8Url(url)}${BEL}${sanitizeOsc8Url(text)}${OSC}8;;${BEL}`
 }
 
 /**
@@ -300,7 +301,8 @@ function applyStylesToWrappedText(
         const segment = segments[runSegmentIndex]
 
         if (segment) {
-          let styled = applyTextStyles(runText, segment.styles)
+          const safeText = sanitizeOsc8Url(runText)
+          let styled = applyTextStyles(safeText, segment.styles)
 
           if (segment.hyperlink) {
             styled = wrapWithOsc8Link(styled, segment.hyperlink)
@@ -308,7 +310,7 @@ function applyStylesToWrappedText(
 
           styledLine += styled
         } else {
-          styledLine += runText
+          styledLine += sanitizeOsc8Url(runText)
         }
 
         runStart = i

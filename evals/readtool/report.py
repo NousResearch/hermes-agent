@@ -28,7 +28,7 @@ def load_label(label: str, model_filter: str | None) -> dict:
         if model_filter and model_dir.name != model_filter:
             continue
         for rep_file in sorted(model_dir.glob("rep*.json")):
-            data = json.loads(rep_file.read_text())
+            data = json.loads(rep_file.read_text(encoding="utf-8-sig"))
             for rec in data["records"]:
                 if rec.get("error"):
                     # count errored task-runs as score 0 but keep them in the

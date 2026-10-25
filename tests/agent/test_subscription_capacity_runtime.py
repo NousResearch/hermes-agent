@@ -104,6 +104,23 @@ def test_phase_denial_is_terminal_before_fallback_logic():
     assert verdict.result["failure_reason"] == "subscription_capacity"
 
 
+def test_real_api_call_boundary_denies_before_transport(monkeypatch):
+    from agent.turn_api_call import perform_api_call
+
+    monkeypatch.setattr(
+        runtime, "check_worker_capacity_phase",
+        lambda agent: (_ for _ in ()).throw(runtime.SubscriptionCapacityUnavailable("denied")),
+    )
+    agent = SimpleNamespace()
+    with pytest.raises(runtime.SubscriptionCapacityUnavailable, match="denied"):
+        perform_api_call(
+            agent, api_kwargs={}, _original_api_kwargs={}, _llm_middleware_trace=[],
+            _moa_prepared_request=None, _retry=None, thinking_spinner=None, retry_count=0,
+            api_call_count=1, api_request_id="req", effective_task_id="task", turn_id="turn",
+            interrupted=False,
+        )
+
+
 def test_pre_spawn_failure_and_hard_death_recovery_release(tmp_path):
     payload = runtime.prepare_kanban_worker_capacity(
         _task(), shared_root=tmp_path, profile_home=None, config={}, fetcher=lambda provider: _snapshot(),

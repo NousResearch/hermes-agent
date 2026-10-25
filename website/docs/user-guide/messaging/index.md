@@ -890,19 +890,33 @@ Telegram is usually a mobile inbox, so the defaults are tuned for that surface:
 
 These per-platform defaults apply only while the same key is unset directly under `display:`. A global `display.tool_progress`, `display.show_reasoning`, `display.busy_ack_detail`, `display.interim_assistant_messages` or `display.long_running_notifications` applies to every platform and replaces its default. A `config.yaml` copied from an older `cli-config.yaml.example` sets all five globally, and an older first-time `hermes setup` wrote `tool_progress: all`; delete those lines to get the per-platform defaults back.
 
-Opt out of either of the kept-on defaults or opt back into verbose progress per platform:
+Opt out of either of the kept-on defaults or opt back into detailed progress per platform:
 
 ```yaml
 display:
   platforms:
     telegram:
-      # Re-enable the tool-progress stream
+      # Re-enable the tool-progress stream. This keeps a separate streaming
+      # segment after each tool so the progress chronology stays clear.
       tool_progress: new
       # Show "iteration N/M, running: tool" in heartbeats and busy acks
       busy_ack_detail: true
       # Or quiet them entirely
       interim_assistant_messages: false
       long_running_notifications: false
+```
+
+To keep one editable preview across tool calls instead, leave tool progress quiet and
+enable streaming plus the Telegram-only single-message option:
+
+```yaml
+streaming:
+  enabled: true
+display:
+  platforms:
+    telegram:
+      tool_progress: off
+      streaming_single_message: true
 ```
 
 ### Warning and error notifications (opt-in suppression)

@@ -299,6 +299,110 @@ class TestSegmentBreakOnToolBoundary:
     """Verify that on_delta(None) finalizes the current message and starts a
     new one so the final response appears below tool-progress messages."""
 
+    def test_telegram_single_message_display_option_requires_progress_off(self, monkeypatch):
+        """The documented quiet Telegram config enables the opt-in without changing progress modes."""
+        from gateway.config import Platform, StreamingConfig
+        from gateway.run_turn import GatewayTurnMixin
+
+        monkeypatch.setattr(
+            "gateway.run._load_gateway_config",
+            lambda: {"display": {"platforms": {"telegram": {
+                "streaming_single_message": True, "tool_progress": "off",
+            }}}},
+        )
+        source = SimpleNamespace(platform=Platform.TELEGRAM, chat_id="chat_123", chat_type="dm")
+        streaming = StreamingConfig.from_dict({"enabled": True, "transport": "edit"})
+        assert streaming.enabled is True
+        config, _ = GatewayTurnMixin._build_stream_consumer_config(
+            None, source, streaming, MagicMock(), on_missing_cursor="raise",
+        )
+
+        assert config.single_message_per_turn is True
+        monkeypatch.setattr(
+            "gateway.run._load_gateway_config",
+            lambda: {"display": {"platforms": {"telegram": {
+                "streaming_single_message": True, "tool_progress": "new",
+            }}}},
+        )
+        config, _ = GatewayTurnMixin._build_stream_consumer_config(
+            None, source, streaming, MagicMock(), on_missing_cursor="raise",
+        )
+        assert config.single_message_per_turn is False
+
+    @pytest.mark.asyncio
+    async def test_single_message_mode_keeps_editing_across_tool_boundary(self):
+        """An opted-in Telegram stream keeps one editable preview for the turn."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="msg_1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter, "chat_123",
+            StreamConsumerConfig(
+                edit_interval=0.01, buffer_threshold=5, single_message_per_turn=True,
+            ),
+        )
+        consumer.on_delta("Before tool. ")
+        consumer.on_delta(None)
+        consumer.on_delta("After tool.")
+        consumer.finish("Before tool. After tool.")
+
+        await consumer.run()
+
+        assert adapter.send.await_count == 1
+        assert adapter.edit_message.call_args_list[-1].kwargs["content"] == "Before tool. After tool."
+
+
+    @pytest.mark.asyncio
+    async def test_single_message_mode_keeps_preview_id_across_two_tool_boundaries(self):
+        """Both tool boundaries must continue editing the original Telegram preview."""
+        adapter = MagicMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        initial_preview_sent = asyncio.Event()
+        first_boundary_finalized = asyncio.Event()
+        second_boundary_finalized = asyncio.Event()
+
+        async def _send(*_args, **_kwargs):
+            initial_preview_sent.set()
+            return SimpleNamespace(success=True, message_id="preview_1")
+
+        async def _edit(*_args, **kwargs):
+            if kwargs["content"] == "Before tool. ":
+                first_boundary_finalized.set()
+            elif kwargs["content"] == "Before tool. After first tool. ":
+                second_boundary_finalized.set()
+            return SimpleNamespace(success=True)
+
+        adapter.send = AsyncMock(side_effect=_send)
+        adapter.edit_message = AsyncMock(side_effect=_edit)
+        consumer = GatewayStreamConsumer(
+            adapter, "chat_123",
+            StreamConsumerConfig(
+                edit_interval=0.01, buffer_threshold=5, single_message_per_turn=True,
+            ),
+        )
+
+        task = asyncio.create_task(consumer.run())
+        consumer.on_delta("Before tool. ")
+        await asyncio.wait_for(initial_preview_sent.wait(), timeout=1)
+        consumer.on_delta(None)
+        await asyncio.wait_for(first_boundary_finalized.wait(), timeout=1)
+        consumer.on_delta("After first tool. ")
+        consumer.on_delta(None)
+        await asyncio.wait_for(second_boundary_finalized.wait(), timeout=1)
+        consumer.on_delta("After second tool.")
+        consumer.finish("Before tool. After first tool. After second tool.")
+        await task
+
+        assert adapter.send.await_count == 1
+        assert {call.kwargs["message_id"] for call in adapter.edit_message.call_args_list} == {
+            "preview_1",
+        }
+        assert adapter.edit_message.call_args_list[-1].kwargs["content"] == (
+            "Before tool. After first tool. After second tool."
+        )
+
 
     @pytest.mark.asyncio
     async def test_segment_break_removes_cursor(self):
@@ -857,6 +961,61 @@ class TestEditOverflowSplitAndDeliver:
 
 
 class TestInterimCommentaryMessages:
+    @pytest.mark.asyncio
+    async def test_single_message_mode_keeps_preview_across_commentary(self):
+        """Commentary must not make an opted-in Telegram preview lose its edit target."""
+        adapter = MagicMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        initial_preview_sent = asyncio.Event()
+        segment_finalized = asyncio.Event()
+        commentary_sent = asyncio.Event()
+        deliveries = []
+
+        async def _send(*_args, **kwargs):
+            content = kwargs["content"]
+            deliveries.append(("send", content))
+            if content.startswith("Before tool."):
+                initial_preview_sent.set()
+                return SimpleNamespace(success=True, message_id="preview_1")
+            if content == "I found the relevant code.":
+                commentary_sent.set()
+                return SimpleNamespace(success=True, message_id="commentary_1")
+            raise AssertionError(f"Unexpected send: {content!r}")
+
+        async def _edit(*_args, **kwargs):
+            content = kwargs["content"]
+            deliveries.append(("edit", content))
+            if content == "Before tool.":
+                segment_finalized.set()
+            return SimpleNamespace(success=True)
+
+        adapter.send = AsyncMock(side_effect=_send)
+        adapter.edit_message = AsyncMock(side_effect=_edit)
+        consumer = GatewayStreamConsumer(
+            adapter, "chat_123",
+            StreamConsumerConfig(
+                edit_interval=0.01, buffer_threshold=5, single_message_per_turn=True,
+            ),
+        )
+
+        task = asyncio.create_task(consumer.run())
+        consumer.on_delta("Before tool.")
+        await asyncio.wait_for(initial_preview_sent.wait(), timeout=1)
+        consumer.on_delta(None)
+        await asyncio.wait_for(segment_finalized.wait(), timeout=1)
+        consumer.on_commentary("I found the relevant code.")
+        await asyncio.wait_for(commentary_sent.wait(), timeout=1)
+        consumer.on_delta(" After tool.")
+        consumer.finish("Before tool. After tool.")
+        await task
+
+        assert deliveries == [
+            ("send", "Before tool. ▉"),
+            ("edit", "Before tool."),
+            ("send", "I found the relevant code."),
+            ("edit", "Before tool. After tool."),
+        ]
+
     @pytest.mark.asyncio
     async def test_commentary_message_stays_separate_from_final_stream(self):
         adapter = MagicMock()
@@ -1593,4 +1752,3 @@ class TestFlushPendingSync:
 
         consumer.finish()
         await task
-

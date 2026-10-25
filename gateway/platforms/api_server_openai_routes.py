@@ -6,6 +6,8 @@ api_server-internal helpers are imported lazily inside each method: the origin i
 module (top-level import = cycle), and lazy lookup keeps ``patch("...api_server.X")`` effective.
 """
 
+from __future__ import annotations
+
 import asyncio
 import copy
 import json

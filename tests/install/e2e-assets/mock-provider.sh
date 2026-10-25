@@ -41,12 +41,16 @@ mock_start() {
     return 0
   fi
 
+  # A dead mock's URL is still what a gateway that outlived its step froze at boot:
+  # the new instance rebinds that port when free (mock-provider.mjs <prior-url>).
+  local prior_url
+  prior_url="$(cat "$MOCK_URLFILE" 2>/dev/null || true)"
   rm -f "$MOCK_PIDFILE" "$MOCK_URLFILE"
 
   # Bare `node file.ts` type-stripping works on node >=22.18 (the images
   # ship 22.22+; the installed managed node is >=26) - same contract as
   # the repo's own `dev:mock` script.
-  node "$ASSETS/mock-provider.mjs" "$MOCK_URLFILE" > "$LOG_DIR/mock.log" 2>&1 &
+  node "$ASSETS/mock-provider.mjs" "$MOCK_URLFILE" "$prior_url" > "$LOG_DIR/mock.log" 2>&1 &
   echo $! > "$MOCK_PIDFILE"
 
   local _i

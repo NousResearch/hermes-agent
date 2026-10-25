@@ -77,3 +77,22 @@ export const ruPluginSettings = {
     }
   }
 } satisfies Pick<SettingsOverrides, 'pluginPages' | 'plugins'>
+
+/** Russian copy for the Capabilities ▸ Plugins tab: the page blurb and a plugin's folder access. */
+export const ruPluginsTab = {
+  pageBlurb:
+    'Плагин может расширять приложение, агента или оба сразу — у каждой части свой переключатель.',
+  folderAccess: {
+    title: 'Доступ к папкам',
+    hint: (name: string) => `${name} может читать и изменять файлы в этих папках. Отзыв доступа действует сразу.`,
+    revoke: 'Отозвать',
+    revokeLabel: (path: string) => `Отозвать доступ к ${path}`,
+    revoked: (name: string, path: string) => `${name} больше не может использовать ${path}.`,
+    revokeFailed: (name: string) => `Не удалось отозвать доступ ${name} к папкам`,
+    pickerTitle: (name: string) => `Выберите папку для ${name}`,
+    pickerButton: 'Разрешить доступ',
+    refusedProtected: (name: string) =>
+      `${name} не может использовать эту папку: в ней хранятся настройки, ключи или данные плагинов Hermes. Выберите папку, в которой их нет.`,
+    loadFailed: (name: string) => `Не удалось загрузить папки, открытые для ${name}.`
+  }
+} satisfies NonNullable<NonNullable<TranslationOverrides['skills']>['plugins']>

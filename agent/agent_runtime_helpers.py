@@ -999,7 +999,7 @@ def _recover_rate_limit(pool, *, has_retried_429, error_context, api_key_hint, c
         usage_limit_reached = any(t in context_reason for t in _USAGE_LIMIT_REASON_TOKENS) or any(
             t in context_message for t in _USAGE_LIMIT_MESSAGE_TOKENS
         )
-    if not has_retried_429 and not usage_limit_reached:
+    if not has_retried_429 and not usage_limit_reached and sum(e.last_status != STATUS_EXHAUSTED for e in pool.entries()) <= 1:
         return False, True
     return (True, False) if rotate_and_swap(429, "rate limit") else (False, True)
 
@@ -1010,9 +1010,9 @@ def recover_with_credential_pool(
     error_context: Optional[dict[str, Any]] = None, billing_unverified: bool = False,
 ) -> tuple[bool, bool]:
     """Attempt credential recovery via pool rotation; returns (recovered, has_retried_429).
-    Rate limits: retry once, then rotate. Billing: rotate immediately. Auth: refresh before
-    rotating. ``classified_reason`` beats raw HTTP codes (e.g. Anthropic 400 "out of extra
-    usage"); ``billing_unverified`` gives the entry a short cooldown, not the one-hour bench."""
+    Rate limits: rotate at once while a sibling is healthy, else retry once first. Billing:
+    rotate immediately. Auth: refresh before rotating. ``classified_reason`` beats raw HTTP codes
+    (e.g. Anthropic 400 "out of extra usage"); ``billing_unverified`` gives a short cooldown, not the one-hour bench."""
     pool = agent._credential_pool
     if pool is None:
         return False, has_retried_429

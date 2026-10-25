@@ -66,9 +66,8 @@ def test_live_session_reverts_to_quota_benched_credential_once_cooldown_lifts(mo
     agent = _LiveAgent(pool)
     assert agent.api_key == "sk-ant-oat01-PREF"
 
-    # 429 twice = retry once, then rotate (the real rate-limit ladder).
-    recover_with_credential_pool(agent, status_code=429, has_retried_429=False, error_context={"message": "Error"})
-    recovered, _ = recover_with_credential_pool(agent, status_code=429, has_retried_429=True, error_context={"message": "Error"})
+    # Multi-entry pool: the first 429 rotates straight to the healthy sibling (no retry-same).
+    recovered, _ = recover_with_credential_pool(agent, status_code=429, has_retried_429=False, error_context={"message": "Error"})
     assert recovered and agent.api_key == "sk-ant-api03-FALL"
 
     # Control: while the bench is still active the session stays on the fallback.

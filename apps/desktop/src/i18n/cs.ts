@@ -563,7 +563,9 @@ export const csOverrides = {
       signInFailed: 'Přihlášení se nezdařilo',
       signInToRemoteGateway: 'Přihlásit se ke vzdálené bráně',
       signInWithProvider: provider => `Přihlásit se pomocí ${provider}`,
-      identityProvider: 'váš poskytovatel identity'
+      identityProvider: 'váš poskytovatel identity',
+      webappDescription: 'Spusťte na tomto počítači hermes webapp, aby se tento prohlížeč přihlásil.',
+      webappTitle: 'Přihlášení do Hermesu'
     },
     updateHold: {
       title: 'Dřívější aktualizace stále blokuje Hermes',
@@ -1181,7 +1183,10 @@ export const csOverrides = {
       testUnsupported: 'Tento systém nepodporuje nativní oznámení.',
       completionSoundTitle: 'Zvuk dokončení',
       completionSoundDesc: 'Přehraje se po dokončení tahu agenta. Zde vyberte předvolbu a přehrajte si náhled.',
-      completionSoundPreview: 'Náhled'
+      completionSoundPreview: 'Náhled',
+      muteSoundsDesc:
+        'Vypne zvuky automatického dokončení, probouzecího slova a přemýšlení, haptickou odezvu i zvuky systémových oznámení. Ukázky zvuků a mluvené odpovědi se přehrávají dál.',
+      muteSoundsTitle: 'Ztlumit zvuky rozhraní'
     },
     sections: {
       model: 'Model',
@@ -1655,7 +1660,9 @@ export const csOverrides = {
         stableConfirmBody:
           'Hermes přejde na nejnovější vydané vydání, které může být starší než kód, který teď běží. Data zapsaná novějším kódem se nemusí načíst správně, proto je nejdřív zazálohujte.',
         stableConfirmTitle: 'Přepnout na stabilní vydání?',
-        title: 'Kanál aktualizací'
+        title: 'Kanál aktualizací',
+        heldBody: v =>
+          `Toto sestavení je novější než stabilní vydání ${v}. Vaše relace už používají běhové prostředí gateway, které ${v} neumí otevřít, proto Hermes zůstává na tomto sestavení, dokud nevyjde novější stabilní vydání.`
       }
     },
     config: {
@@ -2003,7 +2010,46 @@ export const csOverrides = {
       sshErrUpdateRequired: 'Před připojením aktualizujte Hermes na vzdáleném hostiteli.',
       sshErrUnknown: 'Připojení SSH se nezdařilo.',
       sshErrInteractiveAuth:
-        'Tailscale SSH vyžaduje interaktivní ověření v prohlížeči. V Terminálu spusťte `ssh <host> true`, ověření dokončete a zkuste to znovu — Hermes spouští SSH neinteraktivně.'
+        'Tailscale SSH vyžaduje interaktivní ověření v prohlížeči. V Terminálu spusťte `ssh <host> true`, ověření dokončete a zkuste to znovu — Hermes spouští SSH neinteraktivně.',
+      webAccess: {
+        modeLanDetail: url => `Zařízení ve vaší Wi-Fi otevřou ${url}. Používejte jen v síti, které důvěřujete.`,
+        modePublicDetail: port =>
+          `Adresa HTTPS, kterou už provozujete, například Tailscale Serve nebo tunel, přesměrovaná na http://127.0.0.1:${port}.`,
+        unavailableDetail: reason => `Gateway nemohla obsluhovat webovou aplikaci: ${reason}`,
+        failed: 'Webový přístup se nepodařilo změnit',
+        intro:
+          'Otevřete Hermes na tomto počítači z telefonu nebo z jiného počítače, přihlášeni účtem Nous. Kdokoli se přihlásí, může na tomto počítači spouštět příkazy.',
+        lanUnencrypted: 'Spojení není šifrované: ostatní v této síti mohou číst, co posíláte a přijímáte.',
+        modeLan: 'Tato síť',
+        modePublic: 'Vlastní URL',
+        needsNous: 'Nejprve se přihlaste účtem Nous v části Poskytovatelé.',
+        noLan: 'Tento počítač nemá síťovou adresu, na kterou by se jiná zařízení dostala.',
+        notRunningDetail: 'Spusťte ho, abyste mohli Hermes otevřít z jiného zařízení.',
+        pendingOff: 'Vypnuto, ale gateway dál obsluhuje webovou aplikaci až do restartu.',
+        pendingOn: 'Uloženo. Gateway bude webovou aplikaci obsluhovat po restartu.',
+        restartBusy:
+          'Uloženo. Běží chat, takže se gateway nerestartovala. Po jeho skončení zvolte Restartovat gateway.',
+        restartFailed: 'Uloženo, ale gateway se nepodařilo restartovat. Zkuste to znovu volbou Restartovat gateway.',
+        restartGateway: 'Restartovat gateway',
+        restartNeeded: 'Nutný restart',
+        running: 'Běží',
+        runningLan: 'Tuto adresu otevřete na zařízení ve stejné síti.',
+        runningLocal:
+          'Otevřít ji může jen tento počítač. Zastavte ji a znovu spusťte, abyste ji mohli otevřít z jiných zařízení.',
+        runningPublic: 'Obsluhováno přes vaši URL.',
+        start: 'Spustit',
+        startTimedOut: 'Gateway nezačala obsluhovat webovou aplikaci do 90 sekund.',
+        starting: 'Spouští se',
+        stop: 'Zastavit',
+        stopTimedOut: 'Gateway nepřestala obsluhovat webovou aplikaci do 90 sekund.',
+        stopped: 'Zastaveno',
+        stopping: 'Zastavuje se',
+        title: 'Webový přístup',
+        unavailable: 'Nedostupné'
+      },
+      webappHostDesc:
+        'Webapp vždy používá hostitele Hermes, který ji obsluhuje. Chcete-li přepínat gatewaye, přihlásit se do Hermes Cloud nebo spravovat uložená připojení, použijte aplikaci Hermes Desktop.',
+      webappHostTitle: 'Hostitel Hermes'
     },
     keys: {
       loading: 'Načítání API klíčů a přihlašovacích údajů…',
@@ -2188,7 +2234,107 @@ export const csOverrides = {
         parentModel: 'Použít model rodiče',
         parentModelWarning:
           'Zvolený poskytovatel musí model rodiče podporovat. Trasa pouze přes poskytovatele může selhat, pokud je model nekompatibilní. Pokud si tento poskytovatel nastavuje vlastní výchozí model, subagenti použijí ten.',
-        providerLabel: 'Poskytovatel subagentů'
+        providerLabel: 'Poskytovatel subagentů',
+        routing: {
+          baseUrlRoute: url => `koncový bod ${url}`,
+          blockedUnavailable: label =>
+            `Subagenti se nespustí, dokud tady ${label} nepoběží. Jeho plugin hlásí, že nemůže.`,
+          blockedUnregistered: name =>
+            `Subagenti se nespustí, dokud nebude nainstalovaný a zapnutý plugin, který poskytuje „${name}“.`,
+          deleteConfirmNextDefault: name => `Je to výchozí trasa, takže se výchozí stane „${name}“.`,
+          deleteConfirmTitle: name => `Smazat trasu „${name}“?`,
+          inactiveModelMap: route =>
+            `Trasy modelů určují model každého subagenta. Subagenti bez trasy použijí „${route}“.`,
+          inactivePlugin: label => `Model každého subagenta určuje ${label}, takže toto nastavení se neuplatní.`,
+          inactiveProfiles: profile =>
+            `Trasy profilů určují profil každého subagenta. Subagenti bez profilu běží jako „${profile}“.`,
+          profileMissing: name => `${name} (profil už neexistuje)`,
+          routeActions: name => `Akce pro ${name}`,
+          addRoute: 'Přidat trasu',
+          blockedDetail:
+            'Tento režim je uložený, takže Hermes odmítne všechny subagenty, místo aby potichu použil Výchozí.',
+          blockedDisabled: 'Subagenti se nespustí, dokud pro tento profil nezapnete Rozšířenou delegaci.',
+          blockedMissing: 'Subagenti se nespustí, dokud nebude nainstalovaná Rozšířená delegace.',
+          blockedNotLoaded: 'Subagenti se nespustí, dokud Hermes nenačte Rozšířenou delegaci. Restartujte Hermes.',
+          blockedPill: 'Neběží',
+          createRoute: 'Přidat trasu',
+          defaultBadge: 'Výchozí',
+          deleteConfirmAction: 'Smazat trasu',
+          deleteConfirmBody: 'Subagenti už ji nebudou moci zvolit.',
+          deleteRoute: 'Smazat',
+          descriptionHint: 'Jeden řádek, který agent přečte před volbou.',
+          descriptionLabel: 'Kdy ji použít',
+          descriptionPlaceholder: 'např. Levné a rychlé: vyhledávání, shrnutí, jednoduché úpravy.',
+          dialogDesc: 'Agent čte název a popis a podle nich rozhodne, kterou trasu subagent použije.',
+          dialogEdit: 'Upravit trasu modelu',
+          dialogNew: 'Nová trasa modelu',
+          editRoute: 'Upravit',
+          effortInherit: 'Výchozí pro subagenty',
+          effortLabel: 'Úsilí uvažování',
+          enableFailed: 'Rozšířenou delegaci se nepodařilo zapnout',
+          enablePlugin: 'Zapnout',
+          errors: {
+            duplicate: 'Jiná trasa už tento název používá',
+            required: 'Povinné',
+            spaces: 'Bez mezer'
+          },
+          inUse: 'Používá se',
+          inactiveModelMapNoDefault:
+            'Trasy modelů určují model každého subagenta. Subagenti bez trasy použijí model hlavního agenta.',
+          inactiveProfilesNoDefault:
+            'Trasy profilů určují profil každého subagenta. Subagenti bez profilu použijí model hlavního agenta.',
+          inactiveTitle: 'V tomto režimu se nepoužívá',
+          installPlugin: 'Nainstalovat plugin',
+          installUnavailable:
+            'Rozšířená delegace zatím není v katalogu pluginů. Nainstalujte ji přes Možnosti › Pluginy.',
+          intro: 'Jak každý subagent získá svůj model.',
+          loadFailed: 'Trasy subagentů se nepodařilo načíst',
+          makeDefault: 'Nastavit jako výchozí',
+          modeFailed: 'Trasy subagentů se nepodařilo změnit',
+          modelLabel: 'Model',
+          modelRoutesEmpty: 'Zatím žádné trasy. Dokud nějakou nepřidáte, subagenti používají model hlavního agenta.',
+          modelRoutesTitle: 'Trasy modelů',
+          modes: {
+            default: {
+              description: 'Každý subagent běží na modelu pro subagenty níže.',
+              label: 'Výchozí'
+            },
+            model_map: {
+              description: 'Pojmenujte několik modelů. Agent pro každého subagenta jeden vybere.',
+              label: 'Trasy modelů'
+            },
+            profile_routes: {
+              description: 'Subagenti běží jako některý z vašich profilů, s vlastním modelem, dovednostmi a klíči.',
+              label: 'Trasy profilů'
+            }
+          },
+          nameHint: 'Krátký, bez mezer. Agent volí trasy podle tohoto názvu.',
+          nameLabel: 'Název',
+          namePlaceholder: 'např. rychly',
+          optional: 'nepovinné',
+          plugin: 'Plugin',
+          pluginDisabled: 'Rozšířená delegace je nainstalovaná, ale pro tento profil je vypnutá.',
+          pluginMissing: 'Trasy modelů a Trasy profilů pocházejí z pluginu Rozšířená delegace.',
+          pluginNotLoaded: 'Rozšířená delegace je zapnutá, ale Hermes ji ještě nenačetl. Restartujte Hermes.',
+          profileDefault: 'Výchozí',
+          profileDescriptionPlaceholder: 'Kdy ji použít (nepovinné)',
+          profileEmpty: 'Zatím žádné další profily. Vytvořte je v liště profilů.',
+          profileRoutesHint: 'Každý zaškrtnutý profil přináší vlastní model, dovednosti, personu a klíče.',
+          profileRoutesTitle: 'Profily, jako které mohou subagenti běžet',
+          providerLabel: 'Poskytovatel',
+          providerPlaceholder: 'Zvolte poskytovatele',
+          saveFailed: 'Trasy se nepodařilo uložit',
+          saveRoute: 'Uložit trasu',
+          settingsTitle: 'Výchozí hodnoty pro subagenty',
+          thirdPartyDescription: 'Z pluginu. Jeho nastavení najdete u daného pluginu.',
+          tierFast: 'Rychlý',
+          tierHint: 'Jen u modelů, které to nabízejí.',
+          tierLabel: 'Rychlost',
+          tierNormal: 'Normální',
+          tierUltrafast: 'Velmi rychlý',
+          title: 'Směrování',
+          useDefault: 'Přepnout na Výchozí'
+        }
       }
     },
     localModels: {
@@ -2497,6 +2643,20 @@ export const csOverrides = {
             captionDefault: 'Výchozí strop',
             captionSpending: 'Měsíční vzdálené výdaje',
             valueUsed: (spent, limit) => `Využito ${spent} z ${limit}`
+          },
+          window: {
+            barLabel: title => `${title} — využité zahrnuté využití`,
+            captionResetsIn: duration => `Obnoví se za ${duration}`,
+            valueUsed: percent => `vyčerpáno ${percent}`,
+            captionIncluded: 'Zahrnuté využití',
+            captionPaused: 'Pozastaveno: platba předplatného selhala',
+            captionPausedOther: 'Pozastaveno: viz Fakturace na portálu',
+            captionTopTierUsedUp: 'Měsíční příděl vyčerpán, zbytek hradí kredity',
+            captionTopTierUsedUpKeepGoingOff: 'Měsíční příděl vyčerpán, ostatní zahrnuté modely dál fungují',
+            month: 'Tento měsíc',
+            today: 'Dnes',
+            topTier: 'Velké modely (měsíčně)',
+            week: 'Tento týden'
           }
         },
         planCard: {
@@ -2592,6 +2752,15 @@ export const csOverrides = {
           title: 'Požadavek na fakturaci se nezdařil',
           message: 'Požadavek na fakturaci se nezdařil.'
         }
+      },
+      keepGoingOnCredits: {
+        approveInBrowser: 'Změnu potvrdíte schválením Remote Spending v prohlížeči. Projeví se hned po schválení.',
+        approvedRetry: 'Remote Spending je schváleno, ale změna se neuložila.',
+        cancel: 'Zrušit',
+        description: 'Po vyčerpání zahrnutého využití čerpat vaše kredity. Vypnuto: Hermes počká na obnovení limitu.',
+        openAgain: 'Otevřít znovu',
+        title: 'Pokračovat z kreditů',
+        tryAgain: 'Zkusit znovu'
       }
     },
     providers: {
@@ -2944,7 +3113,34 @@ export const csOverrides = {
         `Aktualizace ${name} dostala varovný verdikt (${count} ${count === 1 ? 'nález' : count >= 2 && count <= 4 ? 'nálezy' : 'nálezů'}). Každá aktualizace se skenuje. Použijte ji jen tehdy, pokud zdroji důvěřujete:`,
       updateScanConfirm: 'Přesto aktualizovat',
       updateScanMore: count => `+ ${count} dalších`,
-      updateScanTitle: name => `Bezpečnostní kontrola označila ${name}`
+      updateScanTitle: name => `Bezpečnostní kontrola označila ${name}`,
+      folderAccess: {
+        hint: name => `${name} může číst a měnit soubory v těchto složkách. Odebrání platí okamžitě.`,
+        loadFailed: name => `Složky sdílené s ${name} se nepodařilo načíst.`,
+        pickerTitle: name => `Zvolte složku pro ${name}`,
+        refusedProtected: name =>
+          `${name} nemůže tuto složku použít: obsahuje nastavení Hermesu, klíče nebo data pluginů. Zvolte složku, která je neobsahuje.`,
+        revokeFailed: name => `Přístup ke složce pro ${name} se nepodařilo odebrat`,
+        revokeLabel: path => `Odebrat přístup k ${path}`,
+        revoked: (name, path) => `${name} už nemůže používat ${path}.`,
+        pickerButton: 'Povolit přístup',
+        revoke: 'Odebrat',
+        title: 'Přístup ke složkám'
+      },
+      previewScriptPromptBody: (plugin, origin) =>
+        `${plugin} chce spouštět JavaScript v náhledovém prohlížeči na ${origin}.`,
+      previewScriptPromptTitle: plugin => `Povolit pluginu ${plugin} spouštět skripty na této stránce?`,
+      previewScriptRevoke: origin => `Odebrat přístup k ${origin}`,
+      previewScriptRevokeUnsaved: (plugin, origin) =>
+        `Změnu se nepodařilo uložit, takže platí jen do restartu Hermesu. ${plugin} je zatím na ${origin} blokován.`,
+      previewScriptRevoked: (plugin, origin) => `${plugin} už nemůže spouštět skripty na ${origin}.`,
+      previewScriptAccessLabel: 'Skripty stránky',
+      previewScriptAccessNone: 'Ptá se před spuštěním skriptů na stránce',
+      previewScriptAllow: 'Povolit na tomto webu',
+      previewScriptDeny: 'Nepovolit',
+      previewScriptPromptRevokeHint: 'Platí jen pro tento web. Odebrat to můžete v Možnosti ▸ Pluginy.',
+      previewScriptPromptRisk:
+        'Skripty mohou číst a měnit vše na daném webu, včetně stránek z účtů, do kterých jste tam přihlášeni.'
     },
     officialCatalog: 'Dostupné pro instalaci',
     officialPill: 'Oficiální',
@@ -4961,13 +5157,10 @@ export const csOverrides = {
     signIn: 'Přihlásit se',
     signInHeading: 'Přihlaste se účtem Nous a odemkněte další modely a nástroje.',
     settingUp: 'Nastavuje se bezplatná inference…',
-    codeBody: 'Přihlášení dokončíte zadáním tohoto kódu v prohlížeči.',
-    copyLink: 'Kopírovat odkaz',
     doNotShare: 'Tento kód nikomu nesdělujte.',
     waiting: 'Čeká se na přihlášení…',
     finishingHeading: 'Dokončuje se přihlášení…',
     finishingBody: 'V prohlížeči bylo schváleno. Získávají se tokeny vašeho účtu.',
-    signedInAs: email => `Přihlášeno jako ${email}`,
     signedIn: 'Přihlášeno.',
     completedBody: 'Váš účet nyní poskytuje inferenci a nástroje.',
     defaultModel: 'Výchozí model',
@@ -4975,13 +5168,9 @@ export const csOverrides = {
     done: 'Hotovo',
     notNow: 'Teď ne',
     tryAgain: 'Zkusit znovu',
-    startAgain: 'Začít znovu',
     didNotComplete: 'Přihlášení nebylo dokončeno',
-    rejectedBody: 'Nic se neděje, stále používáte bezplatnou službu Nous. Přihlaste se, až budete chtít.',
-    supersededBody: 'Tento přihlašovací kód byl nahrazen novějším. Použijte nejnovější kód nebo začněte znovu.',
     timedOutHeading: 'Platnost přihlašovacího odkazu vypršela',
     timedOutBody: 'Až budete chtít, začněte znovu. Stále používáte bezplatnou službu Nous.',
-    retiredBody: 'Relace skončila před dokončením přihlášení. Hermes spustí novou; potom se můžete znovu přihlásit.',
     errorBody: 'Přihlášení nebylo dokončeno. Až budete chtít, zkuste to znovu.',
     busyHeading: 'Už jen chvíli',
     busyBody: wait =>
@@ -5015,7 +5204,12 @@ export const csOverrides = {
       heading: 'Pokračujte s Hermes',
       notNow: 'Teď ne',
       signIn: 'Přihlásit se'
-    }
+    },
+    finishInBrowser: 'Dokončit v prohlížeči',
+    openConnectors: 'Otevřít konektory',
+    openPageAgain: 'Otevřít stránku znovu',
+    reconnect: 'Připojit znovu',
+    signedInAsLabel: 'Přihlášen jako'
   },
   modelPicker: {
     title: 'Přepnout model',
@@ -5037,7 +5231,35 @@ export const csOverrides = {
     wasPrice: 'bylo',
     customModel: 'Vlastní model',
     addCustomModelAction: 'Přidat vlastní model…',
-    customModelPlaceholder: 'Zadejte ID modelu, např. openai/gpt-5'
+    customModelPlaceholder: 'Zadejte ID modelu, např. openai/gpt-5',
+    limitReached: name => `Vyčerpán ${name}`,
+    percentUsed: percent => `vyčerpáno ${percent}`,
+    resetsIn: duration => `obnoví se za ${duration}`,
+    included: 'Všechny modely níže jsou zahrnuté',
+    includedUsedUp: 'Zahrnuté využití je vyčerpané',
+    largeFootnote: 'Velké modely navíc čerpají váš měsíční limit velkých modelů.',
+    limitNames: {
+      day: 'denní limit',
+      month: 'měsíční limit',
+      top_tier: 'měsíční limit velkých modelů',
+      week: 'týdenní limit'
+    },
+    limitThenCredits: 'placené modely nyní čerpají vaše kredity (platba za použití)',
+    limitThenCreditsLarge: 'velké modely nyní čerpají vaše kredity (platba za použití)',
+    limitThenWait: 'do té doby jen modely zdarma',
+    limitThenWaitLarge: 'velké modely pozastaveny do té doby',
+    month: 'Měsíc',
+    pausedOther: 'pozastaveno',
+    pausedRenewal: 'pozastaveno: nezaplacené obnovení',
+    sectionOther: 'Ostatní modely',
+    sectionRecommended: 'Doporučené',
+    today: 'Dnes',
+    topTier: 'Velké modely (měsíčně)',
+    usageLevels: {
+      free: 'Zdarma',
+      top_tier: 'Velký'
+    },
+    week: 'Týden'
   },
   modelVisibility: {
     title: 'Modely',
@@ -5246,7 +5468,10 @@ export const csOverrides = {
       providerModelTitle: (provider, model) => `${provider} · ${model}`,
       backend: 'Backend',
       messagingStopped: 'zprávy zastaveny',
-      messagingDegraded: name => `${name} mimo provoz`
+      messagingDegraded: name => `${name} mimo provoz`,
+      planUsageTitle: (used, resetsIn) =>
+        `${used} z využití vašeho tarifu vyčerpáno${resetsIn ? ` · obnoví se za ${resetsIn}` : ''} · otevřít Fakturaci`,
+      togglePlanUsage: 'Využití tarifu'
     }
   },
   rightSidebar: {
@@ -5294,7 +5519,12 @@ export const csOverrides = {
     terminalNew: 'Nový terminál',
     terminalCloseOthers: 'Zavřít ostatní',
     terminalCloseAll: 'Zavřít vše',
-    addToChat: 'Přidat do chatu'
+    addToChat: 'Přidat do chatu',
+    terminalDropControl: paths => `Tyto názvy obsahují řídicí znaky, které shell provede jako klávesy: ${paths}`,
+    terminalDropTooLarge: (names, limit) => `Každý soubor může mít až ${limit}. Nenahráno: ${names}`,
+    terminalDropUploadFailed: name => `Soubor ${name} se nepodařilo nahrát`,
+    terminalDropControlTitle: 'Nevloženo do terminálu',
+    terminalDropTooLargeTitle: 'Příliš velké pro nahrání'
   },
   preview: {
     tab: 'Náhled',
@@ -5413,7 +5643,8 @@ export const csOverrides = {
       commentPlaceholder: 'Přidat komentář...',
       commentTitle: n => `Komentář ${n}`,
       saveComment: 'Uložit',
-      cancelComment: 'Zrušit komentář'
+      cancelComment: 'Zrušit komentář',
+      embeddedPreviewHint: 'Některé weby blokují vložené náhledy. Otevřete původní stránku v panelu prohlížeče.'
     }
   },
   interfaceMode: {
@@ -5697,6 +5928,22 @@ export const csOverrides = {
         SESSION_OWNER_UNCONFIRMED: {
           body: 'Brána včas nepotvrdila vaši zprávu. Pokud se zařadila do fronty, spustí se, jakmile předchozí tah skončí nebo se vyřeší. Než ji pošlete znovu, zkontrolujte chat.',
           title: 'Vaše zpráva už může být ve frontě'
+        },
+        launch_credentials_unavailable: {
+          body: 'Tento chat se spustil s API klíčem, který se mezitím změnil nebo byl odebrán, proto se vaše zpráva neodeslala. Otevřený chat nikdy sám nepřejde na jiný klíč. Spusťte novou relaci, aby se použil váš aktuální klíč.',
+          title: 'API klíč tohoto chatu se změnil'
+        },
+        session_read_only: {
+          body: 'Je to uložená historie, kterou Hermes umí zobrazit, ale ne pokračovat v ní, proto se vaše zpráva nespustila. Odešlete ji v novém chatu.',
+          title: 'Tento chat je jen pro čtení'
+        },
+        usage_window: {
+          body: 'Zahrnuté využití vašeho tarifu je vyčerpané do obnovení limitu. Chcete-li pokračovat, přidejte kredity v /topup.',
+          title: 'Zahrnuté využití je vyčerpané'
+        },
+        workspace_unavailable: {
+          body: 'Složka, ve které tento chat pracuje, byla přesunuta nebo smazána, proto se vaše zpráva nespustila. Složku obnovte, nebo chatu přiřaďte jinou pomocí Přesunout do projektu a zkuste to znovu.',
+          title: 'Složka tohoto chatu už neexistuje'
         }
       },
       errorAuthKinds: {
@@ -5755,7 +6002,13 @@ export const csOverrides = {
       restoreNext: 'Obnovit další kontrolní bod',
       goForward: 'Přejít vpřed',
       sendEdited: 'Odeslat upravenou zprávu',
-      attachingFile: 'Připojování…'
+      attachingFile: 'Připojování…',
+      errorSwitchToModel: (model, note) => (note ? `Přepnout na ${model} (${note})` : `Přepnout na ${model}`),
+      errorAddCredits: 'Přidat kredity',
+      errorOpenBillingSettings: 'Otevřít nastavení fakturace',
+      errorSwitchModelFailed: 'Model se nepodařilo přepnout',
+      errorUseCredits: 'Zapnout Pokračovat z kreditů',
+      errorUseCreditsFailed: 'Pokračovat z kreditů se nepodařilo zapnout'
     },
     approval: {
       gatewayDisconnected:
@@ -6365,7 +6618,9 @@ export const csOverrides = {
       quick: 'Krátká prohlídka',
       skip: 'Přeskočit a jít tvořit'
     },
-    useName: name => `Použít „${name}“`
+    useName: name => `Použít „${name}“`,
+    slashOffBody: 'Po dokončení nastavení budou fungovat jako obvykle.',
+    slashOffTitle: 'Během nastavení jsou lomítkové příkazy vypnuté'
   },
   keepAwakeOffer: {
     action: 'Nenechávat počítač spát během práce',
@@ -6574,12 +6829,17 @@ export const csOverrides = {
     },
     tryAnother: 'Zkuste jiné hledání, nebo zrušte filtry.',
     updatedDate: 'Aktualizováno',
-    version: 'Verze'
+    version: 'Verze',
+    install: 'Nainstalovat'
   },
   gatewayGroupOpen: {
     lookupFailed: 'Skupinu se na bráně nepodařilo dohledat. Zkuste to znovu.',
     missing: 'Tato skupina brány už neexistuje.',
     opening: 'Otevírání skupiny brány…'
+  },
+  connectorOffer: {
+    body: 'Přihlaste se zdarma účtem Nous a aplikace, které jste připojili (třeba Gmail nebo Slack), zůstanou u vašeho účtu.',
+    heading: 'Ponechte si připojené aplikace'
   }
 } satisfies TranslationOverrides
 

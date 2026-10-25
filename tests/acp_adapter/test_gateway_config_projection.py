@@ -48,3 +48,31 @@ async def test_a_projection_superseded_during_its_catalog_build_never_lands_afte
              for call in agent._conn.session_update.await_args_list
              if call.kwargs['update'].session_update == 'config_option_update']
     assert modes[-1] == 'session', modes
+
+
+@pytest.mark.asyncio
+async def test_an_equal_adoption_during_the_catalog_build_does_not_swallow_the_update(monkeypatch):
+    """Another surface switched the mode to Don't Ask; while that event's projection builds its model
+    catalog, an adoption with the same settings lands (a typed /model's own refresh, say). The editor
+    must still receive one config_option_update showing the new mode."""
+    building, release = threading.Event(), threading.Event()
+
+    def model_state(info):
+        if not building.is_set():  # the event's projection: held until the adoption has run
+            building.set()
+            release.wait(30)
+    monkeypatch.setattr('acp_adapter.gateway_session_meta.model_state', model_state)
+    agent = GatewayACPAgent()
+    agent._conn = AsyncMock()
+    info = {'edit_approval_policy': 'ask', 'model': 'fixture', 'reasoning_effort': 'medium'}
+    await agent._project_mode('s', 's', info)  # the attach's snapshot
+    changed = {**info, 'edit_approval_policy': 'session'}
+    event = asyncio.create_task(agent._project_mode('s', 's', changed))
+    await asyncio.to_thread(building.wait, 30)
+    await agent._adopt('s', {'info': dict(changed)})
+    release.set()
+    await event
+    modes = [{o.category: o.current_value for o in call.kwargs['update'].config_options}['mode']
+             for call in agent._conn.session_update.await_args_list
+             if call.kwargs['update'].session_update == 'config_option_update']
+    assert modes == ['session'], modes

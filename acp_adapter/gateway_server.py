@@ -1095,9 +1095,11 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         seen = self._configs.get(sid)
         shown = {**(seen or {}), **{key: payload[key] for key in fields if key in payload},
                  "mode": self._modes.get(sid) or current_mode(payload)}
+        if seen == shown:
+            return  # an equal observation must not take over from a build still running for it
         self._configs[sid] = shown
         # Seeded silently like the mode: the attach's reply carries the options.
-        if seen is None or seen == shown or not self._conn:
+        if seen is None or not self._conn:
             return
         from acp.schema import ConfigOptionUpdate
         models = await asyncio.to_thread(model_state, shown)

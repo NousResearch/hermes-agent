@@ -756,6 +756,13 @@ Only the job's **own conversation** is ever touched:
   created by scripts, or from a session on the request/response `api_server`
   platform, which cannot receive a delivery) — the
   user's primary conversation standing in for the origin;
+- the **API server session** the job was created in, when that request reads its
+  history from the server (the same requests a background `delegate_task` result is
+  saved for, e.g. a chat that sends `X-Hermes-Session-Id`). Nothing is pushed: the
+  result is added to the session transcript the way that delegation result is, and
+  the client sees it the next time it loads the history or sends a message. This
+  takes the place of the home-channel fallback for these jobs; add a platform
+  (`deliver: origin,telegram`) to be notified as well;
 - a job's **single explicit `platform:chat` target**, but only when the job
   itself opts in with `attach_to_session: true` — the job author declares that
   target a conversation. The global `mirror_delivery` flag alone never makes an

@@ -153,7 +153,7 @@ def test_a_screen_in_use_is_kept_and_a_returning_gateway_reattaches(abandoned_sc
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from tools.bot_desktop import runtime
 
-    sd, launcher = abandoned_screen(idle_stop_minutes=0.05)  # 3 s; a human lease lapses after 4 windows (12 s)
+    sd, launcher = abandoned_screen(idle_stop_minutes=0.1)  # 6 s; a human lease lapses after 4 windows (24 s)
     log = sd / "launcher.log"
 
     def checks_kept() -> int:
@@ -174,12 +174,15 @@ def test_a_screen_in_use_is_kept_and_a_returning_gateway_reattaches(abandoned_sc
     finally:
         reset_hermes_home_override(token)
 
-    # A human holding the screen past the window is not timed out...
+    # A human holding the screen past the window is not timed out... Synced to a check that just kept the screen
+    # in use, so the next one starts a window later and judges the human lease, not the use before it.
+    seen = checks_kept()
+    wait_until(lambda: kept_while_used(seen + 1), timeout=30, what="an idle check to sync on")
     (sd / "lease.json").write_text(json.dumps({"holder": "human", "viewer_id": "v", "epoch": 1}), encoding="utf-8")
-    old = time.time() - 3.2
+    old = time.time() - 6.2
     os.utime(sd / "activity", (old, old))
     seen = checks_kept()
-    wait_until(lambda: checks_kept() >= seen + 2, timeout=30, what="idle checks while a human holds the screen")
+    wait_until(lambda: checks_kept() >= seen + 1, timeout=30, what="an idle check while a human holds the screen")
     assert _alive(launcher)
 
     # ...but a human lease nothing has used for four windows (the viewer's link dropped and never came back)

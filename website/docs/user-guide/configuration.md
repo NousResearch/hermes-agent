@@ -2243,6 +2243,7 @@ display:
   compact: false          # Compact output mode (less whitespace)
   cli_multiline_shortcuts: true  # CLI: Ctrl+J, \ + Enter, and supported Shift+Enter insert newlines (false = legacy c-j submit fallback)
   resume_display: full    # full (show previous messages on resume) | minimal (one-liner only)
+  terminal_title: true    # Classic CLI: session name in the window title; false leaves it unchanged
   bell_on_complete: false # Play terminal bell when agent finishes (great for long tasks)
   bell_on_prompt: false   # Play terminal bell when a blocking prompt opens (clarify, approval, sudo password, secret capture) — works over SSH
   # Both bell flags also emit an OSC 9 desktop notification (Ghostty, iTerm2, Kitty, WezTerm raise an OS

@@ -2018,6 +2018,9 @@ display:
   #   false: Silent (default)
   bell_on_prompt: false
 
+  # CLI window title follows the session; restores the previous title on exit.
+  terminal_title: true
+
   # Show model reasoning/thinking before each response.
   # When enabled, a dim box shows the model's thought process above the response.
   # Toggle at runtime with /reasoning show or /reasoning hide.

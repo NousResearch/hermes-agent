@@ -426,7 +426,7 @@ class CLITuiRuntimeMixin:
             # Vi editing mode when display.vim_mode is on.
             # EMACS is prompt_toolkit's own default, so non-opted-in behaviour is unchanged.
             extra_kw["editing_mode"] = EditingMode.VI if self._vim_mode else EditingMode.EMACS
-        return Application(
+        app = Application(
             layout=layout,
             key_bindings=kb,
             style=style,
@@ -444,6 +444,12 @@ class CLITuiRuntimeMixin:
             erase_when_done=True,
             **extra_kw,
         )
+        from hermes_cli.window_title import install_window_title
+        self._window_title = install_window_title(
+            app, self._get_status_bar_session_title,
+            enabled=CLI_CONFIG.get("display", {}).get("terminal_title", True),
+        )
+        return app
 
     def _tui_install_signal_handlers(self):
         """SIGTERM/SIGHUP -> graceful shutdown; Windows absorbs SIGINT (see body)."""
@@ -499,6 +505,9 @@ class CLITuiRuntimeMixin:
         """Teardown after the app exits: interrupt agent, stop voice/pet, persist + close session, cleanup, exit summary."""
         from cli import _DIM, _RST, _cprint, _invoke_interrupted_session_end, _run_cleanup, set_approval_callback, set_secret_capture_callback, set_sudo_password_callback
         self._should_exit = True
+        window_title = getattr(self, "_window_title", None)
+        if window_title is not None:
+            window_title.close()
         self._pet_stop_anim()
         # Without this line the terminal sits silent through the whole cleanup window.
         with suppress(Exception):

@@ -848,9 +848,9 @@ DEFAULT_CONFIG = {
         # One-time TUI hint ("subagents working · /agents to watch live") on first delegation.
         "tui_agents_nudge": True,
         "bell_on_complete": False,
+        "terminal_title": True,  # classic CLI: session title in the terminal window
         "bell_on_prompt": False,   # bell when a blocking prompt opens (clarify/approval/sudo)
-        # Stream reasoning live before the response; otherwise thinking models show only a spinner
-        # for tens of seconds.
+        # Stream reasoning before each response; otherwise thinking models show only a spinner.
         "show_reasoning": True,
         # Post-response "Reasoning" recap collapses to 10 lines; true prints it all (live streaming
         # is always full).

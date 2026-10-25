@@ -178,7 +178,6 @@ import {
   resolveProfileBackendRoute,
   resolveRegistryApiConnection,
   resolveRemoteSshDashboardProfile,
-  resolveSettingsProfileConnection,
   resolveTestWsUrl,
   sanitizeRemoteHeaderValue,
   savedProfileSsh,
@@ -186,6 +185,7 @@ import {
   withTransientRetries
 } from './connection-config'
 import { applyConnectionConfigAtomically } from './connection-config-apply'
+import { resolveConnectionForRequest } from './connection-for'
 import {
   backendScopeKey,
   backendScopePrefix,
@@ -14095,31 +14095,17 @@ async function connectDesktopProfileRoute(route: DesktopProfileRoute, sender?: E
 // canonical gateway when the v1 global mode is remote (the registry 'local'
 // entry always means this machine) unless the profile is remote-only.
 ipcMain.handle('hermes:connection:for', async (event, payload) => {
-  const { connectionId, profile } = payload && typeof payload === 'object' ? (payload as any) : ({} as any)
   const registry = readDesktopConnectionsRegistry()
-  const requestedId = typeof connectionId === 'string' ? connectionId.trim() : ''
 
-  const resolve = (targetProfile: string) =>
-    connectDesktopProfileRoute(
-      requestedId
-        ? { connectionId: registryDialConnectionId(requestedId, registry.primary), profile: targetProfile }
-        : resolveDesktopConnectionRequest(targetProfile, null, primaryProfileKey()),
+  return resolveConnectionForRequest(payload, {
+    assertOwner: assertConnectionOwner,
+    resolve: (connectionId, profile) => connectDesktopProfileRoute(
+      connectionId
+        ? { connectionId: registryDialConnectionId(connectionId, registry.primary), profile }
+        : resolveDesktopConnectionRequest(profile, null, primaryProfileKey()),
       event.sender
     )
-
-  const targetProfile = String(profile ?? '').trim() || 'default'
-
-  if (payload && Object.hasOwn(payload, 'expectedOwner')) {
-    const connection = await resolveSettingsProfileConnection(targetProfile, payload.expectedOwner, resolve)
-
-    if (payload.expectedConnectionOwner) {
-      assertConnectionOwner(payload.expectedConnectionOwner, connection)
-    }
-
-    return connection
-  }
-
-  return resolve(targetProfile)
+  })
 })
 
 const windowConnectionRoutes = new WindowConnectionRouteRegistry()

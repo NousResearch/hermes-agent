@@ -20,6 +20,12 @@ def build_pairing_parser(subparsers, *, cmd_pairing: Callable) -> None:
     pairing_approve_parser.add_argument(
         "code", metavar="request-id|code",
         help="Request ID from 'pairing list', or the code the bot DM'd the user")
+    pairing_approve_parser.add_argument(
+        "--notify", action="store_true",
+        help="Send the approved user a receipt through the configured platform.")
+    pairing_approve_parser.add_argument(
+        "--admin", action="store_true",
+        help="Make the approved user a direct-message slash-command admin (opt-in).")
 
     pairing_revoke_parser = pairing_sub.add_parser("revoke", help="Revoke user access")
     pairing_revoke_parser.add_argument("platform", help="Platform name")

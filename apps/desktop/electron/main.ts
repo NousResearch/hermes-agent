@@ -7312,7 +7312,7 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
         redirect: 'follow'
       } as any)
 
-      setJsonRequestHeaders(request)
+      setJsonRequestHeaders(request, { method: options.method || 'GET', url: parsed })
 
       const headerBag = { ...headersForRemoteRequest(url), ...(options.headers || {}) }
 

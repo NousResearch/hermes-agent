@@ -83,3 +83,32 @@ def test_a_login_labelled_desktop_row_belongs_to_that_login_only(tmp_path):
             assert same_history_owner(conn, 'plain', 'alice-row') is False
     finally:
         db.close()
+
+
+def test_a_served_login_controls_its_own_stamped_chat_over_http(tmp_path):
+    """#143547 DB-15: a remote Desktop signed in as ``basic:alice`` archives, pins and renames the
+    chats it created over plain HTTP (transport ``http``, no native ticket). The claim gate refused
+    every non-native transport before ``authorize_history`` could read the login stamp."""
+    from types import SimpleNamespace
+    from gateway.session_contract import SessionRef
+    from gateway.session_mutations import _authorize_control
+
+    db = SessionDB(db_path=tmp_path / 'state.db')
+    try:
+        db.create_session('alice-row', source='desktop', user_id='basic:alice')
+        db.create_session('unstamped', source='desktop')
+        authority = SimpleNamespace(profile_id=str(tmp_path), db=db, sessions={})
+        caps = frozenset({'session:read', 'session:create', 'session:control'})
+        alice, bob, host = (Principal(subject, str(tmp_path), caps, 'http')
+                            for subject in (_login('alice'), _login('bob'), 'uid:1'))
+
+        def control(actor, sid):
+            params = {'session_id': sid, 'request_id': 'r-' + sid, 'operation': 'archive'}
+            return _authorize_control(authority, actor, SessionRef(str(tmp_path), sid), params)
+
+        assert control(alice, 'alice-row') is True
+        for stranger, sid in ((bob, 'alice-row'), (host, 'alice-row'), (alice, 'unstamped')):
+            with pytest.raises(RuntimeStoreError, match='permission_denied'):
+                control(stranger, sid)
+    finally:
+        db.close()

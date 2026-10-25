@@ -53,7 +53,7 @@ import {
   type SessionTombstoneGenerationSnapshot,
   tombstoneRowIds
 } from '@/store/session-removal'
-import type { ProjectInfo, ProjectsPayload } from '@/types/hermes'
+import type { ProjectFolder, ProjectInfo, ProjectsPayload } from '@/types/hermes'
 
 import { recordFeatureUse } from './desktop-metrics'
 
@@ -1325,6 +1325,48 @@ export async function addProjectFolder(
   reconcileProjects()
 }
 
+/**
+ * The folder the backend promotes when `removed` leaves a project: the oldest
+ * remaining one by `added_at` (`pdb.remove_folder`). Null when `removed` is not
+ * the primary, or nothing else remains.
+ */
+export function nextPrimaryFolder(folders: readonly ProjectFolder[], removed: string): null | ProjectFolder {
+  if (!folders.some(folder => folder.path === removed && folder.is_primary)) {
+    return null
+  }
+
+  return [...folders.filter(folder => folder.path !== removed)].sort((a, b) => a.added_at - b.added_at)[0] ?? null
+}
+
+// Optimistic: drop the folder from the cached project (promoting the same
+// folder the backend will when it was the primary), then reconcile — the lane /
+// session regrouping is backend-computed. A failed write rolls the cache back.
+export async function removeProjectFolder(id: string, path: string): Promise<void> {
+  const context = await activeProjectsContext(writableProjectProfile())
+  const snap = snapshotProjects()
+  const trimmed = path.trim()
+
+  $projects.set(
+    snap.projects.map(proj => {
+      if (proj.id !== id) {
+        return proj
+      }
+
+      const promoted = nextPrimaryFolder(proj.folders ?? [], trimmed)
+      const folders = (proj.folders ?? [])
+        .filter(folder => folder.path !== trimmed)
+        .map(folder => (promoted && folder.path === promoted.path ? { ...folder, is_primary: true } : folder))
+
+      return { ...proj, folders, ...(promoted && { primary_path: promoted.path }) }
+    })
+  )
+
+  await persistOrRollback(snap, () =>
+    gatewayRequestOn(context.gateway, 'projects.remove_folder', projectParams({ id, path: trimmed }, context.profile))
+  )
+  reconcileProjects()
+}
+
 // True when the session currently open in the main pane belongs to `projectId`.
 // Used so deleting a project you have a session open from kicks you back to the
 // intro draft instead of stranding you in a now-orphaned view.
@@ -1428,6 +1470,18 @@ export function openProjectAddFolder(project: { id: string; name: string }): voi
 
 export function closeProjectDialog(): void {
   $projectDialog.set(null)
+}
+
+// "Remove folder" has its own dialog (a picker over the project's existing
+// folders), so it gets its own atom instead of a ProjectDialog mode.
+export const $projectRemoveFolderDialog = atom<null | { name: string; projectId: string }>(null)
+
+export function openProjectRemoveFolder(project: { id: string; name: string }): void {
+  $projectRemoveFolderDialog.set({ name: project.name, projectId: project.id })
+}
+
+export function closeProjectRemoveFolder(): void {
+  $projectRemoveFolderDialog.set(null)
 }
 
 // ── Git-driven worktrees ("Start work") ─────────────────────────────────────

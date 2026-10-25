@@ -22,6 +22,7 @@ import {
   deleteProject,
   enterProject,
   fetchProjectSessions,
+  nextPrimaryFolder,
   openProjectCreate,
   pickProjectFolder,
   pickProjectFolders,
@@ -29,6 +30,7 @@ import {
   projectNameForCwd,
   refreshProjects,
   refreshProjectTree,
+  removeProjectFolder,
   resolveNewSessionCwd,
   scanAndRecordRepos,
   startWorkInRepo,
@@ -494,6 +496,71 @@ describe('pickProjectFolders / addProjectFolders (#68741)', () => {
       ['projects.add_folder', expect.objectContaining({ id: 'p_1', path: '/work/alpha' })],
       ['projects.add_folder', expect.objectContaining({ id: 'p_1', path: '/work/beta' })]
     ])
+  })
+})
+
+describe('removeProjectFolder', () => {
+  const folder = (path: string, added_at: number, is_primary = false) => ({ added_at, is_primary, label: null, path })
+
+  const project: ProjectInfo = {
+    archived: false,
+    board_slug: null,
+    color: null,
+    created_at: 0,
+    description: null,
+    folders: [folder('/ws/new', 30), folder('/ws/primary', 10, true), folder('/ws/old', 20)],
+    icon: null,
+    id: 'p_1',
+    name: 'Jinli',
+    primary_path: '/ws/primary',
+    slug: 'jinli'
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    $activeGatewayProfile.set('default')
+    setShowAllProfiles(false)
+    $projects.set([project])
+    $projectTree.set([])
+  })
+
+  it('promotes the oldest remaining folder, as the backend does, only when the primary goes', () => {
+    expect(nextPrimaryFolder(project.folders, '/ws/primary')?.path).toBe('/ws/old')
+    expect(nextPrimaryFolder(project.folders, '/ws/new')).toBeNull()
+    expect(nextPrimaryFolder([folder('/ws/only', 1, true)], '/ws/only')).toBeNull()
+  })
+
+  it('calls projects.remove_folder and drops the folder from the cache', async () => {
+    const request = vi.fn().mockResolvedValue({})
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    await removeProjectFolder('p_1', '/ws/new')
+
+    expect(request).toHaveBeenCalledWith(
+      'projects.remove_folder',
+      expect.objectContaining({ id: 'p_1', path: '/ws/new' })
+    )
+    expect($projects.get()[0].folders.map(f => f.path)).toEqual(['/ws/primary', '/ws/old'])
+    expect($projects.get()[0].primary_path).toBe('/ws/primary')
+  })
+
+  it('re-points the cached primary when the primary folder is removed', async () => {
+    const request = vi.fn().mockResolvedValue({})
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    await removeProjectFolder('p_1', '/ws/primary')
+
+    const [cached] = $projects.get()
+    expect(cached.primary_path).toBe('/ws/old')
+    expect(cached.folders.find(f => f.is_primary)?.path).toBe('/ws/old')
+  })
+
+  it('rolls the cache back when the backend refuses', async () => {
+    const request = vi.fn().mockRejectedValue(new Error('nope'))
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    await expect(removeProjectFolder('p_1', '/ws/primary')).rejects.toThrow('nope')
+    expect($projects.get()[0]).toEqual(project)
   })
 })
 

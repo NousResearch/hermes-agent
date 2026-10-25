@@ -30,6 +30,13 @@ Gmail, Calendar, Drive, Contacts, Sheets, and Docs — through Hermes-managed OA
 
 - `scripts/setup.py` — OAuth2 setup (run once to authorize)
 - `scripts/google_api.py` — compatibility wrapper CLI. It prefers `gws` for operations when available, while preserving Hermes' existing JSON output contract.
+- [Legacy bridge source](scripts/gws_bridge.py) — legacy operator-only source review.
+  Read with `read_file` only when an operator explicitly requests review of this
+  legacy utility; do not execute it or use it as an alternative entrypoint.
+  Its token write is non-atomic, `token_uri` is read from token data, and the
+  refresh error body can expose sensitive details. Treat these as source-review
+  risks, not a validated execution path. `scripts/google_api.py` remains the
+  canonical entrypoint; the Usage commands and confirmation rules below still apply.
 
 ## First-Time Setup
 

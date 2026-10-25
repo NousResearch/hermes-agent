@@ -10,18 +10,16 @@ Create, search, triage, and manage GitHub issues. Each section shows `gh` first,
 ### Setup
 
 ```bash
-if command -v gh &>/dev/null && gh auth status &>/dev/null; then
-  AUTH="gh"
-else
-  AUTH="git"
-  if [ -z "$GITHUB_TOKEN" ]; then
-    if _hermes_env="${HERMES_HOME:-$HOME/.hermes}/.env"; [ -f "$_hermes_env" ] && grep -q "^GITHUB_TOKEN=" "$_hermes_env"; then
-      GITHUB_TOKEN=$(grep "^GITHUB_TOKEN=" "$_hermes_env" | head -1 | cut -d= -f2 | tr -d '\n\r')
-    elif grep -q "github.com" ~/.git-credentials 2>/dev/null; then
-      GITHUB_TOKEN=$(uv run python "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/git-credential-token.py")
-    fi
-  fi
+# Prefer the installed canonical helper; bundled fallback stays self-contained.
+_helper="${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/gh-env.sh"
+if [ ! -f "$_helper" ]; then
+  _helper="${HERMES_HOME:-$HOME/.hermes}/skills/software-development/github/scripts/gh-env.sh"
 fi
+source "$_helper"
+unset _helper
+AUTH="$GH_AUTH_METHOD"
+# git/none are not API authentication; stop before any curl/gh API operation.
+case "$AUTH" in gh|curl) ;; *) echo "API authentication required" >&2; exit 1 ;; esac
 
 REMOTE_URL=$(git remote get-url origin)
 OWNER_REPO=$(echo "$REMOTE_URL" | sed -E 's|.*github\.com[:/]||; s|\.git$||')

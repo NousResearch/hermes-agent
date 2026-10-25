@@ -4,27 +4,33 @@ Complete guide for managing the PR lifecycle. Each section shows the `gh` way fi
 
 ## Prerequisites
 
-- Authenticated with GitHub (see `github-auth` skill)
+- GitHub API operations require authenticated `gh` or a preconfigured `GITHUB_TOKEN` (see `github-auth`). Pure-Git operations do not require API authentication.
 - Inside a git repository with a GitHub remote
 
 ### Quick Auth Detection
 
 ```bash
-# Determine which method to use throughout this workflow
-if command -v gh &>/dev/null && gh auth status &>/dev/null; then
-  AUTH="gh"
-else
-  AUTH="git"
-  # Ensure we have a token for API calls
-  if [ -z "$GITHUB_TOKEN" ]; then
-    if _hermes_env="${HERMES_HOME:-$HOME/.hermes}/.env"; [ -f "$_hermes_env" ] && grep -q "^GITHUB_TOKEN=" "$_hermes_env"; then
-      GITHUB_TOKEN=$(grep "^GITHUB_TOKEN=" "$_hermes_env" | head -1 | cut -d= -f2 | tr -d '\n\r')
-    elif grep -q "github.com" ~/.git-credentials 2>/dev/null; then
-      GITHUB_TOKEN=$(uv run python "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/git-credential-token.py")
-    fi
-  fi
+# Prefer the installed canonical helper; bundled fallback stays self-contained.
+_helper="${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/gh-env.sh"
+if [ ! -f "$_helper" ]; then
+  _helper="${HERMES_HOME:-$HOME/.hermes}/skills/software-development/github/scripts/gh-env.sh"
 fi
+source "$_helper"
+unset _helper
+AUTH="$GH_AUTH_METHOD"
+# Detection does not block git-only operations.
 echo "Using: $AUTH"
+```
+
+### API Authentication Gate
+
+Run this gate before every GitHub API operation through `gh` or `curl`,
+including PR creation, checks, reviews, and merges. Do not run it for pure-Git
+branch creation, commits, fetch, or push. `git` and `none` do not authorize API
+access. Never obtain an API token from Git's credential store.
+
+```bash
+case "$AUTH" in gh|curl) ;; *) echo "API authentication required for PR operations" >&2; exit 1 ;; esac
 ```
 
 ### Extracting Owner/Repo from the Git Remote

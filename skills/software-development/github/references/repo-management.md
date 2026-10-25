@@ -4,23 +4,33 @@ Create, clone, fork, configure, and manage GitHub repositories. Each section sho
 
 ## Prerequisites
 
-- Authenticated with GitHub (see `github-auth` skill)
+- GitHub API operations require authenticated `gh` or a preconfigured `GITHUB_TOKEN` (see `github-auth`). Pure-Git operations do not require API authentication.
 
 ### Setup
 
 ```bash
-if command -v gh &>/dev/null && gh auth status &>/dev/null; then
-  AUTH="gh"
-else
-  AUTH="git"
-  if [ -z "$GITHUB_TOKEN" ]; then
-    if _hermes_env="${HERMES_HOME:-$HOME/.hermes}/.env"; [ -f "$_hermes_env" ] && grep -q "^GITHUB_TOKEN=" "$_hermes_env"; then
-      GITHUB_TOKEN=$(grep "^GITHUB_TOKEN=" "$_hermes_env" | head -1 | cut -d= -f2 | tr -d '\n\r')
-    elif grep -q "github.com" ~/.git-credentials 2>/dev/null; then
-      GITHUB_TOKEN=$(uv run python "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/git-credential-token.py")
-    fi
-  fi
+# Prefer the installed canonical helper; bundled fallback stays self-contained.
+_helper="${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/gh-env.sh"
+if [ ! -f "$_helper" ]; then
+  _helper="${HERMES_HOME:-$HOME/.hermes}/skills/software-development/github/scripts/gh-env.sh"
 fi
+source "$_helper"
+unset _helper
+AUTH="$GH_AUTH_METHOD"
+# Detection does not block git-only operations.
+echo "Using: $AUTH"
+```
+
+### API Authentication Gate
+
+Run this gate before every GitHub API operation through `gh` or `curl`,
+including repository creation, forks, settings, releases, and metadata queries.
+Do not run it for pure-Git clone, fetch, push, or fork synchronization. `git`
+and `none` do not authorize API access. Never obtain an API token from Git's
+credential store. Resolve `GH_USER` only when the chosen API operation needs it.
+
+```bash
+case "$AUTH" in gh|curl) ;; *) echo "API authentication required for repository API operations" >&2; exit 1 ;; esac
 
 # Get your GitHub username (needed for several operations)
 if [ "$AUTH" = "gh" ]; then
@@ -46,7 +56,7 @@ REPO=$(echo "$OWNER_REPO" | cut -d/ -f2)
 Cloning is pure `git` — works identically either way:
 
 ```bash
-# Clone via HTTPS (works with credential helper or token-embedded URL)
+# Clone via HTTPS with a configured credential helper; never embed tokens.
 git clone https://github.com/owner/repo-name.git
 
 # Clone into a specific directory
@@ -288,51 +298,27 @@ curl -s -X PUT \
 
 ## 7. Secrets Management (GitHub Actions)
 
-**With gh:**
+**User-only secret entry:** the user creates/rotates Actions secrets in GitHub's
+repository settings or runs `gh secret set API_KEY` in their own trusted terminal
+and enters the value privately at the prompt. The agent must not receive secret
+values, put them in command arguments, redirect private keys into gh, or prepare
+plaintext secret payloads. Authentication alone does not authorize creating,
+rotating, or deleting a secret.
+
+**With gh (names/metadata only):**
 
 ```bash
-gh secret set API_KEY --body "your-secret-value"
-gh secret set SSH_KEY < ~/.ssh/id_rsa
 gh secret list
+# Delete only after explicit user authorization; this contains no secret value.
 gh secret delete API_KEY
 ```
 
-**With curl:**
-
-Secrets require encryption with the repo's public key — more involved via API:
+**Without gh:** the user handles secret encryption/upload outside the agent.
+The REST API requires repository-public-key encryption; do not inline plaintext
+secret values in a Python command or agent-generated payload. The agent can
+inspect names/metadata with the existing environment token:
 
 ```bash
-# Get the repo's public key for encrypting secrets
-curl -s \
-  -H "Authorization: token $GITHUB_TOKEN" \
-  https://api.github.com/repos/$OWNER/$REPO/actions/secrets/public-key
-
-# Encrypt and set (requires Python with PyNaCl)
-python -c "
-from base64 import b64encode
-from nacl import encoding, public
-import json, sys
-
-# Get the public key
-key_id = '<key_id_from_above>'
-public_key = '<base64_key_from_above>'
-
-# Encrypt
-sealed = public.SealedBox(
-    public.PublicKey(public_key.encode('utf-8'), encoding.Base64Encoder)
-).encrypt('your-secret-value'.encode('utf-8'))
-print(json.dumps({
-    'encrypted_value': b64encode(sealed).decode('utf-8'),
-    'key_id': key_id
-}))"
-
-# Then PUT the encrypted secret
-curl -s -X PUT \
-  -H "Authorization: token $GITHUB_TOKEN" \
-  https://api.github.com/repos/$OWNER/$REPO/actions/secrets/API_KEY \
-  -d '<output from python script above>'
-
-# List secrets (names only, values hidden)
 curl -s \
   -H "Authorization: token $GITHUB_TOKEN" \
   https://api.github.com/repos/$OWNER/$REPO/actions/secrets \
@@ -342,7 +328,9 @@ for s in json.load(sys.stdin)['secrets']:
     print(f\"  {s['name']:30}  updated: {s['updated_at']}\")"
 ```
 
-Note: For secrets, `gh secret set` is dramatically simpler. If setting secrets is needed and `gh` isn't available, recommend installing it for just that operation.
+Verify only the intended secret's name and update timestamp after the user's
+write; secret values cannot be read back. Metadata verifies the record, not the
+value's correctness. Verify behavior with an authorized workflow only if needed.
 
 ## 8. Releases
 
@@ -500,4 +488,4 @@ for g in json.load(sys.stdin):
 | Create release | `gh release create v1.0` | `curl POST /repos/o/r/releases` |
 | List workflows | `gh workflow list` | `curl GET /repos/o/r/actions/workflows` |
 | Rerun CI | `gh run rerun ID` | `curl POST /repos/o/r/actions/runs/ID/rerun` |
-| Set secret | `gh secret set KEY` | `curl PUT /repos/o/r/actions/secrets/KEY` (+ encryption) |
+| Set secret (user-only) | User runs `gh secret set KEY` privately | User handles encryption/upload outside the agent |

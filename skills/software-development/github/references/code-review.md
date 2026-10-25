@@ -10,18 +10,16 @@ Perform code reviews on local changes before pushing, or review open PRs on GitH
 ### Setup (for PR interactions)
 
 ```bash
-if command -v gh &>/dev/null && gh auth status &>/dev/null; then
-  AUTH="gh"
-else
-  AUTH="git"
-  if [ -z "$GITHUB_TOKEN" ]; then
-    if _hermes_env="${HERMES_HOME:-$HOME/.hermes}/.env"; [ -f "$_hermes_env" ] && grep -q "^GITHUB_TOKEN=" "$_hermes_env"; then
-      GITHUB_TOKEN=$(grep "^GITHUB_TOKEN=" "$_hermes_env" | head -1 | cut -d= -f2 | tr -d '\n\r')
-    elif grep -q "github.com" ~/.git-credentials 2>/dev/null; then
-      GITHUB_TOKEN=$(uv run python "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/git-credential-token.py")
-    fi
-  fi
+# Prefer the installed canonical helper; bundled fallback stays self-contained.
+_helper="${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/gh-env.sh"
+if [ ! -f "$_helper" ]; then
+  _helper="${HERMES_HOME:-$HOME/.hermes}/skills/software-development/github/scripts/gh-env.sh"
 fi
+source "$_helper"
+unset _helper
+AUTH="$GH_AUTH_METHOD"
+# git/none are not API authentication; local git review still works.
+case "$AUTH" in gh|curl) ;; *) echo "API authentication required for PR interactions" >&2; exit 1 ;; esac
 
 REMOTE_URL=$(git remote get-url origin)
 OWNER_REPO=$(echo "$REMOTE_URL" | sed -E 's|.*github\.com[:/]||; s|\.git$||')
@@ -321,10 +319,9 @@ When the user asks you to "review PR #N", "look at this PR", or gives you a PR U
 
 ### Step 1: Set up environment
 
-```bash
-source "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/gh-env.sh"
-# Or run the inline setup block from the top of this skill
-```
+Use the [setup block](#setup-for-pr-interactions) above: it selects the canonical
+installed helper or the safe bundled fallback, and refuses API steps for `git`
+or `none`. Local git review does not require API authentication.
 
 ### Step 2: Gather PR context
 

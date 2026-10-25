@@ -177,19 +177,32 @@ def _resolve_session_id(db, session_id: str) -> Optional[str]:
             raise
 
 
-def _is_in_memory_draft(session_id: str) -> bool:
+def _draft_scope_home(profile):
+    """Profile home the live-draft lookup is scoped to, mirroring the registry's own
+    normalization (#100029): records stamp ``None`` for the profile that IS this process's
+    home, so a request resolving to this home must scope to ``None`` as well — a resolved
+    path would never match the launch profile's records."""
+    from hermes_cli.config import get_hermes_home
+
+    home = Path(_history_profile_home(profile))
+    return None if home.resolve() == Path(get_hermes_home()).resolve() else home
+
+
+def _is_in_memory_draft(session_id: str, profile_home) -> bool:
     """True when *session_id* is a live lazy draft (in-memory session, no DB row yet).
 
     The renderer fetches /messages + /timeline right after ``session.create``; an empty
     draft has no row by design (anti "Untitled" litter), so answer 200-empty instead of
-    a 404 that fail-latches the transcript bind on the client.
+    a 404 that fail-latches the transcript bind on the client. ``profile_home`` scopes the
+    live-draft lookup (same-key sessions can coexist across profiles, #100029) so another
+    profile's live draft can never mask this profile's persisted session.
 
     ImportError here means the TUI/desktop gateway backend is not installed (dashboard-
     only deployment); anything else propagates — a store bug must fail loudly, not masquerade
     as "not a draft"."""
     try:
         from tui_gateway.server import in_memory_draft_session_keys
-        return session_id in in_memory_draft_session_keys()
+        return session_id in in_memory_draft_session_keys(profile_home)
     except ImportError:
         return False
 
@@ -761,7 +774,7 @@ async def get_session_messages(
     if order not in (None, "oldest", "latest"):
         raise HTTPException(status_code=400, detail="order must be one of: oldest, latest")
 
-    if _is_in_memory_draft(session_id):
+    if _is_in_memory_draft(session_id, _draft_scope_home(profile)):
         return {"session_id": session_id, "profile": _serving_profile(profile),
                 "messages": [],
                 "pagination": {"limit": min(limit, 500) if limit is not None else 500,
@@ -834,7 +847,7 @@ async def get_session_timeline(
     from hermes_state_timeline import get_session_timeline as read_timeline
 
     owner = _serving_profile(profile)
-    if _is_in_memory_draft(session_id):
+    if _is_in_memory_draft(session_id, _draft_scope_home(profile)):
         return {"session_id": session_id, "profile": owner,
                 "entries": [],
                 "pagination": {"limit": limit, "after_row_id": after_row_id,

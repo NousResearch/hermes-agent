@@ -97,7 +97,7 @@ _sessions: dict[str, dict] = {}
 _methods: dict[str, callable] = {}
 
 
-def in_memory_draft_session_keys() -> set:
+def in_memory_draft_session_keys(profile_home=None) -> set:
     """Durable session keys of live sessions whose DB row does not exist yet (lazy drafts).
 
     The REST layer uses this to answer 200-empty for a draft's transcript reads instead of 404:
@@ -106,10 +106,20 @@ def in_memory_draft_session_keys() -> set:
     (see tui_gateway/methods_session.py ``session.create`` — the same reason seeded branch
     children persist their row up front). Records carry ``_db_row_pending`` from creation and
     drop it at the single persist chokepoint (``_ensure_session_db_row``) or the seeded-row
-    paths."""
+    paths.
+
+    ``profile_home`` scopes the answer the way live-session lookups are scoped (#100029):
+    timestamp-based durable keys are unique only per profile, so an unscoped key set would let
+    profile A's live draft mask profile B's persisted session carrying the same key. ``None``
+    means the launch profile — records stamp ``None`` there — and a profile home path matches
+    only that profile's records."""
     with _sessions_lock:
+        want = str(profile_home) if profile_home else None
         return {rec["session_key"] for rec in _sessions.values()
-                if rec.get("session_key") and rec.get("_db_row_pending")}
+                if rec.get("session_key") and rec.get("_db_row_pending")
+                and (rec.get("profile_home") or None) == want}
+
+
 _db = None
 _db_error: str | None = None
 _stdout_lock = threading.Lock()

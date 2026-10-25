@@ -79,3 +79,73 @@ async def test_unknown_session_id_still_404s(app, tmp_path):
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://localhost') as client:
         r = await client.get('/api/sessions/never-existed/messages')
     assert r.status_code == 404, r.text
+
+
+@pytest.fixture
+def other_profile(app, monkeypatch, tmp_path):
+    """A named profile ``other`` with its own home (and store dir), resolved by the router.
+
+    Timestamp-based durable keys are only unique per profile (#100029), so a live draft
+    and a persisted session CAN share one — these tests pin that the draft window stays
+    inside its own profile."""
+    home = tmp_path / 'profiles' / 'other'
+    home.mkdir(parents=True)
+    monkeypatch.setattr('hermes_cli.web_routers.sessions._cron_profile_home',
+                        lambda name=None: (name or 'other', home))
+    return home
+
+
+def _register_live(key, profile_home=None):
+    record = {'session_key': key, '_db_row_pending': True}
+    if profile_home is not None:
+        record['profile_home'] = profile_home
+    tui_server._sessions[key] = record
+    return key
+
+
+@pytest.mark.asyncio
+async def test_launch_draft_does_not_mask_other_profiles_persisted_session(app, other_profile, tmp_path):
+    """The masking bug this scoping exists for: profile A's live draft must not 200-empty
+    profile B's persisted session that carries the same durable key."""
+    with SessionDB(db_path=other_profile / 'state.db') as db:
+        db.create_session('shared-key', source='cli')
+        db.append_message('shared-key', 'user', 'persisted body')
+    _register_live('shared-key')  # launch-profile draft (records stamp no profile_home)
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://localhost') as client:
+            r = await client.get('/api/sessions/shared-key/messages', params={'profile': 'other'})
+    finally:
+        tui_server._sessions.pop('shared-key', None)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body['session_id'] == 'shared-key'
+    assert body['pagination']['returned'] == 1
+    assert body['messages'][0]['content'] == 'persisted body'
+
+
+@pytest.mark.asyncio
+async def test_named_profile_draft_answers_200_empty_for_its_own_profile(app, other_profile):
+    _register_live('draft-other', profile_home=str(other_profile))
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://localhost') as client:
+            r = await client.get('/api/sessions/draft-other/messages', params={'profile': 'other'})
+    finally:
+        tui_server._sessions.pop('draft-other', None)
+    assert r.status_code == 200, r.text
+    assert r.json()['pagination']['returned'] == 0
+
+
+@pytest.mark.asyncio
+async def test_named_profile_draft_does_not_leak_into_launch_scope(app, other_profile, tmp_path):
+    # The launch store has no such row; the draft belongs to `other`, so the unscoped
+    # request must fall through to the store and 404 — not 200-empty off another
+    # profile's live session.
+    with SessionDB(db_path=tmp_path / 'state.db'):
+        pass
+    _register_live('draft-other', profile_home=str(other_profile))
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://localhost') as client:
+            r = await client.get('/api/sessions/draft-other/messages')
+    finally:
+        tui_server._sessions.pop('draft-other', None)
+    assert r.status_code == 404, r.text

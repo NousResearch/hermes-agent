@@ -78,6 +78,7 @@ import {
   shouldFollowPtyOutput,
 } from "@/lib/pty-scroll";
 import { installTerminalTouchScroll } from "@/lib/terminal-touch-scroll";
+import { ringBell } from "@/lib/terminal-bell";
 import { uploadChatImage } from "@/lib/chatImagePaste";
 import { attachChatImageDropListeners } from "@/lib/chat-image-drop";
 import { maybeReloadForLoopbackWsAuthFailure } from "@/lib/dashboard-auth-reload";
@@ -543,6 +544,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       theme: terminalTheme,
     });
     termRef.current = term;
+
+    // Audible bell. Whenever the TUI opens a blocking prompt — an approval, a
+    // clarify question, a secret/sudo prompt — it writes C0 BEL (`\x07`) into
+    // the PTY stream (gated server-side by `display.bell_on_prompt`). xterm
+    // parses the byte and fires `onBell`, but a browser plays no sound for BEL
+    // on its own, so without this hook a prompt that is waiting on the user is
+    // silent unless they happen to be looking at the tab. See
+    // `terminal-bell.ts` for why this is WebAudio rather than an audio asset.
+    term.onBell(() => ringBell());
 
     // --- Clipboard integration ---------------------------------------
     //

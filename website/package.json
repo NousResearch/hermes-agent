@@ -1,4 +1,5 @@
 {
+  "minimumReleaseAge": 259200,
   "name": "website",
   "version": "0.0.0",
   "private": true,

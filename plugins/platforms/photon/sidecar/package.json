@@ -1,4 +1,5 @@
 {
+  "minimumReleaseAge": 259200,
   "name": "@hermes-agent/photon-sidecar",
   "private": true,
   "version": "0.4.0",

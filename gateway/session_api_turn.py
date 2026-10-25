@@ -170,8 +170,12 @@ def admit_api_steps(adapter, **kwargs):
         payload['api_turn_v1']['run_owner_scope'] = run_owner_scope
     # Refuse a foreign-surface target before committing any media for it (a refused
     # admission otherwise retains its image bytes under native-inputs/ forever).
+    # Sources this door itself creates (browser extension, dashboard) belong to it, so
+    # they admit turns; sessions owned by another surface (telegram, desktop, cli, ...)
+    # stay refused. Hosted rooms are bot_room and are not part of that create tuple.
+    from gateway.session_api import API_OWNED_SOURCES
     existing = authority.db.get_session(sid)
-    if existing is not None and existing['source'] not in ('api_server', 'bot_room'):
+    if existing is not None and existing['source'] not in API_OWNED_SOURCES + ('bot_room',):
         raise RuntimeStoreError('permission_denied')
     if kwargs.get('turn_author') is not None:
         from agent.turn_author import parse_turn_author

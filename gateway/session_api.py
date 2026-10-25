@@ -11,6 +11,12 @@ from hermes_state_runtime import RuntimeStoreError, _epoch, _json
 
 from hermes_state_local import API_BINDING_PREFIX as _BINDING_PREFIX, API_DECLARED_PREFIX as _DECLARED_PREFIX
 
+# Sources this door both stamps and runs. POST /api/sessions also accepts foreign labels
+# (cli, telegram, discord, slack, desktop); those rows belong to another surface, so bind
+# and admit keep refusing them. ``browser`` is stored as ``hermes_browser``. Hosted rooms
+# stay ``bot_room`` and are admitted only with a server dispatch, not through this tuple.
+API_OWNED_SOURCES = ('api_server', 'hermes_browser', 'dashboard')
+
 
 def declared_api_session(db, key):
     with db._read_ctx() as conn:
@@ -162,6 +168,14 @@ def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=
     if not isinstance(session_id, str) or not session_id or _is_path_unsafe(session_id):
         raise RuntimeStoreError('invalid_params')
     storage_source, title, room_identity, room_generation = 'api_server', None, None, 0
+    if hosted_dispatch is None:
+        # POST /api/sessions can stamp a caller-declared first-party source (the browser
+        # extension sends "browser" -> hermes_browser, the dashboard its own). Those rows
+        # belong to this door, so the binding adopts the row's source instead of insisting
+        # on api_server. The write below still refuses a source that does not match.
+        row_source = (authority.db.get_session(session_id) or {}).get('source')
+        if row_source in API_OWNED_SOURCES:
+            storage_source = row_source
     if hosted_dispatch is not None:
         from gateway.hosted_room_peer import HostedMemberDispatch
         dispatch = HostedMemberDispatch.from_mapping(hosted_dispatch)
@@ -191,8 +205,10 @@ def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=
                'route': route, 'entry': entry.to_dict()}
     if declared_key:
         receipt['declared_key'] = declared_key
+    if storage_source != 'api_server':
+        receipt['storage_source'] = storage_source
     if room_identity is not None:
-        receipt.update(storage_source=storage_source, room_identity=room_identity)
+        receipt['room_identity'] = room_identity
         if room_generation:
             receipt['room_generation'] = room_generation
 

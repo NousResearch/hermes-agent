@@ -286,6 +286,15 @@ class CLICommandsSessionToolsMixin:
         from hermes_cli.slash_exec import CommandContext, execute_command
         _say_block(execute_command("autoprune", CommandContext(surface="cli", args=cmd.partition(" ")[2])).text)
 
+    def _handle_after_command(self, cmd: str):
+        """/after sleep|hibernate|shutdown|cancel — one power action once all agent work is done."""
+        if getattr(self, "is_slash_worker", False):
+            # The TUI/Desktop worker is not the process that runs turns, so it would read as idle.
+            _say_block("/after is not available in the TUI or Desktop yet; use the classic CLI or a messaging bot.")
+            return
+        from hermes_cli.power_after import run_command
+        _say_block(run_command(_command_arg(cmd), notify=_say_block))
+
     def _handle_profile_command(self):
         """Display active profile name and home directory."""
         from hermes_cli.slash_exec import CommandContext, execute_command

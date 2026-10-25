@@ -604,6 +604,17 @@ class GatewaySlashCommandsMixin(
             clear_local_auto_prune_notice(self, event.source)
         return reply
 
+    async def _handle_after_command(self, event: MessageEvent) -> str:
+        """Handle /after — sleep/hibernate/shut down the host once all agent work is done."""
+        import contextvars
+        from hermes_cli.power_after import run_command
+        loop, ctx, source = asyncio.get_running_loop(), contextvars.copy_context(), event.source
+
+        def notify(text: str) -> None:  # called from the watcher thread; deliver in the arming chat's scope
+            ctx.copy().run(asyncio.run_coroutine_threadsafe, self._send_command_ack(source, text, "/after"), loop)
+
+        return run_command(event.get_command_args(), notify=notify)
+
     async def _handle_version_command(self, event: MessageEvent) -> str:
         """Handle /version — show the running Hermes Agent version."""
         return _execute("version").text

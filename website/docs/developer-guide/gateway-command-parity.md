@@ -26,10 +26,11 @@ narrower routes (`hermes_cli/gateway_chat_commands.py`).
 setting to this local session (its next turn and `config.get`), saving config.yaml only where the
 handler does; `client-local (cli_only)` commands are terminal/UI features of a client.
 
-104 registry commands: 29 control, 19 read, 56 refused.
+105 registry commands: 29 control, 19 read, 57 refused.
 
 | Command | Gateway (`slash.exec`) | Classic CLI | Ink | Desktop | ACP | Notes |
 |---|---|---|---|---|---|---|
+| `/after` | refused | HermesCLI._handle_after_command | slash.exec: refused | unavailable: terminal | slash.exec: refused |  |
 | `/agents` (/tasks) | refused | HermesCLI._handle_agents_command | delegation.pause | action: agents | slash.exec: refused | gateway-wide: lists every chat's running agents and the process's async jobs |
 | `/approvals` | control | HermesCLI._handle_approvals_command | slash.exec | slash.exec | slash.exec | per-session setting (gateway handler) |
 | `/approve` | control | messaging-only: unknown command | slash.exec | slash.exec | slash.exec | messaging-only |

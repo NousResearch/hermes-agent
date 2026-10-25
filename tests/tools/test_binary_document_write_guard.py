@@ -9,8 +9,10 @@ allowing new-.pdf creation (raw PDF syntax is text-authorable).
 import contextlib
 import json
 import sqlite3
+import subprocess
 import zipfile
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -19,6 +21,34 @@ from tools.binary_extensions import (
     is_pdf_path,
 )
 from tools.file_tools import patch_tool, write_file_tool
+from tools.file_operations import ShellFileOperations
+
+
+def _use_nonlocal_file_ops(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, prepend_probe_banner: bool = False,
+) -> None:
+    """Run the normal file-tool calls through a shell-backed non-local backend."""
+    env = MagicMock()
+    env.cwd = str(tmp_path)
+
+    def execute(command: str, **kwargs):
+        completed = subprocess.run(
+            command,
+            shell=True,
+            text=True,
+            capture_output=True,
+            input=kwargs.get("stdin_data"),
+            check=False,
+        )
+        output = completed.stdout
+        if prepend_probe_banner and "__HERMES_BINARY_GUARD_" in command:
+            output = "remote login banner\n" + output
+        return {"output": output, "returncode": completed.returncode}
+
+    env.execute.side_effect = execute
+    file_ops = ShellFileOperations(env)
+    monkeypatch.setattr("tools.file_tools._get_file_ops", lambda _task_id: file_ops)
+    monkeypatch.setattr("tools.file_tools_paths._uses_container_paths", lambda _task_id: True)
 
 
 def _make_minimal_docx(path: Path) -> None:
@@ -79,6 +109,31 @@ class TestExtensionHelpers:
 
 
 class TestWriteFileToolGuard:
+    def test_write_file_rejects_nonlocal_text_symlink_to_docx(self, tmp_path: Path, monkeypatch):
+        _use_nonlocal_file_ops(monkeypatch, tmp_path)
+        docx = tmp_path / "report.docx"
+        docx.write_bytes(b"Quarterly numbers look good.\n")
+        original = docx.read_bytes()
+        alias = tmp_path / "report.txt"
+        alias.symlink_to(docx.name)
+
+        result = json.loads(write_file_tool(str(alias), "edited text"))
+
+        assert "binary document" in (result.get("error") or "").lower()
+        assert docx.read_bytes() == original, "document bytes must be untouched"
+
+    def test_write_file_rejects_text_symlink_to_docx(self, tmp_path: Path):
+        docx = tmp_path / "report.docx"
+        docx.write_bytes(b"Quarterly numbers look good.\n")
+        original = docx.read_bytes()
+        alias = tmp_path / "report.txt"
+        alias.symlink_to(docx.name)
+
+        result = json.loads(write_file_tool(str(alias), "edited text"))
+
+        assert "binary document" in (result.get("error") or "").lower()
+        assert docx.read_bytes() == original, "document bytes must be untouched"
+
     def test_write_file_rejects_existing_docx(self, tmp_path: Path):
         docx = tmp_path / "report.docx"
         _make_minimal_docx(docx)
@@ -164,6 +219,102 @@ class TestWriteFileToolGuard:
 
 
 class TestPatchToolGuard:
+    @pytest.mark.parametrize("mode", ["replace", "patch"])
+    def test_patch_rejects_nonlocal_text_symlink_to_docx(self, tmp_path: Path, monkeypatch, mode: str):
+        _use_nonlocal_file_ops(monkeypatch, tmp_path)
+        docx = tmp_path / f"{mode}.docx"
+        docx.write_bytes(b"Quarterly numbers look good.\n")
+        original = docx.read_bytes()
+        alias = tmp_path / f"{mode}.txt"
+        alias.symlink_to(docx.name)
+
+        if mode == "replace":
+            result = json.loads(patch_tool(
+                mode="replace", path=str(alias), old_string="good", new_string="great"))
+        else:
+            result = json.loads(patch_tool(
+                mode="patch",
+                patch=(
+                    "*** Begin Patch\n"
+                    f"*** Update File: {alias}\n"
+                    "@@\n"
+                    "-Quarterly numbers look good.\n"
+                    "+Quarterly numbers look great.\n"
+                    "*** End Patch"),
+            ))
+
+        assert "binary document" in (result.get("error") or "").lower()
+        assert docx.read_bytes() == original, "document bytes must be untouched"
+
+    @pytest.mark.parametrize("mode", ["write", "replace", "patch"])
+    def test_nonlocal_probe_banner_fails_closed_for_text_symlink(self, tmp_path: Path, monkeypatch, mode: str):
+        _use_nonlocal_file_ops(monkeypatch, tmp_path, prepend_probe_banner=True)
+        docx = tmp_path / f"{mode}.docx"
+        docx.write_bytes(b"Quarterly numbers look good.\n")
+        original = docx.read_bytes()
+        alias = tmp_path / f"{mode}.txt"
+        alias.symlink_to(docx.name)
+
+        if mode == "write":
+            result = json.loads(write_file_tool(str(alias), "edited text"))
+        elif mode == "replace":
+            result = json.loads(patch_tool(
+                mode="replace", path=str(alias), old_string="good", new_string="great"))
+        else:
+            result = json.loads(patch_tool(
+                mode="patch",
+                patch=(
+                    "*** Begin Patch\n"
+                    f"*** Update File: {alias}\n"
+                    "@@\n"
+                    "-Quarterly numbers look good.\n"
+                    "+Quarterly numbers look great.\n"
+                    "*** End Patch"),
+            ))
+
+        assert "could not resolve a symbolic link" in (result.get("error") or "").lower()
+        assert docx.read_bytes() == original, "document bytes must be untouched"
+
+    def test_patch_modes_reject_text_symlink_to_docx(self, tmp_path: Path):
+        results = []
+        for mode in ("replace", "patch"):
+            docx = tmp_path / f"{mode}.docx"
+            docx.write_bytes(b"Quarterly numbers look good.\n")
+            original = docx.read_bytes()
+            alias = tmp_path / f"{mode}.txt"
+            alias.symlink_to(docx.name)
+
+            if mode == "replace":
+                result = json.loads(
+                    patch_tool(
+                        mode="replace",
+                        path=str(alias),
+                        old_string="good",
+                        new_string="great",
+                    )
+                )
+            else:
+                v4a = (
+                    "*** Begin Patch\n"
+                    f"*** Update File: {alias}\n"
+                    "@@\n"
+                    "-Quarterly numbers look good.\n"
+                    "+Quarterly numbers look great.\n"
+                    "*** End Patch"
+                )
+                result = json.loads(patch_tool(mode="patch", patch=v4a))
+
+            results.append(
+                (
+                    mode,
+                    result.get("error") or "",
+                    docx.read_bytes() == original,
+                )
+            )
+
+        assert all("binary document" in error.lower() for _, error, _ in results), results
+        assert all(unchanged for _, _, unchanged in results), results
+
     def test_patch_replace_rejects_docx(self, tmp_path: Path):
         docx = tmp_path / "report.docx"
         _make_minimal_docx(docx)

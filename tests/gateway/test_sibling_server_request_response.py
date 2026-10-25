@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from tests.gateway.test_session_authorities_multiplex import _reserve_homes, _runner
+from tests.waiting import async_wait_until
 
 
 class _Transport:
@@ -39,7 +40,6 @@ async def test_host_socket_answers_a_sibling_profiles_sudo_request(tmp_path, mon
         await initialize_gateway_runtime(runner)
         store = runner.session_ticket_store
         beta = runner.session_authorities.for_home(homes[2][1])
-        loop = asyncio.get_running_loop()
 
         async def open_beta_chat(request_id):
             ticket = store.mint(profile_id=str(root.resolve()), subject='uid:desk', purpose='interactive',
@@ -66,10 +66,8 @@ async def test_host_socket_answers_a_sibling_profiles_sudo_request(tmp_path, mon
             worker = threading.Thread(target=lambda: out.update(value=ask_viewer(
                 events, session_id, 'sudo', {'command': 'sudo true'}, timeout=5)), daemon=True)
             worker.start()
-            deadline = loop.time() + 5
-            while not any(f.get('method') == 'sudo' for f in transport.frames):
-                assert loop.time() < deadline, transport.frames
-                await asyncio.sleep(0.01)
+            await async_wait_until(lambda: any(f.get('method') == 'sudo' for f in transport.frames), timeout=5,
+                                   what='sudo request frame')
             rid = next(f['id'] for f in transport.frames if f.get('method') == 'sudo')
             return worker, out, rid, events
 

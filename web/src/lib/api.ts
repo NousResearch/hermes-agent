@@ -2005,9 +2005,8 @@ export interface SharedMetricsConsent {
 
 export interface StatusResponse {
   active_sessions: number;
-  /** Phase 7: ``true`` when the dashboard's OAuth gate is engaged
-   * (public bind, no ``--insecure``). Read alongside ``auth_providers``
-   * to render a "gated / loopback" badge. */
+  /** OAuth gate engaged (public bind, no ``--insecure``). Read alongside
+   * ``auth_providers`` to render a "gated / loopback" badge. */
   auth_required?: boolean;
   /** Phase 7: registered ``DashboardAuthProvider`` names (e.g. ``["nous"]``).
    * Empty in loopback mode; empty + ``auth_required=true`` is a
@@ -2059,6 +2058,7 @@ export interface StatusResponse {
    * older gateways. */
   disk?: DiskPressureStatus;
   release_date: string;
+  source_revision?: string | null; // Exact SHA or null; absent on older Hermes.
   version: string;
 }
 

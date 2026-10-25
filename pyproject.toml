@@ -693,6 +693,7 @@ include = [
 
 [tool.setuptools.package-data]
 hermes_cli = [
+  "_build_metadata.json",
   "observability/schemas/*.json",
   "data/*.json",
   "local_runtime/*.json",

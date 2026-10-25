@@ -968,6 +968,13 @@ platform's saved config still lists it. Use this when you want a single
 switch for "turn X off everywhere" rather than editing 15+ platform rows in
 the `hermes tools` UI.
 
+Removal is per tool, so a listed toolset also takes its tools out of any
+enabled toolset that shares them: `search` (just `web_search`) strips
+`web_search` from an enabled `web`. `hermes tools list` and `hermes doctor`
+flag an enabled toolset that loses tools this way, and enabling a toolset in
+`hermes tools` (checklist, `hermes tools enable`, Desktop or dashboard) clears
+every entry here that the enabled toolsets fully cover.
+
 Leaving the list empty, or omitting the key, is a no-op.
 
 ## Git Worktree Isolation

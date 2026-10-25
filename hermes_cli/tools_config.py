@@ -665,6 +665,30 @@ def _prune_toolsets_stripped_by_disabled(enabled_toolsets: set[str], disabled_na
     return {name for name, tools in resolved.items() if not tools or tools & surviving}
 
 
+def toolsets_partially_stripped(config: dict, enabled_toolsets: set[str]) -> dict[str, tuple[list[str], list[str]]]:
+    """``{toolset: (stripped tools, disabled entries stripping them)}`` for enabled toolsets that
+    ``agent.disabled_toolsets`` cuts down without removing (``web`` minus ``web_search`` via ``search``,
+    #134593). ``_prune_toolsets_stripped_by_disabled`` keeps such a toolset "enabled" because some of its
+    tools survive, so inspection surfaces need this to say which ones did not."""
+    from agent.skill_utils import parse_config_string_list
+    from model_tools import _apply_toolset_selection
+    from toolsets import resolve_toolset, validate_toolset
+
+    disabled = [n.strip() for n in parse_config_string_list((config.get("agent") or {}).get("disabled_toolsets")) if n.strip()]
+    report: dict[str, tuple[list[str], list[str]]] = {}
+    for name in sorted(enabled_toolsets):
+        tools = set(resolve_toolset(name)) if validate_toolset(name) else set()
+        by: dict[str, set[str]] = {}
+        for entry in disabled:
+            kept = set(tools)
+            _apply_toolset_selection(kept, [entry], quiet_mode=True, disable=True)
+            if tools - kept:
+                by[entry] = tools - kept
+        if by:
+            report[name] = (sorted(set().union(*by.values())), sorted(by))
+    return report
+
+
 def _recover_platform_native_toolsets(enabled_toolsets: set[str], platform: str, *, skip: set[str]) -> None:
     """Add non-configurable platform toolsets (discord, feishu_*) in place: in the default composite but not in
     CONFIGURABLE_TOOLSETS, so never in a checklist or saved list. Runs for BOTH ``_get_platform_tools`` branches."""

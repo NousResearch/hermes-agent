@@ -15,13 +15,28 @@ test('named canonical prompt listeners receive replay-safe IDs before answering 
       sent.push(frame)
       socket.send(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: { status: 'resolved' } }))
     })
-    socket.send(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'approval.request', session_id: 's', payload: { prompt_id: 'p', execution_generation: 4, choices: ['once', 'deny'] } } }))
+    socket.send(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'event',
+        params: {
+          type: 'approval.request',
+          session_id: 's',
+          payload: { prompt_id: 'p', execution_generation: 4, choices: ['once', 'deny'] }
+        }
+      })
+    )
   })
   const client = new HermesGateway()
   let projected: any
   let received!: () => void
-  const ready = new Promise<void>(resolve => { received = resolve })
-  client.on('approval.request', event => { projected = { ...(event.payload as object) }; received() })
+  const ready = new Promise<void>(resolve => {
+    received = resolve
+  })
+  client.on('approval.request', event => {
+    projected = { ...(event.payload as object) }
+    received()
+  })
 
   try {
     const address = server.address() as { port: number }
@@ -33,7 +48,9 @@ test('named canonical prompt listeners receive replay-safe IDs before answering 
   } finally {
     client.close()
 
-    for (const socket of server.clients) { socket.terminate() }
+    for (const socket of server.clients) {
+      socket.terminate()
+    }
     await new Promise<void>(resolve => server.close(() => resolve()))
   }
 })
@@ -60,18 +77,25 @@ test('a legacy (non-canonical) dial strips canonical-only identity keys the serv
     await client.connect(`ws://127.0.0.1:${address.port}/api/ws?ticket=legacy`)
     await client.request('session.create', { cols: 96, source: 'desktop', cwd: '/x', fast: false, request_id: 'r1' })
     expect(sent.at(-1).params).toEqual({ cols: 96, source: 'desktop', cwd: '/x', fast: false })
-    await client.request('session.branch_stored', { cols: 96, source: 'desktop', parent_session_id: 'p', request_id: 'r2' })
+    await client.request('session.branch_stored', {
+      cols: 96,
+      source: 'desktop',
+      parent_session_id: 'p',
+      request_id: 'r2'
+    })
     expect(sent.at(-1).method).toBe('session.branch_stored')
     expect(sent.at(-1).params).not.toHaveProperty('request_id')
   } finally {
     client.close()
 
-    for (const socket of server.clients) { socket.terminate() }
+    for (const socket of server.clients) {
+      socket.terminate()
+    }
     await new Promise<void>(resolve => server.close(() => resolve()))
   }
 })
 
-test('a legacy dial branches from a message with the serve contract\'s count, never the canonical row boundary', async () => {
+test("a legacy dial branches from a message with the serve contract's count, never the canonical row boundary", async () => {
   // N20: the legacy `session.branch` contract is closed (extra="forbid"); `through_message_id`
   // answered 4000 "out of sync", which is not a missing method, so "Branch from here" failed.
   const wsPackage = 'ws'
@@ -84,9 +108,13 @@ test('a legacy dial branches from a message with the serve contract\'s count, ne
       const frame = JSON.parse(bytes.toString())
       const unknown = Object.keys(frame.params).filter(key => !allowed.has(key))
 
-      socket.send(JSON.stringify(unknown.length
-        ? { jsonrpc: '2.0', id: frame.id, error: { code: 4000, message: `invalid params: ${unknown}` } }
-        : { jsonrpc: '2.0', id: frame.id, result: { session_id: 'child', kept: frame.params.count } }))
+      socket.send(
+        JSON.stringify(
+          unknown.length
+            ? { jsonrpc: '2.0', id: frame.id, error: { code: 4000, message: `invalid params: ${unknown}` } }
+            : { jsonrpc: '2.0', id: frame.id, result: { session_id: 'child', kept: frame.params.count } }
+        )
+      )
     })
   })
   const client = new HermesGateway()
@@ -94,28 +122,38 @@ test('a legacy dial branches from a message with the serve contract\'s count, ne
   try {
     const address = server.address() as { port: number }
     await client.connect(`ws://127.0.0.1:${address.port}/api/ws?ticket=legacy`)
-    await expect(client.request('session.branch', { session_id: 'parent', idempotency_key: 'k', count: 3, through_message_id: 41 }))
-      .resolves.toMatchObject({ session_id: 'child', kept: 3 })
+    await expect(
+      client.request('session.branch', { session_id: 'parent', idempotency_key: 'k', count: 3, through_message_id: 41 })
+    ).resolves.toMatchObject({ session_id: 'child', kept: 3 })
   } finally {
     client.close()
 
-    for (const socket of server.clients) { socket.terminate() }
+    for (const socket of server.clients) {
+      socket.terminate()
+    }
     await new Promise<void>(resolve => server.close(() => resolve()))
   }
 })
 
-test('a compress settle resumes under the caller\'s original timeout and abort signal', async () => {
+test("a compress settle resumes under the caller's original timeout and abort signal", async () => {
   // R4: the follow-up `session.resume` must not fall back to the default 120 s deadline
   // and ignore the caller's AbortSignal (a cancelled compress would otherwise hang).
   const { JsonRpcGatewayClient } = await import('@hermes/shared')
   const wire: Array<[string, unknown, AbortSignal | undefined]> = []
 
-  const spy = vi.spyOn(JsonRpcGatewayClient.prototype, 'request').mockImplementation(async function (method: string, _params?: unknown, timeoutMs?: number, signal?: AbortSignal) {
+  const spy = vi.spyOn(JsonRpcGatewayClient.prototype, 'request').mockImplementation(async function (
+    method: string,
+    _params?: unknown,
+    timeoutMs?: number,
+    signal?: AbortSignal
+  ) {
     wire.push([method, timeoutMs, signal])
 
-    return (method === 'session.mutate'
-      ? { session_id: 's', revision: 5, operation: 'compress', target_session_id: 's', message_count: 2 }
-      : { session_id: 's', revision: 4, execution_generation: 1, messages: [] }) as never
+    return (
+      method === 'session.mutate'
+        ? { session_id: 's', revision: 5, operation: 'compress', target_session_id: 's', message_count: 2 }
+        : { session_id: 's', revision: 4, execution_generation: 1, messages: [] }
+    ) as never
   })
 
   const client = new HermesGateway()
@@ -159,9 +197,12 @@ test('shared-socket equal-ID streams use replay owners and unknown epochs reconc
       calls.push(frame)
       const snapshot = snapshots[frame.params.profile]
 
-      const result = frame.method === 'session.resume' ? snapshot : frame.method === 'prompt.submit'
-        ? { admission_id: 'accepted-beta', ref: { profile_id: 'beta', session_id: 'same' }, status: 'queued' }
-        : { ...snapshot, operation: frame.params.operation }
+      const result =
+        frame.method === 'session.resume'
+          ? snapshot
+          : frame.method === 'prompt.submit'
+            ? { admission_id: 'accepted-beta', ref: { profile_id: 'beta', session_id: 'same' }, status: 'queued' }
+            : { ...snapshot, operation: frame.params.operation }
 
       socket.send(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result }))
     })
@@ -170,19 +211,41 @@ test('shared-socket equal-ID streams use replay owners and unknown epochs reconc
   const named: any[] = []
   const wildcard: any[] = []
   client.on('session.info', event => named.push(event))
-  client.onAny(event => { if (event.type === 'session.info') {wildcard.push(event)} })
+  client.onAny(event => {
+    if (event.type === 'session.info') {
+      wildcard.push(event)
+    }
+  })
 
   try {
     const address = server.address() as { port: number }
     await client.connect(`ws://127.0.0.1:${address.port}/api/ws?native_dial=fixture&ticket=one-use`)
     await client.request('session.resume', { session_id: 'same', profile: 'alpha' })
-    await client.request('prompt.submit', { session_id: 'same', profile: 'beta', submission_id: 'beta-input', text: 'beta' })
-    expect(calls.filter(frame => frame.method === 'session.resume').map(frame => frame.params.profile)).toEqual(['alpha', 'beta'])
+    await client.request('prompt.submit', {
+      session_id: 'same',
+      profile: 'beta',
+      submission_id: 'beta-input',
+      text: 'beta'
+    })
+    expect(calls.filter(frame => frame.method === 'session.resume').map(frame => frame.params.profile)).toEqual([
+      'alpha',
+      'beta'
+    ])
 
-    const send = (epoch: string, generation: number, revision: number) => socket.send(JSON.stringify({
-      jsonrpc: '2.0', method: 'event', params: { type: 'session.info', session_id: 'same',
-        replay_epoch: epoch, execution_generation: generation, payload: { revision, execution_generation: generation } }
-    }))
+    const send = (epoch: string, generation: number, revision: number) =>
+      socket.send(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'event',
+          params: {
+            type: 'session.info',
+            session_id: 'same',
+            replay_epoch: epoch,
+            execution_generation: generation,
+            payload: { revision, execution_generation: generation }
+          }
+        })
+      )
 
     snapshots.alpha = { ...snapshots.alpha, revision: 5, execution_generation: 3 }
     snapshots.beta = { ...snapshots.beta, revision: 21, execution_generation: 10 }
@@ -202,7 +265,9 @@ test('shared-socket equal-ID streams use replay owners and unknown epochs reconc
   } finally {
     client.close()
 
-    for (const peer of server.clients) {peer.terminate()}
+    for (const peer of server.clients) {
+      peer.terminate()
+    }
     await new Promise<void>(resolve => server.close(() => resolve()))
   }
 })

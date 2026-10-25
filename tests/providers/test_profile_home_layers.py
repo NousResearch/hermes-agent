@@ -90,3 +90,49 @@ def test_plugin_installed_after_discovery_is_found_without_a_restart(homes):
 
     assert providers.get_provider_profile("late-install") is not None
     assert "late-install" in {p.name for p in providers.list_providers()}
+
+
+_REENTRANT_PLUGIN = textwrap.dedent(
+    """
+    import reentry_log
+    from providers import list_providers, register_provider
+    from providers.base import ProviderProfile
+
+    reentry_log.LOG.append("{name}:start")
+    list_providers()  # stands in for a module whose body calls list_providers() (hermes_cli.models)
+    reentry_log.LOG.append("{name}:end")
+    register_provider(ProviderProfile(name="{name}", auth_type="external_process",
+                                      base_url="process://{name}", api_mode="chat_completions"))
+    """
+)
+
+
+def test_lookup_during_a_scan_does_not_start_a_nested_scan(homes, tmp_path, monkeypatch):
+    """A plugin whose import calls list_providers() must not make the scan import the NEXT plugin
+    while the first is still half-imported: that nested scan ran claude-bpx against a partially
+    initialized hermes_cli.models and every one of its pins failed with a circular import."""
+    import providers
+
+    launch, _ = homes
+    helper = tmp_path / "helper"
+    helper.mkdir()
+    (helper / "reentry_log.py").write_text("LOG = []\n", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(helper))
+    monkeypatch.delitem(sys.modules, "reentry_log", raising=False)
+
+    _install(launch, "b-second")  # sorted after a-first, so the outer scan imports it second
+    first = launch / "plugins" / "a-first"
+    first.mkdir(parents=True)
+    (first / "plugin.yaml").write_text("name: a-first\nkind: model-provider\n", encoding="utf-8")
+    (first / "__init__.py").write_text(_REENTRANT_PLUGIN.format(name="a-first"), encoding="utf-8")
+    (launch / "plugins" / "b-second" / "__init__.py").write_text(
+        "import reentry_log\nreentry_log.LOG.append('b-second:start')\n" + _PLUGIN.format(name="b-second"),
+        encoding="utf-8",
+    )
+
+    names = {p.name for p in providers.list_providers()}
+
+    import reentry_log
+
+    assert reentry_log.LOG == ["a-first:start", "a-first:end", "b-second:start"]
+    assert {"a-first", "b-second"} <= names

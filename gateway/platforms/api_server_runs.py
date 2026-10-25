@@ -11,6 +11,7 @@ import uuid
 from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 try:
@@ -239,7 +240,10 @@ def _initialize_run_state(self, *, store_factory) -> None:
 
 
 def _http_routes(self) -> list[tuple[str, str, Any]]:
+    from gateway.platforms import api_server
+
     return [
+        ("POST", "/v1/runs/cancel", partial(_handle_cancel_run, self, _api_server=api_server)),
         ("POST", "/v1/runs", self._handle_runs), ("GET", "/v1/runs/{run_id}", self._handle_get_run),
         ("GET", "/v1/runs/{run_id}/events", self._handle_run_events),
         ("POST", "/v1/runs/{run_id}/approval", self._handle_run_approval),
@@ -252,6 +256,7 @@ def _http_routes(self) -> list[tuple[str, str, Any]]:
 def _idempotency_capabilities(self, *, store_type) -> dict[str, Any]:
     return {
         "supported": True,
+        "cancel_by_key": True,
         "durable": self._run_idempotency_store.durable,
         "retention_seconds": store_type.RETENTION_SECONDS}
 
@@ -362,7 +367,7 @@ def _make_run_event_callback(self, run_id: str, loop: asyncio.AbstractEventLoop,
 # and clarify share the grant's ``approve`` permission. Acknowledging a lost owner epoch
 # ends the run like a stop, so ``/resolve-unknown`` rides the ``stop`` permission.
 _ROOM_CONTROL_PERMISSIONS = {
-    "/stop": "stop", "/resolve-unknown": "stop", "/approval": "approve", "/clarify": "approve"}
+    "/stop": "stop", "/cancel": "stop", "/resolve-unknown": "stop", "/approval": "approve", "/clarify": "approve"}
 
 
 def _room_permission_for(request: web.Request) -> str:
@@ -507,6 +512,10 @@ def _accepted_response(run_id: str, status: str, gateway_session_key, *, replaye
 
 def _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error) -> web.Response:
     """409 for a fingerprint conflict, else a 202 replay of the already-admitted run."""
+    if outcome == "cancelled":
+        return _json_error(
+            _openai_error, "This Idempotency-Key was cancelled",
+            code="idempotency_key_cancelled", status=409)
     if outcome == "conflict":
         return _json_error(
             _openai_error, "Idempotency-Key was already used with a different request payload",
@@ -768,7 +777,7 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
         outcome, record = self._run_idempotency_store.lookup(
             idempotency_scope, idempotency_key, idempotency_fingerprint,
             retention_until=_room_retention_until(request))
-        if outcome == "conflict" or (outcome == "reused" and record is not None):
+        if outcome != "missing":
             return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
     # Enforce concurrency only for a genuinely new run.
     limited = self._concurrency_limited_response()
@@ -840,6 +849,7 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
             return refused
     self._activate_admitted_request()
     if admitted is not None:
+        self._set_run_status(run_id, "queued", delivery_id=admitted[1]["delivery_id"])
         task = self._active_run_tasks[run_id] = asyncio.create_task(
             _execute_run_via_live_owner(self, launch, *admitted, _api_server=_api_server))
     else:
@@ -1056,7 +1066,9 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             _finish("interrupted")
             return
         self._set_run_status(run_id, "running")
-        if run_id in self._stopping_run_ids:
+        # Cancellation may have fenced admission while routing awaited I/O.
+        if run.admission is None and (
+                run_id in self._stopping_run_ids or self._run_idempotency_store.is_cancelled(run_id)):
             _finish("cancelled")
             return
         if run.admission is not None:
@@ -1444,13 +1456,42 @@ async def _handle_steer_run(self, request: web.Request, *, _api_server) -> web.R
     return web.json_response({"object": "hermes.run.steer", "run_id": run_id, "accepted": True})
 
 
+async def _handle_cancel_run(self, request: web.Request, *, _api_server) -> web.Response:
+    """Cancel by original admission key, including when the acceptance response was lost."""
+    auth_error = self._check_run_auth(request, permission="stop")
+    if auth_error is not None:
+        return auth_error
+    key = request.headers.get("Idempotency-Key", "").strip()
+    if not key or len(key) > 255 or any(ord(ch) < 33 or ord(ch) > 126 for ch in key):
+        return _json_error(
+            _api_server._openai_error, "Idempotency-Key must be 1-255 visible ASCII characters",
+            code="invalid_idempotency_key", status=400)
+    scope = self._run_idempotency_scope(request)
+    outcome, record = self._run_idempotency_store.cancel_key(
+        scope, key, retention_until=_room_retention_until(request))
+    if outcome == "prevented":
+        return web.json_response({
+            "object": "hermes.run.cancellation", "status": "prevented",
+            "expires_at": record["expires_at"]})
+    run_id = record["run_id"]
+    status = self._durable_run_status(request, run_id)
+    return await _stop_owned_run(
+        self, run_id, status, self._active_run_agents.get(run_id),
+        self._active_run_tasks.get(run_id), _api_server=_api_server)
+
+
 async def _handle_stop_run(self, request: web.Request, *, _api_server) -> web.Response:
     """POST /v1/runs/{run_id}/stop — interrupt a running agent."""
-    _openai_error = _api_server._openai_error
     run_id, status, agent, task, err = _load_owned_run(
         self, request, _api_server=_api_server, permission="stop", active_fallback=True)
     if err is not None:
         return err
+    return await _stop_owned_run(self, run_id, status, agent, task, _api_server=_api_server)
+
+
+async def _stop_owned_run(self, run_id, status, agent, task, *, _api_server) -> web.Response:
+    """Share interruption semantics between run-ID and admission-key controls."""
+    _openai_error = _api_server._openai_error
     # A run whose turn a live Bot Chat owns (``_execute_run_via_live_owner``) is not an API
     # admission: its stop is the legacy in-process task cancel below, never ``stop_run``.
     if (getattr(self.gateway_runner, 'session_authority', None) is not None
@@ -1463,10 +1504,14 @@ async def _handle_stop_run(self, request: web.Request, *, _api_server) -> web.Re
             return store_error_response(_openai_error, exc)
     if status.get("status") in TERMINAL_STATUSES:
         return web.json_response(status)
+    if status.get("delivery_id"):
+        return web.json_response({**_openai_error(
+            "Run was handed to a live owner and cannot be recalled",
+            code="run_not_interruptible"), "run_id": run_id}, status=409)
     if agent is None and task is None:
-        return _json_error(
-            _openai_error, f"Run is not active in this gateway process: {run_id}",
-            code="run_not_active", status=409)
+        return web.json_response({**_openai_error(
+            "Run is not active in this gateway process",
+            code="run_not_active"), "run_id": run_id}, status=409)
     self._set_run_status(run_id, "stopping", last_event="run.stopping")
     self._stopping_run_ids.add(run_id)
     if agent is not None:

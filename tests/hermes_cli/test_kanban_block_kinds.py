@@ -144,7 +144,9 @@ def test_dependency_block_with_terminal_parents_parks_then_escalates(
         # A cron/human unblocks; the worker re-declares the same impossible wait.
         assert kb.unblock_task(conn, child)
         assert kb.claim_task(conn, child, claimer="worker") is not None
-        assert kb.block_task(conn, child, reason="still waiting", kind="dependency")
+        # Same cause (a reworded one is discounted to BLOCK_RECURRENCE_CHANGED_LIMIT,
+        # see test_kanban_block_loop_progress.py).
+        assert kb.block_task(conn, child, reason="waiting on upstream", kind="dependency")
         assert kb.get_task(conn, child).status == "triage"
         loop = [e for e in kb.list_events(conn, child) if e.kind == "block_loop_detected"][-1].payload
         assert loop["recurrences"] == kb.BLOCK_RECURRENCE_LIMIT

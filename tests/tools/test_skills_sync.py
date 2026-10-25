@@ -193,6 +193,64 @@ class TestRmtreeWritableScopeGuard:
         assert skills.exists()
         assert not sub.exists()
 
+    def test_allows_subdirectory_through_symlinked_category(self, tmp_path):
+        """A category symlinked into the skills tree (e.g. ``~/.hermes/skills/productivity``
+        pointing at an Obsidian-vault sync folder) is part of the user's skills layout,
+        not an escape. The scope guard must compare unresolved paths: the symlink target
+        lives outside ``~/.hermes/skills`` lexically, but the unresolved ``skills/productivity/x``
+        path is plainly a strict child. ``resolve()`` falsely flagged it as outside and aborted
+        every bundled-skill update (#78309).
+        """
+        from tools.skills_sync import _rmtree_writable
+
+        skills = tmp_path / "skills"
+        skills.mkdir()
+        # The category target lives OUTSIDE the skills root on disk; the symlink
+        # is what places it under the skills tree.
+        external = tmp_path / "external_category"
+        external.mkdir()
+        sub = external / "xlsx.bak"  # the exact path the issue example uses
+        sub.mkdir()
+        (sub / "SKILL.md").write_text("# old bundled copy")
+
+        try:
+            os.symlink(external, skills / "productivity")
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlinks unavailable: {exc}")
+
+        # Pass the UNRESOLVED absolute path, exactly what the five call sites in
+        # tools/skills_sync.py compute and pass (the dest is built from a relative
+        # join against SKILLS_DIR; the symlink is only followed by os on disk I/O).
+        symlinked_sub = skills / "productivity" / "xlsx.bak"
+
+        with patch("tools.skills_sync.SKILLS_DIR", skills):
+            _rmtree_writable(symlinked_sub)
+
+        assert skills.exists()  # the symlink itself was not removed
+        assert (skills / "productivity").is_symlink()  # the symlink survives
+        assert not sub.exists()  # but the old skill under the target was removed
+
+    def test_still_refuses_lexical_parent_escape(self, tmp_path):
+        """The unresolved-path comparison must keep rejecting real escapes (#48200):
+        ``skills/../sibling`` collapses outside the skills root on the same OS call.
+        ``os.path.abspath`` normalizes ``..`` lexically without following symlinks.
+        """
+        from tools.skills_sync import _rmtree_writable
+
+        skills = tmp_path / "skills"
+        skills.mkdir()
+        sibling = tmp_path / "sibling"
+        sibling.mkdir()
+
+        # Unresolved: skills/../sibling == tmp_path/sibling, not under skills.
+        escape = skills / ".." / "sibling"
+
+        with patch("tools.skills_sync.SKILLS_DIR", skills):
+            with pytest.raises(ValueError, match="refusing to rmtree"):
+                _rmtree_writable(escape)
+
+        assert sibling.exists()
+
 
 class TestExternalDirsIndexing:
     """Tests for external_dirs awareness in sync_skills (#28126)."""

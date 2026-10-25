@@ -37,7 +37,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from hermes_cli.plugin_host_wire import (
-    Channel, PluginHostUnavailable, PluginHostUnsupported, decode, encode, signature_from,
+    Channel, Opaque, PluginHostUnavailable, PluginHostUnsupported, declared_return, decode, encode, restore,
+    signature_from,
 )
 
 logger = logging.getLogger("hermes_cli.plugins")
@@ -313,7 +314,8 @@ class PluginHost:
 
     # -- parent -> host -----------------------------------------------------------------------------
     def _call(self, method: str, params: dict[str, Any], *, generation: Optional[int] = None,
-              timeout: Optional[float] = None) -> Any:
+              timeout: Optional[float] = None, returns: Any = None) -> Any:
+        """``returns`` is the type a core ABC declares for the result; the reply is rebuilt as it."""
         channel = self._channel
         try:
             if channel is None:
@@ -323,7 +325,8 @@ class PluginHost:
             if self._releases:
                 released, self._releases = self._releases, []
                 channel.call("release", {"refs": released})
-            return decode(channel.call(method, params, timeout=timeout), self._resolve_ref)
+            resolve = functools.partial(self._resolve_result_ref, base=_host_object_base(returns))
+            return restore(decode(channel.call(method, params, timeout=timeout), resolve), returns)
         except PluginHostUnavailable as exc:
             raise PluginHostUnavailable(self._exit_reason()) from exc
 
@@ -336,14 +339,14 @@ class PluginHost:
         return self._call("invoke", {"ref": ref, "args": encode(list(args)), "kwargs": encode(kwargs)},
                           generation=generation)
 
-    def obj_invoke(self, slot: _ObjectSlot, method: str, args: tuple, kwargs: dict) -> Any:
+    def obj_invoke(self, slot: _ObjectSlot, method: str, args: tuple, kwargs: dict, returns: Any = None) -> Any:
         ref, generation = slot.live()
         return self._call("obj_invoke", {"ref": ref, "method": method, "args": encode(list(args)),
-                                         "kwargs": encode(kwargs)}, generation=generation)
+                                         "kwargs": encode(kwargs)}, generation=generation, returns=returns)
 
-    def obj_getattr(self, slot: _ObjectSlot, name: str) -> Any:
+    def obj_getattr(self, slot: _ObjectSlot, name: str, returns: Any = None) -> Any:
         ref, generation = slot.live()
-        value = self._call("obj_getattr", {"ref": ref, "name": name}, generation=generation)
+        value = self._call("obj_getattr", {"ref": ref, "name": name}, generation=generation, returns=returns)
         if isinstance(value, dict) and set(value) == {"__missing__"}:
             raise AttributeError(name)
         return value
@@ -433,6 +436,14 @@ class PluginHost:
             return self._object_proxy(ref, base)
         raise PluginHostUnsupported("registration handles are owned by the plugin host")
 
+    def _resolve_result_ref(self, ref: dict[str, Any], base: Optional[type] = None) -> Any:
+        """A provider object a hosted method returned (``ContextEngine.clone_for_agent``): a proxy when
+        the contract declares that provider type, otherwise a placeholder (and the host drops it)."""
+        if "__object__" in ref and base is None:
+            self._release(self._generation, int(ref["__object__"]))
+            return Opaque(str(ref.get("type") or "object"))
+        return self._resolve_ref(ref, base)
+
     def _callable_proxy(self, ref: dict[str, Any]) -> Callable[..., Any]:
         ref_id, generation = int(ref["__callable__"]), self._generation
 
@@ -462,11 +473,11 @@ class PluginHost:
         live = set(ref.get("live") or ())
         namespace: dict[str, Any] = {}
         for name, meta in (ref.get("methods") or {}).items():
-            namespace[name] = _method_proxy(host, slot, name, meta)
+            namespace[name] = _method_proxy(host, slot, name, meta, declared_return(base, name))
 
         def __getattribute__(self_: Any, name: str) -> Any:
             if name in live:
-                return host.obj_getattr(slot, name)
+                return host.obj_getattr(slot, name, declared_return(base, name))
             return object.__getattribute__(self_, name)
 
         def __getattr__(self_: Any, name: str) -> Any:
@@ -557,12 +568,13 @@ def _run_on_gateway_loop(coro: Any) -> Any:
     return asyncio.run(coro)
 
 
-def _method_proxy(host: PluginHost, slot: _ObjectSlot, name: str, meta: dict[str, Any]) -> Callable[..., Any]:
+def _method_proxy(host: PluginHost, slot: _ObjectSlot, name: str, meta: dict[str, Any],
+                  returns: Any) -> Callable[..., Any]:
     async def async_method(self_: Any, *args: Any, **kwargs: Any) -> Any:
-        return await asyncio.to_thread(host.obj_invoke, slot, name, args, kwargs)
+        return await asyncio.to_thread(host.obj_invoke, slot, name, args, kwargs, returns)
 
     def sync_method(self_: Any, *args: Any, **kwargs: Any) -> Any:
-        return host.obj_invoke(slot, name, args, kwargs)
+        return host.obj_invoke(slot, name, args, kwargs, returns)
 
     method: Any = async_method if meta.get("async") else sync_method
     method.__name__ = method.__qualname__ = name
@@ -571,6 +583,14 @@ def _method_proxy(host: PluginHost, slot: _ObjectSlot, name: str, meta: dict[str
         self_param = inspect.Parameter("self", inspect.Parameter.POSITIONAL_OR_KEYWORD)
         method.__signature__ = signature.replace(parameters=[self_param, *signature.parameters.values()])
     return method
+
+
+def _host_object_base(hint: Any) -> Optional[type]:
+    """``hint`` when it is a provider ABC a hosted object may stand in for (``HOST_OBJECT_BASES``)."""
+    from hermes_cli.plugin_isolation import HOST_OBJECT_BASES
+    if isinstance(hint, type) and f"{hint.__module__}:{hint.__qualname__}" in HOST_OBJECT_BASES.values():
+        return hint
+    return None
 
 
 def _import_ref(ref: str) -> type:

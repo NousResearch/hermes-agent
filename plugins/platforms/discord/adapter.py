@@ -64,8 +64,11 @@ def _image_ext_from_content_type(content_type: str) -> str:
 
 def _format_discord_markdown_link(label: str, url: str) -> str:
     """Return a Discord Markdown link whose label is not itself a URL (URL-shaped labels can
-    win as a broken link; the ``<url>`` angle brackets stop Discord unfurling an embed)."""
+    win as a broken link; the ``<url>`` angle brackets stop Discord unfurling an embed).
+    A bare-host label drops its root ``/`` too (``https://example.com/`` -> ``example.com``)."""
     label = _DISCORD_URL_LABEL_SCHEME_RE.sub("", label, count=1)
+    if label.endswith("/") and label.count("/") == 1:
+        label = label[:-1]
     escaped_label = _DISCORD_MARKDOWN_LINK_LABEL_RE.sub(r"\\\1", label)
     escaped_url = quote(url, safe=":/?#[]@!$&'*+,;=%")
     return f"[{escaped_label}](<{escaped_url}>)"
@@ -1239,7 +1242,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
     PLAYBACK_TIMEOUT_PADDING = 30
 
     def format_tool_preview(self, preview: ToolPreview) -> str:
-        """Keep a truncated URL preview clickable in Discord markdown."""
+        """Render a URL preview as a scheme-less, embed-suppressed Discord link (full URL as target)."""
         if not preview.url:
             return preview.text
         return _format_discord_markdown_link(preview.text, preview.url)

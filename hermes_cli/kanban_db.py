@@ -2138,51 +2138,49 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
-    promoted = 0
     with write_txn(conn):
-        todo_rows = conn.execute(
-            "SELECT id, status, consecutive_failures, max_retries "
-            "FROM tasks WHERE status IN ('todo', 'blocked')"
-        ).fetchall()
-        for row in todo_rows:
-            task_id = row["id"]
-            cur_status = row["status"]
-            if cur_status == "blocked" and _has_sticky_block(conn, task_id):
-                # Explicit human-intervention block; only ``unblock_task`` may exit it.
+        return _recompute_ready_locked(conn, int(failure_limit))
+
+
+def _recompute_ready_locked(conn: sqlite3.Connection, failure_limit: int) -> int:
+    """Promote eligible children while the caller already owns the write txn.
+
+    Terminal transitions call this before commit so acceptance, terminal state
+    and downstream release become one atomic visibility boundary.
+    """
+    promoted = 0
+    todo_rows = conn.execute(
+        "SELECT id, status, consecutive_failures, max_retries "
+        "FROM tasks WHERE status IN ('todo', 'blocked')"
+    ).fetchall()
+    for row in todo_rows:
+        task_id = row["id"]
+        cur_status = row["status"]
+        if cur_status == "blocked" and _has_sticky_block(conn, task_id):
+            continue
+        if not _parents_satisfied(conn, task_id):
+            continue
+        resume_status = _resume_status_from_events(conn, task_id)
+        if cur_status == "blocked":
+            failures = int(row["consecutive_failures"] or 0)
+            task_limit = row["max_retries"]
+            effective_limit = int(task_limit) if task_limit is not None else int(failure_limit)
+            if failures >= effective_limit:
                 continue
-            parents = conn.execute(
-                "SELECT t.status FROM tasks t "
-                "JOIN task_links l ON l.parent_id = t.id "
-                "WHERE l.child_id = ?", (task_id,),
-            ).fetchall()
-            if all(p["status"] in ("done", "archived") for p in parents):
-                resume_status = _resume_status_from_events(conn, task_id)
-                if cur_status == "blocked":
-                    # At the breaker limit, no auto-recovery (else block ->
-                    # recover -> respawn -> exhaust -> block forever). The
-                    # counter is preserved so it accumulates across cycles.
-                    failures = int(row["consecutive_failures"] or 0)
-                    task_limit = row["max_retries"]
-                    effective_limit = (
-                        int(task_limit) if task_limit is not None
-                        else int(failure_limit)
-                    )
-                    if failures >= effective_limit:
-                        continue
-                    conn.execute(
-                        "UPDATE tasks SET status = ? "
-                        "WHERE id = ? AND status = 'blocked'", (resume_status, task_id),
-                    )
-                else:
-                    conn.execute(
-                        "UPDATE tasks SET status = ? WHERE id = ? AND status = 'todo'",
-                        (resume_status, task_id),
-                    )
-                _append_event(
-                    conn, task_id, "promoted",
-                    {"status": resume_status} if resume_status != "ready" else None,
-                )
-                promoted += 1
+            conn.execute(
+                "UPDATE tasks SET status = ? WHERE id = ? AND status = 'blocked'",
+                (resume_status, task_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE tasks SET status = ? WHERE id = ? AND status = 'todo'",
+                (resume_status, task_id),
+            )
+        _append_event(
+            conn, task_id, "promoted",
+            {"status": resume_status} if resume_status != "ready" else None,
+        )
+        promoted += 1
     return promoted
 
 
@@ -2190,12 +2188,53 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
 
 def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
     """Return whether every direct parent is terminal for dependency gating."""
-    return conn.execute(
-        "SELECT 1 FROM task_links l "
-        "JOIN tasks p ON p.id = l.parent_id "
-        "WHERE l.child_id = ? "
-        "AND p.status NOT IN ('done', 'archived') LIMIT 1", (task_id,),
-    ).fetchone() is None
+    parents = conn.execute(
+        "SELECT p.id, p.status, p.completion_contract, p.current_run_id FROM task_links l "
+        "JOIN tasks p ON p.id = l.parent_id WHERE l.child_id = ?", (task_id,),
+    ).fetchall()
+    return all(_terminal_parent_satisfies(conn, row) for row in parents)
+
+
+def _event_accepts(
+    conn: sqlite3.Connection, task_id: str, kind: str, run_id: Optional[int] = None,
+) -> bool:
+    run_clause = "run_id IS NULL" if run_id is None else "run_id=?"
+    params: tuple[Any, ...] = (task_id, kind) if run_id is None else (task_id, kind, int(run_id))
+    rows = conn.execute(
+        f"SELECT payload FROM task_events WHERE task_id=? AND kind=? AND {run_clause} ORDER BY id DESC",
+        params,
+    ).fetchall()
+    return any(_json_dict(row["payload"]).get("ok") is True for row in rows)
+
+
+def _latest_completed_run_id(conn: sqlite3.Connection, task_id: str) -> Optional[int]:
+    row = conn.execute(
+        "SELECT id FROM task_runs WHERE task_id=? AND outcome='completed' "
+        "ORDER BY id DESC LIMIT 1", (task_id,),
+    ).fetchone()
+    return None if row is None else int(row["id"])
+
+
+def _terminal_parent_satisfies(conn: sqlite3.Connection, row) -> bool:
+    status, contract = row["status"], row["completion_contract"] or "local-only"
+    if status not in {"done", "archived"}:
+        return False
+    if contract == "local-only":
+        return True
+    accepted_run_id = _latest_completed_run_id(conn, row["id"])
+    accepted = (
+        _event_accepts(conn, row["id"], "artifact_review_acceptance", accepted_run_id)
+        if contract == "artifact-review-v1"
+        else _event_accepts(conn, row["id"], "pr_acceptance", accepted_run_id)
+    )
+    if accepted:
+        return True
+    if status == "archived":
+        return conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id=? AND kind='non_acceptance_disposition' "
+            "LIMIT 1", (row["id"],),
+        ).fetchone() is not None
+    return False
 
 
 def unsatisfied_parents(conn: sqlite3.Connection, task_id: str) -> list[tuple[str, str]]:
@@ -2204,12 +2243,15 @@ def unsatisfied_parents(conn: sqlite3.Connection, task_id: str) -> list[tuple[st
     order, so a refusal or a board view can name the blockers instead of the
     caller guessing. Read-only."""
     rows = conn.execute(
-        "SELECT p.id, p.status FROM task_links l "
+        "SELECT p.id, p.status, p.completion_contract, p.current_run_id FROM task_links l "
         "JOIN tasks p ON p.id = l.parent_id "
-        "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') "
-        "ORDER BY p.id", (task_id,),
+        "WHERE l.child_id = ? ORDER BY p.id", (task_id,),
     ).fetchall()
-    return [(row["id"], row["status"]) for row in rows]
+    return [
+        (row["id"], row["status"])
+        for row in rows
+        if not _terminal_parent_satisfies(conn, row)
+    ]
 
 
 def _claim_and_open_run(
@@ -2739,6 +2781,17 @@ def complete_task(
     acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata)
     if acceptance is False:
         return False
+    # The verifier candidate is untrusted transport input. The normalized,
+    # bound receipt is persisted by record_acceptance; do not duplicate the
+    # candidate into the closing run/event handoff.
+    if (
+        acceptance is not None
+        and acceptance[0][2] == "artifact-review-v1"
+        and isinstance(metadata, dict)
+        and "artifact_review_receipt" in metadata
+    ):
+        metadata = dict(metadata)
+        metadata.pop("artifact_review_receipt", None)
     with write_txn(conn):
         # Hard invariant even for human review approval: a parent may have
         # reopened while this task waited.
@@ -2798,10 +2851,10 @@ def complete_task(
             _completed_event_payload(result, event_summary, verified_cards, metadata),
             run_id=run_id,
         )
+        _recompute_ready_locked(conn, DEFAULT_FAILURE_LIMIT)
     _flag_phantom_prose_refs(conn, task_id, run_id, summary, result, verified_cards)
     # Success wipes the breaker counter (history stays on the event log).
     _clear_failure_counter(conn, task_id)
-    recompute_ready(conn)  # separate txn so children see ``done``
     _cleanup_workspace(conn, task_id)
     _done_task = get_task(conn, task_id)
     if fire_lifecycle_hook:
@@ -3738,7 +3791,10 @@ def specify_triage_task(
     return True
 
 
-def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> bool:
+def archive_task(
+    conn: sqlite3.Connection, task_id: str, *, signal_fn=None,
+    non_acceptance_disposition: Optional[str] = None,
+) -> bool:
     """Archive a task; a *running* task's host-local worker is terminated.
 
     Clearing ``worker_pid`` in the DB alone left the OS process running past its
@@ -3752,13 +3808,35 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
     termination outcome lands as its own ``archive_worker_termination`` event so
     the ``archived`` event stays atomic with the status flip.
     """
+    pre = conn.execute(
+        "SELECT current_run_id, status, completion_contract FROM tasks WHERE id=?",
+        (task_id,),
+    ).fetchone()
+    if pre is None or pre["status"] == "archived":
+        return False
+    snapshot = (pre["current_run_id"], pre["status"], pre["completion_contract"] or "local-only")
+    contract = snapshot[2]
+    disposition_receipt = None
+    if contract != "local-only":
+        kind = "artifact_review_acceptance" if contract == "artifact-review-v1" else "pr_acceptance"
+        accepted_run_id = _latest_completed_run_id(conn, task_id)
+        accepted = snapshot[1] == "done" and _event_accepts(conn, task_id, kind, accepted_run_id)
+        if not accepted:
+            from hermes_cli.kanban_artifact_acceptance import collect_non_acceptance_disposition
+            disposition_receipt = collect_non_acceptance_disposition(
+                task_id, snapshot, non_acceptance_disposition,
+            )
+            if not disposition_receipt["ok"]:
+                return False
     with write_txn(conn):
         row = conn.execute(
-            "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
-            (task_id,),
+            "SELECT current_run_id, status, claim_lock, worker_pid, worker_started_at, "
+            "completion_contract FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
-        if not row:
+        if not row or (row["current_run_id"], row["status"], row["completion_contract"] or "local-only") != snapshot:
             return False
+        if disposition_receipt is not None:
+            _append_event(conn, task_id, "non_acceptance_disposition", disposition_receipt, run_id=snapshot[0])
         was_running = row["status"] == "running"
         prev_pid, prev_lock, prev_started = row["worker_pid"], row["claim_lock"], row["worker_started_at"]
         cur = conn.execute(
@@ -3774,12 +3852,11 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
             summary="task archived with run still active",
         )
         _append_event(conn, task_id, "archived", None, run_id=run_id)
+        _recompute_ready_locked(conn, DEFAULT_FAILURE_LIMIT)
     if was_running:
         termination = _terminate_reclaimed_worker(prev_pid, prev_lock, signal_fn=signal_fn, started_at=prev_started)
         with write_txn(conn):
             _append_event(conn, task_id, "archive_worker_termination", termination, run_id=run_id)
-    # ``archived`` parents no longer block children; promote them now.
-    recompute_ready(conn)
     # Reap the workspace on archive too (never-completed tasks kept it forever).
     _cleanup_workspace(conn, task_id)
     return True

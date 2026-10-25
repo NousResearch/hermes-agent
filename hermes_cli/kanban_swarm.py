@@ -74,7 +74,7 @@ def _activate_root_inline(
     summary: str,
     metadata: dict[str, Any],
 ) -> bool:
-    """Inline blocked→done CAS flip + event insert for the swarm root.
+    """Inline blocked→done CAS flip for a local-only synthetic swarm anchor.
 
     Runs INSIDE create_swarm's write_txn, so it must not call
     ``kb.complete_task`` (own transaction + post-commit side effects that
@@ -91,6 +91,7 @@ def _activate_root_inline(
                worker_pid   = NULL
          WHERE id = ?
            AND status = 'blocked'
+           AND completion_contract = 'local-only'
         """,
         (int(time.time()), root_id),
     )
@@ -98,7 +99,12 @@ def _activate_root_inline(
         return False
     run_id = kb._synthesize_ended_run(conn, root_id, outcome="completed", summary=summary, metadata=metadata)
     kb._append_event(
-        conn, root_id, "completed", {"result_len": 0, "summary": summary[:400] or None}, run_id=run_id,
+        conn, root_id, "completed", {
+            "result_len": 0,
+            "summary": summary[:400] or None,
+            "synthetic_anchor": True,
+            "accepted_deliverable": False,
+        }, run_id=run_id,
     )
     return True
 

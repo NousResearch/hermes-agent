@@ -116,3 +116,60 @@ def test_midturn_in_place_compaction_without_override_is_unchanged(tmp_path):
         assert users == ["plain question"]
     finally:
         db.close()
+
+
+def test_midturn_in_place_compaction_does_not_rewrite_summary_merged_turn(tmp_path):
+    """A turn whose user row was merged into the summary no longer matches the live dict, so it is left alone."""
+    from agent.conversation_compression import compress_context
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid = "sess-midturn-merged"
+    try:
+        live_user = {"role": "user", "content": API_FORM}
+        messages = [
+            {"role": "user", "content": "earlier question " * 200},
+            {"role": "assistant", "content": "earlier answer " * 200},
+            live_user,
+        ]
+        merged = "[CONTEXT COMPACTION] summary\n\n" + API_FORM
+        compacted = [{"role": "user", "content": merged}]
+        agent = _agent(db, sid, compacted)
+        db.create_session(session_id=sid, source="cli", model="test/model")
+        agent._session_db_created = True
+        agent._persist_user_message_idx = 2
+        agent._persist_user_message_override = CLEAN_FORM
+        agent._persist_user_message_timestamp = None
+        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+            compress_context(agent, messages, "SYSTEM")
+        users = [m["content"] for m in db.get_messages(sid) if m["role"] == "user"]
+        assert users == [merged]
+    finally:
+        db.close()
+
+
+def test_midturn_in_place_compaction_keeps_turn_user_timestamp(tmp_path):
+    """The re-inserted row keeps the timestamp the turn-start flush gave the persisted row."""
+    from agent.conversation_compression import compress_context
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid = "sess-midturn-ts"
+    try:
+        db.create_session(session_id=sid, source="cli", model="test/model")
+        db.append_message(sid, "user", CLEAN_FORM, timestamp=1234.5)
+        live_user = {"role": "user", "content": API_FORM}
+        messages = [{"role": "assistant", "content": "earlier answer"}, live_user]
+        compacted = [
+            {"role": "assistant", "content": "[CONTEXT COMPACTION] summary"},
+            dict(live_user),
+        ]
+        agent = _agent(db, sid, compacted)
+        agent._session_db_created = True
+        agent._persist_user_message_idx = 1
+        agent._persist_user_message_override = CLEAN_FORM
+        agent._persist_user_message_timestamp = 1234.5
+        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+            compress_context(agent, messages, "SYSTEM")
+        active = [m for m in db.get_messages(sid) if m["role"] == "user" and m["content"] == CLEAN_FORM]
+        assert active and active[-1]["timestamp"] == 1234.5
+    finally:
+        db.close()

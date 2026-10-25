@@ -230,6 +230,35 @@ class TestBlueBubblesGuidResolution:
         await adapter._resolve_chat_guid("user@example.com")
         assert "user@example.com" not in adapter._guid_cache
 
+    @pytest.mark.asyncio
+    async def test_spam_filtered_chat_is_not_resolved(self, monkeypatch):
+        """A spam-filtered thread must never be chosen, even when it matches the handle.
+
+        iMessage keeps an auto-spam-reported chat beside the real DM for the same
+        handle, and sending to the filtered GUID fails with a 500 from the BlueBubbles
+        server. The filtered entry is listed FIRST here, so resolving it means the
+        guard is missing.
+        """
+        adapter = _make_adapter(monkeypatch)
+
+        async def fake_api_post(path, payload):
+            return {
+                "data": [
+                    {
+                        "guid": "iMessage;-;user@example.com-filtered",
+                        "chatIdentifier": "user@example.com",
+                        "isFiltered": True,
+                    },
+                    {
+                        "guid": "iMessage;-;user@example.com",
+                        "chatIdentifier": "user@example.com",
+                    },
+                ]
+            }
+
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+        assert await adapter._resolve_chat_guid("user@example.com") == "iMessage;-;user@example.com"
+
 
 class TestBlueBubblesAttachmentDownload:
     """Verify _download_attachment routes to the correct cache helper."""

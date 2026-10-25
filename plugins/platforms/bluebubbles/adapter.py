@@ -371,6 +371,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         with suppress(Exception):
             payload = await self._api_post("/api/v1/chat/query", {"limit": 100, "offset": 0})
             for chat in payload.get("data", []) or []:
+                # Skip spam-filtered threads. iMessage keeps an auto-spam-reported chat alongside
+                # the real DM for the same handle, and sends to the filtered GUID fail with a 500
+                # from the BlueBubbles server, so a filtered match is never a usable target.
+                if chat.get("isFiltered"):
+                    continue
                 if (chat.get("chatIdentifier") or chat.get("identifier")) != target:
                     continue
                 if guid := chat.get("guid") or chat.get("chatGuid"):

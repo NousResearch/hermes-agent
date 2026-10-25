@@ -206,6 +206,40 @@ class TestIRCAdapterMessageParsing:
         await adapter._handle_line(":eve!u@host PRIVMSG #test :hermes: hello")
         assert len(dispatched) == 0
 
+    @pytest.mark.asyncio
+    async def test_allow_all_users_env_overrides_stale_allowlist(self, monkeypatch):
+        """IRC_ALLOW_ALL_USERS=true must open access even when a populated allowed_users
+        list is left over — previously the adapter gate ignored the flag and denied everyone
+        outside the stale list, contradicting the documented contract."""
+        for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("IRC_ALLOW_ALL_USERS", "true")
+        from gateway.config import PlatformConfig
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={
+                "server": "localhost",
+                "port": 6667,
+                "nickname": "hermes",
+                "channel": "#test",
+                "use_tls": False,
+                "allowed_users": ["Admin", "BOB"],  # stale: would otherwise block "eve"
+            },
+        )
+        adapter = IRCAdapter(cfg)
+        adapter._current_nick = "hermes"
+        adapter._registered = True
+        dispatched = []
+
+        async def capture_dispatch(**kwargs):
+            dispatched.append(kwargs)
+
+        adapter._dispatch_message = capture_dispatch
+        adapter._message_handler = AsyncMock()
+
+        await adapter._handle_line(":eve!u@host PRIVMSG #test :hermes: hello")
+        assert len(dispatched) == 1
+
 
 class TestIRCAdapterSplitting:
 

@@ -48,19 +48,33 @@ _HERMES_USER_AGENT = f"hermes-cli/{get_version_info().base_version}"
 _catalog_cache: dict[str, Any] | None = None
 _catalog_cache_source_mtime: float = 0.0
 _catalog_cache_source_path: str = ""
-# ``monotonic()`` deadline before which a failed fetch key is not retried (see FETCH_RETRY_DELAY_SECONDS).
-_fetch_retry_after: dict[str, float] = {}
+# ``monotonic()`` deadline before which a failed fetch is not retried (see FETCH_RETRY_DELAY_SECONDS),
+# keyed by (profile home key, URL): one gateway process serves many profiles.
+_fetch_retry_after: dict[tuple[str, str], float] = {}
 
 
-def _backing_off(key: str) -> bool:
-    return time.monotonic() < _fetch_retry_after.get(key, 0.0)
+def _backoff_key(url: str) -> tuple[str, str]:
+    from hermes_constants import hermes_home_key
+    return (hermes_home_key(), url)
 
 
-def _note_fetch_result(key: str, ok: bool) -> None:
+def _backing_off(url: str) -> bool:
+    return time.monotonic() < _fetch_retry_after.get(_backoff_key(url), 0.0)
+
+
+def _note_fetch_result(url: str, ok: bool) -> None:
     if ok:
-        _fetch_retry_after.pop(key, None)
+        _fetch_retry_after.pop(_backoff_key(url), None)
     else:
-        _fetch_retry_after[key] = time.monotonic() + FETCH_RETRY_DELAY_SECONDS
+        _fetch_retry_after[_backoff_key(url)] = time.monotonic() + FETCH_RETRY_DELAY_SECONDS
+
+
+def clear_fetch_backoff() -> None:
+    """Forget the active profile's fetch failures so an explicit refresh retries every URL."""
+    from hermes_constants import hermes_home_key
+    home = hermes_home_key()
+    for key in [k for k in _fetch_retry_after if k[0] == home]:
+        del _fetch_retry_after[key]
 
 
 def _load_catalog_config() -> dict[str, Any]:
@@ -249,12 +263,10 @@ def get_catalog(*, force_refresh: bool = False) -> dict[str, Any]:
             _spawn_catalog_swr_refresh(cfg["url"])
         return _remember(disk_data, disk_mtime)
 
-    # Keyed per cache file (profile) and URL, like the in-process copy above.
-    backoff_key = f"{_cache_path()}|{cfg['url']}"
-    if not force_refresh and disk_data is None and _backing_off(backoff_key):
+    if not force_refresh and disk_data is None and _backing_off(cfg["url"]):
         return {}
     fetched = _fetch_manifest_with_fallback(cfg["url"], DEFAULT_FETCH_TIMEOUT)
-    _note_fetch_result(backoff_key, fetched is not None)
+    _note_fetch_result(cfg["url"], fetched is not None)
     if fetched is not None:
         _write_disk_cache(fetched)
         new_disk_data, new_mtime = _read_disk_cache()
@@ -277,6 +289,7 @@ def refresh_catalogs() -> bool:
     Blocking; run it off the event loop."""
     if not _load_catalog_config()["enabled"]:
         return False
+    clear_fetch_backoff()  # provider overrides are re-asked too, not only the forced manifest
     catalog = get_catalog(force_refresh=True)
     try:
         from hermes_cli.models import fetch_nous_recommended_models, fetch_openrouter_models

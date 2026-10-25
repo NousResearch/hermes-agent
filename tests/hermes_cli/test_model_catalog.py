@@ -134,6 +134,7 @@ class TestFetchFailure:
         until the retry window ends; an explicit refresh still tries the network."""
         from hermes_cli import model_catalog
         calls: list[str] = []
+        failed_at = time.monotonic()
 
         def offline(url, timeout):
             calls.append(url)  # returns None: the fetch failed
@@ -148,10 +149,9 @@ class TestFetchFailure:
             assert model_catalog.get_catalog(force_refresh=True) == {}
             assert len(calls) == 2 * per_attempt
 
-        # Window over (zero-length): the next call fetches again and serves the manifest.
-        monkeypatch.setattr(model_catalog, "FETCH_RETRY_DELAY_SECONDS", 0.0)
-        with patch.object(model_catalog, "_fetch_manifest", side_effect=offline):
-            assert model_catalog.get_catalog(force_refresh=True) == {}
+        # The clock passes the last failure's window: a plain call fetches again and serves it.
+        later = failed_at + model_catalog.FETCH_RETRY_DELAY_SECONDS + 60.0
+        monkeypatch.setattr(model_catalog.time, "monotonic", lambda: later)
         with patch.object(model_catalog, "_fetch_manifest", return_value=_valid_manifest()):
             assert model_catalog.get_catalog() == _valid_manifest()
 

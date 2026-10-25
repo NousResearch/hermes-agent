@@ -1,13 +1,15 @@
 """Standalone ``hermes serve``/``dashboard`` (no gateway authority) keeps session edits.
 
 The edit runs the gateway's receipt transaction on the process's single writer under the
-exact owner lock: revision/retry/idle guards hold, and a live owner refuses with 409.
+exact owner lock: revision/retry/idle guards hold, an owner discovery cannot reach answers 503
+and one that wins the lock after discovery refuses with 409.
 """
 import httpx
 import pytest
 from fastapi import FastAPI
 
 from gateway.runtime_ownership import ProfileOwnership
+from hermes_cli.gateway_runtime import GatewayDiscovery
 from hermes_cli.web_routers.sessions import manage_router
 from hermes_state import SessionDB
 from hermes_state_runtime import admit_session_input, begin_runtime_epoch
@@ -69,6 +71,14 @@ async def test_standalone_edit_refuses_while_a_gateway_owns_the_store(tmp_path, 
         try:
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                          base_url='http://localhost', headers=AUTH) as client:
+                # The held lock without a control socket reads as a starting owner: retryable, never offline.
+                starting = await client.patch('/api/sessions/owned',
+                                              json={'request_id': 'r1', 'expected_revision': 0, 'title': 'X'})
+                assert (starting.status_code, starting.json()['detail']) == (503, 'owner_unavailable: starting')
+                assert 'gateway owner not reachable' in caplog.text
+                # An owner that reserves after discovery read absent still wins the offline reservation.
+                monkeypatch.setattr('hermes_cli.gateway_runtime.discover_gateway_endpoint',
+                                    lambda home, timeout=2.0: GatewayDiscovery('absent'))
                 refused = await client.patch('/api/sessions/owned',
                                              json={'request_id': 'r1', 'expected_revision': 0, 'title': 'X'})
                 assert refused.status_code == 409, refused.text

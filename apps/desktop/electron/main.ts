@@ -274,6 +274,7 @@ import {
   finalizeGatewayDownload,
   gatewayFilePath,
   gatewayFileRequestPaths,
+  nativeGatewayPath,
   resolveGatewayFileBackend,
   saveGatewayDownload
 } from './gateway-file-download'
@@ -348,7 +349,7 @@ import {
   writeNvidiaEglMarker
 } from './linux-nvidia-egl-fallback'
 import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
-import { resolveIpcFileReadPath, resolveMediaStreamFile, resolvePreviewTargetPath } from './local-read-path'
+import { previewTargetCandidates, resolveIpcFileReadPath, resolveMediaStreamFile } from './local-read-path'
 import { localSkinProfileKey, readLocalSkinPayload } from './local-skin'
 import { ACTIVE_LOG_POLL_MS, planLogRotation, reclaimActiveLogIfOversized } from './log-rotation'
 import { registerMachineProfile } from './machine-profile'
@@ -5667,22 +5668,8 @@ function expandUserPath(filePath) {
 
 /** Markdown hrefs must percent-encode spaces (`/my%20notes/x.md`), but the
  *  on-disk path is the decoded form. When the raw path misses, retry decoded
- *  so chat links to paths with spaces still open in the preview rail. */
-function decodedPathIfMissing(resolvedPath) {
-  if (!/%[0-9a-fA-F]{2}/.test(resolvedPath)) {
-    return null
-  }
-
-  let decoded
-
-  try {
-    decoded = decodeURIComponent(resolvedPath)
-  } catch {
-    return null
-  }
-
-  return decoded !== resolvedPath ? decoded : null
-}
+ *  so chat links to paths with spaces still open in the preview rail.
+ *  (decodedPathIfMissing now lives in local-read-path.ts.) */
 
 async function previewFileTarget(rawTarget, baseDir) {
   const raw = String(rawTarget || '').trim()
@@ -5691,10 +5678,10 @@ async function previewFileTarget(rawTarget, baseDir) {
   // A plain backend target is a WSL/POSIX path; bridge it to a Windows-
   // accessible form before resolving so the existence checks below (and the
   // final read) hit the real file rather than a drive-relative C:\home\... miss.
-  let resolved = resolveRequestedPathForIpc(resolvePreviewTargetPath(raw, expandUserPath), {
-    baseDir: base,
-    purpose: 'Preview target'
-  })
+  // The candidate list also carries the DECODED form of a percent-encoded
+  // target, which the retry below picks up when the encoded one misses.
+  const candidates = previewTargetCandidates(raw, expandUserPath, base)
+  let resolved = candidates[0]
 
   // Attachment references stored in chat history are frequently HOME-relative
   // (e.g. "AppData/Local/hermes/attachments/foo.xlsx" on Windows, or
@@ -5718,10 +5705,12 @@ async function previewFileTarget(rawTarget, baseDir) {
   // rail (#102782) — before the directory/missing classification below, so a
   // decoded target is typed by what it actually is.
   if (!fileExists(resolved) && !directoryExists(resolved)) {
-    const decoded = decodedPathIfMissing(resolved)
+    for (const candidate of candidates.slice(1)) {
+      if (fileExists(candidate) || directoryExists(candidate)) {
+        resolved = candidate
 
-    if (decoded && (fileExists(decoded) || directoryExists(decoded))) {
-      resolved = decoded
+        break
+      }
     }
   }
 
@@ -7543,7 +7532,7 @@ function gatewayFileRequestPath(
 }
 
 async function saveGatewayFile(payload: GatewayFileSavePayload = {}): Promise<GatewayFileSaveResult> {
-  const filePath = gatewayFilePath(payload.path)
+  const filePath = nativeGatewayPath(gatewayFilePath(payload.path))
 
   if (!filePath) {
     throw new Error('Missing gateway file path')

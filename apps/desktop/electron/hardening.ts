@@ -13,6 +13,8 @@ import {
   DATA_URL_READ_MIN_MAX_MB
 } from '../../shared/src/data-url-read-max'
 
+import { nativeWindowsDrivePath } from './native-windows-path'
+
 const DEFAULT_FETCH_TIMEOUT_MS = 30_000
 // Remote file.attach sends one base64 JSON-RPC frame. Cap the dedicated attach
 // reader so the payload still fits uvicorn's raised ws_max_size (384 MiB)
@@ -426,14 +428,14 @@ function resolveRequestedPathForIpc(filePath, options: { purpose?: string; baseD
 
     rejectUnsafePathSyntax(resolvedPath, purpose)
 
-    return path.resolve(resolvedPath)
+    return path.resolve(nativeWindowsDrivePath(resolvedPath, 'win32', path.sep === '\\'))
   }
 
   const baseInput = typeof options.baseDir === 'string' && options.baseDir.trim() ? options.baseDir : process.cwd()
   const safeBaseInput = rejectUnsafePathSyntax(baseInput, purpose)
   const resolvedBase = path.resolve(safeBaseInput)
   rejectUnsafePathSyntax(resolvedBase, purpose)
-  const resolvedPath = path.resolve(resolvedBase, raw)
+  const resolvedPath = path.resolve(resolvedBase, nativeWindowsDrivePath(raw, 'win32', path.sep === '\\'))
   rejectUnsafePathSyntax(resolvedPath, purpose)
 
   return resolvedPath

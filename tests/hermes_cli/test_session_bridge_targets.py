@@ -130,6 +130,18 @@ def test_newer_revocation_tombstones_older_positive_receipt():
         _resolve([old, revoked])
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+def test_equal_time_revocation_conflict_fails_closed_in_both_orders(reverse: bool):
+    active = _receipt(observed_at=100, expires_at=150)
+    revoked = _receipt(
+        receipt_id=str(uuid.uuid4()), native_session_id=active.native_session_id,
+        observed_at=100, expires_at=150, revoked=True,
+    )
+    receipts = [revoked, active] if reverse else [active, revoked]
+    with pytest.raises(TargetUnavailable, match="conflicting latest"):
+        _resolve(receipts)
+
+
 @pytest.mark.parametrize("field", ["assignment_state", "attempt_state"])
 def test_newer_inactive_state_tombstones_older_positive_receipt(field: str):
     old = _receipt(observed_at=100, expires_at=150)
@@ -153,6 +165,24 @@ def test_newer_capability_reduction_tombstones_older_positive_receipt(field: str
     )
     with pytest.raises(TargetUnavailable, match=field):
         _resolve([old, reduced])
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("field,value", [
+    ("transport_authorization_state", "denied"),
+    ("caller_cancellation_state", "unavailable"),
+])
+def test_equal_time_capability_reduction_conflict_fails_closed_in_both_orders(
+    field: str, value: str, reverse: bool,
+):
+    active = _receipt(observed_at=100, expires_at=150)
+    reduced = _receipt(
+        receipt_id=str(uuid.uuid4()), native_session_id=active.native_session_id,
+        observed_at=100, expires_at=150, **{field: value},
+    )
+    receipts = [reduced, active] if reverse else [active, reduced]
+    with pytest.raises(TargetUnavailable, match="conflicting latest"):
+        _resolve(receipts)
 
 
 def test_untrusted_newer_spoof_does_not_tombstone_authoritative_receipt(monkeypatch):

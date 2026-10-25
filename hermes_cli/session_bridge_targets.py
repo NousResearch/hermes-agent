@@ -271,7 +271,14 @@ def resolve_provider_receipts(
         if previous is None or receipt.observed_at > previous[0][0].observed_at:
             latest[key] = [(receipt, policy)]
         elif receipt.observed_at == previous[0][0].observed_at:
-            if all(receipt.binding_sha256 != item[0].binding_sha256 for item in previous):
+            # Without a provider-issued monotonic sequence, distinct states at
+            # the same timestamp are unordered.  Compare the signed payload,
+            # not only the stable target binding: revocation and capability
+            # reductions deliberately keep that binding unchanged.
+            if all(
+                receipt.payload_sha256 != item[0].payload_sha256
+                for item in previous
+            ):
                 previous.append((receipt, policy))
 
     if any(len(candidates) > 1 for candidates in latest.values()):

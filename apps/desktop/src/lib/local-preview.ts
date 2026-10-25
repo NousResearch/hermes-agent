@@ -320,7 +320,10 @@ export async function normalizeOrLocalPreviewTarget(
         return isDesktopFsRemoteMode() ? enrichPreviewTarget(localPreviewTarget(rawTarget, cwd)) : null
       }
 
-      return enrichPreviewTarget(normalized)
+      // This bit is provenance, not a fresh mode check. Preview tabs can stay
+      // open across connection switches, so only the local classification at
+      // admission may grant the system-app action later.
+      return enrichPreviewTarget(isDesktopFsRemoteMode() ? normalized : { ...normalized, localFile: true })
     }
 
     // The main process resolved the target against the real filesystem and

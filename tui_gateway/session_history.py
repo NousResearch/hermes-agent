@@ -241,19 +241,24 @@ def _skill_scaffold_projection(content_text: str) -> str:
     return describe_skill_invocation(content_text, separator=" ") or ""
 
 
-def _expand_skill_invocation_for_replay(text: str, task_id: str) -> str:
+def _expand_skill_invocation_for_replay(text: str, session: dict | None) -> str:
     """Inverse of :func:`_skill_scaffold_projection`: rewind/regenerate hands back the projected invocation,
-    and re-running it verbatim would drop the skill. Unchanged when not resolvable."""
+    and re-running it verbatim would drop the skill. Re-dispatched through ``command.dispatch``'s own
+    bundle and skill stages in the session's home scope, so a bundle, stacked ``/a /b`` skills and a
+    skill only the session's profile or project has expand as the original turn did. Unchanged when
+    not resolvable."""
     head, _, arg = (text or "").strip().partition(" ")
     if not head.startswith("/"):
         return text
     try:
-        from agent.skill_commands import build_skill_invocation_message, resolve_skill_command_key
-        cmd_key = resolve_skill_command_key(head.lstrip("/"), interactive=True)
-        return text if cmd_key is None else (build_skill_invocation_message(cmd_key, arg.strip(), task_id=task_id) or text)
+        with _session_home_scope(session):
+            for stage in (_dispatch_bundle, _dispatch_skill):
+                message = ((stage(None, {}, session, head[1:], arg.strip()) or {}).get("result") or {}).get("message")
+                if message:
+                    return message
     except Exception:  # a skill that no longer resolves must not break the rewind
         logger.debug("skill re-expansion failed for replay", exc_info=True)
-        return text
+    return text
 
 
 # Opening of the crash-recovery note synthesized by _auto_continue_note; matched (not just built) for

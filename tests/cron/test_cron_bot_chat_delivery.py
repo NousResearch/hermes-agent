@@ -201,6 +201,33 @@ def test_terminal_refusal_stays_unverified_and_defers_nothing(tmp_path, monkeypa
     assert not list((tmp_path / "cron" / "bot_chat_pending").glob("*.json"))
 
 
+def test_dial_failure_before_the_send_is_parked_but_a_later_one_is_not(tmp_path, monkeypatch):
+    """The authority vanishing between discovery and the dial (a gateway restart) is a definite
+    no-send: parked like an absent authority. A transport failure after the RPC went out may have
+    been admitted, so it keeps the unverified outcome and parks nothing."""
+    from hermes_cli.gateway_client import GatewayClientError
+    from tools import bot_live_delivery as mailbox
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(mailbox, "find_canonical_live_owner", lambda home: {"session_id": "bot"})
+    pending = tmp_path / "cron" / "bot_chat_pending"
+    monkeypatch.setattr(mailbox, "deliver_to_live_owner", mock.Mock(
+        side_effect=mailbox.PreDialError("profile authority is not ready")))
+    job = {"id": "j1", "name": "n", "execution_id": "r1"}
+    err = _deliver_to_bot_chat(job, "the page", "")
+    assert err is not None and "queued" in err, err
+    assert job["_bot_chat_delivery_receipts"]["bot-chat:(own)"]["status"] == "queued"
+    assert len(list(pending.glob("*.json"))) == 1
+
+    monkeypatch.setattr(mailbox, "deliver_to_live_owner", mock.Mock(
+        side_effect=GatewayClientError("connection closed")))
+    job = {"id": "j2", "name": "n", "execution_id": "r2"}
+    err = _deliver_to_bot_chat(job, "the page", "")
+    assert err is not None and "unverified" in err, err
+    assert "_bot_chat_delivery_receipts" not in job
+    assert len(list(pending.glob("*.json"))) == 1
+
+
 def test_failure_notice_to_a_profile_hiding_warnings_is_suppressed_not_sent(tmp_path, monkeypatch):
     """A ``for_failure`` notice whose TARGET profile hides warning notifications is booked as a
     durable ``suppressed`` disposition (flagged on the job), never admitted to the owner; a

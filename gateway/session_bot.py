@@ -15,7 +15,7 @@ from gateway.session_contract import Principal, SessionRef
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
 from hermes_state_runtime import RuntimeStoreError, get_session_admission
-from tools.bot_failure_reasons import HELD_NOT_SENT
+from tools.bot_failure_reasons import HELD_NOT_SENT, OWNER_STATE_REFUSALS
 from tools.bot_live_delivery import _TERMINAL, _delivery_id, _read
 logger = logging.getLogger(__name__)
 from gateway.session_bot_mailbox import (mailbox_lock, read_receipt, write_receipt,
@@ -26,15 +26,6 @@ _CANONICAL_RECEIPT_STATUSES = frozenset({
     'canonical', 'queued', 'claimed', 'ambiguous', 'settled', 'failed', 'cancelled',
 })
 _BOT_DM_MAX_CHARS = 16200
-# Admission refusals about the owner's state, not the delivery: with nothing committed the pin is
-# withdrawn and a same-id resend admits once it clears (a full FIFO, a drain for restart/update or
-# retirement, a fenced epoch or generation, storage, a live CLI holding the session, or a target
-# that moved before the write: the resend resolves it again). Every other refusal (permission_denied,
-# invalid_params, admission_conflict, profile_mismatch, ...) is final for that delivery: ``refuse_pin``.
-_OWNER_STATE_REFUSALS = frozenset({
-    'queue_full', 'runtime_draining', 'runtime_retired', 'stale_epoch', 'stale_generation',
-    'storage_unavailable', 'runtime_coordination_required', 'session_busy', 'not_found',
-})
 _PRODUCER_MAX_CHARS = 1024 * 1024
 
 
@@ -892,7 +883,7 @@ async def _admit(authority, actor, home, root, key, message, ref, live, entry, a
     except RuntimeStoreError as exc:
         if _admission_at(authority, ref.session_id, 'bot:' + key) is not None:
             raise  # committed after all: the pin stays the explicit unknown record
-        if exc.reason in _OWNER_STATE_REFUSALS:
+        if exc.reason in OWNER_STATE_REFUSALS:
             if legacy is None:
                 # Refused before any INSERT, not for the delivery itself: the same-id resend admits.
                 await withdraw_pin(home, key)

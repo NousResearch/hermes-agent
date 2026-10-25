@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -212,13 +213,15 @@ def test_copied_envelope_cannot_self_register_or_release(tmp_path, monkeypatch):
     # dispatcher authority persisted at admission and therefore cannot create a binding.
     import agent.subscription_capacity as capacity_store
     dispatcher_pid = os.getpid()
-    monkeypatch.setattr(capacity_store.os, "getpid", lambda: dispatcher_pid + 1000)
-    assert runtime.bind_prepared_capacity(payload, dispatcher_pid + 1000) is False
-
-    with pytest.raises(runtime.SubscriptionCapacityUnavailable, match="not owned"):
-        runtime.check_worker_capacity_phase(SimpleNamespace(provider=lease.provider, model=lease.model))
-    assert runtime.release_worker_capacity() is False
-    assert router.worker_process_matches(lease, os.getpid()) is False
+    with monkeypatch.context() as child:
+        child.setattr(capacity_store.os, "getpid", lambda: dispatcher_pid + 1000)
+        assert runtime.bind_prepared_capacity(payload, dispatcher_pid + 1000) is False
+        assert runtime.release_prepared_capacity(payload) is False
+        with pytest.raises(runtime.SubscriptionCapacityUnavailable, match="not owned"):
+            runtime.check_worker_capacity_phase(SimpleNamespace(provider=lease.provider, model=lease.model))
+        assert runtime.release_worker_capacity() is False
+    assert router.worker_process_matches(lease, dispatcher_pid) is False
+    assert runtime.release_prepared_capacity(payload) is True
 
 
 def test_dispatcher_binding_accepts_only_exact_spawned_pid(tmp_path, monkeypatch):
@@ -241,11 +244,37 @@ def test_replayed_lease_cannot_be_stolen_or_deleted_by_new_dispatcher(tmp_path, 
     )
     import agent.subscription_capacity as capacity_store
     dispatcher_pid = os.getpid()
-    monkeypatch.setattr(capacity_store.os, "getpid", lambda: dispatcher_pid + 1000)
-
-    with pytest.raises(runtime.SubscriptionCapacityUnavailable, match="another dispatcher"):
-        runtime.prepare_kanban_worker_capacity(
-            _task(), shared_root=tmp_path, profile_home=None, config={}, fetcher=lambda provider: snapshot,
-        )
-    assert runtime.bind_prepared_capacity(payload, dispatcher_pid + 1000) is False
+    with monkeypatch.context() as replacement:
+        replacement.setattr(capacity_store.os, "getpid", lambda: dispatcher_pid + 1000)
+        with pytest.raises(runtime.SubscriptionCapacityUnavailable, match="another dispatcher"):
+            runtime.prepare_kanban_worker_capacity(
+                _task(), shared_root=tmp_path, profile_home=None, config={}, fetcher=lambda provider: snapshot,
+            )
+        assert runtime.bind_prepared_capacity(payload, dispatcher_pid + 1000) is False
+        assert runtime.release_prepared_capacity(payload) is False
     assert runtime.release_prepared_capacity(payload) is True
+
+
+def test_same_dispatcher_replay_cannot_release_live_first_worker(tmp_path):
+    snapshot = _snapshot()
+    payload = runtime.prepare_kanban_worker_capacity(
+        _task(), shared_root=tmp_path, profile_home=None, config={}, fetcher=lambda provider: snapshot,
+    )
+    first_worker_pid = os.getpid() + 100
+    second_worker_pid = first_worker_pid + 1
+    assert runtime.bind_prepared_capacity(payload, first_worker_pid) is True
+
+    replay = runtime.prepare_kanban_worker_capacity(
+        _task(), shared_root=tmp_path, profile_home=None, config={}, fetcher=lambda provider: snapshot,
+    )
+    assert replay == payload
+    assert runtime.bind_prepared_capacity(replay, second_worker_pid) is False
+    assert runtime.release_prepared_capacity(replay) is False
+
+    state = json.loads(payload)
+    router = runtime.SubscriptionCapacityRouter(
+        Path(state["db_path"]), (runtime._policy_from_dict(state["policy"]),),
+        coordination_scope=state["coordination_scope"], fetcher=lambda provider: snapshot,
+    )
+    lease = runtime._lease_from_dict(state["lease"])
+    assert router.worker_process_matches(lease, first_worker_pid) is True

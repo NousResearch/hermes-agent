@@ -65,6 +65,18 @@ def test_a_folder_other_users_could_read_is_closed_before_the_page_is_written(pr
     assert len(_pages(private)) == 1
 
 
+@pytest.mark.platforms("posix")
+def test_a_relative_hermes_home_still_reaches_the_browser_in_a_page(private, monkeypatch, capsys):
+    """``HERMES_HOME=./root`` is supported; the page's ``file:`` URI is built from its absolute path."""
+    monkeypatch.chdir(private["tmp"])
+    monkeypatch.setenv("HERMES_HOME", "./root")
+    assert launcher.cmd_webapp(_args()) == 0
+    [opened] = private["calls"]["opened"]
+    page = _page_path(opened)
+    assert page.is_absolute() and [page.resolve()] == [p.resolve() for p in _pages(private)]
+    assert "ticket=" not in capsys.readouterr().out
+
+
 def test_pages_of_earlier_launches_are_removed(private):
     folder = private["root"] / "webapp"
     folder.mkdir(mode=0o700)

@@ -113,7 +113,7 @@ def _open_privately(target: Path, url: str) -> bool:
     from hermes_constants import is_wsl
     if os.name == "nt" or is_wsl():
         return False
-    folder = Path(target) / TOKEN_PATH.parent
+    folder = Path(target).absolute() / TOKEN_PATH.parent  # HERMES_HOME may be relative; a file: URI is not
     try:
         folder.mkdir(mode=0o700, parents=True, exist_ok=True)
         _close_to_other_users(folder)

@@ -198,6 +198,21 @@ async def test_session_info_answers_on_a_mount(tmp_path, monkeypatch, sid):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('selected', ['tip', 'root'])
+async def test_a_compressed_cron_history_deletes_as_one_chat(tmp_path, monkeypatch, selected):
+    """Deleting one segment of an old cron run's compression chain removed that segment only: the
+    other came back as its own chat, or stayed as a detached one."""
+    conn, ref = await _connect(tmp_path, monkeypatch, 'cron_job1_20261001_120000')
+    db, root = conn.authority.db, ref.session_id
+    db._write_sql("UPDATE sessions SET end_reason='compression', ended_at=1 WHERE id=?", (root,))
+    db.create_session('cron-tip', source='cron', model='m-old', parent_session_id=root)
+    target = SessionRef(ref.profile_id, 'cron-tip' if selected == 'tip' else root)
+    await conn.resume(target, {})
+    await _mutate(conn, target, 'delete', 'delete', {})
+    assert [sid for sid in (root, 'cron-tip') if db.get_session(sid) is not None] == []
+
+
+@pytest.mark.asyncio
 async def test_push_to_talk_reads_voice_off_on_a_mount(tmp_path, monkeypatch):
     """The TUI's push-to-talk gate on an opened stored chat raised AttributeError on the source-less mount."""
     from gateway import run_api

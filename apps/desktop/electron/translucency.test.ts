@@ -26,6 +26,7 @@ import {
   glassSupportedOn,
   glassSurfaceKeep,
   hudFrostFor,
+  nativeWindowFadeSupportedOn,
   normalizeBook,
   normalizeMaterial,
   normalizeMode,
@@ -124,6 +125,24 @@ describe('windowOpacityFor', () => {
   it('leaves both endpoints bit-identical to the linear ramp it replaced', () => {
     expect(windowOpacityFor(clear(TRANSLUCENCY_MIN))).toBe(legacyOpacity(0))
     expect(windowOpacityFor(clear(TRANSLUCENCY_MAX))).toBe(legacyOpacity(100))
+  })
+
+  // Electron 44.9.3 made setOpacity WORK on Linux — it now writes X11's
+  // _NET_WM_WINDOW_OPACITY — while the setting that drives it stayed hidden
+  // there. So the app asked for a faded window nobody could un-fade, and the
+  // default state (intensity 29, clear) left the chat window at ~94% opacity
+  // with the wallpaper bleeding through. A platform without the native fade
+  // must answer fully opaque for EVERY state.
+  it('is fully opaque on a platform without the native fade, whatever the state', () => {
+    for (const intensity of [0, 1, 29, 50, 100]) {
+      expect(windowOpacityFor(clear(intensity), false), `clear ${intensity}`).toBe(1)
+      expect(windowOpacityFor(glass(intensity, DEFAULT_GLASS_MATERIAL, 100), false), `glass ${intensity}`).toBe(1)
+    }
+  })
+
+  it('keeps the ramp untouched where the native fade IS supported', () => {
+    expect(windowOpacityFor(clear(29), true)).toBe(windowOpacityFor(clear(29)))
+    expect(windowOpacityFor(clear(100), true)).toBeLessThan(1)
   })
 
   it('is fully opaque at 0 and exactly the floor at 100', () => {
@@ -302,6 +321,21 @@ describe('glassSupportedOn', () => {
 
   it('is off on Linux — Electron has no first-party desktop material there', () => {
     expect(glassSupportedOn('linux', '6.8.0')).toBe(false)
+  })
+})
+
+describe('nativeWindowFadeSupportedOn', () => {
+  it('is on for the platforms whose windows can actually be faded', () => {
+    expect(nativeWindowFadeSupportedOn('darwin')).toBe(true)
+    expect(nativeWindowFadeSupportedOn('win32')).toBe(true)
+  })
+
+  // Electron 44.9.3 made setOpacity WORK on Linux (it writes X11's
+  // _NET_WM_WINDOW_OPACITY), but the setting that drives it stayed hidden
+  // there — so the app faded the window with no way to turn it off. The gate
+  // stays shut: the app must not ask for a fade nobody can undo.
+  it('is off on Linux', () => {
+    expect(nativeWindowFadeSupportedOn('linux')).toBe(false)
   })
 })
 
@@ -495,6 +529,15 @@ describe('windowOpacityOptions', () => {
   it('omits opacity entirely when the window is fully opaque', () => {
     expect(windowOpacityOptions(glass(60))).toStrictEqual({})
     expect(windowOpacityOptions(clear(0))).toStrictEqual({})
+  })
+
+  // A platform without the native fade must never be HANDED an opacity at
+  // construction: Linux would take it and render a ~94% window nobody can
+  // turn opaque again.
+  it('omits opacity entirely on a platform without the native fade', () => {
+    for (const state of [clear(29), clear(100), glass(60, DEFAULT_GLASS_MATERIAL, 100)]) {
+      expect(windowOpacityOptions(state, false), JSON.stringify(state)).toStrictEqual({})
+    }
   })
 
   it('passes it the moment the state actually fades', () => {

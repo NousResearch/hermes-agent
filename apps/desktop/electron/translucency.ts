@@ -16,10 +16,66 @@ import type { BrowserWindow } from 'electron'
 import {
   backgroundMaterialFor,
   glassActive,
+  nativeWindowFadeSupportedOn,
   type TranslucencyState,
   windowOpacityFor,
   type WindowsBackgroundMaterial
 } from '../../shared/src/translucency'
+
+/**
+ * Whether the NATIVE window fade is available on this platform.
+ *
+ * Distinct from `translucencySupportedOn` (which gates the SETTING, and so the
+ * Settings row): the native fade and the setting stopped agreeing on Linux.
+ *
+ * - Up to Electron 40.10.2, `setOpacity` was a documented no-op on Linux, so
+ *   the app could ask for a faded window and get an opaque one — harmless.
+ * - Electron 44.9.3 (Hermes Desktop v0.22.5+) made it WORK: it now writes the
+ *   X11 `_NET_WM_WINDOW_OPACITY` property. The app kept asking (it applies the
+ *   renderer's translucency state unconditionally) while the UI still believed
+ *   Linux has no translucency (Settings hides the row, so the value can never
+ *   be turned off in-app). The result: the DEFAULT state (intensity 29, clear)
+ *   rendered the chat window at ~94% opacity, and the desktop wallpaper bled
+ *   through it — with no control anywhere to stop it.
+ *
+ * Linux therefore refuses the native fade.
+ */
+export function nativeWindowFadeSupported(): boolean {
+  return nativeWindowFadeSupportedOn(process.platform)
+}
+
+/**
+ * Apply the native fade to a window, if this platform has one.
+ *
+ * Refuses outright on a platform that cannot fade a native window: there is no
+ * UI to turn the fade off there, so a fade that got applied would be the user's
+ * only option and could not be undone.
+ */
+export function applyNativeWindowOpacity(
+  win: Pick<BrowserWindow, 'getOpacity' | 'setOpacity'>,
+  state: TranslucencyState
+): void {
+  if (!nativeWindowFadeSupported()) {
+    return
+  }
+
+  const opacity = windowOpacityFor(state)
+
+  if (typeof win.setOpacity === 'function' && opacityNeedsSetting(opacity, win.getOpacity?.() ?? 1)) {
+    win.setOpacity(opacity)
+  }
+}
+
+/**
+ * Whether a translucency change is worth reporting as an opacity change.
+ *
+ * The native fade does not exist on some platforms (see
+ * nativeWindowFadeSupported), so there the window stays opaque whatever the
+ * state says — and reporting an opacity change would be a lie.
+ */
+export function opacityChangedFor(previous: TranslucencyState, next: TranslucencyState): boolean {
+  return nativeWindowFadeSupported() && windowOpacityFor(previous) !== windowOpacityFor(next)
+}
 
 /**
  * Electron 40.10.2's material setter also replaces the backing colour: white
@@ -57,6 +113,7 @@ export {
   glassSupportedOn,
   glassSurfaceKeep,
   hudFrostFor,
+  nativeWindowFadeSupportedOn,
   normalizeBook,
   normalizeMaterial,
   normalizeMode,
@@ -144,9 +201,13 @@ export function opacityNeedsSetting(next: number, current = 1): boolean {
 /**
  * BrowserWindow constructor options for a chat window's native opacity. Empty
  * unless the state actually asks the window to fade — see opacityNeedsSetting.
+ *
+ * `fadeSupported` is the platform gate: a platform that cannot fade a native
+ * window (Linux, where the fade only became real in Electron 44.9.3) must not
+ * be handed an opacity at all — see nativeWindowFadeSupportedOn.
  */
-export function windowOpacityOptions(state: TranslucencyState): { opacity?: number } {
-  const opacity = windowOpacityFor(state)
+export function windowOpacityOptions(state: TranslucencyState, fadeSupported = true): { opacity?: number } {
+  const opacity = windowOpacityFor(state, fadeSupported)
 
   return opacityNeedsSetting(opacity) ? { opacity } : {}
 }

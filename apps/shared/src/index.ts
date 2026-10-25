@@ -175,6 +175,7 @@ export {
   type GlassScope,
   glassSupportedOn,
   glassSurfaceKeep,
+  nativeWindowFadeSupportedOn,
   normalizeMaterial,
   normalizeMode,
   normalizeScope,

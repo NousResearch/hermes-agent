@@ -76,9 +76,13 @@ export const GLASS_SUPPORTED =
     : isMacPlatform() || isWindowsPlatform())
 
 /**
- * Whether the setting is worth showing at all. Linux has neither half —
- * `setOpacity` is a documented no-op and there is no native material — so
- * Settings hides the row rather than offering a lever that does nothing.
+ * Whether the setting is worth showing at all. Linux has neither half — no
+ * native material for glass, and no usable native window fade — so Settings
+ * hides the row rather than offering a lever that does nothing.
+ *
+ * This doubles as the renderer's gate on the Clear-mode page effects (the
+ * strengthened overlay scrim): they exist to compensate for a window that is
+ * ACTUALLY faded, so they only belong where the fade is real.
  */
 export const TRANSLUCENCY_SUPPORTED =
   !isBrowserHostedDesktop() &&
@@ -321,7 +325,14 @@ const applyGlassSurfaces = ({ intensity, mode, scope }: TranslucencyState): void
   // covered transcript blend; styles.css strengthens the overlay scrim while
   // this attribute is present. Native opacity applies in every window kind, so
   // no chat-window gate.
-  const clearOn = mode === 'clear' && intensity > 0
+  //
+  // ...but only where the native fade actually EXISTS. On Linux the fade
+  // never happens (the platform does not support it — see
+  // nativeWindowFadeSupportedOn), so the strengthened scrim would darken and
+  // blur every overlay over a window that is not actually faded: the user
+  // sees a washed-out, out-of-focus panel for a setting they cannot even
+  // change. Off means off.
+  const clearOn = mode === 'clear' && intensity > 0 && TRANSLUCENCY_SUPPORTED
 
   root.toggleAttribute('data-hermes-glass-on', glassLive)
   root.toggleAttribute('data-hermes-glass', glassOn)

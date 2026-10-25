@@ -204,6 +204,31 @@ export function translucencySupportedOn(platform: string): boolean {
 }
 
 /**
+ * Whether this OS can fade a NATIVE WINDOW.
+ *
+ * Distinct from `translucencySupportedOn`, which gates the whole SETTING
+ * (the UI row). This one gates the native `setOpacity` call, and the two
+ * stopped agreeing on Linux:
+ *
+ * - Up to Electron 40.10.2, `setOpacity` was a documented no-op on Linux, so
+ *   the app could ask for a faded window and get an opaque one — harmless.
+ * - Electron 44.9.3 (Hermes Desktop v0.22.5+) made it WORK: it now writes
+ *   the X11 `_NET_WM_WINDOW_OPACITY` property. The app kept asking (it applies
+ *   the renderer's translucency state unconditionally) while the UI still
+ *   believed the platform had no translucency — so the row stayed hidden, the
+ *   value could never be turned off, and the DEFAULT state (intensity 29,
+ *   clear) silently rendered the chat window at ~94% opacity with the desktop
+ *   wallpaper bleeding through it.
+ *
+ * So on Linux the native fade is now ACTIVE and must be REJECTED explicitly:
+ * there is no UI to turn it off, and a user who cannot see the control cannot
+ * be expected to have disabled it. The window stays fully opaque.
+ */
+export function nativeWindowFadeSupportedOn(platform: string): boolean {
+  return platform === 'darwin' || platform === 'win32'
+}
+
+/**
  * Whether this OS can back glass with a first-party Electron material.
  * macOS: `setVibrancy`. Windows 11 22H2+: `setBackgroundMaterial`. Linux and
  * older Windows: no.
@@ -399,8 +424,18 @@ function opacityRamp(lever: number): number {
  * as paint, and without this gate that point would follow someone who had
  * turned the tint to zero — leaving a window that asked to be opaque sitting
  * at 0.9999. Off has to mean off.
+ *
+ * `fadeSupported` is the platform gate on the NATIVE fade. It is false on
+ * Linux, where the native fade became real in Electron 44.9.3 while the
+ * setting that controls it stayed hidden — so asking for it would leave the
+ * window at ~94% opacity with no way for the user to turn it off. A platform
+ * that cannot fade a native window always answers 1 (fully opaque).
  */
-export function windowOpacityFor(state: TranslucencyState): number {
+export function windowOpacityFor(state: TranslucencyState, fadeSupported = true): number {
+  if (!fadeSupported) {
+    return 1
+  }
+
   if (state.mode !== 'glass') {
     return opacityRamp(state.intensity)
   }

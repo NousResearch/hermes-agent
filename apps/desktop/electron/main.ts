@@ -574,17 +574,18 @@ import { installSystemCaTrust } from './system-ca'
 import { registerTerminalIpc } from './terminal-ipc'
 import { nativeOverlayWidth as computeNativeOverlayWidth, titleBarOverlayOptions } from './titlebar-overlay-width'
 import {
+  applyNativeWindowOpacity,
   applyWindowsBackdrop,
   defaultTranslucencyState,
   glassActive,
   glassSupportedOn,
+  nativeWindowFadeSupported,
   normalizeState as normalizeTranslucency,
-  opacityNeedsSetting,
+  opacityChangedFor,
   translucencySupportedOn,
   vibrancyFor as vibrancyForTranslucency,
   windowBackgroundMaterialOptions,
   windowBackingOptions,
-  windowOpacityFor,
   windowOpacityOptions
 } from './translucency'
 import {
@@ -1536,11 +1537,7 @@ const translucencyBackedWindows = new WeakSet()
 // window's own opacity is the record of whether that door was ever opened; see
 // opacityNeedsSetting for why it matters that it stays shut.
 function applyWindowOpacity(win) {
-  const opacity = windowOpacityFor(translucencyState)
-
-  if (typeof win.setOpacity === 'function' && opacityNeedsSetting(opacity, win.getOpacity?.() ?? 1)) {
-    win.setOpacity(opacity)
-  }
+  applyNativeWindowOpacity(win, translucencyState)
 }
 
 // Re-apply translucency to a live window (runtime toggle, no recreation).
@@ -1636,7 +1633,7 @@ function chatWindowSurfaceOptions() {
     // RESIZABLE transparent window is unsupported and breaks (electron#48421).
     // Every chat window is resizable.
     ...windowBackgroundMaterialOptions(translucencyState, IS_WINDOWS, GLASS_SUPPORTED),
-    ...windowOpacityOptions(translucencyState),
+    ...windowOpacityOptions(translucencyState, nativeWindowFadeSupported()),
     ...windowBackingOptions(translucencyState, getWindowBackgroundColor())
   }
 }
@@ -16812,7 +16809,7 @@ ipcMain.on('hermes:translucency', (_event, payload) => {
     // The backing follows whether glass is ON, not the intensity behind it.
     backing: glassActive(previous) !== glassActive(next),
     material: vibrancyForTranslucency(previous) !== vibrancyForTranslucency(next),
-    opacity: windowOpacityFor(previous) !== windowOpacityFor(next)
+    opacity: opacityChangedFor(previous, next)
   }
 
   scheduleTranslucencyWrite()

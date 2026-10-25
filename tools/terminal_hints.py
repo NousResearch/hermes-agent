@@ -3,8 +3,9 @@
 Extends the exit-code semantics table in ``terminal_tool`` with a bounded scan of failed-command
 output mapped to ONE short, actionable recovery hint. Rules: only fires on non-zero exit; first
 match wins, patterns ordered by observed production frequency; scans only the first
-``_SCAN_CHARS`` so hints key on error headers, not deep context; hints state the *next action*
-in 1-2 sentences; pure function, no I/O or config reads.
+``_SCAN_CHARS`` so hints key on error headers, not deep context (the one exception, the
+wrapper's own failed ``cd``, reads the last line of the final ``_SCAN_CHARS``); hints state the
+*next action* in 1-2 sentences; pure function, no I/O or config reads.
 """
 
 from __future__ import annotations
@@ -79,6 +80,23 @@ _EXIT_CODE_HINTS: dict[int, str] = {
     124: "Exit 124: the command hit its timeout. Raise timeout= (foreground max 600s) or run it with background=true and notify_on_complete=true.",
 }
 
+# Every backend's per-command wrapper runs ``builtin cd -- <cwd> || exit 126`` before the
+# command (tools/environments/base_session_env.py), so a 126 whose last line is bash's error
+# for that ``cd`` means the command never ran: the working directory is the problem, and the
+# chmod hint above sends the model after the wrong file. The shell path may start with a drive
+# letter, and bash localizes "line N: " ("Zeile 2: ", "ligne 2 : ").
+_WRAPPER_CD_FAILURE = re.compile(r"(?:[A-Za-z]:)?[^:\n]*: (?:[^:\n]+ \d+ ?: )?cd: (.+): ([^:\n]+)")
+
+
+def _wrapper_cd_hint(output: str) -> Optional[str]:
+    last_line = (output or "")[-_SCAN_CHARS:].rstrip().rsplit("\n", 1)[-1]
+    m = _WRAPPER_CD_FAILURE.fullmatch(last_line)
+    if not m:
+        return None
+    return (f"The command never ran: Hermes could not enter its working directory {m.group(1)} "
+            f"({m.group(2)}) before running it, so a `cd` inside the command cannot help. Pass "
+            "`workdir` set to an accessible directory (on each call while this one stays unusable).")
+
 
 # Masked-success detection: `cargo build 2>&1 | tail -20` exits with tail's 0
 # (no pipefail) and `cargo build || echo FAILED` with echo's 0, so the model can
@@ -150,6 +168,8 @@ def annotate_failure(command: str, exit_code: int, output: str) -> Optional[str]
     """Return one short recovery hint for a failed command, or None (exit 0)."""
     if exit_code == 0:
         return None
+    if exit_code == 126 and (hint := _wrapper_cd_hint(output)):
+        return hint
     window = (output or "")[:_SCAN_CHARS]
     for fn in _OUTPUT_HINTS if window else ():
         try:

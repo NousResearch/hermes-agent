@@ -188,3 +188,59 @@ describe("mobile IME double-send dedup (#115505)", () => {
     expect(forwarder.filterTerminalData("xyz")).toBe("xyz");
   });
 });
+
+describe("composition Enter echo (#android-double-submit)", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("swallows an Enter echoed through onData after the composition path sent it", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    // The composition path committed an Enter (a lone CR).
+    forwarder.onCompositionEnd("\r");
+    vi.runAllTimers();
+    expect(send).toHaveBeenCalledExactlyOnceWith("\r");
+
+    // xterm re-emits that Enter through onData — it must not reach the PTY.
+    expect(forwarder.filterTerminalData("\r")).toBe("");
+  });
+
+  it("swallows the CR half of an echoed fused CRLF within the window", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    forwarder.onCompositionEnd("\r\n");
+    vi.runAllTimers();
+    expect(send).toHaveBeenCalledExactlyOnceWith("\r\n");
+
+    expect(forwarder.filterTerminalData("\r")).toBe("");
+  });
+
+  it("keeps a genuine Enter that arrives outside the echo window", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    forwarder.onCompositionEnd("\r");
+    vi.runAllTimers();
+    expect(send).toHaveBeenCalledExactlyOnceWith("\r");
+
+    vi.advanceTimersByTime(200); // outside the 80ms echo window
+    expect(forwarder.filterTerminalData("\r")).toBe("\r"); // a real new Enter
+  });
+
+  it("keeps a genuine Enter after a committed-word composition (no Enter echo)", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    forwarder.onCompositionEnd("hello");
+    vi.runAllTimers();
+    expect(send).toHaveBeenCalledExactlyOnceWith("hello");
+
+    // lastSentEnter is "" (no line-ending sent), so a CR is a fresh Enter.
+    expect(forwarder.filterTerminalData("\r")).toBe("\r");
+  });
+});

@@ -40,7 +40,10 @@ _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/auth/login", "/auth/callback", "/auth/native/authorize", "/auth/native/token",
     "/auth/native/refresh", "/auth/password-login", "/auth/logout", "/login",
     "/api/auth/providers", "/api/mcp/oauth/callback/",
-    "/assets/", "/dashboard-plugins/", "/favicon.ico", "/ds-assets/", "/fonts/", "/fonts-terminal/")
+    "/assets/", "/dashboard-plugins/", "/favicon.ico", "/ds-assets/", "/fonts/", "/fonts-terminal/",
+    # PWA installability: the manifest, icons and service worker must be
+    # fetchable without a session or Chrome only offers "Add to home screen".
+    "/sw.js", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png")
 
 
 def _path_is_public(path: str) -> bool:

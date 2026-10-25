@@ -291,6 +291,11 @@ def build_fill_js(fills: list[dict[str, Any]], expected_origin: str, nonce: str 
     THIS inspection; a ``current-password`` fill additionally requires ``type=password``; ``<select>``
     controls (country, state, expiry month) match an option by value or visible text. No marker is
     left on filled controls so later model-driven DOM reads cannot address them deterministically.
+
+    The expression returns a Promise (the supervisor evaluates with ``awaitPromise``): after writing
+    every field it yields one macrotask so a controlled component's batched re-render runs, then
+    reads each field back and returns ``{"filled": n, "dropped": [tokens]}`` — a field the page
+    reset to empty (#136592) is reported in ``dropped`` instead of silently counted.
     """
     payload = json.dumps(
         [{"index": f["index"], "token": f.get("token", "current-password"), "value": f["value"]} for f in fills]
@@ -306,27 +311,41 @@ _FILL_JS_TEMPLATE = """(() => {
   }
   const fills = __FILLS__;
   const nonce = __NONCE__;
-  let filled = 0;
   const norm = (t) => String(t || "").trim().toLowerCase();
-  for (const f of fills) {
-    const el = document.querySelector('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]');
-    if (!el || (f.token === "current-password" && el.type !== "password")) continue;
-    try {
-      if (el.tagName === "SELECT") {
-        const want = norm(f.value);
-        const opt = Array.from(el.options).find((o) => [o.value, o.textContent].some((t) => norm(t) === want || norm(t) === want.replace(/^0/, "")));
-        if (opt) { el.value = opt.value; el.dispatchEvent(new Event("change", { bubbles: true })); filled += 1; }
-        continue;
-      }
-      el.focus();
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
-      // one-time-code split into single-character boxes: f.value is the slice for THIS box (see build_otp_fills)
-      if (setter && setter.set) { setter.set.call(el, f.value); } else { el.value = f.value; }
-      el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
-      el.dispatchEvent(new Event("change", { bubbles: true }));
-      if (el.value.length > 0) filled += 1;
-    } catch (e) { /* skip */ }
-  }
-  document.querySelectorAll("[data-hermes-vault-slot]").forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
-  return JSON.stringify({ filled });
+  return (async () => {
+    const written = [];  // {el, token} DOM refs kept for the post-settle read-back
+    for (const f of fills) {
+      const el = document.querySelector('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]');
+      if (!el || (f.token === "current-password" && el.type !== "password")) continue;
+      try {
+        if (el.tagName === "SELECT") {
+          const want = norm(f.value);
+          const opt = Array.from(el.options).find((o) => [o.value, o.textContent].some((t) => norm(t) === want || norm(t) === want.replace(/^0/, "")));
+          if (opt) { el.value = opt.value; el.dispatchEvent(new Event("change", { bubbles: true })); written.push({ el, token: f.token }); }
+          continue;
+        }
+        el.focus();
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+        // one-time-code split into single-character boxes: f.value is the slice for THIS box (see build_otp_fills)
+        if (setter && setter.set) { setter.set.call(el, f.value); } else { el.value = f.value; }
+        el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+        written.push({ el, token: f.token });
+      } catch (e) { /* skip */ }
+    }
+    document.querySelectorAll("[data-hermes-vault-slot]").forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
+    // Controlled-component settle (#136592): React batches state and re-applies the DOM after the
+    // current task, so an immediate read-back would count a field the page is about to reset.
+    // Let one macrotask pass, then judge by what actually survived. Only counts and field tokens
+    // are ever returned — the values themselves are never echoed back.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    let filled = 0;
+    const dropped = [];
+    for (const w of written) {
+      let landed = false;
+      try { landed = String(w.el.value || "") !== ""; } catch (e) { landed = false; }
+      if (landed) { filled += 1; } else { dropped.push(w.token); }
+    }
+    return JSON.stringify({ filled, dropped });
+  })();
 })()"""

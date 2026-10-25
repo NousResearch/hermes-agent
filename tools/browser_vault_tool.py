@@ -361,9 +361,35 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
         parsed = _parse_json_result(parsed)
     if isinstance(parsed, dict) and parsed.get("refused") == "origin_changed":
         return json.dumps({"success": False, "error_type": "origin_changed", "error": "The page navigated before the code could be entered. Nothing was written."})
-    filled = int(parsed.get("filled", 0)) if isinstance(parsed, dict) else 0
-    return json.dumps({"success": bool(filled), "filled_fields": filled, "origin": origin, "source": source,
-                       "next": "Submit the form (many sites auto-submit when the last digit lands)."})
+    filled, dropped = _parse_fill_readback(parsed)
+    out = {"success": bool(filled), "filled_fields": filled, "origin": origin, "source": source,
+           "next": "Submit the form (many sites auto-submit when the last digit lands)."}
+    # Same read-back contract as browser_vault_fill (#136592): a reset one-time-code box must
+    # surface as a failure, not a silent success the agent then submits.
+    _mark_dropped_fields(out, dropped, "Enter the code with a real input tool instead.")
+    return json.dumps(out)
+
+
+def _parse_fill_readback(parsed) -> tuple[int, list[str]]:
+    """Read the fill script's post-settle verdict: fields that landed vs tokens the page
+    reset (#136592). Tolerates page results with no ``dropped`` key at all."""
+    if not isinstance(parsed, dict):
+        return 0, []
+    filled = parsed.get("filled", 0)
+    dropped = [str(t) for t in parsed.get("dropped") or []]
+    return filled, dropped
+
+
+def _mark_dropped_fields(out: dict, dropped: list[str], remediation: str) -> None:
+    """Flip a fill result to failure when the page discarded a written field (#136592):
+    names the dropped field tokens (never the values) and tells the agent what to do instead."""
+    if not dropped:
+        return
+    out["success"] = False
+    out["dropped_fields"] = dropped
+    out["error_type"] = "field_dropped"
+    out["error"] = ("The page discarded the value for " + ", ".join(dropped) +
+                    " (scripted validation or a controlled-component re-render reset it). " + remediation)
 
 
 def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
@@ -526,8 +552,10 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
                 ),
             }
         )
-    filled = parsed.get("filled", 0) if isinstance(parsed, dict) else 0
+    filled, dropped = _parse_fill_readback(parsed)
 
+    # Fail closed on a page-discarded field (#136592): a controlled component can batch-reset a
+    # written value right after the fill script returns, so the post-settle read-back judges.
     out = {"success": bool(filled), "filled_fields": int(filled), "backend": backend.name,
            "kind": meta.kind, "origin": page_origin}
     if meta.kind == "login":
@@ -535,6 +563,8 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
                        + (" (a code will be generated automatically)." if meta.has_otp else "."))
     if meta.kind != "login":
         out["fields"] = sorted(f["token"] for f in fills)  # which controls were targeted, never the values
+    _mark_dropped_fields(out, dropped,
+                         "Do not assume the fill landed; enter that field with a real input tool instead.")
     return json.dumps(out)
 
 

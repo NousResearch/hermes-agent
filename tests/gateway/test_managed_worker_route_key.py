@@ -108,6 +108,28 @@ def test_bound_launch_key_wins_over_the_route_key(tmp_path, monkeypatch):
     assert built['api_key'] == launch
 
 
+@pytest.mark.parametrize('model, block, env, expected', [
+    # opencode-go serves this model only on its Responses API (#141861).
+    ('muse-spark-1.3-contributor', {'provider': 'opencode-go', 'base_url': 'https://opencode.ai/zen/go/v1'},
+     {'OPENCODE_GO_API_KEY': 'fake-opencode-go-key'},
+     {'api_mode': 'codex_responses', 'base_url': 'https://opencode.ai/zen/go/v1'}),
+    # Bedrock stores no base_url: the runtime builds the regional endpoint (#143073).
+    ('eu.amazon.nova-pro-v1:0', {'provider': 'bedrock'}, {'AWS_REGION': 'eu-west-1'},
+     {'api_mode': 'bedrock_converse', 'base_url': 'https://bedrock-runtime.eu-west-1.amazonaws.com'}),
+])
+def test_worker_builds_on_the_routes_resolved_api_mode_and_endpoint(tmp_path, monkeypatch, model, block, env, expected):
+    """KB-11: the worker's agent gets the api_mode and endpoint the in-process turn's resolution
+    gives it, not the frozen ``model.base_url`` with no api_mode (chat_completions, us-east-1)."""
+    frame, _ = assignment(tmp_path, monkeypatch)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    config = {**json.loads(frame['policy']['config_json']), 'model': {'default': model, **block}}
+    request = {k: v for k, v in json.loads(frame['policy']['request_json']).items() if k not in ('provider', 'base_url')}
+    policy = {**frame['policy'], 'model': model, 'config_json': json.dumps(config), 'request_json': json.dumps(request)}
+    built = _execute({**frame, 'policy': policy, 'api_key': None}, monkeypatch)
+    assert {key: built.get(key) for key in expected} == expected
+
+
 def test_primary_auth_failure_never_borrows_a_fallback_providers_key(tmp_path, monkeypatch):
     """A fallback entry's credential belongs to another provider; the worker's primary route never
     carries it (the agent's own fallback chain switches provider, model and key together)."""

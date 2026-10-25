@@ -151,7 +151,7 @@ def route_runtime(policy, frozen, model, key, *, fallback=True):
     """``(runtime, fallback_entry)`` for a launch-policy route: the session's FROZEN config and launch
     credential, walking its own fallback chain on an AuthError unless ``fallback=False`` (a session
     control asking which route the session itself runs). The one resolver an in-process turn
-    (``_resolve_policy_agent_runtime``) and a key-less managed worker (``worker_api_key``) share."""
+    (``_resolve_policy_agent_runtime``) and a managed worker (``worker_route``) share."""
     from hermes_cli.runtime_provider import (
         frozen_runtime_config, resolve_runtime_provider, resolve_runtime_with_fallback,
     )
@@ -189,11 +189,14 @@ def route_runtime(policy, frozen, model, key, *, fallback=True):
             explicit_api_key=key, explicit_base_url=launch_url, target_model=model)
 
 
-def worker_api_key(policy, construct):
-    """Child side, for a worker launched without a key (every Kanban run): the route's own credential,
-    resolved as the in-process turn resolves it, from this process's profile home (its HERMES_HOME and
-    ``.env``). A fallback entry's key belongs to another provider and model, so the primary never
-    carries it; the agent's own fallback chain switches all three together (#139155).
+def worker_route(policy, construct):
+    """Child side: the ``api_key`` / ``base_url`` / ``api_mode`` overrides for the worker's agent, resolved
+    as the in-process turn resolves its route (``route_runtime`` with the launch key, if one was bound),
+    from this process's profile home (its HERMES_HOME and ``.env``). The frozen ``model.base_url`` alone
+    is not the route: a per-model api_mode (opencode-go Responses models) and a resolved endpoint
+    (Bedrock's regional URL) come only from resolution. A fallback entry's route belongs to another
+    provider and model, so the primary never carries it; the agent's own fallback chain switches them
+    together (#139155).
 
     A primary AuthError walks the chain the agent will actually get: the owner's per-turn
     ``construct_v1`` chain (an ordinary session's refreshed profile fallbacks) when it was sent,
@@ -201,8 +204,11 @@ def worker_api_key(policy, construct):
     frozen, model = policy.effective()
     if 'fallback_model' in construct:
         frozen = {**frozen, 'fallback_providers': construct['fallback_model'] or [], 'fallback_model': None}
-    runtime, fallback_entry = route_runtime(policy, frozen, model, None)
-    return runtime.get('api_key') if fallback_entry is None else None
+    runtime, fallback_entry = route_runtime(policy, frozen, model, construct['api_key'])
+    if fallback_entry is not None:
+        return {}
+    return {'api_key': construct['api_key'] or runtime.get('api_key'), 'base_url': runtime.get('base_url'),
+            'api_mode': runtime.get('api_mode')}
 
 
 def checkpoint_agent_kwargs(config):

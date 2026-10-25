@@ -1,0 +1,33 @@
+name: divinci-workers-ai
+repo: https://github.com/Divinci-AI/hermes-cloudflare-workers-ai
+sha: 98db1c35512e12bef225695fd48d34d3d20fb020
+description: >-
+  Cloudflare Workers AI as a Hermes model provider (`--provider cloudflare-workers-ai`, alias
+  `cf-workers-ai`), account-scoped: the model list comes from the account's own
+  `/ai/models/search` (paged, filtered to chat-capable tasks) rather than a built-in list, so new
+  Workers AI models appear without a plugin update. Workers AI's account-level capacity 429
+  (code 3040, "Capacity temporarily exceeded") is classified as overloaded — back off and retry —
+  instead of rate_limit, so Hermes does not rotate through pooled keys that all share the same
+  account limit; other 429s keep Hermes's default handling. An alternative to
+  cloudflare-workers-ai-provider, which has a built-in model list and token+base-URL config; this
+  one is account-id based and per-profile (several profiles in one process each use their own
+  account, token and optional gateway URL). Not affiliated with Cloudflare. Disclosure — registers
+  one model provider at import and nothing else (no tools, hooks, commands or threads); chat and
+  model-list requests go to api.cloudflare.com for the configured account id, or to the URL in the
+  optional CLOUDFLARE_BASE_URL (profile `.env` only, never the process environment; https-only, no
+  credentials/query/fragment, and a rejected URL sends nothing); the token is sent only as a bearer
+  credential to that resolved URL; the plugin reads and writes no files and starts no processes.
+maintainer: mikeumus
+tier: community
+category: models
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/Divinci-AI/hermes-cloudflare-workers-ai
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - CLOUDFLARE_API_TOKEN
+  - CLOUDFLARE_ACCOUNT_ID

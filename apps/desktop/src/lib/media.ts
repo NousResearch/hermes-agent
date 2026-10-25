@@ -43,8 +43,35 @@ function mediaInfo(path: string): MediaInfo | undefined {
   return ext ? MEDIA_BY_EXT[ext] : undefined
 }
 
+// A genuinely extensionless remote (http/https) URL — `images.unsplash.com/photo-…`,
+// `picsum.photos/200` — is almost always an image, but `mediaInfo`'s extension
+// strip (which also drops any query string) finds no extension and falls through
+// to `file`, so MediaAttachment blocks it as "Image blocked". Treat those as
+// images. A remote URL that *does* carry an extension (`.pdf`, `.txt`, …) stays a
+// `file`: coercing a document to an image would bypass MediaAttachment's file
+// path and fail thumbnail loading.
+function isExtensionlessRemoteUrl(path: string): boolean {
+  if (!/^https?:/i.test(path)) {
+    return false
+  }
+
+  try {
+    const segment = new URL(path).pathname.split('/').filter(Boolean).pop() ?? ''
+
+    return !segment.includes('.')
+  } catch {
+    return false
+  }
+}
+
 export function mediaKind(path: string): MediaKind {
-  return mediaInfo(path)?.kind ?? 'file'
+  const info = mediaInfo(path)
+
+  if (info) {
+    return info.kind
+  }
+
+  return isExtensionlessRemoteUrl(path) ? 'image' : 'file'
 }
 
 // Markdown is renderable content, not an opaque download: the preview rail
@@ -59,7 +86,14 @@ export function isMarkdownDocumentPath(path: string): boolean {
 }
 
 export function mediaMime(path: string): string {
-  return mediaInfo(path)?.mime ?? 'application/octet-stream'
+  const info = mediaInfo(path)
+
+  if (info) {
+    return info.mime
+  }
+
+  // Mirror mediaKind: only genuinely extensionless remote URLs are images.
+  return isExtensionlessRemoteUrl(path) ? 'image/' : 'application/octet-stream'
 }
 
 export function mediaName(path: string): string {

@@ -1816,7 +1816,8 @@ While a plugin loaded in a profile holds the stream, that profile's sessions sho
 
 What else is held:
 
-- **Commentary** (model text sent between tool calls, `display.interim_assistant_messages`) never passes through `transform_llm_output`, so a held turn drops it. It stays in the model's context but is stored hidden, so resuming or reopening the session (TUI, desktop app, dashboard, classic CLI) does not show it either.
+- **Commentary** (model text sent between tool calls, `display.interim_assistant_messages`) never passes through `transform_llm_output`, so a held turn drops it. It stays in the model's context but is stored hidden, so resuming or reopening the session (TUI, desktop app, dashboard, classic CLI) does not show it either. The same goes for every other model text the user never got: an answer Hermes sent back for another try (late language-server errors, verify-on-stop), a reply cut by the output limit before its continuation, a call to an unknown tool.
+- **Every way a turn ends passes through the hook.** A reply cut by the output limit on every continuation, an iteration-budget summary, a provider or compression error, an interrupt: whatever text the turn ends with reaches the user only after `transform_llm_output` saw it, and model text is stored as the rewrite.
 - **A failing hook withholds the reply.** If no hook rewrote the reply and one raised or timed out, the user gets a short "reply withheld" notice, never the original.
 - **The hook set is fixed for the turn.** A held turn runs the `transform_llm_output` hooks that were loaded when it started, even if plugins are re-discovered mid-turn.
 - **Tool progress and reasoning** are not the reply and keep their own settings (`display.tool_progress`, `display.show_reasoning`). Turn them off as well if model output the plugin never saw must not reach the user.

@@ -16,6 +16,32 @@ from agent.history_commentary import visible_commentary
 logger = logging.getLogger("run_agent")
 
 
+def withhold_held_row(agent: Any, assistant_msg: dict[str, Any]) -> dict[str, Any]:
+    """Type a held turn's model row ``display_kind="hidden"`` when it has visible text; returns it.
+
+    Every row ``_build_assistant_message`` makes passes here before its first flush, so commentary,
+    continuation fragments, codex incomplete partials and an answer a stop gate sent back never reach
+    a history load; ``finish_text_response`` publishes the one row the user gets
+    (``publish_held_final_row``). The key never reaches the wire: the model's context and its cached
+    prefix are unchanged."""
+    if (getattr(agent, "_hold_stream", False) is True and not assistant_msg.get("display_kind")
+            and agent._interim_assistant_visible_text(assistant_msg)):
+        assistant_msg["display_kind"] = "hidden"
+    return assistant_msg
+
+
+def publish_held_final_row(agent: Any, final_msg: dict[str, Any], final_response: Any, joined: bool) -> None:
+    """The held turn's final row shows what the user got: visible again, and carrying the whole
+    stitched reply when length-continuation fragments (hidden above) were joined into it."""
+    if getattr(agent, "_hold_stream", False) is not True:
+        return
+    if final_msg.get("display_kind") == "hidden":
+        del final_msg["display_kind"]
+    if joined and final_msg.get("content") and final_msg["content"] != final_response:
+        final_msg.setdefault("api_content", final_msg["content"])  # the model keeps the piece it wrote
+        final_msg["content"] = final_response
+
+
 class StreamDeliveryMixin:
     """Stream ownership, delta/reasoning hook fan-out and interim-text dedup (see module docstring)."""
 

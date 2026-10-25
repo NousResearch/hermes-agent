@@ -1,9 +1,11 @@
 """Every exit of a held turn (``hold_stream=True`` transform) goes through the turn-start transform
-snapshot.
+snapshot, and every assistant row the user did not get stays out of history.
 
 Through a real ``AIAgent`` + ``SessionDB`` against the loopback model: a reply capped by the output
-limit on every continuation, an iteration-budget summary, and a provider error that ends the turn
-reach the user (and the stored row) only as the rewrite.
+limit on every continuation, a continuation that recovers, an iteration-budget summary, and a
+provider error that ends the turn all reach the user (and the stored row) only as the rewrite; an
+answer a late language-server verdict sends back for another try, and commentary on a call to an
+unknown tool, are hidden in every history load while the model keeps them byte-for-byte.
 """
 
 import os
@@ -12,7 +14,9 @@ from pathlib import Path
 import pytest
 
 from tests.fakes.fake_llm_provider import Error, FakeLLMServer, Text, ToolCall
-from tests.fakes.redactor_plugin import RAW, REWRITE, redactor_home
+from tests.fakes.redactor_plugin import COMMENTARY, RAW, REWRITE, redactor_home
+
+ATTEMPT = "Done, the deploy key SECRET-321 is in place."
 
 
 def _agent(server, db, session_id: str, **kwargs):
@@ -72,6 +76,15 @@ def test_reply_capped_on_every_continuation_is_still_rewritten(held):
     assert "SECRET-" not in str(displayed) and _assistant_texts(displayed) == [result["final_response"]]
 
 
+def test_recovered_continuation_shows_only_the_rewritten_whole(held):
+    cut = RAW.index("the backup")  # at a space: the fragments join back byte-for-byte
+    first, rest = RAW[:cut], RAW[cut:]
+    result, shown, displayed, _, _ = held([Text(first, finish_reason="length"), Text(rest)])
+    assert result["final_response"] == REWRITE
+    assert shown == []
+    assert _assistant_texts(displayed) == [REWRITE]
+
+
 def test_iteration_budget_summary_is_stored_as_the_rewrite(held):
     result, shown, displayed, _, _ = held([ToolCall("todo_list", {}), Text(RAW)], max_iterations=1)
     assert result["final_response"] == REWRITE
@@ -97,3 +110,38 @@ def test_provider_error_after_a_capped_fragment_delivers_only_the_rewrite(held):
     assert result.get("failed") and REWRITE in result["final_response"]
     assert "SECRET-" not in result["final_response"] and shown == []
     assert "SECRET-" not in str(displayed) and REWRITE in _assistant_texts(displayed)
+
+
+def test_answer_sent_back_by_a_late_lsp_verdict_stays_out_of_history(held, monkeypatch):
+    from agent.lsp import deferred
+
+    verdicts = [[("app.py", "app.py:3: error: name 'deploy' is not defined")]]
+    monkeypatch.setattr(deferred, "settle_for_agent", lambda agent, **_: verdicts.pop() if verdicts else [])
+    result, shown, displayed, server, db = held([Text(ATTEMPT), Text(RAW)])
+    assert result["final_response"] == REWRITE
+    assert shown == []
+    assert "SECRET-" not in str(displayed) and _assistant_texts(displayed) == [REWRITE]
+
+    # The model saw its attempted answer, and gets it byte-for-byte again on resume (cached prefix).
+    live = [m for m in server.main_requests()[1]["messages"] if m["role"] == "assistant"]
+    assert [m["content"] for m in live] == [ATTEMPT]
+    resumed = _agent(server, db, "held-exit")
+    resumed.run_conversation("thanks", conversation_history=db.get_messages_as_conversation("held-exit"))
+    replayed = [m for m in server.main_requests()[2]["messages"] if m["role"] == "assistant"]
+    assert replayed[0] == live[0]
+
+
+def test_reply_reused_from_held_commentary_is_not_reported_as_already_shown(held):
+    # Text beside a housekeeping call becomes the reply when the follow-up is empty. Held, that text
+    # was never shown, so the rewrite must not be flagged as previewed (the CLI would print nothing).
+    result, shown, displayed, _, _ = held([ToolCall("todo_list", {}, text=RAW), Text("")])
+    assert result["final_response"] == REWRITE and shown == []
+    assert not result["response_previewed"] and not result["response_reused"]
+    assert "SECRET-" not in str(displayed) and REWRITE in _assistant_texts(displayed)
+
+
+def test_commentary_on_an_unknown_tool_call_stays_out_of_history(held):
+    result, shown, displayed, _, _ = held([ToolCall("no_such_tool", {}, text=COMMENTARY), Text(RAW)])
+    assert result["final_response"] == REWRITE
+    assert shown == []
+    assert COMMENTARY not in str(displayed) and _assistant_texts(displayed) == [REWRITE]

@@ -233,6 +233,33 @@ export const PaneTabLabel = React.forwardRef<HTMLElement, PaneTabLabelProps>(fun
   )
 })
 
+/**
+ * A plain mouse wheel only emits `deltaY`, which a horizontal strip ignores —
+ * reaching tabs past the edge took Shift+wheel. Map a mostly-vertical wheel
+ * onto `scrollLeft` while the strip overflows. Trackpad and Shift+wheel
+ * scrolls (mostly `deltaX`) and Ctrl/⌘+wheel zoom pass through untouched.
+ * Native + non-passive so the handled wheel can be `preventDefault`ed.
+ */
+function bindVerticalWheelToHorizontalScroll(el: HTMLElement): () => void {
+  const onWheel = (event: WheelEvent) => {
+    if (
+      event.ctrlKey ||
+      event.metaKey ||
+      el.scrollWidth <= el.clientWidth ||
+      Math.abs(event.deltaY) <= Math.abs(event.deltaX)
+    ) {
+      return
+    }
+
+    el.scrollLeft += event.deltaY * (getComputedStyle(el).direction === 'rtl' ? -1 : 1)
+    event.preventDefault()
+  }
+
+  el.addEventListener('wheel', onWheel, { passive: false })
+
+  return () => el.removeEventListener('wheel', onWheel)
+}
+
 interface PaneTabStripProps extends React.ComponentProps<'div'> {
   /** The scrolling tab list — receives `role="tablist"`. */
   children: React.ReactNode
@@ -257,6 +284,31 @@ export const PaneTabStrip = React.forwardRef<HTMLDivElement, PaneTabStripProps>(
   { children, className, listRef, trailing, titlebar = false, ...props },
   ref
 ) {
+  // The scroller binds the vertical-wheel mapping itself, then hands the node
+  // on to the caller's `listRef` (tree-group's `useActiveTabVisible`).
+  const scrollerRef = React.useCallback(
+    (node: HTMLDivElement | null) => {
+      const detach = node ? bindVerticalWheelToHorizontalScroll(node) : undefined
+
+      if (typeof listRef === 'function') {
+        listRef(node)
+      } else if (listRef) {
+        listRef.current = node
+      }
+
+      return () => {
+        detach?.()
+
+        if (typeof listRef === 'function') {
+          listRef(null)
+        } else if (listRef) {
+          listRef.current = null
+        }
+      }
+    },
+    [listRef]
+  )
+
   return (
     <div
       // Strip and active tab both sit on the sidebar surface, so the bar reads
@@ -272,7 +324,7 @@ export const PaneTabStrip = React.forwardRef<HTMLDivElement, PaneTabStripProps>(
     >
       <div
         className="flex min-w-0 flex-1 overflow-x-auto overflow-y-hidden overscroll-x-contain [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-        ref={listRef}
+        ref={scrollerRef}
         role="tablist"
       >
         {children}

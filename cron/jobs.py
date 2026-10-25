@@ -41,7 +41,12 @@ logger = logging.getLogger(__name__)
 from hermes_time import now as _hermes_now
 from hermes_time import get_timezone
 from hermes_cli.observability.shared_metrics_gateway import record_cron_missed
-from utils import atomic_replace, atomic_write_text, fsync_directory, mkstemp_beside
+from utils import (
+    _REPLACE_RETRY_ATTEMPTS as _READ_RETRY_ATTEMPTS,
+    _REPLACE_RETRY_BASE_DELAY_S as _READ_RETRY_BASE_DELAY_S,
+    _REPLACE_RETRY_MAX_DELAY_S as _READ_RETRY_MAX_DELAY_S,
+    atomic_replace, atomic_write_text, fsync_directory, mkstemp_beside,
+)
 
 # croniter is imported lazily (slow import, only needed for cron exprs). HAS_CRONITER stays a
 # module attribute: a monkeypatched value wins because _ensure_croniter only probes while None
@@ -1337,12 +1342,32 @@ def get_ticker_last_error() -> Optional[str]:
 
 # --- Job CRUD Operations ---
 
+def _read_jobs_text(jobs_file: Path) -> str:
+    """Read jobs.json, retrying a Windows sharing violation from a concurrent save.
+
+    ``atomic_replace`` retries the WRITE side on the same budget, but the reader had none: ``open()``
+    fails while another handle holds the file without read sharing — which every finish of a
+    concurrent job does — and the C runtime maps that to ``PermissionError``/errno 13 with ``winerror``
+    dropped, so ``utils._is_contended_windows_replace_error`` cannot classify it. Bounded like the
+    write, then re-raise: a genuine ACL denial still surfaces (#144166).
+    """
+    for attempt in range(1, _READ_RETRY_ATTEMPTS + 2):
+        try:
+            with open(jobs_file, "r", encoding="utf-8-sig") as f:
+                return f.read()
+        except PermissionError:
+            if os.name != "nt" or attempt > _READ_RETRY_ATTEMPTS:
+                raise
+            from agent.retry_utils import jittered_backoff
+            time.sleep(jittered_backoff(attempt, base_delay=_READ_RETRY_BASE_DELAY_S,
+                                        max_delay=_READ_RETRY_MAX_DELAY_S))
+
+
 def _parse_jobs_file(jobs_file: Path) -> tuple[Any, bool]:
     """Tolerant jobs.json parse -> ``(data, used_strict_fallback)``: utf-8-sig absorbs a BOM, strict
     failure retries with ``strict=False``. IO/fallback errors propagate (caller decides repair vs
     bail)."""
-    with open(jobs_file, "r", encoding="utf-8-sig") as f:
-        raw = f.read()
+    raw = _read_jobs_text(jobs_file)
     try:
         return json.loads(raw), False
     except json.JSONDecodeError:

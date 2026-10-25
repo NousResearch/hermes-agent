@@ -5,6 +5,7 @@ import logging
 from typing import TYPE_CHECKING
 import asyncio
 import dataclasses
+import copy
 import inspect
 import json
 import os
@@ -21,7 +22,7 @@ from contextvars import copy_context
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
-from gateway.platforms.event import MessageEvent
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
     build_session_context,
@@ -566,14 +567,25 @@ class GatewayTurnPersistenceMixin:
             response = ""
 
         adapter = self._delivery_adapter_for(source)
-        # Auto voice reply (TTS audio before the text) unless streaming TTS already delivered audio.
-        _streaming_tts_done = adapter is not None and bool(
-            getattr(adapter, "_streaming_tts_turn_completed", lambda *_a, **_k: False)(session_key, run_generation)
-        )
-        if not _streaming_tts_done and self._should_send_voice_reply(
-            event, response, agent_messages, already_sent=bool(agent_result.get("already_sent")),
-        ):
-            await self._send_voice_reply(event, response)
+        response = self._include_reply_speech(response, agent_messages, adapter)
+        terminal_event = agent_result.pop("_queued_terminal_reply_event", None) or getattr(event, "_reply_voice_event", None)
+        voice_event = terminal_event if isinstance(terminal_event, MessageEvent) else event
+        if voice_event is event and "queued_terminal_message_type" in agent_result:
+            # Preserve the original text/ledger anchor while applying the terminal input's policy.
+            voice_event = copy.copy(event)
+            voice_event.message_type = MessageType(agent_result["queued_terminal_message_type"])
+            voice_event._reply_voice_managed = False
+            voice_event._reply_voice_caption = False
+            voice_event._reply_voice_result = None
+        if not agent_result.get("_reply_voice_managed"):
+            async with self._async_profile_scope_for_source(voice_event.source):
+                event._reply_voice_caption = await self._narrate_reply(
+                    voice_event, response, agent_messages, session_key, run_generation,
+                    text_delivered=bool(agent_result.get("already_sent") and not agent_result.get("failed")))
+            if hasattr(voice_event, "_reply_voice_result"):
+                event._reply_voice_result = voice_event._reply_voice_result
+        # Ownership is not a success receipt; Base must not start another provider request.
+        event._reply_voice_managed = True
 
         # Streamed responses still need MEDIA: files delivered (chunks carry the tags verbatim). Never
         # skip when the agent failed: the error text is new content streaming didn't show.

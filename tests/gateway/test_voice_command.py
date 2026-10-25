@@ -266,9 +266,9 @@ class TestAutoVoiceReply:
 
     # -- Telegram/Slack/Web: voice input, base handles ---------------------
 
-    def test_voice_input_voice_only_skipped(self, runner):
-        """voice_only + voice input: base auto-TTS handles it, runner skips."""
-        assert self._call(runner, "voice_only", MessageType.VOICE) is False
+    def test_voice_input_voice_only_owned_by_runner(self, runner):
+        """Speech eligibility no longer depends on whether Base will receive the body."""
+        assert self._call(runner, "voice_only", MessageType.VOICE) is True
 
 
     # -- Text input: only runner handles -----------------------------------
@@ -286,10 +286,9 @@ class TestAutoVoiceReply:
 
     # -- Discord VC exception: runner must handle --------------------------
 
-    def test_discord_vc_voice_input_base_handles(self, runner):
-        """Discord VC + voice input: base adapter play_tts plays in VC,
-        so runner skips to avoid double playback."""
-        assert self._call(runner, "all", MessageType.VOICE, in_voice_channel=True) is False
+    def test_discord_vc_voice_input_is_eligible(self, runner):
+        """The coordinator owns policy and retains the adapter's VC playback primitive."""
+        assert self._call(runner, "all", MessageType.VOICE, in_voice_channel=True) is True
 
 
 # =====================================================================
@@ -1413,11 +1412,11 @@ class TestVoiceTTSPlayback:
 
     # -- Streaming OFF (existing behavior, must not change) --
 
-    def test_voice_input_runner_skips(self):
-        """Streaming OFF + voice input: runner skips — base adapter handles."""
+    def test_voice_input_runner_owns_reply(self):
+        """Unstreamed replies must not fall into an adapter/runner ownership gap."""
         from gateway.platforms.event import MessageType
         runner = self._make_runner()
-        assert self._call_should_reply(runner, "all", MessageType.VOICE, already_sent=False) is False
+        assert self._call_should_reply(runner, "all", MessageType.VOICE, already_sent=False) is True
 
 
     def test_error_response_no_tts(self):
@@ -1430,8 +1429,8 @@ class TestVoiceTTSPlayback:
     # -- Streaming ON (already_sent=True) --
 
 
-    def test_streaming_on_agent_tts_dedup(self):
-        """Streaming ON + agent called TTS: runner skips (dedup still works)."""
+    def test_unanswered_agent_tts_call_does_not_suppress_reply(self):
+        """A tool call without successful output has not produced the requested speech."""
         from gateway.platforms.event import MessageType
         runner = self._make_runner()
         agent_msgs = [{"role": "assistant", "tool_calls": [
@@ -1439,7 +1438,7 @@ class TestVoiceTTSPlayback:
         ]}]
         assert self._call_should_reply(
             runner, "all", MessageType.VOICE, agent_msgs=agent_msgs, already_sent=True,
-        ) is False
+        ) is True
 
 
 class TestUDPKeepalive:

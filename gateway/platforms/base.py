@@ -4189,11 +4189,11 @@ class BasePlatformAdapter(ABC):
 
     def _wants_auto_tts(self, event: MessageEvent, session_key: str, interrupt_event: asyncio.Event,
                         text_content: str, media_files: list) -> bool:
-        """Auto-TTS on voice input (voice-first), gated by /voice or voice.auto_tts;
-        skipped when streaming TTS already delivered audio this turn."""
+        """Standalone voice-input speech, unless the runner or an audible stream owns it."""
         generation = getattr(interrupt_event, "_hermes_run_generation", None)
         return bool(
             self._should_auto_tts_for_chat(event.source.chat_id)
+            and not getattr(event, "_reply_voice_managed", False)
             and event.message_type == MessageType.VOICE and text_content and not media_files
             and not self._streaming_tts_turn_completed(session_key, generation, event=event))
 
@@ -4571,8 +4571,8 @@ class BasePlatformAdapter(ABC):
                 if self._wants_auto_tts(
                         event, session_key, interrupt_event, text_content, media_files):
                     _tts_paths, _tts_requested_path = await self._synthesize_auto_tts(text_content)
-                # TTS plays before text; generated files are removed afterwards.
-                _tts_caption_delivered = False
+                _tts_caption_delivered = bool(getattr(event, "_reply_voice_caption", False))
+                _record_delivery(getattr(event, "_reply_voice_result", None))
                 for _tts_index, _tts_path in enumerate(_tts_paths):
                     try:
                         _tts_caption_delivered |= await self._play_tts_file(

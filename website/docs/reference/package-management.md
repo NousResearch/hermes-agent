@@ -571,7 +571,7 @@ launchers, and invokes native packaging. Maintainers can read
 
 ## Network retries
 
-PM retries transient HTTP failures during tool downloads, artifact hashing and
+By default, PM retries transient HTTP failures during tool downloads, artifact hashing and
 version lookups. Probes and non-resumable transfers get at most four attempts.
 Their backoff waits are 1, 2 and 4 seconds. A `Retry-After` header can extend
 these waits up to 30 seconds. Resumable transfers renew their retry budget

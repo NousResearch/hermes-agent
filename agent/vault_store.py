@@ -351,10 +351,11 @@ class VaultStore:
         mine = kc.new_ref(self._base)
         try:
             kc.store_key(mine, key)
-        except kc.KeychainUnavailable:
+            kc.write_ref(self._keyref_path, mine)
+        except (kc.KeychainUnavailable, OSError):
+            kc.delete_key(mine)  # no orphan per retry; the shared entry keeps serving reads
             logger.warning("could not give the copied vault in %s its own keychain entry", self._base, exc_info=True)
             return ref
-        kc.write_ref(self._keyref_path, mine)
         return mine
 
     def _decrypts(self, key: Optional[bytes]) -> bool:

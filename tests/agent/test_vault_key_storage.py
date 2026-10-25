@@ -195,3 +195,31 @@ def test_cloned_and_renamed_keychain_vaults_never_share_or_overwrite_an_entry(ho
     (work / "vault").rename(renamed / "vault")
     _add(VaultStore(work / "vault"))  # a new vault where the renamed one used to live
     assert VaultStore(renamed / "vault").resolve_secret(item)["password"] == _LOGIN["password"]
+
+
+def test_copied_vault_still_opens_when_its_own_pointer_cannot_be_written(home, keychain, monkeypatch):
+    from agent import vault_keychain
+
+    work = home("work", key_storage="keychain")
+    item = _add(VaultStore())
+    clone = home("clone", key_storage="keychain")
+    shutil.copytree(work / "vault", clone / "vault")
+
+    def disk_full(*_a, **_k):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(vault_keychain, "write_ref", disk_full)
+    assert VaultStore().resolve_secret(item)["password"] == _LOGIN["password"]
+    assert len(keychain.entries) == 1, "the half-made entry is removed, not left behind on every retry"
+
+
+def test_cleanup_of_an_already_deleted_keychain_entry_completes(home, keychain):
+    h = home(key_storage="keychain")
+    item = _add(VaultStore())
+    keyref = (h / "vault" / "vault.keyref").read_bytes()
+    assert VaultStore().migrate_key("file") == "file"
+    (h / "vault" / "vault.keyref").write_bytes(keyref)  # stopped after deleting the entry, before the pointer
+    assert VaultStore().migrate_key("file") == "file"
+    assert "keychain_entry_left" not in VaultStore().key_location()
+    assert not (h / "vault" / "vault.keyref").exists()
+    assert VaultStore().resolve_secret(item)["password"] == _LOGIN["password"]

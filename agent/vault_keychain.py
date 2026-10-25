@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from contextlib import suppress
 from pathlib import Path
 from typing import Optional
 
@@ -120,11 +121,15 @@ def store_key(ref: dict, key: bytes) -> None:
 
 
 def delete_key(ref: dict) -> bool:
+    """True once the entry is gone, including when an earlier, interrupted cleanup already removed it."""
+    service, account = str(ref.get("service") or SERVICE), str(ref["account"])
     try:
-        os_keyring().delete_password(str(ref.get("service") or SERVICE), str(ref["account"]))
-    except Exception:  # health: allow BLE001 -- best effort; an orphaned entry is harmless
+        backend = os_keyring()
+        with suppress(Exception):  # a missing entry raises PasswordDeleteError; the read below decides
+            backend.delete_password(service, account)
+        return backend.get_password(service, account) is None
+    except Exception:  # health: allow BLE001 -- unreachable keychain: the caller keeps the pointer to retry
         return False
-    return True
 
 
 def remove_file(path: Path) -> None:

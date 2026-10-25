@@ -388,6 +388,8 @@ that home may claim — anything else lands in the dispatcher's
 `skipped_nonspawnable` bucket instead of spawning, and no longer counts as
 spawnable work for the gateway's wake-up probe.
 
+`hermes kanban create` and the `kanban_create` tool triage a card whose assignee has no live profile in the creating home, but only when the board lives under that home. On a board shared across homes (a `HERMES_KANBAN_DB` or `HERMES_KANBAN_HOME` outside the creating home's root) the creating home cannot tell which profiles exist elsewhere, so the card is created as requested and the claiming home's dispatcher decides.
+
 ### Idempotent create (for automation / webhooks)
 
 ```bash

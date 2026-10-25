@@ -131,6 +131,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
   const {
     appendAssistantDelta,
     appendReasoningDelta,
+    completeReasoningSource,
     compactedTurnRef,
     completeAssistantMessage,
     finalizeInterimAssistantMessage,
@@ -272,9 +273,21 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     return true
   }
 
+  if (event.type === 'reasoning.start') {
+    return true
+  }
+
+  if (event.type === 'reasoning.end') {
+    if (sessionId && payload?.reasoning_id) {
+      completeReasoningSource(sessionId, payload.reasoning_id, occurredAt)
+    }
+
+    return true
+  }
+
   if (event.type === 'reasoning.delta') {
     if (sessionId) {
-      appendReasoningDelta(sessionId, coerceThinkingText(payload?.text), false, occurredAt)
+      appendReasoningDelta(sessionId, coerceThinkingText(payload?.text), false, occurredAt, payload?.reasoning_id)
     }
 
     if (isActiveEvent) {

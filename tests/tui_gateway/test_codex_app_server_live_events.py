@@ -65,3 +65,21 @@ def test_codex_bridge_emits_one_authoritative_tui_tool_lifecycle(monkeypatch):
     ]
     assert lifecycle[0][1]["tool_id"] == "codex_exec_tool-1"
     assert lifecycle[1][1]["tool_id"] == "codex_exec_tool-1"
+
+
+def test_codex_bridge_preserves_reasoning_item_identity_for_desktop(monkeypatch):
+    sid = "codex-reasoning-events"
+    events = []
+    monkeypatch.setattr(server, "_emit", lambda event_type, session_id, payload=None: events.append((event_type, session_id, payload)))
+    callbacks = server._agent_cbs(sid)
+    agent = SimpleNamespace(reasoning_event_callback=callbacks["reasoning_event_callback"])
+    bridge = make_codex_app_server_event_bridge(agent)
+    reasoning = {"type": "reasoning", "id": "reasoning-1"}
+    bridge({"method": "item/started", "params": {"item": reasoning}})
+    bridge({"method": "item/reasoning/summaryDelta", "params": {"itemId": "reasoning-1", "delta": "Examining"}})
+    bridge({"method": "item/completed", "params": {"item": reasoning}})
+    assert events == [
+        ("reasoning.start", sid, {"reasoning_id": "reasoning-1", "text": ""}),
+        ("reasoning.delta", sid, {"reasoning_id": "reasoning-1", "text": "Examining"}),
+        ("reasoning.end", sid, {"reasoning_id": "reasoning-1", "text": ""}),
+    ]

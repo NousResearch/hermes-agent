@@ -33,6 +33,7 @@ function context(type: GatewayEventName): GatewayEventContext {
       activeSessionIdRef: { current: 's1' },
       appendAssistantDelta: vi.fn(),
       appendReasoningDelta: vi.fn(),
+      completeReasoningSource: vi.fn(),
       compactedTurnRef: { current: new Set() },
       completeAssistantMessage: vi.fn(),
       failAssistantMessage: vi.fn(),

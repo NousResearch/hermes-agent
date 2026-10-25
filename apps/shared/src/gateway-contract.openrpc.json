@@ -23446,6 +23446,18 @@
             ],
             "default": null,
             "title": "Verbose"
+          },
+          "reasoning_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reasoning Id"
           }
         },
         "required": [
@@ -32421,6 +32433,26 @@
           "session_id"
         ],
         "title": "ReadRangeRequestParams",
+        "type": "object"
+      },
+      "ReasoningLifecyclePayload": {
+        "additionalProperties": false,
+        "description": "Boundary for one provider-owned reasoning source in the live stream.",
+        "properties": {
+          "reasoning_id": {
+            "title": "Reasoning Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reasoning_id",
+          "text"
+        ],
+        "title": "ReasoningLifecyclePayload",
         "type": "object"
       },
       "RecordRepoItem": {
@@ -41808,6 +41840,18 @@
             ],
             "default": null,
             "title": "Verbose"
+          },
+          "reasoning_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reasoning Id"
           }
         },
         "required": [
@@ -49063,6 +49107,30 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/StreamDeltaPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "reasoning.end",
+      "summary": "A provider-owned reasoning source finished streaming.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/ReasoningLifecyclePayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "reasoning.start",
+      "summary": "A provider-owned reasoning source began streaming.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/ReasoningLifecyclePayload"
           }
         }
       ]

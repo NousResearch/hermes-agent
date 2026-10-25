@@ -1,0 +1,35 @@
+#!/bin/sh
+# acp-bridge.sh.template — conditional ACP bridge: put the app's agent brain on a remote host.
+#
+# Install as the file the app actually launches (see SKILL.md Step 0 — read the app's own
+# agent-id -> binary map; do NOT guess the name). Back up the original first.
+#
+# Replace:  __REMOTE_HOST__    ssh alias or user@host of the machine that runs the agent
+#           __REMOTE_HOME__    home of the remote user (e.g. /home/you)
+#           __REMOTE_PROFILE__ profile dir on the remote host (e.g. .hermes/profiles/appwork)
+#           __LOCAL_CLI__      absolute path of the real local launcher you are wrapping
+#           __LOCAL_PYTHON__   interpreter that runs it (e.g. a venv python)
+
+set -u
+
+REMOTE_HOST="__REMOTE_HOST__"
+REMOTE_HOME="__REMOTE_HOME__"
+REMOTE_PROFILE="__REMOTE_PROFILE__"
+LOCAL_CLI="__LOCAL_CLI__"
+LOCAL_PYTHON="__LOCAL_PYTHON__"
+
+# Only the ACP invocation goes remote. Everything else falls through to the untouched local CLI —
+# a blanket replacement breaks every other local caller of this binary.
+case "${1:-}" in
+  acp)
+    # Set the remote profile explicitly: the app exports its own HERMES_HOME locally and that value
+    # must not be honoured remotely (SSH does not forward env by default, so set it on the far side).
+    exec ssh -T -o BatchMode=yes -o ConnectTimeout=10 \
+      -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+      "$REMOTE_HOST" "HERMES_HOME=$REMOTE_HOME/$REMOTE_PROFILE exec $REMOTE_HOME/.local/bin/$(basename "$LOCAL_CLI") $*"
+    ;;
+esac
+
+# Local fall-through. Clear inherited interpreter state so we behave exactly like the original.
+unset PYTHONPATH PYTHONHOME 2>/dev/null || true
+exec "$LOCAL_PYTHON" "$LOCAL_CLI" "$@"

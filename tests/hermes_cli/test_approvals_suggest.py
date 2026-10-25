@@ -286,6 +286,25 @@ class TestApply:
         assert "git push *" in out and "docker restart *" in out
 
 
+class TestDestinationMessage:
+    """Printed config path must follow the active HERMES_HOME, not a hardcoded ~/.hermes."""
+
+    def test_messages_name_active_home(
+        self, db_path, isolated_allowlist, capsys, tmp_path, monkeypatch
+    ):
+        home = tmp_path / "profiles" / "coder"
+        home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        path, con = db_path
+        for _ in range(4):
+            _add_terminal_call(con, "git push --force origin main")
+        expected = f"{home}/config.yaml"
+        assert suggest_command(_args(path)) == 0
+        assert expected in capsys.readouterr().out
+        assert suggest_command(_args(path, apply_indices="1")) == 0
+        assert expected in capsys.readouterr().out
+
+
 class TestJsonOutput:
     def test_json_proposal_output(self, db_path, isolated_allowlist, capsys):
         path, con = db_path

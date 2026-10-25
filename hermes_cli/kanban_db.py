@@ -2556,6 +2556,8 @@ def release_stale_claims(
             release_claim=False, end_run=False,
             event_payload_extra={"worker_pid": _opt_int(row["worker_pid"]), "retry_status": retry_status},
         )
+        from agent.subscription_capacity_runtime import release_recovered_kanban_capacity
+        release_recovered_kanban_capacity(kanban_home(), row["id"], run_id)
         # Post-commit observer; every non-reclaim branch ``continue``d above.
         if _kanban_observer_consumed("on_kanban_worker_stale_claim"):
             _fire_kanban_lifecycle_hook(

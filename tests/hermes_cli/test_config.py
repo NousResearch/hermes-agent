@@ -136,6 +136,18 @@ class TestLoadConfigDefaults:
             assert config["terminal"]["backend"] == "local"
             assert config["display"]["interim_assistant_messages"] is True
 
+    def test_subscription_capacity_floor_is_effectively_merged(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            (tmp_path / "config.yaml").write_text(
+                "kanban:\n  subscription_capacity:\n    claude_floor_percent: 17.5\n",
+                encoding="utf-8",
+            )
+            config = load_config()
+            assert config["kanban"]["subscription_capacity"]["claude_floor_percent"] == 17.5
+            assert config["kanban"]["max_in_progress"] is None
+
+        assert DEFAULT_CONFIG["kanban"]["subscription_capacity"]["claude_floor_percent"] is None
+
     def test_legacy_root_level_max_turns_migrates_to_agent_config(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             config_path = tmp_path / "config.yaml"

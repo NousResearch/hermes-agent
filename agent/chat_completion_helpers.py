@@ -2241,6 +2241,13 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
 _SUMMARY_ATTEMPT_BUILDERS = {"codex_responses": _codex_summary_attempt, "anthropic_messages": _anthropic_summary_attempt}
 
 
+def _capacity_guarded_summary_attempt(agent, attempt, retry_count: int) -> str:
+    """Last common boundary before every direct max-iteration summary transport."""
+    from agent.subscription_capacity_runtime import check_worker_capacity_phase
+    check_worker_capacity_phase(agent)
+    return attempt(retry_count)
+
+
 def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     """Request a summary when max iterations are reached. Returns the final response text."""
     warning = f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary..."
@@ -2269,7 +2276,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         # One retry on an empty summary; a summary empty once its <think> block is stripped is NOT retried.
         final_response = _EMPTY_SUMMARY_RESPONSE
         for retry_count in (0, 1):
-            text = attempt(retry_count)
+            text = _capacity_guarded_summary_attempt(agent, attempt, retry_count)
             if not text:
                 continue
             if "<think>" in text:

@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -31,6 +32,8 @@ def _task(provider="openai-codex", model="gpt-6-sol", **kwargs):
 @pytest.fixture(autouse=True)
 def _reset_runtime(monkeypatch):
     monkeypatch.delenv(runtime.CAPACITY_LEASE_ENV, raising=False)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "ESN-TEST")
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "7")
     monkeypatch.setattr(runtime, "_runtime", None)
     monkeypatch.setattr(runtime, "_runtime_released", False)
 
@@ -121,6 +124,20 @@ def test_real_api_call_boundary_denies_before_transport(monkeypatch):
         )
 
 
+def test_iteration_summary_boundary_denies_before_direct_transport(monkeypatch):
+    from agent.chat_completion_helpers import _capacity_guarded_summary_attempt
+
+    monkeypatch.setattr(
+        runtime, "check_worker_capacity_phase",
+        lambda agent: (_ for _ in ()).throw(runtime.SubscriptionCapacityUnavailable("summary denied")),
+    )
+    called = []
+    agent = SimpleNamespace(provider="openai-codex", model="gpt-6-sol", api_mode="codex_responses")
+    with pytest.raises(runtime.SubscriptionCapacityUnavailable, match="summary denied"):
+        _capacity_guarded_summary_attempt(agent, lambda retry: called.append(retry), 0)
+    assert called == []
+
+
 def test_pre_spawn_failure_and_hard_death_recovery_release(tmp_path):
     payload = runtime.prepare_kanban_worker_capacity(
         _task(), shared_root=tmp_path, profile_home=None, config={}, fetcher=lambda provider: _snapshot(),
@@ -142,3 +159,38 @@ def test_repair_role_comes_from_durable_workflow_step(tmp_path):
     )
     import json
     assert json.loads(payload)["lease"]["task"] == "repair"
+
+
+def test_in_process_delegate_cannot_check_or_release_parent_lease(tmp_path, monkeypatch):
+    from agent.delegation_context import delegated_child_context
+
+    payload = runtime.prepare_kanban_worker_capacity(
+        _task(), shared_root=tmp_path, profile_home=None, config={}, fetcher=lambda provider: _snapshot(),
+    )
+    monkeypatch.setenv(runtime.CAPACITY_LEASE_ENV, payload)
+    router, lease = runtime._load_runtime()
+    router.fetcher = lambda provider: _snapshot()
+    with delegated_child_context("child"):
+        with pytest.raises(runtime.SubscriptionCapacityUnavailable, match="not owned"):
+            runtime.check_worker_capacity_phase(SimpleNamespace(provider=lease.provider, model=lease.model))
+        assert runtime.release_worker_capacity() is False
+    assert runtime.release_worker_capacity() is True
+
+
+def test_spawned_descendant_gets_no_lease_and_cannot_rebind_process(tmp_path, monkeypatch):
+    from agent.delegation_context import delegated_child_subprocess_env
+
+    payload = runtime.prepare_kanban_worker_capacity(
+        _task(), shared_root=tmp_path, profile_home=None, config={}, fetcher=lambda provider: _snapshot(),
+    )
+    monkeypatch.setenv(runtime.CAPACITY_LEASE_ENV, payload)
+    router, lease = runtime._load_runtime()
+    router.fetcher = lambda provider: _snapshot()
+    runtime.check_worker_capacity_phase(SimpleNamespace(provider=lease.provider, model=lease.model))
+    child_env = delegated_child_subprocess_env(dict(os.environ))
+    assert runtime.CAPACITY_LEASE_ENV not in child_env
+
+    owner_pid = os.getpid()
+    monkeypatch.setattr(runtime.os, "getpid", lambda: owner_pid + 1)
+    with pytest.raises(runtime.SubscriptionCapacityUnavailable, match="not owned"):
+        runtime.check_worker_capacity_phase(SimpleNamespace(provider=lease.provider, model=lease.model))

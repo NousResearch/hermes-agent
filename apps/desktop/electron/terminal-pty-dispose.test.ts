@@ -134,3 +134,45 @@ test('explicit dispose kills the PTY and drops the session', async () => {
   assert.equal(write({}, session.id, 'echo hi'), false)
   assert.equal(dispose({}, session.id), false)
 })
+
+test('repeated terminal starts on one window install a single destroyed hook', async () => {
+  registerTerminalIpc({
+    isWindows: false,
+    findOnPath: () => null,
+    rememberLog: () => {},
+    activeSshTerminalTarget: () => null,
+    sshBinary: () => '/usr/bin/ssh',
+    ensureBackend: async () => undefined,
+    getSshConnectionState: () => undefined
+  })
+
+  const sender = makeSender(7)
+  const first = makeFakePty()
+  const second = makeFakePty()
+
+  spawnMock.fn.mockReturnValueOnce(first.pty).mockReturnValueOnce(second.pty)
+
+  const start = handles.map.get('hermes:terminal:start') as (
+    event: { sender: ReturnType<typeof makeSender> },
+    payload: Record<string, unknown>
+  ) => Promise<{ cwd: string | null; id: string; shell: string }>
+
+  const s1 = await start({ sender }, {})
+  const s2 = await start({ sender }, {})
+
+  assert.ok(s1?.id)
+  assert.ok(s2?.id)
+
+  // Eleven tabs used to mean eleven destroyed listeners on one WebContents.
+  const destroyedHooks = sender.once.mock.calls.filter(([event]) => event === 'destroyed')
+
+  assert.equal(destroyedHooks.length, 1)
+
+  // The single hook sweeps every session owned by that sender.
+  destroyedHooks[0][1]()
+
+  const write = handles.map.get('hermes:terminal:write') as (event: unknown, id: string, data: string) => boolean
+
+  assert.equal(write({}, s1.id, 'x'), false)
+  assert.equal(write({}, s2.id, 'x'), false)
+})

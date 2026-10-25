@@ -55,6 +55,7 @@ from hermes_cli.doctor_state import (
     _check_directory_structure,
     _check_memory_provider,
     _check_plugins_disabled_by_update,
+    _check_plugins_in_both_lists,
     _check_profiles,
     _check_skills_hub,
     _check_state_db,
@@ -126,6 +127,7 @@ DOCTOR_CHECKS = (
     (None, _check_npm_audit), ('API Connectivity', _check_api_connectivity),
     ('Tool Availability', _check_tool_availability), ('Skills Hub', _check_skills_hub),
     ('Memory Provider', _check_memory_provider), (None, _check_plugins_disabled_by_update),
+    (None, _check_plugins_in_both_lists),
     ('NeMo Relay Plugins', _check_relay_plugins),
     (None, _check_profiles),
 )

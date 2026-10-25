@@ -11,6 +11,7 @@ for the same reason is skipped, and only the newest ``keep`` per reason survive,
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import time
 from pathlib import Path
@@ -51,7 +52,7 @@ def backup_config(config_path: Path, reason: str, *, keep: int = DEFAULT_KEEP) -
         if not config_path.is_file() or config_path.stat().st_size == 0:
             return None
         root = backups_dir(config_path)
-        root.mkdir(parents=True, exist_ok=True)
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
         _sweep_legacy_siblings(config_path, root)
         existing = list_config_backups(config_path, reason)
         # Not filecmp.cmp: its process-wide cache keys on (size, mtime), so an equal-size edit
@@ -61,7 +62,8 @@ def backup_config(config_path: Path, reason: str, *, keep: int = DEFAULT_KEEP) -
         dest = root / f"{config_path.name}.{reason}.{time.strftime('%Y%m%d-%H%M%S')}"
         if dest.is_symlink() or dest.exists():  # never write through a planted link
             return None
-        shutil.copy2(config_path, dest)
+        _copy_private(config_path, dest)
+        _tighten_legacy(root)
         for stale in [dest, *existing][keep:]:
             stale.unlink(missing_ok=True)
         return dest
@@ -88,6 +90,42 @@ def load_newest_good_backup(config_path: Path) -> Optional[dict]:
         logger.warning("Last-known-good backup %s is unreadable: %s", newest[0], exc)
         return None
     return data if isinstance(data, dict) else None
+
+
+def _copy_private(src: Path, dest: Path) -> None:
+    """Byte-copy *src* to *dest* with the private mode set at creation.
+
+    ``config.yaml`` commonly holds live provider keys, but ``shutil.copy2`` inherits the
+    source's mode, so a 0644 config (or a permissive umask) stamped every backup 0644 —
+    world-readable copies of secrets, in a dir nothing else guards. The mode is fixed in
+    ``os.open`` (not a later chmod) so no world-readable window exists between creation and
+    tightening, the same invariant ``auth.py`` keeps for token files. mtime still carries
+    over (what ``copy2`` was bought for); the mode deliberately does not.
+    """
+    st = src.stat()
+    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as out, open(src, "rb") as f:
+        shutil.copyfileobj(f, out)
+    os.utime(dest, ns=(st.st_atime_ns, st.st_mtime_ns))
+
+
+def _tighten_legacy(root: Path) -> None:
+    """Narrow pre-fix group/world bits on the backup dir and its copies on next write.
+
+    One-time repair per file: backups written before the mode-at-creation fix keep whatever
+    mode the old ``copy2`` gave them until this runs. Bounded by the same ``keep`` rotation
+    as the copies themselves."""
+    try:
+        if root.stat().st_mode & 0o077:
+            root.chmod(0o700)
+    except OSError:
+        pass
+    for p in root.iterdir():
+        try:
+            if p.is_file() and not p.is_symlink() and p.stat().st_mode & 0o077:
+                p.chmod(0o600)
+        except OSError:
+            pass
 
 
 def _sweep_legacy_siblings(config_path: Path, root: Path) -> None:

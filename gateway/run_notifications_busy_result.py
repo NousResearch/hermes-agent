@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
-from typing import Any
+from typing import Any, Optional
 
 logger = logging.getLogger("gateway.run")
 
@@ -23,6 +23,32 @@ BUSY_RESULT_MODE_KEYS = {
     "async_delegation": ("delegation", "busy_result_mode"),
     "completion": ("display", "background_process_busy_result_mode"),
 }
+
+
+@dataclasses.dataclass(frozen=True)
+class CarriedCompletion:
+    """A claimed completion riding a running turn (``delegation.busy_result_mode: steer``): what
+    settling it later needs once a tool result carried it, or the turn ended without one."""
+
+    evt: dict
+    delegation_id: str
+    claim_id: str
+    identity: Any
+    siblings: tuple
+    waiter: Optional[asyncio.Future] = None  # a process completion's carry outcome
+
+
+def busy_result_mode(evt_type: str) -> str:
+    """The profile in scope's busy-result mode for ``evt_type``: ``queue`` (default) or ``steer``."""
+    from gateway.run import _load_gateway_config
+    from hermes_cli.config import cfg_get
+
+    section, key = BUSY_RESULT_MODE_KEYS[evt_type]
+    mode = str(cfg_get(_load_gateway_config(), section, key, default="") or "queue").strip().lower()
+    if mode not in ("queue", "steer"):
+        logger.warning("%s.%s=%r is not 'queue' or 'steer'; using 'queue'", section, key, mode)
+        return "queue"
+    return mode
 
 
 def offer_process_completion(agent: Any, carried: Any, synth_text: str) -> asyncio.Future:

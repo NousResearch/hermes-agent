@@ -129,14 +129,17 @@ class MaxAdapter(BasePlatformAdapter):
     _MAX_COMMAND_DESC_LIMIT = 128
 
     async def _sync_command_menu(self) -> None:
-        """Push the same slash-command menu Telegram shows (``/help``, ``/new``, ...) to MAX via
-        ``PATCH /me``, reusing the shared, already-sanitized command list so both platforms stay
-        in sync without a second source of truth."""
+        """Push the same slash-command menu Telegram shows to MAX via ``PATCH /me/commands``.
+        Honors the same ``platforms.telegram.extra.command_menu`` config (priority_mode/priority/
+        max_commands) via ``telegram_menu_max_commands()``/``telegram_menu_commands()`` — e.g. a
+        ``max_commands: 9`` + curated ``priority`` list on Telegram yields the identical 9-command
+        menu on MAX, just hard-capped at MAX's own 32-entry ``PATCH /me/commands`` limit."""
         if not self._http_client:
             return
         try:
-            from hermes_cli.commands_platforms import telegram_menu_commands
-            pairs, _hidden = telegram_menu_commands(max_commands=self._MAX_COMMAND_MENU_LIMIT)
+            from hermes_cli.commands_platforms import telegram_menu_commands, telegram_menu_max_commands
+            limit = min(telegram_menu_max_commands(), self._MAX_COMMAND_MENU_LIMIT)
+            pairs, _hidden = telegram_menu_commands(max_commands=limit)
             commands = [
                 {"name": name, "description": (desc or name)[: self._MAX_COMMAND_DESC_LIMIT]}
                 for name, desc in pairs]

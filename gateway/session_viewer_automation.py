@@ -29,6 +29,8 @@ _CALLS = {
     "heartbeat": frozenset({"state", "set", "pause", "resume", "clear", "due_prompt", "abandon_fire"}),
 }
 _READS = frozenset({"state", "is_waiting", "goal_blocks_tick"})
+# /heartbeat set and resume start the CLI's watchdog (cli_commands_mixin); only it calls due_prompt.
+_WATCHDOG_CALLS = frozenset({"set", "resume", "due_prompt"})
 _FIELDS = frozenset({"session_id", "profile", "kind", "call", "args", "kwargs"})
 _ERRORS = (RuntimeError, ValueError, IndexError)
 
@@ -150,8 +152,8 @@ async def automation(connection, ref, params):
     if not hasattr(authority, "viewer_automation"):
         authority.viewer_automation = {}
     authority.viewer_automation[ref.session_id] = connection
-    if kind == "heartbeat" and call == "due_prompt":
-        # Only a running CLI watchdog polls due_prompt: from then on the gateway poller leaves the ticks to it.
+    if kind == "heartbeat" and call in _WATCHDOG_CALLS:
+        # The CLI's watchdog runs from these on: from then on the gateway poller leaves the ticks to it.
         if not hasattr(authority, "viewer_heartbeat"):
             authority.viewer_heartbeat = {}
         authority.viewer_heartbeat[ref.session_id] = connection

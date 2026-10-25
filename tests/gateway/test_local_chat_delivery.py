@@ -87,9 +87,9 @@ async def _attached_cli(tmp_path, monkeypatch):
     ref = create_local_session(authority, cli.actor, dict(request_id='cli', source='cli', model='fixture', toolsets=[]))
     cli.subscriptions[ref.session_id] = 'sub-1'
 
-    async def automation(kind, call):
+    async def automation(kind, call, *args):
         reply = await cli.dispatch({'id': 1, 'method': 'session.automation', 'params': {
-            'session_id': ref.session_id, 'kind': kind, 'call': call, 'args': [], 'kwargs': {}}})
+            'session_id': ref.session_id, 'kind': kind, 'call': call, 'args': list(args), 'kwargs': {}}})
         return reply['result']
     return runner, authority, ref, automation
 
@@ -98,12 +98,10 @@ async def _attached_cli(tmp_path, monkeypatch):
 async def test_a_classic_cli_driving_its_heartbeat_keeps_the_tick(tmp_path, monkeypatch):
     """The classic CLI paints only the ticks its own watchdog fires, so the poller leaves them to it."""
     from gateway.run_heartbeat_restore import restore_heartbeat_watches
-    from hermes_cli.heartbeat import HeartbeatManager
     runner, authority, ref, automation = await _attached_cli(tmp_path, monkeypatch)
-    HeartbeatManager(ref.session_id).set('status tick', 60)
-    await restore_heartbeat_watches(runner)
-    assert (await automation('heartbeat', 'due_prompt'))['value'] is None  # the CLI's watchdog polls, not due yet
+    await automation('heartbeat', 'set', 'status tick', 60)  # /heartbeat set starts the CLI's watchdog
     _overdue_heartbeat(ref.session_id)
+    await restore_heartbeat_watches(runner)
     await runner._heartbeat_poll_once(runner._heartbeat_watch)
     assert not _heartbeat_admissions(authority, ref)
     assert 'status tick' in (await automation('heartbeat', 'due_prompt'))['value']

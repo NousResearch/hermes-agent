@@ -66,8 +66,13 @@ Known caveats:
 * ``git fetch``/``pull`` inside the worker's own worktree fails -- ``FETCH_HEAD``
   lives in the ro main ``.git``. By design the dispatcher fetches/creates the
   worktree; ``hermes -w`` from inside a worker is likewise unavailable.
-* Cron-scheduled agents (``cron/scheduler.py`` Popen) are a second spawn path
-  and are NOT covered here -- exposure is owned by ``t_efef6176``.
+* Cron-scheduled agents (``cron/scheduler.py`` Popen) are a second spawn path.
+  They share the same threat model and are now covered by
+  ``build_isolated_cron_worker_argv`` / the ``--cron`` launcher flag
+  (``t_102333c4``). The cron's helper reuses the same bind dance, but the
+  carve-out set computes its branch ref directory from the agent home's
+  own ``.git/HEAD`` (since a cron worker has no per-task worktree to
+  read). Working-tree files stay read-only.
 """
 
 from __future__ import annotations
@@ -274,19 +279,79 @@ def _build_launcher_argv(
     agent_home: str,
     worktree: Optional[str],
     extra_rw: Sequence[str],
+    cron: bool = False,
 ) -> List[str]:
     """Argv for the launcher itself (without the ``unshare -Urm`` prefix).
 
     Layout: ``[<py>, -m, hermes_cli.worker_isolate, _launcher, <agent_home>,
-    [--worktree <path>] [--rw <path>...] -- <worker argv...>]``.
+    [--cron] [--worktree <path>] [--rw <path>...] -- <worker argv...>]``.
+
+    The ``--cron`` flag tells the launcher that the worker has no per-task
+    worktree: the carve-out set computes the worker's branch ref directory
+    from the agent home's own ``.git/HEAD`` instead of from a worktree's
+    HEAD. Used by ``build_isolated_cron_worker_argv`` for the cron
+    subprocess path (``t_102333c4``).
     """
     argv: List[str] = list(_launcher_module_target())
     argv.append(agent_home)
+    if cron:
+        argv.append("--cron")
     if worktree:
         argv += ["--worktree", worktree]
     if extra_rw:
         argv += ["--rw", *extra_rw]
     return argv
+
+
+def build_isolated_cron_worker_argv(
+    command: Sequence[str],
+    *,
+    agent_home: str,
+    extra_rw: Sequence[str] = (),
+) -> List[str]:
+    """Return the launcher-prefixed argv for a cron-spawned worker (t_102333c4).
+
+    Mirrors :func:`build_isolated_worker_argv` but for the cron subprocess
+    path in ``cron/scheduler.py``: there is no per-task worktree, so the
+    carve-out set is rooted at the agent home itself with the worker's
+    branch ref directory computed from ``<agent_home>/.git/HEAD``.
+
+    Threat model: a cron agent (``python -m cron.scheduler
+    --external-worker-file <payload> --ack-file <ack>``) runs with
+    ``cwd=<agent_home>`` and the host user's privileges. Without
+    isolation it can ``git switch -c cron-evil`` against the production
+    tree, edit ``app.py``, run ``git reset --hard`` etc -- the same
+    set of mutations the dispatch-side isolation guards against. The
+    wrap refuses them at the syscall level (EROFS / EACCES).
+
+    What is NOT carved out (intentionally):
+
+    * The working tree at ``<agent_home>`` itself (no app.py / .py edits
+      in production). A cron agent must use its own workspace tree or
+      a sandbox outside ``agent_home``; mutating the production tree
+      is the attack this card closes.
+    * The full ``<agent_home>/.git/refs/heads`` directory (same
+      cross-branch-update defense as the dispatch path -- a worker that
+      can update arbitrary refs can move ``canonical-deploy`` to a
+      different commit). For nested branches the parent directory is
+      rw; for top-level branches the carve-out narrows to the single
+      branch ref FILE so sibling refs in ``refs/heads/`` stay ro and
+      ``update-ref refs/heads/<other-branch>`` is denied.
+
+    Pure function: no syscalls, no env reads. The config / kill switch
+    gate lives in the caller's wrapper (cron's helper resolves the
+    policy the same way ``_isolation_worker_argv`` does for dispatch).
+    """
+    if not command:
+        raise ValueError("worker command must be a non-empty sequence")
+    if not agent_home:
+        raise ValueError("agent_home is required for worker isolation")
+    launcher_argv = _build_launcher_argv(
+        agent_home=agent_home, worktree=None, extra_rw=extra_rw, cron=True,
+    )
+    # ``--`` separates the launcher from the worker argv so a worker command
+    # beginning with a flag never gets eaten by the launcher.
+    return ["unshare", "-Urm", *launcher_argv, "--", *command]
 
 
 def _launcher_module_target() -> str:
@@ -330,12 +395,12 @@ def _launcher_main(argv: List[str]) -> int:
 
     args = argv[2:]
     try:
-        agent_home, worktree, extra_rw, worker_argv = _parse_launcher_argv(args)
+        agent_home, worktree, extra_rw, worker_argv, cron = _parse_launcher_argv(args)
     except ValueError as exc:
         sys.stderr.write(f"hermes worker isolation: {exc}\n")
         return 64
 
-    rc = _enter_isolation(agent_home=agent_home, worktree=worktree, extra_rw=extra_rw)
+    rc = _enter_isolation(agent_home=agent_home, worktree=worktree, extra_rw=extra_rw, cron=cron)
     if rc != 0:
         return rc
 
@@ -347,19 +412,35 @@ def _launcher_main(argv: List[str]) -> int:
         return 127  # EX_NOTFOUND -- but only as a fallback; the worker IS the long-lived thing.
 
 
-def _parse_launcher_argv(args: List[str]) -> tuple[str, Optional[str], List[str], List[str]]:
-    """Parse the post-``_launcher`` argv into (agent_home, worktree, extras, worker_argv)."""
+def _parse_launcher_argv(args: List[str]) -> tuple[str, Optional[str], List[str], List[str], bool]:
+    """Parse the post-``_launcher`` argv into (agent_home, worktree, extras,
+    worker_argv, cron_flag).
+
+    ``cron_flag=True`` means the worker has no per-task worktree; the
+    launcher reads ``<agent_home>/.git/HEAD`` to determine the branch ref
+    carve-out directory (vs the worktree's HEAD on the dispatch path).
+    ``--cron`` is mutually exclusive with ``--worktree``: a cron worker
+    has no worktree, so combining them is rejected to keep the parse
+    unambiguous.
+    """
     if not args or args[0].startswith("-"):
         raise ValueError("first arg must be the agent home path")
     agent_home = args[0]
     worktree: Optional[str] = None
     extra_rw: List[str] = []
+    cron = False
     i = 1
     while i < len(args) and args[i] != "--":
         a = args[i]
+        if a == "--cron":
+            cron = True
+            i += 1
+            continue
         if a == "--worktree":
             if i + 1 >= len(args):
                 raise ValueError("--worktree requires a value")
+            if cron:
+                raise ValueError("--cron and --worktree are mutually exclusive")
             worktree = args[i + 1]
             i += 2
             continue
@@ -375,11 +456,11 @@ def _parse_launcher_argv(args: List[str]) -> tuple[str, Optional[str], List[str]
     worker_argv = args[i + 1:]
     if not worker_argv:
         raise ValueError("worker argv after -- is empty")
-    return agent_home, worktree, extra_rw, worker_argv
+    return agent_home, worktree, extra_rw, worker_argv, cron
 
 
 def _enter_isolation(
-    *, agent_home: str, worktree: Optional[str], extra_rw: Sequence[str]
+    *, agent_home: str, worktree: Optional[str], extra_rw: Sequence[str], cron: bool = False,
 ) -> int:
     """Apply the bind dance. Mirrors the validated reference launcher,
     with two security-tightening departures:
@@ -396,6 +477,13 @@ def _enter_isolation(
     2. ``.git/packed-refs`` is NOT carved out, so a worker can't
        resurrect a packed ref that the dispatcher unpacks to defang
        an update.
+
+    Cron mode (``cron=True``, ``t_102333c4``): the worker has no per-task
+    worktree, so the carve-out set is computed from the agent home's own
+    ``.git/HEAD`` instead of from a worktree's HEAD. The working tree
+    itself is NEVER carved rw -- a cron agent must not be able to edit
+    ``app.py`` or other production files; mutating the production
+    working tree is the attack this card closes.
 
     Errors return distinct exit codes (91=stage bind, 92=prod bind, 93=remount ro,
     94=carve bind) so the launcher's first failing mount is identifiable from
@@ -426,9 +514,19 @@ def _enter_isolation(
         # 3. carve-outs, sourced from the rw staging bind.
         #    ``.git/refs/heads`` is intentionally NOT included (see docstring);
         #    the worker's own branch carve-out is added below when worktree
-        #    is provided.
+        #    is provided (dispatch path) or when cron=True reads the agent
+        #    home's HEAD (cron path, t_102333c4).
         carve: List[str] = [f"{agent_home}/.git/objects", f"{agent_home}/.git/logs"]
-        if worktree:
+        if cron:
+            # Cron: no per-task worktree. The branch ref dir is computed
+            # from the agent home's own .git/HEAD (this is the actual
+            # checkout branch, not a worker's branch). Working tree at
+            # agent_home stays ro.
+            worker_ref_dir = _agent_home_branch_ref_dir(agent_home)
+            if worker_ref_dir:
+                _ensure_dir_in_stage(stage, parent, worker_ref_dir)
+                carve.append(worker_ref_dir)
+        elif worktree:
             carve.append(worktree)
             carve.append(f"{agent_home}/.git/worktrees/{os.path.basename(worktree)}")
             # The worker's own branch ref lives under ``refs/heads/<branch>``.
@@ -547,6 +645,75 @@ def _worker_branch_ref_dir(agent_home: str, worktree: str) -> Optional[str]:
         # ``<agent_home>/.git/refs/heads`` itself, which is exactly the
         # path we're refusing to expose. Skip and let the worker's
         # first write fail safe.
+        return None
+    return os.path.join(agent_home, ".git", "refs", "heads", branch_dir)
+
+
+def _agent_home_branch_ref_dir(agent_home: str) -> Optional[str]:
+    """Resolve the agent home's current branch ref carve-out path (t_102333c4).
+
+    Counterpart to :func:`_worker_branch_ref_dir` for the cron spawn
+    path: a cron worker has no per-task worktree, so its branch ref
+    carve-out must be derived from the agent home's own ``.git/HEAD``
+    (e.g. ``refs/heads/canonical-deploy-t_7161d9a9`` on production),
+    not from a worktree's HEAD.
+
+    Returns a path that the launcher's bind dance can ``mount --bind``
+    rw over (works for both single files and directories on Linux):
+
+    * **Nested branch** like ``wt/t_x``: returns the parent directory
+      ``<agent_home>/.git/refs/heads/wt`` (the carve-out that
+      ``_worker_branch_ref_dir`` also returns).
+    * **Top-level branch** like ``canonical-deploy-t_7161d9a9``:
+      returns the **branch ref FILE** (e.g.
+      ``<agent_home>/.git/refs/heads/canonical-deploy-t_7161d9a9``).
+      We deliberately do NOT widen to the whole ``refs/heads``
+      directory: doing so re-opens the cross-branch-update hole that
+      the dispatch path closes by returning ``None``. File-level bind
+      is sufficient because git's ref-update syscall targets only that
+      one file (sibling refs in the same directory stay ro and
+      ``git update-ref refs/heads/<other-branch>`` is denied).
+
+    Returns ``None`` when:
+
+    * ``<agent_home>/.git/HEAD`` is missing or unreadable
+    * ``HEAD`` is detached (a SHA, not ``ref: ...``) -- cron should
+      never see a detached HEAD on the production tree, but if it does
+      we skip the carve-out and let the standard ro bind deny writes.
+    * The resolved ref file does not exist yet (e.g. a fresh checkout
+      where ``refs/heads/canonical-deploy-t_7161d9a9`` has not been
+      materialised). Skip and let the worker's first ref write be
+      denied by the standard ro bind (still safe).
+    """
+    head_path = os.path.join(agent_home, ".git", "HEAD")
+    if not os.path.isfile(head_path):
+        return None
+    try:
+        head = open(head_path, "r").read().strip()
+    except OSError:
+        return None
+    if not head.startswith("ref:"):
+        return None  # detached HEAD
+    ref = head[len("ref:"):].strip()  # e.g. ``refs/heads/canonical-deploy-t_7161d9a9``
+    if not ref.startswith("refs/heads/"):
+        return None
+    branch_path = ref[len("refs/heads/"):]  # e.g. ``canonical-deploy-t_7161d9a9``
+    branch_dir, _ = os.path.split(branch_path)
+    if not branch_dir:
+        # Top-level branch (e.g. ``main``, ``canonical-deploy-t_7161d9a9``).
+        # The file git writes to is ``refs/heads/<branch>`` itself; its
+        # parent directory is ``refs/heads``, which the dispatch path
+        # deliberately refuses to carve (whole-dir rw enables cross-branch
+        # moves like ``update-ref refs/heads/<other-branch>``). For cron,
+        # we still want the agent to be able to commit on its current
+        # branch -- but we DO NOT want it to move other branches.
+        #
+        # Linux's ``mount --bind`` works on a single file too: bind the
+        # branch ref FILE rw so the worker can update only that one ref,
+        # while sibling branch refs in the same directory stay ro.
+        ref_file = os.path.join(agent_home, ".git", "refs", "heads", branch_path)
+        if os.path.isfile(ref_file):
+            return ref_file
         return None
     return os.path.join(agent_home, ".git", "refs", "heads", branch_dir)
 

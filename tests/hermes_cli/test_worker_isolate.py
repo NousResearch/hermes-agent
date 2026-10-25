@@ -572,3 +572,307 @@ def test_ensure_dir_in_stage_creates_missing_path():
         # Calling again on an existing path is a no-op.
         _ensure_dir_in_stage(stage, parent, target)
         assert os.path.isdir(os.path.join(stage, ".git", "refs", "heads", "fix"))
+
+
+# ---------------------------------------------------------------------------
+# Cron spawn path (t_102333c4)
+# ---------------------------------------------------------------------------
+#
+# The dispatcher covers worktree-anchored tasks. The cron subprocess path
+# (``cron/scheduler.py:3281``) is a second spawn and has no per-task
+# worktree -- the carve-out set is computed against the agent home's own
+# ``.git/HEAD`` instead. These tests verify the argv shape, the parser,
+# and the branch-ref resolution for the agent-home (vs worktree) case.
+
+
+def test_build_isolated_cron_worker_argv_no_worktree_flag():
+    """Cron argv wraps in unshare -Urm with --cron, no --worktree."""
+    from hermes_cli.worker_isolate import build_isolated_cron_worker_argv
+
+    argv = build_isolated_cron_worker_argv(
+        ["python", "-m", "cron.scheduler"],
+        agent_home="/p/agent",
+    )
+    assert argv[0] == "unshare"
+    assert argv[1] == "-Urm"
+    assert "--cron" in argv
+    # A cron worker has no --worktree flag (it's mutually exclusive).
+    assert "--worktree" not in argv
+    assert "python" in argv and "-m" in argv and "cron.scheduler" in argv
+    sep = argv.index("--")
+    assert argv[sep + 1:] == ["python", "-m", "cron.scheduler"]
+
+
+def test_build_isolated_cron_worker_argv_extra_rw():
+    from hermes_cli.worker_isolate import build_isolated_cron_worker_argv
+
+    argv = build_isolated_cron_worker_argv(
+        ["x"], agent_home="/p", extra_rw=["/extra"],
+    )
+    assert "--rw" in argv
+    rw_idx = argv.index("--rw")
+    assert argv[rw_idx + 1] == "/extra"
+
+
+def test_build_isolated_cron_worker_argv_rejects_empty():
+    from hermes_cli.worker_isolate import build_isolated_cron_worker_argv
+    import pytest
+
+    with pytest.raises(ValueError):
+        build_isolated_cron_worker_argv([], agent_home="/p/agent")
+    with pytest.raises(ValueError):
+        build_isolated_cron_worker_argv(["x"], agent_home="")
+
+
+def test_launcher_argv_parser_accepts_cron_flag(tmp_path):
+    """``--cron`` parses cleanly; mutually exclusive with --worktree."""
+    from hermes_cli.worker_isolate import _parse_launcher_argv
+
+    args = [str(tmp_path), "--cron", "--", "echo", "x"]
+    agent_home, worktree, extra_rw, worker_argv, cron = _parse_launcher_argv(args)
+    assert agent_home == str(tmp_path)
+    assert worktree is None
+    assert extra_rw == []
+    assert worker_argv == ["echo", "x"]
+    assert cron is True
+
+
+def test_launcher_argv_parser_rejects_cron_with_worktree(tmp_path):
+    """``--cron`` + ``--worktree`` is rejected to keep the parse unambiguous."""
+    from hermes_cli.worker_isolate import _parse_launcher_argv
+    import pytest
+
+    args = [str(tmp_path), "--cron", "--worktree", str(tmp_path / "wt"), "--", "x"]
+    with pytest.raises(ValueError, match="--cron and --worktree"):
+        _parse_launcher_argv(args)
+
+
+def test_agent_home_branch_ref_dir_top_level_branch_returns_file(tmp_path):
+    """``canonical-deploy-t_7161d9a9`` style: return the branch ref FILE.
+
+    File-level bind (not whole-dir rw) is what makes cron isolation
+    distinct from dispatch: it lets the cron worker update only its own
+    ref while sibling refs in ``refs/heads/`` stay ro.
+    """
+    from hermes_cli.worker_isolate import _agent_home_branch_ref_dir
+
+    repo = tmp_path / "agent"
+    (repo / ".git" / "refs" / "heads").mkdir(parents=True)
+    (repo / ".git" / "HEAD").write_text("ref: refs/heads/canonical-deploy-t_7161d9a9\n")
+    # Materialise the ref file (cron on a fresh checkout would have no
+    # carved ref until HEAD is materialised; we want to test the happy path).
+    (repo / ".git" / "refs" / "heads" / "canonical-deploy-t_7161d9a9").write_text(
+        "deadbeef\n"
+    )
+    result = _agent_home_branch_ref_dir(str(repo))
+    assert result == str(repo / ".git" / "refs" / "heads" / "canonical-deploy-t_7161d9a9")
+    # File path -- mount --bind onto a single file works on Linux and
+    # does NOT widen to the whole refs/heads directory.
+    assert isinstance(result, str) and os.path.isfile(result)
+
+
+def test_agent_home_branch_ref_dir_nested_branch_returns_dir(tmp_path):
+    """A nested branch ref returns the parent directory (matches dispatch helper)."""
+    from hermes_cli.worker_isolate import _agent_home_branch_ref_dir
+
+    repo = tmp_path / "agent"
+    (repo / ".git" / "refs" / "heads" / "wt").mkdir(parents=True)
+    (repo / ".git" / "HEAD").write_text("ref: refs/heads/wt/t_x\n")
+    # Pretend the ref file exists.
+    (repo / ".git" / "refs" / "heads" / "wt" / "t_x").write_text("deadbeef\n")
+    result = _agent_home_branch_ref_dir(str(repo))
+    # Nested-branch carve returns the parent dir (consistency with dispatch).
+    assert result == str(repo / ".git" / "refs" / "heads" / "wt")
+    assert isinstance(result, str) and os.path.isdir(result)
+
+
+def test_agent_home_branch_ref_dir_detached_returns_none(tmp_path):
+    """A detached HEAD returns None -- cron should never see this on prod."""
+    from hermes_cli.worker_isolate import _agent_home_branch_ref_dir
+
+    repo = tmp_path / "agent"
+    (repo / ".git").mkdir(parents=True)
+    (repo / ".git" / "HEAD").write_text("deadbeef\n")
+    assert _agent_home_branch_ref_dir(str(repo)) is None
+
+
+def test_agent_home_branch_ref_dir_missing_head_returns_none(tmp_path):
+    """No ``.git/HEAD`` file means no carve -- ro bind denies writes."""
+    from hermes_cli.worker_isolate import _agent_home_branch_ref_dir
+
+    repo = tmp_path / "agent"
+    (repo / ".git").mkdir(parents=True)
+    assert _agent_home_branch_ref_dir(str(repo)) is None
+
+
+def test_agent_home_branch_ref_dir_top_level_branch_missing_ref_file(tmp_path):
+    """Top-level branch ref file not yet materialised -> None.
+
+    On a freshly-cloned repo ``refs/heads/<branch>`` is not on disk
+    until first commit; we skip the carve and let the standard ro bind
+    deny writes (still safe).
+    """
+    from hermes_cli.worker_isolate import _agent_home_branch_ref_dir
+
+    repo = tmp_path / "agent"
+    (repo / ".git" / "refs" / "heads").mkdir(parents=True)
+    (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    assert _agent_home_branch_ref_dir(str(repo)) is None
+
+
+# ---------------------------------------------------------------------------
+# Cron acceptance harness (port of verify-isolation.sh, cron mode)
+# ---------------------------------------------------------------------------
+#
+# Mirrors ``test_acceptance_harness_isolates_synthetic_repo`` but for
+# the cron spawn path: cwd is the agent home itself (no per-task
+# worktree), the branch ref directory is computed from the agent
+# home's ``.git/HEAD``, and the working tree at ``<agent_home>``
+# stays ro. The forbidden ops probe the actual threat model: a cron
+# worker must NOT be able to ``git switch -c cron-evil`` against the
+# production tree or write ``app.py``.
+
+
+_CRON_PROBE_SCRIPT = r"""
+import os, subprocess, sys
+PROD = sys.argv[1]
+FAIL = 0
+
+def chk(label, expect, args, cwd=None):
+    global FAIL
+    r = subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=20)
+    denied = (
+        r.returncode != 0
+        or "Read-only file system" in (r.stderr + r.stdout)
+        or "Permission denied" in (r.stderr + r.stdout)
+        or "Operation not permitted" in (r.stderr + r.stdout)
+    )
+    ok = (expect == "deny" and denied) or (expect == "allow" and r.returncode == 0)
+    print(("PASS  " if ok else "FAIL  ") + label + " :: " + (r.stderr.strip() or r.stdout.strip() or "ok"))
+    if not ok:
+        FAIL = 1
+
+# Forbidden: cron-evil must NOT be able to mutate the production tree.
+chk("git switch -c cron-evil", "deny",
+    ["git", "-C", PROD, "switch", "-c", "cron-evil-test"])
+chk("echo x >> app.py", "deny",
+    ["bash", "-c", "echo x >> '%s/app.py'" % PROD])
+chk("git reset --hard", "deny",
+    ["git", "-C", PROD, "reset", "--hard", "HEAD"])
+chk("git checkout HEAD -- .", "deny",
+    ["git", "-C", PROD, "checkout", "HEAD", "--", "."])
+chk("git update-ref other-branch", "deny",
+    ["git", "-C", PROD, "update-ref", "refs/heads/cross-branch-attack", "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"])
+
+# Allowed: a legitimate read of the production tree.
+chk("cat app.py", "allow", ["cat", os.path.join(PROD, "app.py")])
+chk("git log --oneline", "allow",
+    ["git", "-C", PROD, "log", "--oneline", "-n", "1"])
+chk("git status (ro)", "allow",
+    ["git", "-C", PROD, "status", "--porcelain"])
+
+sys.exit(FAIL)
+"""
+
+
+@pytest.mark.live_system_guard_bypass
+@pytest.mark.skipif(shutil.which("unshare") is None, reason="unshare not on PATH")
+@pytest.mark.skipif(
+    subprocess.run(
+        ["unshare", "--user", "--map-root-user", "true"],
+        capture_output=True, timeout=5,
+    ).returncode != 0,
+    reason="unprivileged user namespace unavailable on this host",
+)
+def test_cron_acceptance_harness_isolates_synthetic_repo(tmp_path):
+    """Cron-mode acceptance: forbidden ops against the agent home fail.
+
+    The agent home itself is the cwd. The forbidden probes cover the
+    threat model stated in ``build_isolated_cron_worker_argv``:
+
+    * ``git switch -c cron-evil``: branch creation against production.
+    * ``echo x >> app.py``: direct write to a working-tree file.
+    * ``git reset --hard``: index mutation against ro .git/index.lock.
+    * ``git update-ref refs/heads/cross-branch-attack``: cross-branch
+      ref move (must fail even though the cron worker holds the agent
+      home's current branch ref as a top-level-branch carve -- the
+      cross-branch ref is a SIBLING and is on a different ref file).
+    """
+    from hermes_cli.worker_isolate import _launcher_module_target, build_isolated_cron_worker_argv
+
+    repo = tmp_path / "cron-agent-home"
+    repo.mkdir()
+    (repo / ".git" / "objects").mkdir(parents=True)
+    (repo / ".git" / "refs" / "heads").mkdir(parents=True)
+    (repo / ".git" / "logs").mkdir(parents=True)
+    # Seed HEAD as if the deploy branch were checked out at the agent home.
+    (repo / ".git" / "HEAD").write_text("ref: refs/heads/canonical-deploy-t_7161d9a9\n")
+    (repo / "app.py").write_text("print('hi')\n")
+
+    # git init + initial commit so the ref file exists and git log works.
+    subprocess.run(["git", "-C", str(repo), "init", "-q", "-b", "canonical-deploy-t_7161d9a9", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "--allow-empty", "-q", "-m", "initial"],
+        check=True,
+    )
+    # Make sure the ref file is materialised (some git versions lazy-create it).
+    subprocess.run(["git", "-C", str(repo), "log", "--oneline", "-n", "1"], check=True)
+
+    launcher_prefix = _launcher_module_target()
+    inner_cmd = [
+        *launcher_prefix,
+        str(repo),
+        "--cron",
+        "--",
+        sys.executable, "-c", _CRON_PROBE_SCRIPT, str(repo),
+    ]
+    cmd = ["unshare", "-Urm", *inner_cmd]
+    result = subprocess.run(cmd, capture_output=True, timeout=60, text=True)
+
+    out = result.stdout + result.stderr
+    fail_lines = [line for line in out.splitlines() if line.startswith("FAIL ")]
+    assert not fail_lines, f"cron isolation allowed a forbidden op:\n{out}\nfull argv: {cmd}"
+
+
+# ---------------------------------------------------------------------------
+# Cron integration with ``cron/scheduler.py`` (t_102333c4 follow-up test)
+# ---------------------------------------------------------------------------
+#
+# Verifies that the cron's ``_cron_isolation_argv`` helper honours the
+# policy gate: when the launcher's arg-builder is exercised end-to-end
+# (build -> parse -> launch), the worker argv is the same one the
+# dispatcher's helper would have produced, just rooted at the agent
+# home (no per-task worktree).
+
+
+def test_cron_isolation_argv_returns_unwrapped_when_kill_switch(monkeypatch, tmp_path):
+    """``HERMES_WORKER_ISOLATION=off`` makes ``_cron_isolation_argv`` a no-op."""
+    monkeypatch.setenv("HERMES_WORKER_ISOLATION", "off")
+    from cron.scheduler import _cron_isolation_argv
+
+    sentinel = ["/usr/bin/python", "-m", "cron.scheduler", "--external-worker-file", "/dev/null"]
+    wrapped = _cron_isolation_argv(sentinel, tmp_path)
+    assert wrapped == sentinel
+
+
+def test_cron_isolation_argv_returns_unwrapped_when_kill_switch_truthy(monkeypatch, tmp_path):
+    """``HERMES_WORKER_ISOLATION=on`` keeps enforcing on cron (no-ops only when off)."""
+    monkeypatch.setenv("HERMES_WORKER_ISOLATION", "enforce")
+    from cron.scheduler import _cron_isolation_argv
+
+    sentinel = ["/usr/bin/python", "-m", "cron.scheduler", "--external-worker-file", "/dev/null"]
+    wrapped = _cron_isolation_argv(sentinel, tmp_path)
+    assert wrapped != sentinel
+    assert wrapped[0] == "unshare" and wrapped[1] == "-Urm"
+    assert "--cron" in wrapped
+    assert wrapped[-len(sentinel):] == sentinel
+
+
+def test_cron_isolation_argv_handles_empty_argv(tmp_path):
+    """Empty input passes through unchanged (defensive)."""
+    from cron.scheduler import _cron_isolation_argv
+
+    assert _cron_isolation_argv([], tmp_path) == []
+    assert _cron_isolation_argv(None, tmp_path) is None
+

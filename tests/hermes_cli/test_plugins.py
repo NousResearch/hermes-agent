@@ -1195,6 +1195,38 @@ class TestForceReloadSymmetry:
         assert elapsed < 5.0, f"caller blocked for {elapsed:.2f}s after timeout"
         hold.set()
 
+    def test_hook_timeout_and_skip_warnings_identify_callback_module(self, caplog):
+        """Same-named callbacks from different plugins remain distinguishable (#137681)."""
+        import hermes_cli.plugins_dispatch as dispatch
+
+        hold = threading.Event()
+
+        def make_callback(module):
+            def callback(**_kwargs):
+                hold.wait(timeout=10.0)
+
+            callback.__name__ = "_post_tool_call"
+            callback.__module__ = module
+            return callback
+
+        first = make_callback("plugin_alpha.hooks")
+        second = make_callback("plugin_beta.hooks")
+        mgr = PluginManager()
+        mgr._hook_timeout_suppression_seconds = 10.0
+
+        try:
+            with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+                assert mgr._run_hook_callback_bounded("post_tool_call", first, {}, 0.01) is dispatch._HOOK_SKIPPED
+                assert mgr._run_hook_callback_bounded("post_tool_call", second, {}, 0.01) is dispatch._HOOK_SKIPPED
+                assert mgr._run_hook_callback_bounded("post_tool_call", first, {}, 0.01) is dispatch._HOOK_SKIPPED
+
+            messages = [record.getMessage() for record in caplog.records]
+            assert any("_post_tool_call (plugin_alpha.hooks) timed out" in message for message in messages)
+            assert any("_post_tool_call (plugin_beta.hooks) timed out" in message for message in messages)
+            assert any("_post_tool_call (plugin_alpha.hooks) skipped" in message for message in messages)
+        finally:
+            hold.set()
+
 
     def test_hook_exception_still_isolated_under_timeout_path(self, monkeypatch):
         monkeypatch.setattr(

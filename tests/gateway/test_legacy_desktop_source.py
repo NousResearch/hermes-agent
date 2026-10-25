@@ -161,3 +161,36 @@ async def test_editing_ones_own_branch_leaves_another_logins_parent_alone(tmp_pa
         for sid in ('alice-branch', 'alice-tip'):
             row = db.get_session(sid)
             assert (row['pinned'], row['hidden'], row['archived']) == (1, 1, 1), sid
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('root_owner', ['basic:bob', None])
+async def test_renaming_ones_own_branch_leaves_another_logins_parent_title_alone(tmp_path, root_owner):
+    """#144596 round-2 review F1: a rename transfers a title off a compression ancestor. alice's branch
+    of bob's compressed chat is not his continuation, so taking his title is a conflict, not a transfer."""
+    from types import SimpleNamespace
+    from gateway.session_authority import SessionAuthority
+    from gateway.session_contract import SessionRef
+    from gateway.session_mutations import mutate_session
+    from hermes_state_runtime import begin_runtime_epoch
+    from tui_gateway.methods_session import _persist_branch
+
+    caps = frozenset({'session:read', 'session:control', 'session:create', 'session:operator'})
+    alice = Principal(_login('alice'), 'p', caps, 'http')
+    with SessionDB(db_path=tmp_path / 'state.db') as db:
+        authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id='p', instance_id='owner',
+                                     db=db, epoch=begin_runtime_epoch(db, instance_id='owner'))
+        db.create_session('root', source='desktop', user_id=root_owner)
+        db.set_session_title('root', 'Bob title')
+        db.append_message('root', 'user', 'hello')  # a real chat, not an empty ghost that yields its name
+        db.end_session('root', 'compression')
+        _persist_branch(db, 'alice-branch', 'root', 'Branch', [{'role': 'user', 'content': 'hi'}],
+                        source='desktop', cwd=None, profile_name=None, model='m', user_id='basic:alice')
+        before = db.get_session('root')['runtime_revision']
+        params = {'session_id': 'alice-branch', 'request_id': 'rename', 'operation': 'sidebar',
+                  'payload': {'title': 'Bob title'},
+                  'expected_revision': db.get_session('alice-branch')['runtime_revision']}
+        with pytest.raises(Exception, match='already in use'):
+            await mutate_session(authority, alice, SessionRef('p', 'alice-branch'), params)
+        root = db.get_session('root')
+        assert (root['title'], root['runtime_revision']) == ('Bob title', before)

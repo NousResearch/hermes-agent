@@ -1,0 +1,32 @@
+name: live-artifacts
+repo: https://github.com/mindsocket/hermes-live-artifacts
+sha: 72407dbaee202a17ec6b87dc8eed014b15a4c60b
+subdir: plugin
+title: Live Artifacts
+description: Create and use interactive artifacts - pages, designs and dashboards - in your sessions.
+maintainer: mindsocket
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/mindsocket/hermes-live-artifacts#readme
+version: "0.1.0"
+screenshots:
+  - https://raw.githubusercontent.com/mindsocket/hermes-live-artifacts/72407dbaee202a17ec6b87dc8eed014b15a4c60b/docs/screenshots/review-page.png
+  - https://raw.githubusercontent.com/mindsocket/hermes-live-artifacts/72407dbaee202a17ec6b87dc8eed014b15a4c60b/docs/screenshots/dashboard.png
+  - https://raw.githubusercontent.com/mindsocket/hermes-live-artifacts/72407dbaee202a17ec6b87dc8eed014b15a4c60b/docs/screenshots/chat-send.png
+platforms: [macos, linux]
+known_issues:
+  - "Access to a page is by possession of its link, with no sign-in. Keep the listener on loopback or a private network such as a tailnet."
+capabilities:
+  provides_tools:
+    - live_artifact_create
+    - live_artifact_update
+    - live_artifact_list
+    - live_artifact_read
+    - live_artifact_db_write
+    - live_artifact_archive
+    - live_artifact_delete
+    - live_artifact_export
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

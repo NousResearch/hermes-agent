@@ -502,29 +502,6 @@ export const esOverrides = {
     }
   },
   ...esNotices,
-  sendDiagnostics: {
-    title: 'Enviar diagnóstico a Nous',
-    privacyNotice:
-      'Esto sube un paquete de depuración a un almacenamiento interno de Nous (no a un sitio público). Incluye información del sistema (SO, versiones, proveedor y qué claves API están configuradas, nunca las claves en sí) y los registros completos del agente, del gateway y de la app de escritorio (hasta 512 KB cada uno), que probablemente contengan contenido de conversaciones, salidas de herramientas y rutas de archivos. Los secretos se ocultan antes de subirlo. Solo el personal de Nous y los moderadores autorizados de Discord pueden ver el paquete, que se elimina automáticamente a los 14 días.',
-    upload: 'Subir',
-    uploading: 'Subiendo…',
-    cancel: 'Cancelar',
-    close: 'Cerrar',
-    copyLink: 'Copiar enlace',
-    uploadIdFallback: id => `No se devolvió un enlace para verlo: indica el ID de subida ${id} al equipo de soporte`,
-    doneTitle: 'Diagnóstico enviado',
-    doneDescription:
-      'Tu paquete se subió de forma privada. Comparte el enlace de abajo en tu hilo de soporte para que el equipo pueda ver tus registros.',
-    failedTitle: 'Error al subir',
-    failedHint:
-      'También puedes ejecutar `hermes debug share --nous` desde una terminal, o `hermes debug share --local` para mostrar el informe sin subirlo.',
-    handoffLead: 'Continúa la conversación en:',
-    links: {
-      github: 'Issues de GitHub',
-      portal: 'Soporte de Nous Portal',
-      discord: 'Discord'
-    }
-  },
   titlebar: {
     hideSidebar: 'Ocultar barra lateral',
     showSidebar: 'Mostrar barra lateral',
@@ -1149,7 +1126,8 @@ export const esOverrides = {
         imageInputMode: 'Adjuntos de imagen',
         apiMaxRetries: 'Reintentos de API',
         serviceTier: 'Nivel de servicio',
-        toolUseEnforcement: 'Aplicación de uso de herramientas'
+        toolUseEnforcement: 'Aplicación de uso de herramientas',
+        autoPull: 'Hacer pull automáticamente'
       },
       terminal: {
         cwd: 'Directorio de trabajo',
@@ -1327,7 +1305,9 @@ export const esOverrides = {
       },
       agent: {
         imageInputMode: 'Controla cómo se envían los adjuntos de imagen al modelo.',
-        maxTurns: 'Límite superior de turnos con llamadas a herramientas antes de que Hermes detenga una ejecución.'
+        maxTurns: 'Límite superior de turnos con llamadas a herramientas antes de que Hermes detenga una ejecución.',
+        autoPull:
+          'Avanza la rama predeterminada al iniciar la sesión cuando el checkout no tiene cambios ni commits locales. Los proyectos también pueden activarlo desde el menú del proyecto.'
       },
       terminal: {
         cwd: 'Carpeta de proyecto predeterminada para herramientas y terminal.',

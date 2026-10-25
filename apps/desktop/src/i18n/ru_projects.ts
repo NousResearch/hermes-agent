@@ -24,6 +24,7 @@ export const ruProjects: NonNullable<TranslationOverrides['sidebar']>['projects'
   menu: 'Действия',
   menuRename: 'Переименовать',
   menuAppearance: 'Внешний вид',
+  menuAutoPull: 'Подтягивать автоматически',
   noColor: 'Без цвета',
   menuAddFolder: 'Добавить папку',
   menuSetActive: 'Сделать активным',

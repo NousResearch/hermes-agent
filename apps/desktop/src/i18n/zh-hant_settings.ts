@@ -440,7 +440,8 @@ export const zhHantSettings = {
         imageInputMode: '圖片附件',
         apiMaxRetries: 'API 重試次數',
         serviceTier: '服務層級',
-        toolUseEnforcement: '工具使用強制'
+        toolUseEnforcement: '工具使用強制',
+        autoPull: '自動拉取'
       },
       terminal: {
         cwd: '工作目錄',
@@ -614,7 +615,8 @@ export const zhHantSettings = {
       timezone: 'Hermes 需要本機時間上下文時使用。留空則使用系統時區。',
       agent: {
         imageInputMode: '控制圖片附件如何傳送給模型。',
-        maxTurns: 'Hermes 停止一次執行前的工具呼叫輪次上限。'
+        maxTurns: 'Hermes 停止一次執行前的工具呼叫輪次上限。',
+        autoPull: '當檢出沒有本機變更或提交時，在工作階段開始時快轉預設分支。專案也可以從專案選單啟用。'
       },
       terminal: {
         cwd: '工具與終端機操作的預設專案資料夾。',

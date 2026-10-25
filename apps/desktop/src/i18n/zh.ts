@@ -280,29 +280,6 @@ export const zhOverrides = {
 
   ...zhNotices,
 
-  sendDiagnostics: {
-    title: '向 Nous 发送诊断信息',
-    privacyNotice:
-      '这会将调试包上传到 Nous 内部存储（并非公开粘贴板）。内容包括系统信息（操作系统、版本、服务商、已配置的 API 密钥种类 — 绝不包含密钥本身）以及完整的 agent、gateway 和桌面端日志（每个最多 512 KB，很可能包含对话内容、工具输出与文件路径）。上传前会先脱敏。仅 Nous 员工与获准的 Discord 版主可查看，14 天后自动删除。',
-    upload: '上传',
-    uploading: '上传中…',
-    cancel: '取消',
-    close: '关闭',
-    copyLink: '复制链接',
-    uploadIdFallback: id => `未返回查看链接 — 请向支持人员提供上传 ID ${id}`,
-    doneTitle: '诊断信息已发送',
-    doneDescription: '调试包已私密上传。在您的支持会话中分享以下链接，团队即可查看您的日志。',
-    failedTitle: '上传失败',
-    failedHint:
-      '您也可以在终端运行 `hermes debug share --nous`，或运行 `hermes debug share --local` 在不上传的情况下查看报告。',
-    handoffLead: '在以下位置继续讨论:',
-    links: {
-      github: 'GitHub Issues',
-      portal: 'Nous Portal 支持',
-      discord: 'Discord'
-    }
-  },
-
   titlebar: {
     hideSidebar: '隐藏侧边栏',
     showSidebar: '显示侧边栏',
@@ -869,7 +846,8 @@ export const zhOverrides = {
         imageInputMode: '图片附件',
         apiMaxRetries: 'API 重试次数',
         serviceTier: '服务等级',
-        toolUseEnforcement: '工具调用强制'
+        toolUseEnforcement: '工具调用强制',
+        autoPull: '自动拉取'
       },
       terminal: {
         cwd: '工作目录',
@@ -1043,7 +1021,8 @@ export const zhOverrides = {
       timezone: '当 Hermes 需要本地时间上下文时使用。留空则使用系统时区。',
       agent: {
         imageInputMode: '控制图片附件如何发送给模型。',
-        maxTurns: 'Hermes 停止一次运行前工具调用轮次的上限。'
+        maxTurns: 'Hermes 停止一次运行前工具调用轮次的上限。',
+        autoPull: '当检出没有本地更改或提交时，在会话开始时快进默认分支。项目也可以在项目菜单中启用。'
       },
       terminal: {
         cwd: '工具与终端操作的默认项目目录。',

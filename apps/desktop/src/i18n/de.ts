@@ -499,29 +499,6 @@ export const deOverrides = {
     }
   },
   ...deNotices,
-  sendDiagnostics: {
-    title: 'Diagnosedaten an Nous senden',
-    privacyNotice:
-      'Damit laden Sie ein Debug-Paket in den internen Nous-Speicher hoch (kein öffentliches Paste). Es enthält Systeminfos (Betriebssystem, Versionen, Provider, welche API-Keys konfiguriert sind – niemals die Keys selbst) sowie vollständige Agent-, Gateway- und Desktop-Logs (bis zu 512 KB je Datei), die sehr wahrscheinlich Gesprächsinhalte, Tool-Ausgaben und Dateipfade enthalten. Geheimnisse werden vor dem Upload geschwärzt. Das Paket ist nur für Nous-Mitarbeitende und freigeschaltete Discord-Moderatoren einsehbar und wird nach 14 Tagen automatisch gelöscht.',
-    upload: 'Hochladen',
-    uploading: 'Wird hochgeladen…',
-    cancel: 'Abbrechen',
-    close: 'Schließen',
-    copyLink: 'Link kopieren',
-    uploadIdFallback: id => `Kein Link zurückgegeben — zitiere die Upload-ID ${id} im Support`,
-    doneTitle: 'Diagnosedaten gesendet',
-    doneDescription:
-      'Ihr Paket wurde privat hochgeladen. Teilen Sie den Link unten in Ihrem Support-Thread, damit das Team Ihre Logs sehen kann.',
-    failedTitle: 'Hochladen fehlgeschlagen',
-    failedHint:
-      'Sie können auch `hermes debug share --nous` im Terminal ausführen oder `hermes debug share --local`, um den Bericht ohne Hochladen auszugeben.',
-    handoffLead: 'Diskussion hier fortsetzen:',
-    links: {
-      github: 'GitHub Issues',
-      portal: 'Nous-Portal-Support',
-      discord: 'Discord'
-    }
-  },
   titlebar: {
     hideSidebar: 'Sidebar ausblenden',
     showSidebar: 'Sidebar einblenden',
@@ -1148,7 +1125,8 @@ export const deOverrides = {
         imageInputMode: 'Bildanhänge',
         apiMaxRetries: 'API-Wiederholungen',
         serviceTier: 'Service-Stufe',
-        toolUseEnforcement: 'Tool-Nutzungs-Durchsetzung'
+        toolUseEnforcement: 'Tool-Nutzungs-Durchsetzung',
+        autoPull: 'Automatisch pullen'
       },
       terminal: {
         cwd: 'Arbeitsverzeichnis',
@@ -1324,7 +1302,9 @@ export const deOverrides = {
       },
       agent: {
         imageInputMode: 'Steuert, wie Bildanhänge an das Modell gesendet werden.',
-        maxTurns: 'Obergrenze für Tool-Aufruf-Runden, bevor Hermes einen Lauf stoppt.'
+        maxTurns: 'Obergrenze für Tool-Aufruf-Runden, bevor Hermes einen Lauf stoppt.',
+        autoPull:
+          'Spult den Standard-Branch beim Sitzungsstart vor, wenn der Checkout keine lokalen Änderungen oder Commits hat. Projekte können dies auch im Projektmenü aktivieren.'
       },
       terminal: {
         cwd: 'Standard-Projektordner für Tool- und Terminal-Arbeit.',

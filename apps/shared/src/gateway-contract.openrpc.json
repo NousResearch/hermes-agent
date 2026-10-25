@@ -30392,6 +30392,11 @@
             "default": null,
             "title": "Primary Path"
           },
+          "auto_pull": {
+            "default": false,
+            "title": "Auto Pull",
+            "type": "boolean"
+          },
           "archived": {
             "default": false,
             "title": "Archived",
@@ -30569,6 +30574,11 @@
             ],
             "default": null,
             "title": "Icon"
+          },
+          "auto_pull": {
+            "default": false,
+            "title": "Auto Pull",
+            "type": "boolean"
           },
           "isAuto": {
             "default": false,
@@ -31654,6 +31664,18 @@
             ],
             "default": null,
             "title": "Board Slug"
+          },
+          "auto_pull": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Auto Pull"
           }
         },
         "required": [

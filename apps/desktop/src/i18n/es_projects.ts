@@ -25,6 +25,7 @@ export const esProjects: NonNullable<TranslationOverrides['sidebar']>['projects'
   menu: 'Acciones',
   menuRename: 'Renombrar',
   menuAppearance: 'Apariencia',
+  menuAutoPull: 'Hacer pull automáticamente',
   noColor: 'Sin color',
   menuAddFolder: 'Agregar carpeta',
   menuSetActive: 'Establecer activo',

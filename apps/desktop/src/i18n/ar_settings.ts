@@ -436,6 +436,7 @@ export const arSettings = {
       'agent.apiMaxRetries': 'محاولات API',
       'agent.serviceTier': 'مستوى الخدمة',
       'agent.toolUseEnforcement': 'فرض استخدام الأدوات',
+      'agent.autoPull': 'سحب تلقائي',
       'terminal.cwd': 'مجلد العمل',
       'terminal.backend': 'خلفية التنفيذ',
       'terminal.timeout': 'مهلة الأوامر',
@@ -521,6 +522,8 @@ export const arSettings = {
       timezone: 'تستخدم عندما يحتاج Hermes إلى سياق الوقت المحلي. اتركها فارغة لاستخدام منطقة النظام.',
       'agent.imageInputMode': 'يتحكم في طريقة إرسال مرفقات الصور إلى النموذج.',
       'agent.maxTurns': 'الحد الأعلى لدورات استدعاء الأدوات قبل أن يوقف Hermes التشغيل.',
+      'agent.autoPull':
+        'يقدّم الفرع الافتراضي سريعًا عند بدء الجلسة إذا لم تكن في النسخة تغييرات أو التزامات محلية. ويمكن للمشاريع تفعيله أيضًا من قائمة المشروع.',
       'terminal.cwd': 'مجلد المشروع الافتراضي لعمل الأدوات والطرفية.',
       'terminal.persistentShell': 'يحافظ على حالة الصدفة بين الأوامر عندما تدعمها الخلفية.',
       'terminal.envPassthrough': 'متغيرات البيئة التي تمرر إلى تنفيذ الأدوات.',

@@ -499,29 +499,6 @@ export const frOverrides = {
     }
   },
   ...frNotices,
-  sendDiagnostics: {
-    title: 'Envoyer les diagnostics à Nous',
-    privacyNotice:
-      "Cela téléverse un paquet de débogage vers un stockage interne de Nous, et non vers un service de partage public. Il contient des informations système (système d'exploitation, versions, fournisseur et clés API configurées — jamais les clés elles-mêmes) ainsi que les journaux complets de l'agent, du gateway et du Desktop (jusqu'à 512 Ko chacun), susceptibles de contenir des conversations, des résultats d'outils et des chemins de fichiers. Les secrets sont expurgés avant l'envoi. Seuls le personnel de Nous et les modérateurs Discord autorisés peuvent consulter le paquet, qui est automatiquement supprimé après 14 jours.",
-    upload: 'Envoyer',
-    uploading: 'Envoi en cours…',
-    cancel: 'Annuler',
-    close: 'Fermer',
-    copyLink: 'Copier le lien',
-    uploadIdFallback: id => `Aucun lien de consultation renvoyé — indiquez l'identifiant ${id} au support`,
-    doneTitle: 'Diagnostics envoyés',
-    doneDescription:
-      "Votre paquet a été téléversé de manière privée. Partagez le lien ci-dessous dans votre fil d'assistance afin que l'équipe puisse consulter vos journaux.",
-    failedTitle: "Échec de l'envoi",
-    failedHint:
-      'Vous pouvez également exécuter `hermes debug share --nous` dans un terminal, ou `hermes debug share --local` pour afficher le rapport sans le téléverser.',
-    handoffLead: 'Poursuivez la discussion sur :',
-    links: {
-      github: 'Issues GitHub',
-      portal: 'Assistance du portail Nous',
-      discord: 'Discord'
-    }
-  },
   titlebar: {
     hideSidebar: 'Masquer la barre latérale',
     showSidebar: 'Afficher la barre latérale',
@@ -1153,7 +1130,8 @@ export const frOverrides = {
         imageInputMode: "Pièces jointes d'image",
         apiMaxRetries: 'Nouveaux essais API',
         serviceTier: 'Niveau de service',
-        toolUseEnforcement: "Contrôle de l'utilisation des outils"
+        toolUseEnforcement: "Contrôle de l'utilisation des outils",
+        autoPull: 'Pull automatique'
       },
       terminal: {
         cwd: 'Répertoire de travail',
@@ -1330,7 +1308,9 @@ export const frOverrides = {
       },
       agent: {
         imageInputMode: 'Contrôle la façon dont les pièces jointes image sont envoyées au modèle.',
-        maxTurns: "Limite supérieure de tours d'appel d'outils avant que Hermes n'arrête une exécution."
+        maxTurns: "Limite supérieure de tours d'appel d'outils avant que Hermes n'arrête une exécution.",
+        autoPull:
+          "Avance la branche par défaut au démarrage de la session quand le checkout n'a ni modifications ni commits locaux. Les projets peuvent aussi l'activer depuis le menu du projet."
       },
       terminal: {
         cwd: 'Dossier de projet par défaut pour les outils et le terminal.',

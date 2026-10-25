@@ -37,6 +37,7 @@ vi.mock('@/i18n', () => ({
           menu: 'Actions',
           menuAddFolder: 'Add folder',
           menuAppearance: 'Appearance',
+          menuAutoPull: 'Automatically pull',
           menuDelete: 'Delete',
           menuRename: 'Rename',
           menuSetActive: 'Set active',
@@ -76,7 +77,8 @@ vi.mock('@/store/projects', () => ({
   openProjectRename: vi.fn(),
   revealPath: vi.fn(),
   setActiveProject: vi.fn(),
-  setProjectAppearance: vi.fn().mockResolvedValue(false)
+  setProjectAppearance: vi.fn().mockResolvedValue(false),
+  updateProject: vi.fn().mockResolvedValue(undefined)
 }))
 
 const project = {
@@ -149,5 +151,16 @@ describe('ProjectMenu', () => {
     expect(restoreAutoProject).not.toHaveBeenCalled()
     input.action?.onClick()
     expect(restoreAutoProject).toHaveBeenCalledWith('/auto/repo')
+  }, 15000)
+
+  it('offers automatically pull on explicit projects', async () => {
+    const { updateProject } = await import('@/store/projects')
+
+    render(<ProjectMenu isActive={false} project={project} />)
+    openTriggerMenu(screen.getByRole('button', { name: 'Actions' }))
+
+    const item = await screen.findByRole('menuitemcheckbox', { name: 'Automatically pull' })
+    fireEvent.click(item)
+    expect(updateProject).toHaveBeenCalledWith('p1', { auto_pull: true })
   }, 15000)
 })

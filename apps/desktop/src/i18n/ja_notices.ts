@@ -42,8 +42,31 @@ export const jaNotices = {
     openBilling: '請求を開く',
     addCredits: 'クレジットを追加',
     dismiss: '閉じる'
+  },
+  sendDiagnostics: {
+    title: 'Nous に診断情報を送信',
+    privacyNotice:
+      'デバッグバンドルを Nous 内部ストレージにアップロードします（公開ペーストではありません）。システム情報（OS、バージョン、プロバイダー、設定済み API キーの種類 — キー自体は含まれません）と、エージェント/ゲートウェイ/デスクトップの完全なログ（各最大 512 KB。会話内容、ツール出力、ファイルパスを含む可能性が高い）が含まれます。シークレットはアップロード前にマスクされます。閲覧できるのは Nous スタッフと許可された Discord モデレーターのみで、14 日後に自動削除されます。',
+    upload: 'アップロード',
+    uploading: 'アップロード中…',
+    cancel: 'キャンセル',
+    close: '閉じる',
+    copyLink: 'リンクをコピー',
+    uploadIdFallback: id => `表示リンクが返されませんでした — サポートにアップロード ID ${id} をお伝えください`,
+    doneTitle: '診断情報を送信しました',
+    doneDescription:
+      'バンドルは非公開でアップロードされました。サポートスレッドで以下のリンクを共有すると、チームがログを確認できます。',
+    failedTitle: 'アップロードに失敗しました',
+    failedHint:
+      'ターミナルから `hermes debug share --nous` を実行するか、`hermes debug share --local` でアップロードせずにレポートを表示することもできます。',
+    handoffLead: '続きは次の場所で:',
+    links: {
+      github: 'GitHub Issues',
+      portal: 'Nous Portal サポート',
+      discord: 'Discord'
+    }
   }
 } satisfies Pick<
   TranslationOverrides,
-  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock'
+  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock' | 'sendDiagnostics'
 >

@@ -350,9 +350,12 @@ def _unaddressed_member_mentions(
         for member in resolve_mentions((str(event.payload["text"]),), room.members, default_all=False):
             if member.member_id != speaker_id:
                 cited_at[member.member_id] = event.seq
+    # Strictly one bot per round: even if several peers are still unaddressed, only the
+    # first (roster order) is summoned now; the rest remain unaddressed and are picked up
+    # in later rounds. This prevents a single reply from fanning out into many concurrent turns.
     return tuple(
         member for member in room.members
-        if member.member_id in cited_at and last_post_at.get(member.member_id, 0) <= cited_at[member.member_id])
+        if member.member_id in cited_at and last_post_at.get(member.member_id, 0) <= cited_at[member.member_id])[:1]
 
 
 def _require_gateway_actor(actor: Mapping[str, Any], room: DiscussionRoom, message: str) -> None:
@@ -565,7 +568,7 @@ def _build_prompt(
         "", "Rules for this Discussion:",
         "- Reply with one conversational message only when you have something new worth adding.",
         '- If you have nothing new to add, reply with exactly "(pass)".',
-        "- Mention a teammate by handle to pull them into the next round; do not repeat points already made.",
+        "- Hand off to at most ONE teammate by mentioning their handle exactly once; never mention two or more teammates in a single reply; do not repeat points already made.",
         "- Never reveal content from private conversations. Your reply is published verbatim."]
     fixed_bytes = len("\n".join([*opening, *rules]).encode("utf-8"))
     available = max(0, driver.MAX_PROMPT_BYTES - fixed_bytes - 1)

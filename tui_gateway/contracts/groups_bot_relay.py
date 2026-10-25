@@ -29,8 +29,14 @@ class RoomMember(OpenModel):
 
 
 class RoomActor(Result):
+    """``gateway/hosted_rooms.py`` actor labels: optional ``display_name`` / ``profile`` /
+    ``connection_id`` ride along on non-gateway actors."""
+
     kind: str
     id: str
+    display_name: str | None = None
+    profile: str | None = None
+    connection_id: str | None = None
 
 
 class RoomEvent(Result):

@@ -1469,7 +1469,9 @@ class _GatewayRestartOutcome:
     #: exits, so the fleet matrix renders them as pending instead of STALE (#119597).
     self_restart_pending_pids: set = field(default_factory=set)
     #: Units the restart phase itself could not restart. Verification warns about the ones its fleet
-    #: probe does not prove current: a timed-out ``systemctl`` call can still bring its unit up.
+    #: probe does not prove current: a timed-out ``systemctl`` call can still bring its unit up. Not
+    #: ``failed_or_stale_units``: the Windows resume merge and an aborted phase add to that list, and
+    #: neither gets this systemctl/launchctl advice.
     unrestarted_units: list = field(default_factory=list)
 
     def fleet_probe_signals(self) -> tuple:

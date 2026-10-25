@@ -661,6 +661,22 @@ def _check_plugins_disabled_by_update(should_fix: bool, f: Finding) -> None:
                                f"or run: hermes plugins enable {name}")
 
 
+@doctor_check("")  # best-effort: an unreadable config is the config check's finding
+def _check_plugins_in_both_lists(should_fix: bool, f: Finding) -> None:
+    """A plugin in both plugins.enabled and plugins.disabled loads nowhere (the disable wins). Older
+    updates left plugins in that state when they had to turn them off. Judged by the loader's gate."""
+    from hermes_cli.plugins_discovery import plugins_in_both_lists
+    both = plugins_in_both_lists()
+    if not both:
+        return
+    _section("Plugins Listed as Both Enabled and Disabled")
+    for name in both:
+        check_warn(f"{name} will not load", "(plugins.disabled wins)")
+        f.manual_issues.append(f"Plugin '{name}' is in both plugins.enabled and plugins.disabled, so it is off. "
+                               f"Turn it on with `hermes plugins enable {name}` (a memory provider also needs "
+                               f"memory.provider set), or keep it off with `hermes plugins disable {name}`")
+
+
 @doctor_check("")  # best-effort: profile enumeration must never break doctor
 def _check_profiles(should_fix: bool, f: Finding) -> None:
     from hermes_constants import PROFILE_ID_RE

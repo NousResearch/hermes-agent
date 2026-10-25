@@ -230,13 +230,17 @@ If you want voice bubbles without installing ffmpeg, switch to the OpenAI, Eleve
 
 ### ElevenLabs: agent-selected voices
 
-With `tts.provider: elevenlabs` and `ELEVENLABS_API_KEY` set, the agent can pick a different voice for each `text_to_speech` call, for example one voice per character in a script. Two things appear only for ElevenLabs (other providers keep the configured voice and see neither):
+With `tts.provider: elevenlabs` and `ELEVENLABS_API_KEY` set, the agent can pick a different voice for each `text_to_speech` call, for example one voice per character in a script. The ElevenLabs version of `text_to_speech` has two extra fields that other providers never see (they keep the configured voice):
 
-- `text_to_speech` gains an optional `voice_id`. Leaving it out uses `tts.elevenlabs.voice_id`; the config is never rewritten.
-- The `tts_voices` tool searches voices, 20 per page by default (up to 100), with `next_page` for the following page:
-  - `source: account` (default) lists the voices on your account: premade ones plus anything you saved, cloned or designed.
-  - `source: library` searches the public Voice Library (thousands of community voices). ElevenLabs only allows library voices over the API on paid plans.
-  - Filters: free-text `query` (name, description, labels), `gender`, `age`, `accent`, `language` (ISO code like `en`).
+- `voice_id` picks the voice for this call. Leaving it out uses `tts.elevenlabs.voice_id`; the config is never rewritten.
+- `find_voices` searches for voices instead of speaking. It returns 20 voices per page by default (up to 100), with `next_page` for the following page:
+  - `source: library` (default) searches the public Voice Library: thousands of community voices, most-used first. Library voices work directly by `voice_id` without saving them first; ElevenLabs only allows them over the API on paid plans, and a few carry a higher credit rate (shown as `credit_rate`).
+  - `source: account` lists the voices on your account: premade ones plus anything you saved, cloned or designed.
+  - Filters: free-text `query`, `gender`, `age`, `accent`, `language` (ISO code like `en`), and for the library `use_case` (e.g. `characters_animation`) and `sort` (`usage_character_count_1y`, `trending`, `cloned_by_count`, `created_date`).
+
+The library search matches words in voice names and descriptions literally. "orc" finds orc voices, but "dwarf" finds none, so the agent is told to fall back to describing the sound ("gravelly old" with `age: old` and `use_case: characters_animation`).
+
+The ElevenLabs API key needs the **Text to Speech** permission to speak and **Voices: Read** to search.
 
 The agent can't listen to voices. It chooses from each voice's labels and description, and every result carries a `preview_url` you can open to hear the voice before committing to it.
 

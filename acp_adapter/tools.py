@@ -24,7 +24,7 @@ TOOL_KIND_MAP: dict[str, ToolKind] = {
         "search": ("search_files",),
         "execute": ("terminal", "process", "execute_code", "browser_click", "browser_type", "browser_scroll",
                     "browser_press", "browser_back", "delegate_task", "image_generate", "text_to_speech"),
-        "fetch": ("web_search", "web_extract", "browser_navigate", "tts_voices"),
+        "fetch": ("web_search", "web_extract", "browser_navigate"),
         "other": ("todo",),
         "think": ("_thinking",),
     }.items()

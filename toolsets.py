@@ -17,7 +17,7 @@ _HERMES_CORE_TOOLS = [
     "browser_exec",  # THE browser: Python over CDP (browser-harness)
     "browser_cdp", "browser_dialog",
     "browser_vault",  # rides with the browser; deferred by default (tools.tool_search.defer)
-    "text_to_speech", "tts_voices",  # tts_voices: check_fn-gated to the ElevenLabs provider
+    "text_to_speech",
     "todo_list", "memory",
     "session_search",
     "clarify",
@@ -61,7 +61,7 @@ def _core_without(*excluded, kanban=True):
 
 # Coding posture: everything you reach for while pairing on code; drops messaging,
 # tts, image_gen, cron, kanban and computer-use.
-_CODING_TOOLS = _core_without("image_generate", "text_to_speech", "tts_voices", "cronjob_manage", "computer_use", kanban=False)
+_CODING_TOOLS = _core_without("image_generate", "text_to_speech", "cronjob_manage", "computer_use", kanban=False)
 
 # Toolsets a CLIENT adds to its own sessions (tui_gateway/server.py::_gui_surface_toolsets), never
 # config: another surface lacking them made no configuration choice.
@@ -121,7 +121,7 @@ TOOLSETS = {
         "search (content + files)",
         ["read_file", "write_file", "patch", "search_files"],
     ),
-    "tts": _ts("Text-to-speech: convert text to audio with Edge TTS (free), ElevenLabs, OpenAI, or xAI", ["text_to_speech", "tts_voices"]),
+    "tts": _ts("Text-to-speech: convert text to audio with Edge TTS (free), ElevenLabs, OpenAI, or xAI", ["text_to_speech"]),
     "todo": _ts("Task planning and tracking for multi-step work", ["todo_list"]),
     "memory": _ts("Persistent memory across sessions (personal notes + user profile)", ["memory"]),
     "context_engine": _ts("Runtime tools exposed by the active context engine"),
@@ -193,7 +193,7 @@ TOOLSETS = {
     "hermes-api-server": _ts(
         "OpenAI-compatible API server — full agent tools accessible via HTTP (no "
         "interactive UI tools like clarify or send_message)",
-        _core_without("text_to_speech", "tts_voices", "clarify", "computer_use", kanban=False),
+        _core_without("text_to_speech", "clarify", "computer_use", kanban=False),
     ),
     "hermes-cli": _bundle("Full interactive CLI toolset - all default tools plus cronjob management"),
 

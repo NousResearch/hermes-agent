@@ -353,7 +353,7 @@ def _browser_exec_step_label(args: dict, max_chars: int = 80) -> str | None:
 _PRIMARY_ARGS = {
     "terminal": "command", "web_search": "query", "web_extract": "urls", "read_file": "path",
     "write_file": "path", "patch": "path", "search_files": "pattern", "browser_navigate": "url",
-    "browser_click": "ref", "browser_type": "text", "image_generate": "prompt", "text_to_speech": "text", "tts_voices": "query",
+    "browser_click": "ref", "browser_type": "text", "image_generate": "prompt", "text_to_speech": "text",
     "vision_analyze": "question", "skill_view": "name", "skills_list": "category", "cronjob_manage": "action",
     "execute_code": "code", "browser_exec": "code", "delegate_task": "goal",
     "skill_manage": "name",
@@ -1264,8 +1264,10 @@ _CUTE_LINES = {
     "skills_list": lambda a, r: _cute_row("📚", "skills", t("display.cute.skills_list", category=a.get("category") or t("display.cute.skills_all"))),
     "skill_view": _cute_skill_view,
     "image_generate": lambda a, r: _cute_row("🎨", "create", _cute_trunc(a.get("prompt", ""))),
-    "text_to_speech": lambda a, r: _cute_row("🔊", "speak", _cute_trunc(a.get("text", ""))),
-    "tts_voices": lambda a, r: _cute_row("🗣️ ", "voices", _cute_trunc(a.get("query") or a.get("source") or "account")),
+    "text_to_speech": lambda a, r: (
+        _cute_row("🗣️ ", "voices", _cute_trunc((a.get("find_voices") or {}).get("query") or "browse"))
+        if isinstance(a.get("find_voices"), dict) and a["find_voices"]
+        else _cute_row("🔊", "speak", _cute_trunc(a.get("text", "")))),
     "vision_analyze": lambda a, r: _cute_row("👁️ ", "vision", _cute_trunc(a.get("question", ""))),
     "send_message": lambda a, r: _cute_row("📨", "send", f"{a.get('target', '?')}: \"{_cute_trunc(a.get('message', ''))}\""),
     "cronjob_manage": _cute_cronjob,

@@ -183,7 +183,7 @@ _LEGACY_TOOLSET_MAP = {
     "skills_tools": ["skills_list", "skill_view", "skill_manage"],
     "cronjob_tools": ["cronjob_manage"],
     "file_tools": ["read_file", "write_file", "patch", "search_files"],
-    "tts_tools": ["text_to_speech", "tts_voices"],
+    "tts_tools": ["text_to_speech"],
 }
 
 

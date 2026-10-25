@@ -80,7 +80,7 @@ Or in-session:
 | `skills` | `skill_manage`, `skill_view`, `skills_list` | Skill CRUD and browsing. |
 | `terminal` | `process_manage`, `terminal` | Shell command execution and background process management. |
 | `todo` | `todo_list` | Task list management within a session. |
-| `tts` | `text_to_speech`, `tts_voices` | Text-to-speech audio generation; `tts_voices` (voice search) only appears with the ElevenLabs provider. |
+| `tts` | `text_to_speech` | Text-to-speech audio generation. |
 | `vision` | `vision_analyze` | Image analysis via vision-capable models. |
 | `video` | `video_analyze` | Video analysis and understanding tools (opt-in, not in the default toolset — add explicitly via `--toolsets`). |
 | `web` | `web_extract`, `web_search` | Web search and page content extraction. |

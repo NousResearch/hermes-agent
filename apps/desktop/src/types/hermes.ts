@@ -1766,6 +1766,7 @@ export interface SkillHubInstalledEntry {
   name: string | null
   trust_level: string | null
   scan_verdict: string | null
+  source?: string | null
 }
 
 export interface SkillHubSourcesResponse {

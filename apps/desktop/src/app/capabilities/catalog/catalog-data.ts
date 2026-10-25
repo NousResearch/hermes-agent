@@ -80,6 +80,31 @@ function webUrl(value: unknown): string | null {
 export const catalogLabel = (value: string) =>
   value.includes('.') ? value : value.replace(/[-_]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 
+/** Ids that mark one hub lock row as the catalog card's install.
+ *  The card installs `clawhub/<slug>`. The lock stores `@owner/slug` or the bare slug.
+ */
+export function clawhubLockLookupIds(identifier: string, source: string | null | undefined): string[] {
+  const ids = [identifier]
+
+  if ((source ?? '').toLowerCase() !== 'clawhub' || !identifier) {
+    return ids
+  }
+
+  const slug = (identifier.startsWith('@') ? identifier.slice(1) : identifier).split('/').filter(Boolean).pop()
+
+  if (!slug) {
+    return ids
+  }
+
+  const catalogId = `clawhub/${slug}`
+
+  if (!ids.includes(catalogId)) {
+    ids.push(catalogId)
+  }
+
+  return ids
+}
+
 const isoDate = (value: unknown) => (Number.isFinite(Date.parse(text(value))) ? text(value) : undefined)
 
 /** Where an entry points: install id, source/docs links, artwork. */

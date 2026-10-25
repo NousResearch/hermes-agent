@@ -13,7 +13,7 @@ import { skillSearchTerms } from '../skills/skills-data'
 
 import { CatalogAlert } from './catalog-alert'
 import { CatalogBrowser } from './catalog-browser'
-import { type CatalogEntry, parseCatalog } from './catalog-data'
+import { type CatalogEntry, clawhubLockLookupIds, parseCatalog } from './catalog-data'
 
 interface SkillCatalogProps {
   skills: SkillInfo[]
@@ -123,7 +123,10 @@ function ScopedSkillCatalog({
       const installed = record.name ? installedByName.get(record.name) : undefined
 
       if (installed && skillsById.get(installed.id)?.provenance === 'hub') {
-        installedByIdentifier.set(identifier, installed)
+        for (const id of clawhubLockLookupIds(identifier, record.source)) {
+          installedByIdentifier.set(id, installed)
+          installedIdentifiers.add(id)
+        }
       }
     }
 

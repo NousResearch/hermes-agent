@@ -474,7 +474,7 @@ def _installed_hub_identifiers(profile: Optional[str] = None) -> dict:
         else:
             profile_dir = _resolve_profile_dir(profile.strip())
             lock = HubLockFile(profile_dir / "skills" / ".hub" / "lock.json")
-        keys = ("name", "trust_level", "scan_verdict")
+        keys = ("name", "trust_level", "scan_verdict", "source")
         return {entry["identifier"]: {k: entry.get(k) for k in keys}
                 for entry in lock.list_installed() if entry.get("identifier")}
     except HTTPException:

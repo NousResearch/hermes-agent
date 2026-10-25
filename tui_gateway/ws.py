@@ -224,6 +224,11 @@ class WSTransport:
     def closed(self) -> bool:
         return self._closed
 
+    @property
+    def ws(self) -> Any:
+        """The WebSocket this transport writes to (what sign-out tracks a browser tab by)."""
+        return self._ws
+
     async def write_async(self, obj: dict) -> bool:
         """Send from the owning loop; awaits until the frame is on the wire. Buffered tokens are flushed
         ahead of it in the SAME batch so nothing slips between."""

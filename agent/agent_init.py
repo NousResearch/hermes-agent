@@ -37,6 +37,7 @@ from agent.agent_init_ollama import _clamp_compressor_to_ollama_num_ctx, _config
 from agent.primary_runtime_snapshot import _snapshot_primary_runtime
 from agent.process_bootstrap import _install_safe_stdio
 from agent.subdirectory_hints import SubdirectoryHintTracker
+from agent.agent_init_memory_provider import resolve_memory_provider
 from agent.think_scrubber import StreamingThinkScrubber
 from agent.tool_guardrails import (
     ToolCallGuardrailConfig, ToolCallGuardrailController
@@ -50,41 +51,6 @@ from utils import base_url_host_matches, is_truthy_value
 
 # Same logger name as run_agent so caplog/patches on "run_agent" see our records.
 logger = logging.getLogger("run_agent")
-
-
-# Deduped: the gateway builds a fresh AIAgent per message, so it would warn every turn.
-_warned_unavailable_providers: set[tuple[str, str]] = set()
-
-
-def _unavailable_warning_key(name: str) -> tuple[str, str]:
-    """Once per profile home and provider: one multiplexed gateway/Desktop backend serves several
-    profiles, and each one running without its memory must be told."""
-    from hermes_constants import get_hermes_home, hermes_home_key
-    return hermes_home_key(get_hermes_home()), name
-
-
-def _warn_memory_provider_unavailable(name: str, reason: str = "", say=None) -> None:
-    """Warn once per home and provider that a configured memory provider is unavailable.
-
-    ``is_available()`` is a side-effect-free hot-path check and can't log itself; without this
-    the provider is silently dropped. ``reason`` (the provider's ``unavailable_reason()`` hint)
-    can only reach the user here, so it is appended when present. *say* is the agent's
-    user-facing sink: a log line alone leaves the user running without memory unaware.
-    """
-    key = _unavailable_warning_key(name)
-    if key in _warned_unavailable_providers:
-        return
-    _warned_unavailable_providers.add(key)
-    message = (
-        f"⚠ Memory provider {name!r} is selected but reports unavailable — external memory "
-        "is disabled for this session (built-in memory still works). Check the "
-        "provider's credentials/config with 'hermes memory status'. Note: "
-        "systemd/gateway services do not inherit ~/.hermes/.env automatically; set "
-        f"any required variables in the service environment.{f' {reason}' if reason else ''}"
-    )
-    logger.warning(message)
-    if say is not None:
-        say(message)
 
 
 def _provider_default_routes(provider: str) -> set[str]:
@@ -683,7 +649,7 @@ def _init_prompt_cache_config(agent):
     # subscription users where cache writes bill against "extra usage" or for third-party proxies that
     # inject their own cache_control markers (#13477).
     agent._cache_ttl = "5m"
-    with suppress(Exception):
+    try:
         from hermes_cli.config import load_config_readonly as _load_pc_cfg
         from agent.agent_runtime_helpers import cache_ttl_means_disabled
         from agent.prompt_caching import AUTO_CACHE_TTL, auto_cache_ttl_for_source
@@ -701,6 +667,15 @@ def _init_prompt_cache_config(agent):
             agent._use_native_cache_layout = False
             agent._cache_ttl = None
             agent._cache_disabled = True
+    except Exception as exc:  # health: allow BLE001 -- init must survive any config failure; the class is logged
+        # Config values and traceback frames may contain credentials.
+        logger.warning(
+            "Agent configuration for prompt_caching.cache_ttl could not be loaded (%s); "
+            "using default prompt caching settings. Check the active Hermes Python "
+            "environment and dependencies; run 'hermes config check' after "
+            "configuration imports work again.",
+            type(exc).__name__,
+        )
 
 
 def _init_turn_state(agent, run_budget_seconds):
@@ -1348,23 +1323,10 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
             _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
             if not is_core_memory_provider(_mem_provider_name):
                 from agent.memory_manager import MemoryManager as _MemoryManager
-                from plugins.memory import load_memory_provider as _load_mem
                 agent._memory_manager = _MemoryManager()
-                _mp = _load_mem(_mem_provider_name)
-                if _mp is None:
-                    # The provider left core for the catalog (or was never installed): fetch it once.
-                    from hermes_cli.memory_provider_migration import recover_at_startup
-                    if recover_at_startup(_mem_provider_name, say=agent._emit_startup_warning):
-                        _mp = _load_mem(_mem_provider_name)
-                if _mp and _mp.is_available():
+                _mp = resolve_memory_provider(_mem_provider_name, say=agent._emit_startup_warning)
+                if _mp is not None:
                     agent._memory_manager.add_provider(_mp)
-                elif _mp is not None and _unavailable_warning_key(_mem_provider_name) not in _warned_unavailable_providers:
-                    # unavailable_reason() reads config/probes importlib — skip it once warned.
-                    _unavailable_reason = ""
-                    with suppress(Exception):
-                        _unavailable_reason = _mp.unavailable_reason()
-                    _warn_memory_provider_unavailable(
-                        _mem_provider_name, _unavailable_reason, say=agent._emit_startup_warning)
                 if agent._memory_manager.providers and agent._memory_manager.initialize_for_agent(
                         say=agent._emit_startup_warning, **_memory_provider_init_kwargs(agent, platform)):
                     _ra().logger.info("Memory provider '%s' activated", _mem_provider_name)
@@ -2337,6 +2299,9 @@ def init_agent(
 
     _set_defaults(agent, _CONTROL_STATE)
 
+    # Early config readers must reach the file handlers on first initialization.
+    _setup_logging(agent)
+
     # reasoning_content echo opt-in; switch_model / fallback / restore keep it in sync.
     agent._reasoning_echo_flag = agent._read_reasoning_echo_from_config()
     agent.request_overrides = dict(request_overrides or {})
@@ -2351,7 +2316,6 @@ def init_agent(
 
     _init_prompt_cache_config(agent)
     _init_turn_state(agent, run_budget_seconds)
-    _setup_logging(agent)
     _set_defaults(agent, _STREAM_STATE)
     _build_client(agent, api_key, base_url, fallback_model)
     _init_fallback_chain(agent, fallback_model)
@@ -2365,7 +2329,16 @@ def init_agent(
     try:
         from hermes_cli.config import load_config_readonly as _load_agent_config
         _agent_cfg = _load_agent_config()
-    except Exception:
+    except Exception as exc:  # health: allow BLE001 -- init must survive any config failure; the class is logged
+        # Config exceptions may contain secrets; omit their message and traceback
+        # even when a caller installs a non-redacting log handler.
+        logger.warning(
+            "Agent configuration could not be loaded (%s); using defaults for "
+            "memory, skills, compression and related settings. Check the active "
+            "Hermes Python environment and dependencies; run 'hermes config check' "
+            "after configuration imports work again.",
+            type(exc).__name__,
+        )
         _agent_cfg = {}
 
     _apply_display_config(agent, _agent_cfg, platform)

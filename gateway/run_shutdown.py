@@ -1093,6 +1093,19 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                     "Home-channel shutdown broadcast suppressed by drain marker (suppress_notification=true)"
                 )
                 return
+        # Crash-loop guardrail: a process that stops seconds after boot is restart churn, and its
+        # "gateway shutting down" broadcast is spam, not signal -- one broken spawn loop sent ~975
+        # of them in a night (2026-10-25). A genuine stop happens after minutes of uptime and still
+        # notifies. An unknown start time fails toward the louder behaviour, like the drain check.
+        min_uptime_s = 120.0
+        started_at = float(getattr(self, "_gateway_started_at", 0.0) or 0.0)
+        uptime_s = (time.time() - started_at) if started_at > 0.0 else -1.0
+        if 0.0 <= uptime_s < min_uptime_s:
+            logger.info(
+                "Home-channel shutdown broadcast suppressed: gateway was up only %.0fs (crash-loop guard)",
+                uptime_s,
+            )
+            return
         # EVERY served profile's home channel, through that profile's OWN bot: ``self.adapters`` and
         # ``self.config`` are the launch profile's alone, so iterating them left the secondaries'
         # channels silent (#118233). ``list(...)`` snapshots the adapter maps: adapter.send() can hit

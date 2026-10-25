@@ -49,6 +49,7 @@ class GatewayDashboardMount:
         self._lock: asyncio.Lock | None = None
         self._lifespan = None
         self._closed = False
+        self._web_import_error: str | None = None
 
     @property
     def loaded(self) -> bool:
@@ -89,8 +90,22 @@ class GatewayDashboardMount:
             if self._closed:
                 raise RuntimeError("gateway API stopped")
             import importlib
-            web = sys.modules.get("hermes_cli.web_server") or await asyncio.to_thread(
-                importlib.import_module, "hermes_cli.web_server")
+            if self._web_import_error is not None:
+                raise RuntimeError(f"dashboard web module unavailable: {self._web_import_error}")
+            try:
+                web = sys.modules.get("hermes_cli.web_server") or await asyncio.to_thread(
+                    importlib.import_module, "hermes_cli.web_server")
+            except (SystemExit, ImportError) as exc:
+                # web_server raises SystemExit when its own deps are missing. A SystemExit that
+                # escapes an asyncio task re-raises out of the event loop and took the whole
+                # gateway down mid-boot (messaging included) -- the 2026-10-25 crash loop. The
+                # dashboard is optional: fail it cleanly and keep the core running; requests get
+                # a 500 until deps are repaired.
+                reason = str(exc).strip() or repr(exc)
+                self._web_import_error = reason
+                logger.error(
+                    "Dashboard web module failed to import; gateway keeps running without it: %s", reason)
+                raise RuntimeError(f"dashboard web module unavailable: {reason}") from exc
             if self._closed:  # the listener stopped while the import ran
                 raise RuntimeError("gateway API stopped")
             if getattr(web.app.state, "gateway_runner", None) not in (None, self.runner):

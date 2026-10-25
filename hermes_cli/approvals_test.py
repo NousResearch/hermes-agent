@@ -13,6 +13,7 @@ rules (fire before yolo/off), 5. yolo / ``approvals.mode: off`` bypass, 6. perma
 from __future__ import annotations
 
 import json
+import shlex
 
 EXIT_ALLOW = 0
 EXIT_USAGE = 1
@@ -139,7 +140,12 @@ def approvals_test_command(args) -> int:
         print("usage: hermes approvals test [--env-type TYPE] [--json] -- <command...>")
         return EXIT_USAGE
 
-    verdict = evaluate_command(" ".join(words), env_type=getattr(args, "env_type", None) or "local")
+    # Re-quote shell-split words: the caller's shell already stripped their quoting, and
+    # the detectors are quote-aware, so a bare space join would let quoted metacharacters
+    # (; | $()) reach them as real operators and diverge from the runtime verdict. A
+    # single word is already the complete command string; evaluate it verbatim.
+    command = words[0] if len(words) == 1 else shlex.join(words)
+    verdict = evaluate_command(command, env_type=getattr(args, "env_type", None) or "local")
     if getattr(args, "json", False):
         print(json.dumps(verdict, indent=2))
     else:

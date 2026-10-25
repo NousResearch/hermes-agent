@@ -1,3 +1,4 @@
+// health: allow FILE_LINES -- locale data: translated copy for the usage-window plan UI (allowance gauges, Large/Free tags, the limit card), one key per string
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
@@ -5,13 +6,19 @@ import { frBoot } from './fr_boot'
 import { frClarify } from './fr_clarify'
 import { frConnectorAccounts } from './fr_connector_accounts'
 import { frConnectorCard } from './fr_connector_card'
+import { frErrorCodes } from './fr_error_codes'
+import { frErrorLayers } from './fr_error_layers'
 import { frFirstRun } from './fr_first_run'
+import { frGatewayHost } from './fr_gateway_host'
 import { frLocalModels } from './fr_local_models'
 import { frModelMenu } from './fr_model_menu'
 import { frModelSettings } from './fr_model_settings'
 import { frNotices } from './fr_notices'
+import { frNotifications } from './fr_notifications'
 import { frOnboarding } from './fr_onboarding'
+import { frPluginPreviewAccess } from './fr_plugin_preview_access'
 import { frPluginUpdate } from './fr_plugin_update'
+import { frPreviewWeb } from './fr_preview_web'
 import { frProjects } from './fr_projects'
 import { frSharedMetrics } from './fr_shared_metrics'
 import { frThemePicker } from './fr_theme_picker'
@@ -923,52 +930,7 @@ export const frOverrides = {
         masterPasswordPlaceholder: 'Mot de passe principal'
       }
     },
-    notifications: {
-      title: 'Notifications',
-      intro: "Notifications système (pas les toasts de l'application). Par appareil.",
-      enableAll: 'Activer les notifications',
-      enableAllDesc: 'Désactivé coupe toutes les notifications ci-dessous.',
-      focusedHint: 'Les alertes de fin ne se déclenchent que quand Hermes est en arrière-plan.',
-      kinds: {
-        approval: {
-          label: 'Approbation requise',
-          description: "Une commande attend que vous l'approuviez ou la rejetiez."
-        },
-        input: {
-          label: 'Saisie requise',
-          description: "Hermes a posé une question ou a besoin d'un mot de passe ou d'un secret."
-        },
-        turnDone: {
-          label: 'Réponse prête',
-          description: "Un tour s'est terminé pendant que Hermes était en arrière-plan."
-        },
-        turnError: {
-          label: 'Échec du tour',
-          description: 'Erreurs de tour en arrière-plan.'
-        },
-        backgroundDone: {
-          label: 'Tâche en arrière-plan terminée',
-          description: "Une commande terminal en arrière-plan s'est terminée."
-        },
-        credits: {
-          label: 'Alertes de crédits',
-          description: "L'accès aux crédits est suspendu ou rétabli."
-        },
-        plugin: {
-          label: 'Notifications des plugins',
-          description: 'Un plugin desktop a envoyé une notification pendant que Hermes était en arrière-plan.'
-        }
-      },
-      test: 'Envoyer une notification de test',
-      testTitle: 'Hermes',
-      testBody: 'Les notifications fonctionnent.',
-      testSent:
-        "Test envoyé. Si rien n'apparaît, vérifiez les autorisations de notification de votre système et le mode Ne pas déranger.",
-      testUnsupported: 'Ce système ne prend pas en charge les notifications natives.',
-      completionSoundTitle: 'Son de fin',
-      completionSoundDesc: "Se joue à la fin d'un tour d'agent. Choisissez un préréglage et prévisualisez-le ici.",
-      completionSoundPreview: 'Aperçu'
-    },
+    notifications: frNotifications,
     sections: {
       model: 'Modèle',
       chat: 'Conversation',
@@ -1724,8 +1686,7 @@ export const frOverrides = {
     },
     gateway: {
       loading: 'Chargement des paramètres du gateway...',
-      unavailableTitle: 'Paramètres du gateway indisponibles',
-      unavailableDesc: "Le pont IPC du desktop n'expose pas les paramètres du gateway.",
+      ...frGatewayHost,
       title: 'Connexion au gateway',
       envOverride: "remplacement par variable d'environnement",
       intro:
@@ -2042,6 +2003,17 @@ export const frOverrides = {
         effectScheduled: (targetName: string, effectiveAt: string, creditsDelta?: string) =>
           `Passage à ${targetName} — effectif ${effectiveAt}. Aucun débit maintenant ; vous conservez votre forfait actuel jusque-là.${creditsDelta ? ` Variation des crédits mensuels : ${creditsDelta}.` : ''}`
       },
+      keepGoingOnCredits: {
+        title: 'Continuer avec les crédits',
+        description:
+          'Utilise vos crédits quand l’usage inclus est épuisé. Désactivé : Hermes attend la réinitialisation.',
+        approveInBrowser:
+          "Approuvez Remote Spending dans votre navigateur pour modifier ce réglage. Il s'applique dès votre approbation.",
+        openAgain: 'Rouvrir',
+        cancel: 'Annuler',
+        approvedRetry: "Remote Spending est approuvé, mais la modification n'a pas été enregistrée.",
+        tryAgain: 'Réessayer'
+      },
       autoReload: {
         threshold: 'Seuil',
         thresholdAria: 'Seuil de recharge automatique',
@@ -2122,6 +2094,20 @@ export const frOverrides = {
             captionDefault: 'Plafond par défaut',
             captionSpending: 'Dépenses mensuelles à distance',
             valueUsed: (spent: string, limit: string) => `${spent} sur ${limit} utilisés`
+          },
+          window: {
+            today: "Aujourd'hui",
+            week: 'Cette semaine',
+            month: 'Ce mois-ci',
+            topTier: 'Grands modèles (mensuel)',
+            barLabel: (title: string) => `${title} : usage inclus consommé`,
+            captionPaused: "En pause : échec du paiement de l'abonnement",
+            captionPausedOther: 'En pause : voir Facturation dans le Portail',
+            captionTopTierUsedUp: 'Quota mensuel épuisé, les crédits couvrent le reste',
+            captionTopTierUsedUpKeepGoingOff: 'Quota mensuel épuisé, les autres modèles inclus fonctionnent toujours',
+            captionResetsIn: (duration: string) => `Réinitialisation dans ${duration}`,
+            captionIncluded: 'Usage inclus',
+            valueUsed: (percent: string) => `${percent} utilisé`
           }
         },
         planCard: {
@@ -2519,6 +2505,7 @@ export const frOverrides = {
         `Épinglé au commit ${sha}. Les mises à jour sont refusées tant qu’il n’est pas réinstallé avec un nouvel épinglage.`,
       pinnedBadge: (sha: string) => `épinglé @ ${sha}`,
       ...frPluginUpdate,
+      ...frPluginPreviewAccess,
       uninstall: 'Désinstaller',
       uninstallTip: (name: string, profile: string) => `Désinstaller ${name} de ${profile}`,
       uninstallConfirmTitle: (name: string) => `Désinstaller ${name} ?`,
@@ -3855,7 +3842,7 @@ export const frOverrides = {
       '/init': 'Générer ou mettre à jour les instructions de projet AGENTS.md à partir d’une analyse du dépôt',
       '/suggestions': 'Examiner les automatisations suggérées (accepter/ignorer)',
       '/blueprint': 'Configurer une automatisation à partir d’un modèle',
-      '/browser': 'Gérer le navigateur de l’agent [connect|disconnect|status|use]',
+      '/browser': 'Gérer le navigateur de l’agent [connect|disconnect|status]',
       '/palette': 'Ouvrir la palette de commandes floue (aussi Ctrl+P)',
       '/usage':
         'Afficher l’utilisation des jetons et les limites de débit ; `reset` utilise une réinitialisation de limite Codex en réserve',
@@ -3937,43 +3924,6 @@ export const frOverrides = {
     snippetsDesc: 'Choisissez une invite de démarrage à insérer dans le compositeur.',
     dropFiles: 'Déposez des fichiers pour les attacher',
     dropSession: 'Déposez pour lier cette conversation',
-    mcpSuggestions: {
-      label: server => `Ajouter ${server}`,
-      tip: keyword => `Suggéré car vous avez mentionné « ${keyword} » — cliquez pour vous connecter`,
-      connecting: server => `Connexion à ${server}…`,
-      cancelTip: 'Cliquez pour annuler',
-      added: server => `${server} ajouté`,
-      addedTip: 'Connecté — ses outils sont prêts dans cette conversation',
-      connectFailed: server => `Impossible de se connecter à ${server}`
-    },
-    skillSuggestions: {
-      label: skill => `Utiliser le skill : ${skill}`,
-      tip: skill => `Vous avez mentionné « ${skill} » — cliquez pour commencer avec ce skill`,
-      done: skill => `/${skill} ajouté`,
-      doneTip: "Le skill se charge lors de l'envoi"
-    },
-    githubSuggestions: {
-      label: 'Configurer GitHub',
-      tip: 'GitHub fonctionne ici grâce aux skills de la CLI gh ; cliquez pour connecter votre compte',
-      done: 'Ajout de /github-auth',
-      doneTip: "Envoyez le message et l'agent vous guidera dans la connexion à GitHub"
-    },
-    repairSuggestions: {
-      label: server => `Reconnecter ${server}`,
-      tip: server => `Un appel à ${server} vient d'échouer à cause d'une erreur de connexion`,
-      working: server => `Reconnexion à ${server}…`,
-      workingTip: 'Cliquez pour annuler',
-      done: server => `${server} reconnecté`,
-      doneTip: 'Les nouveaux identifiants sont actifs dans cette conversation',
-      failed: server => `Impossible de reconnecter ${server}`
-    },
-    cronSuggestions: {
-      label: 'Planifier ceci',
-      tip: phrase => `« ${phrase} » semble récurrent — exécutez-le plutôt selon une planification`,
-      prefix: 'Configurer ceci comme tâche planifiée :',
-      done: 'Marqué pour planification',
-      doneTip: "Envoyez-le pour que l'agent crée la tâche"
-    },
     snippets: {
       codeReview: {
         label: 'Revue de code',
@@ -4405,28 +4355,25 @@ export const frOverrides = {
     signIn: 'Se connecter',
     signInHeading: 'Connectez-vous avec un compte Nous pour débloquer davantage de modèles et outils.',
     settingUp: "Configuration de l'inférence gratuite…",
-    codeBody: 'Saisissez ce code dans votre navigateur pour terminer la connexion.',
-    copyLink: 'Copier le lien',
+    finishInBrowser: 'Terminez dans votre navigateur',
     doNotShare: 'Ne partagez pas ce code.',
+    openPageAgain: 'Rouvrir la page',
     waiting: 'En attente de la connexion…',
     finishingHeading: 'Finalisation de la connexion…',
     finishingBody: 'Autorisation accordée dans le navigateur. Récupération des jetons de votre compte.',
-    signedInAs: email => `Connecté en tant que ${email}`,
+    signedInAsLabel: 'Connecté en tant que',
     signedIn: 'Connecté.',
     completedBody: "Votre compte donne maintenant accès à l'inférence et aux outils.",
+    reconnect: 'Reconnecter',
+    openConnectors: 'Ouvrir les connecteurs',
     defaultModel: 'Modèle par défaut',
     change: 'Modifier',
     done: 'Terminé',
     notNow: 'Pas maintenant',
     tryAgain: 'Réessayer',
-    startAgain: 'Recommencer',
     didNotComplete: "La connexion n'a pas abouti",
-    rejectedBody: "La connexion a été refusée dans le navigateur. Vous restez sur l'offre gratuite.",
-    supersededBody: 'Un code de connexion plus récent a remplacé celui-ci.',
     timedOutHeading: 'Délai de connexion dépassé',
     timedOutBody: "Le code n'a pas été utilisé à temps. Vous restez sur l'offre gratuite.",
-    retiredBody:
-      "Cette identité d'offre gratuite a déjà été utilisée ou a expiré ; une nouvelle sera créée au prochain démarrage.",
     errorBody: "La connexion n'a pas abouti ; relancez-la.",
     busyHeading: 'Presque terminé',
     busyBody: wait =>
@@ -4483,7 +4430,32 @@ export const frOverrides = {
     wasPrice: 'était',
     customModel: 'Modèle personnalisé',
     addCustomModelAction: 'Ajouter un modèle personnalisé…',
-    customModelPlaceholder: 'Saisissez un ID de modèle, p. ex. openai/gpt-5'
+    customModelPlaceholder: 'Saisissez un ID de modèle, p. ex. openai/gpt-5',
+    today: "Aujourd'hui",
+    week: 'Semaine',
+    month: 'Mois',
+    topTier: 'Grands modèles (mensuel)',
+    included: 'Tous les modèles ci-dessous sont inclus',
+    pausedRenewal: 'en pause : renouvellement impayé',
+    pausedOther: 'en pause',
+    includedUsedUp: 'Usage inclus épuisé',
+    limitReached: (name: string) => `Limite ${name} atteinte`,
+    limitNames: {
+      day: 'quotidienne',
+      month: 'mensuelle',
+      top_tier: 'mensuelle des grands modèles',
+      week: 'hebdomadaire'
+    },
+    limitThenCredits: "les modèles payants utilisent maintenant vos crédits (paiement à l'usage)",
+    limitThenCreditsLarge: "les grands modèles utilisent maintenant vos crédits (paiement à l'usage)",
+    limitThenWait: "uniquement les modèles gratuits d'ici là",
+    limitThenWaitLarge: "grands modèles en pause d'ici là",
+    percentUsed: (percent: string) => `${percent} utilisé`,
+    resetsIn: (duration: string) => `réinitialisation dans ${duration}`,
+    usageLevels: { free: 'Gratuit', top_tier: 'Grand' },
+    sectionRecommended: 'Recommandés',
+    sectionOther: 'Autres modèles',
+    largeFootnote: 'Les grands modèles comptent aussi dans votre limite mensuelle des grands modèles.'
   },
   modelVisibility: {
     title: 'Modèles',
@@ -4752,61 +4724,7 @@ export const frOverrides = {
       sentTitle: 'Envoyé à la conversation',
       sentMessage: count => `Ajout au compositeur : ${count} message${count === 1 ? '' : 's'} de console`
     },
-    web: {
-      appFailedToBoot: "Échec du démarrage de l'application d'aperçu",
-      serverNotFound: 'Serveur non trouvé',
-      remoteLoopback:
-        "Cette adresse pointe vers la machine qui exécute votre agent, pas vers celle-ci. Le panneau du navigateur charge les pages localement ; un serveur de développement distant nécessite donc une redirection de port ou un nom d'hôte accessible.",
-      failedToLoad: "Échec du chargement de l'aperçu",
-      tryAgain: 'Réessayer',
-      restarting: 'Hermes redémarre...',
-      askRestart: 'Demander à Hermes de redémarrer le serveur',
-      lookingRestart: taskId => `Hermes recherche un serveur d'aperçu à redémarrer (${taskId})`,
-      restartingTitle: "Redémarrage du serveur d'aperçu",
-      restartingMessage: "Hermes travaille en arrière-plan. Surveillez la console d'aperçu pour suivre la progression.",
-      startRestartFailed: message => `Impossible de démarrer le redémarrage du serveur : ${message}`,
-      restartFailed: 'Échec du redémarrage du serveur',
-      hideConsole: "Masquer la console d'aperçu",
-      showConsole: "Afficher la console d'aperçu",
-      hideDevTools: "Masquer les outils de développement d'aperçu",
-      openDevTools: "Ouvrir les outils de développement d'aperçu",
-      goBack: 'Retour',
-      goForward: 'Suivant',
-      reload: 'Recharger la page',
-      address: 'Adresse',
-      addressPlaceholder: 'Saisir une adresse',
-      blankPageBody: "Saisissez une adresse ci-dessus pour naviguer, ou demandez à Hermes d'ouvrir une page.",
-      finishedRestarting: message =>
-        `Hermes a terminé le redémarrage du serveur d'aperçu${message ? `: ${message}` : ''}`,
-      failedRestarting: message => `Échec du redémarrage du serveur : ${message}`,
-      unknownError: 'erreur inconnue',
-      restartedTitle: "Serveur d'aperçu redémarré",
-      reloadingNow: "Rechargement de l'aperçu maintenant.",
-      restartFailedTitle: "Échec du redémarrage de l'aperçu",
-      restartFailedMessage: "Hermes n'a pas pu redémarrer le serveur.",
-      stillWorking:
-        "Hermes travaille toujours, mais aucun résultat de redémarrage n'est arrivé. La commande du serveur peut être en cours d'exécution au premier plan.",
-      workspaceReloading: "Espace de travail modifié, rechargement de l'aperçu",
-      fileChanged: url => `Fichier modifié, rechargement de l'aperçu : ${url}`,
-      filesChanged: (count, url) => `${count} modifications de fichier, rechargement de l'aperçu : ${url}`,
-      watchFailed: message => `Impossible de surveiller le fichier d'aperçu : ${message}`,
-      moduleMimeDescription:
-        "Les scripts de module sont servis avec le mauvais type MIME. Cela signifie généralement qu'un serveur de fichiers statiques sert une application Vite/React au lieu du serveur de développement du projet.",
-      loadFailedConsole: (code, message) => `Échec du chargement${code ? ` (${code})` : ''} : ${message}`,
-      unreachableDescription: "La page d'aperçu n'a pas pu être atteinte.",
-      openTarget: url => `Ouvrir ${url}`,
-      fallbackTitle: 'Aperçu',
-      annotate: 'Annoter',
-      annotateOn: "Arrêter l'annotation",
-      annotateNeedPage: "Ouvrez d'abord une page dans le navigateur intégré.",
-      annotateFailed: "Impossible de démarrer le mode d'annotation",
-      commenting: 'Ajout de commentaires',
-      addComments: count => (count === 1 ? 'Ajouter 1 commentaire' : `Ajouter ${count} commentaires`),
-      commentPlaceholder: 'Ajouter un commentaire...',
-      commentTitle: n => `Commentaire ${n}`,
-      saveComment: 'Enregistrer',
-      cancelComment: 'Annuler le commentaire'
-    }
+    web: frPreviewWeb
   },
   interfaceMode: {
     title: 'Mode d’interface',
@@ -4923,35 +4841,9 @@ export const frOverrides = {
       react: 'Réagir',
       dismissError: "Ignorer l'erreur",
       responseStopped: 'Réponse interrompue',
-      errorLayers: {
-        auth: "Erreur d'authentification",
-        billing: 'Crédits épuisés',
-        disk: 'Disque plein',
-        endpoint: 'Erreur du point de terminaison personnalisé',
-        gateway: 'Erreur du gateway',
-        generic: 'Échec du tour',
-        provider: 'Erreur du fournisseur',
-        runtime: "Erreur d'exécution locale",
-        streaming: 'Erreur de connexion au flux'
-      },
-      errorLayerBodies: {
-        auth: "Le service d'IA a refusé votre connexion. Vérifiez les identifiants de ce fournisseur, puis renvoyez votre message.",
-        billing:
-          "Votre compte n'a plus de crédits chez ce fournisseur. Rechargez-le ou changez de fournisseur, puis réessayez.",
-        disk: "Votre disque est plein ; Hermes n'a pas pu enregistrer cette conversation. Libérez de l'espace, puis réessayez.",
-        endpoint:
-          "Hermes ne parvient pas à joindre votre serveur de modèle personnalisé. Vérifiez qu'il fonctionne, puis renvoyez votre message.",
-        gateway:
-          'Hermes a rencontré un problème interne au démarrage de cette réponse. Renvoyez votre message ; si cela persiste, envoyez les diagnostics.',
-        generic:
-          "Une erreur s'est produite pendant la réponse de Hermes. Réessayez ou copiez les détails si cela persiste.",
-        provider:
-          "Le service d'IA n'a pas pu traiter cette demande. Réessayez dans un instant ou changez de fournisseur.",
-        runtime:
-          'Hermes a rencontré un problème interne au démarrage de cette réponse. Renvoyez votre message ; si cela persiste, envoyez les diagnostics.',
-        streaming: 'La connexion a été interrompue avant la fin de la réponse. Réessayez pour la renvoyer.'
-      },
+      ...frErrorLayers,
       errorCodes: {
+        ...frErrorCodes,
         auth: {
           title: provider => `${provider} a refusé votre connexion`,
           body: provider =>
@@ -5051,10 +4943,6 @@ export const frOverrides = {
           title: 'Hermes est resté bloqué dans une boucle',
           body: 'La réponse répétait les mêmes étapes ; Hermes l’a donc arrêtée. Réessayez ou démarrez une nouvelle conversation.'
         },
-        cron_session_read_only: {
-          title: 'Cette conversation appartient à une tâche planifiée',
-          body: 'Elle n’exécute que cette tâche ; votre message n’a donc pas été exécuté. Démarrez une nouvelle conversation pour l’envoyer.'
-        },
         SESSION_NOT_OWNED: {
           title: 'Cette conversation est ouverte ailleurs',
           body: 'Cette conversation est déjà ouverte dans une autre fenêtre Hermes ou un terminal. Fermez-la là-bas puis réessayez, ou démarrez-en une nouvelle ici.'
@@ -5090,6 +4978,10 @@ export const frOverrides = {
         free_tier_refused: {
           title: "Hermes n'a pas pu envoyer ce message sans connexion",
           body: 'La connexion avec un compte Nous est gratuite.'
+        },
+        usage_window: {
+          title: 'Usage inclus épuisé',
+          body: 'L’usage inclus de votre forfait est épuisé jusqu’à la réinitialisation. Ajoutez des crédits dans /topup pour continuer.'
         }
       },
       errorAuthKinds: {
@@ -5106,6 +4998,12 @@ export const frOverrides = {
       errorGenericProvider: "Le service d'IA",
       errorToastTitle: "Hermes n'a pas pu terminer la réponse",
       errorRetry: 'Réessayer',
+      errorSwitchToModel: (model, note) => (note ? `Passer à ${model} (${note})` : `Passer à ${model}`),
+      errorSwitchModelFailed: 'Impossible de changer de modèle',
+      errorUseCredits: 'Activer Continuer avec les crédits',
+      errorUseCreditsFailed: 'Impossible d’activer Continuer avec les crédits',
+      errorAddCredits: 'Ajouter des crédits',
+      errorOpenBillingSettings: 'Ouvrir les réglages de facturation',
       errorLimitResets: (time: string) => `Le quota se réinitialise à ${time}`,
       errorRetryAtReset: (time: string) => `Réessayer à la réinitialisation du quota (${time})`,
       errorRetryScheduled: (time: string, wait: string) => `Nouvel essai à ${time} — dans ${wait}`,

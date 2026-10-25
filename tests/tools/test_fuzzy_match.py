@@ -77,6 +77,26 @@ class TestWhitespaceDifference:
         assert strategy == "whitespace_normalized"
         assert new == "result = compute(a, b, c) + tail", f"Boundary space deleted: {new!r}"
 
+    def test_whitespace_run_before_match_is_not_consumed(self):
+        """The match span must start at its first character, not inside the
+        whitespace run that precedes it: a run beginning with ' ' used to map
+        its tail onto the next character, so the edit ate that whitespace."""
+        new, count, strategy, err = fuzzy_find_and_replace(
+            "call(a,  b,  c)\n", "b, c", "",
+        )
+        assert err is None and count == 1 and strategy == "whitespace_normalized"
+        assert new == "call(a,  )\n"
+
+    def test_whitespace_run_before_match_is_not_reindented(self):
+        """The swallowed whitespace also looked like a base indent to the
+        reindent pass, which prefixed it onto every line of new_string."""
+        content = "name:  hermes  # app\nother: 1\n"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, "hermes # app", "hermes\nversion: 2",
+        )
+        assert err is None and count == 1 and strategy == "whitespace_normalized"
+        assert new == "name:  hermes\nversion: 2\nother: 1\n"
+
     def test_trailing_ws_still_consumed_when_match_ends_with_space(self):
         """When the normalized match itself ends with whitespace (pattern has
         trailing space), the expansion must still consume the full whitespace

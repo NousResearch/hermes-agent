@@ -121,6 +121,18 @@ async def test_a_classic_cli_without_a_heartbeat_watchdog_leaves_the_tick_to_the
 
 
 @pytest.mark.asyncio
+async def test_a_classic_cli_resume_with_no_heartbeat_leaves_the_tick_to_the_poller(tmp_path, monkeypatch):
+    """/heartbeat resume with nothing to resume starts no watchdog, so a heartbeat set later elsewhere still fires."""
+    from gateway.run_heartbeat_restore import restore_heartbeat_watches
+    runner, authority, ref, automation = await _attached_cli(tmp_path, monkeypatch)
+    assert (await automation('heartbeat', 'resume'))['value'] is None
+    _overdue_heartbeat(ref.session_id)  # Desktop sets it
+    await restore_heartbeat_watches(runner)
+    await runner._heartbeat_poll_once(runner._heartbeat_watch)
+    assert _heartbeat_admissions(authority, ref)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('live_adapters', [False, True], ids=['no-local-adapter-yet', 'in-gateway-ticker'])
 @pytest.mark.parametrize('viewer', [False, True], ids=['unviewed', 'viewed'])
 async def test_cron_result_for_a_local_origin_is_a_note_not_a_turn(tmp_path, monkeypatch, live_adapters, viewer):

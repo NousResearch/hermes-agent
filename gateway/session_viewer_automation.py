@@ -29,7 +29,8 @@ _CALLS = {
     "heartbeat": frozenset({"state", "set", "pause", "resume", "clear", "due_prompt", "abandon_fire"}),
 }
 _READS = frozenset({"state", "is_waiting", "goal_blocks_tick"})
-# /heartbeat set and resume start the CLI's watchdog (cli_commands_mixin); only it calls due_prompt.
+# /heartbeat set and resume start the CLI's watchdog when they return a state (cli_commands_mixin);
+# only it calls due_prompt.
 _WATCHDOG_CALLS = frozenset({"set", "resume", "due_prompt"})
 _FIELDS = frozenset({"session_id", "profile", "kind", "call", "args", "kwargs"})
 _ERRORS = (RuntimeError, ValueError, IndexError)
@@ -152,11 +153,6 @@ async def automation(connection, ref, params):
     if not hasattr(authority, "viewer_automation"):
         authority.viewer_automation = {}
     authority.viewer_automation[ref.session_id] = connection
-    if kind == "heartbeat" and call in _WATCHDOG_CALLS:
-        # The CLI's watchdog runs from these on: from then on the gateway poller leaves the ticks to it.
-        if not hasattr(authority, "viewer_heartbeat"):
-            authority.viewer_heartbeat = {}
-        authority.viewer_heartbeat[ref.session_id] = connection
     runner = authority.runner
     home = Path(authority.profile_id)
 
@@ -170,6 +166,11 @@ async def automation(connection, ref, params):
     before = rows() if call in _READS else None
     # The judge and gates block for seconds: off the loop, with the caller's context (profile scope).
     result = await asyncio.to_thread(run)
+    if kind == "heartbeat" and call in _WATCHDOG_CALLS and (call == "due_prompt" or result.get("value") is not None):
+        # The CLI's watchdog runs from these on: from then on the gateway poller leaves the ticks to it.
+        if not hasattr(authority, "viewer_heartbeat"):
+            authority.viewer_heartbeat = {}
+        authority.viewer_heartbeat[ref.session_id] = connection
     if before is None or rows() != before:
         # The classic CLI drives this session's automation: other viewers (Ink, Desktop) repaint from the event.
         from gateway.session_control_actions import publish

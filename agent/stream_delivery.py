@@ -31,7 +31,10 @@ class StreamDeliveryMixin:
             return False
 
     def _deliver_to_stream_callbacks(self, text: str) -> bool:
-        """Send ``text`` to the display + TTS delta callbacks; True if at least one accepted it."""
+        """Send ``text`` to the display + TTS delta callbacks; True if at least one accepted it.
+        Nothing leaves while a ``hold_stream`` plugin holds this turn's reply (``_hold_stream``)."""
+        if getattr(self, "_hold_stream", False):
+            return False
         results = [self._call_quietly(cb, text) for cb in (self.stream_delta_callback, self._stream_callback)]
         return any(results)
 
@@ -174,8 +177,9 @@ class StreamDeliveryMixin:
             self._delivered_interim_texts.add(normalized)
 
     def _deliver_interim(self, visible: str, *, already_streamed: bool, record: list[str]) -> None:
-        """Hand ``visible`` to ``interim_assistant_callback`` and mark ``record`` delivered; swallows callback errors."""
-        cb = getattr(self, "interim_assistant_callback", None)
+        """Hand ``visible`` to ``interim_assistant_callback`` and mark ``record`` delivered; swallows callback errors.
+        Commentary is model text ``transform_llm_output`` never sees, so a held turn drops it."""
+        cb = None if getattr(self, "_hold_stream", False) else getattr(self, "interim_assistant_callback", None)
         if cb is None:
             return
         try:

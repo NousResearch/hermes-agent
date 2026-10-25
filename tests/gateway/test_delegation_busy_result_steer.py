@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.background_results import BACKGROUND_RESULT_MARKER, attach_to_tool_tail
+from agent.background_results import BACKGROUND_RESULT_MARKER, attach_to_tool_tail, confirm_attached
 from tests.gateway.test_completion_delivery import AdmittingHandler, _async_event, _runner
 
 
@@ -42,8 +42,10 @@ def test_busy_result_rides_the_running_turns_tool_result_not_a_new_turn(steering
     assert delivered is True
     adapter.handle_message.assert_not_awaited()  # no queued next turn
     messages = [{"role": "tool", "tool_call_id": "c1", "content": "tool output"}]
-    assert attach_to_tool_tail(agent, messages) == 1
+    attached = attach_to_tool_tail(agent, messages)
+    assert len(attached) == 1
     assert BACKGROUND_RESULT_MARKER in messages[-1]["content"] and "subagent report" in messages[-1]["content"]
+    confirm_attached(agent, attached, True)  # the tool-progress flush persisted this row
     asyncio.run(runner._settle_carried_completions())
     assert settled == [("complete", "deleg_a")]
 

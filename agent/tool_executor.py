@@ -207,8 +207,9 @@ def _flush_session_db_after_tool_progress(agent, messages: list, *, stage: str) 
     # this tool result as durable. Already-written rows must never be rewritten later.
     _maybe_inject_run_budget_wrapup(agent, messages)
     _maybe_inject_iteration_budget_warning(agent, messages)
-    from agent.background_results import attach_to_tool_tail
-    attach_to_tool_tail(agent, messages)
+    from agent.background_results import attach_to_tool_tail, confirm_attached
+    attached = attach_to_tool_tail(agent, messages)
+    persisted = False
     try:
         persisted = agent._flush_messages_to_session_db(messages) is not False
         if not persisted:
@@ -223,6 +224,10 @@ def _flush_session_db_after_tool_progress(agent, messages: list, *, stage: str) 
         agent._last_persistence_error_cause = classify_persistence_error(exc)
         logger.warning("Incremental tool-call persistence failed after %s: %s", stage, exc)
         return False
+    finally:
+        # A carried background result is acknowledged only by the flush that wrote its tool row;
+        # otherwise a settlement tick would complete the claim for a result that never persisted.
+        confirm_attached(agent, attached, persisted)
 
 
 def _image_generate_parallel_limit() -> int:

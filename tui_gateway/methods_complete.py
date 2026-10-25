@@ -4,7 +4,18 @@ Rebound onto server.py's globals at install time (``method_ctx.bind_module``), s
 bodies reference server globals bare (``_ok``, ``_err``, ``_sessions``, ...).
 """
 
+from typing import TYPE_CHECKING
+
 from .method_ctx import HandlerRegistry, bind_module
+
+if TYPE_CHECKING:
+    from .methods_complete_helpers import _details_completions
+    from .server import (
+        _SLASH_COMPLETION_LIMIT,
+        _ok,
+        _rank_slash_completions,
+        _skill_usage_lookup,
+    )
 
 _registry = HandlerRegistry()
 method = _registry.method

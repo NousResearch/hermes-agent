@@ -613,8 +613,15 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
     headers = {**upload_headers, "Content-Type": "application/json"}
     try:
         # One ClientSession (with proxy) covers the optional uploads + final post.
+        from urllib.parse import urlsplit
         from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
-        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(resolve_proxy_url(platform_env_var="MATTERMOST_PROXY"))
+        # Hand the REST target host to the resolver: without it `should_bypass_proxy(None)` can
+        # never match, so an internal Mattermost URL listed in NO_PROXY still goes out through the
+        # egress proxy (a 403 from Squid) while the live adapter's trust_env session goes direct.
+        _target_host = urlsplit(base_url).hostname
+        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(
+            resolve_proxy_url(platform_env_var="MATTERMOST_PROXY",
+                              target_hosts=[_target_host] if _target_host else None))
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60), **_sess_kw) as session:
             file_ids: list[str] = []
             for media in media_files or []:

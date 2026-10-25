@@ -397,6 +397,90 @@ def test_normalize_codex_response_treats_summary_only_reasoning_as_incomplete():
     assert assistant_message.codex_reasoning_items is None
 
 
+def test_normalize_codex_response_extracts_reasoning_text_from_content_parts():
+    """A reasoning item shaped ``content: [{"type": "reasoning_text", ...}]`` is kept.
+
+    Some Responses transports return the reasoning body as ``content[].reasoning_text``
+    with ``summary``/``text`` null (reproduced against glm-5.3 served through a Bifrost
+    gateway, #144569). Before the content fallback such items extracted to "" and the
+    reasoning was silently dropped while its tokens were still billed.
+    """
+    response = SimpleNamespace(
+        status="completed",
+        output=[
+            SimpleNamespace(
+                type="reasoning",
+                id="rs_1",
+                summary=None,
+                content=[SimpleNamespace(type="reasoning_text", text="thinking it through")],
+                text=None,
+            ),
+            SimpleNamespace(
+                type="message",
+                role="assistant",
+                content=[SimpleNamespace(type="output_text", text="the answer")],
+            ),
+        ],
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "stop"
+    assert assistant_message.content == "the answer"
+    assert assistant_message.reasoning == "thinking it through"
+
+
+def test_normalize_codex_response_prefers_summary_over_content_reasoning_parts():
+    """The extraction order stays summary → content[].reasoning_text → text."""
+    response = SimpleNamespace(
+        status="completed",
+        output=[
+            SimpleNamespace(
+                type="reasoning",
+                id="rs_2",
+                summary=[SimpleNamespace(text="from summary")],
+                content=[SimpleNamespace(type="reasoning_text", text="from content")],
+                text=None,
+            ),
+            SimpleNamespace(
+                type="message",
+                role="assistant",
+                content=[SimpleNamespace(type="output_text", text="done")],
+            ),
+        ],
+    )
+
+    assistant_message, _ = _normalize_codex_response(response)
+
+    assert assistant_message.reasoning == "from summary"
+
+
+def test_normalize_codex_response_reasoning_content_null_keeps_native_shape_working():
+    """OpenAI-native reasoning items (no ``content`` at all) are unaffected."""
+    response = SimpleNamespace(
+        status="completed",
+        output=[
+            SimpleNamespace(
+                type="reasoning",
+                id="rs_3",
+                encrypted_content="opaque-blob",
+                summary=[SimpleNamespace(text="native summary")],
+                text=None,
+            ),
+            SimpleNamespace(
+                type="message",
+                role="assistant",
+                content=[SimpleNamespace(type="output_text", text="ok")],
+            ),
+        ],
+    )
+
+    assistant_message, _ = _normalize_codex_response(response)
+
+    assert assistant_message.reasoning == "native summary"
+    assert assistant_message.codex_reasoning_items is not None
+
+
 # ---------------------------------------------------------------------------
 # Server-side built-in tool calls (xAI native web_search, code interpreter,
 # etc.) come back as discrete ``*_call`` output items that xAI's

@@ -1100,8 +1100,14 @@ def _extract_responses_message_text(item: Any) -> str:
 
 
 def _extract_responses_reasoning_text(item: Any) -> str:
-    """Compact reasoning text from a Responses reasoning item (summary, else ``text``)."""
-    chunks = _text_chunks(getattr(item, "summary", None))
+    """Compact reasoning text from a Responses reasoning item (summary, else ``content``
+    ``reasoning_text`` parts, else ``text``). Some Responses transports (e.g. Bifrost
+    gateways serving models like ``glm-5.3``, #144569) return the reasoning body as
+    ``content: [{"type": "reasoning_text", "text": ...}]`` with ``summary``/``text`` null;
+    without the content fallback that text is dropped while its reasoning tokens are billed."""
+    chunks = _text_chunks(getattr(item, "summary", None)) or _text_chunks(
+        getattr(item, "content", None), {"reasoning_text"}
+    )
     text = getattr(item, "text", None)
     return "\n".join(chunks).strip() if chunks else (text.strip() if isinstance(text, str) else "")
 

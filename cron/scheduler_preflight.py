@@ -233,6 +233,13 @@ class SharedRouteAdapters:
         return default
 
 
+def has_credential_platform(adapters) -> bool:
+    """True when the adapter map holds a bot of the profile's own. Any local session (Desktop chat,
+    CLI run, Kanban worker) adds a ``LOCAL`` adapter, which holds no platform credential: a profile
+    with only that is still a credentialless satellite that may ride routed primary adapters."""
+    return any(getattr(platform, "value", platform) != "local" for platform in adapters or ())
+
+
 def _preflight_check_delivery(job: dict) -> Optional[str]:
     """Check delivery targets resolve to configured platforms. ``local``/``origin``/``all`` are
     never checked (no gateway-config load). Unknown platform always blocks; known platform blocks

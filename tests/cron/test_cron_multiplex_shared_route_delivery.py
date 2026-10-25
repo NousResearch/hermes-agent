@@ -160,3 +160,81 @@ def test_live_native_adapter_without_platform_block_is_not_treated_as_disabled()
         {"id": "j"}, Platform.DISCORD, "discord", {"platform": "discord", "chat_id": "C1"},
         {Platform.DISCORD: adapter}, config)
     assert resolved is None and "not configured/enabled" in err
+
+
+def test_multiplex_tick_routes_desktop_served_satellite_with_only_local_adapter(
+    tmp_path, monkeypatch,
+):
+    """#139825: a satellite profile also chatted with from Hermes Desktop holds
+    ``{LOCAL: adapter}`` in ``_profile_adapters``. LOCAL carries no platform credential, so its
+    cron tick must still hand it the routed primary view — before, the non-empty map skipped
+    ``SharedRouteAdapters`` and delivery fell through to the profile's own credentialless config
+    (``platform 'discord' not configured/enabled``)."""
+    import threading
+
+    from cron.scheduler_provider import InProcessCronScheduler
+    from cron.scheduler_preflight import SharedRouteAdapters
+
+    root = tmp_path / "root"
+    sat_home = root / "profiles" / "sat"
+    (sat_home / "cron").mkdir(parents=True)
+    (root / "config.yaml").write_text(yaml.safe_dump({
+        "gateway": {"multiplex_profiles": True, "profile_routes": [
+            {"platform": "discord", "guild_id": "G1", "chat_id": "C1", "profile": "sat"}]},
+    }), encoding="utf-8")
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+
+    primary = _primary_adapter()
+    captured = {}
+    stop = threading.Event()
+
+    def _tick_and_stop(*_args, **kwargs):
+        captured["adapters"] = kwargs["adapters"]
+        stop.set()
+
+    provider = InProcessCronScheduler()
+    with patch("cron.scheduler.tick", side_effect=_tick_and_stop):
+        thread = threading.Thread(
+            target=provider.start,
+            args=(stop,),
+            kwargs={
+                "interval": 0,
+                "profile_homes": [("sat", sat_home)],
+                "adapters": {Platform.DISCORD: primary},
+                "profile_adapters": {"sat": {Platform.LOCAL: object()}},
+                "default_profile": "default",
+            },
+            daemon=True,
+        )
+        thread.start()
+        thread.join(timeout=10)
+        stop.set()
+        thread.join(timeout=10)
+
+    assert not thread.is_alive()
+    shared = captured["adapters"]
+    assert isinstance(shared, SharedRouteAdapters)
+    # The routed view releases the primary adapter for exactly the route-mapped target.
+    assert shared.get(Platform.DISCORD, {"chat_id": "C1"}) is primary
+    assert shared.get(Platform.DISCORD, {"chat_id": "unmapped"}) is None
+
+
+def test_adapters_for_profile_layers_primary_under_local_only_satellite():
+    """#141910: the authz resolution is the third call site that decided "owns its adapters" by
+    map truthiness. A shared-bot satellite holding only a Desktop ``local`` adapter must still
+    resolve the primary's bots (background notices, tool sends) with its own local adapter
+    layered on top — not instead of the primary."""
+    from gateway.authz_mixin import GatewayAuthorizationMixin
+
+    primary, local = object(), object()
+    holder = GatewayAuthorizationMixin()
+    holder.adapters = {Platform.DISCORD: primary}
+    holder._profile_adapters = {"sat": {Platform.LOCAL: local}}
+    holder._is_shared_bot_satellite = lambda profile: True
+    resolved = GatewayAuthorizationMixin._adapters_for_profile(holder, "sat")
+    assert resolved[Platform.DISCORD] is primary and resolved[Platform.LOCAL] is local
+
+    # A satellite that connected a real platform is its own credential boundary: no borrowing.
+    holder._profile_adapters = {"sat": {Platform.LOCAL: local, Platform.TELEGRAM: object()}}
+    own = holder._profile_adapters["sat"]
+    assert GatewayAuthorizationMixin._adapters_for_profile(holder, "sat") is own

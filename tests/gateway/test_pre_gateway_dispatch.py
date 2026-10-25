@@ -87,6 +87,30 @@ async def test_internal_events_bypass_hook(monkeypatch):
     await runner._handle_message(event)
     assert called["count"] == 0
 
+
+@pytest.mark.asyncio
+async def test_startup_auto_resume_event_can_be_skipped_by_hook(monkeypatch):
+    """Plugins may decline only the marked startup auto-resume internal event."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*")
+
+    async def _fake_hook(name, **kwargs):
+        assert name == "pre_gateway_dispatch"
+        assert kwargs["event"].metadata["startup_auto_resume"] is True
+        return [{"action": "skip", "reason": "plugin-owned turn"}]
+
+    monkeypatch.setattr("hermes_cli.lifecycle.ainvoke_hook", _fake_hook)
+
+    runner, adapter = _make_runner(Platform.WHATSAPP)
+    runner._handle_message_with_agent = AsyncMock()
+    event = _make_event("")
+    event.internal = True
+    event.metadata["startup_auto_resume"] = True
+
+    assert await runner._handle_message(event) is None
+    runner._handle_message_with_agent.assert_not_awaited()
+    adapter.send.assert_not_awaited()
+
 @pytest.mark.asyncio
 async def test_hook_fires_without_session_store_attribute(monkeypatch):
     """A runner missing session_store still delivers the event to plugins.

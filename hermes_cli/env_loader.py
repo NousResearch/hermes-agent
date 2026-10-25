@@ -415,7 +415,9 @@ def _load_dotenv_with_fallback(
             if value is None or (not override and name in os.environ):
                 continue
             if name in LAUNCH_ONLY_ENV_KEYS:
-                continue  # deployment bootstrap knob — only the real launch environment may set it (#135200)
+                logger.info("dotenv %s: ignoring launch-only key %s — only the launch "
+                            "environment may set it", path, name)
+                continue  # deployment bootstrap knob (#135200, #144685)
             current = os.environ.get(name)
             record = _DOTENV_PUBLISHED.get(name)
             ours = record is not None and current == record[1]

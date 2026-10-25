@@ -815,7 +815,7 @@ class CLIStreamMixin:
         if function_name and not function_name.startswith("_"):
             from agent.display import get_tool_preview_max_len, tool_row_emoji
             label = preview or function_name
-            _pl = get_tool_preview_max_len()
+            _pl = get_tool_preview_max_len() or 0
             if _pl > 0 and len(label) > _pl:
                 label = label[:_pl - 3] + "..."
             self._spinner_text = f"{tool_row_emoji(function_name, function_args)} {label}"

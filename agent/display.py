@@ -113,18 +113,19 @@ class LocalEditSnapshot:
 
 
 # Configurable tool preview length; set once at startup from display.tool_preview_length.
-_tool_preview_max_len: int = 0  # 0 = unlimited
+# None = never configured: the "all"/"new" previews fall back to 40, verbose stays uncapped.
+_tool_preview_max_len: int | None = None
 _friendly_tool_labels: bool = True
 
 
-def set_tool_preview_max_len(n: int) -> None:
-    """Set the global max length for tool call previews. 0 = no limit."""
+def set_tool_preview_max_len(n: int | None) -> None:
+    """Set the global max length for tool call previews. 0 = no limit, None = not configured."""
     global _tool_preview_max_len
-    _tool_preview_max_len = max(int(n), 0) if n else 0
+    _tool_preview_max_len = None if n is None else max(int(n), 0)
 
 
-def get_tool_preview_max_len() -> int:
-    """Return the configured max preview length (0 = unlimited)."""
+def get_tool_preview_max_len() -> int | None:
+    """Return the configured max preview length (0 = unlimited, None = not configured)."""
     return _tool_preview_max_len
 
 

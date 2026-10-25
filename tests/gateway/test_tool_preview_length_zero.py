@@ -18,16 +18,26 @@ import pytest
 def _reset_preview_len():
     from agent.display import set_tool_preview_max_len
 
-    set_tool_preview_max_len(0)
+    set_tool_preview_max_len(None)  # the process default: never configured
     yield
-    set_tool_preview_max_len(0)
+    set_tool_preview_max_len(None)
 
 
 def test_unset_tool_preview_length_keeps_the_compact_default():
-    """No configured value and no platform tier → the persistent bubbles keep 40."""
+    """No configured value and no platform tier → unset, and the previews keep 40."""
     from gateway.display_config import resolve_display_setting
+    from gateway.run_turn_progress import GatewayTurnProgressMixin
 
-    assert resolve_display_setting({}, "no_tier_platform", "tool_preview_length") == 40
+    assert resolve_display_setting({}, "no_tier_platform", "tool_preview_length") is None
+    assert GatewayTurnProgressMixin._preview_cap() == 40
+
+
+def test_an_unset_key_never_caps_verbose():
+    """Never configured must stay distinguishable from an explicit 0 in verbose mode."""
+    from agent.display import get_tool_preview_max_len
+
+    assert get_tool_preview_max_len() is None
+    assert (get_tool_preview_max_len() or 0) == 0  # what the verbose path passes on
 
 
 def test_explicit_zero_reaches_the_progress_path_as_no_limit():

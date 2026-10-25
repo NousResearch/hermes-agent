@@ -260,9 +260,14 @@ class GatewayTurnProgressMixin:
 
     @staticmethod
     def _preview_cap() -> int:
-        """tool_preview_length for the "all"/"new" previews; 0 = no limit (documented contract)."""
+        """Budget for the "all"/"new" previews: the configured value, or 40 when unset.
+
+        ``0`` is the documented "no limit", so it must survive as 0 rather than collapsing back
+        to the compact default (#51067); only "never configured" falls back to 40.
+        """
         from agent.display import get_tool_preview_max_len
-        return get_tool_preview_max_len()
+        pl = get_tool_preview_max_len()
+        return 40 if pl is None else pl
 
     def _progress_terminal_blocks(self, adapter, tool_name, args, emoji):
         """(full, short) fenced blocks for a terminal command on markdown platforms, else (None, None).
@@ -306,9 +311,9 @@ class GatewayTurnProgressMixin:
         if verbose:
             if code is None and args:
                 from agent.display import get_tool_preview_max_len, verbose_tool_args_text
-                # tool_preview_length 0 (default) = no truncation in verbose mode; the user asked
-                # for full detail and platform message-length limits handle the rest.
-                args_str = verbose_tool_args_text(args, get_tool_preview_max_len(),
+                # Never configured or 0 = no truncation in verbose mode; the user asked for full
+                # detail and platform message-length limits handle the rest.
+                args_str = verbose_tool_args_text(args, get_tool_preview_max_len() or 0,
                                                   getattr(adapter, "supports_code_blocks", False))
                 code = t("gateway.progress.tool_verbose", emoji=emoji, tool=tool_name, keys=list(args.keys()), args=args_str)
             elif code is None:

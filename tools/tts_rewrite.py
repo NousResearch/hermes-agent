@@ -214,6 +214,9 @@ def _request_rewrite(text: str, timeout: float, system_prompt: str, *,
             task config inside the resolver); None auto-routes to the main provider.
         base_url: Optional base URL accompanying the model pin.
         api_key: Optional API key accompanying the model pin.
+        extra_body: Optional dict forwarded to the provider request (from
+            ``tts.rewrite.extra_body``); used to toggle server-side template behavior
+            such as forcing a local llama-server's thinking channel off.
 
     Returns:
         ``(content | None, route label)``.
@@ -228,6 +231,12 @@ def _request_rewrite(text: str, timeout: float, system_prompt: str, *,
         task=None if interim else _REWRITE_TASK)
     if model:
         kwargs.update(model=model, base_url=base_url, api_key=api_key)
+    # Optional per-request extras from ``tts.rewrite.extra_body`` (e.g. forcing a local
+    # llama-server template's thinking channel off via chat_template_kwargs); forwarded
+    # by call_llm's extra_body. Lenient: a non-dict/missing blob is simply not sent.
+    extra_body = _rewrite_config().get("extra_body")
+    if isinstance(extra_body, dict) and extra_body:
+        kwargs.update(extra_body=extra_body)
     response = call_llm(**kwargs)
     label = model or "auto"
     try:

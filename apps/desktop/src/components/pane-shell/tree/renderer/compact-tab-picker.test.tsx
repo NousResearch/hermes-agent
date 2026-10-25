@@ -26,11 +26,21 @@ beforeEach(() => {
   stubMenuDomApis()
   vi.stubGlobal('CSS', { escape: (value: string) => value })
   globalThis.document.documentElement.dataset.hermesDesktopHost = 'browser'
-  vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() }))
-  ids.forEach((id, i) => disposers.push(registry.register({
-    area: 'panes', id, title: `Session ${i + 1}`, data: { placement: 'main' },
-    render: () => <input aria-label={`Draft ${i + 1}`} defaultValue="" />
-  })))
+  vi.stubGlobal(
+    'matchMedia',
+    vi.fn().mockReturnValue({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })
+  )
+  ids.forEach((id, i) =>
+    disposers.push(
+      registry.register({
+        area: 'panes',
+        id,
+        title: `Session ${i + 1}`,
+        data: { placement: 'main' },
+        render: () => <input aria-label={`Draft ${i + 1}`} defaultValue="" />
+      })
+    )
+  )
   $layoutTree.set({ ...group(ids), active: ids[0], tabStrip: 'always' })
   $narrowViewport.set(true)
 })
@@ -50,12 +60,20 @@ afterEach(() => {
 it('exposes every phone tab and changes the active pane without discarding its draft or siblings', () => {
   render(<Host />)
   fireEvent.change(screen.getByRole('textbox', { name: 'Draft 1' }), { target: { value: 'keep this draft' } })
-  fireEvent.pointerDown(screen.getByRole('button', { name: '3 tabs Session 1' }), { button: 0, pointerType: 'mouse', ctrlKey: false })
+  fireEvent.pointerDown(screen.getByRole('button', { name: '3 tabs Session 1' }), {
+    button: 0,
+    pointerType: 'mouse',
+    ctrlKey: false
+  })
   expect(screen.getAllByRole('menuitemradio')).toHaveLength(ids.length)
   fireEvent.click(screen.getByRole('menuitemradio', { name: 'Session 3' }))
   expect($layoutTree.get()).toMatchObject({ active: ids[2], panes: ids })
 
-  fireEvent.pointerDown(screen.getByRole('button', { name: '3 tabs Session 3' }), { button: 0, pointerType: 'mouse', ctrlKey: false })
+  fireEvent.pointerDown(screen.getByRole('button', { name: '3 tabs Session 3' }), {
+    button: 0,
+    pointerType: 'mouse',
+    ctrlKey: false
+  })
   fireEvent.click(screen.getByRole('menuitemradio', { name: 'Session 1' }))
   expect((screen.getByRole('textbox', { name: 'Draft 1' }) as HTMLInputElement).value).toBe('keep this draft')
   expect($layoutTree.get()).toMatchObject({ active: ids[0], panes: ids })
@@ -83,7 +101,13 @@ it('reserves a separate touch row for phone tabs even when the titlebar reports 
   $layoutTree.set({ ...group([ids[0]]), active: ids[0], tabStrip: 'always' })
   const newTab = vi.fn()
   $newSessionTabAction.set(newTab)
-  const { container } = render(<><div data-titlebar-cluster="left" /><div data-titlebar-cluster="right" /><Host topEdge /></>)
+  const { container } = render(
+    <>
+      <div data-titlebar-cluster="left" />
+      <div data-titlebar-cluster="right" />
+      <Host topEdge />
+    </>
+  )
   const header = container.querySelector<HTMLElement>('[data-panel-header]')!
   const height = () => parseFloat(header.style.height)
 

@@ -8,13 +8,7 @@ import { useImageDownload } from '@/hooks/use-image-download'
 import { useMediaImage } from '@/hooks/use-media-image'
 import { useI18n } from '@/i18n'
 import { generatedImageDimensionsFromResult, generatedImageFromResult } from '@/lib/generated-images'
-import {
-  downloadGatewayMediaFile,
-  isFileMediaPath,
-  isRemoteGateway,
-  mediaExternalUrl,
-  mediaName
-} from '@/lib/media'
+import { downloadGatewayMediaFile, isFileMediaPath, isRemoteGateway, mediaExternalUrl, mediaName } from '@/lib/media'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 

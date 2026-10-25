@@ -15,22 +15,47 @@ test('a sibling profile route survives canonical request translation', async () 
   server.on('connection', (socket: any) => {
     socket.on('message', (bytes: Buffer) => {
       const frame = JSON.parse(bytes.toString())
-      if (frame.method === 'client.capabilities') { socket.send(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: { server_requests: [] } })); return }
+
+      if (frame.method === 'client.capabilities') {
+        socket.send(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: { server_requests: [] } }))
+
+        return
+      }
+
       sent.push(frame)
 
-      const snapshot = { session_id: 's', stored_session_id: 's', revision: 2, execution_generation: 5, messages: [],
-        prompts: [{ kind: 'approval', prompt_id: 'p1', execution_generation: 5, command: 'rm -rf build', choices: ['once', 'deny'] }] }
+      const snapshot = {
+        session_id: 's',
+        stored_session_id: 's',
+        revision: 2,
+        execution_generation: 5,
+        messages: [],
+        prompts: [
+          {
+            kind: 'approval',
+            prompt_id: 'p1',
+            execution_generation: 5,
+            command: 'rm -rf build',
+            choices: ['once', 'deny']
+          }
+        ]
+      }
 
-      const result = frame.method === 'session.resume' ? snapshot
-        : frame.method === 'session.mutate' ? { session_id: 's', revision: 3, operation: frame.params.operation, title: 'Renamed', message_count: 1 }
-          : { status: 'resolved' }
+      const result =
+        frame.method === 'session.resume'
+          ? snapshot
+          : frame.method === 'session.mutate'
+            ? { session_id: 's', revision: 3, operation: frame.params.operation, title: 'Renamed', message_count: 1 }
+            : { status: 'resolved' }
 
       socket.send(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result }))
     })
   })
   const client = new HermesGateway()
   const delivered: any[] = []
-  client.onRequest(request => { delivered.push(request) })
+  client.onRequest(request => {
+    delivered.push(request)
+  })
 
   try {
     const address = server.address() as { port: number }
@@ -51,7 +76,9 @@ test('a sibling profile route survives canonical request translation', async () 
   } finally {
     client.close()
 
-    for (const socket of server.clients) { socket.terminate() }
+    for (const socket of server.clients) {
+      socket.terminate()
+    }
     await new Promise<void>(resolve => server.close(() => resolve()))
   }
 })

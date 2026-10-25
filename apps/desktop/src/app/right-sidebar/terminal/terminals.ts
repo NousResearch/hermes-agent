@@ -397,13 +397,20 @@ export function closeTerminal(id: string): void {
     return
   }
 
-  if (closingTerminals.has(id)) {return}
+  if (closingTerminals.has(id)) {
+    return
+  }
   closingTerminals.add(id)
   // Keep the tab and its resume handle until the server confirms termination.
-  void closeSaved(id).then(closed => {
-    if (!closed) {throw new Error('Terminal close was not confirmed; retry closing this tab')}
-    removeExitedTerminal(id)
-  }).catch(error => notifyError(error, 'Could not close terminal')).finally(() => closingTerminals.delete(id))
+  void closeSaved(id)
+    .then(closed => {
+      if (!closed) {
+        throw new Error('Terminal close was not confirmed; retry closing this tab')
+      }
+      removeExitedTerminal(id)
+    })
+    .catch(error => notifyError(error, 'Could not close terminal'))
+    .finally(() => closingTerminals.delete(id))
 }
 
 export function removeExitedTerminal(id: string): void {
@@ -459,16 +466,19 @@ export function closeOtherTerminals(id: string): void {
   const keep = $terminals.get().find(term => term.id === id)
 
   if (keep) {
-    $terminals.get().filter(term => term.id !== id).forEach(term => closeTerminal(term.id))
+    $terminals
+      .get()
+      .filter(term => term.id !== id)
+      .forEach(term => closeTerminal(term.id))
     $activeTerminalId.set(keep.id)
   }
 }
 
 /** Server replay replaces renderer-only history once persistence is negotiated. */
 export function markTerminalPersistent(id: string): void {
-  $terminals.set($terminals.get().map(term =>
-    term.id === id ? { ...term, persistent: true, reviveBuffer: undefined } : term
-  ))
+  $terminals.set(
+    $terminals.get().map(term => (term.id === id ? { ...term, persistent: true, reviveBuffer: undefined } : term))
+  )
 }
 
 export function updateTerminalReviveBuffer(id: string, reviveBuffer: string): void {
@@ -476,7 +486,11 @@ export function updateTerminalReviveBuffer(id: string, reviveBuffer: string): vo
     reviveBuffer.length > MAX_REVIVE_BUFFER_CHARS ? reviveBuffer.slice(-MAX_REVIVE_BUFFER_CHARS) : reviveBuffer
 
   $terminals.set(
-    $terminals.get().map(term => (term.id === id && term.kind === 'user' && !term.persistent ? { ...term, reviveBuffer: capped } : term))
+    $terminals
+      .get()
+      .map(term =>
+        term.id === id && term.kind === 'user' && !term.persistent ? { ...term, reviveBuffer: capped } : term
+      )
   )
 }
 

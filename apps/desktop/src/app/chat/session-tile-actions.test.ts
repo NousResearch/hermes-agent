@@ -160,14 +160,20 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
     expect($sessionTiles.get()[0]?.runtimeId).toBe(RECOVERED_SESSION_ID)
   })
 
-  it.each(['interrupt', 'steer'] as const)('rejects tile %s RPC failure without converting it to a queue signal', async mode => {
-    requestGatewayMock.mockRejectedValue(new Error('correction unsupported'))
-    const { result } = renderTileActions()
-    await act(async () => {
-      await expect(result.current.steerPrompt('keep correction', mode)).rejects.toThrow('correction unsupported')
-    })
-    expect(requestGatewayMock).toHaveBeenCalledExactlyOnceWith(mode === 'steer' ? 'session.steer' : 'session.redirect', { session_id: RUNTIME_SESSION_ID, text: 'keep correction' })
-  })
+  it.each(['interrupt', 'steer'] as const)(
+    'rejects tile %s RPC failure without converting it to a queue signal',
+    async mode => {
+      requestGatewayMock.mockRejectedValue(new Error('correction unsupported'))
+      const { result } = renderTileActions()
+      await act(async () => {
+        await expect(result.current.steerPrompt('keep correction', mode)).rejects.toThrow('correction unsupported')
+      })
+      expect(requestGatewayMock).toHaveBeenCalledExactlyOnceWith(
+        mode === 'steer' ? 'session.steer' : 'session.redirect',
+        { session_id: RUNTIME_SESSION_ID, text: 'keep correction' }
+      )
+    }
+  )
 
   // #141644: a correction the owner refused before any agent saw it hands the words back (false)
   // so the composer re-queues them, instead of throwing a "prompt failed" that drops them.

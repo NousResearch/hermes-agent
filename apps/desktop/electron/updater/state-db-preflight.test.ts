@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 
 import { test } from 'vitest'
 
-import { preflightStateDb } from './state-db-preflight'
+import { preflightStateDb, stateDbPreflightTimeoutMs } from './state-db-preflight'
 
 test('the desktop preflight publishes committed WAL rows before its caller can stop the backend', async (): Promise<void> => {
   const home: string = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-db-'))
@@ -160,5 +160,20 @@ test('an older selected checkout without the snapshot helper refuses before back
     assert.equal(stopped, false)
   } finally {
     fs.rmSync(oldRoot, { recursive: true, force: true })
+  }
+})
+
+test('scales the preflight timeout for large state databases while keeping the default floor', (): void => {
+  const smallHome: string = fs.mkdtempSync(path.join(os.tmpdir(), 'small-timeout-'))
+  const largeHome: string = fs.mkdtempSync(path.join(os.tmpdir(), 'large-timeout-'))
+
+  try {
+    assert.equal(stateDbPreflightTimeoutMs(smallHome), 30_000)
+    fs.writeFileSync(path.join(largeHome, 'state.db'), '')
+    fs.truncateSync(path.join(largeHome, 'state.db'), 1_048_576_000)
+    assert.equal(stateDbPreflightTimeoutMs(largeHome), 35_000)
+  } finally {
+    fs.rmSync(smallHome, { recursive: true, force: true })
+    fs.rmSync(largeHome, { recursive: true, force: true })
   }
 })

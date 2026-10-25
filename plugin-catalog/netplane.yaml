@@ -1,6 +1,6 @@
 name: netplane
 repo: https://github.com/lEWFkRAD/netplane
-sha: 10b6bff5cf5bb521d39e4443d9d33ee6768fbb23
+sha: ca432caaa18cc681c967b1fee915125643ab28f4
 description: >-
   Install, configure and operate a self-hosted Headscale control plane from Hermes.
   netplane_setup previews a configuration and, after approval, installs the pinned official

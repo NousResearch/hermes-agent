@@ -426,7 +426,7 @@ def _probe_single_server(
         rejected.failure_class = "config_rejected"  # type: ignore[attr-defined]
         raise rejected
 
-    from tools.mcp_tool_loop import _ensure_mcp_loop, _run_on_mcp_loop
+    from tools.mcp_tool_loop import _ensure_mcp_loop, _mcp_probe_lease, _run_on_mcp_loop
     from tools.mcp_tool_discovery import _connect_server
     from tools.mcp_tool_lifecycle import _stop_mcp_loop_if_idle
     from tools.mcp_tool_common import _parse_boolish
@@ -445,7 +445,6 @@ def _probe_single_server(
     # surfacing as a retry that re-opens a second authorization against the same callback port.
     config["connect_timeout"] = connect_timeout
 
-    _ensure_mcp_loop()
     tools_found: list[tuple[str, str]] = []
 
     async def _probe():
@@ -513,7 +512,10 @@ def _probe_single_server(
             await server.shutdown()
 
     try:
-        _run_on_mcp_loop(_probe(), timeout=connect_timeout + 10)
+        # Lease the loop for the whole probe: a sibling probe finishing first must not tear it down.
+        with _mcp_probe_lease():
+            _ensure_mcp_loop()
+            _run_on_mcp_loop(_probe(), timeout=connect_timeout + 10)
     except BaseException as exc:
         redacted = _redact_probe_exception(exc)
         # Classified from the ORIGINAL exception: redaction may rebuild it as a RuntimeError.

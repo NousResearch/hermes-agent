@@ -97,3 +97,106 @@ async def test_a_handed_off_bot_chat_opens_on_its_lane_after_a_restart(tmp_path,
         assert conn.execute('SELECT 1 FROM state_meta WHERE key IN (?,?)', keys).fetchone() is None
     tip = cold.db.get_session(cold.physical_target(ref))
     assert json.loads(tip['origin_json'])['platform'] == 'telegram'
+
+
+def _serve(tmp_path, monkeypatch):
+    """A multiplexed gateway's homes: the default profile and a named ``bot`` profile, each with its
+    own ``state.db``; ``bot`` delivers to a Telegram home channel."""
+    from pathlib import Path
+    import hermes_state
+    root = tmp_path / '.hermes'
+    bot = root / 'profiles' / 'bot'
+    bot.mkdir(parents=True, mode=0o700)
+    (bot / 'config.yaml').write_text(
+        'platforms:\n  telegram:\n    enabled: true\n    token: fixture\n'
+        '    home_channel: {platform: telegram, chat_id: "-1001", name: Bot Home}\n')
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)  # the profiles root is HOME-anchored
+    monkeypatch.setenv('HERMES_HOME', str(root))
+    monkeypatch.setattr(hermes_state, 'DEFAULT_DB_PATH', hermes_state._IMPORT_DEFAULT_DB_PATH)
+    return root, bot
+
+
+async def _boot(root, bot):
+    """One gateway process: a real runner whose runtime builds one authority per served home."""
+    from gateway.config import GatewayConfig
+    from gateway.run import GatewayRunner
+    from gateway.run_runtime import initialize_gateway_runtime
+    config = GatewayConfig()
+    config.multiplex_profiles = True
+    config._runtime_profile_homes = (('default', root), ('bot', bot))
+    runner = GatewayRunner(config)
+    await initialize_gateway_runtime(runner)
+    return runner
+
+
+def _shutdown(runner):
+    for authority in list(runner.session_authorities):
+        authority.db.close()
+    runner.session_store.close_all_db_handles()
+    runner.close_all_session_db_handles()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('handed_off_by', ['this build', 'an older build'])
+async def test_a_named_profiles_handed_off_bot_chat_opens_on_its_lane_after_a_restart(
+        tmp_path, monkeypatch, handed_off_by):
+    """The reporter's topology: a named bot profile under a multiplexed gateway. The chat lives in
+    that profile's own store, the handoff watcher's ``_process_handoff`` runs in its scope and keys
+    the lane ``agent:bot:...``; after a restart the Webapp still finds and opens it there."""
+    import sqlite3
+    from unittest.mock import AsyncMock
+    from gateway.config import Platform
+    from gateway.run import _async_profile_runtime_scope
+    from gateway.runtime_ownership import process_ownership
+    from gateway.session_authorities import active_authority
+    from gateway.session_contract import Principal
+    from gateway.session_local import create_local_session
+    from gateway.session_local_recovery import transcript_target
+    from gateway.session_local_title import resolve_titled_session
+    from hermes_state_local import POLICY_PREFIX
+    from hermes_state_local_migration import LEGACY_PREFIX
+
+    root, bot = _serve(tmp_path, monkeypatch)
+    process_ownership.reserve([root, bot])
+    try:
+        runner = await _boot(root, bot)
+        runner._profile_adapters = {'bot': {Platform.TELEGRAM: SimpleNamespace(
+            create_handoff_thread=AsyncMock(return_value=None))}}
+        runner._handle_message = AsyncMock(return_value='')  # the synthetic handoff turn itself
+        async with _async_profile_runtime_scope(bot):
+            warm = active_authority(runner)
+            caps = frozenset({'session:create', 'session:read', 'session:control'})
+            owner = Principal('owner', warm.profile_id, caps, 'socket')
+            ref = create_local_session(warm, owner, {'request_id': 'bot-chat', 'source': 'gui', 'cwd': str(tmp_path),
+                                                     'model': 'frozen', 'toolsets': []})
+            warm.db.set_session_title(ref.session_id, 'Bot Chat')
+            keys = (POLICY_PREFIX + ref.session_id, LEGACY_PREFIX + ref.session_id)
+            with warm.db._read_ctx() as conn:
+                receipt = conn.execute('SELECT key, value FROM state_meta WHERE key IN (?,?)', keys).fetchall()
+            assert receipt
+            await runner._process_handoff({'id': ref.session_id, 'title': 'Bot Chat', 'handoff_platform': 'telegram'},
+                                          'bot')
+            if handed_off_by == 'an older build':
+                warm.db._execute_write(lambda conn: conn.executemany(
+                    'INSERT OR REPLACE INTO state_meta(key, value) VALUES(?,?)', [tuple(row) for row in receipt]))
+            else:
+                warm.authorize(owner, ref, 'session:control')  # the Desktop that ran /handoff
+                assert transcript_target(warm, ref) == warm.physical_target(ref)
+        _shutdown(runner)
+
+        runner = await _boot(root, bot)
+        async with _async_profile_runtime_scope(bot):
+            cold = active_authority(runner)
+            webapp = Principal('webapp', cold.profile_id, frozenset({'session:read', 'session:control'}), 'browser')
+            assert resolve_titled_session(cold, webapp, 'Bot Chat') == ref
+            cold.authorize(webapp, ref, 'session:control')  # pin, rename, archive
+            live = cold.sessions[ref.session_id]
+            assert live.source.platform == Platform.TELEGRAM and live.route.startswith('agent:bot:telegram:')
+            with cold.db._read_ctx() as conn:
+                assert conn.execute('SELECT 1 FROM state_meta WHERE key IN (?,?)', keys).fetchone() is None
+        _shutdown(runner)
+        with sqlite3.connect(root / 'state.db') as conn:  # never the default profile's store
+            assert conn.execute('SELECT 1 FROM sessions WHERE id=?', (ref.session_id,)).fetchone() is None
+    finally:
+        for home in (root, bot):
+            process_ownership.release(home)

@@ -81,6 +81,15 @@ export function updateProfileSoul(name: string, content: string, scope?: Profile
   })
 }
 
+export function updateProfileColor(name: string, color: string, scope?: ProfileScope): Promise<{ ok: boolean }> {
+  return hermesApi<{ ok: boolean }>({
+    ...profileOwnerScoped(scope),
+    path: `/api/profiles/${encodeURIComponent(name)}/color`,
+    method: 'PUT',
+    body: { color }
+  })
+}
+
 export function getProfileSetupCommand(name: string): Promise<ProfileSetupCommand> {
   return hermesApi<ProfileSetupCommand>({
     path: `/api/profiles/${encodeURIComponent(name)}/setup-command`

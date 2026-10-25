@@ -93,13 +93,15 @@ vi.mock('../../profiles/rename-profile-dialog', () => ({ RenameProfileDialog: ()
 
 const { $hasMultipleConnections } = await import('@/store/connections')
 const hasMultipleConnections = $hasMultipleConnections as ReturnType<typeof atom<boolean>>
-const { $profiles } = await import('@/store/profile')
-const profiles = $profiles as ReturnType<typeof atom<Array<{ is_default: boolean; name: string }>>>
+const { $activeGatewayProfile, $profiles } = await import('@/store/profile')
+const activeGatewayProfile = $activeGatewayProfile as ReturnType<typeof atom<string>>
+const profiles = $profiles as ReturnType<typeof atom<Array<{ display_name?: string; is_default: boolean; name: string }>>>
 
 afterEach(() => {
   cleanup()
   hasMultipleConnections.set(false)
   profiles.set([{ is_default: true, name: 'default' }])
+  activeGatewayProfile.set('default')
 })
 
 describe('ProfileRail multi-gateway entry point', () => {
@@ -128,5 +130,48 @@ describe('ProfileRail multi-gateway entry point', () => {
     expect(screen.getByRole('button', { name: 'default' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Manage gateways…' })).toBeNull()
     expect(screen.getByRole('button', { name: 'Manage profiles…' })).toBeTruthy()
+  })
+  it('keeps thirteen profiles direct and condenses the fourteenth', () => {
+    profiles.set([
+      { is_default: true, name: 'default' },
+      ...Array.from({ length: 12 }, (_, index) => ({ is_default: false, name: `Profile ${index + 1}` }))
+    ])
+    const { unmount } = render(<ProfileRail />)
+
+    expect(screen.queryByRole('button', { name: 'Profiles' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Profile 12' })).toBeTruthy()
+    unmount()
+
+    profiles.set([
+      { is_default: true, name: 'default' },
+      ...Array.from({ length: 13 }, (_, index) => ({ is_default: false, name: `Profile ${index + 1}` }))
+    ])
+    render(<ProfileRail />)
+
+    expect(screen.getByRole('button', { name: 'Profiles' })).toBeTruthy()
+  })
+
+  it('shows the active bot identity in the rail without requiring a tooltip', () => {
+    profiles.set([
+      { is_default: true, name: 'default' },
+      { display_name: 'Build bot', is_default: false, name: 'builder' }
+    ])
+    activeGatewayProfile.set('builder')
+
+    render(<ProfileRail />)
+
+    expect(screen.getByText('Build bot')).toBeTruthy()
+  })
+
+  it('stays shrinkable with many profiles and multiple gateways', () => {
+    hasMultipleConnections.set(true)
+    profiles.set([
+      { is_default: true, name: 'default' },
+      ...Array.from({ length: 13 }, (_, index) => ({ is_default: false, name: `Profile ${index + 1}` }))
+    ])
+    render(<ProfileRail />)
+
+    expect(screen.getByRole('group', { name: 'Profiles' }).className).toContain('min-w-0')
+    expect(screen.getByRole('button', { name: 'Profiles' })).toBeTruthy()
   })
 })

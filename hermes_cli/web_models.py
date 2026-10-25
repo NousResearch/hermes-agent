@@ -477,6 +477,9 @@ class ProfileActiveUpdate(BaseModel):
 class ProfileDescriptionUpdate(BaseModel):
     description: str = ""
 
+class ProfileColorUpdate(BaseModel):
+    color: str = ""
+
 class ProfileModelUpdate(BaseModel):
     provider: str
     model: str
@@ -566,4 +569,3 @@ class _PluginProvidersPutBody(BaseModel):
 
 class _PluginVisibilityBody(BaseModel):
     hidden: bool
-

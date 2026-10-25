@@ -12,6 +12,7 @@ import os
 import signal
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -93,3 +94,50 @@ def test_manual_gateway_of_another_home_is_not_stopped(monkeypatch, own_home):
     fleet._restart_manual_gateways(out, 5.0)
     assert killed == [(111, signal.SIGTERM)]
     assert out.killed_pids == {111}
+
+
+def _winerror_87_kill(pid, sig):
+    # Windows' os.kill maps to TerminateProcess and raises OSError(WinError 87 → EINVAL) — not
+    # ProcessLookupError — for a PID that is already gone (bpo-14484).
+    raise OSError(22, "The parameter is incorrect")
+
+
+def test_unmapped_gateway_gone_before_sigterm_does_not_abort_the_restart_phase(monkeypatch, own_home):
+    """#132812 — a mid-window spawn that exits before the unmapped SIGTERM sweep reaches it must
+    read as "already stopped" (no bookkeeping), never abort the restart phase."""
+    _pid_homes(monkeypatch, {24644: str(own_home)})
+    monkeypatch.setattr("hermes_cli.gateway._get_service_pids", lambda **k: set())
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda **k: [24644])
+    monkeypatch.setattr("hermes_cli.gateway.find_profile_gateway_processes", lambda **k: [])
+    monkeypatch.setattr("hermes_cli.gateway._wait_for_gateway_exit", lambda **k: None)
+    monkeypatch.setattr(os, "kill", _winerror_87_kill)
+
+    out = fleet._GatewayRestartOutcome(
+        incomplete=False, phase_errors=[], pre_restart_gateway_pids=[], restarted_services=[],
+        failed_or_stale_units=[], relaunched_profiles=[], externally_supervised_profiles=[], killed_pids=set(),
+    )
+    fleet._restart_manual_gateways(out, 5.0)  # must not raise
+    assert out.killed_pids == set() and out.stopped_unmapped_pids == set()
+
+
+def test_profile_gateway_gone_before_sigterm_does_not_abort_the_restart_phase(monkeypatch, own_home):
+    """#132812 — same widening on the profile-mapped SIGTERM fallback: the relaunch was already armed,
+    so a gone PID cannot abort the phase and the profile still counts as restarted."""
+    _pid_homes(monkeypatch, {12792: str(own_home)})
+    monkeypatch.setattr("hermes_cli.gateway._get_service_pids", lambda **k: set())
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda **k: [12792])
+    monkeypatch.setattr(
+        "hermes_cli.gateway.find_profile_gateway_processes",
+        lambda **k: [SimpleNamespace(pid=12792, profile="default")],
+    )
+    monkeypatch.setattr("hermes_cli.gateway._prepare_profile_gateway_update_restart", lambda *a, **k: "watcher")
+    monkeypatch.setattr("hermes_cli.gateway._wait_for_gateway_exit", lambda **k: None)
+    monkeypatch.setattr(fleet, "_drain_or_signal_gateway_for_update", lambda *a, **k: False)
+    monkeypatch.setattr(os, "kill", _winerror_87_kill)
+
+    out = fleet._GatewayRestartOutcome(
+        incomplete=False, phase_errors=[], pre_restart_gateway_pids=[], restarted_services=[],
+        failed_or_stale_units=[], relaunched_profiles=[], externally_supervised_profiles=[], killed_pids=set(),
+    )
+    fleet._restart_manual_gateways(out, 5.0)  # must not raise
+    assert out.killed_pids == {12792} and out.relaunched_profiles == ["default"]

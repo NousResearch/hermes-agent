@@ -45,7 +45,8 @@ import {
   collapseDuplicateFinalAfterToolInterim,
   collapseDuplicateFinalOntoIdenticalInterim,
   type DuplicateFinalCollapse,
-  identicalInterimSiblingIndex
+  identicalInterimSiblingIndex,
+  shadowedIdenticalInterimId
 } from './collapse-duplicate-final'
 import { useGatewayEventHandler } from './gateway-event'
 import { handleServerRequest as dispatchServerRequest } from './gateway-event/server-requests'
@@ -657,6 +658,8 @@ export function useMessageStream({
         }
 
         let nextMessages = state.messages
+        const lastUserIndex = nextMessages.findLastIndex(message => message.role === 'user')
+        const normalizedText = normalizeWs(authoritativeText)
 
         if (streamId && nextMessages.some(m => m.id === streamId)) {
           // Seal the streaming bubble in place, marked interim so it renders
@@ -672,6 +675,18 @@ export function useMessageStream({
                 }
               : m
           )
+
+          // #144609 — a superseded attempt can seal this same segment as a
+          // standalone interim BEFORE the turn's own message.start, so the
+          // re-stream above seals it a second time. Every guard in
+          // collapse-duplicate-final keys on the turn's FINAL text and a
+          // pre-tool commentary's final is different text, so the first copy
+          // would survive as a twin bubble. Drop it.
+          const shadowId = shadowedIdenticalInterimId(nextMessages, streamId, normalizedText, lastUserIndex)
+
+          if (shadowId) {
+            nextMessages = nextMessages.filter(message => message.id !== shadowId)
+          }
         } else {
           // No streaming bubble. Usually a duplicate delivery of the interim
           // that just sealed the stream (two sockets, one backend — #120005
@@ -680,15 +695,12 @@ export function useMessageStream({
           // reply twice (#120104). When this occurrence's newest visible
           // assistant row already carries the same text — including a skewed
           // duplicate landing after the turn settled — refresh it in place.
-          const lastUserIndex = nextMessages.findLastIndex(message => message.role === 'user')
-          const normalizedText = authoritativeText.replace(/\s+/g, ' ').trim()
-
           const prevSameText = nextMessages.findLast(
             (message, index) =>
               index > lastUserIndex &&
               message.role === 'assistant' &&
               !message.hidden &&
-              chatMessageText(message).replace(/\s+/g, ' ').trim() === normalizedText
+              normalizeWs(chatMessageText(message)) === normalizedText
           )
 
           if (prevSameText) {

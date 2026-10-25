@@ -1,4 +1,4 @@
-import { type ChatMessage, chatMessageText, withUniqueToolCallIdsWithinMessage } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText, normalizeWs, withUniqueToolCallIdsWithinMessage } from '@/lib/chat-messages'
 
 export interface DuplicateFinalCollapse {
   /** The surviving bubble replaces the removed stream id at completion. */
@@ -145,4 +145,61 @@ export function collapseDuplicateFinalOntoIdenticalInterim(
   }
 
   return mergeLiveIntoKept(messages, streamIndex, interimIndex, options.completeMessage)
+}
+
+/**
+ * Id of an earlier text-only interim that the live bubble was just sealed with
+ * the same text — `null` when there is none.
+ *
+ * `message.interim` materializes a STANDALONE bubble when the client holds no
+ * live one at that moment (a superseded attempt's frames cleared the stream, a
+ * reconnect dropped the deltas). This turn's own `message.start` then opens a
+ * fresh occurrence, the same text streams into a new bubble, and a second
+ * `message.interim` seals that bubble in place. Both copies stay on screen
+ * because every guard above keys on the turn's FINAL text: a pre-tool
+ * commentary segment's final answer is different text, so none of them match
+ * (#144609).
+ *
+ * Byte-identical text is the discriminator, on the same reasoning as
+ * `identicalInterimSiblingIndex`: a second real segment never repeats the reply
+ * verbatim. Three bounds keep that from eating a real earlier segment:
+ *
+ * - the candidate must be the NEAREST VISIBLE row before the sealed bubble —
+ *   a tool round in between means something happened, so the repeated text is
+ *   a restatement, not a re-delivery of the same bytes;
+ * - it must be TEXT-ONLY (an interim that owns tool rows is the record of an
+ *   earlier round);
+ * - `boundaryIndex` bounds the scan to the current occurrence, so a previous
+ *   turn's interim can never be the one dropped.
+ */
+export function shadowedIdenticalInterimId(
+  messages: ChatMessage[],
+  sealedId: string,
+  text: string,
+  boundaryIndex: number
+): string | null {
+  const key = normalizeWs(text)
+  const sealedIndex = messages.findIndex(message => message.id === sealedId)
+
+  if (!key || sealedIndex < 0) {
+    return null
+  }
+
+  for (let index = sealedIndex - 1; index > boundaryIndex; index -= 1) {
+    const message = messages[index]
+
+    if (message.hidden) {
+      continue
+    }
+
+    const isShadowedInterim =
+      message.role === 'assistant' &&
+      message.interim === true &&
+      !message.parts.some(part => part.type === 'tool-call') &&
+      normalizeWs(chatMessageText(message)) === key
+
+    return isShadowedInterim ? message.id : null
+  }
+
+  return null
 }

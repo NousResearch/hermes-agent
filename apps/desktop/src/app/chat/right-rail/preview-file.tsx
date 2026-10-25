@@ -1,3 +1,4 @@
+import { fileUrlToNativePath } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import type {
@@ -202,13 +203,7 @@ function filePathForTarget(target: PreviewTarget) {
     return target.path
   }
 
-  try {
-    const url = new URL(target.url)
-
-    return url.protocol === 'file:' ? decodeURIComponent(url.pathname) : target.url
-  } catch {
-    return target.url
-  }
+  return fileUrlToNativePath(target.url) ?? target.url
 }
 
 function formatBytes(bytes: number | undefined) {

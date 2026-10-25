@@ -3,6 +3,9 @@
   stdenv,
   fetchurl,
   unzip,
+  autoPatchelfHook,
+  patchelf,
+  fetchpatch,
 }:
 # The thin translation layer: pm/lock.json -> one fetched, unpacked
 # derivation per package for this nix system. Nothing here knows versions,
@@ -41,6 +44,30 @@ let
   isArchive = artifact:
     lib.any (suffix: lib.hasSuffix suffix artifact.url) [ ".tar.gz" ".tgz" ".tar.xz" ".txz" ".tar.bz2" ".zip" ];
 
+  # python-build-standalone finds its own libpython through an $ORIGIN/../lib
+  # RPATH. autoPatchelf rewrites that into a literal path and leaves the
+  # interpreter unable to load its own stdlib, so for it the ELF interpreter
+  # and RPATH are set explicitly: $ORIGIN stays, and Nix's glibc is appended.
+  # Only Linux artifacts are ELF; darwin's Mach-O builds run as shipped.
+  originRpath = name: stdenv.hostPlatform.isLinux && name == "python";
+  patchElf = name: stdenv.hostPlatform.isLinux && name != "python";
+
+  # patchelf 0.19.2 corrupts executables whose headers it must move: running
+  # --set-interpreter before --set-rpath (autoPatchelf's order) leaves a
+  # read-only LOAD overlapping the RW one, so ld.so faults on .dynamic and
+  # node segfaults on start (NixOS/patchelf#674). Fixed upstream by #672, not
+  # yet released; drop this once nixpkgs ships a patchelf that contains it.
+  patchelfFixed = patchelf.overrideAttrs (old: {
+    patches = (old.patches or [ ]) ++ [
+      (fetchpatch {
+        name = "patchelf-fix-executable-header-load-overlap.patch";
+        url = "https://github.com/NixOS/patchelf/commit/59acc3d98b4961cfddf02090d9426ac735603218.patch";
+        includes = [ "src/*" ];
+        hash = "sha256-rQWWZlCa4IRrcPcxMD2xrTTD4nLOsWfdZLOk9UoIOIs=";
+      })
+    ];
+  });
+
   derive = name: pin: artifacts:
     stdenv.mkDerivation {
       pname = name;
@@ -56,13 +83,63 @@ let
       # pm merges them into one store entry.
       sourceRoot = ".";
       nativeBuildInputs =
-        lib.optional (lib.any (a: lib.hasSuffix ".zip" a.url) artifacts) unzip;
+        # patchelfFixed precedes the hook so its `patchelf` wins on PATH.
+        lib.optionals (originRpath name || patchElf name) [ patchelfFixed ]
+        ++ lib.optional (patchElf name) autoPatchelfHook
+        ++ lib.optional (lib.any (a: lib.hasSuffix ".zip" a.url) artifacts) unzip;
+      # The upstream tarballs are glibc-linked (interpreter
+      # /lib64/ld-linux-x86-64.so.2, which only exists on a host with nix-ld).
+      # Their whole dependency set is glibc + libstdc++/libgcc/libatomic, so
+      # autoPatchelfHook rewrites the interpreter and RPATH at build time and
+      # every consumer runs them on a plain NixOS host. ripgrep ships musl-
+      # static and is left untouched.
+      buildInputs = [ stdenv.cc.cc.lib ];
+      # Keep the RPATH written below byte for byte; the fixup shrinker cannot
+      # tell that $ORIGIN/../lib is load-bearing.
+      dontPatchELF = originRpath name;
+      postFixup = lib.optionalString (originRpath name) ''
+        for exe in $out/bin/*; do
+          if [ -f "$exe" ] && patchelf --print-interpreter "$exe" >/dev/null 2>&1; then
+            patchelf \
+              --set-interpreter ${stdenv.cc.bintools.dynamicLinker} \
+              --set-rpath '$ORIGIN/../lib:${stdenv.cc.libc}/lib' \
+              "$exe"
+          fi
+        done
+      '';
       dontBuild = true;
       dontConfigure = true;
 
       installPhase = ''
         mkdir -p $out
         cp -r . $out/
+        # Nix's build-environment dump, not artifact content.
+        rm -f $out/env-vars
+
+        # Archives wrap their tree in one versioned directory
+        # (`uv-x86_64-unknown-linux-gnu/`, `node-v26.12.1-linux-x64/`, `package/`).
+        # pm's store strips it; mirror that so `$out/bin` is the entry point
+        # instead of `$out/<archive-name>/bin`.
+        shopt -s dotglob nullglob
+        wrapped=() stray=()
+        for entry in "$out"/*; do
+          if [ -d "$entry" ]; then wrapped+=("$entry"); else stray+=("$entry"); fi
+        done
+        if [ ''${#wrapped[@]} -eq 1 ] && [ ''${#stray[@]} -eq 0 ]; then
+          mv "''${wrapped[0]}"/* "$out"/
+          rmdir "''${wrapped[0]}"
+        fi
+        shopt -u dotglob nullglob
+
+        # Entry points also disagree: node and ffmpeg carry `bin/`, uv and
+        # ripgrep put their executables at the root. PATH composition
+        # (mkShell, lib.makeBinPath) only reads `bin`, so link root-level
+        # executables into it.
+        mkdir -p $out/bin
+        for exe in "$out"/*; do
+          [ -f "$exe" ] && [ -x "$exe" ] || continue
+          ln -sf "../$(basename "$exe")" "$out/bin/$(basename "$exe")"
+        done
       '';
     };
 in

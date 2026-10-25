@@ -884,7 +884,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         gateway route or a refused notice pinned to a permanently-gone session (``_watch_pin_gone``).
         Not transactional: a crash after acceptance can replay (at-least-once).
         """
+        from gateway.session_local_recovery import restore_completion_route
         from gateway.wake import WakeNotAccepted, adapter_supports_push, admit_internal_event
+        restore_completion_route(self, str(evt.get("session_key") or ""))  # watch notices and heartbeats too
         source = await asyncio.to_thread(self._build_process_event_source, evt)
         if not source:
             # API-server sessions bind the RAW X-Hermes-Session-Id key, not a structured ``agent:...`` key.

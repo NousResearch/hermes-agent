@@ -659,8 +659,10 @@ async def admit_route_wake(runner, adapter, source, text, producer, metadata=Non
     route holds no committed human turn to borrow provenance from: the caller keeps the adapter
     path (nothing is queued there either). Raises ``RuntimeStoreError`` on a refusal."""
     from gateway.session_authorities import active_authority
+    from gateway.session_local_recovery import restore_completion_route
     authority = active_authority(runner)
     key = runner._session_key_for_source(source)
+    restore_completion_route(runner, key)  # a closed local session boot left unrestored has no store entry yet
     entry = runner.session_store.lookup_by_session_key(key) if authority is not None else None
     if authority is None or entry is None:
         return False

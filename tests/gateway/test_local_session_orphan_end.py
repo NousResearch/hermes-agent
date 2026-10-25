@@ -381,3 +381,28 @@ async def test_a_session_the_tui_keeps_live_is_only_orphaned_when_its_connection
     assert sorted(authority.orphan_closes) == sorted([kept, front])
     assert [delay for delay, _ in armed] == [300.0, 300.0]
 
+
+@pytest.mark.asyncio
+async def test_a_watch_match_after_close_and_restart_is_noted_on_the_ended_session(tmp_path, monkeypatch):
+    import queue
+    from hermes_state_local import end_idle_local_session
+    from tests.gateway.test_session_end_delegations import _local
+    from tests.gateway.test_unviewed_completion_notes import _delegation_note, _restart, _target
+
+    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
+    route, target = authority.sessions[ref.session_id].route, _target(runner, authority, ref)
+    evt = {'type': 'watch_match', 'session_id': 'proc_watch', 'event_id': 'evt-1', 'command': 'serve',
+           'pattern': 'READY', 'output': 'READY_proc_watch', 'session_key': route, 'parent_session_id': target}
+    assert end_idle_local_session(authority.db, epoch=authority.epoch, session_id=ref.session_id,
+                                  target_id=target, reason='cli_close')
+    runner, authority = await _restart(tmp_path, monkeypatch, authority)
+    try:
+        completion_queue = queue.Queue()
+        completion_queue.put(evt)
+        await runner._drain_watch_notifications(completion_queue)
+        assert completion_queue.empty()  # admitted, not requeued
+        await authority._drain(ref)
+        assert len(_delegation_note(authority, target, 'READY_proc_watch')) == 1
+        assert authority.db.get_session(target)['end_reason'] == 'cli_close'
+    finally:
+        authority.db.close()

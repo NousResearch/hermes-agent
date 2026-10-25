@@ -515,3 +515,24 @@ Switch to a self-hosted instance (see [Option A](#option-a--self-host-with-docke
 ### `web_extract` returns truncated content with a `[TRUNCATED]` footer
 
 That's expected for pages over the character budget. The footer names the on-disk file holding the full clean text and the exact `read_file` call to page through the omitted middle. To see more inline, raise `web.extract_char_limit` in `config.yaml` or pass a larger `char_limit` on the call.
+
+## Prefer `web_extract` over the browser for simple fetches
+
+When both `browser_exec` and `web_extract` are available, the model chooses
+which to use. For plain content retrieval it often spins up the browser even
+though `web_extract` is faster and cheaper.
+
+Opt in with:
+
+```yaml
+web:
+  prefer_fetch_over_browser: true   # default: false
+```
+
+Or for a single run: `HERMES_PREFER_FETCH_OVER_BROWSER=1`.
+
+When enabled, Hermes appends a directive to the `browser_exec` tool description:
+use `web_extract` for non-interactive URL fetches, and reserve the browser for
+login, clicks, forms, and JS-rendered or scroll-dependent content. Browser tools
+stay registered — only the routing guidance changes. URL and SSRF checks are
+unchanged.

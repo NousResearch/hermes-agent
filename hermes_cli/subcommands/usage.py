@@ -23,6 +23,7 @@ def usage_snapshot_document(snapshot) -> dict:
         "source": snapshot.source,
         "title": snapshot.title,
         "plan": snapshot.plan,
+        "email": snapshot.email,
         "fetched_at": snapshot.fetched_at.isoformat(),
         "windows": [
             {
@@ -48,7 +49,7 @@ def pool_usage_document(provider: str, accounts: list[dict]) -> dict:
     from hermes_cli.usage_pool import pool_summary
 
     return {
-        "provider": provider, "source": "credential_pool", "title": "Account pool", "plan": None,
+        "provider": provider, "source": "credential_pool", "title": "Account pool", "plan": None, "email": None,
         "fetched_at": datetime.now(UTC).isoformat(), "windows": [], "details": [],
         "unavailable_reason": None, "accounts": accounts, "pool": pool_summary(accounts),
     }

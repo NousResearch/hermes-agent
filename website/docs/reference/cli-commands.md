@@ -741,6 +741,7 @@ has no usage endpoint, or the fetch fails (stdout stays empty).
   "source": "usage_api",
   "title": "Account limits",
   "plan": "Plus",
+  "email": "you@example.com",
   "fetched_at": "2026-09-19T07:58:55+00:00",
   "windows": [
     {"label": "Session", "used_percent": 37.0, "resets_at": "2026-09-19T21:00:00+00:00", "detail": null},
@@ -752,7 +753,7 @@ has no usage endpoint, or the fetch fails (stdout stays empty).
 ```
 
 `used_percent` is `null` when the provider did not report the window; `resets_at` is ISO-8601 UTC or `null`
-(some windows carry a free-text `detail` instead); `plan` is `null` when unknown.
+(some windows carry a free-text `detail` instead); `plan` and `email` are `null` when unknown.
 
 For a credential pool, `source` is `credential_pool`, the provider-wide `windows` stay empty (one login's
 quota says nothing about its siblings), and two keys are added: `accounts` (one row per account, the same

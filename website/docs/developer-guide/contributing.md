@@ -241,11 +241,42 @@ resvg-py are core dependencies. Do not commit generated PNG/ICO/ICNS outputs.
 
 ### Run tests
 
-Use the canonical runner on every host:
+Use the canonical runner on every host. Prefer `scripts/run_tests.sh` over bare
+`pytest` so local runs match CI (credentials cleared, `TZ=UTC` / `LANG=C.UTF-8`,
+temp `HERMES_HOME`, per-file subprocess isolation via
+`scripts/run_tests_parallel.py` — no xdist). See the root
+[AGENTS.md](https://github.com/NousResearch/hermes-agent/blob/main/AGENTS.md).
 
 ```bash
+# Full suite
 scripts/run_tests.sh
+
+# One directory
 scripts/run_tests.sh tests/agent/ -v
+```
+
+#### Run a single test module quickly
+
+While iterating on a change, run only the tests you touched:
+
+```bash
+# One file
+scripts/run_tests.sh tests/agent/test_prompt_caching.py -q
+
+# Narrow further with -k (runner is file-granular; -k filters inside each file)
+scripts/run_tests.sh tests/agent/test_prompt_caching.py -k test_cache -q
+
+# Pytest flags pass through (no '--' required)
+scripts/run_tests.sh tests/agent/test_foo.py -v --tb=long
+```
+
+If you used the manual clone fallback and `hermes` / `pytest` are not already on
+`PATH`, activate the outside-tree venv first:
+
+```bash
+export VIRTUAL_ENV="$HOME/.hermes/venvs/hermes-dev"
+export PATH="$VIRTUAL_ENV/bin:$PATH"
+# or: source ~/.hermes/venvs/hermes-dev/bin/activate
 ```
 
 On Windows, run the script through Bash. When no local `.venv` or `venv`
@@ -257,6 +288,9 @@ session home, it sets the internal `HERMES_TEST_SANDBOX_HOME` marker. This lets
 re-imported test fixtures recognize their own sandbox instead of flagging it as
 real-home I/O. Do not set this marker yourself; set `HERMES_HOME` for a
 disposable development home and let the test runner isolate it.
+
+Use bare `pytest` only for interactive debugging (`--pdb`, `--trace`). Re-run
+under `scripts/run_tests.sh` before opening a PR.
 
 Run the relevant JS workspace checks for JS changes. Native install/update
 E2E runs on disposable CI hosts, never against the developer's live app.

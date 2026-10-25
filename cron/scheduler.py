@@ -10,6 +10,7 @@ import contextvars
 import errno
 import json
 import logging
+import math
 import os
 import re
 import subprocess
@@ -1562,6 +1563,44 @@ def _run_no_agent_job(
     header = _job_doc_header(job_name, job_id, now_iso, "no_agent (script)")
 
     if not ok:
+        # A no-agent worker may explicitly defer an attempted poll because its own
+        # coordination lock is busy.  This is deliberately narrower than "exit 75":
+        # accept only this application's sanitized, complete envelope.  All malformed
+        # payloads, retry exhaustion and alert-worthy deferrals stay real failures.
+        deferred_prefix = "Script exited with code 75\nstderr:\n"
+        if output.startswith(deferred_prefix) and "\nstdout:\n" not in output:
+            def reject_duplicate_keys(pairs):
+                parsed = dict(pairs)
+                if len(parsed) != len(pairs):
+                    raise ValueError("duplicate JSON key")
+                return parsed
+
+            def reject_nonstandard_constant(value):
+                raise ValueError(f"non-standard JSON constant: {value}")
+
+            try:
+                deferred = json.loads(
+                    output[len(deferred_prefix):],
+                    object_pairs_hook=reject_duplicate_keys,
+                    parse_constant=reject_nonstandard_constant,
+                )
+            except (TypeError, ValueError):
+                deferred = None
+            next_attempt_at = deferred.get("next_attempt_at") if isinstance(deferred, dict) else None
+            if (
+                isinstance(deferred, dict)
+                and set(deferred) == {"status", "reason", "next_attempt_at", "operator_alert"}
+                and deferred.get("status") == "deferred"
+                and deferred.get("reason") in {"cooldown", "pacing", "busy"}
+                and (next_attempt_at is None
+                     or (isinstance(next_attempt_at, (int, float))
+                         and not isinstance(next_attempt_at, bool)
+                         and math.isfinite(next_attempt_at)))
+                and deferred.get("operator_alert") is False
+            ):
+                job["_script_deferred"] = True
+                logger.info("Job '%s' (no_agent): typed worker deferral — silent run", job_id)
+                return True, f"{header}**Status:** deferred\n", SILENT_MARKER, None
         # Deliver the error: a silently broken watchdog is the worst-case outcome.
         alert = (
             f"⚠ Cron watchdog '{job_name}' script failed\n\n"
@@ -3075,6 +3114,7 @@ class _RunDelivery:
     incident_acked: bool = False
     failure_incident_id: Optional[str] = None
     side_effect_ownership_lost: bool = False
+    status: Optional[str] = None
 
 
 def _save_compose_deliver(
@@ -3385,7 +3425,10 @@ def _run_one_job_body(
 
         # Agent is still live through delivery; wrap ALL of save/compose/deliver in try/finally so a
         # raise anywhere still tears the deferred agent down.
-        d = _RunDelivery(job=job, success=success, error=error, agent_declared=agent_declared)
+        d = _RunDelivery(
+            job=job, success=success, error=error, agent_declared=agent_declared,
+            status="deferred" if job.pop("_script_deferred", False) else None,
+        )
         try:
             _save_compose_deliver(
                 d, fence, final_response, output, adapters=adapters, loop=loop, verbose=verbose,

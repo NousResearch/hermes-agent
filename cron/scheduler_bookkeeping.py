@@ -80,6 +80,8 @@ def finish_completed_run(d, fire_owner: Optional[str], execution_id: str, *, rec
         mark_kwargs["recover_consumed_fire"] = bool(job.get("_scheduled_instant"))
     if d.success and not d.delivery_error and d.should_deliver and job.get("last_delivery_queued"):
         mark_kwargs["status"] = "delivery_queued"
+    if d.status is not None:
+        mark_kwargs["status"] = d.status
     if fire_owner is not None:
         mark_kwargs["expected_fire_owner"] = fire_owner
     if d.blocked_config:

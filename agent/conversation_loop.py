@@ -36,6 +36,7 @@ from agent.surface_switch import (
 )
 from agent.turn_context import PreflightCompressionTimedOut, build_turn_context
 from hermes_cli.observability.shared_metrics_efficiency import record_cache_break, record_prompt_rebuild
+from hermes_cli.plugins_dispatch import held_stream_transforms
 from agent.turn_retry_state import TurnRetryState
 from agent.turn_review_budget import (
     _log_refused_review_first_request, _release_review_input_request,
@@ -1615,7 +1616,7 @@ def _codex_app_server_turn(agent: Any, s: Any) -> Optional[dict[str, Any]]:
     codex_result = agent._run_codex_app_server_turn(
         user_message=s.user_message, original_user_message=s.original_user_message,
         messages=s.messages, effective_task_id=s.effective_task_id,
-        should_review_memory=s._should_review_memory,
+        should_review_memory=s._should_review_memory, turn_id=s.turn_id,
     )
     from agent.turn_recovery import activate_codex_app_server_fallback
     if not activate_codex_app_server_fallback(agent, codex_result):
@@ -1671,6 +1672,12 @@ def _run_conversation_turn(
         agent._try_refresh_env_client_credentials()
     except Exception:
         logger.debug("per-turn env credential refresh failed", exc_info=True)
+
+    # A loaded ``hold_stream`` transform in this profile: the user sees only its rewritten final, made
+    # by the transforms live now (a plugin reload mid-turn cannot drop them before the final). Set
+    # before any exit, so an early one never reads the previous turn's hold.
+    agent._held_transforms = held_stream_transforms()
+    agent._hold_stream = bool(agent._held_transforms)
 
     # Per-turn setup: build_turn_context mutates ``agent`` and returns the locals the loop reads.
     try:
@@ -1814,6 +1821,7 @@ def run_conversation(
     addresses, after every history rewrite including post-turn micro-compaction.
     """
     from agent.turn_context import export_current_turn_boundary
+    from agent.turn_finalizer import settle_held_final
     from agent.voice_turn_route import end_voice_turn_route
     from tools.vision_tools_history_budget import native_turn_images
 
@@ -1842,6 +1850,7 @@ def run_conversation(
             )
         finally:
             end_voice_turn_route(agent)
+    settle_held_final(agent, result)
     result = export_current_turn_boundary(agent, result, user_message)
     if isinstance(result, dict):
         result["user_intervened"] = bool(getattr(agent, "_turn_user_intervened", False))

@@ -93,6 +93,11 @@ async def admit_message(authority, event):
         response = await asyncio.shield(waiter)
     except RuntimeStoreError as exc:
         adopt_review_completion(authority, receipt.admission_id, None)
+        row = get_session_admission(authority.db, admission_id=receipt.admission_id)
+        if row is not None and row['status'] == 'terminal':
+            # The drain refused this head (``_refuse_head``): cancelled, not saved behind a pause.
+            return (f'⚠️ Hermes did not answer this message ({exc.reason}): the conversation it was '
+                    'queued for moved, so it was dropped. Send it again to continue.')
         return pause_notice(authority, receipt.ref, exc.reason)
     except asyncio.CancelledError:
         forget_review_waiter(authority, receipt.admission_id)

@@ -995,7 +995,7 @@ DEFAULT_CONFIG = {
             "unicode_cols": 0,  # Hard override for terminal column width; 0 = derive from scale.
         },
     },
-
+    "webapp": {"enabled": False, "host": "127.0.0.1", "port": 9120, "public_url": ""},  # gateway/webapp_listener.py
     "dashboard": {
         # Visual theme: "default" | "midnight" | "ember" | "mono" | "cyberpunk" | "rose"
         "theme": "default",
@@ -1707,8 +1707,8 @@ DEFAULT_CONFIG = {
     # substitutes it; a bare string is shorthand for append. `replace` wins over `append` if both
     # are given.
     "platform_hints": {},
-    # Plugin system. `enabled`/`disabled` lists are written by `hermes plugins enable|disable` and
-    # deliberately omitted here so an empty default never clobbers a user allow-list.
+    # Plugin system. `enabled`/`disabled` (`hermes plugins enable|disable`) and `disabled_by_update` (pm.plugin_eviction:
+    # plugins an update turned off, retried by later updates) are omitted so an empty default never clobbers a user's lists.
     "plugins": {
         # Deadline (seconds) for one plugin Git clone, fetch or checkout. Slow repositories may
         # need more time; each network operation is capped at one hour.
@@ -2279,11 +2279,8 @@ DEFAULT_CONFIG = {
         # List delegate_task subagent runs in session lists (desktop sidebar, dashboard, session.list),
         # nested under their parent. Off by default: they are machinery, not conversations.
         "show_subagents": False,
-        # VACUUM after a prune that deleted rows (SQLite never reclaims disk on DELETE). VACUUM
-        # blocks writes (~seconds per 100MB), so it runs only at startup, only when ≥1 session was
-        # deleted AND freelist/page_count > 25%.
-        # SQLite does not reclaim disk space on DELETE — freed pages are just reused on subsequent INSERTs —
-        # so without VACUUM the file stays bloated even after pruning. See #54189.
+        # VACUUM after a prune that deleted rows (SQLite never reclaims disk on DELETE, #54189). It blocks
+        # writes (~seconds per 100MB): only at startup, only when ≥1 session went AND freelist/page_count > 25%.
         "vacuum_after_prune": True,
         # Minimum days between VACUUM rewrites; pruning keeps its normal cadence.
         "min_vacuum_interval_days": 30,
@@ -2313,6 +2310,9 @@ DEFAULT_CONFIG = {
         # Max active messages per session for in-memory export (`hermes sessions export`); checked
         # per session, so full-DB backups of small sessions work.
         "max_export_messages": 20000,
+        # Seconds before a local session with no viewer is ended (resumable) once its turn settles; 0 = never; after a
+        # restart also >= 6h idle. Unset: dashboard.ws_orphan_reap_grace_s: 0 / startup_orphan_sweep: false opt out.
+        "orphan_end_grace_s": 300.0,
     },
     # First-touch onboarding hints (agent/onboarding.py), each latched under `seen` once shown.
     "onboarding": {
@@ -2445,8 +2445,8 @@ DEFAULT_CONFIG = {
     # External password managers are unlocked per session with a masked master-password prompt;
     # headless sessions (cron, webhook, API) never prompt and see them as locked.
     "vault": {
-        "onepassword": {
-            # Detected managers are login sources unless the user opts out (vault.<name>.enabled: false).
+        "key_storage": "file",  # NEW vault's key: file (0600 vault.key) | keychain (OS; file if none). See `hermes vault key`.
+        "onepassword": {  # detected managers are login sources unless the user opts out (enabled: false)
             "enabled": True,        # `op` CLI: Login items with a website URL become fillable handles.
             "account": "",          # account shorthand for `op --account`; empty = default account.
             "binary_path": "",      # absolute path to op; empty = PATH.

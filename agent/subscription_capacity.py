@@ -1,8 +1,15 @@
 """Fail-closed admission and cross-process leases for subscription workers.
 
-This module deliberately does not launch workers or resolve paid gateway aliases.  It turns
-already-normalized :mod:`agent.account_usage` snapshots into a deterministic admission decision;
-the caller remains responsible for launching the selected subscription session.
+This preparation-only library deliberately does not launch workers or resolve paid gateway aliases.
+It turns already-normalized :mod:`agent.account_usage` snapshots into a deterministic admission
+decision. No production worker path consumes it until an authorized orchestrator explicitly wires
+acquire, phase checks and release around that worker's lifecycle.
+
+The generic Kanban dispatcher is not that consumer: each card carries one already-selected
+provider/model (including paid providers), and its first lifecycle observer runs after spawn. Wiring
+this router there would silently reinterpret operator routing and could not enforce pre-spawn
+candidate selection plus in-worker phase checks. A delivery orchestrator must supply those explicit
+candidates and own the complete lease lifecycle.
 """
 
 from __future__ import annotations
@@ -17,6 +24,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Mapping, Optional
 
 from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow, fetch_account_usage
+from hermes_constants import hermes_home_key
 
 ADMISSION_MAX_AGE = timedelta(seconds=60)
 DISPLAY_MAX_AGE = timedelta(minutes=5)
@@ -126,6 +134,7 @@ class SubscriptionCapacityRouter:
         db_path: Path,
         policies: Iterable[ProviderPolicy],
         *,
+        coordination_scope: str,
         fetcher: Callable[[str], Optional[AccountUsageSnapshot]] = fetch_account_usage,
         now: Callable[[], datetime] = _utc_now,
         lease_ttl: timedelta = DEFAULT_LEASE_TTL,
@@ -140,11 +149,14 @@ class SubscriptionCapacityRouter:
             raise ValueError("subscription provider policies must be unique")
         if lease_ttl <= timedelta(0) or near_tie_percent < 0:
             raise ValueError("lease_ttl must be positive and near_tie_percent cannot be negative")
+        self.coordination_scope = str(coordination_scope or "").strip()
+        if not self.coordination_scope:
+            raise ValueError("coordination_scope must name the shared subscription-account lease pool")
         self.fetcher = fetcher
         self.now = now
         self.lease_ttl = lease_ttl
         self.near_tie_percent = near_tie_percent
-        self._cache: dict[str, AccountUsageSnapshot] = {}
+        self._cache: dict[tuple[str, str], AccountUsageSnapshot] = {}
         self._cache_lock = threading.Lock()
         self._initialize()
 
@@ -157,13 +169,34 @@ class SubscriptionCapacityRouter:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute(
-                """CREATE TABLE IF NOT EXISTS subscription_capacity_leases (
-                    lease_id TEXT PRIMARY KEY, request_id TEXT NOT NULL UNIQUE,
-                    provider TEXT NOT NULL, task TEXT NOT NULL, model TEXT NOT NULL,
-                    owner TEXT NOT NULL, reserved_percent REAL, expires_at TEXT NOT NULL
-                )"""
-            )
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(
+                    """CREATE TABLE IF NOT EXISTS subscription_capacity_leases (
+                        lease_id TEXT PRIMARY KEY, request_id TEXT NOT NULL UNIQUE,
+                        provider TEXT NOT NULL, task TEXT NOT NULL, model TEXT NOT NULL,
+                        owner TEXT NOT NULL, reserved_percent REAL, expires_at TEXT NOT NULL
+                    )"""
+                )
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS subscription_capacity_meta "
+                    "(singleton INTEGER PRIMARY KEY, scope TEXT NOT NULL)"
+                )
+                row = conn.execute("SELECT scope FROM subscription_capacity_meta WHERE singleton = 1").fetchone()
+                if row is None:
+                    conn.execute(
+                        "INSERT INTO subscription_capacity_meta(singleton, scope) VALUES (1, ?)",
+                        (self.coordination_scope,),
+                    )
+                elif row["scope"] != self.coordination_scope:
+                    raise ValueError(
+                        f"capacity database belongs to coordination scope {row['scope']!r}, "
+                        f"not {self.coordination_scope!r}"
+                    )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
     def snapshot(
         self, provider: str, *, purpose: str = "admission", force_refresh: bool = False,
@@ -172,8 +205,9 @@ class SubscriptionCapacityRouter:
             raise ValueError("purpose must be admission or display")
         max_age = ADMISSION_MAX_AGE if purpose == "admission" else DISPLAY_MAX_AGE
         now = _aware(self.now())
+        cache_key = (hermes_home_key(), provider)
         with self._cache_lock:
-            cached = self._cache.get(provider)
+            cached = self._cache.get(cache_key)
             if not force_refresh and cached is not None and timedelta(0) <= now - _aware(cached.fetched_at) <= max_age:
                 return cached
         try:
@@ -184,7 +218,7 @@ class SubscriptionCapacityRouter:
             fresh = None
         if fresh is not None:
             with self._cache_lock:
-                self._cache[provider] = fresh
+                self._cache[cache_key] = fresh
         return fresh
 
     @staticmethod
@@ -252,6 +286,14 @@ class SubscriptionCapacityRouter:
 
     def acquire(self, request: CapacityRequest, *, candidate_models: Mapping[str, str]) -> AdmissionResult:
         candidates = tuple(candidate_models)
+        # A durable request-id hit is a re-admission, not a free idempotency return. Hint the
+        # provider fetch to bypass even the <=60s admission cache; the row is re-read under the
+        # write transaction below before any result is returned.
+        with self._connect() as conn:
+            replay_row = conn.execute(
+                "SELECT provider FROM subscription_capacity_leases WHERE request_id = ?", (request.request_id,),
+            ).fetchone()
+        replay_provider = replay_row["provider"] if replay_row is not None else None
         snapshots: dict[str, Optional[AccountUsageSnapshot]] = {}
         ineligible: list[CapacityAssessment] = []
         for provider in candidates:
@@ -261,7 +303,9 @@ class SubscriptionCapacityRouter:
             elif not policy.eligible(request.task, candidate_models[provider]):
                 ineligible.append(CapacityAssessment(provider, False, "task or model is not eligible"))
             else:
-                snapshots[provider] = self.snapshot(provider, purpose="admission")
+                snapshots[provider] = self.snapshot(
+                    provider, purpose="admission", force_refresh=provider == replay_provider,
+                )
 
         now = _aware(self.now())
         with self._connect() as conn:
@@ -271,7 +315,6 @@ class SubscriptionCapacityRouter:
                 "SELECT * FROM subscription_capacity_leases WHERE request_id = ?", (request.request_id,),
             ).fetchone()
             if existing is not None:
-                conn.commit()
                 lease = self._row_to_lease(existing)
                 expected_model = candidate_models.get(lease.provider)
                 if (
@@ -280,10 +323,28 @@ class SubscriptionCapacityRouter:
                     or lease.reserved_percent != request.reserved_percent
                     or expected_model != lease.model
                 ):
+                    conn.commit()
                     return AdmissionResult(None, (*ineligible, CapacityAssessment(
                         lease.provider, False, "request id belongs to a different lease",
                     )))
-                return AdmissionResult(lease, tuple(ineligible))
+                policy = self.policies.get(lease.provider)
+                snapshot = snapshots.get(lease.provider)
+                if policy is None or not policy.eligible(request.task, lease.model):
+                    conn.commit()
+                    return AdmissionResult(None, (*ineligible, CapacityAssessment(
+                        lease.provider, False, "persisted lease is not eligible under current policy",
+                    )))
+                active, reserved, unbounded = self._lease_state(conn, lease.provider, now)
+                replay = self._assess_snapshot(
+                    policy, request, lease.model, snapshot,
+                    active_leases=max(0, active - 1),
+                    reserved_percent=max(0.0, reserved - (lease.reserved_percent or 0.0)),
+                    has_unbounded=unbounded and lease.reserved_percent is not None,
+                )
+                conn.commit()
+                if not replay.admitted:
+                    return AdmissionResult(None, (*ineligible, replay))
+                return AdmissionResult(lease, (*ineligible, replay))
             assessments = list(ineligible)
             for provider, snapshot in snapshots.items():
                 policy = self.policies[provider]

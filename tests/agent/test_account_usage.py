@@ -184,6 +184,28 @@ def test_usage_windows_carry_model_scope_for_admission():
     assert windows[1].model_prefixes == ("claude-opus",)
 
 
+def test_anthropic_present_model_window_without_utilization_is_preserved_as_unknown(monkeypatch):
+    payload = {
+        "five_hour": {"utilization": 0.1, "resets_at": "2030-01-01T00:00:00Z"},
+        "seven_day": {"utilization": 0.2, "resets_at": "2030-01-02T00:00:00Z"},
+        "seven_day_opus": {"resets_at": "2030-01-02T00:00:00Z"},
+        "seven_day_sonnet": {"utilization": 0.3, "resets_at": "2030-01-02T00:00:00Z"},
+    }
+    calls = []
+    monkeypatch.setattr(account_usage, "resolve_anthropic_token", lambda: "oauth-token")
+    monkeypatch.setattr(account_usage, "_is_oauth_token", lambda token: True)
+    monkeypatch.setattr(account_usage.httpx, "Client", lambda timeout: _FakeClient(calls, payload))
+
+    snapshot = account_usage.fetch_account_usage("anthropic")
+
+    assert snapshot is not None
+    windows = {window.label: window for window in snapshot.windows}
+    assert windows["Opus week"].used_percent is None
+    assert windows["Opus week"].model_prefixes == ("claude-opus",)
+    assert windows["Sonnet week"].used_percent == 30
+    assert windows["Sonnet week"].model_prefixes == ("claude-sonnet",)
+
+
 def test_codex_invalid_payload_fails_closed(monkeypatch):
     snapshot, _ = _explicit_creds_snapshot(monkeypatch, ["not", "a", "dict"])
     assert snapshot is None

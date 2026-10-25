@@ -12,6 +12,7 @@ from agent.subscription_capacity import (
     SubscriptionCapacityRouter,
     default_subscription_policies,
 )
+from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
 
 
 NOW = datetime(2026, 10, 25, 13, 0, tzinfo=timezone.utc)
@@ -53,7 +54,9 @@ def _router(tmp_path, policies, snapshots, *, now=lambda: NOW):
         value = snapshots[provider]
         return value() if callable(value) else value
 
-    return SubscriptionCapacityRouter(tmp_path / "capacity.sqlite", policies, fetcher=fetch, now=now), calls
+    return SubscriptionCapacityRouter(
+        tmp_path / "capacity.sqlite", policies, coordination_scope="test-subscriptions", fetcher=fetch, now=now,
+    ), calls
 
 
 def test_default_floors_keep_codex_voice_allowance_and_require_configured_claude_floor():
@@ -154,7 +157,8 @@ def test_atomic_cross_process_style_lease_allows_only_one_unbounded_worker(tmp_p
     snapshot = _snapshot()
     routers = tuple(
         SubscriptionCapacityRouter(
-            tmp_path / "shared.sqlite", (policy,), fetcher=lambda provider: snapshot, now=lambda: NOW,
+            tmp_path / "shared.sqlite", (policy,), coordination_scope="test-subscriptions",
+            fetcher=lambda provider: snapshot, now=lambda: NOW,
         )
         for _ in range(2)
     )
@@ -229,6 +233,102 @@ def test_request_id_cannot_change_its_reservation_contract(tmp_path):
     assert first.lease is not None
     assert changed.lease is None
     assert changed.assessments[-1].reason == "request id belongs to a different lease"
+
+
+@pytest.mark.parametrize(
+    ("second_policy", "second_snapshot", "reason"),
+    [
+        (_policy(floor=85, max_bounded=2), _snapshot(used=(20, 20)), "protected floor"),
+        (_policy(max_bounded=2), _snapshot(used=(95, 95)), "protected floor"),
+    ],
+)
+def test_request_replay_in_a_new_router_rechecks_current_policy_and_fresh_usage(
+    tmp_path, second_policy, second_snapshot, reason,
+):
+    db_path = tmp_path / "shared.sqlite"
+    first = SubscriptionCapacityRouter(
+        db_path, (_policy(max_bounded=2),), coordination_scope="operator-subscriptions",
+        fetcher=lambda provider: _snapshot(used=(20, 20)), now=lambda: NOW,
+    )
+    request = CapacityRequest("req-replay", "builder", "owner", reserved_percent=5)
+    admitted = first.acquire(request, candidate_models={"openai-codex": "gpt-6-sol"})
+    assert admitted.lease is not None
+
+    calls = []
+
+    def second_fetch(provider):
+        calls.append(provider)
+        return second_snapshot
+
+    restarted = SubscriptionCapacityRouter(
+        db_path, (second_policy,), coordination_scope="operator-subscriptions",
+        fetcher=second_fetch, now=lambda: NOW,
+    )
+    replay = restarted.acquire(request, candidate_models={"openai-codex": "gpt-6-sol"})
+
+    assert replay.lease is None
+    assert calls == ["openai-codex"]
+    assert reason in replay.assessments[-1].reason
+
+
+def test_request_replay_in_the_same_router_bypasses_admission_cache(tmp_path):
+    snapshots = iter((_snapshot(used=(20, 20)), _snapshot(used=(95, 95))))
+    router, calls = _router(
+        tmp_path, (_policy(max_bounded=2),), {"openai-codex": lambda: next(snapshots)},
+    )
+    request = CapacityRequest("req-fresh-replay", "builder", "owner", reserved_percent=5)
+    first = router.acquire(request, candidate_models={"openai-codex": "gpt-6-sol"})
+    replay = router.acquire(request, candidate_models={"openai-codex": "gpt-6-sol"})
+
+    assert first.lease is not None
+    assert replay.lease is None
+    assert calls == ["openai-codex", "openai-codex"]
+    assert replay.assessments[-1].reason == "protected floor would be crossed"
+
+
+def test_snapshot_cache_is_scoped_to_the_active_hermes_home_a_to_b_to_a(tmp_path):
+    home_a, home_b = tmp_path / "a", tmp_path / "b"
+    home_a.mkdir()
+    home_b.mkdir()
+    fetched = []
+
+    def fetch(provider):
+        home = hermes_home_key()
+        fetched.append(home)
+        used = (10, 10) if home == hermes_home_key(home_a) else (80, 80)
+        return _snapshot(used=used)
+
+    router = SubscriptionCapacityRouter(
+        tmp_path / "capacity.sqlite", (_policy(),), coordination_scope="operator-subscriptions",
+        fetcher=fetch, now=lambda: NOW,
+    )
+    token_a = set_hermes_home_override(home_a)
+    try:
+        a_first = router.snapshot("openai-codex")
+    finally:
+        reset_hermes_home_override(token_a)
+    token_b = set_hermes_home_override(home_b)
+    try:
+        b = router.snapshot("openai-codex")
+    finally:
+        reset_hermes_home_override(token_b)
+    token_a = set_hermes_home_override(home_a)
+    try:
+        a_again = router.snapshot("openai-codex")
+    finally:
+        reset_hermes_home_override(token_a)
+
+    assert a_first is a_again
+    assert a_first.windows[0].used_percent == 10
+    assert b.windows[0].used_percent == 80
+    assert fetched == [hermes_home_key(home_a), hermes_home_key(home_b)]
+
+
+def test_capacity_database_refuses_an_accidental_coordination_scope_change(tmp_path):
+    db_path = tmp_path / "capacity.sqlite"
+    SubscriptionCapacityRouter(db_path, (_policy(),), coordination_scope="account-a", now=lambda: NOW)
+    with pytest.raises(ValueError, match="belongs to coordination scope"):
+        SubscriptionCapacityRouter(db_path, (_policy(),), coordination_scope="account-b", now=lambda: NOW)
 
 
 @pytest.mark.parametrize(

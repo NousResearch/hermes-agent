@@ -47,6 +47,7 @@ ANCHORS: dict[str, str | tuple[str, ...]] = {
     "dingtalk": "dingtalk_stream",
     "feishu": "lark_oapi",
     "wecom": "defusedxml",
+    "keychain": "keyring",
     "teams": "microsoft_teams.apps",
     "modal": "modal",
     "daytona": "daytona",

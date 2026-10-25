@@ -1173,7 +1173,12 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
     watcher_env = _host_gateway_watcher_env() if (
         _restart_argv_is_host_gateway(run_argv) if host is None else host
     ) else None
-    popen_env = {"env": watcher_env} if watcher_env is not None else {}
+    # The watcher respawns the gateway with its own os.environ; a worker/delegate-descendant
+    # invoking ``gateway restart`` would otherwise hand the long-lived gateway the Kanban
+    # write-fence marker and worker identity (see delegation_context.scrub_gateway_spawn_env).
+    from agent.delegation_context import scrub_gateway_spawn_env
+    watcher_env = scrub_gateway_spawn_env(watcher_env if watcher_env is not None else os.environ)
+    popen_env = {"env": watcher_env}
     # Same detach for the watcher itself, so closing the terminal doesn't kill it.
     try:
         subprocess.Popen(watcher_argv, **devnull, **popen_env, **windows_detach_popen_kwargs())

@@ -65,11 +65,19 @@ _NO_DELIVERABLE = "No deliverable text or media remained after processing MEDIA 
 
 _TELEGRAM_TRANSIENT_MARKERS = ("bad gateway", "502", "too many requests", "429", "service unavailable", "503",
                                "gateway timeout", "504")
+# DNS/connect-phase failures: the request never left the client (no server contact), so a retry
+# cannot duplicate a delivered message. api.telegram.org DNS can drop out in ~60s blips
+# (httpx.ConnectError [Errno 11001] getaddrinfo failed); python-telegram-bot wraps these in
+# NetworkError, so match the text too.
+_TELEGRAM_DNS_MARKERS = ("getaddrinfo", "temporary failure in name resolution",
+                         "name or service not known", "nodename nor servname",
+                         "connecterror", "connect error")
 
 
 def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
     """Retry delay in seconds, or None when final: honours ``retry_after``; timeouts are
-    never retried (the send may have gone through); 5xx/429 back off exponentially."""
+    never retried (the send may have gone through); DNS/connect failures and 5xx/429 back
+    off exponentially (capped at 5s for the connect phase)."""
     retry_after = getattr(exc, "retry_after", None)
     if retry_after is not None:
         try:
@@ -79,6 +87,9 @@ def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
     text = str(exc).lower()
     if "timed out" in text or "timeout" in text:
         return None
+    if type(exc).__name__ == "ConnectError" or any(
+            marker in text for marker in _TELEGRAM_DNS_MARKERS):
+        return min(float(2 ** attempt), 5.0)
     return float(2 ** attempt) if any(marker in text for marker in _TELEGRAM_TRANSIENT_MARKERS) else None
 
 

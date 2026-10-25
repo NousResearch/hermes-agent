@@ -1047,8 +1047,11 @@ def _build_uvicorn_server(host: str, port: int, *, ssh_isolated: bool = False):
         ping_interval, ping_timeout = TUNNEL_WS_PING_INTERVAL_S, TUNNEL_WS_PING_TIMEOUT_S
 
     _uvicorn_console_logging()  # log_config=None: uvicorn's dictConfig would close every live handler
+    # Bound stalled dashboard writes (a non-reading client must not pin the event loop).
+    from hermes_cli.web_server_slow_client import BoundedH11Protocol
     config = uvicorn.Config(
         served_app, host=host, port=port, log_level="warning", log_config=None,
+        http=BoundedH11Protocol,
         # Off by default so _ws_client_is_allowed sees the real peer, not
         # X-Forwarded-For. Gated mode runs behind a TLS terminator and needs
         # X-Forwarded-Proto for cookie Secure flags.

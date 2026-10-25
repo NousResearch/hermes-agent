@@ -788,7 +788,9 @@ def _spawn_detached(script_path: Path | None = None, home: Path | None = None) -
     # home=None is this process's own gateway, not a forced jump to the default root.
     # served_profile_child_env overlays that home's secrets instead of os.environ.copy().
     target = home if home is not None else _hermes_home()
-    env = {**served_profile_child_env(target_home=target, inherit_credentials=True), **env_overlay}
+    from agent.delegation_context import scrub_gateway_spawn_env
+    env = {**scrub_gateway_spawn_env(served_profile_child_env(target_home=target, inherit_credentials=True)),
+           **env_overlay}
 
     # Stray print()/native stderr goes to a sidecar log; real gateway logs still land in gateway.log
     # via the logging FileHandler.

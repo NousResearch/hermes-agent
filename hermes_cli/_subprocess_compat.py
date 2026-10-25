@@ -895,7 +895,11 @@ def bounded_git_probe(argv: Sequence[str], *, timeout: float, env: Mapping[str, 
     openai/codex#36793). ``process_group`` only changes which group the child belongs to; it does not detach
     the terminal or alter the fast path.
     """
-    result = bounded_probe_run(argv, timeout=timeout, env={**(env or noninteractive_git_env()), **NO_LAZY_FETCH_ENV})
+    # GIT_OPTIONAL_LOCKS=0: a probe is read-only; `git status` must not refresh the index under index.lock,
+    # because a probe killed at its timeout (2.5 s in coding_context) then leaves a stale index.lock that blocks
+    # every later commit in that repository.
+    result = bounded_probe_run(argv, timeout=timeout,
+                               env={**(env or noninteractive_git_env()), **NO_LAZY_FETCH_ENV, "GIT_OPTIONAL_LOCKS": "0"})
     if result is None or result.returncode != 0:
         return ""
     return (result.stdout or "").strip()

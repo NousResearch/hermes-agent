@@ -1739,6 +1739,28 @@ class EphemeralReply(str):
         return str.__str__(self)
 
 
+def _inline_flags_padded(msg: MessageEvent) -> list[Optional[bool]]:
+    """``media_text_inlined`` padded to ``media_urls``' length (a missing flag stays ``None``)."""
+    flags = list(getattr(msg, "media_text_inlined", []) or [])
+    missing = len(msg.media_urls) - len(flags)
+    return flags + [None] * missing if missing > 0 else flags
+
+
+def merge_media_lists(existing: MessageEvent, incoming: MessageEvent) -> None:
+    """Merge ``incoming``'s media into ``existing``, keeping the three media lists aligned.
+
+    ``media_urls`` / ``media_types`` / ``media_text_inlined`` are index-parallel: the native
+    admission contract requires ``len(media_text_inlined)`` to be 0 or ``len(media_urls)``,
+    and a merged album of documents needs one flag per attachment. A source that tracks no
+    per-file state contributes ``None`` rather than dropping the flag entirely.
+    """
+    existing_flags = _inline_flags_padded(existing)
+    incoming_flags = _inline_flags_padded(incoming)
+    existing.media_urls.extend(incoming.media_urls)
+    existing.media_types.extend(incoming.media_types)
+    existing.media_text_inlined = existing_flags + incoming_flags
+
+
 def merge_pending_message_event(pending_messages: dict[str, MessageEvent], session_key: str,
                                 event: MessageEvent, *, merge_text: bool = False) -> None:
     """Store or merge a pending event: photo bursts/albums merge into the queued event so the next
@@ -1751,21 +1773,11 @@ def merge_pending_message_event(pending_messages: dict[str, MessageEvent], sessi
         incoming_is_photo = event.message_type == MessageType.PHOTO
         both_photo = existing_is_photo and incoming_is_photo
         incoming_has_media = bool(event.media_urls)
-
-        def _padded_inline_flags(msg: MessageEvent) -> list[Optional[bool]]:
-            flags = list(getattr(msg, "media_text_inlined", []) or [])
-            return flags + [None] * (len(msg.media_urls) - len(flags))
-        incoming_inline_flags: list[Optional[bool]] = []
-        if incoming_has_media:
-            existing.media_text_inlined = _padded_inline_flags(existing)
-            incoming_inline_flags = _padded_inline_flags(event)
         # A photo burst always absorbs; otherwise merge only when media is involved on either
         # side. Captions merge in every absorbing case.
         if both_photo or existing.media_urls or incoming_has_media:
             if both_photo or incoming_has_media:
-                existing.media_urls.extend(event.media_urls)
-                existing.media_types.extend(event.media_types)
-                existing.media_text_inlined.extend(incoming_inline_flags)
+                merge_media_lists(existing, event)
             if event.text:
                 existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
             existing.absorb_reply_expected(event)
@@ -2532,8 +2544,7 @@ class BasePlatformAdapter(ABC):
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
             if event.media_urls:
-                existing.media_urls.extend(event.media_urls)
-                existing.media_types.extend(event.media_types)
+                merge_media_lists(existing, event)
             existing.absorb_reply_expected(event)
         existing._last_chunk_len = len(event.text or "")  # type: ignore[attr-defined]
         prior_task = self._pending_text_batch_tasks.get(key)

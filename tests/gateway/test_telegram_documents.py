@@ -302,6 +302,43 @@ class TestMediaGroups:
         assert event.media_urls == ["/tmp/burst-one.jpg", "/tmp/burst-two.jpg"]
         assert len(event.media_types) == 2
 
+    @pytest.mark.asyncio
+    async def test_document_album_keeps_inline_flags_parallel_to_urls(self, adapter):
+        """A merged album of documents must carry one inline flag per file.
+
+        Regression: the album merge extended ``media_urls``/``media_types`` but not
+        ``media_text_inlined``, so the merged event had 5 URLs and 1 flag. Native
+        admission refused the whole album with ``invalid_params:
+        media_text_inlined_length`` and the message was never saved or answered.
+        """
+        docs = [
+            _make_document(file_name=f"doc{i}.pdf", mime_type="application/pdf", file_size=10)
+            for i in range(5)
+        ]
+
+        cached_mocks = [
+            SimpleNamespace(path=f"/tmp/album-{i}.pdf", media_type="application/pdf", kind="document")
+            for i in range(5)
+        ]
+        with patch(
+            "gateway.platforms.base.cache_media_bytes_async",
+            new=AsyncMock(side_effect=cached_mocks),
+        ):
+            for i, doc in enumerate(docs):
+                msg = _make_message(document=doc, media_group_id="album-1")
+                msg.message_id = 100 + i
+                await adapter._handle_media_message(_make_update(msg), MagicMock())
+            assert adapter.handle_message.await_count == 0
+            await asyncio.sleep(adapter.MEDIA_GROUP_WAIT_SECONDS + 0.05)
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert len(event.media_urls) == 5
+        assert len(event.media_types) == 5
+        # One flag per attachment — the native-admission contract.
+        assert len(event.media_text_inlined) == 5
+        assert event.media_text_inlined == [False] * 5
+
 
 # ---------------------------------------------------------------------------
 # TestSendVoice — outbound audio delivery

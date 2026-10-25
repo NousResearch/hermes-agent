@@ -143,7 +143,8 @@ from gateway.authz_mixin import _coerce_allow_set
 from agent.i18n import get_language, t
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    BasePlatformAdapter, ExecApprovalPrompt, SendResult, classify_send_error, unauthorized_action_notice,
+    BasePlatformAdapter, ExecApprovalPrompt, SendResult, classify_send_error, merge_media_lists,
+    unauthorized_action_notice,
     cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_video_from_bytes_async, resolve_proxy_url, SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len,
 )
@@ -6649,13 +6650,17 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             lambda ev: logger.info("[Telegram] Flushing photo batch %s with %d image(s)", batch_key, len(ev.media_urls)))
 
     def _merge_into_pending(self, pending: dict, key: str, event: MessageEvent) -> None:
-        """Merge ``event`` into ``pending[key]`` (media + caption) or seed it."""
+        """Merge ``event`` into ``pending[key]`` (media + caption) or seed it.
+
+        ``media_text_inlined`` is index-parallel to ``media_urls`` (one flag per
+        attachment), so an album of documents must carry one flag per merged file.
+        Extending the URLs without the flags left the lists mismatched and native
+        admission refused the whole album with ``media_text_inlined_length``."""
         existing = pending.get(key)
         if existing is None:
             pending[key] = event
             return
-        existing.media_urls.extend(event.media_urls)
-        existing.media_types.extend(event.media_types)
+        merge_media_lists(existing, event)
         if event.text:
             existing.text = self._merge_caption(existing.text, event.text)
 

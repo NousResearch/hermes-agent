@@ -83,6 +83,13 @@ def test_get_record_missing_returns_empty_record(skills_home):
     assert rec["archived_at"] is None
 
 
+def test_missing_skill_cannot_be_pinned(skills_home):
+    from tools.skill_usage import get_record, set_pinned
+
+    assert set_pinned("does-not-exist", True) is False
+    assert get_record("does-not-exist")["pinned"] is False
+
+
 def test_load_usage_handles_corrupt_file(skills_home):
     from tools.skill_usage import load_usage, _usage_file
     _usage_file().write_text("{ not json }", encoding="utf-8")

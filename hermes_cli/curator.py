@@ -223,6 +223,9 @@ def _set_pin(args, pinned: bool) -> int:
     if not skill_usage.is_agent_created(skill):
         print(f"curator: '{skill}' is bundled or hub-installed — {not_agent}")
         return 1
+    if not skill_usage.skill_exists(skill):
+        print(f"curator: skill '{skill}' not found")
+        return 1
     if not skill_usage.set_pinned(skill, pinned):
         print("curator: " + not_eligible.replace("{skill}", skill))
         return 1

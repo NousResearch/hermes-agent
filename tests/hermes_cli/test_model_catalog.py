@@ -129,6 +129,52 @@ class TestFetchFailure:
         # Stale cache is better than nothing.
         assert result == manifest
 
+    def test_offline_cold_cache_does_not_refetch_on_every_call(self, isolated_home, monkeypatch):
+        """Offline with no cached manifest: one failed fetch, then later calls answer at once
+        until the retry window ends; an explicit refresh still tries the network."""
+        from hermes_cli import model_catalog
+        calls: list[str] = []
+
+        def offline(url, timeout):
+            calls.append(url)  # returns None: the fetch failed
+
+        with patch.object(model_catalog, "_fetch_manifest", side_effect=offline):
+            assert model_catalog.get_catalog() == {}
+            per_attempt = len(calls)
+            assert per_attempt >= 1
+            assert model_catalog.get_catalog() == {}
+            assert model_catalog.get_catalog() == {}
+            assert len(calls) == per_attempt, "retried the unreachable catalog inside the window"
+            assert model_catalog.get_catalog(force_refresh=True) == {}
+            assert len(calls) == 2 * per_attempt
+
+        # Window over (zero-length): the next call fetches again and serves the manifest.
+        monkeypatch.setattr(model_catalog, "FETCH_RETRY_DELAY_SECONDS", 0.0)
+        with patch.object(model_catalog, "_fetch_manifest", side_effect=offline):
+            assert model_catalog.get_catalog(force_refresh=True) == {}
+        with patch.object(model_catalog, "_fetch_manifest", return_value=_valid_manifest()):
+            assert model_catalog.get_catalog() == _valid_manifest()
+
+    def test_unreachable_provider_override_is_not_refetched_on_every_call(self, isolated_home):
+        from hermes_cli import model_catalog
+        calls: list[str] = []
+
+        def fetch(url, timeout):
+            calls.append(url)
+            return None if "override" in url else _valid_manifest()
+
+        cfg = {"enabled": True, "url": "http://master", "ttl_hours": 24.0,
+               "providers": {"openrouter": {"url": "http://override"}}}
+        with patch.object(model_catalog, "_load_catalog_config", return_value=cfg), \
+                patch.object(model_catalog, "_fetch_manifest", side_effect=fetch):
+            first = model_catalog.get_curated_openrouter_models()
+            second = model_catalog.get_curated_openrouter_models()
+
+        # Both calls fall back to the main manifest; the dead override is asked once.
+        assert first == second == [(m["id"], m["description"]) for m in
+                                   _valid_manifest()["providers"]["openrouter"]["models"]]
+        assert calls.count("http://override") == 1
+
 
 class TestFallbackChain:
     """``_fetch_manifest_with_fallback`` walks ``DEFAULT_CATALOG_FALLBACK_URLS``

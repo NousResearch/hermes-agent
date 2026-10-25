@@ -662,7 +662,8 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[l
     """Run code on the remote terminal backend: the owner's persistent remote session kernel
     (tools/code_kernel_remote.py) first, else the per-call script ship — the fail-open route when
     a kernel cannot be spawned and the only route for hosts that cannot sustain a background process."""
-    from tools.terminal_tool import _call_in_flight, _resolve_container_task_id
+    from tools.terminal_tool import _resolve_container_task_id
+    from tools.terminal_tool_lifecycle import _call_in_flight
     _cfg = _load_config()
     timeout, max_tool_calls = _cfg.get("timeout", DEFAULT_TIMEOUT), _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
     sandbox_tools, effective_task_id = _sandbox_tools_for(enabled_tools), task_id or "default"

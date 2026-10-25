@@ -11,6 +11,7 @@ import logging
 import inspect
 import threading
 import time
+from contextlib import contextmanager
 from typing import Any, Dict, Optional
 from tools.terminal_tool_backends import (
     _container_config_from_config,
@@ -102,6 +103,33 @@ def _unregister_env(task_id: str):
     with _creation_locks_lock:
         _creation_locks.pop(task_id, None)
     return env
+
+
+@contextmanager
+def _call_in_flight(*keys: Optional[str]):
+    """Hold the env cached under *keys* against the idle reaper for the duration of a call.
+
+    Only background processes on workspace keys refresh ``_last_activity`` mid-run, so a
+    foreground command longer than ``lifetime_seconds`` had its sandbox reaped out from under
+    it. Refcounted (parallel calls share a key); exit restamps, so the idle countdown starts at
+    call end.
+    """
+    from tools.terminal_tool import _calls_in_flight, _env_lock, _last_activity
+    held = [k for k in dict.fromkeys(keys) if k]
+    with _env_lock:
+        for k in held:
+            _calls_in_flight[k] = _calls_in_flight.get(k, 0) + 1
+    try:
+        yield
+    finally:
+        with _env_lock:
+            now = time.time()
+            for k in held:
+                left = _calls_in_flight.pop(k) - 1
+                if left:
+                    _calls_in_flight[k] = left
+                if k in _last_activity:
+                    _last_activity[k] = now
 
 
 def _cleanup_inactive_envs(lifetime_seconds: int = 300):

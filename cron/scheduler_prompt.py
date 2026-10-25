@@ -276,13 +276,32 @@ _CRON_HINT = (
     "the task now. NEVER create or update a cron job because of "
     "recurring or future-schedule language in the task prompt below; "
     "treat phrasing like \"each Monday\" or \"every day at 9\" as "
-    "context for this run, not as a request to schedule another job.]\n\n"
+    "context for this run, not as a request to schedule another job."
+    "{scheduling}"
+    "]\n\n"
 )
+
+# Appended inside the run note only when the operator opened the gate with
+# ``cron.allow_agent_scheduling``. The RECURSION sentence above is a blanket ban on reacting to
+# recurring language, which a chained job ("book this job's next run from the calendar") can read
+# as a ban on its own next step — the chain then stops with no error and no next fire. The gate
+# already decides whether the ``cronjob`` toolset reaches this run, so the note has to agree with
+# it: with the gate off this renders empty and the prompt is byte-exact what it was.
+_SCHEDULING_UNLOCKED_NOTE = (
+    " SELF-SCHEDULING: if the task below tells you to book this job's "
+    "next run, do it — that is the task itself, not recurring language."
+)
+
+
+def _cron_hint(*, allow_agent_scheduling: bool = False) -> str:
+    """The cron run note, carrying the self-scheduling line only when the gate is on."""
+    return _CRON_HINT.format(
+        scheduling=_SCHEDULING_UNLOCKED_NOTE if allow_agent_scheduling else "")
 
 
 def _build_job_prompt(
     job: dict, prerun_script: Optional[tuple] = None, extra_prompt: Optional[str] = None,
-    runtime_data_prompt: Optional[str] = None,
+    runtime_data_prompt: Optional[str] = None, allow_agent_scheduling: bool = False,
 ) -> str:
     """Build the effective prompt for a cron job, optionally loading skills first.
     ``prerun_script``: cached ``(success, stdout)`` from a script the caller already ran (wake-gate
@@ -293,6 +312,10 @@ def _build_job_prompt(
     When provided, the script is not re-executed and the cached result is used for prompt injection. When
     omitted, the script (if any) runs inline as before. extra_prompt: Optional per-run context (from
     ``cronjob(action='run')``, 57331 — salvaged from #57342 by @liuhao1024).
+    ``allow_agent_scheduling``: mirrors ``cron.allow_agent_scheduling``, the gate that decides
+    whether the ``cronjob`` toolset reaches this run. When it is on, the run note stops forbidding
+    the task's own "book the next run" step. The caller passes the same gate value it gives the
+    agent, so the note can never promise a toolset this run does not get.
     """
     user_prompt = str(job.get("prompt") or "")
     if extra_prompt:
@@ -333,7 +356,7 @@ def _build_job_prompt(
         prompt = f"{notepad_section}{prompt}"
         has_injected_data = True
 
-    prompt = _CRON_HINT + prompt
+    prompt = _cron_hint(allow_agent_scheduling=allow_agent_scheduling) + prompt
     skill_names = _job_skill_names(job)
     if not skill_names:
         return _scan_assembled_cron_prompt(

@@ -969,6 +969,41 @@ class TestBuildSkillsSystemPromptConditional:
 
 
 
+    @pytest.mark.parametrize(
+        "requirements, in_scope, listed",
+        [
+            ("requires_tools: [plugin_tool, skill_view]", {"plugin_tool"}, True),
+            ("requires_tools: [plugin_tool, skill_view]", set(), False),
+            ("requires_toolsets: [mcp-figma]", {"mcp__figma__probe"}, True),
+        ],
+    )
+    def test_skill_requirements_count_tools_deferred_behind_the_bridge(
+            self, monkeypatch, request, tmp_path, requirements, in_scope, listed):
+        """Skills may require either a deferred tool or its toolset."""
+        from types import SimpleNamespace
+
+        from agent import system_prompt, tool_executor
+        from tools.registry import registry
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "vault" / "vault-housekeeper"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: vault-housekeeper\ndescription: Housekeeping\nmetadata:\n  hermes:\n"
+            f"    {requirements}\n---\n"
+        )
+        registry.register(
+            name="mcp__figma__probe",
+            toolset="mcp-figma",
+            schema={},
+            handler=lambda args: "{}",
+        )
+        request.addfinalizer(lambda: registry.deregister("mcp__figma__probe"))
+        monkeypatch.setattr(tool_executor, "_tool_search_scoped_names", lambda agent: frozenset(in_scope))
+        agent = SimpleNamespace(valid_tool_names={"skill_view", "tool_search"}, platform="cli")
+
+        assert ("vault-housekeeper" in system_prompt._skills_prompt(agent)) is listed
+
     def test_no_args_shows_all_skills(self, monkeypatch, tmp_path):
         """Backward compat: calling with no args shows everything."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

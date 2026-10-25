@@ -56,8 +56,9 @@ _HOOK_CALL_IDENTITY_FIELDS: dict[str, tuple[str, ...]] = {
     "pre_command": ("session_key",), "post_compaction": ("session_id",),
 }
 
-# Policy hooks: timeout / still-running must fail closed (block the tool).
-_HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: set[str] = {"pre_tool_call"}
+# Policy hooks: timeout / still-running must fail closed. Profile creation maps the directive to
+# an aborted publish instead of exposing a half-initialized profile to the multiplexer.
+_HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: set[str] = {"pre_tool_call", "pre_profile_create"}
 # Documented parent-thread serialization contract — never run on a timeout worker (hooks.md).
 _HOOK_CALLER_THREAD_HOOKS: set[str] = {"subagent_stop"}
 # After a timeout, suppress the same callback this long so a hung hook cannot pile up threads.
@@ -67,12 +68,13 @@ _HOOK_MAX_ABANDONED_WORKERS = 3
 _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE = "pre_tool_call plugin callback timed out or is still running"
 
 
-def _policy_error_block_directive(hook_name: str, cb: Callable, exc: BaseException) -> dict[str, str]:
-    """Block directive for a fail-closed hook whose callback raised: names the callback and the
+def _policy_error_directive(hook_name: str, cb: Callable, exc: BaseException) -> dict[str, str]:
+    """Fail-closed directive for a hook whose callback raised: names the callback and the
     error (truncated — a hook that embeds tool args in its exception must not grow the tool
     result) so the operator can tell a crashing guard from a slow one."""
     callback_name = getattr(cb, "__name__", repr(cb))
-    return {"action": "block",
+    action = "abort" if hook_name == "pre_profile_create" else "block"
+    return {"action": action,
             "message": f"{hook_name} plugin callback {callback_name} raised {type(exc).__name__}: {str(exc)[:200]}"}
 
 # System-prompt sections are tightly bounded: they become high-trust prompt bytes charged every turn.
@@ -290,7 +292,7 @@ class PluginDispatchMixin:
             except (Exception, SystemExit) as exc:
                 self._report_hook_failure(hook_name, cb, kwargs, exc)
                 if fail_closed:  # a guard that raised made no decision: same veto as a timeout
-                    results.append(_policy_error_block_directive(hook_name, cb, exc))
+                    results.append(_policy_error_directive(hook_name, cb, exc))
         return results
 
     def _report_hook_failure(
@@ -569,7 +571,7 @@ class PluginDispatchMixin:
                 # a raising policy guard fails closed).
                 self._report_hook_failure(hook_name, cb, kwargs, exc)
                 if fail_closed:
-                    results.append(_policy_error_block_directive(hook_name, cb, exc))
+                    results.append(_policy_error_directive(hook_name, cb, exc))
         return results
 
     def iter_hook_callbacks(self, hook_name: str) -> tuple[Callable, ...]:

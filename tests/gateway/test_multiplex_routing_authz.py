@@ -205,3 +205,24 @@ def test_raw_api_server_child_notice_follows_the_served_profile_policy(
     finally:
         db.close()
     assert turns == ([("raw-session", "builder")] if served_policy else [])
+
+
+def test_profile_with_own_bot_on_one_platform_drains_shared_bot_on_another(mux):
+    """``team_b`` owns a Telegram bot but a Discord route sends Discord chats to it through the
+    shared bot. A restored Discord source (no transport ref) must resolve the primary Discord
+    adapter, while ``team_b``'s Telegram traffic keeps its own bot."""
+    discord = _stub(Platform.DISCORD, mux.runner, "PRIMARY_DISCORD")
+    mux.runner.adapters[Platform.DISCORD] = discord
+    mux.runner.config.platforms[Platform.DISCORD] = PlatformConfig(enabled=True, extra={})
+    mux.runner.config.profile_routes = parse_profile_routes(
+        [{"name": "admin-dm", "platform": "telegram", "profile": "ops", "chat_id": "72719239"},
+         {"name": "b-thread", "platform": "discord", "profile": "team_b", "chat_id": "555"}])
+    restored = SessionSource(platform=Platform.DISCORD, chat_id="555", chat_type="thread", user_id="7",
+                             thread_id="555", profile="team_b")
+    assert mux.runner._authorization_adapter(Platform.DISCORD, "team_b") is discord
+    assert mux.runner._delivery_adapter_for(restored) is discord
+    assert mux.runner._resolve_injection_adapter("discord", restored) is discord
+    assert mux.runner._authorization_adapter(Platform.TELEGRAM, "team_b") is mux.team_b
+    # A Discord credential of its own that failed to connect stays fail-closed.
+    mux.runner._profile_failed_platforms = {"team_b": {Platform.DISCORD: object()}}
+    assert mux.runner._authorization_adapter(Platform.DISCORD, "team_b") is None

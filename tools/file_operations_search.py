@@ -60,10 +60,11 @@ _FILENAME_SEARCH_WAIT_SECONDS = 0.05
 
 def _normalized_filename_search_root(env: Any, root: str, fallback_cwd: str) -> str:
     """Normalize a filename-walk root without resolving remote paths locally."""
-    from tools.environments.local import LocalEnvironment, _IS_WINDOWS, _msys_to_windows_path
+    from tools.environments.base import env_uses_host_filesystem
+    from tools.environments.local import _IS_WINDOWS, _msys_to_windows_path
 
     cwd = getattr(env, "cwd", None) or fallback_cwd
-    if isinstance(env, LocalEnvironment):
+    if env_uses_host_filesystem(env):
         if _IS_WINDOWS:
             root = _msys_to_windows_path(root)
             cwd = _msys_to_windows_path(cwd)
@@ -293,11 +294,13 @@ class SearchMixin:
         cached = self._rg_resolution_cache.get(cmd)
         if cached:
             return cached
-        from tools.environments.local import LocalEnvironment, _IS_WINDOWS
+        from tools.environments.base import env_uses_host_filesystem
+        from tools.environments.local import _IS_WINDOWS
 
-        # A local search is Hermes's own work, so it runs the pinned ripgrep, never the
+        # A host search is Hermes's own work, so it runs the pinned ripgrep, never the
         # first rg on the terminal PATH, where the user's tools come first.
-        bundled = _bundled_rg() if isinstance(self.env, LocalEnvironment) else None
+        on_host = env_uses_host_filesystem(self.env)
+        bundled = _bundled_rg() if on_host else None
         if bundled:
             self._rg_resolution_cache[cmd] = bundled
             return bundled
@@ -309,7 +312,7 @@ class SearchMixin:
             self._rg_resolution_cache[cmd] = resolved
             return resolved
 
-        if _IS_WINDOWS and isinstance(self.env, LocalEnvironment):
+        if _IS_WINDOWS and on_host:
             user_profile = os.environ.get("USERPROFILE") or str(Path.home())
             local_app_data = os.environ.get("LOCALAPPDATA")
             scoop = os.environ.get("SCOOP") or os.path.join(user_profile, "scoop")
@@ -430,9 +433,9 @@ class SearchMixin:
         """Quote an executable without leaking controller path semantics."""
         if re.fullmatch(r"[A-Za-z0-9_.-]+", executable):
             return executable
-        from tools.environments.local import LocalEnvironment
+        from tools.environments.base import env_uses_host_filesystem
 
-        if isinstance(self.env, LocalEnvironment):
+        if env_uses_host_filesystem(self.env):
             return self._escape_native_tool_arg(executable)
         return "'" + executable.replace("'", "'\"'\"'") + "'"
 
@@ -656,9 +659,10 @@ class SearchMixin:
     def _is_broad_local_search_root(self, path: str) -> bool:
         """Whether a no-rg LOCAL root (filesystem root, $HOME or an ancestor of it) is
         unsafe for recursive find. Controller paths never classify remotes."""
-        from tools.environments.local import LocalEnvironment, _IS_WINDOWS, _msys_to_windows_path
+        from tools.environments.base import env_uses_host_filesystem
+        from tools.environments.local import _IS_WINDOWS, _msys_to_windows_path
 
-        if not isinstance(self.env, LocalEnvironment):
+        if not env_uses_host_filesystem(self.env):
             return False
 
         def normalized(value: str) -> str:
@@ -908,8 +912,9 @@ class SearchMixin:
                     "-printf support; install ripgrep 14+ or use order='discovery'."))
             return SearchResult(error="File search failed while running bounded find traversal.")
 
-        from tools.environments.local import LocalEnvironment, _IS_WINDOWS, _msys_to_windows_path
-        if _IS_WINDOWS and isinstance(self.env, LocalEnvironment):
+        from tools.environments.base import env_uses_host_filesystem
+        from tools.environments.local import _IS_WINDOWS, _msys_to_windows_path
+        if _IS_WINDOWS and env_uses_host_filesystem(self.env):
             raw_files = [_msys_to_windows_path(file_path) for file_path in raw_files]
         return SearchResult(
             files=raw_files[offset:offset + limit], total_count=len(raw_files),

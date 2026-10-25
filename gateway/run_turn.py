@@ -4189,12 +4189,14 @@ class GatewayTurnMixin:
             )
             # Prefix the session title when available, so multi-route surfaces (webhooks, bots)
             # show WHICH task is still working, not just that something is (#name-sessions).
+            # Borrow the runner's pooled per-profile async handle (never a bare SessionDB():
+            # that opens a fresh writer per heartbeat and can hit the wrong profile's DB), and
+            # use the flush-free title read so no token-flush/SQLite stall reaches the loop.
             with suppress(Exception):
                 _sess_id = getattr(turn_ctx, "session_id", None)
                 if _sess_id and "Working —" in _heartbeat_text:
-                    from hermes_state import SessionDB
-                    _row = SessionDB().get_session(_sess_id)
-                    _title = ((_row or {}).get("title") or "").strip()
+                    _title = await self._session_db.get_session_title(_sess_id)
+                    _title = (_title or "").strip()
                     if _title and _title not in _heartbeat_text:
                         _heartbeat_text = f"⏳ {_title} — {_elapsed_mins} min{_status_detail}"
             try:

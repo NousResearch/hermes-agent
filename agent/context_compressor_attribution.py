@@ -98,3 +98,37 @@ class AuxRouteAttributionMixin:
         if policy_error is not None and _classify_summary_failure(policy_error).streaming_closed:
             self._last_summary_network_failure = True
         return access_error or policy_access_error
+
+    def _record_terminal_summary_failure(self, error: Exception, kind: Any, *, access_error: bool) -> None:
+        """Preserve both failure policies after main-model recovery, but diagnose the final wire."""
+        from agent.context_compressor import _classify_summary_failure, _CONSECUTIVE_OVERLOAD_ABORT_ESCALATION
+
+        if kind.streaming_closed:
+            self._last_attempt_failure_class = "network"
+        else:
+            self._classify_attempt_failure("other")
+        policy_error = getattr(error, "_auxiliary_preservation_error", error)
+        policy_kind = _classify_summary_failure(policy_error)
+        # Replacing the ladder's error with a final fallback 429 must not turn an unusable
+        # summary into permission to discard the middle window (#29559, #94448).
+        for failure_class, flag in (
+            ("streaming_closed", "_last_summary_network_failure"),
+            ("truncated", "_last_summary_truncated_failure"),
+            ("empty_content", "_last_summary_empty_content_failure"),
+        ):
+            if getattr(kind, failure_class) or getattr(policy_kind, failure_class):
+                setattr(self, flag, True)
+                return
+        if not (kind.overloaded or policy_kind.overloaded) or access_error:
+            return
+        # Count once per failed summary, even if both routes overloaded. Access/quota
+        # failures never consume this grace period (#29559, #115906).
+        self._increment_consecutive_overload_aborts()
+        self._last_summary_overload_failure = (
+            self._consecutive_overload_aborts < _CONSECUTIVE_OVERLOAD_ABORT_ESCALATION
+        )
+        self._last_summary_overload_degraded = not self._last_summary_overload_failure
+        if self._last_summary_overload_degraded:
+            # Sustained overload permits the existing bounded fallback; stale flags from
+            # earlier attempts must not pin the compressor in abort mode (#123167).
+            self._clear_terminal_summary_failures()

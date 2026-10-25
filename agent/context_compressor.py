@@ -4092,38 +4092,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         err_text = _short_error_text(e)
         self._record_compression_failure_cooldown(_transient_cooldown, err_text)
         self._last_summary_error = err_text
-        # Terminal network/empty-content failure after any fallback: flag so compress() ABORTS
-        # and preserves the session; independent of abort_on_summary_failure.
-        if kind.streaming_closed:
-            # A terminal connection/network failure or empty-content response from a degraded provider (we
-            # reach this branch only after any main-model fallback has already been tried or is
-            # unavailable). Flag it so compress() ABORTS and preserves the session unchanged instead of
-            # destroying the middle window for a placeholder marker — retrying once the provider recovers is
-            # strictly better than dropping context (#29559, #25585, #94448).
-            self._last_summary_network_failure = True
-            self._last_attempt_failure_class = "network"
-        elif kind.truncated:
-            self._last_summary_truncated_failure = True
-            self._classify_attempt_failure("other")
-        elif kind.empty_content:
-            self._last_summary_empty_content_failure = True
-            self._classify_attempt_failure("other")
-        elif kind.overloaded and not access_error:
-            # A 403/402 that also says "overloaded" is an auth/quota abort (#29559), not an
-            # overload strike: counting it would let the next real 503 skip its grace (#115906).
-            self._increment_consecutive_overload_aborts()
-            # Sustained overload stops being terminal after N strikes (#123167; see the constant).
-            self._last_summary_overload_failure = (
-                self._consecutive_overload_aborts < _CONSECUTIVE_OVERLOAD_ABORT_ESCALATION
-            )
-            self._last_summary_overload_degraded = not self._last_summary_overload_failure
-            if self._last_summary_overload_degraded:
-                # The latest failure class decides: a stale network/empty/truncated/auth flag from
-                # an earlier failure (only a success clears those) must not keep aborting forever.
-                self._clear_terminal_summary_failures()
-            self._classify_attempt_failure("other")
-        elif self._last_attempt_failure_class is None:
-            self._classify_attempt_failure("other")
+        self._record_terminal_summary_failure(e, kind, access_error=access_error)
         logger.warning(
             "Failed to generate context summary: %s. Further summary attempts paused for %d seconds.", e,
             _transient_cooldown,

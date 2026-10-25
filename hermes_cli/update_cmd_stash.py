@@ -186,8 +186,10 @@ def _unrestored_autostash_notice() -> Optional[str]:
             f"  Re-apply with: git stash show -p {stash_ref} | git apply --3way")
 
 
-def _warn_orphaned_update_autostashes(git_cmd: list[str], cwd: Path) -> int:
-    """Print a notice for update autostashes older than the warn threshold; return the count (0 on any git failure).
+def _warn_orphaned_update_autostashes(
+    git_cmd: list[str], cwd: Path, *, max_age_days: float = _AUTOSTASH_WARN_AGE_DAYS,
+) -> int:
+    """Print a notice for update autostashes older than ``max_age_days``; return the count (0 on any git failure).
 
     Autostashes legitimately outlive a run (--keep-stash, failed restore) but nothing re-surfaces them.
     Deliberately NOT a GC: a stash may be the only copy of the user's work, so Hermes never drops one.
@@ -196,13 +198,16 @@ def _warn_orphaned_update_autostashes(git_cmd: list[str], cwd: Path) -> int:
     failed restore preserves them for safety), but nothing ever re-surfaces them afterwards — they sit in
     ``git stash`` invisibly for weeks (#63717 problem 6). This prints a short notice naming the stale
     entries with recovery/cleanup guidance.
+
+    ``max_age_days=0`` names every entry regardless of age. ``hermes update`` uses that before it stashes:
+    a park from an earlier run is the one thing a later run's own restore must not be mistaken for.
     """
     from hermes_cli.update_cmd_git import _git_run
     try:
         stash_list = _git_run(git_cmd, ["stash", "list", "--format=%gd %s"], cwd)
         if stash_list.returncode != 0:
             return 0
-        cutoff = datetime.now(UTC) - timedelta(days=_AUTOSTASH_WARN_AGE_DAYS)
+        cutoff = datetime.now(UTC) - timedelta(days=max_age_days)
         stale: list[tuple[str, str]] = []
         for line in stash_list.stdout.splitlines():
             selector, _, subject = line.strip().partition(" ")
@@ -219,15 +224,25 @@ def _warn_orphaned_update_autostashes(git_cmd: list[str], cwd: Path) -> int:
         if not stale:
             return 0
         print()
-        print(
-            f"⚠ {len(stale)} leftover update autostash entr"
-            f"{'y is' if len(stale) == 1 else 'ies are'} more than "
-            f"{_AUTOSTASH_WARN_AGE_DAYS} days old:"
-        )
+        if max_age_days > 0:
+            print(
+                f"⚠ {len(stale)} leftover update autostash entr"
+                f"{'y is' if len(stale) == 1 else 'ies are'} more than "
+                f"{_AUTOSTASH_WARN_AGE_DAYS} days old:"
+            )
+            print("  These hold local changes stashed by earlier updates and never")
+            print("  restored. Review with: git stash show -p <entry>")
+        else:
+            print(
+                f"⚠ {len(stale)} leftover update autostash "
+                f"{'entry holds' if len(stale) == 1 else 'entries hold'} local changes "
+                "that are not in the working tree:"
+            )
+            print("  A restore that hit conflicts parks the stash instead of dropping it, and a")
+            print("  later update that restores its own changes does not bring these back.")
+            print("  Review with: git stash show -p <entry>")
         for selector, stamp in stale:
             print(f"    {selector}  ({_AUTOSTASH_NAME_PREFIX}{stamp})")
-        print("  These hold local changes stashed by earlier updates and never")
-        print("  restored. Review with: git stash show -p <entry>")
         print("  Restore with: git stash apply <entry>   Discard with: git stash drop <entry>")
         return len(stale)
     except Exception as exc:
@@ -564,7 +579,7 @@ def _restore_stashed_changes(
         return False
     _drop_restored_stash(git_cmd, cwd, stash_ref)
     _record_stash_disposition("restored", stash_ref)
-    print("⚠ Local changes were restored on top of the updated codebase.")
+    print("⚠ Restored the local changes this update stashed, on top of the updated codebase.")
     print("  Review `git diff` / `git status` if Hermes behaves unexpectedly.")
     return True
 

@@ -18,8 +18,10 @@ from urllib.parse import urlparse
 import hermes_yaml as yaml
 
 from agent import model_metadata_http
+from agent.model_metadata_cache import _write_context_cache, locked_context_cache
+from agent.model_metadata_llamacpp import llamacpp_context
 
-from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, base_url_hostname
+from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
 from hermes_constants import OPENROUTER_MODELS_URL, openrouter_variant_base
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, UNPRICED_REPLAY_FIELDS, without_persistence_fields
@@ -997,7 +999,7 @@ def _apply_llamacpp_props(cache: dict[str, dict[str, Any]], request_candidate: s
         child_id = child.get("id") if isinstance(child, dict) else None
         if not child_id or child_id not in cache or (child.get("status") or {}).get("value") not in ("loaded", "ready"):
             continue
-        pr = _props({"model": child_id})
+        pr = _props({"model": child_id, "autoload": "false"})  # it may have unloaded since /models
         child_ctx = _n_ctx(pr.json()) if not pr.is_error else None
         if child_ctx:
             cache[child_id]["context_length"] = child_ctx
@@ -1126,20 +1128,12 @@ def _load_context_cache() -> dict[str, int]:
     return _load_context_cache_document().get("context_lengths") or {}
 
 
-def _write_context_cache(cache: dict[str, int], bedrock_confirmed: dict | None = None) -> None:
-    """Atomic write (a truncating write killed mid-dump leaves a partial file that
-    _load_context_cache() swallows as {}, wiping EVERY cached length). Raises on failure."""
-    document = {"context_lengths": cache}
-    if bedrock_confirmed:
-        document["bedrock_confirmed_v1"] = bedrock_confirmed
-    atomic_yaml_write(_get_context_cache_path(), document)
-
-
 def _context_cache_key(model: str, base_url: str) -> str:
     """Canonical ``model@base_url`` key; trailing slashes stripped so ``/v1`` and ``/v1/`` share one entry."""
     return f"{model}@{(base_url or '').rstrip('/')}"
 
 
+@locked_context_cache
 def save_context_length(model: str, base_url: str, length: int, *, source: str = "") -> None:
     """Persist a discovered context length under ``model@base_url`` (same model, different providers, different limits)."""
     # 0/negative is always a bug and would make get_model_context_length() return 0 (`0 is not None`).
@@ -1201,12 +1195,10 @@ def _invalidate_cached_context_length(model: str, base_url: str) -> None:
 
     Bedrock callers without a runtime endpoint must pass ``bedrock://``, as
     the resolver does; a blank URL addresses the distinct generic cache key.
+    In-process caches are dropped unconditionally; only the file update takes the cache lock.
     """
+    from agent.model_metadata_cache import drop_context_cache_rows
     key = _context_cache_key(model, base_url)
-    document = _load_context_cache_document()
-    cache = document.get("context_lengths") or {}
-    confirmed = document.get("bedrock_confirmed_v1") or {}
-    confirmed = confirmed if isinstance(confirmed, dict) else {}
     # Also drop the in-memory TTL probe entries, or the next resolution inside the TTL window reuses the stale value.
     bare, stripped = _strip_provider_prefix(model), (base_url or "").rstrip("/")
     _LOCAL_CTX_PROBE_CACHE.pop((bare, stripped), None)
@@ -1218,16 +1210,7 @@ def _invalidate_cached_context_length(model: str, base_url: str) -> None:
         if memo_key[:2] == (hermes_home_key(), stripped) and memo_key[2] in (model, bare):
             _BEDROCK_PROBE_FAILURE_CACHE.pop(memo_key, None)
     # Every key shape get_cached_context_length consults.
-    stale_keys = {key, f"{model}@{base_url}", f"{key}/"}
-    if not any(k in cache or k in confirmed for k in stale_keys):
-        return
-    for k in stale_keys:
-        cache.pop(k, None)
-        confirmed.pop(k, None)
-    try:
-        _write_context_cache(cache, confirmed)
-    except Exception as e:
-        logger.debug("Failed to invalidate context length cache entry %s: %s", key, e)
+    drop_context_cache_rows({key, f"{model}@{base_url}", f"{key}/"}, key)
 
 
 def get_next_probe_tier(current_length: int) -> Optional[int]:
@@ -1584,23 +1567,6 @@ def _lmstudio_context(client, lmstudio_url: str, model: str) -> Optional[int]:
     return None
 
 
-def _llamacpp_context(client, server_url: str, model: str) -> Optional[int]:
-    """llama.cpp /props: the RUNTIME n_ctx, answered by the router even for a not-yet-loaded model
-    (while /v1/models has meta=null), so a lazily-loaded model doesn't fall to a family catch-all."""
-    import httpx
-    for props_path in (f"/props?model={model}", "/props"):
-        try:
-            resp = client.get(f"{server_url}{props_path}")
-        except httpx.HTTPError:
-            return None
-        if resp.status_code != 200:
-            continue
-        n_ctx = _positive_int((resp.json().get("default_generation_settings") or {}).get("n_ctx"))
-        if n_ctx is not None:
-            return n_ctx
-    return None
-
-
 def _openai_models_list_context(client, server_url: str, model: str) -> Optional[int]:
     """/v1/models list: match by id, else the sole model on single-model servers (llama.cpp reports a GGUF path as id)."""
     resp = client.get(f"{server_url}/v1/models")
@@ -1651,7 +1617,7 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
     typed = {
         "ollama": _ollama_ctx,
         "lm-studio": lambda client: _lmstudio_context(client, lmstudio_url, model),
-        "llamacpp": lambda client: _llamacpp_context(client, server_url, model),
+        "llamacpp": lambda client: llamacpp_context(client, server_url, model),
     }.get(server_type)
     probes = ([typed] if typed else []) + [_model_detail_ctx, lambda client: _openai_models_list_context(client, server_url, model)]
     try:

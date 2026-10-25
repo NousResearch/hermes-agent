@@ -68,7 +68,11 @@ mcp_servers:
 | `auth` | string | HTTP | Authentication method. Set to `oauth` to enable OAuth 2.1 with PKCE |
 | `sampling` | mapping | both | Server-initiated LLM request policy (see MCP guide) |
 | `elicitation` | mapping | both | Server-initiated user-input requests. `enabled` (default `true`) and `timeout` in seconds (default `300`). Form-mode requests route through the approval surface; URL-mode is declined (see MCP guide) |
-| `trust` | string | both | Trust tier: `full` (default) or `untrusted`. On an `untrusted` server, every write-capable tool call (any tool without a `readOnlyHint: true` annotation) requires user approval through the standard approval surface before it runs. `readOnlyHint` is a server-supplied *hint* — a lying server can at most skip approval for tools it claims are read-only, never gain extra access — so mark any server you don't fully control as `untrusted`. The same hint decides whether a call is transparently retried after the transport session expires mid-call: only `readOnlyHint: true` tools are replayed, while unannotated (write-capable) tools return an `outcome_uncertain` error — on a Streamable-HTTP server that expires idle sessions this means the first unannotated call after an idle period may fail and must be verified before re-invoking. Unrecognized values are treated as `untrusted` (fail-closed) A portable package can request `untrusted` for its own server in `plugin.json` (see [Portable Agent Plugins](../developer-guide/plugins/index.md#portable-agent-plugins-v1-packages)); a `config.yaml` entry with the same name always wins |
+| `events` | bool | both | Experimental MCP events client with webhook delivery (default: `false`). Registers `list_event_types`, `subscribe_event` and `unsubscribe_event` for this server. Needs `platforms.webhook.extra.public_url` (HTTPS) and a running gateway. Hermes refreshes subscriptions only while it is connected to the server, so with `lazy: true` or `idle_timeout_seconds` a subscription can lapse until the next connection resubscribes it. See [MCP Events](../user-guide/features/mcp.md#mcp-events-experimental) |
+| `trust` | string | both | Trust tier: `full` (default) or `untrusted`. On an `untrusted` server, every write-capable tool call (any tool without a `readOnlyHint: true` annotation) requires user approval through the standard approval surface before it runs. The prompt offers Allow Once, Session (that tool, for the rest of the chat) and Always (written to `command_allowlist` as `mcp:<server>/<tool>`; deleting the entry revokes it for every other chat, while the chat that answered Always keeps it until that chat ends); each covers one tool, never the server's others. [YOLO](../user-guide/security.md#yolo-mode) and `approvals.mode: off` skip this prompt (`/yolo` for that chat, `--yolo` for that process, `approvals.mode: off` for that profile); a declared `spend_limit` still asks. `readOnlyHint` is a server-supplied *hint* — a lying server can at most skip approval for tools it claims are read-only, never gain extra access — so mark any server you don't fully control as `untrusted`. The same hint decides whether a call is transparently retried after the transport session expires mid-call: only `readOnlyHint: true` tools are replayed, while unannotated (write-capable) tools return an `outcome_uncertain` error — on a Streamable-HTTP server that expires idle sessions this means the first unannotated call after an idle period may fail and must be verified before re-invoking. Unrecognized values are treated as `untrusted` (fail-closed) A portable package can request `untrusted` for its own server in `plugin.json` (see [Portable Agent Plugins](../developer-guide/plugins/index.md#portable-agent-plugins-v1-packages)); a `config.yaml` entry with the same name always wins |
+| `tool_costs` | mapping | both | What each tool spends, keyed by the MCP tool name: a non-negative number, a `[min, max]` range, or `{credits: <number or range>, note: "per animation"}`. The approval prompt names the cost and the chat's running total. Undeclared and zero-cost tools are unaffected. See [Tool costs and spend limits](../user-guide/features/mcp.md#tool-costs-and-spend-limits) |
+| `spend_limit` | number | both | Per-chat budget for this server's costed tools (`0`/absent = no limit). A costed call that would take the chat past it asks first, even on a `trust: full` server, and is refused where nobody can answer (cron, `chat -q`) |
+| `cost_unit` | string | both | Label shown with costs and totals (default: `credits`) |
 
 ## Environment variable references
 
@@ -83,7 +87,7 @@ mcp_servers:
       GITHUB_PERSONAL_ACCESS_TOKEN: "${env:GITHUB_TOKEN}"   # same as "${GITHUB_TOKEN}"
 ```
 
-Values resolve from the active profile's secret scope (falling back to the process environment), so put the secret in `~/.hermes/.env`. An unset variable keeps its literal placeholder — except in a remote server's `url` or `headers`: sending a literal `${VAR}` there is a guaranteed 401 that reads as a bad credential, so the connect fails closed instead, with the variable named in the server's status (`MCP server 'name': ${VAR} in url/headers is not set in this profile's .env or secret source`). Fix the profile's `.env` (or its secret source); the next connect attempt renders the reference afresh.
+Values resolve from the active profile's secret scope (falling back to the process environment), so put the secret in `~/.hermes/.env`. An unset (or empty) variable keeps its literal placeholder, with two exceptions. A stdio server's `env` entry whose whole value is one reference to an unset variable (`GHIDRA_INSTALL_DIR: "${GHIDRA_INSTALL_DIR}"`) is treated as if the entry weren't there: the server doesn't get the placeholder, and the variable keeps whatever value the server would have without that line (usually unset; basics such as `PATH`, `HOME` or `TERM` keep the value Hermes passes every server). So a config or plugin can forward an optional variable safely. A variable that is set is always passed as is, even if its value happens to look like `${...}`; a value that only contains a reference (`"${OPT_DIR}/bin"`) is still passed with the placeholder. And in a remote server's `url` or `headers`: sending a literal `${VAR}` there is a guaranteed 401 that reads as a bad credential, so the connect fails closed instead, with the variable named in the server's status (`MCP server 'name': ${VAR} in url/headers is not set in this profile's .env or secret source`). Fix the profile's `.env` (or its secret source); the next connect attempt renders the reference afresh.
 
 ### Context variables
 
@@ -162,6 +166,11 @@ Prompts:
 - `list_prompts`
 - `get_prompt`
 
+Events (only on servers with `events: true`):
+- `list_event_types`
+- `subscribe_event`
+- `unsubscribe_event`
+
 ### Disable resources
 
 ```yaml
@@ -184,6 +193,9 @@ So this is normal:
 - you enable prompts
 - but no prompt utilities appear
 - because the server does not support prompts
+
+The event utilities are the exception. The MCP SDK drops a server's `events` capability while parsing
+it, so Hermes cannot check for it and registers them whenever `events: true` is set.
 
 ## `enabled: false`
 

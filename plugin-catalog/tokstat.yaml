@@ -1,0 +1,15 @@
+name: tokstat
+repo: https://github.com/heerey525/tokstat
+sha: 5c11db13bd8ddba5fb958f07bce564efd947ce71
+description: "Live token usage in the Hermes Desktop status bar: cumulative total, a real-time this-turn counter, last-turn delta, context occupancy, and prompt-cache hit rate. Event-driven (no polling, no RPC); English and Chinese, follows the app locale."
+maintainer: heerey525
+tier: community
+category: desktop
+version: "1.0.1"
+docs_url: https://github.com/heerey525/tokstat#readme
+requires_hermes: ">=0.20.2"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

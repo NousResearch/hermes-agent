@@ -97,10 +97,11 @@ def test_messaging_session_history_follows_the_compression_tip(tmp_path, monkeyp
         history = local_history(authority, SessionRef('owned', 'root'))
         contents = [m['content'] for m in history]
         assert 'AFTER_COMPRESSION' in contents
-        assert 'BEFORE_COMPRESSION' not in contents
+        # The root's turn is still shown, marked archived: display history, never a live row.
+        assert [m['content'] for m in history if m.get('archived')] == ['BEFORE_COMPRESSION']
         # Snapshot rows carry their durable row id (a session.mutate rewind's target_message_id),
         # under the public TranscriptMessage name, never the internal ``_row_id``.
-        assert [m['row_id'] for m in history] == [m['id'] for m in db.get_messages('child')]
+        assert [m['row_id'] for m in history if not m.get('archived')] == [m['id'] for m in db.get_messages('child')]
         assert not any('_row_id' in m for m in history)
 
 

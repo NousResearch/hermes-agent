@@ -473,11 +473,16 @@ let
           the sealed Python venv. These are resolved by uv alongside core
           dependencies — no PYTHONPATH patching or collision risk.
 
+          They add to the groups `package` already ships (the default
+          package ships "messaging", "voice", "exa", ...); they never
+          replace them. For a smaller venv pick a smaller `package`
+          (`minimal`, `messaging`) or override its defaultDependencyGroups.
+
           Use this for optional extras already declared in hermes-agent's
-          pyproject.toml (e.g. "exa", "voice").
+          pyproject.toml (e.g. "google-meet").
           Use extraPythonPackages for external packages not in pyproject.toml.
         '';
-        example = [ "voice" ];
+        example = [ "google-meet" ];
       };
 
       # ── Service behaviour ──────────────────────────────────────────────
@@ -676,12 +681,20 @@ let
     '';
 
   # ── Package resolution ──────────────────────────────────────────────────
+  # The module's lists extend the package's own extras, never replace them.
+  # The shipped variants keep their groups in defaultDependencyGroups, but a
+  # custom `package` built with `.override { extraDependencyGroups = ...; }`
+  # carries its choices in the extras, and a plain attrset override here
+  # would drop them.
   effectivePackage =
     cfg:
     if cfg.extraPythonPackages == [ ] && cfg.extraDependencyGroups == [ ] then
       cfg.package
     else
-      cfg.package.override { inherit (cfg) extraPythonPackages extraDependencyGroups; };
+      cfg.package.override (prev: {
+        extraPythonPackages = (prev.extraPythonPackages or [ ]) ++ cfg.extraPythonPackages;
+        extraDependencyGroups = (prev.extraDependencyGroups or [ ]) ++ cfg.extraDependencyGroups;
+      });
 
   # ── The rendered config.yaml ────────────────────────────────────────────
   # YAML contains JSON, so the output of toJSON is a correct config.yaml.

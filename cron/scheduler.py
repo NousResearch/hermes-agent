@@ -1,4 +1,4 @@
-# health: allow FILE_LINES -- security fix for #82010: distinguish an explicitly-empty toolset allowlist (fail closed, nothing allowed) from an absent one (no restriction); the added lines are minimal fail-closed branches at this existing chokepoint
+# health: allow FILE_LINES -- security fix for #82010: distinguish an explicitly-empty toolset allowlist (fail closed, nothing allowed) from an absent one (no restriction); the added lines are minimal fail-closed branches at this existing chokepoint. Also #141468: match the `mcp-<server>` toolset spelling so a narrow job's MCP allowlist is not widened into every enabled server — a minimal branch at the same chokepoint.
 """Cron job scheduler: tick() runs due jobs (gateway calls it every 60s from a background thread).
 A file lock (~/.hermes/cron/.tick.lock) keeps overlapping processes to one tick at a time.
 """
@@ -445,7 +445,15 @@ def _merge_mcp_into_per_job_toolsets(per_job: list[str], cfg: dict) -> list[str]
     # lazy: avoid heavy hermes_cli import at module load; shares MCP-membership with gateway/CLI
     from hermes_cli.tools_config import enabled_mcp_server_names
     enabled_mcp = enabled_mcp_server_names(cfg)
-    if set(result) & enabled_mcp:
+    # A job names an MCP server by its TOOLSET name (``mcp-<server>``) or by the bare alias the
+    # registry registers for it; compare against BOTH, or a job that named one server never matched
+    # and the fallback below unioned EVERY enabled server into its allowlist (#141468).
+    # A server that is CONFIGURED but disabled still counts as named: it is the user's selection, it
+    # stays off, and it must not fall through to every enabled server either - the same rule the
+    # interactive resolver follows (hermes_cli.tools_config._merge_mcp_servers).
+    configured = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
+    known = enabled_mcp | {str(name) for name in configured}
+    if set(result) & (known | {f"mcp-{name}" for name in known}):
         return result
     for name in sorted(enabled_mcp):
         if name not in result:
@@ -1624,8 +1632,9 @@ class _CronJobConfig:
 
 def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConfig:
     """Load config.yaml and resolve the run's model: per-job pin > cron.model (fleet default) >
-    the main agent model (config ``model:``, then HERMES_MODEL). Re-read every tick (no cache) so
-    ``hermes cron edit --model`` and ``hermes model`` both apply next tick."""
+    the main agent model (config ``model:``, then HERMES_MODEL) > the claimed welcome trial's. Re-read
+    every tick (no cache) so ``hermes cron edit --model`` and ``hermes model`` both apply next tick."""
+    from hermes_cli.anon_auth import trial_model
     model = job.get("model") or cron_env_setting("HERMES_MODEL") or ""
     _cron_default_provider = ""
     _cfg: dict = {}
@@ -1653,10 +1662,9 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
                     model = str(_main or "").strip() or model
     except Exception as e:
         logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
-
-    # Fail fast: an empty model otherwise reaches the provider as an opaque 400.
-    # See #23979.
-    if not (isinstance(model, str) and model.strip()):
+    model = (model if isinstance(model, str) else "").strip() or trial_model()
+    # Fail fast: an empty model otherwise reaches the provider as an opaque 400 (#23979).
+    if not model:
         raise RuntimeError(
             f"Cron job '{job_name}' has no model configured "
             f"(job.model={job.get('model')!r}, "
@@ -2390,6 +2398,7 @@ class _CronRunScope:
         self._cron_session_var = _VAR_MAP["HERMES_CRON_SESSION"]
         self._cron_session_token = None
         self._non_dispatcher_token = None
+        self._spend_token = None
 
     def enter(self) -> None:
         # Scope cron approval policy; exit() RESETS via token (pinning "" would suppress the legacy
@@ -2400,6 +2409,9 @@ class _CronRunScope:
         # ContextVar, NOT an os.environ clear (env is shared with the worker heartbeat and
         # concurrent jobs); copy_context() carries it into the agent thread.
         self._non_dispatcher_token = enter_non_dispatcher_owned_context()
+        # Each run is its own MCP spend "chat" (its approval session key is "" for every job).
+        from tools.mcp_tool_costs import bind_run
+        self._spend_token = bind_run(self.task_id)
 
     def exit(self) -> None:
         from gateway.session_context import clear_session_vars
@@ -2411,6 +2423,9 @@ class _CronRunScope:
             self._cron_session_var.reset(self._cron_session_token)
         if self._non_dispatcher_token is not None:
             exit_non_dispatcher_owned_context(self._non_dispatcher_token)
+        if self._spend_token is not None:
+            from tools.mcp_tool_costs import unbind_run
+            unbind_run(self._spend_token)
         for name in _CRON_DELIVERY_VARS:
             self._var_map[name].set("")
 
@@ -3219,14 +3234,14 @@ def _install_fire_secret_scope() -> tuple[contextvars.Token, Optional[contextvar
     here rather than at the tick means no read is ever fail-closed without a scope to read — the
     restart-safe handoff in ``run_one_job`` runs before this and keeps today's semantics (#107692).
     """
-    from agent.secret_scope import (
-        build_profile_secret_scope, set_multiplex_context, set_secret_scope)
+    from agent.secret_scope import set_multiplex_context, set_secret_scope
     from cron.scheduler_provider import routed_profile_fire
     from hermes_cli.env_loader import hydrate_profile_secret_sources
+    from tui_gateway.launch_profile_policy import owner_secret_scope
 
     home = Path(_get_hermes_home())
     hydrate_profile_secret_sources(home)
-    scope_token = set_secret_scope(build_profile_secret_scope(home), profile_home=str(home))
+    scope_token = set_secret_scope(owner_secret_scope(home), profile_home=str(home))
     context_token = set_multiplex_context(True) if routed_profile_fire() else None
     return scope_token, context_token
 
@@ -4022,14 +4037,19 @@ _last_dead_owner_reap_at: dict[str, float] = {}
 
 # Worktree prune throttle: the cron tick is the only reliably periodic process on gateway boxes.
 _WORKTREE_MAINTENANCE_INTERVAL_SECONDS = 6 * 3600.0
-_last_worktree_maintenance_at: Optional[float] = None
+_last_worktree_maintenance_at: Optional[dict] = None  # profile home -> monotonic stamp
 _worktree_maintenance_lock = threading.Lock()
 
 
 def _worktree_maintenance_repos() -> list[str]:
-    """Repos whose ``.worktrees/`` to keep pruned: the hermes checkout plus job workdir repo roots,
-    filtered to those that actually have a ``.worktrees/`` dir."""
+    """Repos whose ``.worktrees/`` to keep pruned: the hermes checkout, job workdir repo roots and
+    every repo this profile created a worktree in (``worktree_registry``), filtered to those that
+    actually have a ``.worktrees/`` dir."""
     repos: set = set()
+
+    with contextlib.suppress(Exception):
+        from hermes_cli.worktree_registry import registered_repos
+        repos.update(registered_repos())
 
     # Hermes source checkout (git installs only; wheel installs have no .git).
     with contextlib.suppress(Exception):
@@ -4059,18 +4079,24 @@ def _worktree_maintenance_repos() -> list[str]:
 
 def _maybe_run_worktree_maintenance() -> None:
     """Throttled worktree prune from the cron tick, on a daemon thread so the tick never waits on
-    git. Same conservative pruner as ``hermes -w`` startup (dirty/unpushed/locked trees untouched).
-    Errors never propagate: GC is hygiene, not scheduling."""
+    git. Same pruner as ``hermes -w`` startup (idle dirty/unpushed trees archived before removal,
+    live trees untouched). Throttled per profile home: a multiplexed tick runs once per served
+    profile, and each must sweep its own registered repos under its own config. The thread runs in
+    a copy of the caller's context so the profile-home override travels with it. Errors never
+    propagate: GC is hygiene, not scheduling."""
     global _last_worktree_maintenance_at
+    import contextvars
+
+    from hermes_constants import get_hermes_home
+
+    home = str(get_hermes_home())
     now = time.monotonic()
     with _worktree_maintenance_lock:
-        if (
-            _last_worktree_maintenance_at is not None
-            and now - _last_worktree_maintenance_at
-            < _WORKTREE_MAINTENANCE_INTERVAL_SECONDS
-        ):
+        stamps = _last_worktree_maintenance_at or {}
+        last = stamps.get(home)
+        if last is not None and now - last < _WORKTREE_MAINTENANCE_INTERVAL_SECONDS:
             return
-        _last_worktree_maintenance_at = now
+        _last_worktree_maintenance_at = {**stamps, home: now}
 
     def _run() -> None:
         try:
@@ -4087,7 +4113,8 @@ def _maybe_run_worktree_maintenance() -> None:
         except Exception:
             logger.debug("Cron worktree maintenance skipped", exc_info=True)
 
-    threading.Thread(target=_run, name="cron-worktree-prune", daemon=True).start()
+    threading.Thread(target=contextvars.copy_context().run, args=(_run,), name="cron-worktree-prune",
+                     daemon=True).start()
 
 
 def _acquire_tick_lock(lock_file):

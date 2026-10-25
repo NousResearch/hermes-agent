@@ -31,6 +31,15 @@ sleep() { return 1; }
 '''
 
 
+# Workflows use Blacksmith's drop-in checkout (same inputs, cached on its runners;
+# it also works on the remaining GitHub-hosted jobs); a few still use actions/checkout.
+CHECKOUT_ACTIONS = ("actions/checkout@", "useblacksmith/checkout@")
+
+
+def is_checkout(step: dict) -> bool:
+    return str(step.get("uses", "")).startswith(CHECKOUT_ACTIONS)
+
+
 def required(step: dict, ctx: dict) -> None:
     label = step.get("name", step.get("id", "required step"))
     assert gha.condition(step.get("if"), ctx), f"{label}: disabled"

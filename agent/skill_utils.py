@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import sys
+import threading
 from pathlib import Path, PurePath
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
@@ -192,11 +193,19 @@ def skill_matches_apps(frontmatter: dict[str, Any]) -> bool:
 
 
 _RAW_CONFIG_CACHE: dict[tuple[str, int, int, int, int], dict[str, Any]] = {}
+# A multiplexed watcher rotates through up to ~32 published profile/project scopes plus
+# the ambient one (#141610), so a miss must not drop the whole cache — only a stale
+# signature entry. The bound retires entries a config's own edits leave behind.
+_RAW_CONFIG_CACHE_MAX = 128
+# Guards every cache read/publish/evict: concurrent tool threads share it, and an unlocked
+# ``pop(next(iter(...)))`` races another thread's insert (RuntimeError) or pop (KeyError).
+_RAW_CONFIG_CACHE_LOCK = threading.Lock()
 
 
 def _raw_config_cache_clear() -> None:
     """Test hook — drop the shared raw config cache."""
-    _RAW_CONFIG_CACHE.clear()
+    with _RAW_CONFIG_CACHE_LOCK:
+        _RAW_CONFIG_CACHE.clear()
 
 
 def _config_cache_key(config_path: Path) -> Optional[tuple[str, int, int, int, int]]:
@@ -219,7 +228,8 @@ def _load_raw_config() -> dict[str, Any]:
     if not config_path.exists():
         return {}
     cache_key = _config_cache_key(config_path)
-    cached = _RAW_CONFIG_CACHE.get(cache_key) if cache_key is not None else None
+    with _RAW_CONFIG_CACHE_LOCK:
+        cached = _RAW_CONFIG_CACHE.get(cache_key) if cache_key is not None else None
     if cached is not None:
         return cached
     try:
@@ -230,8 +240,10 @@ def _load_raw_config() -> dict[str, Any]:
     if not isinstance(parsed, dict):
         return {}
     if cache_key is not None:
-        _RAW_CONFIG_CACHE.clear()
-        _RAW_CONFIG_CACHE[cache_key] = parsed
+        with _RAW_CONFIG_CACHE_LOCK:
+            _RAW_CONFIG_CACHE[cache_key] = parsed
+            while len(_RAW_CONFIG_CACHE) > _RAW_CONFIG_CACHE_MAX:
+                _RAW_CONFIG_CACHE.pop(next(iter(_RAW_CONFIG_CACHE)))
     return parsed
 
 
@@ -824,7 +836,12 @@ def resolve_skill_config_values(config_vars: list[dict[str, Any]]) -> dict[str, 
     return resolved
 
 
+# Max description chars shown per row of the system-prompt skill index. skill_manage rejects a new or changed
+# description over it and tests/skills/test_authoring_standards.py holds shipped skills to it, so only legacy or
+# hand-edited skills ever reach clip_skill_description().
 SKILL_PROMPT_DESC_LIMIT = 60
+_LAST_WHITESPACE_RE = re.compile(r"\s\S*$")
+_CLIP_TRAIL_RE = re.compile(r"[\s.,;:\-\u2013\u2014(/]+$")
 
 
 def _normalize_skill_description(frontmatter: dict[str, Any]) -> str:
@@ -833,10 +850,20 @@ def _normalize_skill_description(frontmatter: dict[str, Any]) -> str:
     return str(raw_desc).strip().strip("'\"") if raw_desc else ""
 
 
+def clip_skill_description(desc: str) -> str:
+    """*desc* fitted to SKILL_PROMPT_DESC_LIMIT, cut at a word boundary so the index never shows a half word."""
+    if len(desc) <= SKILL_PROMPT_DESC_LIMIT:
+        return desc
+    head = desc[:SKILL_PROMPT_DESC_LIMIT - 2]  # one char past the budget: whitespace there means the last word is whole
+    boundary = _LAST_WHITESPACE_RE.search(head)  # any whitespace (tab, NBSP, ...) separates words, not just " "
+    if not boundary or boundary.start() == 0:  # a single word longer than the budget has no boundary to cut at
+        return desc[:SKILL_PROMPT_DESC_LIMIT - 3] + "..."
+    return _CLIP_TRAIL_RE.sub("", head[:boundary.start()]) + "..."
+
+
 def extract_skill_description(frontmatter: dict[str, Any]) -> str:
     """Extract a system-prompt-length description from parsed frontmatter."""
-    desc = _normalize_skill_description(frontmatter)
-    return desc[:SKILL_PROMPT_DESC_LIMIT - 3] + "..." if len(desc) > SKILL_PROMPT_DESC_LIMIT else desc
+    return clip_skill_description(_normalize_skill_description(frontmatter))
 
 
 def is_skill_description_truncated_for_prompt(frontmatter: dict[str, Any]) -> bool:

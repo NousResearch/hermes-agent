@@ -90,17 +90,15 @@ def _fire_pre_api_request_hook(
         pass
 
 
-def build_api_request(
+def build_request_payload(
     agent: Any, *, api_messages: Any, _moa_prepared_request: Any, tools_for_api: Any,
-    system_message: Any, messages: Any, original_user_message: Any, approx_tokens: Any,
-    total_chars: Any, retry_count: Any, api_call_count: Any, api_request_id: Any,
-    api_start_time: Any, effective_task_id: Any, turn_id: Any,
+    system_message: Any, api_call_count: Any, api_request_id: Any, effective_task_id: Any,
+    turn_id: Any,
 ) -> ApiRequestBuild:
-    """Assemble the attempt's request in the original order (every mutation happens BEFORE
-    middleware/hooks/debug dumps observe the payload)."""
-    from agent.conversation_loop import (
-        _moa_client_consumes_prepared_request, _redecorate_prompt_cache_for_provider,
-    )
+    """The provider payload through the LLM request middleware, with no turn hook fired: the
+    turn loop's :func:`build_api_request` and off-turn side requests (``ctx.side_question``,
+    which reports through ``pre/post_auxiliary_call``) share it."""
+    from agent.conversation_loop import _redecorate_prompt_cache_for_provider
 
     agent._reset_stream_delivery_tracking()
     # Per-attempt first-chunk timestamp so a stale value never leaks into post_api_request.
@@ -152,11 +150,33 @@ def build_api_request(
         _original_api_kwargs = _llm_request_mw.original_payload
         _llm_middleware_trace = _llm_request_mw.trace
     except Exception:
+        logger.warning("LLM request middleware failed; sending the request unmodified", exc_info=True)
         _original_api_kwargs = dict(api_kwargs)
         _llm_middleware_trace = []
+    return ApiRequestBuild(
+        "fallthrough", api_messages, _moa_prepared_request, tools_for_api, api_kwargs,
+        _original_api_kwargs, _llm_middleware_trace,
+    )
 
+
+def build_api_request(
+    agent: Any, *, api_messages: Any, _moa_prepared_request: Any, tools_for_api: Any,
+    system_message: Any, messages: Any, original_user_message: Any, approx_tokens: Any,
+    total_chars: Any, retry_count: Any, api_call_count: Any, api_request_id: Any,
+    api_start_time: Any, effective_task_id: Any, turn_id: Any,
+) -> ApiRequestBuild:
+    """Assemble the attempt's request in the original order (every mutation happens BEFORE
+    middleware/hooks/debug dumps observe the payload)."""
+    from agent.conversation_loop import _moa_client_consumes_prepared_request
+
+    built = build_request_payload(
+        agent, api_messages=api_messages, _moa_prepared_request=_moa_prepared_request,
+        tools_for_api=tools_for_api, system_message=system_message, api_call_count=api_call_count,
+        api_request_id=api_request_id, effective_task_id=effective_task_id, turn_id=turn_id,
+    )
+    api_kwargs, api_messages, _moa_prepared_request = built.api_kwargs, built.api_messages, built._moa_prepared_request
     _fire_pre_api_request_hook(
-        agent, api_kwargs, api_messages, _llm_middleware_trace, messages=messages,
+        agent, api_kwargs, api_messages, built._llm_middleware_trace, messages=messages,
         original_user_message=original_user_message, approx_tokens=approx_tokens,
         total_chars=total_chars, retry_count=retry_count, api_call_count=api_call_count,
         api_request_id=api_request_id, api_start_time=api_start_time,
@@ -179,7 +199,4 @@ def build_api_request(
                 "prepared prompt without the MoA handshake",
                 type(agent.client).__name__,
             )
-    return ApiRequestBuild(
-        "fallthrough", api_messages, _moa_prepared_request, tools_for_api, api_kwargs,
-        _original_api_kwargs, _llm_middleware_trace,
-    )
+    return built

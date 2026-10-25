@@ -70,6 +70,7 @@
             "git",
             "home-manager",
             "homebrew",
+            "microsoft-store",
             "nixos",
             "pip",
             "unknown"

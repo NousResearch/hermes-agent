@@ -9,6 +9,7 @@ sessions reuse ``Group: <room_id>`` so a local-to-hosted migration keeps one tra
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import uuid
@@ -19,6 +20,8 @@ from pathlib import Path
 from typing import Any, ContextManager, Protocol, cast
 
 from gateway import hosted_room_driver as state
+
+logger = logging.getLogger(__name__)
 
 _CANCEL_ROUTE_RETRIES = 8
 _STOP_ACK_STATUSES = {"cancelled", "interrupted"}
@@ -589,10 +592,12 @@ class HostedRoomRuntime:
     ) -> None:
         profile, submit_attempted = task["payload"]["target_profile"], False
         attachments = task["payload"].get("attachments")
-        transport = self._transport_for(binding, task)
         with self._status_lock:
             self._current_tasks[binding.room_id] = attempt.identity
         try:
+            # Inside the try: a member whose destination is gone (an unserved bot) fails its own
+            # turn before submit instead of leaving the task running and the room wedged.
+            transport = self._transport_for(binding, task)
             if attachments and not getattr(transport, "accepts_attachments", False):
                 # A route that cannot carry the files would answer without them, and a
                 # retry cannot change the route: settle a proven failure before submit.
@@ -623,6 +628,10 @@ class HostedRoomRuntime:
             self._drop_lease(binding.room_id)
             self._record_task_error(attempt, f"fenced: {exc}")
         except Exception as exc:
+            # Exceptions may contain prompt text or credentials. Persist only a fixed
+            # reason, not the free-form messages retained in the in-memory status.
+            reason = 'request_too_large' if getattr(exc, 'reason', None) == 'request_too_large' else 'attempt_failed'
+            logger.warning('hosted room task %s: %s', attempt.identity.task_id, reason)
             if submit_attempted and bool(getattr(exc, "not_admitted", False)):
                 try:
                     state.requeue_not_admitted_task(self.db_path, attempt, clock=self.clock)

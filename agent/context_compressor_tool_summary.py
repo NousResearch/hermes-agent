@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from agent.compression_marker import _COMPRESSION_MARKER_RE, _elision_marker, elide
-from agent.context_compressor_tail import is_demoted_stub
+from agent.context_compressor_tail import is_demoted_stub, without_skill_safety_rule
 
 
 def _has_terminal_compression_marker(content: str) -> bool:
@@ -18,6 +18,7 @@ def is_summary_stub(content: str) -> bool:
     """True for a bounded one-line result summary or a lean-tail demotion stub."""
     from agent.context_compressor import _AUTO_FOCUS_MAX_CHARS
 
+    content = without_skill_safety_rule(content)
     if not content.startswith("["):
         return False
     return (

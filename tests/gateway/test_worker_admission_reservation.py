@@ -139,3 +139,83 @@ async def test_input_queued_behind_a_live_worker_is_released_then_runs_when_it_f
         process.stdin.close()
         process.wait(timeout=5)
         db.close()
+
+
+@pytest.fixture
+def stale_psutil_boot_reference(monkeypatch):
+    """Step psutil's macOS boot-time reference the way a clock step leaves it in a long-lived
+    process: ``_psosx.INIT_BOOT_TIME`` is frozen at import, and ``create_time()`` adds
+    ``abs(INIT_BOOT_TIME - boot_time())``. The real macOS psutil code runs; only the reference,
+    which is what a step makes stale, moves (stepping the host clock needs root)."""
+    def step(drift):
+        monkeypatch.setattr(psutil._psplatform, 'INIT_BOOT_TIME', psutil.boot_time() + drift)
+    return step
+
+
+@pytest.mark.platforms("macos")
+@pytest.mark.parametrize('drift', [5.0, -5.0])
+def test_reservation_survives_a_clock_step_on_macos(tmp_path, stale_psutil_boot_reference, drift):
+    """#140580: after a clock step a long-lived owner's psutil reads a fresh worker's birth
+    shifted, while the worker reports its own unshifted one, so the exact match refused every
+    managed worker. ``process_birth`` (the kernel start) is what both processes see."""
+    from gateway.session_worker_reservation import reserve_admission_worker
+    from hermes_cli.process_identity import process_birth
+    db = SessionDB(tmp_path / 'state.db')
+    process = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'], stdin=subprocess.PIPE,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        frame = hello(process) | {'birth': process_birth(psutil.Process(process.pid))}  # the worker's own read
+        stale_psutil_boot_reference(drift)
+        assert psutil.Process(process.pid).create_time() != frame['birth']  # the step is real
+        db.create_session('owned', 'cli')
+        epoch = begin_runtime_epoch(db, instance_id='owner')
+        authority = SimpleNamespace(db=db, epoch=epoch, profile_id=str(tmp_path), _require_admission_open=lambda: None)
+        admitted = admit_session_input(db, epoch=epoch, principal_id='human', session_id='owned', request_id='input', payload={})
+        claim_session_input(db, epoch=epoch, session_id='owned')
+        kwargs = dict(admission_id=admitted['admission_id'], process=process, principal_id='human')
+        with pytest.raises(Exception, match='permission_denied'):  # a forged birth still fails
+            reserve_admission_worker(authority, hello=frame | {'birth': frame['birth'] + 1}, **kwargs)
+        scope = reserve_admission_worker(authority, hello=frame, **kwargs)
+        assert scope['pid'] == process.pid and scope['birth'] == frame['birth']
+    finally:
+        process.stdin.close()
+        process.wait(timeout=5)
+        db.close()
+
+
+@pytest.mark.platforms("macos")
+@pytest.mark.parametrize('drift', [5.0, -5.0])
+def test_process_fingerprints_survive_a_clock_step_on_macos(stale_psutil_boot_reference, drift):
+    """KB-6 beyond worker birth: the Kanban submitter fingerprint (``_process_fingerprint`` via
+    ``get_process_start_time``; ``_watch_submitter`` exits on a mismatch), the delegation
+    ``owner_started_at`` and the spawn ledger's ``_pid_alive_matches`` read the same live process
+    the same way before and after a clock step."""
+    from gateway.status import get_process_start_time
+    from hermes_cli.kanban_db_dispatch import _pid_recycled, _process_fingerprint
+    from hermes_cli.process_identity import _pid_alive_matches, _process_create_time
+    process = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'], stdin=subprocess.PIPE,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        start, fingerprint, create = (get_process_start_time(process.pid), _process_fingerprint(process.pid),
+                                      _process_create_time(process.pid))
+        stale_psutil_boot_reference(drift)
+        assert abs(psutil.Process(process.pid).create_time() - create) >= 4  # the step is real
+        assert get_process_start_time(process.pid) == start
+        assert _process_fingerprint(process.pid) == fingerprint and not _pid_recycled(process.pid, fingerprint)
+        assert _pid_alive_matches(process.pid, create, strict=True) is True
+        assert _pid_alive_matches(process.pid, create) is True
+    finally:
+        process.stdin.close()
+        process.wait(timeout=5)
+
+
+def test_process_birth_is_create_time_where_psutil_applies_no_reference():
+    """Linux and Windows read ``create_time()`` unchanged, so every stored fingerprint and ledger
+    row written before KB-6 still matches there; on macOS with no step psutil returns the kernel
+    start unchanged too (``adjust_proc_create_time`` ignores |drift| < 1 s)."""
+    from gateway.status import get_process_start_time
+    from hermes_cli.process_identity import _pid_alive_matches, process_birth
+    proc = psutil.Process()
+    assert process_birth(proc) == proc.create_time()
+    assert _pid_alive_matches(os.getpid(), proc.create_time(), strict=True) is True
+    assert get_process_start_time(os.getpid()) is not None

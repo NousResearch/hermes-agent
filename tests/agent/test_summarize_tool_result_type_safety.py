@@ -66,6 +66,17 @@ class TestEdgeCases:
         assert "terminal" in result
 
 
+def test_attached_skill_safety_rule_keeps_summaries_recognizable():
+    from agent.context_compressor_tail import SKILL_SAFETY_RULE
+
+    summaries = [
+        _summarize_tool_result("skill_view", '{"name":"pdf"}', "instructions " * 800),
+        _summarize_tool_result("mcp__docs__search", "{}", "evidence " * 800),
+    ]
+    for summary in summaries:
+        assert is_summary_stub(summary + "\n\n" + SKILL_SAFETY_RULE)
+
+
 class TestMcpResultSummary:
     def test_failed_mcp_results_keep_outcome_and_bounded_evidence(self):
         from agent.compression_marker import _COMPRESSION_MARKER_PREFIX

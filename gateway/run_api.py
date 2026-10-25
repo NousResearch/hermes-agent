@@ -238,6 +238,11 @@ def _embedded_chat_enabled() -> bool:
     return True if web is None else bool(getattr(web, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True))
 
 
+def _restart_wait_read(runner, scope) -> bool:
+    from gateway.drain_control import restart_wait_read
+    return scope['type'] == 'http' and restart_wait_read(runner, scope.get('method'), scope.get('path'))
+
+
 class GatewayRuntimeAPI:
     """Redeem private local tickets at the existing WS subprotocol boundary.
 
@@ -250,13 +255,39 @@ class GatewayRuntimeAPI:
         self.app, self.runner, self.web_app = app, runner, web_app
 
     async def __call__(self, scope, receive, send):
+        if scope['type'] != 'websocket' or scope.get('path') != '/api/ws':
+            return await self._serve(scope, receive, send)
+        started = accepted = False
+
+        async def send_watched(message):
+            nonlocal started, accepted
+            started = True
+            accepted = accepted or message.get('type') == 'websocket.accept'
+            await send(message)
+
+        try:
+            return await self._serve(scope, receive, send_watched)
+        except Exception as exc:
+            # Uvicorn answers an upgrade that raised before accept with HTTP 500 and logs it only to
+            # its own logger, never gateway.log: the dialing cron worker or managed worker sees a bare
+            # InvalidStatus (#139922). Name the cause here; uvicorn still sends the 500, but only when
+            # nothing was sent yet: a handler that had closed the upgrade already got its 403 out.
+            if not accepted:
+                logger.error('Gateway refused a session WebSocket upgrade from %s %s: %s: %s',
+                             scope.get('hermes.gateway_socket_peer') or scope.get('client'),
+                             'after its handler had refused it' if started else 'with HTTP 500',
+                             type(exc).__name__, exc, exc_info=True)
+            raise
+
+    async def _serve(self, scope, receive, send):
         descriptor = getattr(self.runner, 'session_runtime_descriptor', None)
         if scope['type'] not in {'http', 'websocket'} or descriptor is None:
             return await self.app(scope, receive, send)
         draining_socket = (descriptor['state'] in {'ready', 'draining'}
             and (self.runner._draining or descriptor['state'] == 'draining')
             and scope['type'] == 'websocket' and scope['path'] == '/api/ws')
-        if (descriptor['state'] != 'ready' or self.runner._draining) and not draining_socket:
+        if ((descriptor['state'] != 'ready' or self.runner._draining) and not draining_socket
+                and not _restart_wait_read(self.runner, scope)):
             if scope['type'] == 'websocket':
                 await send({'type': 'websocket.close', 'code': 1013})
             else:
@@ -264,19 +295,24 @@ class GatewayRuntimeAPI:
                 await JSONResponse({'error': 'gateway_not_ready', 'state': descriptor['state']},
                                    status_code=503)(scope, receive, send)
             return
-        if scope['type'] == 'http':
-            # Capture before Uvicorn's proxy middleware rewrites scope.client.
-            scope['hermes.gateway_socket_peer'] = scope.get('client')
+        # Capture before Uvicorn's proxy middleware rewrites scope.client (native grants, both kinds).
+        scope['hermes.gateway_socket_peer'] = scope.get('client')
         from gateway.run_idle_exit import attached_client, note_client_activity
         if scope['type'] != 'websocket' or scope['path'] != '/api/ws':
             note_client_activity(self.runner)  # dashboard/API traffic keeps an idle-exit gateway up
             return await self.app(scope, receive, send)
         original_receive = receive
         allow_draining = False
+        admitted_in_wait = False
+        from gateway.drain_control import restart_wait_open
 
         async def receive_admitted():
             message = await original_receive()
-            if (descriptor['state'] != 'ready' or self.runner._draining) and not allow_draining:
+            # Only a socket admitted INTO the restart wait (to answer a parked prompt) outlives it. One
+            # opened before the wait is cut as before: its client reconnects to the next owner, and a
+            # held one (a kanban worker polling its card) would otherwise pin the drain to its cap.
+            if ((descriptor['state'] != 'ready' or self.runner._draining) and not allow_draining
+                    and not (admitted_in_wait and restart_wait_open(self.runner))):
                 return {'type': 'websocket.disconnect', 'code': 1013}
             return message
 
@@ -314,7 +350,11 @@ class GatewayRuntimeAPI:
                     return
                 return await self.app(scope, receive, send)
         allow_draining = not operator
-        if (descriptor['state'] != 'ready' or self.runner._draining) and not allow_draining:
+        admitted_in_wait = restart_wait_open(self.runner)
+        # A restart's after-turn wait still owns its turns: an interactive client attaches to answer
+        # a parked approval/clarify (#139041); stop() closes this window.
+        if ((descriptor['state'] != 'ready' or self.runner._draining) and not allow_draining
+                and not admitted_in_wait):
             await ws.close(code=1013)
             return
         from gateway.session_authorities import authority_for_profile_id

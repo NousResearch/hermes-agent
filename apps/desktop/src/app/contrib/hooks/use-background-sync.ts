@@ -48,6 +48,7 @@ import {
   setLiveTurnBackend,
   setSessionStalled
 } from '@/store/session-states'
+import { noteLiveSessionSource } from '@/store/session-unread'
 import { loadArchivedSessions } from '@/store/sidebar-archive'
 import {
   clearActiveSessionTodos,
@@ -716,6 +717,7 @@ interface LiveSessionStatusItem {
   id?: string
   last_active?: number
   session_key?: string
+  source?: null | string
   status?: 'idle' | 'starting' | 'waiting' | 'working'
 }
 
@@ -788,6 +790,7 @@ export function rehydrateLiveSessionStatuses(
     }
 
     seen.add(runtimeSessionId)
+    noteLiveSessionSource(storedSessionId, session.source, profileKey)
 
     if (working) {
       workingStoredIds.add(storedSessionId)

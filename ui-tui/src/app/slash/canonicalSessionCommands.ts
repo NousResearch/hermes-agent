@@ -3,23 +3,30 @@
 // `session.mutate` rename / rewind (`gateway/session_mutations.py`), the committed admission
 // result (`prompt.receipt include_result`) and the frozen launch policy (`session.info`).
 
+import type { SessionStats } from '@hermes/shared/gateway-events'
+import { JsonRpcGatewayError } from '@hermes/shared/json-rpc-channel'
+
+import { CANONICAL_REASONING_EFFORTS } from '../../domain/slash.js'
 import { usageFromTick } from '../../domain/usage.js'
+import type { BillingStateResponse } from '../../gatewayTypes.js'
 import { t } from '../../i18n/runtime.js'
 import { asRpcResult } from '../../lib/rpc.js'
 import { patchUiState } from '../uiStore.js'
 
 import { mutateCanonical, type MutationSnapshot } from './canonicalSessionControls.js'
 import type { SlashRunCtx } from './types.js'
-import { usageTotalsSections } from './usagePanel.js'
+import { planUsageLines, usageTotalsSections } from './usagePanel.js'
 
 const COMPACTION_MARKERS = ['[CONTEXT COMPACTION', '[CONTEXT SUMMARY]:', '[END OF PRIOR CONTEXT']
 
-/** A human-authored user turn (`agent/context_compressor.py::split_user_originated_turn`): no
- * display-only kind other than a typed /steer, and not a compaction handoff carrier. */
+/** A human-authored live user turn (`agent/context_compressor.py::split_user_originated_turn`): no
+ * display-only kind other than a typed /steer, not a compaction handoff carrier, and not a row a
+ * compression archived (history the snapshot shows, never a turn to rewind to). */
 const isUserTurn = (row: Record<string, unknown>) =>
   row.role === 'user' &&
   (!row.display_kind || row.display_kind === 'steer') &&
   Number.isSafeInteger(row.row_id) &&
+  !row.archived &&
   !(typeof row.content === 'string' && COMPACTION_MARKERS.some(marker => row.content!.toString().includes(marker)))
 
 /** The rewind payload for the newest user turn in the snapshot the CAS tuple came from. */
@@ -115,34 +122,25 @@ export async function renameCanonicalSession(
   return mutation?.result ? String(mutation.result.title ?? title).trim() : undefined
 }
 
-// The levels `hermes_constants.parse_reasoning_effort` accepts; the display words are config.yaml writes.
-const REASONING_EFFORTS = new Set([
-  'none',
-  'false',
-  'disabled',
-  'minimal',
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-  'max',
-  'ultra'
-])
-
 /** Session-scope `/reasoning <level>`: the owner's revision-fenced `reasoning` mutation of the frozen
  * policy. False when the shared gateway has no verb for it (`--global`, a display word). */
 export function canonicalReasoning(payload: { scope?: string; value: string }, ctx: SlashRunCtx): boolean {
   const effort = payload.value.trim().toLowerCase()
 
-  if (payload.scope === 'global' || !REASONING_EFFORTS.has(effort)) {
+  if (payload.scope === 'global' || !CANONICAL_REASONING_EFFORTS.has(effort)) {
     return false
   }
 
   void mutateCanonical(ctx.gateway.gw, ctx.sid!, 'reasoning', { effort }, ctx.stale)
-    .then(
-      mutation =>
-        mutation?.result && !ctx.stale() && ctx.transcript.sys(t('slashCmd.session.reasoning.current', effort))
-    )
+    .then(mutation => {
+      if (mutation?.result) {
+        ctx.ran?.() // the owner accepted it; a refusal rejects and reports nothing
+
+        if (!ctx.stale()) {
+          ctx.transcript.sys(t('slashCmd.session.reasoning.current', effort))
+        }
+      }
+    })
     .catch(ctx.guardedErr)
 
   return true
@@ -178,7 +176,32 @@ export function canonicalRewind(intent: 'retry' | 'undo', ctx: SlashRunCtx) {
 
       return text ? ctx.transcript.send(text) : ctx.transcript.sys(t('slashCmd.core.retry.nothing'))
     })
-    .catch(ctx.guardedErr)
+    .catch(error => {
+      const busy = rewindBusyText(error, intent)
+
+      if (!busy) {
+        return ctx.guardedErr(error)
+      }
+
+      if (!ctx.stale()) {
+        ctx.transcript.sys(busy)
+      }
+    })
+}
+
+/** Main's busy text for a refused rewind: wait for a running /compress, else stop the reply; null otherwise. */
+function rewindBusyText(error: unknown, intent: 'retry' | 'undo'): null | string {
+  if (!(error instanceof JsonRpcGatewayError)) {
+    return null
+  }
+
+  const data = asRpcResult(error.data)
+
+  if (data?.reason !== 'session_busy') {
+    return null
+  }
+
+  return t(data.field === 'compression' ? 'slashCmd.core.busy.compressing' : 'slashCmd.core.busy.replying', intent)
 }
 
 interface CommittedResult {
@@ -204,18 +227,26 @@ export function canonicalUsage(ctx: SlashRunCtx) {
         return
       }
 
-      const usage = usageFromTick(asRpcResult<Record<string, unknown>>(raw))
+      const usage = usageFromTick(asRpcResult<SessionStats>(raw))
 
       if (!usage?.calls) {
         ctx.transcript.sys(t('slashCmd.session.usage.noCalls'))
         ctx.transcript.sys(t('slashCmd.session.usage.cta'))
-
-        return
+      } else {
+        patchUiState(state => ({ ...state, usage: { ...state.usage, ...usage } }))
+        ctx.transcript.panel(t('slashCmd.session.usage.usageTitle'), usageTotalsSections(usage))
+        ctx.transcript.sys(t('slashCmd.session.usage.cta'))
       }
 
-      patchUiState(state => ({ ...state, usage: { ...state.usage, ...usage } }))
-      ctx.transcript.panel(t('slashCmd.session.usage.usageTitle'), usageTotalsSections(usage))
-      ctx.transcript.sys(t('slashCmd.session.usage.cta'))
+      // Usage-window plans: the allowance bars, after the lines above (every other account: nothing).
+      void ctx.gateway
+        .rpc<BillingStateResponse>('billing.state', {})
+        .then(r => {
+          if (!ctx.stale()) {
+            planUsageLines(r?.plan_usage).forEach(line => ctx.transcript.sys(line))
+          }
+        })
+        .catch(() => undefined)
     })
     .catch(ctx.guardedErr)
 }

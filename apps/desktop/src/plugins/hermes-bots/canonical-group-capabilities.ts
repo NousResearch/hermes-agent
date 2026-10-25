@@ -50,6 +50,10 @@ export function groupAdvertisedMethods(value: unknown): ReadonlySet<string> | nu
 export const offersGroupMethod = (methods: GroupMethods, method: string) =>
   methods === null || Boolean(methods?.has(method))
 
+// `host.state.gateway` is the foreground connection's socket: it says nothing about a room on
+// another connection. A host double without socket state reads as one socket that stays open.
+const onForeground = (connectionId: string) => (host.state?.connectionId?.get() ?? connectionId) === connectionId
+
 /** The group methods `route`'s gateway lists, read once per opening of the gateway socket: an
  *  update restarts the gateway, so a reopened socket may be a gateway with other methods. Until a
  *  read for the current opening succeeds it lists none, so a failed read never offers a control the
@@ -61,11 +65,12 @@ export function useGroupMethods(route: { connectionId: string; profile: string }
   const [attempt, setAttempt] = useState(0)
   const answered = answer?.opening === opening
 
-  // A host double without socket state reads as one socket that stays open.
-  useEffect(() => host.state?.gateway?.listen(() => setOpening(value => value + 1)), [])
+  const { connectionId } = route
+
+  useEffect(() => host.state?.gateway?.listen(() => { if (onForeground(connectionId)) {setOpening(value => value + 1)} }), [connectionId])
 
   useEffect(() => {
-    if (answered || !visible || (host.state?.gateway?.get() ?? 'open') !== 'open') {return}
+    if (answered || !visible || (onForeground(connectionId) && (host.state?.gateway?.get() ?? 'open') !== 'open')) {return}
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | undefined
     void canonicalGroupRequest<unknown>(route, 'groups.capabilities').then(
@@ -74,7 +79,7 @@ export function useGroupMethods(route: { connectionId: string; profile: string }
     )
 
     return () => { cancelled = true; clearTimeout(timer) }
-  }, [route, visible, answered, attempt, opening])
+  }, [route, connectionId, visible, answered, attempt, opening])
 
   return answered ? answer.methods : undefined
 }

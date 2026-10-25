@@ -485,7 +485,7 @@ def _enter_isolation(
     ``app.py`` or other production files; mutating the production
     working tree is the attack this card closes.
 
-    Errors return distinct exit codes (91=stage bind, 92=prod bind, 93=remount ro,
+    Errors return distinct exit codes (91=stage bind, 92=prod read-only bind,
     94=carve bind) so the launcher's first failing mount is identifiable from
     a worker log without re-running.
     """
@@ -505,12 +505,33 @@ def _enter_isolation(
         if rc != 0:
             return 91
         # 2. the production tree -> read-only.
-        rc = _mount(["--bind", agent_home, agent_home])
+        #
+        # Single-step ``mount -o bind,ro <src> <dst>`` -- NOT the two-step
+        # ``mount --bind X X`` + ``mount -o remount,bind,ro X`` that this
+        # launcher used to do. The two-step form DEADLOCKS the kernel on
+        # this host: ``remount,bind,ro`` on a bind mount whose source and
+        # target are the same path blocks forever in uninterruptible sleep
+        # (process state D), so the launcher never returns and the worker
+        # never starts. Measured on this box (2026-10-25, t_a968012b):
+        #
+        #   mount --bind /tmp/src /tmp/dst
+        #   mount -o remount,bind,ro /tmp/dst   -> hangs (rc=124 under
+        #                                            `timeout`), state D
+        #
+        # The hang is NOT about the staging bind or about nesting -- the
+        # minimal repro is a plain bind of two unrelated dirs followed by
+        # ``remount,bind,ro`` on the target. This host's kernel blocks the
+        # remount; ``mount -o bind,ro`` performs the same "bind a subtree
+        # read-only" in ONE syscall and does not deadlock.
+        #
+        # Verified equivalent behaviour: after ``mount -o bind,ro`` a write
+        # into the bound tree fails with "Read-only file system", and a
+        # subsequent ``mount -o bind <src> <dst>`` over a carve-out path
+        # restores writability there (the carve-out is bound AFTER this
+        # step, from the rw staging view).
+        rc = _mount(["-o", "bind,ro", agent_home, agent_home])
         if rc != 0:
             return 92
-        rc = _mount(["-o", "remount,bind,ro", agent_home])
-        if rc != 0:
-            return 93
         # 3. carve-outs, sourced from the rw staging bind.
         #    ``.git/refs/heads`` is intentionally NOT included (see docstring);
         #    the worker's own branch carve-out is added below when worktree

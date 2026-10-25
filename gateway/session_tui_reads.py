@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections import Counter
+from pathlib import Path
 
 # The TUI surfaces whose /status and /context read as main's TUI sidecar did.
 _TUI_SOURCES = frozenset({'tui'})
@@ -50,10 +51,11 @@ def _status(authority, ref, live, policy, agent, arg) -> str:
         tokens=getattr(agent, 'session_total_tokens', 0) if agent is not None else None,
         agent_running=running, home=authority.profile_id)
     if fields['provider'] == 'custom':  # the adapter's billing class: show the entry the session runs on
-        from hermes_cli.runtime_provider_custom import routed_custom_identity_in
-        fields['provider'] = routed_custom_identity_in(
-            authority.profile_id, getattr(agent, 'base_url', None) or policy.base_url, fields['model'],
-            getattr(agent, 'requested_provider', None)) or 'custom'
+        from gateway.run import _profile_runtime_scope
+        from hermes_cli.runtime_provider_custom import session_provider_identity
+        with _profile_runtime_scope(Path(authority.profile_id)):
+            fields['provider'] = session_provider_identity('custom', getattr(agent, 'requested_provider', None),
+                getattr(agent, 'base_url', None) or policy.base_url, fields['model'])
     project = server._project_info_for_cwd(policy.cwd)
     return '\n'.join([
         'Hermes TUI Status', '', *status_lines(fields, 'session_id', 'path'),

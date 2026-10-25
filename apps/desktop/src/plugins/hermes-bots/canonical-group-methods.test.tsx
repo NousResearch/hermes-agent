@@ -2,20 +2,21 @@ import { act, renderHook } from '@testing-library/react'
 import type { WritableAtom } from 'nanostores'
 import { afterEach, expect, it, vi } from 'vitest'
 
-const { request, socket } = vi.hoisted(() => ({ request: vi.fn(), socket: { gateway: null as null | WritableAtom<string> } }))
+const { request, socket } = vi.hoisted(() => ({ request: vi.fn(), socket: { gateway: null as null | WritableAtom<string>, connectionId: null as null | WritableAtom<null | string> } }))
 vi.mock('@hermes/plugin-sdk', async () => {
   const { captureGroupRequests } = await import('./canonical-group-contract-test-utils')
   const { atom } = await import('nanostores')
   socket.gateway = atom('open')
+  socket.connectionId = atom<null | string>('remote')
 
-  return { host: { requestProfile: captureGroupRequests(request).request, state: { gateway: socket.gateway } } }
+  return { host: { requestProfile: captureGroupRequests(request).request, state: { connectionId: socket.connectionId, gateway: socket.gateway } } }
 })
 
 import { offersGroupMethod, useGroupMethods } from './canonical-group-capabilities'
 import { CANONICAL_GROUP_CAPABILITIES, STANDALONE_GROUP_CAPABILITIES } from './canonical-group-contract-test-utils'
 
 const route = { connectionId: 'remote', profile: 'team' }
-afterEach(() => { vi.useRealTimers(); request.mockReset(); socket.gateway?.set('open') })
+afterEach(() => { vi.useRealTimers(); request.mockReset(); socket.gateway?.set('open'); socket.connectionId?.set('remote') })
 
 it('offers no control after a failed capabilities read, and reads again while the room is visible', async () => {
   vi.useFakeTimers()
@@ -68,4 +69,19 @@ it('reads the methods again when the gateway socket reopens and drops a reply fr
   await act(async () => { socket.gateway!.set('open') })
   expect(request).toHaveBeenCalledTimes(3)
   expect(offersGroupMethod(result.current, 'groups.discard')).toBe(true)
+})
+
+// The foreground socket is another connection's: a room on its own connection reads and keeps its methods.
+it('reads a room\'s methods whatever the socket of another foreground connection does', async () => {
+  request.mockResolvedValue(STANDALONE_GROUP_CAPABILITIES)
+  socket.connectionId!.set('local')
+  socket.gateway!.set('closed')
+  const { result } = renderHook(() => useGroupMethods(route))
+  await act(async () => {})
+  expect(request).toHaveBeenCalledOnce()
+  expect(offersGroupMethod(result.current, 'groups.rename')).toBe(true)
+  await act(async () => { socket.gateway!.set('open') })
+  await act(async () => { socket.gateway!.set('closed') })
+  expect(request).toHaveBeenCalledOnce()
+  expect(offersGroupMethod(result.current, 'groups.rename')).toBe(true)
 })

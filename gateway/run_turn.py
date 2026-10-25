@@ -24,6 +24,7 @@ from contextvars import copy_context
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
+from gateway.platforms.base_edit_targets import next_edit_target_message_id
 from gateway.platforms.event import MessageEvent
 from gateway.response_filters import (
     display_kind_for_event, display_metadata_for_event, is_machinery_display_kind, reply_expected_metadata,
@@ -169,9 +170,11 @@ def hygiene_no_commit_reason(agent) -> str:
 from gateway.run_turn_prepare import GatewayTurnPrepareMixin
 from gateway.run_turn_hygiene import GatewayTurnHygieneMixin
 from gateway.run_turn_persistence import GatewayTurnPersistenceMixin
+from gateway.run_turn_streaming import GatewayTurnStreamingMixin
 
 
-class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, GatewayTurnPersistenceMixin):
+class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, GatewayTurnPersistenceMixin,
+                       GatewayTurnStreamingMixin):
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
 
@@ -736,43 +739,6 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             url = ((_load_gateway_config().get("gateway") or {}).get("proxy_url") or "").strip()
         return url.rstrip("/") if url else None
 
-    def _build_stream_consumer_config(
-        self, source: SessionSource, scfg: Any, adapter: Any, *, on_missing_cursor: str,
-    ) -> tuple[Any, Optional[Callable[[], None]]]:
-        """Build the shared ``StreamConsumerConfig`` and optional Telegram pause-typing closure.
-        For non-editing adapters ``on_missing_cursor="fallback"`` streams with an empty cursor;
-        ``"raise"`` raises ``RuntimeError`` so the caller skips streaming entirely."""
-        from gateway.stream_consumer import StreamConsumerConfig
-        _pause_typing_before_finalize = None
-        if source.platform == Platform.TELEGRAM and hasattr(adapter, "pause_typing_for_chat"):
-            def _pause_typing_before_finalize(_adapter=adapter, _chat_id=source.chat_id) -> None:
-                _adapter.pause_typing_for_chat(_chat_id)
-        # Non-editing platforms (QQ, WeChat) skip streaming — the partial first message could never
-        # be updated — unless they have a native-streaming transport (WeCom msgtype "stream").
-        _adapter_supports_edit = getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True)
-        _adapter_supports_native_stream = bool(getattr(adapter, "SUPPORTS_NATIVE_STREAMING", False))
-        if not _adapter_supports_edit and not _adapter_supports_native_stream and on_missing_cursor == "raise":
-            raise RuntimeError("skip streaming for non-editable platform")
-        _effective_cursor = scfg.cursor if _adapter_supports_edit else ""
-        # Some Matrix clients render the cursor as tofu: stream text, no cursor.
-        if source.platform == Platform.MATRIX:
-            _effective_cursor = ""
-        # Fresh-final applies to Telegram only (others edit in place cheaply).
-        # Fresh-final applies to Telegram only — other platforms either edit in place cheaply (Discord,
-        # Slack) or don't have the timestamp-on-edit / edit-timestamp-stays-stale problem. (Ported from
-        # openclaw/openclaw#72038.)
-        _fresh_final_secs = (
-            float(getattr(scfg, "fresh_final_after_seconds", 0.0) or 0.0)
-            if source.platform == Platform.TELEGRAM else 0.0
-        )
-        _consumer_cfg = StreamConsumerConfig(
-            edit_interval=scfg.edit_interval, buffer_threshold=scfg.buffer_threshold,
-            cursor=_effective_cursor,
-            fresh_final_after_seconds=_fresh_final_secs, transport=scfg.transport or "edit",
-            chat_type=getattr(source, "chat_type", "") or "",
-        )
-        return _consumer_cfg, _pause_typing_before_finalize
-
     def _run_still_current_fn(self, session_key: Optional[str], run_generation: Optional[int]) -> Callable[[], bool]:
         """Predicate: does this run's generation still own ``session_key``? (always True when untracked)."""
         def _run_still_current() -> bool:
@@ -784,40 +750,6 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
     @staticmethod
     def _proxy_error_result(text: str) -> dict[str, Any]:
         return {"final_response": text, "messages": [], "api_calls": 0, "tools": []}
-
-    def _proxy_stream_consumer(self, source: SessionSource, event_message_id, _thread_metadata, _run_still_current):
-        """Platform stream consumer for the proxy path when streaming is enabled, else ``None``."""
-        from gateway.run import _load_gateway_config, _platform_config_key
-        _scfg = getattr(getattr(self, "config", None), "streaming", None)
-        # #60671 — streaming TTS consumer is created on the outer event-loop thread before run_sync
-        # launches.  run_sync only reads it via ``streaming_tts_consumer_holder[0]`` for delta callback
-        # wiring.
-        if _scfg is None:
-            from gateway.config import StreamingConfig
-            _scfg = StreamingConfig()
-        # Global master switch first: skips the config.yaml re-read on the default (off) path.
-        if not _scfg.globally_enabled:
-            return None
-        from gateway.display_config import resolve_display_setting
-        _plat_streaming = resolve_display_setting(_load_gateway_config(), _platform_config_key(source.platform), "streaming")
-        if not _scfg.enabled_for(_plat_streaming):
-            return None
-        try:
-            from gateway.stream_consumer import GatewayStreamConsumer
-            _adapter = self._delivery_adapter_for(source)
-            if not _adapter:
-                return None
-            _consumer_cfg, _pause_typing_before_finalize = self._build_stream_consumer_config(
-                source, _scfg, _adapter, on_missing_cursor="fallback",
-            )
-            return GatewayStreamConsumer(
-                adapter=_adapter, chat_id=source.chat_id, config=_consumer_cfg,
-                metadata=_thread_metadata, on_before_finalize=_pause_typing_before_finalize,
-                initial_reply_to_id=event_message_id, run_still_current=_run_still_current,
-            )
-        except Exception as _sc_err:
-            logger.debug("Proxy: could not set up stream consumer: %s", _sc_err)
-            return None
 
     async def _run_agent_via_proxy(
         self, message: str, context_prompt: str, history: list[dict[str, Any]],
@@ -2269,6 +2201,8 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 if _heartbeat_msg_id:
                     try:
                         _notify_res = await _notify_adapter.edit_message(source.chat_id, _heartbeat_msg_id, _heartbeat_text)
+                        # Timestamp-chained adapters (Signal) mint the next edit target on every edit.
+                        _heartbeat_msg_id = next_edit_target_message_id(_notify_adapter, _heartbeat_msg_id, _notify_res)
                     except Exception as _ee:
                         logger.debug("Heartbeat edit failed: %s", _ee)
                         _notify_res = None

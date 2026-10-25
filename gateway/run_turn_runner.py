@@ -25,6 +25,7 @@ from agent.replay_cleanup import canonicalize_replay_history
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.base_edit_targets import adapter_supports_streaming_edits
 from gateway.platforms.base_exec_approval import ea_default_reason_text
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
@@ -246,8 +247,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 from gateway.stream_consumer import GatewayStreamConsumer
                 adapter = self._runner._delivery_adapter_for(ctx.source)
                 if adapter:
+                    # Token streaming needs streaming-safe edits, not just an edit API: Signal can
+                    # edit (opt-in progress) but keeps assistant-response streaming off.
                     supports_incremental_stream = (
-                        getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True)
+                        adapter_supports_streaming_edits(adapter)
                         or bool(getattr(adapter, "SUPPORTS_NATIVE_STREAMING", False))
                     )
                     consumer_stream_deltas = want_stream_deltas and supports_incremental_stream

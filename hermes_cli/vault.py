@@ -70,8 +70,17 @@ def _cmd_add(args) -> None:
             password = ""
             while not password:
                 password = getpass.getpass("Password (hidden): ")
-            otp_secret = getpass.getpass(
-                "Authenticator key (optional, hidden; the 2FA \"setup key\" or otpauth:// link — Enter to skip): ")
+            otp_method = ""
+            while otp_method not in {"totp", "fixed", "none"}:
+                otp_method = input("2FA method (totp/fixed/none) [totp]: ").strip().lower() or "totp"
+            otp_secret = ""
+            fixed_otp = ""
+            if otp_method == "totp":
+                otp_secret = getpass.getpass(
+                    "Authenticator key (optional, hidden; the 2FA \"setup key\" or otpauth:// link — Enter to skip): ")
+            elif otp_method == "fixed":
+                c.print("[yellow]Fixed OTP is for local testing only; do not use it for production accounts.[/]")
+                fixed_otp = getpass.getpass("Fixed test OTP (six digits, hidden): ")
             # identifier_type/identifier are stored as metadata (not secret);
             # add_item moves them out of the encrypted payload.
             secret = {
@@ -79,6 +88,7 @@ def _cmd_add(args) -> None:
                 "identifier": identifier,
                 "password": password,
                 **({"otp_secret": otp_secret} if otp_secret.strip() else {}),
+                **({"fixed_otp": fixed_otp} if fixed_otp else {}),
             }
             meta = get_vault_store().add_item(
                 kind="login", label=label, secret=secret, origin=origin

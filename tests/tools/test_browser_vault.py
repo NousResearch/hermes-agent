@@ -77,6 +77,31 @@ class TestVaultStore:
         blob = (tmp_path / "vault" / "vault.json.enc").read_bytes()
         assert b"s3cret-pw" not in blob
 
+    def test_fixed_test_otp_is_encrypted_and_resolved_without_metadata(self, store, tmp_path):
+        """Regression for #137094: deterministic test codes remain secret like TOTP seeds."""
+        from agent.vault_backends.local import LocalLoginBackend
+
+        meta = store.add_item(
+            kind="login", label="Test account", origin="https://example.com",
+            secret={"identifier_type": "email", "identifier": "test@example.com", "password": "pw",
+                    "fixed_otp": "258000"},
+        )
+
+        with patch("agent.vault_store.get_vault_store", return_value=store):
+            assert LocalLoginBackend().resolve_otp(meta.id) == "258000"
+        assert store.resolve_secret(meta.id)["fixed_otp"] == "258000"
+        assert "258000" not in json.dumps(meta.to_dict())
+        assert b"258000" not in (tmp_path / "vault" / "vault.json.enc").read_bytes()
+
+    @pytest.mark.parametrize("fixed_otp", ["25800", "2580000", "25800a", " 258000 "])
+    def test_fixed_test_otp_must_be_exactly_six_decimal_digits(self, store, fixed_otp):
+        with pytest.raises(VaultError, match="fixed test OTP"):
+            store.add_item(
+                kind="login", label="Test account", origin="https://example.com",
+                secret={"identifier_type": "email", "identifier": "test@example.com", "password": "pw",
+                        "fixed_otp": fixed_otp},
+            )
+
     def test_file_permissions_0600(self, store, tmp_path):
         _add_login(store)
         for name in ("vault.json.enc", "vault.key"):

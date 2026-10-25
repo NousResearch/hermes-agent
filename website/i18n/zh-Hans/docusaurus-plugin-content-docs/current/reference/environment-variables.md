@@ -275,6 +275,10 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `DISCORD_ALLOW_MENTION_ROLES` | 允许 bot ping `@role` mention（默认：`false`）。 |
 | `DISCORD_ALLOW_MENTION_USERS` | 允许 bot ping 单个 `@user` mention（默认：`true`）。 |
 | `DISCORD_ALLOW_MENTION_REPLIED_USER` | 回复消息时 ping 原作者（默认：`true`）。 |
+| `DISCORD_APPROVAL_MENTIONS` | 为 `true` 时，命令审批卡片会 `@mention` 所有允许的用户（`DISCORD_ALLOWED_USERS` 中的数字 ID），以便 Discord 应用弹出通知（默认：`false`）。 |
+| `DISCORD_CLARIFY_MENTIONS` | 为 `true` 时，`clarify` 决策提示会 `@mention` 所有允许的用户（默认：`false`）。 |
+| `DISCORD_SLASH_CONFIRM_MENTIONS` | 为 `true` 时，斜杠命令确认提示会 `@mention` 所有允许的用户（默认：`false`）。 |
+| `DISCORD_UPDATE_PROMPT_MENTIONS` | 为 `true` 时，网关更新的"是/否"提示会 `@mention` 所有允许的用户（默认：`false`）。 |
 | `SLACK_BOT_TOKEN` | Slack bot token（`xoxb-...`） |
 | `SLACK_APP_TOKEN` | Slack 应用级 token（`xapp-...`，Socket Mode 必需） |
 | `SLACK_ALLOWED_USERS` | 逗号分隔的 Slack 用户 ID |

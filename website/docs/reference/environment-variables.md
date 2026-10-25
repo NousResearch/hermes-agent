@@ -355,6 +355,10 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `DISCORD_ALLOW_MENTION_ROLES` | Allow the bot to ping `@role` mentions (default: `false`). |
 | `DISCORD_ALLOW_MENTION_USERS` | Allow the bot to ping individual `@user` mentions (default: `true`). |
 | `DISCORD_ALLOW_MENTION_REPLIED_USER` | Ping the author when replying to their message (default: `true`). |
+| `DISCORD_APPROVAL_MENTIONS` | When `true`, command-approval cards `@mention` every allowed user (numeric IDs from `DISCORD_ALLOWED_USERS`) so the Discord app raises a notification (default: `false`). |
+| `DISCORD_CLARIFY_MENTIONS` | When `true`, `clarify` decision prompts `@mention` every allowed user (default: `false`). |
+| `DISCORD_SLASH_CONFIRM_MENTIONS` | When `true`, slash-command confirmation prompts `@mention` every allowed user (default: `false`). |
+| `DISCORD_UPDATE_PROMPT_MENTIONS` | When `true`, gateway update Yes/No prompts `@mention` every allowed user (default: `false`). |
 | `DISCORD_MISSED_MESSAGE_BACKFILL` | Env fallback for `discord.missed_message_backfill.enabled`: replay messages missed while disconnected (default: `false`). See [Missed message backfill](../user-guide/messaging/discord.md#discordmissed_message_backfill). |
 | `DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS` | Comma-separated channel IDs to scan (fallback for `discord.missed_message_backfill.channels`; empty = `discord.free_response_channels`, `*` = every reachable text channel). |
 | `DISCORD_MISSED_MESSAGE_BACKFILL_WINDOW_SECONDS` | How far back a scan may look (fallback for `window_seconds`, default `21600`, minimum `60`). |

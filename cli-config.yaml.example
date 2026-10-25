@@ -1511,6 +1511,10 @@ platform_toolsets:
 #   reactions: true                  # Show processing reactions (default: true)
 #   history_backfill: true           # Recover missed channel messages on mention (default: true)
 #   history_backfill_limit: 50       # Max messages to scan backwards (default: 50)
+#   approval_mentions: false         # @mention allowed users on command-approval cards (default: false)
+#   clarify_mentions: false          # @mention allowed users on clarify prompts (default: false)
+#   slash_confirm_mentions: false    # @mention allowed users on slash-confirm prompts (default: false)
+#   update_prompt_mentions: false    # @mention allowed users on update prompts (default: false)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)

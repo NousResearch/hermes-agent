@@ -1201,7 +1201,8 @@ class VoiceReceiver:
 
 
 from plugins.platforms.discord.adapter_config_readers import (
-    _DISCORD_PROMPT_TIMEOUT_DEFAULT, _DISCORD_PROMPT_TIMEOUT_MIN, _read_discord_prompt_timeout, _read_dm_role_auth_guild)
+    _DISCORD_PROMPT_TIMEOUT_DEFAULT, _DISCORD_PROMPT_TIMEOUT_MIN, _read_discord_prompt_timeout, _read_dm_role_auth_guild,
+    _seed_prompt_mention_keys)
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -5614,16 +5615,20 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             return None
 
     def _self_contained_prompt_content(
-        self, header: str, body: str, *, code_block: bool = False, tail: str = ""
+        self, header: str, body: str, *, code_block: bool = False, tail: str = "",
+        head: str = "",
     ) -> str:
         """Plain content mirroring an embed's payload.
-        Embeds can be invisible/detached on web/mobile, so ``content`` carries the payload."""
+        Embeds can be invisible/detached on web/mobile, so ``content`` carries the payload.
+        ``head`` (e.g. an opt-in mention line) rides as the first line and counts against the
+        message-length budget."""
         body = str(body or "")
+        head_line = f"{head}\n" if head else ""
         if code_block:
-            prefix = f"{header}\n```bash\n"
+            prefix = f"{head_line}{header}\n```bash\n"
             suffix = f"\n```{tail}"
         else:
-            prefix = f"{header}\n\n"
+            prefix = f"{head_line}{header}\n\n"
             suffix = tail
         truncated_suffix = "\n" + t("platform.discord.prompt.truncated_marker")
         budget = max(0, self.MAX_MESSAGE_LENGTH - len(prefix) - len(suffix))
@@ -5631,15 +5636,36 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             body = body[: max(0, budget - len(truncated_suffix))] + truncated_suffix
         return f"{prefix}{body}{suffix}"
 
-    def _approval_mention_content(self) -> Optional[str]:
-        """User mentions for approval prompts, gated on ``discord.approval_mentions``
-        (``DISCORD_APPROVAL_MENTIONS``). Only numeric allowlist entries; default off."""
-        if not self._extra_or_env_flag("approval_mentions", "DISCORD_APPROVAL_MENTIONS", "false", truthy=True):
+    def _prompt_mention_content(self, key: str, env_key: str) -> Optional[str]:
+        """User mentions for interactive prompts, gated on ``discord.<key>`` (``<env_key>``).
+        Only numeric allowlist entries; default off."""
+        if not self._extra_or_env_flag(key, env_key, "false", truthy=True):
             return None
         user_ids = sorted(uid for uid in self._allowed_user_ids if str(uid).isdigit())
         if not user_ids:
             return None
         return " ".join(f"<@{uid}>" for uid in user_ids)
+
+    def _approval_mention_content(self) -> Optional[str]:
+        """User mentions for approval prompts, gated on ``discord.approval_mentions``
+        (``DISCORD_APPROVAL_MENTIONS``). Only numeric allowlist entries; default off."""
+        return self._prompt_mention_content("approval_mentions", "DISCORD_APPROVAL_MENTIONS")
+
+    def _ping_allowed_mentions(self) -> Optional[Any]:
+        """``AllowedMentions`` that lets the injected user mentions actually ping, while still
+        denying @everyone/@here/role pings. ``None`` when discord.py is unavailable."""
+        allowed_mentions_cls = getattr(discord, "AllowedMentions", None)
+        if allowed_mentions_cls is None:
+            return None
+        return allowed_mentions_cls(users=True, roles=False, everyone=False, replied_user=False)
+
+    def _prompt_send_kwargs(self, send_kwargs: dict[str, Any], mention_content: Optional[str]) -> dict[str, Any]:
+        """Attach ``allowed_mentions`` so a mention-bearing prompt's pings are delivered."""
+        if mention_content:
+            allowed_mentions = self._ping_allowed_mentions()
+            if allowed_mentions is not None:
+                send_kwargs["allowed_mentions"] = allowed_mentions
+        return send_kwargs
 
     async def _send_prompt(
         self, chat_id: str, metadata: Optional[dict], build, *, fail_log: Optional[str] = None,
@@ -5714,13 +5740,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 allow_session="session" in choices, smart_denied=prompt.smart_denied,
             )
             send_kwargs: dict[str, Any] = {"content": content, "embed": embed, "view": view}
-            if mention_content:
-                allowed_mentions_cls = getattr(discord, "AllowedMentions", None)
-                if allowed_mentions_cls is not None:
-                    send_kwargs["allowed_mentions"] = allowed_mentions_cls(
-                        users=True, roles=False, everyone=False, replied_user=False,
-                    )
-            return send_kwargs, view
+            return self._prompt_send_kwargs(send_kwargs, mention_content), view
         return await self._send_prompt(prompt.chat_id, prompt.metadata, _build)
 
     async def send_slash_confirm(
@@ -5733,12 +5753,15 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             # content only, so embed-rendering clients don't see it twice (#114693).
             header = title or t("platform.discord.approval.confirm_title")
             embed = discord.Embed(title=_truncate_discord_component_text(header, _DISCORD_EMBED_TITLE_LIMIT), color=discord.Color.orange())
-            content = self._self_contained_prompt_content(f"**{header}**", message)
+            mention_content = self._prompt_mention_content(
+                "slash_confirm_mentions", "DISCORD_SLASH_CONFIRM_MENTIONS")
+            content = self._self_contained_prompt_content(f"**{header}**", message, head=mention_content or "")
             view = SlashConfirmView(
                 session_key=session_key, confirm_id=confirm_id,
                 allowed_user_ids=self._allowed_user_ids, allowed_role_ids=self._allowed_role_ids,
             )
-            return {"content": content, "embed": embed, "view": view}, view
+            return self._prompt_send_kwargs(
+                {"content": content, "embed": embed, "view": view}, mention_content), view
         return await self._send_prompt(chat_id, metadata, _build)
 
     async def send_clarify(
@@ -5782,13 +5805,16 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             else:
                 hint = t("platform.discord.prompt.clarify_hint_text")
                 view = None
+            mention_content = self._prompt_mention_content(
+                "clarify_mentions", "DISCORD_CLARIFY_MENTIONS")
             content = self._self_contained_prompt_content(
                 f"❓ **{clarify_title}**", str(question or "").strip(), tail=f"\n\n{hint}",
+                head=mention_content or "",
             )
             send_kwargs = {"content": content, "embed": embed}
             if view:
                 send_kwargs["view"] = view
-            return send_kwargs, view
+            return self._prompt_send_kwargs(send_kwargs, mention_content), view
         return await self._send_prompt(chat_id, metadata, _build, fail_log="send_clarify")
 
     async def send_update_prompt(
@@ -5807,8 +5833,12 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 session_key=session_key, allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
             )
-            content = self._self_contained_prompt_content(f"☤ **{update_title}**", f"{prompt}{default_hint}")
-            return {"content": content, "embed": embed, "view": view}, view
+            mention_content = self._prompt_mention_content(
+                "update_prompt_mentions", "DISCORD_UPDATE_PROMPT_MENTIONS")
+            content = self._self_contained_prompt_content(
+                f"☤ **{update_title}**", f"{prompt}{default_hint}", head=mention_content or "")
+            return self._prompt_send_kwargs(
+                {"content": content, "embed": embed, "view": view}, mention_content), view
         result = await self._send_prompt(chat_id, metadata, _build)
         if result.success and _metadata_marks_nonconversational(metadata):
             await self._nonconversational_messages.mark_many([result.message_id])
@@ -7313,13 +7343,9 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     _gate("allowed_roles", "DISCORD_ALLOWED_ROLES", from_platform_extra=True)
     _gate("allow_all_users", "DISCORD_ALLOW_ALL_USERS", from_platform_extra=True, lower=True)
     _gate("allow_bots", "DISCORD_ALLOW_BOTS", from_platform_extra=True, lower=True)
-    approval_mentions_cfg = (
-        discord_cfg["approval_mentions"] if "approval_mentions" in discord_cfg
-        else platform_extra_cfg.get("approval_mentions")
-    )
-    if approval_mentions_cfg is not None:
-        seeded_extra["approval_mentions"] = approval_mentions_cfg
-        _env_default("DISCORD_APPROVAL_MENTIONS", str(approval_mentions_cfg).lower())
+    # Prompt-mention knobs: each interactive prompt family has its own opt-in owner-mention
+    # switch (default off), mirroring approval_mentions.
+    _seed_prompt_mention_keys(discord_cfg, platform_extra_cfg, seeded_extra, _env_default)
     _gate("free_response_channels", "DISCORD_FREE_RESPONSE_CHANNELS", from_platform_extra=False)
     for key, env_key in (
         ("auto_thread", "DISCORD_AUTO_THREAD"),

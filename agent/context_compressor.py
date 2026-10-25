@@ -36,7 +36,7 @@ from agent.context_compressor_prune import ProactivePruneMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.context_compressor_retry import retryable_user_text
 from agent.context_compressor_tail import (
-    TAIL_MAX_THRESHOLD_FRACTION, demote_stale_tail_tools, is_demoted_stub, skill_view_names_by_call_id,
+    demote_stale_tail_tools, lean_tail_budget, is_demoted_stub, skill_view_names_by_call_id,
     elide_keeping_skill_safety_rule, with_skill_safety_rule, without_skill_safety_rule,
 )
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
@@ -2232,9 +2232,7 @@ class ContextCompressor(
         if self._tail_token_budget is None:
             if getattr(self, "tail_mode", "lean") == "lean":
                 # Lean mode: tail is a small clamped recency window; the summary carries continuity.
-                budget = max(LEAN_TAIL_FLOOR_TOKENS, min(LEAN_TAIL_CAP_TOKENS, int(self.context_length * 0.025)))
-                if self.threshold_tokens > 0:  # floor AND window term: 25K at 1M outgrew a 12K/30K trigger
-                    budget = min(budget, int(self.threshold_tokens * TAIL_MAX_THRESHOLD_FRACTION))
+                budget = lean_tail_budget(self.context_length, self.threshold_tokens)
             else:
                 budget = int(self.threshold_tokens * self.summary_target_ratio)
             if self.context_length > 0:

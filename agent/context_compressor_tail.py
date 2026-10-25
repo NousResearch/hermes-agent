@@ -16,11 +16,26 @@ _LEAN_TAIL_DEMOTE_MIN_CHARS = 1_500
 # id and a reload marker the stub can pass the Phase-1 prune floor, and re-summarising it would drop both pointers.
 _DEMOTED_STUB_RE = re.compile(r"\[[^\s\]]* output demoted at compaction — [\d,]+ chars preserved in session history\.")
 
-# ``ContextCompressor.tail_token_budget``: the lean tail never claims more than this share of the trigger. A
-# configured ``threshold_tokens`` (or aux summariser ceiling) far below the window left that floor at 83% of a 12K
-# trigger, so head + summary + tail stayed over threshold and every pre-API pass refused as "would grow" (the
-# window-side twin is ``TAIL_MAX_CONTEXT_FRACTION``). It caps the whole lean budget, the 2.5%-of-window term included.
+# :func:`lean_tail_budget`: the lean tail never claims more than this share of the trigger. A configured
+# ``threshold_tokens`` (or aux summariser ceiling) far below the window left the 10K floor at 83% of a 12K trigger, and
+# the 2.5%-of-window term at 216% of it on a 1M window, so head + summary + tail stayed over threshold and every pre-API
+# pass refused as "would grow" (the window-side twin is ``TAIL_MAX_CONTEXT_FRACTION``).
 TAIL_MAX_THRESHOLD_FRACTION = 0.50
+
+
+def lean_tail_budget(context_length: int, threshold_tokens: int) -> int:
+    """Lean-mode tail selection budget: 2.5% of the window clamped to the 10K floor / 25K cap, then held to
+    :data:`TAIL_MAX_THRESHOLD_FRACTION` of the trigger. At or below ``_MIN_SUMMARY_TOKENS`` the summary alone fills
+    the trigger, so no tail leaves room under it and only the floor is held: trimming the recency window there
+    would lose context without ending the loop."""
+    from agent.context_compressor import _MIN_SUMMARY_TOKENS, LEAN_TAIL_CAP_TOKENS, LEAN_TAIL_FLOOR_TOKENS
+    floor, window_term = LEAN_TAIL_FLOOR_TOKENS, min(LEAN_TAIL_CAP_TOKENS, int(context_length * 0.025))
+    if threshold_tokens > 0:
+        share = int(threshold_tokens * TAIL_MAX_THRESHOLD_FRACTION)
+        floor = min(floor, share)
+        if threshold_tokens > _MIN_SUMMARY_TOKENS:
+            window_term = min(window_term, share)
+    return max(floor, window_term)
 
 
 def is_demoted_stub(content: str) -> bool:

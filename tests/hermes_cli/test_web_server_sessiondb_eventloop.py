@@ -141,7 +141,7 @@ def test_session_rename_runs_writer_open_and_update_off_event_loop(monkeypatch, 
         authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id="p", instance_id="owner",
                                      db=db, epoch=begin_runtime_epoch(db, instance_id="owner"))
         authority.sessions["sess-1"] = LiveSession(None, "route")
-        actor = Principal("owner", "p", frozenset({"session:control"}), "http")
+        actor = Principal("owner", "p", frozenset({"session:read", "session:control"}), "http")
         monkeypatch.setattr(_web_server_sessions, "_open_session_db_for_profile", _open_db)
         monkeypatch.setattr(_web_server_sessions, "_session_mutation_context", lambda request, profile: (authority, actor))
         monkeypatch.setattr(_mutations, "mutate_runtime_session", _recording_commit)

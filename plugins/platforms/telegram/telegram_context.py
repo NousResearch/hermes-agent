@@ -6,6 +6,11 @@ must be stable for the life of a session (username only — never a per-message 
 
 from typing import TYPE_CHECKING, Optional
 
+from plugins.platforms.telegram.telegram_bot_mentions import (
+    entity_sources as _mention_entity_sources, entity_type as _mention_entity_type,
+    entity_span as _mention_entity_span,
+)
+
 if TYPE_CHECKING:
     from telegram import Message
     from plugins.platforms.telegram.adapter import TelegramAdapter
@@ -15,11 +20,11 @@ def mentions_other_participants(adapter: "TelegramAdapter", message: "Message") 
     """True when a ``mention``/``text_mention`` entity names someone other than this bot."""
     own = adapter._current_bot_username()
     bot_id = getattr(adapter._bot, "id", None) if adapter._bot else None
-    for source_text, entities in adapter._entity_sources(message):
+    for source_text, entities in _mention_entity_sources(message):
         for entity in entities:
-            entity_type = adapter._entity_type(entity)
+            entity_type = _mention_entity_type(entity)
             if entity_type == "mention":
-                handle = (adapter._entity_span(source_text, entity) or "").strip().lstrip("@").lower()
+                handle = (_mention_entity_span(source_text, entity) or "").strip().lstrip("@").lower()
                 if handle and handle != own:
                     return True
             elif entity_type == "text_mention":

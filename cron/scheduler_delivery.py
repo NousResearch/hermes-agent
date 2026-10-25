@@ -1892,6 +1892,14 @@ def _deliver_result(
                 if receipt and receipt["status"] == "ambiguous":
                     unverified_targets.append(bot_chat_error)
             continue
+        if target["platform"] == "local":
+            from gateway.session_cron import deliver_to_local_chat
+            from hermes_constants import get_hermes_home
+            local_error = deliver_to_local_chat(get_hermes_home(), target["chat_id"],
+                                                bot_chat_message(job, content), diagnostic=for_failure)
+            if local_error:
+                delivery_errors.append(local_error)
+            continue
 
         t = _prepare_target_delivery(
             job, target, adapters=adapters, loop=loop, config=config,

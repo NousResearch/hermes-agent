@@ -146,7 +146,9 @@ class GatewayGoalsMixin:
             session_id = current
             watch[quick_key] = (source, session_id)
         adapter = self._delivery_adapter_for(source)
-        if adapter is None or not adapter._message_handler:
+        from gateway.session_local import LocalSessionAdapter
+        # A local chat has no message handler: its owner admits the tick (``admit_heartbeat``).
+        if adapter is None or not (adapter._message_handler or isinstance(adapter, LocalSessionAdapter)):
             return
         if getattr(self, 'session_authority', None) is not None:
             from gateway.run_heartbeat_acceptance import admit_heartbeat

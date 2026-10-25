@@ -38,6 +38,35 @@ def owner_for_home(home):
     return None
 
 
+async def _admit_local_delivery(authority, chat_id, text, metadata):
+    from gateway.config import Platform
+    from gateway.session_authorities import owner_scope
+    from gateway.session_automation import admit_route_wake
+    from gateway.session_local_recovery import local_adapter_map, restore_local_session
+    with owner_scope(authority):
+        restore_local_session(authority, chat_id)  # a chat closed before this fire, as for completions
+        source = authority.sessions[chat_id].source
+        return await admit_route_wake(authority.runner, local_adapter_map(authority)[Platform.LOCAL], source,
+                                      text, 'cron', metadata)
+
+
+def deliver_to_local_chat(home, chat_id, text, *, diagnostic=False):
+    """Admit a cron result into local chat *chat_id*'s FIFO, as a Kanban wake. A local chat has no
+    push transport (``LocalSessionAdapter.send`` only acknowledges a turn's own output), so only the
+    owner in this process can deliver. Called off the owner loop; None once admitted, else the error."""
+    owner = owner_for_home(home)
+    if owner is None:
+        return f"local chat {chat_id}: no gateway in this process owns its session"
+    authority, loop = owner
+    metadata = {'notification_category': 'diagnostic'} if diagnostic else {}
+    try:
+        admitted = asyncio.run_coroutine_threadsafe(
+            _admit_local_delivery(authority, chat_id, text, metadata), loop).result(timeout=60)
+    except (RuntimeStoreError, KeyError, TimeoutError) as exc:  # unknown chat, refused admission, stalled owner
+        return f"local chat {chat_id}: delivery not confirmed: {exc!r}"
+    return None if admitted else f"local chat {chat_id}: delivery refused: the chat has no committed route"
+
+
 def current_execution():
     return _execution.get()
 

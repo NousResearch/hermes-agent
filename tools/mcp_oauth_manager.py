@@ -146,6 +146,34 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                                  self._hermes_server_name, asm.token_endpoint)
                     break
 
+    async def force_authorization(self, *, http_client: Any = None) -> None:
+        """The authorization-code grant for an explicit ``hermes mcp login``, without waiting for a 401.
+
+        Some OAuth servers (Google's hosted Gmail/Calendar/Drive MCP) answer ``initialize`` and
+        ``tools/list`` anonymously and only challenge on ``tools/call``, so the login probe never starts the
+        browser flow (#89412, #137289). Discovery here goes through the pre-flight path; its issuer must
+        match the advertised authorization server (modulo a root slash, see
+        ``issuer_differs_only_by_root_slash``) because pre-flight discovery does not run the SDK's check."""
+        from tools.mcp_oauth_provider import issuer_differs_only_by_root_slash
+        from tools.mcp_tool import sdk_httpx
+        await self._initialize()
+        if self.context.oauth_metadata is None:
+            await self._prefetch_oauth_metadata()
+        metadata = self.context.oauth_metadata
+        if metadata is None:
+            raise RuntimeError("OAuth authorization server metadata was not discovered")
+        advertised = self.context.auth_server_url
+        if advertised and str(metadata.issuer) != advertised and not issuer_differs_only_by_root_slash(
+                metadata.issuer, advertised):
+            raise RuntimeError(f"Authorization server metadata issuer mismatch: {metadata.issuer} != {advertised}")
+        request = await self._perform_authorization()
+        if http_client is not None:
+            response = await http_client.send(request)
+        else:
+            async with sdk_httpx().AsyncClient(timeout=30.0) as client:
+                response = await client.send(request)
+        await self._handle_token_response(response)
+
     def _persist_oauth_metadata_if_changed(self) -> None:
         """Save metadata the SDK discovered lazily (401 branch); no-op when absent/unchanged."""
         meta = self.context.oauth_metadata

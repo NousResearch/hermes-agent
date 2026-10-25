@@ -7,6 +7,8 @@ import logging
 import os
 import json
 import threading
+import time
+import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field, fields
@@ -14,16 +16,21 @@ from typing import Dict, List, Optional, Any
 
 from .config import Platform, GatewayConfig, HomeChannel
 from .whatsapp_identity import canonical_whatsapp_identifier
-from gateway.session_identity import transport_profile_of
+from gateway.session_identity import transport_profile_of, replace_source
 from gateway.session_persistence import SessionPersistenceMixin, _DB_UNPINNED
 from gateway.session_prompt_pin import SessionPromptPinMixin, sanitize_prompt_pin
 from gateway.session_recovery import SessionRecoveryMixin
 from gateway.session_lifecycle import SessionLifecycleMixin, _iso, _new_session_id, _now, _parse_iso
 from gateway.session_transcript import SessionTranscriptMixin
 # Inverse of _session_key_namespace, defined storage-side (hermes_state must not import gateway).
-from hermes_state_keys import profile_from_session_key_namespace
+from hermes_state_keys import claim_profile_from_session_key, profile_from_session_key_namespace
+from hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
+
+
+class ChannelClaimBlocked(RuntimeStoreError):
+    """Raised when the channel claim is held by another gateway instance."""
 
 
 # -- PII redaction helpers --------------------------------------------------------------------
@@ -727,6 +734,19 @@ def build_session_key(
     return ":".join(str(part) for part in parts)
 
 
+def claim_channel_scope(source: SessionSource, session_key: str):
+    """``(platform, scope_id, chat_id, profile)`` a channel claim keys on
+    (design/channel-claim-lock.md §3), or None when no one claims the event: local/api
+    chats without a channel identity, LOCAL platform, or a non-``agent:`` route key. The
+    profile part is the key's own namespace slot, so claim collisions mirror key
+    collisions exactly (multiplex lanes claim separately)."""
+    chat_id = (source.chat_id or "").strip()
+    profile = claim_profile_from_session_key(session_key)
+    if not chat_id or profile is None or source.platform == Platform.LOCAL:
+        return None
+    return source.platform.value, source.scope_id or "", chat_id, profile
+
+
 class _SessionFlight:
     def __init__(self) -> None:
         self.event = threading.Event()
@@ -930,6 +950,234 @@ class SessionStore(
             with inflight_lock:
                 self._inflight_sessions.pop(session_key, None)
 
+    # -- Channel admission gate (design/channel-claim-lock.md §6) ---------------------------------
+    # Runs first in _get_or_create_session_impl, before the route checks: fold a thread reply
+    # onto the channel route, then claim the channel in the state runtime store so concurrent
+    # admissions of one channel converge on the holder instead of minting a parallel session.
+
+    _claim_instance_id: Optional[str] = None
+
+    def _claim_instance(self) -> str:
+        """Identity this store stamps on its channel claims: one per store per process. A
+        restarted gateway therefore sees the killed instance's claims as foreign and merges
+        via holder-remap (§6 case E) or lease expiry (case F)."""
+        instance = self._claim_instance_id
+        if instance is None:
+            self._claim_instance_id = instance = "inproc-" + uuid.uuid4().hex
+        return instance
+
+    def _entry_for_sid_locked(self, session_id: str) -> Optional[SessionEntry]:
+        """The live routing entry bound to a session id, or None (caller holds ``_lock``)."""
+        return next((e for e in self._entries.values() if e.session_id == session_id), None)
+
+    def _claim_gate(self, source: SessionSource, session_key: str) -> str:
+        """§6.1 collapse + §6 claim gate; returns the session key to route with: the channel
+        key when a thread reply folds onto the channel route, the claim holder's key when
+        this admission must join its lane, else the key it came with. Stands down (raises
+        ``RuntimeStoreError``) only when a live claim names no session this store can serve."""
+        from hermes_state_runtime import (RuntimeStoreError, acquire_channel_claim,
+            renew_channel_claim, transfer_channel_claim)
+        gate = getattr(self.config, "claim_lock", None)
+        if gate is None or not gate.enabled:
+            return session_key  # claim_lock.enabled=false: the gate is off — no fold, no claim, no stand-down
+        # Fail-open rollout phase (design §5): any mode other than "enforce" keeps the
+        # claim store maintained but logs each would-be stand-down instead of acting.
+        monitor = getattr(gate, "mode", "monitor") != "enforce"
+        # §6.1: an exact thread route (live or recoverable) keeps its thread key; a thread
+        # reply folds onto the channel-level route only when that session is live in the
+        # store — minting a channel key here would strand recoverable thread sessions.
+        if source.thread_id:
+            channel_scope_key = self._generate_session_key(
+                source, replace_source(source, thread_id=None, prospective_thread_id=None))
+            if channel_scope_key != session_key:
+                with self._lock:
+                    self._ensure_loaded_locked()
+                    fold_live = (session_key not in self._entries
+                                 and channel_scope_key in self._entries)
+                if fold_live and monitor:
+                    # Monitor is observation only (release §13): log the fold in
+                    # enforce, then admit with pre-claim keying. Zero routing delta.
+                    logger.warning(
+                        "Channel claim monitor for %s/%s: enforce would fold this thread "
+                        "reply onto the live channel session (%s); admitting with "
+                        "pre-claim keying",
+                        source.platform.value, source.chat_id, channel_scope_key)
+                elif fold_live:
+                    session_key = channel_scope_key
+        scope = claim_channel_scope(source, session_key)
+        db = self._db_for_key(session_key) if scope is not None else None
+        if scope is None or db is None:
+            return session_key
+        with self._lock:
+            self._ensure_loaded_locked()
+            observed = self._entries.get(session_key)
+        acquired, claim = acquire_channel_claim(
+            db, platform=scope[0], scope_id=scope[1], chat_id=scope[2], profile=scope[3],
+            instance_id=self._claim_instance(),
+            session_id=observed.session_id if observed is not None else "")
+        if acquired:
+            return session_key
+        claim_sid = claim["session_id"]
+        with self._lock:
+            self._ensure_loaded_locked()
+            holder = self._entry_for_sid_locked(claim_sid) if claim_sid else None
+        remaining = max(claim["lease_expire"] - time.time(), 0.0)
+        if claim["instance_id"] == self._claim_instance():
+            if observed is not None and claim_sid == observed.session_id:
+                # §6 case B re-entry: refresh the thread-root tag when the lane moved.
+                tag = source.thread_id or ""
+                if (claim["thread_root_id"] or "") != tag:
+                    renew_channel_claim(db, platform=scope[0], scope_id=scope[1],
+                        chat_id=scope[2], profile=scope[3], session_id=claim_sid,
+                        thread_root_id=tag)
+                return session_key
+            if holder is None and (claim_sid or observed is not None):
+                # §6 case D / stale SELF claim: the named session is gone (end, reset,
+                # delete). One CAS write moves the claim onto this admission's lane and also
+                # adopts the unbound placeholder ``''`` of a finished create.
+                transfer_channel_claim(db, platform=scope[0], scope_id=scope[1],
+                    chat_id=scope[2], profile=scope[3], old_session_id=claim_sid,
+                    new_session_id=observed.session_id if observed is not None else "")
+                return session_key
+            if holder is not None:
+                # §6 case C: one channel, one lane — join the live holder.
+                if monitor:
+                    logger.warning(
+                        "Channel claim monitor for %s/%s: would route this event into "
+                        "session %s (enforce stands down); admitting on the incoming key",
+                        scope[0], scope[2], claim_sid)
+                    return session_key
+                logger.warning(
+                    "Channel claim stand-down for %s/%s: session %s owns the channel; "
+                    "routing this event into it instead of admitting a new session",
+                    scope[0], scope[2], claim_sid)
+                return self._handle_blocked_claim(source, holder)
+            # Unbound SELF claim and no route to join: another admission of this store is
+            # minting the channel session inside the gate→finish window.
+            # shortcut: stand down rather than wait on the millisecond window; a retry
+            # then lands in case C. Upgrade if concurrent first-message bursts regress.
+            if monitor:
+                logger.warning(
+                    "Channel claim monitor for %s/%s: would refuse to double-admit "
+                    "(channel_claim_inflight; enforce stands down)", scope[0], scope[2])
+                return session_key
+            logger.warning("Channel claim stand-down for %s/%s: a concurrent admission of "
+                           "this gateway is minting the channel session", scope[0], scope[2])
+            raise RuntimeStoreError("channel_claim_inflight")
+        # Foreign instance (§6 cases E/F): F is stolen inside acquire; a live foreign claim
+        # whose session is known here serves this event through it (shared state.db);
+        # otherwise the event stands down so the owning gateway keeps the channel.
+        if holder is not None:
+            if monitor:
+                logger.warning(
+                    "Channel claim monitor for %s/%s: would route this event into session "
+                    "%s of gateway instance %s (enforce stands down); admitting on the "
+                    "incoming key",
+                    scope[0], scope[2], claim_sid, claim["instance_id"])
+                return session_key
+            logger.warning(
+                "Channel claim stand-down for %s/%s: gateway instance %s owns the channel "
+                "with session %s here; routing this event into that session",
+                scope[0], scope[2], claim["instance_id"], claim_sid)
+            return self._handle_blocked_claim(source, holder)
+        if claim_sid and db.get_session(claim_sid) is not None:
+            # The claim lives in this store's own db, so its session row is shared: the
+            # normal route phases recover that row and both mounts converge on it —
+            # a fresh authority mount must not be refused off the lane.
+            logger.warning(
+                "Channel claim for %s/%s: gateway instance %s owns session %s in the shared "
+                "store; this admission recovers and joins that lane",
+                scope[0], scope[2], claim["instance_id"], claim_sid)
+            return session_key
+        if monitor:
+            logger.warning(
+                "Channel claim monitor for %s/%s: would refuse to double-admit (gateway "
+                "instance %s holds a live claim, session %s unknown here, lease %.0fs; "
+                "enforce would refuse with channel_claimed_elsewhere)",
+                scope[0], scope[2], claim["instance_id"], claim_sid or "unbound", remaining)
+            return session_key
+        logger.warning(
+            "Channel claim stand-down for %s/%s: gateway instance %s holds a live claim "
+            "(session %s unknown here, lease %.0fs) — refusing to double-admit the channel",
+            scope[0], scope[2], claim["instance_id"], claim_sid or "unbound", remaining)
+        raise RuntimeStoreError("channel_claimed_elsewhere")
+
+    def _handle_blocked_claim(self, source: SessionSource, holder: SessionEntry) -> str:
+        """§6.1/§6 cases C+E: hand the blocked event to the claim holder's route and retag the
+        holder's thread root so outbound delivery follows the event's thread."""
+        origin = getattr(holder, "origin", None)
+        if origin is not None and source.thread_id and origin.thread_id != source.thread_id:
+            holder.origin = replace_source(origin, thread_id=source.thread_id)
+            self._save_entry(holder.session_key)
+        return holder.session_key
+
+    def _finish_channel_claim(self, session_key, *, end_session_id, create_kwargs, origin):
+        """§5.3/§7.2 transition bookkeeping: bind the gate's placeholder acquire to the
+        minted session, transfer across a reset, release an ended session's claim.
+        Best-effort — the lease covers a missed write."""
+        from hermes_state_runtime import (acquire_channel_claim, release_channel_claim,
+            transfer_channel_claim)
+        if not getattr(getattr(self.config, "claim_lock", None), "enabled", False):
+            return  # claim_lock off: the gate acquired nothing, so nothing binds or moves
+        db = self._db_for_key(session_key) if origin is not None else None
+        scope = claim_channel_scope(origin, session_key) if db is not None else None
+        if scope is None:
+            return
+        platform, scope_id, chat_id, profile = scope
+        new_sid = (create_kwargs or {}).get("session_id")
+        try:
+            if new_sid:
+                moved = transfer_channel_claim(db, platform=platform, scope_id=scope_id,
+                    chat_id=chat_id, profile=profile, old_session_id=end_session_id or "",
+                    new_session_id=new_sid, new_instance_id=self._claim_instance())
+                if not moved and not end_session_id:
+                    # Placeholder bind lost (row stolen or released): fresh acquire (§5.3).
+                    fresh_ok, fresh = acquire_channel_claim(db, platform=platform,
+                        scope_id=scope_id, chat_id=chat_id, profile=profile,
+                        instance_id=self._claim_instance(), session_id=new_sid)
+                    if not fresh_ok and fresh is not None:
+                        # Refused: a raced or foreign row won. The lease covers the
+                        # exposure; log so operators can see the race (pass-2 Minor).
+                        logger.warning(
+                            "Channel claim re-acquire at session finish refused for %s "
+                            "(holder instance %s, session %s)", session_key,
+                            fresh.get("instance_id"), fresh.get("session_id"))
+            elif end_session_id:
+                release_channel_claim(db, platform=platform, scope_id=scope_id,
+                    chat_id=chat_id, profile=profile, session_id=end_session_id)
+        except Exception:
+            logger.exception("Channel claim bookkeeping failed for %s", session_key)
+
+    def _release_entry_claims(self, entries) -> None:
+        """§7.2 hook: delete the claims of entries removed by evict/delete flows."""
+        from hermes_state_runtime import release_channel_claim
+        for entry in entries:
+            origin = getattr(entry, "origin", None)
+            db = self._db_for_key(entry.session_key) if origin is not None else None
+            scope = claim_channel_scope(origin, entry.session_key) if db is not None else None
+            if scope is None:
+                continue
+            try:
+                release_channel_claim(db, platform=scope[0], scope_id=scope[1],
+                    chat_id=scope[2], profile=scope[3], session_id=entry.session_id)
+            except Exception:
+                logger.exception("Channel claim release failed for %s", entry.session_key)
+
+    def _release_orphan_claim_placeholder(self, source: SessionSource, session_key: str) -> None:
+        """Drop the unbound claim placeholder (session_id="") this admission minted
+        before a stand-down. Fail-open: a release failure must not mask the
+        stand-down error that the caller re-raises."""
+        try:
+            scope = claim_channel_scope(source, session_key)
+            db = self._db_for_key(session_key) if scope is not None else None
+            if scope is None or db is None:
+                return
+            from hermes_state_runtime import release_channel_claim
+            release_channel_claim(db, platform=scope[0], scope_id=scope[1],
+                chat_id=scope[2], profile=scope[3], session_id="")
+        except Exception:
+            logger.debug("orphan claim placeholder release failed for %s", session_key, exc_info=True)
+
     def _get_or_create_session_impl(
         self, source: SessionSource, force_new: bool = False, touch_activity: bool = True,
     ) -> SessionEntry:
@@ -937,6 +1185,19 @@ class SessionStore(
         index rewrite + fsync, recovery queries) runs *outside* ``self._lock``, which protects
         only ``_entries`` / ``_loaded`` mutations."""
         session_key = self._generate_session_key(source)
+        if not force_new:
+            from hermes_state_runtime import RuntimeStoreError
+            # Channel claim gate (§6): fold thread replies onto the channel route, then claim
+            # the channel before the checks below mint or reuse a session for it.
+            try:
+                session_key = self._claim_gate(source, session_key)
+            except RuntimeStoreError:
+                raise  # a claim conflict stands down by design with its logged refusal
+            except Exception:
+                # Fail-open: a broken claim store must not mute the bot. The lease bounds
+                # whatever stale row an ungated admission leaves behind.
+                logger.exception("Channel claim gate failed for %s; admitting without a claim",
+                                 session_key)
         now = _now()
         if not force_new:
             self._adopt_legacy_slack_entry(source, session_key)
@@ -965,8 +1226,20 @@ class SessionStore(
             self._route_recover(decision, session_key, source, now)
         create_kwargs = None
         if decision.entry is None:
+            candidate_sid = _new_session_id(now)
+            if not force_new:
+                try:
+                    self._check_relay_claim_gate(source, session_key, candidate_sid, now)
+                except ChannelClaimBlocked:
+                    # The SQLite gate minted a placeholder claim (session_id="") for
+                    # this candidate before the relay gate stood us down. Unbind it,
+                    # or the next admission is refused with channel_claim_inflight
+                    # for the rest of the lease (pass-1 Major 1).
+                    self._release_orphan_claim_placeholder(source, session_key)
+                    raise
             create_kwargs = self._route_create(
-                decision, session_key, source, now, force_new, observed
+                decision, session_key, source, now, force_new, observed,
+                session_id=candidate_sid,
             )
         if decision.needs_save:
             if decision.metadata_only_save:
@@ -1039,14 +1312,19 @@ class SessionStore(
         with self._lock:
             decision.entry = self._entries.setdefault(session_key, recovered)
         decision.needs_save = True
+        # The gate empties a stale self-claim onto its placeholder (§6 case D) before recovery
+        # runs; the create path rebinds placeholders, so the recovery path must too.
+        self._finish_channel_claim(session_key, end_session_id="",
+            create_kwargs={"session_id": decision.entry.session_id}, origin=source)
 
     def _route_create(
         self, decision: _RouteDecision, session_key: str, source: SessionSource, now: datetime,
-        force_new: bool, observed: Optional[SessionEntry],
+        force_new: bool, observed: Optional[SessionEntry], session_id: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
         """Create a candidate outside the lock and publish it only if the key is still vacant;
         returns ``create_session`` kwargs when the candidate won."""
-        session_id = _new_session_id(now)
+        if session_id is None:
+            session_id = _new_session_id(now)
         candidate = SessionEntry(
             session_key=session_key, session_id=session_id, created_at=now, updated_at=now,
             origin=source, display_name=source.chat_name, platform=source.platform,
@@ -1067,6 +1345,42 @@ class SessionStore(
             source_value=source.platform.value, display_name=source.chat_name,
             parent_session_id=decision.prev_session_id,
         )
+
+    def _check_relay_claim_gate(
+        self, source: SessionSource, session_key: str, candidate_sid: str, now: datetime,
+    ) -> None:
+        gate = getattr(self.config, "claim_lock", None)
+        if gate is None or not gate.enabled:
+            return  # claim_lock.enabled=false: no relay acquire, no cross-instance stand-down
+        monitor = getattr(gate, "mode", "monitor") != "enforce"
+        from gateway.relay import relay_instance_id
+        instance_id = relay_instance_id()
+        if not instance_id or not self._routing_home:
+            return
+        try:
+            from tools.bot_relay import _normalize_profile_for_claim, acquire_relay_claim
+            profile_norm = _normalize_profile_for_claim(source.profile)
+            acquired, claim = acquire_relay_claim(
+                self._routing_home, source.platform.value,
+                source.scope_id or "", source.chat_id, profile_norm,
+                instance_id, candidate_sid,
+            )
+            if not acquired and claim and float(claim.get("lease_expire", 0)) >= time.time() and str(claim.get("instance_id")) != instance_id:
+                if monitor:
+                    logger.warning(
+                        "Channel claim monitor for %s/%s: would stand down to gateway "
+                        "instance %s (enforce raises channel_claim_standdown); admitting",
+                        source.platform.value, source.chat_id, claim.get("instance_id"))
+                    return
+                raise ChannelClaimBlocked(
+                    "channel_claim_standdown",
+                    field=f"other_instance={claim.get('instance_id')}",
+                    detail=f"session_key={session_key}",
+                )
+        except ChannelClaimBlocked:
+            raise
+        except Exception:
+            logger.debug("_check_relay_claim_gate failed for %s", session_key, exc_info=True)
 
     def update_session(
         self, session_key: str, last_prompt_tokens: int | None = None, touch_activity: bool = True,
@@ -1237,6 +1551,7 @@ class SessionStore(
         with self._lock:
             self._ensure_loaded_locked()
             dropped = [key for key, entry in self._entries.items() if entry.session_id == session_id]
+            dropped_entries = [self._entries[key] for key in dropped]
             for key in dropped:
                 self._entries.pop(key, None)
             if dropped:
@@ -1247,6 +1562,7 @@ class SessionStore(
         if dropped:
             logger.info("SessionStore removed %d routing entr%s for deleted session %s",
                         len(dropped), "y" if len(dropped) == 1 else "ies", session_id)
+            self._release_entry_claims(dropped_entries)
         return len(dropped)
 
     # Compression repoint is store bookkeeping, not user activity — leave ``updated_at`` alone so a
@@ -1304,6 +1620,19 @@ class SessionStore(
                 display_name=new_entry.display_name, include_compression_ancestors=True,
                 transport_profile=new_entry.transport_profile,
             )
+        # §5.3: the lane moved to another row — move the claim with it, else the old
+        # session stays "the holder" and the gate routes new events back to it.
+        if new_entry is not None and new_entry.origin is not None:
+            db = self._db_for_key(session_key)
+            scope = claim_channel_scope(new_entry.origin, session_key) if db is not None else None
+            if scope is not None:
+                try:
+                    from hermes_state_runtime import transfer_channel_claim
+                    transfer_channel_claim(db, platform=scope[0], scope_id=scope[1],
+                        chat_id=scope[2], profile=scope[3], old_session_id=old_entry.session_id,
+                        new_session_id=target_session_id, new_instance_id=self._claim_instance())
+                except Exception:
+                    logger.exception("Channel claim transfer on switch failed for %s", session_key)
         return new_entry
 
     def list_sessions(self, active_minutes: Optional[int] = None) -> list[SessionEntry]:

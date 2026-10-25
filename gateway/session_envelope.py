@@ -331,10 +331,18 @@ async def check_native_route(runner, payload, session_id, available_source, adap
     _validate_native(runner, event, provenance, fresh_roles)
     route = payload['native_text_v1']['route']
     store = runner.session_store
-    if (store._generate_session_key(event.source) != route
-            or store._generate_session_key(available_source) != route):
-        raise RuntimeStoreError('admission_conflict')
-    entry = store.lookup_by_session_key(route)
+    gen_event = store._generate_session_key(event.source)
+    gen_avail = store._generate_session_key(available_source)
+    if gen_event != route or gen_avail != route:
+        # §6.1 fold: a thread reply admitted into the live channel lane freezes its
+        # thread-scoped route; the lane's key is that route's channel-scope fold.
+        # The claim gate made that binding at admit time; re-derive it from the event.
+        from gateway.session_identity import replace_source
+        folded = store._generate_session_key(
+            replace_source(event.source, thread_id=None, prospective_thread_id=None))
+        if not (gen_event == route and folded == gen_avail):
+            raise RuntimeStoreError('admission_conflict')
+    entry = store.lookup_by_session_key(gen_avail if gen_avail != route else route)
     if entry is None or entry.session_id != session_id:
         raise RuntimeStoreError('admission_conflict')
     if adapter is None or runner._adapter_for_source(event.source) is not adapter:

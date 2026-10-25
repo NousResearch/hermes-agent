@@ -393,6 +393,18 @@ class SessionRecoveryMixin:
             from hermes_cli.observability.relay_shared_metrics import close_session_run
 
             close_session_run(end_session_id)
+        # Release relay claim for cross-instance coordination.
+        if end_session_id and origin is not None and getattr(self, '_routing_home', None) is not None:
+            try:
+                from tools.bot_relay import _normalize_profile_for_claim, release_relay_claim
+                profile_norm = _normalize_profile_for_claim(origin.profile)
+                release_relay_claim(
+                    self._routing_home, origin.platform.value,
+                    origin.scope_id or "", origin.chat_id, profile_norm,
+                    end_session_id,
+                )
+            except Exception:
+                logger.debug("release_relay_claim failed for %s", session_key, exc_info=True)
         if self._db_for_key(session_key) and end_session_id:
             self._promote_session_reset(
                 session_key, end_session_id, end_reason,
@@ -409,6 +421,9 @@ class SessionRecoveryMixin:
                     "self-healing peer refresh on the next turn",
                     create_kwargs.get("session_id"), session_key, during, e),
             )
+        self._finish_channel_claim(
+            session_key, end_session_id=end_session_id,
+            create_kwargs=create_kwargs, origin=origin)
 
     @staticmethod
     def _session_create_kwargs(

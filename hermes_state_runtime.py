@@ -4,6 +4,7 @@ No execution, transport, or authority objects live here. Every mutation uses the
 SessionDB transaction owner, including its inode guard and SQLite retry policy.
 """
 import json
+import time
 import uuid
 from typing import NamedTuple, Optional
 
@@ -11,7 +12,7 @@ from agent.conversation_compression_archive import ABSORBED_ROW_IDS
 from agent.message_metadata import (
     CANONICAL_ROW, DATA_USE, DB_ROW_SNAPSHOT, MESSAGE_UID, PERSISTENCE_ONLY_MESSAGE_FIELDS, TOOL_CALL_UID, TOOL_CALL_UIDS,
 )
-from hermes_state_keys import admission_fingerprint
+from hermes_state_keys import admission_fingerprint, claim_profile_from_profile
 
 
 class SessionGoneEvent(NamedTuple):
@@ -997,3 +998,116 @@ def apply_worker_receipt(db, *, epoch, execution_id, session_id, generation, seq
             compact_terminal_receipts(conn, execution_id)
         return result
     return db._execute_write(write, patience_s=db._TRANSCRIPT_WRITE_PATIENCE_S)
+
+
+# ── Channel admission claims (design/channel-claim-lock.md §5, §7) ──────────────────────────────
+# One row reserves a (platform, scope_id, chat_id, profile) channel for a single gateway
+# instance's session, acquired before admission mints or reuses a session. All mutations are
+# single-transaction CAS writes through _execute_write; the lease releases a crashed gateway's
+# channel by expiry (steal on next acquire) instead of locking it forever.
+
+CHANNEL_CLAIM_LEASE_SECONDS = 300
+
+_CLAIM_WHERE = " WHERE platform=? AND scope_id=? AND chat_id=? AND profile=?"
+
+
+def _claim_params(platform, scope_id, chat_id, profile):
+    return platform, scope_id or "", chat_id, claim_profile_from_profile(profile)
+
+
+def get_channel_claim(db, *, platform: str, scope_id: str, chat_id: str, profile: str):
+    """Current claim row of a channel, or None. Expiry is the caller's decision (§4)."""
+    row = db._read_one(
+        "SELECT * FROM channel_claims" + _CLAIM_WHERE,
+        _claim_params(platform, scope_id, chat_id, profile))
+    return dict(row) if row else None
+
+
+def acquire_channel_claim(db, *, platform: str, scope_id: str, chat_id: str, profile: str,
+                          instance_id: str, session_id: str,
+                          lease_seconds: int = CHANNEL_CLAIM_LEASE_SECONDS,
+                          now: Optional[float] = None):
+    """Atomic channel acquire: INSERT when free, CAS-steal an expired row in the same write.
+    Returns ``(acquired, claim)``. ``acquired`` False hands the live claim (held by this
+    instance's session or another instance's) to the caller for the §6 decision table; an
+    identical re-acquire of our own row is False like any other holder — re-entry is a gate
+    case, not an op case."""
+    now = time.time() if now is None else now
+    lease_expire = now + lease_seconds
+    params = _claim_params(platform, scope_id, chat_id, profile)
+
+    def write(conn):
+        conn.execute(
+            "INSERT OR IGNORE INTO channel_claims"
+            " (platform, scope_id, chat_id, profile, instance_id, session_id,"
+            "  thread_root_id, lease_expire, created_at, updated_at)"
+            " VALUES (?,?,?,?,?,?, '', ?,?,?)",
+            params + (instance_id, session_id, lease_expire, now, now))
+        inserted = conn.execute("SELECT changes()").fetchone()[0]
+        row = conn.execute("SELECT * FROM channel_claims" + _CLAIM_WHERE, params).fetchone()
+        if inserted:
+            return True, dict(row)
+        if row is None:  # unreachable: the INSERT above guarantees the row
+            return False, None
+        if row["lease_expire"] < now:
+            # EXPIRED (§4): steal under CAS on the observed holder; a racing writer that
+            # renewed first wins and its fresh row is what we report.
+            conn.execute(
+                "UPDATE channel_claims SET instance_id=?, session_id=?, thread_root_id='',"
+                " lease_expire=?, updated_at=?" + _CLAIM_WHERE +
+                " AND instance_id=? AND lease_expire=?",
+                (instance_id, session_id, lease_expire, now)
+                + params + (row["instance_id"], row["lease_expire"]))
+            row = conn.execute("SELECT * FROM channel_claims" + _CLAIM_WHERE, params).fetchone()
+            return row["instance_id"] == instance_id, dict(row)
+        return False, dict(row)
+    return db._execute_write(write)
+
+
+def transfer_channel_claim(db, *, platform: str, scope_id: str, chat_id: str, profile: str,
+                           old_session_id: str, new_session_id: str, new_instance_id: Optional[str] = None,
+                           lease_seconds: int = CHANNEL_CLAIM_LEASE_SECONDS) -> bool:
+    """Move a claim between sessions of one lane atomically (§5.3): /new and auto-reset
+    (old→new), the admission bind of the gate's placeholder (`''` row → new), and the steal
+    of a claim whose named session died. False: the claim no longer names *old_session_id*
+    — the caller falls back to a fresh acquire or release."""
+    now = time.time()
+    params = _claim_params(platform, scope_id, chat_id, profile)
+
+    def write(conn):
+        conn.execute(
+            "UPDATE channel_claims SET session_id=?, instance_id=COALESCE(?, instance_id),"
+            " lease_expire=?, updated_at=?, thread_root_id=''" + _CLAIM_WHERE + " AND session_id=?",
+            (new_session_id, new_instance_id, now + lease_seconds, now)
+            + params + (old_session_id,))
+        return conn.execute("SELECT changes()").fetchone()[0] > 0
+    return db._execute_write(write)
+
+
+def renew_channel_claim(db, *, platform: str, scope_id: str, chat_id: str, profile: str,
+                        session_id: str, thread_root_id: str = "",
+                        lease_seconds: int = CHANNEL_CLAIM_LEASE_SECONDS) -> bool:
+    """Extend the lease of the claim bound to *session_id* once per turn (§7.1); the
+    thread-root tag rides along. False: this session no longer holds the channel."""
+    now = time.time()
+    params = _claim_params(platform, scope_id, chat_id, profile)
+
+    def write(conn):
+        conn.execute(
+            "UPDATE channel_claims SET lease_expire=?, updated_at=?, thread_root_id=?"
+            + _CLAIM_WHERE + " AND session_id=?",
+            (now + lease_seconds, now, thread_root_id) + params + (session_id,))
+        return conn.execute("SELECT changes()").fetchone()[0] > 0
+    return db._execute_write(write)
+
+
+def release_channel_claim(db, *, platform: str, scope_id: str, chat_id: str, profile: str,
+                          session_id: str) -> None:
+    """Delete the claim a session holds (§7.2): normal end, eviction, session delete."""
+    params = _claim_params(platform, scope_id, chat_id, profile)
+
+    def write(conn):
+        conn.execute(
+            "DELETE FROM channel_claims" + _CLAIM_WHERE + " AND session_id=?",
+            params + (session_id,))
+    db._execute_write(write)

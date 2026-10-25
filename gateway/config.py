@@ -541,6 +541,43 @@ class StreamingConfig:
         )
 
 
+# Channel claim-gate rollout modes (design/channel-claim-lock.md §5): "monitor" logs every
+# stand-down the gate would take instead of acting on it (fail-open rollout phase);
+# "enforce" acts (route into the holder / refuse the double-admit).
+CLAIM_LOCK_MODES = ("monitor", "enforce")
+
+
+@dataclass
+class ClaimLockConfig:
+    """``gateway.claim_lock`` — rollout gate for the admission-time channel claim.
+
+    ``enabled: false`` turns the whole gate off: no claim acquire, no thread fold, no
+    renewal, no stand-down — exactly the pre-claim-lock behavior (the kill switch).
+    ``mode`` picks the phase: ``monitor`` (default, the fail-open phase upstream merges
+    behind) keeps the claim store maintained but logs each would-have-blocked admission
+    without refusing or rerouting it; ``enforce`` additionally stands down on live claim
+    conflicts. This slice parses ``enabled`` and ``mode`` only — ``scope`` and ``lease_s``
+    belong to the cross-instance relay claim surface and are not read here.
+    """
+    enabled: bool = True
+    mode: str = "monitor"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"enabled": self.enabled, "mode": self.mode}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ClaimLockConfig":
+        if not isinstance(data, dict) or not data:
+            return cls()
+        mode = str(data.get("mode") or "monitor").strip().lower()
+        if mode not in CLAIM_LOCK_MODES:
+            logger.warning(
+                "gateway.claim_lock.mode %r is not one of %s; using monitor",
+                data.get("mode"), ", ".join(CLAIM_LOCK_MODES))
+            mode = "monitor"
+        return cls(enabled=_coerce_bool(data.get("enabled"), True), mode=mode)
+
+
 def _has_usable_api_server_key(key: object) -> bool:
     """True when API_SERVER_KEY is strong enough for the adapter to start (mirrors the
     ``has_usable_secret(min_length=16)`` guard in ``gateway/platforms/api_server.py``)."""
@@ -645,6 +682,7 @@ class GatewayConfig:
     unauthorized_dm_behavior: str = "pair"  # UNAUTHORIZED_DM_BEHAVIORS
     unauthorized_dm_decline_message: str = ""  # "decline" reply text; empty → DEFAULT_UNAUTHORIZED_DM_DECLINE_MESSAGE
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
+    claim_lock: ClaimLockConfig = field(default_factory=ClaimLockConfig)
     # Prune SessionEntry records older than this (a resumed chat gets a fresh session). 0 = off.
     session_store_max_age_days: int = 90
     profile_routes: list = field(default_factory=list)  # gateway/profile_routing.py
@@ -698,6 +736,7 @@ class GatewayConfig:
             "sessions_dir": str(self.sessions_dir),
             **{name: getattr(self, name) for name in self._SCALAR_DICT_FIELDS},
             "streaming": self.streaming.to_dict(),
+            "claim_lock": self.claim_lock.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
             "profile_routes": [
                 {k: v for k, v in asdict(r).items() if k != "user_id" or v is not None}
@@ -797,6 +836,7 @@ class GatewayConfig:
             unauthorized_dm_behavior=_normalize_choice(data.get("unauthorized_dm_behavior"), UNAUTHORIZED_DM_BEHAVIORS, "pair"),
             unauthorized_dm_decline_message=str(data.get("unauthorized_dm_decline_message") or "").strip(),
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
+            claim_lock=ClaimLockConfig.from_dict(pick("claim_lock")),
             session_store_max_age_days=session_store_max_age_days,
             profile_routes=parse_profile_routes(data.get("profile_routes") or []),
         )

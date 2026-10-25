@@ -45,6 +45,16 @@ async def admit_message(authority, event):
     except RuntimeStoreError as exc:
         if exc.reason == 'stale_generation' and exc.field == 'route':
             return None  # a later /stop or /new of the chat fenced it, as main cancels a queued row
+        if exc.reason == 'channel_claim_standdown':
+            logger.warning("gateway.session_ingress: channel claim held by %s; standing down", getattr(exc, 'field', '?'))
+            # Same stand-down class as the two arms below (cross-instance relay):
+            # no reply — an answer would give the channel a second voice (§8.2).
+            return None
+        if exc.reason in ('channel_claimed_elsewhere', 'channel_claim_inflight'):
+            # Claim-gate stand-down from before any session existed; the gate already logged
+            # its routing decision. No reply here: an answer would give the channel a second
+            # voice, and cross-instance overlap may drop the event (design §8.2).
+            return None
         if exc.reason == 'invalid_params' and exc.field:
             # Refused before commit (_validate_native): a refusal notice instead of a generic turn error.
             # The reply reaches the whole chat, so only content clauses are named; trust and provenance

@@ -58,6 +58,7 @@ class FakeWS:
     def __init__(self):
         self.sent = []               # list of ("bytes"|"text", payload)
         self.close_code = None
+        self.close_reason = None
 
     async def send_bytes(self, data):
         self.sent.append(("bytes", bytes(data)))
@@ -67,6 +68,7 @@ class FakeWS:
 
     async def close(self, code=1000, reason=""):
         self.close_code = code
+        self.close_reason = reason
 
 
 class FailingWS(FakeWS):
@@ -517,6 +519,46 @@ async def test_eof_marks_dead_and_closes_socket_4410():
     assert s.alive is False
     assert ws.close_code == 4410
     await s.close()
+
+
+# 4410 also ends a shell the server closed (expiry, a deleted profile, shutdown). Only a shell that
+# exited by itself says so in the close reason, so a viewer can end its tab the way native Desktop
+# does when its shell exits, and keep the tab for the other cases.
+@pytest.mark.asyncio
+async def test_eof_close_says_the_process_exited():
+    from hermes_cli.pty_session import PtySession
+    s = PtySession("k", FakeBridge([b"logout", None]), buffer_cap=1024, read_timeout=0.01)
+    await s.start()
+    ws = FakeWS()
+    await s.attach(ws)
+    await async_wait_until(lambda: ws.close_code is not None, timeout=2.0)
+    assert (ws.close_code, ws.close_reason) == (4410, "Process exited")
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_attaching_to_a_shell_that_exited_while_detached_says_it_exited():
+    from hermes_cli.pty_session import PtySession
+    s = PtySession("k", FakeBridge([b"logout", None]), buffer_cap=1024, read_timeout=0.01)
+    await s.start()
+    await async_wait_until(lambda: not s.alive, timeout=2.0)
+    ws = FakeWS()
+    assert await s.attach(ws, initial_text="meta") is False
+    assert ws.sent == [("text", "meta"), ("bytes", b"logout")]
+    assert (ws.close_code, ws.close_reason) == (4410, "Process exited")
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_a_server_close_keeps_4410_without_the_exit_reason():
+    from hermes_cli.pty_session import PtySession
+    s = PtySession("k", FakeBridge([]), buffer_cap=1024, read_timeout=0.01)
+    await s.start()
+    ws = FakeWS()
+    await s.attach(ws)
+    await s.close()
+    assert ws.close_code == 4410
+    assert ws.close_reason != "Process exited"
 
 
 from hermes_cli.pty_session import PtySessionRegistry, RegistryFull

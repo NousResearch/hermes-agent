@@ -187,6 +187,31 @@ describe('persistent browser terminals', () => {
     expect(localStorage.length).toBe(0)
   })
 
+  // The server closes with 4410 both when the shell exits (`exit`, Ctrl-D) and when it ends the
+  // shell itself (expiry, a deleted profile, shutdown); only an exit carries the reason.
+  it('reports a host shell that exited as an exit, as native Desktop does, and forgets it', async () => {
+    const api = install()
+    const session = await api.start({ cwd: '/original', restoreKey: 'tab-one' })
+    const exit = vi.fn()
+    api.onExit(session.id, exit)
+    Socket.instances[0].close(4410, 'Process exited')
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(Socket.instances).toHaveLength(1)
+    expect(exit).toHaveBeenCalledExactlyOnceWith({ code: null, signal: null })
+    expect(localStorage.length).toBe(0)
+  })
+
+  it('reports a 4410 close without the exit reason as expired', async () => {
+    const api = install()
+    const session = await api.start({ cwd: '/original', restoreKey: 'tab-one' })
+    const exit = vi.fn()
+    api.onExit(session.id, exit)
+    Socket.instances[0].close(4410)
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(Socket.instances).toHaveLength(1)
+    expect(exit).toHaveBeenCalledExactlyOnceWith({ code: null, signal: 'expired' })
+  })
+
   it('never retries denied attachments or silently adopts the active profile', async () => {
     const api = install()
     const session = await api.start({ cwd: '/original', restoreKey: 'tab-one' })

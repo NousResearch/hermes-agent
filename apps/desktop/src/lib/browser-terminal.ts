@@ -47,6 +47,9 @@ interface TerminalState {
 }
 
 const META = '\u0000HERMES_TERMINAL_META:'
+// 4410 also ends a shell the server closed (expiry, a deleted profile, shutdown); only a shell
+// that exited by itself (`exit`, Ctrl-D) carries this reason (pty_session.WS_CLOSE_PROCESS_EXITED_REASON).
+const PROCESS_EXITED_REASON = 'Process exited'
 const MAX_RETRIES = 5
 const RETRY_BACKOFF = { baseDelayMs: 500, capMs: 8000 }
 const START_TIMEOUT = 10_000
@@ -267,6 +270,9 @@ async function dialTerminal(state: TerminalState, context: DialContext): Promise
 
       if (!state.terminalId) {
         finish(state, event.code === 4410 ? null : 'disconnected')
+      } else if (event.code === 4410 && event.reason === PROCESS_EXITED_REASON) {
+        // The shell ended: report a process exit, which closes the tab as in native Desktop.
+        finish(state, null)
       } else if (signal !== 'disconnected') {
         finish(state, signal)
       } else {

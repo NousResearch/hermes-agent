@@ -299,6 +299,21 @@ it('replays server history once, suppresses parser replies, and detaches on remo
   expect(Socket.instances[2].url.searchParams.has('attach')).toBe(false)
 })
 
+// Typing `exit` ends the host shell: the tab closes as it does in native Desktop, instead of
+// staying open as an expired terminal.
+it('closes a persistent browser tab when its host shell exits', async () => {
+  seedWebappSession('test-token')
+  Socket.persistent = true
+  vi.stubGlobal('WebSocket', Socket)
+  installBrowserDesktopBridge()
+  const id = createTerminal('/work')
+  render(<Harness id={id} />)
+  await waitFor(() => expect(screen.getByText('open')).toBeTruthy())
+  act(() => Socket.instances[0].close(4410, 'Process exited'))
+  expect($terminals.get().some(tab => tab.id === id)).toBe(false)
+  expect(emulator.output).not.toContain('Press Enter to create a new shell')
+})
+
 it('close others and close all terminate mounted and unmounted persisted shells', async () => {
   seedWebappSession('test-token')
   Socket.persistent = true

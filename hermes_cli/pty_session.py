@@ -19,6 +19,9 @@ from fastapi import WebSocketDisconnect
 logger = logging.getLogger(__name__)
 
 WS_CLOSE_PROCESS_EXITED = 4410
+# 4410 also ends a session the server closed (expiry, a deleted profile, shutdown). Only a child
+# that exited by itself carries this reason, so the Webapp terminal can close its tab on `exit`.
+WS_CLOSE_PROCESS_EXITED_REASON = "Process exited"
 WS_CLOSE_SUPERSEDED = 4409
 # Going Away: the viewer stopped taking output, but its session lives on and the same
 # token reattaches. The dashboard chat tab and the Webapp terminal both redial on 1001;
@@ -140,7 +143,7 @@ class PtySession:
                 ws = self._ws
                 async with self._output_lock:
                     if self._ws is ws:
-                        await _close_ws(ws, WS_CLOSE_PROCESS_EXITED)
+                        await _close_ws(ws, WS_CLOSE_PROCESS_EXITED, WS_CLOSE_PROCESS_EXITED_REASON)
                 return
             if not chunk:                            # idle tick
                 await asyncio.sleep(0)
@@ -275,7 +278,7 @@ class PtySession:
             return False
         if not self.alive:
             self.detach(ws)
-            await _close_ws(ws, WS_CLOSE_PROCESS_EXITED)
+            await _close_ws(ws, WS_CLOSE_PROCESS_EXITED, WS_CLOSE_PROCESS_EXITED_REASON)
             return False
         if force_redraw:
             return await self.write(ws, TUI_FORCE_REDRAW)

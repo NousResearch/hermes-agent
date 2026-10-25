@@ -1,5 +1,7 @@
 """RoomLink dispatch validation and hidden member-session ownership."""
 
+from __future__ import annotations
+
 import asyncio
 import hashlib
 import hmac

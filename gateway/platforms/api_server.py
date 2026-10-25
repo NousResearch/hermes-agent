@@ -6,6 +6,8 @@ OpenAI-compatible frontend connects at http://localhost:8642/v1 with API_SERVER_
 ``gateway.multiplex_profiles`` secondary profiles live at ``/p/<profile>/...``.
 """
 
+from __future__ import annotations
+
 import asyncio
 import errno
 import hashlib

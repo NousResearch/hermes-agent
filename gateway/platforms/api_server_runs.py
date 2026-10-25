@@ -1,5 +1,7 @@
 """Durable ``/v1/runs`` admission, status, events, and control handlers."""
 
+from __future__ import annotations
+
 import asyncio
 import hashlib
 import json

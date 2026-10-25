@@ -49,7 +49,12 @@ def spawn_unmanaged_gateway(profile_home: Path, *, deadline: float, idle_exit: b
     # _apply_profile_override follows the sticky active_profile and boots the wrong
     # profile's daemon. A <root>/profiles/<name> home is already trusted as-is.
     selector = [] if home.parent.name == "profiles" else ["--profile", "default"]
-    command = [sys.executable, "-m", "hermes_cli.main", *selector, "gateway", "run", "--quiet",
+    # The daemon runs on PM's committed Python tool when one is recorded -- never the
+    # invoking client's interpreter: a client shim on pre-PM Python must not decide the
+    # daemon's ABI (its dependency generation, linked SQLite and logging all follow this
+    # interpreter). get_python_path() falls back to sys.executable when nothing is committed.
+    from hermes_cli.gateway import get_python_path
+    command = [get_python_path(), "-m", "hermes_cli.main", *selector, "gateway", "run", "--quiet",
                *(["--idle-exit"] if idle_exit else []), *(["--force"] if force else [])]
     # The target profile's own secrets, never the launching client's: a `hermes -p work` client's
     # dotenv would otherwise become the default daemon's frozen launch env (host_gateway_child_env).

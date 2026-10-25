@@ -990,6 +990,35 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             return None
         return None, _parsed["platform"], _parsed["chat_id"], _parsed.get("thread_id"), _parsed.get("profile")
 
+    async def _send_crash_loop_alert(self, uptime_s: float) -> None:
+        """One actionable alert per hour while a crash loop persists.
+
+        The per-exit broadcast is spam (2026-10-25: ~975 of them); total silence would
+        hide the outage. Best-effort by design: never raises into the shutdown path.
+        """
+        try:
+            from gateway.status import crash_loop_alert_due
+            if not crash_loop_alert_due():
+                return
+            msg = (f"Hermes is crash-looping: this attempt stayed up only {uptime_s:.0f}s. "
+                   f"This notice repeats at most hourly. Run `hermes doctor` and check "
+                   f"logs/gateway-exit-diag.log.")
+            profile_adapters = getattr(self, "_profile_adapters", None) or {}
+            for profile, platform, platform_cfg in list(self._served_home_channel_configs()):
+                home = platform_cfg.home_channel
+                if not home or not home.chat_id:
+                    continue
+                adapter = (self.adapters if profile is None else profile_adapters.get(profile) or {}).get(platform)
+                if adapter is None:
+                    continue
+                if not self._notice_allowed(platform, "home channel", platform_cfg):
+                    continue
+                await self._send_shutdown_notice(
+                    adapter, str(home.chat_id), msg, "crash-loop alert", platform.value)
+                break  # one delivered alert is enough
+        except Exception:
+            logger.debug("Failed to send crash-loop alert", exc_info=True)
+
     async def _send_shutdown_notice(
         self, adapter, chat_id: str, msg: str, kind: str, platform_str: str, **send_kwargs
     ) -> bool:
@@ -1093,6 +1122,20 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                     "Home-channel shutdown broadcast suppressed by drain marker (suppress_notification=true)"
                 )
                 return
+        # Crash-loop guardrail: a process that stops seconds after boot is restart churn, and its
+        # "gateway shutting down" broadcast is spam, not signal -- one broken spawn loop sent ~975
+        # of them in a night (2026-10-25). A genuine stop happens after minutes of uptime and still
+        # notifies. An unknown start time fails toward the louder behaviour, like the drain check.
+        min_uptime_s = 120.0
+        started_at = float(getattr(self, "_gateway_started_at", 0.0) or 0.0)
+        uptime_s = (time.time() - started_at) if started_at > 0.0 else -1.0
+        if 0.0 <= uptime_s < min_uptime_s:
+            logger.info(
+                "Home-channel shutdown broadcast suppressed: gateway was up only %.0fs (crash-loop guard)",
+                uptime_s,
+            )
+            await self._send_crash_loop_alert(uptime_s)
+            return
         # EVERY served profile's home channel, through that profile's OWN bot: ``self.adapters`` and
         # ``self.config`` are the launch profile's alone, so iterating them left the secondaries'
         # channels silent (#118233). ``list(...)`` snapshots the adapter maps: adapter.send() can hit

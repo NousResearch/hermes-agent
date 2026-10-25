@@ -1113,6 +1113,7 @@ def _prepare_runtime_status_update(
         payload.setdefault("platforms", {})
         if not isinstance(payload["platforms"], dict):
             payload["platforms"] = {}
+        payload["platforms"] = _prune_stale_platform_entries(payload["platforms"])
         if clear_profile_platforms or drop_profile_platforms:
             drop_prefix = f"{drop_profile_platforms}:" if drop_profile_platforms else None
             payload["platforms"] = {
@@ -1183,6 +1184,54 @@ def write_runtime_status(
     # timed-out update is still written by the background writer, so its transition happened.
     _emit_runtime_status_transition(previous_payload, payload)
     return writer.wait(generation, timeout=wait_timeout)
+
+
+def crash_loop_alert_due(now: float | None = None, home: Optional[Path] = None) -> bool:
+    """True while the hourly crash-loop alert slot is free; claims it as a side effect.
+
+    The marker file IS the rate limit -- it is claimed before the send so a failing send
+    cannot itself become a spam loop. A crash-loop run is many short-lived processes, so
+    the limit must live on disk, not in process state.
+    """
+    import time
+    from datetime import datetime, timezone
+
+    from hermes_constants import get_hermes_home
+
+    now = time.time() if now is None else now
+    path = Path(home if home is not None else get_hermes_home()) / "crash-loop-alert.json"
+    try:
+        if path.exists() and now - path.stat().st_mtime < 3600.0:
+            return False
+        path.write_text(json.dumps({"claimed_at": datetime.now(UTC).isoformat()}), encoding="utf-8")
+        return True
+    except OSError:
+        return False
+
+
+def _prune_stale_platform_entries(platforms: dict[str, Any], *, max_age_days: float = 90.0) -> dict[str, Any]:
+    """Drop platform entries nothing has re-stamped in 90+ days.
+
+    A platform that leaves the configuration (session retired, profile edited) leaves a
+    residue entry no later update ever touches -- one stale 'retrying' record misled
+    status output for months. Live records (including 'disabled' ones) are re-stamped
+    every boot, so age alone separates residue from state.
+    """
+    import time
+    from datetime import datetime
+
+    cutoff = time.time() - max_age_days * 86400.0
+    kept: dict[str, Any] = {}
+    for key, value in platforms.items():
+        stamp = value.get("updated_at") if isinstance(value, dict) else None
+        try:
+            parsed = datetime.fromisoformat(stamp) if isinstance(stamp, str) else None
+        except ValueError:
+            parsed = None
+        if parsed is not None and parsed.timestamp() < cutoff:
+            continue
+        kept[key] = value
+    return kept
 
 
 def publish_runtime_status(**fields: Any) -> int:

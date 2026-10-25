@@ -476,6 +476,19 @@ def activate_dependencies(project_root: Path) -> None:
             while not held and (current := committed_venv(project_root)) not in (None, environment):
                 release()
                 environment, release = current, lease_generation(current)
+            # A committed generation is built for ONE interpreter (see venv_python_version).
+            # A launcher running a different Python must never select it: activating a 3.14
+            # tree under CPython 3.11 dies at the first native import (pydantic_core), and
+            # that SystemExit took the whole gateway down mid-boot. The mismatched process
+            # keeps the packages it booted with instead.
+            if (env_version := venv_python_version(environment)) not in (None, sys.version_info[:2]):
+                release()
+                if sys.prefix != sys.base_prefix:
+                    return  # a venv interpreter carries its own ABI-matched packages
+                raise RuntimeError(
+                    f"committed dependency environment targets Python "
+                    f"{env_version[0]}.{env_version[1]}, but this interpreter is "
+                    f"{sys.version_info[0]}.{sys.version_info[1]}: run hermes pm repair")
             selected = site_packages(environment)
             if not selected.is_dir() and not runtime_facts_path(project_root).is_file():
                 return

@@ -5,9 +5,10 @@ reload / targeted unload unwind registries in reverse order. Mixed into :class:`
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Optional, Set, Union
 
 from registration_lifecycle import replacement_coordinator
 from hermes_cli.plugins_loader import _plugin_home_scope
@@ -117,6 +118,67 @@ class PluginLedgerMixin:
                 "longer supplies it after re-discovery", registration.kind, registration.key, registration.plugin_key,
             )
         self._dispose_registrations(stale)
+
+    @contextmanager
+    def _force_sweep_continuity(self, force: bool) -> Iterator[None]:
+        """Keep a force re-discovery from opening a gap in live behaviour (entered under the discovery lock).
+
+        Unload-all clears ``_hooks`` before plugins re-register, and dispatch does not take the discovery
+        lock, so a concurrent turn used to see no hooks at all (``pre_llm_call`` context missing,
+        ``pre_tool_call`` guards failing OPEN) and every plugin's supervised task was cancelled even when
+        the plugin came straight back. Before unload-all this publishes ``(generation + 1, frozen copy of
+        the committed table)`` as one value, and ``(generation + 2, None)`` when the sweep commits or
+        fails; dispatch serves the frozen copy in between (see ``_dispatch_callbacks``, which also
+        re-checks the generation for a lookup that was already under way). The copy holds the previous
+        incarnation's callbacks, so they can still run after that plugin's ``on_unload``. In-flight
+        supervised tasks are parked and re-adopted afterwards (see ``_readopt_parked_tasks``).
+        Non-force calls and a nested force sweep on the same thread are no-ops.
+        """
+        generation, frozen = self._hook_dispatch_state
+        if not force or frozen is not None:
+            yield
+            return
+        # dict() first: one atomic copy even if a config-hook writer touches ``_hooks`` without the lock.
+        committed = {name: tuple(callbacks) for name, callbacks in dict(self._hooks).items()}
+        self._hook_dispatch_state = (generation + 1, committed)
+        parked: list[PluginRegistration] = []
+        try:
+            parked = self._park_supervised_tasks()
+            yield
+        finally:
+            self._hook_dispatch_state = (generation + 2, None)
+            self._readopt_parked_tasks(parked)
+
+    def _park_supervised_tasks(self) -> list[PluginRegistration]:
+        """Detach live ``spawn_task`` handles from the ledger so unload-all does not cancel them."""
+        parked = [r for r in self._registration_order if r.kind == "background_task" and r.active]
+        self._forget_registrations(parked)
+        return parked
+
+    def _readopt_parked_tasks(self, parked: list[PluginRegistration]) -> None:
+        """Return each still-running parked task to its plugin's ledger when that plugin is loaded again, so a
+        later targeted unload/disable still cancels it. Cancel it when the plugin did not come back (disabled,
+        removed, failed) or when the new incarnation started a supervised task of the same name (a
+        ``register()``-spawned loop must not run twice)."""
+        restarted = {(r.plugin_key, r.key) for r in self._registration_order
+                     if r.kind == "background_task" and r.active}
+        cancel: list[PluginRegistration] = []
+        for registration in parked:
+            if not registration.active:
+                continue  # finished while parked; its done-callback already released it
+            loaded = self._plugins.get(registration.plugin_key)
+            if (loaded is None or loaded.error or not loaded.enabled or loaded.deferred
+                    or (registration.plugin_key, registration.key) in restarted):
+                cancel.append(registration)
+                continue
+            self._ownership_ledger.setdefault(registration.plugin_key, []).append(registration)
+            self._registration_order.append(registration)
+            if not registration.active:  # finished during re-adoption: drop the stale handle again
+                self._forget_registrations([registration])
+        for registration in cancel:
+            logger.info("Cancelling supervised task %s of plugin '%s' after force re-discovery",
+                        registration.key, registration.plugin_key)
+        self._dispose_registrations(cancel)
 
     @staticmethod
     def _remove_identity(values: list, target: Any) -> bool:

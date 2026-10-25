@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 from urllib.parse import urljoin
 
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
@@ -41,12 +41,12 @@ MITTWALD_TTS_LANGUAGES = (
     "Korean", "Portuguese", "Russian", "Sichuan_Dialect", "Spanish")
 # ISO-639-1 -> the word form the endpoint expects. Anything else (including an already
 # spelled-out language) is passed through unchanged rather than guessed at.
-_MITTWALD_TTS_LANGUAGE_BY_ISO: Dict[str, str] = {
+_MITTWALD_TTS_LANGUAGE_BY_ISO: dict[str, str] = {
     "zh": "Chinese", "en": "English", "fr": "French", "de": "German", "it": "Italian",
     "ja": "Japanese", "ko": "Korean", "pt": "Portuguese", "ru": "Russian", "es": "Spanish"}
 # Lower-cased word form -> its documented spelling, so a config value only differing in case
 # still reaches the endpoint in the spelling it accepts.
-_MITTWALD_TTS_LANGUAGE_BY_WORD: Dict[str, str] = {
+_MITTWALD_TTS_LANGUAGE_BY_WORD: dict[str, str] = {
     language.lower(): language for language in MITTWALD_TTS_LANGUAGES}
 
 
@@ -135,7 +135,7 @@ def _generate_openai_tts(
     text: str, output_path: str, tts_config: dict[str, Any], *, api_key: Optional[str] = None,
     base_url: Optional[str] = None, model: Optional[str] = None, voice: Optional[str] = None,
     speed: Optional[float] = None, instructions: Optional[str] = None,
-    extra_body: Optional[Dict[str, Any]] = None) -> str:
+    extra_body: Optional[dict[str, Any]] = None) -> str:
     """Generate audio via the OpenAI ``audio.speech.create`` SDK shape.
 
     Explicit kwargs let OpenAI-compatible backends (DeepInfra) supply credentials/model/voice
@@ -214,7 +214,7 @@ def _generate_deepinfra_tts(text: str, output_path: str, tts_config: dict[str, A
         speed=float(di_config.get("speed", tts_config.get("speed", 1.0))))
 
 
-def _generate_mittwald_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+def _generate_mittwald_tts(text: str, output_path: str, tts_config: dict[str, Any]) -> str:
     """Generate audio via mittwald AI Hosting (Qwen3-TTS), then delegate to the OpenAI-compatible handler."""
     origin = _origin()
     api_key = resolve_mittwald_api_key()

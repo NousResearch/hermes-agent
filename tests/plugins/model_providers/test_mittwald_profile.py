@@ -15,7 +15,7 @@ import pytest
 @pytest.fixture
 def mittwald_profile():
     """Resolve the registered profile through the registry, exercising plugin discovery."""
-    import model_tools  # noqa: F401
+    import model_tools
     import providers
 
     profile = providers.get_provider_profile("mittwald")

@@ -1,7 +1,10 @@
 'use client'
 
+import { useStore } from '@nanostores/react'
 import { type FC, useState } from 'react'
 
+import { useSessionView } from '@/app/chat/session-view'
+import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
 import { DiffusionCanvas } from '@/components/chat/image-generation-placeholder'
 import { ImageActionButton, ImageLightbox } from '@/components/chat/zoomable-image'
 import { useImageDownload } from '@/hooks/use-image-download'
@@ -10,13 +13,16 @@ import { useI18n } from '@/i18n'
 import { generatedImageDimensionsFromResult, generatedImageFromResult } from '@/lib/generated-images'
 import {
   downloadGatewayMediaFile,
+  type GatewayFileOrigin,
   isFileMediaPath,
+  isInlineMediaSrc,
   isRemoteGateway,
   mediaExternalUrl,
   mediaName
 } from '@/lib/media'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
+import { profileScopeForSessionOwner } from '@/store/session-request-router'
 
 // A hint is only a placeholder shape, not a promise about the delivered image.
 const ASPECT_HINTS: Record<string, number> = {
@@ -35,6 +41,21 @@ function hintedRatio(aspectRatio?: string): number {
   )
 }
 
+/** A relative path names a file in the producing session's working directory, on its profile. The
+ *  gateway resolves it there only for a save that names that session, and in its own cwd otherwise. */
+async function sessionFileOrigin(storedSessionId: null | string): Promise<GatewayFileOrigin> {
+  if (!storedSessionId) {
+    throw new Error('No session to resolve a relative image path in')
+  }
+
+  const scope = profileScopeForSessionOwner(await resolveSessionOwner(storedSessionId))
+
+  return {
+    sessionId: storedSessionId,
+    ...(typeof scope === 'string' ? { profile: scope } : scope ? { owner: scope } : {})
+  }
+}
+
 export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({ aspectRatio, result }) => {
   const { t } = useI18n()
   const copy = t.desktop
@@ -49,6 +70,7 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
   const [canvasGone, setCanvasGone] = useState<string | null>(null)
   const [lightboxOpen, setLightboxOpen] = useState<string | null>(null)
   const { download, saving } = useImageDownload(src)
+  const storedSessionId = useStore(useSessionView().$storedId)
 
   // Completed but no usable image (generation failed): the agent's prose carries
   // the explanation, so render nothing here.
@@ -67,9 +89,18 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
 
           // A gateway file saves through the host bridge, like every other
           // remote media open: its URL form carries the connection token,
-          // which must never land in a browser's history.
-          if (isRemoteGateway() && isFileMediaPath(image)) {
+          // which must never land in a browser's history. A relative path
+          // saves through it too, from the chat's own working directory,
+          // which only a save naming that session resolves it in. A data:
+          // image carries its own bytes and saves them, as its download button does.
+          if (/^data:/i.test(image)) {
+            void download()
+          } else if (isRemoteGateway() && isFileMediaPath(image)) {
             void downloadGatewayMediaFile(image).catch(error => notifyError(error, copy.imageDownloadFailed))
+          } else if (isRemoteGateway() && !isInlineMediaSrc(image)) {
+            void sessionFileOrigin(storedSessionId)
+              .then(origin => downloadGatewayMediaFile(image, origin))
+              .catch(error => notifyError(error, copy.imageDownloadFailed))
           } else {
             void window.hermesDesktop?.openExternal(mediaExternalUrl(image))
           }

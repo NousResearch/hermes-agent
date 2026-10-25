@@ -2,6 +2,7 @@
 
 import asyncio
 import importlib
+import queue
 import sys
 import threading
 import time
@@ -2150,6 +2151,38 @@ async def test_per_platform_streaming_does_not_override_global_disabled(monkeypa
 
     assert result.get("already_sent") is not True
     assert adapter.edits == []
+
+
+def test_progress_replay_after_editable_reset_uses_tool_call_identity():
+    """A streamed content boundary must not make its preceding tool event new again.
+
+    Feishu renders each fenced command as a separate post row, so replaying the
+    same terminal event after the editable progress bubble is reset is visibly
+    noisier than on adapters that render one markdown block.
+    """
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.turn_context import TurnContext
+
+    adapter = SimpleNamespace(supports_code_blocks=True)
+    ctx = TurnContext(
+        progress_queue=queue.Queue(), source=SimpleNamespace(), tool_progress_enabled=True,
+        progress_mode="all", _run_still_current=lambda: True,
+    )
+    runner = TurnRunner(SimpleNamespace(_delivery_adapter_for=lambda source: adapter), ctx)
+    state = runner._ProgressEditState(
+        adapter=SimpleNamespace(), progress_lines=["💻 terminal\n```\necho once\n```"],
+        progress_msg_id="progress-1", can_edit=True, _progress_len_fn=len,
+        _PROGRESS_TEXT_LIMIT=4000, _edit_accepts_metadata=False,
+    )
+    runner.progress_callback("tool.started", "terminal", "echo once", {"command": "echo once"}, call_id="call-1")
+    assert not ctx.progress_queue.empty()
+    ctx.progress_queue.get_nowait()
+
+    runner._reset_progress_bubble(state)
+    runner.progress_callback("tool.started", "terminal", "echo once", {"command": "echo once"}, call_id="call-1")
+
+    assert ctx.progress_queue.empty()
+    assert state.progress_lines == []
 
 
 class TestSlackReplyInThreadProgressRouting:

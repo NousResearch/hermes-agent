@@ -184,7 +184,10 @@ dropped silently. The mechanics, in the order the due scan applies them
 5. **Past grace → collapse the backlog, fire once** (`kind = catch_up`), or skip
    with a logged reason when the operator set `cron.catch_up_missed: false`
    (planned downtime). One-shots past their 120 s grace are retired with a
-   diagnostic, never resurrected.
+   diagnostic, never resurrected — unless the slot fell inside a store outage
+   (`store_health.outage_covers`) or, with `cron.catch_up_missed_oneshots: true`,
+   inside a recorded ticker-downtime window (`cron/ticker_downtime.py`): nothing
+   was alive to fire it, so it was skipped rather than missed.
 6. **Paused / disabled / terminal jobs never fire**; the due scan drops them
    before any of the above, and pause/resume clears any pending slot. A
    recurring occurrence that came due *while paused* is not lost, though:

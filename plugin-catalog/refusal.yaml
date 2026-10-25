@@ -1,0 +1,21 @@
+name: refusal
+repo: https://github.com/0ldev/refusal
+sha: bc06b6851ae3e2cee8d4ede34c594119056307a0
+version: "0.1.1"
+description: "Detects when a model refuses a request or deflects to an educational alternative, and retries the turn on the next model in your fallback_providers chain. Detection is local and rule-based (regex patterns over the response prose); tool-calling responses, code blocks and partial answers are treated as genuine answers. Disclosure — an llm_execution middleware inspects every model response before the agent loop uses it, and when its regex patterns match a refusal or deflection it sets finish_reason to content_filter (Anthropic: stop_reason to refusal) so Hermes activates its fallback model; the patterns also match ordinary statements of technical inability (\"I can't run that because the file does not exist\"); a triggered fallback resends the full conversation to the fallback provider and spends tokens there; with no fallback model configured, Hermes replaces the response with its standard safety-refusal notice, so a false positive discards a valid answer; the matched snippet of the response is logged at warning level; no network calls, no files read or written outside the plugin package, no shell commands, no background processes, no stored credentials, no telemetry."
+maintainer: 0ldev
+tier: community
+category: models
+requires_hermes: ">=0.22.1"
+docs_url: https://github.com/0ldev/refusal/blob/bc06b6851ae3e2cee8d4ede34c594119056307a0/README.md
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware:
+    - llm_execution
+  requires_env: []
+known_issues:
+  - "Detection is pattern-based, so an unusual refusal phrasing can be missed and a response that quotes refusal language can occasionally be flagged. Configure at least one fallback model so a false positive does not discard an answer."
+  - "A detected refusal appears under Hermes's own content_policy_blocked failover reason; plugins cannot register custom reasons."

@@ -7,6 +7,7 @@ import {
   localImageSrcPath,
   noteDirectory,
   previewHeadingSlug,
+  rehypePreviewFileLinks,
   rehypePreviewHeadingIds,
   rehypePreviewImagePaths,
   remarkPreviewFileLinks,
@@ -164,6 +165,46 @@ describe('rehypePreviewImagePaths', () => {
 
     expect(img.properties).toEqual({ src: '/vault/notes/docs/img.png' })
     expect(anchor.properties).toEqual({ href: 'docs/other.md' })
+  })
+})
+
+describe('rehypePreviewFileLinks', () => {
+  const anchor = (href: string) => ({ children: [], properties: { href }, tagName: 'a', type: 'element' })
+
+  it('rewrites raw-HTML file anchors to the preview door and leaves web and scheme links alone', () => {
+    const img = { children: [], properties: { src: 'docs/img.png' }, tagName: 'img', type: 'element' }
+
+    const tree = {
+      children: [
+        {
+          children: [
+            anchor('README.md'),
+            anchor('https://example.com'),
+            anchor('#亮点'),
+            anchor('#a%20b'),
+            anchor('mailto:a@b.c'),
+            img
+          ],
+          tagName: 'p',
+          type: 'element'
+        }
+      ],
+      type: 'root'
+    }
+
+    rehypePreviewFileLinks()(tree)
+
+    const [paragraph] = tree.children
+    const nodes = paragraph.children
+
+    expect(nodes[0].properties).toEqual({ href: `#preview/${encodeURIComponent('README.md')}` })
+    expect(nodes[1].properties).toEqual({ href: 'https://example.com' })
+    // A raw CJK fragment is percent-encoded so the hardener keeps it;
+    // an already-encoded one survives untouched (no double-encoding).
+    expect(nodes[2].properties).toEqual({ href: `#${encodeURIComponent('亮点')}` })
+    expect(nodes[3].properties).toEqual({ href: '#a%20b' })
+    expect(nodes[4].properties).toEqual({ href: 'mailto:a@b.c' })
+    expect(nodes[5].properties).toEqual({ src: 'docs/img.png' })
   })
 })
 

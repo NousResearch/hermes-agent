@@ -237,6 +237,46 @@ export function rehypePreviewImagePaths(baseDir?: string) {
   }
 }
 
+/** Rehype attacher: raw-HTML anchors (`<a href="README.md">`) never pass the
+ *  remark link wrapper — they arrive as html nodes and become hast `a`
+ *  elements after rehypeRaw — so they reach Streamdown's hardener untouched
+ *  and render as "label [blocked]". Two rewrites before that pass:
+ *  - file-naming hrefs wrap into the same `#preview/…` door
+ *    remarkPreviewFileLinks uses for markdown-syntax links;
+ *  - hash hrefs get their non-ASCII characters percent-encoded (the
+ *    markdown pipeline pre-encodes destinations, raw HTML does not, and
+ *    harden rejects a fragment its URL parser has to re-encode).
+ *  Web and scheme links stay put. */
+export function rehypePreviewFileLinks() {
+  return (tree: HastNode) => {
+    const visit = (node: HastNode) => {
+      if (node.type === 'element' && node.tagName === 'a') {
+        const href = typeof node.properties?.href === 'string' ? node.properties.href : ''
+
+        if (href && isPreviewFileHref(href)) {
+          node.properties = { ...node.properties, href: previewMarkdownHref(href.trim()) }
+        } else if (href.startsWith('#') && /[^!-~]/.test(href)) {
+          node.properties = { ...node.properties, href: normalizeHashHref(href) }
+        }
+      }
+
+      for (const child of node.children ?? []) {
+        visit(child)
+      }
+    }
+
+    visit(tree)
+  }
+}
+
+/** Percent-encode the characters a URL fragment may not carry raw (CJK,
+ *  spaces, …) one by one — existing `%XX` escapes survive untouched. */
+function normalizeHashHref(href: string): string {
+  return `#${Array.from(href.slice(1))
+    .map(char => (/[\x21-\x7E]/.test(char) ? char : encodeURIComponent(char)))
+    .join('')}`
+}
+
 export function decodeHashFragment(href: string): string {
   const raw = href.replace(/^#/, '')
 

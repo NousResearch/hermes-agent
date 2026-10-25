@@ -89,6 +89,25 @@ describe('MarkdownPreview', () => {
     expect(screen.queryByText(/blocked/i)).toBeNull()
   })
 
+  it('routes raw-HTML file anchors to the preview door instead of blocking them', () => {
+    const { container } = render(
+      <MarkdownPreview
+        filePath="/work/notes/README.md"
+        text={'<a href="README.md">English</a> | <a href="#亮点">亮点</a> | [中文](README.zh-CN.md)'}
+      />
+    )
+
+    const anchors = Array.from(container.querySelectorAll('a'))
+    const fileAnchors = anchors.filter(a => (a.getAttribute('href') ?? '').startsWith('#preview/'))
+
+    // Both the raw-HTML href and the markdown-syntax file link reach the door.
+    expect(fileAnchors).toHaveLength(2)
+    expect(screen.queryByText(/blocked/i)).toBeNull()
+
+    // The fragment anchor survives (percent-encoded) for in-note scrolling.
+    expect(anchors.some(a => a.getAttribute('href') === `#${encodeURIComponent('亮点')}`)).toBe(true)
+  })
+
   it('opens an https link in the in-app browser instead of a blank window', async () => {
     $previewTabs.set([])
     setAlwaysExternalLinks(false)

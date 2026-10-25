@@ -44,6 +44,7 @@ import {
   decodeHashFragment,
   localImageSrcPath,
   noteDirectory,
+  rehypePreviewFileLinks,
   rehypePreviewHeadingIds,
   rehypePreviewImagePaths,
   remarkPreviewFileLinks,
@@ -541,17 +542,18 @@ const MARKDOWN_COMPONENTS = {
 // Passing either plugin list REPLACES Streamdown's defaults, so both spread them.
 const PREVIEW_REMARK_PLUGINS = [...Object.values(defaultRemarkPlugins), remarkPreviewFileLinks]
 
-/** Same hardener Streamdown ships with, plus the image-path rewrite that must
- *  run before it (the hardener blocks bare relative `src`s outright). The
- *  rewrite travels as a `[plugin, baseDir]` tuple on purpose: Streamdown's
- *  processor cache keys plugin arrays by function name only, so a bound
- *  closure would freeze the first render's baseDir into every later document;
- *  tuple parameters do enter the cache key. */
+/** Same hardener Streamdown ships with, plus the two rewrites that must run
+ *  before it: local image paths (the hardener blocks bare relative `src`s) and
+ *  raw-HTML file anchors (only markdown-syntax links pass the remark wrapper).
+ *  The image rewrite travels as a `[plugin, baseDir]` tuple on purpose:
+ *  Streamdown's processor cache keys plugin arrays by function name only, so a
+ *  bound closure would freeze the first render's baseDir into every later
+ *  document; tuple parameters do enter the cache key. */
 function previewRehypePlugins(baseDir?: string) {
   const { raw, sanitize, harden } = defaultRehypePlugins
   const imagePaths: [typeof rehypePreviewImagePaths, string | undefined] = [rehypePreviewImagePaths, baseDir]
 
-  return [raw, sanitize, imagePaths, harden, rehypePreviewHeadingIds]
+  return [raw, sanitize, imagePaths, rehypePreviewFileLinks, harden, rehypePreviewHeadingIds]
 }
 
 export function MarkdownPreview({ filePath, text }: { filePath?: string; text: string }) {

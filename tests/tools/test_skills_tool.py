@@ -383,6 +383,44 @@ class TestSkillView:
             session_id="session-view",
         )
 
+    def test_view_large_skill_content_respects_cap(self, tmp_path):
+        """skill_view full-content dump must honor tool_output.max_bytes.
+
+        A large SKILL.md body serializes to ~66K chars, refilling the
+        conversation context. The full-content path must bound its output to
+        the centralized cap while keeping the response parseable and the
+        content field present (tail-truncated with an in-band marker).
+        """
+        from tools.tool_output_limits import get_max_bytes
+
+        big_body = "Step 1: " + "z" * 80_000
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "big-skill", body=big_body)
+            raw = skill_view("big-skill")
+        assert len(raw) <= get_max_bytes() + 500, len(raw)
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["name"] == "big-skill"
+        assert result["truncated"] is True
+        assert result["truncated_count"] > 0
+        assert "content" in result
+        assert "[truncated]" in result["content"]
+
+    def test_view_skill_by_frontmatter_name_when_dir_differs(self, tmp_path):
+        # The on-disk directory ("alias-dir") differs from the skill's
+        # frontmatter name ("real-skill-name"). skills_list() exposes the
+        # frontmatter name, so skill_view(name) must resolve it too.
+        skill_dir = tmp_path / "alias-dir"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: real-skill-name\n"
+            "description: A skill whose directory name differs from its name.\n"
+            "---\n\n"
+            "# real-skill-name\n\n"
+            "Step 1: Do the thing.\n"
+        )
+
 
     def test_view_reference_files(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):

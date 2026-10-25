@@ -2123,6 +2123,11 @@ def _dispatch_lane_task(
         result.spawned.append((task_id, assignee, ""))
         _count_spawn(assignee)
         return True
+    # Cross-node dispatch guard (ADR-013/9.2): when KANBAN_SPAWN_CLAIM_CMD is
+    # set, claim the task across the fleet before spawning here. Fail-open.
+    if not _cross_node_claim_allows(board, task_id):
+        _kb._log.info("kanban dispatcher: cross-node claim guard declined %s (board=%s)", task_id, board)
+        return False
     claim = _kb.claim_review_task if lane == "review" else _kb.claim_task
     claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
     if claimed is None:
@@ -2963,3 +2968,26 @@ def run_daemon(
 from hermes_cli import kanban_db as _kb
 from hermes_cli import kanban_db_connect as _kbc
 from hermes_cli import kanban_db_workspace as _kbw
+
+
+def _cross_node_claim_allows(board, task_id) -> bool:
+    """Optional cross-node dispatch guard (ADR-013/9.2). Default: allow.
+
+    When ``KANBAN_SPAWN_CLAIM_CMD`` is set, run it (``{board}``/``{task_id}``
+    substituted) BEFORE spawning a worker. Exit 0 = this node won the claim
+    (proceed); non-zero = a peer holds it (skip). Unset -> always allow.
+    Fail-open on error: the guard must never wedge dispatch.
+    """
+    try:
+        tmpl = os.environ.get("KANBAN_SPAWN_CLAIM_CMD", "").strip()
+        if not tmpl:
+            return True
+        if not board or not task_id:
+            return True
+        cmd = tmpl.replace("{board}", str(board)).replace("{task_id}", str(task_id))
+        rc = subprocess.run(cmd, shell=True, timeout=15, check=False,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL).returncode
+        return rc == 0
+    except Exception:
+        return True

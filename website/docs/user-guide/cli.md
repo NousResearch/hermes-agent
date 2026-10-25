@@ -379,6 +379,11 @@ Each entry is a skill name. The list is resolved once when a session's system pr
 
 `--ignore-rules` (equivalently `HERMES_IGNORE_RULES=1`) skips auto-load together with AGENTS.md, SOUL.md, `.cursorrules` and memory injection; explicit `-s` skills still load. The setting is profile-scoped: each profile's `config.yaml` controls its own list.
 
+Native subagents do not use the main-agent `auto_load` list. To opt selected
+skills into direct, nested, and background subagents, configure the independent
+[`skills.inherit_to_subagents` allowlist](./configuration.md#inheriting-selected-skills-in-native-subagents).
+It defaults to empty and retains the same skill-tool and ignore-rules gates.
+
 ## Skill Slash Commands
 
 Every installed skill in `~/.hermes/skills/` is automatically registered as a slash command. The skill name becomes the command:

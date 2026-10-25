@@ -193,6 +193,33 @@ class TestSubdirectoryHintTracker:
         assert result is None
         assert "timed out" in caplog.text.lower()
 
+    def test_constructor_times_out_on_slow_working_dir_hint(self, project, monkeypatch, caplog):
+        """Seeding the CWD hint digest is bounded too, so a blocked read can't wedge turn start (#10047)."""
+        import sys
+
+        from agent import subdirectory_hints as sh_mod
+
+        pb_mod = sys.modules[sh_mod._read_text_with_timeout.__module__]
+        monkeypatch.setattr(pb_mod, "_get_context_file_read_timeout", lambda: 0.05)
+
+        original_read_text = Path.read_text
+
+        def slow_read_text(self, *args, **kwargs):
+            if self.name.lower() == "agents.md" and self.parent == project.resolve():
+                time.sleep(0.6)
+            return original_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", slow_read_text)
+
+        start = time.monotonic()
+        with caplog.at_level("WARNING", logger="agent.prompt_builder"):
+            tracker = SubdirectoryHintTracker(working_dir=str(project))
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 0.4, f"tracker construction blocked for {elapsed:.2f}s"
+        assert tracker._loaded_digests == set()
+        assert "timed out" in caplog.text.lower()
+
 
 class TestPermissionErrorHandling:
     """Regression tests for PermissionError in filesystem checks (ref #6214)."""

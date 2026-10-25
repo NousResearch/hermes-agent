@@ -3,10 +3,12 @@ import { useEffect, useRef, useState } from 'react'
 import { capabilityScoped, type ProfileScope, profileScopeKey } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import type { McpCatalogEntry, McpTestResult } from '@/hermes'
+import type { McpCatalogEntry } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { completeMcpDesktopOAuth, McpOAuthCancelled } from '@/lib/mcp-dashboard-oauth'
 import type { McpServers } from '@/lib/mcp-servers'
+
+import type { McpAccountUpdate } from '../mcp/use-mcp-servers'
 
 import { createLocalAccount, localAccountCatalog, localAccountName, localAccountProblem } from './data/local-accounts'
 
@@ -16,7 +18,7 @@ export interface LocalAccountsProps {
   serverName: string
   profile: ProfileScope
   pending: boolean
-  onChanged: (authorized?: { name: string; tools: McpTestResult['tools'] }) => Promise<void>
+  onChanged: (account?: McpAccountUpdate) => Promise<void>
   onOpenAccount: (name: string) => void
 }
 
@@ -57,15 +59,15 @@ function AccountEditor({ entry, servers, serverName, profile, pending, onChanged
   const isCancelled = () => !alive.current || cancelled.current
 
   // An unfinished sign-in must remain visible for a deliberate retry or removal.
-  const revealIncompleteAccount = async (created: boolean) => {
-    if (!created || !alive.current) {
+  const revealIncompleteAccount = async (created: boolean, name: string) => {
+    if (!created) {
       return
     }
 
     try {
-      await onChanged()
+      await onChanged({ name, state: 'abandoned' })
     } catch (err) {
-      if (!cancelled.current) {
+      if (alive.current && !cancelled.current) {
         setError(err instanceof Error ? err.message : String(err))
       }
     }
@@ -97,6 +99,7 @@ function AccountEditor({ entry, servers, serverName, profile, pending, onChanged
       if (!savedName) {
         await createLocalAccount(name, entry.name, servers[serverName]?.tools, scope)
         created = true
+        await onChanged({ name, state: 'pending' })
 
         if (!alive.current) {
           return
@@ -121,7 +124,7 @@ function AccountEditor({ entry, servers, serverName, profile, pending, onChanged
         return
       }
 
-      await onChanged({ name, tools: flow.tools ?? [] })
+      await onChanged({ name, state: 'authorized', tools: flow.tools ?? [] })
       created = false
 
       if (isCancelled()) {
@@ -138,7 +141,7 @@ function AccountEditor({ entry, servers, serverName, profile, pending, onChanged
       }
     } finally {
       // Do not publish the new server to background probes before OAuth completes.
-      await revealIncompleteAccount(created)
+      await revealIncompleteAccount(created, name)
 
       running.current = false
 

@@ -106,10 +106,10 @@ describe('direct MCP additional accounts', () => {
     await connect('home')
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Consent denied'))
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
-    await waitFor(() => expect(refresh).toHaveBeenCalledWith({ name: 'notion-home', tools }))
+    await waitFor(() => expect(refresh).toHaveBeenCalledWith({ name: 'notion-home', state: 'authorized', tools }))
   })
 
-  it('publishes a new account only after OAuth succeeds, so its first probe sees authorized credentials', async () => {
+  it('publishes the new server immediately but defers probing until OAuth succeeds', async () => {
     let approve!: (value: { tools: [] }) => void
     rpc.mockResolvedValue({ ok: true })
     oauth.mockReturnValue(new Promise(resolve => { approve = resolve }))
@@ -117,10 +117,10 @@ describe('direct MCP additional accounts', () => {
 
     await connect('work')
     await waitFor(() => expect(oauth).toHaveBeenCalledTimes(1))
-    expect(refresh).not.toHaveBeenCalled()
+    expect(refresh).toHaveBeenCalledWith({ name: 'notion-work', state: 'pending' })
 
     approve({ tools: [] })
-    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(refresh).toHaveBeenCalledWith({ name: 'notion-work', state: 'authorized', tools: [] }))
   })
 
   it('rejects names that collide with an existing token or tool identity', async () => {
@@ -145,7 +145,7 @@ describe('direct MCP additional accounts', () => {
     finish({ ok: true })
     await Promise.resolve()
     expect(oauth).not.toHaveBeenCalled()
-    expect(refresh).not.toHaveBeenCalled()
+    await waitFor(() => expect(refresh).toHaveBeenCalledWith({ name: 'notion-work', state: 'abandoned' }))
   })
 
   it('cancels the visible interaction immediately while the source authorization unwinds', async () => {

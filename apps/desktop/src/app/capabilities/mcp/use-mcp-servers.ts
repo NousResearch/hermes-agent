@@ -35,6 +35,10 @@ import { type McpProbes, useMcpProbes } from './use-mcp-probes'
 
 type PublishedProbes = Pick<McpProbes, 'costFor' | 'probes' | 'runProbe' | 'toolCounts' | 'usageByServer'>
 
+export type McpAccountUpdate =
+  | { name: string; state: 'pending' | 'abandoned' }
+  | { name: string; state: 'authorized'; tools: McpTestResult['tools'] }
+
 export interface McpServersController extends McpDraft, PublishedProbes {
   addServerEntry: (name: string, entry: McpServerEntry) => Promise<boolean>
   authing: null | string
@@ -48,7 +52,7 @@ export interface McpServersController extends McpDraft, PublishedProbes {
   configLoading: boolean
   descriptionFor: (name: string, entry: McpServerEntry) => null | string
   names: string[]
-  onCatalogInstalled: (authorized?: { name: string; tools: McpTestResult['tools'] }) => Promise<void>
+  onCatalogInstalled: (account?: McpAccountUpdate) => Promise<void>
   profilePending: boolean
   refetchConfig: () => void
   removeServer: (name: string) => Promise<boolean>
@@ -247,8 +251,13 @@ export function useMcpServers({ gateway, profile }: UseMcpServersOptions): McpSe
     }
   }
 
-  const onCatalogInstalled = async (authorized?: { name: string; tools: McpTestResult['tools'] }) => {
+  const onCatalogInstalled = async (account?: McpAccountUpdate) => {
     const epoch = profileEpoch.current
+
+    if (account?.state === 'pending') {
+      fleet.setProbe(account.name, 'probing')
+    }
+
     void catalogQuery.refetch()
     const { data } = await refetchConfigQuery()
 
@@ -259,8 +268,11 @@ export function useMcpServers({ gateway, profile }: UseMcpServersOptions): McpSe
     const nextServers = getServers(data ?? null)
     mirror(nextServers, doc => ({ ...nextServers, ...doc }))
 
-    if (authorized && nextServers[authorized.name]) {
-      fleet.publishAuthorized(authorized.name, authorized.tools, nextServers[authorized.name])
+    if (account?.state === 'authorized' && nextServers[account.name]) {
+      fleet.publishAuthorized(account.name, account.tools, nextServers[account.name])
+    } else if (account?.state === 'abandoned' && nextServers[account.name]) {
+      probeCache.delete(probeKey(account.name, nextServers[account.name], scopeProfileKey))
+      fleet.setProbe(account.name, { ok: false, error: 'OAuth authentication required', tools: [] })
     }
 
     void silentReload()

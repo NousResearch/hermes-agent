@@ -57,3 +57,25 @@ it('publishes successful OAuth tools to the exact profile and server probe cache
   expect(probeCache.get(probeKey('notion', server, 'profile-a'))?.result).toMatchObject({ ok: true, tools })
   expect(probeCache.has(probeKey('notion', server, 'profile-b'))).toBe(false)
 })
+
+it('does not probe a newly added server while OAuth is pending', async () => {
+  const newServer = { url: 'https://mcp.notion.com/mcp', auth: 'oauth' }
+
+  const options = {
+    appProfile: null,
+    profile: null,
+    profileEpoch: { current: 0 },
+    scopeProfileKey: 'profile-a'
+  }
+
+  const { result, rerender } = renderHook(({ servers }) => useMcpProbes({ ...options, servers }), {
+    initialProps: { servers: {} as Record<string, typeof newServer> }
+  })
+
+  act(() => {
+    result.current.setProbe('notion-new', 'probing')
+    rerender({ servers: { 'notion-new': newServer } })
+  })
+  expect(mocks.probe).not.toHaveBeenCalled()
+  expect(result.current.probes['notion-new']).toBe('probing')
+})

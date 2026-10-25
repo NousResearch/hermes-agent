@@ -147,7 +147,8 @@ the gallery. There is no separate listing to maintain.
    `config_schema` secrets are read with `agent.secret_scope.get_secret(NAME)`,
    which honours the active profile (a bare `os.environ` read can pick up another
    profile's key under multiplexing). A subscription sign-in (Codex / ChatGPT
-   today) is used only through `credentialed_provider_request` with
+   today) is used only through `credentialed_provider_request` (or its websocket
+   form, `credentialed_provider_websocket`) with
    `requires_auth`, so Hermes attaches the token and the plugin never holds it. An
    OAuth client for a third-party API (the user's own Google Cloud client, for
    example) is declared under `oauth:` in `plugin.yaml`, signed in with

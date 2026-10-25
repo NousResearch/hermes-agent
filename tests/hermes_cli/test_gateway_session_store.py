@@ -513,6 +513,24 @@ def test_row_cwd_is_mains_stamp_while_the_tools_run_in_terminal_cwd(store, monke
     assert [p for m, p in client.calls if m == "session.create"][-1]["row_cwd"] == ""
 
 
+@pytest.mark.parametrize("backend", ["docker", "ssh"])
+def test_a_sandbox_backend_sends_the_host_launch_dir_not_its_terminal_cwd(store, monkeypatch, tmp_path, backend):
+    """A docker/ssh ``terminal.cwd`` (bridged to TERMINAL_CWD) names a path inside the sandbox. The
+    owner checks ``cwd`` on its own host, so sending it refused every launch with ``invalid_params``;
+    like the thin client and the TUI, the classic CLI sends its host launch dir."""
+    from hermes_cli import gateway_session_store as gss
+    db, client = store
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TERMINAL_CWD", "/project/not-on-this-host")
+    monkeypatch.setenv("TERMINAL_ENV", backend)
+    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
+    db.create({"toolsets": ["file"]})
+    assert [p for m, p in client.calls if m == "session.create"][-1]["cwd"] == str(tmp_path.resolve())
+    monkeypatch.setattr(gss, "session_store", lambda: db)
+    gss.create_titled_session("Remote Named")
+    assert [p for m, p in client.calls if m == "session.create"][-1]["cwd"] == str(tmp_path.resolve())
+
+
 def test_explicit_reasoning_max_turns_and_checkpoints_reach_session_create(store, monkeypatch):
     """Main's HermesCLI built AIAgent with the run's `--reasoning`, `--max-turns` and `--checkpoints`;
     the gateway now builds the agent, so `session.create` must carry them or the run silently uses

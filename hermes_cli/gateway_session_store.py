@@ -164,7 +164,7 @@ class GatewaySessionStore:
         ``--create-if-missing``) leaves the row's cwd empty, as main's explicit creates did."""
         from agent.session_source import CLI_FAMILY_SOURCES, create_surface, session_source_for
         params = _creation_policy(launch or {})
-        params["cwd"] = os.path.realpath(os.getenv("TERMINAL_CWD") or os.getcwd())
+        params["cwd"] = _launch_cwd()
         # Main's row label: ``cli``, ``oneshot`` for a finite -q/-Q run, or an explicit --source.
         params["source"] = create_surface(session_source_for("cli"))
         # Main's row stamp (run_agent._launch_cwd_for_session): this process's cwd (``-w`` never
@@ -486,6 +486,14 @@ def _creation_policy(launch):
     return policy
 
 
+def _launch_cwd():
+    """``session.create``'s ``cwd``: a host folder, which the owner checks on its own host. Only a local
+    backend's TERMINAL_CWD is one; a docker/ssh ``terminal.cwd`` names a path inside the sandbox, so
+    those send the launch dir and the backend keeps its own cwd (``terminal_uses_host_cwd``)."""
+    local = (os.getenv("TERMINAL_ENV") or "local").strip().lower() in ("", "local")
+    return os.path.realpath((os.getenv("TERMINAL_CWD") if local else None) or os.getcwd())
+
+
 def _classic_only_policy(launch):
     """Main's `--run-budget` and `-v`, which the thin client refuses."""
     policy = {}
@@ -542,7 +550,7 @@ def create_titled_session(title):
     (``row_cwd`` ""). Returns the id, or None when the gateway refused (the caller prints main's
     "could not be created" copy)."""
     params = _creation_policy({})
-    params["cwd"] = os.path.realpath(os.getenv("TERMINAL_CWD") or os.getcwd())
+    params["cwd"] = _launch_cwd()
     params["source"] = "cli"  # main's titled row is `cli` (hermes_cli.main._create_titled_session)
     params["row_cwd"] = ""
     try:

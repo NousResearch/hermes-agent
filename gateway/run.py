@@ -2230,6 +2230,13 @@ def _best_effort(fn: Callable[[], Any], debug_msg: Optional[str] = None) -> Any:
         return None
 
 
+async def _maybe_arm_process_exit_backstop(runner) -> None:
+    """Arm the post-teardown leash when the runner implements it; abort fixtures do not."""
+    arm = getattr(runner, "_arm_process_exit_backstop_after_shutdown", None)
+    if callable(arm):
+        await arm()
+
+
 # Shutdown quiesce ceiling for the gateway-owned thread pool. Drain already waited for the agents; what
 # remains is short blocking work; anything slower is a stuck worker not worth waiting on (leash-clamped).
 _EXECUTOR_QUIESCE_TIMEOUT = 2.0
@@ -5233,6 +5240,11 @@ def _exit_after_graceful_shutdown(exit_code: int) -> None:
 
     for _step in (_release_locks, _mark_exited, _drain_logs):
         _best_effort(_step)
+    # The post-teardown watchdog must cover asyncio.run() cleanup and every bounded flush above.
+    # Disarm only at the final instruction before the clean hard exit.
+    from gateway.shutdown_watchdog import disarm_process_exit_backstop
+    with suppress(Exception):
+        disarm_process_exit_backstop()
     os._exit(exit_code)
 
 

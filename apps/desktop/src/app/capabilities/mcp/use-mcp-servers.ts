@@ -39,6 +39,10 @@ export type McpAccountUpdate =
   | { name: string; state: 'pending' | 'abandoned' }
   | { name: string; state: 'authorized'; tools: McpTestResult['tools'] }
 
+/** Only an authorized account can be connected to the backend; ordinary catalog installs still reload. */
+export const reloadAfterAccountUpdate = (account?: McpAccountUpdate): boolean =>
+  account === undefined || account.state === 'authorized'
+
 export interface McpServersController extends McpDraft, PublishedProbes {
   addServerEntry: (name: string, entry: McpServerEntry) => Promise<boolean>
   authing: null | string
@@ -275,7 +279,9 @@ export function useMcpServers({ gateway, profile }: UseMcpServersOptions): McpSe
       fleet.setProbe(account.name, { ok: false, error: 'OAuth authentication required', tools: [] })
     }
 
-    void silentReload()
+    if (reloadAfterAccountUpdate(account)) {
+      void silentReload()
+    }
   }
 
   const writeEntry = async (

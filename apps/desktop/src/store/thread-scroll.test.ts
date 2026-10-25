@@ -26,6 +26,13 @@ describe('publishThreadAtBottom', () => {
     expect(Boolean($threadScrolledUpBySession.get()['session-a'])).toBe(true)
   })
 
+  it('lets a stalled reader un-dim the composer while the jump pill stays', () => {
+    publishThreadAtBottom(false, { paneVisible: true, sessionId: 'session-a' }, false)
+
+    expect(Boolean($threadJumpButtonVisibleBySession.get()['session-a'])).toBe(true)
+    expect(Boolean($threadScrolledUpBySession.get()['session-a'])).toBe(false)
+  })
+
   it('ignores stick-to-bottom misses from a hidden keep-alive pane', () => {
     setThreadAtBottom(true, 'session-a')
 

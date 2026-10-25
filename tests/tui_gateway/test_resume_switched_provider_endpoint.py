@@ -33,3 +33,24 @@ def test_resume_drops_previous_providers_endpoint(tmp_path, row_origin):
     assert (desktop["provider"], desktop["base_url"], desktop["api_mode"]) == ("openai-codex", None, None)
     assert stored_session_route(row, current_model="openai/gpt-6-luna", current_provider="nous") == (
         "gpt-6-luna-900k", "openai-codex", None, None, True)
+
+
+def test_resume_honors_gateway_runtime_over_first_call_billing_provider():
+    """The messaging gateway persists the route it last ran only in ``model_config.gateway_runtime``;
+    ``billing_provider`` is frozen at the first accounted call. Desktop resume must read the nested
+    route like CLI ``--resume`` does, not recombine the current model with the stale bucket (#125942)."""
+    row = {"model": "gpt-6-sol", "billing_provider": "anthropic", "model_config": json.dumps(
+        {"gateway_runtime": {"provider": "openai-codex", "base_url": None, "api_mode": "codex_responses"}})}
+    desktop = _stored_session_runtime_overrides(row)["model_override"]
+    assert (desktop["provider"], desktop["base_url"], desktop["api_mode"]) == ("openai-codex", None, "codex_responses")
+    assert stored_session_route(row, current_model="gpt-6-sol", current_provider="anthropic")[1:4] == (
+        "openai-codex", None, "codex_responses")
+
+
+def test_resume_prefers_gateway_runtime_over_stale_top_level_keys():
+    """A gateway turn after a Desktop pick rewrites only ``gateway_runtime``, so the nested route is the
+    newest one — same precedence as ``SessionDB.session_gateway_runtime``."""
+    row = {"model": "gpt-6-sol", "model_config": json.dumps(
+        {"provider": "anthropic", **NOUS_ROUTE, "gateway_runtime": {"provider": "openai-codex", "api_mode": "codex_responses"}})}
+    desktop = _stored_session_runtime_overrides(row)["model_override"]
+    assert (desktop["provider"], desktop["base_url"], desktop["api_mode"]) == ("openai-codex", None, "codex_responses")

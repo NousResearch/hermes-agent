@@ -50,7 +50,7 @@ def test_stamp_uses_built_commit_even_with_dispatch_sha_and_refuses_mismatch(tmp
 
     def run(*args, override=None):
         return subprocess.run([*command, *args], cwd=tmp_path, env={**env, **(override or {})},
-                              capture_output=True, text=True, encoding='utf-8', timeout=30)
+                              capture_output=True, text=True, encoding='utf-8', timeout=30, check=False)
 
     result = run()
     assert result.returncode == 0, result.stderr

@@ -54,6 +54,62 @@ describe('singleFlightSessionResume', () => {
     expect(requestGateway).toHaveBeenCalledTimes(2)
   })
 
+  it('does not coalesce the same stored id across backend owners', async () => {
+    let release!: () => void
+    const pending = new Promise<void>(resolve => (release = resolve))
+
+    const runA = vi.fn(async () => {
+      await pending
+
+      return { session_id: 'runtime-a' }
+    })
+
+    const runB = vi.fn(async () => {
+      await pending
+
+      return { session_id: 'runtime-b' }
+    })
+
+    const a = singleFlightSessionResume('stored-shared', runA, {
+      scope: { connectionId: 'backend-a', profile: 'default' }
+    })
+
+    const b = singleFlightSessionResume('stored-shared', runB, {
+      scope: { connectionId: 'backend-b', profile: 'default' }
+    })
+
+    await vi.waitFor(() => {
+      expect(runA).toHaveBeenCalledTimes(1)
+      expect(runB).toHaveBeenCalledTimes(1)
+    })
+    release()
+
+    await expect(Promise.all([a, b])).resolves.toEqual([
+      { session_id: 'runtime-a' },
+      { session_id: 'runtime-b' }
+    ])
+  })
+
+  it('coalesces a scoped foreground resume with an unscoped recovery for the same runtime under a non-default profile', async () => {
+    // use-session-actions passes the owner scope; submit/rewind recovery and
+    // the route resolver pass none. Both dial the same socket, so they must
+    // share ONE flight or a wake-up storm mints two runtimes (#91276).
+    const run = vi.fn(async () => {
+      await new Promise(resolve => setTimeout(resolve, 10))
+
+      return { session_id: 'rt-work' }
+    })
+
+    const [scoped, unscoped] = await Promise.all([
+      singleFlightSessionResume('stored-work', run, { scope: 'work' }),
+      singleFlightSessionResume('stored-work', run)
+    ])
+
+    expect(scoped).toEqual({ session_id: 'rt-work' })
+    expect(unscoped).toEqual({ session_id: 'rt-work' })
+    expect(run).toHaveBeenCalledTimes(1)
+  })
+
   it('a rejected flight is not cached: the next caller retries', async () => {
     const run = vi
       .fn<() => Promise<{ session_id: string }>>()

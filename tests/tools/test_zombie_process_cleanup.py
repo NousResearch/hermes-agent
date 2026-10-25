@@ -196,12 +196,16 @@ class TestGatewayCleanupWiring:
         import threading
         from unittest.mock import MagicMock, patch
 
+        from gateway.config import GatewayConfig
         from gateway.run import GatewayRunner
 
         runner = object.__new__(GatewayRunner)
         runner._running = True
         runner._running_agents = {}
         runner._running_agents_ts = {}
+        # __init__ always binds ``config``; the shutdown notice now walks every served
+        # profile's configured home channels from it, not just the live adapters.
+        runner.config = GatewayConfig()
         runner.adapters = {}
         runner._background_tasks = set()
         runner._pending_messages = {}
@@ -238,7 +242,7 @@ class TestGatewayCleanupWiring:
             with patch("gateway.status.remove_pid_file"), \
                  patch("gateway.status.write_runtime_status"), \
                  patch("tools.terminal_tool.cleanup_all_environments"), \
-                 patch("tools.browser_tool_lifecycle.cleanup_all_browsers"):
+                 patch("tools.browser_session_lifecycle.cleanup_all_browsers"):
                 loop.run_until_complete(GatewayRunner.stop(runner))
         finally:
             loop.close()
@@ -389,7 +393,7 @@ class TestDelegationCleanup:
                 child_started.wait(timeout=5)
                 return super().wait(timeout)
 
-        import tools.delegate_tool as delegate_tool
+        from tools import delegate_tool
 
         real_start_heartbeat = delegate_tool._start_heartbeat
 

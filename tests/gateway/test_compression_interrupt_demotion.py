@@ -32,7 +32,7 @@ from gateway.platforms.base import (
     build_session_key,
 )
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner  # noqa: E402
+from gateway.run import GatewayRunner
 
 def _make_event(text: str = "hello", chat_id: str = "123") -> MessageEvent:
     source = SessionSource(

@@ -1,4 +1,10 @@
-export const DEFAULT_BACKEND_READY_TIMEOUT_MS = 45_000
+// A cold backend boot (plugin discovery + route mounting at web_server import
+// time) can take 45-60s on slower hardware. A 45s deadline makes first-boot
+// readiness a coin flip: every lost race tears down a healthy-but-slow backend
+// and re-drives boot, which cascades into minutes of "not connected" and
+// orphaned python processes (#63454). The poll returns the moment the backend
+// responds, so fast machines see no change; 180s is deliberately generous.
+export const DEFAULT_BACKEND_READY_TIMEOUT_MS = 180_000
 export const DEFAULT_BACKEND_READY_POLL_MS = 500
 // A cold backend can stall its event loop for tens of seconds while Windows
 // scans and byte-compiles the gateway import tree. At the default 15s socket

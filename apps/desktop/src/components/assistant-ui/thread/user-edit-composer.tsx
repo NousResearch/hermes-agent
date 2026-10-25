@@ -79,7 +79,8 @@ import { cn } from '@/lib/utils'
 import type { ComposerAttachment } from '@/store/composer'
 import { notifyError } from '@/store/notifications'
 import { $terminalBackend } from '@/store/session'
-import { isSessionRemote } from '@/store/session-states'
+import { ambientRequestFor } from '@/store/session-gone-latch'
+import { isSessionRemote, requestForOwnedSession } from '@/store/session-states'
 import { useForcedTextDirection } from '@/store/text-direction'
 import { notifyThreadEditClose } from '@/store/thread-scroll'
 
@@ -122,7 +123,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   const expanded = draft.includes('\n')
   const canSubmit = draft.trim().length > 0
   const at = useAtCompletions({ cwd, gateway, sessionId })
-  const slash = useSlashCompletions({ gateway })
+  const slash = useSlashCompletions({ gateway, sessionId })
   const emoji = useEmojiCompletions()
 
   // Timers this composer schedules must not outlive it. Every callback below
@@ -306,7 +307,9 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
     }
 
     const before = textBeforeCaret(editor)
-    const detected = detectTrigger(before ?? composerPlainText(editor))
+    const typed = detectTrigger(before ?? composerPlainText(editor))
+    // A `/` source with no adapter offers no menu (the onboarding chat before its setup ends).
+    const detected = typed?.kind === '/' && !slash.adapter ? null : typed
 
     if (detected) {
       const rect = editor.getBoundingClientRect()
@@ -325,7 +328,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
     if (detected?.kind !== trigger?.kind || detected?.query !== trigger?.query) {
       setTriggerActive(0)
     }
-  }, [trigger])
+  }, [slash.adapter, trigger])
 
   const closeTrigger = useCallback(() => {
     setTrigger(null)
@@ -462,8 +465,12 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
 
       const remote = isSessionRemote(sessionId)
 
+      // Staged on the edited session's owner: a bare-profile owner otherwise
+      // rides the ambient socket, which refuses another profile's session.
+      const ambient = ambientRequestFor(gateway)
+
       const requestGateway = <T,>(method: string, params?: Record<string, unknown>) =>
-        gateway.request<T>(method, params)
+        requestForOwnedSession<T>(sessionId, ambient, method, params)
 
       const refs: InlineRefInput[] = []
 
@@ -556,8 +563,14 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
 
     // In-app drags (project tree / gutter) are workspace-relative paths that
     // resolve on the gateway as-is, so they stay inline refs. OS drops need to
-    // be staged + uploaded first, then their gateway-side ref is inserted.
-    const { inAppRefs, osDrops } = partitionDroppedFiles(candidates)
+    // be staged + uploaded first, then their gateway-side ref is inserted —
+    // unless the backend resolves this machine's paths as-is, in which case
+    // the drop keeps its original-path inline ref too (#52427).
+    const { inAppRefs, osDrops } = partitionDroppedFiles(candidates, {
+      backendCwd: cwd,
+      remote: isSessionRemote(sessionId),
+      terminalBackend: $terminalBackend.get()
+    })
 
     if (insertDroppedRefs(inAppRefs)) {
       triggerHaptic('selection')

@@ -19,9 +19,10 @@ logger = logging.getLogger(__name__)
 _GITHUB = re.compile(r"^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$")
 _TIMEOUT = 5.0
 _MAX_BYTES = 256 * 1024
+_DISCLOSURE = re.compile(r"\bDisclosure\s*[:\u2014]\s*(.+)")
 # (repo, sha, subdir) -> manifest dict, or None when the pin has no readable plugin.json. A pin is
 # immutable, so the process keeps the answer.
-_manifests: Dict[Tuple[str, str, str], Optional[Dict[str, Any]]] = {}
+_manifests: dict[tuple[str, str, str], Optional[dict[str, Any]]] = {}
 
 
 @dataclass(frozen=True)
@@ -43,12 +44,12 @@ def _raw_manifest_url(repo: str, sha: str, subdir: str) -> Optional[str]:
     return f"https://raw.githubusercontent.com/{match.group(1)}/{match.group(2)}/{sha}/{path}"
 
 
-def _pinned_manifest(repo: str, sha: str, subdir: str) -> Optional[Dict[str, Any]]:
+def _pinned_manifest(repo: str, sha: str, subdir: str) -> Optional[dict[str, Any]]:
     key = (repo, sha, subdir)
     if key in _manifests:
         return _manifests[key]
     url = _raw_manifest_url(repo, sha, subdir)
-    manifest: Optional[Dict[str, Any]] = None
+    manifest: Optional[dict[str, Any]] = None
     if url:
         try:
             import httpx
@@ -67,6 +68,7 @@ def _pinned_manifest(repo: str, sha: str, subdir: str) -> Optional[Dict[str, Any
 
 
 def _server_presence(decl: Any, liveness_raw: Any, title: str) -> Presence:
+    from hermes_platform.declaration import gpu_label
     from hermes_platform.host import facts
     from hermes_platform.resolver.app import AppResolver
     from hermes_platform.resolver.availability import availability
@@ -78,6 +80,8 @@ def _server_presence(decl: Any, liveness_raw: Any, title: str) -> Presence:
         return UNKNOWN
     if available.state in ("missing_app", "unsupported_os"):
         return Presence("missing_app", f"needs {title}")
+    if available.state == "unsupported_gpu":
+        return Presence("missing_app", f"needs {gpu_label(decl.required_gpu)}")
     if available.state == "version_too_old":
         found = f" (found {available.version})" if available.version else ""
         return Presence("missing_app", f"needs {title} {available.min_version} or newer{found}")
@@ -120,18 +124,27 @@ def presence(entry: Any) -> Presence:
     return min(found, key=lambda p: rank[p.state]) if found else UNKNOWN
 
 
-def onboarding_entries() -> list[Dict[str, Any]]:
-    """Catalog entries curated for the onboarding card (``onboarding: true``) that this OS can run,
-    each with its app state. Platform mismatch is the only exclusion; a missing app is reported."""
+def _onboarding_catalog() -> list:
+    """Catalog entries curated for onboarding (``onboarding: true``) that this OS can run."""
     from hermes_cli.plugin_catalog import load_catalog_live
     from hermes_cli.plugins_cmd_catalog import normalized_platforms
     from hermes_platform.host.facts import os_family
 
     here = os_family()
+    return [entry for entry in load_catalog_live()
+            if entry.onboarding and (not entry.platforms or here in normalized_platforms(entry.platforms))]
+
+
+def onboarding_names() -> list[str]:
+    """The onboarding plugins this OS runs, by catalog name; no presence probe."""
+    return [entry.name for entry in _onboarding_catalog()]
+
+
+def onboarding_entries() -> list[dict[str, Any]]:
+    """Catalog entries curated for the onboarding card (``onboarding: true``) that this OS can run,
+    each with its app state. Platform mismatch is the only exclusion; a missing app is reported."""
     rows = []
-    for entry in load_catalog_live():
-        if not entry.onboarding or (entry.platforms and here not in normalized_platforms(entry.platforms)):
-            continue
+    for entry in _onboarding_catalog():
         found = presence(entry)
         rows.append({
             "name": entry.name,
@@ -143,6 +156,35 @@ def onboarding_entries() -> list[Dict[str, Any]]:
             "sentence": found.sentence,
         })
     return rows
+
+
+def presence_for(names: list[str]) -> list[dict[str, Any]]:
+    """The named catalog plugins this OS runs, in the order asked, each with its app state and the
+    catalog description's disclosure. A name the live catalog does not carry (unknown or removed) is dropped."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from hermes_cli.plugin_catalog import load_catalog_live
+    from hermes_cli.plugins_cmd_catalog import normalized_platforms
+    from hermes_platform.host.facts import os_family
+
+    here = os_family()
+    by_name = {entry.name: entry for entry in load_catalog_live()}
+    entries = [by_name[name] for name in dict.fromkeys(names) if name in by_name
+               and (not by_name[name].platforms or here in normalized_platforms(by_name[name].platforms))]
+    if not entries:
+        return []
+    # Each manifest read is bounded by _TIMEOUT; in parallel the whole answer waits one timeout, not one per name.
+    with ThreadPoolExecutor(max_workers=len(entries)) as pool:
+        found = list(pool.map(presence, entries))
+    return [{"name": entry.name, "title": entry.title or entry.name, "state": state.state,
+             "sentence": state.sentence, "disclosure": _disclosure(entry.description)}
+            for entry, state in zip(entries, found)]
+
+
+def _disclosure(text: str) -> str:
+    """The sentence after the description's ``Disclosure:`` (or ``Disclosure —``) marker; empty when absent."""
+    match = _DISCLOSURE.search(" ".join(str(text or "").split()))
+    return _first_sentence(match.group(1)) if match else ""
 
 
 def _first_sentence(text: str) -> str:

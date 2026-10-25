@@ -89,9 +89,9 @@ metadata:
 ### `description` rules (HARDLINE — the validator's 1024 is NOT the standard)
 
 - **≤ 60 characters.** One sentence. Ends with a period.
-- State the capability, not the implementation, and don't repeat the skill name.
+- State the capability, not the implementation, and don't repeat the skill name or its category name (the index prints the category above the skill).
 - No marketing words ("powerful", "comprehensive", "seamless", "advanced").
-- The system prompt skill index truncates at 57 chars + "..." — the trigger/capability must be self-contained in that window.
+- 60 is the width the system prompt skill index shows; `skill_manage` rejects a new or changed description over it, and the index clips a longer legacy one at a word boundary.
 - If the description contains a `:`, wrap it in double quotes or YAML parses it as a mapping and the docs generator crashes. Quotes don't count toward the 60.
 
 Good: `Track named companies for material news with cited digests.`
@@ -147,7 +147,7 @@ Not every section applies to every skill (a pure-procedure task skill may have n
 
 ### Reference Hermes tools, not raw shell
 
-When the skill needs a capability, name the proper Hermes tool in backticks: `terminal`, `read_file`, `write_file`, `patch`, `search_files`, `web_search`, `web_extract`, `browser_navigate`, `vision_analyze`, `delegate_task`, `cronjob`. Do NOT name shell utilities the agent already has wrapped (`grep` → `search_files`, `cat` → `read_file`, `sed`/`awk` → `patch`, `find`/`ls` → `search_files target='files'`). A CLI-wrapper skill should frame invocations as `terminal(command="<tool> ...", timeout=...)` — bare shell prose ("run `foo --version`") is a review-blocking non-conformance. If the skill depends on an MCP server, name it and document setup in Prerequisites.
+When the skill needs a capability, name the proper Hermes tool in backticks: `terminal`, `read_file`, `write_file`, `patch`, `search_files`, `web_search`, `web_extract`, `browser_exec`, `vision_analyze`, `delegate_task`, `cronjob`. Do NOT name shell utilities the agent already has wrapped (`grep` → `search_files`, `cat` → `read_file`, `sed`/`awk` → `patch`, `find`/`ls` → `search_files target='files'`). A CLI-wrapper skill should frame invocations as `terminal(command="{tool} ...", timeout=...)` — bare shell prose ("run `foo --version`") is a review-blocking non-conformance. If the skill depends on an MCP server, name it and document setup in Prerequisites.
 
 ### Never use machine-local paths
 

@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.posix_lock_probe import own_posix_locks
+
 from hermes_state import (
     SessionDB,
     StateDbReplacedError,
@@ -185,7 +187,7 @@ def test_divert_session_transcript_jsonl_appends(tmp_path, monkeypatch):
         [{"role": "user", "content": "hello-jsonl"}],
     )
     assert path == tmp_path / "sessions" / "sess-jsonl.jsonl"
-    lines = path.read_text(encoding="utf-8").strip().splitlines()
+    lines = path.read_text(encoding="utf-8-sig").strip().splitlines()
     assert json.loads(lines[-1])["content"] == "hello-jsonl"
     assert divert_session_transcript_jsonl("sess-jsonl", []) is None
 
@@ -202,34 +204,9 @@ def _stat_changed(path: Path, recorded) -> bool:
 # Before the _pread_db_header fix it did open("rb")/read/close, and that
 # close() cancelled every POSIX advisory lock this process held on the file
 # — including the WAL-mode DMS shared lock of the writer connection.  These
-# tests measure the actual kernel lock table (/proc/locks), so they are
+# tests measure this process's kernel lock table (/proc/self/fdinfo), so they are
 # Linux-only; the hazard itself is POSIX-only.
 # ---------------------------------------------------------------------------
-
-def _posix_locks_on(paths):
-    """Set of (inode, type, mode, start, end) locks held by this pid."""
-    import sys as _sys
-    if not _sys.platform.startswith("linux"):
-        pytest.skip("lock-table probe requires /proc/locks (Linux)")
-    inodes = {}
-    for p in paths:
-        try:
-            inodes[os.stat(p).st_ino] = str(p)
-        except OSError:
-            continue
-    pid = os.getpid()
-    held = set()
-    for line in Path("/proc/locks").read_text().splitlines():
-        parts = line.split()
-        try:
-            lpid = int(parts[4])
-            ino = int(parts[5].split(":")[2])
-        except (IndexError, ValueError):
-            continue
-        if lpid == pid and ino in inodes:
-            held.add((ino, parts[1], parts[3], parts[6], parts[7]))
-    return held
-
 
 @pytest.mark.platforms("linux")
 def test_identity_probe_does_not_cancel_live_posix_locks(tmp_path):
@@ -247,13 +224,13 @@ def test_identity_probe_does_not_cancel_live_posix_locks(tmp_path):
         db._conn.execute(
             "UPDATE sessions SET source = source WHERE id = 'probe-sess'"
         )
-        before = _posix_locks_on([live])
+        before = own_posix_locks(live)
         assert before, "expected in-transaction WAL connection to lock state.db"
 
         for _ in range(3):
             _read_sqlite_application_id(live)
 
-        after = _posix_locks_on([live])
+        after = own_posix_locks(live)
         db._conn.rollback()
         # Only locks on the main file prove the header probe safe. WAL-index
         # read-lock slots on -shm may legitimately move while SQLite runs, and

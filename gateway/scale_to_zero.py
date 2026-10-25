@@ -105,7 +105,7 @@ def touch_dashboard_client_heartbeat(path: Optional[os.PathLike | str] = None) -
         open(p, "a", encoding="utf-8").close()
         os.utime(p, None)
         return True
-    except Exception:  # noqa: BLE001 - liveness garnish must never break the WS
+    except Exception:
         logger.debug("scale-to-zero: dashboard heartbeat touch failed", exc_info=True)
         return False
 

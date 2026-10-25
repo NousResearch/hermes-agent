@@ -232,12 +232,22 @@ function WorkspaceValue({ kind, path }: { kind: null | string | undefined; path:
 /** The dashboard's diagnostics panel: severity-toned, plain-English, with the
  *  backend's structured recovery actions as buttons. `reassign` is skipped —
  *  the Assignee control in the meta table IS that action, inline. */
-function Diagnostics({ items, onReclaim }: { items: Diagnostic[]; onReclaim: () => void }) {
+function Diagnostics({
+  items,
+  onReclaim,
+  onUnblock
+}: {
+  items: Diagnostic[]
+  onReclaim: () => void
+  onUnblock: () => void
+}) {
   const k = useKanban()
 
   const act = (action: DiagnosticAction) => {
     if (action.kind === 'reclaim') {
       onReclaim()
+    } else if (action.kind === 'unblock') {
+      onUnblock()
     } else if (action.kind === 'cli_hint') {
       void navigator.clipboard.writeText(String(action.payload?.command ?? action.label))
       host.notify({ kind: 'info', message: k.commandCopied })
@@ -248,7 +258,10 @@ function Diagnostics({ items, onReclaim }: { items: Diagnostic[]; onReclaim: () 
     <div className="flex flex-col gap-2">
       {items.map(diag => {
         const tone = SEVERITY_TONE[diag.severity]
-        const actions = diag.actions.filter(action => action.kind === 'reclaim' || action.kind === 'cli_hint')
+
+        const actions = diag.actions.filter(
+          action => action.kind === 'reclaim' || action.kind === 'unblock' || action.kind === 'cli_hint'
+        )
 
         return (
           <Callout
@@ -1048,6 +1061,12 @@ export function TaskDrawer({
                       <Diagnostics
                         items={task.diagnostics}
                         onReclaim={() => void mutate(() => reclaimTask(task.id))()}
+                        onUnblock={() =>
+                          void mutate(
+                            () => patchTask(task.id, { status: 'ready' }),
+                            () => host.notify({ kind: 'success', message: k.unblockedMessage(shortId(task.id)) })
+                          )()
+                        }
                       />
                     </Section>
                   )}
@@ -1092,6 +1111,33 @@ export function TaskDrawer({
                   </MetaRow>
                 )}
                 {task.tenant && <MetaRow label={k.metaTenant}>{task.tenant}</MetaRow>}
+                {/* #124391 — block detail the API already returns. The kind is
+                    retained across unblock, so present it as CURRENT only
+                    while the card sits in the blocked column. */}
+                {task.status === 'blocked' && task.block_kind && (
+                  <MetaRow label={k.blockReason}>
+                    <Tip label={k.blockKindTip(task.block_kind)}>
+                      <span className="cursor-help text-destructive">{task.block_kind}</span>
+                    </Tip>
+                  </MetaRow>
+                )}
+                {typeof task.block_recurrences === 'number' && task.block_recurrences > 0 && (
+                  <MetaRow label={k.blockRecurrences}>
+                    <Tip label={k.blockRecurrencesTip}>
+                      <span className="cursor-help">×{task.block_recurrences}</span>
+                    </Tip>
+                  </MetaRow>
+                )}
+                {typeof task.consecutive_failures === 'number' && task.consecutive_failures > 0 && (
+                  <MetaRow label={k.consecutiveFailures}>{task.consecutive_failures}</MetaRow>
+                )}
+                {task.last_failure_error && (
+                  <MetaRow label={k.lastFailureError}>
+                    <span className="whitespace-pre-wrap font-mono text-[0.65rem] leading-snug text-(--ui-text-tertiary)">
+                      {task.last_failure_error}
+                    </span>
+                  </MetaRow>
+                )}
                 {task.workspace_path && (
                   <MetaRow label={k.workspace}>
                     <WorkspaceValue kind={task.workspace_kind} path={task.workspace_path} />

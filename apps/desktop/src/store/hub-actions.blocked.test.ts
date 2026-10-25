@@ -51,6 +51,16 @@ test('the current CLI "Not installed:" tail parses into findings + trust', () =>
   ]
 
   expect(parseInstallBlocked(uncounted)).toEqual({ findings: 0, unverified: false })
+
+  // The real action log is Rich-wrapped at 80 columns, which can break the
+  // hard-block clause between "never" and "installs" (seen on a live arxiv install).
+  const wrappedHardBlock = [
+    'Not installed: the security scan found 9 high-risk pattern(s) in ',
+    "'NousResearch/hermes-agent/skills/research/arxiv' (listed above). Hermes never ",
+    'installs unverified skills with high-risk findings, even with --force. Review '
+  ]
+
+  expect(parseInstallBlocked(wrappedHardBlock)).toEqual({ findings: 9, unverified: true })
 })
 
 test('the legacy "Installation blocked:" tail still parses and toasts a plain explanation', () => {

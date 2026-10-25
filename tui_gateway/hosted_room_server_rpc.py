@@ -27,6 +27,8 @@ class HostedRoomSessionError(RuntimeError):
 class HostedRoomServerRPC:
     """Normalize the installed server handlers for :class:`HostedRoomRuntime`."""
 
+    accepts_attachments = False  # prompt.submit here has no event-bound file resolution
+
     def __init__(self, server: ModuleType) -> None:
         self.server = server
         self._ids = itertools.count(1)
@@ -68,7 +70,10 @@ class HostedRoomServerRPC:
     def submit(
         self, *, profile: str, session_id: str, prompt: str, source: str, task: state.TaskIdentity,
         execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None], member_id: str,
+        attachments: Sequence[Mapping[str, Any]] | None = None,
     ) -> Mapping[str, Any]:
+        if attachments:  # the driver refuses files before submit on this route
+            raise ValueError("attachments_unsupported_on_route: in-process route cannot carry files")
         try:
             return self._call("prompt.submit", {
                 "profile": profile, "session_id": session_id, "text": prompt, "source": source,

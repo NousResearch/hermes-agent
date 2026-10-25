@@ -49,6 +49,8 @@ class RequestedRoute(NamedTuple):
     ``explicit_api_key`` carry a URL-bearing direct alias's endpoint and credential
     (None = not pinned by the route). ``config_model`` / ``nested_provider`` expose the
     split ``model.default`` pieces for CLI consumers (``_model_is_default``).
+    ``explicit_provider`` is the provider the command line chose (MoA prefix > ``--provider``
+    > startup alias route; None when only config/env picked it), the CLI's gateway launch policy.
     """
 
     model: str
@@ -57,6 +59,7 @@ class RequestedRoute(NamedTuple):
     explicit_api_key: Optional[str] = None
     config_model: str = ""
     nested_provider: str = ""
+    explicit_provider: Optional[str] = None
 
 
 def resolve_requested_route(
@@ -121,4 +124,5 @@ def resolve_requested_route(
         explicit_api_key=startup_api_key_override or None,
         config_model=config_model,
         nested_provider=nested_provider,
+        explicit_provider=moa_provider_override or provider or startup_provider_override or None,
     )

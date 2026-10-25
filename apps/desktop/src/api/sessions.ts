@@ -1,7 +1,7 @@
-import { isMissingRestEndpoint } from '@/lib/gateway-rpc'
+import { isMissingRestEndpoint, isUnroutedRestPath } from '@/lib/gateway-rpc'
 import { maybeBackfillLegacySessionOwners } from '@/lib/legacy-session-owner-backfill'
 import { stampRowsWithOwningConnection } from '@/lib/session-owner-stamp'
-import { recordTranscriptTail } from '@/store/transcript-tail'
+import { pageHonorsLatestOrder, recordTranscriptTail } from '@/store/transcript-tail'
 import type {
   PaginatedSessions,
   SessionInfo,
@@ -9,6 +9,8 @@ import type {
   SessionMessagesResponse,
   SessionSearchResponse
 } from '@/types/hermes'
+
+import { createSessionMutationClient, type SessionMutationIdentity, type SessionMutationSnapshot } from '../../../shared/src/session-http-mutations'
 
 import {
   ambientOwnerConnectionId,
@@ -18,7 +20,8 @@ import {
   getApiRequestProfile,
   hermesApi,
   type ProfileScope,
-  profileScoped
+  profileScoped,
+  sessionReadOwnerPin
 } from './client'
 
 const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
@@ -138,7 +141,8 @@ export async function listAllProfileSessions(
   archived: 'exclude' | 'include' | 'only' = 'exclude',
   order: 'created' | 'recent' = 'recent',
   profile: 'all' | (string & {}) = 'all',
-  filter: SessionSourceFilter = {}
+  filter: SessionSourceFilter = {},
+  offset = 0
 ): Promise<PaginatedSessions> {
   const sourceParam = filter.source ? `&source=${encodeURIComponent(filter.source)}` : ''
 
@@ -149,7 +153,7 @@ export async function listAllProfileSessions(
   const result = await hermesApi<PaginatedSessions>({
     ...profileScoped(),
     path:
-      `/api/profiles/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}` +
+      `/api/profiles/sessions?limit=${limit}&offset=${Math.max(0, offset)}&min_messages=${Math.max(0, minMessages)}` +
       `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}${sourceParam}${excludeParam}`,
     timeoutMs: SESSION_LIST_REQUEST_TIMEOUT_MS
   })
@@ -157,7 +161,7 @@ export async function listAllProfileSessions(
   return {
     ...result,
     sessions: pageWindow(stampActiveConnectionOwner(result.sessions), limit),
-    offset: 0
+    offset: Math.max(0, offset)
   }
 }
 
@@ -368,65 +372,77 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
   }
 }
 
-// Mutations take the owning `profile` so Electron can route them to the correct
-// remote backend or local profile scope. Omit for the current/default profile.
+const runSessionMutation = createSessionMutationClient()
+
+class MissingMutationSnapshotRoute extends Error {}
+
+/** Run one fenced session edit. The fencing protocol is a backend capability: an older
+ *  standalone runtime has no snapshot route and keeps its base write. Only that route-level
+ *  verdict on the read, before any write was attempted, selects it; a session/profile 404,
+ *  refusal, conflict, timeout or failed write keeps the canonical CAS path and its retained
+ *  identity. */
+export function mutateSessionFenced<T>(key: string, read: () => Promise<SessionMutationSnapshot>,
+  send: (identity: Partial<SessionMutationIdentity>) => Promise<T>): Promise<T> {
+  return runSessionMutation(key, () => read().catch(error => {
+    // The prepared read is shared by equal concurrent edits; its verdict must
+    // travel with that rejection, rather than one caller's local closure.
+    if (isUnroutedRestPath(error)) { throw new MissingMutationSnapshotRoute(String(error), { cause: error }) }
+    throw error
+  }), send).catch(error => {
+    if (!(error instanceof MissingMutationSnapshotRoute)) { throw error }
+
+    return send({})
+  })
+}
+
+function mutateSessionHttp<T>(id: string, method: 'PATCH' | 'DELETE', payload: Record<string, unknown>, profile?: ProfileScope): Promise<T> {
+  // Null is the window's v1 route (its primary, local or remote); defaulting it to
+  // the registry's 'local' source would pin a remote primary's edits to this machine.
+  const scope = { connectionId: getApiRequestConnection(), ...sessionScoped(profile) }
+  const path = `/api/sessions/${encodeURIComponent(id)}`
+  const query = new URLSearchParams(scope.profile ? { profile: scope.profile } : {})
+  const suffix = query.size ? `?${query}` : ''
+  const key = JSON.stringify([scope, id, method, payload])
+
+  const send = (identity: Partial<SessionMutationIdentity>) => {
+    if (method === 'DELETE') {
+      const params = new URLSearchParams(query)
+
+      for (const [name, value] of Object.entries(identity)) { params.set(name, String(value)) }
+
+      return hermesApi<T>({ ...scope, path: params.size ? `${path}?${params}` : path, method })
+    }
+
+    return hermesApi<T>({ ...scope, path, method,
+      body: { ...payload, ...identity, ...(scope.profile ? { profile: scope.profile } : {}) } })
+  }
+
+  return mutateSessionFenced(key, () => hermesApi<SessionMutationSnapshot>({ ...scope, path: `${path}/mutation-snapshot${suffix}` }), send)
+}
+
 export function setSessionArchived(id: string, archived: boolean, profile?: string | null): Promise<{ ok: boolean }> {
-  // Carry the owning profile IN THE PATCH BODY, mirroring renameSession — the
-  // backend reads its target DB from body.profile (_open_session_db_for_profile).
-  // Passing it only as request.profile (Electron routing) is not enough on a
-  // remote gateway with no remoteProfile alias: the archive lands on the wrong
-  // (default) state.db, no-ops on a missing row, and the archived/unarchived
-  // state silently fails to stick — the same class as the unscoped DELETE.
-  const owner = sessionWriteProfile(profile)
-
-  return hermesApi<{ ok: boolean }>({
-    ...(owner ? { profile: owner } : {}),
-    path: `/api/sessions/${encodeURIComponent(id)}`,
-    method: 'PATCH',
-    body: { archived, ...(owner ? { profile: owner } : {}) }
-  })
+  return mutateSessionHttp(id, 'PATCH', { archived, ...(archived ? { pinned: false } : {}) }, sessionWriteProfile(profile))
 }
 
-// Mirror a sidebar pin to the backend "keep" flag so the sessions.auto_archive
-// sweep (which runs backend-side, blind to Desktop localStorage) never hides a
-// pinned chat. Best-effort: the sidebar stays localStorage-driven for its own
-// display; this only feeds the backend policy.
 export function setSessionPinnedRemote(id: string, pinned: boolean, profile?: string | null): Promise<{ ok: boolean }> {
-  // Owning profile in the PATCH body (see setSessionArchived / renameSession):
-  // the handler reads its target DB from body.profile, so a remote/foreign
-  // profile's pin must travel in the body or it no-ops on the wrong state.db.
-  const owner = sessionWriteProfile(profile)
-
-  return hermesApi<{ ok: boolean }>({
-    ...(owner ? { profile: owner } : {}),
-    path: `/api/sessions/${encodeURIComponent(id)}`,
-    method: 'PATCH',
-    body: { pinned, ...(owner ? { profile: owner } : {}) }
-  })
+  return mutateSessionHttp(id, 'PATCH', { pinned }, sessionWriteProfile(profile))
 }
 
-// Mirror a sidebar unread toggle to the backend read-state watermark
-// (sessions.last_read_at via SessionDB.set_session_read). Same profile
-// routing as the other session mutations: a remote session's row lives only
-// on its remote host, so the owning profile must travel with the request.
 export function setSessionUnreadRemote(id: string, unread: boolean, profile?: string | null): Promise<{ ok: boolean }> {
-  // Owning profile in the PATCH body (see setSessionArchived / renameSession):
-  // the handler reads its target DB from body.profile, so a remote/foreign
-  // profile's unread toggle must travel in the body or it no-ops on the wrong
-  // state.db.
-  const owner = sessionWriteProfile(profile)
-
-  return hermesApi<{ ok: boolean }>({
-    ...(owner ? { profile: owner } : {}),
-    path: `/api/sessions/${encodeURIComponent(id)}`,
-    method: 'PATCH',
-    body: { unread, ...(owner ? { profile: owner } : {}) }
-  })
+  return mutateSessionHttp(id, 'PATCH', { unread }, sessionWriteProfile(profile))
 }
 
-export function searchSessions(query: string): Promise<SessionSearchResponse> {
+// Full-text search over one profile's sessions. Pass the profile the caller is
+// showing: an unscoped request lands on the primary backend, which searches
+// its launch profile's state.db whatever profile the sidebar is on. `null`
+// asks the primary on purpose; omitted follows the ambient request profile.
+export function searchSessions(query: string, profile?: null | string): Promise<SessionSearchResponse> {
+  const scope = profileScoped(profile)
+  const suffix = scope.profile ? `&profile=${encodeURIComponent(scope.profile)}` : ''
+
   return hermesApi<SessionSearchResponse>({
-    path: `/api/sessions/search?q=${encodeURIComponent(query)}`
+    ...scope,
+    path: `/api/sessions/search?q=${encodeURIComponent(query)}${suffix}`
   })
 }
 
@@ -435,10 +451,14 @@ export function searchSessions(query: string): Promise<SessionSearchResponse> {
 // 404s when the id isn't on that profile — so a cheap by-id lookup replaces the
 // cross-profile list scan when locating an unknown id's owner.
 export function getSession(id: string, profile?: ProfileScope): Promise<SessionInfo> {
-  const suffix = sessionScopeQuery(profile)
+  // Pin the read to the session's OWNER connection (#125372): the ambient dial
+  // 404s on the wrong backend whenever two connections expose a same-named
+  // profile.
+  const scope = { ...sessionScoped(profile), ...sessionReadOwnerPin(id, profile) }
+  const suffix = scope.profile ? `?profile=${encodeURIComponent(scope.profile)}` : ''
 
   return hermesApi<SessionInfo>({
-    ...sessionScoped(profile),
+    ...scope,
     path: `/api/sessions/${encodeURIComponent(id)}${suffix}`
   })
 }
@@ -455,7 +475,8 @@ export function getSessionMessages(
 ): Promise<SessionMessagesResponse> {
   const query = new URLSearchParams()
 
-  const sessionScope = sessionScoped(profile)
+  // Owner connection pin (#125372) — see getSession.
+  const sessionScope = { ...sessionScoped(profile), ...sessionReadOwnerPin(id, profile) }
 
   if (sessionScope.profile) {
     query.set('profile', sessionScope.profile)
@@ -504,7 +525,7 @@ export function getLatestSessionMessages(
   // (ambient, profile string, or explicit pin). Otherwise refreshes create
   // duplicate tail entries and "Show earlier" cannot resolve the loaded tail.
   // Capture before awaiting: the active gateway may change during the read.
-  const route = { ...connectionScoped(), ...sessionScoped(profile) }
+  const route = { ...connectionScoped(), ...sessionScoped(profile), ...sessionReadOwnerPin(id, profile) }
   // Only the lookup key is normalized — backfill replays `route` verbatim.
   const ambientConnectionId = route.connectionId || ambientOwnerConnectionId()
   const ambientProfile = getApiRequestProfile() || 'default'
@@ -521,7 +542,19 @@ export function getLatestSessionMessages(
       includeCompacted: true
     },
     options
-  ).then(page => {
+  ).then(async page => {
+    // Order-echo guard. A backend built before the `order` param silently drops
+    // it (FastAPI ignores unknown query params) and serves the OLDEST page
+    // while still answering with a `pagination` object — so a full page looked
+    // like a truncated tail and the transcript silently became its first N
+    // rows, with "Show earlier" then prepending rows N..2N counted from the
+    // oldest end. Only a page that echoes `order: 'latest'` may be adopted as
+    // the tail; anything else is read as the complete transcript instead, which
+    // is the one paging contract both backend generations honour.
+    const authoritativePage = pageHonorsLatestOrder(page)
+      ? page
+      : await completeTranscriptForOrderlessBackend(id, profile, page, options)
+
     // Record whether the tail was truncated (page came back full) and where
     // the next older page starts, so "Show earlier" can backfill over REST
     // (app/chat/transcript-backfill). Keyed under both the requested id and
@@ -534,14 +567,43 @@ export function getLatestSessionMessages(
       profile: route.profile || page.profile || ambientProfile
     }
 
-    recordTranscriptTail(id, page, route, owner)
+    recordTranscriptTail(id, authoritativePage, route, owner)
 
-    if (page.session_id && page.session_id !== id) {
-      recordTranscriptTail(page.session_id, page, route, owner)
+    if (authoritativePage.session_id && authoritativePage.session_id !== id) {
+      recordTranscriptTail(authoritativePage.session_id, authoritativePage, route, owner)
     }
 
-    return page
+    return authoritativePage
   })
+}
+
+/**
+ * Complete chronological transcript for a backend that did not honour
+ * `order=latest` (#92508).
+ *
+ * A page with no `pagination` at all (the pre-paging generation) or an
+ * orderless page that came back SHORT already holds every row: both were
+ * served from the oldest row at offset 0. Only a full orderless page needs
+ * the paged read. `getAllSessionMessages` pages with `order: 'oldest'`: the
+ * newer generation honours that explicitly and the older one drops the param
+ * and always paged from the start, so both return the same full history. The
+ * result carries NO `pagination`, the established "this is everything" signal
+ * (`tailStateFromPage`), so nothing arms a REST backfill against the wrong end
+ * of the transcript.
+ */
+async function completeTranscriptForOrderlessBackend(
+  id: string,
+  profile: ProfileScope | undefined,
+  page: SessionMessagesResponse,
+  options: { passive?: boolean }
+): Promise<SessionMessagesResponse> {
+  const { pagination, ...complete } = page
+
+  if (!pagination || page.messages.length < pagination.limit) {
+    return complete
+  }
+
+  return { ...complete, messages: (await getAllSessionMessages(id, profile, options)).messages }
 }
 
 /**
@@ -606,7 +668,7 @@ export function getOlderSessionMessages(
 export async function getAllSessionMessages(
   id: string,
   profile?: ProfileScope,
-  options: { maxJsonChars?: number } = {}
+  options: { maxJsonChars?: number; passive?: boolean } = {}
 ): Promise<SessionMessagesResponse> {
   const messages: SessionMessage[] = []
   const pageSize = 500
@@ -616,12 +678,17 @@ export async function getAllSessionMessages(
   let resolvedSessionId = id
 
   while (true) {
-    const page = await getSessionMessages(id, profile, {
-      limit: pageSize,
-      offset,
-      order: 'oldest',
-      includeCompacted: true
-    })
+    const page = await getSessionMessages(
+      id,
+      profile,
+      {
+        limit: pageSize,
+        offset,
+        order: 'oldest',
+        includeCompacted: true
+      },
+      { passive: options.passive }
+    )
 
     resolvedSessionId = page.session_id
     jsonChars += (JSON.stringify(page.messages) ?? '').length
@@ -646,38 +713,9 @@ export async function getAllSessionMessages(
 }
 
 export function deleteSession(id: string, profile?: ProfileScope): Promise<{ ok: boolean }> {
-  // Scope the DELETE to the owning profile IN THE URL, mirroring getSession /
-  // getSessionMessages. Passing the profile only via request.profile (which the
-  // Electron main process consumes for backend routing) is NOT enough: on a
-  // remote gateway whose connection has no remoteProfile alias, the main-process
-  // path rewrite leaves the URL unscoped, so the backend opens its OWN (default)
-  // state.db, fails to find another profile's session, and returns
-  // {ok:true, already_absent:true}. The row then vanishes optimistically but was
-  // never deleted and reappears on the next sidebar refresh — the "All Profiles
-  // delete doesn't stick" report. The endpoint already honours ?profile=
-  // (get/rename/messages all send it); DELETE was the one mutation that dropped
-  // it after the api/ split. request.profile stays on for per-profile remote
-  // override + global-remote routing (both re-read/re-append the param).
-  const suffix = sessionScopeQuery(profile)
-
-  return hermesApi<{ ok: boolean }>({
-    ...sessionScoped(profile),
-    path: `/api/sessions/${encodeURIComponent(id)}${suffix}`,
-    method: 'DELETE'
-  })
+  return mutateSessionHttp(id, 'DELETE', {}, profile)
 }
 
-export function renameSession(
-  id: string,
-  title: string,
-  profile?: string | null
-): Promise<{ ok: boolean; title: string }> {
-  const owner = sessionWriteProfile(profile)
-
-  return hermesApi<{ ok: boolean; title: string }>({
-    ...(owner ? { profile: owner } : {}),
-    path: `/api/sessions/${encodeURIComponent(id)}`,
-    method: 'PATCH',
-    body: { title, ...(owner ? { profile: owner } : {}) }
-  })
+export function renameSession(id: string, title: string, profile?: string | null): Promise<{ ok: boolean; title: string }> {
+  return mutateSessionHttp(id, 'PATCH', { title }, sessionWriteProfile(profile))
 }

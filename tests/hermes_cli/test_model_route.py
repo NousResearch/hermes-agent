@@ -148,7 +148,17 @@ class TestPrecedence:
         route = resolve_requested_route(
             model="m", provider="anthropic", model_config=_cfg(provider="openrouter"),
         )
-        assert route == RequestedRoute(model="m", requested_provider="anthropic")
+        assert route == RequestedRoute(
+            model="m", requested_provider="anthropic", explicit_provider="anthropic")
+
+    def test_config_provider_is_not_explicit_launch_policy(self):
+        # The gateway resolves the config default itself; only a command-line choice
+        # (flag, MoA prefix, startup alias) is launch policy (cli ``_explicit_provider``).
+        route = resolve_requested_route(model="m", provider=None, model_config=_cfg(provider="openrouter"))
+        assert route.requested_provider == "openrouter"
+        assert route.explicit_provider is None
+        moa = resolve_requested_route(model="moa:fast", provider=None, model_config=_cfg(provider="openrouter"))
+        assert moa.explicit_provider == "moa"
 
     def test_moa_prefix_wins_over_provider_flag(self):
         route = resolve_requested_route(

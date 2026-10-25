@@ -8,7 +8,17 @@ import {
   tailBoundedRemend
 } from '@assistant-ui/react-streamdown'
 import type { code as streamdownCode } from '@streamdown/code'
-import { type ComponentProps, memo, type ReactNode, useEffect, useMemo, useState } from 'react'
+import {
+  Children,
+  type ComponentProps,
+  isValidElement,
+  memo,
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useState
+} from 'react'
+import { defaultRemarkPlugins } from 'streamdown'
 
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
@@ -16,6 +26,7 @@ import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlig
 import { TranscriptVideo } from '@/components/chat/transcript-video'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { ErrorBoundary } from '@/components/error-boundary'
+import { useContributions } from '@/contrib'
 import { useMediaImage } from '@/hooks/use-media-image'
 import { detectArtifact } from '@/lib/artifact-detect'
 import { renderMediaTags } from '@/lib/chat-messages/parts'
@@ -35,10 +46,11 @@ import {
   resolveMediaPlaybackSrc,
   validImageDimensions
 } from '@/lib/media'
-import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
+import { remarkSoftBreaks } from '@/lib/remark-soft-breaks'
 import { sessionRefFromMarkdownHref } from '@/lib/session-refs'
-import { isDirectiveInProgress } from '@/lib/transcript-directives'
+import { TOOL_MEDIA_RENDERER_AREA } from '@/lib/tool-media-renderers'
+import { remarkTranscriptDirectives } from '@/lib/transcript-directives'
 import { cn } from '@/lib/utils'
 import { useForcedTextDirection } from '@/store/text-direction'
 
@@ -46,9 +58,8 @@ import { ArtifactCard } from './artifact-card'
 import { SessionRefLink } from './directive-text'
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
 import { ResizableMarkdownTable, ResizableMarkdownTh } from './markdown-table'
+import { ToolMediaSlot } from './tool-media-slot'
 import { paragraphPlainText, TranscriptDirectiveLeaf, useResolvedParagraph } from './transcript-directive'
-
-const onboardingEnabled = isOnboardingEnabled()
 
 // Math rendering plugin (KaTeX). Configured once at module scope — the
 // plugin is stateless beyond its internal cache so re-creating per-render
@@ -98,6 +109,8 @@ function useCodePlugin(): CodePlugin | null {
 
   return plugin
 }
+
+const REMARK_PLUGINS = [...Object.values(defaultRemarkPlugins), remarkTranscriptDirectives, remarkSoftBreaks]
 
 // Replaces Streamdown's `parseIncompleteMarkdown` (full-text remend per
 // flush) with a tail-bounded repair. Must stay module-scope so the prop
@@ -249,13 +262,29 @@ function MediaPlaybackAttachment({ path }: { path: string }) {
   )
 }
 
+// Authored labels can be formatted markdown — an inline-code label like
+// [`v1.0.1`](url) arrives as a <code> element, not a plain string. Extract
+// the text so MarkdownLink can pass it as `fallbackLabel`; dropping it sent
+// the link down the title-fetch / URL-slug fallback path instead (#121321).
 function childrenToText(children: unknown): string {
-  if (typeof children === 'string' || typeof children === 'number') {
-    return String(children).trim()
+  return flattenChildrenToText(children).trim()
+}
+
+function flattenChildrenToText(node: unknown): string {
+  if (node === null || node === undefined || typeof node === 'boolean') {
+    return ''
   }
 
-  if (Array.isArray(children) && children.every(c => typeof c === 'string' || typeof c === 'number')) {
-    return children.join('').trim()
+  if (typeof node === 'string' || typeof node === 'number') {
+    return String(node)
+  }
+
+  if (Array.isArray(node)) {
+    return node.map(flattenChildrenToText).join('')
+  }
+
+  if (isValidElement<{ children?: unknown }>(node)) {
+    return flattenChildrenToText(node.props.children)
   }
 
   return ''
@@ -269,21 +298,22 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
     // download: route it to the preview rail (which renders .md with a
     // rendered/source toggle) instead of the download-link fallback that
     // `mediaKind() === 'file'` would produce. (#84951)
-    if (isMarkdownDocumentPath(mediaPath)) {
-      return <PreviewAttachment target={mediaPath} />
-    }
-
+    //
     // Non-media files (PDFs, data files, anything outside MEDIA_BY_EXT):
     // MediaAttachment's kind==='file' branch is a degraded dead-end (bare
     // "Open <name>" anchor). Route through the preview pipeline instead —
     // the same file card + "Open preview" the bare-path markdown-link
     // branch below produces — so MEDIA: uniformly delivers the richest
     // rendering for every file type.
-    if (mediaKind(mediaPath) === 'file') {
-      return <PreviewAttachment target={mediaPath} />
-    }
+    const builtIn =
+      isMarkdownDocumentPath(mediaPath) || mediaKind(mediaPath) === 'file' ? (
+        <PreviewAttachment target={mediaPath} />
+      ) : (
+        <MediaAttachment path={mediaPath} />
+      )
 
-    return <MediaAttachment path={mediaPath} />
+    // The plugin that owns the tool which produced this file may draw it instead.
+    return <ToolMediaSlot path={mediaPath}>{builtIn}</ToolMediaSlot>
   }
 
   const previewTarget = previewTargetFromMarkdownHref(href)
@@ -313,10 +343,14 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
     const fileHref = href && !href.startsWith('#') && isFileMediaPath(href) ? href : null
 
     if (fileHref) {
-      return mediaKind(fileHref) === 'file' ? (
-        <PreviewAttachment target={fileHref} />
-      ) : (
-        <MediaAttachment path={fileHref} />
+      return (
+        <ToolMediaSlot path={fileHref}>
+          {mediaKind(fileHref) === 'file' ? (
+            <PreviewAttachment target={fileHref} />
+          ) : (
+            <MediaAttachment path={fileHref} />
+          )}
+        </ToolMediaSlot>
       )
     }
 
@@ -345,7 +379,14 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
     }
   }
 
-  const fallbackLabel = text && normalizeExternalUrl(text) !== target ? text : undefined
+  // Always pass the link's own text as the fallback label so a bare URL stays
+  // fully visible (#121007): previously this was `undefined` when the child
+  // text matched the target URL (the bare-autolink case), so PrettyLink fell
+  // through to urlSlugTitleLabel — a host-only label like `ncpssd.org` with
+  // the address readable only via hover/inspect. The full URL is the label the
+  // sender actually wrote into the chat. Labeled links are unchanged: their
+  // authored label already wins display by design.
+  const fallbackLabel = text || undefined
 
   return (
     <PrettyLink className={cn('wrap-anywhere', className)} fallbackLabel={fallbackLabel} href={target} {...props} />
@@ -375,10 +416,10 @@ export function MarkdownImage(props: ComponentProps<'img'>) {
 }
 
 // A cold frame is ~4:3 because that is the envelope an image can occupy here
-// (--image-preview-max-width x --image-preview-height, 34rem x 26.25rem): every
-// shape, portrait included, fits at the size it would have without a reserved
-// frame. A 16:9 box shrank every narrower image (a 1080x1920 portrait to
-// 172x306). Warm mounts use the measured size instead.
+// (--image-preview-max-width x --image-preview-height): every shape, portrait
+// included, fits at the size it would have without a reserved frame. A 16:9
+// box shrank every narrower image (a 1080x1920 portrait to 172x306). Warm
+// mounts use the measured size instead.
 const COLD_IMAGE_RATIO = 4 / 3
 
 function MarkdownImageContent({
@@ -464,8 +505,8 @@ interface MarkdownTextSurfaceProps {
   /** This text is the model's private scratchpad (reasoning), so nothing in it
    *  may be promoted into app chrome: no artifact cards from fenced blocks (a
    *  draft must not register artifact versions), and no transcript directives
-   *  (a `::onboarding{step="look"}` the model was only reminding itself about
-   *  otherwise mounted a live accent picker inside the thinking block). */
+   *  (a directive the model was only reminding itself about would otherwise
+   *  mount a live plugin card inside the thinking block). */
   scratchpad?: boolean
   /** Disable artifact-card promotion for fenced blocks (reasoning text — a
    *  model's scratchpad draft must not register artifact versions). */
@@ -486,14 +527,14 @@ interface MarkdownTextSurfaceProps {
 // Headings shrink to chat scale rather than the prose default (h1≈xl). Kept
 // table-driven so adding/tweaking levels is one row.
 const HEADING_SIZES: Record<'h1' | 'h2' | 'h3' | 'h4', string> = {
-  h1: 'text-[1rem] tracking-tight',
-  h2: 'text-[0.9375rem] tracking-tight',
-  h3: 'text-[0.875rem]',
-  h4: 'text-[0.8125rem]'
+  h1: 'text-[1.25em] tracking-tight',
+  h2: 'text-[1.15em] tracking-tight',
+  h3: 'text-[1.075em]',
+  h4: 'text-[1em]'
 }
 
 const MARKDOWN_CONTAINER_CLASS_NAME = cn(
-  'aui-md prose w-full max-w-none overflow-hidden text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground',
+  'aui-md prose w-full min-w-0 max-w-none overflow-hidden text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground',
   'prose-p:leading-(--dt-line-height) prose-li:leading-(--dt-line-height)',
   'prose-headings:text-foreground prose-strong:text-foreground',
   // Typography styles `pre` as a dark slab: light text (`--tw-prose-pre-code`,
@@ -523,7 +564,7 @@ function HugeTextFallback({ containerClassName, text }: { containerClassName?: s
       <ExpandableBlock className="p-2">
         {chunks.map((chunk, index) => (
           <div
-            className="[content-visibility:auto]"
+            className="whitespace-pre-wrap wrap-anywhere [content-visibility:auto]"
             key={index}
             style={{ containIntrinsicSize: `auto ${chunk.lines * 16}px` }}
           >
@@ -551,6 +592,9 @@ function MarkdownParagraph({
 }: ComponentProps<'p'> & { scratchpad?: boolean; streaming?: boolean }) {
   const plain = paragraphPlainText(children)
   const resolved = useResolvedParagraph(scratchpad ? null : plain)
+  // A plugin's tool media renderer draws block content (a card, a viewer), which
+  // a <p> cannot hold; a paragraph delivering a MEDIA: file becomes a <div> then.
+  const blockMedia = useContributions(TOOL_MEDIA_RENDERER_AREA).length > 0 && holdsMediaLink(children)
 
   // Vertical rhythm is owned by styles.css (`--paragraph-gap`), which must
   // out-specify Tailwind Typography's `prose` margins — so no `my-*` here.
@@ -574,16 +618,12 @@ function MarkdownParagraph({
     )
   }
 
-  // Directive-in-progress: while the message is still streaming, a paragraph
-  // that begins with `::` is a directive whose closing shape hasn't fully
-  // arrived (directives always sit alone in their own paragraph — FLOW.md),
-  // so it can't be claimed yet. Rendering the plain <p> here is the raw-text
-  // flash (`::ask{question="Wha…`) that snaps into a card on settle — hold
-  // the slot empty instead. Once streaming ends this branch is dead, so a
-  // SETTLED malformed/unclaimed directive still shows as prose (an authoring
-  // bug the user should see).
-  if (onboardingEnabled && streaming && plain !== null && isDirectiveInProgress(plain)) {
-    return null
+  if (blockMedia) {
+    return (
+      <div className={paragraphClass} data-tool-media-paragraph="" {...(props as ComponentProps<'div'>)}>
+        {children}
+      </div>
+    )
   }
 
   return (
@@ -591,6 +631,23 @@ function MarkdownParagraph({
       {children}
     </p>
   )
+}
+
+// Every link `MarkdownLink` may hand to a `ToolMediaSlot` (a `MEDIA:` href or a
+// bare file path), at any depth (`**[model](/out/a.glb)**`).
+function holdsMediaLink(children: ReactNode): boolean {
+  return Children.toArray(children).some(child => {
+    if (!isValidElement<{ children?: ReactNode; href?: unknown }>(child)) {
+      return false
+    }
+
+    const href = typeof child.props.href === 'string' ? child.props.href : ''
+
+    return (
+      (href !== '' && (mediaPathFromMarkdownHref(href) !== null || (!href.startsWith('#') && isFileMediaPath(href)))) ||
+      holdsMediaLink(child.props.children)
+    )
+  })
 }
 
 function MarkdownTextSurface({
@@ -704,7 +761,13 @@ function MarkdownTextSurface({
         ),
         th: ResizableMarkdownTh,
         td: ({ children, className, ...props }: ComponentProps<'td'>) => (
-          <td className={cn('px-2.5 py-1.5 align-top text-[0.8125rem] leading-snug', className)} {...props}>
+          <td
+            className={cn(
+              'px-2.5 py-1.5 align-top text-[length:var(--conversation-text-font-size)] leading-snug',
+              className
+            )}
+            {...props}
+          >
             {decorateText ? decorateText(children) : children}
           </td>
         ),
@@ -777,6 +840,7 @@ function MarkdownTextSurface({
         parseMarkdownIntoBlocksFn={parseMarkdownIntoBlocksCached}
         plugins={plugins}
         preprocess={preprocessWithTailRepair}
+        remarkPlugins={REMARK_PLUGINS}
       />
     </ErrorBoundary>
   )

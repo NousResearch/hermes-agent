@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { MarkdownTextContent } from './markdown-text'
@@ -73,5 +73,42 @@ describe('markdown surface survives stack-overflow content', () => {
     // the whole message to plain text.
     expect(await screen.findByRole('heading', { name: 'Disk report' })).toBeTruthy()
     expect(screen.getByText('full')).toBeTruthy()
+  })
+})
+
+describe('MarkdownTextContent overflow containment', () => {
+  // #70451: wide content must never push a horizontal scrollbar onto the
+  // transcript. Prose wraps; tables and fenced code keep content-sized layout
+  // and scroll inside their own cards, so the thread itself stays one column
+  // wide. The missing link was min-w-0 on the markdown container.
+  it('keeps prose in the column while tables and code scroll inside their own cards', async () => {
+    const longToken = 'x'.repeat(500)
+
+    const text = [
+      longToken,
+      '',
+      '```text',
+      longToken,
+      '```',
+      '',
+      '| Header with a long value | Other |',
+      '| --- | --- |',
+      `| ${longToken} | value |`
+    ].join('\n')
+
+    const { container } = render(<MarkdownTextContent isRunning={false} text={text} />)
+
+    await waitFor(() => expect(container.querySelector('[data-slot="code-card"]')).toBeTruthy())
+
+    const markdown = container.querySelector('.aui-md')!
+    const codeCard = container.querySelector('[data-slot="code-card"]')!
+    // The card's overlay scroller (ExpandableBlock's inner div).
+    const codeScroller = codeCard.querySelector('.scrollbar-overlay')!
+    const tableWrapper = container.querySelector('.aui-md-table')!
+
+    expect(markdown.className).toContain('min-w-0')
+    expect(codeScroller.className).toContain('overflow-x-auto')
+    expect(codeCard.textContent).toContain(longToken)
+    expect(tableWrapper.className).toContain('overflow-x-auto')
   })
 })

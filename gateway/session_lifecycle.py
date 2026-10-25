@@ -6,7 +6,7 @@ import logging
 import os
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from typing import TYPE_CHECKING, Optional
 
 from hermes_state_ids import new_session_id
@@ -58,28 +58,63 @@ def auto_continue_freshness_window() -> float:
 class SessionLifecycleMixin:
     """SessionStore explicit boundaries and crash-recovery markers."""
 
-    def _is_session_ended_in_db(self, session_id: str) -> bool:
-        """True iff state.db has this session with a non-null end_reason (same staleness test as
-        ``_prune_stale_sessions_locked``; no DB/row or DB error -> False). Lets routing self-heal a
-        session ended while the gateway stays alive. Store resolved from the owning profile.
+    def _is_session_ended_in_db(self, session_id: str, session_key: Optional[str] = None) -> bool:
+        """True iff state.db says the session is gone: ended (non-null end_reason) or hard-deleted
+        (no row in a readable owning DB). No DB or a DB error -> False (same failure mode as
+        ``_prune_stale_sessions_locked``). Lets routing self-heal a session finalized or deleted
+        while the gateway stays alive. Store resolved from the owning profile.
 
         Used by ``get_or_create_session`` to self-heal at routing time: ``_prune_stale_sessions_locked``
         only runs at startup, so a session ended in the DB while the gateway stays alive (any path that
         finalizes the row without clearing sessions.json) would otherwise be reused as a live routing key
         and silently swallow every subsequent message until the next restart (#54878 — the live-gateway
-        variant of #52804/FM9). DB errors are non-fatal — never block routing on a failed lookup.
+        variant of #52804/FM9). A hard delete is the same shape one step further: the row is GONE, not
+        merely ended, and reusing the route makes run_agent's INSERT OR IGNORE resurrect the deleted
+        session with its old id (#42422) — so a missing row is treated exactly like an ended one. DB
+        errors are non-fatal — never block routing on a failed lookup.
         The store is resolved from the row's owning profile rather than the ambient scope: an unscoped
         background writer keeps its own copy of the same session, and comparing against that copy reports a
         live session as ended (#66887).
+
+        Pass *session_key* when the owning key is known but the id may have left the routing index:
+        after the self-heal re-homes the key, the id has no owner and would resolve to the launch
+        store, which never holds a routed profile's rows (#118862).
         """
-        db = self._db_for_session_id(session_id)
+        db = self._db_for_key(session_key) if session_key else self._db_for_session_id(session_id)
         if not db or not session_id:
             return False
         try:
             row = db.get_session(session_id)
         except Exception:
             return False
-        return bool(row is not None and row.get("end_reason") is not None)
+        return row is None or row.get("end_reason") is not None
+
+    def _local_receipt_target(self, entry: Optional[SessionEntry]) -> Optional[str]:
+        """The physical target the authority's receipt names for *entry*'s local route, else None
+        (not a local route, no receipt, or the receipt belongs to another route).
+
+        Such a route moves only through the authority (compression and reset advance the receipt
+        and the route in one transaction), and its first admitted turn reopens a stamped row
+        (``reopen_local_session``). A row stamped ended (a viewer's ``ws_orphan_reap``) is
+        therefore never a stale route: dropping it minted a replacement id the authority refuses
+        (``admission_conflict``) and stranded the conversation (#140642)."""
+        origin = getattr(entry, "origin", None)
+        if origin is None or getattr(origin, "platform", None) is None or origin.platform.value != "local":
+            return None
+        db = self._db_for_key(entry.session_key)
+        if db is None or getattr(db, "_read_ctx", None) is None:
+            return None
+        import sqlite3
+
+        from hermes_state_local import local_receipt
+        from hermes_state_runtime import RuntimeStoreError
+        try:
+            receipt = local_receipt(db, str(origin.chat_id))
+            if receipt.get("route") != entry.session_key:
+                return None
+            return str(receipt["entry"]["session_id"]) or None
+        except (RuntimeStoreError, sqlite3.Error, KeyError, TypeError, AttributeError):
+            return None
 
     def _route_reset_reason(self, entry: SessionEntry) -> Optional[str]:
         """Only explicit suspension replaces a routed conversation; time never does."""
@@ -140,7 +175,7 @@ class SessionLifecycleMixin:
                 return None
             # Aware UTC, unlike the local wall clock elsewhere: the next process compares it with
             # epoch transcript timestamps and may run in another zone (DST, container vs unit TZ).
-            self._set_turn_marker_locked(session_key, entry, token, datetime.now(timezone.utc))
+            self._set_turn_marker_locked(session_key, entry, token, datetime.now(UTC))
         return token
 
     def clear_turn_active(self, session_key: str, token: str) -> bool:

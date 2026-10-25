@@ -96,9 +96,6 @@ def test_noop_when_fork_made_no_calls(db):
 
     assert _usage_rows(db, "sess-parent") == []
 
-def test_noop_when_parent_has_no_session_db():
-    background_review._record_review_usage_to_parent(_FakeParent(None), _usage())
-
 def test_noop_when_parent_has_no_session_id(db):
     db.create_session("sess-parent", source="cli")
 

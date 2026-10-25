@@ -515,6 +515,19 @@ class TestInstall:
         assert "evil" not in (load_config().get("mcp_servers") or {})
 
 
+    def test_first_install_records_one_extension_install_and_reinstall_none(self, catalog_dir, monkeypatch):
+        _write_manifest(catalog_dir, "demo", _basic_manifest())
+        import hermes_cli.observability.shared_metrics_events as events
+        from hermes_cli.mcp_catalog import install_entry
+
+        calls = []
+        monkeypatch.setattr(events, "record_extension_install", lambda **kw: calls.append(kw))
+        install_entry(_entry("demo"), enable=True)
+        install_entry(_entry("demo"), enable=True)
+
+        assert calls == [{"kind": "mcp_server", "source": "catalog", "name": "demo", "outcome": "success",
+                          "failure_class": None, "error": None}]
+
     def test_install_with_api_key_prompts_and_saves(self, catalog_dir, monkeypatch):
         body = _basic_manifest(
             auth={

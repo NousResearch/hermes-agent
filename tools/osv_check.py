@@ -139,7 +139,7 @@ def _save_disk_cache() -> None:
         logger.debug("Failed to save OSV disk cache to %s: %s", path, exc)
 
 
-def _cache_get(key) -> Tuple[bool, Optional[str]]:
+def _cache_get(key) -> tuple[bool, Optional[str]]:
     """Return (hit, result) for a fresh cache entry."""
     with _cache_lock:
         _load_disk_cache()
@@ -206,7 +206,7 @@ def _infer_ecosystem(command: str) -> Optional[str]:
     return _ECOSYSTEM_BY_COMMAND.get(re.split(r"[\\/]", command)[-1].lower())
 
 
-def _parse_package_from_args(args: list, ecosystem: str) -> Tuple[Optional[str], Optional[str]]:
+def _parse_package_from_args(args: list, ecosystem: str) -> tuple[Optional[str], Optional[str]]:
     """Extract (package_name, version) from command args, or (None, None) if not parseable."""
     # Skip flags to find the package token. npx's explicit install target (--package=NAME /
     # --package NAME / -p NAME) names a package distinct from the executed binary.
@@ -234,7 +234,7 @@ def _parse_package_from_args(args: list, ecosystem: str) -> Tuple[Optional[str],
     return parser(package_token) if parser else (package_token, None)
 
 
-def _parse_npm_package(token: str) -> Tuple[Optional[str], Optional[str]]:
+def _parse_npm_package(token: str) -> tuple[Optional[str], Optional[str]]:
     """Parse npm package: @scope/name@version or name@version."""
     if token.startswith("@"):
         match = re.match(r"^(@[^/]+/[^@]+)(?:@(.+))?$", token)
@@ -245,7 +245,7 @@ def _parse_npm_package(token: str) -> Tuple[Optional[str], Optional[str]]:
     return token, None
 
 
-def _parse_pypi_package(token: str) -> Tuple[Optional[str], Optional[str]]:
+def _parse_pypi_package(token: str) -> tuple[Optional[str], Optional[str]]:
     """Parse PyPI package: name==version or name[extras]==version."""
     match = re.match(r"^([a-zA-Z0-9._-]+)(?:\[[^\]]*\])?(?:==(.+))?$", token)
     return (match.group(1), match.group(2)) if match else (token, None)

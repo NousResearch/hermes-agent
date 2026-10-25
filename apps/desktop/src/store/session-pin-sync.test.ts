@@ -15,9 +15,9 @@ vi.mock('@/hermes', () => ({
 
 import { $pinnedSessionIds } from '@/store/layout'
 import { $activeGatewayProfile } from '@/store/profile'
-import { $cronSessions, $messagingSessions, $sessions } from '@/store/session'
+import { $cronSessions, $messagingSessions, $sessions, applySessionTitle, touchSessionActivity } from '@/store/session'
 
-import { $unconfirmedPinWrites, resetSessionPinMirror, watchSessionPins } from './session-pin-sync'
+import { $unconfirmedPinWrites, forgetPinSyncState, resetSessionPinMirror, watchSessionPins } from './session-pin-sync'
 
 const row = (id: string, extra: Partial<SessionInfo> = {}): SessionInfo =>
   ({ id, message_count: 1, source: 'cli', started_at: 0, title: id, ...extra }) as SessionInfo
@@ -100,6 +100,21 @@ describe('watchSessionPins', () => {
 
     // A session-list refresh that doesn't change the pinned set.
     $sessions.set([row('d'), row('e')])
+    await flush()
+
+    expect(patch).not.toHaveBeenCalled()
+  })
+
+  it('forgetPinSyncState suppresses the re-PATCH of a rowless pin being pruned', async () => {
+    // The dead-session prune unpins a rowless (dead) pin; without forgetting
+    // its pending bookkeeping first, the reconcile would re-PATCH the dead id
+    // (a fresh 404 on every boot — the noise the prune exists to remove).
+    $pinnedSessionIds.set(['c'])
+    await flush()
+    expect(patch).not.toHaveBeenCalled()
+
+    forgetPinSyncState('c')
+    $pinnedSessionIds.set([])
     await flush()
 
     expect(patch).not.toHaveBeenCalled()
@@ -320,6 +335,154 @@ describe('watchSessionPins remote pull', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('does not resurrect an unpin from a stale row that outlives the guard', async () => {
+    // A just-unpinned chat drops out of the backend's pinned back-fill, but it
+    // stays in $sessions as a SURVIVOR (open tile / selected / recently
+    // settled) — the same object that said pinned=true before the unpin. No
+    // page ever replaces it, so once the write guard's cooldown expires the
+    // next unrelated refresh must not read that frozen flag as a remote pin.
+    vi.useFakeTimers()
+
+    try {
+      const sticky = row('survivor', { pinned: true })
+      $sessions.set([sticky])
+      await flush()
+      expect($pinnedSessionIds.get()).toEqual(['survivor'])
+
+      $pinnedSessionIds.set([])
+      await flush()
+      expect(patch).toHaveBeenCalledWith('survivor', false, undefined)
+
+      vi.advanceTimersByTime(11_000)
+
+      // An unrelated refresh: the survivor row object is carried forward.
+      $sessions.set([...$sessions.get(), row('other')])
+      await flush()
+
+      expect($pinnedSessionIds.get()).not.toContain('survivor')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not re-pin an unpinned row when the next shift-click lands after the guard', async () => {
+    // The reported workflow: shift-click A to unpin, keep working through the
+    // list, shift-click B more than 10 s later. A PATCH emits no list refresh,
+    // so $sessions still holds A's pre-unpin row; B's toggle fires reconcile,
+    // the guard has lapsed, and that frozen pinned=true used to re-adopt A.
+    vi.useFakeTimers()
+
+    try {
+      $sessions.set([row('A', { pinned: true }), row('B', { pinned: false })])
+      await flush()
+      expect($pinnedSessionIds.get()).toEqual(['A'])
+
+      $pinnedSessionIds.set([])
+      await flush()
+
+      vi.advanceTimersByTime(11_000)
+
+      $pinnedSessionIds.set(['B'])
+      await flush()
+
+      expect($pinnedSessionIds.get()).toEqual(['B'])
+      expect($unconfirmedPinWrites.get().has('A')).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not resurrect a batch of shift-click unpins after the guard', async () => {
+    vi.useFakeTimers()
+
+    try {
+      $sessions.set([row('s1', { pinned: true }), row('s2', { pinned: true }), row('s3', { pinned: true })])
+      await flush()
+      expect($pinnedSessionIds.get()).toEqual(['s1', 's2', 's3'])
+
+      // Rapid, one-at-a-time unpins (shift+click each row).
+      $pinnedSessionIds.set(['s2', 's3'])
+      $pinnedSessionIds.set(['s3'])
+      $pinnedSessionIds.set([])
+      await flush()
+
+      vi.advanceTimersByTime(11_000)
+      $sessions.set([...$sessions.get()])
+      await flush()
+
+      expect($pinnedSessionIds.get()).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not let a value-copied painted row confirm the guard while the PATCH is in flight', async () => {
+    // applyRowPinned paints the local intent onto a row object, but SessionInfo
+    // rows are re-spread by value on ordinary user paths (touchSessionActivity on
+    // send, applySessionTitle on rename). A copy carries the painted `pinned`
+    // but not the optimistic marker, so it used to read as "a page agreeing
+    // with what we wrote" and released the write guard while the PATCH was
+    // still in flight — the exact revert this fix exists to close.
+    let settle: (v: { ok: boolean }) => void = () => {}
+
+    patch.mockImplementationOnce(() => new Promise(resolve => (settle = resolve)))
+
+    $sessions.set([row('in-use', { pinned: true })])
+    await flush()
+    expect($pinnedSessionIds.get()).toEqual(['in-use'])
+
+    // User unpins; the PATCH is held in flight so the guard stays armed.
+    $pinnedSessionIds.set([])
+    await flush()
+    expect(patch).toHaveBeenCalledWith('in-use', false, undefined)
+
+    // The very next message re-spreads the painted row by VALUE.
+    touchSessionActivity('in-use', { at: 12345, preview: 'next message' })
+    await flush()
+
+    // The copied row agrees with what we wrote, but it is still OUR intent,
+    // not a server confirmation. The guard must stay armed...
+    expect($unconfirmedPinWrites.get().has('in-use')).toBe(true)
+    // ...and a stale pre-PATCH page landing now must not resurrect the pin.
+    $sessions.set([row('in-use', { pinned: true }), row('other')])
+    await flush()
+
+    expect($pinnedSessionIds.get()).not.toContain('in-use')
+
+    settle({ ok: true })
+    await flush()
+    await flush()
+  })
+
+  it('does not let a title-applied copy of a painted row confirm the guard', async () => {
+    // Same class, rename path: applySessionTitle re-spreads every matching row.
+    let settle: (v: { ok: boolean }) => void = () => {}
+
+    patch.mockImplementationOnce(() => new Promise(resolve => (settle = resolve)))
+
+    $sessions.set([row('renamed', { pinned: true })])
+    await flush()
+    expect($pinnedSessionIds.get()).toEqual(['renamed'])
+
+    $pinnedSessionIds.set([])
+    await flush()
+    expect(patch).toHaveBeenCalledWith('renamed', false, undefined)
+
+    applySessionTitle('renamed', 'New Title')
+    await flush()
+
+    expect($unconfirmedPinWrites.get().has('renamed')).toBe(true)
+
+    $sessions.set([row('renamed', { pinned: true, title: 'New Title' })])
+    await flush()
+
+    expect($pinnedSessionIds.get()).not.toContain('renamed')
+
+    settle({ ok: true })
+    await flush()
+    await flush()
   })
 
   it('keeps the pin and retries when the write itself fails', async () => {

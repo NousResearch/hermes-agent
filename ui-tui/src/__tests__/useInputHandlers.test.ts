@@ -8,6 +8,7 @@ import {
   dismissSensitivePrompt,
   handleIdleHotkeyExit,
   resolveCtrlCComposerAction,
+  resolveDoubleEscAction,
   shouldDetachEditedHistoryInput,
   shouldFallThroughForScroll
 } from '../app/useInputHandlers.js'
@@ -96,6 +97,28 @@ describe('resolveCtrlCComposerAction — draft wins over interrupt', () => {
 
   it('does not interrupt a busy session that has no sid yet', () => {
     expect(resolveCtrlCComposerAction({ busy: true, hasDraft: false, hasSession: false })).toBe('exit')
+  })
+})
+
+describe('resolveDoubleEscAction — double-Esc interrupts only a busy, draft-free turn (#62478)', () => {
+  it('interrupts the running turn when the composer is empty', () => {
+    expect(resolveDoubleEscAction({ busy: true, hasDraft: false, hasSession: true })).toBe('interrupt')
+  })
+
+  it('clears a draft instead of interrupting, even mid-stream', () => {
+    expect(resolveDoubleEscAction({ busy: true, hasDraft: true, hasSession: true })).toBe('clear')
+  })
+
+  it('does nothing while idle with an empty composer (single-Esc conventions unchanged)', () => {
+    expect(resolveDoubleEscAction({ busy: false, hasDraft: false, hasSession: true })).toBe('none')
+  })
+
+  it('does not interrupt a busy session that has no sid yet', () => {
+    expect(resolveDoubleEscAction({ busy: true, hasDraft: false, hasSession: false })).toBe('none')
+  })
+
+  it('keeps clearing an idle draft (existing discard convention)', () => {
+    expect(resolveDoubleEscAction({ busy: false, hasDraft: true, hasSession: true })).toBe('clear')
   })
 })
 
@@ -188,5 +211,33 @@ describe('dismissSensitivePrompt', () => {
 
     expect(getOverlayState().secret).toBeNull()
     expect(sys).toHaveBeenCalled()
+  })
+
+  it('declines a vault save-login overlay with an empty value so the blocked wait resolves', () => {
+    resetOverlayState()
+    resetServerRequestsForTests()
+    patchOverlayState({ vaultSaveLogin: { origin: 'https://example.com', requestId: 'save-1', site: 'example.com' } })
+    const respond = openRequest('save-1', 'vault.save_login')
+    const sys = vi.fn()
+
+    dismissSensitivePrompt(getOverlayState(), vi.fn(), sys)
+
+    expect(getOverlayState().vaultSaveLogin).toBeNull()
+    expect(sys).toHaveBeenCalledWith('login for example.com not saved')
+    expect(respond).toHaveBeenCalledWith({ value: '' })
+  })
+
+  it('skips a vault verification-code overlay with an empty value', () => {
+    resetOverlayState()
+    resetServerRequestsForTests()
+    patchOverlayState({ vaultCode: { hint: '', requestId: 'code-1', site: 'github.com' } })
+    const respond = openRequest('code-1', 'vault.code')
+    const sys = vi.fn()
+
+    dismissSensitivePrompt(getOverlayState(), vi.fn(), sys)
+
+    expect(getOverlayState().vaultCode).toBeNull()
+    expect(sys).toHaveBeenCalledWith('verification code for github.com skipped')
+    expect(respond).toHaveBeenCalledWith({ value: '' })
   })
 })

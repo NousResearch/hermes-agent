@@ -202,7 +202,7 @@ class TestManagedFalSyncClientSubmit:
         return client, sync_instance, fal_client
 
     def test_submit_basic(self):
-        client, sync_instance, fal_client = self._make_client()
+        client, _sync_instance, _fal_client = self._make_client()
         response = MagicMock()
         response.json.return_value = {
             "request_id": "req-1",
@@ -340,7 +340,7 @@ class TestManagedFalSyncClientSubmit:
 
     def test_submit_uses_custom_default_timeout(self):
         """SyncClient.default_timeout is used if present."""
-        fal_client, sync_instance = _make_fal_client_mock(default_timeout=300.0)
+        fal_client, _sync_instance = _make_fal_client_mock(default_timeout=300.0)
         client = _ManagedFalSyncClient(
             fal_client, key="k", queue_run_origin="https://q.example.com"
         )

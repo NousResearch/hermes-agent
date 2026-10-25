@@ -159,7 +159,7 @@ Codex uses a separate Responses API path:
 
 - `api_mode = codex_responses`
 - dedicated credential resolution and auth store support
-- a resumed session whose lingering Codex reasoning items (`encrypted_content`) are rejected — as a 400 `invalid_encrypted_content` or as a 401 `token_expired` — self-heals by stripping the cached items and replaying once, before any credential refresh or pool rotation
+- a resumed session whose lingering Codex reasoning items (`encrypted_content`) are rejected — as a 400 `invalid_encrypted_content` or as a 401 `token_expired` — self-heals by stripping the cached items and replaying once, before any credential refresh or pool rotation. Reasoning minted after that strip keeps replaying; only a second rejection in the same session turns replay off
 
 ## Auxiliary model routing
 

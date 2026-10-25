@@ -12,6 +12,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { en } from '@/i18n/en'
 import type { ErrorCardCopy } from '@/i18n/types'
 import { $displayTimestamps } from '@/store/display-timestamps'
+import { $activeSessionId } from '@/store/session'
+import { type SessionTileDelegate, setSessionTileDelegate } from '@/store/session-states'
 
 import { stubThreadEnvironment } from '../test-utils'
 
@@ -215,6 +217,23 @@ describe('AssistantMessage branch button visibility (bug #2 fix)', () => {
   })
 })
 
+describe('stopped reply marker', () => {
+  it('marks a reply the user stopped', async () => {
+    const base = assistantMessage()
+    const stopped = { ...base, metadata: { ...base.metadata, custom: { interrupted: true } } } as ThreadMessage
+    render(<Harness assistant={stopped} />)
+
+    expect(await screen.findByText(en.assistant.thread.responseStopped)).toBeTruthy()
+  })
+
+  it('leaves a finished reply unmarked', async () => {
+    render(<Harness />)
+    await screen.findByText('done')
+
+    expect(screen.queryByText(en.assistant.thread.responseStopped)).toBeNull()
+  })
+})
+
 describe('ownership refusal recovery (#106217)', () => {
   it('offers Start new session and suppresses Retry for live-owner refusals', async () => {
     render(<Harness assistant={ownershipRefusalMessage()} />)
@@ -372,6 +391,98 @@ describe('scheduled retry at the usage-limit reset (#98852)', () => {
   })
 })
 
+describe("a window plan's limit: one-click switch and credits (no silent switch)", () => {
+  const limitMessage = (credits: 'add_credits' | 'use_credits', suggestions = true) =>
+    failedMessage(
+      {
+        code: 'usage_window',
+        layer: 'billing',
+        message: "You've hit your daily limit · resets 15:56",
+        provider: 'nous',
+        retryable: true,
+        // The parsed surface (lib/error-surface.ts parseUsageLimit), as chat-runtime stores it.
+        usageLimit: {
+          credits,
+          suggestions: suggestions
+            ? [{ label: 'Model Free', model: 'example/model-free:free', note: 'free', provider: 'nous' }]
+            : []
+        }
+      },
+      'HTTP 402: usage window'
+    )
+
+  afterEach(() => {
+    $activeSessionId.set(null)
+  })
+
+  it('switches THIS session to the recommended model, then re-runs the turn', async () => {
+    const switchSessionModel = vi.fn(async () => true)
+    const onReload = vi.fn(async () => {})
+    setSessionTileDelegate({ switchSessionModel } as unknown as SessionTileDelegate)
+    $activeSessionId.set('rt-1')
+
+    render(
+      <MemoryRouter>
+        <Harness assistant={limitMessage('add_credits')} onReload={onReload} />
+      </MemoryRouter>
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Switch to Model Free (free)' }))
+
+    await waitFor(() => expect(onReload).toHaveBeenCalledTimes(1))
+    expect(switchSessionModel).toHaveBeenCalledWith('rt-1', 'example/model-free:free', 'nous')
+    // No balance: the credits way on is Billing, labelled for what it does.
+    expect(screen.getByRole('button', { name: 'Open billing settings' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Turn on Keep going on credits' })).toBeNull()
+    // The generic provider menu is replaced by the one-click switch.
+    expect(screen.queryByRole('button', { name: 'Switch provider' })).toBeNull()
+  })
+
+  it('re-runs nothing while the switch is unconfirmed or the user keeps the current model', async () => {
+    // The gateway asked to confirm a guarded target and the user kept the current model.
+    const switchSessionModel = vi.fn(async () => false)
+    const executeSlash = vi.fn(async () => {})
+    const onReload = vi.fn(async () => {})
+    setSessionTileDelegate({ executeSlash, switchSessionModel } as unknown as SessionTileDelegate)
+    $activeSessionId.set('rt-1')
+
+    render(
+      <MemoryRouter>
+        <Harness assistant={limitMessage('add_credits')} onReload={onReload} />
+      </MemoryRouter>
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Switch to Model Free (free)' }))
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 0))
+    })
+
+    expect(onReload).not.toHaveBeenCalled()
+  })
+
+  it('with a balance and Keep going off, offers to turn on Keep going (a lasting setting)', async () => {
+    render(
+      <MemoryRouter>
+        <Harness assistant={limitMessage('use_credits')} />
+      </MemoryRouter>
+    )
+
+    expect(await screen.findByRole('button', { name: 'Turn on Keep going on credits' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Switch to Model Free (free)' })).toBeTruthy()
+  })
+
+  it('with no model to offer, still points at choosing one', async () => {
+    render(
+      <MemoryRouter>
+        <Harness assistant={limitMessage('add_credits', false)} />
+      </MemoryRouter>
+    )
+
+    expect(await screen.findByRole('button', { name: 'Open billing settings' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^Switch to / })).toBeNull()
+  })
+})
+
 describe('rejected API key recovery', () => {
   it('names the key as the problem and deep-links Settings → Keys to that env var', async () => {
     render(
@@ -399,7 +510,9 @@ describe('rejected API key recovery', () => {
     expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
 
     screen.getByRole('button', { name: 'Update API key' }).click()
-    await waitFor(() => expect(screen.getByTestId('location').textContent).toMatch(/\?tab=keys&key=OPENAI_API_KEY$/))
+    await waitFor(() =>
+      expect(screen.getByTestId('location').textContent).toMatch(/\?tab=providers&pview=keys&key=OPENAI_API_KEY$/)
+    )
   })
 })
 

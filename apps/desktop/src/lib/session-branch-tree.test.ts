@@ -158,7 +158,9 @@ describe('flattenSessionsWithBranches', () => {
     const second = reset('second', 'first', { last_active: 20 })
     const third = reset('third', 'second', { last_active: 30 })
 
-    expect(flattenSessionsWithBranches([first, second, third]).map(e => ({ id: e.session.id, stem: e.branchStem }))).toEqual([
+    expect(
+      flattenSessionsWithBranches([first, second, third]).map(e => ({ id: e.session.id, stem: e.branchStem }))
+    ).toEqual([
       { id: 'third', stem: undefined },
       { id: 'second', stem: undefined },
       { id: 'first', stem: undefined }
@@ -170,7 +172,9 @@ describe('flattenSessionsWithBranches', () => {
     const branch = fork('branch', 'parent', { last_active: 15 })
     const nextTopic = reset('next', 'parent', { last_active: 20 })
 
-    expect(flattenSessionsWithBranches([parent, branch, nextTopic]).map(e => ({ id: e.session.id, stem: e.branchStem }))).toEqual([
+    expect(
+      flattenSessionsWithBranches([parent, branch, nextTopic]).map(e => ({ id: e.session.id, stem: e.branchStem }))
+    ).toEqual([
       { id: 'next', stem: undefined },
       { id: 'parent', stem: undefined },
       { id: 'branch', stem: '└─ ' }

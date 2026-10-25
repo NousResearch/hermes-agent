@@ -41,7 +41,7 @@ TOKEN = r"\b(?:c1|a1|t1)w\d{3}\b"
 CELLS = [
     "clarify_card_survives_resize", "clarify_answer_reaches_tool", "clarify_tool_call_rendered_once",
     "clarify_answer_not_a_user_turn",
-    "approval_card_survives_resize", "approval_deny_honoured",
+    "approval_card_survives_resize", "approval_deny_honoured", "prompts_resize_without_detach_error",
     "tool_output_reaches_model_in_order", "tool_output_rendered_once",
     "transcript_ledger", "exits_clean",
 ]
@@ -69,6 +69,11 @@ def _typed(content) -> object:
     return content.split("\n\n[System note: ", 1)[0] if isinstance(content, str) else content
 
 
+# describeRpcError's copy for a 4001 "session not found": a resize while a prompt is open is not
+# a detach, so the transcript must never claim the chat lost its backend.
+DETACHED_RE = re.compile(r"no\s+longer\s+attached\s+to\s+the\s+backend")
+
+
 def _visible_once(tui: TmuxTui, needles: list[str]) -> str:
     text = "\n".join(tui.rows())
     bad = {n: text.count(n) for n in needles if text.count(n) != 1}
@@ -78,7 +83,7 @@ def _visible_once(tui: TmuxTui, needles: list[str]) -> str:
 def _scenario(root, victim) -> object:
     command = f"for i in $(seq -w 1 {len(TOOL_LINES)}); do echo tout$i; sleep 0.3; done"
     script = [
-        ToolCall("clarify", {"question": QUESTION, "choices": ["red", "blue"]}), Text(REPLIES["c1"]),
+        ToolCall("clarify", {"questions": [{"question": QUESTION, "choices": ["red", "blue"]}]}), Text(REPLIES["c1"]),
         ToolCall("terminal", {"command": f"rm -rf {victim}"}), Text(REPLIES["a1"]),
         ToolCall("terminal", {"command": command}), Text(REPLIES["t1"]),
     ]
@@ -98,18 +103,18 @@ def _scenario(root, victim) -> object:
         cells.phase = "clarify"
         # 1. clarify card open across a shrink and a grow, answered afterwards.
         tui.submit("pick a colour mq1")
-        tui.wait_for("quick pick")
+        tui.wait_for("1. red")
         for cols in (90, 130):
             tui.resize(cols)
             tui.wait_quiet(1.0)
         cells.add("clarify_card_survives_resize",
-                  _visible_once(tui, [f"ask {QUESTION}", "1. red", "2. blue"]), tui.dump())
+                  _visible_once(tui, ["ask 1 question", f"▸ {QUESTION}", "1. red", "2. blue"]), tui.dump())
         tui.key("Down")
         tui.wait_for(lambda t: "▸ 2. blue" in t, history=False)
         tui.key("Enter")
         tui.wait_replies(1)
         results = _tool_results(llm)
-        answer = json.loads(results[0]).get("user_response") if results else None
+        answer = json.loads(results[0])["responses"][0]["user_response"] if results else None
         cells.add("clarify_answer_reaches_tool", "" if answer == "blue" else f"tool result {results[:1]}")
         tui.wait_quiet(1.0)
         n = tui.text().count(f'Clarify("{QUESTION}")')
@@ -135,6 +140,11 @@ def _scenario(root, victim) -> object:
         if not victim.exists():
             problem += " / the dangerous command ran before anyone answered"
         cells.add("approval_card_survives_resize", problem, tui.dump())
+        # Scrollback + screen: covers the clarify card's resizes as well as this one's.
+        n = len(DETACHED_RE.findall(tui.text()))
+        cells.add("prompts_resize_without_detach_error",
+                  f"'no longer attached' error printed {n}x across the prompts' resizes" if n else "",
+                  tui.dump())
         tui.key("4")
         tui.wait_replies(2)
         denied = _tool_results(llm)[-1]

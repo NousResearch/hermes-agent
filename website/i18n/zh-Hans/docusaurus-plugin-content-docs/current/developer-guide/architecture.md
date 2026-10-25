@@ -117,12 +117,12 @@ hermes-agent/
 │   ├── mirror.py             # 跨会话消息镜像
 │   ├── status.py             # Token 锁、profile 范围的进程追踪
 │   ├── builtin_hooks/        # 始终注册的 hook 扩展点（当前无内置）
-│   └── platforms/            # 20 个适配器：telegram、discord、slack、whatsapp、
-│                             #   signal、matrix、mattermost、email、sms、
-│                             #   dingtalk、feishu、wecom、wecom_callback、weixin、
-│                             #   bluebubbles、qqbot、homeassistant、webhook、api_server、
-│                             #   yuanbao
+│   └── platforms/            # 核心入站适配器：api_server、webhook、
+│                             #   msgraph_webhook
 │
+├── plugins/platforms/        # 随包平台插件：telegram、discord、slack、whatsapp、
+│                             #   whatsapp_cloud、signal、weixin、bluebubbles、qqbot、
+│                             #   yuanbao、matrix、feishu 等
 ├── acp_adapter/              # ACP 服务器（VS Code / Zed / JetBrains）
 ├── cron/                     # 调度器（jobs.py、scheduler.py）
 ├── plugins/memory/           # 记忆提供者插件

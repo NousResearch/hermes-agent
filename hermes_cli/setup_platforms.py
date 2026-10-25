@@ -1,4 +1,4 @@
-"""Messaging-platform setup wizards (Telegram, BlueBubbles, webhooks) and the ``hermes setup
+"""Messaging-platform setup wizards (Telegram, webhooks) and the ``hermes setup
 gateway`` flow. setup.py re-exports the public names, and tests monkeypatch prompt/print/env
 helpers on hermes_cli.setup, so those are imported lazily per function."""
 
@@ -187,39 +187,7 @@ def _setup_telegram():
 # _setup_slack and _write_slack_manifest_and_instruct moved to the slack plugin:
 # plugins/platforms/slack/adapter.py::interactive_setup (registered via setup_fn and dispatched through the
 # plugin path). #41112 / #3823.
-def _setup_bluebubbles():
-    """Configure BlueBubbles iMessage gateway."""
-    from hermes_cli.setup import _info, print_header, print_success, prompt, prompt_yes_no
-    print_header("BlueBubbles (iMessage)")
-    if declines_reconfigure("BlueBubbles", "Reconfigure BlueBubbles?", "BLUEBUBBLES_SERVER_URL"):
-        return
-    _info("Connects Hermes to iMessage via BlueBubbles — a free, open-source",
-          "macOS server that bridges iMessage to any device.",
-          "   Requires a Mac running BlueBubbles Server v1.0.0+",
-          "   Download: https://bluebubbles.app/", None,
-          "In BlueBubbles Server → Settings → API, note your Server URL and Password.", None)
-    for label, env_var, secret, what, transform in (
-        ("BlueBubbles server URL (e.g. http://192.168.1.10:1234)", "BLUEBUBBLES_SERVER_URL", False, "Server URL",
-         lambda v: v.rstrip("/")),
-        ("BlueBubbles server password", "BLUEBUBBLES_PASSWORD", True, "Password", None),
-    ):
-        if not save_prompted(env_var, label, password=secret, transform=transform,
-                              skip_msg=f"{what} is required — skipping BlueBubbles setup"):
-            return
-    print_success("BlueBubbles credentials saved")
-    _info(None, "🔒 Security: Restrict who can message your bot",
-          "   Use iMessage addresses: email (user@icloud.com) or phone (+15551234567)", None)
-    _prompt_allowlist("BLUEBUBBLES_ALLOWED_USERS", "Allowed iMessage addresses (comma-separated, leave empty for open access)",
-                      "BlueBubbles allowlist configured", "⚠️  No allowlist set — anyone who can iMessage you can use the bot!")
-    _info(None, "📬 Home Channel: phone or email for cron job delivery and notifications.",
-          "   You can also set this later with /set-home in your iMessage chat.")
-    save_prompted("BLUEBUBBLES_HOME_CHANNEL", "Home channel address (leave empty to set later)")
-    _info(None, "Advanced settings (defaults are fine for most setups):")
-    if prompt_yes_no("Configure webhook listener settings?", False):
-        _save_port("BLUEBUBBLES_WEBHOOK_PORT", prompt("Webhook listener port (default: 8645)"), "8645")
-    _info(None, "Requires the BlueBubbles Private API helper for typing indicators,",
-          "read receipts, and tapback reactions. Basic messaging works without it.",
-          "   Install: https://docs.bluebubbles.app/helper-bundle/installation")
+# _setup_bluebubbles moved to plugins/platforms/bluebubbles/adapter.py::interactive_setup (setup_fn).
 
 
 def _setup_webhooks():
@@ -346,16 +314,14 @@ def setup_gateway(config: dict):
         print_success("Messaging platforms configured!")
         _warn_missing_home_channels()
 
-    # Gateway service setup runs UNCONDITIONALLY — a gateway with zero platforms is a supported
-    # mode (cron keeps running; adapters come up once tokens are added via `hermes import` /
-    # `hermes setup gateway`). Gating it on messaging config left install-then-import machines
-    # with cron jobs and bot tokens but no process to serve them.
-    from hermes_cli.gateway import _is_service_running, supports_systemd_services, ensure_gateway_service
+    # Offer optional persistence even with no messaging platforms: cron can run alone.
+    from hermes_cli.gateway import _is_service_running, supports_systemd_services
+    from hermes_cli.gateway_setup_service import ensure_gateway_service
     supports_systemd = supports_systemd_services()
     print()
     if _is_service_running():
         _restart_running_gateway(any_messaging, supports_systemd)
     else:
-        # Not running: install (if needed) and start, no questions asked.
-        ensure_gateway_service(context="setup")
+        # Existing services can start; a new service requires explicit consent.
+        ensure_gateway_service(context="setup", interactive=True, config=config)
     print_info(_RULE)

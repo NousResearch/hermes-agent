@@ -1,3 +1,5 @@
+import { keybindActionAllowedInEditableTarget } from './actions'
+
 // Keybind combo normalization + display.
 //
 // A combo is a canonical lowercase string like "mod+k", "mod+shift+]", "shift+x",
@@ -57,7 +59,14 @@ const MODIFIER_CODES = new Set([
 // Modifier names as reported by `event.key` on a bare modifier keydown.
 const MODIFIER_KEYS = new Set(['Alt', 'Control', 'Meta', 'Shift'])
 
-function baseKeyFromCode(code: string): string | null {
+function baseKeyFromCode(code: unknown): string | null {
+  // event.code is typed string, but synthetic/IME keydowns can arrive without
+  // one (packaged-renderer TypeError reproductions in #91611); treat a
+  // non-string or empty code as "no physical key" instead of throwing.
+  if (typeof code !== 'string' || !code) {
+    return null
+  }
+
   if (code.startsWith('Key')) {
     return code.slice(3).toLowerCase()
   }
@@ -303,6 +312,14 @@ export function actionAllowedInInput(actionId: string, combo: string): boolean {
   }
 
   if (/^(?:mod|ctrl)(?:\+|$)/.test(combo)) {
+    return true
+  }
+
+  // An action that opts in (reasoning up/down) fires from an editable target
+  // on any modified combo — including Alt/Numpad chords without a primary
+  // modifier (#71627). Bare/shift-only combos never qualify, so typing is
+  // never hijacked.
+  if (keybindActionAllowedInEditableTarget(actionId, combo)) {
     return true
   }
 

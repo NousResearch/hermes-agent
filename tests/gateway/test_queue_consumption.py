@@ -265,3 +265,18 @@ class TestBusyInputModeQueueFifo:
         assert head.media_urls == ["/tmp/a.jpg", "/tmp/b.jpg"]
         assert "first" in head.text and "second" in head.text
         assert runner._queue_depth(session_key, adapter=adapter) == 1
+
+    def test_photo_never_merges_into_a_queued_goal_continuation(self):
+        """A human photo arriving behind a synthetic continuation keeps its own turn: merged, it
+        would run under the continuation's inherited pins instead of its own channel inputs."""
+        runner, adapter = self._make_runner_and_adapter()
+        session_key = "telegram:user:goal-photo"
+        continuation = self._text_event("[goal] continue")
+        continuation.inherit_channel_pin = True
+        runner._queue_or_replace_pending_event(session_key, continuation)
+        runner._queue_or_replace_pending_event(
+            session_key, self._media_event("/tmp/a.jpg", "image/jpeg", MessageType.PHOTO))
+
+        assert adapter._pending_messages[session_key] is continuation
+        assert continuation.media_urls == []
+        assert runner._queue_depth(session_key, adapter=adapter) == 2

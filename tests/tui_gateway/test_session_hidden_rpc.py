@@ -14,7 +14,7 @@ Covers the two seams Bot Mode's "sessions are always hidden" policy leans on:
 import pytest
 
 import tui_gateway.server as srv
-import tui_gateway.methods_session  # noqa: F401  (registers the RPC methods)
+import tui_gateway.methods_session
 from hermes_state import SessionDB
 
 
@@ -59,6 +59,14 @@ def test_set_hidden_unknown_id_still_errors(db):
     assert envelope.get("error"), envelope
 
 
+def test_set_hidden_without_flag_leaves_visible_session_alone(db):
+    """#122190: a flag-less ``session.set_hidden`` is rejected, never treated as hide."""
+    _seed(db, "plain-chat")
+    assert db.get_session("plain-chat")["hidden"] == 0
+
+    envelope = _call("session.set_hidden", {"session_id": "plain-chat"})
+    assert envelope.get("error"), envelope
+    assert db.get_session("plain-chat")["hidden"] == 0
 
 
 def test_session_list_include_hidden(db):

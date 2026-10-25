@@ -198,9 +198,9 @@ def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = 
             status = color("✓ enabled", Colors.GREEN) if ts_key in enabled_toolsets else color("✗ disabled", Colors.RED)
             print(f"  {status}  {ts_key}  {color(label, Colors.DIM)}")
             if ts_key in (stripped or {}) and ts_key in enabled_toolsets:
-                tools, by = stripped[ts_key]
-                print(color(f"      ⚠ {', '.join(tools)} removed by agent.disabled_toolsets: {', '.join(by)}"
-                            f" (run `hermes tools enable {ts_key}` to restore)", Colors.YELLOW))
+                tools, by, hint = stripped[ts_key]
+                print(color(f"      ⚠ {', '.join(tools)} removed by agent.disabled_toolsets: {', '.join(by)} ({hint})",
+                            Colors.YELLOW))
 
     print(f"Built-in toolsets ({platform}):")
     _print_rows((k, l) for k, l, _ in effective if k in builtin_keys)

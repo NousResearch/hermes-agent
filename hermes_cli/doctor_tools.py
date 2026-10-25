@@ -507,6 +507,6 @@ def _warn_partially_stripped_toolsets(f: Finding) -> None:
     from hermes_cli.config import load_config
     from hermes_cli.tools_config import _get_platform_tools, toolsets_partially_stripped
     config = load_config() or {}
-    for ts, (tools, by) in toolsets_partially_stripped(config, _get_platform_tools(config, "cli")).items():
+    for ts, (tools, by, hint) in toolsets_partially_stripped(config, _get_platform_tools(config, "cli")).items():
         check_warn(f"{ts} (partly disabled)", f"({', '.join(tools)} removed by agent.disabled_toolsets: {', '.join(by)})")
-        f.issues.append(f"Run 'hermes tools enable {ts}' to restore {', '.join(tools)}")
+        f.issues.append(f"{ts}: {hint[0].upper()}{hint[1:]} {', '.join(tools)}")

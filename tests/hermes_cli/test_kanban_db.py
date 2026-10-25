@@ -523,6 +523,31 @@ def test_infrastructure_spawn_refusal_never_charges_the_card(
         ).fetchone()[0] == 1
 
 
+def test_custom_spawn_cannot_bypass_native_subscription_admission(
+    kanban_home, all_assignees_spawnable,
+):
+    calls = []
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="guarded", assignee="a", model_override="gpt-6-sol",
+            provider_override="openai-codex",
+        )
+        result = kbd.dispatch_once(conn, spawn_fn=lambda *args, **kwargs: calls.append(args) or 42)
+        row = conn.execute(
+            "SELECT status, consecutive_failures, last_failure_error FROM tasks WHERE id = ?", (tid,),
+        ).fetchone()
+        run = conn.execute(
+            "SELECT metadata FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1", (tid,),
+        ).fetchone()
+
+    assert calls == []
+    assert result.spawned == []
+    assert row["status"] == "ready"
+    assert row["consecutive_failures"] == 0
+    assert "cannot bypass" in row["last_failure_error"]
+    assert json.loads(run["metadata"])["infrastructure"] is True
+
+
 
 
 

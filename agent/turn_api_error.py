@@ -69,6 +69,17 @@ def handle_api_error(
             _provider_overflow_recovery_pending=_provider_overflow_recovery_pending, result=result,
         )
 
+    # Capacity denials are local policy verdicts.  Retrying or walking the configured fallback
+    # chain could escape the admitted subscription route and spend on an unrelated provider.
+    from agent.subscription_capacity_runtime import SubscriptionCapacityUnavailable
+    if isinstance(api_error, SubscriptionCapacityUnavailable):
+        message = str(api_error)
+        return _verdict("return", {
+            "final_response": message, "messages": messages, "api_calls": api_call_count,
+            "completed": False, "failed": True, "error": message,
+            "failure_reason": "subscription_capacity", "failure_retryable": True,
+        })
+
     # Stop spinner silently — retry status is buffered and only flushed when every
     # retry+fallback is exhausted.
     if thinking_spinner:

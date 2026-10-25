@@ -145,6 +145,8 @@ def test_failed_config_migration_is_owed_and_later_maintenance_runs(tmp_path, mo
         raise SystemExit(1)  # a migration helper that exits must not fail the committed update
 
     monkeypatch.setattr(update_cmd, "_check_and_apply_config_migration", broken_migration)
+    monkeypatch.setattr(update_cmd, "_m", lambda: type("Main", (), {"PROJECT_ROOT": tmp_path})())
+    monkeypatch.setattr(maint, "_install_default_tools_after_update", lambda: calls.append("defaults"))
     monkeypatch.setattr(maint, "_print_verified_update_completion", lambda message: calls.append("verdict") or True)
     monkeypatch.setattr(maint, "_print_post_update_notices_and_self_heals", lambda: calls.append("notices"))
     update_receipt.begin_update_receipt()
@@ -154,7 +156,7 @@ def test_failed_config_migration_is_owed_and_later_maintenance_runs(tmp_path, mo
         had_desktop_app_before_update=False, pre_update_version=None, followups=owed) is True
     assert [step for step, _ in owed] == ["config_migration"]
     assert calls[0] == "repair_windows_home_acl"
-    assert calls[-2:] == ["verdict", "notices"]
+    assert calls[-3:] == ["defaults", "verdict", "notices"]
     assert "⚠ Update follow-up 'config_migration'" in capsys.readouterr().out
     update_receipt.finalize_update_receipt("success")
     assert [f["step"] for f in _latest(tmp_path)["followups"]] == ["config_migration"]

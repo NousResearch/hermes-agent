@@ -10,6 +10,7 @@ from contextlib import suppress
 import os
 import subprocess
 import sys
+import threading
 import time as _time
 from pathlib import Path
 from typing import Optional
@@ -889,6 +890,29 @@ def _refresh_cua_driver_after_update() -> None:
         pm.ensure("cua-driver", explicit=True)
 
 
+_DEFAULT_TOOL_HEARTBEAT_SECONDS = 30.0
+
+
+def _ensure_default_tool_with_heartbeat(name: str) -> None:
+    """Run a quiet PM install while keeping unattended update output alive."""
+    import pm
+    from agent.memory_provider import spawn_context_thread
+
+    stopped = threading.Event()
+
+    def report_progress() -> None:
+        while not stopped.wait(_DEFAULT_TOOL_HEARTBEAT_SECONDS):
+            print(f"  … Still installing {name}; this can take several minutes.", flush=True)
+
+    reporter = spawn_context_thread(report_progress, name=f"hermes-install-{name}")
+    reporter.start()
+    try:
+        pm.ensure(name, explicit=True)
+    finally:
+        stopped.set()
+        reporter.join()
+
+
 def _install_default_tools_after_update() -> None:
     """Give the install its optional default tools: the PM defaults (Chromium,
     cua-driver). browser_exec's engine (browser-harness) is a venv dependency.
@@ -911,9 +935,9 @@ def _install_default_tools_after_update() -> None:
     for name in default_packages(Lockfile(lockfile_path()).names()):
         if pm.installed_package(name) is not None:
             continue
-        print(f"\n→ Installing {name} (default tool; opt out with `hermes pm install --without {name}`)...")
+        print(f"\n→ Installing {name} (default tool; opt out with `hermes pm install --without {name}`)...", flush=True)
         try:
-            pm.ensure(name, explicit=True)
+            _ensure_default_tool_with_heartbeat(name)
         except (pm.InstallError, OSError) as exc:
             print(f"  ⚠ {name} was not installed: {exc}")
             print(f"    Retry with: hermes pm install {name}")
@@ -948,7 +972,6 @@ def _print_post_update_notices_and_self_heals() -> None:
         ('CLI launcher exposure failed: %s', lambda: _launchers.expose_cli(_m().PROJECT_ROOT)),
         ('Windows bin launcher migration failed: %s', _migrate_windows_bin_path),
         ('cua-driver refresh failed: %s', _refresh_cua_driver_after_update),
-        ('Default PM tool install failed: %s', _install_default_tools_after_update),
         ('Checkpoint footprint notice failed: %s', _print_checkpoint_footprint_notice),
         # Legacy HERMES_NEMO_RELAY_ATIF_*/ATOF_* vars produce no traces since the Relay cutover;
         # generate each profile's relay-plugins.toml instead of leaving exports silently dead.
@@ -1051,6 +1074,9 @@ def _run_post_update_maintenance(
     owed_step("config_migration", lambda: _check_and_apply_config_migration(
         assume_yes=assume_yes, gateway_mode=gateway_mode, pre_update_snapshot_id=pre_update_snapshot_id,
     ))
+
+    with _best_effort('Default PM tool install failed: %s'):
+        _install_default_tools_after_update()
 
     print()
     update_complete = _print_verified_update_completion(completion_message or _update_complete_message(pre_update_version))

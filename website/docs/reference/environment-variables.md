@@ -180,7 +180,6 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `GROQ_BASE_URL` | Override the Groq OpenAI-compatible STT endpoint |
 | `STT_OPENAI_MODEL` | Override the OpenAI STT model (default: `whisper-1`) |
 | `STT_OPENAI_BASE_URL` | Override the OpenAI-compatible STT endpoint |
-| `STT_MITTWALD_MODEL` | Override the mittwald STT model (default: `whisper-large-v3-turbo`) |
 | `MITTWALD_STT_BASE_URL` | Override the mittwald STT endpoint only. Precedence: `stt.mittwald.base_url` > this > `MITTWALD_BASE_URL` > the built-in default |
 | `GITHUB_TOKEN` | GitHub token for Skills Hub (higher API rate limits, skill publish) and the desktop app's update check (`GH_TOKEN` also honoured; without either, the desktop falls back to the `gh` CLI login, then anonymous) |
 | `HONCHO_API_KEY` | Cross-session user modeling ([honcho.dev](https://honcho.dev/)) |

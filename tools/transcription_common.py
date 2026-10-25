@@ -22,7 +22,7 @@ DEFAULT_ELEVENLABS_STT_MODEL = os.getenv("STT_ELEVENLABS_MODEL", "scribe_v2")
 # Seconds for one STT HTTP request; shared by the OpenAI-SDK path and the QQ adapter so a
 # self-hosted model's cold start is not cut off at the old fixed 30s (#112939).
 DEFAULT_STT_TIMEOUT = 60.0
-DEFAULT_MITTWALD_STT_MODEL = os.getenv("STT_MITTWALD_MODEL", "whisper-large-v3-turbo")
+DEFAULT_MITTWALD_STT_MODEL = "whisper-large-v3-turbo"
 # /v1/stt's server default moved from grok-voice-transcribe-1.0 to 2.0 between Sep 17 and
 # Sep 21 2026 and 1.0 is slated for retirement; naming the model keeps the wire deterministic
 # and lets STT_XAI_MODEL / stt.xai.model pin 1.0 for a rollback.
@@ -36,10 +36,9 @@ GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
 XAI_STT_BASE_URL = os.getenv("XAI_STT_BASE_URL", "https://api.x.ai/v1")
 ELEVENLABS_STT_BASE_URL = os.getenv("ELEVENLABS_STT_BASE_URL", "https://api.elevenlabs.io/v1")
-# mittwald AI Hosting serves STT on the same OpenAI-compatible origin as chat, so the
-# provider-wide MITTWALD_BASE_URL override applies here too.
-MITTWALD_STT_BASE_URL = os.getenv(
-    "MITTWALD_STT_BASE_URL", os.getenv("MITTWALD_BASE_URL", "https://llm.aihosting.mittwald.de/v1"))
+# mittwald AI Hosting serves STT on the same OpenAI-compatible origin as chat. Last fallback only:
+# callers read the MITTWALD_STT_BASE_URL / MITTWALD_BASE_URL overrides at call time.
+MITTWALD_STT_BASE_URL = "https://llm.aihosting.mittwald.de/v1"
 # DeepInfra STT base URL is resolved via hermes_cli.models.deepinfra_base_url (shared).
 
 SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".oga", ".opus", ".aac", ".flac", ".caf"}

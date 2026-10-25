@@ -444,12 +444,18 @@ def _sync_bot_capabilities(sid: str, session: dict) -> None:
     except Exception:
         return
     try:
-        tokens = _set_session_context(sid, cwd=_session_cwd(session))
+        # This runs INSIDE the turn's own session context (_prepare_turn_input bound it just before
+        # us). Bind the durable session key — not the UI id — with the turn's ui_session_id kept,
+        # and rebind that context after the clear: set/clear_session_vars is non-nestable, so the
+        # finally resets every var to "" instead of restoring the turn's values, leaving the rest
+        # of the turn (start_chat, secret prompts) with an empty HERMES_UI_SESSION_ID (#136877).
+        tokens = _set_session_context(session["session_key"], ui_session_id=sid, cwd=_session_cwd(session))
         try:
             new_agent = _rebuild_session_agent(sid, session, session_id=session["session_key"],
                                                platform_override=_session_source(session))
         finally:
             _clear_session_context(tokens)
+            _set_session_context(session["session_key"], ui_session_id=sid)
         new_agent._session_title_hint = "Bot Chat"
         _emit("notice", sid, {"message": "Capabilities updated — this bot's tools and prompt were refreshed."})
     except Exception as e:

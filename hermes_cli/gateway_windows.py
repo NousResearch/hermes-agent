@@ -7,6 +7,7 @@ hidden-console launcher instead of ``schtasks /Run`` so start/restart behavior i
 
 from __future__ import annotations
 
+import codecs
 import ctypes
 import json
 import locale
@@ -96,6 +97,11 @@ def _decode_schtasks_output(data: bytes) -> str:
     Scheduled-Task drift check could never settle (#116193). Strict UTF-8 first (ASCII and genuine
     UTF-8 output pass; legacy multi-byte text fails loudly), then the native code pages, then a lossy
     fallback so a reader thread never raises."""
+    if data[:2] in (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE):
+        try:
+            return data.decode("utf-16")  # a genuine UTF-16 write (BOM) decodes as such, never as a code page
+        except UnicodeDecodeError:
+            pass  # malformed UTF-16 falls through to the same fallbacks as any other bytes
     for encoding in ("utf-8", *_windows_console_encodings()):
         try:
             return data.decode(encoding)
@@ -182,7 +188,7 @@ def _quote_vbs_string(value: str) -> str:
 
 # ── schtasks.exe wrapper
 
-def _exec_schtasks(args: list[str]) -> tuple[int, str, str]:
+def _exec_schtasks(args: list[str], timeout: float = _SCHTASKS_TIMEOUT_S) -> tuple[int, str, str]:
     """Run ``schtasks.exe`` with a hard timeout. Return (code, stdout, stderr); a wedge returns
     code=124 with a synthetic stderr so the fallback regex matches."""
     _assert_windows()
@@ -194,7 +200,7 @@ def _exec_schtasks(args: list[str]) -> tuple[int, str, str]:
         # UnicodeDecodeError from subprocess' reader threads. CREATE_NO_WINDOW: no flashing console under a TUI.
         proc = subprocess.run(
             [schtasks, *args], capture_output=True, text=False,
-            timeout=_SCHTASKS_TIMEOUT_S, creationflags=windows_hide_flags(),
+            timeout=timeout, creationflags=windows_hide_flags(),
             check=False,
         )
         return (
@@ -203,7 +209,7 @@ def _exec_schtasks(args: list[str]) -> tuple[int, str, str]:
             _decode_schtasks_output(proc.stderr or b""),
         )
     except subprocess.TimeoutExpired:
-        return (124, "", f"schtasks timed out after {_SCHTASKS_TIMEOUT_S}s")
+        return (124, "", f"schtasks timed out after {timeout}s")
     except OSError as e:
         return (1, "", f"schtasks invocation failed: {e}")
 
@@ -217,12 +223,11 @@ def _is_access_denied(detail: str) -> bool:
 
 
 def _is_running_as_admin() -> bool:
-    """Return True when the current Windows process is elevated."""
+    """Return True when the current Windows process is elevated (the shared ``TokenElevation``
+    probe; ``IsUserAnAdmin`` is deprecated and answered the same question a second way)."""
     _assert_windows()
-    try:
-        return bool(ctypes.windll.shell32.IsUserAnAdmin())
-    except Exception:
-        return False
+    from hermes_dir_acl import process_is_elevated
+    return process_is_elevated()
 
 
 def _current_profile_cli_args() -> list[str]:
@@ -1383,6 +1388,29 @@ def _query_scheduled_task_xml(task_name: str) -> str | None:
     return out
 
 
+# The install probe runs before the desktop backend says ready: a wedged schtasks must not hold that.
+_TASK_PROBE_TIMEOUT_S = 5
+
+
+def registered_task_launchers() -> list[str]:
+    """The scripts this OS user's ``Hermes_Gateway*`` Scheduled Tasks start (``install_state``). A task
+    install removes the Startup-folder entries, so for a custom home the task is all that still names
+    it. Empty off Windows, and when Task Scheduler does not answer, as for an unreadable Startup entry."""
+    if sys.platform != "win32":
+        return []
+    from hermes_cli.gateway_service_owner import service_definition_launchers
+
+    code, listing, _err = _exec_schtasks(["/Query", "/FO", "CSV", "/NH"], timeout=_TASK_PROBE_TIMEOUT_S)
+    names = re.findall(rf'^"\\({_TASK_NAME_DEFAULT}[^"\\]*)"', listing, flags=re.MULTILINE) if code == 0 else []
+    launchers: list[str] = []
+    for name in dict.fromkeys(names):
+        code, xml, _err = _exec_schtasks(["/Query", "/TN", name, "/XML"], timeout=_TASK_PROBE_TIMEOUT_S)
+        leaves = (_task_xml_leaf_values(xml) if code == 0 else None) or {}
+        command = leaves.get("Task/Actions/Exec/Command", "").strip('"')
+        launchers += service_definition_launchers(f'"{command}" {leaves.get("Task/Actions/Exec/Arguments", "")}')
+    return launchers
+
+
 def _task_xml_leaf_values(xml: str) -> dict[str, str] | None:
     """Namespace-agnostic ``Task/Settings/...`` leaf-path → text map, or ``None`` for invalid XML.
     The root ``version`` attribute is exposed as ``Task@version``."""
@@ -1834,6 +1862,21 @@ def _wait_for_gateway_absent(timeout_s: float = 30.0, interval_s: float = 0.5) -
     return _absent()
 
 
+def _mark_planned_restart() -> None:
+    """Stamp the planned-restart marker once the old gateway is gone, before ``start()``.
+
+    Windows has no SIGUSR1, so ``restart()`` is stop + start: the gateway never runs the in-band
+    restart path that stamps this marker itself, and the next boot would read a plain stop and skip
+    the "Gateway online" home-channel notice.
+
+    Not before ``stop()``: the old process stays alive until its planned-stop watcher notices, and
+    for that window a flapping platform can reconnect, replay the notice and unlink the marker the
+    new process then never finds.
+    """
+    from gateway.restart_notice import write_planned_restart_marker
+    write_planned_restart_marker()
+
+
 def restart() -> None:
     """Stop then start. Waits for the old gateway to be authoritatively gone first; otherwise
     ``start()``'s "already running" guard sees the draining process and no-ops, and nothing
@@ -1854,6 +1897,7 @@ def restart() -> None:
     from hermes_cli.gateway import _wait_for_api_server_port_free  # avoid circular init
 
     _wait_for_api_server_port_free()
+    _mark_planned_restart()
     start()
 
     if not _wait_for_gateway_ready(timeout_s=15.0):

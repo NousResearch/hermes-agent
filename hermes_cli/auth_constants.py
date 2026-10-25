@@ -59,6 +59,9 @@ DEFAULT_NOUS_INFERENCE_URL = "https://inference-api.nousresearch.com/v1"
 # the host allowlist, because the paid host cross-refuses an anonymous JWT with a 400.
 DEFAULT_NOUS_WELCOME_URL = "https://welcome-api.nousresearch.com/v1"
 DEFAULT_NOUS_CLIENT_ID = "hermes-cli"
+# On every guest minted since the welcome trial: True when the desktop's first install claimed it
+# (``hermes_cli.welcome_trial``), False for a connector mint. Absent = minted before the trial existed.
+WELCOME_CLAIM_FLAG = "welcome_claim"
 NOUS_INFERENCE_INVOKE_SCOPE = "inference:invoke"
 NOUS_BILLING_MANAGE_SCOPE = "billing:manage"
 DEFAULT_NOUS_SCOPE = NOUS_INFERENCE_INVOKE_SCOPE

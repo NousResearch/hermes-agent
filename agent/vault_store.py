@@ -28,6 +28,7 @@ from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
+from hermes_dir_acl import make_user_dir
 
 from hermes_constants import get_hermes_home
 from utils import atomic_write_bytes
@@ -203,12 +204,7 @@ class VaultStore:
     # -- key / crypto ------------------------------------------------------
 
     def _ensure_dir(self) -> None:
-        if os.name == "nt":
-            # 0o700 on Windows applies a *protected* DACL that can strand the dir for the
-            # same user's other processes; inherit the parent ACL instead.
-            self._base.mkdir(parents=True, exist_ok=True)
-        else:
-            self._base.mkdir(mode=0o700, parents=True, exist_ok=True)
+        make_user_dir(self._base, mode=0o700, parents=True, exist_ok=True)
         # Route through the canonical securer (honors managed/NixOS
         # group-share mode and HERMES_UID/GID ownership) rather than a
         # bespoke chmod — same requirement as the browser-profile snapshot

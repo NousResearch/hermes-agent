@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- platform-tables refactor: core's PLATFORM_HINTS/_PLATFORM_DEFAULTS rows for this platform moved onto its register() call (hint text lives in adapter_hint.py); the growth is only those kwargs
 """
 Feishu/Lark platform adapter.
 
@@ -91,7 +92,8 @@ from gateway.platforms.base import (
     cache_audio_from_bytes_async, cache_image_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
-from gateway.status import acquire_scoped_lock, release_scoped_lock
+from gateway.status import acquire_scoped_lock
+from gateway.status_scoped_locks import release_scoped_lock
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write, env_float, env_int
 
@@ -1289,7 +1291,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
     supports_code_blocks = True  # Feishu renders fenced code blocks
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
-
+    serial_receive_loop = True  # a chat's next message waits on its lock (_handle_message_with_guards)
     MAX_MESSAGE_LENGTH = 8000
     CHAT_LOCK_MAX_SIZE: int = 1000  # distinct chat IDs kept in _chat_locks before LRU eviction
     _SPLIT_THRESHOLD = 4000  # chunk near Feishu's ~4096-char client split → continuation almost certain
@@ -1863,10 +1865,15 @@ class FeishuAdapter(BasePlatformAdapter):
 
     async def send_voice(
         self, chat_id: str, audio_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
-        metadata: Optional[dict[str, Any]] = None, **kwargs,
+        metadata: Optional[dict[str, Any]] = None, is_voice: Optional[bool] = None, **kwargs,
     ) -> SendResult:
         """Native voice message (Feishu only accepts Opus): non-opus audio is transcoded via ffmpeg
-        first; without ffmpeg the original file goes out as a file attachment."""
+        first; without ffmpeg the original file goes out as a file attachment. ``is_voice=False``
+        (an audio MEDIA file without [[audio_as_voice]]: music, a sound effect) is a file
+        attachment under its real name, never transcoded into a voice note."""
+        if is_voice is False:
+            return await self.send_document(
+                chat_id, audio_path, caption=caption, reply_to=reply_to, metadata=metadata)
         transcoded_path: Optional[str] = None
         ext = Path(audio_path).suffix.lower()
         if ext not in _FEISHU_OPUS_UPLOAD_EXTENSIONS:
@@ -2158,10 +2165,8 @@ class FeishuAdapter(BasePlatformAdapter):
     def _on_drive_comment_event(self, data: Any) -> None:
         """drive.notice.comment_add_v1 → feishu_comment.handle_drive_comment_event on the adapter loop."""
         from plugins.platforms.feishu.feishu_comment import handle_drive_comment_event
-        self._submit_if_ready(
-            "drive comment event",
-            lambda: handle_drive_comment_event(self._client, data, self_open_id=self._bot_open_id),
-        )
+        self._submit_if_ready("drive comment event", lambda: handle_drive_comment_event(
+            self._client, data, self_open_id=self._bot_open_id, secondary=bool(getattr(self, "_owner_profile", None))))
 
     def _on_meeting_invited_event(self, data: Any) -> None:
         """vc.bot.meeting_invited_v1 → feishu_meeting_invite.handle_meeting_invited_event."""
@@ -2748,12 +2753,12 @@ class FeishuAdapter(BasePlatformAdapter):
         return await cache_image_from_url(image_url, ext=ext)
 
     async def _download_remote_document(self, file_url: str, *, default_ext: str, preferred_name: str) -> tuple[str, str]:
-        from gateway.platforms.base import _ssrf_redirect_guard
+        from gateway.platforms.base import ssrf_redirect_guard
         from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
         if not is_safe_url(file_url):
             raise ValueError(f"Blocked unsafe URL (SSRF protection): {file_url[:80]}")
         async with create_ssrf_safe_async_client(
-            timeout=30.0, follow_redirects=True, event_hooks={"response": [_ssrf_redirect_guard]},
+            timeout=30.0, follow_redirects=True, event_hooks={"response": [ssrf_redirect_guard]},
         ) as client:
             response = await client.get(
                 file_url, headers={"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)", "Accept": "*/*"},
@@ -4057,9 +4062,10 @@ class FeishuAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _resolve_outbound_file_routing(*, file_path: str, requested_message_type: str) -> tuple[str, str]:
-        # requested_message_type is accepted for call-site symmetry; routing is by extension only.
+        # Opus only becomes an ``audio`` message (Lark's in-app voice recording) when the caller asked
+        # for one (send_voice with voice intent); a document/plain-audio send of an .ogg stays a file.
         ext = Path(file_path).suffix.lower()
-        if ext in _FEISHU_OPUS_UPLOAD_EXTENSIONS:
+        if ext in _FEISHU_OPUS_UPLOAD_EXTENSIONS and requested_message_type == "audio":
             return "opus", "audio"
         if ext in _FEISHU_MEDIA_UPLOAD_EXTENSIONS:
             return "mp4", "media"
@@ -4470,24 +4476,31 @@ def _apply_yaml_config(yaml_cfg: dict, feishu_cfg: dict) -> dict | None:
     return {"allow_bots": str(seeded["allow_bots"]).lower()} if seeded else None
 
 
-
 def _is_connected(config) -> bool:
     """Feishu counts as connected once app_id is configured."""
     extra = getattr(config, "extra", {}) or {}
     return bool(extra.get("app_id"))
 
 
-
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
+    from .adapter_hint import PLATFORM_HINT
+    from .send_targets import SEND_ENTRY_KWARGS
+    from .dashboard_card import DASHBOARD_CARD
+    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
     ctx.register_platform(
+        **SEND_ENTRY_KWARGS,  # send_message target syntax + routing
         name="feishu", label="Feishu / Lark", adapter_factory=FeishuAdapter,
+        **DASHBOARD_CARD,
         check_fn=feishu_deps_present, ensure_deps_fn=check_feishu_requirements,
         is_connected=_is_connected, validate_config=_is_connected,
         required_env=["FEISHU_APP_ID", "FEISHU_APP_SECRET"],
         install_hint="Run `hermes setup` to install Feishu support.", setup_fn=interactive_setup,
-        apply_yaml_config_fn=_apply_yaml_config, allowed_users_env="FEISHU_ALLOWED_USERS",
-        allow_all_env="FEISHU_ALLOW_ALL_USERS", cron_deliver_env_var="FEISHU_HOME_CHANNEL",
+        apply_yaml_config_fn=_apply_yaml_config, cron_deliver_env_var="FEISHU_HOME_CHANNEL",
         standalone_sender_fn=_standalone_send, max_message_length=8000, emoji="🪽",
         allow_update_command=True,
+        platform_hint=PLATFORM_HINT,
+        display_tier="medium",
+        env_overrides=gateway_env.ENV_OVERRIDES,
+        env_enable_credentials=gateway_env.ENV_ENABLE_CREDENTIALS, **gateway_env.AUTHZ,
     )

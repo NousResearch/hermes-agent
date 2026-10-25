@@ -243,24 +243,3 @@ def continue_quiet_notify_completions(
         if not texts:
             return last
     return last
-
-
-def adopt_unanswered_turn(cli: Any, query: Any, environ: MutableMapping[str, str] = os.environ) -> bool:
-    """A dispatcher's re-run of a failed delivery turn resumes the DM its first attempt already
-    persisted instead of appending it again. Returns True when the tail row was adopted.
-
-    The failed attempt's turn-start persist left the DM as the transcript's unanswered tail row. A
-    fresh process cannot know that by itself (``_DB_PERSISTED_MARKER`` is in-process only), and
-    inferring it from an identical tail alone would swallow a person's deliberate re-send — so the
-    dispatcher must say so with ``tools.bot_relay.RESUME_UNANSWERED_TURN_ENV``, consumed (popped) here
-    before the turn so tool subprocesses never inherit it. Which row counts as the unanswered DM, and
-    how it is re-staged as ``_pending_cli_user_message``, is shared with the in-process peer-DM lane
-    (``agent.session_persistence.adopt_unanswered_turn``, #115325).
-    """
-    from tools.bot_relay import RESUME_UNANSWERED_TURN_ENV
-
-    if environ.pop(RESUME_UNANSWERED_TURN_ENV, None) != "1":
-        return False
-    from agent.session_persistence import adopt_unanswered_turn as _adopt_tail
-
-    return _adopt_tail(getattr(cli, "conversation_history", None) or [], query, cli.agent)

@@ -443,6 +443,236 @@ class TestStatusEndpointTopology:
         assert data["components"]["platforms"]["configured"] == 2
         assert data["components"]["platforms"]["connected"] == 2
 
+    def _scope_to_served_profile(self, monkeypatch, tmp_path, *, own_runtime, lock_pid, mux_pid, mux_runtime):
+        from contextlib import nullcontext
+
+        from gateway.status import GatewayLiveness
+        import hermes_cli.web_routers.status as status_router
+        from hermes_cli import web_server_profiles
+
+        profile = tmp_path / "profiles" / "coder"
+        profile.mkdir(parents=True)
+        monkeypatch.setattr(web_server_profiles, "_resolve_profile_dir", lambda name: profile)
+        monkeypatch.setattr(web_server_profiles, "_config_profile_scope", lambda profile: nullcontext())
+        monkeypatch.setattr(status_router, "read_runtime_status", lambda path=None: own_runtime)
+        # The PID rung answers first (gateway.lock resolves), so the ladder never attaches a runtime.
+        monkeypatch.setattr(
+            status_router, "resolve_gateway_liveness",
+            lambda **kwargs: GatewayLiveness(running=True, pid=lock_pid, source="pid"),
+        )
+        def _lookup(home):
+            return (mux_pid, mux_runtime) if home == profile else None
+
+        monkeypatch.setattr(_gw_status, "multiplexer_liveness_for_profile", _lookup)
+        monkeypatch.setattr(_web_server_gateway, "_load_configured_gateway_platforms", lambda: {"telegram"})
+
+    def test_profile_scoped_status_uses_multiplexer_record_when_lock_names_it(self, monkeypatch, tmp_path):
+        # #139080: a profile migrated onto the multiplexer keeps its retired standalone gateway's
+        # gateway_state.json (stopped, telegram disconnected) while the shared gateway holds its
+        # gateway.lock. Liveness came from that lock, so the platform map must come from the same
+        # owner's live record, never the dead one.
+        self._scope_to_served_profile(
+            monkeypatch, tmp_path,
+            own_runtime={
+                "gateway_state": "stopped", "updated_at": "2026-10-02T12:33:48Z",
+                "platforms": {"telegram": {"state": "disconnected"}},
+            },
+            lock_pid=4242, mux_pid=4242,
+            mux_runtime={
+                "gateway_state": "running",
+                "served_profiles": ["default", "coder", "other"],
+                "platforms": {
+                    "telegram": {"state": "disconnected"},
+                    "coder:telegram": {"state": "connected"},
+                    "other:discord": {"state": "connected"},
+                },
+            },
+        )
+
+        resp = self.client.get("/api/status", params={"profile": "coder"})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["gateway_state"] == "running"
+        # Only coder's adapters: neither the default's flat telegram nor another profile's entry.
+        assert set(data["gateway_platforms"]) == {"telegram"}
+        assert data["gateway_platforms"]["telegram"]["state"] == "connected"
+        assert data["gateway_shared_with"] == ["default", "coder", "other"]
+        assert data["components"]["platforms"]["connected"] == 1
+
+    def test_profile_scoped_status_keeps_own_gateway_record_over_multiplexer(self, monkeypatch, tmp_path):
+        # A --force-started gateway of the profile's own holds the lock under a different PID: its
+        # record is the live one, and the multiplexer's view of the profile must not replace it.
+        self._scope_to_served_profile(
+            monkeypatch, tmp_path,
+            own_runtime={"gateway_state": "running", "platforms": {"telegram": {"state": "connected"}}},
+            lock_pid=5151, mux_pid=4242,
+            mux_runtime={
+                "gateway_state": "running",
+                "served_profiles": ["default", "coder"],
+                "platforms": {"coder:telegram": {"state": "disconnected"}},
+            },
+        )
+
+        resp = self.client.get("/api/status", params={"profile": "coder"})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["gateway_platforms"]["telegram"]["state"] == "connected"
+        assert data["gateway_shared_with"] is None
+
+    def test_unscoped_status_on_a_served_profiles_own_backend_uses_multiplexer_record(self, monkeypatch, tmp_path):
+        # `hermes -p coder serve` answers plain /api/status (no ?profile=) for its own home. That
+        # home's gateway.lock is the multiplexer's too, so the same live record applies.
+        import hermes_cli.web_routers.status as status_router
+
+        self._scope_to_served_profile(
+            monkeypatch, tmp_path,
+            own_runtime={"gateway_state": "stopped", "platforms": {"telegram": {"state": "disconnected"}}},
+            lock_pid=4242, mux_pid=4242,
+            mux_runtime={
+                "gateway_state": "running",
+                "served_profiles": ["default", "coder"],
+                "platforms": {"telegram": {"state": "disconnected"},
+                              "coder:telegram": {"state": "connected"}},
+            },
+        )
+        monkeypatch.setattr(status_router, "get_process_hermes_home", lambda: tmp_path / "profiles" / "coder")
+
+        resp = self.client.get("/api/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["gateway_state"] == "running"
+        assert data["gateway_platforms"]["telegram"]["state"] == "connected"
+        assert data["gateway_shared_with"] == ["default", "coder"]
+
+    def test_profile_scoped_status_keeps_own_record_when_multiplexer_lookup_raises(self, monkeypatch, tmp_path):
+        # The multiplexer lookup is optional: a failure there must not 500 the status route or
+        # drop the record the ladder already selected.
+        self._scope_to_served_profile(
+            monkeypatch, tmp_path,
+            own_runtime={"gateway_state": "running", "platforms": {"telegram": {"state": "connected"}}},
+            lock_pid=4242, mux_pid=4242, mux_runtime={},
+        )
+
+        def _boom(home):
+            raise OSError("unreadable multiplexer record")
+
+        monkeypatch.setattr(_gw_status, "multiplexer_liveness_for_profile", _boom)
+
+        resp = self.client.get("/api/status", params={"profile": "coder"})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["gateway_state"] == "running"
+        assert data["gateway_platforms"]["telegram"]["state"] == "connected"
+        assert data["gateway_shared_with"] is None
+
+    def test_profile_scoped_status_keeps_own_record_when_multiplexer_record_is_missing(self, monkeypatch, tmp_path):
+        # A missing/unreadable multiplexer gateway_state.json comes back as (pid, {}): that is no
+        # record, so it must not replace the profile's own one with an empty platform map.
+        self._scope_to_served_profile(
+            monkeypatch, tmp_path,
+            own_runtime={"gateway_state": "running", "platforms": {"telegram": {"state": "connected"}}},
+            lock_pid=4242, mux_pid=4242, mux_runtime={},
+        )
+
+        resp = self.client.get("/api/status", params={"profile": "coder"})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["gateway_platforms"]["telegram"]["state"] == "connected"
+        assert data["gateway_shared_with"] is None
+
+    def test_remote_health_liveness_never_borrows_the_local_multiplexer_record(self, monkeypatch, tmp_path):
+        # A health-probe answer carries the REMOTE container's PID, which can equal an unrelated
+        # local host-record PID; only a PID proven on this host may select the local record.
+        from gateway.status import GatewayLiveness
+        import hermes_cli.web_routers.status as status_router
+
+        mux_runtime = {
+            "gateway_state": "running", "served_profiles": ["default", "coder"],
+            "platforms": {"coder:telegram": {"state": "disconnected"}},
+        }
+        self._scope_to_served_profile(
+            monkeypatch, tmp_path,
+            own_runtime={"gateway_state": "running", "platforms": {"telegram": {"state": "connected"}}},
+            lock_pid=4242, mux_pid=4242, mux_runtime=mux_runtime,
+        )
+        monkeypatch.setattr(
+            status_router, "resolve_gateway_liveness",
+            lambda **kwargs: GatewayLiveness(running=True, pid=4242, source="health",
+                                             health_body={"gateway_state": "running", "pid": 4242}),
+        )
+        calls = []
+
+        def _lookup(home):
+            calls.append(home)
+            return 4242, mux_runtime
+
+        monkeypatch.setattr(_gw_status, "multiplexer_liveness_for_profile", _lookup)
+
+        resp = self.client.get("/api/status", params={"profile": "coder"})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert calls == []
+        assert data["gateway_platforms"]["telegram"]["state"] == "connected"
+        assert data["gateway_shared_with"] is None
+
+    def _status_on_the_host(self, monkeypatch, record):
+        # The default profile's own backend on the host: its gateway_state.json is the live
+        # multiplexer's record, and the real lookup (host record + default root) resolves to it.
+        from gateway import host_topology
+        from gateway.status import GatewayLiveness
+        import hermes_cli.web_routers.status as status_router
+        from hermes_constants import get_process_hermes_home
+
+        monkeypatch.setattr(_gw_status, "read_runtime_status", lambda path=None: record)
+        monkeypatch.setattr(_gw_status, "get_runtime_status_running_pid",
+                            lambda runtime=None, *, expected_home=None: (runtime or {}).get("pid"))
+        monkeypatch.setattr(host_topology, "host_gateway_topology", lambda: host_topology.HostGatewayTopology(
+            pid=4242, profiles=("default", "reviewer"), source="host_record"))
+        monkeypatch.setattr(status_router, "resolve_gateway_liveness",
+                            lambda **kwargs: GatewayLiveness(running=True, pid=4242, source="pid"))
+        monkeypatch.setattr(_web_server_gateway, "_load_configured_gateway_platforms", lambda: {"telegram"})
+        monkeypatch.setattr(_web_server_gateway, "_collect_profile_gateway_topology", lambda: {
+            "profiles": ["default", "reviewer"], "gateway_mode": "multiplex", "gateways": [],
+            "profile_platforms": {}})
+        # The lookup genuinely succeeds here (no zero-arg PID-probe trap making it raise).
+        assert _gw_status.multiplexer_liveness_for_profile(get_process_hermes_home()) == (4242, record)
+        resp = self.client.get("/api/status")
+        assert resp.status_code == 200
+        return resp.json()
+
+    def test_status_on_the_host_keeps_other_profiles_platform_errors(self, monkeypatch):
+        # The host's own record proves the live gateway, so it is read whole: folding it through
+        # the default profile's projection dropped every ``<profile>:<platform>`` entry and the
+        # platforms component read ok over another profile's fatal adapter.
+        data = self._status_on_the_host(monkeypatch, {
+            "pid": 4242, "gateway_state": "running", "served_profiles": ["default", "reviewer"],
+            "platforms": {
+                "telegram": {"state": "connected"},
+                "reviewer:discord": {"state": "fatal", "error_code": "duplicate_credential",
+                                     "error_message": "Profiles configure the same credential"},
+            },
+        })
+
+        assert data["gateway_platforms"]["reviewer:discord"]["error_code"] == "duplicate_credential"
+        assert data["gateway_platforms"]["telegram"]["state"] == "connected"
+        assert data["components"]["platforms"]["status"] != "ok"
+
+    def test_status_on_the_host_names_the_profiles_it_serves(self, monkeypatch):
+        # A restart of the host gateway blips every profile it serves, so its own unscoped
+        # readout names them just as a served profile's does.
+        data = self._status_on_the_host(monkeypatch, {
+            "pid": 4242, "gateway_state": "running", "served_profiles": ["default", "reviewer"],
+            "platforms": {"telegram": {"state": "connected"}},
+        })
+
+        assert data["gateway_shared_with"] == ["default", "reviewer"]
+
     def test_status_rejects_malformed_namespaced_platform_key(self, monkeypatch):
         monkeypatch.setattr(_gw_status, "get_running_pid_cached", lambda: 123)
         monkeypatch.setattr(

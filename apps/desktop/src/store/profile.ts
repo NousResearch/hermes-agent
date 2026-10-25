@@ -23,16 +23,14 @@ import {
   ensureGatewayForAgent,
   ensureGatewayForProfile,
   openGatewayForAgent,
-  openGatewayForProfile,
-  openSecondaryCount
+  openGatewayForProfile
 } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
-import { $poolLimits } from '@/store/pool-limits'
 import { notifyRemoteOverrideAuthFailure } from '@/store/profile-remote-override'
 import { exitProjectScope } from '@/store/project-scope'
 import { $connection, clearComposerSelectionOwner, setComposerSelectionOwner, setConnection } from '@/store/session'
 import type { SessionOwnerRoute } from '@/store/session-request-router'
-import { resetStarmapGraph } from '@/store/starmap'
+import { reloadOpenStarmapGraph, resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
 
 // Canonical key for a profile: trimmed, empty → "default". Used everywhere we
@@ -293,7 +291,7 @@ export async function switchProfile(name: string): Promise<void> {
 // to the primary (window) backend's profile on boot. The gateway registry
 // mirrors its own route into this atom via the onActiveRouteChanged callback
 // (wired in use-gateway-boot's configureGatewayRegistry), so registry-internal
-// eviction fallbacks (idle reap, connection removal, profile delete) can never
+// eviction fallbacks (connection removal, profile delete) can never
 // leave this naming a profile the active socket no longer serves (#89206).
 export const $activeGatewayProfile = atom<string>('default')
 
@@ -469,6 +467,8 @@ $activeGatewayProfile.subscribe(value => {
     // every profile switch.
     invalidateProfileScopedQueries()
     resetStarmapGraph()
+    // setApiRequestProfile above already routes requests to the new profile.
+    reloadOpenStarmapGraph()
     // /api/profiles now routes to a different backend: strand any in-flight
     // profile-list fetch so the previous backend's late answer can't clobber
     // the rail (the #85731 class — same guard as the connection-apply wipe).
@@ -494,22 +494,17 @@ export const $gatewaySwapTarget = atom<string | null>(null)
 export const $hydrationSyncProfile = atom<string | null>(null)
 
 // ── Hover-intent backend pre-warm ───────────────────────────────────────────
-// A cold switch to a profile whose pool backend isn't running pays the full
-// spawn (Python boot + port announce + readiness probe — measured ~2.5-3s)
-// plus the socket connect before the sidebar can repopulate. The pointer
-// entering a profile square in the rail signals the switch a few hundred ms
-// before the click lands, so we run the same spawn + connect chain then
-// (openGatewayForProfile — without activating). `ensureBackend` in the
-// Electron main is idempotent (a pooled profile returns its existing
-// connectionPromise), so the real switch joins the in-flight work instead of
-// duplicating it — and a pre-warm for an already-open profile is a no-op.
-// Throttled per profile so drive-by hovers can't spam spawn attempts; failures
-// stay silent here and surface on the real switch, which owns retry/error UX.
-// A `connectionId` scopes the warm to a registry source (the (connection,
-// profile) rows a multi-source roster shows): same guards, keyed by the pool
-// scope key, dialed through openGatewayForAgent. Every speculative warm in
-// the app — rail, session rows, plugin rosters — goes through here so one
-// resolver owns the policy (#91545, #103631).
+// A cold switch to a profile whose gateway descriptor isn't cached pays the
+// `hermes gateway ensure` round-trip plus the socket connect before the sidebar
+// can repopulate. The pointer entering a profile square in the rail signals the
+// switch a few hundred ms before the click lands, so we run the same dial +
+// connect chain then (openGatewayForProfile — without activating).
+// `ensureBackend` in the Electron main is idempotent (a cached profile returns
+// its existing connectionPromise), so the real switch joins the in-flight work
+// instead of duplicating it — and a pre-warm for an already-open profile is a
+// no-op. Throttled per profile so drive-by hovers can't spam dial attempts;
+// failures stay silent here and surface on the real switch, which owns
+// retry/error UX.
 const PREWARM_MIN_INTERVAL_MS = 60_000
 
 const prewarmedAt = new Map<string, number>()
@@ -540,23 +535,25 @@ export function prewarmProfileBackend(name: string, connectionId: null | string 
     return
   }
 
-  // Prewarm/cap harmony (#91545): the pool caps spawned backends at the
-  // configured max, and a spawn over the cap LRU-evicts the warmest idle
-  // backend. A hover sweep across the rail therefore evicted backends for
-  // profiles the user was about to click — prewarming caused the exact churn
-  // it exists to prevent. Skip speculative spawns once every pool slot is
-  // occupied by an open socket; the real click still spawns on demand, it
-  // just doesn't get a head start.
-  if (openSecondaryCount() + 1 > $poolLimits.get().maxBackends) {
-    return
-  }
-
   prewarmedAt.set(scope, now)
+  // A registry connection prewarms its own gateway; only a local profile dials the primary.
   const dial = connection ? openGatewayForAgent(connection, key) : openGatewayForProfile(key)
   dial.catch(() => undefined)
 }
 
 let gatewaySwitch: Promise<void> | null = null
+
+// Bumped by every explicit profile selection (ensureGatewayProfile with a
+// target). Boot and connection applies snapshot it before their slow
+// descriptor/dial awaits; a selection made in between is newer intent than
+// the boot's primary adoption, which must then leave the active route alone
+// (T19, #134889: the first secondary click right after boot otherwise flipped
+// back to default and the sidebar loaded default's sessions).
+let profileSelectionRevision = 0
+
+export function currentProfileSelectionRevision(): number {
+  return profileSelectionRevision
+}
 
 // Descriptor lookups are IPC round-trips into Electron main. A wedged main
 // (the #93454 class: a ticket mint that never answers) must not latch the
@@ -622,6 +619,7 @@ export async function ensureGatewayProfile(
   }
 
   const target = normalizeProfileKey(profile)
+  profileSelectionRevision += 1
 
   // Fast path: only when the REGISTRY's active route — the authority that
   // selects the socket in applyActive — already serves the target. The
@@ -1192,14 +1190,4 @@ export const $profileCreateRequest = atom(0)
 
 export function requestProfileCreate(): void {
   $profileCreateRequest.set($profileCreateRequest.get() + 1)
-}
-
-// Keepalive ping for the active pool backend so the main-process idle reaper
-// (which can't see the direct renderer↔backend WS) spares it. No-op for the
-// primary/default backend, which is never pooled.
-export function touchActiveGatewayBackend(): void {
-  // Always ping: the main process no-ops for non-pool (primary) backends, so we
-  // don't need to know which profile is primary from here.
-  const target = normalizeProfileKey($activeGatewayProfile.get())
-  void window.hermesDesktop?.touchBackend?.(target).catch(() => undefined)
 }

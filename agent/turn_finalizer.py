@@ -466,6 +466,14 @@ def _apply_output_hooks(
     )
     # Detached forks are internal work and must not publish turns under the parent's session ID.
     if not getattr(agent, "_persist_disabled", False):
+        # Leased on the turn thread so the capture holds this turn's context; None unless a
+        # loaded plugin holds llm.side_question. The response must survive a failed capture.
+        try:
+            from agent.side_question_lease import issue_side_question_token
+            side_question_token = issue_side_question_token(agent, messages, turn_id)
+        except Exception:
+            side_question_token = None
+            logger.warning("side question lease failed", exc_info=True)
         _invoke_hook_safely(
             "post_llm_call", logger,
             session_id=agent.session_id,
@@ -476,6 +484,7 @@ def _apply_output_hooks(
             conversation_history=list(messages),
             model=agent.model,
             platform=platform,
+            side_question_token=side_question_token,
         )
     return final_response, transformed, pre_transform
 
@@ -743,8 +752,9 @@ def finalize_turn(
     if _cleanup_errors:
         result["cleanup_errors"] = _cleanup_errors
     # A /steer landing after the final assistant turn has no tool batch to drain into;
-    # hand it back so it becomes the next user turn instead of being lost.
-    _leftover_steer = agent._drain_pending_steer()
+    # hand it back so it becomes the next user turn instead of being lost. A gateway transfer
+    # (ticketed) stays buffered: the claim's settlement returns it to its own queue place.
+    _leftover_steer = (getattr(agent, "_drain_leftover_steer", None) or agent._drain_pending_steer)()
     if _leftover_steer:
         result["pending_steer"] = _leftover_steer
     agent._response_was_previewed = False

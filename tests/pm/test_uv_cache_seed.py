@@ -104,3 +104,21 @@ def test_retry_recopies_a_file_the_interrupted_seed_left_short(payload_cache):
     packages.uv_cache_dir()
     assert short.read_text(encoding="utf-8") == "seeded = True\n"
     assert (payload_cache / ".seeded").is_file()
+
+
+def test_marker_from_a_seedless_image_does_not_block_a_later_seed(payload_cache, tmp_path, monkeypatch):
+    """An image without ``uv-cache/`` still writes ``.seeded`` for the current lock. The next image
+    ships the seed with the same lock, and its wheels must still reach the volume."""
+    code = tmp_path / "code"
+    code.mkdir()
+    (code / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    monkeypatch.setattr(paths, "repo_root", lambda: code)
+    seed = paths.store_root().parent / "uv-cache"
+    seedless = tmp_path / "uv-cache-hidden"
+    seed.rename(seedless)
+    packages.uv_cache_dir()
+    assert (payload_cache / ".seeded").is_file()
+
+    seedless.rename(seed)
+    packages.uv_cache_dir()
+    assert (payload_cache / "archive-v0" / "bucket" / "module.py").is_file()

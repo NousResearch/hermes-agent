@@ -282,16 +282,19 @@ def start_deferred_title_upgrade(agent: Any) -> None:
 def reanchor_current_turn_user_idx(messages: list[Any], user_message: Any) -> int:
     """Locate this turn's user message after compaction rebuilt ``messages``.
 
-    Prefers the LAST user message whose content exactly matches this turn's text, else
-    the last user-originated turn; compaction handoffs are never the fallback.
+    Prefers the LAST user message whose content exactly matches this turn's text or ends
+    with it after sequence repair, else the last user-originated turn; compaction handoffs
+    are never the fallback.
     Returns -1 when there is no user-originated message.
 
     Compression replaces list entries with fresh copies (and may append a todo-snapshot user message or a
     restored user turn AFTER the surviving copy of the current turn's message), so a pre-compression index
     is meaningless. Prefer the LAST user message whose content exactly matches this turn's text — the
     surviving copy in the common case — so the injection stamp and the #48677 persist override can't land on
-    a todo-snapshot or historical row. Fall back to the last *user-originated* turn when no exact match
-    survives (merge-summary-into-tail rewrites the content but the trackers still need a live anchor).
+    a todo-snapshot or historical row. Sequence repair joins adjacent user rows with a separator; when it
+    absorbs this turn as the tail, that separator preserves a more specific identity than the human-only
+    fallback. Fall back to the last *user-originated* turn when neither identity survives
+    (merge-summary-into-tail rewrites the content but the trackers still need a live anchor).
     Compaction handoffs must never become the fallback anchor (#80622) — they are reference-only
     scaffolding, not the active ask.
     """
@@ -305,6 +308,12 @@ def reanchor_current_turn_user_idx(messages: list[Any], user_message: Any) -> in
         # Typed synthetic current events keep their persistence anchor when raw
         # content is unchanged; not eligible for the human-only fallback below.
         if msg.get("content") == user_message:
+            return i
+        if (
+            isinstance(user_message, str)
+            and isinstance(msg.get("content"), str)
+            and msg["content"].endswith("\n\n" + user_message)
+        ):
             return i
         live_view = user_originated_turn_view(msg)
         if live_view is None:

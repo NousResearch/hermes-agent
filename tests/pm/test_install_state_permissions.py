@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 from pathlib import Path
 import subprocess
@@ -50,6 +51,26 @@ import hermes_bootstrap
     assert "run `hermes update`" not in result.stderr
     assert "hermes pm repair" not in result.stderr
     assert "Traceback" not in result.stderr
+
+
+def test_permission_message_keeps_the_os_error_codes(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    root = Path(__file__).resolve().parents[2]
+    lock = install_state_dir(root) / ".install.lock"
+
+    message = install_state_permission_message(
+        root, PermissionError(errno.EACCES, "Permission denied", str(lock)))
+    assert "[errno 13: Permission denied]" in message
+    assert str(lock) in message
+
+    class _SharingViolation(PermissionError):
+        winerror = 32
+
+    message = install_state_permission_message(root, _SharingViolation(
+        errno.EACCES,
+        "The process cannot access the file because it is being used by another process.",
+        str(lock)))
+    assert "[errno 13, winerror 32:" in message
 
 
 def test_pm_repair_reports_unwritable_runtime_without_traceback(tmp_path, monkeypatch, capsys):

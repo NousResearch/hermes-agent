@@ -1283,3 +1283,28 @@ class TestBlankRouteSecretFailsClosed:
 )
 def test_is_usable_secret_classifies_configured_secrets(value, usable):
     assert _is_usable_secret(value) is usable
+
+
+def _write_skill(root, name):
+    d = root / "skills" / name
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text(f"---\nname: {name}\ndescription: d\n---\n\nBody of {name}.\n")
+
+
+def test_apply_skills_injects_every_listed_skill(tmp_path, monkeypatch):
+    """A route listing several skills loads all of them, not just the first match (missing names are skipped)."""
+    import agent.skill_commands as sc_mod
+
+    for name in ("alpha-skill", "beta-skill"):
+        _write_skill(tmp_path, name)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with patch.object(sc_mod, "_skill_commands_by_key", {}):
+        stacked = WebhookAdapter._apply_skills("the prompt", ["alpha-skill", "missing-skill", "beta-skill", "alpha-skill"])
+        single = WebhookAdapter._apply_skills("the prompt", ["missing-skill", "beta-skill"])
+        none = WebhookAdapter._apply_skills("the prompt", ["missing-skill"])
+    assert "Body of alpha-skill." in stacked and "Body of beta-skill." in stacked
+    assert stacked.count("Body of alpha-skill.") == 1
+    assert "the prompt" in stacked
+    assert "Body of beta-skill." in single and "Body of alpha-skill." not in single
+    assert "stacked skill bundle" not in single
+    assert none == "the prompt"

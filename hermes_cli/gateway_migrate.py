@@ -465,6 +465,9 @@ def _credential_probe(platform_config) -> SimpleNamespace:
         token=getattr(platform_config, "token", None) or getattr(platform_config, "api_key", None),
         _app_id=extra.get("app_id"), _client_id=extra.get("client_id"), _bot_id=extra.get("bot_id"),
         _project_secret=extra.get("project_secret"), config=platform_config,
+        # Email's exclusive resource is the mailbox address carried in ``extra``; none of the
+        # probed names can see it, so the probe declares the identity the adapter declares (#134662).
+        credential_identity=lambda: (extra.get("address") or "").strip().lower() or None,
     )
 
 

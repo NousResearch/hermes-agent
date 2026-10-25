@@ -65,3 +65,72 @@ def test_distinct_tokens_and_shared_non_singleton_keys_are_not_findings(homes):
     assert gm.duplicate_credential_findings() == []
     assert not gm.build_migration_plan().blocked
     assert "both hold" not in _surfaces()
+
+
+def _email_env(address: str) -> str:
+    import uuid
+
+    return (
+        f"EMAIL_ADDRESS={address}\nEMAIL_PASSWORD={uuid.uuid4().hex}\n"
+        "EMAIL_IMAP_HOST=imap.example.com\nEMAIL_SMTP_HOST=smtp.example.com\n"
+    )
+
+
+def test_duplicate_email_mailbox_named_identically_by_doctor_status_and_preflight(
+    homes, monkeypatch
+):
+    """#134662: the email credential lands in ``extra`` under a name no probe read, so two
+    profiles on one mailbox were invisible to doctor, gateway status and the preflight."""
+    default, worker = homes
+    for name in (
+        "EMAIL_ADDRESS",
+        "EMAIL_PASSWORD",
+        "EMAIL_IMAP_HOST",
+        "EMAIL_SMTP_HOST",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    (default / ".env").write_text(_email_env("user@example.com"), encoding="utf-8")
+    (worker / ".env").write_text(_email_env("user@example.com"), encoding="utf-8")
+
+    findings = gm.duplicate_credential_findings()
+    assert len(findings) == 1
+    line = findings[0]
+    assert "'default'" in line and "'worker'" in line and "EMAIL_PASSWORD" in line
+    assert "user@example.com" not in line  # the mailbox never reaches any surface
+    assert gm.build_migration_plan().blockers == findings
+    assert _surfaces().count(line) == 2  # once from doctor, once from gateway status
+
+
+def test_distinct_email_mailboxes_are_not_a_finding(homes, monkeypatch):
+    default, worker = homes
+    for name in (
+        "EMAIL_ADDRESS",
+        "EMAIL_PASSWORD",
+        "EMAIL_IMAP_HOST",
+        "EMAIL_SMTP_HOST",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    (default / ".env").write_text(_email_env("user@example.com"), encoding="utf-8")
+    (worker / ".env").write_text(_email_env("other@example.org"), encoding="utf-8")
+
+    assert gm.duplicate_credential_findings() == []
+    assert not gm.build_migration_plan().blocked
+
+
+def test_case_variants_of_one_mailbox_are_one_finding(homes, monkeypatch):
+    """Mail domains (and in practice local parts) are case-insensitive, so
+    User@Example.Com and user@example.com are one inbox: the probe must collide
+    them exactly like the byte-identical pair, or doctor/status miss the
+    duplicate the runtime guard refuses (#134662)."""
+    default, worker = homes
+    for name in (
+        "EMAIL_ADDRESS",
+        "EMAIL_PASSWORD",
+        "EMAIL_IMAP_HOST",
+        "EMAIL_SMTP_HOST",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    (default / ".env").write_text(_email_env("User@Example.Com"), encoding="utf-8")
+    (worker / ".env").write_text(_email_env("user@example.com"), encoding="utf-8")
+
+    assert len(gm.duplicate_credential_findings()) == 1

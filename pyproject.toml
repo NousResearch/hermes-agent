@@ -286,11 +286,14 @@ slack = ["slack-bolt==1.30.0", "slack-sdk==3.45.0", "aiohttp==3.14.5"]
 # build) doesn't try to build python-olm on the win/darwin lanes. The
 # matrix adapter degrades gracefully without mautrix (import stubs).
 matrix = [
-  "mautrix[encryption]==0.21.1; sys_platform == 'linux'",
-  "aiosqlite==0.22.1; sys_platform == 'linux'",
+  "mautrix==0.21.1",
+  "aiosqlite==0.22.1",
   "asyncpg==0.32.0; sys_platform == 'linux'",
-  "aiohttp-socks==0.12.0; sys_platform == 'linux'",
-  "aiohttp==3.14.5; sys_platform == 'linux'",
+  "aiohttp-socks==0.12.0",
+  "aiohttp==3.14.5",
+]
+matrix-encryption = [
+  "mautrix[encryption]==0.21.1; sys_platform == 'linux'",
 ] # aiohttp 3.14.5: prior CVEs + GHSA-9xw5-w5jj-pvcg/GHSA-2g87-pp6c-29x5/GHSA-5wr8-gcqf-gqf3 family (mautrix/aiohttp-socks only cap aiohttp<4 / >=3.10, so pin the patched floor directly)
 
 # WeCom callback-mode adapter — parses untrusted XML POST bodies from

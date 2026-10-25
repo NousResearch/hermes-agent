@@ -11,7 +11,7 @@ import json
 import logging
 import re
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -146,6 +146,14 @@ def save_heartbeat(session_id: str, state: HeartbeatState) -> None:
         logger.debug("HeartbeatManager: set_meta failed: %s", exc)
 
 
+def _replace_heartbeat(db: Any, session_id: str, expected: str, replacement: str) -> bool:
+    """Compare the whole stored row, including edits/status, inside SQLite's write transaction."""
+    return db._write_rowcount(
+        "UPDATE state_meta SET value = ? WHERE key = ? AND value = ?",
+        (replacement, _META_PREFIX + session_id, expected),
+    ) == 1
+
+
 class HeartbeatManager:
     """Per-session heartbeat state + due-tick decisions; the surface CLI + gateway talk to.
 
@@ -156,7 +164,7 @@ class HeartbeatManager:
     def __init__(self, session_id: str):
         self.session_id = session_id
         self._state: Optional[HeartbeatState] = load_heartbeat(session_id)
-        self._last_claim: Optional[tuple[float, int]] = None  # (last_fired_at, fire_count) before the last due_prompt
+        self._last_claim: Optional[tuple[str, str]] = None  # stored row before/after the last successful claim
 
     @property
     def state(self) -> Optional[HeartbeatState]:
@@ -216,33 +224,47 @@ class HeartbeatManager:
     def due_prompt(self, now: Optional[float] = None) -> Optional[str]:
         """Return the injection prompt if the heartbeat is due, else None.
 
-        The fire is recorded immediately (before the turn runs) so overlapping polls or a long turn can never
-        double-fire the same tick. Missed ticks coalesce: the anchor resets to NOW, not the theoretical
-        schedule.
+        Read the durable state and claim it with a conditional SQLite update before returning a prompt.
+        Independent managers/processes reading the same due row cannot both win. Missed ticks coalesce:
+        the anchor resets to NOW, not the theoretical schedule. A failed write never authorizes injection.
         """
-        s = self._state
-        if s is None or not s.is_due(now):
+        db = _get_session_db() if self.session_id else None
+        if db is None:
             return None
-        self._last_claim = (s.last_fired_at, s.fire_count)
-        s.last_fired_at = now if now is not None else time.time()
-        s.fire_count += 1
-        save_heartbeat(self.session_id, s)
-        return s.render_prompt()
+        try:
+            raw = db.get_meta(_META_PREFIX + self.session_id)
+            s = HeartbeatState.from_json(raw) if raw else None
+            self._state = None if s is None or s.status == "cleared" else s
+            if s is None or not s.is_due(now):
+                return None
+            claimed = replace(s, last_fired_at=now if now is not None else time.time(), fire_count=s.fire_count + 1)
+            updated = claimed.to_json()
+            if not _replace_heartbeat(db, self.session_id, raw, updated):
+                return None
+        except Exception as exc:
+            logger.debug("HeartbeatManager: claim failed: %s", exc, exc_info=True)
+            return None
+        self._last_claim = (raw, updated)
+        self._state = claimed
+        return claimed.render_prompt()
 
     def abandon_fire(self) -> bool:
         """Rewind the fire recorded by the last :meth:`due_prompt` whose turn never started, so the tick stays
         due for the next poll instead of being silently consumed. Mirrors ``LoopManager.abandon_tick``. Skipped
         (False) when the persisted state moved on — a pause/resume/clear that landed in between wins."""
-        claim, s = self._last_claim, self._state
-        if claim is None or s is None:
+        claim = self._last_claim
+        db = _get_session_db() if self.session_id else None
+        if claim is None or db is None:
             return False
-        current = load_heartbeat(self.session_id)
-        if current is None or current.status != "active" or (current.last_fired_at, current.fire_count) != (
-                s.last_fired_at, s.fire_count):
+        previous, claimed = claim
+        try:
+            if not _replace_heartbeat(db, self.session_id, claimed, previous):
+                return False
+        except Exception as exc:
+            logger.debug("HeartbeatManager: abandon failed: %s", exc, exc_info=True)
             return False
-        s.last_fired_at, s.fire_count = claim
+        self._state = HeartbeatState.from_json(previous)
         self._last_claim = None
-        save_heartbeat(self.session_id, s)
         return True
 
 

@@ -108,6 +108,14 @@ def _resolve_child_toolsets(
     else:
         child_toolsets = sorted(parent_toolsets) or DEFAULT_TOOLSETS
     child_toolsets = _strip_blocked_tools(child_toolsets)
+    # The child runs the same context engine as the parent (same config), so it rewrites its own
+    # old tool results into recall stubs. Without the engine's tools it can't read them back:
+    # engine tools are infrastructure that make that rewrite reversible, not a capability the
+    # toolset narrowing is meant to withhold. ``valid_tool_names`` can't reveal them (they are
+    # injected by the engine, not registered under a toolset), hence the explicit carry-over.
+    engine_tools = getattr(parent_agent, "_context_engine_tool_names", None)
+    if isinstance(engine_tools, (set, frozenset)) and engine_tools and "context_engine" not in child_toolsets:
+        child_toolsets = [*child_toolsets, "context_engine"]
 
     raw_parent_disabled = getattr(parent_agent, "disabled_toolsets", None)
     inherited_disabled = (

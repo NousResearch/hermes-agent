@@ -1,7 +1,7 @@
 // Product receipts belong to the compilers, not PM dependency receipts or profiles.
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { isAbsolute, join, relative, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { isMain } from './frontend-common.mjs'
 
@@ -138,18 +138,27 @@ function rendererEnv(env) {
     .filter(([key]) => key === 'NODE_ENV' || key.startsWith('VITE_')).sort()
 }
 
+// A prepared input inside the checkout is recorded relative to it, so a receipt does not
+// name the directory it was built in: a moved checkout, another worktree or a CI runner
+// that compiled the same tree all read the same inputs. Outside inputs stay absolute.
+function recordedPath(source, path) {
+  const inside = relative(resolve(source), resolve(path))
+  return inside && !inside.startsWith('..') && !isAbsolute(inside) ? inside.replaceAll('\\', '/') : resolve(path)
+}
+
 export function buildInputs(source, product, prepared = {}, env = process.env) {
   return {
     sourceHash: sourceHash(source, product),
     prepared: Object.entries(prepared).sort().map(([name, path]) => ({
-      name, path: resolve(path), hash: name === 'stamp' ? stampContentHash(resolve(path)) : treeHash(resolve(path), ['.'], () => false),
+      name, path: recordedPath(source, path),
+      hash: name === 'stamp' ? stampContentHash(resolve(path)) : treeHash(resolve(path), ['.'], () => false),
     })),
     ...(product === 'desktop' ? { env: rendererEnv(env) } : {}),
   }
 }
 
-function preparedPaths(inputs) {
-  return Object.fromEntries(inputs.prepared.map(({ name, path }) => [name, path]))
+function preparedPaths(source, inputs) {
+  return Object.fromEntries(inputs.prepared.map(({ name, path }) => [name, resolve(source, path)]))
 }
 
 // The clock the compiler BAKED, not the clock on disk now. desktop.mjs must pass
@@ -159,7 +168,7 @@ function preparedPaths(inputs) {
 // Undefined (tui/web, which have no stamp) is dropped from the receipt, which is
 // exactly the "predates this" shape productCurrent already tolerates.
 export function recordProduct({ source, product, out, inputs, stampClock }) {
-  if (JSON.stringify(buildInputs(source, product, preparedPaths(inputs))) !== JSON.stringify(inputs)) {
+  if (JSON.stringify(buildInputs(source, product, preparedPaths(source, inputs))) !== JSON.stringify(inputs)) {
     throw new Error('Build inputs changed during compilation; retry the build')
   }
   writeFileSync(join(out, receiptName), JSON.stringify({
@@ -168,18 +177,24 @@ export function recordProduct({ source, product, out, inputs, stampClock }) {
   }) + '\n')
 }
 
-/** The receipt in ``out`` when it was written for ``product`` by this platform, arch and Node. */
+// The TUI and web bundles are platform-neutral JavaScript: the same tree compiled by the same
+// pinned Node is byte-identical on darwin, linux and windows, arm64 and x64 alike. Desktop
+// carries native addons and a packaged Electron app, so its receipt stays per platform/arch.
+const portableProducts = new Set(['tui', 'web'])
+
+/** The receipt in ``out`` when it was written for ``product`` by this Node (and, for desktop,
+ *  this platform and arch). */
 function hostReceipt(out, product) {
   const saved = JSON.parse(readFileSync(join(out, receiptName), 'utf8'))
   return saved.schema === 1 && saved.product === product
-    && saved.platform === process.platform && saved.arch === process.arch
+    && (portableProducts.has(product) || (saved.platform === process.platform && saved.arch === process.arch))
     && saved.node === process.versions.node ? saved : null
 }
 
 export function productCurrent({ source, product, out, prepared }) {
   try {
     const saved = hostReceipt(out, product)
-    const paths = saved && (prepared ?? preparedPaths(saved.inputs))
+    const paths = saved && (prepared ?? preparedPaths(source, saved.inputs))
     return !!saved
       // The pre-build gate, unlike recordProduct, must also see the clock. A restamp
       // that lands after the build (a racing write-build-stamp, or a second builder

@@ -115,8 +115,9 @@ your Nous account (Providers → Accounts). It appears only in the native app on
 and only that app can change it: a browser signed in over the network cannot.
 
 - **This network:** devices on the same Wi-Fi open `http://<this computer's address>:<port>`, where the
-  port is `webapp.port` (9120 unless you set another). This is plain HTTP: the connection is not
-  encrypted, so others on the network could read it. Use it only on a network you trust.
+  port is `webapp.port` (9120 unless you set another, or Start chose one for a standalone profile).
+  This is plain HTTP: the connection is not encrypted, so others on the network could read it. Use it
+  only on a network you trust.
 - **My own URL:** an HTTPS address you already run (Tailscale Serve, a tunnel or a reverse proxy) that
   forwards to `http://127.0.0.1:<port>`. It is saved as `webapp.public_url`. Never forward that port
   from your router directly.
@@ -134,8 +135,10 @@ Web Access changes only the `webapp:` settings and keeps your `webapp.port`. It 
 Its Nous sign-in uses a sign-in client of its own, which the first Start registers with your Nous
 account and keeps in the gateway's home (`webapp/sign-in-registration.json`). Start never reads or
 writes `HERMES_DASHBOARD_OAUTH_CLIENT_ID` in `.env`, so turning Web Access on never changes the
-standalone dashboard's Nous sign-in. A standalone profile with its own gateway needs its own
-`webapp.port` to serve a Webapp beside the default gateway's. `hermes update` rebuilds the Webapp
+standalone dashboard's Nous sign-in. A standalone profile with its own gateway serves its Webapp on a
+port of its own: when its `webapp.port` is unset, the first Start picks the first free port above 9120
+that no other profile uses and saves it as that profile's `webapp.port`, so its address stays the same
+after restarts. A `webapp.port` you set is always kept. `hermes update` rebuilds the Webapp
 whenever a profile has it turned on.
 If that build fails, the gateway reports the Webapp unavailable, and the page says so, until
 `hermes webapp` rebuilds it.

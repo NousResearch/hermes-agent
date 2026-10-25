@@ -152,25 +152,101 @@ def _register_nous_sign_in(callback_url: str) -> None:
     atomic_write_text(path, json.dumps(record) + "\n", mode=0o600)
 
 
-def plan(mode: str, public_url: Optional[str] = None) -> tuple[str, str, str]:
-    """Check that *mode* can be served and signed in to; returns ``(host, public_url, callback)``:
-    the bind host and the URL to pin for :func:`serve`, and the sign-in callback for
-    :func:`register`. Changes nothing, so Start runs it before any slow or lasting step."""
-    from gateway.webapp_listener import webapp_settings
-
+def plan(mode: str, public_url: Optional[str] = None) -> tuple[str, Optional[int], str, str]:
+    """Check that *mode* can be served and signed in to; returns ``(host, port, public_url, callback)``:
+    the bind host, the port to write (None to keep the config's, :func:`_port_to_serve`) and the URL to
+    pin for :func:`serve`, and the sign-in callback for :func:`register`. Changes nothing, so Start
+    runs it before any slow or lasting step."""
     if mode == "lan":
         address = lan_address()
         if address is None:
             raise WebappAccessError("This machine has no network address other devices can reach.")
-        host, url, pinned = "0.0.0.0", f"http://{address}:{webapp_settings(gateway_home()).port}", ""
+        host, pinned = "0.0.0.0", ""
+        serving, port = _port_to_serve(gateway_home(), host)
+        url = f"http://{address}:{serving}"
     elif mode == "public":
         host, url = "127.0.0.1", _public_url(public_url)
         pinned = url
+        port = _port_to_serve(gateway_home(), host)[1]
     else:
         raise WebappAccessError(f"Unknown access mode {mode!r}.")
     if not nous_signed_in():
         raise WebappAccessError("Sign in to your Nous account under Providers first.")
-    return host, pinned, f"{url}/auth/callback"
+    return host, port, pinned, f"{url}/auth/callback"
+
+
+#: How many ports above the default Start tries for a standalone profile's Webapp.
+_PORT_SEARCH = 100
+
+
+def _port_to_serve(home: Path, host: str) -> tuple[int, Optional[int]]:
+    """``(port, port to write)`` for the Webapp of *home*'s gateway, bound on *host*.
+
+    A ``webapp.port`` in *home*'s config is the user's, and so is the default profile's gateway, which
+    serves the documented address (9120 unless set): both keep it, and Start writes no port. A standalone
+    profile's gateway with no ``webapp.port`` would find the default port taken by the default gateway's
+    Webapp, so it gets the first port above it that no other Hermes home on this machine claims and
+    nothing listens on now, and Start writes it to that profile's ``webapp.port``: the profile keeps that
+    address across restarts, and the gateway, the launcher and the sign-in callback all use it."""
+    from gateway.webapp_listener import DEFAULT_PORT, webapp_settings
+    from hermes_constants import named_profile_home
+
+    if _own_port(home) is not None or named_profile_home(home) is None:
+        return webapp_settings(home).port, None
+    claimed = _claimed_ports(home)
+    for port in range(DEFAULT_PORT + 1, DEFAULT_PORT + 1 + _PORT_SEARCH):
+        if port not in claimed and _port_free(host, port):
+            return port, port
+    raise WebappAccessError(f"No free port for the Webapp from {DEFAULT_PORT + 1} to {DEFAULT_PORT + _PORT_SEARCH}. "
+                            f"Set webapp.port in {home / 'config.yaml'} to a free port, then start again.")
+
+
+def _own_port(home: Path) -> Optional[object]:
+    """The ``webapp.port`` *home*'s ``config.yaml`` sets, valid or not (the gateway reports an invalid
+    one by name), or None when it sets none. The file as written: the defaults name a port for everyone."""
+    from ruamel.yaml.error import YAMLError
+
+    from hermes_cli.config import read_user_config_raw
+
+    try:
+        document = read_user_config_raw(Path(home) / "config.yaml")
+    except (OSError, ValueError, YAMLError):  # the gateway reports an unreadable config itself
+        return None
+    block = document.get("webapp") if isinstance(document, dict) else None
+    return block.get("port") if isinstance(block, dict) else None
+
+
+def _claimed_ports(home: Path) -> set[int]:
+    """The Webapp ports the other Hermes homes beside *home* claim: the default profile's (9120 unless
+    set) and every other profile's own ``webapp.port``, whether or not its gateway runs now. Only that
+    setting is read from their configs."""
+    from gateway.webapp_listener import DEFAULT_PORT
+    from hermes_constants import named_profile_home
+
+    profile = named_profile_home(home)
+    if profile is None:
+        return set()
+    root = profile.parent.parent
+    root_port = _own_port(root)
+    claimed = {root_port if isinstance(root_port, int) else DEFAULT_PORT}
+    for other in profile.parent.iterdir() if profile.parent.is_dir() else ():
+        port = _own_port(other) if other != profile and other.is_dir() else None
+        if isinstance(port, int) and not isinstance(port, bool):
+            claimed.add(port)
+    return claimed
+
+
+def _port_free(host: str, port: int) -> bool:
+    """Whether a listener could bind *host*:*port* now, as the gateway's does."""
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    with socket.socket(family, socket.SOCK_STREAM) as probe:
+        if os.name != "nt":  # as the gateway's listener; on Windows the option would share a bound port
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind((host, port))
+        except OSError:
+            return False
+    return True
 
 
 def build_bundle() -> None:
@@ -193,9 +269,10 @@ def register(callback_url: str) -> None:
     _register_nous_sign_in(callback_url)
 
 
-def serve(host: str, public_url: str) -> None:
-    """Serve the Webapp on *host* from the gateway's next start. Call :func:`register` first."""
-    _write_config(enabled=True, host=host, public_url=public_url)
+def serve(host: str, public_url: str, port: Optional[int] = None) -> None:
+    """Serve the Webapp on *host* (and *port* when :func:`plan` chose one) from the gateway's next
+    start. Call :func:`register` first."""
+    _write_config(enabled=True, host=host, public_url=public_url, port=port)
 
 
 def turn_off() -> None:
@@ -203,16 +280,16 @@ def turn_off() -> None:
     _write_config(enabled=False)
 
 
-def _write_config(*, enabled: bool, host: str = "", public_url: str = "") -> None:
+def _write_config(*, enabled: bool, host: str = "", public_url: str = "", port: Optional[int] = None) -> None:
     """The ``webapp:`` block, and nothing outside it. Starting pins ``webapp.public_url`` for the
     own-URL mode and drops it for LAN, where the callback follows each request; stopping changes
-    only ``enabled``, so the next start offers the same address. ``webapp.port`` is the user's:
-    a second gateway on this machine needs a port of its own."""
+    only ``enabled``, so the next start offers the same address. ``webapp.port`` is the user's; only a
+    standalone profile that has none gets the free one :func:`plan` chose, once."""
     from hermes_cli.config import load_config, save_config
 
     cfg = load_config()
     webapp = cfg.get("webapp") if isinstance(cfg.get("webapp"), dict) else {}
-    webapp.update(enabled=enabled, **({"host": host} if enabled else {}))
+    webapp.update(enabled=enabled, **({"host": host} if enabled else {}), **({"port": port} if port else {}))
     if enabled and public_url:
         webapp["public_url"] = public_url
     elif enabled:

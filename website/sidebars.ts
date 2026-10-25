@@ -746,6 +746,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'guides/run-nemotron-3-ultra-free',
         'guides/run-hermes-with-nous-portal',
+        'guides/run-hermes-on-agent37',
         'guides/tips',
         'guides/secure-hermes-on-a-work-machine',
         'guides/local-llm-on-mac',

@@ -61,6 +61,7 @@ def _builtin_gateway_liveness() -> Optional[bool]:
         from hermes_cli.gateway import find_gateway_pids, named_profile_served_by_running_multiplexer
         if find_gateway_pids():
             return True
+        from hermes_cli.profiles import get_active_profile_name
         from cron.jobs import get_ticker_heartbeat_age, ticker_heartbeat_writer_alive
         if not _ticker_age_is_fresh(get_ticker_heartbeat_age()):
             return False
@@ -68,7 +69,10 @@ def _builtin_gateway_liveness() -> Optional[bool]:
         # record already proves. Any other writer (the in-process ticker, a shared gateway whose
         # record omits this profile) must itself still be running: a killed ticker's last stamp
         # reads fresh for ~3 minutes and would queue manual runs nobody picks up.
-        return named_profile_served_by_running_multiplexer() or ticker_heartbeat_writer_alive()
+        # Resolve the target explicitly: the CLI environment can retain the launch profile while
+        # the command targets a named profile under a shared serve process.
+        return (named_profile_served_by_running_multiplexer(get_active_profile_name())
+                or ticker_heartbeat_writer_alive())
     except Exception:
         return None
 

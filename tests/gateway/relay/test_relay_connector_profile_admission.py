@@ -10,6 +10,7 @@ import asyncio
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -24,7 +25,7 @@ SOURCE = {'platform': 'telegram', 'chat_type': 'dm'}
 
 
 @asynccontextmanager
-async def _relay(runner, platforms=('telegram',)):
+async def _relay(runner, platforms=('telegram',), port=0):
     """A real WebSocketRelayTransport + RelayAdapter wired as ``runner``'s primary relay, against a
     fake connector that acks every outbound. Yields ``(send, outgoing, adapter)``."""
     from gateway.relay.adapter import RelayAdapter
@@ -47,7 +48,7 @@ async def _relay(runner, platforms=('telegram',)):
             elif frame['type'] == 'going_idle':
                 await ws.send(json.dumps({'type': 'going_idle_ack'}) + '\n')
 
-    async with websockets.serve(connector, '127.0.0.1', 0) as server:
+    async with websockets.serve(connector, '127.0.0.1', port) as server:
         transport = WebSocketRelayTransport(
             f'ws://127.0.0.1:{server.sockets[0].getsockname()[1]}/relay', platforms[0], 'fixture-bot',
             gateway_id='fixture-gateway', upgrade_secret='fixture-secret', reconnect=False)
@@ -208,5 +209,55 @@ async def test_multiplexed_gateway_admits_a_connector_stamped_profile_into_its_o
     finally:
         for authority in list(getattr(runner, 'session_authorities', None) or []):
             authority.db.close()
+        for _, home in homes:
+            process_ownership.release(home)
+
+
+@pytest.mark.asyncio
+async def test_stamped_profile_completion_finds_its_relay_after_a_restart(tmp_path, monkeypatch):
+    """A persisted origin omits relay trust, and a stamped profile with no local route cannot borrow
+    the primary relay by route: after a restart its background completion must still reach the relay,
+    proven by the route's committed relay admission, instead of being deferred or refused."""
+    from gateway.run_runtime import initialize_gateway_runtime
+    from gateway.runtime_ownership import process_ownership
+
+    _root, homes = _reserve_homes(tmp_path, monkeypatch, names=('work',))
+    process_ownership.reserve([home for _, home in homes])
+    config = GatewayConfig(sessions_dir=tmp_path / 'sessions')
+    config.multiplex_profiles = True
+    config._runtime_profile_homes = tuple(homes)
+    key = 'agent:work:telegram:dm:chat-work'
+    runners = []
+    try:
+        first = GatewayRunner(config)
+        runners.append(first)
+        turns = _stub_turns(first, monkeypatch)
+        await initialize_gateway_runtime(first)
+        async with _relay(first) as (send, outgoing, adapter):
+            # The relay seal binds the connector URL: the restarted gateway dials the same one.
+            port = urlsplit(adapter._transport._url).port
+            await send('to-work', 'chat-work', profile='work')
+            await async_wait_until(lambda: turns and _replies(outgoing, 'chat-work'), timeout=30,
+                                   what='the stamped turn answered')
+        parent = first.session_store.lookup_by_session_key(key).session_id
+        for authority in list(first.session_authorities):
+            authority.db.close()
+
+        second = GatewayRunner(config)  # restart: fresh runner, authorities and relay over persisted state
+        runners.append(second)
+        turns = _stub_turns(second, monkeypatch)
+        await initialize_gateway_runtime(second)
+        async with _relay(second, port=port) as (_send, outgoing, _adapter):
+            evt = {'type': 'completion', 'session_key': key, 'parent_session_id': parent,
+                   'session_id': 'proc_restart', 'started_at': 1.0}
+            async with second._completion_event_scope(evt):
+                assert await second._inject_watch_notification('[process finished]', evt) is True
+            await async_wait_until(lambda: turns and _replies(outgoing, 'chat-work'), timeout=30,
+                                   what='the completion answered through the relay')
+            assert turns[0][1:] == (homes[1][1].resolve(), key)
+    finally:
+        for runner in runners:
+            for authority in list(getattr(runner, 'session_authorities', None) or []):
+                authority.db.close()
         for _, home in homes:
             process_ownership.release(home)

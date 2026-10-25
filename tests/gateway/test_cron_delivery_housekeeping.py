@@ -218,8 +218,8 @@ def test_multiplex_housekeeping_routes_desktop_served_satellite_with_only_local_
 def test_multiplex_housekeeping_keeps_reconnecting_satellite_off_the_primary_bot(
     tmp_path, monkeypatch
 ):
-    """A satellite whose OWN bot dropped has it popped from ``_profile_adapters`` and parked in
-    ``_profile_failed_platforms`` for reconnect. With only a Desktop LOCAL adapter left, the drain
+    """A satellite whose OWN bot dropped has it popped from ``_profile_adapters`` while it
+    reconnects; ``_profile_bot_platforms`` still names it. With only a Desktop LOCAL adapter left, the drain
     must still treat it as owning its bot, never route its queue through the primary bot."""
     from gateway.config import Platform
 
@@ -229,7 +229,7 @@ def test_multiplex_housekeeping_keeps_reconnecting_satellite_off_the_primary_bot
         config=SimpleNamespace(multiplex_profiles=True),
         adapters=root_adapters,
         _profile_adapters={"secondary": own},
-        _profile_failed_platforms={"secondary": {Platform.DISCORD: object()}},
+        _profile_bot_platforms={"secondary": {Platform.DISCORD}},
     )
     calls = []
 

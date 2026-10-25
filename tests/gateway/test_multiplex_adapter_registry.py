@@ -261,6 +261,17 @@ def _install_secondary_reconnect_context(
     monkeypatch.setattr(runner, "_create_adapter", lambda platform, config: adapter)
 
 
+def _stub_secondary_start(monkeypatch, runner):
+    async def connect(adapter, platform):
+        return True
+
+    monkeypatch.setattr("hermes_cli.env_loader.hydrate_profile_secret_sources", lambda h: {})
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
+    monkeypatch.setattr(runner, "_snapshot_profile_busy_modes", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+    monkeypatch.setattr(runner, "_connect_initial_adapter_with_timeout", connect)
+
+
 class TestSecondaryProfileFatalRecovery:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("entry", ["startup", "reconnect"])
@@ -397,6 +408,65 @@ class TestSecondaryProfileFatalRecovery:
         assert redelivery_homes
         assert all(path != Path("/profiles/reviewer") for path in redelivery_homes)
 
+
+    @pytest.mark.asyncio
+    async def test_dropped_bot_is_never_swapped_for_the_primary(self, monkeypatch):
+        """A routed profile whose own bot dropped (disconnect pending, then no reconnect for a dead
+        credential) is still that bot's owner: its notices must not resolve the primary bot."""
+        from gateway.profile_routing import ProfileRoute
+        runner = _secondary_recovery_runner()
+        runner._adapter_disconnect_timeout_secs = lambda: 5
+        primary = object()
+        runner.adapters = {Platform.DISCORD: primary}
+        runner.config.profile_routes = [ProfileRoute("r", "discord", "reviewer", chat_id="C1")]
+        monkeypatch.setattr(gateway_run, "_multiplex_profile_homes",
+                            lambda config: [("reviewer", Path("/profiles/reviewer"))])
+        stale = _SecondaryRecoveryAdapter(retryable=False)
+        _install_secondary_reconnect_context(monkeypatch, runner, stale)
+        _stub_secondary_start(monkeypatch, runner)
+        assert await runner._start_one_profile_adapters("reviewer", Path("/profiles/reviewer"), {}) == 1
+        runner._profile_adapters["reviewer"][Platform.LOCAL] = object()
+        disconnecting, release = asyncio.Event(), asyncio.Event()
+
+        async def disconnect():
+            disconnecting.set()
+            await release.wait()
+
+        stale.disconnect = disconnect
+        handler = asyncio.create_task(
+            runner._handle_profile_adapter_fatal_error("reviewer", Platform.DISCORD, stale))
+        await asyncio.wait_for(disconnecting.wait(), 5)
+        assert runner._adapters_for_profile("reviewer").get(Platform.DISCORD) is None
+        release.set()
+        await handler
+        assert not runner._background_tasks
+        assert runner._adapters_for_profile("reviewer").get(Platform.DISCORD) is None
+
+    @pytest.mark.asyncio
+    async def test_credential_repair_during_a_dead_disconnect_connects(self, monkeypatch):
+        """A rescan after a credential repair, landing while a non-retryable bot is still
+        disconnecting, builds the repaired bot: nothing else will (the dead one is never retried)."""
+        runner = _secondary_recovery_runner()
+        runner._adapter_disconnect_timeout_secs = lambda: 5
+        stale, repaired = _SecondaryRecoveryAdapter(retryable=False), _SecondaryRecoveryAdapter()
+        _install_secondary_reconnect_context(monkeypatch, runner, stale)
+        _stub_secondary_start(monkeypatch, runner)
+        assert await runner._start_one_profile_adapters("reviewer", Path("/profiles/reviewer"), {}) == 1
+        disconnecting, release = asyncio.Event(), asyncio.Event()
+
+        async def disconnect():
+            disconnecting.set()
+            await release.wait()
+
+        stale.disconnect = disconnect
+        handler = asyncio.create_task(
+            runner._handle_profile_adapter_fatal_error("reviewer", Platform.DISCORD, stale))
+        await asyncio.wait_for(disconnecting.wait(), 5)
+        monkeypatch.setattr(runner, "_create_adapter", lambda platform, config: repaired)
+        assert await runner._start_one_profile_adapters("reviewer", Path("/profiles/reviewer"), {}) == 1
+        release.set()
+        await handler
+        assert runner._profile_adapters["reviewer"][Platform.DISCORD] is repaired
 
     @pytest.mark.asyncio
     async def test_secondary_reconnect_keeps_inbound_dedup(self, monkeypatch):

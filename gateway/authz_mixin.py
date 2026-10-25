@@ -246,8 +246,8 @@ class GatewayAuthorizationMixin:
         config = getattr(self, "config", None)
         if not getattr(config, "multiplex_profiles", False):
             return False
-        # A bot that failed to connect is queued for reconnect: that profile owns a credential.
-        if (getattr(self, "_profile_failed_platforms", None) or {}).get(profile_name):
+        # A bot of its own that is down (failed to connect, or dropped) still makes it a credential boundary.
+        if (getattr(self, "_profile_bot_platforms", None) or {}).get(profile_name):
             return False
         routes = getattr(config, "profile_routes", None) or []
         if not any(r.enabled and r.profile == profile_name and r.bot_profile is None for r in routes):

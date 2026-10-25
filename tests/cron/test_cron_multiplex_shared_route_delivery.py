@@ -220,7 +220,7 @@ def test_multiplex_tick_routes_desktop_served_satellite_with_only_local_adapter(
 
 
 def test_multiplex_tick_keeps_reconnecting_satellite_off_the_primary_bot(tmp_path, monkeypatch):
-    """A satellite whose OWN bot dropped is parked in ``_profile_failed_platforms`` while only its
+    """A satellite whose OWN bot dropped stays in ``_profile_bot_platforms`` while only its
     Desktop LOCAL adapter remains. Its cron tick must deliver via its own map (and fail until the
     bot reconnects), never borrow the primary bot."""
     import threading
@@ -254,7 +254,7 @@ def test_multiplex_tick_keeps_reconnecting_satellite_off_the_primary_bot(tmp_pat
                 "profile_homes": [("sat", sat_home)],
                 "adapters": {Platform.DISCORD: _primary_adapter()},
                 "profile_adapters": {"sat": own},
-                "profile_failed_platforms": {"sat": {Platform.DISCORD: object()}},
+                "profile_bot_platforms": {"sat": {Platform.DISCORD}},
                 "default_profile": "default",
             },
             daemon=True,

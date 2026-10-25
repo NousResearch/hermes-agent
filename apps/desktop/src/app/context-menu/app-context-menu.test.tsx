@@ -2,6 +2,7 @@ import { cleanup, createEvent, fireEvent, render, screen, waitFor } from '@testi
 import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { FileEntryContextMenu, InlineRenameInput } from '@/app/right-sidebar/file-actions'
 import { registerTerminalContextMenu } from '@/app/right-sidebar/terminal/terminal-context-menu'
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
 import { ContextMenu, ContextMenuTrigger, HERMES_CONTEXT_MENU_TRIGGER_ATTR } from '@/components/ui/context-menu'
@@ -224,6 +225,87 @@ describe('AppContextMenu', () => {
     expect(event.defaultPrevented).toBe(false)
   })
 
+  // The browser bridge has no contextMenuEdit (our Cut/Copy/Paste) and no spellcheck feed:
+  // only the browser's own menu has working edit verbs and spelling suggestions there.
+  it.each([
+    [
+      'a field in a pane body',
+      '<div data-zone-body="t" data-slot="context-menu-trigger"><textarea>teh</textarea></div>',
+      'textarea'
+    ],
+    ['the rich composer', '<div contenteditable="true" data-slot="composer-rich-input"><span>teh</span></div>', 'span'],
+    ['a link inside an editable', '<div contenteditable="true"><a href="https://example.com">link</a></div>', 'a']
+  ])('leaves the native menu on %s in the browser Webapp', (_name, html, selector) => {
+    installBridge()
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+    mountMenu()
+    const host = attach(html)
+    // jsdom lacks the browser's isContentEditable.
+    host
+      .querySelectorAll('[contenteditable]')
+      .forEach(node => Object.defineProperty(node, 'isContentEditable', { value: true }))
+    const fallback = vi.fn()
+    host.addEventListener('contextmenu', fallback)
+    const field = host.querySelector(selector)!
+    const event = createEvent.contextMenu(field, { bubbles: true, cancelable: true })
+
+    fireEvent(field, event)
+
+    expect(event.defaultPrevented).toBe(false)
+    expect(fallback).not.toHaveBeenCalled()
+    expect($contextMenu.get()).toBeNull()
+  })
+
+  it('leaves the native menu on an inline file rename in the browser Webapp', () => {
+    installBridge()
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+    render(
+      <MemoryRouter>
+        <AppContextMenu />
+        <FileEntryContextMenu isDirectory={false} name="notes.txt" path="/work/notes.txt">
+          <div>
+            <InlineRenameInput name="notes.txt" path="/work/notes.txt" />
+          </div>
+        </FileEntryContextMenu>
+      </MemoryRouter>
+    )
+    const input = screen.getByRole('textbox', { name: 'New name' })
+    const event = createEvent.contextMenu(input, { bubbles: true, cancelable: true })
+
+    fireEvent(input, event)
+
+    expect(event.defaultPrevented).toBe(false)
+    expect(screen.queryByText('Copy path')).toBeNull()
+  })
+
+  // Only a field the user types in keeps the browser's menu; Electron resolves nothing for a row.
+  it.each([
+    ['browser', 'checkbox'],
+    ['electron', 'text']
+  ])('%s: a %s input inside a row still opens the row menu', async (hostKind, type) => {
+    installBridge()
+    window.document.documentElement.dataset.hermesDesktopHost = hostKind
+    render(
+      <MemoryRouter>
+        <AppContextMenu />
+        <FileEntryContextMenu isDirectory={false} name="notes.txt" path="/work/notes.txt">
+          <div>
+            <input aria-label="Pick" type={type} />
+          </div>
+        </FileEntryContextMenu>
+      </MemoryRouter>
+    )
+    const input = screen.getByLabelText('Pick')
+    const selectionText = vi.spyOn(Selection.prototype, 'toString')
+    const event = createEvent.contextMenu(input, { bubbles: true, cancelable: true })
+
+    fireEvent(input, event)
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(await screen.findByText('Copy path')).toBeTruthy()
+    expect(selectionText).not.toHaveBeenCalled()
+  })
+
   it('keeps native media gestures unprevented in Electron', async () => {
     installBridge()
     window.document.documentElement.dataset.hermesDesktopHost = 'electron'
@@ -348,18 +430,22 @@ describe('AppContextMenu', () => {
     expect(screen.getByText('the')).toBeTruthy()
   })
 
-  it('runs edit verbs after the menu closed, with focus back on the editable', async () => {
+  // A browser host whose bridge can run the edit verbs keeps the app menu too, cancelling its own.
+  it.each(['electron', 'browser'])('%s: edit verbs run after the menu closed, field refocused', async hostKind => {
     const contextMenuEdit = vi.fn().mockResolvedValue(undefined)
 
     installBridge({ contextMenuEdit: contextMenuEdit as unknown as Window['hermesDesktop']['contextMenuEdit'] })
+    window.document.documentElement.dataset.hermesDesktopHost = hostKind
     mountMenu()
     const host = attach('<textarea>some draft text</textarea>')
     const textarea = host.querySelector('textarea')!
 
     // Cut/copy act on the selection, so give the field one.
     textarea.setSelectionRange(0, 4)
-    fireEvent.contextMenu(textarea)
+    const event = createEvent.contextMenu(textarea, { bubbles: true, cancelable: true })
+    fireEvent(textarea, event)
     fireEvent.click(await screen.findByText('Copy'))
+    expect(event.defaultPrevented).toBe(hostKind === 'browser')
 
     // The verb waits a frame so the radix focus trap unmounts first —
     // dispatching while the trap holds focus sent the command to `body`.

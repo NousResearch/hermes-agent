@@ -6,6 +6,7 @@ not what should be persisted in conversation history.
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from typing import Any, Optional
 
@@ -19,6 +20,11 @@ from typing import Any, Optional
 LIVE_GATEWAY_SILENT_MARKERS = frozenset({
     "[SILENT]", "SILENT", "NO_REPLY", "NO REPLY",
     "[静默]", "静默", "[沉默]", "沉默",
+    # Not a rendering of the sentinel word: a cron lane drifted to this label
+    # (``[审核]``, "reviewed/audited") as its whole response and the token reached
+    # the user's chat as content. A lone bracketed label IS the sentinel's shape,
+    # so the observed drift is carried too — same whole-response rule as above.
+    "[审核]", "审核",
 })
 
 # Bracketed markers drive the autonomous lane's prefix rule ("[SILENT] nothing
@@ -44,8 +50,36 @@ PRODUCER_CARD_KINDS = frozenset({INTERNAL_NOTIFICATION_DISPLAY_KIND, *PRODUCER_N
 _MARKER_LENGTH_CAP = 64
 
 
+def _strip_format_characters(text: str) -> str:
+    """Drop Unicode *format* characters (category ``Cf``): zero-width space/joiners,
+    BOM, bidi marks, soft hyphen.
+
+    ``str.split()`` only breaks on whitespace, and ``Cf`` is not whitespace
+    (``"\\u200b".isspace()`` is False), so an invisible character a model pastes
+    into the sentinel survived canonicalization: ``[\\u200bSILENT]`` stopped
+    matching and the whole control token was delivered to the chat as content.
+    Only ``Cf`` is dropped — a whitespace or punctuation character still fails the
+    match, and a response left empty by this is the empty-response path, not silence.
+    """
+    return "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
+
+
+def _strip_bracket_padding(text: str) -> str:
+    """Drop whitespace hugging the *inside* of square brackets: ``[ SILENT ]`` -> ``[SILENT]``.
+
+    Collapsing runs of whitespace (below) keeps the single space a model writes between the
+    bracket and the token, so ``[ SILENT ]``, ``[SILENT ]`` and ``[ SILENT]`` canonicalized to
+    themselves, matched no marker, and the whole control token was delivered as content
+    (job 8bf097dcd9d2, 2026-10-10, hex ``5b2053494c454e54205d``). Padding is a rendering
+    artifact of the token, not prose, so it goes — but only the whitespace directly inside the
+    brackets: the space between a marker and the note after it (``[SILENT] nothing new``) and
+    any bracketed word that is not a marker are untouched, so prose stays prose.
+    """
+    return re.sub(r"\s+\]", "]", re.sub(r"\[\s+", "[", text))
+
+
 def _canonical_silence_candidate(text: str) -> str:
-    return " ".join(text.strip().upper().split())
+    return _strip_bracket_padding(" ".join(_strip_format_characters(text).strip().upper().split()))
 
 
 def _is_edge_punctuation(ch: str) -> bool:
@@ -91,14 +125,17 @@ def is_autonomous_silence_response(response: Any) -> bool:
     changes detected``).  A token buried mid-sentence is still delivered.
     Shares :data:`LIVE_GATEWAY_SILENT_MARKERS` so the two sets cannot drift.
     """
-    stripped = response.strip() if isinstance(response, str) else ""
+    stripped = _strip_format_characters(response.strip()) if isinstance(response, str) else ""
     if not stripped:
         return False
     lines = [ln for ln in stripped.splitlines() if ln.strip()]
     # Bracketed form only for the prefix rule, so a bare "Silent retry succeeded" is NOT swallowed.
     # Same de-punctuating forms as the interactive rule, so ``【静默】`` / ``静默。`` cannot
     # be suppressed in chat yet delivered by cron.
-    return stripped.upper().startswith(_BRACKETED_SILENCE_MARKERS) or any(
+    # ``_canonical_silence_candidate`` runs first (like every candidate below): an invisible
+    # character before/inside the sentinel, or padding inside its brackets
+    # (``[ SILENT ] No changes detected``), would defeat this prefix match otherwise.
+    return _canonical_silence_candidate(stripped).startswith(_BRACKETED_SILENCE_MARKERS) or any(
         is_intentional_silence_response(c) for c in (stripped, lines[0], lines[-1])
     )
 

@@ -77,6 +77,7 @@ def test_codex_usage_prefers_explicit_live_agent_credentials(monkeypatch, codex_
     assert snapshot is not None
     assert snapshot.provider == "openai-codex"
     assert snapshot.plan == "Plus"
+    assert snapshot.identity is None
     assert [w.label for w in snapshot.windows] == ["Session", "Weekly"]
     assert snapshot.windows[0].used_percent == 21
     assert calls[0]["url"] == "https://chatgpt.com/backend-api/wham/usage"
@@ -171,6 +172,16 @@ def test_codex_snapshot_exposes_exact_raw_payload_with_one_get(monkeypatch, code
     assert [w.label for w in snapshot.windows] == ["Session", "Weekly"]  # normalized limits unchanged
     # Additive: existing constructor calls stay valid and default to no raw body.
     assert account_usage.AccountUsageSnapshot(provider="anthropic", source="x", fetched_at=snapshot.fetched_at).raw is None
+
+
+def test_usage_windows_carry_model_scope_for_admission():
+    windows = account_usage._usage_windows(
+        {"all": {"used": 10, "reset": 1_900_000_000}, "opus": {"used": 20, "reset": 1_900_000_000}},
+        (("all", "All"), ("opus", "Opus")), "used", "reset",
+        model_scopes={"opus": ("claude-opus",)},
+    )
+    assert windows[0].model_prefixes == ()
+    assert windows[1].model_prefixes == ("claude-opus",)
 
 
 def test_codex_invalid_payload_fails_closed(monkeypatch):

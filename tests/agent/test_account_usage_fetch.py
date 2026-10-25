@@ -103,6 +103,7 @@ def test_fetch_account_usage_codex(monkeypatch):
 
     assert snapshot is not None
     assert snapshot.plan == "Pro"
+    assert snapshot.identity == "acct_123"
     assert len(snapshot.windows) == 2
     assert snapshot.windows[0].label == "Session"
     assert snapshot.windows[0].used_percent == 15.0

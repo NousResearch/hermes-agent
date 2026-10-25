@@ -30,6 +30,9 @@ class AccountUsageWindow:
     used_percent: Optional[float] = None
     reset_at: Optional[datetime] = None
     detail: Optional[str] = None
+    # Empty means account-wide. Model-scoped windows participate in admission
+    # only when the requested model matches one of these prefixes.
+    model_prefixes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -45,6 +48,9 @@ class AccountUsageSnapshot:
     # Exact decoded provider response body (no headers/credentials) for integrations that need
     # fields Hermes does not normalize yet. Only populated by providers that fetch a JSON body.
     raw: Optional[dict] = None
+    # Stable, non-secret account identity when a provider exposes one. Routing
+    # policies may require it; absence then fails closed rather than guessing.
+    identity: Optional[str] = None
 
     @property
     def available(self) -> bool:
@@ -369,7 +375,8 @@ def _get_json(url: str, headers: dict[str, str], *, timeout: float) -> dict:
 
 
 def _usage_windows(
-    source: dict, mapping: tuple[tuple[str, str], ...], used_key: str, reset_key: str, *, fraction: bool = False
+    source: dict, mapping: tuple[tuple[str, str], ...], used_key: str, reset_key: str, *, fraction: bool = False,
+    model_scopes: Optional[dict[str, tuple[str, ...]]] = None,
 ) -> list[AccountUsageWindow]:
     """Build windows from ``source[key][used_key]``; ``fraction`` scales values <= 1 to percent."""
     windows: list[AccountUsageWindow] = []
@@ -381,7 +388,10 @@ def _usage_windows(
         used = float(used)
         if fraction and used <= 1:
             used *= 100
-        windows.append(AccountUsageWindow(label=label, used_percent=used, reset_at=_parse_dt(window.get(reset_key))))
+        windows.append(AccountUsageWindow(
+            label=label, used_percent=used, reset_at=_parse_dt(window.get(reset_key)),
+            model_prefixes=(model_scopes or {}).get(key, ()),
+        ))
     return windows
 
 
@@ -439,8 +449,10 @@ def _fetch_codex_account_usage(
         details.append(f"Credits balance: ${float(balance):.2f}")
     elif credits.get("has_credits") and credits.get("unlimited"):
         details.append("Credits balance: unlimited")
-    return _snapshot("openai-codex", "usage_api", windows, details, plan=_title_case_slug(payload.get("plan_type")),
-                     raw=payload)
+    return _snapshot(
+        "openai-codex", "usage_api", windows, details, plan=_title_case_slug(payload.get("plan_type")),
+        identity=account_id, raw=payload,
+    )
 
 
 @dataclass(frozen=True)
@@ -583,6 +595,7 @@ def _fetch_anthropic_account_usage(
     windows = _usage_windows(
         payload, (("five_hour", "Current session"), ("seven_day", "Current week"), ("seven_day_opus", "Opus week"),
                   ("seven_day_sonnet", "Sonnet week")), "utilization", "resets_at", fraction=True,
+        model_scopes={"seven_day_opus": ("claude-opus",), "seven_day_sonnet": ("claude-sonnet",)},
     )
     details: list[str] = []
     extra = payload.get("extra_usage") or {}

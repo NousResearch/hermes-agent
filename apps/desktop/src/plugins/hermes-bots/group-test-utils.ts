@@ -457,6 +457,7 @@ export async function pluginSdkMock(host: Record<string, unknown>) {
   const nanostores = await import('nanostores')
   const { Textarea } = await import('@/components/ui/textarea')
   const { cn } = await import('@/lib/utils')
+  const { randomUuid } = await import('@hermes/shared')
 
   return {
     Textarea,
@@ -474,6 +475,7 @@ export async function pluginSdkMock(host: Record<string, unknown>) {
     gatewayActivationEpoch: () => 0,
     GlyphSpinner: () => null,
     host,
+    randomUuid,
     CapabilitiesView: undefined,
     MessageTextContent: undefined,
     Streamdown: undefined,

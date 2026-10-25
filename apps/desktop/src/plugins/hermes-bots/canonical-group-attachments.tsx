@@ -1,4 +1,4 @@
-import { Button } from '@hermes/plugin-sdk'
+import { Button, randomUuid } from '@hermes/plugin-sdk'
 import { type Ref, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react'
 
 import { downloadCanonicalAttachment } from './canonical-attachment-download'
@@ -78,7 +78,7 @@ export function CanonicalGroupAttachments({ binding, attachments, onChange, onUp
       })
 
       const result = await canonicalGroupRequest<Attachment>(binding, 'groups.attachment.upload', {
-        room_id: binding.roomId, upload_id: crypto.randomUUID(), kind: kindFor(file), name: file.name,
+        room_id: binding.roomId, upload_id: randomUuid(), kind: kindFor(file), name: file.name,
         mime: file.type || 'application/octet-stream', data_base64: data
       })
 

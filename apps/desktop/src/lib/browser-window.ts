@@ -1,3 +1,5 @@
+import { randomUuid } from '@hermes/shared'
+
 import type { HermesApiRequest } from '@/global'
 
 interface BrowserWindowOptions {
@@ -15,7 +17,7 @@ export function createBrowserWindowOpener({ api, basePath, privateSession }: Bro
       return Promise.resolve({ ok: true })
     }
 
-    const id = crypto.randomUUID()
+    const id = randomUuid()
     const channel = new BroadcastChannel(`hermes.webapp.window:${id}`)
     const launch = new URL(`${basePath}/webapp/window`, window.location.origin)
     launch.hash = new URLSearchParams({ channel: id, query: target.search, route: target.hash.slice(1) }).toString()

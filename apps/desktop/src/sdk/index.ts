@@ -1622,14 +1622,7 @@ export { WorkspacePageHeaderControl } from '@/app/contrib/workspace-page-header'
  *  that prints a next run switches its label on this (`t.cron.next` →
  *  `t.cron.overdueSince`) so a dead scheduler never reads as "Next: 7 hr ago". */
 export { nextRunOverdueMs } from '@/app/cron/job-state'
-/** THE master-detail toolkit core uses for list+inspector surfaces (Scheduled
- *  jobs, Kanban, …): a dense left `PanelList` of `PanelListRow`s beside a
- *  scrolling `PanelDetail` of `PanelSectionLabel` / `PanelMeta` / `PanelBlock`.
- *  `PanelEmpty` is the icon+action empty state (plain `EmptyState` is title +
- *  description only, and silently drops an `icon`). A row takes a custom `lead`
- *  (avatar/swatch), trailing `meta`, and `menuItems` for kebab + right-click
- *  parity, so a roster needs no hand-rolled row. The overlay-bound `Panel` root
- *  is deliberately NOT exported — these compose inside a pane just as well. */
+/** Master-detail components for pane content; the overlay-bound Panel root is deliberately private. */
 export {
   PanelAction,
   PanelAddButton,
@@ -1976,6 +1969,9 @@ export { compactNumber } from '@hermes/shared'
  *  `approvals.timeout` (300s) so a plugin answering an approval never rejects
  *  its own RPC while the backend still applies the decision (#60654). */
 export { APPROVAL_RESPOND_TIMEOUT_MS } from '@hermes/shared'
+/** THE id minter: a v4 UUID on every origin. `crypto.randomUUID` exists only in secure contexts,
+ *  so a Webapp opened over plain HTTP from another machine has none. */
+export { randomUuid } from '@hermes/shared'
 /** Hermes' reasoning levels, so a plugin surfacing a thinking depth uses the
  *  same scale as the rest of the app (labels: `reasoningEffortLabel`). */
 export {

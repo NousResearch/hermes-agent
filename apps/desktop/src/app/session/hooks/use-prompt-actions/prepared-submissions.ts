@@ -1,3 +1,5 @@
+import { randomUuid } from '@hermes/shared'
+
 import type { ComposerAttachment } from '@/store/composer'
 import type { SessionOwnerScope } from '@/store/session-request-router'
 
@@ -220,7 +222,7 @@ export async function adoptPreparedSubmission(
  *  entry, so a separate send from another window cannot overwrite or share its identity. */
 export async function preparedSubmissionSlot(intent: string): Promise<string> {
   if (!(await readJournal())[intent] && (await holdPreparedSubmission(intent))) { return intent }
-  const key = JSON.stringify([...JSON.parse(intent), crypto.randomUUID()])
+  const key = JSON.stringify([...JSON.parse(intent), randomUuid()])
   await holdPreparedSubmission(key)
 
   return key

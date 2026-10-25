@@ -1,3 +1,4 @@
+import { randomUuid } from '@hermes/shared'
 import type { WebglAddon } from '@xterm/addon-webgl'
 import type { Terminal } from '@xterm/xterm'
 import { atom, computed } from 'nanostores'
@@ -258,8 +259,7 @@ export const $activeTerminal = computed(
   (list, id) => list.find(term => term.id === id) ?? null
 )
 
-const newId = () =>
-  globalThis.crypto?.randomUUID?.() ?? `term-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+const newId = () => randomUuid()
 
 /** Append a fresh terminal and focus it. Captures the current cwd once (its only
  *  tie to session/project state); pass an explicit cwd to override. Returns the id. */

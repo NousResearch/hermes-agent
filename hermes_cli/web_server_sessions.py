@@ -192,8 +192,11 @@ async def _mutate_via_gateway_owner(profile, actor, params):
     dashboard`` is not the store owner, so the offline path's
     exclusive-maintenance reservation can never win and every write action
     dies on a bare 409 (#138915). The owner exposes the same revision-fenced
-    verb over the control socket; with no discoverable owner return None so the
-    caller falls back to the offline store.
+    verb over the control socket. Only a home discovery reads as owner-less
+    (``absent``) returns None, so the caller falls back to the offline store. An owner that
+    exists but could not be identified (a control timeout, a profile mismatch, a refused peer,
+    one starting or draining) answers 503 with discovery's reason: the offline reservation would
+    lose to it and the edit would vanish behind the bare 409 (#144141).
 
     A dial, mint or RPC that dies on an endpoint discovery just identified is
     not owner-less (a slow first dial, or an owner restart between discovery
@@ -217,9 +220,14 @@ async def _mutate_via_gateway_owner(profile, actor, params):
     home = Path(_cron_profile_home(profile)[1]) if profile else Path(_default_db_path()).parent
     # Discovery is read-only and never starts a gateway.
     discovery = await asyncio.to_thread(discover_gateway_endpoint, home, timeout=1.5)
-    endpoint = getattr(discovery, 'endpoint', None)
+    endpoint = discovery.endpoint
     if endpoint is None:
-        return None
+        if discovery.state == 'absent':
+            return None
+        reason = discovery.reason_code or discovery.state
+        _log.warning('session write for %s: gateway owner not reachable (%s, %s): %s',
+                     home, discovery.state, reason, discovery.detail)
+        raise HTTPException(status_code=503, detail=f'owner_unavailable: {reason}')
     if not getattr(endpoint, 'control_home', True):
         # The selected home answered on its own socket (a multiplexer-served profile already
         # names the multiplexer root). Pin it, so the ticket is minted on the socket that just

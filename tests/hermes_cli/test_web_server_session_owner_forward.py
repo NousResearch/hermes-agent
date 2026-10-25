@@ -31,7 +31,8 @@ def _discover(monkeypatch, endpoint, seen=None):
     def fake_discover(home, timeout=2.0):
         if seen is not None:
             seen['home'] = home
-        return SimpleNamespace(endpoint=endpoint)
+        return SimpleNamespace(state='absent' if endpoint is None else 'ready', endpoint=endpoint,
+                               reason_code=None, detail=None)
     monkeypatch.setattr('hermes_cli.gateway_runtime.discover_gateway_endpoint', fake_discover)
 
 
@@ -99,6 +100,31 @@ async def test_standalone_mutation_falls_back_to_offline_without_an_owner(tmp_pa
     assert result == {'ok': True, 'session_id': 'session-2', 'operation': 'rename', 'revision': 2}
     assert len(offline) == 1
     assert offline[0]['operation'] == 'rename'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('state, reason_code', [('inaccessible', 'control_timeout'),
+                                               ('inaccessible', 'profile_mismatch'), ('starting', None)])
+async def test_an_owner_discovery_cannot_identify_is_not_owner_less(tmp_path, monkeypatch, state, reason_code):
+    """#144141: over SSH ``serve --isolated`` discovery of a running gateway came back without an
+    endpoint, and every such verdict took the offline store, whose reservation the live owner
+    always wins (409): pins and renames looked applied, then vanished. Only an ``absent`` owner is
+    owner-less; anything else answers a retryable 503 that names discovery's reason."""
+    from hermes_cli import web_server_sessions
+    from hermes_cli.gateway_runtime import GatewayDiscovery
+
+    request = _standalone_request(monkeypatch, tmp_path)
+    monkeypatch.setattr('hermes_cli.gateway_runtime.discover_gateway_endpoint',
+                        lambda home, timeout=2.0: GatewayDiscovery(state, reason_code=reason_code))
+    offline = []
+    monkeypatch.setattr(web_server_sessions, '_mutate_offline_store',
+                        lambda profile, actor, params: offline.append(params))
+    with pytest.raises(HTTPException) as exc:
+        await web_server_sessions._mutate_session_request(
+            request, None, 'session-7', request_id='req-7', expected_revision=0,
+            operation='sidebar', payload={})
+    assert (exc.value.status_code, exc.value.detail) == (503, f'owner_unavailable: {reason_code or state}')
+    assert offline == []
 
 
 @pytest.mark.asyncio

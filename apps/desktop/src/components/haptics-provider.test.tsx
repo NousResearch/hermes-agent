@@ -45,6 +45,8 @@ class MockAudioContext {
   createBufferSource() {
     return {
       buffer: null,
+      // Standard AudioBufferSourceNode property; harmless for haptics.
+      playbackRate: { value: 1 },
       connect: () => undefined,
       disconnect: () => undefined,
       onended: null,

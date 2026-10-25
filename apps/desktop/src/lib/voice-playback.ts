@@ -10,6 +10,7 @@ import {
   type VoicePlaybackSource,
   type VoicePlaybackState
 } from '@/store/voice-playback'
+import { $voicePlaybackSpeed } from '@/store/voice-playback-speed'
 
 import { cutSentences, sanitizeTextForSpeech } from './speech-text'
 
@@ -18,6 +19,21 @@ import { cutSentences, sanitizeTextForSpeech } from './speech-text'
 // fails to start or stalls mid-stream for this long (rearmed on each progress
 // tick, so legitimately long speech is never cut off).
 const PLAYBACK_STALL_MS = 15_000
+
+// Speed is applied SYNTHESIS-SIDE (the speed store is sent to the backend and
+// honored by providers like Kokoro), so playback elements always run at rate 1 —
+// client-side playbackRate would double-apply or shift pitch. Keep the explicit
+// preservesPitch: Electron builds have shipped false despite the spec default,
+// and belt-and-suspenders costs nothing.
+function applyVoicePlaybackRate(audio: HTMLAudioElement): void {
+  audio.playbackRate = 1
+  const el = audio as HTMLAudioElement & {
+    preservesPitch?: boolean
+    webkitPreservesPitch?: boolean
+  }
+  el.preservesPitch = true
+  el.webkitPreservesPitch = true
+}
 
 let currentAudio: HTMLAudioElement | null = null
 // Every live playback registers its barge-in stop here: streaming sessions
@@ -300,6 +316,7 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
         try {
           await new Promise<void>((resolve, reject) => {
             const audio = new Audio(url)
+            applyVoicePlaybackRate(audio)
             playing = audio
             audio.addEventListener('ended', () => resolve(), { once: true })
             audio.addEventListener('error', () => reject(new Error('Playback failed')), { once: true })
@@ -421,6 +438,8 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
     }
   })
 
+  liveSpeedSend = speed => send({ speed })
+
   const send = (frame: object) => {
     const data = JSON.stringify(frame)
 
@@ -465,6 +484,12 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
     }
 
     const pcm = new Int16Array(bytes.buffer, bytes.byteOffset, usable / 2)
+
+    // Speed is applied SYNTHESIS-SIDE: the client sends {"speed"} frames over
+    // this socket and the backend passes it into the provider (Kokoro --speed
+    // etc.), so the PCM arrives already at the requested rate — pitch-perfect.
+    // Client-side playbackRate/resampling would double-apply or shift pitch,
+    // so the source always plays at 1.
     const buffer = context.createBuffer(1, pcm.length, streamRate)
     const channel = buffer.getChannelData(0)
 
@@ -474,6 +499,7 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
 
     const source = context.createBufferSource()
     source.buffer = buffer
+    source.playbackRate.value = 1
     source.connect(context.destination)
 
     const startAt = Math.max(context.currentTime + 0.05, nextStartAt)
@@ -487,6 +513,9 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
   }
 
   ws.onopen = () => {
+    // Announce the session's synthesis speed before any text (server adopts it
+    // for every sentence; live changes ride dedicated speed frames).
+    ws.send(JSON.stringify({ speed: $voicePlaybackSpeed.get() }))
     pendingSends.splice(0).forEach(data => ws.send(data))
   }
 
@@ -632,13 +661,14 @@ async function playSpeechDataUrl(
   options: VoicePlaybackOptions,
   isCurrent: () => boolean
 ): Promise<boolean> {
-  const response = await speakText(speakableText, options)
+  const response = await speakText(speakableText, options, $voicePlaybackSpeed.get())
 
   if (!isCurrent()) {
     return false
   }
 
   const audio = new Audio(response.data_url)
+  applyVoicePlaybackRate(audio)
   currentAudio = audio
   setVoicePlaybackState(currentState('speaking', options, audio))
 
@@ -824,6 +854,22 @@ async function startSpeechText(text: string, options: VoicePlaybackOptions): Pro
 export function isVoicePlaybackActive() {
   return $voicePlayback.get().status !== 'idle'
 }
+
+// Forward live speed changes: a streaming session gets a speed frame
+// (sentence-granular adoption server-side); the data-URL element stays at
+// rate 1 because its synthesis already applied the speed.
+let liveSpeedSend: ((speed: number) => void) | null = null
+
+$voicePlaybackSpeed.subscribe(speed => {
+  // Streaming session: tell the backend (sentence-granular adoption).
+  liveSpeedSend?.(Math.min(4, Math.max(0.25, speed)))
+
+  // Data-URL playback: synthesis already applied the speed at request time;
+  // keep the element at rate 1 (playbackRate would double-apply or shift pitch).
+  if (currentAudio && !currentAudio.paused) {
+    currentAudio.playbackRate = 1
+  }
+})
 
 // ---------------------------------------------------------------------------
 // Interruption latch — the next prompt.submit carries `interrupted: true` so

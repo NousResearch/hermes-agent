@@ -682,6 +682,25 @@ hermes kanban set-model t_abcd none    # clear the override
 
 The dispatcher spawns the worker with the pinned model (`--provider <name>` is passed when set; `--provider` requires a model). The dashboard's per-task model dropdown drives the same `model_override` field. With no override, the worker uses its profile's configured model.
 
+#### Requiring a reason to pin some providers
+
+Some providers are shared pools: one subscription seat or one quota-limited account that several agents draw from. Pinning cards or a lane to such a provider can starve everything else on it. To make that a deliberate act, list the providers in `config.yaml`:
+
+```yaml
+kanban:
+  pin_reason_required_providers: ["team-seat-*", "shared-quota"]   # fnmatch globs, case-insensitive
+```
+
+A route write whose provider matches is then refused unless it states why, and the reason is recorded on the card's `created` / `model_override_set` event:
+
+```bash
+hermes kanban set-model t_abcd some-model --provider team-seat-2 --pin-reason "needs the long-context seat"
+hermes kanban create "big audit" --assignee coder --model some-model --provider team-seat-2 --pin-reason "..."
+hermes kanban lane-model set team-seat-2/some-model --ttl 2h --reason "outage" --pin-reason "..."
+```
+
+Clearing an override is never gated. Surfaces that cannot pass a reason (the `kanban_create` tool, the dashboard dropdown) are refused for matching providers, so those pins go through the CLI. The list is empty by default, which leaves every route write unchanged.
+
 ### Cost strategy: frontier orchestrator, inexpensive workers
 
 Kanban's per-profile configs make the planner/worker cost split natural. Decomposing a project into well-scoped cards takes frontier-level judgment; executing a card that already carries a clear goal, context, and handoff evidence usually doesn't — and the workers are where the vast majority of tokens are spent, so the worker model is where the cost lives. Run your orchestrator/dispatcher profile on a frontier model and point worker profiles at inexpensive models. Each profile has its own `config.yaml` under `~/.hermes/profiles/<name>/`, and the dispatcher injects the profile-scoped `HERMES_HOME` when it spawns `hermes -p <assignee>`, so each worker reads its own profile's model settings:

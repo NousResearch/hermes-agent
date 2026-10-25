@@ -675,16 +675,26 @@ export function useComposerActions({
   )
 
   const pickImages = useCallback(async () => {
-    const paths = await selectDesktopPaths({
-      title: copy.attachImages,
-      defaultPath: currentCwd || undefined,
-      filters: [
-        {
-          name: t.composer.images,
-          extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff']
-        }
-      ]
-    })
+    let paths: string[]
+
+    try {
+      paths = await selectDesktopPaths({
+        title: copy.attachImages,
+        defaultPath: currentCwd || undefined,
+        filters: [
+          {
+            name: t.composer.images,
+            extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff']
+          }
+        ]
+      })
+    } catch (err) {
+      // The browser stages a pick before returning its path; a refused stage (an image over the
+      // upload limit) is reported here, not left as an unhandled rejection.
+      notifyError(err, copy.imageAttachFailed)
+
+      return
+    }
 
     if (!paths?.length) {
       return
@@ -693,7 +703,7 @@ export function useComposerActions({
     for (const path of paths) {
       await attachImagePath(path)
     }
-  }, [attachImagePath, copy.attachImages, currentCwd, t.composer.images])
+  }, [attachImagePath, copy.attachImages, copy.imageAttachFailed, currentCwd, t.composer.images])
 
   const pasteClipboardImage = useCallback(
     async ({ silent = false }: { silent?: boolean } = {}) => {

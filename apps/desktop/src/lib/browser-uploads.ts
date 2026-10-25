@@ -94,6 +94,13 @@ async function stageBrowserFile(
   profile: null | string,
   onStaged: OnStaged
 ): Promise<string> {
+  // The server refuses a larger file anyway, with a 413 that doesn't name the limit: say it here.
+  if (file.size > BROWSER_UPLOAD_MAX_BYTES) {
+    throw new Error(
+      `${file.name || 'The file'} is larger than ${BROWSER_UPLOAD_MAX_BYTES / (1024 * 1024)} MiB, the largest file the browser can attach.`
+    )
+  }
+
   const form = new FormData()
   form.append('file', file, file.name || 'attachment')
 

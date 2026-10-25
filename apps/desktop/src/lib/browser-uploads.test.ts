@@ -1,5 +1,8 @@
+import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { useComposerActions } from '@/app/chat/hooks/use-composer-actions'
+import { $notifications, clearNotifications } from '@/store/notifications'
 import { $connection } from '@/store/session'
 import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
 
@@ -7,6 +10,8 @@ import { installBrowserDesktopBridge } from './browser-desktop-bridge'
 import { BROWSER_UPLOAD_MAX_BYTES } from './browser-uploads'
 
 afterEach(() => {
+  cleanup()
+  clearNotifications()
   clearWebappSession()
   Reflect.deleteProperty(window, 'hermesDesktop')
   document.documentElement.removeAttribute('data-hermes-desktop-host')
@@ -52,5 +57,70 @@ describe('browser image paste size', () => {
       '/srv/hermes/cache/images/upload.png'
     )
     expect((fetchMock.mock.calls[0] as [URL])[0].pathname).toBe('/api/chat/image-upload')
+  })
+})
+
+describe('browser file stage size', () => {
+  // A picked or dropped file over the upload limit gets the server's 413 "Upload request is too large",
+  // which doesn't say what the limit is, and a refused image pick used to show nothing at all.
+  const tooLarge = (name: string, type: string) => new File([new Uint8Array(BROWSER_UPLOAD_MAX_BYTES + 1)], name, { type })
+  const limitMessage = (name: string) => `${name} is larger than 16 MiB, the largest file the browser can attach.`
+
+  async function installBrowser() {
+    seedWebappSession('served-token')
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), window.location.origin)
+
+      if (url.pathname === '/api/chat/file-upload') {
+        return new Response(JSON.stringify({ detail: 'Upload request is too large' }), { status: 413 })
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    vi.stubGlobal('fetch', fetchMock)
+    expect(installBrowserDesktopBridge()).toBe(true)
+    $connection.set(await window.hermesDesktop.getConnection('owner'))
+
+    const uploads = () => fetchMock.mock.calls.filter(([input]) => String(input).includes('/api/chat/file-upload'))
+
+    return { uploads }
+  }
+
+  const renderComposer = () =>
+    renderHook(() => useComposerActions({ activeSessionId: null, currentCwd: '/workspace', requestGateway: vi.fn() }))
+
+  it('refuses a picked image over the limit, names the limit, and uploads nothing', async () => {
+    const { uploads } = await installBrowser()
+    const { result } = renderComposer()
+
+    vi.spyOn(HTMLInputElement.prototype, 'click').mockImplementation(function (this: HTMLInputElement) {
+      Object.defineProperty(this, 'files', { configurable: true, value: [tooLarge('huge.png', 'image/png')] })
+      this.dispatchEvent(new Event('change'))
+    })
+
+    await act(async () => {
+      await result.current.pickImages()
+    })
+
+    expect(uploads()).toHaveLength(0)
+    expect($notifications.get()).toContainEqual(expect.objectContaining({ kind: 'error', message: limitMessage('huge.png') }))
+  })
+
+  it('names the limit when a dropped file over it cannot be attached', async () => {
+    const { uploads } = await installBrowser()
+    const { result } = renderComposer()
+    let attached = true
+
+    await act(async () => {
+      attached = await result.current.attachDroppedItems([{ file: tooLarge('huge.zip', 'application/zip'), path: '' }])
+    })
+
+    expect(attached).toBe(false)
+    expect(uploads()).toHaveLength(0)
+    expect($notifications.get()).toContainEqual(
+      expect.objectContaining({ kind: 'warning', message: `Could not attach huge.zip: ${limitMessage('huge.zip')}` })
+    )
   })
 })

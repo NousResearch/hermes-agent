@@ -58,10 +58,12 @@ try:  # sibling modules; support both package and flat plugin-dir import
     from .block_kit import render_blocks, sanitize_blocks
     from .adapter_slash_lane import SlashHandoffLanes
     from .adapter_slash_payload import slash_command_text, slash_thread_id
+    from .adapter_status import SlackTypingStatusMixin
 except ImportError:  # pragma: no cover - plugin loaded outside package context
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
     from adapter_slash_lane import SlashHandoffLanes  # type: ignore
     from adapter_slash_payload import slash_command_text, slash_thread_id  # type: ignore
+    from adapter_status import SlackTypingStatusMixin  # type: ignore
 
 
 logger = logging.getLogger(__name__)
@@ -1011,7 +1013,7 @@ def _extra_or_env_channel_set_getter(
     return getter
 
 
-class SlackAdapter(BasePlatformAdapter):
+class SlackAdapter(SlackTypingStatusMixin, BasePlatformAdapter):
     """Slack bot adapter (Socket Mode).
     Needs SLACK_BOT_TOKEN (xoxb-, API calls) and SLACK_APP_TOKEN (xapp-, Socket Mode). DMs +
     mention-gated channels, threads, attachments, slash commands, status text."""
@@ -1119,6 +1121,10 @@ class SlackAdapter(BasePlatformAdapter):
         # Active Assistant statuses by (team_id, channel_id, thread_ts) so cleanup
         # can't clear an overlapping Slack Connect workspace; evicted oldest-thread-first.
         self._active_status_threads: dict[tuple[str, str, str], dict[str, Any]] = {}
+        # Status heartbeat throttle state (same keys) and per-target clear dedup deadlines;
+        # both owned by ``adapter_status.SlackTypingStatusMixin``.
+        self._status_heartbeats: dict[tuple[str, str, str], dict[str, Any]] = {}
+        self._status_clears: dict[tuple[str, str, str], float] = {}
         # Native progress streams; each owns a lock so concurrent start/append/stop
         # can't create duplicates or append after finalization.
         self._native_task_card_streams: dict[tuple[str, str, str], _NativeTaskCardStream] = {}
@@ -2722,127 +2728,6 @@ class SlackAdapter(BasePlatformAdapter):
             return None
         await self.stop_typing(chat_id, metadata)
         return SendResult(success=True, message_id=ts)
-
-    async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """Show a thread status via assistant.threads.setStatus.
-        Needs assistant:write or chat:write scope; auto-clears on reply."""
-        if self._suppressed_ignored(chat_id, "typing/status in", level=logging.DEBUG):
-            return
-        if not self._app:
-            return
-        thread_ts = None
-        if metadata:
-            # Same synthetic-thread guard as sending: with reply_in_thread=false thread_id is the
-            # message's own ts, and setStatus on it would open an assistant thread prematurely.
-            thread_ts = self._resolve_thread_ts(
-                reply_to=metadata.get("message_id"), metadata=metadata)
-        if not thread_ts:
-            return  # Can only set status in a thread context
-        team_id = self._metadata_team_id(metadata) or self._channel_team.get(chat_id, "")
-        status_key = self._workspace_thread_key(team_id, chat_id, str(thread_ts))
-        _status_started: Optional[float] = None
-        if status_key:
-            # Keep the first start time across _keep_typing refreshes so long turns show elapsed
-            # time; stored in the status entry so it shares eviction/stop_typing cleanup.
-            # Heartbeat (#45702): preserve the first refresh's start time across _keep_typing refreshes so a
-            # long turn surfaces elapsed time ("still working… (2m03s)") instead of a static "is
-            # thinking..." that reads as stuck — which is what provokes mid-turn "you there?" pings. Stored
-            # inside the tracked status entry so it shares the existing bounds/eviction and is dropped by
-            # stop_typing with the rest of the status state.
-            _prev_entry = self._active_status_threads.get(status_key)
-            if isinstance(_prev_entry, dict):
-                _status_started = _prev_entry.get("started")
-            if not isinstance(_status_started, (int, float)):
-                _status_started = time.monotonic()
-            self._active_status_threads[status_key] = {
-                "thread_ts": str(thread_ts), "team_id": str(team_id) if team_id else "",
-                "started": _status_started}
-            # Evict oldest-thread-first (key[2] is the thread ts) so the newest survives.
-            self._evict_oldest_by_ts(
-                self._active_status_threads, self._ACTIVE_STATUS_THREADS_MAX, lambda k: k[2])
-        # May lack assistant:write scope or assistant context; reactions still work.
-        _status = getattr(self, "_status_text", {}).get(str(chat_id)) or getattr(
-            self.config, "typing_status_text", None)
-        _status = _status or self._default_status_text(_status_started)
-        await self._set_thread_status(chat_id, team_id, thread_ts, _status, "failed")
-
-    async def _set_thread_status(
-        self, chat_id: str, team_id: str, thread_ts: str, status: str, fail_label: str) -> None:
-        """Set/clear the thread status line; failures are debug-logged.
-
-        The endpoint is chosen first, then the payload. ``agents.sessions.setStatus``
-        (slack-sdk >= 3.44.0, the only API that works in Slack session channels) takes
-        lifecycle values: any non-empty status is ``processing``, an empty clear is
-        ``active``. ``assistant.threads.setStatus`` takes the free text / ``""`` clear.
-        When the sessions API rejects the call (no session scope, session-less channel)
-        the legacy endpoint is tried once with the original text.
-        """
-        client = self._get_client(chat_id, team_id=team_id)
-        set_status, uses_sessions = _session_status_method(client)
-        payload = ("processing" if status else "active") if uses_sessions else status
-        try:
-            await set_status(channel_id=chat_id, thread_ts=thread_ts, status=payload)
-        except Exception as e:
-            if not uses_sessions:
-                logger.debug("[Slack] assistant.threads.setStatus %s: %s", fail_label, e,
-                             exc_info=True)
-                return
-            try:
-                await client.assistant_threads_setStatus(
-                    channel_id=chat_id, thread_ts=thread_ts, status=status)
-            except Exception as e2:
-                logger.debug("[Slack] assistant.threads.setStatus %s: %s (agents.sessions: %s)",
-                             fail_label, e2, e, exc_info=True)
-
-    @staticmethod
-    def _default_status_text(started: Optional[float]) -> str:
-        """Fallback status label: after 30s show elapsed progress so long turns don't read
-        as stuck (live-status phrases and ``typing_status_text`` always win over this)."""
-        elapsed = int(time.monotonic() - started) if started is not None else 0
-        if elapsed < 30:
-            return t("platform.slack.status.thinking")
-        mins, secs = divmod(elapsed, 60)
-        return t("platform.slack.status.still_working",
-                 elapsed=f"{mins}m{secs:02d}s" if mins else f"{secs}s")
-
-    async def stop_typing(self, chat_id: str, metadata=None) -> None:
-        """Clear the assistant thread status indicator."""
-        if self._suppressed_ignored(chat_id, "status clear in", level=logging.DEBUG):
-            self._active_status_threads.pop(chat_id, None)
-            return
-        if not self._app:
-            return
-        requested_thread_ts = ""
-        if metadata:
-            requested_thread_ts = str(metadata.get("thread_id") or metadata.get("thread_ts") or "")
-        requested_team_id = self._metadata_team_id(metadata)
-        active = None
-        ambiguous_tracked = False
-        if requested_thread_ts and requested_team_id:
-            active_key = self._workspace_thread_key(requested_team_id, chat_id, requested_thread_ts)
-            if active_key:
-                active = self._active_status_threads.pop(active_key, None)
-        else:
-            # Slack Connect workspaces can share a channel ID, so a team-less clear
-            # only pops a UNIQUE tracked match for this channel (+ thread when given).
-            matching_keys = [
-                key
-                for key in self._active_status_threads
-                if key[1] == str(chat_id)
-                and (not requested_thread_ts or key[2] == requested_thread_ts)]
-            if len(matching_keys) == 1:
-                active = self._active_status_threads.pop(matching_keys[0], None)
-            ambiguous_tracked = bool(requested_thread_ts) and len(matching_keys) > 1
-        active = active or {}
-        thread_ts = active.get("thread_ts", "")
-        team_id = requested_team_id or active.get("team_id", "")
-        if not thread_ts and requested_thread_ts and not ambiguous_tracked:
-            # Untracked (restart/eviction) but the caller named the exact thread: clear anyway so
-            # a stuck status is always dismissable; skipped when several workspaces track it.
-            thread_ts = requested_thread_ts
-        if not thread_ts:
-            return
-        await self._set_thread_status(chat_id, team_id, thread_ts, "", "clear failed")
 
     def _dm_top_level_threads_as_sessions(self) -> bool:
         """Each top-level DM reply thread is its own session (default True; set

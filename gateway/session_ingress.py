@@ -409,7 +409,7 @@ async def deliver_response(adapter, event, session_key, response):
     if not text:
         return
     extracted = await adapter._extract_response_content(text, event, session_key, is_ephemeral_response=ttl > 0)
-    metadata = _mark_notify_metadata(_thread_metadata_for_event(event))
+    metadata = _mark_notify_metadata(_thread_metadata_for_event(event, session_key))
     results = []
     if extracted.text_content:
         await adapter._send_final_text(event, session_key, extracted.text_content,
@@ -446,7 +446,7 @@ async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):
             if not accepted.done():
                 raise  # nothing was queued: the receive loop sees the failure as before
             logger.error('[%s] Queued busy follow-up failed: %s', adapter.name, exc, exc_info=True)
-            await adapter._notify_turn_error(delivery_event, exc)
+            await adapter._notify_turn_error(delivery_event, exc, session_key)
         finally:
             # Clears the marker if no ledgered send did, then wakes the drain's bounded wait,
             # which listens on the adopter (``event``).

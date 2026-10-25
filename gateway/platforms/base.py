@@ -20,6 +20,7 @@ import weakref
 from abc import ABC, abstractmethod
 from hermes_dir_acl import make_user_dir, unusable_dir_remedy
 from gateway.platforms.base_log_safety import safe_url_for_log
+from gateway.platforms.base_status_anchor import with_status_anchor
 
 from utils import normalize_proxy_url
 from agent.i18n import t
@@ -114,7 +115,7 @@ DEFAULT_BUSY_TEXT_DEBOUNCE_SECONDS = 0.35
 DEFAULT_BUSY_TEXT_HARD_CAP_SECONDS = 1.0
 
 
-def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) -> dict | None:
+def _thread_metadata_for_source(source, reply_to_message_id: str | None = None, owner: str | None = None) -> dict | None:
     """Platform-aware thread metadata for adapter sends. Telegram DM topics route with
     ``message_thread_id`` + a reply anchor; anchorless synthetic/resumed sends fall back to
     ``direct_messages_topic_id`` when supported."""
@@ -127,7 +128,7 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     if scope_id:
         metadata["slack_team_id"] = str(scope_id)
     if not metadata:
-        return None
+        return with_status_anchor(None, reply_to_message_id, owner)
     if platform == "telegram" and getattr(source, "chat_type", None) == "dm":
         metadata["telegram_dm_topic_reply_fallback"] = True
         if str(thread_id) not in {"", "1"}:
@@ -140,19 +141,17 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     profile = str(getattr(source, "profile", None) or "").strip()
     if profile:
         metadata["hermes_profile"] = profile
-    return metadata
+    return with_status_anchor(metadata, reply_to_message_id, owner)
 
 
-def _thread_metadata_for_event(event) -> dict | None:
-    """``_thread_metadata_for_source`` for an event, anchored on its reply id."""
-    return _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+def _thread_metadata_for_event(event, owner: str | None = None) -> dict | None:
+    """``_thread_metadata_for_source`` for an event, anchored on its reply id (owned by session ``owner``)."""
+    return _thread_metadata_for_source(event.source, _reply_anchor_for_event(event), owner)
 
 
 def _mark_notify_metadata(metadata: dict | None) -> dict:
     """Clone metadata and mark a user-visible reply as notify-worthy."""
-    notify_metadata = dict(metadata) if metadata else {}
-    notify_metadata["notify"] = True
-    return notify_metadata
+    return {**(metadata or {}), "notify": True}
 
 
 def _reply_anchor_for_event(event) -> str | None:
@@ -4340,12 +4339,12 @@ class BasePlatformAdapter(ABC):
         if ephemeral_ttl and ephemeral_ttl > 0 and result.success and result.message_id:
             delivery_adapter._schedule_ephemeral_delete(event.source.chat_id, result.message_id, ephemeral_ttl)
 
-    async def _notify_turn_error(self, event: MessageEvent, e: BaseException) -> Optional[dict]:
+    async def _notify_turn_error(self, event: MessageEvent, e: BaseException, session_key: Optional[str] = None) -> Optional[dict]:
         """Tell the user a turn failed rather than leaving radio silence (last resort:
         a failing notice is logged, never raised). Returns the thread metadata used."""
         _thread_metadata = None
         try:
-            _thread_metadata = _thread_metadata_for_event(event)
+            _thread_metadata = _thread_metadata_for_event(event, session_key)
             error_detail = str(e)[:300] if str(e) else t("gateway.notify.turn_error_no_details")
             # Only the policy reads bind the routed profile; the send stays in the launch scope
             # as before, so delivery bookkeeping keeps landing where boot-time recovery reads it.
@@ -4493,7 +4492,7 @@ class BasePlatformAdapter(ABC):
         # Reuse the interrupt event handle_message() installed; new Event only if removed externally.
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
-        _thread_metadata = _thread_metadata_for_event(event)
+        _thread_metadata = _thread_metadata_for_event(event, session_key)
         typing_task = self._start_typing_refresh(event, interrupt_event, _thread_metadata)
         try:
             await self._run_processing_hook("on_processing_start", event)
@@ -4588,7 +4587,7 @@ class BasePlatformAdapter(ABC):
         except BaseException as e:
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
-            _thread_metadata = (await self._notify_turn_error(event, e)) or _thread_metadata
+            _thread_metadata = (await self._notify_turn_error(event, e, session_key)) or _thread_metadata
             # SystemExit/KeyboardInterrupt propagate; other BaseExceptions are contained.
             if isinstance(e, (SystemExit, KeyboardInterrupt)):
                 raise

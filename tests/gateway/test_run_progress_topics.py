@@ -583,10 +583,9 @@ async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch
 
     assert result["final_response"] == "done"
     assert adapter.sent
-    expected_metadata = {
-        "thread_id": "1234567890.000001",
-        "message_id": "1234567890.000001",
-    }
+    expected_metadata = {"thread_id": "1234567890.000001", "message_id": "1234567890.000001",
+                         "status_anchor_message_id": "1234567890.000001",
+                         "status_owner_key": "agent:main:slack:dm:D123"}
     assert adapter.sent[0]["metadata"] == expected_metadata
     assert all(call["metadata"] == expected_metadata for call in adapter.typing)
 

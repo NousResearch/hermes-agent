@@ -2209,6 +2209,7 @@ from gateway.platforms.base import (
     _reply_anchor_for_event,
     _terminal_sentinel_start,
 )
+from gateway.platforms.base_status_anchor import with_status_anchor
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT,
@@ -3886,9 +3887,7 @@ class GatewayRunner(
             getattr(source, "thread_id", None), chat_type=getattr(source, "chat_type", None),
             reply_to_message_id=reply_to_message_id or getattr(source, "message_id", None))
         if getattr(source, "platform", None) == Platform.SLACK:
-            # Per-turn egress identity: Slack chat.startStream needs recipient_user_id/team_id; the relay
-            # adapter's _with_scope fallback reads per-chat caches a CONCURRENT turn overwrites.
-            # Slack's chat.startStream requires recipient_user_id (+ recipient_team_id) when streaming to a
+            # Per-turn egress identity. Slack's chat.startStream requires recipient_user_id (+ recipient_team_id) when streaming to a
             # channel, and the relay connector fills those from metadata.user_id / metadata.scope_id. The
             # relay adapter's _with_scope fallback resolves BOTH from per-chat caches keyed only by chat_id
             # — mutable state that a CONCURRENT turn overwrites: two users with overlapping turns in one
@@ -3914,7 +3913,8 @@ class GatewayRunner(
         if profile and metadata is not None:
             metadata = dict(metadata)
             metadata["hermes_profile"] = profile
-        return metadata
+        owner = self._resolve_session_key_or_none(source, None) if reply_to_message_id else None
+        return with_status_anchor(metadata, reply_to_message_id, owner)
 
     def _thread_metadata_for_target(
         self, platform: Optional[Platform], chat_id: Optional[str], thread_id: Optional[str], *,

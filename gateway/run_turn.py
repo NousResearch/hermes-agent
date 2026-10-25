@@ -24,6 +24,7 @@ from contextvars import copy_context
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
+from gateway.platforms.base_status_anchor import with_status_anchor
 from gateway.platforms.event import MessageEvent
 from gateway.response_filters import (
     display_kind_for_event, display_metadata_for_event, is_machinery_display_kind, reply_expected_metadata,
@@ -1187,11 +1188,10 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         else:
             metadata = self._thread_metadata_for_target(
                 source.platform, source.chat_id, _progress_thread_id,
-                chat_type=getattr(source, "chat_type", None), reply_to_message_id=event_message_id,
-            )
+                chat_type=getattr(source, "chat_type", None), reply_to_message_id=event_message_id)
         if metadata is None and _relay_prospective_thread_id:
             metadata = {"reply_to_message_id": event_message_id}
-        return metadata
+        return with_status_anchor(metadata, event_message_id, event_message_id and self._resolve_session_key_or_none(source, None))
 
     def _run_agent_progress_threading(
         self, source: SessionSource, event_message_id: Optional[str], _native_slack_task_cards: bool

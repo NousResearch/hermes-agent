@@ -114,8 +114,14 @@ These hooks frame the user turn, not individual provider API attempts:
 
 | Hook | When it fires |
 | --- | --- |
+| `pre_turn` | Once per user turn, before the turn context is built. |
 | `pre_llm_call` | Before the tool loop begins for a user turn. |
 | `post_llm_call` | After the turn completes with final assistant output. |
+
+`pre_turn` fields are `agent` (the live agent object for this turn), `user_message`,
+and `task_id`. It is the earliest point in a turn, so it is where a plugin reads or
+updates agent state that the context build and the model call then use. Its return
+values are ignored: an observer cannot replace the turn's result.
 
 Common `pre_llm_call` fields include `session_id`, `turn_id`,
 `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`,

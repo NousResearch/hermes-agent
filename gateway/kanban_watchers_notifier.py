@@ -683,7 +683,11 @@ class _KanbanNotification:
         _send_res = None
         async def send_ping():
             nonlocal _send_res
-            _send_res = await adapter.send(sub["chat_id"], msg, metadata=metadata)
+            if self.platform_str == "local":
+                _send_res = await adapter.send_notification(
+                    sub["chat_id"], msg, notice_key=f"kanban:{self.board_slug}:{self.task_id}:{ev.id}")
+            else:
+                _send_res = await adapter.send(sub["chat_id"], msg, metadata=metadata)
         if not await present_notification(send_ping, platform=self.platform_str, diagnostic=diagnostic_event(ev)):
             return False
         # SendResult(success=False) without an exception is a FAILED delivery
@@ -713,6 +717,10 @@ class _KanbanNotification:
         for ev in self.d["events"]:
             msg = self.format_event(ev)
             if msg is None:
+                continue
+            # Local turns already stream their answer to viewers. A second sticky ping would
+            # duplicate it; passive-only and bookkeeping events still publish explicit notices.
+            if self.platform_str == "local" and self.wake_agent and ev.kind in _WAKE_KINDS:
                 continue
             # Non-push adapters (api_server) always report SendResult(success=False)
             # from send(); treating that as failure would drop the sub forever and

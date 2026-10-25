@@ -391,6 +391,37 @@ mode, including supporting-file writes/removals and skill deletion. Staged write
 awaiting approval and rolled-back batches are not reported as completed changes.
 Batch summaries use the applied results rather than assuming requested writes ran.
 
+## Recall indicator (`display.recall_notifications`)
+
+When a memory provider injects facts at the start of a turn, Hermes posts a
+model-independent status line so you can see that memory was used:
+
+```
+🧠 Holographic — recalled 1 memory
+```
+
+That line is not a background-review notice. `display.memory_notifications`
+does not gate it, and `display.tool_progress` does not either. On Slack it is a
+permanent thread message (`chat.postMessage`), not an editable progress bubble.
+
+```yaml
+display:
+  recall_notifications: on    # off | on (default)
+  platforms:
+    slack:
+      recall_notifications: off   # shared channels: drop the line here only
+```
+
+| Value | Behaviour |
+|-------|-----------|
+| `on` (default) | Post the recall line on gateway chat surfaces. |
+| `off` | Do not post it. Recall still runs and the facts are still injected. |
+
+A platform override wins over the global key. Programmatic surfaces (`local`,
+`api_server`, `webhook`) keep the raw line either way. The gateway reads this
+on each status, so a config change applies on the next turn without a restart
+once the build that honors the key is running.
+
 ## Running the review on a cheaper model (`auxiliary.background_review`)
 
 The review runs on your **main chat model** by default, replaying the

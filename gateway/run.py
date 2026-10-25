@@ -341,6 +341,33 @@ _COMPRESSION_PROGRESS_STATUS_RE = re.compile(
     re.IGNORECASE)
 
 
+# MemoryManager.describe_recall() join. Em dash is the formatter's separator.
+# "memory"/"memories" are not the same stem, so memories? would miss the singular.
+# Do not widen this to bare "recalled" prose.
+_RECALL_INDICATOR_RE = re.compile("— recalled (?:[0-9]+ memor(?:y|ies)|relevant memory)")
+
+
+def _gateway_recall_notifications_enabled(platform: Any) -> bool:
+    """True when chat should post the memory-provider recall indicator.
+
+    ``display.recall_notifications`` and ``display.platforms.<platform>.recall_notifications``
+    (``on`` default). ``off`` drops ``describe_recall()`` lines before they become permanent
+    chat messages. Read live so a config edit applies at the next status. Fail-open: a config
+    read error keeps the line visible, which is today's behavior.
+    """
+    try:
+        from gateway.display_config import resolve_display_setting
+        config = _load_gateway_config()
+        if not isinstance(config, dict):
+            return True
+        value = resolve_display_setting(
+            config, _gateway_platform_value(platform), "recall_notifications", fallback="on",
+        )
+        return str(value).strip().lower() != "off"
+    except Exception:
+        return True
+
+
 def _gateway_compression_progress_notices_enabled() -> bool:
     """True when ``compression.progress_notices`` is on (default False: chat is silent by design).
 
@@ -731,6 +758,10 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
         return text
 
     text = _redact_gateway_user_facing_secrets(text)
+    # Recall indicator is a lifecycle status, not a tool step and not a review-write notice.
+    # memory_notifications does not gate it. Default on; per-platform off drops the permanent chat line.
+    if _RECALL_INDICATOR_RE.search(text) and not _gateway_recall_notifications_enabled(platform):
+        return None
     # Opt-in `compression.progress_notices` lets ROUTINE (template-derived) progress through; other noise stays.
     if _TELEGRAM_NOISY_STATUS_RE.search(text) and not (
         _gateway_compression_progress_notices_enabled() and _COMPRESSION_PROGRESS_STATUS_RE.search(text)

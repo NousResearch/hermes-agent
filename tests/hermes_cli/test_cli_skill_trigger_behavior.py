@@ -167,6 +167,26 @@ def test_auto_triggers_false_stops_matching_but_explicit_slash_skill_still_loads
     assert _loaded(_send("What is the market doing today?"), "MARKET-BODY")
 
 
+@pytest.mark.parametrize("skills_config,auto_loads", [
+    ('skills:\n  auto_triggers: "false"\n', False),
+    ('skills:\n  auto_triggers: "off"\n', False),
+    ('skills:\n  auto_triggers: "0"\n', False),
+    ('skills:\n  auto_triggers: "true"\n', True),
+    ("skills: {}\n", True),  # unset
+], ids=["quoted-false", "quoted-off", "quoted-0", "quoted-true", "unset"])
+def test_quoted_auto_triggers_values_are_read_as_booleans(skills_dir, skills_config, auto_loads):
+    _write_skill(skills_dir, "market-watch", "metadata:\n  hermes:\n    triggers: [market]\n", "MARKET-BODY")
+    _write_config(skills_config)
+
+    message = "What is the market doing today?"
+    kwargs = _send(message)
+    if auto_loads:
+        assert _loaded(kwargs, "MARKET-BODY")
+    else:
+        assert kwargs["user_message"] == message
+        assert kwargs["persist_user_message"] is None
+
+
 # (d) transcript keeps the user's text; the model gets (and is resent) the skill ---------------
 
 def test_transcript_keeps_user_text_while_the_expansion_is_sent_and_replayed(skills_dir):

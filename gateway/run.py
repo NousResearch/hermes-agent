@@ -3367,6 +3367,8 @@ class GatewayRunner(
     _restart_command_source: Optional[SessionSource] = None
     _stop_task: Optional[asyncio.Task] = None
     _restart_task: Optional[asyncio.Task] = None
+    # Armed pre-announced restart (gateway/scheduled_restart.py::ScheduledRestart).
+    _scheduled_restart: Optional[Any] = None
     _profile_failed_platforms: Optional[dict[str, dict[Platform, asyncio.Task]]] = None
     _systemd_watchdog: Optional[Any] = None
     _startup_restore_in_progress: bool = False

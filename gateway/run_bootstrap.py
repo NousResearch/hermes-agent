@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from pathlib import Path
@@ -268,6 +269,71 @@ def _start_gateway_claim_pid_file(force: bool = False) -> bool:
     return True
 
 
+def _schedule_restart_handler(runner, main_loop):
+    """Control-socket ``schedule-restart``: arm a pre-announced restart (#135051).
+
+    Runs on the socket executor thread, so marshal onto the loop and wait
+    briefly, exactly like the ``pause-for-update`` handler.
+    """
+    def handler(params: dict) -> dict:
+        try:
+            when_raw = params.get("when")
+            reason = str(params.get("reason") or "").strip()
+        except Exception:
+            return {"accepted": False, "error": "invalid_params"}
+        if when_raw is None:
+            return {"accepted": False, "error": "missing_when"}
+        wall_time = None
+        if not isinstance(when_raw, str):
+            try:
+                wall_time = float(when_raw)
+            except (TypeError, ValueError):
+                wall_time = None
+        if wall_time is None:
+            from gateway.scheduled_restart import parse_wallclock_string
+            wall_time = parse_wallclock_string(str(when_raw))
+        if wall_time is None:
+            return {"accepted": False, "error": "unparseable_when", "when": str(when_raw)}
+        accepted_box: list[dict] = []
+        done = threading.Event()
+
+        def _arm() -> None:
+            try:
+                accepted_box.append(runner.schedule_restart(wall_time, reason))
+            finally:
+                done.set()
+
+        main_loop.call_soon_threadsafe(_arm)
+        done.wait(timeout=5.0)
+        result = dict(accepted_box[0]) if accepted_box else {"accepted": False, "error": "no_ack"}
+        result["pid"] = os.getpid()
+        return result
+
+    return handler
+
+
+def _cancel_restart_handler(runner, main_loop):
+    """Control-socket ``cancel-restart``: cancel an armed restart (#135051)."""
+    def handler(params: dict) -> dict:
+        accepted_box: list[dict] = []
+        done = threading.Event()
+
+        def _cancel() -> None:
+            try:
+                accepted_box.append(runner.cancel_scheduled_restart())
+            finally:
+                done.set()
+
+        main_loop.call_soon_threadsafe(_cancel)
+        done.wait(timeout=5.0)
+        result: dict[str, Any] = (dict(accepted_box[0]) if accepted_box
+                                  else {"cancelled": False, "had_scheduled": False})
+        result["pid"] = os.getpid()
+        return result
+
+    return handler
+
+
 async def _start_gateway_start_control_socket(runner):
     """Start the gateway control socket (identify/status/pause-for-update); None when unavailable."""
     from gateway.run import (asyncio, logger, os, threading)
@@ -360,6 +426,9 @@ async def _start_gateway_start_control_socket(runner):
                            "purge-profile-identity": purge_profile_identity_verb(runner),
                            # `hermes gateway stop/restart` refuse while this names live work.
                            "active-work": active_work_verb(runner, _main_loop),
+                           # `hermes gateway restart --in/--at/--cancel` (issue #135051).
+                           "schedule-restart": _schedule_restart_handler(runner, _main_loop),
+                           "cancel-restart": _cancel_restart_handler(runner, _main_loop),
                            # A plugin installed/enabled by another process loads now and re-wires the
                            # live adapters' handlers (#87770); tools/prompt still wait for the next session.
                            "reload-plugins": reload_plugins_verb(runner, _main_loop)})

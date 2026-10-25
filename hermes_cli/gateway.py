@@ -5452,6 +5452,66 @@ def _restart_all_as_host(owner, system: bool, detach: bool = False, owe_online_n
 
 
 def _cmd_restart(args):
+    # A scheduled restart is an in-band request to the live gateway: do not run
+    # the normal lifecycle guards, reap or service-manager restart path now.
+    delay_raw = getattr(args, "in", None)
+    at_raw = getattr(args, "at", None)
+    cancel = bool(getattr(args, "cancel", False))
+    schedule_args = int(bool(delay_raw)) + int(bool(at_raw)) + int(cancel)
+    if schedule_args > 1:
+        print("✗ Use exactly one of --in, --at, or --cancel.", file=sys.stderr)
+        raise SystemExit(2)
+    if schedule_args:
+        from gateway.control_socket import cancel_gateway_restart, schedule_gateway_restart
+        from gateway.scheduled_restart import (
+            MIN_SCHEDULED_LEAD_SECONDS, format_countdown, format_wallclock, parse_wallclock_string,
+        )
+        home = get_hermes_home()
+        if cancel:
+            result = cancel_gateway_restart(home)
+            if result is None:
+                print("✗ Running gateway does not support scheduled restart cancellation.", file=sys.stderr)
+                raise SystemExit(1)
+            if result.get("cancelled"):
+                print("✓ Scheduled gateway restart cancelled; users were notified.")
+                return
+            print("No scheduled gateway restart is pending.")
+            return
+        if delay_raw:
+            from hermes_cli.heartbeat import parse_interval
+            seconds = parse_interval(str(delay_raw))
+            # heartbeat's parser deliberately enforces a 60s floor; scheduled
+            # restarts allow a smaller (but still non-racy) 5s floor for tests
+            # and local maintenance.
+            if seconds == -1:
+                import re
+                match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([smhd])\s*", str(delay_raw), re.IGNORECASE)
+                factors = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+                seconds = int(float(match.group(1)) * factors[match.group(2).lower()]) if match else None
+            if seconds is None or seconds < MIN_SCHEDULED_LEAD_SECONDS:
+                print(f"✗ Invalid --in value {delay_raw!r}; use at least {int(MIN_SCHEDULED_LEAD_SECONDS)}s "
+                      "(examples: 10m, 90s, 2h).", file=sys.stderr)
+                raise SystemExit(2)
+            when = time.time() + seconds
+        else:
+            when = parse_wallclock_string(str(at_raw))
+            if when is None:
+                print(f"✗ Invalid --at value {at_raw!r}; use HH:MM, ISO-8601, or epoch seconds.", file=sys.stderr)
+                raise SystemExit(2)
+        result = schedule_gateway_restart(home, when, getattr(args, "reason", ""))
+        if result is None:
+            print("✗ Running gateway does not support scheduled restarts; update it or restart immediately.",
+                  file=sys.stderr)
+            raise SystemExit(1)
+        if not result.get("accepted"):
+            error = result.get("error", "refused")
+            print(f"✗ Scheduled restart refused: {error}.", file=sys.stderr)
+            raise SystemExit(1)
+        lead = float(result.get("lead_seconds", max(when - time.time(), 0.0)))
+        print(f"✓ Gateway restart scheduled for {format_wallclock(float(result['scheduled_for']))} "
+              f"(in {format_countdown(lead)}); users were notified.")
+        return
+
     _refuse_from_inside_gateway("restart", "restart loops")
     from hermes_cli.gateway_profile_lifecycle import profile_lifecycle
     if profile_lifecycle("restart", args):

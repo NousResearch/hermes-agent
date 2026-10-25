@@ -574,3 +574,23 @@ def reload_gateway_plugins(home: Path, *, profile_home: Optional[Path] = None,
     session; only handlers go live."""
     params = {"home": str(profile_home or home)}
     return query_gateway_control(home, "reload-plugins", params=params, timeout=timeout)
+
+
+def schedule_gateway_restart(home: Path, when: float, reason: str = "", *,
+                             timeout: float = 5.0) -> Optional[dict[str, Any]]:
+    """Ask the gateway serving ``home`` to arm a pre-announced restart at ``when`` (epoch).
+
+    Returns ``{"accepted": True, "scheduled_for", "lead_seconds", "reason"}`` or a refusal
+    (``already_stopping`` / ``lead_too_short`` / ``lead_too_long``), or None when no gateway
+    answers / it predates the verb — the caller then falls back to an immediate restart hint.
+    """
+    return query_gateway_control(home, "schedule-restart",
+                                 params={"when": when, "reason": reason}, timeout=timeout)
+
+
+def cancel_gateway_restart(home: Path, *, timeout: float = 5.0) -> Optional[dict[str, Any]]:
+    """Ask the gateway serving ``home`` to cancel an armed restart (``shutdown -c`` equivalent).
+
+    Returns ``{"cancelled": bool, "had_scheduled": bool}`` or None when no gateway answers.
+    """
+    return query_gateway_control(home, "cancel-restart", params={}, timeout=timeout)

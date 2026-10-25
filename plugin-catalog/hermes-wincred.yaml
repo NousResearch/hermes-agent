@@ -1,12 +1,13 @@
 name: hermes-wincred
-repo: https://github.com/Yicheng-Mark/hermes-wincred
-sha: 0855e07b23105e7f93c99b1474e56cbdd4a6c691
+repo: https://github.com/Yicheng-Mark/hermes-windows-plugins
+sha: 7e919c5aaf74cb424164b5603a95ce302e2f6bc5
+subdir: wincred
 description: "Resolve Hermes environment variables from the current user's Windows Credential Manager at startup, instead of keeping provider keys in plaintext in .env or auth.json. Config is secrets.wincred.map, an ENV_VAR -> generic-credential-target mapping (bare names or wincred:// names); each value is read with CredReadW in the current user's vault and handed to the secret-source orchestrator, which applies it with the usual precedence, provenance and conflict rules. Values may be UTF-8 or UTF-16LE (cmdkey and the Credential UI write UTF-16); anything that does not decode to text, or that contains interior NULs, is skipped with a warning instead of being injected as a mangled key. Disclosure - this source reads your Windows Credential Manager: only the generic credentials named in the map, with no enumeration of the vault. Resolved values become environment variables of the Hermes process and its children, exactly like .env entries, so anything that can read that environment can see them. The package is read-only and stdlib-only (ctypes): it never creates, updates or deletes credentials, writes no files, starts no subprocesses, makes no network calls and does not self-update. Windows only. Credential Manager is user-scoped, so this raises the at-rest bar for backups, cloud sync and dotfiles; it is not a boundary against code already running as the same user. Applying fetched values stays the orchestrator's job; the plugin never writes os.environ itself. Disclosure — when enabled, reads only the Windows Credential Manager generic credentials named in secrets.wincred.map (no vault enumeration) and injects them as environment variables of the Hermes process and its children, exactly like .env entries; read-only, stdlib ctypes, no subprocesses, no network, no file writes; user-scoped at-rest protection, not a boundary against code already running as the same user."
 maintainer: Yicheng-Mark
 tier: community
 category: tools
 requires_hermes: ">=0.21.4"
-docs_url: https://github.com/Yicheng-Mark/hermes-wincred#readme
+docs_url: https://github.com/Yicheng-Mark/hermes-windows-plugins/tree/7e919c5aaf74cb424164b5603a95ce302e2f6bc5/wincred
 version: "0.1.0"
 platforms:
 - windows

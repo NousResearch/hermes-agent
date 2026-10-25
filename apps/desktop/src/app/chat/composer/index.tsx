@@ -105,7 +105,6 @@ import { useComposerScope, useComposerSurfaceId } from './scope'
 import { ComposerStatusStack } from './status-stack'
 import { CodingStatusRow } from './status-stack/coding-row'
 import { StatusDrawerContent, StatusDrawerToggle } from './status-stack/drawer'
-import { SuggestionPills } from './suggestion-pills'
 import { extractClipboardImageBlobs, openDirectiveScope } from './text-utils'
 import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
@@ -119,6 +118,19 @@ import {
   selectionLinkLabel
 } from './url-refs'
 import { VoiceActivity, VoicePlaybackActivity } from './voice-activity'
+
+/** Grid areas for the menu / input / controls row: one row when roomy, input
+ *  above menu + controls when stacked, and one area per row once two touch-size
+ *  controls no longer fit side by side. */
+function controlRowGridClass(singleColumn: boolean, stacked: boolean): string {
+  if (singleColumn) {
+    return 'grid-cols-[minmax(0,1fr)] gap-(--composer-row-gap) [grid-template-areas:"input"_"menu"_"controls"]'
+  }
+
+  return stacked
+    ? 'grid-cols-[auto_1fr] gap-(--composer-row-gap) [grid-template-areas:"input_input"_"menu_controls"]'
+    : 'grid-cols-[auto_1fr_auto] items-center gap-(--composer-control-gap) [grid-template-areas:"menu_input_controls"]'
+}
 
 export function ChatBar({
   busy,
@@ -391,7 +403,7 @@ export function ChatBar({
     return onCancel()
   }, [activeQueueSessionKeyRef, onCancel])
 
-  const { compactPill, foldVoice, minimal, stacked } = useComposerMetrics({
+  const { compactPill, foldVoice, minimal, stacked, singleColumn } = useComposerMetrics({
     composerDockRef,
     composerRef,
     composerSurfaceRef,
@@ -1144,7 +1156,11 @@ export function ChatBar({
       hideModelPill={guidedChat}
       minimal={minimal || chatOnboardingSolo}
       onDictate={dictate}
-      onQueue={queueDraft}
+      onQueue={() => {
+        // Queueing clears the draft too, so the list over it closes with it.
+        closeTrigger()
+        queueDraft()
+      }}
       onSteer={canSteer ? () => steerDraft('steer') : undefined}
       onToggleAutoSpeak={handleToggleAutoSpeak}
       state={state}
@@ -1300,7 +1316,6 @@ export function ChatBar({
               and share one left edge with it. */}
           <div className={cn(composerFloatingStrip, 'px-[5px] pb-1.5 empty:hidden')}>
             <ActionBadges sessionId={statusSessionId} />
-            <SuggestionPills sessionId={statusSessionId} />
             <PreparedImageRecovery
               occupied={hasText || attachments.length > 0 || busy || disabled}
               onRestore={(text, restored, id) => {
@@ -1394,6 +1409,9 @@ export function ChatBar({
                 return
               }
 
+              // The send clears the text an open completion list was built
+              // from; a list left open would take the next Enter or Tab.
+              closeTrigger()
               submitDraft()
             }}
             ref={composerRef}
@@ -1496,14 +1514,7 @@ export function ChatBar({
                   <VoicePlaybackActivity />
                   {queueEdit && editingQueuedPrompt && <QueuedEditBanner onExit={exitQueuedEdit} />}
                   {attachments.length > 0 && <AttachmentList attachments={attachments} onRemove={onRemoveAttachment} />}
-                  <div
-                    className={cn(
-                      'grid w-full',
-                      stacked
-                        ? 'grid-cols-[auto_1fr] gap-(--composer-row-gap) [grid-template-areas:"input_input"_"menu_controls"]'
-                        : 'grid-cols-[auto_1fr_auto] items-center gap-(--composer-control-gap) [grid-template-areas:"menu_input_controls"]'
-                    )}
-                  >
+                  <div className={cn('grid w-full', controlRowGridClass(singleColumn, stacked))}>
                     <div className="flex translate-y-[3px] items-start gap-(--composer-control-gap) self-start [grid-area:menu]">
                       {contextMenu}
                       <ContribSlot area={COMPOSER_AREAS.leading} />

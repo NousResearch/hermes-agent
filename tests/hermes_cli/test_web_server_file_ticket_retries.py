@@ -1,14 +1,14 @@
-"""A browser retry of the same download URL redeems that ticket again, a few times.
+"""A browser retry of the same download URL redeems its ticket again, a few times (#144667).
 
-The download is fetched once, and the browser repeats that exact URL when the
-download fails or is cancelled. Those retries succeed inside the download TTL.
-The ticket is not a reusable credential: a different path, query, or method is
-refused without spending a retry, an expired ticket is refused, and signing out
-drops one minted under the replaced browser credential. Stream tickets stay
-reusable until they expire.
+The loopback gate spends a download ticket's use before the file is opened, and the browser
+retries a failed download by requesting that exact URL. The ticket stays bounded: it admits
+``DOWNLOAD_MAX_REDEMPTIONS`` requests (a HEAD counts like a GET) within ``DOWNLOAD_TTL_SECONDS``
+of minting. A different path, query or method is refused without using one up, and signing out
+drops a ticket minted under the replaced browser credential even with uses left. Stream tickets
+stay reusable until they expire.
 """
 
-import time
+from types import SimpleNamespace
 
 import pytest
 from starlette.testclient import TestClient
@@ -49,23 +49,25 @@ def test_the_same_download_url_can_be_retried_a_few_times_then_dies(browser_down
     client, browser, clip = browser_download
     route = web_server_file_tickets.ROUTES["download"]
     params = _mint(client, "download", path=str(clip))
-    # A handful of browser retries, not a credential that lasts for the TTL.
-    assert 1 < web_server_file_tickets.DOWNLOAD_MAX_REDEMPTIONS <= 5
 
     assert browser.get(route, params=params).content == b"hello"
-    assert (
-        browser.get(route, params={**params, "path": str(clip) + ".other"}).status_code
-        == 401
-    )
+    retry = browser.get(route, params=params)
+    assert (retry.status_code, retry.content) == (200, b"hello")
+
+    # Refused requests use none of the ticket's uses.
+    assert browser.get(route, params={**params, "path": str(clip) + ".other"}).status_code == 401
     assert browser.get(route, params={**params, "profile": "other"}).status_code == 401
     assert browser.post(route, params=params).status_code == 401
-    assert (
-        browser.get(web_server_file_tickets.ROUTES["stream"], params=params).status_code
-        == 401
-    )
-    for _ in range(web_server_file_tickets.DOWNLOAD_MAX_REDEMPTIONS - 1):
+    assert browser.get(web_server_file_tickets.ROUTES["stream"], params=params).status_code == 401
+
+    # A handful of uses, not a credential that lasts for the TTL. A HEAD of the
+    # URL is admitted like a GET and uses one up.
+    assert 2 < web_server_file_tickets.DOWNLOAD_MAX_REDEMPTIONS <= 5
+    for _ in range(web_server_file_tickets.DOWNLOAD_MAX_REDEMPTIONS - 3):
         assert browser.get(route, params=params).content == b"hello"
+    assert browser.head(route, params=params).status_code == 200
     assert browser.get(route, params=params).status_code == 401
+    assert browser.head(route, params=params).status_code == 401
 
     stream = _mint(client, "stream", path=str(clip))
     for _ in range(web_server_file_tickets.DOWNLOAD_MAX_REDEMPTIONS + 1):
@@ -77,25 +79,23 @@ def test_the_same_download_url_can_be_retried_a_few_times_then_dies(browser_down
         assert (partial.status_code, partial.content) == (206, b"ell")
 
 
-def test_an_expired_download_ticket_is_refused_while_retries_remain(
-    browser_download, monkeypatch
-):
+def test_a_download_ticket_dies_its_ttl_after_minting_with_uses_left(browser_download, monkeypatch):
     client, browser, clip = browser_download
     route = web_server_file_tickets.ROUTES["download"]
-    real = time.monotonic
-    offset = {"seconds": 0.0}
+    clock = {"now": 1000.0}
     monkeypatch.setattr(
-        web_server_file_tickets.time, "monotonic", lambda: real() + offset["seconds"]
+        web_server_file_tickets, "time", SimpleNamespace(monotonic=lambda: clock["now"])
     )
 
-    fresh = _mint(client, "download", path=str(clip))
-    assert browser.get(route, params=fresh).content == b"hello"
-    offset["seconds"] = web_server_file_tickets.DOWNLOAD_TTL_SECONDS + 1
-    assert browser.get(route, params=fresh).status_code == 401
+    params = _mint(client, "download", path=str(clip))
+    assert browser.get(route, params=params).content == b"hello"
+    clock["now"] += web_server_file_tickets.DOWNLOAD_TTL_SECONDS - 1
+    assert browser.get(route, params=params).content == b"hello"
 
-    monkeypatch.setattr(web_server_file_tickets, "DOWNLOAD_TTL_SECONDS", 0)
-    expired = _mint(client, "download", path=str(clip))
-    assert browser.get(route, params=expired).status_code == 401
+    # Uses are left; only the TTL, counted from minting, refuses it.
+    assert web_server_file_tickets.DOWNLOAD_MAX_REDEMPTIONS > 2
+    clock["now"] += 1
+    assert browser.get(route, params=params).status_code == 401
 
 
 def test_sign_out_drops_a_download_ticket_minted_under_the_browser_credential(

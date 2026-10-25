@@ -5,14 +5,15 @@ header, and the session token grants host shells and file access, so it must
 never appear in a URL the browser records (download history, "Copy video
 address"). An authenticated ``POST /api/files/ticket`` mints a ticket that lets
 the loopback token gate admit GET/HEAD of exactly one route + query and nothing
-else. A browser retries a failed or cancelled download by requesting that same
-URL again, so a download ticket allows a few redemptions of that exact request
-and then dies, still inside its short TTL. It is not a reusable credential. A
-media element issues many Range requests for one source, so a stream ticket is
-reusable until it expires. Each ticket captures the resolved file (on the
-profile's SSH workspace when it has one, as for native Desktop's download) and
-the named profile homes it belongs to; the resource opener refuses it once one
-of those homes is missing or
+else. A browser retries a failed download by requesting the same URL, and the
+gate spends a download ticket's use before the file is even opened, so a failed
+or cut-off first response has already used one. A download ticket therefore
+admits up to ``DOWNLOAD_MAX_REDEMPTIONS`` requests (GET or HEAD) within
+``DOWNLOAD_TTL_SECONDS`` of minting, then dies. A media element issues many
+Range requests for one source, so a stream ticket is reusable until it expires.
+Each ticket captures the resolved file (on the profile's SSH workspace
+when it has one, as for native Desktop's download) and the named profile homes it
+belongs to; the resource opener refuses it once one of those homes is missing or
 deleted (``hermes_constants.assert_named_profile_home_live``). A ticket minted for
 a request that presented the browser session token records that credential's
 generation (``hermes_cli.browser_credential``) and redeems only while it is
@@ -36,9 +37,8 @@ if TYPE_CHECKING:
     from starlette.requests import Request
 
 DOWNLOAD_TTL_SECONDS = 60
-#: The original GET, the browser's restart after it cancels that request, and
-#: one retry of a failed or cancelled download. Past this the ticket is spent
-#: even though the download TTL has not elapsed.
+#: Requests one download ticket admits: the first fetch and two repeats of that
+#: same URL. Kept small because the URL sits in download history and proxy logs.
 DOWNLOAD_MAX_REDEMPTIONS = 3
 #: A transcript video may be played long after it mounted; seeking past the
 #: buffered range needs the ticket again.
@@ -74,15 +74,15 @@ class FileAuthority:
 class _Ticket:
     scope: _Scope
     expires_at: float
-    single_use: bool
+    #: Requests (GET or HEAD) a download ticket still admits; None for a stream ticket, which
+    #: lasts until it expires.
+    uses_left: int | None
     authority: FileAuthority
     #: Generation of the browser credential the minting request presented
     #: (``hermes_cli.browser_credential``; None for any other credential): the ticket redeems only
     #: while it is current, so a sign-out that lands between the request's admission and the mint
     #: still ends it.
     generation: str | None = None
-    #: Download tickets only. Stream tickets stay until expiry and ignore this.
-    uses_remaining: int = 0
 
 
 _lock = threading.Lock()
@@ -112,16 +112,15 @@ def mint(route: str, query: Mapping[str, str], *, authority: FileAuthority,
     a request admitted with *session_token*, it records that browser credential's generation and
     redeems only while it is current."""
     route_path = ROUTES[route]
-    single_use = route == "download"
+    download = route == "download"
     now = time.monotonic()
     ticket = secrets.token_urlsafe(32)
     entry = _Ticket(
         scope=_scope(route_path, query.items()),
-        expires_at=now + (DOWNLOAD_TTL_SECONDS if single_use else STREAM_TTL_SECONDS),
-        single_use=single_use,
+        expires_at=now + (DOWNLOAD_TTL_SECONDS if download else STREAM_TTL_SECONDS),
+        uses_left=DOWNLOAD_MAX_REDEMPTIONS if download else None,
         authority=authority,
         generation=None if session_token is None else browser_credential.generation_of(session_token),
-        uses_remaining=DOWNLOAD_MAX_REDEMPTIONS if single_use else 0,
     )
     with _lock:
         for stale in [key for key, value in _tickets.items() if value.expires_at <= now]:
@@ -143,21 +142,20 @@ def revoke_replaced() -> int:
     return len(replaced)
 
 
-def _spend_download(ticket: str, entry: _Ticket) -> None:
-    """Count one same-URL redemption. Caller holds ``_lock``. Stream tickets are not spent."""
-    if not entry.single_use:
+def _spend_use(ticket: str, entry: _Ticket) -> None:
+    """Count one admitted request against a download ticket, dropping it at its last use. Caller
+    holds ``_lock``. A stream ticket has no count."""
+    if entry.uses_left is None:
         return
-    remaining = entry.uses_remaining - 1
-    if remaining > 0:
-        _tickets[ticket] = replace(entry, uses_remaining=remaining)
+    if entry.uses_left > 1:
+        _tickets[ticket] = replace(entry, uses_left=entry.uses_left - 1)
     else:
         del _tickets[ticket]
 
 
 def redeem(request: Request) -> bool:
-    """True when ``?ticket=`` authorizes this exact request. A download ticket grants only a few
-    redemptions of that same URL; a stream ticket lasts until it expires. A ticket minted under a
-    browser credential that has since been replaced is dropped instead."""
+    """True when ``?ticket=`` authorizes this exact request; spends one of a download ticket's uses.
+    A ticket minted under a browser credential that has since been replaced is dropped instead."""
     ticket = request.query_params.get("ticket", "")
     if not ticket or request.method not in ("GET", "HEAD"):
         return False
@@ -169,7 +167,7 @@ def redeem(request: Request) -> bool:
         if entry.generation is not None and not browser_credential.is_current(entry.generation):
             del _tickets[ticket]
             return False
-        _spend_download(ticket, entry)
+        _spend_use(ticket, entry)
     # Carry the captured authority through middleware to the resource opener.
     # A middleware-only check would race deletion before FileResponse opens it.
     request.state.file_ticket_authority = entry.authority

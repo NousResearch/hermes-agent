@@ -35,16 +35,13 @@ class TestNvidiaProfileParity:
 
 class TestKimiProfileParity:
     def test_temperature_omitted(self, transport):
-        legacy = transport.build_kwargs(
+        """The kimi-coding profile (``kimi`` is an alias of it) leaves temperature to the server."""
+        assert get_provider_profile("kimi") is get_provider_profile("kimi-coding")
+        kwargs = transport.build_kwargs(
             model="kimi-k2", messages=_msgs(), tools=None,
-            provider_profile=get_provider_profile("kimi-coding"), omit_temperature=True,
+            provider_profile=get_provider_profile("kimi-coding"),
         )
-        profile = transport.build_kwargs(
-            model="kimi-k2", messages=_msgs(), tools=None,
-            provider_profile=get_provider_profile("kimi"),
-        )
-        assert "temperature" not in legacy
-        assert "temperature" not in profile
+        assert "temperature" not in kwargs
 
 
 

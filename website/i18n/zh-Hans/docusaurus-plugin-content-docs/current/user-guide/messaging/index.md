@@ -279,6 +279,8 @@ gateway:
 - `queue` — 后续消息等待，在当前任务完成后作为下一轮运行。
 - `steer` — 后续消息通过 `/steer` 注入当前运行，在下一次工具调用后到达 agent。不中断，不开新轮次。如果 agent 尚未开始，则回退为 `queue` 行为。
 
+网关重启或停止时仍在等待的后续消息（包括任何模式下发送的 `/queue`）不会被丢弃：下一个网关进程会把它加入对话，agent 会在你发送下一条消息时一并看到它。
+
 ```yaml
 display:
   busy_input_mode: steer   # 或 queue，或 interrupt（默认）

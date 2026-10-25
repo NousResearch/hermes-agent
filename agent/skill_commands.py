@@ -12,6 +12,7 @@ from hermes_constants import display_hermes_home
 from agent.prompt_cache_boundary import register_stable_prefix
 from agent.skill_preprocessing import load_skills_config as _load_skills_config, preprocess_skill_content
 from agent.skill_utils import AMBIGUOUS_SKILL_PREFIX
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -295,7 +296,9 @@ def find_triggered_skill_command(
         return None
 
     text = user_message.strip()
-    if not text or text.startswith("/") or not _load_skills_config().get("auto_triggers", True):
+    if not text or text.startswith("/"):
+        return None
+    if not is_truthy_value(_load_skills_config().get("auto_triggers"), default=True):
         return None
 
     best_match: tuple[int, int, str, str, dict[str, Any]] | None = None

@@ -8875,6 +8875,182 @@
    ]
   }
  },
+ "oci": {
+  "api_mode": "chat_completions",
+  "base_url": "https://inference.generativeai.us-chicago-1.oci.oraclecloud.com/openai/v1",
+  "high": {
+   "messages": [
+    {
+     "content": "You are a test agent.",
+     "role": "system"
+    },
+    {
+     "content": "list files",
+     "role": "user"
+    },
+    {
+     "content": "",
+     "role": "assistant",
+     "tool_calls": [
+      {
+       "function": {
+        "arguments": "{\"command\": \"ls\"}",
+        "name": "terminal"
+       },
+       "id": "call_1",
+       "type": "function"
+      }
+     ]
+    },
+    {
+     "content": "a.txt\nb.txt",
+     "role": "tool",
+     "tool_call_id": "call_1"
+    },
+    {
+     "content": "thanks, now summarize",
+     "role": "user"
+    }
+   ],
+   "model": "openai.gpt-oss-120b",
+   "timeout": 1800.0,
+   "tools": [
+    {
+     "function": {
+      "description": "Run a shell command.",
+      "name": "terminal",
+      "parameters": {
+       "properties": {
+        "command": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "command"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ]
+  },
+  "model": "openai.gpt-oss-120b",
+  "off": {
+   "messages": [
+    {
+     "content": "You are a test agent.",
+     "role": "system"
+    },
+    {
+     "content": "list files",
+     "role": "user"
+    },
+    {
+     "content": "",
+     "role": "assistant",
+     "tool_calls": [
+      {
+       "function": {
+        "arguments": "{\"command\": \"ls\"}",
+        "name": "terminal"
+       },
+       "id": "call_1",
+       "type": "function"
+      }
+     ]
+    },
+    {
+     "content": "a.txt\nb.txt",
+     "role": "tool",
+     "tool_call_id": "call_1"
+    },
+    {
+     "content": "thanks, now summarize",
+     "role": "user"
+    }
+   ],
+   "model": "openai.gpt-oss-120b",
+   "timeout": 1800.0,
+   "tools": [
+    {
+     "function": {
+      "description": "Run a shell command.",
+      "name": "terminal",
+      "parameters": {
+       "properties": {
+        "command": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "command"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ]
+  },
+  "unset": {
+   "messages": [
+    {
+     "content": "You are a test agent.",
+     "role": "system"
+    },
+    {
+     "content": "list files",
+     "role": "user"
+    },
+    {
+     "content": "",
+     "role": "assistant",
+     "tool_calls": [
+      {
+       "function": {
+        "arguments": "{\"command\": \"ls\"}",
+        "name": "terminal"
+       },
+       "id": "call_1",
+       "type": "function"
+      }
+     ]
+    },
+    {
+     "content": "a.txt\nb.txt",
+     "role": "tool",
+     "tool_call_id": "call_1"
+    },
+    {
+     "content": "thanks, now summarize",
+     "role": "user"
+    }
+   ],
+   "model": "openai.gpt-oss-120b",
+   "timeout": 1800.0,
+   "tools": [
+    {
+     "function": {
+      "description": "Run a shell command.",
+      "name": "terminal",
+      "parameters": {
+       "properties": {
+        "command": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "command"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ]
+  }
+ },
  "ollama-cloud": {
   "api_mode": "chat_completions",
   "base_url": "https://ollama.com/v1",

@@ -104,6 +104,8 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `NEBIUS_BASE_URL` | Override Nebius Token Factory base URL (default: `https://api.tokenfactory.nebius.com/v1`) |
 | `NVIDIA_API_KEY` | NVIDIA NIM API key — Nemotron and open models ([build.nvidia.com](https://build.nvidia.com)) |
 | `NVIDIA_BASE_URL` | Override NVIDIA base URL (default: `https://integrate.api.nvidia.com/v1`; set to `http://localhost:8000/v1` for a local NIM endpoint) |
+| `OCI_GENAI_API_KEY` | Oracle Cloud (OCI Generative AI) API key ([docs](https://docs.oracle.com/en-us/iaas/Content/generative-ai/api-keys.htm)) |
+| `OCI_GENAI_BASE_URL` | Override OCI Generative AI base URL (default: `https://inference.generativeai.us-chicago-1.oci.oraclecloud.com/openai/v1`) |
 | `STEPFUN_API_KEY` | StepFun API key — Step-series models ([platform.stepfun.com](https://platform.stepfun.com)) |
 | `STEPFUN_BASE_URL` | Override StepFun base URL (default: `https://api.stepfun.com/v1`) |
 | `OLLAMA_API_KEY` | Ollama Cloud API key — managed Ollama catalog without local GPU ([ollama.com/settings/keys](https://ollama.com/settings/keys)) |

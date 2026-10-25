@@ -833,16 +833,21 @@ def _load_secrets_config(home_path: Path) -> dict:
         try:
             from hermes_cli.config import read_raw_config
 
-            data = read_raw_config() or {}
-            return data.get("secrets") or {}
+            return _secrets_section(read_raw_config())
         except Exception:
             pass
     # Routed profiles re-enter their scope on every poll/turn; only re-parse after the file changed.
     try:
-        data = read_config_doc_readonly(config_path) or {}
+        data = read_config_doc_readonly(config_path)
     except Exception:
         return {}
-    return data.get("secrets") or {}
+    return _secrets_section(data)
+
+
+def _secrets_section(data: object) -> dict:
+    """The ``secrets:`` mapping, or ``{}`` for a missing or non-mapping value (``secrets: bitwarden``)."""
+    secrets = data.get("secrets") if isinstance(data, dict) else None
+    return secrets if isinstance(secrets, dict) else {}
 
 
 def _process_hermes_home() -> Path:

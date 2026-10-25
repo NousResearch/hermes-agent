@@ -15,6 +15,7 @@ from rich.table import Table
 
 from agent.proxy_sources import iron_proxy as ip
 from agent.redact import mask_secret
+from hermes_cli._secrets_common import section_cfg
 from hermes_cli.config import load_config, load_env, save_config
 
 
@@ -343,7 +344,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     # ``credential_source: bitwarden`` refreshes upstream secrets from BSM at startup — that is
     # the rotation guarantee distinguishing it from ``env``.
     credential_source = proxy_cfg.get("credential_source", "env")
-    bw_cfg = (cfg.get("secrets") or {}).get("bitwarden")
+    bw_cfg = section_cfg(cfg, "bitwarden") or None
     refresh_bw = (credential_source == "bitwarden" and bw_cfg is not None and bool(bw_cfg.get("enabled")))
     # Silent-degrade guard: bitwarden mode chosen but secrets.bitwarden disabled/removed. Refuse
     # (quietly starting on host env is the bug class BW mode exists to defeat) unless the
@@ -537,7 +538,7 @@ def _bitwarden_env_names(console: Console) -> Optional[list[str]]:
     ``None`` on any failure so the wizard aborts loudly instead of falling back to the host env.
     """
     cfg = load_config()
-    bw_cfg = (cfg.get("secrets") or {}).get("bitwarden") or {}
+    bw_cfg = section_cfg(cfg, "bitwarden")
     if not bw_cfg.get("enabled"):
         console.print("  [red]✗ --from-bitwarden requested but secrets.bitwarden.enabled is false.[/red]")
         console.print("  Run `hermes secrets bitwarden setup` first, or omit --from-bitwarden.")

@@ -26,8 +26,10 @@ def yn(b: bool) -> str:
 
 
 def section_cfg(cfg: dict, section: str) -> dict:
-    """``cfg["secrets"][section]`` or ``{}``."""
-    return (cfg.get("secrets") or {}).get(section) or {}
+    """``cfg["secrets"][section]``, or ``{}`` when either level is missing or not a mapping."""
+    secrets = cfg.get("secrets")
+    value = secrets.get(section) if isinstance(secrets, dict) else None
+    return value if isinstance(value, dict) else {}
 
 
 def cfg_str(cfg: dict, key: str) -> str:

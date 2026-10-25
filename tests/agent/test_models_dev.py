@@ -99,6 +99,16 @@ class TestProviderMapping:
         assert PROVIDER_TO_MODELS_DEV["xai"] == "xai"
         assert PROVIDER_TO_MODELS_DEV["xai-oauth"] == "xai"
 
+    def test_kimi_providers_map_to_renamed_models_dev_slugs(self):
+        """models.dev renamed the Kimi Code plan provider to kimi-code-plan-global/-cn; the
+        old "kimi-for-coding" provider slug survives there only as a MODEL id, so a stale
+        mapping makes every catalog lookup silently miss (#126224)."""
+        assert PROVIDER_TO_MODELS_DEV["kimi"] == "kimi-code-plan-global"
+        assert PROVIDER_TO_MODELS_DEV["kimi-coding"] == "kimi-code-plan-global"
+        assert PROVIDER_TO_MODELS_DEV["kimi-coding-cn"] == "kimi-code-plan-cn"
+        # Legacy Moonshot API keys serve the moonshotai catalog, not the coding-plan one.
+        assert PROVIDER_TO_MODELS_DEV["moonshot"] == "moonshotai"
+
 
 
 
@@ -119,6 +129,22 @@ class TestLookupModelsDevContext:
     def test_exact_match(self, mock_fetch):
         mock_fetch.return_value = SAMPLE_REGISTRY
         assert lookup_models_dev_context("anthropic", "claude-opus-4-6") == 1000000
+
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_kimi_for_coding_context_via_renamed_provider(self, mock_fetch):
+        """The renamed kimi-code-plan-* catalog carries kimi-for-coding at 1 Mi and its
+        -highspeed sibling at 256K (#126224)."""
+        mock_fetch.return_value = {
+            "kimi-code-plan-global": {
+                "id": "kimi-code-plan-global",
+                "models": {
+                    "kimi-for-coding": {"id": "kimi-for-coding", "limit": {"context": 1048576, "output": 32768}},
+                    "kimi-for-coding-highspeed": {"id": "kimi-for-coding-highspeed", "limit": {"context": 262144}},
+                },
+            },
+        }
+        assert lookup_models_dev_context("kimi-coding", "kimi-for-coding") == 1048576
+        assert lookup_models_dev_context("kimi-coding", "kimi-for-coding-highspeed") == 262144
 
 
 
@@ -901,6 +927,31 @@ class TestModelOverrides:
         with self._setup_overrides(overrides):
             # Caller passes the Hermes id; config keyed by models.dev id.
             result = _explicit_model_override("copilot", "my-model")
+        assert result is not None
+        assert result["context_window"] == 222222
+
+    def test_override_keyed_by_retired_models_dev_slug_still_resolves(self):
+        """Overrides keyed by a retired models.dev slug (kimi-for-coding, pre-rename) resolve
+        in both id spaces — the rename must not silently drop them (#126224)."""
+        overrides = {
+            "kimi-for-coding": {
+                "kimi-for-coding": {"context_window": 111111},
+            },
+        }
+        with self._setup_overrides(overrides):
+            # Caller passes the Hermes id; config keyed by the retired slug.
+            result = _explicit_model_override("kimi-coding", "kimi-for-coding")
+        assert result is not None
+        assert result["context_window"] == 111111
+
+        overrides = {
+            "kimi": {
+                "kimi-for-coding": {"context_window": 222222},
+            },
+        }
+        with self._setup_overrides(overrides):
+            # Caller passes the retired slug; config keyed by the Hermes id.
+            result = _explicit_model_override("kimi-for-coding", "kimi-for-coding")
         assert result is not None
         assert result["context_window"] == 222222
 

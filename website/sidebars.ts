@@ -763,6 +763,7 @@ const sidebars: SidebarsConfig = {
         'guides/troubleshooting-agent-quality',
         'guides/work-with-skills',
         'guides/delegation-patterns',
+        'guides/vertical-agents',
         'guides/agent-email-address',
         'guides/github-pr-review-agent',
         'guides/webhook-github-pr-review',

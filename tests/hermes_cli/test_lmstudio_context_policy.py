@@ -53,6 +53,24 @@ def _capture_load(monkeypatch, response_payload):
 
 
 
+def test_jit_load_without_explicit_context_reads_runtime_from_loaded_instance(monkeypatch):
+    """JIT load (no explicit context, no echoed load_config) must discover the runtime
+    context LM Studio applied from its configured default via the refreshed models list,
+    not fall back to the 64K probe tier. Regression for the JIT arm of the refresh-after-load."""
+    catalogs = iter([
+        _catalog(),  # Before load: no loaded instance
+        _catalog(loaded_context=132_096),  # After load with LM Studio's configured default
+    ])
+    monkeypatch.setattr(models_local, "_lmstudio_fetch_raw_models", lambda **_kwargs: next(catalogs))
+    _capture_load(monkeypatch, {"status": "loaded"})
+
+    result = models_local.ensure_lmstudio_model_loaded(
+        MODEL, BASE_URL, api_key="", target_context_length=None
+    )
+
+    assert result == 132_096
+
+
 def test_missing_echo_refreshes_loaded_state(monkeypatch):
     catalogs = iter([_catalog(), _catalog(loaded_context=88_000)])
     monkeypatch.setattr(models_local, "_lmstudio_fetch_raw_models", lambda **_kwargs: next(catalogs)

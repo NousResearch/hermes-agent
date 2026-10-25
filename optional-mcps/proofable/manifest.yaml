@@ -1,0 +1,40 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: proofable
+description: Context and control for any AI. Agent identity, scoped access, and proof across tools.
+source: https://docs.proofable.me/mcp/overview
+
+# Proofable ships a hosted remote MCP server with native OAuth 2.1 + Dynamic
+# Client Registration over Streamable HTTP. Hermes's MCP client + mcp_oauth_manager
+# handle discovery, PKCE, token exchange, and refresh - nothing to install
+# locally. No `provider:` - this is native MCP OAuth, not a third-party provider.
+transport:
+  type: http
+  url: https://mcp.proofable.me/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - proofable
+    - trust
+    - verification
+    - verify
+    - gate
+    - proof
+  hosts:
+    - proofable.me
+    - mcp.proofable.me
+  examples:
+    - Verify wallet risk before executing a trade
+    - Check agent delegation and authority before running tools
+    - Create a portable proof of task completion
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  Proofable (or run `hermes mcp login proofable`). Approve access,
+  then restart the session so tools load.

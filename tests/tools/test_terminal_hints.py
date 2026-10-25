@@ -1,8 +1,12 @@
 """Tests for tools/terminal_hints.py — output-pattern failure hints."""
 
+import shlex
+import subprocess
 from unittest.mock import patch as mock_patch
 
+import pytest
 
+from tools.environments.base_session_env import _wrap_command_script
 from tools.terminal_hints import annotate_failure, annotate_masked_success
 
 
@@ -90,6 +94,64 @@ class TestBoundedScan:
         # A hint raising must not propagate.
         with mock_patch("tools.terminal_hints._OUTPUT_HINTS", [lambda c, o: 1 / 0]):
             assert annotate_failure("x", 1, "boom") is None
+
+
+class TestWrapperCdFailure:
+    """A 126 from the session wrapper's own ``cd`` is a missing working directory, not chmod."""
+
+    @staticmethod
+    def _hint(command: str, exit_code: int, output: str) -> str:
+        return annotate_failure(command, exit_code, output) or ""
+
+    @pytest.mark.platforms("posix")
+    def test_missing_working_directory_is_named_not_chmod(self, tmp_path):
+        gone = tmp_path / "gone dir"  # never created: a deleted session cwd looks the same
+        # The real per-command wrapper every backend runs, pointed at the missing directory.
+        script = _wrap_command_script(
+            "cd /tmp && pwd", quoted_cwd=shlex.quote(str(gone)), quoted_snap="/nonexistent-snapshot",
+            snap_tmp_template="/tmp/hermes-snap.XXXXXX", passthrough_names=(),
+            snapshot_ready=False, cwd_marker="__HERMES_CWD_test__")
+        proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False)
+        assert proc.returncode == 126
+        hint = self._hint("cd /tmp && pwd", 126, proc.stdout + proc.stderr)
+        assert str(gone) in hint
+        assert "workdir" in hint
+        assert "chmod" not in hint
+
+    @pytest.mark.parametrize("prefix", [
+        "bash: Zeile 4: ",  # de
+        "bash: ligne 4 : ",  # fr puts a space before the colon
+        "C:\\Program Files\\Git\\usr\\bin\\bash.exe: line 4: ",
+    ])
+    def test_localized_and_drive_letter_shell_prefixes(self, prefix):
+        hint = self._hint("pwd", 126, prefix + "cd: /srv/app: No such file or directory")
+        assert "/srv/app" in hint
+        assert "chmod" not in hint
+
+    @pytest.mark.parametrize("out", [
+        "bash: line 1: cd: OLDPWD not set",
+        "bash: line 1: cd: too many arguments",
+    ])
+    def test_cd_errors_without_a_directory_keep_the_chmod_hint(self, out):
+        assert "chmod" in self._hint("./run.sh", 126, out)
+
+    def test_genuine_not_executable_keeps_its_hints(self):
+        assert "chmod" in self._hint("./run.sh", 126, "")
+        out = "bash: line 1: ./run.sh: Permission denied"
+        assert "Permission denied" in self._hint("./run.sh", 126, out)
+
+    def test_cd_error_not_on_last_line_is_not_the_wrapper(self):
+        out = "bash: cd: build: No such file or directory\nbash: ./run.sh: Permission denied"
+        hint = self._hint("cd build; ./run.sh", 126, out)
+        assert "Permission denied" in hint
+        assert "build" not in hint
+
+    def test_cd_lookalike_from_another_program_is_not_the_wrapper(self):
+        assert "chmod" in self._hint("./tool", 126, "my-cd: x: y")
+
+    def test_user_cd_failure_with_its_own_exit_code_untouched(self):
+        out = "bash: line 1: cd: build: No such file or directory"
+        assert annotate_failure("cd build", 1, out) is None
 
 
 

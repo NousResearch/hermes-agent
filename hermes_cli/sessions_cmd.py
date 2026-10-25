@@ -7,6 +7,7 @@ import — must run without opening ``SessionDB()``, which a malformed schema pr
 """
 
 import json
+import logging
 import os
 import shutil
 import sqlite3
@@ -960,11 +961,15 @@ def _cmd_optimize(db, args):
     print("Optimizing session store (FTS merge + VACUUM)…")
     try:
         n = db.vacuum()  # merges FTS5 segments then VACUUMs; returns indexes merged
+        # Zero indexes is valid (e.g. FTS unavailable), but False/None is not that contract.
+        if type(n) is not int or n < 0:
+            raise RuntimeError("VACUUM did not return a valid completion result")
     except Exception as e:
         print(f"Error: optimization failed: {e}")
-        return
+        return 1
     print(f"Optimized {n} FTS index(es).")
     _print_size_change(db, before_mb)
+    return 0
 
 
 def _cmd_clean_markers(db, args):
@@ -982,9 +987,14 @@ def _cmd_clean_markers(db, args):
 
 def _cmd_optimize_storage(db, args):
     db_path = db.db_path
-    if not db.fts_optimize_available():
-        print("Search index is already on the compact layout — nothing to do.")
-        return
+    available = db.fts_optimize_available()
+    if available is False:
+        # False also covers unavailable FTS5, so it does not prove a compact layout.
+        print("No search-index storage optimization is available — nothing to do.")
+        return 0
+    if available is not True:
+        print("Error: search-index maintenance availability was not verified.")
+        return 1
     before_bytes = os.path.getsize(db_path) if db_path.exists() else 0
     before_mb = before_bytes / (1024 * 1024)
     # Disk preflight: the new index is built before the old is torn down, and VACUUM needs a full
@@ -1002,7 +1012,7 @@ def _cmd_optimize_storage(db, args):
         if free_bytes < need_bytes:
             print("\n⚠ Not enough free disk to complete safely. Free up space, or run with --no-vacuum "
                   "(rebuilds the index but doesn't reclaim space until a later VACUUM).")
-            return
+            return 1
     if before_mb > 500:
         print("  This may take a while on a large database. It runs in the foreground with progress below; "
               "safe to Ctrl-C and re-run (it resumes).")
@@ -1013,7 +1023,12 @@ def _cmd_optimize_storage(db, args):
             resp = ""
         if resp not in ("y", "yes"):
             print("Cancelled.")
-            return
+            return 0
+    # Confirmation can wait indefinitely: the dispatch-time scan is no longer fresh.
+    refusal = _maintenance_refusal(db_path, args)
+    if refusal:
+        print(refusal)
+        return 1
     _last = {"phase": None}
     labels = {"teardown": "Reclaiming old index", "vacuum": "Compacting database (VACUUM)", "done": "Done"}
 
@@ -1028,16 +1043,27 @@ def _cmd_optimize_storage(db, args):
     print("Optimizing search-index storage…")
     try:
         result = db.optimize_fts_storage(progress_cb=_progress, vacuum=do_vacuum)
+        if not isinstance(result, dict) or result.get("ok") is not True:
+            reason = result.get("reason", "unknown") if isinstance(result, dict) else "invalid result"
+            print(f"\nCould not optimize: {reason}")
+            return 1
+        # Re-read work state rather than trusting a success flag alone. This includes
+        # interrupted backfill/teardown and actionable CJK work as well as layout drift.
+        if db.fts_optimize_available() is not False:
+            print("\nError: optimization incomplete — search-index storage work remains.")
+            return 1
+        if do_vacuum and result.get("vacuumed") is not True:
+            print("\nError: search index rebuilt, but requested VACUUM did not complete. "
+                  "Run `hermes sessions optimize` with the store offline to reclaim freed space.")
+            return 1
     except Exception as e:
-        print(f"\nError: optimization failed: {e}\nNo data was lost. Re-run to resume.")
-        return
-    if not result.get("ok"):
-        print(f"\nCould not optimize: {result.get('reason', 'unknown')}")
-        return
+        print(f"\nError: optimization failed: {e}\nCompletion was not verified; inspect the store before retrying.")
+        return 1
     print("\n✓ Search index optimized.")
     _print_size_change(db, before_mb, prefix="  ")
-    if result.get("vacuumed") is False:
-        print("  (VACUUM was skipped or failed — run `hermes sessions optimize` later to reclaim freed space.)")
+    if not do_vacuum:
+        print("  (VACUUM was skipped by request — run `hermes sessions optimize` later to reclaim freed space.)")
+    return 0
 
 
 def _cmd_repair_routing(db, args):
@@ -1292,6 +1318,21 @@ def _print_empty_store(action: str, args) -> None:
 _HELD_STORE_ACTIONS = frozenset({"optimize", "optimize-storage", "prune"})
 
 
+def _maintenance_refusal(path, args):
+    """Shared pre-open / pre-mutation gate; a scan is not an exclusive maintenance lock."""
+    action = args.sessions_action
+    if (action not in _HELD_STORE_ACTIONS or getattr(args, "force", False)
+            or (action == "prune" and (getattr(args, "dry_run", False)
+                                      or getattr(args, "owner_endpoint", None) is not None))):
+        return None
+    from hermes_state_holders import held_store_refusal
+    try:
+        return held_store_refusal(path, command=action)
+    except Exception as exc:
+        logging.getLogger(__name__).exception("Cannot establish maintenance preflight")
+        return f"Refusing `hermes sessions {action}`: could not verify store holders for {path}: {exc}"
+
+
 def cmd_sessions(args, sessions_parser=None):
     action = args.sessions_action
     pre = _PRE_DB_HANDLERS.get(action)
@@ -1311,9 +1352,15 @@ def cmd_sessions(args, sessions_parser=None):
         # deletes. No gateway: the local prune below, behind the holder scan, as before.
         from hermes_cli.sessions_owner import live_owner
         args.owner_endpoint = live_owner()
-        observational = args.owner_endpoint is not None
+        observational = args.owner_endpoint is not None or getattr(args, "dry_run", False)
     # A served-profile process has no single default home: pass the store path explicitly.
     path = get_hermes_home() / "state.db"
+    # A writable SessionDB constructor can migrate/rebuild the store. Refuse BEFORE it
+    # runs, not merely before invoking the handler; even a refused command must not write.
+    refusal = _maintenance_refusal(path, args)
+    if refusal:
+        print(refusal)
+        return 1
     try:
         db = SessionDB(db_path=path, read_only=observational)
     except Exception as e:
@@ -1329,16 +1376,18 @@ def cmd_sessions(args, sessions_parser=None):
         if handler is None:
             sessions_parser.print_help()
             return
-        if (action in _HELD_STORE_ACTIONS and not getattr(args, "dry_run", False) and not getattr(args, "force", False)
-                and getattr(args, "owner_endpoint", None) is None):
-            from hermes_state_holders import held_store_refusal
-            # Same path the SessionDB above opened, so the scan never depends on the db object.
-            refusal = held_store_refusal(path, command=action)
-            if refusal:
-                print(refusal)
-                return 1
+        # Keep the inner guard: a holder may have appeared while the store opened.
+        refusal = _maintenance_refusal(path, args)
+        if refusal:
+            print(refusal)
+            return 1
         try:
             return handler(db, args)
+        except KeyboardInterrupt:
+            if action not in _HELD_STORE_ACTIONS:
+                raise
+            print("\nInterrupted — maintenance completion was not verified.")
+            return 130
         except sqlite3.OperationalError as e:
             from hermes_state_repair import _schema_not_built
 

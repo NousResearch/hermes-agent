@@ -46,7 +46,6 @@ import {
   markSelectionRestore,
   nextSessionTileForWorkspace,
   openSessionTile,
-  orderTilesByTree,
   patchSessionTile,
   recordSessionEventScope,
   rekeySessionTile,
@@ -60,6 +59,7 @@ import {
   setSessionTileDelegate,
   setSessionTileWorkspaceScope
 } from '@/store/session-states'
+import { orderTilesByTree } from '@/store/session-tile-order'
 
 const tile = (storedSessionId: string): SessionTile => ({ storedSessionId })
 const tilePane = (id: string) => `session-tile:${id}`

@@ -126,16 +126,31 @@ describe('browser profile prefs follow rename and delete', () => {
     expect(resolveNewSessionCwd('alpha')).toBe('')
   })
 
-  it('keeps a folder the destination profile already chose', () => {
-    host()
-    putFolder('alpha', '/srv/alpha')
-    putFolder('renamed', '/srv/kept')
+  // A rename never lands on a live profile, so prefs already under the new name
+  // were left by a deleted profile (a delete before this fix kept them).
+  it.each([
+    { expected: '/srv/research', research: '/srv/research' },
+    { expected: '', research: null }
+  ])(
+    'gives the renamed profile its own folder ($research), not what a deleted profile left',
+    ({ expected, research }) => {
+      host()
+      putFolder('work', '/srv/deleted-work')
+      putStartup('work', '/hermes', 'local')
+      $defaultProfileRoute.set({ connectionId: 'local', profile: 'work' })
 
-    migrateTilesForProfile('alpha', 'renamed')
+      if (research) {
+        putFolder('research', research)
+      }
 
-    expect(localStorage.getItem(browserDefaultProjectDirKey('/hermes', 'renamed'))).toBe('/srv/kept')
-    expect(localStorage.getItem(browserDefaultProjectDirKey('/hermes', 'alpha'))).toBeNull()
-  })
+      migrateTilesForProfile('research', 'work')
+
+      expect(resolveNewSessionCwd('work')).toBe(expected)
+      expect(localStorage.getItem(browserDefaultProjectDirKey('/hermes', 'research'))).toBeNull()
+      expect(localStorage.getItem(browserStartupProfileKey('/hermes'))).toBeNull()
+      expect($defaultProfileRoute.get()).toBeNull()
+    }
+  )
 
   it('drops a blank folder instead of carrying it to the new name', () => {
     host()

@@ -25,6 +25,10 @@ export function migrateBrowserProfilePrefs(from: string, to: string): void {
     return
   }
 
+  // A rename never lands on a live profile's name, so a folder or startup
+  // profile already stored under the new name was left by a deleted profile.
+  // The renamed profile's own prefs, or their absence, replace it.
+  dropBrowserProfilePrefs(toName)
   migrateBrowserFolderPref(basePath, fromName, toName)
 
   const movedStartup = migrateBrowserStartupProfile(basePath, fromName, toName)

@@ -1869,9 +1869,9 @@ export const workspaceCwdForNewSession = (profile?: string): string => {
   // remote-keyed and intentionally sticky).
   //
   // A browser host stores that default folder per profile. The process cache
-  // was last filled for whichever profile the window synced, so a chat aimed
-  // at another profile reads that profile's key and stays detached when it
-  // never chose one.
+  // holds the folder of the profile the window last synced (boot, a connection
+  // apply, Settings), and a rail switch does not refill it, so a browser new
+  // chat reads its own profile's key and stays detached when it never chose one.
   const owner = profile?.trim()
 
   if (owner && isBrowserHostedDesktop()) {

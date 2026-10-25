@@ -23,7 +23,6 @@ import { useI18n } from '@/i18n'
 import {
   type ChatMessage,
   preserveLocalAssistantErrors,
-  QUESTION_CARD_TOOLS,
   restorePendingClarifyToolCall,
   settlePendingClarifyToolCall,
   stripPendingClarifyProjectionForCache,
@@ -163,7 +162,11 @@ import { reconcilePersistedLiveTurn } from './persisted-live-turn'
 import { provisionalTranscriptPaint, transcriptRestScope } from './provisional-transcript'
 import { rememberedOwnerForResume } from './remembered-owner'
 import { restorePendingApproval } from './restore-pending-approval'
-import { pendingClarifyToolPayload, restorePendingClarifyFromSnapshot } from './restore-pending-clarify'
+import {
+  pendingClarifyToolPayload,
+  restorePendingClarifyFromSnapshot,
+  withoutEarlyClarifyProjection
+} from './restore-pending-clarify'
 import { projectPendingConnection, restorePendingConnectionFromSnapshot } from './restore-pending-connection'
 import {
   ambientResumeConnectionId,
@@ -172,7 +175,7 @@ import {
   rememberResolvedResumeOwner,
   resolveResumeOwner
 } from './resume-owner'
-import { backgroundRuntimeOptions, runtimeOwner } from './runtime-owner'
+import { backgroundRuntimeOptions, runtimeOwner, runtimeOwnerProfile } from './runtime-owner'
 import { createGatewaySession, desktopSessionCreateParams } from './session-create-request'
 import {
   createPersistedDisplayTranscriptProvenance,
@@ -299,39 +302,6 @@ interface FreshSessionDraftOptions {
   replaceRoute?: boolean
   rotateFreshDraftKey?: boolean
   workspaceTarget?: NewChatWorkspaceTarget
-}
-
-/** Drop the pre-hydration request-id row without copying the other messages.
- *  A copied clarify row looks like a concurrent edit and hydration keeps both. */
-function withoutEarlyClarifyProjection(messages: ChatMessage[], requestId: string): ChatMessage[] {
-  let changed = false
-  const next: ChatMessage[] = []
-
-  for (const message of messages) {
-    const parts = message.parts.filter(
-      part =>
-        !(
-          part.type === 'tool-call' &&
-          QUESTION_CARD_TOOLS.has(part.toolName) &&
-          part.result === undefined &&
-          part.toolCallId === requestId
-        )
-    )
-
-    if (parts.length === message.parts.length) {
-      next.push(message)
-
-      continue
-    }
-
-    changed = true
-
-    if (parts.length > 0) {
-      next.push({ ...message, parts })
-    }
-  }
-
-  return changed ? next : messages
 }
 
 /** Session-state patch for a restored blocking prompt row; the first non-null projection is used. */
@@ -1004,8 +974,12 @@ export function useSessionActions({
       const listed = options?.listed ?? true
 
       try {
-        // Project-path tiles take the tree's profile (#79005 / #124265). A stale
-        // $newChatProfile pin must not win for the occupied-chat "+" or a project drag.
+        // A tile anchored at a project path belongs to the profile the project
+        // tree is rendered under — the same owner the fresh-draft "+" pins
+        // (#79005). The occupied-chat "+" and project-row drags reach this
+        // path instead, where a stale $newChatProfile pin would otherwise win
+        // and land the session in the wrong profile (#124265). All-profiles
+        // view has no owner and keeps the ordinary fallback.
         const projectOwnerProfile =
           options?.profile === undefined && typeof options?.cwd === 'string'
             ? (projectProfile() ?? undefined)
@@ -1060,12 +1034,15 @@ export function useSessionActions({
           ...(legacyOwnerProfile ? { ownerProfile: legacyOwnerProfile } : {})
         }
 
+        // The default folder belongs to the profile the session is created in.
+        // A dialled route names it: the Bot Mode "+" aims at the bot's profile
+        // while requestedProfile still holds the window's.
         const cwd =
           options?.cwd === null
             ? ''
             : typeof options?.cwd === 'string'
               ? options.cwd.trim()
-              : resolveNewSessionCwd(requestedProfile)
+              : resolveNewSessionCwd(runtimeOwnerProfile(capturedRoute, requestedProfile))
 
         // #52589 provenance for the tile path: an explicitly-passed cwd is a
         // deliberate workspace pick; a resolved default is inherited.

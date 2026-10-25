@@ -70,6 +70,10 @@ export interface GroupCapabilityState {
 /** `groups.capabilities` for the active source while `active`, keyed by that
  *  source so an answer from a source the window has left is never used. */
 export function useGroupCapability(active: boolean) {
+  // The activation epoch is an impure read fenced against later activations: opt out of
+  // React Compiler memoization, which cached it on [connectionId, profile, gateway] and kept
+  // comparing responses to a stale epoch (groups.capabilities answered, mode stuck at checking).
+  'use no memo'
   const connectionId = useValue(host.state.connectionId)
   const profile = useValue(host.state.profile)
   const gateway = useValue(host.state.gateway)

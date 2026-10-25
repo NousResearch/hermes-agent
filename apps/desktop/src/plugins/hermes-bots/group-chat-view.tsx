@@ -597,6 +597,8 @@ export function GroupChatWorkspace(props: GroupChatWorkspaceProps) {
 }
 
 function GroupExecutionGate(props: GroupChatWorkspaceProps) {
+  // Same impure activation-epoch read as useGroupCapability: keep it un-memoized.
+  'use no memo'
   const b = useBots()
   const { t } = useI18n()
   const connectionId = useValue(host.state.connectionId)

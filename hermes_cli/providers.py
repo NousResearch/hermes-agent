@@ -373,9 +373,10 @@ def _nous_anthropic_wire() -> str:
 
 
 def determine_api_mode(provider: str, base_url: str = "", model: str = "") -> str:
-    """API mode (wire protocol) for a provider/endpoint: host-mandated mode, then Nous dual-wire
-    (model-derived — the overlay alone says openai_chat and would pin Claude on the wrong wire),
-    then the known provider's transport, then bedrock, else ``chat_completions``."""
+    """API mode (wire protocol) for a provider/endpoint: host-mandated mode, then the dual-wire
+    providers' model-derived wire (Nous Portal and OpenCode Zen/Go — the overlay alone says
+    openai_chat and would pin Claude or muse-spark on the wrong wire), then the known provider's
+    transport, then bedrock, else ``chat_completions``."""
     if is_actual_route(provider, base_url):
         return "chat_completions"
     mandated = host_mandated_api_mode(base_url)
@@ -383,6 +384,17 @@ def determine_api_mode(provider: str, base_url: str = "", model: str = "") -> st
         return mandated
     if (provider or "").strip().lower() in {"nous", "nous-portal", "nousresearch"}:
         return nous_api_mode(model)
+    # OpenCode Zen/Go (and custom providers extending a family slug) serve several wire formats
+    # behind ONE endpoint: the Responses models (muse-spark*/gpt-*/grok-*) ride /v1/responses, the
+    # Anthropic-shaped ones (claude-*/minimax-*) ride /v1/messages, everything else
+    # /v1/chat/completions. The provider overlay declares openai_chat for all of them, so a
+    # resolver that stops at the provider's transport pins EVERY OpenCode model on chat/completions
+    # — the wrong wire for a Responses model, which the relay answers with
+    # ``ModelProtocolUnsupported`` (#141861). The wire follows the MODEL, like the Nous branch
+    # above; ``opencode_model_api_mode`` is the single owner of that table.
+    from hermes_cli.models import opencode_model_api_mode, opencode_provider_family
+    if opencode_provider_family(provider) is not None:
+        return opencode_model_api_mode(provider, model)
     pdef = get_provider(provider)
     if pdef is not None:
         if pdef.transport in TRANSPORT_TO_API_MODE:

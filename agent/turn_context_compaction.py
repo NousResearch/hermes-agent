@@ -130,13 +130,15 @@ def run_turn_start_compaction(
     agent: Any, *, messages: list[dict[str, Any]], system_message: Optional[str],
     active_system_prompt: Optional[str], conversation_history: Optional[list[dict[str, Any]]],
     current_turn_user_idx: int, user_message: Any, effective_task_id: str,
+    task_continuation: bool = False,
 ) -> CompactionOutcome:
-    """Idle compaction, then preflight compression (or the uncompressed guard)."""
+    """Idle compaction, drift compaction, then preflight compression (or the guard)."""
     out = CompactionOutcome(
         messages=messages, active_system_prompt=active_system_prompt,
         conversation_history=conversation_history, current_turn_user_idx=current_turn_user_idx,
     )
     _idle_compaction(agent, out, system_message, user_message, effective_task_id)
+    _drift_compaction(agent, out, system_message, user_message, effective_task_id, task_continuation)
     _preflight_compression(agent, out, system_message, user_message, effective_task_id)
     return out
 
@@ -510,3 +512,118 @@ def _rearm_uncompressed_overflow_warn(
     )
     if _uncompressed_tokens <= _ctx_len:
         _clear_overflow_warn(agent)
+
+
+# ── JEV drift-triggered compaction ──
+
+
+def _drift_model_check(agent: Any, incoming: str, prior_excerpt: str) -> Optional[bool]:
+    """Ambiguous-band tiebreak: ask a model whether replying needs the earlier context.
+
+    True = dependent (keep), False = independent (safe to compact), None = unknown.
+    Never raises; on any failure the ambiguous band simply stays uncompacted —
+    missing an early compaction is harmless, a wrong one is lossy.
+    """
+    try:
+        from agent.auxiliary_client import resolve_provider_client
+        client, _ = resolve_provider_client(agent.provider or "auto", model=agent.model, raw_codex=True)
+        if client is None:
+            return None
+        prompt = (
+            "The earlier conversation context is about to be summarized because the topic "
+            "seems to have changed. Decide whether answering the NEW message requires the "
+            "EARLIER context below. Answer exactly YES (requires it) or NO (independent).\n\n"
+            f"EARLIER CONTEXT:\n{prior_excerpt[-4000:]}\n\nNEW MESSAGE:\n{incoming[-1000:]}"
+        )
+        resp = client.chat.completions.create(
+            model=agent.model, messages=[{"role": "user", "content": prompt}],
+            max_tokens=16, temperature=0,
+        )
+        choices = getattr(resp, "choices", None) or []
+        text = str((choices[0].message.content or "") if choices else "").strip().upper()
+        if text.startswith("NO"):
+            return False
+        if text.startswith("YES"):
+            return True
+        return None
+    except Exception:
+        logger.debug("Drift model check unavailable; ambiguous band stays uncompacted", exc_info=True)
+        return None
+
+
+def _drift_compaction(
+    agent: Any, out: CompactionOutcome, system_message: Optional[str], user_message: Any,
+    effective_task_id: str, task_continuation: bool,
+) -> None:
+    """JEV drift-triggered compaction (opt-in; ``compression.drift_compact``): when a new
+    conversational direction makes the old context dead weight, compact it early instead
+    of waiting for one lossy cliff at the size threshold.
+
+    Failure-mode guards (the policy's reason to exist): heuristics first (lexical
+    dependence over the region that would compress away — the protected tail stays
+    verbatim), a model check only inside the ambiguous band, never on a task
+    continuation, and never within ``drift_compact_cooldown_seconds``.
+    """
+    from agent import turn_context as _tc
+
+    messages = out.messages
+    if not (agent.compression_enabled
+            and getattr(agent, "compression_drift_compact", False)
+            and messages and not task_continuation):
+        return
+    _compressor = agent.context_compressor
+    if bool(getattr(_compressor, "awaiting_real_usage_after_compression", False)):
+        return
+    _now = time.time()
+    _cooldown_s = int(getattr(agent, "compression_drift_cooldown_seconds", 600) or 0)
+    if _cooldown_s > 0 and _now - float(getattr(agent, "_drift_compact_last_ts", 0.0)) < _cooldown_s:
+        return
+    _tokens = _tc._preflight_request_tokens(agent, messages, out.active_system_prompt or "")
+    _window = int(getattr(_compressor, "context_length", 0) or 0)
+    _floor = int(_compressor.threshold_tokens * _compressor.summary_target_ratio)
+    _last = getattr(_compressor, "last_compression_rough_tokens", 0)
+    if not isinstance(_last, int) or isinstance(_last, bool):
+        _last = 0
+    # Dependence is measured against the region that would compress away: everything
+    # before the protected tail (the tail survives verbatim and needs no summary).
+    _tail_n = int(getattr(_compressor, "protect_last_n", 20) or 0)
+    _prior = [str(m.get("content") or "") for m in (messages[:-_tail_n] if _tail_n else messages)
+              if isinstance(m, dict)]
+    _incoming = user_message if isinstance(user_message, str) else str(
+        (user_message or {}).get("content") or "")
+    _score = _tc.drift_dependence_score(_incoming, _prior)
+    _confirm = None
+    if _tc.drift_score_ambiguous(_score) and getattr(agent, "compression_drift_confirm", True):
+        _confirm = _drift_model_check(agent, _incoming, "\n".join(_prior[-8:]))
+    if not _tc._should_drift_compact(
+        enabled=True, tokens=_tokens, window_tokens=_window,
+        min_ratio=float(getattr(agent, "compression_drift_min_ratio", 0.5) or 0.0),
+        dependence_score=_score, confirm_independent=_confirm,
+        cooldown_active=False, in_task=task_continuation,
+        floor_tokens=_floor, last_compaction_tokens=_last,
+    ):
+        return
+    logger.info(
+        "Drift compaction: new direction at ~%s tokens (%.0f%% of %s window), "
+        "dependence %s, confirm %s (session %s)",
+        f"{_tokens:,}", (100.0 * _tokens / _window) if _window else 0.0, f"{_window:,}",
+        f"{_score:.2f}" if _score is not None else "n/a", _confirm, agent.session_id or "none",
+    )
+    agent._drift_compact_last_ts = _now
+    _drift_status = automatic_compaction_status_message(
+        _compressor, phase="drift",
+        default_message=f"🧠 New direction — compacting finished context (~{_tokens:,} tokens)…",
+        approx_tokens=_tokens, model=agent.model,
+    )
+    if _drift_status:
+        agent._emit_status(_drift_status)
+    out.messages, out.active_system_prompt = agent._compress_context(
+        messages, system_message, approx_tokens=_tokens, task_id=effective_task_id, trigger="drift",
+    )
+    # ``_compress_context`` returns the INPUT list object when it skips; only
+    # re-baseline and re-anchor after a real compaction.
+    if out.messages is not messages:
+        out.conversation_history = conversation_history_after_compression(
+            agent, out.messages, out.conversation_history
+        )
+        out.current_turn_user_idx = _reanchor(agent, out.messages, user_message)

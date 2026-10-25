@@ -488,6 +488,89 @@ def _should_idle_compact(
     return tokens > effective_floor
 
 
+# ── JEV drift-triggered compaction policy ──
+# A topic change makes the old context dead weight; compacting at the size threshold
+# then produces one big lossy cliff. Drift compaction fires EARLY (opportunistic,
+# above ``min_ratio`` of the window) so each summary covers less and loses less.
+
+_DRIFT_DEPENDENT_MIN = 0.45    # >= : lexically entangled with the old region → keep it
+_DRIFT_INDEPENDENT_MAX = 0.15  # <= : disjoint from it → safe to compact away
+_DRIFT_STOPWORDS = frozenset(
+    "a an and are as at be been but by can did do does for from had has have how if in into is it "
+    "its just may might must not of on or our should so than that the their them there these they this "
+    "those to too under up use using very was were what when where which who why will with would you "
+    "your please could about after before between get got need needs want wants still even also"
+    .split()
+)
+
+
+def _drift_content_words(text: str) -> set[str]:
+    """Lowercased lexical content words (length >= 3, stopwords dropped)."""
+    import re
+
+    return {
+        w for w in re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", (text or "").lower())
+        if w not in _DRIFT_STOPWORDS
+    }
+
+
+def drift_dependence_score(incoming: str, prior_texts: list[str]) -> Optional[float]:
+    """Lexical dependence of *incoming* on the earlier (would-be-summarized) region.
+
+    0.0 = disjoint vocabulary (a new direction: the old region is dead weight),
+    1.0 = every content word already appears earlier (continuation: keep it).
+    ``None`` = too little signal to decide (short message or empty region) — the
+    caller treats that as ambiguous and may consult a model. Cheap on purpose: this
+    runs on every turn start and must cost no provider call.
+    """
+    incoming_words = _drift_content_words(incoming)
+    if len(incoming_words) < 3:
+        return None
+    older: set[str] = set()
+    for text in prior_texts:
+        older |= _drift_content_words(text)
+    if len(older) < 3:
+        return None
+    return len(incoming_words & older) / len(incoming_words)
+
+
+def drift_score_ambiguous(score: Optional[float]) -> bool:
+    """True when the heuristic cannot decide (no signal or the gray band)."""
+    if score is None:
+        return True
+    return _DRIFT_INDEPENDENT_MAX < score < _DRIFT_DEPENDENT_MIN
+
+
+def _should_drift_compact(
+    *, enabled: bool, tokens: int, window_tokens: int, min_ratio: float,
+    dependence_score: Optional[float], confirm_independent: Optional[bool],
+    cooldown_active: bool, in_task: bool, floor_tokens: int,
+    last_compaction_tokens: int = 0,
+) -> bool:
+    """Pure predicate: JEV drift compaction fires on a clearly NEW conversational
+    direction above ``min_ratio`` of the window, never below the post-compression
+    floor (same contract as ``_should_idle_compact``), never during a task
+    continuation (its follow-ups depend on in-flight work — the #1 false-drift
+    failure mode) and never inside the drift cooldown.
+
+    The heuristic decides only the clear bands; the ambiguous band (or no signal)
+    compacts only when a model check confirmed the message is independent of the
+    earlier context (``confirm_independent=True``).
+    """
+    if not enabled or in_task or cooldown_active or window_tokens <= 0:
+        return False
+    if min_ratio > 0 and tokens < min_ratio * window_tokens:
+        return False
+    effective_floor = floor_tokens
+    if last_compaction_tokens > 0:
+        effective_floor = max(effective_floor, last_compaction_tokens + floor_tokens)
+    if tokens <= effective_floor:
+        return False
+    if drift_score_ambiguous(dependence_score):
+        return confirm_independent is True
+    return bool(dependence_score is not None and dependence_score <= _DRIFT_INDEPENDENT_MAX)
+
+
 @dataclass
 class TurnContext:
     """Values produced by the turn prologue and consumed by the turn loop."""
@@ -1169,7 +1252,7 @@ def build_turn_context(
         agent, messages=messages, system_message=system_message,
         active_system_prompt=active_system_prompt, conversation_history=conversation_history,
         current_turn_user_idx=current_turn_user_idx, user_message=user_message,
-        effective_task_id=effective_task_id,
+        effective_task_id=effective_task_id, task_continuation=bool(task_id),
     )
     messages = compaction.messages
     active_system_prompt = compaction.active_system_prompt

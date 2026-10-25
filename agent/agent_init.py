@@ -1549,6 +1549,13 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
     # Opt-in idle compaction: compact up front when a session resumes after this many
     # seconds idle (0 = disabled). Consumed by build_turn_context().
     idle_compact_after_seconds = max(0, int(cfg.get("idle_compact_after_seconds", 0)))
+    # Opt-in JEV drift compaction: compact early when the conversation changes direction
+    # (new topic makes the old context dead weight) instead of one lossy cliff at the size
+    # threshold. min_ratio gates it above this fraction of the context window.
+    drift_compact = is_truthy_value(cfg.get("drift_compact"), default=False)
+    drift_min_ratio = float(cfg.get("drift_compact_min_ratio", 0.5))
+    drift_confirm = is_truthy_value(cfg.get("drift_compact_confirm"), default=True)
+    drift_cooldown_seconds = max(0, int(cfg.get("drift_compact_cooldown_seconds", 600)))
     return CompressionSettings(
         threshold=threshold,
         autoraise_notice_enabled=autoraise_notice_enabled,
@@ -1596,6 +1603,10 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
         codex_responses_native=responses_native,
         codex_responses_compact_threshold=compact_threshold,
         idle_compact_after_seconds=idle_compact_after_seconds,
+        drift_compact=drift_compact,
+        drift_compact_min_ratio=drift_min_ratio,
+        drift_compact_confirm=drift_confirm,
+        drift_compact_cooldown_seconds=drift_cooldown_seconds,
     )
 
 
@@ -2049,6 +2060,10 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
     )
     agent.max_compression_attempts = cs.max_attempts
     agent.compression_idle_compact_after_seconds = cs.idle_compact_after_seconds
+    agent.compression_drift_compact = cs.drift_compact
+    agent.compression_drift_min_ratio = cs.drift_compact_min_ratio
+    agent.compression_drift_confirm = cs.drift_compact_confirm
+    agent.compression_drift_cooldown_seconds = cs.drift_compact_cooldown_seconds
 
 
 def _enforce_minimum_context(agent):

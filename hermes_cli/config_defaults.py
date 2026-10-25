@@ -601,6 +601,15 @@ DEFAULT_CONFIG = {
         # are floored at 0.75 (raise-only) so compaction doesn't fire with half the window free; set
         # above 0.75 to override the floor.
         "threshold": 0.50,
+        # drift_compact: opt-in JEV drift-triggered compaction — compact early when the
+        # conversation changes direction (the old context becomes dead weight) instead of
+        # one lossy cliff at the size threshold. drift_compact_min_ratio gates it above
+        # this fraction of the context window; drift_compact_confirm allows one cheap
+        # model check inside the ambiguous band; drift_compact_cooldown_seconds rate-limits.
+        "drift_compact": False,
+        "drift_compact_min_ratio": 0.5,
+        "drift_compact_confirm": True,
+        "drift_compact_cooldown_seconds": 600,
         # threshold_tokens: optional absolute token cap — when set, compression triggers at the
         # lower of the ratio threshold and this count. Clamped to the model's context length.
         # Off by default: no single count suits windows from 64K to 1M+, so the ratio decides.

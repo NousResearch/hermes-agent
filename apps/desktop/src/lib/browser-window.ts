@@ -10,8 +10,12 @@ interface BrowserWindowOptions {
 
 const POPUP_BLOCKED = 'Webapp window did not open. Allow popups for this site and try again.'
 
-// `noopener` makes a successful open return null (HTML window open step 18),
-// so a blocked popup is indistinguishable. Sever opener on the handle instead.
+// No `noopener`: with it, window.open returns null even when the window opens (HTML "window
+// open steps"), so a blocked popup cannot be told from an open one. Severing `opener` on the
+// handle keeps the window from reaching this one. The rest of what noopener prevented now
+// happens: the browser copies this tab's sessionStorage into the window and sends this URL as a
+// same-origin Referer. The only credential in that copy is the launch-link one, which the window
+// ticket below hands over anyway.
 function openWebappWindow(href: string): Window | null {
   const opened = window.open(href, '_blank')
 
@@ -22,7 +26,10 @@ function openWebappWindow(href: string): Window | null {
   return opened
 }
 
-/** Open synchronously in the user gesture; never rely on an opener/storage copy. */
+/**
+ * Open synchronously in the user gesture. A launch-link tab's window signs in with a one-use ticket
+ * and does not rely on the opener or on the sessionStorage copy.
+ */
 export function createBrowserWindowOpener({ api, basePath, privateSession }: BrowserWindowOptions) {
   return (target: URL): Promise<{ ok: true }> => {
     if (!privateSession) {

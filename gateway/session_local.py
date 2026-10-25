@@ -18,6 +18,35 @@ from hermes_state_runtime import RuntimeStoreError
 logger = logging.getLogger(__name__)
 
 
+class ProfileAdapterMap(dict):
+    """Per-profile adapter registry for a served secondary (see
+    ``authz_mixin.GatewayAuthorizationMixin._is_shared_bot_satellite``).
+
+    Truthiness reports only REAL (non-LOCAL) adapters: the ``LocalSessionAdapter`` that
+    session-local recovery registers for a profile's cron/kanban worker sessions must not
+    make a credential-less satellite look like it owns a bot. Every consumer keyed on
+    ``not profile_adapters`` (the cron tick adapter selection and the restart-safe
+    delivery drain) then keeps routing real-platform delivery through the primary's
+    ``profile_routes`` instead of failing closed. The LOCAL entry stays fully
+    accessible for local-session delivery; only the empty-placeholder contract is
+    restored."""
+
+    def __bool__(self) -> bool:
+        from gateway.config import Platform
+        return any(k is not Platform.LOCAL for k in self)
+
+
+def ensure_profile_adapter_map(maps: dict, name: str) -> ProfileAdapterMap:
+    """Fetch ``maps[name]`` as a :class:`ProfileAdapterMap`, swapping a plain dict when needed so
+    the empty-placeholder contract (LOCAL-only == falsy) holds regardless of which call site
+    created the entry first (secondary adapter start vs session-local recovery). All consumers
+    re-read the map per use, so the swap is safe."""
+    existing = maps.get(name)
+    if not isinstance(existing, ProfileAdapterMap):
+        existing = maps[name] = ProfileAdapterMap(existing or {})
+    return existing
+
+
 class LocalSessionAdapter(BasePlatformAdapter):
     """Delivery stays in the canonical event stream; no second local transport."""
 

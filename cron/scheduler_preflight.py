@@ -201,14 +201,20 @@ class SharedRouteAdapters:
     See #101113.
     """
 
-    def __init__(self, primary_adapters, routes) -> None:
+    def __init__(self, primary_adapters, routes, local_adapter=None) -> None:
         self._primary = dict(primary_adapters or {})
         self._routes = list(routes or [])
+        # The satellite's own LOCAL adapter (session_local_recovery placeholder) stays
+        # authoritative for local lookups; real platforms only ride the shared routes.
+        self._local = local_adapter
 
     def __bool__(self) -> bool:
         return bool(self._primary) and bool(self._routes)
 
     def get(self, platform, target=None, default=None):
+        from gateway.config import Platform
+        if platform is Platform.LOCAL:
+            return self._local if self._local is not None else default
         if not target:
             return default
         adapter = self._primary.get(platform)

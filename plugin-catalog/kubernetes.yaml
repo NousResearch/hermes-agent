@@ -1,0 +1,20 @@
+name: kubernetes
+repo: https://github.com/TakeshiTGAL/hermes-plugin-kubernetes
+sha: efd99f3afca5054c7f15b37e39261402827f3cda
+description: "Write one namespace in cluster.json to approve the scope, then use four reads: list pods, get one pod, list events, and read logs. Kubernetes is a registered trademark of The Linux Foundation. kubernetes-mcp-server 0.0.68 starts with uvx and is not modified. read_only is true, toolsets stay core, and only pods_list_in_namespace, pods_get, events_list, and pods_log are enabled. Helm is not offered. Secret, ConfigMap, and ServiceAccount are denied. configuration_view is not listed. prod, production, live, and prd names are refused unless allow_production is true. Public and link-local hosts are always refused. The host must be local, and DNS is not resolved. readOnlyHint is true, so no approval card is shown. Before the call, name the namespace, the object, and that it only reads, because status, events, and logs reach the model. This plugin does not create a cron job. Disclosure — the token is sent only to the API host in the kubeconfig. No HTTP proxy is used. Plain http sends the token without encryption. The first start may download the pinned binary from GitHub. Password-like env values and last-applied-configuration become [redacted]. Gateway users can call these tools with that kubeconfig. Stop with hermes plugins disable kubernetes or hermes tools disable mcp-kubernetes."
+maintainer: TakeshiTGAL
+tier: community
+category: tools
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/TakeshiTGAL/hermes-plugin-kubernetes#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - mcp__kubernetes__pods_list_in_namespace
+    - mcp__kubernetes__pods_get
+    - mcp__kubernetes__events_list
+    - mcp__kubernetes__pods_log
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

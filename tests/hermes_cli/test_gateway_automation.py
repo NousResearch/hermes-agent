@@ -88,6 +88,7 @@ def test_the_watchdog_fires_a_heartbeat_another_viewer_resumed(cli, monkeypatch)
     from hermes_cli import cli_loops_mixin
     from hermes_cli.gateway_automation import GatewayHeartbeatManager
     from hermes_cli.heartbeat import load_heartbeat, save_heartbeat
+    from tests.waiting import wait_until
     hb = cli.cli._get_heartbeat_manager()
     hb.set('pulse', 60)
     hb.pause()  # /heartbeat pause in this CLI
@@ -101,9 +102,7 @@ def test_the_watchdog_fires_a_heartbeat_another_viewer_resumed(cli, monkeypatch)
     monkeypatch.setattr(cli_loops_mixin, 'time', SimpleNamespace(
         sleep=lambda _s: setattr(cli.cli, '_should_exit', True), time=time.time))
     cli.cli._start_heartbeat_watchdog()
-    deadline = time.monotonic() + 5
-    while cli.cli._heartbeat_watchdog_started and time.monotonic() < deadline:
-        time.sleep(0.01)
+    wait_until(lambda: not cli.cli._heartbeat_watchdog_started, what='the watchdog exited')
     assert [p for p in cli.cli._pending_input.queue if 'pulse' in p]
 
 

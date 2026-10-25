@@ -84,6 +84,15 @@ class TestMultiprofileRawConfigCache:
     other profile's unchanged entry."""
 
     @staticmethod
+    def _patch_config_parser(monkeypatch, parse):
+        """Route config.yaml parses through *parse(text)*: the backend parses with
+        ``utils.fast_safe_load`` on the open file."""
+        import utils
+
+        real = utils.fast_safe_load
+        monkeypatch.setattr(utils, "fast_safe_load", lambda stream: parse(stream.read(), real))
+
+    @staticmethod
     def _load_under(home) -> list:
         from agent import skill_utils
         from hermes_constants import (
@@ -104,14 +113,13 @@ class TestMultiprofileRawConfigCache:
         for i, home in enumerate(homes):
             _write_disabled_config(home, f"skill-{i:02d}")
         parse_count = 0
-        real_yaml_load = skill_utils.yaml_load
 
-        def counting_yaml_load(text):
+        def counting_parse(text, real):
             nonlocal parse_count
             parse_count += 1
-            return real_yaml_load(text)
+            return real(text)
 
-        monkeypatch.setattr(skill_utils, "yaml_load", counting_yaml_load)
+        self._patch_config_parser(monkeypatch, counting_parse)
         skill_utils._raw_config_cache_clear()
 
         for _ in range(3):
@@ -129,14 +137,13 @@ class TestMultiprofileRawConfigCache:
         _write_disabled_config(first, "old-disabled")
         _write_disabled_config(second, "second-disabled")
         parse_count = 0
-        real_yaml_load = skill_utils.yaml_load
 
-        def counting_yaml_load(text):
+        def counting_parse(text, real):
             nonlocal parse_count
             parse_count += 1
-            return real_yaml_load(text)
+            return real(text)
 
-        monkeypatch.setattr(skill_utils, "yaml_load", counting_yaml_load)
+        self._patch_config_parser(monkeypatch, counting_parse)
         skill_utils._raw_config_cache_clear()
         assert self._load_under(first) == ["old-disabled"]
         assert self._load_under(second) == ["second-disabled"]
@@ -162,15 +169,14 @@ class TestMultiprofileRawConfigCache:
         _write_disabled_config(first, "first-disabled")
         _write_disabled_config(second, "second-disabled")
         entered, release = Event(), Event()
-        real_yaml_load = skill_utils.yaml_load
 
-        def delayed_yaml_load(text):
+        def delayed_parse(text, real):
             if "first-disabled" in text:
                 entered.set()
                 assert release.wait(5), "first profile was not released"
-            return real_yaml_load(text)
+            return real(text)
 
-        monkeypatch.setattr(skill_utils, "yaml_load", delayed_yaml_load)
+        self._patch_config_parser(monkeypatch, delayed_parse)
         skill_utils._raw_config_cache_clear()
         with ThreadPoolExecutor(max_workers=2) as pool:
             first_result = pool.submit(self._load_under, first)

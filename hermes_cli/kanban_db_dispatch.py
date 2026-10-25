@@ -930,48 +930,6 @@ def _error_fingerprint(error_text: str) -> str:
     return fp.lower().strip()
 
 
-# ~96% of "clean exit without a terminal tool call" tasks complete on a later
-# run, so a protocol violation gets a bounded retry before the breaker trips.
-# The budget is a violation-only STREAK (``_protocol_violation_streak``),
-# independent of ``consecutive_failures``: other failure kinds neither consume
-# nor extend it. Per-task ``max_retries`` overrides it.
-_PROTOCOL_VIOLATION_FAILURE_LIMIT = 3
-
-# Closed runs to walk when counting the streak; it trips at a handful anyway.
-_PROTOCOL_VIOLATION_SCAN_LIMIT = 50
-
-
-def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
-    """Count the task's trailing run of clean-exit protocol violations.
-
-    Walks closed runs newest-first (including the one ``detect_crashed_workers``
-    just closed). ``rate_limited`` runs are neutral and skipped (a quota wall
-    says nothing about the task); any other closed run breaks the streak, so
-    the budget counts ONLY protocol violations. Violations are recognized by the
-    ``protocol_violation`` run-metadata marker, with the error text as fallback
-    for runs recorded before the marker existed.
-    """
-    streak = 0
-    rows = conn.execute(
-        "SELECT outcome, error, metadata FROM task_runs "
-        "WHERE task_id = ? AND ended_at IS NOT NULL "
-        "ORDER BY id DESC LIMIT ?",
-        (task_id, _PROTOCOL_VIOLATION_SCAN_LIMIT),
-    ).fetchall()
-    for row in rows:
-        outcome = row["outcome"] or ""
-        if outcome == "rate_limited":
-            continue
-        if outcome == "crashed" and (
-            _kb._json_dict(row["metadata"]).get("protocol_violation")
-            or "protocol violation" in (row["error"] or "")
-        ):
-            streak += 1
-            continue
-        break
-    return streak
-
-
 _PROTOCOL_VIOLATION_ERROR = (
     # Worker subprocess returned 0 but its task is still ``running`` in the DB — it exited without calling
     # ``kanban_complete`` / ``kanban_block`` / ``kanban_request_review``. Overwhelmingly the work itself succeeded and only the
@@ -1108,9 +1066,8 @@ def _classify_dead_worker_exit(
         # worker via ``build_worker_context``.
         return _DeadWorker(
             kind, code, _PROTOCOL_VIOLATION_ERROR, "protocol_violation",
-            # ``protocol_violation`` is the durable marker for
-            # _protocol_violation_streak: _end_run copies this payload into the
-            # run metadata.
+            # ``protocol_violation`` is durable evidence: the reclaim CAS
+            # copies this payload into the closed run's metadata.
             {"pid": pid, "claimer": claimer, "exit_code": code, "protocol_violation": True},
             protocol_violation=True,
         )
@@ -1195,19 +1152,35 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
             exit_code = managed_run_exit_code(conn, row["id"], pid, row["claim_lock"])
             dead = _classify_dead_worker(pid, row["claim_lock"], exit_code, task_id=row["id"], board=board)
             retry_status = _kb._retry_status_for_run(conn, row["id"])
-            dead.event_payload["retry_status"] = retry_status
-            cur = conn.execute(
-                "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "
-                "WHERE id = ? AND status = 'running' "
-                "  AND worker_pid = ? AND claim_lock IS ?",
-                (retry_status, row["id"], pid, row["claim_lock"]),
-            )
+            # A zero exit is terminal evidence that a worker ignored the board
+            # protocol.  Make the status transition, run closure, and visible
+            # event one CAS-protected transaction; a competing terminal action
+            # changes status/claim and loses this update without side effects.
+            if dead.protocol_violation:
+                dead.event_payload.update({"sticky": True, "retry_status": retry_status})
+                cur = conn.execute(
+                    "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
+                    "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
+                    "last_failure_error = ? "
+                    "WHERE id = ? AND status = 'running' "
+                    "  AND worker_pid = ? AND claim_lock IS ?",
+                    (dead.error_text[:500], row["id"], pid, row["claim_lock"]),
+                )
+            else:
+                dead.event_payload["retry_status"] = retry_status
+                cur = conn.execute(
+                    "UPDATE tasks SET status = ?, claim_lock = NULL, "
+                    "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "
+                    "WHERE id = ? AND status = 'running' "
+                    "  AND worker_pid = ? AND claim_lock IS ?",
+                    (retry_status, row["id"], pid, row["claim_lock"]),
+                )
             if cur.rowcount != 1:
                 continue
             run_id = _kb._end_run(
                 conn, row["id"],
-                outcome=dead.run_outcome, status=dead.run_outcome,
+                outcome=("protocol_violation" if dead.protocol_violation else dead.run_outcome),
+                status=("protocol_violation" if dead.protocol_violation else dead.run_outcome),
                 error=dead.error_text,
                 metadata=dict(dead.event_payload),
             )
@@ -1236,18 +1209,22 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 sweep.rate_limited.append(row["id"])
             else:
                 sweep.crashed.append(row["id"])
-                sweep.crash_details.append((row["id"], pid, row["claim_lock"], dead))
+                # Clean-exit protocol violations already reached their terminal,
+                # sticky state in the CAS transaction above. Other crash kinds
+                # retain deferred breaker accounting.
+                if not dead.protocol_violation:
+                    sweep.crash_details.append((row["id"], pid, row["claim_lock"], dead))
     return sweep
 
 
 def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]:
     """Count each crash against the breaker; returns the task ids it tripped.
 
-    Protocol violations get a BOUNDED violation-only budget independent of
-    ``consecutive_failures`` (per-task ``max_retries`` takes precedence);
-    systemic same-error crashes (>= 3 identical fingerprints this tick) and
-    terminal provider errors (credential revoked, model gone — a retry cannot
-    heal them) trip immediately.
+    Clean-exit protocol violations are terminally blocked in
+    :func:`_reclaim_dead_workers`; this function accounts only nonzero crash
+    paths. Systemic same-error crashes (>= 3 identical fingerprints this tick)
+    and terminal provider errors (credential revoked, model gone — a retry
+    cannot heal them) trip immediately.
     """
     auto_blocked: list[str] = []
     fp_counts: dict[str, int] = {}
@@ -1256,37 +1233,7 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
         fp_counts[fp] = fp_counts.get(fp, 0) + 1
     for tid, pid, claimer, dead in crash_details:
         error_text = dead.error_text
-        if dead.protocol_violation:
-            streak = _protocol_violation_streak(conn, tid)
-            trow = conn.execute("SELECT max_retries FROM tasks WHERE id = ?", (tid,)).fetchone()
-            if trow is None:
-                continue  # task deleted mid-loop
-            task_override = _kb._row_get(trow, "max_retries")
-            violation_limit = (
-                int(task_override) if task_override is not None else _PROTOCOL_VIOLATION_FAILURE_LIMIT
-            )
-            if streak < violation_limit:
-                # Below budget: already back at ``ready`` with the error stamped.
-                # No ``_record_task_failure`` — must not consume the unified budget.
-                continue
-            # ``force_trip``: the decision (incl. per-task ``max_retries``) was
-            # already made against the violation streak above.
-            tripped = _record_task_failure(
-                conn, tid,
-                error=error_text,
-                outcome="crashed",
-                failure_limit=violation_limit,
-                force_trip=True,
-                release_claim=False,
-                end_run=False,
-                event_payload_extra={
-                    "pid": pid,
-                    "claimer": claimer,
-                    "protocol_violations": streak,
-                    "protocol_violation_limit": violation_limit,
-                },
-            )
-        elif dead.terminal_provider:
+        if dead.terminal_provider:
             # A retry cannot heal a revoked credential or a missing model, so
             # the whole ``failure_limit`` budget would be spent on identical
             # failures. ``force_trip`` blocks now, sticky: ``recompute_ready``
@@ -1325,9 +1272,9 @@ def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None
 
     Restores the source phase immediately (no waiting for the claim TTL), for
     tasks claimed by *this host* only — other hosts' PIDs are meaningless.
-    Clean exit while ``running`` is a protocol violation with a bounded
-    violation-only retry budget; ``KANBAN_RATE_LIMIT_EXIT_CODE`` is a quota
-    wall, released WITHOUT counting a failure and surfaced via the
+    Clean exit while ``running`` is a first-occurrence sticky
+    ``protocol_violation``; ``KANBAN_RATE_LIMIT_EXIT_CODE`` is a quota wall,
+    released WITHOUT counting a failure and surfaced via the
     ``_last_rate_limited`` attribute (the return stays crashed-only).
     """
     sweep = _reclaim_dead_workers(conn, board=board)

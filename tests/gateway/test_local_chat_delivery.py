@@ -76,6 +76,33 @@ async def test_overdue_heartbeat_fires_once_with_a_classic_cli_also_polling(tmp_
 
 
 @pytest.mark.asyncio
+async def test_a_classic_cli_driving_its_heartbeat_keeps_the_tick(tmp_path, monkeypatch):
+    """The classic CLI paints only the ticks its own watchdog fires, so the poller leaves them to it."""
+    from gateway.run_heartbeat_restore import restore_heartbeat_watches
+    from gateway.session_controls import AuthorityConnection
+    from gateway.session_local import create_local_session
+    from hermes_cli import goals
+    runner, authority, _, _ = await _local(tmp_path, monkeypatch)
+    # The RPC runs under the owner's profile scope, ``Path('default')`` here: keep it in tmp_path, on its db.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(goals, '_get_session_db', lambda: authority.db)
+    cli = AuthorityConnection(authority, object(), {'user_id': 'human', 'profile_id': 'default'})
+    ref = create_local_session(authority, cli.actor, dict(request_id='cli', source='cli', model='fixture', toolsets=[]))
+    cli.subscriptions[ref.session_id] = 'sub-1'
+    _overdue_heartbeat(ref.session_id)
+    await restore_heartbeat_watches(runner)
+
+    async def automation(call):
+        reply = await cli.dispatch({'id': 1, 'method': 'session.automation', 'params': {
+            'session_id': ref.session_id, 'kind': 'heartbeat', 'call': call, 'args': [], 'kwargs': {}}})
+        return reply['result']
+    await automation('state')  # the attached CLI's heartbeat manager
+    await runner._heartbeat_poll_once(runner._heartbeat_watch)
+    assert not _heartbeat_admissions(authority, ref)
+    assert 'status tick' in (await automation('due_prompt'))['value']
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('live_adapters', [False, True], ids=['no-local-adapter-yet', 'in-gateway-ticker'])
 @pytest.mark.parametrize('viewer', [False, True], ids=['unviewed', 'viewed'])
 async def test_cron_result_for_a_local_origin_is_a_note_not_a_turn(tmp_path, monkeypatch, live_adapters, viewer):

@@ -282,6 +282,33 @@ def _validate_bot_chat_deliver(deliver: Optional[str]) -> Optional[str]:
     return None
 
 
+def _validate_platform_deliver_targets(deliver: Optional[str]) -> Optional[str]:
+    """Validate explicit ``platform:target`` deliver elements at create/update time through
+    resolve_send_target — the resolver the send path uses (plugin parser, then validator,
+    then channel directory) — so a malformed target fails the call while the model can still
+    fix it, not the first fired run after the job's work is already lost (#135942). Routing
+    tokens (``local``/``origin``/``all``/``bot-chat[:profile]``) and bare platform names
+    (home-channel delivery) keep their fire-time handling. Returns an error string or None."""
+    if not deliver:
+        return None
+    try:
+        from cron.scheduler_delivery import parse_bot_chat_deliver_token
+        from tools.send_message_targets import resolve_send_target
+        from tools.send_message_tool import prepare_send_message_platforms
+    except ImportError:
+        return None  # best-effort; resolution re-checks at fire time
+    for part in str(deliver).split(","):
+        target = part.strip()
+        platform_name, sep, target_ref = target.partition(":")
+        if not sep or not target_ref or parse_bot_chat_deliver_token(target) is not None:
+            continue  # routing token, bot-chat token, or bare platform (home channel)
+        prepare_send_message_platforms()
+        _, _, error = resolve_send_target(platform_name.strip().lower(), target_ref)
+        if error:
+            return f"invalid deliver target '{target}': {error}"
+    return None
+
+
 def _resolve_cron_context_deliver(deliver: Optional[str]) -> Optional[str]:
     """Resolve ``origin`` to a concrete target for creates made FROM a cron run (the creating
     session is ephemeral, so by fire time there is no origin). Non-cron sessions: unchanged.

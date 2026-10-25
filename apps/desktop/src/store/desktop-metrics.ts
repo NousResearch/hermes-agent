@@ -307,6 +307,7 @@ export type DesktopFeatureToggle =
   | 'tips'
   | 'tours'
   | 'vibe_hearts'
+  | 'show_full_user_messages'
 
 export type DesktopUndoTarget = 'closed_tab' | 'restored_draft'
 

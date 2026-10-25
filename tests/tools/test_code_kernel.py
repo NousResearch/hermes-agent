@@ -23,6 +23,7 @@ import sys
 import tempfile
 import textwrap
 import time
+import threading
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
@@ -528,6 +529,75 @@ class TestPerCellRpcAuthority(unittest.TestCase):
         authority.retire()
         result = authority.dispatch("web_search", {"query": "q"})
         self.assertIn("No active execute_code cell", result)
+
+    def test_retiring_cell_authority_withdraws_a_waiting_protected_file_approval(self):
+        """Regression for #139062: a timed-out cell cannot apply a later approval."""
+        from tools.code_kernel import CellAuthority
+        from tools.file_tools import write_file_tool
+        from tools.interrupt import is_interrupted, set_interrupt
+        from tools.terminal_tool import set_approval_callback
+
+        started, release = threading.Event(), threading.Event()
+        target = Path(tempfile.mkdtemp()) / "AGENTS.md"
+
+        def approval_callback(*_args, **_kwargs):
+            started.set()
+            release.wait(timeout=5)
+            return "once"
+
+        def dispatch(_tool_name, _tool_args, *, task_id):
+            return write_file_tool(str(target), "after", task_id=task_id)
+
+        import tools.file_tools_write_guards as guards
+        result = []
+        try:
+            set_approval_callback(approval_callback)
+            authority = CellAuthority("turn-1")
+            with patch("model_tools.handle_function_call", side_effect=dispatch), \
+                 patch.object(guards, "_protected_instruction_config", return_value=(True, [])):
+                def run_dispatch():
+                    result.append(authority.dispatch("write_file", {}))
+
+                worker = threading.Thread(target=run_dispatch)
+                worker.start()
+                self.assertTrue(started.wait(timeout=5), "protected-file approval never started")
+                authority.retire()
+                release.set()
+                worker.join(timeout=5)
+            self.assertFalse(worker.is_alive(), "RPC handler did not leave the withdrawn approval")
+        finally:
+            set_approval_callback(None)
+            release.set()
+        self.assertFalse(target.exists())
+        self.assertIn("approval was withdrawn", result[0])
+
+    def test_retiring_cell_authority_keeps_a_later_user_interrupt(self):
+        from tools.code_kernel import CellAuthority
+        from tools.interrupt import is_interrupted, set_interrupt
+
+        started, release = threading.Event(), threading.Event()
+        thread_id, interrupted = [], []
+
+        def dispatch(*_args, **_kwargs):
+            thread_id.append(threading.current_thread().ident)
+            started.set()
+            release.wait(timeout=5)
+            return "done"
+
+        authority = CellAuthority("turn-1")
+        with patch("model_tools.handle_function_call", side_effect=dispatch):
+            worker = threading.Thread(target=lambda: (
+                authority.dispatch("web_search", {}), interrupted.append(is_interrupted())
+            ))
+            worker.start()
+            self.assertTrue(started.wait(timeout=5), "RPC dispatch never started")
+            authority.retire()
+            set_interrupt(True, thread_id[0], reason="user stop")
+            release.set()
+            worker.join(timeout=5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(interrupted, [True])
+        set_interrupt(False, thread_id[0])
 
     def test_each_cell_installs_a_fresh_authority(self):
         with _kernel_config():

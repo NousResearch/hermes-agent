@@ -798,7 +798,8 @@ export function useComposerActions({
       }
 
       let attached = false
-      let lastFailure: string | null = null
+      // Every item that failed, so a drop that attached some files still names the rest.
+      const failures: string[] = []
 
       for (const candidate of candidates) {
         const { file, isDirectory, path: knownPath } = candidate
@@ -812,7 +813,7 @@ export function useComposerActions({
               continue
             }
 
-            lastFailure = `Could not attach folder ${knownPath || ''}`
+            failures.push(`Could not attach folder ${knownPath || ''}`)
 
             continue
           }
@@ -824,7 +825,7 @@ export function useComposerActions({
               continue
             }
 
-            lastFailure = `Could not attach ${knownPath}`
+            failures.push(`Could not attach ${knownPath}`)
 
             continue
           }
@@ -835,7 +836,7 @@ export function useComposerActions({
             continue
           }
 
-          lastFailure = `Could not attach ${knownPath || 'file'}`
+          failures.push(`Could not attach ${knownPath || 'file'}`)
 
           continue
         }
@@ -861,7 +862,7 @@ export function useComposerActions({
             continue
           }
 
-          lastFailure = `Could not attach ${file.name || 'image'}`
+          failures.push(`Could not attach ${file.name || 'image'}`)
 
           continue
         }
@@ -875,11 +876,11 @@ export function useComposerActions({
           continue
         }
 
-        lastFailure = staged.failure
+        failures.push(staged.failure)
       }
 
-      if (!attached && lastFailure) {
-        notify({ kind: 'warning', title: copy.dropFiles, message: lastFailure })
+      if (failures.length) {
+        notify({ kind: 'warning', title: copy.dropFiles, message: failures.join('; ') })
       }
 
       return attached

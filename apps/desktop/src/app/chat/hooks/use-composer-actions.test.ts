@@ -426,6 +426,51 @@ describe('useComposerActions native image drops', () => {
     expect($notifications.get().at(-1)?.message).toContain("Could not attach shots.png: Folders can't be attached")
   })
 
+  // A drop that attached some files must still name the ones it left out.
+  it('reports the items a mixed drop could not attach alongside the ones it did', async () => {
+    const stageFileForAttach = vi.fn(async (file: File) => {
+      if (file.name === 'big.zip') {
+        throw new Error('Upload request is too large')
+      }
+
+      return `/srv/uploads/web-${file.name}`
+    })
+
+    const value = { getPathForFile: () => '', stageFileForAttach }
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value })
+
+    const add = vi.fn()
+
+    const { result } = renderHook(() =>
+      useComposerActions({
+        activeSessionId: null,
+        currentCwd: '/w',
+        requestGateway: vi.fn(),
+        scope: { add, remove: vi.fn(() => null), target: 'main', update: vi.fn(() => true), updateIfCurrent: vi.fn(() => true) }
+      })
+    )
+
+    let attached = false
+
+    await act(async () => {
+      attached = await result.current.attachDroppedItems([
+        { file: new File(['x'], 'notes.txt'), path: '' },
+        { file: new File(['x'], 'big.zip'), path: '' },
+        { file: new File([], 'my-repo'), isDirectory: true, path: '' }
+      ])
+    })
+
+    expect(attached).toBe(true)
+    expect(add).toHaveBeenCalledOnce()
+    expect(add).toHaveBeenCalledWith(expect.objectContaining({ path: '/srv/uploads/web-notes.txt' }))
+
+    const warning = $notifications.get().find(notice => notice.message.includes('big.zip'))
+
+    expect(warning).toMatchObject({ kind: 'warning' })
+    expect(warning?.message).toContain('Could not attach big.zip: Upload request is too large')
+    expect(warning?.message).toContain("Could not attach my-repo: Folders can't be attached")
+  })
+
   it('copies dropped screenshot bytes before trusting a transient macOS path', async () => {
     const transientPath =
       '/var/folders/x7/example/T/TemporaryItems/NSIRD_screencaptureui_4roSuW/Screen Shot 2026-08-11.png'

@@ -258,6 +258,24 @@ def _route_owner(authority, entry):
             else authority.logical_owner(entry.session_id))
 
 
+def _owned_by(db, session_id, current):
+    """Whether ``session_id``, or a (nested) delegate_task conversation it runs under, is the route's
+    live ``current`` session or compressed into it. The walk stops at the first such hop: a resumed
+    delegate run is the chat's own conversation, never the parent it was spawned from. As in the
+    completion pre-flight (``_lookup_completion_owner``), only ``model_config._delegate_from`` leads
+    out of an execution transcript: ``parent_session_id`` also records compression and branches.
+    Likewise a session closed at a user boundary (/new, a resume away) leads nowhere."""
+    from gateway.run import _USER_BOUNDARY_END_REASONS
+    lineage = [session_id]
+    while lineage[-1] != current and db.get_compression_tip(lineage[-1]) != current:
+        row = db.get_session(lineage[-1]) or {}
+        parent = db.get_session_model_config_value(lineage[-1], '_delegate_from')
+        if (row.get('ended_at') and row.get('end_reason') in _USER_BOUNDARY_END_REASONS) or parent in (None, *lineage):
+            return False
+        lineage.append(parent)
+    return True
+
+
 def _owner(runner, event, authority):
     route = event.metadata.get('gateway_session_key') or runner.session_store._generate_session_key(event.source)
     entry = runner.session_store.lookup_by_session_key(route)
@@ -266,12 +284,10 @@ def _owner(runner, event, authority):
     if runner.session_store._generate_session_key(event.source) != route:
         raise RuntimeStoreError('admission_conflict')
     expected = event.metadata.get('gateway_session_id')
-    if not expected:
+    # A completed child may follow compression, and a process a subagent started its parent
+    # conversation, but never /new or an unrelated resume.
+    if not expected or not _owned_by(authority.db, expected, entry.session_id):
         raise RuntimeStoreError('admission_conflict')
-    if expected != entry.session_id:
-        # A completed child may follow compression, but never /new or an unrelated resume.
-        if authority.db.get_compression_tip(expected) != entry.session_id:
-            raise RuntimeStoreError('admission_conflict')
     return entry
 
 
@@ -326,10 +342,6 @@ def admission_display(payload):
     return card
 
 
-def _route_identity(source):
-    return {key: value for key, value in source.to_dict().items() if key != 'message_id'}
-
-
 def committed_route_envelope(authority, entry):
     """The route's last committed native envelope with connector provenance (what a producer turn
     borrows), or ``None`` while no human message was admitted there."""
@@ -364,15 +376,20 @@ def snapshot_automation(authority, adapter, event, identity):
     # Recheck only the source/provenance: a completed input's retained media is already released.
     restored = restore_native({'text': event.text, 'native_text_v1': {
         key: value for key, value in envelope.items() if key != 'media'}}, runner)
-    # Synthetic wakes clear ``message_id`` (#52694, #123097) while the committed human source keeps
-    # it, so compare the routing/provenance identity, never the platform reply anchor.
-    if (_route_identity(restored.source) != _route_identity(event.source)
+    # The wake runs as the committed human source; the producer's source, rebuilt from the route's
+    # stored origin, only names the route. Its labels, first speaker and stored profile drift from
+    # the latest committed turn, so compare the route both resolve to now (``_owner`` checked it).
+    if (runner.session_store._generate_session_key(restored.source) != entry.session_key
             or runner._adapter_for_source(restored.source) is not adapter):
         raise RuntimeStoreError('admission_conflict')
     provenance = deepcopy(envelope['provenance'])
     source = deepcopy(envelope['source'])
     # Never anchor the wake to the stale human message; ``to_dict`` already omits a null anchor.
     source.pop('message_id', None)
+    if 'relay' in provenance:
+        # The relay seal binds the source; restore_native verified it over the anchored source.
+        from gateway.session_ingress_context import reseal_relay
+        provenance = reseal_relay(adapter, source, provenance)
     # Producer timestamps and platform reply IDs change on retry. Neither belongs
     # in the identity/fingerprint of the same immutable completion.
     envelope = {'source': source, 'route': entry.session_key,
@@ -488,6 +505,17 @@ async def admit_automation(authority, adapter, event, identity, replaces=None):
 
 
 _ROUTE_WAKE_PRODUCERS = frozenset({'kanban-wake', 'loop-tick'})
+
+
+def route_owner_lock(runner, session_id):
+    """*session_id*'s live owner's ``mutation_lock`` (a no-op without one). Held across a route
+    rotation and ``move_route_wakes``: its drain refuses a wake on the rotated route, so it must not
+    claim one the move has not taken yet."""
+    import contextlib
+    from gateway.session_authorities import active_authority
+    authority = active_authority(runner)
+    live = authority.sessions.get(authority.logical_owner(session_id)) if authority and session_id else None
+    return live.mutation_lock if live is not None else contextlib.nullcontext()
 
 
 async def move_route_wakes(runner, session_key, old_session_id):
@@ -659,8 +687,10 @@ async def admit_route_wake(runner, adapter, source, text, producer, metadata=Non
     route holds no committed human turn to borrow provenance from: the caller keeps the adapter
     path (nothing is queued there either). Raises ``RuntimeStoreError`` on a refusal."""
     from gateway.session_authorities import active_authority
+    from gateway.session_local_recovery import restore_completion_route
     authority = active_authority(runner)
     key = runner._session_key_for_source(source)
+    restore_completion_route(runner, key)  # a closed local session boot left unrestored has no store entry yet
     entry = runner.session_store.lookup_by_session_key(key) if authority is not None else None
     if authority is None or entry is None:
         return False

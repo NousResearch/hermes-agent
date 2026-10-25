@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import sys
+from urllib.parse import urlsplit
 
 import requests
 
@@ -44,8 +45,18 @@ def _headers():
     return {"Authorization": f"Bearer {CANVAS_API_TOKEN}"}
 
 
+def _same_origin(url: str) -> bool:
+    """True when ``url`` shares the configured Canvas origin (scheme + host)."""
+    base, other = urlsplit(CANVAS_BASE_URL), urlsplit(url)
+    return bool(base.netloc) and other.scheme == base.scheme and other.netloc == base.netloc
+
+
 def _paginated_get(url, params=None, max_items=200):
-    """Fetch all pages up to max_items, following Canvas Link headers."""
+    """Fetch all pages up to max_items, following Canvas Link headers.
+
+    A ``rel="next"`` URL is followed only when it stays on the configured Canvas
+    origin, so a compromised/misconfigured base can never point pagination at an
+    attacker host and receive the bearer token."""
     results = []
     while url and len(results) < max_items:
         resp = requests.get(url, headers=_headers(), params=params, timeout=30)
@@ -56,7 +67,9 @@ def _paginated_get(url, params=None, max_items=200):
         link = resp.headers.get("Link", "")
         for part in link.split(","):
             if 'rel="next"' in part:
-                url = part.split(";")[0].strip().strip("<>")
+                candidate = part.split(";")[0].strip().strip("<>")
+                if _same_origin(candidate):
+                    url = candidate
     return results[:max_items]
 
 

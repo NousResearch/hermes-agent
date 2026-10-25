@@ -22,6 +22,7 @@ from agent.file_safety import get_nt_namespace_error, get_read_block_error
 from agent.tool_result_classification import GUARDRAIL_REFUSAL_KEY
 from tools.binary_extensions import has_binary_extension
 from tools.skill_provenance import is_background_review
+from tools.spillover_guard import spillover_search_block
 from tools.file_operations import (
     ShellFileOperations, normalize_read_pagination, normalize_search_pagination)
 from tools.file_operations_common import DEFAULT_READ_LIMIT, count_conflict_blocks
@@ -1075,6 +1076,10 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 pattern=pattern,
                 already_searched=count,
                 **{GUARDRAIL_REFUSAL_KEY: True})
+
+        spill_err = spillover_search_block(pattern, path, file_glob, target)
+        if spill_err:
+            return tool_error(spill_err, **{GUARDRAIL_REFUSAL_KEY: True})
 
         # Raw string before _resolve_path_for_task: resolving is the NTLM-leak
         # trigger and the task-base join would hide the prefix (see read_file_tool).

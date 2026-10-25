@@ -922,6 +922,11 @@ from tools.terminal_tool_guards import (
     _foreground_background_guidance, _safe_command_preview, _validate_workdir,
     gateway_lifecycle_block, self_repo_block, trailing_amp_background_command,
 )
+from tools.spillover_guard import (
+    bounded_spillover_timeout,
+    spillover_background_block,
+    spillover_regex_block,
+)
 from tools.terminal_tool_background import _YIELDED_NOTE, spawn_background_process, yield_to_background_handler
 from tools.terminal_tool_result import finalize_foreground_result
 
@@ -1205,8 +1210,18 @@ def _plan_execution(
     # value is truthy and would fire an immediate "-Ns" timeout.
     if timeout is not None and timeout <= 0:
         raise _Rejected(tool_error(f"timeout must be a positive number of seconds (got {timeout})."))
+    # Refuse before any env/backend work: the background path (spawn_local/spawn_via_env) has
+    # no call deadline, so a spillover command that slips past the static regex guard would
+    # run unbounded; the incident class is exactly a grep that outlived its timeout.
+    spill_bg_msg = spillover_background_block(command, background)
+    if spill_bg_msg:
+        logger.warning("Blocked background spillover command (command: %s)", _safe_command_preview(command))
+        raise _Rejected(_error_json(spill_bg_msg, status="blocked"))
     promoted = None
     if not background:
+        # A foreground command that touches a spillover file is a bounded read: hard-cap its
+        # deadline (also keeps it from being promoted to background by an over-cap timeout).
+        timeout = bounded_spillover_timeout(command, timeout)
         # An over-cap foreground timeout is a bounded job the caller wants to wait for (test suites,
         # builds). Refusing it only bought a mechanical retry: 454 refusals in one run, every one
         # re-sent lower/split/background. Promote to a tracked background process instead; the
@@ -1393,6 +1408,11 @@ def _pre_exec_block(
     )
     if blocked:
         raise _Rejected(blocked)
+    # Regex engine over a spillover file / oversized GNU interval: refused before any spawn.
+    spill_msg = spillover_regex_block(command)
+    if spill_msg:
+        logger.warning("Blocked spillover regex command (command: %s)", _safe_command_preview(command))
+        raise _Rejected(_error_json(spill_msg, status="blocked"))
     if workdir:
         workdir_error = _validate_workdir(workdir)
         if workdir_error:

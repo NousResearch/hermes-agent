@@ -763,6 +763,10 @@ def execute_code(
                 "it could complete (SIGTERM propagates to child processes). "
                 "Run the lifecycle command from a shell outside the gateway."
             )
+    from tools.spillover_guard import execute_code_spillover_block
+    _spill_msg = execute_code_spillover_block(code)
+    if _spill_msg:
+        return tool_error(_spill_msg)
     from tools.terminal_tool import _get_env_config, _docker_has_host_access
     _env_config = _get_env_config()
     env_type = _env_config["env_type"]

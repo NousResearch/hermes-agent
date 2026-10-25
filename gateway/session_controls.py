@@ -814,8 +814,23 @@ class AuthorityConnection:
 
     async def cancel(self, ref, params):
         admission_id = params.get('admission_id')
-        if (await self.authority.receipt(self.actor, ref, admission_id)).status != 'queued':
-            return asdict(await self.authority.cancel_queued(self.actor, ref, admission_id))  # started: unaffected
+        receipt = await self.authority.receipt(self.actor, ref, admission_id)
+        if receipt.status == 'started':
+            # Started: stop the running turn in this RPC. The caller has already said this turn
+            # must die, and answering stale_generation while leaving the interrupt to a follow-up
+            # RPC from the same client loses the turn whenever that client dies before its
+            # follow-up lands. One RPC owns the whole cancel, using the same canonical Stop as the
+            # queued-claim race below.
+            try:
+                await self.interrupt(ref, {'execution_generation': receipt.execution_generation})
+            except RuntimeStoreError as exc:
+                if exc.reason != 'stale_generation':
+                    raise
+                # The turn settled (or a successor claimed) between the receipt and the
+                # interrupt: nothing of ours is running; report the fresh state.
+            return asdict(await self.authority.receipt(self.actor, ref, admission_id))
+        if receipt.status != 'queued':
+            return asdict(await self.authority.cancel_queued(self.actor, ref, admission_id))
         # Queued at this read, claimed by the drain before the cancel commit: Stop that exact claim (as
         # API and ACP do) instead of refusing while the withdrawn prompt runs.
         row = await self.authority.cancel_or_claimed(self.actor, ref, admission_id)

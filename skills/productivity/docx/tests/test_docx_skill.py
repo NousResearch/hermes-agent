@@ -404,6 +404,29 @@ class TestValidate:
         assert res["ok"] is True
         assert all(i["severity"] != "error" for i in res["issues"])
 
+    def test_document_relationship_owner_survives_sibling_rels(
+            self, tmp_path: Path):
+        """A header rels part must not hide document.xml's own rels."""
+        import zipfile
+
+        png = tmp_path / "synthetic.png"
+        make_png(png)
+        doc = Document()
+        doc.add_paragraph("synthetic document")
+        doc.add_picture(str(png))
+        doc.sections[0].header.paragraphs[0].add_run().add_picture(str(png))
+        path = tmp_path / "sibling-rels.docx"
+        doc.save(str(path))
+
+        with zipfile.ZipFile(str(path)) as zf:
+            names = set(zf.namelist())
+        assert {"word/document.xml", "word/header1.xml",
+                "word/_rels/document.xml.rels",
+                "word/_rels/header1.xml.rels"} <= names
+
+        res = run("docx_validate.py", str(path))
+        assert res["ok"] is True
+
     def test_not_a_zip(self, tmp_path: Path):
         bad = tmp_path / "bad.docx"
         bad.write_bytes(b"this is not a zip file")

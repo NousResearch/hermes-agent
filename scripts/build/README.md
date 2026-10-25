@@ -125,8 +125,13 @@ manifests and TypeScript configuration, dependency locks, and its compiler and
 shared compiler helpers, plus the shipped Python runtime helpers. Tests, workspace documentation, dependency-provider
 recipes, and other products' compiler recipes do not invalidate the TUI.
 It records product/host identity, content hashes of workspace/shared sources and
-build inputs, and the exact supplied icon directory, desktop install stamp, and
-native-dependency tree. The desktop stamp is hashed as its provenance identity
+build inputs, and the supplied icon directory, desktop install stamp, and
+native-dependency tree (recorded relative to the source when they live inside it,
+so a moved checkout or another worktree of the same tree reads the same receipt).
+TUI and web receipts are matched on the Node version only: their bundles are
+platform-neutral JavaScript, and the same tree compiled by the same pinned Node is
+byte-identical on darwin/linux and arm64/x64. Desktop receipts also match platform
+and arch (native addons, packaging). The desktop stamp is hashed as its provenance identity
 rather than its raw bytes: `write-build-stamp.mjs` rewrites the `builtAt` clock on
 every build, so hashing it byte-for-byte let a second build racing this one kill
 it with "inputs changed" for a difference the build machinery itself made

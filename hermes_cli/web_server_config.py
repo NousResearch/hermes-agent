@@ -159,6 +159,14 @@ _SCHEMA_OVERRIDES: dict[str, dict[str, Any]] = {
         "Terminal updates always ask, regardless of this setting.",
         "stash", "discard",
     ),
+    "updates.prebuilt_products": {
+        "type": "boolean",
+        "description": (
+            "During hermes update, install the published TUI and web UI build when it "
+            "was compiled from exactly this checkout's sources, instead of compiling "
+            "them locally. Turn off to always build from source."
+        ),
+    },
     "updates.refresh_cua_driver": {
         "type": "boolean",
         "description": (

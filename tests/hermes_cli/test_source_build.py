@@ -117,6 +117,9 @@ def source_checkout(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pm, "ensure", acquire)
     use_host_node_as_pm_node(monkeypatch)
+    # Fixture trees are never published: keep the prebuilt lookup off the network.
+    from hermes_cli import source_products
+    monkeypatch.setattr(source_products, "products_base", lambda: "http://127.0.0.1:9/products")
     root = tmp_path / "source with spaces"
     root.mkdir()
     workspaces = ["ui-tui", "web", "apps/desktop", "unrelated"]
@@ -294,6 +297,39 @@ def test_update_recompiles_only_products_whose_inputs_changed(source_products):
     (root / "web/src/changed.ts").write_text("export {}\n", encoding="utf-8")
     build_update_products(root, desktop=False)
     assert products() == ["web"]
+
+
+@pytest.mark.platforms("linux")
+def test_update_installs_a_published_frontend_instead_of_compiling_it(source_products, monkeypatch, capsys):
+    from hermes_cli import source_products as published
+    from hermes_cli.source_build import build_update_products
+
+    root, _ = source_products
+    looked_up = []
+
+    def install(project_root, product, key):
+        looked_up.append((product, key))
+        if product == "tui":
+            raise OSError("disk full")  # any failure in the prebuilt path compiles locally
+        return True  # CI published the web build of this tree
+
+    monkeypatch.setattr(published, "install_prebuilt", install)
+    build_update_products(root, desktop=False)
+    assert [product for product, _ in looked_up] == ["tui", "web"]
+    assert all(len(key) == 64 for _, key in looked_up)  # the checkout's own input keys
+    assert [e["step"] for e in _events(root) if e["step"] != "deps"] == ["tui"]
+    out = capsys.readouterr().out
+    assert "Web UI installed from the published build" in out and "Published TUI build skipped" in out
+
+    # Turned off in config.yaml: every product compiles, nothing is looked up.
+    looked_up.clear()
+    (root / "events.jsonl").unlink()
+    (root / "web/src").mkdir(parents=True, exist_ok=True)
+    (root / "web/src/changed.ts").write_text("export {}\n", encoding="utf-8")
+    monkeypatch.setattr(published, "prebuilt_products_enabled", lambda: False)
+    build_update_products(root, desktop=False)
+    assert looked_up == []
+    assert [e["step"] for e in _events(root) if e["step"] != "deps"] == ["web"]
 
 
 @pytest.mark.platforms("linux")

@@ -54,10 +54,13 @@ def _wedged_probe():
 def _clear_parked_probes():
     probes = getattr(registry_module, "_check_fn_probes", None)
     lock = getattr(registry_module, "_check_fn_probe_lock", None)
+    wedged = getattr(registry_module, "_check_fn_wedged_probes", None)
     if probes is None or lock is None:
         return
     with lock:
         probes.clear()
+        if wedged is not None:
+            wedged.clear()
 
 
 def _probe_threads():
@@ -223,6 +226,55 @@ def test_a_wedged_probe_is_not_restarted_for_every_sweep(monkeypatch):
     assert outcome.get("value") is False
     assert elapsed < 1.0, "a known-wedged probe must not be waited on again"
     assert len(_probe_threads()) - before <= 1
+
+
+def test_a_probe_the_sweep_never_reached_is_not_cached(monkeypatch):
+    """A tool the exhausted sweep skipped was never asked, so its False verdict must not be
+    cached for the TTL - the next build has to probe it again (#142062)."""
+    monkeypatch.setattr(registry_module, "_CHECK_FN_MAX_UNANSWERED_PROBES", 1, raising=False)
+    monkeypatch.setattr(registry_module, "_CHECK_FN_WEDGED_TTL_SECONDS", 0.0, raising=False)
+    reg = ToolRegistry()
+    for name in ("answered", "skipped"):
+        reg.register(name=name, toolset="probe", schema=_schema(name), handler=_handler,
+                     check_fn=_wedged_probe())
+
+    assert reg.get_definitions({"answered", "skipped"}, quiet=True) == []  # one poisons the sweep
+
+    _RELEASE.set()  # both would answer now
+    built = reg.get_definitions({"answered", "skipped"}, quiet=True)
+    assert [entry["function"]["name"] for entry in built] == ["skipped"]
+
+
+def test_a_wedged_probe_is_not_restarted_for_another_session(monkeypatch):
+    """The request identity scopes the verdict, not the failure: a probe that already went silent
+    will not answer for another session either, so it is not waited on again (#142062)."""
+    # A full second, so paying the budget again is unmistakable against the fast path.
+    monkeypatch.setattr(registry_module, "_CHECK_FN_PROBE_TIMEOUT_SECONDS", 1.0, raising=False)
+    probe = _wedged_probe()
+    # Every invocation differs (the identity is read once for the cache scope and once for the
+    # key), so a fresh key would mean a second probe.
+    counter = iter(range(1, 1000))
+    monkeypatch.setattr(registry_module, "_probe_identity", lambda: f"s{next(counter)}", raising=False)
+
+    assert _check_fn_cached(probe) is False
+    invalidate_check_fn_cache()  # the verdict cache is scope-keyed; this is about the probe itself
+    threads_before = len(_probe_threads())
+    assert _check_fn_cached(probe) is False
+    # No second worker: the identity is not part of the wedged key, so the failure is reused.
+    assert len(_probe_threads()) == threads_before, "another session started a second probe"
+
+
+def test_the_wedged_marker_expires(monkeypatch):
+    """The fast path is not permanent: once the marker is stale, the probe is asked again."""
+    monkeypatch.setattr(registry_module, "_CHECK_FN_WEDGED_TTL_SECONDS", 0.0, raising=False)
+    probe = _wedged_probe()
+    counter = iter(range(1, 1000))
+    monkeypatch.setattr(registry_module, "_probe_identity", lambda: f"s{next(counter)}", raising=False)
+
+    assert _check_fn_cached(probe) is False  # times out, marks the (fn, profile)
+    _RELEASE.set()
+    invalidate_check_fn_cache()  # the TTL verdict is not what this test is about
+    assert _check_fn_cached(probe) is True  # marker window lapsed: probed, and it answers
 
 
 def test_a_raising_check_fn_still_reports_raised(caplog):

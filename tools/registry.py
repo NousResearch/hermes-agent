@@ -370,7 +370,12 @@ class _CheckFnProbe:
 
 
 _check_fn_probe_lock = threading.Lock()
-_check_fn_probes: dict[tuple, _CheckFnProbe] = {}
+_check_fn_probes: dict[tuple, "_CheckFnProbe"] = {}
+# (fn, profile) -> monotonic when a probe of it last went silent. Kept after the parked probe
+# entry is gone so another session does not pay the same budget again; it expires so a probe that
+# recovers is retried (#142062).
+_check_fn_wedged_probes: dict[tuple, float] = {}
+_CHECK_FN_WEDGED_TTL_SECONDS = 60.0
 
 
 def _publish_probe_context(probe_context) -> None:
@@ -404,14 +409,18 @@ def _probe_identity() -> str:
     return "|".join(str(get_session_env(k, "") or "") for k in _BROWSER_IDENTITY_KEYS)
 
 
-def _probe_share_key(fn: Callable) -> tuple:
-    """Key a running probe by the identity whose verdict it answers for.
+def _probe_share_key(fn: Callable) -> tuple[tuple, tuple]:
+    """``(share key, wedged key)`` for a running probe.
 
-    Availability is profile-scoped (each profile has its own browser backend
-    and its own credentials) and, for a bound browser request, principal-scoped:
-    one probe's verdict must never be handed to another profile or another
-    principal. Computed independently of ``check_fn_cache_scope`` so the
+    The share key is the identity whose verdict the probe answers for. Availability is
+    profile-scoped (each profile has its own browser backend and its own credentials) and, for a
+    bound browser request, principal-scoped: one probe's verdict must never be handed to another
+    profile or another principal. Computed independently of ``check_fn_cache_scope`` so the
     uncached probes share the same boundary.
+
+    The wedged key drops the request identity: a probe that has already gone silent will not
+    answer for another session either, so it is not restarted (and waited on) per principal
+    (#142062). Only the share key is used for handing a verdict around.
     """
     profile: Optional[str] = None
     try:
@@ -422,7 +431,7 @@ def _probe_share_key(fn: Callable) -> tuple:
             profile = str(Path(override).expanduser().resolve()) if override else "?"
     except (ImportError, OSError):
         profile = "?"
-    return (fn, profile, _probe_identity())
+    return (fn, profile, _probe_identity()), (fn, profile)
 
 
 def _probe_timeout(sweep: Optional["_ProbeSweep"]) -> Optional[float]:
@@ -449,8 +458,13 @@ def _run_check_fn_bounded(fn: Callable, timeout: Optional[float]) -> tuple[bool,
     """
     if timeout is None:
         return False, False, "skipped: too many availability probes went unanswered", False
-    key = _probe_share_key(fn)
+    key, wedged_key = _probe_share_key(fn)
     with _check_fn_probe_lock:
+        wedged_at = _check_fn_wedged_probes.get(wedged_key)
+        if wedged_at is not None:
+            if time.monotonic() - wedged_at < _CHECK_FN_WEDGED_TTL_SECONDS:
+                return False, False, f"is not answering (a probe of it went silent {time.monotonic() - wedged_at:.0f}s ago)", True
+            del _check_fn_wedged_probes[wedged_key]
         probe = _check_fn_probes.get(key)
         if probe is None:
             from agent.memory_provider import spawn_context_thread
@@ -473,11 +487,15 @@ def _run_check_fn_bounded(fn: Callable, timeout: Optional[float]) -> tuple[bool,
         if not probe.done.is_set():
             probe.timed_out = True
             probe.timeout_exceeded = timeout
+            with _check_fn_probe_lock:
+                _check_fn_wedged_probes[wedged_key] = time.monotonic()
             return False, False, f"did not answer within {timeout:.1f}s", True
     with _check_fn_probe_lock:
         if _check_fn_probes.get(key) is probe:
             del _check_fn_probes[key]
     _publish_probe_context(probe.snapshot)
+    with _check_fn_probe_lock:
+        _check_fn_wedged_probes.pop(wedged_key, None)  # it answered: it is not wedged
     if probe.error is not None:
         raise probe.error
     return True, probe.available, "returned %s" % ("True" if probe.available else "False"), False
@@ -544,12 +562,16 @@ def _check_fn_cached(fn: Callable, sweep: Optional[_ProbeSweep] = None) -> bool:
             return cached[1]
     exc_info = None
     timed_out = False
+    skipped = False
     value, outcome = False, "returned False"
     try:
-        _answered, probed, outcome, unanswered = _run_check_fn_bounded(
+        answered, probed, outcome, unanswered = _run_check_fn_bounded(
             fn, _probe_timeout(sweep))
         value = probed
         timed_out = unanswered
+        # Never probed (the sweep gave up first): the verdict says nothing about this tool, so it
+        # must not be cached for the TTL (#142062).
+        skipped = not answered and not unanswered
     except Exception as exc:
         # Keep the exception for the verdict log below (emitted outside this block, where
         # ``exc_info=True`` would resolve to nothing): a check_fn that raises is a bug in the probe
@@ -592,11 +614,12 @@ def _check_fn_cached(fn: Callable, sweep: Optional[_ProbeSweep] = None) -> bool:
         else:
             # A probe that never answered is a bug in the probe, not a missing backend:
             # it is actionable, so it keeps the WARNING verdict.
-            log = logger.warning if (exc_info or timed_out) else logger.info
+            log = logger.warning if (exc_info or timed_out) else logger.debug if skipped else logger.info
             log(
                 "check_fn %s %s; dependent tools will be unavailable this turn", _fn_label(fn), outcome,
                 exc_info=exc_info)
-        _check_fn_cache[cache_key] = (now, False)
+        if not skipped:
+            _check_fn_cache[cache_key] = (now, False)
         return False
 
 

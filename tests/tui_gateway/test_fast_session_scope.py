@@ -23,7 +23,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import tui_gateway.server as server
+from tui_gateway import server
 
 FAST_OVERRIDES = {"service_tier": "priority"}
 
@@ -73,6 +73,25 @@ class TestConfigSetFastSessionScope:
             response = _set({"key": "fast", "session_id": "isolated", "value": "on"})
             assert response["error"]["code"] == 4002
             assert "create_service_tier_override" not in session
+        write_key.assert_not_called()
+
+    def test_isolated_ultrafast_respects_selected_codex_account_offer(self, monkeypatch) -> None:
+        from agent import codex_service_tiers
+
+        session = {
+            "session_key": "isolated", "agent": None, "_compute_host_active": True,
+            "_metadata_mirror": {"model": "gpt-6-astra", "provider": "openai-codex"},
+        }
+        with patch.dict(server._sessions, {"isolated": session}), \
+                patch.object(server, "_write_config_key") as write_key:
+            monkeypatch.setattr(codex_service_tiers, "codex_account_offers_tier", lambda *a, **kw: False)
+            response = _set({"key": "fast", "session_id": "isolated", "value": "ultra"})
+            assert response.get("error", {}).get("code") == 4002, response
+            assert "create_service_tier_override" not in session
+            monkeypatch.setattr(codex_service_tiers, "codex_account_offers_tier", lambda *a, **kw: True)
+            response = _set({"key": "fast", "session_id": "isolated", "value": "ultra"})
+            assert response["result"]["value"] == "ultrafast"
+            assert session["create_service_tier_override"] == "ultrafast"
         write_key.assert_not_called()
 
     def test_session_scoped_fast_skips_global_write(self) -> None:

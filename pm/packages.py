@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
+from pm.filesystem import long_root, native
 from pm.package import (
     DebPackage,
     InstallError,
@@ -101,16 +102,17 @@ class BinaryPackage(Package):
             return ""
         try:
             proc = subprocess.run(
-                [str(binary), *self.probe_args],
+                [native(binary), *self.probe_args],
                 capture_output=True,
                 timeout=60,
-                cwd=str(binary.parent) if self.probe_cwd else None,
+                cwd=native(binary.parent) if self.probe_cwd else None,
                 env=self._probe_env(),
+                check=False,
             )
         except OSError as e:
-            return f"could not exec {binary} {' '.join(self.probe_args)}: {e}"
+            return f"could not exec {native(binary)} {' '.join(self.probe_args)}: {e}"
         except subprocess.TimeoutExpired:
-            return f"{binary} {' '.join(self.probe_args)} timed out after 60s"
+            return f"{native(binary)} {' '.join(self.probe_args)} timed out after 60s"
         if proc.returncode != 0:
             return _probe_reason(binary, proc)
         return ""
@@ -301,47 +303,87 @@ def _uv_lock_digest(path: Path) -> bytes:
 _uv_lock_digest_cache: dict[Path, tuple] = {}
 
 
+def _copy_seed_file(src: str | os.PathLike, dst: str | os.PathLike) -> str | os.PathLike:
+    """Copy one payload cache file unless an earlier seed already copied it whole.
+
+    A copy cut short leaves the file in place with too few bytes, so a matching
+    size is what counts as done; a finished file is not rewritten.
+    """
+    try:
+        if os.stat(dst).st_size == os.stat(src).st_size:
+            return dst
+    except FileNotFoundError:
+        pass
+    # Other profiles share this cache: publish only a complete copy, without
+    # truncating the live entry or leaving a failed copy visible to readers.
+    fd, staging = tempfile.mkstemp(prefix=".seed-", dir=Path(dst).parent)
+    os.close(fd)
+    try:
+        shutil.copy2(src, staging)
+        os.replace(staging, dst)
+    finally:
+        Path(staging).unlink(missing_ok=True)
+    return dst
+
+
 def uv_cache_dir() -> Path:
     """The hermes-owned uv cache: machine-scoped and shared (keyed by
     content — two profiles reuse one cache), anchored to the DEFAULT
     hermes root like partials_root(). A bundle ships a seeded copy at
-    the payload root (uv-cache/); the first call on a sealed install
-    copies it out to the writable machine cache (the read-only payload
+    the payload root (uv-cache/); the first call under each uv.lock
+    merges it into the writable machine cache (the read-only payload
     can't serve uv's working cache), and a warm `uv sync --offline`
     from it is near-free (probed: 0.4s vs 1.2s cold) — the blow-away-
     on-update contract depends on it. uv's default cache location is
     per-user/platform-opinionated and never used by pm."""
     from hermes_constants import get_default_hermes_root
 
+    from pm.paths import repo_root, store_root
+
     machine_cache = get_default_hermes_root() / "cache" / "uv"
     marker = machine_cache / ".seeded"
-    if not marker.is_file():
+    # The marker names the lock whose payload was merged. An update ships a new payload cache for
+    # a new lock; a bare "done" marker skipped it forever, so plugin rebuilds fetched the new pins
+    # from the network (and built sdists where the index has no wheel for the target).
+    lock = repo_root() / "uv.lock"
+    seed = _uv_lock_digest(lock).hex() if lock.is_file() else "1"
+    # The marker also records whether a payload cache was present. An image without one still
+    # writes the marker for its lock, and a later image with the same lock must still merge its
+    # seed. Do not drop the suffix: the lock alone cannot tell those two images apart.
+    payload_cache = long_root(store_root().parent / "uv-cache")
+    if payload_cache.is_dir():
+        seed += "+payload"
+    try:
+        current = marker.read_text(encoding="utf-8-sig").strip() == seed
+    except OSError:
+        current = False
+    if not current:
         # Seed from a shipped bundle cache when present (payload root =
         # store_root().parent on a sealed install). Record completion ONLY after a clean copy: a
         # partial seed that marked itself done would never be retried, and every later offline
         # sync that needs the missing entries fails closed.
         try:
-            from pm.paths import store_root
-
-            payload_cache = store_root().parent / "uv-cache"
+            # uv's cache trees run deep; both roots get the long spelling so
+            # the copy is not cut at MAX_PATH. The returned path stays ordinary.
             if payload_cache.is_dir():
-                machine_cache.mkdir(parents=True, exist_ok=True)
+                seeded = long_root(machine_cache)
+                seeded.mkdir(parents=True, exist_ok=True)
                 for entry in payload_cache.iterdir():
                     if entry.name == ".seeded":
                         continue
-                    dest = machine_cache / entry.name
-                    if not dest.exists():
-                        (
-                            shutil.copytree(entry, dest)
-                            if entry.is_dir()
-                            else shutil.copy2(entry, dest)
-                        )
+                    dest = seeded / entry.name
+                    # Merge into whatever an earlier failed or killed seed left: skipping
+                    # an existing directory would record that partial copy as complete.
+                    if entry.is_dir():
+                        shutil.copytree(entry, dest, dirs_exist_ok=True, copy_function=_copy_seed_file)
+                    else:
+                        _copy_seed_file(entry, dest)
         except OSError as exc:
             LOG.warning("uv cache seed incomplete, retrying on the next install: %s", exc)
         else:
             try:
                 marker.parent.mkdir(parents=True, exist_ok=True)
-                marker.write_text("1", encoding="utf-8")
+                marker.write_text(seed, encoding="utf-8")
             except OSError:
                 pass
     return machine_cache
@@ -438,10 +480,12 @@ class Venv(StatePackage):
                           seed_lock=seed, frozen=repair or not members, replay=replay,
                           source=project, environment=environment)
             resolved_lock = generation / "workspace" / "uv.lock"
-            environment.check()
+            environment.check(resolved_lock)
             if repair:
+                from pm.environments import venv_command
                 from pm.recovery import validate_environment
-                validate_environment(environment.executable, env=dict(environment.env), cwd=resolved_lock.parent)
+                validate_environment(venv_command(project, candidate, ("-I",)),
+                                     env=dict(environment.env), cwd=resolved_lock.parent)
         except BaseException:
             shutil.rmtree(generation, ignore_errors=True)
             raise
@@ -614,14 +658,15 @@ class Npm(BinaryPackage):
         with tempfile.TemporaryDirectory(prefix="hermes-npm-cache-", ignore_cleanup_errors=True) as cache:
             proc = subprocess.run(
                 [
-                    str(node_bin), str(bundled_cli), "install", "--global",
-                    "--prefix", str(staged), "--offline", "--ignore-scripts",
-                    "--no-audit", "--no-fund", str(archive),
+                    native(node_bin), native(bundled_cli), "install", "--global",
+                    "--prefix", native(staged), "--offline", "--ignore-scripts",
+                    "--no-audit", "--no-fund", native(archive),
                 ],
                 capture_output=True,
                 text=True,
                 timeout=900,
                 env=npm_env(Path(cache)),
+                check=False,
             )
         if proc.returncode != 0:
             raise InstallError(
@@ -699,11 +744,12 @@ class Git(BinaryPackage):
             # open past the stub's exit. Under -y the stub prints nothing anyway.
             try:
                 proc = subprocess.run(
-                    [str(exe), f"-o{staged}", "-y"],
+                    [native(exe), f"-o{native(staged)}", "-y"],
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     timeout=600,
+                    check=False,
                 )
             except subprocess.TimeoutExpired:
                 raise InstallError(
@@ -917,65 +963,6 @@ class CuaDriver(BinaryPackage):
 
 
 @register
-class AgentBrowser(BinaryPackage):
-    name = "agent-browser"
-    optional = True
-    # Browser tools find agent-browser only in PM's store or on PATH (no npx
-    # fallback), and their readiness check never installs it, so an install
-    # without it silently loses every browser_* tool.
-    # Default-install it; `install.sh --skip-browser` declines it.
-    default = True
-    deps = ("chromium",)
-    # Termux owns its browser stack (`npm install -g agent-browser`; see
-    # tools/browser_tool_install.py), and PM has no bionic Chromium to drive.
-    gaps = {
-        "linux-arm64-bionic": "Termux installs agent-browser through npm",
-        **{target: "agent-browser has no musl Chromium runtime" for target in MUSL_TARGETS},
-    }
-    flatten = True
-    probe_version = False
-    url = "https://registry.npmjs.org/agent-browser/-/agent-browser-{version}.tgz"
-    # No win32-arm64 gap: agent-browser ships only win32-x64, and Windows
-    # ARM64 runs it via built-in emulation (its own postinstall falls back
-    # to x64 on arm64). chromium is likewise the x64 build on win32-arm64.
-    emulated_arch_targets = frozenset({"win32-arm64"})
-
-    def latest_versions(self, target: str, locked=None) -> list[str]:
-        latest = npm_dist_tags("agent-browser").get("latest")
-        return [latest] if latest else []
-
-    def _rel(self, target: str) -> Optional[str]:
-        ext = ".exe" if target.startswith("win32") else ""
-        # Windows ARM64 runs the x64 binary under built-in emulation:
-        # agent-browser ships no native arm64 build (its own postinstall
-        # falls back to x64 on arm64), so the staged name is win32-x64.
-        if target == "win32-arm64":
-            target = "win32-x64"
-        return f"bin/agent-browser-{target}{ext}"
-
-    def binary(self, entry: Path, target: str) -> Optional[Path]:
-        # The win32-arm64 payload carries the x64 binary (emulated), so
-        # resolve it under the win32-x64 name.
-        return super().binary(entry, "win32-x64" if target == "win32-arm64" else target)
-
-    def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
-        flatten_single_dir(staged)
-        bin_dir = staged / "bin"
-        if not bin_dir.is_dir():
-            raise InstallError(self.name, "staged without a bin/ directory")
-        keep = Path(self._rel(target)).name
-        if not (bin_dir / keep).is_file():
-            raise InstallError(self.name, f"{keep} missing from the staged tarball")
-        for item in bin_dir.iterdir():
-            if item.is_file() and item.name.startswith("agent-browser-") and item.name != keep:
-                item.unlink()
-        # The npm tarball ships every native binary as 0644; agent-browser's
-        # own postinstall sets the exec bit, and pm runs no postinstall.
-        kept = bin_dir / keep
-        kept.chmod(kept.stat().st_mode | 0o111)
-
-
-@register
 class Chromium(Package):
     """Playwright resolves browsers by DIRECTORY NAME under one root:
     `<name with '-'→'_'>-<revision>`, no target suffix. The env points
@@ -990,6 +977,10 @@ class Chromium(Package):
 
     name = "chromium"
     optional = True
+    # browser_exec's launcher drives this build, and its readiness check
+    # installs it only once per process, so default-install it like the
+    # other OS tools; `install.sh --skip-browser` declines it.
+    default = True
     on_path = False
     # Neither Chrome-for-Testing nor Playwright's mirror builds for Android.
     gaps = {
@@ -1003,7 +994,7 @@ class Chromium(Package):
     # playwright's dbazure mirror with its own platform names.
     # win32-arm64 uses the win64 (x64) build: CfT publishes no native
     # win-arm64 chromium, and Windows ARM64 runs x64 binaries via built-in
-    # emulation — the same choice agent-browser's own postinstall makes.
+    # emulation.
     _CFT = {
         "linux-x64": "linux64",
         "darwin-x64": "mac-x64",
@@ -1040,20 +1031,21 @@ class Chromium(Package):
     def verify(self, entry: Path, target: str) -> str:
         marker = entry / "INSTALLATION_COMPLETE"
         if not marker.is_file():
-            return f"INSTALLATION_COMPLETE missing under {entry}; {_entry_listing(entry)}"
+            return f"INSTALLATION_COMPLETE missing under {native(entry)}; {_entry_listing(entry)}"
         binary = self.binary(entry, target)
         if binary is None:
-            return f"Chromium executable missing under {entry}"
+            return f"Chromium executable missing under {native(entry)}"
         return self._binary_reason(binary, entry, target)
 
     def env(self, entry: Path, target: str) -> dict:
         binary = self.binary(entry, target)
         if binary is None:
-            raise InstallError(self.name, f"Chromium executable missing under {entry}")
-        return {
-            "PLAYWRIGHT_BROWSERS_PATH": str(entry.parent),
-            "AGENT_BROWSER_EXECUTABLE_PATH": str(binary),
-        }
+            raise InstallError(self.name, f"Chromium executable missing under {native(entry)}")
+        # Playwright launches without an executable_path (e.g. the
+        # har-derived-api-client skill's `chromium.launch(channel="chromium")`)
+        # find this build through the root; Hermes's own launcher asks
+        # hermes_cli.browser_runtime.chromium_executable() instead.
+        return {"PLAYWRIGHT_BROWSERS_PATH": str(entry.parent)}
 
 
 class LlamaCpp(BinaryPackage):
@@ -1266,3 +1258,16 @@ class LlamaCppCpu(LlamaCpp):
         "darwin-x64": "macos-x64",
         "darwin-arm64": "macos-arm64",
     }
+
+
+@register
+class WhisperCppCpu(BinaryPackage):
+    """Native local STT for Windows ARM64, where faster-whisper has no wheel."""
+
+    name = "whispercpp-cpu"
+    optional = True
+    gaps = {target: "uses the existing faster-whisper provider" for target in ALL_TARGETS
+            if target != "win32-arm64"}
+    binary_rel = {"win32-arm64": "whisper-cli.exe"}
+    probe_args = ["--help"]
+    url = "https://github.com/ggml-org/whisper.cpp/releases/download/{version}/whisper-bin-win-cpu-arm64.zip"

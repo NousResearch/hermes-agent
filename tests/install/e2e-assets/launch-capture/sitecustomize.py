@@ -58,7 +58,7 @@ if _SPEC_PATH:
                 base = base[: -len(ext)]
         return base.lower()
 
-    def _match_shape(argv: "list[str]") -> str:
+    def _match_shape(argv: list[str]) -> str:
         """Return the launch shape for argv, or '' when it is not a launch."""
         if not argv:
             return ""
@@ -79,14 +79,14 @@ if _SPEC_PATH:
             return "packaged"
         return ""
 
-    def _launch_shape(args, kwargs) -> "tuple[list[str], str]":
+    def _launch_shape(args, kwargs) -> tuple[list[str], str]:
         argv = args[0] if args else kwargs.get("args")
         if not isinstance(argv, (list, tuple)):
             return [], ""
         tokens = [str(t) for t in argv]
         return tokens, _match_shape(tokens)
 
-    def _capture(tokens: "list[str]", kwargs: dict, shape: str) -> None:
+    def _capture(tokens: list[str], kwargs: dict, shape: str) -> None:
         env = kwargs.get("env")
         spec = {
             "argv": tokens,

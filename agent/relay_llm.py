@@ -59,7 +59,7 @@ class _ManagedAttempt:
     def resolve(
         cls, session_id: str | None, request: dict[str, Any], metadata: dict[str, Any] | None,
         *, name: str, model_name: str,
-    ) -> "_ManagedAttempt | None":
+    ) -> _ManagedAttempt | None:
         """Return the managed attempt for ``session_id`` (None: the inherited turn's), or None to run unmanaged."""
         if session_id is None:
             session_id = _current_session_id()
@@ -429,7 +429,7 @@ class ManagedLlmStream(Iterator[Any]):
                 self._release_runtime_lease()
             raise
 
-    def __iter__(self) -> "ManagedLlmStream":
+    def __iter__(self) -> ManagedLlmStream:
         return self
 
     def _prime_completed_response(self) -> None:
@@ -648,7 +648,9 @@ class AnthropicStreamAccumulator:
         if "usage" in payload:
             usage, current_usage = payload["usage"], self._message.get("usage")
             if isinstance(current_usage, dict) and isinstance(usage, dict):
-                usage = {**current_usage, **usage}
+                # The SDK's MessageDeltaUsage serializes unset fields as null; they must not
+                # erase message_start's input/cache counts.
+                usage = {**current_usage, **{k: v for k, v in usage.items() if v is not None}}
             self._message["usage"] = usage
 
     _EVENT_HANDLERS = {

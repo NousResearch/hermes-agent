@@ -1,4 +1,4 @@
-import type { ConnectionRequestPayload, ToolLabel } from '@hermes/shared'
+import type { ConnectionRequestPayload, FreeTierChallengePayload, ToolLabel } from '@hermes/shared'
 
 import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
 
@@ -140,22 +140,38 @@ export interface OAuthPollResponse {
   account_email?: null | string
   error_message?: null | string
   expires_at?: null | number
+  /** Approved Nous sign-ins only: the free tier's handoff the sign-in ran
+   *  (what moved, what to reconnect). Null when it replaced no free tier. */
+  handoff_status?: AppHandoffStatus | null
   /** Approved sign-ins only: the default model the backend settled on. Null
    *  when the config already pointed at the user's own model and was left
    *  alone. */
   model?: null | string
-  /** Why a non-approved terminal status ended that way: `user_declined`
-   *  (status `denied`), or `superseded` / `account_retired` /
-   *  `account_not_anonymous` / `account_busy` / `timeout` (status `error`).
-   *  `error_message` carries the matching user-facing text. */
+  /** Why a non-approved terminal status ended that way: `timeout`, or one of
+   *  the account service's `anon_*` verdicts (status `error`). `error_message`
+   *  carries the matching user-facing text. */
   reason?: null | string
-  /** Failed sign-ins over a free-tier identity: the seconds the account service
-   *  asked the client to wait before trying again (0 or absent when none). */
+  /** Failed Nous sign-ins: the seconds the account service asked the client
+   *  to wait before trying again (0 or absent when none). */
   retry_after?: null | number
-  /** Failed sign-ins over a free-tier identity: whether a later attempt can succeed. */
+  /** Failed Nous sign-ins: whether a later attempt can succeed. */
   retryable?: boolean | null
   session_id: string
   status: 'approved' | 'denied' | 'error' | 'expired' | 'pending'
+}
+
+/** The free tier's apps moving to the account that replaced it
+ *  (`hermes_cli/guest_handoff.py`, `wire_status`). `lines` is the backend's
+ *  own copy for this state, the same lines the terminal prints. */
+export interface AppHandoffStatus {
+  account_email?: null | string
+  connectors_kind?: null | string
+  dropped_toolkits?: string[]
+  lines: string[]
+  moved_toolkits?: string[]
+  probably_moved?: boolean
+  state: 'claimed' | 'failed' | 'gone' | 'idle' | 'pending' | 'retrying'
+  updated_at?: null | string
 }
 
 /** Result of the `free_tier.status` RPC. Pull-only: it reads local auth state
@@ -181,6 +197,12 @@ export interface FreeTierStatus {
   error_code?: string
   retryable?: boolean
   retry_after?: number
+  /** Present while the backend is waiting on a browser challenge. */
+  challenge?: FreeTierChallengePayload | null
+  /** Seconds until the one-time first-task sign-in offer is due (0 = now); null when none is owed. */
+  nudge_due_in?: number | null
+  /** The same for the connector offer: no trial, and apps connected on the free tier. */
+  connector_nudge_due_in?: number | null
 }
 
 export interface MemoryProviderOAuthStatus {
@@ -482,9 +504,12 @@ export interface HermesConfig {
   }
   display?: {
     show_reasoning?: boolean | string
+    /** Per-platform overrides; a local session's `/reasoning show|hide` saves `platforms.cli`. */
+    platforms?: Record<string, { show_reasoning?: boolean | string } | undefined>
     personality?: string
     skin?: string
     interim_assistant_messages?: boolean
+    busy_input_mode?: string
     timestamps?: boolean
     tool_progress?: boolean | string
   }
@@ -834,12 +859,18 @@ export interface SessionResumeResult {
 }
 
 export interface SessionRuntimeInfo {
+  stored_session_id?: string
+  pending_submissions?: unknown
+  /** Canonical snapshot only: the session replay epoch and event sequence its pending set reflects. */
+  replay_epoch?: string
+  last_sequence?: number
   approval_mode?: 'manual' | 'off' | 'smart'
   branch?: string
   config_warning?: string
   credential_warning?: string
   cwd?: string
   desktop_contract?: number
+  desktop_protocol?: string
   fast?: boolean
   install_warning?: string
   model?: string
@@ -873,6 +904,8 @@ export interface UsageStats {
   cost_usd?: number
   input: number
   output: number
+  /** Window plans only (tui_gateway `_get_usage`): today's allowance (else the binding one), for the status bar. */
+  plan_gauge?: { id: string; label: string; resets_at_ms?: null | number; used_bp: number }
   total: number
 }
 
@@ -1039,6 +1072,7 @@ export interface CronJobCreatePayload {
   name?: string
   prompt: string
   provider?: string
+  repeat?: number
   schedule: string
 }
 
@@ -1096,9 +1130,14 @@ export interface AutomationBlueprint {
   fields: AutomationBlueprintField[]
   command: string
   appUrl: string
+  /** Where it comes from; absent on backends that predate plugin blueprints. */
+  source?: 'builtin' | 'plugin'
+  /** The registering plugin's name when source is 'plugin' (key is `<plugin>:<key>`). */
+  plugin?: null | string
 }
 
 export interface ProfileCreatePayload {
+  soul?: string
   clone_all?: boolean
   clone_from?: null | string
   clone_from_default?: boolean
@@ -1118,8 +1157,6 @@ export interface ProfileInfo {
   name: string
   path: string
   provider: null | string
-  /** Backend-assigned role from profile.yaml; `setup` marks the onboarding guide's profile. */
-  role?: 'setup' | null
   skill_count: number
 }
 
@@ -1253,6 +1290,9 @@ export interface ToolProvider {
   /** Web toolset only: capabilities this backend can serve. Search-only
    *  providers (ddgs, brave-free) report ['search']. */
   capabilities?: WebCapability[]
+  /** Set on the "Nous Subscription" rows (e.g. 'web'): served through the
+   *  Nous Tool Gateway rather than the user's own key. */
+  managed_nous_feature?: null | string
 }
 
 /** A web toolset capability — the runtime dispatches web_search and
@@ -1270,6 +1310,10 @@ export interface ToolsetConfig {
   active_search_backend?: string | null
   /** Web toolset only: backend the web_extract tool resolves to right now. */
   active_extract_backend?: string | null
+  /** Web toolset only: web_search / web_extract currently go through the Nous
+   *  Tool Gateway (billed to the subscription) instead of the user's own key. */
+  search_via_nous?: boolean
+  extract_via_nous?: boolean
 }
 
 /** Health status of a terminal execution backend row.
@@ -1480,8 +1524,8 @@ export interface LocalCatalogModel {
   native_context_label: string
   recommended: boolean
   /** Why the resolver picked this entry (recommended rows only):
-   *  best-quality-resident | speed-gated-quality | fastest-resident |
-   *  least-painful-spilled. Renders as the Recommended badge's tooltip. */
+   *  product-default | best-quality-resident | speed-gated-quality.
+   *  Renders as the Recommended badge's tooltip. */
   recommended_reason?: string | null
   downloaded: boolean
   downloaded_model_id?: string | null
@@ -1546,6 +1590,11 @@ export interface UpdateReceiptSummary {
   post_sha: string | null
   post_version: string | null
   fleet_states: string[]
+  /** Post-commit steps a committed (successful) update still owes. */
+  followups?: Array<{ step: string; reason: string }>
+  user_action?: { step: string; reason: string } | null
+  /** Dashboard action that wrote the receipt; null for a CLI-run update. */
+  action_id?: string | null
 }
 
 export interface ActionStatusResponse {
@@ -1577,6 +1626,15 @@ export interface BackendUpdateCheckResponse {
   current_version: string
   behind: number | null
   update_available: boolean
+  /** A stable release this build already contains: applying it moves back. */
+  rollback_to?: null | string
+  /** A stable release `hermes update` refuses: the backend stays on its build. */
+  held?: 'downgrade' | null
+  /** Update-available only; absent on older backends. */
+  channel?: string
+  branch?: null | string
+  /** Stable: the release version the update installs, e.g. `0.22.0`. */
+  source_version?: null | string
   can_apply: boolean
   update_command: string | null
   message: string | null
@@ -1585,10 +1643,21 @@ export interface BackendUpdateCheckResponse {
 
 export interface AuxiliaryTaskAssignment {
   base_url: string
+  /** Plugin tasks with `inherit_from` only: the route the task resolves to right now
+   *  (the base slot's while this slot is unpinned). Absent on older backends. */
+  effective?: { base_url: string; model: string; provider: string }
+  /** Set only on plugin-registered tasks (PluginContext.register_auxiliary_task):
+   *  the plugin's display name / description / owning plugin id. Built-in tasks
+   *  are labelled client-side via i18n. Absent on older backends. */
+  hint?: string
+  /** Plugin tasks only: the slot this one follows until it is pinned itself. */
+  inherit_from?: null | string
+  label?: string
   /** Backend verdict (`agent/model_metadata.py::is_local_endpoint`) that `base_url`
    *  is a loopback/LAN/mDNS endpoint. Absent on older backends. */
   local_endpoint?: boolean
   model: string
+  plugin?: string
   provider: string
   /** Task-level effort override (`auxiliary.<task>.reasoning_effort`); null/absent
    *  means the task inherits the main agent's effort. */
@@ -1792,8 +1861,6 @@ export interface McpCatalogEntry {
     examples?: string[]
     requires_app?: boolean
   } | null
-  /** Observed on this entry's backend host, not proof that its MCP is usable. */
-  detected_apps?: string[]
   needs_install: boolean
   installed: boolean
   enabled: boolean
@@ -1802,7 +1869,6 @@ export interface McpCatalogEntry {
 export interface McpCatalogResponse {
   entries: McpCatalogEntry[]
   diagnostics: { name: string; kind: string; message: string }[]
-  discovery?: { scope: 'backend'; status: 'ok' | 'unavailable'; platform: string }
 }
 
 /** `GET /api/memory` — active provider + built-in memory file sizes. */
@@ -1842,6 +1908,8 @@ export interface ModelAssignmentResponse {
   confirm_message?: string
   confirm_required?: boolean
   model?: string
+  /** Window plans, Large model: a warning to show (never a confirm). */
+  notice?: string
   ok: boolean
   provider?: string
   reset?: boolean

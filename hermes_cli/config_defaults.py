@@ -5,7 +5,7 @@ docs of config.yaml.
 """
 
 
-#: Image every container terminal backend (docker/modal/daytona/singularity) uses unless the
+#: Image every container terminal backend (docker/modal/daytona, the singularity plugin) uses unless the
 #: user pins one. LEGACY_SANDBOX_IMAGES are the plain defaults that preceded the desktop stack
 #: (the 3.14 pin shipped between the two without a migration); a saved config still holding one
 #: is the template copied, and the config migration unsets it, never a user's own pin.
@@ -109,13 +109,11 @@ DEFAULT_CONFIG = {
         # TimeoutStopSec or risk SIGKILL mid-cleanup; for /restart prefer restart_after_turn_timeout
         # so turns finish BEFORE stop().
         "restart_drain_timeout": 0,
-        # Cron-only floor under the stop()/drain wait (seconds). Interrupted chat turns resume on
-        # the next message, but an interrupted cron run is recorded as a permanent failure, so it
-        # must not inherit restart_drain_timeout's 0. Clamped to the shutdown-watchdog leash minus
-        # teardown headroom (~50s unless TimeoutStopSec is raised). 0 = opt out.
-        # A chat turn interrupted by a restart is announced to the user and resumed on their next message;
-        # an interrupted cron run is written to jobs.json as a permanent failure that nobody is waiting on,
-        # so it must not inherit restart_drain_timeout's 0 (#82161).
+        # Floor under the stop()/drain wait (seconds) for cron jobs and api_server runs. Interrupted
+        # chat turns resume on the next message, but an interrupted cron run is recorded as a
+        # permanent failure and an interrupted /v1 run fails its waiting caller, so neither may
+        # inherit restart_drain_timeout's 0 (#82161, #132989). Clamped to the shutdown-watchdog
+        # leash minus teardown headroom (~50s unless TimeoutStopSec is raised). 0 = opt out.
         "cron_drain_timeout": 30,
         # In-band restart (/restart, SIGUSR1): refuse new work, then wait up to this many seconds
         # for in-flight agents/cron/api runs to finish before stop(). 0 = enter stop() at once. 30
@@ -282,11 +280,11 @@ DEFAULT_CONFIG = {
         # Model name (any reasonable spelling) -> effort level; overrides agent.reasoning_effort
         # when the current model matches. Edit in config.yaml (no CLI support: dots in keys).
         "reasoning_overrides": {},
-        # Preserve assistant `reasoning_content` on history replay. Echo families (DeepSeek,
-        # Kimi/Moonshot, Xiaomi MiMo) are auto-detected by provider name/base-URL host; custom
-        # providers and OpenAI-compatible gateways proxying them are not. Set `reasoning_echo: true`
-        # on a `model:` entry or a `fallback_providers:` entry to opt in per provider. Default
-        # false: strict providers (Mistral, Groq, Cerebras) reject the field.
+        # Stored reasoning is replayed to every provider that can read it by default. This flag
+        # only adds the must-echo " " pad on reasoning-less tool-call turns, which DeepSeek,
+        # Kimi/Moonshot and Xiaomi MiMo require (auto-detected by provider name/host). Set
+        # `reasoning_echo: true` on a `model:` or `fallback_providers:` entry for a custom gateway
+        # proxying one of them. Strict providers (Mistral, Groq, Cerebras) never get the field.
         "reasoning_echo": False,
         # Turn liveness watchdog: a turn with no observable progress for `timeout_s` seconds is
         # logged, force-interrupted so the UI can retry, and its lease stops renewing so stale-turn
@@ -322,12 +320,11 @@ DEFAULT_CONFIG = {
         # immediately kills the delivery (e.g. Bot Mode handoff replies via message_agent /
         # bot_relay). Plain background processes without notify_on_complete are never waited on. 0
         # disables.
-        # Bounded linger (seconds) for one-shot CLI runs (-q/-Q/-z) that exit while background processes
-        # spawned with notify_on_complete=true are still running. See #90879.
         "oneshot_completion_wait_seconds": 600.0,
-        # Env vars passed into sandboxed terminal/execute_code (skill-declared
-        # required_environment_variables pass through automatically).
+        "process_wait_auto_notify": True,  # 2 unchanged wait/poll -> notify_on_complete + stop; False = old polling
+        # Env vars passed into sandboxed terminal/execute_code (plus skill-declared required_environment_variables).
         "env_passthrough": [],
+        "client_env_passthrough": [],  # Extra non-secret toolchain names a CLI/TUI client sends for its tools
         # Remote-backend sync-back refuses to extract a downloaded state archive larger than this
         # (bytes); raise it for a ~/.hermes tree that legitimately exceeds 2 GiB.
         "sync_back_max_bytes": 2 * 1024 * 1024 * 1024,
@@ -356,12 +353,11 @@ DEFAULT_CONFIG = {
         # reads host values) — useful under systemd without the user's shell env. Example:
         # {"SSH_AUTH_SOCK": "/run/user/1000/ssh-agent.sock"}
         "docker_env": {},
-        "singularity_image": f"docker://{DEFAULT_SANDBOX_IMAGE}",
         "modal_image": DEFAULT_SANDBOX_IMAGE,
         "daytona_image": DEFAULT_SANDBOX_IMAGE,
         "vercel_image": DEFAULT_VERCEL_IMAGE,  # vercel_sandbox backend only: a Vercel-managed or VCR image
         "vercel_runtime": "",  # deprecated by Vercel; a legacy runtime pin (node24 | node22 | python3.13) overrides vercel_image
-        # Container limits (docker, singularity, modal, daytona, vercel_sandbox; not local/ssh).
+        # Container limits (docker, modal, daytona, vercel_sandbox, container plugin backends; not local/ssh).
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
         "container_disk": 51200,        # MB (default 50GB)
@@ -388,8 +384,8 @@ DEFAULT_CONFIG = {
         "docker_snap_compat": False,
         # Trusted profiles sharing one Docker container identity; empty = per-profile boundary.
         "docker_shared_container_key": "",
-        # Keep a long-lived bash shell across execute() calls so cwd/env/shell variables survive.
-        # Applies to non-local backends (SSH); local is opt-in via TERMINAL_LOCAL_PERSISTENT env.
+        # SSH: carry exported env vars between commands (cwd always carries). false = every command
+        # starts from the login env, profile functions included. Local: TERMINAL_LOCAL_PERSISTENT.
         "persistent_shell": True,
     },
 
@@ -425,24 +421,29 @@ DEFAULT_CONFIG = {
     },
 
     "browser": {
-        # "" = Browser Use mode when the browser-use CLI (or uvx) is available, else built-in tools
-        # (Camofox setups always keep built-in tools: no CDP surface); "browser-use" = force one
-        # browser_exec tool driving the Browser Use CLI over any CDP backend (local Chrome, cloud);
-        # "off" = force the built-in browser_navigate/browser_click/... tools.
-        "backend": "",
+        # REMOVAL NOTE: `backend` (built-in browser_* tools vs browser_exec), `snapshot_threshold`,
+        # `record_sessions`, `allow_unsafe_evaluate` and `restrict_evaluate` left with the built-in
+        # browser tools; browser_exec is the only core browser. Config v52 drops `backend` (an `off`
+        # gets a one-time notice) and copies AGENT_BROWSER_* from .env to the keys below; other
+        # user values stay untouched.
         "inactivity_timeout": 120,
-        "command_timeout": 30,  # seconds per browser command (screenshot, navigate, etc.)
-        "snapshot_threshold": 15000,  # max chars before snapshot truncate-and-store (min 1000)
-        "record_sessions": False,  # auto-record browser sessions as WebM videos
+        # Seconds a local Chromium launch may take to open its DevTools port; a launch always waits
+        # at least 120 s (a cold first start unpacks the profile).
+        "command_timeout": 30,
         # headed: visible Chromium window (local); skips per-turn cleanup, idle reaper still applies
         "headed": False,
         "allow_private_urls": False,  # allow private/internal IPs (localhost, 192.168.x.x, ...)
-        # Local browser engine for both drivers. "auto" = Chrome; "lightpanda" = faster navigation,
-        # no screenshots (Browser Use mode spawns `lightpanda serve` per session; built-in tools
-        # pass `--engine <value>` to agent-browser with Chrome fallback); "chrome" = explicit.
-        # Ignored while a cloud provider, Camofox, cdp_url or use_real_profile is active. Also
-        # settable via AGENT_BROWSER_ENGINE.
+        # Local browser engine. "auto" = Chromium; "lightpanda" = `lightpanda serve` per session
+        # (faster navigation, no screenshots); "chrome" is read as "auto". Ignored while a cloud
+        # provider, cdp_url or use_real_profile is active.
         "engine": "auto",
+        # Chromium binary for local sessions. "" = pm's chromium (`hermes pm install chromium`), the
+        # Docker image's build, else a system chromium where pm builds none (Termux).
+        "executable_path": "",
+        # Persistent Chromium profile directory shared by local sessions; "" = a fresh throwaway
+        # profile per session.
+        "user_data_dir": "",
+        "chromium_args": [],  # extra Chromium flags for local sessions, e.g. ["--lang=de"]
         # With a cloud provider, auto-spawn local Chromium for LAN/localhost URLs instead
         "auto_local_for_private_urls": True,
         "cdp_url": "",  # persistent CDP endpoint for attaching to an existing Chromium/Chrome
@@ -451,49 +452,45 @@ DEFAULT_CONFIG = {
         # prefs copied and re-synced per fresh session) driven by Hermes' packaged Chromium. The
         # snapshot dir sidesteps Chrome 136+'s default-profile debugging block and never contends
         # with the running browser. Turning off deletes ~/.hermes/browser-profile/ so credentials
-        # don't outlive consent. Chromium-family only (Chrome, Edge, Brave, Brave Origin, Chromium);
-        # Firefox etc. fails closed. Also gates the browser_exec `local` argument (real-profile
-        # local session even under a cloud backend). Desktop Settings -> Browser.
+        # don't outlive consent. Chromium-family only; a profile that can't be copied (Firefox default,
+        # Windows browser holding its cookies) gives a fresh, signed-out browser plus a note saying why.
+        # Also gates the browser_exec `local` arg (real-profile session under a cloud backend). Desktop Settings -> Browser.
         "use_real_profile": False,
-        # Windows only: a running Chrome/Edge/Brave locks its cookie DB, so the profile can't be
-        # copied. When on, a locked profile still blocks and the agent ASKS first; on approval it
-        # runs `hermes browser close-profile` (kills that profile's browser tree, unsaved tabs lost)
-        # and retries once; still locked -> stays blocked, no auto-kill. No effect on macOS/Linux,
-        # where a running browser instead makes the Login Data / Web Data SQLite backups miss
-        # their deadline; quit the browser by hand there.
+        # Windows only: a running Chrome/Edge/Brave locks its cookie DB (the last snapshot is reused;
+        # with none yet, a fresh browser runs). When on, the agent ASKS first; on approval it runs
+        # `hermes browser close-profile` (kills that profile's browser tree, unsaved tabs lost) so a
+        # new session can copy it; no auto-kill. No effect on macOS/Linux, where a running
+        # browser only locks the password/autofill DBs, which are skipped (cookies still copy).
         "real_profile_autoclose": False,
         # Pin WHICH source profile directory is snapshotted for real-profile browsing (e.g. "Profile
         # 2"). Empty = browser's last-used profile, which on multi-profile machines can hand the
-        # agent the wrong identity. A pin naming a missing directory FAILS CLOSED.
+        # agent the wrong identity. A pin naming a missing directory never falls back to another
+        # profile: the session gets a fresh browser without the user's logins.
         "real_profile_pin": "",
-        # restrict_evaluate: opt-in denylist blocking sensitive JS primitives (cookies/storage/
-        # clipboard/network/form values) in browser_console(expression=...); allow_unsafe_evaluate
-        # is the legacy override that bypasses that denylist entirely.
-        "allow_unsafe_evaluate": False,
-        "restrict_evaluate": False,
         # CDP supervisor: dialog + frame detection over a persistent WebSocket; active only with a
         # CDP-capable backend (Browserbase, or local Chrome via /browser connect). See
         # website/docs/developer-guide/browser-supervisor.md.
         "dialog_policy": "must_respond",  # must_respond | auto_dismiss | auto_accept
         "dialog_timeout_s": 300,  # safety auto-dismiss after N seconds under must_respond
-        "camofox": {
-            # true = send a stable profile-scoped userId so Camofox maps it to a persistent Firefox
-            # profile; false = random ephemeral userId per session.
-            "managed_persistence": False,
-            # Externally managed Camofox identity, for when another app owns the visible browser.
-            "user_id": "",
-            "session_key": "",
-            "adopt_existing_tab": False,  # rehydrate tab_id from Camofox before creating a tab
-            # Docker Camofox opens page URLs from inside the container: rewrite loopback page URLs
-            # (localhost/127.0.0.1/::1) to the host alias; CAMOFOX_URL itself is unchanged.
-            "rewrite_loopback_urls": False,
-            "loopback_host_alias": "host.docker.internal",
-        },
-        # Authenticated browser-extension controller lane: a registered extension can become the
-        # exact controller for a session's browser_* tools (fail-closed once bound). Local API
-        # registration also requires the API server bearer key. developer_mode gates the privileged
-        # browser_cdp / browser_evaluate capabilities.
-        "extension_control": {"enabled": False, "developer_mode": False},
+        # Read by the `camofox` catalog plugin (Camofox left core). An empty free-form mapping, so
+        # `hermes config set browser.camofox.<key>` is accepted and user values are never stripped.
+        "camofox": {},
+    },
+    # Stale git worktree lifecycle (`hermes -w`, `/worktree new`, subagent isolation, Desktop). The
+    # sweep runs at `hermes -w` startup and every 6h from the cron ticker over every repo Hermes made
+    # a worktree in. Trees idle past their tier (hermes-*/subagent-* 24h, named 72h) that are clean
+    # and merged are removed; dirty or unpushed ones are archived to refs/hermes/archive/<tree>
+    # first (`hermes worktree restore <name>`). Live trees and Kanban t_<hex> trees are never touched.
+    "worktrees": {
+        # false = never remove a dirty/unpushed tree (the pre-archive behaviour, exactly).
+        "archive_dirty": True,
+        # Untracked files larger than this (MB) are not archived, so a tree holding one is kept.
+        "archive_max_file_mb": 50,
+        # The sweep deletes archive refs older than this many days. 0 keeps them forever.
+        "archive_retention_days": 30,
+        # Optional size budget (GB) for idle trees: past it the oldest idle trees are archived and
+        # removed first. Live, young and Kanban trees are never counted or touched. 0 = off.
+        "max_total_gb": 0,
     },
     # Filesystem checkpoints: snapshot the working directory once per turn (on the first
     # write_file/patch call); restore with /rollback. Opt-in via `hermes chat --checkpoints` or
@@ -760,9 +757,9 @@ DEFAULT_CONFIG = {
         # OpenAI-compatible request fields. Vision: download_timeout = image HTTP download (s).
         "vision": _aux(120, download_timeout=30),
         # web_extract and session_search no longer use an aux LLM; leftover blocks in user config
-        # are ignored. Compression: raise timeout for local models. no_progress_timeout
-        # (Codex/Responses streams only): seconds without a substantive event before the stream
-        # fails fast; None = built-in 60s default. Independent of "timeout" (the overall request
+        # are ignored. Compression: raise timeout for local models. no_progress_timeout:
+        # seconds a streamed call goes without a substantive chunk before it fails fast into
+        # retry/fallback; None = built-in 60s default. Independent of "timeout" (the overall request
         # budget) — raising "timeout" alone does not widen this window. See #108104.
         "compression": _aux(120, no_progress_timeout=None),
         "skills_hub": _aux(30),
@@ -776,9 +773,7 @@ DEFAULT_CONFIG = {
         "title_generation": {
             "enabled": True,
             "model_upgrade_enabled": True,  # False = keep the instant derived title, never call a model
-            # Note: session_search no longer uses an auxiliary LLM (PR #27590 — single-shape tool returns DB
-            # content directly). The old ``auxiliary.session_search.*`` block was removed here. Existing
-            # values in user config.yaml files are harmless leftovers and ignored.
+            # session_search no longer uses an aux LLM (#27590); leftover auxiliary.session_search is ignored.
             "provider": "auto",
             "model": "",
             "prefer_fast_model": False,
@@ -791,6 +786,7 @@ DEFAULT_CONFIG = {
         },
         "memory_query_rewrite": _aux(8, reasoning_effort=False),
         "tts_audio_tags": _aux(30),
+        "voice_chat": {**_aux(120), "reasoning_effort": "none"},  # agent/voice_turn_route.py; off = lowest valid
         # Kanban: triage_specifier expands a Triage one-liner into a spec (cheap model OK);
         # kanban_decomposer emits a JSON graph of child tasks (more tokens).
         "triage_specifier": _aux(120),
@@ -838,9 +834,9 @@ DEFAULT_CONFIG = {
         # continues, Shift+Enter reported distinctly. False restores the c-j submit fallback for
         # POSIX PTYs whose plain Enter arrives as LF.
         "cli_multiline_shortcuts": True,
-        # Interface bare `hermes`/`hermes chat` launches: "cli" (prompt_toolkit REPL) | "tui" (Ink).
-        # Flags win: `--cli` forces the REPL, `--tui` / HERMES_TUI=1 forces the TUI.
-        "interface": "cli",
+        # `hermes`/`hermes chat` launches "cli" (prompt_toolkit REPL) | "tui" (Ink); --cli, --tui, HERMES_TUI=1 win.
+        # cli_layout = the REPL's look: "modern" (glyph rows, status under the composer) | "classic" (boxed panels).
+        "interface": "cli", "cli_layout": "modern",
         # Native TUI uses the terminal's primary buffer and scrollback instead of the custom
         # alternate-screen viewport. Flags win: `--native` / `--tui-native` and `--cli`.
         "tui_native": False,
@@ -1160,18 +1156,17 @@ DEFAULT_CONFIG = {
         "enabled": True,
         # Echo the raw transcript of gateway voice messages back as a 🎙️ message.
         "echo_transcripts": True,
-        # No seeded "provider": a stored value counts as an explicit user pick; unset = autodetect
-        # ladder. Valid: "local" (faster-whisper) | "groq" | "openai" | "mistral" | "elevenlabs" |
-        # "deepinfra". Global language hint unless a per-provider language overrides it. "en"
-        # because Whisper auto-detect misreads short/accented clips; "" = auto; or "es", "zh", ...
+        # No seeded "provider" (a stored value is an explicit pick; unset = autodetect): local | groq |
+        # openai | mistral | elevenlabs | deepinfra | xai. Global language hint unless a per-provider one
+        # overrides it; "en" because Whisper auto-detect misreads short clips; "" = auto; "es", ...
         "language": "en",
-        # Client-side ffmpeg silence trim before cloud upload (local whisper uses VAD): silence
-        # inflates upload time, billing and hallucinations. Failure = raw upload.
+        "streaming": False,  # live partial text while speaking (openai/xai/elevenlabs); failure = file path
+        # Pre-upload ffmpeg silence trim (local whisper uses VAD); failure = raw upload.
         "cloud_trim_silence": True,
         "cloud_trim_threshold_db": -40,  # quieter than this counts as silence
         "cloud_trim_keep_ms": 300,  # how much of each pause survives (natural pacing)
         "local": {
-            "model": "base",  # tiny, base, small, medium, large-v3
+            "model": "base",  # tiny, base, small, medium, large-v3, turbo
             "language": "",  # auto-detect; set "en", "es", ... to force
             "initial_prompt": "",
             # Anti-hallucination (faster-whisper decodes junk from silence). vad: Silero filter
@@ -1184,13 +1179,13 @@ DEFAULT_CONFIG = {
             "unload_after_idle_seconds": 0,  # 0 = never; e.g. 300 frees the model after 5min
         },
         "groq": {
-            # whisper-large-v3, whisper-large-v3-turbo, distil-whisper-large-v3-en
-            "model": "whisper-large-v3-turbo",
+            "model": "whisper-large-v3-turbo",  # whisper-large-v3-turbo, whisper-large-v3
             "language": "",  # auto-detect; set "en", "es", ... to force
         },
         "openai": {
             # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe, gpt-transcribe
             "model": "whisper-1",
+            "streaming_model": "gpt-live-transcribe",  # stt.streaming; the one model with mid-utterance deltas
             "language": "",  # auto-detect; set "en", "es", ... to force
             "timeout": 60,  # seconds; allow self-hosted backends time to cold-start
             "max_retries": 1,  # OpenAI SDK transport retries
@@ -1200,6 +1195,7 @@ DEFAULT_CONFIG = {
             "language": "",  # auto-detect; set "en", "es", ... to force
         },
         "xai": {
+            "model": "",  # "" = STT_XAI_MODEL or grok-voice-transcribe-2.0; or grok-voice-transcribe-1.0
             "language": "",  # auto-detect; set "en", "es", ... to force
         },
         "elevenlabs": {
@@ -1249,8 +1245,7 @@ DEFAULT_CONFIG = {
         # instead of going to the agent. [] disables.
         "stop_phrases": ["stop"],
     },
-    # Native vision embeds (vision_analyze / browser screenshots on vision-capable main models) ride
-    # conversation history and are re-sent on every later API call.
+    # Native images (vision_analyze, browser screenshots, replayed user images) are re-sent on every later call.
     "vision": {
         # Byte budget for one embedded image (clamped 64 KiB..4 MiB). Raise it for dense phone
         # screenshots of tables the model calls "unreadable" at 256 KB.
@@ -1259,6 +1254,7 @@ DEFAULT_CONFIG = {
         # null = 3 inside delegated subagents (they run unattended), unlimited for the main agent;
         # an explicit number applies everywhere; 0 = unlimited.
         "max_calls_per_image": None,
+        "replay_recent_images": 3,  # newest user images re-sent on turns rebuilt from state.db; 0 = off
     },
     # "Hey Hermes" hands-free wake word: always-on, on-device hotword detection that starts a fresh
     # voice session. Off by default; toggle with /wake.
@@ -1314,6 +1310,7 @@ DEFAULT_CONFIG = {
     "memory": {  # Persistent memory — bounded curated memory injected into the system prompt
         "memory_enabled": True,
         "user_profile_enabled": True,
+        "prefetch_spill_enabled": False,  # External recall opt-in to hooks.output_spill.
         # Approval gate for memory writes on BOTH foreground turns and the background review fork.
         # true = foreground writes prompt inline; background writes are staged (/memory
         # pending|approve <id>|reject <id>). To disable memory: memory_enabled.
@@ -1322,15 +1319,14 @@ DEFAULT_CONFIG = {
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
         # Periodic built-in memory review; 0 when an external provider auto-extracts.
         "nudge_interval": 10,
-        # External memory provider plugin (empty = built-in only); only ONE at a time: "openviking",
-        # "mem0", "holographic", "retaindb", "byterover", or a catalog-installed one ("honcho",
-        # "hindsight", "supermemory").
+        # One external provider: bundled (retaindb, byterover) or catalog-installed (honcho,
+        # hindsight, supermemory, mem0, openviking, holographic). Empty = built-in only.
         "provider": "",
     },
-    # Subagent delegation — override the provider:model used by delegate_task so children run on a
-    # cheaper/faster model. Uses the same runtime provider resolution as CLI/gateway startup, so
-    # every configured provider is supported.
+    # Subagent delegation: `backend` = task-routing strategy ("default": keys below), `backends.<name>` = its settings.
     "delegation": {
+        "backend": "default",
+        "backends": {},
         "model": "",  # e.g. "google/gemini-3-flash-preview" (empty = inherit parent)
         "provider": "",  # e.g. "openrouter" (empty = inherit parent provider + credentials)
         # Fallback chain for delegated children (same entry format as the top-level list).
@@ -1467,7 +1463,7 @@ DEFAULT_CONFIG = {
         # Substitute ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID} in SKILL.md content.
         "template_vars": True,
         # Pre-execute !`cmd` snippets in SKILL.md, inlining stdout (dates, git state...). Off:
-        # skill-author content would run on the host unapproved — trusted sources only.
+        # host-unapproved skill-author code; community hub installs never auto-execute (#63307).
         "inline_shell": False,
         "inline_shell_timeout": 10,  # seconds per !`cmd` snippet
         # Security-scan skills the agent writes via skill_manage. Off: the agent can run the same
@@ -1635,12 +1631,12 @@ DEFAULT_CONFIG = {
             # Bot API 10.1 native rich messages (tables/task lists/math). Off = legacy MarkdownV2,
             # since rich messages are hard to copy as plain text.
             "rich_messages": False,
-            # Experimental rich draft previews while streaming DMs; off because Telegram
-            # Desktop/macOS can overlay draft frames until the chat redraws.
+            # Experimental rich DM stream previews; off: Telegram Desktop/macOS overlays draft frames.
             "rich_drafts": False,
             # CJK stays on legacy MarkdownV2 (Telegram Desktop/macOS garbles rich CJK, #47653);
             # set True on an unaffected client to get native rich tables for CJK.
             "allow_cjk_rich_messages": False,
+            "dm_topic_auto_transfer": False,  # /topic mode: root-DM message opens a fresh topic
         },
     },
 
@@ -1769,7 +1765,7 @@ DEFAULT_CONFIG = {
         # for one login without changing this key.
         "codex_login_flow": "device_code",
     },
-    "security": {  # Security: pre-exec scanning via tirith plus related guards.
+    "security": {  # Security: URL/private-network guards, redaction and approval presentation.
         "allow_private_urls": False,  # allow requests to private/internal IPs (OpenWrt, VPNs)
         # CIDR blocks a local TUN proxy answers DNS with (Mihomo/Clash fake-ip, Surge enhanced).
         # Answers inside these blocks are the proxy's sentinels, not internal hosts, so the guard
@@ -1789,10 +1785,6 @@ DEFAULT_CONFIG = {
         # globs on the basename (e.g. "*.mdc").
         "protected_instruction_files": True,
         "protected_instruction_extra_patterns": [],
-        "tirith_enabled": True,
-        "tirith_path": "tirith",
-        "tirith_timeout": 5,
-        "tirith_fail_open": True,
         "website_blocklist": {"enabled": False, "domains": [], "shared_files": []},
         # IDs of supply-chain advisories the user has read and acted on; acked ones stop the startup
         # banner. Add via `hermes doctor --ack <id>`; remove by editing the list. Catalog:
@@ -2024,11 +2016,11 @@ DEFAULT_CONFIG = {
             # tool eager. The runtime fallback in tools/tool_search.py derives from this value.
             "defer": [
                 "computer_use", "session_search", "image_generate",
-                "todo_list", "process_manage", "cronjob_manage",
-                # Desktop GUI surface (desktop_ui + project toolsets)
-                "drive_preview", "gui_tour", "desktop_preview", "annotate_preview",
+                "todo_list", "process_manage", "cronjob_manage", "browser_vault",
+                # Desktop GUI surface (desktop_ui, project and catalog toolsets)
+                "drive_preview", "gui_tour", "desktop_preview", "annotate_preview", "manage_catalog",
                 "show_tip", "desktop_project", "close_terminal",
-                "apply_layout", "read_terminal", "read_window_below", "focus_pane",
+                "set_theme", "read_terminal", "read_window_below", "focus_pane",
             ],
         },
         # Remote connector discovery/lifecycle through the Nous tool gateway.
@@ -2105,10 +2097,10 @@ DEFAULT_CONFIG = {
         "export": {"otlp": {"enabled": False, "endpoint": "", "headers_env": {}}},
     },
     "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
-
-        # Seconds to let a SIGTERM-interrupted gateway agent unwind before adapter/database
-        # teardown. Keep short so service-manager shutdowns don't exhaust their stop budget.
+        "unmanaged_idle_exit_seconds": 600,  # client-auto-started gateway only; 0 disables
+        # Seconds a SIGTERM-interrupted agent unwinds before teardown (short: service stop budgets).
         "signal_interrupt_grace_timeout": 1,
+        "service_install_choice": None,  # null | install | decline; never authorizes ordinary launch installation.
         # Durable delivery-obligation ledger: final responses are recorded in state.db around the
         # platform send; a gateway that died between finalize and platform ACK redelivers on next
         # boot (ambiguous cases carry a "recovered reply — may be a duplicate" marker;
@@ -2270,18 +2262,14 @@ DEFAULT_CONFIG = {
     # inserts, /resume listing, and insights queries.
     "sessions": {
         # Prune ENDED sessions inactive for retention_days (activity = freshest of live activity /
-        # latest message / creation) about once per min_interval_hours at startup. Open, pinned, or mid-turn sessions
-        # are never deleted; stale automation sessions whose process died are *closed*, then get a
-        # full retention window before removal.
-        "auto_prune": True,
+        # latest message / creation) about once per min_interval_hours at CLI/gateway/cron startup.
+        # Open, pinned, or mid-turn sessions are never deleted; stale automation sessions whose
+        # process died are *closed*, then get a full retention window before removal.
+        # Off by default (deleting history is opt-in). While the user's config.yaml has no
+        # auto_prune key, every surface asks once the disk holding state.db runs low
+        # (hermes_cli/prune_advisor.py); either answer writes the key and ends the question.
+        "auto_prune": False,
         # Inactive days of ended-session history to keep (= `hermes sessions prune`).
-        # When true, prune ENDED sessions inactive for retention_days once per (roughly) min_interval_hours
-        # at CLI/gateway/cron startup. Activity is the freshest of live activity (last_activity_at) / latest
-        # message timestamp / creation time. Sessions that are still open, pinned, or mid-turn are never deleted — the
-        # only open rows the sweep touches are stale automation sessions (cron/kanban/subagent/one-shot CLI)
-        # whose process died without closing them; those are *closed*, not deleted, and get a further full
-        # retention window before removal. Default true since #54189: without it state.db grows without
-        # bound (multi-GB installs reported within weeks).
         "retention_days": 90,
         # Auto-archive (soft-hide, never delete) sessions with no activity for auto_archive_days,
         # once per min_interval_hours. Pinned sessions are exempt.
@@ -2306,8 +2294,8 @@ DEFAULT_CONFIG = {
         # Notice about the compact FTS layout (reclaims ~60%+ of state.db). OPT-IN: legacy indexes
         # stay until `hermes sessions optimize-storage` runs, since the rebuild is disk-heavy on
         # large DBs. advise = `hermes update` prints a one-line notice with reclaimable size when a
-        # legacy index is detected; require = shown as a REQUIRED upgrade (tooling may gate on it);
-        # off = none.
+        # legacy index is detected (a later layout change gets a rebuild notice without a size estimate);
+        # require = the same notices worded as REQUIRED (tooling may gate on it); off = none.
         "fts_optimize_notice": "advise",
         # CJK-bigram search index (messages_fts_cjk). When the extension is built
         # (native/fts5_cjk/build.sh → ~/.hermes/lib/libfts5_cjk.so), 1-2 char CJK terms get exact
@@ -2326,16 +2314,15 @@ DEFAULT_CONFIG = {
         # per session, so full-DB backups of small sessions work.
         "max_export_messages": 20000,
     },
-    # First-touch onboarding hints (agent/onboarding.py). Each hint shows once and is latched under
-    # `seen`; wipe the section to re-see all hints.
+    # First-touch onboarding hints (agent/onboarding.py), each latched under `seen` once shown.
     "onboarding": {
         "seen": {},
-        # First-ever gateway message: ask = offer to build a user profile (consent- gated; never
-        # reads connected accounts silently); off = plain intro only.
-        "profile_build": "ask",
+        "profile_build": "ask",  # first-ever message: ask = offer; off = plain intro only
+        # Desktop first run, root profile only (onboarding_run.py): None = fresh install; true = next launch; false = done
+        "run": None,
     },
     # Privacy-safe aggregate metrics in this profile's local telemetry dir. Collection (`enabled`)
-    # and transmission to Nous (`send`) are SEPARATE opt-ins; see
+    # and upload to Nous (`send`) are separate keys that every consent surface sets together; see
     # website/docs/developer-guide/relay-shared-metrics.md Appendix A for consent/retention.
     "telemetry": {
         "shared_metrics": {
@@ -2453,7 +2440,7 @@ DEFAULT_CONFIG = {
     },
     # External secret sources — pull credentials from secret managers at startup instead of storing
     # them in ~/.hermes/.env.
-    # Browser credential vault: which login sources browser_vault_list/fill may draw from. The local
+    # Browser credential vault: which login sources browser_vault may draw from. The local
     # encrypted vault (`hermes vault add`, Desktop → Settings → Credential Vault) is always on.
     # External password managers are unlocked per session with a masked master-password prompt;
     # headless sessions (cron, webhook, API) never prompt and see them as locked.
@@ -2539,7 +2526,7 @@ DEFAULT_CONFIG = {
         # 0 keeps screens up until stopped.
         "idle_stop_minutes": 30,
         # Where the screen (and with it computer_use and the bot's browser) runs.
-        #   auto      follow the terminal backend: inside the docker / ssh / singularity sandbox when one is
+        #   auto      follow the terminal backend: inside the docker / ssh / streaming plugin sandbox when one is
         #             configured, on the gateway host when terminal.backend is local. A sandbox backend that
         #             cannot host a screen (modal, daytona, vercel) REFUSES rather than quietly running the
         #             desktop on the host beside the sandbox you chose for the agent.
@@ -2726,48 +2713,11 @@ DEFAULT_CONFIG = {
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },
-    "_config_version": 49,  # Config schema version - bump this when adding new required fields
+    "_config_version": 52,  # Config schema version - bump this when adding new required fields
 }
 
 
-def _env(description, prompt, **keys):
-    """One OPTIONAL_ENV_VARS entry; keyword order is preserved as dict key order."""
-    return {"description": description, "prompt": prompt, **keys}
-
-
-_OMIT = object()
-
-
-def _category(category, password, advanced):
-    """Entry factory for one category with its usual password/advanced defaults.
-
-    ``url``/``help``/``tools`` are only written when passed; ``password=None`` omits the key;
-    ``advanced`` is only written when true. Key order matches the plain ``_env`` entries.
-    """
-    def make(description, prompt, url=_OMIT, *, help=_OMIT, tools=_OMIT, password=password,
-             advanced=advanced):
-        d = {"description": description, "prompt": prompt}
-        d.update((k, v) for k, v in (("help", help), ("url", url), ("tools", tools)) if v is not _OMIT)
-        if password is not None:
-            d["password"] = password
-        d["category"] = category
-        if advanced:
-            d["advanced"] = True
-        return d
-    return make
-
-
-_prov = _category("provider", password=True, advanced=True)
-_tool = _category("tool", password=True, advanced=False)
-_msg = _category("messaging", password=False, advanced=False)
-_skill = _category("skill", password=True, advanced=True)
-_setting = _category("setting", password=False, advanced=False)
-
-
-def _base_url(name, prompt_name=None):
-    """Provider ``*_BASE_URL`` override entry (advanced, not a secret)."""
-    prompt = f"{prompt_name or name} base URL (leave empty for default)"
-    return _prov(f"{name} base URL override", prompt, None, password=False)
+from hermes_cli.config_defaults_env import _base_url, _env, _msg, _prov, _setting, _skill, _tool
 
 
 # Optional environment variables that enhance functionality. Feeds the dashboard keys page and setup
@@ -2937,36 +2887,22 @@ OPTIONAL_ENV_VARS = {
     "BROWSERBASE_API_KEY": _tool(
         "Browserbase API key for cloud browser (optional — local browser works without this)",
         "Browserbase API key", "https://browserbase.com/",
-        tools=["browser_navigate", "browser_click"]),
+        tools=["browser_exec"]),
     "BROWSERBASE_PROJECT_ID": _tool(
         "Browserbase project ID (optional — only needed for cloud browser)",
         "Browserbase project ID", "https://browserbase.com/",
-        tools=["browser_navigate", "browser_click"], password=False),
+        tools=["browser_exec"], password=False),
     "BROWSER_USE_API_KEY": _tool(
         "Browser Use API key for cloud browser (optional — local browser works without this)",
         "Browser Use API key", "https://browser-use.com/",
-        tools=["browser_navigate", "browser_click"]),
+        tools=["browser_exec"]),
     "FIRECRAWL_BROWSER_TTL": _tool(
         "Firecrawl browser session TTL in seconds (optional, default 300)",
-        "Browser session TTL (seconds)", tools=["browser_navigate", "browser_click"],
+        "Browser session TTL (seconds)", tools=["browser_exec"],
         password=False),
-    "AGENT_BROWSER_ENGINE": _env(
-        "Local browser engine: auto (default Chrome), lightpanda (faster, no screenshots; Browser Use mode "
-        "spawns lightpanda serve), chrome", "Browser engine (auto/lightpanda/chrome)",
-        url="https://lightpanda.io/docs/run-locally/installation/one-liner",
-        tools=["browser_exec", "browser_navigate", "browser_snapshot", "browser_click", "browser_vision"],
-        password=False, category="tool", advanced=True),
-    "CAMOFOX_URL": _tool(
-        "Camofox browser server URL for local anti-detection browsing (e.g. http://localhost:9377)",
-        "Camofox server URL", "https://github.com/jo-inc/camofox-browser",
-        tools=["browser_navigate", "browser_click"], password=False),
-    "CAMOFOX_API_KEY": _tool(
-        "Optional bearer token sent as Authorization header to a remote/authenticated Camofox "
-        "server", "Camofox API key", "https://github.com/jo-inc/camofox-browser",
-        tools=["browser_navigate", "browser_click"], advanced=True),
     "FAL_KEY": _tool("FAL API key for image and video generation", "FAL API key", "https://fal.ai/",
         tools=["image_generate", "video_generate"]),
-    "KREA_API_KEY": _tool("Krea API key for Krea 2 image generation (Medium + Large)",
+    "KREA_API_KEY": _tool("Krea API key for Krea 3 and Krea 2 image generation",
         "Krea API key", "https://www.krea.ai/settings/api-tokens", tools=["image_generate"]),
     "VOICE_TOOLS_OPENAI_KEY": _tool(
         "OpenAI API key for voice transcription (Whisper) and OpenAI TTS",
@@ -3026,14 +2962,6 @@ OPTIONAL_ENV_VARS = {
         "OpenViking API key", tools=["viking_search"]),
     "OPENVIKING_ENDPOINT": _tool("OpenViking server URL (default: http://127.0.0.1:1933)",
         "OpenViking endpoint", password=None, advanced=True),
-    # ── Langfuse observability ──
-    "HERMES_LANGFUSE_PUBLIC_KEY": _tool("Langfuse project public key (pk-lf-...)",
-        "Langfuse public key", "https://cloud.langfuse.com", password=False),
-    "HERMES_LANGFUSE_SECRET_KEY": _tool("Langfuse project secret key (sk-lf-...)",
-        "Langfuse secret key", "https://cloud.langfuse.com"),
-    "HERMES_LANGFUSE_BASE_URL": _tool("Langfuse server URL (default: https://cloud.langfuse.com)",
-        "Langfuse server URL (leave empty for cloud.langfuse.com)", None, password=False,
-        advanced=True),
     # ── Messaging platforms ──
     "TELEGRAM_BOT_TOKEN": _msg(
         "Complete Telegram bot token created by @BotFather (numeric bot ID followed by a colon "

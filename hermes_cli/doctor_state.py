@@ -11,7 +11,6 @@ from hermes_cli.doctor_report import (
     warn_on_error,
 )
 from hermes_cli.sizefmt import format_bytes as _human_bytes
-from hermes_state_common import FTS_STORAGE_VERSION
 from hermes_state_holders import read_only_db_uri
 
 
@@ -94,12 +93,12 @@ def _render_state_db_stats(stats: dict, holders=None, host_note: str = "") -> li
                           "(stop the listed processes; the host gateway's own retry then rebuilds, or run "
                           "'hermes sessions optimize-storage' with every holder stopped)"))
     # Oversized DB: suggest auto_prune, plus the offline optimize-storage pass when the FTS rebuild is
-    # pending OR the DB predates the current trigram layout (fts_storage_version < FTS_STORAGE_VERSION).
+    # pending, an earlier run stopped before tearing down the old index, or the stored FTS layout is an
+    # older release's (not just a lagging marker).
     if logical is not None and logical > STATE_DB_SIZE_WARN_BYTES:
         detail = "consider enabling sessions.auto_prune in config.yaml to bound growth"
-        stale_trigram = (fts is not None and fts.get("messages_fts_trigram")
-                         and (stats.get("fts_storage_version") or 0) < FTS_STORAGE_VERSION)
-        if stats.get("fts_rebuild_pending") or stale_trigram:
+        structural_fts_upgrade = bool(stats.get("fts_storage_upgrade_needed"))
+        if stats.get("fts_rebuild_pending") or stats.get("fts_teardown_pending") or structural_fts_upgrade:
             detail += "; run 'hermes sessions optimize-storage' offline (with the host gateway stopped) to compact FTS storage"
         lines.append(("warn", f"state.db is large ({_human_bytes(logical)})", f"({detail})"))
     # WAL runaway is deliberately NOT warned here: _state_db_wal already warns above 50 MB and offers --fix.
@@ -145,6 +144,7 @@ def check_legacy_desktop_checkout() -> None:
             return subprocess.run(
                 ["git", "-C", str(checkout), *args],
                 capture_output=True, text=True, encoding="utf-8", timeout=10,
+                check=False,
             )
         except (OSError, subprocess.SubprocessError):
             return None
@@ -262,6 +262,9 @@ def _check_scratch_dir(hermes_home: Path, _DHH: str) -> None:
     scratch = get_scratch_dir(hermes_home, prune=False)
     size = _human_bytes(scratch_dir_usage_bytes(scratch))
     check_ok(f"{_DHH}/cache/scratch/ is the scratch dir (TMPDIR; {size}, entries pruned after {SCRATCH_MAX_IDLE_HOURS}h idle)")
+    from hermes_constants_scratch_stuck import removal_hint, stuck_entries
+    for entry in stuck_entries(scratch):
+        check_warn(f"{_DHH}/cache/scratch/{entry.name}/ holds files you may not delete, so the prune skips it — {removal_hint(entry)}")
     for name, nbytes in unpruned_cache_hogs(hermes_home):
         check_warn(
             f"{_DHH}/cache/{name}/ is {_human_bytes(nbytes)} and outside every pruner "
@@ -419,7 +422,7 @@ def _state_db_stats(issues: list, state_db_path: Path) -> None:
 def _state_db_wal(f: Finding, should_fix: bool, state_db_path: Path) -> None:
     """WAL file size (unbounded growth indicates missed checkpoints)."""
     wal_path = state_db_path.parent / "state.db-wal"
-    wal_size = lambda: wal_path.stat().st_size if wal_path.exists() else 0  # noqa: E731
+    wal_size = lambda: wal_path.stat().st_size if wal_path.exists() else 0
     with warn_on_error(""):
         size = wal_size()
         if size > 50 * 1024 * 1024:  # 50 MB
@@ -492,6 +495,22 @@ def _check_state_db(should_fix: bool, f: Finding) -> None:
 
 
 @doctor_check()
+def _check_cron_store(should_fix: bool, f: Finding) -> None:
+    """The cron store accepts writes and its filesystem is not nearly full (jobs skip otherwise)."""
+    from hermes_cli.doctor import HERMES_HOME, _DHH
+    from cron.store_health import LOW_FREE_BYTES, free_bytes, probe_report
+    cron_dir = HERMES_HOME / "cron"
+    if (report := probe_report(cron_dir)) is not None:
+        check_warn(f"{_DHH}/cron/ is NOT writable ({report['error']}) — scheduled cron jobs are being skipped")
+        return f.issues.append(f"Cron store {report['store']} is not writable: {report['fix']}")
+    free = free_bytes(cron_dir) if cron_dir.is_dir() else None
+    if free is not None and free < LOW_FREE_BYTES:
+        check_warn(f"{_DHH}/cron/ filesystem has only {_human_bytes(free)} free — cron jobs stop when it fills")
+        return f.issues.append(f"Free disk space on the filesystem holding {cron_dir}")
+    check_ok(f"{_DHH}/cron/ store is writable")
+
+
+@doctor_check()
 def _check_checkpoint_store(should_fix: bool, f: Finding) -> None:
     """/rollback store footprint: warn when checkpoints are on and the store sits above its cap."""
     from tools.checkpoint_maintenance import checkpoint_footprint_notice
@@ -550,7 +569,7 @@ def _gh_authenticated() -> bool:
     if not _safe_which("gh"):
         return False
     try:
-        result = subprocess.run(["gh", "auth", "status"], capture_output=True, timeout=10)
+        result = subprocess.run(["gh", "auth", "status"], capture_output=True, timeout=10, check=False)
         return result.returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return False
@@ -579,26 +598,13 @@ def _check_skills_hub(should_fix: bool, f: Finding) -> None:
                    ("No GITHUB_TOKEN", f"(60 req/hr rate limit — set in {_DHH}/.env for better rates)"))
 
 
-def _memory_provider_mem0(issues: list) -> None:
-    from plugins.memory import import_provider_module
-    mem0_cfg = import_provider_module("mem0")._load_config()
-    if mem0_cfg.get("api_key", ""):
-        check_ok("Mem0 API key configured")
-        check_info(f"user_id={mem0_cfg.get('user_id', '?')}  agent_id={mem0_cfg.get('agent_id', '?')}")
-    else:
-        _fail_and_issue("Mem0 API key not set", "(set MEM0_API_KEY in .env or run hermes memory setup)",
-                        "Mem0 is set as memory provider but API key is missing", issues)
-
-
-# provider -> (checker, ImportError row, ImportError issue, label for "check failed")
-_MEMORY_PROVIDER_CHECKS = {
-    "mem0": (_memory_provider_mem0, ("Mem0 plugin not loadable", "run hermes memory setup"),
-             "Mem0 dependencies missing — run hermes memory setup, then restart Hermes", "Mem0"),
-}
+# provider -> (checker, ImportError row, ImportError issue, label for "check failed"); every provider
+# still bundled or catalog-installed uses the generic check.
+_MEMORY_PROVIDER_CHECKS: dict = {}
 
 
 def _memory_provider_generic(name: str) -> None:
-    """Generic check for every other memory provider (openviking, honcho, hindsight, ...)."""
+    """Generic check for every memory provider (honcho, hindsight, mem0, openviking, ...)."""
     from plugins.memory import load_memory_provider
     _provider = load_memory_provider(name)
     if _provider and _provider.is_available():
@@ -634,7 +640,8 @@ def _check_memory_provider(should_fix: bool, f: Finding) -> None:
 
 @doctor_check("")  # best-effort: profile enumeration must never break doctor
 def _check_profiles(should_fix: bool, f: Finding) -> None:
-    from hermes_cli.profiles import list_profiles, _get_wrapper_dir, profile_exists
+    from hermes_constants import PROFILE_ID_RE
+    from hermes_cli.profiles import _wrapper_path, list_profiles, _get_wrapper_dir, profile_exists
     import re as _re
     named_profiles = [p for p in list_profiles() if not p.is_default]
     if not named_profiles:
@@ -646,7 +653,7 @@ def _check_profiles(should_fix: bool, f: Finding) -> None:
         parts = [text for cond, text in (
             (p.gateway_running, "gateway running"), (p.model, (p.model or "")[:30]),
             (not (p.path / "config.yaml").exists(), "⚠ missing config"), (not (p.path / ".env").exists(), "no .env"),
-            (not (wrapper_dir / p.name).exists(), "no alias")) if cond]
+            (p.alias_path is None, "no alias")) if cond]
         check_ok(f"  {p.name}: {', '.join(parts) if parts else 'configured'}")
     # Orphan wrappers
     if wrapper_dir.is_dir():
@@ -656,7 +663,9 @@ def _check_profiles(should_fix: bool, f: Finding) -> None:
             with warn_on_error(""):
                 _m = _re.search(r"hermes -p (\S+)", wrapper.read_text(encoding="utf-8-sig"))
                 if _m and not profile_exists(_m.group(1)):
-                    check_warn(f"Orphan alias: {wrapper.name} → profile '{_m.group(1)}' no longer exists")
+                    alias = wrapper.stem if _wrapper_path(wrapper.stem) == wrapper else wrapper.name
+                    fix = f"hermes profile alias {alias} --remove" if PROFILE_ID_RE.match(alias) else f"delete {wrapper}"
+                    check_warn(f"Orphan alias: {alias} → profile '{_m.group(1)}' no longer exists", f"(remove with: {fix})")
     # Same helper as the multiplex migration preflight, so doctor names the duplicates that make
     # `hermes gateway migrate --multiplex` refuse (and made pre-multiplex standalone gateways race).
     from hermes_cli.gateway_migrate import duplicate_credential_findings

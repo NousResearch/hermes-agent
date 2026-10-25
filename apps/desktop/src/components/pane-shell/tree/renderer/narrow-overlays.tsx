@@ -9,13 +9,13 @@
 import { useStore } from '@nanostores/react'
 import { type MouseEventHandler, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { $chatOnboardingSolo } from '@/components/onboarding-chat/assembly'
 import { PaneTab, PaneTabLabel, PaneTabStrip } from '@/components/ui/pane-tab'
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import type { Contribution } from '@/contrib/types'
 import { ESCAPE_PRIORITY, isTopEscapeLayer, pushEscapeLayer } from '@/lib/escape-layers'
 import { cn } from '@/lib/utils'
+import { $chatOnboardingSolo } from '@/store/onboarding-intro'
 import { $paneStates } from '@/store/panes'
 
 import { PANE_TOGGLE_REVEAL_EVENT } from '../..'

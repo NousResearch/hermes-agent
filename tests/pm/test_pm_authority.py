@@ -15,12 +15,12 @@ from pathlib import Path
 
 import pytest
 
-import pm.paths as paths
-import pm.registry as registry
+from pm import paths
+from pm import registry
 from pm.lock import Facts, Lockfile
 from pm.store import Store, current_target, tree_digest
-from tests.pm._fixtures import make_tar, served as served
-from tests.pm.test_pm_core import FakeTool, pm_env as core_env  # noqa: F401
+from tests.pm._fixtures import make_tar, served as served  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
+from tests.pm.test_pm_core import FakeTool, pm_env as core_env
 
 
 @pytest.fixture
@@ -258,6 +258,7 @@ def test_killed_replacement_recovers_on_next_install(pm_env, route, interruption
     child = subprocess.run(
         [sys.executable, "-c", code, str(env["lockfile_path"]), route, interruption],
         env=dict(os.environ), capture_output=True, text=True, timeout=30,
+        check=False,
     )
     assert child.returncode == 17, child.stderr
     assert Facts(paths.facts_path()).get("faketool") == old_fact

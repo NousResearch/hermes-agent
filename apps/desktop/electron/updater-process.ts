@@ -1,4 +1,13 @@
-import { spawn, type SpawnOptions, spawnSync, type SpawnSyncReturns } from 'node:child_process'
+import {
+  execFile,
+  type ExecFileOptions,
+  execFileSync,
+  spawn,
+  type SpawnOptions,
+  spawnSync,
+  type SpawnSyncOptions,
+  type SpawnSyncReturns
+} from 'node:child_process'
 import { existsSync, realpathSync, statSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -112,41 +121,113 @@ export function launcherTargetsInstallation(launcher: string, root: string): boo
   }
 }
 
-/** The real install directory a launcher's `--version` reports, or null. */
-function launcherInstallDirectory(launcher: string, root?: string): string | null {
-  try {
-    // Node refuses to exec a .cmd directly (CVE-2024-27980), and `shell:true`
-    // would hand an interpolated path to cmd.exe wholesale. Invoke cmd.exe
-    // explicitly instead: a fixed argv, the path quoted verbatim and screened
-    // for cmd metacharacters, and nothing else for the shell to interpret.
-    const viaCmd: boolean = process.platform === 'win32' && /\.cmd$/i.test(launcher)
+// A launcher's install directory cannot move while this process lives, and the
+// backend resolver runs once per surface (startup, TUI resume, pool backends, and
+// every tick of reensureDuringRestart), so the HERMES_DESKTOP_HERMES rung memoizes
+// each launcher's root. The probe is async: `--version` may take seconds (it also
+// runs the passive update check) and must never stall Electron's main thread.
+// Concurrent resolves share one in-flight probe. A miss (no `Install directory:`
+// line, a timeout, a launcher mid-replacement) is cached only briefly, so it is
+// neither permanent nor re-spawned on every resolve.
+export const LAUNCHER_ROOT_MISS_TTL_MS = 60_000
+const launcherInstallRoots = new Map<string, Promise<string | undefined>>()
+const launcherRootMisses = new Map<string, number>()
 
-    if (viaCmd && CMD_UNSAFE_PATH.test(launcher)) {
-      return null
+/** The root a launcher reports, memoized: ticketRuntimeFor() mints gateway
+ *  tickets from a command backend only when it names its installation root. */
+export function launcherInstallRoot(launcher: string): Promise<string | undefined> {
+  const missedAt = launcherRootMisses.get(launcher)
+
+  if (missedAt !== undefined && Date.now() - missedAt < LAUNCHER_ROOT_MISS_TTL_MS) {
+    return Promise.resolve(undefined)
+  }
+
+  const cached = launcherInstallRoots.get(launcher)
+
+  if (cached) {return cached}
+  const flight = launcherInstallDirectoryAsync(launcher).then(root => {
+    if (root === null) {
+      launcherInstallRoots.delete(launcher)
+      launcherRootMisses.set(launcher, Date.now())
+
+      return undefined
     }
 
-    const command: string = viaCmd ? (process.env.ComSpec ?? 'cmd.exe') : launcher
-    const args: string[] = viaCmd ? ['/d', '/s', '/c', `""${launcher}" --version"`] : ['--version']
+    launcherRootMisses.delete(launcher)
 
-    const probe: SpawnSyncReturns<string> = spawnSync(command, args, {
+    return root
+  })
+
+  launcherInstallRoots.set(launcher, flight)
+
+  return flight
+}
+
+interface LauncherVersionProbe { command: string; args: string[]; options: SpawnSyncOptions }
+
+// Node refuses to exec a .cmd directly (CVE-2024-27980), and `shell:true`
+// would hand an interpolated path to cmd.exe wholesale. Invoke cmd.exe
+// explicitly instead: a fixed argv, the path quoted verbatim and screened
+// for cmd metacharacters, and nothing else for the shell to interpret.
+function launcherVersionProbe(launcher: string, root?: string): LauncherVersionProbe | null {
+  const viaCmd: boolean = process.platform === 'win32' && /\.cmd$/i.test(launcher)
+
+  if (viaCmd && CMD_UNSAFE_PATH.test(launcher)) {
+    return null
+  }
+
+  return {
+    command: viaCmd ? (process.env.ComSpec ?? 'cmd.exe') : launcher,
+    args: viaCmd ? ['/d', '/s', '/c', `""${launcher}" --version"`] : ['--version'],
+    options: {
       cwd: root,
-      encoding: 'utf8',
       timeout: 15000,
       windowsHide: true,
       windowsVerbatimArguments: viaCmd,
       env: root ? { ...process.env, HERMES_INSTALL_ROOT: root } : process.env
-    })
-
-    if (probe.error || probe.status !== 0) {
-      return null
     }
+  }
+}
 
-    const reported: string | undefined = /^Install directory: (.+)$/m.exec(probe.stdout)?.[1]?.trim()
+function reportedInstallDirectory(stdout: string): string | null {
+  const reported: string | undefined = /^Install directory: (.+)$/m.exec(stdout)?.[1]?.trim()
 
-    return reported ? realpathSync(reported) : null
+  return reported ? realpathSync(reported) : null
+}
+
+/** The real install directory a launcher's `--version` reports, or null. */
+export function launcherInstallDirectory(launcher: string, root?: string): string | null {
+  try {
+    const probe: LauncherVersionProbe | null = launcherVersionProbe(launcher, root)
+
+    if (!probe) {return null}
+    const result: SpawnSyncReturns<string> = spawnSync(probe.command, probe.args, { ...probe.options, encoding: 'utf8' })
+
+    return result.error || result.status !== 0 ? null : reportedInstallDirectory(result.stdout)
   } catch {
     return null
   }
+}
+
+/** launcherInstallDirectory without blocking the caller's event loop. */
+function launcherInstallDirectoryAsync(launcher: string): Promise<string | null> {
+  const probe: LauncherVersionProbe | null = launcherVersionProbe(launcher)
+
+  if (!probe) {return Promise.resolve(null)}
+
+  return new Promise(resolve => {
+    try {
+      execFile(probe.command, probe.args, { ...probe.options, encoding: 'utf8' } as ExecFileOptions, (error, stdout) => {
+        try {
+          resolve(error ? null : reportedInstallDirectory(String(stdout)))
+        } catch {
+          resolve(null)
+        }
+      })
+    } catch {
+      resolve(null)
+    }
+  })
 }
 
 /** File prerequisites only: dependency recovery remains reachable through update. */
@@ -296,13 +377,17 @@ export function resolvePosixScriptHandoff(
  * Survival past our own exit does not need `detached`: libuv's per-process
  * job object has JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK, so grandchildren
  * (`start`'s powershell) are never members and Windows does not tie a
- * process's lifetime to its parent. `start` returns immediately, so the
+ * process's lifetime to its parent. By default `start` returns immediately, so the
  * spawned pid is the WRAPPER's — callers must not use it as a marker owner
- * (the script claims the marker itself with its own $PID).
+ * (the script claims the marker itself with its own $PID). Set waitForExit for
+ * callers that cancel the process tree or read the script's exit code: cmd then
+ * runs the command directly in the same hidden console, stays alive until it
+ * exits and returns its exit code (`start /wait` always returns 0).
  */
 export function wrapHandoffForDetachedConsole(
   handoff: UpdateScriptHandoff,
-  extraArgs: string[]
+  extraArgs: string[],
+  waitForExit = false
 ): {
   command: string
   args: string[]
@@ -311,7 +396,15 @@ export function wrapHandoffForDetachedConsole(
 } {
   return {
     command: 'cmd.exe',
-    args: ['/d', '/s', '/c', 'start', '', '/b', handoff.command, ...handoff.args, ...extraArgs],
+    args: [
+      '/d',
+      '/s',
+      '/c',
+      ...(waitForExit ? [] : ['start', '', '/b']),
+      handoff.command,
+      ...handoff.args,
+      ...extraArgs
+    ],
     detached: false
   }
 }
@@ -470,6 +563,41 @@ export function stagedUpdaterSupportsPrewrittenMarker(
   return typeof mtimeMs === 'number' && Number.isFinite(mtimeMs) && mtimeMs >= MARKER_SELF_ADOPT_EPOCH_MS
 }
 
+/**
+ * Clear the staged macOS updater helper's quarantine and, when its signature
+ * does not verify, ad-hoc sign it so Gatekeeper lets it run. Best effort.
+ */
+export function repairMacUpdaterHelper(
+  updater: string | null,
+  deps: { isMac: boolean; log: (line: string) => void }
+): void {
+  if (!deps.isMac || !updater) {
+    return
+  }
+
+  try {
+    execFileSync('/usr/bin/xattr', ['-cr', updater], { stdio: 'ignore' })
+  } catch (err) {
+    deps.log(`[updates] macOS updater helper quarantine repair skipped: ${(err as Error).message}`)
+  }
+
+  try {
+    execFileSync('/usr/bin/codesign', ['--verify', updater], { stdio: 'ignore' })
+
+    return
+  } catch {
+    // Unsigned or invalid helper. Apply a local ad-hoc signature so Gatekeeper
+    // does not block the staged updater before it can run.
+  }
+
+  try {
+    execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', updater], { stdio: 'ignore' })
+    deps.log('[updates] repaired macOS updater helper signature')
+  } catch (err) {
+    deps.log(`[updates] macOS updater helper signature repair skipped: ${(err as Error).message}`)
+  }
+}
+
 export interface SpawnUpdaterProcessDeps {
   isWindows?: boolean
   spawnProcess?: (command: string, args: string[], options: SpawnOptions) => UpdaterChild
@@ -496,6 +624,67 @@ export function spawnUpdaterProcess(
   child.unref()
 
   return child
+}
+
+/**
+ * Stop a hand-off the Desktop has given up on (C2 timeout), so a script that
+ * starts late cannot run an update the UI already reported as "did not start".
+ * POSIX: the detached launcher leads its own process group — kill the group.
+ * Windows: the `cmd start /b` wrapper exits at once and PowerShell outlives it,
+ * so stop the wrapper's recorded children that carry this Desktop's
+ * `-DesktopPid` (a reused pid never matches both), then the wrapper's tree if
+ * it is still running. Best effort; the script is adopt-only besides (A4).
+ */
+export function killHandoffTree(
+  child: UpdaterChild & { exitCode?: number | null; signalCode?: string | null },
+  {
+    isWindows = process.platform === 'win32',
+    desktopPid = process.pid,
+    kill = process.kill.bind(process),
+    spawnProcess = spawn
+  }: {
+    isWindows?: boolean
+    desktopPid?: number
+    kill?: typeof process.kill
+    spawnProcess?: typeof spawn
+  } = {}
+): void {
+  const pid = child.pid
+
+  if (!Number.isInteger(pid) || !pid || pid <= 0) {
+    return
+  }
+
+  if (!isWindows) {
+    try {
+      kill(-pid, 'SIGKILL')
+    } catch {
+      try {
+        kill(pid, 'SIGKILL')
+      } catch {
+        // Already gone.
+      }
+    }
+
+    return
+  }
+
+  const wrapperRunning = child.exitCode == null && child.signalCode == null
+
+  const command =
+    `Get-CimInstance Win32_Process -Filter 'ParentProcessId=${pid}' | ` +
+    `Where-Object { $_.CommandLine -match '-DesktopPid\\s+${desktopPid}(\\s|$)' } | ` +
+    `ForEach-Object { taskkill.exe /PID $_.ProcessId /T /F | Out-Null }` +
+    (wrapperRunning ? `; taskkill.exe /PID ${pid} /T /F | Out-Null` : '')
+
+  try {
+    spawnProcess('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], {
+      stdio: 'ignore',
+      windowsHide: true
+    }).on('error', () => {})
+  } catch {
+    // Best effort.
+  }
 }
 
 export interface UpdaterHandoffOutcome {

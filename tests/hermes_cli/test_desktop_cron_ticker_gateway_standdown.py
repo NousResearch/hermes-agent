@@ -36,7 +36,7 @@ def ticker_env(tmp_path, monkeypatch):
 @pytest.fixture()
 def gateway(monkeypatch):
     """Mutable gateway liveness; ``probes`` counts ownership checks."""
-    import hermes_cli.profiles as profiles
+    from hermes_cli import profiles
 
     state = {"running": True, "probes": 0}
 
@@ -104,7 +104,7 @@ def test_ticker_fails_open_when_ownership_probe_raises(ticker_env, monkeypatch, 
 
     _home, started = ticker_env
 
-    import hermes_cli.profiles as profiles
+    from hermes_cli import profiles
 
     def _boom(home):
         raise RuntimeError("probe unavailable")
@@ -122,7 +122,7 @@ def test_gated_ticker_resumes_after_the_gateway_stops(ticker_env, gateway, monke
     """A gateway live at backend start must not silence Desktop cron for good: the multiplex
     ticker still starts, and its per-tick gate stands down only while that gateway runs."""
     import cron.scheduler_provider as sp
-    import hermes_cli.profiles as profiles
+    from hermes_cli import profiles
     import hermes_logging
     from hermes_cli import web_server
 
@@ -149,7 +149,7 @@ def test_fail_open_ticker_uses_the_same_profile_gate(ticker_env, gateway, monkey
     through ``profile_gate``, standing down per tick only while a gateway owns it, including one
     that comes back."""
     import cron.scheduler_provider as sp
-    import hermes_cli.profiles as profiles
+    from hermes_cli import profiles
     from hermes_cli import web_server
 
     home, started = ticker_env
@@ -179,7 +179,7 @@ def test_fail_open_ticker_yields_to_the_multiplexer_serving_this_profile(tmp_pat
     """A named profile served by the live default multiplexer has no gateway.pid of its own; the
     fail-open gate must still stand down for it, as the multiplex gate does."""
     import cron.scheduler_provider as sp
-    import hermes_cli.profiles as profiles
+    from hermes_cli import profiles
     import hermes_constants
     from hermes_cli import web_server
 
@@ -214,8 +214,8 @@ def test_gated_out_fail_open_tick_leaves_the_gateway_store_status_alone(tmp_path
     """Through the real built-in loop: while the gateway owns the store, the fail-open ticker
     neither ticks nor records a successful tick or clears the gateway's recorded tick error
     (#32612, #32895)."""
-    import cron.jobs as jobs
-    import hermes_cli.profiles as profiles
+    from cron import jobs
+    from hermes_cli import profiles
     import hermes_constants
     from cron.scheduler_provider import InProcessCronScheduler
     from hermes_cli import web_server

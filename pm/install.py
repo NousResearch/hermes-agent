@@ -15,7 +15,7 @@ from typing import Optional
 
 from pm import paths
 from pm.downloader import DownloadPaused, ProgressFn
-from pm.filesystem import remove_tree
+from pm.filesystem import native, remove_tree, retry_held
 from pm.lock import Facts, Lockfile
 from pm.package import InstallError, Package, Runner, StatePackage, compose_env
 from pm.plugin_inputs import Candidates, Members, PluginInput, Selection, StagedUpdate
@@ -69,7 +69,7 @@ def _store() -> Store:
 
 
 def _heal_exec_bit(binary: Path) -> bool:
-    """agent-browser entries staged before stage() set the exec bit sit at 0644 and fail every
+    """Store entries staged from archives that drop the exec bit sit at 0644 and fail every
     launch with PermissionError. Modes are not part of the pinned digest, so restore it in place;
     an entry we cannot chmod (sealed store) is treated as not installed."""
     if os.name == "nt" or os.access(binary, os.X_OK):
@@ -91,7 +91,7 @@ def _installed_location(package: Package, lockfile: Lockfile, target: str, *,
         store = Store(root)
         facts = _facts() if root == paths.store_root() else Facts(root / "facts.json")
         fact = facts.get(package.name)
-        if not fact or not facts.installed(package.name, None, root):
+        if not fact or not facts.installed(package.name, None, store.root):
             continue
         binary = package.binary(store.entry(fact["entry"]), target)
         if binary is not None and not binary.is_file():
@@ -100,7 +100,7 @@ def _installed_location(package: Package, lockfile: Lockfile, target: str, *,
             continue
         if verify and not _entry_verified(package, fact, store, target):
             continue
-        if facts.installed(package.name, lockfile.version(package.name), root,
+        if facts.installed(package.name, lockfile.version(package.name), store.root,
                            _identity(lockfile, package.name, target)):
             return facts, store
         if (allow_outdated and fact.get("target") == target
@@ -128,7 +128,10 @@ def installed_package(name: str, *, allow_outdated: bool = False) -> InstalledPa
     facts, store = location
     fact = facts.get(name)
     entry = store.entry(fact["entry"])
-    return InstalledPackage(entry, fact["version"], package.binary(entry, target))
+    binary = package.binary(entry, target)
+    # Callers execute and compare these paths outside PM: the ordinary spelling, not the store's.
+    return InstalledPackage(Path(native(entry)), fact["version"],
+                            Path(native(binary)) if binary is not None else None)
 
 
 def uv_launcher(name: str) -> Path | None:
@@ -145,7 +148,7 @@ def uv_launcher(name: str) -> Path | None:
     facts, store = location
     binary = package.binary(store.entry(facts.get("uv")["entry"]), target)
     launcher = binary.with_name(name + binary.suffix) if binary is not None else None
-    return launcher if launcher is not None and launcher.is_file() else None
+    return Path(native(launcher)) if launcher is not None and launcher.is_file() else None
 
 
 def _identity(lockfile: Lockfile, name: str, target: str):
@@ -305,12 +308,12 @@ def _restore_previous_entry(store: Store, entry, previous) -> None:
     displaced = store.entry(f".displaced-{uuid.uuid4().hex}")
     had_entry = entry.exists() or entry.is_symlink()
     if had_entry:
-        entry.rename(displaced)
+        retry_held(lambda: entry.rename(displaced))
     try:
-        previous.rename(entry)
+        retry_held(lambda: previous.rename(entry))
     except BaseException:
         if had_entry:
-            displaced.rename(entry)
+            retry_held(lambda: displaced.rename(entry))
         raise
     if had_entry:
         _discard_entry(store, displaced.name)
@@ -320,7 +323,7 @@ def _restore_previous_entry(store: Store, entry, previous) -> None:
 def _publish_entry(package, store, staged, entry, previous_entry, target):
     """Keep rollback live through the caller's native facts commit, if any."""
     if entry.exists() or entry.is_symlink():
-        entry.rename(previous_entry)
+        retry_held(lambda: entry.rename(previous_entry))
     try:
         store.publish(staged, entry.name)
         reason = package.verify(entry, target)
@@ -358,6 +361,33 @@ def _entry_current(package, lockfile, facts, store, entry, previous, version, pi
     except OSError:
         recorded = None
     return recorded == pin and not package.verify(entry, target)
+
+
+def _refresh_recorded_env(package, facts, store, entry, previous, target) -> None:
+    """An entry's env is derived from the package code, not its bytes: when the code changes it (a
+    variable renamed or retired), re-record it so stores installed earlier match what admission
+    compares against. The recorded digest still vouches for the bytes, so nothing is re-fetched."""
+    env = package.env(entry, target)
+    if facts.env_for(package.name, store.root) != env:
+        facts.record(package.name, previous["version"], previous["entry"], env, store.root,
+                     target=previous.get("target"), artifacts=previous.get("artifacts"),
+                     digest=previous.get("digest"))
+
+
+def _refresh_found_env(package, location, target, operation) -> None:
+    """:func:`_refresh_recorded_env` for an entry ``ensure`` found installed: `hermes update` skips
+    installed defaults, so no install would re-record it. Only the writable store is re-recorded, under
+    its install lock (a sealed store's facts ship with the artifact)."""
+    facts, store = location
+    entry = store.entry(facts.get(package.name)["entry"])
+    if (facts.env_for(package.name, store.root) == package.env(entry, target)
+            or store.root != Store(paths.writable_store_root()).root):
+        return
+    with nullcontext() if operation is not None else store.install_lock():
+        facts.reload()
+        previous = facts.get(package.name)
+        if previous and previous.get("entry") == entry.name:
+            _refresh_recorded_env(package, facts, store, entry, previous, target)
 
 
 def _copy_verified_source(package, lockfile, copy_from, staged, version, target) -> None:
@@ -426,6 +456,8 @@ def _install(
         _reclaim_set_aside(store)
         if (_entry_current(package, lockfile, facts, store, entry, previous, version, pin, target)
                 and not _fresh_copy):
+            if facts is not None:
+                _refresh_recorded_env(package, facts, store, entry, previous, target)
             _remove_downloads(store, artifacts)
             return entry
         if not artifacts:
@@ -527,8 +559,9 @@ def ensure(
 
     ``verify`` re-hashes an already-recorded entry and repairs it when the
     bytes moved. A deliberate install keeps that check. Shell activation
-    passes ``False``. It trusts the recorded digest, the same check startup
-    uses, because hashing every tool tree costs seconds per shell.
+    and the source-build tail (moments after the install/update's own PM
+    step) pass ``False``. It trusts the recorded digest, the same check
+    startup uses, because hashing every tool tree costs seconds per call.
 
     ``progress(stage, done, total, label)`` reports the slow parts of an
     install to a UI, including ordered multi-archive labels.
@@ -553,15 +586,17 @@ def ensure(
                     json.dumps(_identity(lockfile, package.name, target), sort_keys=True))
         if identity in checked:
             continue
-        if _installed_location(package, lockfile, target, verify=explicit and verify) is None:
+        location = _installed_location(package, lockfile, target, verify=explicit and verify)
+        if location is None:
             missing.append(package)
         else:
+            _refresh_found_env(package, location, target, _operation)
             checked.add(identity)
     if missing and not explicit and not lazy_installs_allowed():
         raise _refuse_lazy(name, ", ".join(p.name for p in missing))
     if missing:
         store = _operation.lock() if _operation is not None else Store(paths.writable_store_root())
-        facts = _facts() if store.root == paths.store_root() else Facts(store.root / "facts.json")
+        facts = _facts() if store.root == _store().root else Facts(store.root / "facts.json")
         for package in missing:
             # Publication may change entries; do not carry observations across it.
             checked.clear()
@@ -620,6 +655,13 @@ def _member_inputs(plugins: PluginInput | None) -> dict:
     raise TypeError(f"{type(plugins).__name__} changes plugin state; only a sync may carry it")
 
 
+def _extra_key(name: str) -> str:
+    """The PEP 685 name uv matches an extra by (``foo_bar`` is ``foo-bar``)."""
+    import re
+
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
 def _still_declared(package, recorded: list[str]) -> list[str]:
     """The recorded extras this tree still declares.
 
@@ -629,17 +671,13 @@ def _still_declared(package, recorded: list[str]) -> list[str]:
     Membership uses PEP 685 names (uv matches ``foo_bar`` to ``foo-bar``); the
     recorded spelling is what reaches uv.
     """
-    import re
     from pm.features import declared_extras
-
-    def normalized(name: str) -> str:
-        return re.sub(r"[-_.]+", "-", name).lower()
 
     root = package.project_root()
     if not (root / "pyproject.toml").is_file():
         return list(recorded)
-    declared = {normalized(extra) for extra in declared_extras(root)}
-    return [extra for extra in recorded if normalized(extra) in declared]
+    declared = {_extra_key(extra) for extra in declared_extras(root)}
+    return [extra for extra in recorded if _extra_key(extra) in declared]
 
 
 def venv_is_current(*, extras: list[str] | None = None, plugins: Members | Candidates | None = None,
@@ -865,7 +903,6 @@ def drift(*, include_venv: bool = True) -> dict[str, str]:
     problems: dict[str, str] = {}
     lockfile = _lockfile()
     facts = _facts()
-    store = _store()
     target = current_target()
     for name in lockfile.names():
         try:
@@ -896,9 +933,30 @@ def check(*, include_venv: bool = True) -> list[str]:
     return [f"{name}: {reason}" for name, reason in drift(include_venv=include_venv).items()]
 
 
+def _dependents_first(names: list[str]) -> list[str]:
+    """*names* with each package moved ahead of the packages it depends on.
+
+    A package that extends its dependency must win on PATH: node's own dir also holds node's
+    bundled npm and npx, so with node first every ``npm`` ran that copy, not the pinned npm.
+    Unrelated packages keep their order.
+    """
+    order = list(names)
+    for name in names:
+        try:
+            deps = {package.name for package in walk([name])} - {name}
+        except KeyError:
+            continue
+        positions = [order.index(dep) for dep in deps if dep in order]
+        if positions and min(positions) < order.index(name):
+            order.remove(name)
+            order.insert(min(positions), name)
+    return order
+
+
 def _store_path_dirs() -> list[str]:
     """Composed PATH dirs of all installed (non-internal, on_path) store
-    packages, deps-first, deduped. Includes optional packages that are
+    packages, each package ahead of its dependencies (``_dependents_first``),
+    deduped. Includes optional packages that are
     *installed* (facts say so) — an installed git/gh must be on PATH even
     though it's not in the root closure. A package whose dependency chain is
     not fully installed contributes nothing: store npm over a missing store
@@ -914,7 +972,7 @@ def _store_path_dirs() -> list[str]:
         return locations[package.name]
 
     dirs: list[str] = []
-    for name in lockfile.names():
+    for name in _dependents_first(lockfile.names()):
         try:
             package = get_package(name)
             chain = walk([name])
@@ -936,8 +994,8 @@ def _store_path_dirs() -> list[str]:
         if isinstance(path_dirs, str):
             path_dirs = [path_dirs]
         for directory in path_dirs:
-            if directory and directory not in dirs:
-                dirs.append(str(directory))
+            if directory and native(directory) not in dirs:
+                dirs.append(native(directory))
     return dirs
 
 

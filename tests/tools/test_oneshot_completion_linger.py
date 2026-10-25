@@ -339,6 +339,7 @@ def _run_e2e_parent(tmp_path, *, linger: bool) -> Path:
         timeout=60,
         env=env,
         cwd=str(tmp_path),
+        check=False,
     )
     assert proc.returncode == 0, proc.stderr
     assert "SPAWNED" in proc.stdout

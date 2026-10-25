@@ -95,6 +95,7 @@ export const it: Translations = {
   status: {
     actionFailed: "Azione non riuscita",
     actionFinished: "Completata",
+    actionFinishedOwed: "Aggiornato, ma ancora in sospeso (riesegui `hermes update` per completare)",
     actions: "Azioni",
     agent: "Agente",
     activeSessions: "Sessioni attive",

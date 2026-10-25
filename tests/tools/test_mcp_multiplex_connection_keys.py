@@ -120,8 +120,8 @@ def test_same_named_server_with_other_credentials_is_a_separate_connection(two_p
     # owner scope only around the config load, #113746): with a source-tagged secret the adopter's
     # stdio identity still resolves in ITS OWN scope, so an equal value shares the owner's child.
     import sys
-    import agent.secret_scope as secret_scope
-    import hermes_cli.env_loader as env_loader
+    from agent import secret_scope
+    from hermes_cli import env_loader
     monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
     monkeypatch.setattr(env_loader, "_SECRET_SOURCES", {"FIXTURE_TOKEN": "op"})
     for profile in ("a", "b"):
@@ -250,7 +250,7 @@ def test_untrusted_adopter_of_a_full_profiles_connection_keeps_its_own_trust_gat
     B's ``trust: untrusted`` write-capable call skip approval."""
     from tools import mcp_tool_discovery as disc, mcp_tool_handlers as handlers
     from tools import mcp_tool_registration as reg
-    import tools.approval_prompt as approval_prompt
+    from tools import approval_prompt
 
     route = {"url": "https://mcp.example/x", "headers": {"Authorization": "Bearer shared"}}
     cfg_a, cfg_b = dict(route, trust="full"), dict(route, trust="untrusted")

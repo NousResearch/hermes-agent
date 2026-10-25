@@ -33,7 +33,7 @@ import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import tui_gateway.server as server
+from tui_gateway import server
 import hermes_yaml as yaml
 
 

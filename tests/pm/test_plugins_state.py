@@ -68,7 +68,7 @@ def test_only_live_profiles_join_the_dependency_union(homes):
 def test_unreadable_profile_state_is_not_an_empty_selection(homes, monkeypatch, boundary):
     from pm.workspace import enabled_member_dirs
 
-    default_home, profile_home = homes
+    _default_home, profile_home = homes
     _write_config(profile_home, ["keep-plug"])
     plugin = profile_home / "plugins" / "keep-plug"
     plugin.mkdir(parents=True)
@@ -166,7 +166,7 @@ def test_member_discovery_uses_real_enabled_config(homes):
     from pm.workspace import enabled_member_dirs
     home, _ = homes
     manifests = {
-        "modern/pyproject.toml": "[project]\n",
+        "modern/pyproject.toml": '[project]\ndependencies = ["requests>=2"]\n',
         "legacy/plugin.yaml": 'name: legacy\npip_dependencies: ["requests>=2"]\n',
         "plain/plugin.yaml": "name: plain\n",
         "orphan/pyproject.toml": "[project]\n",

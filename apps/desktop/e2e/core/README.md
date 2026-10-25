@@ -30,6 +30,10 @@ A small, deterministic Electron suite that guards three issue classes end to end
     steer at each point of a tool turn, then reload and switch-back over the
     folded tool turns. `switch-back-race.spec.ts` runs both orders with a tool
     turn too (history folds it under its first row, #128809).
+    `behind-window-send.spec.ts`: two windows on one chat, window 2 deaf to
+    window 1's turn pings; window 2's send from behind goes through with no
+    "Chat out of date" refusal, the model's request carries window 1's turn,
+    and both windows converge under the oracle.
     `onboarding-first-chat.spec.ts` starts from a fresh home with no provider:
     the real onboarding (custom endpoint → the fake provider's URL), then the
     first chat, a second turn and a reload under the same oracle, plus

@@ -8,17 +8,17 @@ from agent.prompt_builder import STEER_DISPLAY_KIND
 from agent.skill_commands import extract_user_instruction_from_skill_message
 
 
-# The existing room-origin marker, authored by Desktop's
-# apps/desktop/src/plugins/hermes-bots/group-round-prompt.ts::GROUP_PROMPT_HEADER_PREFIX.
+# Room-origin markers from Desktop's group-round-prompt.ts and
+# gateway/hosted_room_discussion.py. Both producers remain in use.
 # A room prompt contains peer messages and participation rules, not human-authored speech.
-_GROUP_PROMPT_HEADER_PREFIX = '[Group chat: "'
+_GROUP_PROMPT_HEADER_PREFIXES = ('[Group chat: "', '[Discussion: "')
 
 
 def memory_user_text(content: Any) -> str | None:
     """Strip skill scaffolding and omit generated group-room turns from provider input."""
     from agent.context_compressor import _restated_request_text
 
-    if _restated_request_text(content).startswith(_GROUP_PROMPT_HEADER_PREFIX):
+    if _restated_request_text(content).startswith(_GROUP_PROMPT_HEADER_PREFIXES):
         return None
     return extract_user_instruction_from_skill_message(content)
 
@@ -40,7 +40,7 @@ def memory_messages(messages: list[dict[str, Any]] | None) -> list[dict[str, Any
         if isinstance(message, dict) and message.get("role") == "user":
             live = user_originated_turn_view(message)
             text = _restated_request_text((live if live is not None else message).get("content"))
-            if text.startswith(_GROUP_PROMPT_HEADER_PREFIX):
+            if text.startswith(_GROUP_PROMPT_HEADER_PREFIXES):
                 room_exchange = True
             elif room_exchange and (
                 message.get("display_kind") in {"skill_invocation", STEER_DISPLAY_KIND}

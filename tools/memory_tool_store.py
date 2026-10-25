@@ -324,6 +324,16 @@ class MemoryStore:
         return self._consolidation_failure(
             _error(message, "over_budget", current_entries=self._entries_for(target), usage=self._usage(target)))
 
+    def _add_overflow(self, target: str, content: str, limit: int) -> dict[str, Any]:
+        """A lone add over budget, legacy or one-item batch: the model has not consolidated yet,
+        so the live entries come back (its prompt snapshot may predate other sessions' writes)."""
+        over = len(ENTRY_DELIMITER.join(self._entries_for(target) + [content])) - limit
+        return self._failure_with_entries(target, (
+            f"Memory at {self._char_count(target):,}/{limit:,} chars; adding this entry ({len(content)} chars) "
+            f"would exceed the limit by {over:,} chars. Retry as ONE 'operations' batch that "
+            f"removes or shortens (patch) stale entries from current_entries below to free at least "
+            f"{over:,} chars AND adds this entry — the limit is checked only on the batch result."))
+
     def _batch_failure(self, target: str, message: str, failure_class: str,
                        closest_entries: Optional[list[str]] = None) -> dict[str, Any]:
         """Batch-abort failure WITHOUT ``current_entries``: the store did not change and the
@@ -378,12 +388,7 @@ class MemoryStore:
             if content in entries:
                 return self._success_response(target, "Entry already exists (no duplicate added).")
             if len(ENTRY_DELIMITER.join(entries + [content])) > limit:
-                new_total = len(ENTRY_DELIMITER.join(entries + [content]))
-                return self._failure_with_entries(target, (
-                    f"Memory at {self._char_count(target):,}/{limit:,} chars; adding this entry ({len(content)} chars) "
-                    f"would exceed the limit by {new_total - limit:,} chars. Retry as ONE 'operations' batch that "
-                    f"removes or shortens (patch) stale entries from current_entries below to free at least "
-                    f"{new_total - limit:,} chars AND adds this entry — the limit is checked only on the batch result."))
+                return self._add_overflow(target, content, limit)
             return entries + [content], "Entry added."
         # Append-only: skip the drift guard (appending never clobbers foreign
         # content) but still refuse a failed read — add rewrites the WHOLE file.
@@ -594,6 +599,8 @@ class MemoryStore:
                     f"final entry deliberately, remove it alone in a one-item batch."), "would_empty")
             new_total = len(ENTRY_DELIMITER.join(working))  # budget check against the FINAL state only
             if new_total > limit:
+                if len(ops) == 1 and ops[0].get("action") == "add":  # the advertised single add
+                    return self._add_overflow(target, (ops[0].get("content") or ops[0].get("new_text") or "").strip(), limit)
                 return self._batch_failure(target, (
                     f"Applying all {len(operations)} operations {_over_limit(new_total, limit)} more. Add "
                     f"removes or shortening patches of other stale entries to the same batch, then retry."),

@@ -68,3 +68,18 @@ def test_advertised_one_item_remove_deletes_the_last_entry_but_a_multi_op_batch_
     for old in ("alpha", "beta"):
         assert json.loads(handler({"target": "user", "operations": [{"action": "remove", "old_text": old}]}, store=store))["success"]
     assert store.user_entries == []
+
+
+def test_one_item_add_that_overflows_returns_the_live_entries_like_the_legacy_add(tmp_path, monkeypatch):
+    """The one-item batch is the advertised single add, so its over-budget failure carries
+    current_entries: without them the model consolidates against its load-time snapshot."""
+    monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+    store = MemoryStore(memory_char_limit=60, user_char_limit=300)
+    store.load_from_disk()
+    handler = registry.get_entry("memory").handler
+    store.add("memory", "written by another session after load")
+    result = json.loads(handler({"target": "memory", "operations": [{"action": "add", "content": "x" * 40}]}, store=store))
+    assert result["success"] is False
+    assert result["current_entries"] == ["written by another session after load"]
+    assert store.memory_entries == ["written by another session after load"]
+

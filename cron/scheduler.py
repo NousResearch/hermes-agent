@@ -988,12 +988,17 @@ def _latest_executions_for_releasable_claims() -> dict:
             key[1]: _running_futures.get(key)
             for key in _running_job_ids if key[0] == local_home
         }
+        # Orphaned fire-owner entries (run_one_job registered, claim half gone)
+        # have no future of their own; always query their latest row so the
+        # sweep can reap them once it turns terminal.
+        fire_only = {
+            key[1] for key in _running_fire_owners
+            if key[0] == local_home and key[1] not in claim_futures
+        }
     candidates = [
         job_id for job_id, fut in claim_futures.items()
         if fut is None or fut is _FUTURE_PENDING or fut.done()
-    ]
-    if not candidates:
-        return {}
+    ] + sorted(fire_only)
     try:
         from cron.executions import latest_executions as _latest_execs
         return _latest_execs(candidates)
@@ -1112,6 +1117,36 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
             _running_futures.pop(key, None)
             _forced_release_count += 1
             stale.append((job_id, age, allowance, fut, reason))
+        # Orphaned fire-owner entries keep get_running_job_ids() (the gateway
+        # shutdown drain's active_agents count) at >=1 after the claim half is
+        # gone: the claim half was force-released while the fire half stayed,
+        # or run_one_job's registration outlived its release. Reap the ones
+        # whose own ledger row is terminal, logged and counted like the
+        # claim-half releases above. Live claims stay owned by that loop;
+        # non-terminal rows are still running and keep the count.
+        reported = {job_id for job_id, _a, _al, _f, _r in stale}
+        for key in [k for k in _running_fire_owners if k[0] == _local_home]:
+            if key in _running_job_ids:
+                continue  # live claim: the loop above owns the decision
+            job_id = key[1]
+            latest = _latest.get(job_id)
+            if latest is None or latest.get("status") not in _terminal_states:
+                continue
+            started = _running_since.get(key)
+            if started is not None and not _row_belongs_to_claim(latest, started):
+                continue  # previous run's row, not this entry's proof
+            _running_fire_owners.pop(key, None)
+            _running_since.pop(key, None)
+            if job_id in reported:
+                continue  # claim half already reported this pass
+            age = now - started if started is not None else 0.0
+            interval_minutes = _intervals.get(job_id)
+            allowance = floor_seconds
+            if interval_minutes:
+                allowance = max(allowance, 2.0 * interval_minutes * 60.0)
+            _forced_release_count += 1
+            stale.append((job_id, age, allowance, None, "ledger-terminal"))
+            reported.add(job_id)
 
     for job_id, age, allowance, fut, _reason in stale:
         _record_stale_release(by_id.get(job_id) or {}, job_id, age, allowance, fut, _reason)

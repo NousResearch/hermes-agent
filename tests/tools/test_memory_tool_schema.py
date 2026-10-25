@@ -83,3 +83,21 @@ def test_one_item_add_that_overflows_returns_the_live_entries_like_the_legacy_ad
     assert result["current_entries"] == ["written by another session after load"]
     assert store.memory_entries == ["written by another session after load"]
 
+
+def test_background_review_one_item_remove_of_the_last_entry_is_staged_not_applied(tmp_path, monkeypatch):
+    """A one-item remove may empty a store, but an unattended background review never gets
+    that far: the #105921 delete gate stages it, so #103419's USER.md wipe stays closed."""
+    from tools.memory_tool import memory_tool
+    from tools.skill_provenance import reset_current_write_origin, set_current_write_origin
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+    store = MemoryStore(memory_char_limit=500, user_char_limit=300)
+    store.load_from_disk()
+    store.add("user", "Name: Alice")
+    token = set_current_write_origin("background_review")
+    try:
+        result = json.loads(memory_tool(target="user", operations=[{"action": "remove", "old_text": "Alice"}], store=store))
+    finally:
+        reset_current_write_origin(token)
+    assert result["staged"] is True
+    assert store.user_entries == ["Name: Alice"]

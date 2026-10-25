@@ -1,6 +1,6 @@
 name: aixy
 repo: https://github.com/aixy-tech/aixy-hermes-plugin
-sha: "efb18672ad114f76f9d6b731ff7e7757dd1a2765"
+sha: "cb61066afffe86bcafcbbfa7cd0482ed9c6e5d7d"
 title: Aixy
 description: >-
   Guided Aixy inference setup with optional MCP tools: hermes aixy setup selects an available

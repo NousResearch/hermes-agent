@@ -72,6 +72,18 @@ def test_run_slash_stats_text_includes_review_lane(kanban_home):
     assert json.loads(kc.run_slash("stats --json"))["by_status"].get("review") == 1
 
 
+def test_run_slash_routine_create_and_list(kanban_home):
+    out = kc.run_slash(
+        "routine create 'weekly note' --cron '* * * * *' "
+        "--assignee scribe --body 'Draft the weekly note.'"
+    )
+    assert "Created routine" in out
+
+    out = kc.run_slash("routine list")
+    assert "weekly note" in out
+    assert "scribe" in out
+
+
 def test_kanban_show_json_includes_runtime_limit(kanban_home):
     with kbc.connect() as conn:
         bounded_id = kb.create_task(

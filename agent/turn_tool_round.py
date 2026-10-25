@@ -183,10 +183,10 @@ def run_tool_round(
         agent._emit_diagnostic_status(f"⚠️ Tool guardrail halted {decision.tool_name}: {decision.code}")
         append_message(messages, {"role": "assistant", "content": final_response})
         # Emit the halt so it isn't mistaken for a crash; the stream callback is still
-        # alive, so SSE/TUI clients see the explanation.
+        # alive, so SSE/TUI clients see the explanation. A held turn shows it as the final only.
         if final_response:
             agent._safe_print(f"\n{final_response}\n")
-            if agent.stream_delta_callback:
+            if agent.stream_delta_callback and not getattr(agent, "_hold_stream", False):
                 with suppress(Exception):
                     agent.stream_delta_callback(final_response)
                     agent.stream_delta_callback(None)

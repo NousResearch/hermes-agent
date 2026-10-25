@@ -1444,7 +1444,7 @@ def create_profile(
     # on every create and every 30 s, and ``_iter_named_profile_dirs`` only lists valid ids (no leading
     # dot), so it can never adopt the half-copied tree and start adapters on credentials the strip
     # below has not removed yet.
-    from hermes_cli.profiles_initialization import clone_staging_dir, finish_profile_layout
+    from hermes_cli.profiles_initialization import clone_staging_dir, discard_unpublished_vault_key, finish_profile_layout
     staging = clone_staging_dir(profile_dir)
     try:
         if clone_all and source_dir:
@@ -1459,6 +1459,7 @@ def create_profile(
         finish_profile_layout(staging, no_skills=no_skills, clone_all=clone_all, description=description, soul=soul)
         os.rename(staging, profile_dir)
     except BaseException:
+        discard_unpublished_vault_key(staging, source_dir if clone_all else None)
         shutil.rmtree(staging, ignore_errors=True)
         raise
 

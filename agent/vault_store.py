@@ -326,7 +326,7 @@ class VaultStore:
                 # working: the key goes to the 0600 file exactly as it always has.
                 logger.warning("vault.key_storage is keychain, but %s; using %s instead", exc, self._key_path)
             else:
-                kc.write_ref(self._keyref_path, ref)
+                kc.save_new_ref(self._keyref_path, ref)
                 return key
         kc.remove_file(self._keyref_path)
         self._write_key_file(key)
@@ -346,7 +346,7 @@ class VaultStore:
         from agent import vault_keychain as kc
 
         ref = kc.read_ref(self._keyref_path)
-        if ref is None or self._key_path.exists() or kc.owns(ref, published_base):
+        if ref is None or self._key_path.exists():
             return  # key file layout (a vault.key always wins on read): nothing is shared
         try:
             key = kc.load_key(ref)
@@ -358,11 +358,17 @@ class VaultStore:
             raise VaultError(
                 f"its key is in the OS keychain, which this session cannot use ({exc}). Clone from a session "
                 "that can reach the keychain, or run `hermes vault key migrate --to file` on the source first.") from exc
-        try:
-            kc.write_ref(self._keyref_path, mine)
-        except OSError:
-            kc.delete_key(mine)
-            raise
+        kc.save_new_ref(self._keyref_path, mine)
+
+    def discard_copied_key(self, source_base: Path) -> None:
+        """Undo :meth:`own_copied_key` for a clone that was never published: delete the entry this copy
+        was given, never one the source's pointer names. Never raises (it runs while unwinding)."""
+        from agent import vault_keychain as kc
+
+        with suppress(VaultError):
+            mine, theirs = kc.read_ref(self._keyref_path), kc.read_ref(Path(source_base) / "vault.keyref")
+            if mine is not None and mine["account"] != (theirs or {}).get("account"):
+                kc.delete_key(mine)
 
     def _adopt(self, ref: dict) -> dict:
         """Give a moved vault (profile rename, or a clone made before clones got their own entry at
@@ -462,7 +468,11 @@ class VaultStore:
                 kc.delete_key(ref)
             raise VaultError(f"could not move the vault key to the OS keychain ({exc}); "
                              f"it stays in {self._key_path}") from exc
-        kc.write_ref(self._keyref_path, ref)
+        if ref is not existing:
+            try:
+                kc.save_new_ref(self._keyref_path, ref)
+            except OSError as exc:
+                raise VaultError(f"could not save {self._keyref_path.name} ({exc}); the key stays in {self._key_path}") from exc
         kc.remove_file(self._key_path)
         return "keychain"
 

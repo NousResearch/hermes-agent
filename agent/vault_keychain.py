@@ -97,6 +97,21 @@ def write_ref(path: Path, ref: dict) -> None:
     atomic_write_bytes(path, json.dumps(ref, indent=2).encode("utf-8"), mode=0o600, fsync_dir=True)
 
 
+def save_new_ref(path: Path, ref: dict) -> None:
+    """Save the pointer to an entry just created. If saving fails, delete the entry unless the pointer
+    did land (a replace can succeed before a later step errors): every account is random, so an entry
+    no pointer names is a key Hermes would never find or remove again."""
+    try:
+        write_ref(path, ref)
+    except OSError:
+        from agent.vault_store import VaultError
+        with suppress(VaultError):
+            if (read_ref(path) or {}).get("account") == ref["account"]:
+                raise
+        delete_key(ref)
+        raise
+
+
 def load_key(ref: dict) -> Optional[bytes]:
     """The stored key, or None when the entry is gone. Raises KeychainUnavailable."""
     backend = os_keyring()

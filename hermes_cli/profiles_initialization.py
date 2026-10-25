@@ -18,6 +18,13 @@ def clone_staging_dir(profile_dir: Path) -> Path:
     return staging
 
 
+def discard_unpublished_vault_key(staging: Path, source_dir: Optional[Path]) -> None:
+    """A create that fails after a --clone-all copy got its own keychain entry must not leave it behind."""
+    if source_dir is not None and (staging / "vault").is_dir():
+        from agent.vault_store import VaultStore
+        VaultStore(staging / "vault").discard_copied_key(source_dir / "vault")
+
+
 def finish_profile_layout(profile_dir: Path, *, no_skills: bool, clone_all: bool,
                            description: Optional[str], soul: Optional[str] = None) -> None:
     """Seed files a fresh profile owns from day one; runs on the staging tree before publish."""

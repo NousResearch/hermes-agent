@@ -230,6 +230,43 @@ def test_clone_all_without_a_reachable_keychain_is_refused_not_published_sharing
     assert not get_profile_dir("vault-clone").exists()
 
 
+def test_a_clone_that_fails_to_publish_leaves_no_keychain_entry_behind(home, keychain, tmp_path, monkeypatch):
+    from hermes_cli import profiles_initialization
+    from hermes_cli.profiles import create_profile, get_profile_dir
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    source = home(".hermes", key_storage="keychain")
+    item = _add(VaultStore())
+
+    def fail_layout(*args, **kwargs):
+        raise RuntimeError("dummy failure after the clone got its own entry")
+
+    monkeypatch.setattr(profiles_initialization, "finish_profile_layout", fail_layout)
+    with pytest.raises(RuntimeError):
+        create_profile("vault-clone", clone_from="default", clone_all=True, no_alias=True)
+    assert not get_profile_dir("vault-clone").exists()
+    assert len(keychain.entries) == 1, "the unpublished clone's entry is removed; the source's is kept"
+    assert VaultStore(source / "vault").resolve_secret(item)["password"] == _LOGIN["password"]
+
+
+def test_migration_whose_pointer_cannot_be_saved_leaves_no_untracked_entry(home, keychain, monkeypatch):
+    from agent import vault_keychain
+
+    h = home()
+    item = _add(VaultStore())
+
+    def failing_write_ref(path, ref):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(vault_keychain, "write_ref", failing_write_ref)
+    with pytest.raises(VaultError, match="vault.keyref"):
+        VaultStore().migrate_key("keychain")
+    assert keychain.entries == {}, "a retry would mint another random account, so nothing may be left"
+    assert (h / "vault" / "vault.key").exists()
+    assert VaultStore().resolve_secret(item)["password"] == _LOGIN["password"]
+
+
 @pytest.mark.parametrize("pointer_landed", [False, True])
 def test_copied_vault_keeps_opening_when_saving_its_own_pointer_fails(home, keychain, monkeypatch, pointer_landed):
     from agent import vault_keychain

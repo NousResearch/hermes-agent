@@ -35,6 +35,7 @@ import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
 import {
   addMentions,
+  appendObservedLine,
   buildPollPayload,
   createReconnectScheduler,
   createVersionResolver,
@@ -49,6 +50,9 @@ import {
   inferMediaType,
   mediaPayloadForFile,
   normalizeWhatsAppId,
+  observedContent,
+  observedLine,
+  observerEnabled,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
   writeJsonLine,
@@ -252,6 +256,28 @@ function buildLidMap() {
 let lidToPhone = buildLidMap();
 
 const logger = pino({ level: 'warn' });
+
+// ── Inbound observation log (read-only) ─────────────────────────────────────
+// The bridge keeps no message archive: messageQueue drains on every poll and
+// messageStore is a bounded cache (512, quotes/polls only). Worse, a message
+// the intake gates reject leaves only an id-and-reason line behind — the text
+// the gate actually dropped is never recoverable. With WHATSAPP_OBSERVER on,
+// one JSON line per message is appended BEFORE the gates, so rejected traffic
+// (non-allowlisted groups, unknown DMs) is auditable too. It never replies and
+// never dispatches: this is a log, not a channel.
+//
+// Opt-in, because it writes message content to disk.
+const WA_OBSERVER_ON = observerEnabled(process.env.WHATSAPP_OBSERVER);
+// Next to the session dir so a multiplexed profile writes under its own home,
+// not the launch profile's. Not bridge.log: the adapter holds that handle and
+// the bridge's console stamps would break a one-object-per-line reader.
+const WA_OBSERVER_FILE = process.env.WHATSAPP_OBSERVER_FILE
+  || path.join(path.dirname(SESSION_DIR), 'observed.jsonl');
+
+function logObserved(fields) {
+  if (!WA_OBSERVER_ON) return;
+  appendObservedLine(WA_OBSERVER_FILE, observedLine(fields));
+}
 
 // Message queue for polling
 const messageQueue = [];
@@ -551,6 +577,25 @@ async function startSocket() {
         senderId: redactWhatsAppId(senderId),
         messageKeys: Object.keys(msg.message || {}),
       });
+
+      // Observed before every gate below (fromMe handling, self-chat, allowlist,
+      // empty-body check), so a message a gate is about to drop is still on
+      // record — that rejected traffic is the part today's logs cannot
+      // reconstruct. Content comes off the raw payload: extractBridgeEvent runs
+      // after the gates and downloads media, which a dropped message must not
+      // trigger.
+      if (WA_OBSERVER_ON) {
+        const content = observedContent(getMessageContent(msg));
+        logObserved({
+          direction: msg.key.fromMe ? 'out' : 'in',
+          chatId,
+          senderId: resolvedSenderId,
+          messageId: msg.key.id,
+          text: content.text,
+          hasMedia: content.hasMedia,
+          mediaType: content.mediaType,
+        });
+      }
 
       // Handle fromMe messages based on mode
       let fromOwner = false;
@@ -1135,6 +1180,22 @@ app.get('/health', (req, res) => {
     // path.resolve, not realpath: the adapter compares against os.path.abspath, which keeps symlinks.
     session: path.resolve(SESSION_DIR),
     capabilities: { outboundMentions: true },
+    // The effective gate, so "only allowlisted senders" is auditable against
+    // the live process instead of against a .env someone may have edited. A
+    // bridge running a policy other than the one config.yaml implies is
+    // otherwise invisible from outside.
+    gate: {
+      mode: WHATSAPP_MODE,
+      dmPolicy: WHATSAPP_DM_POLICY,
+      groupPolicy: WHATSAPP_GROUP_POLICY,
+      // Spread, not the Set: JSON.stringify(new Set()) is "{}", which would
+      // report a correctly configured gate as empty.
+      allowedUsers: [...ALLOWED_USERS],
+      groupAllowedUsers: [...GROUP_ALLOWED_USERS],
+      // require_mention is not here: the bridge does not gate on mentions, the
+      // Python adapter does after intake.
+      observer: { enabled: WA_OBSERVER_ON, file: WA_OBSERVER_FILE },
+    },
   });
 });
 

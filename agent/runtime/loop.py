@@ -28,6 +28,7 @@ are byte-identical under replay.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable
 
 from .callbacks import CallbackRegistry
@@ -61,6 +62,8 @@ from .steps import (
     ToolOutput,
 )
 from .transitions import TransitionGuard
+
+logger = logging.getLogger(__name__)
 
 FinalAnswerCheck = Callable[[Any, AgentMemory], tuple[bool, str]]  # (ok, reason)
 
@@ -244,6 +247,9 @@ class MultiStepLoop:
         try:
             output: ModelOutput = self.model.generate(messages, tools=self.tools)
         except Exception as exc:
+            # Boundary: any model failure becomes a typed StepFailure; keep
+            # the traceback in the log since the step only records the type.
+            logger.warning("model call failed at step %d", step_number, exc_info=True)
             return ActionStep(
                 step_number=step_number,
                 started_at=started,
@@ -312,6 +318,7 @@ class MultiStepLoop:
             try:
                 results = self.tool_handler.handle(allowed_calls)
             except Exception as exc:
+                logger.warning("tool handler failed at step %d", step_number, exc_info=True)
                 failure = failure_from_exception(
                     "tool_error",
                     exc,
@@ -363,6 +370,7 @@ class MultiStepLoop:
             plan_text = output.content
             failure: StepFailure | None = None
         except Exception as exc:
+            logger.warning("planning call failed at step %d", step_number, exc_info=True)
             plan_text = ""
             failure = failure_from_exception("model_error", exc)
         return PlanningStep(

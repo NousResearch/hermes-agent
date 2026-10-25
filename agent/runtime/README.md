@@ -74,8 +74,9 @@ step 5.
   what makes replay deterministic.
 - **No I/O in the loop.** All side effects go through the injected
   `ModelProtocol`, `ToolHandlerProtocol` and `GovernanceProtocol`. The loop
-  never reads config, opens files, or logs to disk; telemetry is a callback
-  concern.
+  never reads config or opens files; telemetry is a callback concern. The
+  only output is a stdlib `logging` warning (with traceback) when a model or
+  tool call raises at a boundary that converts it into a `StepFailure`.
 - **Interruption is cooperative.** `loop.interrupt()` flips a flag checked
   between steps; it does not raise from inside the model call.
 

@@ -69,6 +69,14 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         from tools.mcp_oauth import HermesTokenStorage
         return self.context.storage if isinstance(self.context.storage, HermesTokenStorage) else None
 
+    def _hermes_discard_rejected_grant(self) -> bool:
+        """Also drop this cached provider, so the next rebuild hits the no-cached-tokens guard in
+        ``_build_provider`` and parks on its ``hermes mcp login`` error without touching the network."""
+        if not super()._hermes_discard_rejected_grant():
+            return False
+        get_manager().evict(self._hermes_server_name, hermes_home=self._hermes_home)
+        return True
+
     def _log_nonfatal(self, what: str, exc: BaseException) -> None:
         logger.debug("MCP OAuth '%s': %s failed (non-fatal): %s", self._hermes_server_name, what, exc)
 

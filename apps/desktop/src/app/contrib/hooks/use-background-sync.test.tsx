@@ -2,6 +2,7 @@ import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesConnection } from '@/global'
+import { installBrowserDesktopBridge } from '@/lib/browser-desktop-bridge'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $sidebarShowArchived } from '@/store/layout'
 import { $changeEventsAvailable, $cronChangeTick, $sessionsChangeTick } from '@/store/live-sync'
@@ -16,6 +17,7 @@ import {
   publishSessionState
 } from '@/store/session-states'
 import { loadArchivedSessions } from '@/store/sidebar-archive'
+import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
 
 import { useBackgroundSync } from './use-background-sync'
 
@@ -180,6 +182,41 @@ describe('useBackgroundSync live-status poll with no session open', () => {
     expect(await polledParams({ profile: 'research' } as HermesConnection)).toEqual([{}])
     cleanup()
     expect(await polledParams(null)).toEqual([{}])
+  })
+
+  // A reconnect re-resolves the socket's own route and publishes the primary's descriptor
+  // (sharedPrimary false) while the picked profile stays selected; the poll must still name it.
+  it('keeps naming the picked profile after a reconnect republishes the primary descriptor', async () => {
+    const win = window as unknown as Window & { __HERMES_DASHBOARD_PROFILE__?: string }
+    win.__HERMES_DASHBOARD_PROFILE__ = 'default'
+    seedWebappSession('served-token')
+    window.history.replaceState(null, '', '/?profile=research#/')
+
+    try {
+      expect(installBrowserDesktopBridge()).toBe(true)
+      const desktop = window.hermesDesktop!
+
+      const request = vi.fn(async (_method: string, _params?: Record<string, unknown>) => ({ sessions: [] }))
+      $connection.set(await desktop.getConnection('research'))
+      render('research', 'local', async () => undefined, request as typeof requestGateway)
+      await act(async () => undefined)
+
+      $connection.set(await desktop.getConnection())
+      expect($connection.get()?.sharedPrimary).toBeFalsy()
+      await act(async () => {
+        $sessionsChangeTick.set(1)
+      })
+      await act(async () => undefined)
+
+      expect(
+        request.mock.calls.filter(([method]) => method === 'session.active_list').map(([, params]) => params)
+      ).toEqual([{ profile: 'research' }, { profile: 'research' }])
+    } finally {
+      delete win.__HERMES_DASHBOARD_PROFILE__
+      clearWebappSession()
+      Reflect.deleteProperty(window, 'hermesDesktop')
+      window.history.replaceState(null, '', '/#/')
+    }
   })
 })
 

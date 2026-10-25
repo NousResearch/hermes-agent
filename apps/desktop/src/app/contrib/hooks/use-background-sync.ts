@@ -19,11 +19,11 @@ import {
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { sessionListFingerprint, sessionMessagesSignature } from '@/lib/session-signatures'
 import { latestSessionTodos, latestSessionTodoSnapshot } from '@/lib/todos'
-import { pendingSessionReplay } from '@/store/gateway'
+import { pendingSessionReplay, sharedPrimaryRoute } from '@/store/gateway'
 import { $sidebarShowArchived } from '@/store/layout'
 import { $changeEventsAvailable, $cronChangeTick, $projectsChangeTick, $sessionsChangeTick } from '@/store/live-sync'
 import { $onBattery, batteryPollInterval } from '@/store/power'
-import { refreshActiveProfile } from '@/store/profile'
+import { normalizeProfileKey, refreshActiveProfile } from '@/store/profile'
 import { refreshProjects, refreshProjectTree } from '@/store/projects'
 import {
   $activeSessionId,
@@ -914,13 +914,30 @@ export function rehydrateLiveSessionStatuses(
  *  open it rides the active socket, and a profile that shares the primary socket
  *  (a Webapp tab's live pick, a global remote) is only reached by naming it: the
  *  socket answers an unnamed request for its own profile, and the sidebar would
- *  paint that profile's turns instead of the selected one's. */
-function liveStatusParams(activeGatewayProfile: string): Record<string, unknown> {
-  if ($focusedStoredSessionId.get() || $connection.get()?.sharedPrimary !== true) {
+ *  paint that profile's turns instead of the selected one's.
+ *
+ *  The published descriptor is not enough on its own: a reconnect republishes
+ *  the primary's own descriptor (sharedPrimary false) while the picked profile
+ *  stays selected. So a remote descriptor that isn't the selected profile's own
+ *  asks main for the selected profile's route, the check requestGatewayForProfile
+ *  routes by. A local descriptor never shares the primary and asks nothing. */
+async function liveStatusParams(activeGatewayProfile: string): Promise<Record<string, unknown>> {
+  const connection = $connection.get()
+
+  if ($focusedStoredSessionId.get() || !connection) {
     return {}
   }
 
-  return { profile: activeGatewayProfile }
+  if (connection.sharedPrimary === true) {
+    return { profile: activeGatewayProfile }
+  }
+
+  const ownSocket =
+    connection.mode !== 'remote' ||
+    (Boolean(connection.profile?.trim()) &&
+      normalizeProfileKey(connection.profile) === normalizeProfileKey(activeGatewayProfile))
+
+  return !ownSocket && (await sharedPrimaryRoute(activeGatewayProfile)) ? { profile: activeGatewayProfile } : {}
 }
 
 /** Forget every profile's live-runtime bookkeeping. A gateway wipe already
@@ -1296,7 +1313,7 @@ export function useBackgroundSync({
       try {
         const response = await requestGateway<LiveSessionStatusResponse>(
           'session.active_list',
-          liveStatusParams(activeGatewayProfile)
+          await liveStatusParams(activeGatewayProfile)
         )
 
         if (!cancelled) {

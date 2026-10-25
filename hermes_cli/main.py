@@ -1427,7 +1427,7 @@ def _resolve_continue_arg(args, *, use_tui: bool) -> None:
                     new_sid = _create_titled_session(continue_val)
                 else:
                     from hermes_cli.gateway_session_store import create_titled_session
-                    new_sid = create_titled_session(continue_val)
+                    new_sid = create_titled_session(continue_val, args)  # born with the run's -t/-m
                 if new_sid:
                     args.resume = new_sid
                 else:

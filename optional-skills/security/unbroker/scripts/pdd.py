@@ -2,7 +2,7 @@
 """unbroker - deterministic CLI helper.
 
 The Hermes agent orchestrates scanning and opt-out submission with native tools
-(`web_extract`, `browser_navigate`, email mechanisms). THIS CLI owns the
+(`web_extract`, `browser_exec`, email mechanisms). THIS CLI owns the
 deterministic state: config, dossiers + consent, the broker DB, tier planning,
 the ledger + audit log, draft/template rendering, and reports.
 
@@ -260,7 +260,7 @@ def cmd_cdp(args) -> None:
         _out({"running": True, "endpoint": f"127.0.0.1:{port}",
               "browser": live.get("Browser"),
               "webSocketDebuggerUrl": live.get("webSocketDebuggerUrl"),
-              "note": "a debuggable browser is already listening; point Hermes's browser tools at "
+              "note": "a debuggable browser is already listening; attach Hermes's browser (`/browser connect`) to "
                       f"127.0.0.1:{port} and make sure the operator's webmail is signed in in THAT browser."})
         return
 
@@ -292,7 +292,7 @@ def cmd_cdp(args) -> None:
     _out({"running": bool(live), "launched_pid": pid, "browser": browser,
           "profile": str(profile), "endpoint": f"127.0.0.1:{port}",
           "webSocketDebuggerUrl": (live or {}).get("webSocketDebuggerUrl"),
-          "next": ([f"point Hermes's browser tools at 127.0.0.1:{port} (CDP)",
+          "next": ([f"attach Hermes's browser (browser_exec) with `/browser connect` to 127.0.0.1:{port} (CDP)",
                     "in the launched browser, sign into the operator's webmail ONCE (dedicated debug profile)",
                     "then run email/verify flows in browser mode -- they use this logged-in session"]
                    if live else
@@ -595,7 +595,7 @@ def cmd_send_email(args) -> None:
 
     if mode == "browser":
         # No network / no credentials: hand the agent a recipient-locked payload to send in the
-        # operator's webmail via browser_* tools. State still records deterministically here.
+        # operator's webmail via browser_exec. State still records deterministically here.
         payload = emailer.browser_send_payload(b, body, to=args.to)
         ledger_mod.log_disclosure(args.subject, args.broker, list(disclosed), f"email_browser:{kind}")
         case = ledger_mod.transition(args.subject, args.broker, "submitted",
@@ -604,7 +604,7 @@ def cmd_send_email(args) -> None:
               "state": case["state"], "next_recheck_at": case.get("next_recheck_at"),
               "instruction": "In the operator's logged-in webmail, compose a NEW email to compose.to "
                              "with compose.subject/body EXACTLY (disclose nothing beyond it) and send "
-                             "it via browser_* tools. Then use `verify-link` on any confirmation reply.",
+                             "it via browser_exec. Then use `verify-link` on any confirmation reply.",
               "note": "recipient is locked to the broker's declared address"})
         return
 
@@ -635,7 +635,7 @@ def cmd_verify_link(args) -> None:
         sys.exit("error: provide --text '<email body>' (or --file) from the broker's confirmation email")
     link = email_modes.extract_verification_link(text, b)
     _out({"broker": args.broker, "verification_link": link,
-          "next": ("browser_navigate the link IN THE SAME browser (sessions are browser-bound), "
+          "next": ("open the link with browser_exec IN THE SAME browser (sessions are browser-bound), "
                    f"complete the flow, then `record {args.subject} {args.broker} awaiting_processing`"
                    if link else
                    "no broker/opt-out-scoped link found in that text; confirm you opened the right email")})
@@ -674,7 +674,7 @@ def cmd_poll_verification(args) -> None:
                                       **ledger_mod.followup_fields("verification_pending", b, d))
             results.append({"broker": bid, "verification_link": hit["link"],
                             "email_from": hit.get("from"), "email_subject": hit.get("subject"),
-                            "next": f"browser_navigate the link IN THE AGENT'S OWN BROWSER, complete "
+                            "next": f"open the link with browser_exec IN THE AGENT'S OWN BROWSER, complete "
                                     f"the flow, then `record {args.subject} {bid} awaiting_processing` "
                                     f"(or confirmed_removed only after a verifying re-scan)"})
         else:

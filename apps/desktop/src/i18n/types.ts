@@ -2972,6 +2972,9 @@ catalog: CatalogTranslations
     previewLabel: (label: string) => string
     couldNotPreview: (label: string) => string
     removeAttachment: (label: string) => string
+    insertAsText: string
+    pasteTextRestoreFailed: string
+    pasteTextIncomplete: string
     dictating: string
     preparingAudio: string
     speakingResponse: string

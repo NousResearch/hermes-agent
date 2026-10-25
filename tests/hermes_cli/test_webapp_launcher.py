@@ -426,3 +426,42 @@ def test_a_link_for_the_user_to_open_by_hand_is_printed_and_never_handed_to_a_br
     assert all("ticket" not in url for url in world["calls"]["opened"])
     out = capsys.readouterr().out
     assert LINK in out and "keep it private" in out and "60 seconds" in out and "once" in out
+
+
+def _says_what_plain_http_loses(out: str) -> bool:
+    lowered = out.lower()
+    return all(part in lowered for part in ("plain http", "bot screen", "microphone", "notifications", "https"))
+
+
+@pytest.mark.parametrize("no_open", [False, True])
+def test_a_webapp_opened_over_plain_http_on_the_lan_says_what_the_browser_loses(world, capsys, no_open):
+    """Browsers keep secure-context features (the bot screen's viewer, the microphone, notifications)
+    from a plain-HTTP origin that is not loopback: the launcher says so wherever it opens or prints one."""
+    url = "http://192.168.1.20:9120/"
+    world["answers"]["webapp-launch"] = {"ok": True, "result": {
+        "url": url, "private": False, "expires_in_seconds": None, "sign_in": True}}
+    assert launcher.cmd_webapp(_args(no_open=no_open)) == 0
+    assert _says_what_plain_http_loses(capsys.readouterr().out)
+
+
+def test_status_of_a_webapp_served_over_plain_http_on_the_lan_says_what_the_browser_loses(world, capsys):
+    world["answers"]["webapp-status"] = {"ok": True, "result": {
+        "state": "serving", "url": "http://10.0.1.170:9120", "reason": None}}
+    assert launcher.cmd_webapp(_args(status=True)) == 0
+    assert _says_what_plain_http_loses(capsys.readouterr().out)
+
+
+@pytest.mark.parametrize("url", ["http://127.0.0.1:9120/", "http://127.0.0.2:9120/", "http://localhost:9120/",
+                                 "http://hermes.localhost:9120/", "http://[::1]:9120/",
+                                 "https://hermes.example.ts.net/"])
+def test_loopback_and_https_addresses_are_secure_contexts_and_get_no_warning(world, capsys, url):
+    world["answers"]["webapp-launch"] = {"ok": True, "result": {
+        "url": url, "private": False, "expires_in_seconds": None, "sign_in": True}}
+    assert launcher.cmd_webapp(_args(no_open=True)) == 0
+    assert "plain http" not in capsys.readouterr().out.lower()
+
+
+def test_a_one_use_link_on_loopback_gets_no_plain_http_warning(world, capsys):
+    assert launcher.cmd_webapp(_args(no_open=True)) == 0
+    assert launcher.cmd_webapp(_args(status=True)) == 0
+    assert "plain http" not in capsys.readouterr().out.lower()

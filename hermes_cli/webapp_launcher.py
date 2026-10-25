@@ -15,12 +15,14 @@ link for the user to open instead.
 from __future__ import annotations
 
 import html
+import ipaddress
 import json
 import os
 import secrets
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 RESTART_COMMAND = "hermes gateway restart"
 # The gateway reads the Webapp's settings and sign-in providers only when it starts.
@@ -30,6 +32,11 @@ STARTED_BEFORE_ON = f"The gateway started before the Webapp was turned on. Resta
 # socket answers, so the gateway running predates them (an upgrade it has not restarted onto).
 OLDER_GATEWAY = ("The running gateway is older than the Webapp and does not know its commands. Restart it "
                  f"onto this version of Hermes: {RESTART_COMMAND}")
+# Browsers keep secure-context APIs (crypto.subtle, mediaDevices, Notification) from a plain-HTTP origin
+# that is not loopback.
+PLAIN_HTTP_NOTE = ("This address is plain HTTP, so the browser turns off what needs a secure connection: the bot "
+                   "screen, the microphone (dictation and live voice) and system notifications. Open the Webapp "
+                   "over HTTPS (webapp.public_url) or through an SSH tunnel to 127.0.0.1 to use them.")
 # How long --sign-out waits for a gateway that is still starting to answer (30 s).
 _START_WAIT_ATTEMPTS, _START_WAIT_INTERVAL = 60, 0.5
 
@@ -181,6 +188,21 @@ def _off_message(target: Path, then: str) -> str:
     return f"The Webapp is off. Set webapp.enabled: true in {target / 'config.yaml'}, then {then}."
 
 
+def _plain_http_note(url: str) -> str | None:
+    """:data:`PLAIN_HTTP_NOTE` when *url* is plain HTTP on a host other than loopback, else None.
+    Browsers count ``localhost``, ``*.localhost``, 127.0.0.0/8 and ``::1`` as secure contexts."""
+    parts = urlsplit(url)
+    if parts.scheme != "http":
+        return None
+    host = (parts.hostname or "").rstrip(".")
+    if host == "localhost" or host.endswith(".localhost"):
+        return None
+    try:
+        return None if ipaddress.ip_address(host).is_loopback else PLAIN_HTTP_NOTE
+    except ValueError:
+        return PLAIN_HTTP_NOTE
+
+
 def _status(target: Path) -> int:
     try:
         response = _control(target, "webapp-status")
@@ -197,6 +219,8 @@ def _status(target: Path) -> int:
     status = response["result"]
     if status["state"] == "serving":
         print(f"Serving at {status['url']}")
+        if note := _plain_http_note(status["url"]):
+            print(note)
         from gateway.webapp_listener import webapp_settings
         if not webapp_settings(target).enabled:
             print(f"{target / 'config.yaml'} no longer turns the Webapp on: it stops at the next gateway restart "
@@ -345,6 +369,8 @@ def cmd_webapp(args) -> int:
     if not response.get("ok"):
         return _explain_refused_launch(target, response)
     link = response["result"]
+    if note := _plain_http_note(link["url"]):
+        print(note)
     if link.get("sign_in"):
         # The Webapp is behind the dashboard's sign-in: the page asks for it, so its address is no secret.
         if not args.no_open and _open(link["url"]):

@@ -79,8 +79,14 @@ requires the same sign-in. `hermes webapp` then opens the Webapp's address, wher
 your dashboard account: `webapp.public_url` when set; on the LAN, the address **Web Access → Start**
 registered Nous sign-in for, while it is still this machine's address and the Webapp's port; else the
 loopback address (a password provider, or sign-in you set up by hand for that address). One-use
-links serve only a Webapp that needs no sign-in. HTTPS is strongly recommended remotely and browsers
-require it for some microphone and clipboard features.
+links serve only a Webapp that needs no sign-in. HTTPS is strongly recommended remotely.
+
+**What plain HTTP loses.** Browsers turn off features that need a secure context on a plain-HTTP
+address other than loopback (`http://localhost` and `http://127.0.0.1` count as secure): the bot
+screen viewer, the microphone (dictation and live voice) and system notifications. The bot screen and
+live voice say so instead of opening. `hermes webapp` and `hermes webapp --status` print a note when
+the address they give is plain HTTP on another host. To keep these features, open the Webapp over
+HTTPS (`webapp.public_url`) or through an SSH tunnel to `127.0.0.1`.
 
 :::warning Treat Webapp access like access to Hermes on the host
 A signed-in Webapp user can run arbitrary commands as the OS account running Hermes, run agent tools,
@@ -118,8 +124,9 @@ and only that app can change it: a browser signed in over the network cannot.
 
 - **This network:** devices on the same Wi-Fi open `http://<this computer's address>:<port>`, where the
   port is `webapp.port` (9120 unless you set another, or Start chose one for a standalone profile).
-  This is plain HTTP: the connection is not encrypted, so others on the network could read it. Use it
-  only on a network you trust.
+  This is plain HTTP: the connection is not encrypted, so others on the network could read it, and
+  browsers turn off the features listed under **What plain HTTP loses** above. Use it only on a
+  network you trust.
 - **My own URL:** an HTTPS address you already run (Tailscale Serve, a tunnel or a reverse proxy) that
   forwards to `http://127.0.0.1:<port>`. It is saved as `webapp.public_url`. Never forward that port
   from your router directly.

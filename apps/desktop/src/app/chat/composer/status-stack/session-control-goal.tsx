@@ -16,6 +16,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger
 } from '@/components/ui/context-menu'
+import { CopyButton } from '@/components/ui/copy-button'
 import {
   Dialog,
   DialogContent,
@@ -31,7 +32,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
-import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import {
   runSessionControlAction,
@@ -131,18 +131,6 @@ export const SessionControlGoalSection = memo(function SessionControlGoalSection
       }
     },
     [sessionId, onSubmit, onFeedback, ctrl]
-  )
-
-  const copyCriterionText = useCallback(
-    async (text: string) => {
-      try {
-        await navigator.clipboard.writeText(text)
-        onFeedback(null, ctrl.copySuccess)
-      } catch {
-        onFeedback(ctrl.copyFailure, null)
-      }
-    },
-    [onFeedback, ctrl]
   )
 
   const visibleState: 'waiting' | 'active' | 'paused' | 'done' = goal.wait_barrier
@@ -329,7 +317,11 @@ export const SessionControlGoalSection = memo(function SessionControlGoalSection
               label={headerLabel}
             >
               <div>
-                <StatusControlRow className="text-[0.73rem] leading-4 text-foreground/92 break-words" icon="flag">
+                <StatusControlRow
+                  className="text-[0.73rem] leading-4 text-foreground/92 break-words"
+                  copyText={goal.title}
+                  icon="flag"
+                >
                   {goal.title}
                 </StatusControlRow>
                 {!detailsOpen && goal.wait_barrier && (
@@ -414,18 +406,14 @@ export const SessionControlGoalSection = memo(function SessionControlGoalSection
                             leading={<StatusPendingIcon />}
                             trailing={
                               <div className="flex shrink-0 items-center gap-0.5">
-                                <Tip label={ctrl.copyCriterion(index)}>
-                                  <Button
-                                    aria-label={ctrl.copyCriterion(index)}
-                                    className="size-6 rounded text-muted-foreground/60 hover:text-foreground/90"
-                                    onClick={() => void copyCriterionText(subgoal)}
-                                    size="icon-xs"
-                                    type="button"
-                                    variant="ghost"
-                                  >
-                                    <Codicon name="copy" size="0.7rem" />
-                                  </Button>
-                                </Tip>
+                                <CopyButton
+                                  appearance="icon"
+                                  buttonSize="icon-xs"
+                                  label={ctrl.copyCriterion(index)}
+                                  onCopied={() => onFeedback(null, ctrl.copySuccess)}
+                                  onCopyError={() => onFeedback(ctrl.copyFailure, null)}
+                                  text={subgoal}
+                                />
                                 <Button
                                   aria-label={ctrl.removeCriterion(index)}
                                   className="size-6 rounded text-muted-foreground/60 hover:text-destructive"
@@ -523,7 +511,7 @@ export const SessionControlGoalSection = memo(function SessionControlGoalSection
           <DialogHeader>
             <DialogTitle>{ctrl.goalDetailsTitle}</DialogTitle>
           </DialogHeader>
-          <div className="space-y-3 py-2 text-xs">
+          <div className="space-y-3 py-2 text-xs" data-selectable-text="true">
             <div>
               <div className="font-semibold text-muted-foreground/75 uppercase tracking-wider text-[0.68rem]">
                 {ctrl.objectiveLabel}

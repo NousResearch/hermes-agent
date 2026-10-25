@@ -33,6 +33,8 @@
   grid-column: 3;
   grid-row: 1;
   align-items: start;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 [data-slot='composer-status-stack'] .status-row-dismiss {

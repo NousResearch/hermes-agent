@@ -414,7 +414,12 @@ from their root base tokens; do not multiply the global tokens or nest CSS zoom.
   own their padding and full-width hover fill. `StatusControlRow` uses the same
   columns for goal/loop/heartbeat details; `StatusPendingIcon` supplies the
   dashed marker for tasks and criteria. The first row keeps its normal padding;
-  the stack adds no extra top inset.
+  the stack adds no extra top inset. Status-row content is selectable without
+  making section headers or action buttons selectable. Drag-selection must not
+  activate a row; ordinary clicks and keyboard activation remain available.
+  Goal, Loop and Heartbeat prompt rows use `StatusControlRow.copyText` for a
+  full-text `CopyButton`; criteria use the same clipboard primitive. Goal
+  contract details and quality-gate commands also remain selectable.
 - Keep the rounded status card stationary, with the bounded scroll viewport
   inside it. The outer scroll boundary uses `overscroll-behavior-y: contain`;
   nested rosters and transcripts use `auto` so wheel input can hand off at an

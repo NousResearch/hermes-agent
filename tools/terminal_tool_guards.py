@@ -11,9 +11,11 @@ keeps resolving.
 
 import json
 import logging
+import os
 import re
 import shlex
 import stat
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
@@ -252,6 +254,221 @@ def _read_script_for_guard(env: Any, guard_cwd: str, script_path: str, max_bytes
     return None
 
 
+# --- FIX-2068-e: unsupervised (CLI/interactive) raw-kick defer gate ---------------------------
+#
+# The supervised branch of ``gateway_lifecycle_block`` below hard-blocks gateway lifecycle
+# commands issued from INSIDE the gateway (self-kill). By design it lets the CLI/interactive
+# scope through ("CLI ... must still be able to restart the gateway") — but that pass-through
+# carried ZERO in-flight awareness, which is exactly the 2026-10-25 FIX-2068 storm: a CLI
+# session issued 6 bare ``launchctl kickstart -k gui/$(id -u)/ai.hermes.gateway`` terminal calls
+# (12:24/14:27/14:39/14:49/15:50/16:25), each SIGTERM killing every in-flight kanban worker
+# (FIX-2066 died 5x, FIX-2068 died 2x, both hit dispatcher gave_up). The CLI-side
+# ``hermes gateway`` guard (refuse_while_sessions_live) was deliberately bypassed ("不走 hermes CLI").
+#
+# This section adds the missing in-flight awareness + rate limiting to the UNSUPERVISED scope:
+# a destructive gateway-lifecycle command issued from a CLI/interactive process is deferred
+# (blocked with a defer message) while kanban workers are in flight, with a 2h log-dedup
+# cooldown (the drift-check pattern). The legitimate manual-restart channel is preserved:
+#   * 0 workers in flight -> allowed (log only, do not block), and
+#   * HERMES_GATEWAY_RESTART_FORCE=1 -> explicit bypass (allowed, log only).
+# Non-lifecycle commands are never touched. The supervised branch is unchanged (regression-safe).
+
+_KANBAN_WORKER_MARKER = "hermes_cli.kanban_worker_client"
+_KICK_FORCE_ENV = "HERMES_GATEWAY_RESTART_FORCE"
+# Same cooldown file the L3 drift-check uses (one file, many keys) — a distinct key so this
+# guard's defer dedup never races drift-check's gateway-code-drift window.
+_KICK_COOLDOWN_FILE = Path.home() / ".hermes" / "data" / "l3-cooldown.json"
+_KICK_COOLDOWN_KEY = "cli-raw-kick-defer"
+_KICK_COOLDOWN_HOURS = 2
+# FIX-946: the out-of-process deferred-restart channel (consumed by gateway-drift-check.py
+# within 30 min, itself guarded against in-flight kanban workers). Recommended in the defer msg.
+_FIX946_SIGNAL_FILE = Path.home() / ".hermes" / "data" / "gateway-restart-pending"
+# ps command-line signatures of the live gateway — the plain `-m hermes_cli.main gateway run`
+# form and the `--external-supervisor` runpy re-exec form (drift-check FIX-2068e patterns).
+_GW_CMD_PATTERNS = (
+    "hermes_cli.main gateway run",
+    "hermes_cli/main.py', 'gateway', 'run",
+)
+# Fast pre-filter: a gateway-lifecycle command must mention at least one of these, so the 99% of
+# terminal commands that never touch the gateway skip the (shlex-costly) full detector below.
+_LIFECYCLE_PREFILTER_TOKENS = (
+    "launchctl", "systemctl", "hermes", "pkill", "kill", "taskkill", "stop-process",
+)
+
+
+def _mentions_gateway_lifecycle_token(command: str) -> bool:
+    low = command.lower()
+    return any(tok in low for tok in _LIFECYCLE_PREFILTER_TOKENS)
+
+
+def _live_gateway_pid() -> Optional[int]:
+    """PID of the live gateway a kick would target, or None (no gateway running).
+
+    Official pid-file lookup first, then a ps command-line fallback (both gateway forms) so a
+    profile-scoped pid-file miss still finds the launchd job's gateway. Any failure -> None
+    (no gateway found -> nothing in flight to kill -> the caller allows)."""
+    try:
+        from gateway.status import get_running_pid
+
+        pid = get_running_pid(cleanup_stale=False)
+        if pid:
+            return int(pid)
+    except Exception as exc:
+        logger.debug("FIX-2068-e get_running_pid failed: %s", exc)
+    try:
+        import subprocess
+
+        out = subprocess.run(
+            ["ps", "-ax", "-o", "pid=,command="], capture_output=True, text=True, timeout=10, check=False
+        ).stdout
+        for line in out.splitlines():
+            if "stderr_timestamp" in line:
+                continue  # the stderr wrapper's argv contains the child's, not the gateway itself
+            if any(p in line for p in _GW_CMD_PATTERNS):
+                pid_s = line.strip().split()[0]
+                if pid_s.isdigit():
+                    return int(pid_s)
+    except Exception as exc:
+        logger.debug("FIX-2068-e ps gateway-pid fallback failed: %s", exc)
+    return None
+
+
+def kanban_workers_in_flight(gw_pid: Optional[int]) -> int:
+    """Count live kanban runs parented to gateway process *gw_pid* (drift-check FIX-2068e pattern).
+
+    A ``launchctl kickstart -k`` SIGTERMs the gateway and its process tree, so workers whose ppid is
+    the live gateway pid lose their in-flight task cards on a kick. Orphans from a previous gateway
+    (ppid=1) do NOT lose work in a new-gateway kick, so they are not counted. ps failure or no
+    gateway pid -> 0 (degrade: never let the guard itself break the restart machinery)."""
+    if not gw_pid:
+        return 0
+    try:
+        import subprocess
+
+        out = subprocess.run(
+            ["ps", "-ax", "-o", "pid=,ppid=,command="], capture_output=True, text=True, timeout=10, check=False
+        ).stdout
+        n = 0
+        for line in out.splitlines():
+            parts = line.strip().split(None, 2)
+            if len(parts) < 3:
+                continue
+            _pid, ppid_s, cmd = parts
+            if ppid_s == str(gw_pid) and _KANBAN_WORKER_MARKER in cmd:
+                n += 1
+        return n
+    except Exception as exc:
+        logger.warning("FIX-2068-e worker count failed (degrading to 0): %s", exc)
+        return 0
+
+
+def _in_kick_cooldown() -> bool:
+    """True while a previous in-flight defer is inside the 2h log-dedup window."""
+    if not _KICK_COOLDOWN_FILE.exists():
+        return False
+    try:
+        state = json.loads(_KICK_COOLDOWN_FILE.read_text())
+    except (json.JSONDecodeError, OSError):
+        return False
+    last = state.get(_KICK_COOLDOWN_KEY)
+    if not last:
+        return False
+    try:
+        age = (datetime.now() - datetime.fromisoformat(last)).total_seconds()
+        return age < _KICK_COOLDOWN_HOURS * 3600
+    except ValueError:
+        return False
+
+
+def _mark_kick_cooldown() -> None:
+    state: dict = {}
+    if _KICK_COOLDOWN_FILE.exists():
+        try:
+            state = json.loads(_KICK_COOLDOWN_FILE.read_text())
+        except (json.JSONDecodeError, OSError):
+            state = {}
+    state[_KICK_COOLDOWN_KEY] = datetime.now().isoformat()
+    try:
+        _KICK_COOLDOWN_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _KICK_COOLDOWN_FILE.write_text(json.dumps(state, indent=2, ensure_ascii=False))
+    except OSError as exc:
+        logger.warning("FIX-2068-e cooldown write failed: %s", exc)
+
+
+def _unsupervised_kick_defer_block(
+    command: str, *, _gw_pid: Optional[int] = None, _workers_in_flight: Optional[int] = None,
+) -> Optional[str]:
+    """FIX-2068-e: defer a destructive gateway-lifecycle command issued from an UNSUPERVISED
+    (CLI/interactive) process while kanban workers are in flight. Returns the JSON defer string
+    when blocked, else None (the command may proceed).
+
+    ``_gw_pid`` / ``_workers_in_flight`` are injection seams for tests; when None they are
+    computed live (gateway pid -> ps worker count).
+    """
+    # 1. Fast pre-filter: skip the full detector for the 99% of commands that never touch the
+    #    gateway (no lifecycle token present).
+    if not _mentions_gateway_lifecycle_token(command):
+        return None
+    # 2. Full detection — the SAME data-sink-exempted choke point the supervised path uses, so
+    #    splice bypasses and data-sink false positives behave identically in both scopes, and
+    #    unrelated labels (com.example.*, other hermes services) stay allowed.
+    from cron.lifecycle_guard import _lifecycle_command_scan_with_data_exemption
+
+    if not _lifecycle_command_scan_with_data_exemption(command):
+        return None
+    # Compute live state once (injection seams above short-circuit this for tests).
+    if _gw_pid is None:
+        _gw_pid = _live_gateway_pid()
+    if _workers_in_flight is None:
+        _workers_in_flight = kanban_workers_in_flight(_gw_pid)
+    # 3. Explicit force bypass: a deliberate manual restart that accepts killing in-flight work.
+    if os.environ.get(_KICK_FORCE_ENV) == "1":
+        logger.info(
+            "FIX-2068-e unsupervised gateway kick ALLOWED via force bypass %s=1 "
+            "(%d worker(s) in flight; command: %s)",
+            _KICK_FORCE_ENV, _workers_in_flight, _safe_command_preview(command),
+        )
+        return None
+    # 4. Legitimate manual-restart channel: nothing in flight -> allow (log only, do not block).
+    if _workers_in_flight <= 0:
+        logger.info(
+            "FIX-2068-e unsupervised gateway kick ALLOWED (0 kanban workers in flight; command: %s)",
+            _safe_command_preview(command),
+        )
+        return None
+    # 5. In flight > 0 -> defer (block) + log one line + 2h log-dedup cooldown.
+    first_defer = not _in_kick_cooldown()
+    if first_defer:
+        _mark_kick_cooldown()
+        logger.info(
+            "FIX-2068-e unsupervised gateway kick DEFERRED: %d kanban worker(s) in flight on "
+            "pid=%s; recommended channel = FIX-946 signal file %s; force bypass = %s=1 "
+            "(command: %s)",
+            _workers_in_flight, _gw_pid, _FIX946_SIGNAL_FILE, _KICK_FORCE_ENV,
+            _safe_command_preview(command),
+        )
+    else:
+        logger.info(
+            "FIX-2068-e unsupervised gateway kick still DEFERRED (2h cooldown active): "
+            "%d worker(s) in flight (command: %s)",
+            _workers_in_flight, _safe_command_preview(command),
+        )
+    defer_msg = (
+        f"Deferred: this command would restart/stop the gateway, but {_workers_in_flight} "
+        f"kanban worker(s) are in flight on gateway pid={_gw_pid} — a raw `launchctl kickstart` "
+        f"SIGTERMs the gateway process tree and kills their in-flight task cards (the 2026-10-25 "
+        f"FIX-2068 storm shape). It was issued from an unsupervised (CLI/interactive) process, so "
+        f"it is deferred rather than self-approved. Choose one:\n"
+        f"  1. Preferred channel — write the FIX-946 restart signal file; the drift-check consumes "
+        f"it out-of-process within 30 min and itself defers while workers are in flight:\n"
+        f"       printf '%s' '{{\"reason\":\"manual\"}}' > {_FIX946_SIGNAL_FILE}\n"
+        f"  2. Wait for the {_workers_in_flight} worker(s) to finish, then re-run this command.\n"
+        f"  3. Force this kick now (you accept killing the {_workers_in_flight} in-flight worker(s)):\n"
+        f"       {_KICK_FORCE_ENV}=1 <this command>"
+    )
+    return _blocked_json(defer_msg, "deferred")
+
+
 def gateway_lifecycle_block(
     *,
     command: str,
@@ -272,13 +489,29 @@ def gateway_lifecycle_block(
     serve, CLI, web server), which must still be able to restart the gateway;
     an unsupervised foreground ``hermes gateway run`` has no KeepAlive to turn
     a self-restart into a respawn loop, so it passes too.
+
+    UNSUPERVISED (CLI/interactive) scope — FIX-2068-e dual mode: a CLI must still
+    restart the gateway, but the raw pass-through previously had ZERO in-flight
+    awareness (the 2026-10-25 storm: 6 bare ``launchctl kickstart`` terminal calls
+    killed every in-flight kanban worker). Destructive lifecycle commands from here
+    now route through ``_unsupervised_kick_defer_block``: 0 kanban workers in flight
+    -> allow (log only), >0 -> defer (block) + one log line pointing at the FIX-946
+    out-of-process restart channel, ``HERMES_GATEWAY_RESTART_FORCE=1`` -> explicit
+    bypass. Non-lifecycle commands and unrelated launchd labels are never touched.
+
     Returns the JSON error string when blocked, else None.
     """
     from tools.process_registry import _is_supervised_gateway_process
     from tools.terminal_tool import _resolve_command_cwd, get_session_cwd
 
     if not _is_supervised_gateway_process():
-        return None
+        # FIX-2068-e: UNSUPERVISED (CLI/interactive) scope. The supervised hard block above does
+        # not apply here by design — a CLI must still be able to restart the gateway. But that
+        # pass-through previously carried ZERO in-flight awareness (the 2026-10-25 FIX-2068 storm:
+        # 6 bare `launchctl kickstart` terminal calls killed every in-flight kanban worker). Route
+        # destructive lifecycle commands through the in-flight defer gate: 0 workers -> allow,
+        # >0 workers -> defer (block) + log, force env -> allow. Non-lifecycle commands pass.
+        return _unsupervised_kick_defer_block(command)
     from cron.lifecycle_guard import (
         _MAX_REFERENCED_SCRIPT_BYTES,
         HOST_INTERPRETER_KILL_REJECTION,

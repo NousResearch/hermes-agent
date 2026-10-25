@@ -74,10 +74,20 @@ def finish_completed_run(d, fire_owner: Optional[str], execution_id: str, *, rec
         # A re-run of an occurrence that already counted: must not spend another repeat slot.
         mark_kwargs["ladder_rung"] = True
     _hold_s = job.pop("_quota_hold_seconds", None)
+    _hold_provider = job.pop("_quota_hold_provider", None)
     if not d.success and _hold_s:
         # Provider window closed for a known duration: park past it (cron/quota_hold.py, #89376).
         mark_kwargs["quota_hold_seconds"] = _hold_s
         mark_kwargs["recover_consumed_fire"] = bool(job.get("_scheduled_instant"))
+        if _hold_provider == "anthropic":
+            # t_317282ed BUILD #2: an Anthropic per-model usage wall is not the job's own fault
+            # and must not render as a red "error" the operator has to triage — `cron list`
+            # (hermes_cli/cron.py's _last_run_display) special-cases this status into a plain
+            # "paused (usage limit)" line. Scoped to anthropic only: Codex's own quota-wall
+            # shape (tests/cron/test_quota_hold.py) keeps the original "error" status — that
+            # choice is Codex's call to revisit, not bundled into this fix. The hold itself
+            # (next_run_at parked past the window) is identical either way; this is display-only.
+            mark_kwargs["status"] = "paused_usage_limit"
     if d.success and not d.delivery_error and d.should_deliver and job.get("last_delivery_queued"):
         mark_kwargs["status"] = "delivery_queued"
     if fire_owner is not None:

@@ -429,6 +429,119 @@ def test_ensure_runtime_credentials_records_quota_vs_bad_key(monkeypatch, tmp_pa
     assert bad_shell._credentials_rate_limited is False
 
 
+def test_anthropic_model_cooldown_raises_a_rate_limited_auth_error(monkeypatch):
+    """A per-model Anthropic cooldown is a QUOTA wall, and must be typed as one.
+
+    After a 429 the retry loop benches the credential for that model, so the NEXT
+    turn's credential resolve finds no token and `_anthropic_token_or_raise` raises.
+    That AuthError used to carry no `code`, so `is_rate_limited_auth_error()` said
+    False, `_credentials_rate_limited` stayed False, and a Kanban worker exited 1 —
+    the dispatcher then counted a provider outage against `kanban.failure_limit`
+    and abandoned the card as `gave_up`.
+    """
+    from hermes_cli.auth import CODEX_RATE_LIMITED_CODE, AuthError, is_rate_limited_auth_error
+    from hermes_cli import runtime_provider
+
+    # Benched for THIS model only: model-scoped resolve fails, unscoped still works.
+    monkeypatch.setattr(
+        "agent.anthropic_credentials.resolve_anthropic_token",
+        lambda *, model=None: None if model else "sk-ant-oat01-token",
+    )
+
+    with pytest.raises(AuthError) as exc_info:
+        runtime_provider._anthropic_token_or_raise(model="claude-opus-5")
+
+    err = exc_info.value
+    assert "rate-limited" in str(err)
+    assert err.code == CODEX_RATE_LIMITED_CODE
+    assert err.relogin_required is False
+    # The whole point: the classifier the CLI uses must recognise it.
+    assert is_rate_limited_auth_error(err) is True
+
+
+def test_missing_anthropic_credentials_is_not_mistaken_for_a_quota_wall(monkeypatch):
+    """Negative control for the test above: no credentials at all is a REAL auth failure.
+
+    It must keep exit 1 and keep counting against the retry budget — a fix that made
+    every credential error look transient would be worse than the bug.
+    """
+    from hermes_cli.auth import AuthError, is_rate_limited_auth_error
+    from hermes_cli import runtime_provider
+
+    monkeypatch.setattr(
+        "agent.anthropic_credentials.resolve_anthropic_token",
+        lambda *, model=None: None,  # nothing resolves, scoped or not
+    )
+
+    with pytest.raises(AuthError) as exc_info:
+        runtime_provider._anthropic_token_or_raise(model="claude-opus-5")
+
+    assert is_rate_limited_auth_error(exc_info.value) is False
+
+
+def test_anthropic_model_cooldown_retry_after_never_none_when_pool_cannot_say(monkeypatch):
+    """t_0d53d772 regression: when the pool can't compute a precise reset time —
+    ``next_available_at`` returns None, or raises — the AuthError must still carry a positive
+    ``retry_after``, not None.
+
+    Before this fix, ``_anthropic_model_cooldown_retry_after`` returned None in exactly this
+    case, so the AuthError it feeds had no wait hint. ``cron/quota_hold.py``'s
+    ``hold_seconds_from_failure`` only engages on a positive ``retry_after`` (or a "retry after
+    Ns" string), so a bare None meant the hold mechanism never engaged: the scheduler's
+    ``RuntimeError(...) from resolve_exc`` reached ``run_job``'s except-block with nothing for
+    ``hold_seconds_from_failure`` to read, and the run landed in generic 'error' state instead of
+    the pause-and-resume 'paused_usage_limit' one t_317282ed built.
+    """
+    from hermes_cli.auth import AuthError, is_rate_limited_auth_error
+    from hermes_cli import runtime_provider
+    from cron import quota_hold
+
+    # Benched for THIS model only (same shape as the other tests here), but the pool's
+    # next_available_at has no number to give back — the exact production shape when
+    # model_cooldowns holds a timestamp already in the past (stale/racing with the scheduler).
+    monkeypatch.setattr(
+        "agent.anthropic_credentials.resolve_anthropic_token",
+        lambda *, model=None: None if model else "«redacted:sk-…»",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.load_pool",
+        lambda provider: SimpleNamespace(next_available_at=lambda *, model=None: None),
+    )
+
+    with pytest.raises(AuthError) as exc_info:
+        runtime_provider._anthropic_token_or_raise(model="claude-sonnet-5")
+
+    err = exc_info.value
+    assert is_rate_limited_auth_error(err) is True
+    assert err.retry_after is not None and err.retry_after > 0
+    # The whole point: quota_hold's engagement gate must now fire off this AuthError alone.
+    assert quota_hold.hold_seconds_from_failure(err) == err.retry_after
+
+
+def test_anthropic_model_cooldown_retry_after_survives_pool_read_exception(monkeypatch):
+    """Sibling of the test above: a pool read failure (store unreadable, corrupt, etc.) must
+    also fall back to a positive retry_after, not swallow it to None."""
+    from hermes_cli.auth import AuthError, is_rate_limited_auth_error
+    from hermes_cli import runtime_provider
+
+    monkeypatch.setattr(
+        "agent.anthropic_credentials.resolve_anthropic_token",
+        lambda *, model=None: None if model else "«redacted:sk-…»",
+    )
+
+    def _boom(provider):
+        raise OSError("pool store unreadable")
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.load_pool", _boom)
+
+    with pytest.raises(AuthError) as exc_info:
+        runtime_provider._anthropic_token_or_raise(model="claude-sonnet-5")
+
+    err = exc_info.value
+    assert is_rate_limited_auth_error(err) is True
+    assert err.retry_after is not None and err.retry_after > 0
+
+
 
 
 

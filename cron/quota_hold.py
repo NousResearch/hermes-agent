@@ -56,6 +56,23 @@ def hold_seconds_from_failure(exc: BaseException) -> Optional[float]:
     return None
 
 
+def hold_provider_from_failure(exc: BaseException) -> Optional[str]:
+    """The ``AuthError.provider`` (e.g. ``"anthropic"``, ``"openai-codex"``) backing a quota
+    hold, or None when *exc*'s cause chain carries no rate-limited AuthError. Scheduler uses
+    this to label the cron-list status per provider (t_317282ed BUILD #2) without changing
+    the hold mechanics themselves, which stay provider-agnostic."""
+    from hermes_cli.auth import AuthError, is_rate_limited_auth_error
+
+    seen: set[int] = set()
+    cur: Optional[BaseException] = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, AuthError) and is_rate_limited_auth_error(cur):
+            return getattr(cur, "provider", None)
+        cur = cur.__cause__ or cur.__context__
+    return None
+
+
 def hold_active(job: dict[str, Any], now: Optional[datetime] = None) -> bool:
     """True while the job is parked inside a provider window (an expired marker is inert)."""
     from cron.jobs import _instant_after, _parse_aware  # late: jobs imports this module's helpers

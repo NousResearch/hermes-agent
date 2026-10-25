@@ -143,6 +143,30 @@ def _task_prompt_fields(task: kb.Task) -> dict[str, str]:
     }
 
 
+def _is_rate_limited_aux_error(exc: Exception) -> bool:
+    """True when *exc* is a provider rate-limit / usage-wall failure an immediate retry cannot
+    fix — never a thing a fixed-cadence auto-tick loop should hammer on (t_317282ed:
+    kanban_decomposer retried the same triage task every 60s for ~2,700 429s in one day because
+    this distinction didn't exist and every aux failure looked like a generic, instantly-retryable
+    error). Checked two ways: an ``AuthError`` from credential resolution (the model is benched by
+    ``agent.credential_pool_model_cooldowns``, see ``hermes_cli.auth.is_rate_limited_auth_error``),
+    or a raw SDK error straight off the wire, classified the same way the main turn loop does."""
+    try:
+        from hermes_cli.auth import AuthError, is_rate_limited_auth_error
+        if isinstance(exc, AuthError):
+            return is_rate_limited_auth_error(exc)
+    except Exception:
+        pass
+    try:
+        from agent.error_classifier import FailoverReason, classify_api_error
+        verdict = classify_api_error(exc)
+        return verdict.reason in (
+            FailoverReason.rate_limit, FailoverReason.upstream_rate_limit, FailoverReason.billing,
+        )
+    except Exception:
+        return False
+
+
 def _call_aux(verb: str, task_id: str, *, aux_task: str, system: str, user: str,
               max_tokens: int, timeout: int, log: logging.Logger = logger) -> tuple[Optional[str], str]:
     """One auxiliary LLM call; ``(reply_text, "")`` or ``(None, reason)``.
@@ -150,6 +174,11 @@ def _call_aux(verb: str, task_id: str, *, aux_task: str, system: str, user: str,
     ``call_llm`` applies all ``auxiliary.<aux_task>.*`` config (provider/model/
     base_url, extra_body, reasoning_effort, retries). Imported lazily so a
     missing aux client degrades to a skip instead of an import-time crash.
+    A rate-limit/usage-wall failure returns the stable reason ``"rate_limited"``
+    (see :func:`_is_rate_limited_aux_error`) instead of a bare exception-type
+    string, so a caller running on a fixed tick (the gateway's auto-decompose
+    loop) can tell "back off, this will heal itself" apart from a broken call
+    it cannot fix by waiting (t_317282ed).
     """
     try:
         from agent.auxiliary_client import call_llm
@@ -176,6 +205,9 @@ def _call_aux(verb: str, task_id: str, *, aux_task: str, system: str, user: str,
         )
     except Exception as exc:
         suffix = " — skipping" if verb == "specify" else ""
+        if _is_rate_limited_aux_error(exc):
+            log.info("%s: rate-limited for %s (%s); caller should back off%s", verb, task_id, exc, suffix)
+            return None, "rate_limited"
         log.info("%s: API call failed for %s (%s)%s", verb, task_id, exc, suffix)
         return None, f"LLM error: {type(exc).__name__}"
     finally:

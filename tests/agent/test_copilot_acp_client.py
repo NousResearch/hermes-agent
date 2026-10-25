@@ -588,3 +588,56 @@ def test_cli_death_is_reported_as_a_crash_not_a_timeout(tmp_path):
         assert "exited early: fatal: agent segfaulted" in str(exc)
     else:
         raise AssertionError("session on a dead CLI must raise")
+
+
+_USAGE_ACP_SERVER = """import json
+import sys
+from pathlib import Path
+
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request.get("method")
+    result = {}
+    if method == "initialize":
+        result = {"protocolVersion": 1}
+    elif method == "session/new":
+        result = {"sessionId": "s1"}
+    elif method == "session/prompt":
+        for text in ("Info: Unknown tool name in the tool allowlist", "Info: the answer", " is 42"):
+            print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {
+                "update": {"sessionUpdate": "agent_message_chunk", "content": {"text": text}},
+            }}), flush=True)
+        result = {"stopReason": "end_turn", "usage": {
+            "inputTokens": 3430, "outputTokens": 183, "totalTokens": 3613, "thoughtTokens": 129,
+            "cachedReadTokens": 1250, "cachedWriteTokens": 2177}}
+    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
+# stdin EOF: a graceful shutdown, like Copilot writing session.shutdown.
+Path(sys.argv[1]).write_text("shutdown", encoding="utf-8")
+"""
+
+
+def test_prompt_reports_acp_usage_strips_cli_notices_and_shuts_child_down_gracefully(tmp_path):
+    from agent.usage_pricing import normalize_usage
+
+    server = tmp_path / "usage_acp.py"
+    server.write_text(_USAGE_ACP_SERVER, encoding="utf-8")
+    marker = tmp_path / "shutdown.txt"
+    client = CopilotACPClient(command=sys.executable, args=[str(server), str(marker)], acp_cwd=str(tmp_path))
+
+    completion = client._create_chat_completion(model="copilot-acp", messages=[{"role": "user", "content": "hi"}])
+
+    assert completion.choices[0].message.content == "Info: the answer is 42"
+    usage = normalize_usage(completion.usage, provider="copilot-acp", api_mode="chat_completions")
+    assert (usage.input_tokens, usage.output_tokens, usage.cache_read_tokens, usage.cache_write_tokens,
+            usage.reasoning_tokens) == (3430 - 1250 - 2177, 183, 1250, 2177, 129)
+    assert marker.read_text(encoding="utf-8") == "shutdown", "child must exit on stdin EOF, not be terminated"
+
+
+def test_default_launch_disables_copilot_native_tools(monkeypatch):
+    from hermes_cli.auth import resolve_external_process_provider_credentials
+
+    monkeypatch.delenv("HERMES_COPILOT_ACP_ARGS", raising=False)
+    for args in (CopilotACPClient(acp_cwd="/tmp")._acp_args,
+                 resolve_external_process_provider_credentials("copilot-acp")["args"]):
+        assert "--disable-builtin-mcps" in args and "--no-custom-instructions" in args, args
+        assert any(a.startswith("--available-tools=") for a in args), args

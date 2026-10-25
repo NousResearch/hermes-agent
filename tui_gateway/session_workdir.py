@@ -657,6 +657,11 @@ def _workdir_reraise_disk_full(exc: BaseException, log_msg: str) -> None:
 _WORKDIR_SEED_FIELDS = (
     "content", "reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items",
     "codex_message_items", "display_kind", "display_metadata", "timestamp")
+# Model-fidelity extras the lazy seed must preserve when the live history carries them: a branch child's
+# read-back history includes tool calls/results (and the api_content sidecar that keeps provider
+# prompt-cache continuity) — stripping them re-seeded the narration-only transcript this seed exists
+# to prevent. Tool-less seeds are unaffected (the fields are simply absent).
+_WORKDIR_SEED_TOOL_FIELDS = ("tool_calls", "tool_call_id", "tool_name", "api_content")
 
 
 def _persist_branch_seed(session: dict) -> None:
@@ -672,8 +677,16 @@ def _persist_branch_seed(session: dict) -> None:
     from agent.transcript_repair import sync_flushed_message_markers
     with session["history_lock"]:  # message_identity stamps the live dicts
         live = list(session.get("history") or [])
-        seed = [{"role": msg.get("role", "user"), **{f: msg.get(f) for f in _WORKDIR_SEED_FIELDS},
-                 **message_identity(msg)} for msg in live]
+        seed = []
+        for msg in live:
+            row = {"role": msg.get("role", "user"), **{f: msg.get(f) for f in _WORKDIR_SEED_FIELDS},
+                   **message_identity(msg, with_tool_uids=True)}
+            for field in _WORKDIR_SEED_TOOL_FIELDS:
+                if msg.get(field) is not None:
+                    row[field] = msg.get(field)
+            if msg.get("tool_name") is None and msg.get("name") is not None:
+                row["tool_name"] = msg.get("name")
+            seed.append(row)
     if not seed:
         return
     with _session_db(session) as db:

@@ -63,22 +63,53 @@ _BRANCH_COPY_FIELDS = (
     # Branch copies are history, not new activity: keep the parent's timestamps.
     "timestamp")
 
+# The live branch's UNFLUSHED tail rows are appended after the durable copy with full model fidelity —
+# CLI /branch parity: tool calls/results ride along, and the api_content sidecar keeps provider
+# prompt-cache continuity for rows the parent never wrote.
+_BRANCH_MODEL_COPY_FIELDS = _BRANCH_COPY_FIELDS + ("tool_calls", "tool_call_id", "tool_name", "api_content")
 
-def _branch_source_history(db, session: dict, old_key: str) -> list:
-    """Rows a branch copies: the persisted DISPLAY projection reconciled with live memory (live history is
-    the MODEL projection — post-compaction summary + tail — the child would lose every archived turn)."""
+
+def _branch_seed_parts(db, session: dict, old_key: str) -> tuple[list, list]:
+    """(display_rows, live_tail) for a live branch: the persisted DISPLAY projection reconciled with live
+    memory, and the UNFLUSHED live tail past it. The child's transcript is the DURABLE rows copied
+    verbatim (tools intact — see ``copy_transcript_for_branch``); only the tail needs a row-by-row append.
+    Live history is the MODEL projection (post-compaction summary + tail), so the display read is what
+    reconciles it against what the parent actually persisted."""
     with session["history_lock"]:
         in_memory_history = [
             dict(msg) for msg in list(session.get("display_history_prefix") or []) + list(session.get("history", []))
             if isinstance(msg, dict)]
-    history = None
+    display_rows, live_tail = [], []
     if callable(get_resume_conversations := getattr(db, "get_resume_conversations", None)):
         try:
             _, display_history = get_resume_conversations(old_key)
-            history = _visible_branch_history(_reconcile_display_with_live(display_history, in_memory_history))
+            # _reconcile_display_with_live returns the DB display rows + the in-memory rows past the
+            # last shared anchor — the tail slice is exactly the rows past the DB display set.
+            reconciled = _reconcile_display_with_live(display_history, in_memory_history)
+            display_rows, live_tail = reconciled[:len(display_history)], reconciled[len(display_history):]
         except Exception:
             logger.debug("branch display projection read failed", exc_info=True)
-    return history or _visible_branch_history(in_memory_history)
+    if not display_rows:
+        display_rows = list(in_memory_history)
+    return display_rows, live_tail
+
+
+def _branch_boundary_row_id(display_rows: list, count) -> int | None:
+    """Row id bounding a ``count`` branch: the Nth VISIBLE (user/assistant with text) DB row, so the copy
+    keeps interleaved tool rows between here and the boundary. None (copy everything) when *count* is not
+    a positive int or the durable rows hold fewer than *count* visible rows."""
+    if not isinstance(count, int) or count <= 0:
+        return None
+    seen = 0
+    for msg in display_rows:
+        if not isinstance(msg, dict) or msg.get("role") not in {"user", "assistant"}:
+            continue
+        if not _coerce_message_text(msg.get("content")).strip():
+            continue
+        seen += 1
+        if seen >= count:
+            return msg.get("_row_id")
+    return None
 
 
 def _branch_live(rid, params: dict, session: dict, *, omit_messages: bool = False) -> dict:
@@ -102,21 +133,32 @@ def _branch_live(rid, params: dict, session: dict, *, omit_messages: bool = Fals
         if db is None:
             return _db_unavailable_error(rid, code=5008)
         old_key = session["session_key"]
-        history = _branch_source_history(db, session, old_key)
-        if not history:
+        display_rows, live_tail = _branch_seed_parts(db, session, old_key)
+        if not display_rows and not live_tail:
             return _err(rid, 4008, "nothing to branch — send a message first")
-        if isinstance(count := params.get("count"), int) and count > 0:
-            history = history[:count]
+        # Wire payload stays the VISIBLE prose view (client contract); the durable copy below is what
+        # the child's model context becomes.
+        paint_rows = _visible_branch_history(display_rows)
+        boundary = _branch_boundary_row_id(display_rows, params.get("count"))
         new_key, new_sid, source = _new_session_key(), uuid.uuid4().hex[:8], _session_source(session)
+        # Durable-verbatim seed when the store supports it (the fix for narration-only branch children);
+        # the prose rebuild remains the fallback for stores without the copy API.
+        copy_api = hasattr(db, "copy_transcript_for_branch")
+        seed_rows = live_tail if copy_api else paint_rows
         try:
             title = params.get("name", "") or _branch_title(db, old_key)
             home = session.get("profile_home")
-            _persist_branch(db, new_key, old_key, title, history, source=source,
+            _persist_branch(db, new_key, old_key, title, seed_rows, source=source,
                             cwd=None if _is_remote_launch_cwd(session) else _session_cwd(session),
                             profile_name=profile_name_for_home(home) or _current_profile_name(),
-                            model=_session_default_route(session)[0], copy_fields=_BRANCH_COPY_FIELDS,
+                            model=_session_default_route(session)[0],
+                            copy_fields=_BRANCH_MODEL_COPY_FIELDS if copy_api else _BRANCH_COPY_FIELDS,
                             title_source="user" if params.get("name") else "derived",
-                            user_id=_session_auth_user_id(session))
+                            user_id=_session_auth_user_id(session),
+                            transcript_source=old_key if copy_api else None, up_to_row_id=boundary)
+            # The child's live model context is its OWN rows (fresh row ids, born-durable stamps) — never
+            # the parent's projection dicts, whose _row_id values address PARENT rows.
+            history = db.get_resume_conversations(new_key)[0] if copy_api else seed_rows
         except Exception as e:
             return _err(rid, 5008, f"branch failed: {e}")
     try:
@@ -131,26 +173,31 @@ def _branch_live(rid, params: dict, session: dict, *, omit_messages: bool = Fals
             if new_sid in _sessions:
                 _sessions[new_sid]["branch_title"] = title
     response = {"session_id": new_sid, "stored_session_id": new_key, "title": title, "parent": old_key,
-                "message_count": len(history), "info": _session_info(agent, _sessions.get(new_sid))}
+                "message_count": len(paint_rows), "info": _session_info(agent, _sessions.get(new_sid))}
     if omit_messages:
         response["messages_omitted"] = True
     else:
-        response["messages"] = _history_to_messages(history, profile_home=session.get("profile_home"))
+        response["messages"] = _history_to_messages(paint_rows, profile_home=session.get("profile_home"))
     return _ok(rid, response)
 
 
 def _branch_idempotent_hit(existing_sid: str, session: dict, omit_messages: bool) -> dict:
-    """The SAME result shape a fresh ``_branch_live`` returns for the existing child."""
+    """The SAME result shape a fresh ``_branch_live`` returns for the existing child. ``history`` is the
+    child's MODEL context (tool rows included since the durable-copy fix); the wire stays the VISIBLE
+    prose view, so the retry paints exactly what the fresh reply painted."""
     history = session.get("history") or []
     key = session.get("session_key") or ""
+    # Same wire shape as the fresh reply: the VISIBLE count/payload, not the model projection's row
+    # count (tool rows ride in history but are not paint rows).
+    paint_rows = _visible_branch_history(list(session.get("display_history_prefix") or []) + history)
     response = {"session_id": existing_sid, "stored_session_id": key,
                 "title": session.get("branch_title") or _branch_title_for(session),
-                "parent": session.get("parent_session_id"), "message_count": len(history),
+                "parent": session.get("parent_session_id"), "message_count": len(paint_rows),
                 "info": _fallback_session_info(session)}
     if omit_messages:
         response["messages_omitted"] = True
     else:
-        response["messages"] = _history_to_messages(history, profile_home=session.get("profile_home"))
+        response["messages"] = _history_to_messages(paint_rows, profile_home=session.get("profile_home"))
     return response
 
 

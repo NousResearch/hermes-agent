@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import re
+import sqlite3
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -1691,6 +1692,88 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             chain.append(parent["id"])
             current = parent
         return list(reversed(chain))
+
+    # Every messages column except ``id`` — the branch copy's SELECT/INSERT shape. Kept in lockstep with
+    # _INSERT_MESSAGE_SQL's column list plus the three SQLite-owned extras (compacted, display_order);
+    # ``test_branch_copy_column_list_matches_schema`` pins it to PRAGMA table_info so a new column can
+    # never be silently dropped from branch children.
+    _BRANCH_COPY_COLUMNS = (
+        "session_id", "role", "content", "tool_call_id", "tool_calls", "tool_name", "effect_disposition",
+        "timestamp", "token_count", "finish_reason", "reasoning", "reasoning_content", "reasoning_details",
+        "codex_reasoning_items", "codex_message_items", "platform_message_id", "observed",
+        "_compressed_summary", "active", "api_content", "display_kind", "display_metadata", "display_identity",
+        "display_order", "message_uid", "absorbed_message_uids", "tool_call_uids", "tool_call_uid", "compacted")
+
+    def copy_transcript_for_branch(self, source_key: str, target_key: str, *,
+                                   up_to_row_id: Optional[int] = None, chunk_rows: int = 500) -> int:
+        """Copy the source's DISPLAY row set into *target_key* VERBATIM — one INSERT..SELECT per chunk,
+        no Python round-trip. This is what a branch child's transcript should be (the row-by-row
+        prose rebuild it replaces dropped every tool call/result and reasoning sidecar, so the child's
+        first turn sent the provider a context the parent never had and every tool-bearing turn 400'd
+        on models that validate tool-call/tool-result alternation — kimi-k3 surfaced it first).
+
+        Fidelity rules, in order of "why verbatim matters":
+        - content stays the STORED BYTES: a decode/encode round-trip can alter stored content and the
+          child's first turn re-sends its api_content sidecar — byte-drift there forfeits the provider
+          prompt cache the parent already paid for.
+        - tool rows (tool_call_id / tool_calls / tool_name / tool_call_uid*) ride along: the child's
+          MODEL projection must equal the parent's (alternation-repaired on read, not reconstructed).
+        - compaction flags are MAPPED, not copied: TIP rows keep their (active, compacted) so the child's
+          model projection is exactly the parent's summary + tail (never re-inflating turns the parent
+          already compressed); compression-lineage ANCESTOR rows land (active=0, compacted=1) so the
+          child's DISPLAY projection keeps the full lineage the desktop branch paints.
+        - display identity (display_identity/display_order/message_uid) rides along so timeline markers
+          keep their parent-relative grouping; ``platform_message_id`` is nulled — a platform row id
+          must not exist on two sessions (CLI /branch parity).
+        - ``up_to_row_id`` bounds the copy to ``id <= up_to_row_id`` for ``count`` branches (the row id
+          of the Nth visible display row, from the caller's display read).
+
+        Chunks share one read shape (ids only grow, so LIMIT/OFFSET windows over a stable filter are
+        stable — same txn-size bound as append_messages_batch). The target's session counters are set
+        from the copied rows in the final txn; returns the total inserted row count."""
+        lineage = self._resume_lineage_ids(source_key)
+        lineage_ph = ", ".join("?" * len(lineage))
+        copy_cols = ", ".join(self._BRANCH_COPY_COLUMNS)
+        # Remap exactly the three columns whose meaning is session-relative; everything else verbatim.
+        select_cols = ", ".join(
+            "? AS session_id" if col == "session_id"
+            else "NULL AS platform_message_id" if col == "platform_message_id"
+            else f"CASE WHEN session_id = ? THEN {col} ELSE 0 END AS active" if col == "active"
+            else f"CASE WHEN session_id = ? THEN {col} ELSE 1 END AS compacted" if col == "compacted"
+            else col
+            for col in self._BRANCH_COPY_COLUMNS)
+        # Params: per-column bind for the remapped SELECT expressions, then the WHERE binds.
+        select_params: list[Any] = [target_key, source_key, source_key]
+        where_sql = (f"FROM messages WHERE session_id IN ({lineage_ph})"
+                     f" AND (active = 1 OR compacted = 1)")
+        where_params: list[Any] = list(lineage)
+        if up_to_row_id is not None:
+            where_sql += " AND id <= ?"
+            where_params.append(up_to_row_id)
+
+        total = 0
+        offset = 0
+        while True:
+            chunk = self._execute_write(lambda conn, offset=offset: conn.execute(
+                f"INSERT INTO messages ({copy_cols}) SELECT {select_cols} {where_sql} "
+                f"ORDER BY id LIMIT ? OFFSET ?",
+                (*select_params, *where_params, chunk_rows, offset)).rowcount)
+            total += max(chunk, 0)
+            if not chunk or chunk < chunk_rows:
+                break
+            offset += chunk_rows
+
+        def _set_counters(conn: sqlite3.Connection) -> None:
+            # Child counters from the child's OWN rows (display-visible count + tool calls), same shape
+            # as _active_transcript_counts but for the branch's display set.
+            row = conn.execute(
+                "SELECT COUNT(*), COALESCE(SUM(CASE WHEN tool_calls IS NOT NULL"
+                " THEN json_array_length(tool_calls) ELSE 0 END), 0)"
+                " FROM messages WHERE session_id = ? AND (active = 1 OR compacted = 1)",
+                (target_key,)).fetchone()
+            conn.execute(_SET_COUNTERS_SQL + " WHERE id = ?", (row[0], row[1] or 0, target_key))
+        self._execute_write(_set_counters)
+        return total
 
     def _resume_count_scope(self, session_id: str, tip_only: bool) -> tuple[list[str], str]:
         """``tip_only``: the tip's ACTIVE rows (model restore); else the full-lineage DISPLAY set."""

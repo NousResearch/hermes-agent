@@ -53,6 +53,19 @@ class TestReadChain:
         result[0]["provider"] = "mutated"
         assert cfg["fallback_providers"][0]["provider"] == "nous"
 
+    def test_write_chain_removes_nested_legacy_key(self):
+        from hermes_cli.fallback_cmd import _write_chain
+
+        config = {
+            "model": {"provider": "nous", "fallback_model": "legacy-model"},
+            "fallback_model": "top-level-legacy",
+        }
+        _write_chain(config, [{"provider": "openrouter", "model": "new-model"}])
+
+        assert "fallback_model" not in config["model"]
+        assert "fallback_model" not in config
+        assert config["fallback_providers"] == [{"provider": "openrouter", "model": "new-model"}]
+
 # ---------------------------------------------------------------------------
 # _extract_fallback_from_model_cfg
 # ---------------------------------------------------------------------------

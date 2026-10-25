@@ -62,6 +62,7 @@ def validate_manifest(source: Path) -> dict:
 class PluginSelection:
     def __init__(self, selection: dict):
         from hermes_yaml import roundtrip_yaml
+        from pm.plugin_eviction import settle_record
 
         self.configs = selection_snapshot()
         self.home = Path(selection["home"]).resolve()
@@ -84,6 +85,7 @@ class PluginSelection:
             raise ValueError(f"plugins must be a mapping in {self.path}")
         plugins["enabled"] = sorted(selection["enabled"])
         plugins["disabled"] = sorted(selection["disabled"])
+        settle_record(plugins, selection.get("settled", ()))
         output = io.StringIO()
         yaml.dump(config, output)
         self.proposed = output.getvalue().encode("utf-8")

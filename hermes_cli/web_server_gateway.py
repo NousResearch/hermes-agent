@@ -674,11 +674,12 @@ def live_session_refusal(profile: Optional[str], verb: str) -> Optional[str]:
 def _restart_gateway_after(profile: Optional[str], *, what: str, label: str) -> dict[str, Any]:
     """Best-effort gateway restart after a config change. The save stays authoritative: a failed
     spawn is reported (``restart_started: False`` + ``restart_error``) so the UI can fall back to
-    its manual restart banner instead of failing the request. Live sessions refuse it the same way."""
+    its manual restart banner instead of failing the request. Live sessions refuse it the same way,
+    with ``restart_busy`` set so a UI can say so in its own words."""
     from hermes_cli.web_server import _spawn_gateway_restart
     refusal = live_session_refusal(profile, "restart")
     if refusal:
-        return {"restart_started": False, "restart_error": refusal}
+        return {"restart_started": False, "restart_error": refusal, "restart_busy": True}
     try:
         proc, reused = _spawn_gateway_restart(profile)
     except Exception as exc:

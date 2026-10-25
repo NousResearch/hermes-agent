@@ -30,7 +30,7 @@ def _cmd_list(args) -> None:
     if not bundles:
         c.print(
             f"[dim]No bundles installed yet. Create one with:\n"
-            f"  hermes bundles create <name> --skill skill1 --skill skill2[/]\n"
+            f"  hermes bundles create <name> --skill skill1 --skill skill2\n"
             f"Bundles directory: [bold]{_bundles_dir()}[/]")
         return
 

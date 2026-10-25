@@ -1308,11 +1308,28 @@ def _yield_kwargs(command: str, **ctx) -> dict:
 def _run_foreground(
     command: str, env: Any, plan: _ExecPlan, *,
     task_id: Optional[str], session_id: Optional[str], session_key: str,
+    cwd_session_key: Optional[str] = None,
     workdir: Optional[str], approval_note: Optional[str], clear_interrupt: bool,
     metered: bool = True,
 ) -> str:
     """Execute in the foreground with retry on transient errors, then finalize. ``metered``
-    is False for Hermes' own control-plane commands (``_host_local``)."""
+    is False for Hermes' own control-plane commands (``_host_local``).
+    ``session_key`` routes approvals/notifications; ``cwd_session_key`` (defaults
+    to ``session_key``) anchors the durable cwd record — the subagent-child
+    task_id, so a child ``cd`` stays off the parent's record (#140395)."""
+    cwd_record_key = cwd_session_key or session_key
+    # Mirror key for a TOP-LEVEL turn whose cwd anchor moved off the caller's
+    # bound session key (gateway/TUI: task_id ≠ HERMES_SESSION_KEY): session-keyed
+    # readers (the /init ladder) must still track its cd. A subagent child is
+    # excluded via its container alias (seed_workspace registers child→parent) —
+    # for a child, ``session_key`` is the PARENT's key, exactly the record a
+    # child cd must not rewrite (#140395).
+    mirror_key: Optional[str] = None
+    if session_key and cwd_record_key != session_key:
+        with _container_alias_lock:
+            is_registered_child = cwd_record_key in _container_aliases
+        if not is_registered_child:
+            mirror_key = session_key
     from hermes_cli.observability.shared_metrics_harness import record_terminal_outcome
     max_retries = 3
     env_type, eff, effective_timeout = plan.env_type, plan.effective_task_id, plan.effective_timeout
@@ -1329,7 +1346,7 @@ def _run_foreground(
     for retry_count in range(max_retries + 1):
         try:
             command_cwd = _resolve_command_cwd(
-                workdir=workdir, default_cwd=plan.cwd, session_key=session_key, env_type=env_type,
+                workdir=workdir, default_cwd=plan.cwd, session_key=cwd_record_key, env_type=env_type,
                 mounted_host=getattr(env, "host_cwd", None) or plan.host_cwd,
                 env=env,
             )
@@ -1368,7 +1385,8 @@ def _run_foreground(
         record_terminal_outcome(command, env_type, result)
     return finalize_foreground_result(
         command=command, result=result, env=env, env_type=env_type, effective_task_id=eff,
-        task_id=task_id, session_id=session_id, session_key=session_key, workdir=workdir,
+        task_id=task_id, session_id=session_id, session_key=cwd_record_key,
+        mirror_session_key=mirror_key, workdir=workdir,
         command_cwd=command_cwd, approval_note=approval_note,
     )
 
@@ -1485,12 +1503,20 @@ def terminal_tool(
         env = _acquire_env(plan, task_id)
         env_type, cwd, effective_task_id = plan.env_type, plan.cwd, plan.effective_task_id
 
-        # Session key for cwd records: the contextvar doesn't cross tool-worker
-        # threads, so fall back to the raw task_id (the top-level agent's
-        # session_key) as a stable anchor.
+        # Session key for approvals, lifecycle guards and notification routing.
+        # The approval contextvar DOES cross tool-worker threads now (daemon-pool
+        # submit copies the caller's context), so it wins over the raw task_id.
         from tools.approval import get_current_session_key
 
         session_key = get_current_session_key(default="") or (task_id or "")
+        # Cwd-record anchor: a subagent child runs tool calls under its own
+        # task_id (``seed_workspace`` records its starting cwd there), but the
+        # contextvar the daemon worker inherits is the PARENT's session key —
+        # anchoring the child's durable cwd on it lets a child ``cd`` rewrite
+        # the parent's record, and the parent's next workdir-less command then
+        # runs in the child's directory (#140395). The child's task_id wins;
+        # a top-level call without one keeps the session-key anchor.
+        cwd_session_key = task_id or session_key
 
         # The supervised-gateway identity probe ends in a kernel process query
         # (psutil create_time) that has wedged for the better part of an hour on
@@ -1510,7 +1536,12 @@ def terminal_tool(
         try:
             bounded_guard = run_bounded_sync(
                 lambda: _pre_exec_block(
-                    command, env=env, env_type=env_type, cwd=cwd, workdir=workdir, session_key=session_key,
+                    # The guards resolve cwd from this key, so anchor it on the
+                    # same record the command itself will run in; a delegate
+                    # child's session_key is the PARENT's, and resolving the
+                    # lifecycle/self-repo scan against the parent's record let a
+                    # child-run relative script slip past the scan (#140434).
+                    command, env=env, env_type=env_type, cwd=cwd, workdir=workdir, session_key=cwd_session_key,
                 ),
                 guard_timeout,
                 label="terminal.pre-exec-guard",
@@ -1535,7 +1566,8 @@ def terminal_tool(
         if background:
             result = spawn_background_process(
                 command=command, env=env, env_type=env_type, effective_task_id=effective_task_id,
-                task_id=task_id, session_key=session_key, workdir=workdir, cwd=cwd,
+                task_id=task_id, session_key=session_key, cwd_session_key=cwd_session_key,
+                workdir=workdir, cwd=cwd,
                 mounted_host=getattr(env, "host_cwd", None) or plan.host_cwd,
                 effective_pty=pty and not pty_disabled, notify_on_complete=notify_on_complete,
                 watch_patterns=watch_patterns, approval_note=verdict.note,
@@ -1551,6 +1583,7 @@ def terminal_tool(
         return _metered(None if _host_local else plan, _run_foreground(
             command, env, plan,
             task_id=task_id, session_id=session_id, session_key=session_key,
+            cwd_session_key=cwd_session_key,
             workdir=workdir, approval_note=verdict.note, clear_interrupt=verdict.approved_run,
             metered=not _host_local,
         ))

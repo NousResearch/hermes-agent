@@ -12,7 +12,8 @@ taking the session turn lease (`turn_facade_lease.py`). `AIAgent.__init__` takes
 (credentials, routing, callbacks, session context, budget, credential pool, ...) — read
 `run_agent.py` for the list; the subset you usually touch: `base_url`, `api_key`, `provider`,
 `api_mode` (`"chat_completions" | "codex_responses" | ...`), `model` (empty → resolved from
-config/provider later), `max_iterations` (default 500, shared with subagents),
+config/provider later), `max_iterations` (unlimited unless configured; subagents get their
+own `delegation.max_iterations` budget),
 `enabled_toolsets`/`disabled_toolsets`, `quiet_mode`, `save_trajectories`, `platform`
 (`"cli"`, `"telegram"`, ...), `session_id`, `skip_context_files`, `skip_memory`, `credential_pool`.
 `chat(message) -> str` is the simple interface; `run_conversation(user_message, system_message=None,

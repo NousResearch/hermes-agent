@@ -133,16 +133,10 @@ def test_an_idle_check_that_waited_on_the_lock_never_stops_the_replacement_scree
                 proc.wait()
 
 
-@pytest.mark.platforms("posix")
-def test_the_launcher_runs_its_idle_check_through_the_installs_stable_command(tmp_path, monkeypatch):
-    """The screen outlives ``hermes update``: a check pinned to the starter's interpreter and its inherited
-    dependency generation fails with ModuleNotFoundError once that generation is collected, forever. On a store
-    install the launcher gets the ``hermes --run-module`` launcher, which loads the current one at every run."""
-    from hermes_cli import _launchers
+def _spawn(monkeypatch, tmp_path) -> dict[str, str]:
+    """Runs ``_spawn_and_wait`` up to the launcher's Popen (a launcher that exits at once); the env it got."""
     from tools.bot_desktop import browser
 
-    root = runtime._LAUNCHER.resolve().parents[2]
-    monkeypatch.setattr(_launchers, "resolve_store_python", lambda repo_root, **_: tmp_path / "store/bin/python3")
     monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
     monkeypatch.setattr(runtime, "_ALLOC_LOCK", tmp_path / "alloc.lock")
     monkeypatch.setattr(runtime, "_pick_display", lambda: 20)
@@ -158,7 +152,34 @@ def test_the_launcher_runs_its_idle_check_through_the_installs_stable_command(tm
     monkeypatch.setattr(runtime.subprocess, "Popen", lambda argv, env, **_: handed.append(env) or _Exited())
     with pytest.raises(RuntimeError):
         runtime._spawn_and_wait(tmp_path, 1)
+    return handed[0]
 
-    command = shlex.split(handed[0]["HERMES_BD_IDLE_CMD"])
+
+@pytest.mark.platforms("posix")
+def test_the_launcher_runs_its_idle_check_through_the_installs_stable_command(tmp_path, monkeypatch):
+    """The screen outlives ``hermes update``: a check pinned to the starter's interpreter and its inherited
+    dependency generation fails with ModuleNotFoundError once that generation is collected, forever. On a store
+    install the launcher gets the ``hermes --run-module`` launcher, which loads the current one at every run."""
+    from hermes_cli import _launchers
+
+    root = runtime._LAUNCHER.resolve().parents[2]
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda repo_root, **_: tmp_path / "store/bin/python3")
+
+    command = shlex.split(_spawn(monkeypatch, tmp_path)["HERMES_BD_IDLE_CMD"])
     assert command == _launchers.installation_command(root, module="tools.bot_desktop.idle_watch")
     assert command == [str(root / ".hermes/bin/hermes"), "--run-module", "tools.bot_desktop.idle_watch"]
+
+
+@pytest.mark.platforms("posix")
+def test_a_stale_idle_check_never_writes_into_the_replacement_screens_log(tmp_path, monkeypatch):
+    """The old screen's idle check runs in a session of its own and can outlive its screen (it waited on
+    ``start.lock`` while a replacement started) with the old ``launcher.log`` open at its offset. A start that
+    truncated the same file let that late write leave a run of NUL bytes and a "screen kept" line in the
+    replacement's log, reading as if it were about the new screen."""
+    log = tmp_path / "launcher.log"
+    log.write_bytes(b"x" * 4096)
+    with open(log, "r+b") as stale:  # the old check's stderr: the launcher's, not opened for append
+        stale.seek(0, os.SEEK_END)
+        _spawn(monkeypatch, tmp_path)
+        stale.write(b"idle-watch changed while the idle stop waited; kept\n")
+    assert log.read_bytes() == b""

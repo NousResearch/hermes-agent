@@ -7,6 +7,7 @@ tool module stays importable without the plugin machinery).
 from __future__ import annotations
 
 import logging
+from tools.tts_prepared_types import SpeechResolution
 import math
 from typing import Any, Dict, Optional, Tuple
 
@@ -79,7 +80,9 @@ def _plugin_pcm_streaming_provider(provider: str, tts_config: dict[str, Any]) ->
     return plugin, int(rate)
 
 
-def _dispatch_to_plugin_provider(text: str, output_path: str, provider: str, tts_config: dict[str, Any]) -> Optional[str]:
+def _dispatch_to_plugin_provider(
+    text: str, output_path: str, provider: str, tts_config: dict[str, Any], *, prepared_resolution: SpeechResolution | None = None,
+) -> Optional[str]:
     """Route to a plugin-registered TTS provider; None means "fall through".
 
     Invariants re-checked here so a caller refactor can't break them: built-in names never reach
@@ -98,15 +101,27 @@ def _dispatch_to_plugin_provider(text: str, output_path: str, provider: str, tts
     try:
         plugin_provider = _lookup_plugin_provider(key, retry=True)
     except Exception as exc:
+        if prepared_resolution is not None:
+            raise
         logger.debug("tts plugin dispatch skipped (discovery failed): %s", exc)
         return None
     if plugin_provider is None:
         return None
+    extra = {}
+    if prepared_resolution is not None:
+        from tools.tts_prepared_policy import _resolve
+        from tools.tts_prepared_types import SpeechFailureCode, SpeechSynthesisError
+
+        current = _resolve(prepared_resolution.settings, tts_config, plugin=plugin_provider)
+        if current != prepared_resolution:
+            raise SpeechSynthesisError(SpeechFailureCode.RESOLUTION_CHANGED)
+        if prepared_resolution.settings.instructions is not None:
+            extra["instructions"] = prepared_resolution.settings.instructions
     fmt = (tts_config if isinstance(tts_config, dict) else {}).get(
         "output_format", DEFAULT_COMMAND_TTS_OUTPUT_FORMAT)
     logger.info("Generating speech with plugin TTS provider '%s'...", key)
     written = plugin_provider.synthesize(
-        text, output_path, format=str(fmt).lower() if fmt else "mp3", **_plugin_voice_kwargs(tts_config))
+        text, output_path, format=str(fmt).lower() if fmt else "mp3", **_plugin_voice_kwargs(tts_config), **extra)
     return written if isinstance(written, str) and written else output_path
 
 

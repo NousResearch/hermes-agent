@@ -7,10 +7,13 @@ must never import that module at module level (import cycle).
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agent.model_metadata import estimate_messages_tokens_rough
 from agent.model_metadata_token_memo import forget_message_token_memo
+
+if TYPE_CHECKING:
+    from agent.context_compressor import _SummaryFailureKind
 
 
 def _safe_int(value: Any) -> int | None:
@@ -48,6 +51,8 @@ class CompressionTelemetryMixin:
             "total_duration_ms": None, "aux_call_duration_ms": None, "queue_wait_ms": None, "prompt_build_ms": None,
             "time_to_first_progress_ms": None, "summary_generation_ms": None, "commit_ms": None,
             "fallback_used": False, "commit_status": "unknown", "split_status": "unknown", "failure_class": None,
+            "failed_aux_provider": None, "failed_aux_model": None, "failure_reason": None,
+            "failure_error_type": None, "failure_status_code": None, "result_estimated_tokens": None,
             # Lean-sampling coverage (filled by _record_summary_input_coverage; None on the legacy path).
             "summary_input_chars": None, "summary_input_sampled_chars": None, "summary_input_omitted_chars": None,
             "summary_input_record_count": None, "summary_input_sampled_record_count": None,
@@ -99,6 +104,27 @@ class CompressionTelemetryMixin:
             # Wait and generation phases accumulate across retries; the rest are point readings.
             accumulate = key in {"queue_wait_ms", "summary_generation_ms"} and value is not None
             telemetry[key] = (telemetry.get(key) or 0) + value if accumulate else value
+
+    def _record_summary_failure_telemetry(self, error: Exception) -> _SummaryFailureKind:
+        """Classify each error for retries, retaining only the first failure's content-free diagnostics."""
+        from agent.context_compressor import _classify_summary_failure, _exc_status_code
+
+        kind = _classify_summary_failure(error)
+        telemetry = getattr(self, "_active_compression_telemetry", None)
+        if not isinstance(telemetry, dict) or telemetry.get("failure_error_type") is not None:
+            return kind
+        failed_model = str(telemetry.get("aux_model") or "").strip() or None
+        failed_provider = str(telemetry.get("aux_provider") or "").strip() or None
+        main_model = str(telemetry.get("main_model") or "").strip()
+        main_provider = str(telemetry.get("main_provider") or "").strip()
+        if failed_model in {None, main_model} and failed_provider in {None, main_provider}:
+            failed_model = failed_provider = None
+        telemetry.update(
+            failed_aux_provider=failed_provider, failed_aux_model=failed_model,
+            failure_reason=kind.fallback_reason(), failure_error_type=type(error).__name__,
+            failure_status_code=_safe_int(_exc_status_code(error)),
+        )
+        return kind
 
     def _compression_method(self) -> str:
         """How the summary that replaced the middle window was produced."""

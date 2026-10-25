@@ -17,6 +17,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -757,6 +758,7 @@ def _spawn_and_wait(sd: Path, wait_seconds: float) -> DesktopStatus:
         child_env["HOME"] = child_env["HERMES_REAL_HOME"]
         for key in ("DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "SESSION_MANAGER"):
             child_env.pop(key, None)
+        from hermes_cli._launchers import installation_command
         from tools.bot_desktop.idle_watch import next_check_in
         child_env.update({
             "HERMES_BD_PROFILE": _profile_name(),
@@ -766,10 +768,13 @@ def _spawn_and_wait(sd: Path, wait_seconds: float) -> DesktopStatus:
             "HERMES_BD_ENV_FILE": str(env_file),
             "HERMES_BD_CONFIG_HOME": str(sd / "xdg"),
             "HERMES_BD_GEOMETRY": geometry(),
-            # The launcher's idle self-stop runs tools.bot_desktop.idle_watch with this interpreter and home,
-            # first once the screen could be due (nothing is idle at start).
-            "HERMES_BD_PYTHON": sys.executable,
-            "HERMES_BD_SRC_ROOT": str(Path(__file__).resolve().parents[2]),
+            # The launcher's idle self-stop runs tools.bot_desktop.idle_watch through the install's stable
+            # command (the ``hermes --run-module`` launcher on a store install, which follows Python pin changes
+            # and picks the current dependency generation at every run; this interpreter elsewhere), in this
+            # home, first once the screen could be due (nothing is idle at start). The screen outlives updates,
+            # so neither this interpreter nor the inherited PYTHONPATH generation may be pinned.
+            "HERMES_BD_IDLE_CMD": shlex.join(installation_command(
+                Path(__file__).resolve().parents[2], module="tools.bot_desktop.idle_watch")),
             "HERMES_BD_HOME": str(get_hermes_home()),
             "HERMES_BD_IDLE_FIRST_DELAY": str(next_check_in(idle_stop_seconds(), 0.0)),
         })

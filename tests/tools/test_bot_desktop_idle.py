@@ -4,6 +4,7 @@ one a human holds or that saw recent use is not."""
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import threading
 import time
@@ -130,3 +131,34 @@ def test_an_idle_check_that_waited_on_the_lock_never_stops_the_replacement_scree
             if proc is not None and proc.poll() is None:
                 proc.kill()
                 proc.wait()
+
+
+@pytest.mark.platforms("posix")
+def test_the_launcher_runs_its_idle_check_through_the_installs_stable_command(tmp_path, monkeypatch):
+    """The screen outlives ``hermes update``: a check pinned to the starter's interpreter and its inherited
+    dependency generation fails with ModuleNotFoundError once that generation is collected, forever. On a store
+    install the launcher gets the ``hermes --run-module`` launcher, which loads the current one at every run."""
+    from hermes_cli import _launchers
+    from tools.bot_desktop import browser
+
+    root = runtime._LAUNCHER.resolve().parents[2]
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda repo_root, **_: tmp_path / "store/bin/python3")
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(runtime, "_ALLOC_LOCK", tmp_path / "alloc.lock")
+    monkeypatch.setattr(runtime, "_pick_display", lambda: 20)
+    monkeypatch.setattr(browser, "dock_launch", lambda: None)
+    handed = []
+
+    class _Exited:
+        pid, returncode = os.getpid(), 1
+
+        def poll(self):
+            return 1
+
+    monkeypatch.setattr(runtime.subprocess, "Popen", lambda argv, env, **_: handed.append(env) or _Exited())
+    with pytest.raises(RuntimeError):
+        runtime._spawn_and_wait(tmp_path, 1)
+
+    command = shlex.split(handed[0]["HERMES_BD_IDLE_CMD"])
+    assert command == _launchers.installation_command(root, module="tools.bot_desktop.idle_watch")
+    assert command == [str(root / ".hermes/bin/hermes"), "--run-module", "tools.bot_desktop.idle_watch"]

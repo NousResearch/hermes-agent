@@ -278,10 +278,11 @@ xset -display "$DISPLAY" s off -dpms s noblank 2>/dev/null || true
 # ---- idle self-stop: the screen outlives the gateway that started it (a restarted gateway re-attaches),
 # so it must also stop itself when no gateway ever comes back. tools/bot_desktop/idle_watch.py applies the
 # gateway watcher's own rule (bot_desktop.idle_stop_minutes; never while a human holds the screen) once per
-# run and prints the seconds until the next check; nothing stays resident in between. Skipped when runtime.py
-# passed no interpreter (the sandbox-hosted screen, whose sandbox lifetime bounds it).
+# run and prints the seconds until the next check; nothing stays resident in between. runtime.py passes the
+# install's command for it, shell-quoted (the launcher's pid is appended); skipped when it passed none (the
+# sandbox-hosted screen, whose sandbox lifetime bounds it).
 WATCH_PID=
-if [[ -n "${HERMES_BD_PYTHON:-}" ]]; then
+if [[ -n "${HERMES_BD_IDLE_CMD:-}" ]]; then
   # A start is use: stamp it now, or an activity file left by an earlier screen could make the first check
   # stop this one before runtime.py stamps it.
   touch "$(dirname "$HERMES_BD_ENV_FILE")/activity"
@@ -303,13 +304,8 @@ if [[ -n "${HERMES_BD_PYTHON:-}" ]]; then
       wait "$sleeper"
       sleeper=
       kill -0 "$$" 2>/dev/null || exit 0
-      # `hermes update` may rebuild the environment at a new path, leaving the starter's interpreter gone:
-      # use the install's current one then (both layouts are in the wild), or no check ever runs again.
-      py="$HERMES_BD_PYTHON"
-      [[ -x "$py" ]] || py="$HERMES_BD_SRC_ROOT/venv/bin/python"
-      [[ -x "$py" ]] || py="$HERMES_BD_SRC_ROOT/.venv/bin/python"
-      HERMES_HOME="$HERMES_BD_HOME" PYTHONPATH="$HERMES_BD_SRC_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
-        "$py" -m tools.bot_desktop.idle_watch "$$" >"$out" &
+      eval "set -- $HERMES_BD_IDLE_CMD"
+      HERMES_HOME="$HERMES_BD_HOME" "$@" "$$" >"$out" &
       if wait "$!"; then delay=$(<"$out"); else delay=300; fi  # broken check: retry slowly
       [[ -n "$delay" ]] || exit 0  # it stopped the screen
     done

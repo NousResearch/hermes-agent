@@ -2014,24 +2014,6 @@ def _latest_event(
     return conn.execute(sql + " ORDER BY id DESC LIMIT 1", params).fetchone()
 
 
-def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
-    """``review`` when the newest lifecycle event carries a review
-    ``resume_status``/``retry_status``/``source_status``, else ``ready`` (legacy)."""
-    row = conn.execute(
-        "SELECT payload FROM task_events "
-        "WHERE task_id = ? AND kind IN ("
-        "'blocked', 'block_loop_detected', 'dependency_wait', 'gave_up', "
-        "'unblocked', 'changes_requested', 'review_reopened', 'status', 'reclaimed', "
-        "'stale', 'timed_out', 'crashed', 'spawn_failed', 'rate_limited'"
-        ") ORDER BY id DESC LIMIT 1", (task_id,),
-    ).fetchone()
-    payload = _json_dict(_row_get(row, "payload"))
-    for key in ("resume_status", "retry_status", "source_status"):
-        if payload.get(key) == "review":
-            return "review"
-    return "ready"
-
-
 def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) -> int:
     """Promote ``todo``/``blocked`` tasks whose parents are all done/archived;
     returns the count. Opens its own IMMEDIATE txn — call OUTSIDE any write txn.
@@ -2046,6 +2028,19 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
+    # Read-only fast path: with no candidate rows there is nothing to write, so
+    # skip the IMMEDIATE txn. Otherwise a read-only caller (``kanban list``) in a
+    # delegate-child fence trips the write-mutation guard (write_txn ->
+    # _assert_not_delegated_child_mutation) for a query that mutates nothing, and
+    # every no-op caller takes the database write lock. With candidates present
+    # the txn opens and the fence keeps denying real promotions (fail-closed is
+    # unchanged). A row inserted between the pre-check and the txn only means a
+    # fenced caller gets the denial it would have gotten anyway; unfenced callers
+    # pick it up on their next call.
+    if conn.execute(
+        "SELECT 1 FROM tasks WHERE status IN ('todo', 'blocked') LIMIT 1"
+    ).fetchone() is None:
+        return 0
     promoted = 0
     with write_txn(conn):
         todo_rows = conn.execute(
@@ -4220,6 +4215,7 @@ from hermes_cli.kanban_db_connect import (
     init_db,
     write_txn,
 )
+from hermes_cli.kanban_db_graph import _resume_status_from_events
 from hermes_cli.kanban_db_workspace import (
     _cleanup_workspace,
     _is_managed_scratch_path,

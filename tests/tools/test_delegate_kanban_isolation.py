@@ -347,3 +347,72 @@ def test_child_attempting_default_complete_does_not_finish_parent_or_delete_work
     assert task.status == "running"
     assert run.status == "running"
     assert workspace.is_dir()
+
+
+def _kanban_list_cli_code() -> str:
+    """Spawn the real ``kanban list`` CLI path (parser -> kanban_command)."""
+    return (
+        "from hermes_cli import kanban; "
+        "import argparse; "
+        "p = argparse.ArgumentParser(); "
+        "sub = p.add_subparsers(dest='cmd'); "
+        "kanban.build_parser(sub); "
+        "args = p.parse_args(['kanban', 'list']); "
+        "raise SystemExit(kanban.kanban_command(args))"
+    )
+
+
+def _run_list_in_fenced_child(tmp_path: Path) -> dict:
+    from agent.delegation_context import delegated_child_context
+    from tools.environments.local import LocalEnvironment
+
+    env = LocalEnvironment(cwd=str(tmp_path), timeout=30)
+    try:
+        with delegated_child_context():
+            return env.execute(_python_with_repo_path(_kanban_list_cli_code()), timeout=30)
+    finally:
+        env.cleanup()
+
+
+def test_delegate_child_kanban_list_read_only_without_promotable_rows(monkeypatch, tmp_path):
+    """``kanban list`` is a read for the fence: with no ``todo``/``blocked`` rows,
+    recompute_ready's read-only pre-check returns before opening its write txn,
+    so a delegated child listing its fenced board gets rc 0 instead of the
+    durable write-mutation denial."""
+    _kb, _tid, _workspace, _attachments_root = _make_running_kanban_task(monkeypatch, tmp_path)
+
+    result = _run_list_in_fenced_child(tmp_path)
+
+    assert result["returncode"] == 0, result["output"]
+    assert "parent" in result["output"]
+
+
+def test_delegate_child_kanban_list_with_promotable_rows_still_denied(monkeypatch, tmp_path):
+    """Fail-closed is unchanged: with a promotable ``todo`` row present,
+    recompute_ready opens the write txn and the fence still denies it."""
+    kb, _tid, _workspace, _attachments_root = _make_running_kanban_task(monkeypatch, tmp_path)
+    from hermes_cli import kanban_db_connect as kbc
+
+    gate_ws = tmp_path / "gate-ws"
+    gate_ws.mkdir()
+    conn = kbc.connect()
+    try:
+        gate = kb.create_task(
+            conn,
+            title="gate",
+            assignee="other-worker",
+            workspace_kind="scratch",
+            workspace_path=str(gate_ws),
+            initial_status="running",
+        )
+        kb.create_task(conn, title="child", assignee="other-worker", parents=[gate])
+        assert conn.execute(
+            "SELECT 1 FROM tasks WHERE status IN ('todo', 'blocked') LIMIT 1"
+        ).fetchone() is not None
+    finally:
+        conn.close()
+
+    result = _run_list_in_fenced_child(tmp_path)
+
+    assert result["returncode"] == 1
+    assert "delegate_task child contexts cannot mutate Kanban tasks" in result["output"]

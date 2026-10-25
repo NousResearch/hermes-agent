@@ -16,6 +16,13 @@ export const enModelMenu: Translations['shell']['modelMenu'] = {
   cacheRead: 'cached read',
   priceTitle: (input: string, output: string, cache: string) =>
     `Input ${input}/Mtok · Output ${output}/Mtok` + (cache ? ` · Cached read ${cache}/Mtok` : ''),
+    pricing: {
+      title: 'Pricing',
+      titlePerMillion: 'Pricing · per 1M tokens',
+      input: 'Input',
+      output: 'Output',
+      free: 'Free'
+    },
   localSetup: {
     title: 'Run locally · free, private',
     text: (model: string, size: string) => `${model} fits this machine · ${size} download`,

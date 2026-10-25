@@ -364,6 +364,13 @@ export const arChrome = {
       cacheRead: 'قراءة من الذاكرة المؤقتة',
       priceTitle: (input: string, output: string, cache: string) =>
         `الإدخال ${input}/Mtok · الإخراج ${output}/Mtok` + (cache ? ` · قراءة من الذاكرة المؤقتة ${cache}/Mtok` : ''),
+      pricing: {
+        title: 'الأسعار',
+        titlePerMillion: 'الأسعار · لكل مليون رمز',
+        input: 'الإدخال',
+        output: 'الإخراج',
+        free: 'مجاني'
+      },
       localSetup: {
         title: 'تشغيل محلي · مجاني وخاص',
         text: (model: string, size: string) => `${model} يناسب هذا الجهاز · تنزيل ${size}`,

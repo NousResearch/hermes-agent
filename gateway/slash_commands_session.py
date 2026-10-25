@@ -193,41 +193,51 @@ class GatewaySessionCommandsMixin:
             authority._publish_route(event.source, sid, session_key)
         return await discard_lost_turns(authority, sid)
 
-    async def _handle_reset_command(self, event: MessageEvent) -> str | EphemeralReply:
-        """Handle /new or /reset command."""
-        source = event.source
-        session_key = self._session_key_for_source(source)
-        await self._hm_stop_owner_turn(session_key)  # idle and confirmed resets too (N53)
-        self._invalidate_session_run_generation(session_key, reason="session_reset")
+    async def _rotate_session(self, session_key: str,
+                              source: Optional[SessionSource] = None,
+                              *, reason: str = "session_reset"):
+        """Rotate ONE conversation onto a fresh session id — the shared /new and /new-all boundary.
+
+        Returns ``(old_entry, new_entry)``. Every conversation-scoped cleanup lives here so the bulk
+        reset cannot drift from the single-chat one (the drift class called out on
+        ``_clear_conversation_scope``). ``source`` is only needed to fire the session-end/reset
+        hooks; a routing entry restored without an origin resets without them.
+        """
+        self._invalidate_session_run_generation(session_key, reason=reason)
         # Evict the running-agent slot now that the generation is bumped: the in-flight run's own
         # guarded release (old generation) returns False and would leave a zombie slot that silently
         # drops all later messages. Idempotent, so the run's finally calling it again is harmless.
         self._release_running_agent_state(session_key)
         # Snapshot the old entry so on_session_finalize can report the expiring session id.
-        # Evict the running-agent slot now that the generation is bumped. The in-flight run's own guarded
-        # release (run_generation=old) will return False and leave its dead agent behind; clearing here
-        # keeps the slot from becoming a zombie that silently drops all later messages (#28686). Idempotent,
-        # so the run's finally calling it again is harmless.
         old_entry = self.session_store._entries.get(session_key)
         await self._cleanup_old_agent_for_reset(session_key)
         self._evict_cached_agent(session_key)
         # Conversation boundary: ALL conversation-scoped per-session state + security state in one
         # funnel call (see _CONVERSATION_SCOPED_STATE in gateway/run.py).
-        self._clear_conversation_scope(session_key, reason="session_reset")
+        self._clear_conversation_scope(session_key, reason=reason)
         # In-flight async delegations end WITH the conversation: once the id rotates their
         # completions have no live owner. Expire by durable id, routing key as legacy fallback.
         with contextlib.suppress(Exception):
             from tools.async_delegation import interrupt_for_session
-            interrupt_for_session(session_key=session_key, reason="session_reset",
+            interrupt_for_session(session_key=session_key, reason=reason,
                                   parent_session_id=str(getattr(old_entry, "session_id", "") or ""))
-        _reset_process_scoped_tool_state()
-
         new_entry = await self.async_session_store.reset_session(session_key)
         _old_sid = old_entry.session_id if old_entry else None
         from gateway.session_automation import move_route_wakes
         await move_route_wakes(self, session_key, _old_sid)  # main #114456: a parked wake survives /new
-        await self._fire_session_reset_hooks(source, session_key, _old_sid,
-                                             new_entry.session_id if new_entry else None)
+        if source is not None:
+            await self._fire_session_reset_hooks(source, session_key, _old_sid,
+                                                 new_entry.session_id if new_entry else None)
+        return old_entry, new_entry
+
+    async def _handle_reset_command(self, event: MessageEvent) -> str | EphemeralReply:
+        """Handle /new or /reset command."""
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        await self._hm_stop_owner_turn(session_key)  # idle and confirmed resets too (N53)
+        old_entry, new_entry = await self._rotate_session(session_key, source)
+        _reset_process_scoped_tool_state()
+        _old_sid = old_entry.session_id if old_entry else None
         # Scoped to the profile serving this source so a multiplexed /new banner reports the
         # profile's model, not the base config's.
         try:
@@ -266,6 +276,48 @@ class GatewaySessionCommandsMixin:
             _tip_line = ""
         body = f"{header}\n\n{session_info}" if session_info else header
         return EphemeralReply(f"{body}{_tip_line}")
+
+    async def _handle_new_all_command(self, event: MessageEvent) -> str | EphemeralReply:
+        """``/new-all``: rotate EVERY chat on this gateway onto a fresh session.
+
+        Bulk /new. Each chat keeps its routing key, origin and delivery identity — only the session
+        id (the transcript) is rotated, so the next message from every user opens a new conversation.
+        Chats with a turn in flight are LEFT ALONE and reported: resetting them would kill a reply
+        someone is waiting on. Old transcripts stay in the session store.
+        """
+        store = self.session_store
+        entries = list(getattr(store, "_entries", {}).items())
+        invoking_key = self._session_key_for_source(event.source)
+        try:
+            running = self._snapshot_running_agents()
+        except Exception:  # bare test double / older runner without the snapshot helper
+            running = getattr(self, "_running_agents", None) or {}
+        reset_count = skipped = 0
+        failures: list[str] = []
+        for session_key, old_entry in entries:
+            # The invoking chat is never mid-run here (busy turns reject this command).
+            if session_key != invoking_key and session_key in running:
+                skipped += 1
+                continue
+            try:
+                await self._rotate_session(session_key, getattr(old_entry, "origin", None),
+                                           reason="session_reset_all")
+                reset_count += 1
+            except Exception as exc:  # one wedged chat must not abort the sweep
+                logger.warning("/new-all could not reset %s: %s", session_key, exc)
+                failures.append(session_key)
+        if reset_count:
+            _reset_process_scoped_tool_state()
+        lines = [f"🆕 Fresh session started for {reset_count} chat{'s' if reset_count != 1 else ''}."]
+        if skipped:
+            lines.append(f"⏳ Left {skipped} chat{'s' if skipped != 1 else ''} alone (turn in flight) — "
+                         f"run /new-all again once they're idle.")
+        if failures:
+            lines.append(f"⚠️ {len(failures)} chat{'s' if len(failures) != 1 else ''} failed to reset — "
+                         f"see the gateway log.")
+        if not entries:
+            lines = ["No active sessions to reset."]
+        return EphemeralReply("\n".join(lines))
 
     async def _reset_titled_header(self, header: str, session_id: str, title_arg: str) -> str:
         """``/new <title>``: titled header on success, else the header plus a rejection note."""

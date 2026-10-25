@@ -25,7 +25,7 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.media_cache import ext_for_mime
-from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
+from gateway.platforms.helpers import MessageDeduplicator, compile_mention_patterns, strip_markdown
 from utils import TRUTHY_STRINGS
 
 # Historical BlueBubbles mime→ext maps, preserved verbatim as overrides for the shared dispatch in
@@ -64,7 +64,24 @@ _PAGINATION_SUFFIX_RE = re.compile(r"\s*\(\d+/\d+\)$")
 _ADDRESS_RE = re.compile(r"^\+\d+")
 
 _GUID_CACHE_SIZE = 500  # LRU cap for resolved chat-GUID lookups
-_LOCAL_HOSTS = {"0.0.0.0", "127.0.0.1", "localhost", "::"}
+# Local binds are advertised to BlueBubbles as a LITERAL loopback address, never the name
+# "localhost": the BlueBubbles server is Node, and Node resolves "localhost" to ::1 first (it has
+# not reordered to IPv4 since 17), so a registration built on the name delivers every event to the
+# IPv6 loopback and is refused when the listener bound IPv4. The value is the host to put in the
+# registered URL; only a v6 bind advertises the v6 loopback, and a v6 literal needs brackets.
+_LOCAL_HOSTS = {
+    "0.0.0.0": "127.0.0.1",
+    "127.0.0.1": "127.0.0.1",
+    "localhost": "127.0.0.1",
+    "::": "[::1]",
+    "::1": "[::1]",
+}
+
+# Inbound webhook dedup: BlueBubbles re-delivers a webhook after a reconnect/resume, so the same
+# message guid can arrive twice. A TTL cache (a MessageDeduplicator, so the runner's reconnect
+# handover adopts its live ids into a rebuilt adapter) drops the replay before it reaches the agent.
+_BLUEBUBBLES_DEDUP_WINDOW_SECONDS = 48 * 3600  # re-accept an id older than 48h
+_BLUEBUBBLES_DEDUP_MAX_SIZE = 2000             # hard bound on cached ids
 
 
 def _redact(text: str) -> str:
@@ -132,6 +149,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
+        self._dedup = MessageDeduplicator(
+            max_size=_BLUEBUBBLES_DEDUP_MAX_SIZE, ttl_seconds=_BLUEBUBBLES_DEDUP_WINDOW_SECONDS)
+        # Send-only client: built by the standalone sender (`_standalone_send`) to POST one message.
+        # It must NOT bind the webhook port — the live gateway holds it, so the bind raised
+        # EADDRINUSE and killed the cron fallback lane — and must not touch webhook
+        # registrations, which belong to the live listener.
+        self.send_only = bool(extra.get("send_only"))
 
     # --- API helpers ---
 
@@ -219,6 +243,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         # Explicit body cap: BlueBubbles webhook events are small JSON (or form-encoded) payloads.
         # client_max_size makes aiohttp enforce the cap on every read path — including chunked requests that
         # carry no Content-Length (same pattern as webhook.py / raft, #58536/#58902).
+        if self.send_only:
+            # Nothing inbound to serve: skip the listener AND the webhook registration, which the
+            # live gateway owns. Marking connected is what `adapter.send()` gates on.
+            self._mark_connected()
+            return True
         app = web.Application(client_max_size=_WEBHOOK_MAX_BODY_BYTES)
         app.router.add_get("/health", lambda _: web.Response(text="ok"))
         app.router.add_post(self.webhook_path, self._handle_webhook)
@@ -243,7 +272,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             self.client = None
 
     async def disconnect(self) -> None:
-        await self._unregister_webhook()
+        # A send-only client never registered a webhook; unregistering would delete the LIVE
+        # listener's registration (same URL) and silently stop inbound iMessage.
+        if not self.send_only:
+            await self._unregister_webhook()
         await self._close_client()
         if self._runner:
             await self._runner.cleanup()
@@ -257,7 +289,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         shared = getattr(self, "_shared_ingress_url", None)
         if shared:
             return shared
-        host = "localhost" if self.webhook_host in _LOCAL_HOSTS else self.webhook_host
+        host = _LOCAL_HOSTS.get(self.webhook_host, self.webhook_host)
         return f"http://{host}:{self.webhook_port}{self.webhook_path}"
 
     def _webhook_register_url_with(self, password_param: str) -> str:
@@ -579,6 +611,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         assoc_type = record.get("associatedMessageType")
         if isinstance(assoc_type, int) and assoc_type in _TAPBACK_CODES:  # tapback reactions delivered as messages
             return _ok()
+        # Inbound dedup: a replayed guid (webhook retry / reconnect replay) is acknowledged and
+        # never reaches handle_message. `self._dedup` is a MessageDeduplicator so the runner's
+        # reconnect handover (carry_inbound_dedup) adopts its live ids into the rebuilt adapter.
+        inbound_id = self._value(record.get("guid"), record.get("messageGuid"), record.get("id"))
+        if inbound_id and self._dedup.is_duplicate(inbound_id):
+            logger.debug("[bluebubbles] dropped duplicate inbound message %s", _redact(str(inbound_id)))
+            return _ok()
         text = self._value(record.get("text"), record.get("message"), record.get("body")) or ""
         chat_guid, chat_identifier, sender = self._resolve_chat_and_sender(payload, record)
         session_chat_id = chat_guid or chat_identifier
@@ -634,7 +673,11 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
     if not check_bluebubbles_requirements():
         return send_error("BlueBubbles requirements not met (need aiohttp + httpx).")
     try:
-        adapter = BlueBubblesAdapter(PlatformConfig(extra=dict(getattr(pconfig, "extra", None) or {})))
+        # Send-only: the live gateway already owns the BlueBubbles webhook port and registration,
+        # so a throwaway adapter that tried to bind 8645 died with EADDRINUSE (and, on the success
+        # path, would have deleted the live webhook on disconnect).
+        adapter = BlueBubblesAdapter(PlatformConfig(
+            extra={**(dict(getattr(pconfig, "extra", None) or {})), "send_only": True}))
         if not await adapter.connect():
             return send_error("BlueBubbles: failed to connect to server")
         try:

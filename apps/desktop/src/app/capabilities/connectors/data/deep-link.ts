@@ -36,7 +36,7 @@ export async function resumeAccountConnect(opId: string, navigate: (to: string) 
     return true
   }
 
-  navigate(connectorRoute(operation.connectors[0] ?? ''))
+  navigate(operation.returnRoute ?? connectorRoute(operation.connectors[0] ?? ''))
 
   try {
     await wakeAccountOperation(operation.scope, opId)

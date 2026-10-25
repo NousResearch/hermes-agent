@@ -99,3 +99,49 @@ def test_console_send_for_named_profile_does_not_write_process_env(two_homes, mo
     assert seen["loader_sees"] == "b-telegram-token"  # the loader gets B's token through the scope
     assert seen["environ_has"] is False  # and the dashboard process env never learns it
     assert "B_ONLY_TOKEN" not in os.environ
+
+
+def _native_ticket(home):
+    from types import SimpleNamespace
+    return SimpleNamespace(state=SimpleNamespace(native_http_principal={"profile_id": str(home.resolve())}))
+
+
+@pytest.mark.parametrize("selector", [None, "", "current"])
+def test_secondary_native_ticket_implicit_selector_expands_only_the_ticket_profiles_secrets(two_homes, selector):
+    """R16: under a secondary-profile native ticket, a nested ``_config_profile_scope(None/''/current)``
+    installed the LAUNCH profile's secret scope, so B's YAML expanded with A's credentials."""
+    from hermes_cli.config import load_config
+    from hermes_cli.dashboard_auth.native_http import native_profile_scope
+    from hermes_cli.web_server_profiles import _config_profile_scope
+
+    _root, b = two_homes
+    environ_before = dict(os.environ)
+    with native_profile_scope(_native_ticket(b)), _config_profile_scope(selector):
+        probe = load_config()["custom_probe"]
+    assert probe["b_ref"] == B_VAL  # present only in the ticket profile's .env
+    assert probe["a_ref"] == "${A_ONLY_TOKEN}"  # missing in B: never borrowed from the launch profile
+    assert dict(os.environ) == environ_before
+
+
+def test_concurrent_launch_and_secondary_native_requests_keep_their_own_secrets(two_homes):
+    import threading
+
+    from hermes_cli.config import load_config
+    from hermes_cli.dashboard_auth.native_http import native_profile_scope
+    from hermes_cli.web_server_profiles import _config_profile_scope
+
+    root, b = two_homes
+    barrier, seen = threading.Barrier(2, timeout=10), {}
+
+    def request(name, home):
+        with native_profile_scope(_native_ticket(home)), _config_profile_scope(None):
+            barrier.wait()  # both scopes are live at once
+            seen[name] = load_config()["custom_probe"]
+
+    threads = [threading.Thread(target=request, args=args) for args in (("a", root), ("b", b))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    assert seen["a"] == {"a_ref": A_VAL, "b_ref": "${B_ONLY_TOKEN}"}
+    assert seen["b"] == {"a_ref": "${A_ONLY_TOKEN}", "b_ref": B_VAL}

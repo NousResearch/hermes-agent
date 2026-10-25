@@ -1134,7 +1134,8 @@ export function PreviewPane({
     }
 
     const webview = document.createElement('webview') as PreviewWebview
-    webview.className = 'flex h-full w-full flex-1 bg-transparent'
+    // A page with no background of its own shows white, as in a browser and the remote HTML frame below.
+    webview.className = 'flex h-full w-full flex-1 bg-white'
     webview.setAttribute('partition', 'persist:hermes-preview')
     webview.setAttribute('src', initialUrl)
     webview.setAttribute('webpreferences', 'contextIsolation=yes,nodeIntegration=no,sandbox=yes')

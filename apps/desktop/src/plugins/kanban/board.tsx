@@ -34,6 +34,7 @@ import {
   host,
   Input,
   isSubmitEnter,
+  KanbanCardBadges,
   Loader,
   SearchField,
   Select,
@@ -255,7 +256,8 @@ function Card({
   onOpen,
   onToggleSelect,
   selected,
-  task
+  task,
+  tenants
 }: {
   columns: string[]
   onDelete: (id: string) => void
@@ -264,6 +266,7 @@ function Card({
   onToggleSelect: (id: string) => void
   selected: boolean
   task: KanbanTask
+  tenants: readonly string[]
 }) {
   const k = useKanban()
   const [dragging, setDragging] = useState(false)
@@ -305,6 +308,7 @@ function Card({
           {(arc === 'running' || arc === 'stale') && !dragging && !selected && (
             <span aria-hidden className={cn('kanban-arc', arc === 'stale' && 'kanban-arc--stale')} />
           )}
+          <KanbanCardBadges card={task} tenants={tenants} />
           <span className="line-clamp-2 text-[0.8125rem] font-medium leading-snug text-foreground">
             {task.title || task.id}
           </span>
@@ -355,7 +359,8 @@ function Column({
   onOpen,
   onToggle,
   onToggleSelect,
-  selected
+  selected,
+  tenants
 }: {
   collapsed: boolean
   column: { name: string; tasks: KanbanTask[] }
@@ -368,6 +373,7 @@ function Column({
   onToggle: () => void
   onToggleSelect: (id: string) => void
   selected: ReadonlySet<string>
+  tenants: readonly string[]
 }) {
   const k = useKanban()
   const [over, setOver] = useState(false)
@@ -491,6 +497,7 @@ function Column({
                     onToggleSelect={onToggleSelect}
                     selected={selected.has(task.id)}
                     task={task}
+                    tenants={tenants}
                   />
                 ))}
               </div>
@@ -505,6 +512,7 @@ function Column({
                 onToggleSelect={onToggleSelect}
                 selected={selected.has(task.id)}
                 task={task}
+                tenants={tenants}
               />
             ))}
         {/* Jira-style lane add — dashed, faded in on lane hover. Opacity (not
@@ -1427,6 +1435,7 @@ export function KanbanBoardPage() {
                 onToggle={() => toggleLane(col.name, auto)}
                 onToggleSelect={toggleSelect}
                 selected={selected}
+                tenants={filtered.tenants}
               />
             )
           })}

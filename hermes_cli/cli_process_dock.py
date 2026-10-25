@@ -43,7 +43,8 @@ def process_rows(now: float | None = None) -> list:
     spawns and any a child handed back) belongs to this dock; gateway-hosted surfaces scope
     by session key in ``tui_gateway`` instead.
     """
-    from tools.process_registry import process_registry
+    from hermes_cli.gateway_tools import process_registry as _registry
+    process_registry = _registry()  # the gateway session's processes (rewired CLI)
 
     now = time.time() if now is None else now
     rows = []
@@ -93,7 +94,8 @@ def process_glyph(row: dict) -> str:
 
 
 def process_tail(process_id: str) -> str:
-    from tools.process_registry import process_registry
+    from hermes_cli.gateway_tools import process_registry as _registry
+    process_registry = _registry()  # the gateway session's processes (rewired CLI)
 
     proc = process_registry.get(process_id)
     if proc is None:
@@ -104,6 +106,7 @@ def process_tail(process_id: str) -> str:
 
 
 def kill(process_id: str) -> dict:
-    from tools.process_registry import process_registry
+    from hermes_cli.gateway_tools import process_registry as _registry
+    process_registry = _registry()  # the gateway session's processes (rewired CLI)
 
     return process_registry.kill_process(process_id)

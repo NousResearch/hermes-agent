@@ -355,7 +355,6 @@ _BLOCKED_TOP = frozenset(
 
 _BLOCKED_PAIRS = {
     ("config", "edit"): "`config edit` opens an editor and is not available in Hermes Console.",
-    ("mcp", "serve"): "`mcp serve` starts a server and is not available in Hermes Console.",
     ("profile", "alias"): "`profile alias` creates shell wrappers and is not available in Hermes Console.",
     ("skills", "config"): "`skills config` is interactive and is not available in Hermes Console.",
     ("skills", "publish"): "`skills publish` is not available in Hermes Console.",
@@ -561,7 +560,7 @@ def _status(_engine: HermesConsoleEngine, args: list[str]) -> str:
 
 _doctor = _simple_command(
     "doctor", "hermes_cli.doctor", "run_doctor", lambda: (SimpleNamespace(fix=False, ack=None),))
-_config_show = _simple_command("config show", "hermes_cli.config", "show_config")
+_config_show = _simple_command("config show", "hermes_cli.config_show", "show_config")
 _cron_status = _simple_command("cron status", "hermes_cli.cron", "cron_status")
 
 

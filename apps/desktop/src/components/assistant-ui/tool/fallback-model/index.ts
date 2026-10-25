@@ -16,6 +16,7 @@ import {
   compactPreview,
   contextValue,
   formatDurationSeconds,
+  isNeutralFailure,
   isRecord,
   numberValue,
   parseMaybeObject,
@@ -204,14 +205,6 @@ const TOOL_META: Record<ToolTitleKey, ToolMetaSpec> = {
   },
   session_search_recall: {
     icon: 'search',
-    tone: 'agent'
-  },
-  setup_choose: {
-    icon: 'question',
-    tone: 'agent'
-  },
-  start_chat: {
-    icon: 'comment',
     tone: 'agent'
   },
   terminal: {
@@ -740,6 +733,10 @@ function toolStatus(part: ToolPart, resultRecord: Record<string, unknown>): Tool
   }
 
   if (part.toolName === 'terminal' && error === 'Command failed with exit code 1.') {
+    return 'notice'
+  }
+
+  if (isNeutralFailure(part.toolName, part.result)) {
     return 'notice'
   }
 

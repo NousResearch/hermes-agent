@@ -702,12 +702,13 @@ def put_object(
 
 
 def finalize(tag: str, dir: str, variant: str | None = None, archive: str | None = None,
-             arches: tuple[str, ...] | None = None) -> None:
+             arches: tuple[str, ...] | None = None, verify_bytes: bool = True) -> None:
     """Lazy re-export of the Darwin finalize so callers can treat
     scripts.releases.r2 as the single transport surface."""
     from . import darwin as darwin_module
 
-    darwin_module.finalize(tag=tag, dir=dir, variant=variant, archive=archive, arches=arches)
+    darwin_module.finalize(tag=tag, dir=dir, variant=variant, archive=archive, arches=arches,
+                           verify_bytes=verify_bytes)
 
 
 def put(

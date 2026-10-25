@@ -312,16 +312,24 @@ def _add_nous_oauth_credential(args, provider: str) -> PooledCredential:
     def _persist(creds: dict, what: str) -> PooledCredential:
         # `--label` is embedded into providers.nous so label_from_token doesn't overwrite it on every
         # subsequent load_pool("nous").
+        from hermes_cli.anon_auth import settle_after_upgrade
+        from hermes_cli.guest_handoff import drain, result_lines
         entry = auth_mod.persist_nous_credentials(creds, label=custom_label)
+        handoff = drain()  # a replaced free tier hands its apps over once the save lands
+        settle_after_upgrade(creds)  # a config left on the free tier's route moves to the account
         shown_label = entry.label if entry is not None else label_from_token(
             creds.get("access_token", ""), f"{provider}-oauth-1")
         print(f'{what} {provider} OAuth {"device-code " if what == "Saved" else ""}credentials: "{shown_label}"')
+        for line in (line for view in handoff for line in result_lines(view)):
+            print(f"  {line}")
         return entry
 
     # Codex-style auto-import: a shared Nous credential at <hermes-root>/shared/nous_auth.json
     # (written by any previous login) makes `hermes --profile <name> auth add nous --type oauth`
     # a one-tap operation for multi-profile users.
-    if auth_mod._read_shared_nous_state():
+    from hermes_cli.anon_auth import is_guest_state
+
+    if (shared := auth_mod._read_shared_nous_state()) and not is_guest_state(shared):
         try:
             found = f"Found existing Nous OAuth credentials at {auth_mod._nous_shared_store_path()}"
         except RuntimeError:
@@ -700,6 +708,11 @@ def auth_status_command(args) -> None:
         value = status.get(key)
         if value:
             print(f"  {key}: {value}")
+    if provider == "nous":
+        from hermes_cli.guest_handoff import drain, handoff_status, status_lines
+        drain()   # a move left retrying gets its next try now
+        for line in status_lines(handoff_status()):
+            print(f"  {line}")
 
 
 def auth_logout_command(args) -> None:

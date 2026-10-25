@@ -1,5 +1,5 @@
 import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
-import { JsonRpcGatewayError } from '@hermes/shared'
+import { isUndeliveredCorrectionRefusal, JsonRpcGatewayError } from '@hermes/shared'
 import { stripAnsi } from '@hermes/shared/ansi'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
@@ -23,6 +23,7 @@ import {
   setComposerAttachmentUploadState,
   updateComposerAttachment
 } from '@/store/composer'
+import { serverOwnsComposerQueue } from '@/store/composer-queue'
 import { resetSessionBackground } from '@/store/composer-status'
 import { confirm } from '@/store/confirm'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
@@ -40,6 +41,7 @@ import {
   setTurnStartedAt
 } from '@/store/session'
 import { $sessionStates, isLiveTurnAwaitingEvents, isSessionRemote } from '@/store/session-states'
+import { flushStreamDeltas } from '@/store/stream-delta-flush'
 import { clearSessionSubagents } from '@/store/subagents'
 import { runGatewayRestart } from '@/store/system-actions'
 import { clearSessionTodos } from '@/store/todos'
@@ -72,11 +74,14 @@ import {
   rebindSurvivorRowIds,
   retryKeepsDeepConfirm,
   runRewindSubmit,
+  sealAcceptedCorrection,
   type SurvivorUserRowIds
 } from './rewind'
 import { useSlashCommand } from './slash'
 import { captureSteeringSession } from './steering-session'
+import { captureSubmissionDestination } from './submission-destination'
 import { useSubmitPrompt } from './submit'
+import { uploadServerOwnedImage } from './upload-server-image'
 import {
   blobToDataUrl,
   delay,
@@ -121,10 +126,20 @@ export async function uploadComposerAttachment(
     terminalBackend?: string
   }
 ): Promise<ComposerAttachment> {
-  const { backendCwd, remote, requestGateway, storedSessionId, onRecovered, onSessionRecovered, terminalBackend } = opts
+  const { backendCwd, remote, storedSessionId, onRecovered, onSessionRecovered, terminalBackend } = opts
+
+  const destination = captureSubmissionDestination(storedSessionId ?? opts.sessionId, opts.requestGateway)
+  const requestGateway = destination.requestGateway
+
   const path = attachment.path ?? ''
   const label = attachment.label || pathLabel(path)
   const uploadBytes = remote || attachmentPathNeedsUpload(path, backendCwd, terminalBackend)
+
+  if (attachment.kind === 'image' && serverOwnsComposerQueue(storedSessionId ?? opts.sessionId)) {
+    // Pin HTTP to the same owner before the native byte read yields. Images
+    // are immutable admission payloads, never legacy agent.pending_images.
+    return await uploadServerOwnedImage(attachment, destination, path, label, opts.sessionId)
+  }
 
   // Read bytes/paths ONCE, outside the retry. Only the session-scoped RPC is
   // replayed on recovery — re-reading a multi-MB file to retry a dead session
@@ -351,15 +366,29 @@ export function usePromptActions({
     async (
       sessionId: string,
       attachments: ComposerAttachment[],
-      options: { storedSessionId?: null | string; updateComposerAttachments?: boolean } = {}
+      options: {
+        updateComposerAttachments?: boolean
+        storedSessionId?: string | null
+        requestGateway?: GatewayRequest
+      } = {}
     ): Promise<{ attachments: ComposerAttachment[]; sessionId: string }> => {
       const updateComposerAttachments = options.updateComposerAttachments ?? true
+
       // The submit's own target, never the chat on screen: a queued send drains
       // after the user has moved on, so a stale runtime here must recover the
       // session the text belongs to — not stage the files on, and then submit
       // into, whichever chat is selected now (#46194, the attachments edition).
-      const storedSessionId = options.storedSessionId ?? selectedStoredSessionIdRef.current
+      const storedSessionId =
+        options.storedSessionId !== undefined ? options.storedSessionId : selectedStoredSessionIdRef.current
+
       const targetIsForeground = storedSessionId === selectedStoredSessionIdRef.current
+
+      const uploadRequest =
+        options.requestGateway ??
+        captureSubmissionDestination(storedSessionId ?? sessionId, requestGateway).requestGateway
+
+      const backendCwd = $currentCwd.get()
+      const terminalBackend = $terminalBackend.get()
       const remote = isSessionRemote(storedSessionId ?? sessionId)
       let liveSessionId = sessionId
       const synced: ComposerAttachment[] = []
@@ -412,14 +441,14 @@ export function usePromptActions({
 
         if (attachment.kind === 'image' || attachment.kind === 'file') {
           const nextAttachment = await uploadComposerAttachment(attachment, {
-            backendCwd: $currentCwd.get(),
+            backendCwd,
             remote,
-            requestGateway,
+            requestGateway: uploadRequest,
             sessionId: liveSessionId,
             storedSessionId,
             onRecovered,
             onSessionRecovered,
-            terminalBackend: $terminalBackend.get()
+            terminalBackend
           })
 
           // Update-only: never resurrect a chip the user removed mid-upload.
@@ -431,6 +460,7 @@ export function usePromptActions({
                 attachedSessionId: nextAttachment.attachedSessionId,
                 label: nextAttachment.label,
                 path: nextAttachment.path,
+                mime: nextAttachment.mime,
                 refText: nextAttachment.refText,
                 uploadState: nextAttachment.uploadState
               })
@@ -664,11 +694,10 @@ export function usePromptActions({
         }
 
         triggerHaptic('selection')
+
         // Forward the explicit target (background queue drain, tile) — dropping
         // it ran the command against whatever chat happened to be in front.
-        await executeSlashCommand(visibleText, options?.sessionId ? { sessionId: options.sessionId } : undefined)
-
-        return true
+        return await executeSlashCommand(visibleText, options)
       }
 
       return await submitPromptText(rawText, options)
@@ -794,7 +823,7 @@ export function usePromptActions({
   // completed work intact. During a tool it waits for the safe result boundary.
   // Returns false when the turn raced to completion so the composer can queue.
   const redirectPrompt = useCallback(
-    async (rawText: string): Promise<boolean> => {
+    async (rawText: string, mode: 'interrupt' | 'steer' = 'interrupt'): Promise<boolean> => {
       const text = sanitizeComposerInput(rawText).trim()
 
       // Ref, not the closure-captured prop — see cancelRun above. A redirect
@@ -836,14 +865,9 @@ export function usePromptActions({
       // message after the interrupted checkpoint, matching the durable core
       // transcript rather than a system note that changes role after reload.
       const send = async (id: string): Promise<boolean> => {
-        // Redirect aborts the model request, so the completion event can race
-        // its RPC response. Record the correction *before* awaiting the
-        // gateway, in arrival order: sealed already-streamed output above,
-        // correction bubble below it, post-redirect deltas below that
-        // (#73793, #83151).
-        const messageId = appendSessionTextMessage(id, 'user', text, target.storedSessionId, {
-          appendAfterActiveReply: true
-        })
+        // Reserve the correction's arrival position, but do not seal the live
+        // stream until acceptance: a refusal must leave in-flight deltas intact.
+        const messageId = appendSessionTextMessage(id, 'user', text, target.storedSessionId)
 
         const discardOptimisticMessage = () =>
           updateSessionState(id, state => ({
@@ -861,27 +885,53 @@ export function usePromptActions({
           })
 
         try {
-          const result = await target.requestGateway<SessionRedirectResponse>('session.redirect', {
-            session_id: id,
-            text
-          })
+          const result = await target.requestGateway<SessionRedirectResponse>(
+            mode === 'steer' ? 'session.steer' : 'session.redirect',
+            { session_id: id, text }
+          )
+
+          // TUI-26: a bare stop phrase typed mid-turn into a LOCAL voice chat ended that chat on
+          // the owner and reached no turn. Settled (nothing to re-queue), and no bubble stays.
+          if (result?.voice_stopped === true) {
+            discardOptimisticMessage()
+
+            return true
+          }
 
           if (result?.status === 'redirected') {
+            if (mode === 'interrupt') {
+              flushStreamDeltas(id)
+              updateSessionState(id, state => sealAcceptedCorrection(state, messageId))
+            }
+
             triggerHaptic('submit')
 
             return true
           }
 
           if (result?.status === 'queued') {
-            // Build-window redirects become the next turn, not part of the
-            // active reply, so retain the optimistic row at the tail.
-            moveOptimisticMessageToEnd()
+            // A redirect queued in the build window is the next turn; an
+            // accepted steer joins this one after its running tool.
+            if (mode === 'steer') {
+              flushStreamDeltas(id)
+              updateSessionState(id, state => sealAcceptedCorrection(state, messageId, { keepRunningTools: true }))
+            } else {
+              moveOptimisticMessageToEnd()
+            }
+
             triggerHaptic('submit')
 
             return true
           }
         } catch (err) {
           discardOptimisticMessage()
+
+          // Refused before any agent saw it (the turn this pane believed busy is gone):
+          // not a failed send. The composer re-queues the words as the next turn (#141644).
+          if (isUndeliveredCorrectionRefusal(err)) {
+            return false
+          }
+
           throw err
         }
 
@@ -897,16 +947,16 @@ export function usePromptActions({
         const { result } = await withSessionNotFoundResume(target.sessionId, target.storedSessionId, send, target)
 
         return result
-      } catch {
-        // Swallow — caller queues the text so nothing is lost.
+      } catch (err) {
+        notifyError(err, copy.promptFailed)
+        throw err
       }
-
-      return false
     },
     [
       activeSessionIdRef,
       appendSessionTextMessage,
       busyRef,
+      copy.promptFailed,
       getRoutedStoredSessionId,
       requestGateway,
       runtimeIdByStoredSessionIdRef,

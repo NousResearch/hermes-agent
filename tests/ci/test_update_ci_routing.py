@@ -340,7 +340,7 @@ def test_update_path_change_selects_every_suite_that_exercises_it(path, lanes):
 
 # Review CI2/CI3: update-path files the classifier sent to the wrong suites.
 _CI3_CASES = {
-    # /api/health `commit`: host-backend-attach compares it before attaching after an update.
+    # /api/health `commit`: the Desktop compares it before attaching after an update.
     "hermes_cli/web_routers/status.py": ("python", "e2e_desktop_update"),
     # The SSH remote's marker judge/gate: typecheck/vitest and the marker contract's script tests.
     "apps/desktop/electron/remote-update-marker-programs.ts": ("frontend", "desktop_updater"),

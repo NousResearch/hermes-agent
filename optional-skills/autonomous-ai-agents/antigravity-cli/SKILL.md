@@ -37,6 +37,12 @@ Antigravity has two layers — keep them distinct or the guidance will be wrong:
 
 `agy help` shows the shell wrapper surface, NOT the in-session slash commands.
 
+## Explicit effort for current models
+
+- If the CLI rejects a model with `requires --effort (available: low, medium, high)`, pass an explicit supported effort on the invocation; do not switch models or mistake it for an OAuth/IP failure.
+- Keep the model ID unchanged and record the exact observed backend label when the provider reports effort in it (for example `Gemini 3.8 Flash (High)`), rather than relaxing route verification to a partial match.
+- Verify before relying on it: run one headless call with an explicit `--effort` and confirm the CLI accepts the value for that model -- an unsupported value is rejected, not silently ignored.
+
 ## Prerequisites
 
 - The `agy` binary on PATH. Verify through the `terminal` tool:
@@ -105,9 +111,7 @@ review capacity can absorb.
 
 ### Output + bounding caveat (differs from Claude Code)
 
-- `agy -p` returns **plain text** — there is **no `--output-format json`** and
-  no result envelope with `session_id` / cost / turn count. Parse stdout
-  directly; don't expect a JSON object.
+- `agy` accepted `--output-format text|json|stream-json` on CLI 1.1.17. **Confirm against your installed version's `agy --help` before relying on it** -- sibling CLIs spell the same option differently (`grok` uses `plain|json|streaming-json`, Hermes' own CLI uses `--format text|stream-json`), so the enum is not portable. `--input-format stream-json` (same caveat) can keep one headless conversation open across NDJSON messages.
 - There is **no `--max-turns`**. A print run is bounded by **`--print-timeout`**
   (default `5m`). Raise it for long tasks: `--print-timeout 20m`. Pair with the
   `terminal` `timeout=` so the outer call doesn't cut the run short.
@@ -217,8 +221,7 @@ another agent's plan or diff.
   session-state problems, not browser-only problems.
 - Workspace identity can depend on launch directory and the `.antigravitycli`
   project marker.
-- `agy -p` prints plain text only — no `--output-format json`, no result
-  envelope. Don't try to parse a JSON object out of it (unlike `claude-code`).
+- `agy` can emit structured output (`--output-format json` / `stream-json` on versions that support it); check `agy --help` for your version instead of scraping text.
 - Bound print runs with `--print-timeout` (default `5m`), not `--max-turns`
   (which does not exist on `agy`).
 

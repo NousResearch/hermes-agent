@@ -218,6 +218,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         source = event.source
 
         if not self._is_user_authorized_for_source(source):
+            # Mark the refusal so the processing-complete hook reports REJECTED
+            # (no ✅/❌) instead of painting the silent drop as a successful turn
+            # — the empty response otherwise classifies as SUCCESS (#81440).
+            event.rejected = True
             if source.user_id is None:
                 # No user identity (Telegram service messages, channel forwards, anonymous admin
                 # posts, sender_chat): can't be paired but may be authorized via a chat allowlist.

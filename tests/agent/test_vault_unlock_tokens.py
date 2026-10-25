@@ -78,6 +78,37 @@ def test_idle_token_is_dropped_at_the_ttl_without_another_vault_call(monkeypatch
                what="an expired token released without waiting for the next vault call")
 
 
+def test_session_teardown_fences_a_late_unlock_after_its_token_expired(monkeypatch):
+    """The TTL drops the token bytes, not the record of which session owned that login: a replacement
+    unlock still running when the owning session ends must not commit afterwards."""
+    monkeypatch.setattr(unlock, "_IDLE_TTL_S", 0.05)
+    unlock.set_current_session_id("dummy-session")
+    try:
+        assert unlock.store_session_token("bitwarden", f"dummy-old-{uuid.uuid4().hex}")
+        generation = unlock.begin_unlock("bitwarden")  # e.g. a slow `bw unlock` child
+        wait_until(lambda: not unlock.is_unlocked("bitwarden"), timeout=5, what="the old token expires")
+        unlock.release_session("dummy-session")
+        assert not unlock.store_session_token("bitwarden", f"dummy-late-{uuid.uuid4().hex}", generation)
+        assert not unlock.is_unlocked("bitwarden")
+    finally:
+        unlock.set_current_session_id(None)
+
+
+def test_sibling_session_teardown_keeps_a_login_after_an_earlier_token_expired(monkeypatch):
+    monkeypatch.setattr(unlock, "_IDLE_TTL_S", 0.05)
+    try:
+        unlock.set_current_session_id("dummy-first")
+        assert unlock.store_session_token("bitwarden", f"dummy-first-{uuid.uuid4().hex}")
+        wait_until(lambda: not unlock.is_unlocked("bitwarden"), timeout=5, what="the first token expires")
+        monkeypatch.setattr(unlock, "_IDLE_TTL_S", 60)
+        unlock.set_current_session_id("dummy-second")
+        assert unlock.store_session_token("bitwarden", f"dummy-second-{uuid.uuid4().hex}")
+        unlock.release_session("dummy-first")
+        assert unlock.is_unlocked("bitwarden"), "the first session ending must not revoke the second's login"
+    finally:
+        unlock.set_current_session_id(None)
+
+
 # A stand-in `bw` that logs the environment of every invocation beside itself.
 _FAKE_BW = r'''#!/usr/bin/env python3
 import json, os, sys

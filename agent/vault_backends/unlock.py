@@ -94,7 +94,6 @@ _Key = tuple[str, str]  # (profile home, backend)
 class _Token:
     value: str = field(repr=False)
     last_used: float
-    owner: Optional[str]  # the gateway session that unlocked; released when THAT session ends
 
 
 class _TokenOps(NamedTuple):
@@ -112,14 +111,20 @@ def _token_store() -> _TokenOps:
     The lock generation per key is bumped by every lock, and an unlock that started before the bump
     must not commit its token afterwards (a slow `bw unlock` child would otherwise silently undo an
     acknowledged Lock). Sibling sessions in a profile never release each other's tokens.
+
+    ``owners`` (which gateway session unlocked a key) is revocation bookkeeping and outlives the token:
+    the TTL drops only the secret, so a session ending after its token expired still bumps the
+    generation and fences a replacement unlock that is in flight.
     """
     guard = threading.Lock()
     tokens: dict[_Key, _Token] = {}
+    owners: dict[_Key, Optional[str]] = {}
     generations: dict[_Key, int] = {}
     timer: Optional[threading.Timer] = None
 
     def forget(key: _Key) -> None:
         tokens.pop(key, None)
+        owners.pop(key, None)
         generations[key] = generations.get(key, 0) + 1
 
     def arm(now: float) -> None:
@@ -171,7 +176,8 @@ def _token_store() -> _TokenOps:
             if generation is not None and generation != generations.get(key, 0):
                 return False
             now = time.monotonic()
-            tokens[key] = _Token(value, now, owner)
+            tokens[key] = _Token(value, now)
+            owners[key] = owner
             arm(now)
             return True
 
@@ -179,7 +185,7 @@ def _token_store() -> _TokenOps:
         with guard:
             # Bump the generation for every key the lock names (not only the ones holding a token):
             # an unlock that is still running for this backend must see the lock when it returns.
-            keys = {k for k in [*tokens, *generations] if k[0] == home and (backend is None or k[1] == backend)}
+            keys = {k for k in [*tokens, *owners, *generations] if k[0] == home and (backend is None or k[1] == backend)}
             if backend is not None:
                 keys.add((home, backend))
             for key in keys:
@@ -188,13 +194,13 @@ def _token_store() -> _TokenOps:
 
     def release(session_id: str) -> None:
         with guard:
-            for key in [k for k, t in tokens.items() if t.owner == session_id]:
+            for key in [k for k, owner in owners.items() if owner == session_id]:
                 forget(key)
             settle()
 
     def lock_everything() -> None:
         with guard:
-            for key in list(tokens):
+            for key in {*tokens, *owners}:
                 forget(key)
             settle()
 

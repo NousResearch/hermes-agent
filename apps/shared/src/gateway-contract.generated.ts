@@ -2759,7 +2759,7 @@ export interface PromptSubmitResult {
   admission_id?: string | null
   forwarded?: boolean | null
 }
-export type PromptSubmitStatus = 'streaming' | 'queued' | 'steered' | 'redirected'
+export type PromptSubmitStatus = 'streaming' | 'queued' | 'steered' | 'redirected' | 'clarify_answered' | 'clarify_retry'
 export interface ClipboardPasteParams {
   session_id: string
   profile?: string | null

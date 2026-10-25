@@ -58,6 +58,11 @@ class PromptSubmitStatus(WireEnum):
     queued = "queued"
     steered = "steered"
     redirected = "redirected"
+    # The busy submit answered the pending clarify server request instead of steering/queueing
+    # (#134230): the input became the card's answer. ``clarify_retry`` = selection-shaped but out
+    # of range: the input was withheld and the card stays armed for another try.
+    clarify_answered = "clarify_answered"
+    clarify_retry = "clarify_retry"
 
 
 class PromptSubmitResult(Result):

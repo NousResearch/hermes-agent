@@ -342,6 +342,20 @@ export function captureNewChatSource(connectionId: null | string = activeGateway
   $newChatConnectionId.set(connectionId)
 }
 
+/** Drop every pending new-chat owner intent — the profile pick, the exact
+ *  agent route, its captured source and the legacy profile-only pin. A generic
+ *  New session is a new draft, so its owner must re-resolve from the live
+ *  active gateway, NOT inherit the route a previous draft (or a window's boot
+ *  hint) pinned. Without this a stale `local` pin kept minting local sessions
+ *  in a window the user had since pointed at a remote gateway (#45000 class). */
+export function clearNewChatIntent(): void {
+  newChatIntentRevision += 1
+  legacyNewChatProfile = null
+  $newChatProfile.set(null)
+  $newChatRoute.set(null)
+  $newChatConnectionId.set(null)
+}
+
 export function pinLegacyNewChatProfile(profile: string): void {
   const target = normalizeProfileKey(profile)
   $newChatProfile.set(target)

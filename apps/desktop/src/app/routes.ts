@@ -163,6 +163,7 @@ export interface ProfileGroupHeaderContribution {
 export const OVERLAY_VIEWS: ReadonlySet<AppView> = new Set([
   'session-import',
   'agents',
+  'capabilities',
   'command-center',
   'cron',
   'profiles',
@@ -172,7 +173,12 @@ export const OVERLAY_VIEWS: ReadonlySet<AppView> = new Set([
 ])
 
 export function isOverlayView(view: AppView): boolean {
-  return OVERLAY_VIEWS.has(view)
+  // The DEFAULT is overlay: a sidebar destination is not a place to work, so it
+  // must not take the workspace pane — and with it the user's chat tabs — the
+  // way Messaging/Artifacts/plugin pages used to. New views (including future
+  // first-party pages and contributed plugin routes) are overlays from day one;
+  // `OVERLAY_VIEWS` above stays as the documented list of DEDICATED mounts.
+  return view !== 'chat'
 }
 
 /** True when TitlebarControls may hide the app's fixed tool clusters.
@@ -180,7 +186,7 @@ export function isOverlayView(view: AppView): boolean {
  *  Contributed full pages (`extension`) hide the app clusters only while the
  *  page actually mounts `titleBar.*` chrome — those slots are mount-scoped, so
  *  a plugin page with no titlebar contribution keeps the app controls.
- *  First-party workspace pages (capabilities/messaging/artifacts) keep the clusters. */
+ *  First-party workspace pages (messaging/artifacts) keep the clusters. */
 export function hidesFixedTitlebarClusters(view: AppView): boolean {
   return isOverlayView(view) || view === 'extension'
 }
@@ -249,8 +255,8 @@ export function appViewForPath(pathname: string): AppView {
 }
 
 /** Does `to` land on a full page rendered INSIDE the workspace pane
- *  (skills/messaging/artifacts/contributed routes)? Overlays don't count —
- *  they float over whatever the workspace is already showing. */
+ *  (messaging/artifacts/contributed routes)? Overlays don't count — they float
+ *  over whatever the workspace is already showing. */
 export function isWorkspacePageRoute(to: string): boolean {
   const view = appViewForPath(to)
 

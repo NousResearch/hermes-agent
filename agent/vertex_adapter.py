@@ -116,15 +116,51 @@ def _sa_snapshot(resolved_path: Optional[str]) -> tuple[Optional[bytes], tuple[A
     return raw, (resolved_path, hashlib.sha256(raw).hexdigest())
 
 
+def _service_account_creds(info: dict):
+    return service_account.Credentials.from_service_account_info(info, scopes=_CLOUD_PLATFORM_SCOPES)
+
+
+def _authorized_user_creds(info: dict):
+    # Imported lazily: google.oauth2.credentials is only needed for a gcloud ADC file,
+    # and importing it at module scope would make the whole adapter depend on it.
+    from google.oauth2 import credentials as oauth2_credentials
+
+    return oauth2_credentials.Credentials.from_authorized_user_info(info, scopes=_CLOUD_PLATFORM_SCOPES)
+
+
+# Credential-file "type" -> (builder, project_id resolver). A gcloud ADC file is
+# authorized_user (refresh token, no project of its own); a downloaded key is service_account.
+_CRED_FILE_TYPES: dict = {
+    "service_account": (_service_account_creds, lambda info, creds: creds.project_id),
+    "authorized_user": (
+        _authorized_user_creds,
+        # quota_project_id is the project the request is billed against.
+        lambda info, creds: info.get("quota_project_id"),
+    ),
+}
+
+
+def _build_credentials(info: dict) -> tuple[Any, Optional[str]]:
+    """Build (credentials, project_id) from a parsed credential-file dict, dispatching on its type.
+
+    A file with no ``type`` field is a service account (a hand-made key may omit it);
+    a file naming a type we do not build is rejected rather than guessed at.
+    """
+    entry = _CRED_FILE_TYPES.get(info.get("type") or "service_account")
+    if entry is None:
+        raise ValueError(f"Unsupported Vertex credential file type: {info.get('type')!r}")
+    builder, project_of = entry
+    creds = builder(info)
+    return creds, project_of(info, creds)
+
+
 def _load_credentials(resolved_path: Optional[str], sa_raw: Optional[bytes]) -> Optional[tuple[Any, Optional[str]]]:
     """Build (credentials, project_id) for a cache miss; None when ADC must be refused."""
     if resolved_path:
-        if sa_raw is not None:
-            creds = service_account.Credentials.from_service_account_info(json.loads(sa_raw), scopes=_CLOUD_PLATFORM_SCOPES)
-        else:
-            # Unreadable at key time: let the SDK try the file directly.
-            creds = service_account.Credentials.from_service_account_file(resolved_path, scopes=_CLOUD_PLATFORM_SCOPES)
-        return creds, creds.project_id
+        # The snapshot may be missing because the file was unreadable at key time; re-read it
+        # so the type can still drive the dispatch.
+        raw = sa_raw if sa_raw is not None else open(resolved_path, "rb").read()
+        return _build_credentials(json.loads(raw))
     # google.auth.default() reads GOOGLE_APPLICATION_CREDENTIALS from os.environ (set by whichever
     # profile loaded first); this profile doesn't define it, so refuse a stranger's identity.
     if is_multiplex_active() and os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):

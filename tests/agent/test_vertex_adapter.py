@@ -9,6 +9,7 @@ global vs regional base-URL shapes, and the ADC→service-account fallback.
 from __future__ import annotations
 
 import importlib
+import json
 import sys
 import types
 
@@ -23,6 +24,7 @@ def _install_fake_google_auth(monkeypatch, *, adc_ok=True, adc_project="adc-proj
     gtr = types.ModuleType("google.auth.transport.requests")
     go = types.ModuleType("google.oauth2")
     gsa = types.ModuleType("google.oauth2.service_account")
+    goc = types.ModuleType("google.oauth2.credentials")
     gp = types.ModuleType("google")
 
     gtr.Request = type("Request", (), {})
@@ -58,15 +60,26 @@ def _install_fake_google_auth(monkeypatch, *, adc_ok=True, adc_project="adc-proj
             c.project_id = sa_project
             return c
 
+    class _AU:
+        """A gcloud authorized_user credential: no embedded project, quota project in the file."""
+
+        @staticmethod
+        def from_authorized_user_info(info, scopes=None):
+            c = _Creds()
+            c.info = info  # type: ignore[attr-defined]
+            return c
+
     gsa.Credentials = _SA
+    goc.Credentials = _AU  # type: ignore[attr-defined]
     go.service_account = gsa
+    go.credentials = goc  # type: ignore[attr-defined]
     gp.auth = ga
     gp.oauth2 = go
 
     for name, mod in [
         ("google", gp), ("google.auth", ga), ("google.auth.transport", gt),
         ("google.auth.transport.requests", gtr), ("google.oauth2", go),
-        ("google.oauth2.service_account", gsa),
+        ("google.oauth2.service_account", gsa), ("google.oauth2.credentials", goc),
     ]:
         monkeypatch.setitem(sys.modules, name, mod)
     return gp
@@ -165,6 +178,63 @@ def test_adc_refuses_foreign_profile_google_application_credentials(
 
 
 
+
+
+# --- Credential-file type dispatch (gcloud ADC vs service-account key) ---
+
+
+def test_authorized_user_adc_file_yields_quota_project(vertex_adapter, monkeypatch, tmp_path):
+    """A gcloud ``application-default login`` file is an ``authorized_user`` credential
+    (refresh token + client id/secret, no project of its own). It must load, and the
+    project it bills against is the file's ``quota_project_id``."""
+    adc_file = tmp_path / "application_default_credentials.json"
+    adc_file.write_text(
+        json.dumps(
+            {
+                "type": "authorized_user",
+                "client_id": "cid.apps.googleusercontent.com",
+                "client_secret": "secret",
+                "refresh_token": "refresh",
+                "quota_project_id": "example-quota-project",
+            }
+        )
+    )
+    monkeypatch.setattr(
+        vertex_adapter, "_resolve_credentials_path", lambda explicit=None: str(adc_file)
+    )
+
+    token, project_id = vertex_adapter.get_vertex_credentials()
+
+    assert token == "ya29.FAKE"
+    assert project_id == "example-quota-project"
+    (key,) = vertex_adapter._creds_cache
+    creds = vertex_adapter._creds_cache[key][0]
+    # Built as an authorized_user credential, not fed to the service-account parser.
+    assert getattr(creds, "info", None) is not None
+
+
+def test_service_account_file_still_yields_its_project(vertex_adapter, monkeypatch, tmp_path):
+    """A downloaded service-account key keeps its existing behaviour: the credentials
+    carry the key's own ``project_id``."""
+    sa_file = tmp_path / "sa.json"
+    sa_file.write_text(
+        json.dumps(
+            {
+                "type": "service_account",
+                "project_id": "sa-project",
+                "client_email": "test-sa@example-project.iam.gserviceaccount.com",
+                "token_uri": "https://oauth2.googleapis.com/token",
+            }
+        )
+    )
+    monkeypatch.setattr(
+        vertex_adapter, "_resolve_credentials_path", lambda explicit=None: str(sa_file)
+    )
+
+    token, project_id = vertex_adapter.get_vertex_credentials()
+
+    assert token == "ya29.FAKE"
+    assert project_id == "sa-project"
 
 
 # --- Pattern D: credential-file rotation invalidates the cache ---

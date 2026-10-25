@@ -87,8 +87,9 @@ the kernel, not by convention. The carve-out set (the only writable paths)
 is the per-task worktree plus a minimal git bookkeeping set under
 `<agent_home>/.git/`. Config gate `kanban.worker_isolation = off|warn|enforce`;
 env kill switch `HERMES_WORKER_ISOLATION=off`. See the wiki page for the
-full set + caveats (lost supplementary groups, no `git fetch` inside the
-sandbox, cron scheduler is a separate spawn path).
+full set + caveats (lost supplementary groups — lxd unix.socket still
+authenticates as host serveradmin via `SO_PEERCRED`; no `git fetch`
+inside the sandbox; cron scheduler is a separate spawn path).
 
 ## Development Environment
 

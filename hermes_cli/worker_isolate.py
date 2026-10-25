@@ -55,10 +55,14 @@ switch: ``HERMES_WORKER_ISOLATION=off``.
 
 Known caveats:
 
-* Supplementary groups are lost inside the user namespace -- local group-gated
-  sockets (e.g. ``/var/snap/lxd/common/lxd/unix.socket``, group ``lxd``) are
-  unreachable from a sandboxed worker. Remote access is unaffected (docker on
-  this host is already an ssh context).
+* Supplementary groups are lost inside the user namespace; local group-gated
+  sockets (e.g. ``/var/snap/lxd/common/lxd/unix.socket``, group ``lxd``) keep
+  working, but the kernel maps the worker's in-namespace uid 0 back to the
+  host's ``serveradmin`` via ``SO_PEERCRED``, so lxd sees the worker as
+  fully-trusted ``serveradmin`` (MORE trust than expected, not less).
+  Mitigation if a flow needs lxd-as-another-user: map the gid via
+  ``newgidmap``/subgid, or run that one op outside the sandbox. Remote access
+  is unaffected (docker on this host is already an ssh context).
 * ``git fetch``/``pull`` inside the worker's own worktree fails -- ``FETCH_HEAD``
   lives in the ro main ``.git``. By design the dispatcher fetches/creates the
   worktree; ``hermes -w`` from inside a worker is likewise unavailable.

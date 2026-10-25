@@ -1,5 +1,8 @@
 """``session.context_breakdown`` (Desktop context popover) and TUI ``/context`` measure the compression
 tip's model history, and the popover's categories survive a session with no resident agent."""
+import subprocess
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -77,6 +80,16 @@ async def test_agentless_breakdown_measures_a_legacy_name_only_pin(owner):
     sid, _ = await _agentless_session(owner, 'legacy', ['terminal'])
     actual = await owner.call('session.context_breakdown', session_id=sid)
     assert 'tool_definitions' in {c['id'] for c in actual['categories']}, actual
+
+
+def test_a_legacy_pin_resolves_before_any_agent_ran_tool_discovery():
+    """The gateway reads an agentless breakdown before its warm-up imports the tools (or with it off);
+    only a fresh interpreter has that cold registry."""
+    code = ("from tools.mcp_tool_agent import pinned_tool_defs; "
+            "print(sorted(d['function']['name'] for d in pinned_tool_defs(['terminal'])))")
+    out = subprocess.run([sys.executable, '-c', code], cwd=Path(__file__).resolve().parents[2],
+                         capture_output=True, text=True, check=True, timeout=120).stdout
+    assert out.strip().splitlines()[-1] == "['terminal']", out
 
 
 @pytest.mark.asyncio

@@ -454,7 +454,7 @@ def _verify_and_restore_one_state_db(home: Path, *, label: str) -> None:
         if not snap_root.exists():
             print("  ⚠ No pre-update snapshot for this home")
             return
-        for snap_dir in sorted((d for d in snap_root.iterdir() if d.is_dir()), reverse=True):
+        for snap_dir in sorted((d for d in snap_root.iterdir() if d.is_dir()), key=lambda d: (d.stat().st_mtime if d.exists() else 0, d.name), reverse=True):
             snap_state = snap_dir / "state.db"
             if not snap_state.exists():
                 continue

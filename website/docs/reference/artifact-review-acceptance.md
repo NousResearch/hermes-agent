@@ -37,3 +37,32 @@ same-privilege process that can chmod or rewrite Hermes-owned files, or to an
 arbitrary database writer. Deployments that run untrusted workers under the
 same operating-system identity need a privileged verifier/CAS broker or OS
 isolation for a stronger boundary.
+
+## Delivery evidence and isolated install rehearsal
+
+After acceptance, an integration owner can call
+`build_artifact_review_evidence` from
+`hermes_cli.kanban_acceptance_evidence` to export one deterministic report that
+links the ticket, Kanban assignments and runs, builder/reviewer/repair phases,
+the revalidated acceptance receipt, and content-addressed CFO usage receipts.
+The exporter is read-only. Roots and the CFO ledger remain separate authorities,
+so their references must be checked at those systems; the report explicitly
+records that limit rather than claiming external acceptance.
+
+Before installing an exact candidate, rehearse its bytes and rollback entirely
+inside a temporary directory:
+
+```bash
+python evals/artifact_review_install_rehearsal.py \
+  --repo /path/to/reviewed/hermes-agent \
+  --expected-commit <reviewed-commit> \
+  --component hermes_cli/kanban_artifact_acceptance.py \
+  --component hermes_cli/kanban_acceptance_evidence.py \
+  --output /tmp/hermes-install-rehearsal.json
+```
+
+The command refuses a dirty or different checkout, compares the selected files
+with a Git archive of the exact commit, performs an isolated swap, restores the
+prior sentinel bytes, and emits a digest-bearing JSON receipt. It does not touch
+a Hermes home, restart a service, read credentials, launch a model worker, or
+activate the candidate.

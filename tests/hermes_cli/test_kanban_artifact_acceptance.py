@@ -11,6 +11,7 @@ import pytest
 
 from hermes_cli import config as hc
 from hermes_cli import kanban_db as kb
+from hermes_cli.kanban_acceptance_evidence import build_artifact_review_evidence
 from hermes_cli.kanban_db_connect import connect
 
 
@@ -244,6 +245,56 @@ def test_acceptance_binds_review_artifact_and_atomically_releases_child(board):
         assert not kb.complete_task(conn, parent, metadata=_candidate(original))
         assert len([event for event in kb.list_events(conn, parent)
                     if event.kind == "artifact_review_acceptance"]) == 1
+
+
+def test_accepted_delivery_exports_deterministic_ticket_run_and_cfo_evidence(board):
+    with connect() as conn:
+        task_id, review_run, artifact = _reviewed_task(conn)
+        assert kb.complete_task(
+            conn, task_id, metadata=_candidate(artifact), expected_run_id=review_run,
+        )
+        cfo = [{"ref": "cfo://usage/review-run-1", "receipt_sha256": "a" * 64}]
+        first = build_artifact_review_evidence(
+            conn, task_id, ticket_ref="ESN-0406", cfo_usage_links=cfo,
+        )
+        second = build_artifact_review_evidence(
+            conn, task_id, ticket_ref="ESN-0406", cfo_usage_links=reversed(cfo),
+        )
+
+        assert first == second
+        assert first["task"]["accepted_run_id"] == review_run
+        assert first["acceptance"]["review_profile"] == "reviewer"
+        assert {phase["kind"] for phase in first["phases"]} >= {
+            "claimed", "review_requested", "artifact_review_acceptance",
+        }
+        unsigned = {key: value for key, value in first.items() if key != "report_sha256"}
+        assert first["report_sha256"] == hashlib.sha256(
+            json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+
+
+def test_evidence_export_revalidates_cas_and_cfo_links(board):
+    with connect() as conn:
+        task_id, review_run, artifact = _reviewed_task(conn)
+        assert kb.complete_task(
+            conn, task_id, metadata=_candidate(artifact), expected_run_id=review_run,
+        )
+        receipt = next(
+            event.payload for event in kb.list_events(conn, task_id)
+            if event.kind == "artifact_review_acceptance"
+        )
+        with pytest.raises(ValueError, match="CFO usage"):
+            build_artifact_review_evidence(
+                conn, task_id, ticket_ref="ESN-0406", cfo_usage_links=[],
+            )
+        Path(receipt["artifacts"][0]["cas_path"]).chmod(0o644)
+        Path(receipt["artifacts"][0]["cas_path"]).write_bytes(b"mutated")
+
+        with pytest.raises(ValueError, match="no longer matches"):
+            build_artifact_review_evidence(
+                conn, task_id, ticket_ref="ESN-0406",
+                cfo_usage_links=[{"ref": "cfo://usage/1", "receipt_sha256": "b" * 64}],
+            )
 
 
 def test_rejection_and_missing_configuration_fail_closed(board):

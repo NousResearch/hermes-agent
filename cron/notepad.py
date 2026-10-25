@@ -15,7 +15,6 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
-from cron.executions import ledger_transaction, open_ledger, prepare_ledger
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
 
@@ -35,11 +34,18 @@ def _current_notepad_file() -> Path:
 
 
 def _connect() -> sqlite3.Connection:
-    return open_ledger(_current_notepad_file())
+    # Late imports: a scheduler daemon that outlives an on-disk upgrade already has the OLD
+    # ``hermes_cli.sqlite_util`` / ``cron.jobs`` cached, so new names must be resolved at call time,
+    # not at import time (the guarantee cron/ledger.py used to carry, see e24c8499).
+    from cron.jobs import _ensure_cron_dir
+    from hermes_cli.sqlite_util import open_db
+
+    path = _current_notepad_file()
+    _ensure_cron_dir(path.parent)
+    return open_db(path, db_label="cron/notepad.db", initialize=_initialize_schema)
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
-    prepare_ledger(conn, db_label="cron/notepad.db", synchronous_full=False)
     conn.execute(
         """CREATE TABLE IF NOT EXISTS cron_notepad (
              job_id TEXT NOT NULL,
@@ -53,7 +59,9 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
 
 @contextmanager
 def _transaction() -> Iterator[sqlite3.Connection]:
-    with ledger_transaction(_lock, _connect, _initialize_schema) as conn:
+    from hermes_cli.sqlite_util import transaction
+
+    with _lock, transaction(_connect()) as conn:
         yield conn
 
 
@@ -68,7 +76,7 @@ def _validate(job_id: str, key: str, value: str) -> None:
         raise ValueError(f"value too large (max {MAX_VALUE_BYTES} bytes per key)")
 
 
-def set_note(job_id: str, key: str, value: str) -> Dict[str, Any]:
+def set_note(job_id: str, key: str, value: str) -> dict[str, Any]:
     """Upsert one key. Raises ValueError when a size cap would be exceeded."""
     job_id, key, value = str(job_id), str(key), str(value)
     _validate(job_id, key, value)
@@ -115,7 +123,7 @@ def delete_note(job_id: str, key: str) -> bool:
     return cur.rowcount > 0
 
 
-def list_notes(job_id: str) -> List[Dict[str, Any]]:
+def list_notes(job_id: str) -> list[dict[str, Any]]:
     """All entries for one job, sorted by key."""
     with _transaction() as conn:
         rows = conn.execute(

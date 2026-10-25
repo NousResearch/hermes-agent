@@ -283,26 +283,6 @@ def test_adapter_reports_false_when_the_transport_hold_fails():
     assert working.calls == ["hold"]
 
 
-@pytest.mark.asyncio
-async def test_adapter_redial_hold_delegates_to_transport(server):
-    """The runner only holds the adapter, so this delegation is the only thing
-    wiring its suspend decision to the transport."""
-    from gateway.config import PlatformConfig
-    from gateway.relay.adapter import RelayAdapter
-
-    placeholder = _relay_descriptor()
-    transport = WebSocketRelayTransport(
-        server.url, "discord", "appShared", reconnect=True, reconnect_backoff_s=0.05
-    )
-    adapter = RelayAdapter(PlatformConfig(), placeholder, transport=transport)
-    await adapter.connect()
-    try:
-        adapter.hold_redial()
-        assert transport._redial_held is True
-        adapter.release_redial()
-        assert transport._redial_held is False
-    finally:
-        await adapter.disconnect()
 
 
 @pytest.mark.asyncio

@@ -1,153 +1,128 @@
+import type { ConnectionRequestPayload, ConnectionUpdatePayload, GatewayEvent } from '@hermes/shared'
+
+import { applyAccountConnectionUpdate } from '@/app/capabilities/connectors/data/account-operations'
+import { abortPreviewTyping } from '@/app/chat/right-rail/preview-typing-abort'
 import { pendingClarifyToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-clarify'
+import { connectionRequestToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-connection'
 import { translateNow } from '@/i18n'
-import { restorePendingClarifyToolCall, settlePendingClarifyToolCall } from '@/lib/chat-messages'
+import { settlePendingClarifyToolCall, textPart } from '@/lib/chat-messages'
+import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
 import {
-  $clarifyRequests,
-  clearClarifyRequest,
-  normalizeChoices,
-  normalizeQuestions,
-  setClarifyRequest,
-  warnDroppedChoices
-} from '@/store/clarify'
-import { $gateway } from '@/store/gateway'
-import { setMcpSetupRequest } from '@/store/mcp-setup'
+  type ConnectionRequest,
+  normalizeConnectionRequest,
+  setConnectionRequest,
+  updateConnectionRequest
+} from '@/store/connection-request'
 import { dispatchNativeNotification } from '@/store/native-notifications'
-import { receiveApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
-import { requestScrollToBottom } from '@/store/thread-scroll'
+import { notify } from '@/store/notifications'
+import {
+  $secretRequests,
+  $sudoRequests,
+  $vaultCodeRequests,
+  $vaultSaveLoginRequests,
+  $vaultUnlockRequests,
+  clearApprovalRequest,
+  clearSecretRequest,
+  clearSudoRequest,
+  clearVaultCodeRequest,
+  clearVaultSaveLoginRequest,
+  clearVaultUnlockRequest,
+  sessionApprovalRequests
+} from '@/store/prompts'
+import { requestRoute } from '@/store/recovery-requests'
+import { forgetServerRequest } from '@/store/server-requests'
+import { clearSetupBeat } from '@/store/setup-beat'
+import { clearThemePick } from '@/store/theme-pick'
 
 import type { GatewayEventContext } from './types'
 
-/** The blocking-input family: clarify / MCP setup consent / approval / sudo /
- *  secret requests. The Python side is blocked on the matching *.respond, so
- *  each of these must be parked per-session and surfaced. */
+/** Settings → Safety, where `approvals.timeout` lives (settings/constants.ts). */
+const SAFETY_SETTINGS_ROUTE = '/settings?tab=config:safety'
+
+type ConnectionRequestEvent = GatewayEvent<'connection.request'> & { payload: ConnectionRequestPayload }
+type ConnectionUpdateEvent = GatewayEvent<'connection.update'> & { payload: ConnectionUpdatePayload }
+
+const isConnectionRequestEvent = (event: GatewayEvent): event is ConnectionRequestEvent =>
+  event.type === 'connection.request' && event.payload !== undefined
+
+const isConnectionUpdateEvent = (event: GatewayEvent): event is ConnectionUpdateEvent =>
+  event.type === 'connection.update' && event.payload !== undefined
+
+/** `approval.settled` / `clarify.settled {prompt_id}`: take down the card
+ *  parked under that server request id. Returns false for other events. */
+function handlePromptSettledEvent(ctx: GatewayEventContext): boolean {
+  const { deps, event, payload, sessionId } = ctx
+
+  if (event.type !== 'approval.settled' && event.type !== 'clarify.settled') {
+    return false
+  }
+
+  const promptId = (payload as { prompt_id?: unknown } | undefined)?.prompt_id
+
+  if (typeof promptId !== 'string' || !promptId) {
+    return true
+  }
+
+  forgetServerRequest(promptId)
+  const key = sessionId ?? ''
+
+  if (event.type === 'clarify.settled') {
+    if ($clarifyRequests.get()[key]?.requestId === promptId) {
+      clearClarifyRequest(promptId, sessionId)
+
+      if (sessionId) {
+        deps.updateSessionState(sessionId, state => ({ ...state, needsInput: false }))
+      }
+    }
+
+    return true
+  }
+
+  const approval = sessionApprovalRequests(sessionId ?? null)
+    .get()
+    .find(request => request.serverRequestId === promptId)
+
+  if (approval) {
+    clearApprovalRequest(sessionId, approval.requestId)
+  }
+
+  return true
+}
+
+// A display card has no targets to name.
+const connectionRequestNoticeBody = (request: ConnectionRequest): string =>
+  request.targets.map(target => target.name).join(', ') || translateNow('connectors.title')
+
+/** The blocking-input family arrives as server→client REQUESTS (see
+ *  `server-requests.ts`); the one EVENT in the family is `request.cancel`, the
+ *  backend withdrawing an open request (timeout / interrupt / session close):
+ *  tear down whichever parked card carries that id. Cancel is request-correlated:
+ *  a delayed cancel for an older prompt must not erase a newer one the same
+ *  session raised. */
 export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, occurredAt } = ctx
-  const { activeSessionIdRef, sessionInterrupted, updateSessionState, upsertToolCall } = deps
 
-  if (event.type === 'clarify.request') {
-    // Surface the clarify tool's overlay. The Python side is blocked on
-    // `clarify.respond`, so without this handler the agent would hang
-    // forever (see tools/clarify_tool.py + tui_gateway/server.py:_block).
-    //
-    // Store the request for whichever session raised it — even a background
-    // one. clarify.request is a one-shot event; if we dropped it for an
-    // unfocused session, that session would block on `clarify.respond`
-    // indefinitely and re-focusing it could never recover (the event is
-    // gone). Parking it per-session lets the user answer once they switch
-    // over; the inline ClarifyTool reads the active session's entry.
-    if (sessionId && sessionInterrupted(sessionId)) {
+  if (isConnectionRequestEvent(event)) {
+    // An interrupted/deleted session's runtime has no turn left to consent to a
+    // connection; the backend withdraws its request on the same boundary. Drop
+    // the frame rather than parking a stale consent card (#75587).
+    if (sessionId && deps.sessionInterrupted(sessionId)) {
       return true
     }
 
-    const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
-    const question = typeof payload?.question === 'string' ? payload.question : ''
-    const rawChoices = payload?.choices
-    const choices = normalizeChoices(rawChoices)
-    const multiSelect = payload?.multi_select === true
-    // Batch (multi-question) clarify: `questions` replaces question/choices
-    // on the wire. `answers` rides along only on reconnect replay, carrying
-    // the per-question locks the server already accepted.
-    const questions = normalizeQuestions(payload?.questions)
+    // Park per-session and upsert a stable tool row so the card renders even if tool.start was missed.
+    const request = normalizeConnectionRequest(event.payload, sessionId ?? null)
 
-    const lockedAnswers =
-      typeof payload?.answers === 'object' && payload?.answers !== null
-        ? Object.fromEntries(
-            Object.entries(payload.answers as Record<string, unknown>).filter(
-              (entry): entry is [string, string] => typeof entry[1] === 'string'
-            )
-          )
-        : undefined
-
-    if (requestId && questions.length > 0) {
-      const request = {
-        choices: null,
-        lockedAnswers,
-        multiSelect: false,
-        question: '',
-        questions,
-        receivedAt: Date.now() / 1000,
-        requestId,
-        sessionId: sessionId ?? null
-      }
-
-      setClarifyRequest(request)
+    if (request) {
+      setConnectionRequest(request)
 
       if (sessionId) {
-        // A resumed/hydrated transcript may already contain this provider's
-        // clarify call while carrying no live streamId. Re-arm that exact row
-        // instead of letting the generic stream mutator append a second card.
-        updateSessionState(sessionId, state => {
-          const projection = restorePendingClarifyToolCall(
-            state.messages,
-            pendingClarifyToolPayload(request),
-            occurredAt
-          )
-
-          return {
-            ...state,
-            messages: projection.messages,
-            streamId: projection.streamId,
-            sawAssistantPayload: true,
-            awaitingResponse: false,
-            needsInput: true
-          }
-        })
-
-        if (sessionId === activeSessionIdRef.current) {
-          requestScrollToBottom(sessionId)
-        }
+        deps.upsertToolCall(sessionId, connectionRequestToolPayload(request), 'running')
+        deps.updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
       }
 
       dispatchNativeNotification({
-        body: questions.map(q => q.question).join(' · '),
-        kind: 'input',
-        sessionId,
-        title: translateNow('notifications.native.inputTitle')
-      })
-    } else if (requestId && question) {
-      if (rawChoices != null && choices.length === 0) {
-        warnDroppedChoices('gateway', question, rawChoices)
-      }
-
-      const request = {
-        requestId,
-        question,
-        choices: choices.length > 0 ? choices : null,
-        multiSelect,
-        receivedAt: Date.now() / 1000,
-        sessionId: sessionId ?? null
-      }
-
-      setClarifyRequest(request)
-
-      if (sessionId) {
-        // Same provider-shape-aware repair as the batch path above. This keeps
-        // the original hydrated row and provider tool id, while still seeding
-        // a row when tool.start was genuinely missed.
-        updateSessionState(sessionId, state => {
-          const projection = restorePendingClarifyToolCall(
-            state.messages,
-            pendingClarifyToolPayload(request),
-            occurredAt
-          )
-
-          return {
-            ...state,
-            messages: projection.messages,
-            streamId: projection.streamId,
-            sawAssistantPayload: true,
-            awaitingResponse: false,
-            needsInput: true
-          }
-        })
-
-        if (sessionId === activeSessionIdRef.current) {
-          requestScrollToBottom(sessionId)
-        }
-      }
-
-      dispatchNativeNotification({
-        body: question,
+        body: connectionRequestNoticeBody(request),
         kind: 'input',
         sessionId,
         title: translateNow('notifications.native.inputTitle')
@@ -157,169 +132,135 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     return true
   }
 
-  if (event.type === 'clarify.expire') {
-    if (!sessionId) {
+  if (isConnectionUpdateEvent(event)) {
+    if (event.payload.owner.type === 'account') {
+      applyAccountConnectionUpdate(event.payload)
+
       return true
     }
 
-    const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
-    const request = $clarifyRequests.get()[sessionId]
+    updateConnectionRequest(sessionId ?? null, event.payload)
 
-    // Expiry is request-correlated: a delayed event from an older prompt must
-    // not erase a newer clarify raised by the same session.
-    if (!requestId || !request || request.requestId !== requestId) {
-      return true
+    if (event.payload.settled && sessionId) {
+      deps.updateSessionState(sessionId, state => ({ ...state, needsInput: false }))
     }
-
-    clearClarifyRequest(requestId, sessionId)
-    updateSessionState(sessionId, state => {
-      const projection = settlePendingClarifyToolCall(
-        state.messages,
-        pendingClarifyToolPayload(request),
-        state.busy,
-        occurredAt
-      )
-
-      return {
-        ...state,
-        messages: projection.messages,
-        needsInput: false,
-        streamId: state.busy ? (projection.streamId ?? state.streamId) : null
-      }
-    })
 
     return true
   }
 
-  if (event.type === 'mcp.setup.request') {
-    // setup_mcp tool (desktop GUI): the agent proposed an MCP server and
-    // the Python side is blocked on mcp.setup.respond. Park the request
-    // per-session (like clarify) and upsert a stable pending tool row so
-    // the inline consent card has somewhere to render even when the
-    // tool.start event was missed (stream reconnect / hydration race).
-    const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
-    const server = typeof payload?.server === 'string' ? payload.server : ''
-    const rawAction = typeof payload?.action === 'string' ? payload.action : 'install'
-    const action = rawAction === 'enable' || rawAction === 'authorize' ? rawAction : 'install'
-    const reason = typeof payload?.reason === 'string' ? payload.reason : ''
+  // Canonical gateways settle a shared prompt with `approval.settled` /
+  // `clarify.settled {prompt_id}` once ANY attached viewer answered it (or the
+  // turn ended). The prompt id is the server request id this window parked the
+  // card under. Only the parked card comes down: the answer itself reaches the
+  // transcript through the tool's own completion, so no "skipped" projection.
+  if (handlePromptSettledEvent(ctx)) {
+    return true
+  }
 
-    if (requestId && server) {
-      setMcpSetupRequest({ action, reason, requestId, server, sessionId: sessionId ?? null })
+  if (event.type !== 'request.cancel') {
+    return false
+  }
 
-      if (sessionId) {
-        upsertToolCall(
-          sessionId,
-          { args: { action, reason, server }, name: 'setup_mcp', tool_id: requestId },
-          'running'
+  const id = typeof payload?.id === 'string' ? payload.id : ''
+
+  if (!id) {
+    return true
+  }
+
+  // preview.act has no card. A timeout or interrupt still has to stop keystrokes
+  // already queued for that type.
+  abortPreviewTyping(id, typeof payload?.reason === 'string' ? payload.reason : 'interrupted')
+
+  forgetServerRequest(id)
+
+  const key = sessionId ?? ''
+
+  if ($clarifyRequests.get()[key]?.requestId === id) {
+    const request = $clarifyRequests.get()[key]
+
+    clearClarifyRequest(id, sessionId)
+
+    if (sessionId && request) {
+      deps.updateSessionState(sessionId, state => {
+        const projection = settlePendingClarifyToolCall(
+          state.messages,
+          pendingClarifyToolPayload(request),
+          state.busy,
+          occurredAt
         )
-        updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
-      }
 
-      dispatchNativeNotification({
-        body: reason || server,
-        kind: 'input',
-        sessionId,
-        title: translateNow('notifications.native.inputTitle')
+        return {
+          ...state,
+          messages: projection.messages,
+          needsInput: false,
+          streamId: state.busy ? (projection.streamId ?? state.streamId) : null
+        }
       })
     }
 
     return true
   }
 
-  if (event.type === 'approval.request') {
-    // Dangerous-command / execute_code approval. The Python side is blocked
-    // in _await_gateway_decision() until approval.respond lands; without
-    // this the agent stalls until its 5-min timeout and the tool is BLOCKED.
-    // Park it per-session (like clarify) so a *background* profile's turn can
-    // raise it and wait — the sidebar flags "needs input" and the inline bar
-    // surfaces once the user focuses that chat.
-    const command = typeof payload?.command === 'string' ? payload.command : ''
-    const description = typeof payload?.description === 'string' ? payload.description : 'dangerous command'
+  const approval = sessionApprovalRequests(sessionId ?? null)
+    .get()
+    .find(request => request.serverRequestId === id)
 
-    void receiveApprovalRequest($gateway.get(), {
-      // false only when a tirith warning forbids it; backend omits the field otherwise.
-      allowPermanent: payload?.allow_permanent !== false,
-      choices: Array.isArray(payload?.choices)
-        ? payload.choices.filter(choice => typeof choice === 'string')
-        : undefined,
-      command,
-      description,
-      requestId: typeof payload?.request_id === 'string' ? payload.request_id : undefined,
-      sessionId: sessionId ?? null,
-      smartDenied: payload?.smart_denied === true
-    }).catch(() => undefined)
+  if (approval) {
+    clearApprovalRequest(sessionId, approval.requestId)
 
-    if (sessionId) {
-      updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
-    }
+    // The Run/Reject bar vanishing is the only thing the user would otherwise
+    // see; the tool row then shows a model-facing "BLOCKED" result. Say what
+    // happened in human terms and point at the setting that controls the wait.
+    if (payload?.reason === 'timeout' && sessionId) {
+      const line = translateNow('assistant.approval.timedOutSystemLine')
 
-    dispatchNativeNotification({
-      actions: [
-        { id: 'approve', text: translateNow('notifications.native.approveAction') },
-        { id: 'reject', text: translateNow('notifications.native.rejectAction') }
-      ],
-      body: command || description,
-      kind: 'approval',
-      sessionId,
-      title: translateNow('notifications.native.approvalTitle')
-    })
-
-    return true
-  }
-
-  if (event.type === 'sudo.request') {
-    // Sudo password capture (tools/terminal_tool.py). Blocked on
-    // sudo.respond {request_id, password}.
-    const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
-
-    if (requestId) {
-      setSudoRequest({ requestId, sessionId: sessionId ?? null })
-
-      if (sessionId) {
-        updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
-      }
-
-      dispatchNativeNotification({
-        body: translateNow('notifications.native.inputBody'),
-        kind: 'input',
-        sessionId,
-        title: translateNow('notifications.native.inputTitle')
+      deps.flushQueuedDeltas(sessionId)
+      deps.updateSessionState(sessionId, state => ({
+        ...state,
+        messages: [
+          ...state.messages,
+          { id: `approval-timeout-${id}`, role: 'system', parts: [textPart(line, occurredAt)], timestamp: occurredAt }
+        ]
+      }))
+      notify({
+        kind: 'warning',
+        message: line,
+        action: {
+          label: translateNow('assistant.approval.openSafetySettings'),
+          onClick: () => requestRoute(SAFETY_SETTINGS_ROUTE)
+        }
       })
     }
-
-    return true
+  } else {
+    cancelParkedCredentialRequest(ctx, key, id)
   }
 
-  if (event.type === 'secret.request') {
-    // Skill credential capture (tools/skills_tool.py). Blocked on
-    // secret.respond {request_id, value}.
-    const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+  return true
+}
 
-    if (requestId) {
-      const envVar = typeof payload?.env_var === 'string' ? payload.env_var : ''
-      const promptText = typeof payload?.prompt === 'string' ? payload.prompt : ''
+/** Withdraw the sudo / secret / vault / setup card parked under `id`, first match wins. */
+function cancelParkedCredentialRequest(ctx: GatewayEventContext, key: string, id: string): void {
+  const { sessionId } = ctx
 
-      setSecretRequest({
-        requestId,
-        envVar,
-        prompt: promptText,
-        sessionId: sessionId ?? null
-      })
-
-      if (sessionId) {
-        updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
-      }
-
-      dispatchNativeNotification({
-        body: promptText || envVar || translateNow('notifications.native.inputBody'),
-        kind: 'input',
-        sessionId,
-        title: translateNow('notifications.native.inputTitle')
-      })
-    }
-
-    return true
+  if ($sudoRequests.get()[key]?.requestId === id) {
+    clearSudoRequest(sessionId, id)
+  } else if ($sudoRequests.get()['']?.requestId === id) {
+    clearSudoRequest(null, id) // the app-level Bot Screen install card: not owned by any chat
+  } else if ($secretRequests.get()[key]?.requestId === id) {
+    clearSecretRequest(sessionId, id)
+  } else if ($vaultCodeRequests.get()[key]?.requestId === id) {
+    clearVaultCodeRequest(sessionId, id)
+  } else if ($vaultSaveLoginRequests.get()[key]?.requestId === id) {
+    clearVaultSaveLoginRequest(sessionId, id)
+  } else if ($vaultUnlockRequests.get()[key]?.requestId === id) {
+    clearVaultUnlockRequest(sessionId, id)
+  } else {
+    clearParkedCard(ctx, id)
   }
+}
 
-  return false
+function clearParkedCard({ deps, sessionId }: GatewayEventContext, requestId: string) {
+  if (sessionId && (clearThemePick(requestId, sessionId) || clearSetupBeat(requestId, sessionId))) {
+    deps.updateSessionState(sessionId, state => ({ ...state, needsInput: false }))
+  }
 }

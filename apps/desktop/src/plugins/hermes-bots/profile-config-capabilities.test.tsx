@@ -1,13 +1,13 @@
 /**
  * The bot editor's Advanced section renders the REAL core Capabilities
- * surfaces — SkillsView (installed skills + hub installs + detail),
- * ToolsetConfigPanel (per-toolset env/keys/model/post-setup) and McpTab
+ * surfaces — CapabilitiesView (installed skills + hub installs + detail),
+ * ToolsetConfigPanel (per-toolset env/keys/model/post-setup) and ConnectorsTab
  * (per-server enable + OAuth + API keys) — pinned to the bot's own profile,
  * instead of bare checkbox stand-ins.
  *
  * All three are optional SDK namespace exports (hermes-agent#87317), so every
  * use site is feature-detected and older desktop builds keep the staged
- * checklist UI. The sharp edge is a REMOTE bot on a build whose SkillsView
+ * checklist UI. The sharp edge is a REMOTE bot on a build whose CapabilitiesView
  * predates `supportsFixedConnection`: rendering the live surface there would
  * read and write the ACTIVE gateway's skills under the remote bot's name —
  * the wrong machine — so those builds must fail closed to "staged only".
@@ -33,7 +33,7 @@ interface StubProps {
 
 /** The optional SDK exports, swapped per test to model each desktop build. */
 const sdk = vi.hoisted(() => {
-  const seen: Record<string, StubProps[]> = { McpTab: [], SkillsView: [], ToolsetConfigPanel: [] }
+  const seen: Record<string, StubProps[]> = { ConnectorsTab: [], CapabilitiesView: [], ToolsetConfigPanel: [] }
 
   const spy = (name: string) => {
     const Stub = (props: StubProps) => {
@@ -77,7 +77,7 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
     usePluginI18n: () => translateBots
   }
 
-  for (const name of ['McpTab', 'SkillsView', 'ToolsetConfigPanel']) {
+  for (const name of ['ConnectorsTab', 'CapabilitiesView', 'ToolsetConfigPanel']) {
     Object.defineProperty(mocked, name, { configurable: true, enumerable: true, get: () => sdk.exports[name] })
   }
 
@@ -178,10 +178,10 @@ afterEach(() => {
   cleanup()
 })
 
-describe('a build whose SkillsView cannot route connections', () => {
+describe('a build whose CapabilitiesView cannot route connections', () => {
   const oldBuild = () => ({
-    McpTab: sdk.spy('McpTab'),
-    SkillsView: sdk.spy('SkillsView'),
+    ConnectorsTab: sdk.spy('ConnectorsTab'),
+    CapabilitiesView: sdk.spy('CapabilitiesView'),
     ToolsetConfigPanel: sdk.spy('ToolsetConfigPanel')
   })
 
@@ -191,8 +191,8 @@ describe('a build whose SkillsView cannot route connections', () => {
     // The model catalog settles first so the picker is past its spinner.
     expect(await screen.findByText('Provider')).toBeTruthy()
     expect(screen.getByText(/Remote capabilities require a newer desktop/)).toBeTruthy()
-    expect(sdk.seen.SkillsView).toHaveLength(0)
-    expect(sdk.seen.McpTab).toHaveLength(0)
+    expect(sdk.seen.CapabilitiesView).toHaveLength(0)
+    expect(sdk.seen.ConnectorsTab).toHaveLength(0)
     expect(sdk.seen.ToolsetConfigPanel).toHaveLength(0)
     expect(screen.queryByText('Skills Hub')).toBeNull()
     expect(screen.queryByRole('button', { name: /Set up/ })).toBeNull()
@@ -215,12 +215,12 @@ describe('a build whose SkillsView cannot route connections', () => {
 
     // The staged checklist and the hub search section both survive here.
     expect(screen.getByText('staged-skill')).toBeTruthy()
-    expect(screen.getByText('Skills Hub')).toBeTruthy()
+    expect(screen.getByText(translateBots('tools.skillsHub'))).toBeTruthy()
     expect(sdk.seen.ToolsetConfigPanel[0]).toEqual({
       profile: { connectionId: 'local', profile: 'default' },
       toolset: 'local-tools'
     })
-    expect(sdk.seen.McpTab[0]).toEqual({
+    expect(sdk.seen.ConnectorsTab[0]).toEqual({
       gateway: 'ambient-gateway',
       profile: { connectionId: 'local', profile: 'default' }
     })
@@ -228,75 +228,43 @@ describe('a build whose SkillsView cannot route connections', () => {
   })
 })
 
-describe('a connection-aware SkillsView', () => {
+describe('a connection-aware CapabilitiesView', () => {
   it('receives the connection and the BACKEND profile separately', async () => {
-    const Routed = sdk.spy('SkillsView')
+    const Routed = sdk.spy('CapabilitiesView')
 
     ;(Routed as unknown as { supportsFixedConnection: boolean }).supportsFixedConnection = true
 
-    await renderEditor({ SkillsView: Routed }, remoteBot)
+    await renderEditor({ CapabilitiesView: Routed }, remoteBot)
 
     // The alias's logical name is `default`; the backend row it activates into
     // is `backend-default`. Pinning the logical name would edit the wrong one.
-    expect(sdk.seen.SkillsView[0]).toMatchObject({
+    expect(sdk.seen.CapabilitiesView[0]).toMatchObject({
       fixedConnection: 'remote-a',
       fixedProfile: 'backend-default'
     })
   })
 
   it('#93492: degrades an orphaned row to its own name instead of throwing', async () => {
-    const Routed = sdk.spy('SkillsView')
+    const Routed = sdk.spy('CapabilitiesView')
 
     ;(Routed as unknown as { supportsFixedConnection: boolean }).supportsFixedConnection = true
 
     // A row whose owning connection was removed resolves to no route at all.
     // The editor renders on the render path, so a throw here would take the
     // whole pane down through the dialog's error boundary.
-    await renderEditor({ SkillsView: Routed }, { ...remoteBot, connectionId: '', route: undefined })
+    await renderEditor({ CapabilitiesView: Routed }, { ...remoteBot, connectionId: '', route: undefined })
 
-    expect(sdk.seen.SkillsView[0]).toEqual({ embedded: true, fixedProfile: 'default' })
+    expect(sdk.seen.CapabilitiesView[0]).toEqual({ embedded: true, fixedProfile: 'default' })
   })
 })
 
 describe('a build with no Capabilities exports at all', () => {
-  const bareBuild = { McpTab: undefined, SkillsView: undefined, ToolsetConfigPanel: undefined }
+  const bareBuild = { ConnectorsTab: undefined, CapabilitiesView: undefined, ToolsetConfigPanel: undefined }
 
   it('keeps the checkbox MCP list with its inline setup button', async () => {
     await renderEditor(bareBuild, localBot)
 
     expect(screen.getByText('remote-mcp')).toBeTruthy()
     expect(screen.getByRole('button', { name: /Set up/ })).toBeTruthy()
-  })
-
-  it('says so plainly when the profile has no MCP servers', async () => {
-    await renderEditor(bareBuild, localBot, { mcp: [] })
-
-    expect(screen.getByText('No MCP servers configured or in the catalog.')).toBeTruthy()
-  })
-})
-
-describe('the model catalog read', () => {
-  it('#95279: rides the bot\u2019s captured route and never forces a refresh', async () => {
-    sdk.exports = {}
-    vi.resetModules()
-
-    const { ModelPicker } = await import('./model-picker')
-
-    render(
-      withQueryClient(<ModelPicker bot={remoteBot} onChange={() => undefined} value={{ model: '', provider: '' }} />)
-    )
-
-    // No `refresh`: a forced network read on every mount bypassed the
-    // staleTime cache, so each Bots view remount re-entered the spinner and
-    // discarded the user's staged selection mid-edit.
-    expect(sdk.requestProfile).toHaveBeenCalledWith(
-      expect.objectContaining({ connectionId: 'remote-a' }),
-      'model.options',
-      {
-        explicit_only: false,
-        include_unconfigured: true
-      }
-    )
-    expect(sdk.request).not.toHaveBeenCalled()
   })
 })

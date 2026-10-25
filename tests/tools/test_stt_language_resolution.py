@@ -70,6 +70,9 @@ class TestXaiNoForcedEnglish:
         assert result["success"] is True
         assert "language" not in (captured["data"] or {}), \
             "xAI must auto-detect when no language is configured (was forced to 'en')"
+        # /v1/stt returns HTTP 400 for format=true without a language, so auto-detect drops it.
+        assert "format" not in (captured["data"] or {}), \
+            "format=true must not be sent without a language (xAI rejects it with HTTP 400)"
 
     def test_global_language_reaches_xai(self, tmp_path, monkeypatch):
         import tools.transcription_tools as tt

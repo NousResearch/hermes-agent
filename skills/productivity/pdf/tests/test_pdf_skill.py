@@ -17,6 +17,7 @@ def run(script: str, *args: str, expect: int = 0) -> subprocess.CompletedProcess
     proc = subprocess.run(
         [sys.executable, str(SCRIPTS / script), *args],
         capture_output=True, text=True, encoding="utf-8", env=env,
+        check=False,
     )
     assert proc.returncode == expect, f"{script} {args}: rc={proc.returncode}\n{proc.stderr}"
     return proc
@@ -278,7 +279,7 @@ def test_form_layout_detects_problems(workdir: Path):
 def _raster_available() -> bool:
     import shutil
     try:
-        import pypdfium2  # noqa: F401
+        import pypdfium2
         return True
     except ImportError:
         return shutil.which("pdftoppm") is not None

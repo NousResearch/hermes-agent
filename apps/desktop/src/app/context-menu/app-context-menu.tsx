@@ -1,13 +1,13 @@
 import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
-import { useEffect } from 'react'
-import { useNavigate } from 'react-router'
+import { useEffect, useMemo } from 'react'
 
+import { COMPOSER_AREAS } from '@/app/chat/composer/contrib'
 import { terminalMenuHandleFor } from '@/app/right-sidebar/terminal/terminal-context-menu'
-import { toggleTargetZoneTabStrip } from '@/components/pane-shell/tree/store'
+import { openStarMapNodeMenuFor } from '@/app/starmap/context-menu-handle'
+import { DROPDOWN_KIT } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
 import { HERMES_CONTEXT_MENU_TRIGGER_ATTR } from '@/components/ui/context-menu'
-import { writeClipboardText } from '@/components/ui/copy-button'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -16,19 +16,19 @@ import {
   DropdownMenuShortcut,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
+import { useContributions } from '@/contrib/react/use-contributions'
 import { type Translations, useI18n } from '@/i18n'
+import { writeClipboardText } from '@/lib/clipboard'
 import { hostPathLabel, hudForcesNativeLinks, normalizeExternalUrl, openExternalLink } from '@/lib/external-link'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { isRemoteGateway } from '@/lib/media'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
-import { openCommandPalette } from '@/store/command-palette'
+import { isBrowserOwnedTouch } from '@/lib/touch-interaction'
 import { openPreview } from '@/store/preview'
-import { toggleStatusbarVisible } from '@/store/statusbar-prefs'
-import { requestActiveUpdate } from '@/store/updates'
-import { canOpenNewWindow, openNewWindow } from '@/store/windows'
 
-import { navigateToWorkspacePage, NEW_CHAT_ROUTE, SETTINGS_ROUTE } from '../routes'
-
+import { type ComposerMenuRow, resolveComposerMenuSections } from './composer-menu'
+import { ShellMenuItems } from './shell-menu-items'
 import {
   $contextMenu,
   augmentSpellcheck,
@@ -56,6 +56,22 @@ const EDIT_SHORTCUTS = {
   paste: formatCombo('mod+v'),
   selectAll: formatCombo('mod+a')
 } as const
+
+function isNativeMediaContextMenu(event: MouseEvent): boolean {
+  const path = typeof event.composedPath === 'function' ? event.composedPath() : []
+
+  return [event.target, ...path].some(target => target instanceof HTMLMediaElement)
+}
+
+/** Take a gesture the app menu answers away from other renderer handlers,
+ * cancelling the browser's native menu only where it would open alongside. */
+function claimContextMenuGesture(event: MouseEvent) {
+  if (isBrowserHostedDesktop()) {
+    event.preventDefault()
+  }
+
+  event.stopPropagation()
+}
 
 function isLoopbackUrl(url: string): boolean {
   try {
@@ -88,11 +104,6 @@ function Item({
       {shortcut ? <DropdownMenuShortcut>{shortcut}</DropdownMenuShortcut> : null}
     </DropdownMenuItem>
   )
-}
-
-type ShellVerbs = {
-  navigate: ReturnType<typeof useNavigate>
-  t: Translations
 }
 
 function terminalSections(open: Extract<OpenContextMenu, { kind: 'terminal' }>, t: Translations): ReactNode[][] {
@@ -130,7 +141,21 @@ function terminalSections(open: Extract<OpenContextMenu, { kind: 'terminal' }>, 
   ]
 }
 
-function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Translations): ReactNode[][] {
+/** One section per plugin, already ordered and capped by the resolver; each row
+ *  runs after the menu closed, like the built-in edit verbs. */
+function composerItemSections(sections: ComposerMenuRow[][], afterClose: (run: () => void) => void): ReactNode[][] {
+  return sections.map(rows =>
+    rows.map(row => (
+      <Item disabled={row.disabled} key={row.key} label={row.label} onSelect={() => afterClose(row.run)} />
+    ))
+  )
+}
+
+function domSections(
+  open: Extract<OpenContextMenu, { kind: 'dom' }>,
+  t: Translations,
+  composerSections: ComposerMenuRow[][]
+): ReactNode[][] {
   const copy = t.contextMenu
   const { spellcheck, target } = open
   const sections: ReactNode[][] = []
@@ -200,12 +225,7 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
             icon="globe"
             key="link-open-app"
             label={copy.link.openInApp}
-            onSelect={() =>
-              openPreview(
-                { kind: 'url', label: hostPathLabel(linkUrl), source: linkUrl, url: linkUrl },
-                'explicit-link'
-              )
-            }
+            onSelect={() => openPreview({ kind: 'url', label: hostPathLabel(linkUrl), source: linkUrl, url: linkUrl })}
           />
         ) : null,
         <Item
@@ -241,10 +261,12 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
             key="image-open-app"
             label={copy.link.openInApp}
             onSelect={() =>
-              openPreview(
-                { kind: 'url', label: hostPathLabel(target.imageUrl), source: target.imageUrl, url: target.imageUrl },
-                'explicit-link'
-              )
+              openPreview({
+                kind: 'url',
+                label: hostPathLabel(target.imageUrl),
+                source: target.imageUrl,
+                url: target.imageUrl
+              })
             }
           />
         ) : null,
@@ -303,6 +325,9 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
         />
       ])
     }
+
+    // Plugin rows (composer only), after the app's own spell-check rows.
+    sections.push(...composerItemSections(composerSections, withEditableFocus))
 
     // Verb availability mirrors the native menu: cut/copy act on the
     // SELECTION, so they need selected text — not just field content.
@@ -400,12 +425,7 @@ function guestSections(open: Extract<OpenContextMenu, { kind: 'guest' }>, t: Tra
             icon="globe"
             key="guest-link-open-app"
             label={copy.link.openInApp}
-            onSelect={() =>
-              openPreview(
-                { kind: 'url', label: hostPathLabel(linkUrl), source: linkUrl, url: linkUrl },
-                'explicit-link'
-              )
-            }
+            onSelect={() => openPreview({ kind: 'url', label: hostPathLabel(linkUrl), source: linkUrl, url: linkUrl })}
           />
         ) : null,
         <Item
@@ -546,67 +566,13 @@ function guestSections(open: Extract<OpenContextMenu, { kind: 'guest' }>, t: Tra
   return sections
 }
 
-/** Bare right-click on app chrome: the window verbs (the old shell fallback). */
-function shellSections({ navigate, t }: ShellVerbs): ReactNode[][] {
-  return [
-    [
-      <Item
-        icon="add"
-        key="shell-new-chat"
-        label={t.commandCenter.nav.newChat.title}
-        onSelect={() => navigateToWorkspacePage(navigate, NEW_CHAT_ROUTE)}
-      />,
-      canOpenNewWindow() ? (
-        <Item
-          icon="multiple-windows"
-          key="shell-new-window"
-          label={t.keybinds.actions['session.newWindow']}
-          onSelect={() => void openNewWindow()}
-        />
-      ) : null,
-      <Item icon="search" key="shell-palette" label={t.commandCenter.paletteTitle} onSelect={openCommandPalette} />
-    ].filter(Boolean),
-    [
-      <Item
-        icon="layout-statusbar"
-        key="shell-statusbar"
-        label={t.keybinds.actions['view.toggleStatusbar']}
-        onSelect={toggleStatusbarVisible}
-      />,
-      // The pointer-only way back to a hidden tab strip: right-clicking the
-      // shell reaches this menu from anywhere, including a zone that has no
-      // chrome left to right-click.
-      <Item
-        icon="layout-menubar"
-        key="shell-tabstrip"
-        label={t.keybinds.actions['view.toggleTabStrip']}
-        onSelect={() => void toggleTargetZoneTabStrip()}
-      />,
-      <Item
-        icon="settings-gear"
-        key="shell-settings"
-        label={t.commandCenter.settings}
-        onSelect={() => navigateToWorkspacePage(navigate, SETTINGS_ROUTE)}
-      />
-    ],
-    [
-      <Item
-        icon="cloud-download"
-        key="shell-update"
-        label={t.commandCenter.updateHermes}
-        onSelect={requestActiveUpdate}
-      />
-    ]
-  ]
-}
-
 /**
  * THE app context menu: one capture-phase listener, one store, one menu.
  *
  * Every right-click in the app resolves here first. Radix-owned surfaces
  * (session rows and other `context-menu-trigger` wrappers) keep their own
- * menus; the reaction bubble keeps plain right-clicks; terminals answer
- * through their registered xterm handles; everything else gets a menu
+ * menus; the reaction bubble keeps plain right-clicks; terminals and the
+ * Star Map answer through registered handles; everything else gets a menu
  * assembled from what the click landed on — link, image, editable,
  * selection — with the window verbs as the empty-target fallback. Replaced
  * both the native Electron menu and the shell fallback wrapper, so labels
@@ -614,23 +580,58 @@ function shellSections({ navigate, t }: ShellVerbs): ReactNode[][] {
  */
 export function AppContextMenu() {
   const { t } = useI18n()
-  const navigate = useNavigate()
   const open = useStore($contextMenu)
+  const composerContributions = useContributions(COMPOSER_AREAS.contextMenu)
+  const composerTarget = open?.kind === 'dom' ? open.target.composer : null
+
+  // Resolved once per right-click (the target is captured at open and kept
+  // across the late spell-check update), and again only if a plugin
+  // registers or unloads while the menu is up.
+  const composerSections = useMemo(
+    () =>
+      composerTarget && composerContributions.length
+        ? resolveComposerMenuSections(composerContributions, composerTarget)
+        : [],
+    [composerContributions, composerTarget]
+  )
 
   useEffect(() => {
-    // stopPropagation beats other renderer handlers; preventDefault is never
-    // called because Chromium emits the main-process context-menu event (the
-    // spellcheck + image-coordinate source) only for unprevented gestures —
-    // and with no Menu.popup anywhere, "default" means no menu at all.
+    // Electron needs unprevented gestures for main-process spellcheck and
+    // image coordinates. Webapp must cancel the browser's native menu when
+    // we own the gesture, or it opens alongside the app menu.
     const onContextMenu = (event: MouseEvent) => {
       const element = event.target instanceof Element ? event.target : null
 
-      // Surfaces with their own Radix context menu keep the whole gesture.
-      // Guard the dedicated marker first: Radix `asChild` Slot merges
-      // `mergeProps(slotProps, childProps)` so the child's `data-slot` wins
-      // (status bar footer is `data-slot="statusbar"`). The marker is stamped
-      // after `{...props}` on ContextMenuTrigger and is not overwritten.
-      if (element?.closest(`[${HERMES_CONTEXT_MENU_TRIGGER_ATTR}], [data-slot="context-menu-trigger"]`)) {
+      // Stop pane/row fallback menus without cancelling the native menu.
+      // Explicit app actions live in More.
+      if (isBrowserOwnedTouch(event)) {
+        event.stopPropagation()
+
+        return
+      }
+
+      const trigger = element?.closest(`[${HERMES_CONTEXT_MENU_TRIGGER_ATTR}], [data-slot="context-menu-trigger"]`)
+
+      // Only the pane-body wrapper is a fallback menu. Explicit row, tab and
+      // status-bar menus still own their whole gesture, even inside a pane.
+      if (trigger && !trigger.hasAttribute('data-zone-body')) {
+        return
+      }
+
+      // Browser-owned media controls need their native context menu, including
+      // save and picture-in-picture actions. Chromium can retarget a control
+      // hit through the media element's UA shadow tree, so inspect the whole
+      // composed path instead of relying only on event.target.
+      if (isBrowserHostedDesktop() && isNativeMediaContextMenu(event)) {
+        return
+      }
+
+      // The Star Map owns node hits, but empty canvas space still reaches the
+      // shell fallback below. A canvas-wide opt-out would lose that fallback.
+      if (openStarMapNodeMenuFor(element, event.clientX, event.clientY)) {
+        event.preventDefault()
+        event.stopPropagation()
+
         return
       }
 
@@ -639,14 +640,30 @@ export function AppContextMenu() {
       const terminal = terminalMenuHandleFor(element)
 
       if (terminal) {
-        event.stopPropagation()
+        claimContextMenuGesture(event)
         openTerminalContextMenu(event.clientX, event.clientY, terminal)
 
         return
       }
 
       const target = resolveDomTarget(element)
-      const owned = Boolean(target.linkUrl || target.onImage || target.editable || target.selectionText)
+      const selection = window.getSelection()
+
+      const selected = Boolean(
+        target.selectionText &&
+        element &&
+        selection &&
+        Array.from({ length: selection.rangeCount }, (_, index) => selection.getRangeAt(index)).some(range =>
+          range.intersectsNode(element)
+        )
+      )
+
+      const owned = Boolean(target.linkUrl || target.onImage || target.editable || selected)
+
+      // A selection elsewhere in the same pane must not take its bare menu.
+      if (!owned && trigger) {
+        return
+      }
 
       // The reaction bubble owns bare right-clicks; a link inside it still
       // opens the link menu.
@@ -654,7 +671,7 @@ export function AppContextMenu() {
         return
       }
 
-      event.stopPropagation()
+      claimContextMenuGesture(event)
       openDomContextMenu(event.clientX, event.clientY, target)
     }
 
@@ -676,7 +693,9 @@ export function AppContextMenu() {
       ? terminalSections(open, t)
       : open.kind === 'guest'
         ? guestSections(open, t)
-        : (list => (list.length ? list : shellSections({ navigate, t })))(domSections(open, t))
+        : (list => (list.length ? list : [[<ShellMenuItems key="shell" kit={DROPDOWN_KIT} />]]))(
+            domSections(open, t, composerSections)
+          )
 
   return (
     <DropdownMenu

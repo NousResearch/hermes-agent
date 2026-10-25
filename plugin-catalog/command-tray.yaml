@@ -1,0 +1,25 @@
+name: command-tray
+repo: https://github.com/aydnOktay/hermes-command-tray
+sha: f28afd1e21dd9ac18756a4ec8d48e8a0f6889ce2
+description: >-
+  Session command tray — shell commands the Hermes agent ran via the terminal tool (success and
+  failure). Desktop pane and /commands. No API keys. Disclosure — records terminal commands with
+  exit code, workdir and a 160-char redacted output preview to
+  $HERMES_HOME/plugin-data/command-tray/state.json; the Desktop pane inserts text through Hermes
+  Desktop's internal hermes:composer-insert event (not a public SDK API) with clipboard fallback;
+  no network.
+maintainer: aydnOktay
+tier: community
+category: desktop
+requires_hermes: ">=0.21"
+docs_url: https://github.com/aydnOktay/hermes-command-tray
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+  - command_tray_list
+  - command_tray_clear
+  provides_hooks:
+  - post_tool_call
+  provides_middleware: []
+  requires_env: []

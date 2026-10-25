@@ -29,7 +29,7 @@ export {
 export { GridAreas, WidgetGrid } from '../components/widgetGrid.js'
 
 export { gauge, hbars, sparkline, sparkRows } from '../lib/charts.js'
-export { contrastRatio, liftForContrast, mix, relativeLuminance } from '../lib/color.js'
+export { liftForContrast } from '../lib/color.js'
 // Layout engine
 export {
   type GridAreaItem,
@@ -43,8 +43,8 @@ export {
   type WidgetGridLayout,
   type WidgetGridLayoutOptions
 } from '../lib/widgetGrid.js'
-
 export type { Theme, ThemeColors } from '../theme.js'
+
 // App contract + host
 export {
   ActiveWidgetSlot,
@@ -67,3 +67,4 @@ export {
   type WidgetRenderCtx
 } from './types.js'
 export { loadUserWidgets, type UserWidgetLoadResult, widgetSdk, type WidgetSdk } from './userWidgets.js'
+export { contrastRatio, mix, relativeLuminance } from '@hermes/shared/color'

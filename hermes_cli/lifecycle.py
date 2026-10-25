@@ -9,6 +9,10 @@ logger = logging.getLogger(__name__)
 
 
 def _observe(hook_name: str, **kwargs: Any) -> None:
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return
     try:
         from hermes_cli.observability import observe_lifecycle
 
@@ -17,20 +21,37 @@ def _observe(hook_name: str, **kwargs: Any) -> None:
         logger.warning("Built-in observability hook failed", exc_info=True)
 
 
-def _plugin_hooks(hook_name: str, **kwargs: Any) -> List[Any]:
+def _plugin_hooks(hook_name: str, **kwargs: Any) -> list[Any]:
     from hermes_cli import plugins
 
     return plugins.invoke_hook(hook_name, **kwargs)
 
 
-def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
+def invoke_hook(hook_name: str, **kwargs: Any) -> list[Any]:
     """Notify first-party observers, then invoke compatibility plugin hooks."""
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return []
     _observe(hook_name, **kwargs)
     return _plugin_hooks(hook_name, **kwargs)
 
 
+async def ainvoke_hook(hook_name: str, **kwargs: Any) -> list[Any]:
+    """:func:`invoke_hook` for callers on an event loop: same observers-then-plugins
+    composition, with ``async def`` plugin callbacks awaited on that loop."""
+    _observe(hook_name, **kwargs)
+    from hermes_cli import plugins
+
+    return await plugins.ainvoke_hook(hook_name, **kwargs)
+
+
 def has_hook(hook_name: str) -> bool:
     """Return whether a first-party observer or plugin consumes a hook."""
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return False
     try:
         from hermes_cli.observability import handles_hook
 
@@ -44,7 +65,20 @@ def has_hook(hook_name: str) -> bool:
     return plugins.has_hook(hook_name)
 
 
-def finalize_session(**kwargs: Any) -> List[Any]:
+def session_end_messages(results: Any) -> list[str]:
+    """User-facing text from ``on_session_finalize`` results: a non-empty ``str`` or ``{"message": str}``.
+
+    Surfaces show these out-of-band (CLI print, TUI system line, gateway chat send) — never as a model
+    turn. ``on_session_end`` is per-turn and stays observer-only."""
+    messages: list[str] = []
+    for result in results or ():
+        text = result.get("message") if isinstance(result, dict) else result
+        if isinstance(text, str) and text.strip():
+            messages.append(text.strip())
+    return messages
+
+
+def finalize_session(**kwargs: Any) -> list[Any]:
     """Notify observers and hard-close one core-owned Relay conversation."""
     _observe("on_session_finalize", **kwargs)
 

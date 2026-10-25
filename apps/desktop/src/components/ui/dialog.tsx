@@ -23,11 +23,18 @@ function DialogClose({ ...props }: React.ComponentProps<typeof DialogPrimitive.C
   return <DialogPrimitive.Close data-slot="dialog-close" {...props} />
 }
 
-function DialogOverlay({ className, ...props }: React.ComponentProps<typeof DialogPrimitive.Overlay>) {
+function DialogOverlay({
+  className,
+  blur = true,
+  ...props
+}: React.ComponentProps<typeof DialogPrimitive.Overlay> & {
+  blur?: boolean
+}) {
   return (
     <DialogPrimitive.Overlay
       className={cn(
-        'fixed inset-0 z-(--z-modal-backdrop) pointer-events-auto bg-black/22 backdrop-blur-[0.125rem] data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0',
+        'fixed inset-0 z-(--z-modal-backdrop) pointer-events-auto bg-black/22 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0',
+        blur && 'backdrop-blur-[0.125rem]',
         className
       )}
       data-slot="dialog-overlay"
@@ -62,18 +69,49 @@ export function preventCloseButtonAutoFocus(event: Event) {
   event.preventDefault()
 }
 
+// The dialog's top-right X. Radix Close routes through the modal's
+// onOpenChange, same path as Escape. Exported for bespoke Radix shells (the
+// boot-failure overlay) that can't use DialogContent but want the same X.
+function DialogCloseButton() {
+  const { t } = useI18n()
+
+  return (
+    <DialogPrimitive.Close asChild data-slot="dialog-close-button">
+      <Button
+        aria-label={t.common.close}
+        className="absolute right-2.5 top-2.5 z-20 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
+        size="icon-xs"
+        variant="ghost"
+      >
+        <X className="size-4" />
+        <span className="sr-only">{t.common.close}</span>
+      </Button>
+    </DialogPrimitive.Close>
+  )
+}
+
 function DialogContent({
   className,
   bodyClassName,
   children,
   showCloseButton = true,
   fitContent = false,
+  blurBackdrop = true,
   banner,
   bannerTone = 'error',
+  chrome,
+  overlayClassName,
   onOpenAutoFocus,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
+  // Backdrop skin, e.g. a heavier scrim for media viewers.
+  overlayClassName?: string
+  // Controls pinned to the shell rather than the scrolling body (e.g. prev/next
+  // pagers). The shell doesn't clip, so these may sit past its edges.
+  chrome?: React.ReactNode
+  // Keep the underlying task readable for context-sensitive prompts.
+  blurBackdrop?: boolean
   // Size the dialog to its content (capped at the viewport) instead of the
   // default fixed `max-w-lg`. For content that has no intrinsic width (grids,
   // full-width inputs) pair it with a `min-w-*` in `className`.
@@ -88,8 +126,6 @@ function DialogContent({
   banner?: React.ReactNode
   bannerTone?: DialogBannerTone
 }) {
-  const { t } = useI18n()
-
   const widthClass = fitContent ? 'w-auto max-w-[92vw]' : 'w-full max-w-lg'
 
   // Publish the dialog's content node so popovers (Select / Popover /
@@ -101,24 +137,23 @@ function DialogContent({
   // the node mounts.
   const [contentNode, setContentNode] = React.useState<HTMLElement | null>(null)
 
+  // Opened from inside another dialog (e.g. an image lightbox over a detail
+  // modal): both layers step above the parent so its scrim dims the parent too.
+  // Shared z tokens alone would slot this backdrop under the parent's content.
+  const nested = React.useContext(DialogPortalContainerContext) !== null
+
+  const overlay = (
+    <DialogOverlay blur={blurBackdrop} className={cn(nested && 'z-[calc(var(--z-modal)+1)]', overlayClassName)} />
+  )
+
+  const layerClass = nested && 'z-[calc(var(--z-modal)+2)]'
+
   // No default here — Radix's normal autofocus (first focusable element, often
   // an input) is what most dialogs want. Dialogs with no input should pass
   // `onOpenAutoFocus={preventCloseButtonAutoFocus}` explicitly instead.
 
-  // No tip on the X — the glyph is the label. Keep aria-label / sr-only for a11y.
-  const closeButton = showCloseButton ? (
-    <DialogPrimitive.Close asChild data-slot="dialog-close-button">
-      <Button
-        aria-label={t.common.close}
-        className="absolute right-2.5 top-2.5 z-20 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
-        size="icon-xs"
-        variant="ghost"
-      >
-        <X className="size-4" />
-        <span className="sr-only">{t.common.close}</span>
-      </Button>
-    </DialogPrimitive.Close>
-  ) : null
+  // No tip on the X — the glyph is the label (DialogCloseButton keeps aria-label / sr-only).
+  const closeButton = showCloseButton ? <DialogCloseButton /> : null
 
   // With a banner, the border can't live on the scroll/clip box (it would draw a
   // line around the banner too). The white body keeps its own bottom radius and
@@ -127,7 +162,7 @@ function DialogContent({
   if (banner) {
     return (
       <DialogPortal>
-        <DialogOverlay />
+        {overlay}
         <DialogPrimitive.Content
           className={cn(
             // The same split as the plain variant. The shell must not clip,
@@ -135,6 +170,7 @@ function DialogContent({
             // below has its own `overflow-hidden`, which rounds its corners.
             'fixed left-1/2 top-1/2 z-(--z-modal) pointer-events-auto flex max-h-[85vh] -translate-x-1/2 -translate-y-1/2 flex-col rounded-xl bg-(--ui-chat-bubble-background) text-[length:var(--conversation-text-font-size)] text-foreground shadow-nous duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
             widthClass,
+            layerClass,
             className,
             // Callers often pass `gap-*` for the no-banner grid layout — suppress
             // it here so the banner can tuck under the body's rounded bottom edge.
@@ -169,6 +205,7 @@ function DialogContent({
             >
               {banner}
             </div>
+            {chrome}
             {closeButton}
           </DialogPortalContainerContext.Provider>
         </DialogPrimitive.Content>
@@ -178,7 +215,7 @@ function DialogContent({
 
   return (
     <DialogPortal>
-      <DialogOverlay />
+      {overlay}
       <DialogPrimitive.Content
         className={cn(
           // The SHELL: position, size, and skin. It has no overflow of its own,
@@ -189,6 +226,7 @@ function DialogContent({
           // past the edge of that box.
           'fixed left-1/2 top-1/2 z-(--z-modal) pointer-events-auto flex max-h-[85vh] -translate-x-1/2 -translate-y-1/2 flex-col rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) text-[length:var(--conversation-text-font-size)] text-foreground shadow-nous duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
           widthClass,
+          layerClass,
           className
         )}
         data-slot="dialog-content"
@@ -212,6 +250,7 @@ function DialogContent({
           >
             {children}
           </div>
+          {chrome}
           {closeButton}
         </DialogPortalContainerContext.Provider>
       </DialogPrimitive.Content>
@@ -282,6 +321,7 @@ function DialogDescription({ className, ...props }: React.ComponentProps<typeof 
 export {
   Dialog,
   DialogClose,
+  DialogCloseButton,
   DialogContent,
   DialogDescription,
   DialogFooter,

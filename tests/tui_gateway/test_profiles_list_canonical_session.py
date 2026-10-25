@@ -26,7 +26,11 @@ Contract under test:
 
 from __future__ import annotations
 
+import json
+
 import pytest
+
+from agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY
 
 import tui_gateway.server as srv
 
@@ -192,6 +196,90 @@ def test_canonical_session_ignores_unmarked_normal_child(home):
     assert canonical["resolved_id"] == "root1"
     assert canonical["title"] == "Bot Chat"
     assert "canonical bot content" in canonical["preview"]
+
+
+# ---------------------------------------------------------------------------
+# live_message_count: the count the roster's history wait can trust
+# ---------------------------------------------------------------------------
+
+
+def _fold_all_rows(db, sid):
+    """Fold every row of one session the way an orphaned compaction mark does."""
+    with db._lock:
+        db._conn.execute(
+            "UPDATE messages SET active = 0, _compressed_summary = 1 WHERE session_id = ?", (sid,))
+
+
+def test_canonical_session_live_count_zero_when_all_rows_folded(home):
+    db = _db(home)
+    _add_session(db, "foldedchat", title="Bot Chat", ts=1000,
+                 text="folded away", hidden=True)
+    _fold_all_rows(db, "foldedchat")
+    db.close()
+
+    canonical = _row(_profiles({}), "default")["canonical_session"]
+
+    # The denormalized total still advertises history no reader can serve...
+    assert canonical["message_count"] > 0
+    # ...while the paintable count says the open must not wait for a transcript.
+    assert canonical["live_message_count"] == 0
+
+
+def test_canonical_session_live_count_skips_model_only_rows_like_the_reader(home):
+    """Micro-compaction's model-only rows never paint, so they must not make the open wait."""
+    db = _db(home)
+    _add_session(db, "modelonly", title="Bot Chat", ts=1000, text="for the model", hidden=True)
+    with db._lock:
+        db._conn.execute("UPDATE messages SET display_metadata = ? WHERE session_id = ?",
+                         (json.dumps({MODEL_ONLY_DISPLAY_METADATA_KEY: True}), "modelonly"))
+    painted = db.get_messages_as_conversation("modelonly", include_compacted=True)
+    db.close()
+
+    canonical = _row(_profiles({}), "default")["canonical_session"]
+
+    assert canonical["live_message_count"] == len(painted) == 0
+
+
+def test_canonical_session_live_count_counts_paintable_rows(home):
+    db = _db(home)
+    _add_session(db, "livechat", title="Bot Chat", ts=1000,
+                 text="still painted", hidden=True)
+    db.close()
+
+    canonical = _row(_profiles({}), "default")["canonical_session"]
+
+    assert canonical["message_count"] == 1
+    assert canonical["live_message_count"] == 1
+
+
+def test_session_list_title_lookup_reports_live_count(home, monkeypatch):
+    # The click path's exact-title lookup carries the same field.
+    db = _db(home)
+    _add_session(db, "folded2", title="Bot Chat", ts=1000,
+                 text="click target", hidden=True)
+    _fold_all_rows(db, "folded2")
+    monkeypatch.setattr(srv, "_get_db", lambda: db)
+
+    envelope = srv._methods["session.list"](1, {"title": "Bot Chat"})
+    sessions = envelope["result"]["sessions"]
+
+    assert len(sessions) == 1
+    assert sessions[0]["message_count"] > 0
+    assert sessions[0]["live_message_count"] == 0
+    db.close()
+
+
+def test_profiles_list_last_session_reports_live_count(home):
+    db = _db(home)
+    _add_session(db, "visible", title="Scratch", ts=1000, text="ordinary content")
+    _fold_all_rows(db, "visible")
+    db.close()
+
+    row = _row(_profiles({}), "default")
+
+    assert row["last_session"]["id"] == "visible"
+    assert row["last_session"]["message_count"] > 0
+    assert row["last_session"]["live_message_count"] == 0
 
 
 # ---------------------------------------------------------------------------

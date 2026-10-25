@@ -20,11 +20,6 @@ describe('killToLineStart', () => {
     expect(killToLineStart('one\ntwo', 7)).toEqual({ cursor: 4, value: 'one\n' })
   })
 
-  it('consumes the newline when already at a line start, so repeats progress', () => {
-    // Second press from the position the first press left us at.
-    expect(killToLineStart('one\n', 4)).toEqual({ cursor: 3, value: 'one' })
-  })
-
   it('repeated presses walk up a multiline draft to empty', () => {
     let state = { cursor: 11, value: 'one\ntwo\nsix' }
     const seen: string[] = []

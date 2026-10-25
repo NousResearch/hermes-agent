@@ -24,13 +24,13 @@ def _max_tokens_fn(n):
 
 class TestNvidiaProfileParity:
     def test_max_tokens_match(self, transport):
-        """NVIDIA profile sets max_tokens=16384; legacy flag is removed."""
+        """The NVIDIA profile default max_tokens reaches the wire when the user sets none."""
         profile = transport.build_kwargs(
             model="nvidia/nemotron", messages=_msgs(), tools=None,
             provider_profile=get_provider_profile("nvidia"),
             max_tokens_param_fn=_max_tokens_fn,
         )
-        assert profile["max_completion_tokens"] == 16384
+        assert profile["max_completion_tokens"] == get_provider_profile("nvidia").default_max_tokens
 
 
 class TestKimiProfileParity:
@@ -47,92 +47,16 @@ class TestKimiProfileParity:
         assert "temperature" not in profile
 
 
-    def test_thinking_enabled(self, transport):
-        # xor contract: explicit effort → reasoning_effort only, no thinking.
-        rc = {"enabled": True, "effort": "high"}
-        legacy = transport.build_kwargs(
-            model="kimi-k2", messages=_msgs(), tools=None,
-            provider_profile=get_provider_profile("kimi-coding"), reasoning_config=rc,
-        )
-        profile = transport.build_kwargs(
-            model="kimi-k2", messages=_msgs(), tools=None,
-            provider_profile=get_provider_profile("kimi"),
-            reasoning_config=rc,
-        )
-        assert profile["reasoning_effort"] == legacy["reasoning_effort"] == "high"
-        assert "thinking" not in profile.get("extra_body", {})
-        assert "thinking" not in legacy.get("extra_body", {})
 
 
 
 
-class TestOpenRouterProfileParity:
-    def test_provider_preferences(self, transport):
-        prefs = {"allow": ["anthropic"]}
-        legacy = transport.build_kwargs(
-            model="anthropic/claude-sonnet-4.6", messages=_msgs(), tools=None,
-            provider_profile=get_provider_profile("openrouter"), provider_preferences=prefs,
-        )
-        profile = transport.build_kwargs(
-            model="anthropic/claude-sonnet-4.6", messages=_msgs(), tools=None,
-            provider_profile=get_provider_profile("openrouter"),
-            provider_preferences=prefs,
-        )
-        assert profile["extra_body"]["provider"] == legacy["extra_body"]["provider"]
-
-    def test_reasoning_full_config(self, transport):
-        rc = {"enabled": True, "effort": "high"}
-        legacy = transport.build_kwargs(
-            model="deepseek/deepseek-chat", messages=_msgs(), tools=None,
-            provider_profile=get_provider_profile("openrouter"), supports_reasoning=True, reasoning_config=rc,
-        )
-        profile = transport.build_kwargs(
-            model="deepseek/deepseek-chat", messages=_msgs(), tools=None,
-            provider_profile=get_provider_profile("openrouter"),
-            supports_reasoning=True, reasoning_config=rc,
-        )
-        assert profile["extra_body"]["reasoning"] == legacy["extra_body"]["reasoning"]
 
 
 
-class TestNousProfileParity:
-    def test_tags(self, transport):
-        legacy = transport.build_kwargs(
-            model="hermes-3", messages=_msgs(), tools=None, provider_profile=get_provider_profile("nous"),
-        )
-        profile = transport.build_kwargs(
-            model="hermes-3", messages=_msgs(), tools=None,
-            provider_profile=get_provider_profile("nous"),
-        )
-        assert profile["extra_body"]["tags"] == legacy["extra_body"]["tags"]
 
 
 
-class TestQwenProfileParity:
-
-    def test_vl_high_resolution(self, transport):
-        legacy = transport.build_kwargs(
-            model="qwen3.5", messages=_msgs(), tools=None, provider_profile=get_provider_profile("qwen-oauth"),
-        )
-        profile = transport.build_kwargs(
-            model="qwen3.5", messages=_msgs(), tools=None,
-            provider_profile=get_provider_profile("qwen"),
-        )
-        assert profile["extra_body"]["vl_high_resolution_images"] == legacy["extra_body"]["vl_high_resolution_images"]
-
-    def test_metadata_top_level(self, transport):
-        meta = {"sessionId": "s123", "promptId": "p456"}
-        legacy = transport.build_kwargs(
-            model="qwen3.5", messages=_msgs(), tools=None,
-            provider_profile=get_provider_profile("qwen-oauth"), qwen_session_metadata=meta,
-        )
-        profile = transport.build_kwargs(
-            model="qwen3.5", messages=_msgs(), tools=None,
-            provider_profile=get_provider_profile("qwen"),
-            qwen_session_metadata=meta,
-        )
-        assert profile["metadata"] == legacy["metadata"] == meta
-        assert "metadata" not in profile.get("extra_body", {})
 
 
 

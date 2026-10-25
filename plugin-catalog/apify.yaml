@@ -1,0 +1,22 @@
+name: apify
+repo: https://github.com/apify/apify-hermes-agent-plugin
+sha: a3a7af0c0dda9fdac79d67fb0a7a50b7a39cd91d
+description: 'Apify, the largest marketplace of tools for AI: discover, run, and collect results from
+  thousands of ready-to-run Actors, from the comfort of your agent, plus an Apify backend for the
+  built-in web_search and web_extract tools.'
+maintainer: apify
+title: Apify
+version: "0.1.5"
+image: https://raw.githubusercontent.com/apify/apify-hermes-agent-plugin/a3a7af0c0dda9fdac79d67fb0a7a50b7a39cd91d/assets/banner.png
+tier: community
+category: web
+docs_url: https://docs.apify.com/integrations/hermes-agent
+capabilities:
+  provides_tools:
+  - apify_discover
+  - apify_start
+  - apify_collect
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - APIFY_API_TOKEN

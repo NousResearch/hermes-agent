@@ -68,7 +68,17 @@ async function resolveTerminalConnectionForSender(webContentsId, getTarget, ensu
  *  re-enters before-quit with an empty map. Without `inFlight`, Electron
  *  exits while disconnect is running and the detached serve --isolated
  *  stays at pid 1 (post-#95085 leftover on #91668: window X on Windows). */
-function sshQuitShouldBlock({ teardownDone, connectionCount, bootstrapPending, inFlight }) {
+function sshQuitShouldBlock({
+  teardownDone,
+  connectionCount,
+  bootstrapPending,
+  inFlight
+}: {
+  teardownDone: boolean
+  connectionCount: number
+  bootstrapPending: number
+  inFlight: Promise<unknown> | null
+}): boolean {
   if (teardownDone) {
     return false
   }

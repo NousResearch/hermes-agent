@@ -6,7 +6,7 @@ the same inventory + live enable/disable contract as runtime plugins.
 
 Keep this tree for real shipped plugins (and the small authoring fixtures that
 dogfood the SDK). One-off demos that rebuild a core chrome piece 1:1 do not
-belong here — they double the UI and confuse Settings ▸ Plugins. Publish those
+belong here — they double the UI and confuse Capabilities ▸ Plugins. Publish those
 in the companion
 [`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins)
 repo instead.

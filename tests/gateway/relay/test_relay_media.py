@@ -120,7 +120,7 @@ async def test_local_path_lanes_upload_first(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_op_gating_falls_back_when_not_advertised(tmp_path: Path):
     # Connector advertises only the legacy ops — send_media must never hit the wire.
-    adapter, stub, fake = _adapter(
+    adapter, stub, _fake = _adapter(
         supported_ops=("send", "edit", "typing", "get_chat_info")
     )
     result = await adapter.send_image("chat1", "https://x.io/a.png", caption="hi")
@@ -136,7 +136,7 @@ async def test_op_gating_falls_back_when_not_advertised(tmp_path: Path):
 
 
 def _make_event(media_urls):
-    from gateway.platforms.base import MessageEvent, MessageType
+    from gateway.platforms.event import MessageEvent, MessageType
     from gateway.session import SessionSource
 
     return MessageEvent(
@@ -205,7 +205,7 @@ async def test_download_sends_a_user_agent_on_every_request():
         def __exit__(self, *_a):
             return False
 
-    def _fake_urlopen(req, timeout=None):  # noqa: ARG001
+    def _fake_urlopen(req, timeout=None):
         seen.append(dict(req.headers))
         return _Resp()
 
@@ -276,7 +276,7 @@ async def test_download_routes_auth_decision_through_is_relay_media_url(monkeypa
         def __exit__(self, *_a):
             return False
 
-    def _fake_urlopen(req, timeout=None):  # noqa: ARG001
+    def _fake_urlopen(req, timeout=None):
         seen.append(dict(req.headers))
         return _Resp()
 

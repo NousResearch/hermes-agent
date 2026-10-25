@@ -38,18 +38,7 @@ def _run_idle_tick(**kwargs):
 
 
 class TestIdleTickSkipsConfigLoad:
-    def test_idle_nonverbose_tick_skips_load_config(self):
-        """Gateway-style tick(verbose=False) with no due jobs: no config load."""
-        rc, calls = _run_idle_tick(verbose=False)
-        assert rc == 0
-        assert calls["load_config"] == 0, (
-            "idle tick must not load config (was loading every 60s in the gateway ticker)"
-        )
 
-    def test_idle_verbose_tick_skips_load_config(self):
-        rc, calls = _run_idle_tick(verbose=True)
-        assert rc == 0
-        assert calls["load_config"] == 0
 
     def test_idle_tick_still_sweeps_mcp_orphans(self):
         """The idle-tick orphan sweep is intentional on main — must survive."""

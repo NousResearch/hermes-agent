@@ -26,6 +26,8 @@ import { createOnigurumaEngine } from 'shiki/engine/oniguruma'
 import { SHIKI_HIGHLIGHT_SCOPE, SHIKI_THEME } from '@/components/chat/shiki-config'
 import { highlightCache, highlightCacheKey } from '@/components/chat/shiki-highlight-cache'
 
+import { PlainShiki } from './shiki-plain'
+
 /** Same debounce react-shiki's `delay` used to throttle highlight work with. */
 const HIGHLIGHT_DELAY_MS = 120
 
@@ -164,9 +166,10 @@ export default function CachedShikiBlock({ language, code, theme, colorReplaceme
   }, [cacheKey, code, language, replacements, themeConfig])
 
   if (html === null) {
-    // Nothing to paint yet (miss, debounce pending). Matches react-shiki's
-    // own empty render while the highlight is in flight.
-    return null
+    // Keep the same pre/code geometry during the debounce. An empty render
+    // collapses every cold code card, then shifts the transcript when color
+    // arrives. React escapes the payload; only highlighting uses cached HTML.
+    return <PlainShiki code={code} />
   }
 
   return <div className="rs-root not-prose" dangerouslySetInnerHTML={{ __html: html }} data-testid="shiki-container" />

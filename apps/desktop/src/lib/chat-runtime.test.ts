@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import type { ChatMessage, ChatMessagePart } from '@/lib/chat-messages'
 import type { ComposerAttachment } from '@/store/composer'
@@ -8,49 +8,109 @@ import {
   attachmentId,
   coalesceToolOnlyAssistants,
   coerceThinkingText,
+  createClientSessionState,
   createToolMergeCache,
+  isSlashCommandText,
   messageCreatedAt,
   optimisticAttachmentRef,
-  parseCommandDispatch,
-  parseSlashCommand,
+  personalityNamesFromConfig,
+  stripAttachmentRefs,
   toRuntimeMessage
 } from './chat-runtime'
 
 const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
 const THUMB_URL = 'data:image/png;base64,dGh1bWI='
 
+describe('createClientSessionState', () => {
+  it('anchors a fresh runtime to its creation time', () => {
+    const createdAt = 1_700_000_000_000
+    const now = vi.spyOn(Date, 'now').mockReturnValue(createdAt)
+
+    try {
+      expect(createClientSessionState('stored-1').runtimeStartedAt).toBe(createdAt)
+    } finally {
+      now.mockRestore()
+    }
+  })
+})
+
 function attachment(overrides: Partial<ComposerAttachment> & Pick<ComposerAttachment, 'kind'>): ComposerAttachment {
   return { id: 'a', label: 'file.png', ...overrides }
 }
 
 describe('optimisticAttachmentRef', () => {
-  it('renders an image from its in-hand base64 preview (no @image: path ref)', () => {
+  it('renders a path-backed image through the same @image: ref as a reloaded turn (#93204)', () => {
     const ref = optimisticAttachmentRef(attachment({ kind: 'image', detail: '/tmp/shot.png', previewUrl: DATA_URL }))
 
-    // The raw data URL flows through extractEmbeddedImages → inline thumbnail,
-    // dodging the remote /api/media 403 an @image:<localpath> ref would hit.
-    expect(ref).toBe(DATA_URL)
+    // DirectiveImage paints a bounded thumbnail inline and hands the full file
+    // to the lightbox, so the in-flight bubble matches the reloaded turn instead
+    // of freezing on a 512px thumbnail. Remote gateways resolve the same path
+    // over the authenticated media API (no /api/media 403).
+    expect(ref).toBe('@image:/tmp/shot.png')
   })
 
-  it('prefers the downscaled thumbnail for the display ref when present', () => {
+  it('prefers the path ref even when a downscaled thumbnail is present (#93204)', () => {
     const ref = optimisticAttachmentRef(
-      attachment({ kind: 'image', detail: '/tmp/shot.png', previewUrl: DATA_URL, thumbnailUrl: THUMB_URL })
+      attachment({ kind: 'image', path: '/tmp/shot.png', previewUrl: DATA_URL, thumbnailUrl: THUMB_URL })
     )
 
-    // The bubble is display-only; full bytes are read on demand and for upload.
-    expect(ref).toBe(THUMB_URL)
+    // The thumbnail no longer caps fidelity: the path lets the lightbox load the
+    // original. Full bytes are read on demand and for upload.
+    expect(ref).toBe('@image:/tmp/shot.png')
   })
 
-  it('does not render a full path-backed image while its bounded thumbnail is pending', () => {
-    expect(optimisticAttachmentRef(attachment({ kind: 'image', detail: '/tmp/shot.png' }))).toBeNull()
+  it('emits the path ref for a freshly attached image before its thumbnail resolves (#93204)', () => {
+    // Previously this returned null (waiting on the resize); now the path drives
+    // an @image: ref that DirectiveImage renders bounded-inline immediately.
+    expect(optimisticAttachmentRef(attachment({ kind: 'image', detail: '/tmp/shot.png' }))).toBe('@image:/tmp/shot.png')
   })
 
-  it('does not use a path fallback for a non-data preview url', () => {
+  it('emits the path ref regardless of a non-data preview url (#93204)', () => {
     const ref = optimisticAttachmentRef(
       attachment({ kind: 'image', detail: '/tmp/shot.png', previewUrl: 'https://example.com/x.png' })
     )
 
-    expect(ref).toBeNull()
+    expect(ref).toBe('@image:/tmp/shot.png')
+  })
+
+  it('falls back to the bounded thumbnail for a path-less pasted image', () => {
+    // No filesystem path to rehydrate from (raw clipboard bytes): keep the
+    // inline thumbnail so the bubble still renders something.
+    const ref = optimisticAttachmentRef(attachment({ kind: 'image', previewUrl: DATA_URL, thumbnailUrl: THUMB_URL }))
+
+    expect(ref).toBe(THUMB_URL)
+  })
+
+  it('falls back to a data preview url when a path-less image has no thumbnail', () => {
+    const ref = optimisticAttachmentRef(attachment({ kind: 'image', previewUrl: DATA_URL }))
+
+    expect(ref).toBe(DATA_URL)
+  })
+
+  it('returns null for a path-less image with no renderable inline source', () => {
+    expect(optimisticAttachmentRef(attachment({ kind: 'image', previewUrl: 'https://example.com/x.png' }))).toBeNull()
+  })
+
+  it('renders an OS-drop blob: preview as a markdown image (no IPC data URL)', () => {
+    const blobUrl = 'blob:https://desktop/preview-1'
+
+    const ref = optimisticAttachmentRef(
+      attachment({ kind: 'image', label: 'Lattice.png', detail: 'C:\\shot.png', previewUrl: blobUrl })
+    )
+
+    expect(ref).toBe(`![Lattice.png](${blobUrl})`)
+  })
+
+  it('percent-encodes a blob ref alt so brackets in a filename cannot break it', () => {
+    const blobUrl = 'blob:file:///07aa165b-55f6-4167-96c0-68f45ce7de27'
+
+    const ref = optimisticAttachmentRef(
+      attachment({ kind: 'image', label: 'shot[1].png', detail: '/tmp/shot[1].png', previewUrl: blobUrl })
+    )
+
+    // `]` in the raw label would end the alt span in the Markdown-image form
+    // the directive parser matches, leaking the raw expression into text.
+    expect(ref).toBe(`![shot%5B1%5D.png](${blobUrl})`)
   })
 
   it('passes non-image attachments straight through to attachmentDisplayText', () => {
@@ -68,10 +128,6 @@ describe('optimisticAttachmentRef', () => {
     expect(() => optimisticAttachmentRef(undefined as unknown as ComposerAttachment)).not.toThrow()
     expect(optimisticAttachmentRef(undefined as unknown as ComposerAttachment)).toBeNull()
   })
-
-  it('returns null for a null attachment instead of throwing', () => {
-    expect(optimisticAttachmentRef(null as unknown as ComposerAttachment)).toBeNull()
-  })
 })
 
 describe('attachmentDisplayText', () => {
@@ -79,38 +135,6 @@ describe('attachmentDisplayText', () => {
     expect(() => attachmentDisplayText(undefined as unknown as ComposerAttachment)).not.toThrow()
     expect(attachmentDisplayText(undefined as unknown as ComposerAttachment)).toBeNull()
     expect(attachmentDisplayText(null as unknown as ComposerAttachment)).toBeNull()
-  })
-
-  it('still resolves a normal file ref', () => {
-    expect(attachmentDisplayText(attachment({ kind: 'file', refText: '@file:src/a.ts' }))).toBe('@file:src/a.ts')
-  })
-
-  it('expands a review attachment into an anchored fenced block', () => {
-    const detail = JSON.stringify({
-      author: 'teknium1',
-      body: 'this cap looks wrong',
-      diffHunk: '@@ -1,2 +1,2 @@\n-const CAP = 5\n+const CAP = 50',
-      kind: 'review',
-      line: 12,
-      path: 'src/limits.ts',
-      prNumber: 123,
-      startLine: null,
-      url: 'https://github.com/o/r/pull/123#discussion_r1'
-    })
-
-    const block = attachmentDisplayText(attachment({ kind: 'review', detail, refText: '@url:`https://x`' }))
-
-    // The contract: anchor (file:line), author, body, and the hunk all ride.
-    expect(block).toContain('review-comment src/limits.ts:12')
-    expect(block).toContain('@teknium1')
-    expect(block).toContain('this cap looks wrong')
-    expect(block).toContain('const CAP = 50')
-  })
-
-  it('falls back to the url ref when a review detail is malformed', () => {
-    expect(attachmentDisplayText(attachment({ kind: 'review', detail: 'not json', refText: '@url:`https://x`' }))).toBe(
-      '@url:`https://x`'
-    )
   })
 })
 
@@ -126,72 +150,6 @@ describe('coerceThinkingText', () => {
         "◉_◉ processing... I don't see any current rewritten thinking or next thinking to process. Could you provide the thinking content you'd like me to rewrite?"
       )
     ).toBe('')
-  })
-})
-
-describe('parseCommandDispatch', () => {
-  it('keeps the notice on a send directive (e.g. /goal set)', () => {
-    // The backend's /goal set returns {type:send, notice:"⊙ Goal set …", message}.
-    // Dropping the notice made /goal look like it did nothing in the desktop app.
-    const parsed = parseCommandDispatch({ type: 'send', notice: '⊙ Goal set', message: 'do the thing' })
-
-    expect(parsed).toEqual({ type: 'send', message: 'do the thing', notice: '⊙ Goal set' })
-  })
-
-  it('keeps message-only send directives working (no notice)', () => {
-    expect(parseCommandDispatch({ type: 'send', message: 'hi' })).toEqual({
-      type: 'send',
-      message: 'hi',
-      notice: undefined
-    })
-  })
-
-  it('parses a prefill directive with its notice (e.g. /undo)', () => {
-    const parsed = parseCommandDispatch({ type: 'prefill', notice: 'backed up 1 turn', message: 'edit me' })
-
-    expect(parsed).toEqual({ type: 'prefill', message: 'edit me', notice: 'backed up 1 turn' })
-  })
-
-  it('rejects a prefill directive missing its message', () => {
-    expect(parseCommandDispatch({ type: 'prefill', notice: 'x' })).toBeNull()
-  })
-})
-
-describe('parseSlashCommand', () => {
-  it('parses a single-line command', () => {
-    expect(parseSlashCommand('/some-skill do something')).toEqual({
-      arg: 'do something',
-      name: 'some-skill'
-    })
-  })
-
-  it('keeps a multiline arg intact instead of failing the whole parse (#41323)', () => {
-    expect(parseSlashCommand('/goal Write a Python script\nthat prints Hello World')).toEqual({
-      arg: 'Write a Python script\nthat prints Hello World',
-      name: 'goal'
-    })
-  })
-
-  it('parses a skill command with a long pasted multi-paragraph context (#55510)', () => {
-    const context = 'summarize this:\n\nparagraph one\nparagraph two\n\nparagraph three'
-
-    expect(parseSlashCommand(`/some-skill ${context}`)).toEqual({
-      arg: context,
-      name: 'some-skill'
-    })
-  })
-
-  it('takes the name across a newline boundary like the CLI and gateway (split on any whitespace)', () => {
-    expect(parseSlashCommand('/goal\npasted block')).toEqual({ arg: 'pasted block', name: 'goal' })
-  })
-
-  it('keeps truly empty slash input empty', () => {
-    expect(parseSlashCommand('/')).toEqual({ arg: '', name: '' })
-    expect(parseSlashCommand('/   ')).toEqual({ arg: '', name: '' })
-  })
-
-  it('does not treat text after horizontal whitespace as a command name (CLI parity)', () => {
-    expect(parseSlashCommand('/ some words')).toEqual({ arg: '', name: '' })
   })
 })
 
@@ -305,5 +263,100 @@ describe('coalesceToolOnlyAssistants toolCallId uniqueness', () => {
       .map(part => (part as { toolCallId: string }).toolCallId)
 
     expect(ids).toEqual(['call-a', 'call-b'])
+  })
+})
+
+describe('personalityNamesFromConfig', () => {
+  it('reads root-level personalities the runtime honours (#123297)', () => {
+    expect(personalityNamesFromConfig({ personalities: { root_persona: '...' } })).toEqual(['root_persona'])
+  })
+
+  it('merges root and agent blocks, deduping name clashes', () => {
+    const names = personalityNamesFromConfig({
+      personalities: { root_persona: 'r', shared: 'root' },
+      agent: { personalities: { agent_persona: 'a', shared: 'agent' } }
+    })
+
+    // Direct array equality pins membership, dedupe, AND order in one assertion:
+    // `available_personalities()` inserts the root block before `agent.personalities`,
+    // and a clashing name keeps its first-insert (root) position, so the GUI listing
+    // must match that exact order.
+    expect(names).toEqual(['root_persona', 'shared', 'agent_persona'])
+  })
+
+  it('ignores non-object or array blocks', () => {
+    expect(personalityNamesFromConfig({ personalities: ['nope'], agent: { personalities: 'nope' } })).toEqual([])
+    expect(personalityNamesFromConfig(null)).toEqual([])
+  })
+
+  it('folds keys like the runtime: case/whitespace fold and dedupe, neutral names dropped', () => {
+    // The runtime (`available_personalities`) folds each key `str(name).strip().lower()`
+    // and skips the neutral spellings, so the dropdown must not offer a row the runtime
+    // never resolves. `Catgirl` and `catgirl` are one personality; `  Spaced  ` resolves
+    // to `spaced`; `none`/`default`/`neutral` resolve to nothing.
+    const names = personalityNamesFromConfig({
+      personalities: { Catgirl: 'r', '  Spaced  ': 'r', none: 'r', Default: 'r', NEUTRAL: 'r' },
+      agent: { personalities: { catgirl: 'a' } }
+    })
+
+    expect(names).toEqual(['catgirl', 'spaced'])
+  })
+})
+
+describe('stripAttachmentRefs', () => {
+  it('strips a single leading image ref line', () => {
+    expect(stripAttachmentRefs('@image:/tmp/screenshot.png\n\n/moa what is this?')).toBe('\n/moa what is this?')
+  })
+
+  it('strips multiple ref lines joined by a single newline (producer format)', () => {
+    expect(stripAttachmentRefs('@image:a.png\n@file:b.pdf\n\n/moa hi')).toBe('\n/moa hi')
+  })
+
+  it('strips backtick-quoted ref values (formatRefValue output for spaced paths)', () => {
+    expect(stripAttachmentRefs('@image:`C:\\Users\\John Doe\\photo.png`\n\n/moa hi')).toBe('\n/moa hi')
+  })
+
+  it('strips folder/terminal/line refs from the inline palette', () => {
+    expect(stripAttachmentRefs('@folder:`apps/desktop/`\n\n/moa hi')).toBe('\n/moa hi')
+    expect(stripAttachmentRefs('@terminal:main\n\n/status')).toBe('\n/status')
+    expect(stripAttachmentRefs('@line:src/a.ts:12\n\n/moa')).toBe('\n/moa')
+  })
+
+  it('does not strip a ref-looking token in the middle of the text', () => {
+    expect(stripAttachmentRefs('look at @image:x /moa hi')).toBe('look at @image:x /moa hi')
+  })
+
+  it('leaves plain text untouched', () => {
+    expect(stripAttachmentRefs('hello world')).toBe('hello world')
+  })
+
+  it('handles an empty string', () => {
+    expect(stripAttachmentRefs('')).toBe('')
+  })
+})
+
+describe('isSlashCommandText', () => {
+  it('detects a plain slash command', () => {
+    expect(isSlashCommandText('/new')).toBe(true)
+  })
+
+  it('detects a command after an image ref (composer wire format)', () => {
+    expect(isSlashCommandText('@image:/tmp/foo.png\n\n/moa something')).toBe(true)
+  })
+
+  it('detects a command after a folder ref from the inline palette', () => {
+    expect(isSlashCommandText('@folder:`apps/desktop/`\n\n/moa hi')).toBe(true)
+  })
+
+  it('detects a command after multiple refs with one newline each', () => {
+    expect(isSlashCommandText('@image:a.png\n@file:b.pdf\n\n/compress')).toBe(true)
+  })
+
+  it('rejects plain text that merely contains a slash later', () => {
+    expect(isSlashCommandText('what is this?')).toBe(false)
+  })
+
+  it('rejects a ref-only message (no command)', () => {
+    expect(isSlashCommandText('@image:/tmp/foo.png')).toBe(false)
   })
 })

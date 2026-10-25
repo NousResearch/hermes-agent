@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import signal
@@ -165,3 +166,83 @@ class TestParseSystemdDuration:
 # ---------------------------------------------------------------------------
 # check_systemd_timing_alignment
 # ---------------------------------------------------------------------------
+
+class TestCheckSystemdTimingAlignment:
+    @pytest.mark.parametrize(
+        "cgroup, user_timeout, system_timeout, expected_timeout, mismatch, user_manager",
+        [
+            ("0::/system.slice/hermes-gateway.service\n", "90s", "3min 30s", 210.0, False, False),
+            ("0::/system.slice/hermes-gateway.service\n", "210s", "90s", 90.0, True, False),
+            ("2:cpu:/\n1:name=systemd:/system.slice/hermes-gateway.service\n",
+             "90s", "210000000", 210.0, False, False),
+            ("0::/user.slice/user-1000.slice/user@1000.service/app.slice/hermes-gateway.service\n",
+             "3min 30s", "90s", 210.0, False, True),
+            ("0::/user.slice/user-1000.slice/user@1000.service/app.slice/hermes-gateway.service\n",
+             "90s", "210s", 90.0, True, True),
+            ("0::/user.slice/user-1000.slice/user@1000.service/system.slice/hermes-gateway.service\n",
+             "210s", "90s", 210.0, False, True),
+        ],
+    )
+    def test_timeout_comes_from_running_cgroup_manager(
+        self, monkeypatch, cgroup, user_timeout, system_timeout,
+        expected_timeout, mismatch, user_manager,
+    ):
+        """An inactive same-named unit in the other manager cannot mask the running unit."""
+        monkeypatch.setenv("INVOCATION_ID", "fixture-invocation")
+        monkeypatch.setattr(sf, "open", lambda *args, **kwargs: io.StringIO(cgroup), raising=False)
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            assert cmd == ["systemctl", *(["--user"] if "--user" in cmd else []),
+                           "show", "hermes-gateway.service", "--property=TimeoutStopUSec"]
+            timeout = user_timeout if "--user" in cmd else system_timeout
+            return subprocess.CompletedProcess(cmd, 0, f"TimeoutStopUSec={timeout}\n")
+
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+        result = sf.check_systemd_timing_alignment(180.0)
+
+        assert result == {
+            "unit": "hermes-gateway.service", "timeout_stop_sec": expected_timeout,
+            "drain_timeout": 180.0, "cron_drain_timeout": 30.0,
+            "expected_min": float(sf.resolve_systemd_timeout_stop_sec(180.0, 30.0)),
+            "mismatch": mismatch,
+        }
+        assert len(calls) == 1
+        assert ("--user" in calls[0]) is user_manager
+
+    @pytest.mark.parametrize("user_manager", [False, True])
+    @pytest.mark.parametrize("failure", ["exit", "oserror", "timeout", "unparseable"])
+    def test_unavailable_preferred_manager_keeps_existing_fallback(
+        self, monkeypatch, user_manager, failure,
+    ):
+        monkeypatch.setenv("INVOCATION_ID", "fixture-invocation")
+        cgroup_path = ("/user.slice/user-1000.slice/user@1000.service/app.slice"
+                       if user_manager else "/system.slice")
+        monkeypatch.setattr(
+            sf, "open", lambda *args, **kwargs: io.StringIO(
+                f"0::{cgroup_path}/hermes-gateway.service\n"), raising=False,
+        )
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if ("--user" in cmd) is user_manager:
+                if failure == "oserror":
+                    raise OSError("fixture manager unavailable")
+                if failure == "timeout":
+                    raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+                return subprocess.CompletedProcess(
+                    cmd, 1 if failure == "exit" else 0, "TimeoutStopUSec=unknown\n",
+                )
+            return subprocess.CompletedProcess(cmd, 0, "TimeoutStopUSec=3min 30s\n")
+
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+        result = sf.check_systemd_timing_alignment(180.0)
+
+        assert result is not None
+        assert result["timeout_stop_sec"] == 210.0
+        assert result["mismatch"] is False
+        assert len(calls) == 2
+        assert ("--user" in calls[0]) is user_manager
+        assert ("--user" in calls[1]) is not user_manager

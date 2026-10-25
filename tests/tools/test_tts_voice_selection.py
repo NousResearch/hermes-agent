@@ -70,6 +70,10 @@ def test_voice_id_reaches_elevenlabs_and_is_ignored_elsewhere(tmp_path):
                              "use case": "characters"},
                   "preview_url": "https://example.test/bram.mp3"}],
       "has_more": True, "next_page_token": "tok-2"}, "tok-2"),
+    ({}, "/v1/shared-voices",  # an empty object browses the library with the defaults
+     {"sort": "usage_character_count_1y", "page": 0, "page_size": 20},
+     {"voices": [{"voice_id": "lib2", "name": "Bram", "gender": "male", "accent": "scottish"}],
+      "has_more": False}, None),
 ])
 def test_find_voices_pages_both_sources(find, path, expected_params, body, next_page):
     calls = []
@@ -81,7 +85,10 @@ def test_find_voices_pages_both_sources(find, path, expected_params, body, next_
     with patch("tools.tts_tool._load_tts_config", return_value=_EL_CONFIG), \
          patch("tools.tts_tool._resolve_provider_key", return_value="el-test-key"), \
          patch("tools.tts_elevenlabs_voices.httpx.get", side_effect=fake_get):
-        result = json.loads(tts_tool.text_to_speech_tool("", find_voices=find))
+        from tools.registry import registry  # through the registered handler, as the model calls it
+        entry = registry.get_entry("text_to_speech")
+        assert entry is not None
+        result = json.loads(entry.handler({"find_voices": find}))
         bad_page = json.loads(tts_tool.text_to_speech_tool("", find_voices={"page": "tok-2"}))
     url, params, headers = calls[0]
     assert url == "https://api.elevenlabs.io" + path and headers["xi-api-key"] == "el-test-key"
@@ -90,7 +97,7 @@ def test_find_voices_pages_both_sources(find, path, expected_params, body, next_
     assert result["success"] and result["next_page"] == next_page
     assert row["gender"] == "male" and row["accent"] == "scottish"
     assert result["configured_voice_id"] == "configuredVoice001"
-    if path == "/v1/shared-voices":
+    if "total_count" in body:
         assert result["total"] == 812 and len(row["description"]) == 240 and row["credit_rate"] == 2
     assert not bad_page["success"] and len(calls) == 1  # a cursor token is not a library page
 

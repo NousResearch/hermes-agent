@@ -509,7 +509,7 @@ def text_to_speech_tool(
     sequentially, then packed against the platform's upload limit: a failed combine keeps the
     separate valid files and no over-limit artifact is ever returned. ``find_voices`` (ElevenLabs
     only) searches voices instead of speaking."""
-    if find_voices:
+    if find_voices is not None:  # {} = browse with the defaults
         return _find_voices(find_voices)
     if not text or not text.strip():
         return tool_error("Text is required", success=False)

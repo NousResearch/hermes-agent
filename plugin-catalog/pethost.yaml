@@ -1,0 +1,25 @@
+# Pethost's own package: the hermes/ folder of the repository the other agents install Pethost from.
+name: pethost
+title: Pethost
+repo: https://github.com/pethost-dev/plugin
+sha: b48e5ccdb3dc70fd60b0792158bfba6fa8387548
+subdir: hermes
+version: "1.7.0"
+maintainer: pethost-dev
+tier: community
+category: platform
+docs_url: https://github.com/pethost-dev/plugin/tree/main/hermes#readme
+readme: true
+# The package is a skill and an HTTPS connection; validated with v0.21.6 and v0.22.5 on Linux amd64.
+platforms: []
+description: "Deploy and run Docker Compose projects on Pethost with its skill and Pethost's hosted MCP server: deploys, logs and requests, rollbacks, backups and restores, domains and commands in containers. Disclosure — connects Hermes to Pethost's hosted MCP server (mcp.pethost.dev) with your PETHOST_API_TOKEN, an API token made in the Pethost panel that works until revoked; the server is marked untrusted so tools without a read-only annotation need approval; tools act on the account's machine (deploys, restarts, restores, deletions, commands in containers); the skill has Hermes run the upload and download commands a transfer returns (tar and curl) and fetch a deployed site to check it."
+known_issues:
+  - "An existing native mcp_servers.pethost configuration overrides the package connection and trust setting; the README's OAuth route relies on this."
+# MCP tools are discovered from the remote server; the package registers no native tools or hooks.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - PETHOST_API_TOKEN
+requires_hermes: ">=0.21.6"

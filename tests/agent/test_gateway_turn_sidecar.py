@@ -145,6 +145,37 @@ class TestConsumeIsOneShot:
 
 
 class TestStringContentSidecarDelivery:
+    def test_pre_llm_hook_receives_the_current_message_origin(self):
+        agent = _FakeAgent()
+        agent._turn_client_origin = "hermes-pilot"
+        captured = {}
+
+        def hook(_name, **kwargs):
+            captured.update(kwargs)
+            return []
+
+        with patch("hermes_cli.plugins.invoke_hook", side_effect=hook):
+            _build(agent)
+
+        assert captured["origin"] == "hermes-pilot"
+
+    def test_pre_llm_hook_gets_no_stale_origin_after_gateway_clears_it(self):
+        agent = _FakeAgent()
+        agent._turn_client_origin = "desktop"
+        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+            _build(agent)
+        agent._turn_client_origin = ""
+        captured = {}
+
+        def hook(_name, **kwargs):
+            captured.update(kwargs)
+            return []
+
+        with patch("hermes_cli.plugins.invoke_hook", side_effect=hook):
+            _build(agent)
+
+        assert captured["origin"] == ""
+
     def test_notes_ride_the_api_content_sidecar(self):
         """String user message: the note lands in the API copy only — the
         stored content stays clean and the sidecar persists the exact sent

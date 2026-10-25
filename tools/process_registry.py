@@ -1300,24 +1300,16 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             f"( nohup bash -lc {q(command)} > {q(log_path)} 2>&1; "
             f"rc=$?; printf '%s\\n' \"$rc\" > {q(exit_path)} ) & "
             f"echo $! > {q(pid_path)} && cat {q(pid_path)}")
-        try:
-            result = env.execute(bg_command, timeout=timeout, rewrite_compound_background=False)
-            output = result.get("output", "").strip()
-            session.pid = next((int(ln) for ln in map(str.strip, output.splitlines()) if ln.isdigit()), None)
-            # No PID from the wrapper (syntax error, broken redirect): a failed launch,
-            # not a fake running session.
-            if session.pid is None:
-                session.mark_exited(int(result.get("returncode", -1)) or -1, "failed_start", "failed_start")
-                session.output_buffer = output
-        except Exception as e:
-            session.mark_exited(-1, "failed_start", "failed_start")
-            session.output_buffer = f"Failed to start: {e}"
-        if session.exited:
-            with self._lock:
-                self._prune_if_needed()
-        else:
-            self._track_started(
-                session, self._env_poller_loop, f"proc-poller-{session.id}", (env, log_path, pid_path, exit_path))
+        result = env.execute(bg_command, cwd=cwd or "", timeout=timeout, rewrite_compound_background=False)
+        output = result.get("output", "").strip()
+        session.pid = next((int(ln) for ln in map(str.strip, output.splitlines()) if ln.isdigit()), None)
+        # No PID from the wrapper (no bash in the image, sandbox gone, broken redirect): the
+        # command never started, so raise like a failed Popen instead of returning a session.
+        if session.pid is None:
+            raise RuntimeError(f"launch wrapper exited {result.get('returncode')} without a PID: "
+                               f"{output or '(no output)'}")
+        self._track_started(
+            session, self._env_poller_loop, f"proc-poller-{session.id}", (env, log_path, pid_path, exit_path))
         return session
 
     # ----- Reader / Poller Threads -----
@@ -2606,8 +2598,7 @@ PROCESS_SCHEMA = {
     # (write-vs-submit is the one real trap: a lone \n on a Windows PTY is not Enter).
     # See #95681.
     "description": (
-        "Poll, wait on, or kill background terminal processes (from "
-        "terminal(background=true)). "
+        "Poll, wait on, send input to, or kill terminal(background=true) processes. "
         "Completed results remain retrievable by session_id when resuming their owning conversation "
         "(up to 7 days, newest 64 results per profile; rolling output tail). "
         "poll: status + new output. log: full output, paged. wait: block "

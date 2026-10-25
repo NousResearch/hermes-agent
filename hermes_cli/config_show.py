@@ -91,7 +91,6 @@ def _show_terminal_section(config: dict[str, Any]) -> None:
     from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE as default_img, DEFAULT_VERCEL_IMAGE as _DEFAULT_VERCEL_IMAGE
     backend_lines = {
         'docker': lambda: [f"  Docker image: {terminal.get('docker_image', default_img)}"],
-        'singularity': lambda: [f"  Image:        {terminal.get('singularity_image', 'docker://' + default_img)}"],
         'modal': lambda: [
             f"  Modal image:  {terminal.get('modal_image', default_img)}",
             f"  Modal token:  {configured('MODAL_TOKEN_ID')}"],

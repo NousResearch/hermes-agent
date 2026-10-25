@@ -121,6 +121,7 @@ import { TermsButterbar } from '../shell/terms-butterbar'
 import { BASIC_TREE, DEFAULT_TREE, registerLayoutPresets } from './layout-presets'
 import { bindLayoutSides } from './layout-sides'
 import { FilesPane, LogsPane, ReviewPaneContent } from './panes'
+import { PluginPreviewConsentDialog } from './plugin-preview-consent-dialog'
 import { ContribWiring, WiredPane } from './wiring'
 import { WorkspacePageHeaderHostContext } from './workspace-page-header'
 
@@ -790,6 +791,7 @@ export function ContribController() {
       <ContribWiring>
         <AppContextMenu />
         <HudShell />
+        <PluginPreviewConsentDialog />
       </ContribWiring>
     )
   }
@@ -798,21 +800,25 @@ export function ContribController() {
     return (
       <ContribWiring>
         <BrowserPopoutShell />
+        <PluginPreviewConsentDialog />
       </ContribWiring>
     )
   }
 
   return (
     <SidebarProvider
-      className="h-screen min-h-0 flex-col bg-background"
+      className="h-full min-h-0 flex-col bg-background"
       onOpenChange={setSidebarOpen}
       open={sidebarOpen}
       style={{ '--sidebar-width': '100%' } as CSSProperties}
     >
       <ContribWiring>
         <AppContextMenu />
+        {/* App-owned answer to a plugin's ctx.preview.executeJavaScript. Plugins
+            run in every window kind, so each shell mounts it. */}
+        <PluginPreviewConsentDialog />
         <div
-          className="flex h-screen min-h-0 w-screen flex-col bg-(--ui-bg-chrome) text-(--ui-text-primary)"
+          className="flex h-full min-h-0 w-screen flex-col bg-(--ui-bg-chrome) text-(--ui-text-primary)"
           // Window-glass hook: this div and the sidebar-wrapper above it are
           // the app shell's two full-window opaque painters; the
           // [data-hermes-glass] rules in styles.css clear them so the tint

@@ -1,6 +1,6 @@
 name: respire
 repo: https://github.com/risense-ai/respire-hermes
-sha: 0ac54d9789eae41d580e86f47c0cc183b9942adb
+sha: 9878189578b19c98cb40162559459ecb60e4e483
 version: "0.1.0"
 description: "Local-first encrypted memory for Hermes through the rsrs CLI sidecar: per-turn title-tier recall, judge-then-store remember, causal-tree show, and a shared user-level library across agents. Disclosure — the plugin spawns the separately installed rsrs CLI (npm rsrs-cli@1.0.16, pinned version); the sidecar may contact rsrs.rs for sign-in, sync, model download and update checks; memory lives in ~/.rsrs and is shared across Hermes profiles; the plugin makes no HTTP calls, reads no credential stores, and has no telemetry or self-updater."
 maintainer: ShiningRay

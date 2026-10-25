@@ -314,14 +314,22 @@ describe('a failed lookup fails CLOSED — never "no chat exists"', () => {
   // SUCCESSFULLY with an empty list instead of throwing. `rows.find(...) ||
   // null` used to read that identically to "this bot never had a chat",
   // which minted a replacement and re-fired the kickoff on every click.
-  it('refuses to mint on an empty lookup when the roster already confirmed a canonical chat', async () => {
+  // #139779: an empty title lookup plus a roster pointer is no longer an
+  // automatic fail-close — probe the id. A still-live hidden "Bot Chat" at
+  // that id means the lookup lied (or the backend is mid-restart), so minting
+  // would fork. Archived / missing / tombstoned ids are the next describe.
+  it('refuses to mint on an empty lookup when the roster id still names a live Bot Chat', async () => {
     const calls = respondWith(method => {
       if (method === 'session.list') {
         return { sessions: [] }
       }
 
+      if (method === 'session.info') {
+        return { title: 'Bot Chat' }
+      }
+
       if (method === 'session.create') {
-        throw new Error('must not create: an empty result is not confirmed absence')
+        throw new Error('must not create: a live Bot Chat at the roster id is not confirmed absence')
       }
 
       return {}
@@ -330,8 +338,85 @@ describe('a failed lookup fails CLOSED — never "no chat exists"', () => {
     const bot = { canonical_session: { id: 'forever-chat' }, name: 'ops' } as RosterRow
     const { openBotCanonicalChat } = await loadModule()
 
-    await expect(openBotCanonicalChat(bot)).rejects.toThrow(/Bot Chat registry/)
+    await expect(openBotCanonicalChat(bot)).rejects.toThrow(/Could not confirm ops's Bot Chat registry/)
     expect(calls.some(call => call.method === 'session.create')).toBe(false)
     expect(hostMock.openSession).not.toHaveBeenCalled()
+    expect(calls.find(call => call.method === 'session.info')?.params).toEqual({ session_id: 'forever-chat' })
+  })
+
+  it('refuses to mint when the roster-id probe itself throws', async () => {
+    const calls = respondWith(method => {
+      if (method === 'session.list') {
+        return { sessions: [] }
+      }
+
+      if (method === 'session.info') {
+        throw new Error('gateway not ready')
+      }
+
+      if (method === 'session.create') {
+        throw new Error('must not create: a failed probe is not confirmed absence')
+      }
+
+      return {}
+    })
+
+    const bot = { canonical_session: { id: 'forever-chat' }, name: 'ops' } as RosterRow
+    const { openBotCanonicalChat } = await loadModule()
+
+    await expect(openBotCanonicalChat(bot)).rejects.toThrow(/Could not confirm ops's Bot Chat registry/)
+    expect(calls.some(call => call.method === 'session.create')).toBe(false)
+  })
+})
+
+describe('#139779 stale roster canonical_session.id is absent so mint is allowed', () => {
+  const stale = { canonical_session: { id: 'retired-1' }, name: 'ops' } as RosterRow
+
+  function mintOnStalePointer(info: () => unknown) {
+    return respondWith(method => {
+      if (method === 'session.list') {
+        return { sessions: [] }
+      }
+
+      if (method === 'session.info') {
+        return info()
+      }
+
+      if (method === 'session.create') {
+        return { session_id: 'rt-fresh', stored_session_id: 'fresh-1' }
+      }
+
+      return {}
+    })
+  }
+
+  it('mints when the roster id is archived', async () => {
+    const calls = mintOnStalePointer(() => ({ archived: true, title: 'Bot Chat' }))
+    const { openBotCanonicalChat } = await loadModule()
+
+    await expect(openBotCanonicalChat(stale)).resolves.toEqual({ openedId: 'fresh-1', registryId: 'fresh-1' })
+    expect(calls.find(call => call.method === 'session.info')?.params).toEqual({ session_id: 'retired-1' })
+    expect(calls.find(call => call.method === 'session.info')?.options).toEqual({ spawnPriority: 'foreground' })
+    expect(calls.some(call => call.method === 'session.create')).toBe(true)
+  })
+
+  it('mints when the roster id is tombstoned (title no longer Bot Chat)', async () => {
+    const calls = mintOnStalePointer(() => ({ title: null }))
+    const { createCanonicalChat } = await loadModule()
+
+    await expect(createCanonicalChat(stale)).resolves.toBe('fresh-1')
+    expect(calls.some(call => call.method === 'session.create')).toBe(true)
+    expect(hostMock.openSession).toHaveBeenCalled()
+  })
+
+  it('mints when the roster id is missing (session.info not_found)', async () => {
+    const calls = mintOnStalePointer(() => {
+      throw Object.assign(new Error('session not found'), { data: { reason: 'not_found' } })
+    })
+
+    const { openBotCanonicalChat } = await loadModule()
+
+    await expect(openBotCanonicalChat(stale)).resolves.toEqual({ openedId: 'fresh-1', registryId: 'fresh-1' })
+    expect(calls.some(call => call.method === 'session.create')).toBe(true)
   })
 })

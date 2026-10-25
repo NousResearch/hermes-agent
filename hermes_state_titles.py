@@ -8,7 +8,19 @@ import re
 from typing import Any, Dict, Optional
 
 from agent.message_sanitization import _sanitize_surrogates
-from hermes_state_common import _COMPRESSION_CHILD_SQL, escape_like as _escape_like
+from hermes_state_common import (
+    _COMPRESSION_CHILD_SQL, _RECOVERABLE_END_REASONS, _RECOVERABLE_END_REASONS_SQL,
+    escape_like as _escape_like,
+)
+
+# Title-as-identity lookup: live rows, plus recoverable auto-archives that
+# unarchive_recoverable_session still has to find (#92687). Deliberate archives
+# (archived=1 and end_reason not in that set, including NULL) are skipped so a
+# retired hidden Bot Chat cannot occupy the name or reopen on click (#139779).
+_TITLE_LOOKUP_VISIBLE_SQL = (
+    f"(COALESCE({{alias}}.archived, 0) = 0 "
+    f"OR {{alias}}.end_reason IN ({_RECOVERABLE_END_REASONS_SQL}))"
+)
 
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
@@ -193,12 +205,34 @@ class SessionTitlesMixin:
         ) > 0
 
     def get_session_by_title(self, title: str) -> Optional[dict[str, Any]]:
-        """Look up a session by exact title. Returns session dict or None."""
+        """Look up a session by exact title. Returns session dict or None.
+
+        Deliberately archived rows are skipped. Recoverable auto-archives stay
+        visible so REST / Bot Mode resurrection can still find them (#92687).
+        Recoverability is judged on the compression tip (same as
+        ``unarchive_recoverable_session``): a compressed Bot Chat keeps
+        ``title`` on the root (``end_reason='compression'``) while the reaper
+        stamp lives on the tip.
+        """
         row = self._read_one(
             "SELECT s.*, COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved "
             "FROM sessions s LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash "
             "WHERE s.title = ?", (title,))
-        return self._session_row_dict(row) if row else None
+        if not row:
+            return None
+        session = self._session_row_dict(row)
+        if not session.get("archived"):
+            return session
+        tip = session
+        try:
+            tip_id = self.get_compression_tip(session["id"]) or session["id"]
+            if tip_id != session["id"]:
+                tip = self.get_session(tip_id) or session
+        except Exception:
+            tip = session
+        if (tip.get("end_reason") or "") in _RECOVERABLE_END_REASONS:
+            return session
+        return None
 
     def resolve_session_by_title(self, title: str) -> Optional[str]:
         """Resolve a title to a session ID, preferring the latest "title #N" continuation."""
@@ -210,12 +244,17 @@ class SessionTitlesMixin:
         # it. Every DM transport (``hermes -p <bot> chat --in ~ -c "Bot Chat"``: message_agent,
         # bot_relay, cron delivery) resolves through here, so letting the numbered row win
         # silently routes teammates' messages into a chat whose bot cannot answer back.
-        if exact is not None and title == self.CANONICAL_BOT_CHAT_TITLE:
-            return exact["id"]
+        # A retired (deliberately archived) Bot Chat must not fall through to "#N" either:
+        # lookup returning None is what lets Desktop mint a fresh canonical chat (#139779).
+        if title == self.CANONICAL_BOT_CHAT_TITLE:
+            return exact["id"] if exact is not None else None
         # Escape LIKE wildcards so "%"/"_" in titles cannot false-match.
+        # Same deliberate-archive skip as get_session_by_title (#139779).
         numbered = self._read_all(
             "SELECT id, title, started_at FROM sessions "
-            "WHERE title LIKE ? ESCAPE '\\' ORDER BY started_at DESC",
+            "WHERE title LIKE ? ESCAPE '\\' "
+            f"AND {_TITLE_LOOKUP_VISIBLE_SQL.format(alias='sessions')} "
+            "ORDER BY started_at DESC",
             (f"{_escape_like(title)} #%",))
         return numbered[0]["id"] if numbered else (exact["id"] if exact else None)
 

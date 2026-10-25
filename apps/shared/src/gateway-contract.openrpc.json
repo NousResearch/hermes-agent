@@ -10052,6 +10052,18 @@
             "default": null,
             "title": "Title"
           },
+          "archived": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Archived"
+          },
           "started_at": {
             "anyOf": [
               {
@@ -10827,6 +10839,18 @@
             ],
             "default": null,
             "title": "Title"
+          },
+          "archived": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Archived"
           },
           "started_at": {
             "anyOf": [

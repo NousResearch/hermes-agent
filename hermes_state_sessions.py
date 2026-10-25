@@ -953,12 +953,33 @@ class SessionSessionsMixin:
         This is the DELIBERATE archive (user, CLI, API): it clears the ``auto_archived``
         provenance, so re-activation never un-hides it on the user's behalf. A real
         unarchived -> archived flip fires ``on_session_delete`` (``reason="archive"``) after commit;
-        ``notify=False`` is for housekeeping that hides a row whose session lives on elsewhere."""
+        ``notify=False`` is for housekeeping that hides a row whose session lives on elsewhere.
+
+        Newly-deliberate archive of a hidden canonical Bot Chat also NULLs ``title`` (and
+        ``title_source``) in this same write, so ``UNIQUE(title)`` no longer pins the registry
+        name to the retired row. Idle sweep and recoverable auto-archives do not take this
+        path / keep the name so ``unarchive_recoverable_session`` can still find them (#92687).
+        """
         def _do(conn):
-            row = conn.execute("SELECT archived FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            row = conn.execute(
+                "SELECT archived, end_reason FROM sessions WHERE id = ?", (session_id,),
+            ).fetchone()
             ids = self._set_lineage_column_in_transaction(
                 conn, "archived", session_id, int(archived), extra_set_sql=", auto_archived = 0")
-            return ids, bool(archived and ids and row is not None and not row[0])
+            newly = bool(archived and ids and row is not None and not row["archived"])
+            # Recoverable accidents (ws_orphan_reap / agent_close / …) stamp end_reason
+            # before this write; those rows must keep "Bot Chat" so title lookup can resurrect.
+            if newly and row is not None and (row["end_reason"] or "") not in _RECOVERABLE_END_REASONS:
+                conn.execute(
+                    _LINEAGE_CTE_SQL + """
+                    UPDATE sessions SET title = NULL, title_source = NULL
+                    WHERE id IN (SELECT id FROM lineage)
+                      AND COALESCE(hidden, 0) <> 0
+                      AND title = ?
+                    """,
+                    (session_id, session_id, self.CANONICAL_BOT_CHAT_TITLE),
+                )
+            return ids, newly
         ids, newly_archived = self._execute_write(_do)
         if newly_archived and notify:
             emit_session_deleted(self, ids, reason="archive", primary=session_id)

@@ -49,3 +49,27 @@ def test_title_resolves_like_classic_cli_and_never_confirms_foreign_titles(tmp_p
         assert resolve_titled_session(authority, human, 'nope', missing_ok=True) is None
         with pytest.raises(RuntimeStoreError, match='invalid_params'):
             resolve('')
+
+
+def test_resolve_titled_session_skips_deliberately_archived_bot_chat(tmp_path):
+    with SessionDB(db_path=tmp_path / 'state.db') as db:
+        authority = _authority(db)
+        _local(db, authority, 'local-retired', user='human', title='Bot Chat')
+        assert db.set_session_hidden('local-retired', True)
+        db._write_sql(
+            'UPDATE sessions SET archived = 1, auto_archived = 0 WHERE id = ?', ('local-retired',))
+        human = Principal('human', 'owned', frozenset({'session:read'}), 'viewer')
+        assert resolve_titled_session(authority, human, 'Bot Chat', missing_ok=True) is None
+
+
+def test_resolve_titled_session_finds_recoverable_auto_archived_bot_chat(tmp_path):
+    with SessionDB(db_path=tmp_path / 'state.db') as db:
+        authority = _authority(db)
+        _local(db, authority, 'local-reaped', user='human', title='Bot Chat')
+        assert db.set_session_hidden('local-reaped', True)
+        db.end_session('local-reaped', 'ws_orphan_reap')
+        assert db.set_session_archived('local-reaped', True)
+        human = Principal('human', 'owned', frozenset({'session:read'}), 'viewer')
+        ref = resolve_titled_session(authority, human, 'Bot Chat', missing_ok=True)
+        assert ref is not None
+        assert ref.session_id == 'local-reaped'

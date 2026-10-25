@@ -4665,6 +4665,7 @@ export interface CanonicalSessionInfo {
   service_tier?: string | null
   fast?: boolean | null
   title?: string | null
+  archived?: boolean | null
   started_at?: number | null
   last_active_at?: number | null
   yolo?: boolean | null
@@ -5051,6 +5052,7 @@ export interface CanonicalSnapshotInfo {
   service_tier?: string | null
   fast?: boolean | null
   title?: string | null
+  archived?: boolean | null
   started_at?: number | null
   last_active_at?: number | null
   yolo?: boolean | null

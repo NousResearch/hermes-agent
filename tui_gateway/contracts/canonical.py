@@ -191,6 +191,8 @@ class CanonicalSessionInfo(SessionInventoryFields, OpenModel):
     fast: bool | None = None
     # What main's classic CLI read off itself (/status, status bar, exit summary).
     title: str | None = None
+    # SQLite stores 0/1; the wire is a JSON boolean so Desktop's ``archived === true`` probe matches.
+    archived: bool | None = None
     started_at: float | None = None
     last_active_at: float | None = None
     yolo: bool | None = None

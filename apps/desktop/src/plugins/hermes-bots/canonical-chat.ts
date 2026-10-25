@@ -205,6 +205,47 @@ function isCanonicalBotChatHistory(history: CanonicalChatRow) {
   return rootTitle === CANONICAL_CHAT_TITLE || (!rootTitle && title === CANONICAL_CHAT_TITLE)
 }
 
+function confirmRegistryError(name: string): Error {
+  return new Error(`Could not confirm ${name}'s Bot Chat registry — not starting a new chat`)
+}
+
+/** Definitive "this id is gone" — not a transport blip. Probe throws that
+ *  are not this stay fail-closed so a mid-restart cannot mint (#98383). */
+function isMissingSessionError(error: unknown): boolean {
+  if (error == null) {
+    return false
+  }
+
+  const obj = typeof error === 'object' ? (error as { data?: unknown; message?: unknown }) : null
+  const data = obj?.data
+  const reason = data && typeof data === 'object' ? (data as { reason?: unknown }).reason : undefined
+
+  if (reason === 'not_found') {
+    return true
+  }
+
+  const message = (typeof obj?.message === 'string' ? obj.message : String(error)).trim()
+
+  return /^(?:4001\s*[:,-]?\s*)?(?:not_found|session not found)[.!]?$/i.test(message)
+}
+
+/** A get-by-id probe of the roster pointer. Live hidden "Bot Chat" → the
+ *  title lookup lied and minting would fork. Archived, missing-shaped, or
+ *  title≠Bot Chat (tombstone / title=NULL) → confirmed absence. */
+function isLiveHiddenBotChatProbe(info: unknown): boolean {
+  if (!info || typeof info !== 'object') {
+    return false
+  }
+
+  const row = info as { archived?: unknown; title?: unknown }
+
+  if (row.archived === true) {
+    return false
+  }
+
+  return String(row.title || '').trim() === CANONICAL_CHAT_TITLE
+}
+
 function botModeGatewayNeedsUpdate(error: unknown) {
   const message = String((error as RpcErrorLike)?.message || error || '')
 
@@ -332,11 +373,35 @@ async function findExistingCanonicalChat(owner: RosterRow | string): Promise<Can
   // answer `session.list` successfully with an empty list rather than
   // failing it, and `|| null` used to read that identically to "this bot
   // never had a chat" (#98383). The roster's own `canonical_session` is the
-  // last positive confirmation this profile HAD one — when that exists,
-  // an empty lookup is unconfirmed absence, not confirmed absence, so fail
-  // closed the same way a thrown RPC error already does instead of minting.
+  // last positive confirmation this profile HAD one. Probe that id:
+  // a still-live hidden "Bot Chat" (lookup lied / backend mid-restart) stays
+  // fail-closed so minting cannot fork. An archived, missing, or tombstoned
+  // (title=NULL / no longer "Bot Chat") pointer is confirmed absence — mint
+  // is allowed (#139779). A thrown list or probe (other than not_found)
+  // stays fail-closed.
   if (bot?.canonical_session?.id) {
-    throw new Error(`Could not confirm ${name}'s Bot Chat registry — not starting a new chat`)
+    let probe: unknown
+
+    try {
+      probe = await requestForBot(
+        bot,
+        'session.info',
+        { session_id: bot.canonical_session.id },
+        { spawnPriority: 'foreground' }
+      )
+    } catch (error) {
+      if (isMissingSessionError(error)) {
+        return null
+      }
+
+      throw confirmRegistryError(name)
+    }
+
+    if (!isLiveHiddenBotChatProbe(probe)) {
+      return null
+    }
+
+    throw confirmRegistryError(name)
   }
 
   return null

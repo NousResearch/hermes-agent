@@ -13,6 +13,7 @@ import { $transcriptLightbox, closeTranscriptLightbox, openTranscriptLightbox } 
 
 export interface ZoomableImageProps extends ComponentProps<'img'> {
   containerClassName?: string
+  downloadName?: string
   slot?: string
   /** Full-resolution source for the lightbox and download. When set, the inline
    * `<img>` keeps its bounded `src` (avoiding heavy inline paints) while the
@@ -32,6 +33,7 @@ export interface ImageActionCopy {
 export function ZoomableImage({
   className,
   containerClassName,
+  downloadName,
   src,
   zoomSrc,
   alt,
@@ -43,7 +45,7 @@ export function ZoomableImage({
   // The lightbox and Save action prefer the full-resolution source; the inline
   // thumbnail (`src`) stays the cheap paint.
   const fullSrc = zoomSrc || src || ''
-  const { download, saving } = useImageDownload(fullSrc)
+  const { download, saving } = useImageDownload(fullSrc, downloadName)
   // The open flag lives in a store keyed by source identity, not local state:
   // transcript rows (and the markdown leaves inside them) remount routinely
   // while a turn streams — the render-budget slice can drop the row, and the

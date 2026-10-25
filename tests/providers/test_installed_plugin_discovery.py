@@ -38,12 +38,15 @@ def _clear_provider_caches():
             del sys.modules[mod]
 
 
-def _write_plugin(directory: Path, *, name: str, manifest: str | None):
+def _write_plugin(directory: Path, *, name: str, manifest: str | None, marker: Path | None = None):
     directory.mkdir(parents=True, exist_ok=True)
     if manifest is not None:
         (directory / "plugin.yaml").write_text(manifest, encoding="utf-8")
     # Registers a provider on import, so an unwanted import is *visible*.
-    (directory / "__init__.py").write_text(_PROFILE_SOURCE.format(name=name), encoding="utf-8")
+    source = _PROFILE_SOURCE.format(name=name)
+    if marker is not None:
+        source = f"from pathlib import Path\nPath({str(marker)!r}).touch()\n" + source
+    (directory / "__init__.py").write_text(source, encoding="utf-8")
 
 
 @pytest.fixture
@@ -76,3 +79,28 @@ def test_other_plugins_in_the_flat_directory_are_left_to_the_plugin_manager(herm
 
     assert not [p for p in list_providers() if p.name in ("other-standalone", "manifestless", "broken-manifest")]
     assert get_provider_profile("copilot-acp") is not None  # bundled set still intact
+
+
+def test_disabled_filesystem_model_provider_plugins_do_not_execute(hermes_home, monkeypatch):
+    """Regression for #137671: disabled providers must not run import-time setup."""
+    flat_marker = hermes_home / "flat-imported"
+    nested_marker = hermes_home / "nested-imported"
+    _write_plugin(
+        hermes_home / "plugins" / "flat-provider", name="flat-provider",
+        manifest="name: flat-display\nkind: model-provider\n", marker=flat_marker,
+    )
+    _write_plugin(
+        hermes_home / "plugins" / "model-providers" / "nested-provider", name="nested-provider",
+        manifest="name: nested-display\nkind: model-provider\n", marker=nested_marker,
+    )
+    import hermes_cli.plugins_discovery as discovery
+
+    monkeypatch.setattr(
+        discovery, "_get_disabled_plugins", lambda: {"flat-display", "model-providers/nested-provider"}
+    )
+    from providers import get_provider_profile
+
+    assert get_provider_profile("flat-provider") is None
+    assert get_provider_profile("nested-provider") is None
+    assert not flat_marker.exists()
+    assert not nested_marker.exists()

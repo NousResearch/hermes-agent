@@ -424,6 +424,34 @@ def _declares_model_provider_kind(plugin_dir: Path) -> bool:
     return False
 
 
+def _filesystem_provider_plugin_is_disabled(plugin_dir: Path) -> bool:
+    """Whether the provider directory is explicitly disabled in plugin config.
+
+    Filesystem model providers are active by default, unlike entry-point
+    providers, but they still honor the common ``plugins.disabled`` deny-list.
+    Accept the directory, category-qualified directory, and manifest-name
+    spellings that the plugin selection UI recognizes.
+    """
+    try:
+        from hermes_cli.plugins_discovery import _get_disabled_plugins
+
+        disabled = _get_disabled_plugins()
+        names = {plugin_dir.name, f"model-providers/{plugin_dir.name}"}
+        for filename in ("plugin.yaml", "plugin.yml"):
+            manifest = plugin_dir / filename
+            if not manifest.is_file():
+                continue
+            from utils import fast_safe_load
+
+            data = fast_safe_load(manifest.read_text(encoding="utf-8", errors="replace"))
+            if isinstance(data, dict) and isinstance(data.get("name"), str):
+                names.add(data["name"])
+            break
+        return bool(names & disabled)
+    except Exception:
+        return False
+
+
 def _scan_home_layer(layer: _HomeLayer, key: str) -> None:
     """Import the bound home's not-yet-imported provider plugins into *layer*.
 
@@ -439,14 +467,16 @@ def _scan_home_layer(layer: _HomeLayer, key: str) -> None:
         user_dir = _user_plugins_dir()
         if user_dir is not None:
             for child in sorted(user_dir.iterdir()):
-                if child.is_dir() and not child.name.startswith(("_", ".")):
+                if (child.is_dir() and not child.name.startswith(("_", "."))
+                        and not _filesystem_provider_plugin_is_disabled(child)):
                     _import_plugin_dir(child, "user", home_key=key)
         installed_dir = _installed_plugins_dir()
         if installed_dir is not None:
             for child in sorted(installed_dir.iterdir()):
                 if not child.is_dir() or child.name.startswith(("_", ".")) or child.name == "model-providers":
                     continue
-                if _declares_model_provider_kind(child):
+                if (_declares_model_provider_kind(child)
+                        and not _filesystem_provider_plugin_is_disabled(child)):
                     _import_plugin_dir(child, "user", home_key=key)
     finally:
         _REGISTRATION_TARGET.reset(token)

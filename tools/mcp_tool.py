@@ -292,10 +292,18 @@ async def _paginate_full_list(list_method, items_attr: str, server_name: str,
             else:
                 result = await list_method(cursor=cursor)
         if cache_meta_out is not None and not items:
+            # SDK 2.x result models synthesize ttl_ms=0 / cache_scope="private" when the server
+            # sent no hint, so only fields set on the wire count (a wire ``ttlMs: 0`` is a real
+            # "immediately stale" hint). Without field tracking a 0 is indistinguishable from
+            # the synthesized default and is dropped, or every entry would expire on write.
+            fields_set = getattr(result, "model_fields_set", None)
             for key, snake, camel in (("ttl_ms", "ttl_ms", "ttlMs"), ("cache_scope", "cache_scope", "cacheScope")):
+                if fields_set is not None and snake not in fields_set:
+                    continue
                 hint = mcp_field(result, snake, camel)
-                if hint is not None:
-                    cache_meta_out[key] = hint
+                if hint is None or (fields_set is None and key == "ttl_ms" and hint == 0):
+                    continue
+                cache_meta_out[key] = hint
         items.extend(getattr(result, items_attr, None) or [])
         cursor = mcp_field(result, "next_cursor", "nextCursor")
         # Cursor is an opaque string; anything else (incl. mocks) = last page.

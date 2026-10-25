@@ -1,24 +1,24 @@
 name: x-dashboard
 title: X Dashboard
 repo: https://github.com/omxhub/x-dashboard
-sha: afcf1c7fbc53a4aa9d211e99a4d8d499893a6258
+sha: 795dcfc0ed1a204eb223daf2b17b0c0da03b9f65
 version: "0.1.0"
 description: >-
   Zero-cost ($0.00) X analytics dashboard for Hermes Web and Desktop with profile KPIs,
   verified-follower & impression goal tracking, post/mention feeds, SVG charts, and CSV/JSON export.
   Disclosure — Free Mode fetches public profile and post metadata from api.fxtwitter.com /
   api.vxtwitter.com and r.jina.ai and caches snapshots in <hermes_home>/plugin-data/x-dashboard/;
-  optional Live X API v2 mode calls api.x.com (or an installed xurl CLI) only when explicitly
-  selected and X_BEARER_TOKEN is configured.
+  optional xAI x_search discovery (enable_x_search=true) and Live X API v2 mode (api.x.com or xurl CLI)
+  run only when explicitly opted in.
 maintainer: omxhub
 tier: community
 category: desktop
-docs_url: https://github.com/omxhub/x-dashboard/blob/afcf1c7fbc53a4aa9d211e99a4d8d499893a6258/README.md
-image: https://raw.githubusercontent.com/omxhub/x-dashboard/afcf1c7fbc53a4aa9d211e99a4d8d499893a6258/docs/screenshots/hero-overview.png
+docs_url: https://github.com/omxhub/x-dashboard/blob/795dcfc0ed1a204eb223daf2b17b0c0da03b9f65/README.md
+image: https://raw.githubusercontent.com/omxhub/x-dashboard/795dcfc0ed1a204eb223daf2b17b0c0da03b9f65/docs/screenshots/hero-overview.png
 screenshots:
-  - https://raw.githubusercontent.com/omxhub/x-dashboard/afcf1c7fbc53a4aa9d211e99a4d8d499893a6258/docs/screenshots/hero-overview.png
-  - https://raw.githubusercontent.com/omxhub/x-dashboard/afcf1c7fbc53a4aa9d211e99a4d8d499893a6258/docs/screenshots/analytics-charts.png
-  - https://raw.githubusercontent.com/omxhub/x-dashboard/afcf1c7fbc53a4aa9d211e99a4d8d499893a6258/docs/screenshots/mentions-goals.png
+  - https://raw.githubusercontent.com/omxhub/x-dashboard/795dcfc0ed1a204eb223daf2b17b0c0da03b9f65/docs/screenshots/hero-overview.png
+  - https://raw.githubusercontent.com/omxhub/x-dashboard/795dcfc0ed1a204eb223daf2b17b0c0da03b9f65/docs/screenshots/analytics-charts.png
+  - https://raw.githubusercontent.com/omxhub/x-dashboard/795dcfc0ed1a204eb223daf2b17b0c0da03b9f65/docs/screenshots/mentions-goals.png
 readme: true
 platforms: []
 capabilities:

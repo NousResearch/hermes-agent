@@ -103,9 +103,10 @@ def _clone_background_review_messages(messages):
 
 def _hand_off_background_review(agent, messages, *, review_memory: bool, review_skills: bool) -> None:
     """Give the delivered turn's review candidate to whoever owns the session's foreground: the
-    gateway's admission completes it with the delivery (``gateway/run_turn_review.py``); a turn holding
-    the durable session row stages it for the facade to start once every foreground owner is
-    released (``agent/turn_facade_review.py``); a bare turn spawns it here."""
+    gateway's admission completes it with the delivery, or drops it when a cancel already completed
+    that owner while this thread was still finalizing (``gateway/run_turn_review.py``); a turn
+    holding the durable session row stages it for the facade to start once every foreground owner
+    is released (``agent/turn_facade_review.py``); a bare turn spawns it here."""
     gateway_admission = getattr(agent, "_gateway_review_admission", None)
     if gateway_admission is not None:
         gateway_admission.capture_candidate(

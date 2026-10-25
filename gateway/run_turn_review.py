@@ -7,7 +7,9 @@ that releases the token and spawns the candidate — where the turn's delivery o
 (``begin_gateway_review_admission``): the live session Event an adapter task completes with
 its send (``platforms/base_followup_admission.py``), the event a direct-call ingress completes
 itself, or the drain's handover (``session_ingress_review.py``). Ownership is released before
-the spawn hop, and a dropped candidate logs a body-free, owner-tagged slug.
+the spawn hop, and a dropped candidate logs a body-free, owner-tagged slug. A finished admission
+stays bound until the next turn's ``bind_agent``: a hand-off that lands after a cancel completed
+the owner is dropped as ``delivery_unconfirmed``, never spawned through the facade.
 """
 
 from __future__ import annotations
@@ -110,22 +112,39 @@ class _GatewayReviewAdmission:
         review_memory: bool,
         review_skills: bool,
     ) -> None:
-        """Freeze the terminal candidate on this delivery owner, never on a cached agent."""
+        """Freeze the terminal candidate on this delivery owner, never on a cached agent.
+
+        After ``finish`` the owner is complete: a ``/stop``, ``/new`` or teardown cancel ended
+        the adapter task (or it delivered a synthetic reply) while the executor thread was still
+        inside ``finalize_turn``, so this candidate's reply never had a confirmed delivery. It is
+        dropped here with the owner-tagged ``delivery_unconfirmed`` line — the hand-off must not
+        fall through to the facade staging or the direct spawn, which know nothing of the gate.
+        """
+        from agent import review_admission
         from agent.turn_finalizer import _clone_background_review_messages
 
-        candidate = {
-            "messages_snapshot": _clone_background_review_messages(messages),
-            "review_memory": review_memory,
-            "review_skills": review_skills,
-            "_spawning_turn_token": self.token,
-            "_review_profile_key": self.profile_key,
-            "_review_session_id": str(
-                getattr(agent, "session_id", None) or self.session_id
-            ),
-        }
+        review_session_id = str(getattr(agent, "session_id", None) or self.session_id)
         with self._lock:
-            if not self._finished:
-                self._candidate = candidate
+            finished = self._finished
+        if not finished:
+            candidate = {
+                "messages_snapshot": _clone_background_review_messages(messages),
+                "review_memory": review_memory,
+                "review_skills": review_skills,
+                "_spawning_turn_token": self.token,
+                "_review_profile_key": self.profile_key,
+                "_review_session_id": review_session_id,
+            }
+            with self._lock:
+                finished = self._finished
+                if not finished:
+                    self._candidate = candidate
+        if finished:
+            logger.info(
+                "Background review skipped (owner=%s): %s",
+                review_admission.owner_tag(self.profile_key, review_session_id),
+                review_admission.REASON_DELIVERY_UNCONFIRMED,
+            )
 
     def adopt_candidate(
         self, candidate: dict[str, Any], owner: _GatewayReviewAdmission
@@ -200,6 +219,12 @@ class _GatewayReviewAdmission:
         handoff) so a starved review is as greppable as a refused one. ``outer`` is the turn
         whose delivery window this turn was nested in: while it still owns the session the
         candidate is handed to it (``adopt_candidate``) instead of being refused at spawn.
+
+        The finished admission stays bound to the agent (the next turn's ``bind_agent``
+        supersedes it; every turn on a cached gateway agent binds): a cancel can complete the
+        owner while the executor thread is still inside ``finalize_turn``, and its late hand-off
+        must meet this owner and be dropped (``capture_candidate``) rather than find no gateway
+        owner and spawn through the facade or direct path.
         """
         with self._lock:
             if self._finished:
@@ -213,9 +238,6 @@ class _GatewayReviewAdmission:
         candidate = self._candidate
         self._candidate = None
         agent = self.agent
-        if agent is not None:
-            if getattr(agent, "_gateway_review_admission", None) is self:
-                agent._gateway_review_admission = None
         if not isinstance(candidate, dict):
             return None
         if not delivery_succeeded:

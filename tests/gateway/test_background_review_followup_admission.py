@@ -970,7 +970,9 @@ async def test_gateway_spawns_the_review_once_after_confirmed_delivery():
     assert call["live"] is False  # ownership released before the spawn
     assert call["thread"] != loop_thread
     assert call["has_loop"] is False
-    assert agent._gateway_review_admission is None
+    # The finished owner stays bound until the next turn's bind_agent, so a hand-off landing
+    # after a cancel completed it is dropped there (test_background_review_late_handoff.py).
+    assert agent._gateway_review_admission is admission
 
 
 @pytest.mark.asyncio

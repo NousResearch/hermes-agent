@@ -191,6 +191,51 @@ class TestNotepadCaps:
         notepad.set_note("job-1", "a", "x" * 90)  # must not raise
         assert notepad.get_note("job-1", "a") == "x" * 90
 
+    def test_value_cap_counts_utf8_bytes_not_characters(self, notepad):
+        # 4-byte codepoints plus an ASCII remainder land exactly on the byte cap
+        # while holding far fewer characters than MAX_VALUE_BYTES.
+        exact = "\U0001F600" * (notepad.MAX_VALUE_BYTES // 4) + "x" * (notepad.MAX_VALUE_BYTES % 4)
+        assert len(exact.encode("utf-8")) == notepad.MAX_VALUE_BYTES
+        assert len(exact) < notepad.MAX_VALUE_BYTES
+
+        notepad.set_note("job-1", "emoji", exact)
+        assert notepad.get_note("job-1", "emoji") == exact
+        before = notepad.list_notes("job-1")
+
+        with pytest.raises(ValueError, match="value too large"):
+            notepad.set_note("job-1", "emoji", exact + "x")
+        assert notepad.list_notes("job-1") == before
+
+        shorter = "é" * 10
+        notepad.set_note("job-1", "emoji", shorter)
+        assert notepad.get_note("job-1", "emoji") == shorter
+
+    def test_job_total_cap_counts_utf8_key_and_value_bytes(self, notepad, monkeypatch):
+        # "ключ"=8 bytes, "значение"=16 -> 24;  "鍵"=3 bytes, "日本語"=9 -> 12.
+        # 24 + 12 = 36 fills the cap exactly, yet only 16 characters are stored.
+        monkeypatch.setattr(notepad, "MAX_JOB_TOTAL_BYTES", 36)
+        sibling = ("ключ", "значение")
+        target = ("鍵", "日本語")
+        assert sum(len(s.encode("utf-8")) for s in sibling + target) == 36
+
+        notepad.set_note("job-1", *sibling)
+        notepad.set_note("job-1", *target)
+        assert notepad.get_note("job-1", sibling[0]) == sibling[1]
+        assert notepad.get_note("job-1", target[0]) == target[1]
+        before = notepad.list_notes("job-1")
+        assert len(before) == 2
+
+        # One extra ASCII byte on the target: 24 (sibling) + 3 + 10 = 37 > 36.
+        with pytest.raises(ValueError, match="notepad full"):
+            notepad.set_note("job-1", target[0], target[1] + "x")
+        assert notepad.list_notes("job-1") == before
+
+        # Shrinking the target to "日本" (6 bytes): 24 + 3 + 6 = 33 <= 36.
+        notepad.set_note("job-1", target[0], "日本")
+        assert notepad.get_note("job-1", target[0]) == "日本"
+        after = {row["key"]: row for row in notepad.list_notes("job-1")}
+        assert after[sibling[0]] == next(r for r in before if r["key"] == sibling[0])
+
 
 class TestPromptInjection:
     def test_nonempty_notepad_rendered_into_prompt(self, cron_env, notepad):

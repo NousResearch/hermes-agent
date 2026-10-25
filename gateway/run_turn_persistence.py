@@ -570,8 +570,10 @@ class GatewayTurnPersistenceMixin:
         response = self._include_reply_speech(response, agent_messages, adapter)
         terminal_event = agent_result.pop("_queued_terminal_reply_event", None) or getattr(event, "_reply_voice_event", None)
         voice_event = terminal_event if isinstance(terminal_event, MessageEvent) else event
+        # Base must reply to the same completed request without replacing the admission event.
+        event._reply_delivery_event = voice_event if voice_event is not event else None
         if voice_event is event and "queued_terminal_message_type" in agent_result:
-            # Preserve the original text/ledger anchor while applying the terminal input's policy.
+            # An event-less continuation has only a terminal input type, not a new reply target.
             voice_event = copy.copy(event)
             voice_event.message_type = MessageType(agent_result["queued_terminal_message_type"])
             voice_event._reply_voice_managed = False

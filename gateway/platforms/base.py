@@ -4381,8 +4381,8 @@ class BasePlatformAdapter(ABC):
         is_ephemeral_response: bool, ephemeral_ttl: int, record_delivery: Callable) -> None:
         """Normal-lane final: the ledger bracket plus the message-id owner's ephemeral delete."""
         result, delivery_adapter = await self.send_final_ledgered(
-            event, session_key, text_content, metadata,
-            reply_to=_reply_anchor_for_event(event), is_ephemeral_response=is_ephemeral_response)
+            event, session_key, text_content, metadata, is_ephemeral_response=is_ephemeral_response,
+            reply_to=_reply_anchor_for_event(getattr(event, "_reply_delivery_event", None) or event))
         record_delivery(result)
         if ephemeral_ttl and ephemeral_ttl > 0 and result.success and result.message_id:
             delivery_adapter._schedule_ephemeral_delete(event.source.chat_id, result.message_id, ephemeral_ttl)

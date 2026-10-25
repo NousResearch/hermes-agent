@@ -283,7 +283,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
-            # The terminal turn owns speech and ledger identity. Keep the original text anchor.
+            # The terminal turn owns reply context and ledger identity; admission stays unchanged.
             if isinstance(agent_result, dict):
                 event._reply_voice_event = agent_result.pop("_queued_terminal_reply_event", None)
                 _terminal_inbound = agent_result.get("queued_terminal_inbound_id")

@@ -56,6 +56,21 @@ function AccountEditor({ entry, servers, serverName, profile, pending, onChanged
 
   const isCancelled = () => !alive.current || cancelled.current
 
+  // An unfinished sign-in must remain visible for a deliberate retry or removal.
+  const revealIncompleteAccount = async (created: boolean) => {
+    if (!created || !alive.current) {
+      return
+    }
+
+    try {
+      await onChanged()
+    } catch (err) {
+      if (!cancelled.current) {
+        setError(err instanceof Error ? err.message : String(err))
+      }
+    }
+  }
+
   const connect = async () => {
     if (running.current || pending) {
       return
@@ -122,17 +137,8 @@ function AccountEditor({ entry, servers, serverName, profile, pending, onChanged
         setError(err instanceof Error ? err.message : String(err))
       }
     } finally {
-      // Keep the new entry out of background probes until OAuth succeeds. If sign-in
-      // fails or is cancelled, expose it for an explicit retry or removal instead.
-      if (created && alive.current) {
-        try {
-          await onChanged()
-        } catch (err) {
-          if (!cancelled.current) {
-            setError(err instanceof Error ? err.message : String(err))
-          }
-        }
-      }
+      // Do not publish the new server to background probes before OAuth completes.
+      await revealIncompleteAccount(created)
 
       running.current = false
 

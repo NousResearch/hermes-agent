@@ -463,6 +463,7 @@ class TestSessionCwdSurvivesEnvRecreation:
             "env_type": "local",
             "cwd": "/default/path",
             "timeout": 30,
+            "lifetime_seconds": 300,
         }
 
         task_id = "default"
@@ -516,6 +517,7 @@ class TestSessionCwdSurvivesEnvRecreation:
             "env_type": "local",
             "cwd": "/config/default/path",
             "timeout": 30,
+            "lifetime_seconds": 300,
         }
 
         try:

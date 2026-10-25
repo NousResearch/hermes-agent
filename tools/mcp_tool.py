@@ -38,9 +38,10 @@ _OSV_MALWARE_CHECK_TIMEOUT_S = 12.0
 
 async def _preflight_stdio_command(server_name: str, command: str, args: list) -> tuple[str, list]:
     """OSV malware preflight (off-loop, wall-clock bound, fail-open on timeout), THEN the
-    cached-npx swap. The preflight must see the REAL command/args: anything that rewrites argv to a
-    wrapper or resolved binary has to happen after it, or the check silently inspects the wrapper
-    and becomes a no-op (``_infer_ecosystem`` keys off the command basename being npx/uvx/pipx)."""
+    cached-npx swap, then the docker-run label stamp. The preflight must see the REAL command/args:
+    anything that rewrites argv to a wrapper or resolved binary has to happen after it, or the check
+    silently inspects the wrapper and becomes a no-op (``_infer_ecosystem`` keys off the command
+    basename being npx/uvx/pipx)."""
     from tools.osv_check import check_package_for_malware
     try:
         malware_error = await asyncio.wait_for(
@@ -68,7 +69,11 @@ async def _preflight_stdio_command(server_name: str, command: str, args: list) -
             logger.debug("MCP server '%s': using cached npx binary %s (skipping the "
                          "resident `npm exec` parent)", server_name, direct_command)
             command, args = direct_command, direct_args
-    return command, args
+    # ``docker run`` servers get tracking labels after every preflight rewrite so the next
+    # connect can reap containers orphaned by an ungraceful exit (#138312); anything else
+    # passes through untouched.
+    from tools.mcp_tool_docker import inject_docker_run_labels
+    return inject_docker_run_labels(server_name, command, args)
 
 
 # ---- Optional MCP SDK: availability probe now, symbol import on first use ----

@@ -445,6 +445,9 @@ class AuthorityConnection:
         if type(hidden) is not bool:
             raise RuntimeStoreError('invalid_params', field='hidden', detail='must be a boolean')
         ref = title and resolve_titled_session(self.authority, self.actor, title, missing_ok=True)
+        if not ref and title == 'Bot Chat':
+            from gateway.session_bot import move_aside_superseded_bot_chat
+            await move_aside_superseded_bot_chat(self.authority)
         if (not ref and title == 'Bot Chat'
                 and not any(params.get(name) is True for name in BYPASS_FIELDS)
                 and staged_creation_follows(self.authority, self.actor, params.get('request_id'))):

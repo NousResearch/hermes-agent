@@ -168,17 +168,19 @@ def retire_local_receipts(conn, session_ids):
 
 
 def moved_receipts(conn, target_ids=None):
-    """``{owner id: (target id, target source)}`` of local receipts whose current physical target row
-    now carries another lane's route. An explicit repoint (``/handoff``, a platform ``/resume``)
-    rewrote that row's routing identity, so the receipt can never restore it again (the stored
-    identity check in ``gateway.session_local_recovery._checked_entry``). *target_ids* narrows the
-    scan to the rows one repoint rewrote."""
+    """``{owner id: (moved row id, its source)}`` of local receipts whose current physical target row,
+    or whose owner row (the conversation's first segment, which a ``/new`` reset leaves behind), now
+    carries another lane's route. An explicit repoint (``/handoff``, a platform ``/resume``) rewrote
+    that row's routing identity, so the receipt can never restore the conversation again (the stored
+    identity check in ``gateway.session_local_recovery._checked_entry``, the lineage check in
+    ``validate_local_lineage``). *target_ids* narrows the scan to the rows one repoint rewrote."""
+    start = len(POLICY_PREFIX) + 1
     rows = conn.execute(
-        "SELECT substr(m.key, ?), s.id, s.source FROM state_meta m JOIN sessions s ON s.id = "
-        "CASE WHEN json_valid(m.value) THEN json_extract(m.value, '$.entry.session_id') END "
+        "SELECT substr(m.key, ?), s.id, s.source FROM state_meta m JOIN sessions s ON s.id IN ("
+        "CASE WHEN json_valid(m.value) THEN json_extract(m.value, '$.entry.session_id') END, substr(m.key, ?)) "
         "WHERE m.key GLOB ? AND s.session_key IS NOT NULL "
         "AND s.session_key IS NOT json_extract(m.value, '$.route')",
-        (len(POLICY_PREFIX) + 1, POLICY_PREFIX + '*')).fetchall()
+        (start, start, POLICY_PREFIX + '*')).fetchall()
     return {owner: (target, source) for owner, target, source in rows
             if target_ids is None or target in target_ids}
 

@@ -153,3 +153,13 @@ def handed_off_ref(authority, session_id):
     if row.get('created_source') not in LEGACY_LOCAL_SOURCES or not mountable(authority, ref.session_id):
         return None
     return ref
+
+
+def superseded_hand_off(authority, ref):
+    """Whether the lane that took over *ref* (a ``handed_off_ref``) has since moved on to another
+    conversation (``/new``, a reset): the chat is history now, read-only on that lane."""
+    live = authority.sessions.get(ref.session_id)
+    route = (authority.db.get_session(ref.session_id) or {}).get('session_key')
+    # The routing entry moves at the platform's /new; the lane publishes its new conversation (and so
+    # supersedes a mounted one) only at its next inbound.
+    return bool(live is not None and live.superseded) or _names_another_conversation(authority, ref.session_id, route)

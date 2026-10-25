@@ -180,7 +180,7 @@ def _home(authority, actor, profile):
 
 
 async def _target(authority, actor):
-    ref = None
+    ref = lane = None
     row = authority.db.get_session_by_title('Bot Chat')
     if row is None or (displaced := displaceable_bot_chat(authority, row)) is not None:
         # None: a concurrent delivery created it first. A title held by an API conversation no FIFO
@@ -193,11 +193,15 @@ async def _target(authority, actor):
         if target is None:
             raise RuntimeStoreError('not_found')
         from gateway.session_local_migration import resolve_local_target
-        ref = resolve_local_target(authority, actor, target['id'])
+        from gateway.session_route_recovery import handed_off_ref
+        # A Bot Chat handed off to a messaging lane stays the bot's chat there: delivery follows it.
+        ref = lane = handed_off_ref(authority, target['id'])
+        if ref is None:
+            ref = resolve_local_target(authority, actor, target['id'])
     authority.authorize(actor, ref, 'session:submit')
     live = authority.sessions[ref.session_id]
     entry = authority.runner.session_store.lookup_by_session_key(live.route)
-    if live.source.platform != Platform.LOCAL or entry is None:
+    if (live.source.platform != Platform.LOCAL and lane is None) or entry is None:
         raise RuntimeStoreError('admission_conflict')
     return ref, live, entry
 
@@ -216,6 +220,11 @@ def displaceable_bot_chat(authority, row):
         return None  # every delivery asks: a bound local chat answers from its own row, with no read
     db = authority.db
     tip = db.get_session(db.get_compression_tip(row['id']) or row['id'])
+    from gateway.session_route_recovery import handed_off_ref, superseded_hand_off
+    if tip is not None and (lane := handed_off_ref(authority, tip['id'])) is not None:
+        # Handed off (``/handoff``): still the bot's chat while its lane holds it; history once that
+        # lane moved on (``/new``), so a fresh Bot Chat takes the title (#143286).
+        return row['id'] if superseded_hand_off(authority, lane) else None
     for candidate in (row, tip):
         if candidate is None or str(candidate.get('chat_id') or '').startswith('local-'):
             return None
@@ -228,6 +237,26 @@ def displaceable_bot_chat(authority, row):
         if _kept_local_history(db, candidate):
             return None
     return row['id']
+
+
+def superseded_bot_chat(authority):
+    """The id of a handed-off Bot Chat whose lane has moved on (``displaceable_bot_chat`` names it),
+    else None: Desktop's titled create moves it aside before minting the fresh canonical chat."""
+    from gateway.session_route_recovery import handed_off_ref
+    row = authority.db.get_session_by_title('Bot Chat')
+    if row is None or (displaced := displaceable_bot_chat(authority, row)) is None:
+        return None
+    tip = authority.db.get_compression_tip(row['id']) or row['id']
+    return displaced if handed_off_ref(authority, tip) is not None else None
+
+
+async def move_aside_superseded_bot_chat(authority):
+    """Free the canonical title from a handed-off Bot Chat whose lane moved on; the caller holds the
+    titled-create lock. Its history stays, renamed and visible (``_displace_bot_chat``)."""
+    from gateway.session_runtime_workers import tracked_write
+    if (sid := superseded_bot_chat(authority)) is not None:
+        logger.info("Bot Chat %s was handed off and its lane moved on: moving it aside", sid)
+        await tracked_write(authority, partial(_displace_bot_chat, authority.db, sid))
 
 
 def _kept_local_history(db, row):

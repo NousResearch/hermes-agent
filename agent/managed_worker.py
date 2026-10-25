@@ -21,6 +21,8 @@ from pathlib import Path
 import sys
 import threading
 
+from hermes_constants import MANAGED_WORKER_PID_ENV
+
 logger = logging.getLogger(__name__)
 
 MAX_FRAME = 4 * 1024 * 1024
@@ -451,7 +453,20 @@ def hello():
     return {'pid': me.pid, 'birth': process_birth(me), 'ancestors': [p.pid for p in me.parents()[:3]]}
 
 
+def claim_managed_worker_scope():
+    """Stamp this interpreter as the gateway's managed worker (#144495).
+
+    Terminal tools execute in this process, so the background jobs they start inherit THIS
+    pid, not the gateway's. ``tools.process_registry`` reads the marker to put those jobs in
+    their own systemd scope; without it they stay in ``hermes-gateway.service``'s cgroup and
+    past ``MemoryHigh`` the kernel throttles the gateway event loop with them, which times
+    every profile out with ``worker_receipt_timeout``.
+    """
+    os.environ[MANAGED_WORKER_PID_ENV] = str(os.getpid())
+
+
 def main():
+    claim_managed_worker_scope()
     channel = WorkerChannel(os.fdopen(os.dup(sys.stdout.fileno()), 'wb', buffering=0))  # windows-footgun: ok — binary frames
     os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
     # This process's own stderr only, never the channel. The owner drains it into the profile's

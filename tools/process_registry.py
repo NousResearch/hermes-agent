@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, NamedTuple, Optional
 
 from hermes_cli.config import get_hermes_home
+from hermes_constants import MANAGED_WORKER_PID_ENV
 
 from tools.process_registry_notifications import (
     format_process_notification, heartbeat_output_tail, is_child_process_notification, should_surface_notification)
@@ -325,6 +326,65 @@ def _is_supervised_gateway_process() -> bool:
     except Exception as exc:
         logger.debug("Could not verify supervised gateway process identity: %s", exc)
         return False
+
+
+# Ancestors walked to find the gateway above a managed worker: same bound as
+# gateway.session_worker_reservation.MAX_LAUNCHER_HOPS, which sizes the launcher trampoline
+# (uv's venv python.exe, an exe shim) the owner's Popen handle can sit behind.
+_WORKER_ANCESTOR_HOPS = 4
+
+
+def _is_managed_worker_process() -> bool:
+    """Whether this interpreter is the gateway's own managed worker (``agent/managed_worker``).
+
+    Terminal tools execute there, not in the gateway, so it is the process whose background
+    jobs need the gateway's cgroup isolation (#144495). The worker stamps its own pid
+    (:data:`hermes_constants.MANAGED_WORKER_PID_ENV`); inherited markers alone never qualify,
+    because every descendant of the gateway — a terminal child, a CLI, a nested shell — would
+    otherwise pass.
+    """
+    return os.environ.get(MANAGED_WORKER_PID_ENV) == str(os.getpid())
+
+
+def _has_gateway_ancestor(gateway_pid: int) -> bool:
+    """Whether the live gateway *gateway_pid* is one of this process's first few ancestors.
+
+    Only the gateway starts a managed worker, so a live gateway above this process is what
+    proves the worker marker was stamped by that chain rather than left over from a recycled
+    pid. A launcher (uv's venv trampoline, a shim) can sit between the gateway's Popen handle
+    and the interpreter, so allow the same hops ``verify_worker_identity`` allows.
+    """
+    try:
+        import psutil
+
+        return any(parent.pid == gateway_pid for parent in psutil.Process().parents()[:_WORKER_ANCESTOR_HOPS])
+    except Exception as exc:
+        logger.debug("Could not read this process's ancestors for the scope gate: %s", exc)
+        return False
+
+
+def _is_in_supervised_gateway_tree() -> bool:
+    """Whether background executors spawned here belong in their own systemd scope: this is the
+    live supervised gateway (:func:`_is_supervised_gateway_process`) or a worker it started.
+
+    Background terminal jobs from a managed worker used to skip scoping entirely — the worker
+    inherits ``_HERMES_GATEWAY`` but not the gateway's pid — so they stayed in
+    ``hermes-gateway.service``'s cgroup. Past ``MemoryHigh`` the kernel then throttled every
+    process in that cgroup, the gateway event loop included, and every profile failed with
+    ``worker_receipt_timeout`` (#144495).
+    """
+    if _is_supervised_gateway_process():
+        return True
+    if not _IS_LINUX or not _is_managed_worker_process():
+        return False
+    try:
+        from gateway.status import get_running_pid
+
+        gateway_pid = get_running_pid(cleanup_stale=False)
+    except Exception as exc:
+        logger.debug("Could not read the gateway pid for the worker scope gate: %s", exc)
+        return False
+    return bool(gateway_pid) and _has_gateway_ancestor(int(gateway_pid))
 
 
 def _build_systemd_scope_argv(shell_argv: list[str], unit_suffix: str) -> list[str]:
@@ -1108,12 +1168,13 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
 
     def _scope_argv(self, session: ProcessSession, safe_command: str, unit_suffix: str, label: str) -> list[str]:
         """Login-shell argv for *safe_command* (parity with LocalEnvironment: rc files
-        sourced, user tools on PATH), wrapped in a transient systemd scope when we are
-        the supervised gateway (own cgroup: an OOM kills only the worker, not the
-        gateway and its messaging control plane)."""
+        sourced, user tools on PATH), wrapped in a transient systemd scope when we run in the
+        supervised gateway's tree (own cgroup: an OOM kills only the worker, not the gateway
+        and its messaging control plane)."""
         argv = [_find_shell(), "-lic", f"set +m; {safe_command}"]
-        # This applies to both pipe mode and the PTY path above. See #70716.
-        in_supervised_gateway = _IS_LINUX and _is_supervised_gateway_process()
+        # This applies to both pipe mode and the PTY path above. See #70716, and #144495 for
+        # the managed-worker case where the tool runs outside the gateway process itself.
+        in_supervised_gateway = _IS_LINUX and _is_in_supervised_gateway_tree()
         if in_supervised_gateway and _systemd_run_user_scope_available():
             session.systemd_unit = f"hermes-worker-{unit_suffix}.scope"
             return _build_systemd_scope_argv(argv, unit_suffix=unit_suffix)

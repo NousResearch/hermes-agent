@@ -62,7 +62,7 @@ class PromptCancelParams(Params):
 
 
 canonical_method("prompt.cancel", params=PromptCancelParams, result=AdmissionStatus,
-                 doc="Retire a still-queued admission; a started one is unaffected.")
+                 doc="Retire a queued admission; a started one is interrupted in the same call.")
 
 
 class PromptResolveUnknownParams(Params):

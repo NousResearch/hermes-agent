@@ -107,7 +107,7 @@ def _unregister_env(task_id: str):
 def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     """Clean up environments that have been inactive for longer than lifetime_seconds."""
     from tools.terminal_tool import (
-        _active_environments, _creation_locks, _creation_locks_lock, _env_lock,
+        _active_environments, _calls_in_flight, _creation_locks, _creation_locks_lock, _env_lock,
         _last_activity,
     )
     current_time = time.time()
@@ -128,7 +128,9 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     # Phase 1: unregister stale entries atomically under the lock; phase 2:
     # stop them outside it (see _unregister_env for why).
     with _env_lock:
-        stale = [t for t, last in list(_last_activity.items()) if current_time - last > lifetime_seconds]
+        # A key with a foreground call in flight is busy, however old its stamp.
+        stale = [t for t, last in list(_last_activity.items())
+                 if current_time - last > lifetime_seconds and t not in _calls_in_flight]
         envs_to_stop = [(t, _active_environments.pop(t, None)) for t in stale]
         for t in stale:
             _last_activity.pop(t, None)

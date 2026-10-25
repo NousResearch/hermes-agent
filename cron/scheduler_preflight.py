@@ -233,11 +233,14 @@ class SharedRouteAdapters:
         return default
 
 
-def has_credential_platform(adapters) -> bool:
-    """True when the adapter map holds a bot of the profile's own. Any local session (Desktop chat,
-    CLI run, Kanban worker) adds a ``LOCAL`` adapter, which holds no platform credential: a profile
-    with only that is still a credentialless satellite that may ride routed primary adapters."""
-    return any(getattr(platform, "value", platform) != "local" for platform in adapters or ())
+def has_credential_platform(adapters, reconnecting=None) -> bool:
+    """True when the profile has a bot of its own. Any local session (Desktop chat, CLI run, Kanban
+    worker) adds a ``LOCAL`` adapter, which holds no platform credential: a profile with only that is
+    still a credentialless satellite that may ride routed primary adapters. ``reconnecting`` is the
+    profile's ``_profile_failed_platforms`` entry: a bot that dropped is removed from the map while
+    it reconnects, and borrowing the primary meanwhile would send through the wrong bot."""
+    return bool(reconnecting) or any(
+        getattr(platform, "value", platform) != "local" for platform in adapters or ())
 
 
 def _preflight_check_delivery(job: dict) -> Optional[str]:

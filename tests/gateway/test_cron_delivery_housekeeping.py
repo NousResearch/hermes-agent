@@ -215,6 +215,49 @@ def test_multiplex_housekeeping_routes_desktop_served_satellite_with_only_local_
     ]
 
 
+def test_multiplex_housekeeping_keeps_reconnecting_satellite_off_the_primary_bot(
+    tmp_path, monkeypatch
+):
+    """A satellite whose OWN bot dropped has it popped from ``_profile_adapters`` and parked in
+    ``_profile_failed_platforms`` for reconnect. With only a Desktop LOCAL adapter left, the drain
+    must still treat it as owning its bot, never route its queue through the primary bot."""
+    from gateway.config import Platform
+
+    root_adapters = {Platform.DISCORD: object()}
+    own = {Platform.LOCAL: object()}
+    runner = SimpleNamespace(
+        config=SimpleNamespace(multiplex_profiles=True),
+        adapters=root_adapters,
+        _profile_adapters={"secondary": own},
+        _profile_failed_platforms={"secondary": {Platform.DISCORD: object()}},
+    )
+    calls = []
+
+    monkeypatch.setattr(
+        gateway_run,
+        "_handoff_watch_scopes",
+        lambda _runner: [("secondary", tmp_path / "secondary")],
+    )
+
+    @contextmanager
+    def fake_scope(_home):
+        yield
+
+    monkeypatch.setattr(gateway_run, "_profile_runtime_scope", fake_scope)
+    monkeypatch.setattr(sched_preflight, "_primary_profile_routes_for_current_home",
+        lambda: ["route-to-secondary"],
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "drain_delivery_queue",
+        lambda adapters, _loop: calls.append(adapters),
+    )
+
+    gateway_run._drain_restart_safe_cron_deliveries(root_adapters, object(), runner)
+
+    assert calls == [own]
+
+
 def test_primary_drain_delivers_credentialless_satellite_queue_row_through_primary_adapter(
     tmp_path, monkeypatch,
 ):

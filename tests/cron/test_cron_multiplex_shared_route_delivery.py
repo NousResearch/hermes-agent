@@ -219,6 +219,55 @@ def test_multiplex_tick_routes_desktop_served_satellite_with_only_local_adapter(
     assert shared.get(Platform.DISCORD, {"chat_id": "unmapped"}) is None
 
 
+def test_multiplex_tick_keeps_reconnecting_satellite_off_the_primary_bot(tmp_path, monkeypatch):
+    """A satellite whose OWN bot dropped is parked in ``_profile_failed_platforms`` while only its
+    Desktop LOCAL adapter remains. Its cron tick must deliver via its own map (and fail until the
+    bot reconnects), never borrow the primary bot."""
+    import threading
+
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    root = tmp_path / "root"
+    sat_home = root / "profiles" / "sat"
+    (sat_home / "cron").mkdir(parents=True)
+    (root / "config.yaml").write_text(yaml.safe_dump({
+        "gateway": {"multiplex_profiles": True, "profile_routes": [
+            {"platform": "discord", "guild_id": "G1", "chat_id": "C1", "profile": "sat"}]},
+    }), encoding="utf-8")
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+
+    own = {Platform.LOCAL: object()}
+    captured = {}
+    stop = threading.Event()
+
+    def _tick_and_stop(*_args, **kwargs):
+        captured["adapters"] = kwargs["adapters"]
+        stop.set()
+
+    provider = InProcessCronScheduler()
+    with patch("cron.scheduler.tick", side_effect=_tick_and_stop):
+        thread = threading.Thread(
+            target=provider.start,
+            args=(stop,),
+            kwargs={
+                "interval": 0,
+                "profile_homes": [("sat", sat_home)],
+                "adapters": {Platform.DISCORD: _primary_adapter()},
+                "profile_adapters": {"sat": own},
+                "profile_failed_platforms": {"sat": {Platform.DISCORD: object()}},
+                "default_profile": "default",
+            },
+            daemon=True,
+        )
+        thread.start()
+        thread.join(timeout=10)
+        stop.set()
+        thread.join(timeout=10)
+
+    assert not thread.is_alive()
+    assert captured["adapters"] is own
+
+
 def test_adapters_for_profile_layers_primary_under_local_only_satellite():
     """#141910: the authz resolution is the third call site that decided "owns its adapters" by
     map truthiness. A shared-bot satellite holding only a Desktop ``local`` adapter must still

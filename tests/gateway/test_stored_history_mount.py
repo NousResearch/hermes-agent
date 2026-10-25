@@ -185,3 +185,30 @@ async def test_an_api_chat_opened_read_only_still_continues_through_the_api(tmp_
     assert frame['params']['payload'] == {'text': 'bound'}
     detached = await conn.detach(ref, {'session_id': 'api-1', 'subscription_id': opened['subscription_id']})
     assert detached['detached'] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('sid', sorted(ROWS))
+async def test_session_info_answers_on_a_mount(tmp_path, monkeypatch, sid):
+    """The classic CLI's /new and /tools read session.info first; on a mount it answered ``internal error``."""
+    conn, ref = await _connect(tmp_path, monkeypatch, sid)
+    await conn.resume(ref, {})
+    reply = await conn.dispatch({'id': 1, 'method': 'session.info', 'params': {'session_id': sid}})
+    assert reply.get('result', {}).get('source') == ROWS[sid][0], reply
+
+
+@pytest.mark.asyncio
+async def test_push_to_talk_reads_voice_off_on_a_mount(tmp_path, monkeypatch):
+    """The TUI's push-to-talk gate on an opened stored chat raised AttributeError on the source-less mount."""
+    from gateway import run_api
+    from gateway.run import GatewayRunner
+    from gateway.session_config import local_voice_enabled
+    conn, ref = await _connect(tmp_path, monkeypatch, 'cron_job1_20261001_120000')
+    await conn.resume(ref, {})
+    runner = conn.authority.runner
+    for name in ('_voice_key_for_source', '_voice_key'):
+        setattr(runner, name, getattr(GatewayRunner, name).__get__(runner))
+    runner._adapter_profile_for_source = lambda source: None
+    runner.session_authority = conn.authority
+    monkeypatch.setattr(run_api, '_ACTIVE_RUNNER', runner)
+    assert local_voice_enabled(ref.session_id) is False

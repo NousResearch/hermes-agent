@@ -132,6 +132,8 @@ def local_voice_enabled(session_id):
     for authority in all_authorities(_ACTIVE_RUNNER):
         live = getattr(authority, 'sessions', {}).get(session_id)
         if live is not None:
+            if live.source is None:  # a history mount: no chat for a voice mode to belong to
+                return False
             modes = getattr(_ACTIVE_RUNNER, '_voice_mode', None) or {}
             return modes.get(_ACTIVE_RUNNER._voice_key_for_source(live.source), 'off') != 'off'
     return None

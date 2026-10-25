@@ -4555,6 +4555,20 @@ def _respawn_storm_backoff() -> None:
         logger.debug("respawn-storm breaker check failed (non-fatal): %s", _be)
 
 
+def _system_exit_code(exc: SystemExit) -> int:
+    """Process exit code for a ``SystemExit`` escaping ``start_gateway()``.
+
+    An int code passes through untouched — that is how a permanent config refusal keeps
+    ``GATEWAY_FATAL_CONFIG_EXIT_CODE`` (78) all the way to the supervisor's
+    ``RestartPreventExitStatus``. ``None`` is a clean exit. Anything else is a string code
+    (``sys.exit("message")``): the raiser chose no code, so it keeps the historical 1.
+    """
+    code = exc.code
+    if code is None:
+        return 0
+    return code if isinstance(code, int) else 1
+
+
 def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, force: bool = False,
                 idle_exit: bool = False):
     """Run the gateway in foreground. verbose 1=INFO/2+=DEBUG on stderr; quiet: no stderr logs; replace:
@@ -4638,7 +4652,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
         return  # unreachable in production (os._exit); guard for test stubs
     except SystemExit as e:
         _exit_diag("asyncio.run.SystemExit", code=e.code, traceback=_traceback.format_exc())
-        _hard_exit_after_gateway_teardown(0 if e.code is None else e.code if isinstance(e.code, int) else 1)
+        _hard_exit_after_gateway_teardown(_system_exit_code(e))
     except BaseException as e:
         # Everything else (CancelledError, exotic BaseExceptions): log the cause, then re-raise.
         _exit_diag("asyncio.run.exception", exc_type=type(e).__name__, exc_repr=repr(e), traceback=_traceback.format_exc())

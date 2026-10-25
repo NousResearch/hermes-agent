@@ -1,4 +1,5 @@
 import base64
+import os
 import urllib.parse
 import json
 from contextlib import nullcontext
@@ -254,6 +255,67 @@ def test_fs_download_streams_ssh_files_without_preview_cap(client, monkeypatch):
     assert response.content == b"123456"
 
 
+def test_a_browser_download_reads_the_ssh_workspace_file_it_listed(client, monkeypatch, tmp_path):
+    """The browser lists an SSH workspace through ``/api/fs/list``. Its Download checks the file
+    with a HEAD, then hands the browser the URL a download ticket authorizes (an anchor cannot send
+    the session header). Both read the file on the SSH machine, as native Desktop's download does,
+    never a file at the same path on the gateway's own disk. The ticket is single-use and dies
+    with its profile."""
+    from hermes_cli import web_server_file_tickets as file_tickets
+    from hermes_constants import mark_named_profile_deleted
+
+    # The Webapp: the browser's file routes (download tickets) exist only there.
+    monkeypatch.setattr(web_server.app.state, "ui_surface", "webapp", raising=False)
+    home = tmp_path / ".hermes"
+    profile = home / "profiles" / "remote-dev"
+    profile.mkdir(parents=True)
+    (profile / "config.yaml").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_DASHBOARD_FILES_ROOT", raising=False)
+    same_path = tmp_path / "srv" / "report.txt"
+    same_path.parent.mkdir()
+    same_path.write_bytes(b"gateway copy")
+    remote_only = str(tmp_path / "srv" / "only-remote.txt")
+    streamed = []
+
+    class FakeSshFs:
+        def inspect_file(self, path):
+            return path, len(b"remote copy")
+
+        def stream_file(self, path):
+            streamed.append(path)
+            yield b"remote copy"
+
+    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: FakeSshFs())
+    route = file_tickets.ROUTES["download"]
+    anchor = TestClient(web_server.app)  # a download link sends no session header
+
+    def ticketed(query):
+        minted = client.post("/api/files/ticket", json={"route": "download", **query})
+        assert minted.status_code == 200, (query, minted.text)
+        return {**query, "ticket": minted.json()["ticket"]}
+
+    try:
+        for path in (str(same_path), remote_only):
+            query = {"path": path, "profile": "remote-dev"}
+            checked = client.head(route, params=query)
+            assert (checked.status_code, checked.content) == (200, b""), (path, checked.text)
+            params = ticketed(query)
+            saved = anchor.get(route, params=params)
+            assert (saved.status_code, saved.content) == (200, b"remote copy"), path
+            assert saved.headers["content-disposition"].startswith("attachment;")
+            assert anchor.get(route, params=params).status_code == 401
+        assert streamed == [str(same_path), remote_only]  # the HEAD checks read nothing
+
+        params = ticketed({"path": remote_only, "profile": "remote-dev"})
+        mark_named_profile_deleted(profile)
+        assert anchor.get(route, params=params).status_code in (401, 403, 404)
+        assert streamed == [str(same_path), remote_only]
+    finally:
+        anchor.close()
+
+
 def test_fs_read_data_url_rejects_over_cap(client, tmp_path, monkeypatch):
     monkeypatch.setattr(web_server, "_FS_DATA_URL_MAX_BYTES", 3)
     target = tmp_path / "image.png"
@@ -372,6 +434,77 @@ def test_fs_endpoints_require_auth(tmp_path):
     assert default_response.status_code == 401
 
 
+def test_fs_default_cwd_leaves_a_placeholder_terminal_cwd_to_terminal_cwd(client, monkeypatch, tmp_path):
+    """A placeholder terminal.cwd ("." is the default) counts as unset, so TERMINAL_CWD names the folder."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(file_routes, "load_config", lambda: {"terminal": {"cwd": "."}})
+    monkeypatch.setenv("TERMINAL_CWD", str(home))
+
+    response = client.get("/api/fs/default-cwd")
+
+    assert response.status_code == 200
+    assert response.json()["cwd"] == str(home.resolve())
+
+
+def test_fs_default_cwd_answers_each_profile_with_its_own_start_folder(client, monkeypatch, tmp_path):
+    """``/api/fs/default-cwd?profile=<name>`` answers with that profile's ``terminal.cwd``, so a
+    gateway serving several profiles starts each one's sessions and browser terminals in its own
+    folder. A profile without one starts in the home folder: never another profile's folder and
+    never the folder the serving process was started from."""
+    from hermes_cli import profiles
+
+    default_home = tmp_path / "default-home"
+    work_home = default_home / "profiles" / "work"
+    plain_home = default_home / "profiles" / "plain"
+    default_project = tmp_path / "default-project"
+    work_project = tmp_path / "work-project"
+    user_home = tmp_path / "user"
+    launch_dir = tmp_path / "launch-dir"
+    for folder in (work_home, plain_home, default_project, work_project, user_home, launch_dir):
+        folder.mkdir(parents=True)
+    (default_home / "config.yaml").write_text(
+        f"terminal:\n  cwd: {default_project.as_posix()}\n", encoding="utf-8")
+    (work_home / "config.yaml").write_text(
+        f"terminal:\n  cwd: {work_project.as_posix()}\n", encoding="utf-8")
+    (plain_home / "config.yaml").write_text("terminal:\n  cwd: .\n", encoding="utf-8")
+    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+    # What the gateway's startup leaves in its own environment for its own profile.
+    monkeypatch.setenv("TERMINAL_CWD", str(default_project))
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: user_home)
+    monkeypatch.chdir(launch_dir)
+
+    def start_folder(**params):
+        response = client.get("/api/fs/default-cwd", params=params)
+        assert response.status_code == 200, response.text
+        return response.json()["cwd"]
+
+    assert start_folder(profile="work") == str(work_project.resolve())
+    assert start_folder(profile="plain") == str(user_home.resolve())
+    assert start_folder() == str(default_project.resolve())
+    assert start_folder(profile="default") == str(default_project.resolve())
+
+
+def test_fs_default_cwd_falls_back_to_the_home_folder(client, monkeypatch, tmp_path):
+    """With neither ``terminal.cwd`` nor ``TERMINAL_CWD`` naming a folder, the serving profile's
+    start folder is the home folder, not the folder the gateway was started from."""
+    user_home = tmp_path / "user"
+    launch_dir = tmp_path / "launch-dir"
+    user_home.mkdir()
+    launch_dir.mkdir()
+    monkeypatch.setattr(file_routes, "load_config", lambda: {"terminal": {"cwd": "."}})
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: user_home)
+    monkeypatch.chdir(launch_dir)
+
+    response = client.get("/api/fs/default-cwd")
+
+    assert response.status_code == 200
+    assert response.json()["cwd"] == str(user_home.resolve())
+
+
 def test_fs_read_text_decodes_double_encoded_non_ascii_path(client, tmp_path):
     target = tmp_path / "半导体行业运营分享会纪要.md"
     target.write_text("hello")
@@ -398,6 +531,77 @@ def test_fs_read_text_keeps_literal_percent_filename_verbatim(client, tmp_path):
     assert response.json()["text"] == "literal percent name"
 
 
+@pytest.mark.parametrize("name", ["..%252fsecret.md", "%252e%252e%252fsecret.md", "..%255csecret.md"])
+def test_fs_read_text_decodes_a_file_url_once(client, tmp_path, name):
+    """A ``file:`` URL is percent-decoded once. ``..%252f`` is then the name ``..%2f`` inside the
+    folder the URL names, which does not exist; a second decode would turn it into ``../`` and read
+    a file outside that folder."""
+    folder = tmp_path / "docs"
+    folder.mkdir()
+    (tmp_path / "secret.md").write_text("outside the named folder")
+
+    response = client.get("/api/fs/read-text", params={"path": f"{folder.as_uri()}/{name}"})
+
+    assert response.status_code == 404
+    assert "outside the named folder" not in response.text
+
+
+@pytest.mark.parametrize("endpoint", ["read-text", "read-data-url", "download"])
+def test_a_file_url_is_decoded_once_by_every_read(client, tmp_path, endpoint):
+    """A ``file:`` URL is percent-decoded once on every read, the regular-file check included.
+    ``report%252fsecret.txt`` names the file ``report%2fsecret.txt`` in the folder the URL names;
+    a second decode would read ``report/secret.txt``, a file the URL never named."""
+    folder = tmp_path / "docs"
+    (folder / "report").mkdir(parents=True)
+    (folder / "report" / "secret.txt").write_text("a file the URL never named")
+    url = f"{folder.as_uri()}/report%252fsecret.txt"
+
+    unnamed = client.get(f"/api/fs/{endpoint}", params={"path": url})
+    (folder / "report%2fsecret.txt").write_text("the file the URL names")
+    named = client.get(f"/api/fs/{endpoint}", params={"path": url})
+
+    assert unnamed.status_code == 404, unnamed.text
+    assert named.status_code == 200, named.text
+    if endpoint == "read-text":
+        body = named.json()["text"]
+    elif endpoint == "read-data-url":
+        body = base64.b64decode(named.json()["dataUrl"].split(",", 1)[1]).decode()
+    else:
+        body = named.text
+    assert body == "the file the URL names"
+
+
+@pytest.mark.parametrize("name", ["..%2fsecret.md", "..%2Fsecret.md", "..%5csecret.md"])
+@pytest.mark.parametrize("endpoint", ["read-text", "read-data-url", "download"])
+def test_a_file_url_that_encodes_a_separator_is_refused(client, tmp_path, endpoint, name):
+    """A ``file:`` URL that percent-encodes a separator (``%2f``; ``%5c`` where it decodes to one)
+    is refused, as the shared parser in ``apps/shared/src/file-url.ts`` refuses it in the renderer
+    and Electron: decoding it would add a segment, and ``..%2fsecret.md`` would read a file outside
+    the folder the URL names."""
+    folder = tmp_path / "docs"
+    folder.mkdir()
+    (tmp_path / "secret.md").write_text("outside the named folder")
+
+    response = client.get(f"/api/fs/{endpoint}", params={"path": f"{folder.as_uri()}/{name}"})
+
+    assert response.status_code in {400, 404}, (endpoint, name, response.status_code)
+    assert "outside the named folder" not in response.text
+
+
+@pytest.mark.parametrize("name", ["..%2fsecret.md", "%2e%2e/secret.md", "%2E%2E%2Fsecret.md"])
+def test_fs_read_text_decode_fallback_stays_in_the_named_folder(client, tmp_path, name):
+    """The one-decode rescue for a doubly encoded path (issue #103425) never leaves the folder the
+    path names: when decoding would add a ``..`` segment, the path is read as written."""
+    folder = tmp_path / "docs"
+    folder.mkdir()
+    (tmp_path / "secret.md").write_text("outside the named folder")
+
+    response = client.get("/api/fs/read-text", params={"path": f"{folder}/{name}"})
+
+    assert response.status_code == 404
+    assert "outside the named folder" not in response.text
+
+
 def test_fs_write_text_never_decodes_percent_path(client, tmp_path):
     sibling = tmp_path / "report v2.md"
     sibling.write_text("existing")
@@ -410,6 +614,168 @@ def test_fs_write_text_never_decodes_percent_path(client, tmp_path):
     assert response.status_code == 200
     assert sibling.read_text() == "existing"
     assert (tmp_path / "report%20v2.md").read_text() == "new"
+
+
+def test_fs_read_data_url_reads_a_browser_paste_from_the_host_for_an_ssh_profile(client, monkeypatch):
+    """A browser paste is saved in the profile's host image cache even when its workspace is an
+    SSH machine. Sending it reads it back through this route, so that one host-owned path must not
+    go looking on the SSH machine; every other path still does."""
+
+    class FakeSshFs:
+        def read_bytes(self, path, *, max_bytes, read_limit=None):
+            raise ssh_workspace_fs.SshWorkspaceFsError("ENOENT", f"{path} is not on the SSH machine")
+
+        def inspect_file(self, path):
+            raise ssh_workspace_fs.SshWorkspaceFsError("ENOENT", f"{path} is not on the SSH machine")
+
+    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: FakeSshFs())
+    pasted = base64.b64decode("iVBORw0KGgo=")
+    upload = client.post(
+        "/api/chat/image-upload",
+        json={"data_url": "data:image/png;base64,iVBORw0KGgo=", "filename": "paste.png"},
+    )
+    assert upload.status_code == 200, upload.text
+    host_path = Path(upload.json()["path"])
+
+    # The same bytes on this host outside the image cache are still the SSH machine's to answer.
+    elsewhere = host_path.parent.parent / "elsewhere.png"
+    elsewhere.write_bytes(pasted)
+
+    read_back = client.get("/api/fs/read-data-url", params={"path": str(host_path)})
+    saved = client.get("/api/fs/download", params={"path": str(host_path)})
+    not_host_owned = client.get("/api/fs/read-data-url", params={"path": str(elsewhere)})
+
+    assert read_back.status_code == 200, read_back.text
+    assert base64.b64decode(read_back.json()["dataUrl"].split(",", 1)[1]) == pasted
+    assert (saved.status_code, saved.content) == (200, pasted)
+    assert not_host_owned.status_code == 404
+
+
+def test_a_browser_paste_reads_back_while_the_ssh_machine_is_unreachable(client, monkeypatch):
+    """A paste in the host image cache is read on this host before anything dials the SSH machine,
+    so it still sends while that machine is down. A path only the SSH machine has answers 503."""
+
+    class UnreachableSsh:
+        def __init__(self, **_options):
+            raise ConnectionRefusedError("ssh: connect to host 127.0.0.1 port 1: Connection refused")
+
+    monkeypatch.setattr(ssh_workspace_fs, "SSHEnvironment", UnreachableSsh)
+    monkeypatch.setattr(ssh_workspace_fs, "_BACKENDS", {})
+    monkeypatch.setattr(
+        file_routes, "load_config",
+        lambda: {"terminal": {"backend": "ssh", "ssh_host": "127.0.0.1", "ssh_user": "dev", "ssh_port": 1}},
+    )
+    monkeypatch.setattr(file_routes, "load_env", dict)
+    upload = client.post(
+        "/api/chat/image-upload",
+        json={"data_url": "data:image/png;base64,iVBORw0KGgo=", "filename": "paste.png"},
+    )
+    assert upload.status_code == 200, upload.text
+    host_path = upload.json()["path"]
+
+    read_back = client.get("/api/fs/read-data-url", params={"path": host_path})
+    saved = client.get("/api/fs/download", params={"path": host_path})
+    remote_only = client.get("/api/fs/read-data-url", params={"path": "/srv/repos/shot.png"})
+    remote_download = client.get("/api/fs/download", params={"path": "/srv/repos/shot.png"})
+
+    assert read_back.status_code == 200, read_back.text
+    assert read_back.json()["dataUrl"] == "data:image/png;base64,iVBORw0KGgo="
+    assert (saved.status_code, saved.content) == (200, base64.b64decode("iVBORw0KGgo="))
+    for response in (remote_only, remote_download):
+        assert (response.status_code, response.json()) == (503, {"detail": "SSH workspace is unavailable"})
+
+
+class _NotOnTheSshMachine:
+    """An SSH workspace that has none of the files a test asks it for; it records each ask."""
+
+    def __init__(self):
+        self.asked = []
+
+    def read_bytes(self, path, *, max_bytes, read_limit=None):
+        self.asked.append(path)
+        raise ssh_workspace_fs.SshWorkspaceFsError("ENOENT", f"{path} is not on the SSH machine")
+
+    def inspect_file(self, path):
+        self.asked.append(path)
+        raise ssh_workspace_fs.SshWorkspaceFsError("ENOENT", f"{path} is not on the SSH machine")
+
+
+def _ssh_profiles(tmp_path, monkeypatch):
+    """A default home and a named profile ``remote-dev``, both with an SSH machine as workspace."""
+    home = tmp_path / ".hermes"
+    profile = home / "profiles" / "remote-dev"
+    profile.mkdir(parents=True)
+    (profile / "config.yaml").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_DASHBOARD_FILES_ROOT", raising=False)
+    workspace = _NotOnTheSshMachine()
+    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: workspace)
+    return profile, workspace
+
+
+def test_a_picked_image_reads_back_from_the_host_for_an_ssh_profile(client, monkeypatch, tmp_path):
+    """The browser's file picker stages a file in the profile's uploads folder on this host, even
+    when its workspace is an SSH machine. Previewing and sending a picked image read it back through
+    /api/fs/read-data-url (saving it, through /api/fs/download), so a file the upload route staged
+    for that profile is read on this host. Every other path still goes to the SSH machine: a staged
+    file of another profile, a file in the uploads folder the upload route did not name, one in a
+    folder below it, and a path that leaves the folder through ``..``."""
+    profile, workspace = _ssh_profiles(tmp_path, monkeypatch)
+    # The Webapp: the browser's file routes (the file picker's upload) exist only there.
+    monkeypatch.setattr(web_server.app.state, "ui_surface", "webapp", raising=False)
+    image = base64.b64decode("iVBORw0KGgo=")
+
+    def pick(query):
+        staged = client.post("/api/chat/file-upload", params=query,
+                             files={"file": ("shot.png", image, "image/png")})
+        assert staged.status_code == 200, staged.text
+        return Path(staged.json()["path"])
+
+    remote_dev = {"profile": "remote-dev"}
+    staged, default_staged = pick(remote_dev), pick({})
+    unnamed = staged.parent / "shot.png"
+    nested = staged.parent / "below" / "web-shot.png"
+    nested.parent.mkdir()
+    (profile / "web-shot.png").write_bytes(image)
+    left_through_dots = f"{staged.parent}{os.sep}..{os.sep}web-shot.png"
+    for path in (unnamed, nested):
+        path.write_bytes(image)
+
+    for query, path in ((remote_dev, staged), ({}, default_staged)):
+        read_back = client.get("/api/fs/read-data-url", params={"path": str(path), **query})
+        saved = client.get("/api/fs/download", params={"path": str(path), **query})
+        assert read_back.status_code == 200, read_back.text
+        assert read_back.json()["dataUrl"] == "data:image/png;base64,iVBORw0KGgo="
+        assert (saved.status_code, saved.content) == (200, image)
+    assert workspace.asked == []
+
+    not_host_owned = [str(default_staged), str(unnamed), str(nested), left_through_dots]
+    for path in not_host_owned:
+        for route in ("read-data-url", "download"):
+            response = client.get(f"/api/fs/{route}", params={"path": path, **remote_dev})
+            assert response.status_code == 404, (route, path, response.text)
+    assert workspace.asked == [path for path in not_host_owned for _route in range(2)]
+
+
+@pytest.mark.platforms("posix")
+def test_a_link_staged_in_the_uploads_folder_is_not_read_from_the_host(client, monkeypatch, tmp_path):
+    """A staged name that links to another host file resolves outside the uploads folder, so an
+    SSH profile's read of it goes to the SSH machine and never returns the host file."""
+    profile, workspace = _ssh_profiles(tmp_path, monkeypatch)
+    host_file = tmp_path / "host-only.png"
+    host_file.write_bytes(b"host only")
+    uploads = profile / "uploads"
+    uploads.mkdir(mode=0o700)
+    link = uploads / "web-0123456789abcdef-shot.png"
+    link.symlink_to(host_file)
+
+    response = client.get("/api/fs/read-data-url", params={"path": str(link), "profile": "remote-dev"})
+
+    assert response.status_code == 404, response.text
+    assert workspace.asked == [str(link)]
+
+
 @pytest.mark.parametrize("endpoint", ["read-text", "read-data-url", "download"])
 def test_fs_reads_translate_docker_workspace_path_to_host(
     client, docker_volumes, monkeypatch, endpoint,

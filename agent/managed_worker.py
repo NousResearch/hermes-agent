@@ -33,7 +33,7 @@ RESULT_FIELDS = ('final_response', 'failed', 'interrupted', 'completed', 'partia
                  'cache_read_tokens', 'cache_write_tokens', 'reasoning_tokens',
                  'estimated_cost_usd', 'cost_status', 'cost_source', 'service_tier', 'failure_reason',
                  'session_id', 'requested_model', 'served_model', '_turn_input_tokens', '_turn_output_tokens',
-                 'failure_retryable', 'failure_resets_at', 'billing_block', 'free_tier')
+                 'failure_retryable', 'failure_resets_at', 'billing_block', 'free_tier', 'usage_window_message')
 # The structured fields and their allowed keys: ``billing_block`` (``agent/billing_links.BillingBlock``
 # plus ``unverified``) and ``free_tier`` (``agent/turn_recovery._stamp_free_tier``). With
 # ``failure_reason``, ``failure_retryable`` and ``failure_resets_at`` they are what

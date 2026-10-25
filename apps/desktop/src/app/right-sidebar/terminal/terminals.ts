@@ -3,7 +3,7 @@ import type { Terminal } from '@xterm/xterm'
 import { atom, computed } from 'nanostores'
 
 import { readKey, writeKey } from '@/lib/storage'
-import { $currentCwd } from '@/store/session'
+import { $focusedWorkspaceCwd } from '@/store/session-states'
 
 import { setTerminalTakeover } from '../store'
 
@@ -115,7 +115,7 @@ export interface TerminalEntry {
    *  session/project state — the only thing they inherit is this initial cwd
    *  (the project root if opened in one, else the backend's default). Switching
    *  sessions never moves or recreates a terminal; at most it re-SELECTS a tab
-   *  already pointed at the session's cwd (see the $currentCwd listener). */
+   *  already pointed at the focused chat's cwd (see the listener below). */
   cwd: string
   /** Last observed working directory of the live shell (tracked via the PTY
    *  cwd probe / OSC 7). Used to reopen the tab where the user last `cd`'d
@@ -256,7 +256,7 @@ const newId = () =>
 
 /** Append a fresh terminal and focus it. Captures the current cwd once (its only
  *  tie to session/project state); pass an explicit cwd to override. Returns the id. */
-export function createTerminal(cwd: string = $currentCwd.get()): string {
+export function createTerminal(cwd: string = $focusedWorkspaceCwd.get()): string {
   const id = newId()
   $terminals.set([...$terminals.get(), { id, title: 'Terminal', auto: true, cwd, kind: 'user' }])
   $activeTerminalId.set(id)
@@ -339,7 +339,7 @@ const terminalCwd = (term: TerminalEntry) => normalizePath(term.restoreCwd || te
 // one, and never reveals the pane; a detached session (empty cwd) or a cwd no
 // tab lives in leaves the tabs exactly where they were. `listen` (not
 // `subscribe`) so boot keeps the persisted active tab.
-$currentCwd.listen(cwd => {
+$focusedWorkspaceCwd.listen(cwd => {
   const target = normalizePath(cwd)
 
   if (!target) {

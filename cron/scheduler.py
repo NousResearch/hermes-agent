@@ -1549,6 +1549,13 @@ def _run_no_agent_job(
 
         return _block_and_pause_job(job_id, job_name, NO_AGENT_WITHOUT_SCRIPT_ERROR)
 
+    # Keep curator usage fresh for declared skill dependencies. no_agent jobs bypass
+    # _build_job_prompt(), where agent-backed cron jobs normally bump loaded skills.
+    try:
+        _bump_declared_cron_skill_usage(job, _job_skill_names(job))
+    except Exception:
+        logger.debug("Job '%s': failed to bump declared skill usage", job_id, exc_info=True)
+
     # Pass workdir as subprocess cwd; never os.chdir() (leaks into concurrent gateway sessions).
     _job_workdir = _resolve_job_workdir(job, job_id)
     try:
@@ -4404,8 +4411,8 @@ from cron.scheduler_script import (
 )
 from cron.scheduler_prompt import (
     _PROMPT_FRAME, _PROMPT_HEADING, _PROMPT_SEPARATOR, _RESPONSE_FRAME, _RESPONSE_HEADING,
-    _RESPONSE_TERMINATOR, _block_and_pause_job, _build_job_prompt, _guard_job_credential_exfil,
-    _parse_wake_gate,
+    _RESPONSE_TERMINATOR, _block_and_pause_job, _build_job_prompt, _bump_declared_cron_skill_usage,
+    _guard_job_credential_exfil, _job_skill_names, _parse_wake_gate,
 )
 from cron.scheduler_preflight import (
     BLOCKED_CONFIG_MARKER, BLOCKED_CONFIG_SILENT_MARKER, _cron_preflight_enabled,

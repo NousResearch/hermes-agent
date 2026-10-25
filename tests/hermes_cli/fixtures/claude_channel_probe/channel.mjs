@@ -117,7 +117,7 @@ const localServer = net.createServer((socket) => {
           pending.delete(envelope.correlation_id);
           invalidated.add(envelope.correlation_id);
         }
-        socket.end('{"type":"cancelled"}\n');
+        socket.end(JSON.stringify({ type: "cancelled", correlation_id: envelope.correlation_id }) + "\n");
         return;
       }
       if (ownedCorrelation) throw new Error("one question is allowed per connection");
@@ -131,7 +131,7 @@ const localServer = net.createServer((socket) => {
       const timer = setTimeout(() => {
         pending.delete(envelope.correlation_id);
         invalidated.add(envelope.correlation_id);
-        socket.end('{"type":"expired"}\n');
+        socket.end(JSON.stringify({ type: "expired", correlation_id: envelope.correlation_id }) + "\n");
       }, ttlMs);
       pending.set(envelope.correlation_id, { socket, timer });
       await mcp.notification({
@@ -151,7 +151,11 @@ const localServer = net.createServer((socket) => {
         },
       });
     } catch (error) {
-      socket.end(JSON.stringify({ type: "error", error: String(error.message) }) + "\n");
+      socket.end(JSON.stringify({
+        type: "error",
+        correlation_id: ownedCorrelation,
+        error: String(error.message),
+      }) + "\n");
     }
   });
   socket.on("close", () => {

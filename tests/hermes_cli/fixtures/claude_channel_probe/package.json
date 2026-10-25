@@ -5,7 +5,7 @@
   "type": "module",
   "license": "UNLICENSED",
   "scripts": {
-    "test": "node --test contract.test.mjs"
+    "test": "node --test contract.test.mjs sender.test.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2"

@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+umask 077
 
 # Launch exactly one reviewed foreground session. Custom development Channels
 # require an interactive Claude confirmation before they register, so this
@@ -11,6 +12,7 @@ script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 : "${ESN0407_SESSION_ID:?set ESN0407_SESSION_ID to the pre-registered provider session UUID}"
 : "${ESN0407_PROFILE_ROOT:?set ESN0407_PROFILE_ROOT to the reviewed durable provider-auth profile}"
 : "${CLAUDE_CONFIG_DIR:?set CLAUDE_CONFIG_DIR to the reviewed durable Claude config directory}"
+: "${ESN0407_DEBUG_FILE:?set ESN0407_DEBUG_FILE to a new file in the disposable fixture directory}"
 
 case "$ESN0407_MCP_CONFIG" in /*) ;; *) echo "MCP config path must be absolute" >&2; exit 2 ;; esac
 case "$ESN0407_WORK_DIR" in /*) ;; *) echo "work directory must be absolute" >&2; exit 2 ;; esac
@@ -96,7 +98,9 @@ cd "$ESN0407_WORK_DIR"
 # from /dev/null. Preserve the launcher's terminal input explicitly so Claude's
 # mandatory development-Channel confirmation remains a human interaction.
 exec 3<&0
-claude --restricted --permission-mode dontAsk \
+node "$script_dir/launch-claude.mjs" "$ESN0407_DEBUG_FILE" -- \
+  claude --restricted --permission-mode dontAsk \
+  --debug=mcp --debug-file /dev/fd/3 \
   --session-id "$ESN0407_SESSION_ID" \
   --setting-sources "" --strict-mcp-config \
   --mcp-config "$ESN0407_MCP_CONFIG" \

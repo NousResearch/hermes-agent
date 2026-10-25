@@ -4,6 +4,8 @@ import {
   assertDisposableDirectory,
   assertLockedDependencies,
   assertManagedProfile,
+  assertNewPrivateOutputPath,
+  claimNewPrivateOutputPath,
   assertSubscriptionAuth,
 } from "./contract.mjs";
 
@@ -30,6 +32,12 @@ if (mode === "auth") {
     throw new Error("managed provider-auth profile already has an active session");
   }
   process.stdout.write("managed-profile-idle-ok\n");
+} else if (mode === "output") {
+  assertNewPrivateOutputPath(process.argv[3], process.argv[4]);
+  process.stdout.write("private-output-path-ok\n");
+} else if (mode === "claim-output") {
+  claimNewPrivateOutputPath(process.argv[3], process.argv[4]);
+  process.stdout.write("private-output-claimed\n");
 } else {
-  throw new Error("usage: node preflight.mjs auth|lock|location|profile|sessions");
+  throw new Error("usage: node preflight.mjs auth|claim-output|lock|location|output|profile|sessions");
 }

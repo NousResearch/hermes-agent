@@ -10,6 +10,8 @@ import {
   assertDisposableDirectory,
   assertLockedDependencies,
   assertManagedProfile,
+  assertNewPrivateOutputPath,
+  claimNewPrivateOutputPath,
   assertSubscriptionAuth,
   closeChannelResources,
   readExpectedRoute,
@@ -143,6 +145,60 @@ test("dependency preparation accepts only an owned private temporary non-reposit
   fs.rmSync(privateDirectory, { recursive: true });
 });
 
+test("diagnostic output must be a new direct child of the private fixture", () => {
+  const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "esn0407-output-test-")));
+  fs.chmodSync(directory, 0o700);
+  const output = path.join(directory, "mcp-debug.log");
+  assert.equal(assertNewPrivateOutputPath(directory, output), output);
+  const broken = path.join(directory, "broken.log");
+  fs.symlinkSync(path.join(directory, "missing-target"), broken);
+  assert.throws(() => assertNewPrivateOutputPath(directory, broken), /including as a symlink/);
+  fs.writeFileSync(output, "existing", { mode: 0o600 });
+  assert.throws(() => assertNewPrivateOutputPath(directory, output), /must not already exist/);
+  assert.throws(() => assertNewPrivateOutputPath(directory, path.join(directory, "nested", "out")));
+  const claimed = path.join(directory, "claimed.log");
+  assert.equal(claimNewPrivateOutputPath(directory, claimed), claimed);
+  assert.equal(fs.lstatSync(claimed).isSymbolicLink(), false);
+  assert.equal(fs.statSync(claimed).mode & 0o777, 0o600);
+  fs.rmSync(directory, { recursive: true });
+});
+
+test("debug writer stays bound to its opened descriptor if the pathname is replaced", () => {
+  const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "esn0407-debug-fd-test-")));
+  fs.chmodSync(directory, 0o700);
+  const debugPath = path.join(directory, "debug.log");
+  const redirected = path.join(directory, "redirected.log");
+  const fake = path.join(directory, "fake-claude.sh");
+  fs.writeFileSync(fake, `#!/bin/sh
+rm "$ESN0407_TEST_DEBUG_PATH"
+ln -s "$ESN0407_TEST_REDIRECT_TARGET" "$ESN0407_TEST_DEBUG_PATH"
+printf '%s\\n' descriptor-bound >&3
+`, { mode: 0o700 });
+  const result = spawnSync(process.execPath, [
+    new URL("./launch-claude.mjs", import.meta.url).pathname,
+    debugPath, "--", fake,
+  ], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      ESN0407_TEST_DEBUG_PATH: debugPath,
+      ESN0407_TEST_REDIRECT_TARGET: redirected,
+    },
+  });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(fs.lstatSync(debugPath).isSymbolicLink(), true);
+  assert.equal(fs.existsSync(redirected), false);
+  fs.rmSync(debugPath);
+  fs.symlinkSync(redirected, debugPath);
+  const refused = spawnSync(process.execPath, [
+    new URL("./launch-claude.mjs", import.meta.url).pathname,
+    debugPath, "--", fake,
+  ], { encoding: "utf8" });
+  assert.notEqual(refused.status, 0);
+  assert.equal(fs.existsSync(redirected), false);
+  fs.rmSync(directory, { recursive: true });
+});
+
 test("trust bootstrap plan binds one empty private config to one empty private workspace", () => {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), "esn0407-trust-plan-test-"));
   fs.chmodSync(parent, 0o700);
@@ -192,6 +248,8 @@ test("launcher scrubs credentials, verifies subscription auth, and uses isolated
   const work = path.join(profile, "work");
   const config = path.join(directory, "mcp.json");
   const record = path.join(directory, "record.json");
+  const debugFile = path.join(directory, "mcp-debug.log");
+  const ptyDebugFile = path.join(directory, "mcp-pty-debug.log");
   fs.mkdirSync(bin);
   fs.mkdirSync(profile, { mode: 0o700 });
   fs.mkdirSync(claudeConfig, { mode: 0o700 });
@@ -230,6 +288,7 @@ TEST_STDIN="$consent" node -e 'const fs=require("fs"); fs.writeFileSync(process.
       ESN0407_PROFILE_ROOT: profile,
       ESN0407_SESSION_ID: "12345678-1234-4abc-8def-1234567890ab",
       CLAUDE_CONFIG_DIR: claudeConfig,
+      ESN0407_DEBUG_FILE: debugFile,
       ANTHROPIC_API_KEY: "must-not-reach-child",
       ANTHROPIC_BASE_URL: "https://must-not-reach-child.invalid",
       AWS_PROFILE: "must-not-reach-child",
@@ -248,6 +307,9 @@ TEST_STDIN="$consent" node -e 'const fs=require("fs"); fs.writeFileSync(process.
   assert.notEqual(sessionIndex, -1);
   assert.equal(observed.args[sessionIndex + 1], "12345678-1234-4abc-8def-1234567890ab");
   assert.ok(observed.args.includes("--dangerously-load-development-channels"));
+  assert.ok(observed.args.includes("--debug=mcp"));
+  assert.equal(observed.args[observed.args.indexOf("--debug-file") + 1], "/dev/fd/3");
+  assert.equal(fs.statSync(debugFile).mode & 0o777, 0o600);
   assert.ok(observed.args.includes("--strict-mcp-config"));
   const allowedIndex = observed.args.indexOf("--allowedTools");
   assert.notEqual(allowedIndex, -1);
@@ -282,6 +344,7 @@ sys.exit(os.waitstatus_to_exitcode(status))
       ESN0407_PROFILE_ROOT: profile,
       ESN0407_SESSION_ID: "87654321-4321-4cba-9fed-ba0987654321",
       CLAUDE_CONFIG_DIR: claudeConfig,
+      ESN0407_DEBUG_FILE: ptyDebugFile,
     },
   });
   assert.equal(ptyResult.status, 0, ptyResult.stdout + ptyResult.stderr);
@@ -300,6 +363,8 @@ test("managed profile lease lets exactly one concurrent launcher reach Claude", 
   const work = path.join(profile, "work");
   const mcpConfig = path.join(directory, "mcp.json");
   const record = path.join(directory, "record.txt");
+  const debugFile = path.join(directory, "mcp-debug-first.log");
+  const secondDebugFile = path.join(directory, "mcp-debug-second.log");
   fs.mkdirSync(bin);
   fs.mkdirSync(profile, { mode: 0o700 });
   fs.mkdirSync(claudeConfig, { mode: 0o700 });
@@ -330,6 +395,7 @@ sleep 2
     ...process.env, PATH: `${bin}:${process.env.PATH}`, TEST_RECORD: record,
     ESN0407_MCP_CONFIG: mcpConfig, ESN0407_WORK_DIR: work,
     ESN0407_PROFILE_ROOT: profile, CLAUDE_CONFIG_DIR: claudeConfig,
+    ESN0407_DEBUG_FILE: debugFile,
   };
   const launcher = new URL("./launch.sh", import.meta.url).pathname;
   const first = spawn("sh", [launcher], {
@@ -342,7 +408,7 @@ sleep 2
   }
   assert.equal(fs.existsSync(record), true, "first launcher did not reach Claude");
   const second = spawnSync("sh", [launcher], {
-    env: { ...baseEnv, ESN0407_SESSION_ID: "87654321-4321-4cba-9fed-ba0987654321" },
+    env: { ...baseEnv, ESN0407_SESSION_ID: "87654321-4321-4cba-9fed-ba0987654321", ESN0407_DEBUG_FILE: secondDebugFile },
     encoding: "utf8",
   });
   assert.notEqual(second.status, 0);
@@ -364,6 +430,8 @@ test("launcher signals cannot release the lease and continue or orphan Claude", 
   const work = path.join(profile, "work");
   const mcpConfig = path.join(directory, "mcp.json");
   const record = path.join(directory, "record.txt");
+  const debugFile = path.join(directory, "mcp-debug-auth.log");
+  const mainDebugFile = path.join(directory, "mcp-debug-main.log");
   fs.mkdirSync(bin);
   fs.mkdirSync(profile, { mode: 0o700 });
   fs.mkdirSync(claudeConfig, { mode: 0o700 });
@@ -404,6 +472,7 @@ exec node -e '
     ...process.env, PATH: `${bin}:${process.env.PATH}`, TEST_RECORD: record,
     ESN0407_MCP_CONFIG: mcpConfig, ESN0407_WORK_DIR: work,
     ESN0407_PROFILE_ROOT: profile, CLAUDE_CONFIG_DIR: claudeConfig,
+    ESN0407_DEBUG_FILE: debugFile,
     ESN0407_SESSION_ID: "12345678-1234-4abc-8def-1234567890ab",
   };
   const launcher = new URL("./launch.sh", import.meta.url).pathname;
@@ -428,7 +497,7 @@ exec node -e '
 
   fs.writeFileSync(record, "");
   const duringMain = spawn("sh", [launcher], {
-    env: baseEnv, stdio: ["ignore", "pipe", "pipe"],
+    env: { ...baseEnv, ESN0407_DEBUG_FILE: mainDebugFile }, stdio: ["ignore", "pipe", "pipe"],
   });
   await waitFor("main");
   duringMain.kill("SIGTERM");

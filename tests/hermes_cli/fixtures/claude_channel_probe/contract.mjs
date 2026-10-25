@@ -175,6 +175,52 @@ export function assertDisposableDirectory(directory) {
   return resolved;
 }
 
+export function assertNewPrivateOutputPath(directory, outputPath) {
+  const resolvedDirectory = assertDisposableDirectory(directory);
+  if (typeof outputPath !== "string" || !path.isAbsolute(outputPath)) {
+    throw new Error("output path must be absolute");
+  }
+  try {
+    fs.lstatSync(outputPath);
+    throw new Error("output path must not already exist, including as a symlink");
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  const parent = fs.realpathSync(path.dirname(outputPath));
+  if (parent !== resolvedDirectory || ["", ".", ".."].includes(path.basename(outputPath))) {
+    throw new Error("output path must be a new file directly beneath the disposable directory");
+  }
+  return outputPath;
+}
+
+export function openNewPrivateOutputPath(directory, outputPath) {
+  assertNewPrivateOutputPath(directory, outputPath);
+  const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL |
+    (fs.constants.O_NOFOLLOW ?? 0);
+  const descriptor = fs.openSync(outputPath, flags, 0o600);
+  try {
+    const opened = fs.fstatSync(descriptor);
+    const named = fs.lstatSync(outputPath);
+    if (
+      !opened.isFile() || named.isSymbolicLink() || opened.dev !== named.dev || opened.ino !== named.ino ||
+      (opened.mode & 0o777) !== 0o600 ||
+      (typeof process.getuid === "function" && opened.uid !== process.getuid())
+    ) {
+      throw new Error("claimed output path is not the exact private regular file opened by this process");
+    }
+  } catch (error) {
+    fs.closeSync(descriptor);
+    throw error;
+  }
+  return descriptor;
+}
+
+export function claimNewPrivateOutputPath(directory, outputPath) {
+  const descriptor = openNewPrivateOutputPath(directory, outputPath);
+  fs.closeSync(descriptor);
+  return outputPath;
+}
+
 export function assertManagedProfile(profileDirectory, configDirectory, workDirectory) {
   for (const [name, value] of Object.entries({ profileDirectory, configDirectory, workDirectory })) {
     if (typeof value !== "string" || !path.isAbsolute(value)) {

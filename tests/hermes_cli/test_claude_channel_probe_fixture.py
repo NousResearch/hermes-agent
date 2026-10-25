@@ -42,7 +42,7 @@ def test_fixture_cleanup_destroys_clients_and_unlinks_owned_socket():
 
 def test_fixture_runtime_contract_suite_passes():
     result = subprocess.run(
-        ["node", "--test", "contract.test.mjs"],
+        ["node", "--test", "contract.test.mjs", "sender.test.mjs"],
         cwd=FIXTURE,
         text=True,
         capture_output=True,

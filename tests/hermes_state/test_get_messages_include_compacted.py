@@ -161,9 +161,9 @@ class TestDisplayDedupe:
                 f"""
                 INSERT INTO messages
                     (session_id, role, content, tool_call_id, tool_calls,
-                     tool_name, timestamp, active, compacted)
+                     tool_name, timestamp, message_uid, active, compacted)
                 SELECT session_id, role, content, tool_call_id, tool_calls,
-                       tool_name, timestamp, 0, 1
+                       tool_name, timestamp, message_uid, 0, 1
                 FROM messages
                 WHERE session_id = ? AND id IN ({placeholders})
                 """,

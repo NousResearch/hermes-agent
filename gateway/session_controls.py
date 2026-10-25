@@ -857,8 +857,11 @@ class AuthorityConnection:
         from gateway.session_server_requests import may_settle, resolve
 
         def entitled(session_id, events):
-            # The same rule ``clarify.lock`` applies to the same request id (attached + respond).
-            return may_settle(self.authority, self.actor, session_id, events)
+            # The same rule ``clarify.lock`` applies to the same request id (attached + respond). A
+            # response frame names no profile: a host-scoped socket answers a sibling's request as the
+            # sibling connection that attached it.
+            return any(may_settle(connection.authority, connection.actor, session_id, events)
+                       for connection in (self, *self._siblings.values()))
         if not resolve(frame, session_ok=entitled):
             import logging
             logging.getLogger(__name__).debug('dropping response for unknown server request id=%r', frame.get('id'))

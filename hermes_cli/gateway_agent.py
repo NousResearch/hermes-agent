@@ -465,6 +465,14 @@ class GatewayAgent:
             self.provider = info["provider"]
         if info.get("context_length"):
             self.context_compressor.context_length = int(info["context_length"])
+        effort = str(info.get("reasoning_effort") or "").strip()
+        if effort:
+            from hermes_constants import parse_reasoning_effort
+            config = parse_reasoning_effort(effort)
+            if config:
+                # The session owns its effort: adopt it locally without the property setter,
+                # which would POST session.mutate reasoning and rewrite the policy we read.
+                self._reasoning_config = config
 
     @property
     def tools(self):

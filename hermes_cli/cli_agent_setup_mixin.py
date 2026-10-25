@@ -785,6 +785,8 @@ class CLIAgentSetupMixin:
                 except Exception as e:
                     _cprint(f"  {t('cli.resume.title_apply_failed', error=e)}")
                     # Keep _pending_title so it can be retried after row creation succeeds
+            from hermes_cli.cli_model_switch_mixin import _sync_cli_reasoning_from_session
+            _sync_cli_reasoning_from_session(self)
             return True
         except Exception as e:
             console = ChatConsole()

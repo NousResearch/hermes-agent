@@ -49,6 +49,34 @@ def _resolve_cli_reasoning(cli) -> None:
     cli._reasoning_user_set = False
 
 
+def _sync_cli_reasoning_from_session(cli) -> None:
+    """Adopt the attached gateway session's live effort into the CLI's display fields.
+
+    A resumed session can own its effort (a ``/reasoning`` pin frozen into the session policy,
+    or a creation-time level) while the CLI's own resolve above reads only the launch profile:
+    the status bar and ``/reasoning`` then report a level the next turn will not run. The
+    gateway owns session state, so ``session.info.reasoning_effort`` — the level the next turn
+    will send — wins when the attachment reports one. An empty/absent value keeps the resolve's
+    result (a session that follows its profile has no own level to adopt).
+    """
+    agent = getattr(cli, "agent", None)
+    state_of = getattr(agent, "_state", None)
+    if not callable(state_of):
+        return
+    try:
+        info = state_of().info or {}
+    except Exception:
+        return
+    effort = str(info.get("reasoning_effort") or "").strip()
+    if not effort:
+        return
+    from hermes_constants import parse_reasoning_effort
+    config = parse_reasoning_effort(effort)
+    if config:
+        cli.reasoning_config = config
+        cli._reasoning_user_set = False
+
+
 def stored_session_route(session_meta, *, current_model, current_provider):
     """The route a resumed session should run on, or ``None`` when the stored one is absent or
     already current. Returns ``(model, provider, base_url, api_mode, provider_changed)``; the
@@ -602,6 +630,9 @@ class CLIModelSwitchMixin:
                     "%s failed; keeping ambient credentials",
                     stored_provider, exc_info=True)
         _resolve_cli_reasoning(self)
+        # The gateway owns a resumed session's effort (a /reasoning pin); adopt it after the
+        # profile re-resolve above so /reasoning and the status bar show what the next turn runs.
+        _sync_cli_reasoning_from_session(self)
         # Mid-chat /resume swaps the live agent; on startup --resume _init_agent picks up
         # self.model / self.provider / self.reasoning_config.
         if self.agent is not None:

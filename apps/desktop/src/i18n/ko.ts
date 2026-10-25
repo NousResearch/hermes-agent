@@ -587,6 +587,8 @@ export const koOverrides = {
     skip: '설정 건너뛰기',
     skipTip: '안내 설정을 끝내고 새 대화를 엽니다.',
     skipFailed: '설정을 건너뛰지 못했습니다',
+    slashOffTitle: '설정 중에는 슬래시 명령을 쓸 수 없습니다',
+    slashOffBody: '설정이 끝나면 평소처럼 작동합니다.',
     localModel: {
       title: '이 컴퓨터에서 모델을 로컬로 구동할 수 있습니다',
       text: (model, size) =>
@@ -827,7 +829,7 @@ export const koOverrides = {
       inputTitleNamed: session => `입력 필요 — ${session}`,
       inputBody: 'Hermes가 응답을 기다리고 있습니다.',
       turnDoneTitle: 'Hermes 완료',
-      turnDoneBody: '',
+      turnDoneBody: '메시지 완료.',
       turnErrorTitle: '턴 실패',
       backgroundDoneTitle: '백그라운드 작업 완료',
       backgroundFailedTitle: '백그라운드 작업 실패',
@@ -933,6 +935,10 @@ export const koOverrides = {
     message:
       '작업이 실행되는 동안 Hermes가 컴퓨터 절전을 막을 수 있습니다. 화면은 그대로 꺼지며, 배터리 사용 중에는 절전 상태로 들어갈 수 있습니다.',
     action: '작업 중 절전 방지'
+  },
+  connectorOffer: {
+    heading: '연결한 앱 유지하기',
+    body: '무료 Nous 계정으로 로그인하면 Gmail이나 Slack처럼 연결한 앱을 계정에 그대로 유지할 수 있습니다.'
   },
 
   billingBlock: {
@@ -1405,6 +1411,9 @@ export const koOverrides = {
       testBody: '알림이 정상 작동합니다.',
       testSent: '테스트를 보냈습니다. 아무것도 보이지 않으면 OS 알림 권한과 집중 모드/방해 금지를 확인하세요.',
       testUnsupported: '이 시스템은 네이티브 알림을 지원하지 않습니다.',
+      muteSoundsTitle: '인터페이스 소리 끄기',
+      muteSoundsDesc:
+        '완료·호출어·사고 중에 자동으로 나는 신호음, 햅틱 피드백, OS 알림 소리를 끕니다. 소리 미리듣기와 음성 답변은 그대로 재생됩니다.',
       completionSoundTitle: '완료 소리',
       completionSoundDesc: '에이전트 턴이 끝날 때 재생됩니다. 프리셋을 고르고 여기서 미리 들어보세요.',
       completionSoundPreview: '미리 듣기'
@@ -1809,7 +1818,8 @@ export const koOverrides = {
       },
       terminal: {
         cwd: '도구와 터미널 작업의 기본 프로젝트 폴더입니다.',
-        persistentShell: '백엔드가 지원하면 명령 사이에 셸 상태를 유지합니다.',
+        persistentShell:
+          'SSH 백엔드: 명령 사이에 export한 변수를 유지합니다. 끄면 각 명령이 로그인 환경에서 시작합니다. 작업 디렉터리는 항상 이어집니다.',
         envPassthrough: '도구 실행에 전달할 환경 변수입니다.',
         dockerImage: '실행 백엔드가 Docker일 때 사용할 컨테이너 이미지입니다.',
         singularityImage: '실행 백엔드가 Singularity일 때 사용할 이미지입니다.',
@@ -1981,6 +1991,8 @@ export const koOverrides = {
         latestRelease: v => `최신 안정 릴리스(${v})를 쓰고 있습니다.`,
         rollbackTitle: v => `안정 릴리스 ${v}(으)로 되돌리기`,
         rollbackBody: v => `이 빌드는 안정 릴리스 ${v}보다 최신입니다. 설치하면 Hermes가 그 릴리스로 되돌아갑니다.`,
+        heldBody: v =>
+          `이 빌드는 안정 릴리스 ${v}보다 최신입니다. 세션이 이미 ${v}에서 열 수 없는 게이트웨이 런타임을 쓰고 있어, 더 새로운 안정 릴리스가 나올 때까지 Hermes는 이 빌드에 머뭅니다.`,
         rollbackAction: v => `${v}(으)로 롤백`,
         allChanges: '모든 변경 사항 보기'
       }
@@ -2010,7 +2022,7 @@ export const koOverrides = {
         '사용 중인 도구 세트를 모두 해제할까요? 다시 켜기 전까지 메모리, 터미널, 웹 검색, 위임을 비롯한 대부분의 도구가 꺼집니다.',
       keepAwakeTitle: '컴퓨터 절전 방지',
       keepAwakeDesc:
-        '긴 작업이나 야간 실행이 계속되도록 이 머신이 잠자기로 들어가지 않게 합니다. 화면은 어두워질 수 있습니다.',
+        '이 머신이 잠자기로 들어가지 않게 합니다. "작업 중에만"은 턴이 진행되는 동안에만 깨어 있게 하므로, 노트북을 일주일 내내 깨워 두지 않고도 야간 실행이 유지됩니다. 화면은 어두워질 수 있습니다.',
       keepAwakeOff: '끔',
       keepAwakeWhileWorking: '작업 중에만',
       keepAwakeAlways: '항상',
@@ -2469,7 +2481,110 @@ export const koOverrides = {
           '직접 엔드포인트가 활성 상태이며 저장된 공급자보다 우선합니다. 이 모드를 선택한 동안 엔드포인트와 자격 증명은 유지됩니다.',
         directClear: '이 경로를 적용하면 직접 엔드포인트와 저장된 키가 지워집니다. 다른 요청 설정은 유지됩니다.',
         catalogFailed: '모델 카탈로그를 사용할 수 없습니다. 공급자와 모델을 직접 입력하거나 재시도하세요.',
-        draftHint: '적용하기 전까지 변경 사항은 로컬에만 남습니다.'
+        draftHint: '적용하기 전까지 변경 사항은 로컬에만 남습니다.',
+        routing: {
+          title: '라우팅',
+          settingsTitle: '서브에이전트 기본값',
+          intro: '각 서브에이전트가 모델을 정하는 방식입니다.',
+          modes: {
+            default: {
+              label: '기본',
+              description: '모든 서브에이전트가 아래 서브에이전트 모델로 실행됩니다.'
+            },
+            model_map: {
+              label: '모델 경로',
+              description: '모델 몇 개에 이름을 붙여 두면 에이전트가 서브에이전트마다 하나를 고릅니다.'
+            },
+            profile_routes: {
+              label: '프로필 경로',
+              description: '서브에이전트가 내 프로필 중 하나로 실행되며, 그 프로필의 모델·스킬·키를 씁니다.'
+            }
+          },
+          inUse: '사용 중',
+          plugin: '플러그인',
+          pluginMissing: '모델 경로와 프로필 경로는 Advanced Delegation 플러그인이 제공합니다.',
+          pluginDisabled: 'Advanced Delegation이 설치되어 있지만 이 프로필에서는 꺼져 있습니다.',
+          pluginNotLoaded:
+            'Advanced Delegation이 켜져 있지만 Hermes가 아직 불러오지 않았습니다. 마무리하려면 Hermes를 재시작하세요.',
+          installPlugin: '플러그인 설치',
+          installUnavailable:
+            'Advanced Delegation이 아직 플러그인 카탈로그에 없습니다. 기능 › 플러그인에서 설치하세요.',
+          enablePlugin: '켜기',
+          enableFailed: 'Advanced Delegation을 켜지 못했습니다',
+          modeFailed: '서브에이전트 라우팅을 변경하지 못했습니다',
+          loadFailed: '서브에이전트 라우팅을 불러오지 못했습니다',
+          blockedPill: '미실행',
+          blockedDetail:
+            '이 모드가 저장되어 있어, Hermes는 조용히 기본 모드로 돌아가지 않고 모든 서브에이전트를 거부합니다.',
+          blockedMissing: 'Advanced Delegation을 설치하기 전까지 서브에이전트가 시작되지 않습니다.',
+          blockedDisabled: '이 프로필에서 Advanced Delegation을 켜기 전까지 서브에이전트가 시작되지 않습니다.',
+          blockedNotLoaded:
+            'Hermes가 Advanced Delegation을 불러오기 전까지 서브에이전트가 시작되지 않습니다. 마무리하려면 Hermes를 재시작하세요.',
+          blockedUnavailable: label =>
+            `${label}을(를) 여기서 실행할 수 있게 되기 전까지 서브에이전트가 시작되지 않습니다. 해당 플러그인이 실행할 수 없다고 보고했습니다.`,
+          blockedUnregistered: name =>
+            `“${name}”을(를) 제공하는 플러그인을 설치하고 켜기 전까지 서브에이전트가 시작되지 않습니다.`,
+          thirdPartyDescription: '플러그인이 제공합니다. 설정은 해당 플러그인에 있습니다.',
+          modelRoutesTitle: '모델 경로',
+          modelRoutesEmpty:
+            '아직 경로가 없습니다. 경로를 추가하기 전까지 서브에이전트는 메인 에이전트의 모델을 씁니다.',
+          addRoute: '경로 추가',
+          editRoute: '편집',
+          makeDefault: '기본으로 지정',
+          deleteRoute: '삭제',
+          defaultBadge: '기본',
+          routeActions: name => `${name} 작업`,
+          deleteConfirmTitle: name => `“${name}” 경로를 삭제할까요?`,
+          deleteConfirmBody: '서브에이전트가 더 이상 이 경로를 고를 수 없습니다.',
+          deleteConfirmNextDefault: name => `기본 경로이므로 “${name}”이(가) 새 기본 경로가 됩니다.`,
+          deleteConfirmAction: '경로 삭제',
+          saveFailed: '경로를 저장하지 못했습니다',
+          baseUrlRoute: url => `엔드포인트 ${url}`,
+          dialogNew: '새 모델 경로',
+          dialogEdit: '모델 경로 편집',
+          dialogDesc: '에이전트는 이름과 설명을 읽고 서브에이전트가 탈 경로를 정합니다.',
+          nameLabel: '이름',
+          namePlaceholder: '예: fast',
+          nameHint: '공백 없이 짧게 쓰세요. 에이전트가 이 이름으로 경로를 고릅니다.',
+          descriptionLabel: '사용 시점',
+          descriptionPlaceholder: '예: 저렴하고 빠름. 조회, 요약, 간단한 수정',
+          descriptionHint: '에이전트가 고르기 전에 읽는 한 줄입니다.',
+          providerLabel: '공급자',
+          providerPlaceholder: '공급자 선택',
+          modelLabel: '모델',
+          effortLabel: '추론 강도',
+          effortInherit: '서브에이전트 기본값',
+          tierLabel: '속도',
+          tierNormal: '표준',
+          tierFast: '빠름',
+          tierUltrafast: '초고속',
+          tierHint: '지원하는 모델에서만 적용됩니다.',
+          optional: '선택 사항',
+          errors: {
+            required: '필수',
+            spaces: '공백 불가',
+            duplicate: '다른 경로가 이미 이 이름을 쓰고 있습니다'
+          },
+          saveRoute: '경로 저장',
+          createRoute: '경로 추가',
+          profileRoutesTitle: '서브에이전트가 실행될 수 있는 프로필',
+          profileRoutesHint: '선택한 프로필마다 자체 모델, 스킬, 페르소나, 키를 가져옵니다.',
+          profileDescriptionPlaceholder: '사용 시점(선택 사항)',
+          profileDefault: '기본',
+          profileEmpty: '아직 다른 프로필이 없습니다. 프로필 레일에서 생성하세요.',
+          profileMissing: name => `${name}(존재하지 않는 프로필)`,
+          inactiveTitle: '이 모드에서는 미사용',
+          inactiveModelMap: route =>
+            `모델 경로가 서브에이전트마다 모델을 고릅니다. 경로를 고르지 않은 서브에이전트는 “${route}”을(를) 씁니다.`,
+          inactiveProfiles: profile =>
+            `프로필 경로가 서브에이전트마다 프로필을 고릅니다. 프로필을 고르지 않은 서브에이전트는 “${profile}”(으)로 실행됩니다.`,
+          inactiveModelMapNoDefault:
+            '모델 경로가 서브에이전트마다 모델을 고릅니다. 경로를 고르지 않은 서브에이전트는 메인 에이전트의 모델을 씁니다.',
+          inactiveProfilesNoDefault:
+            '프로필 경로가 서브에이전트마다 프로필을 고릅니다. 프로필을 고르지 않은 서브에이전트는 메인 에이전트의 모델을 씁니다.',
+          inactivePlugin: label => `${label}이(가) 서브에이전트마다 모델을 정하므로 이 설정은 적용되지 않습니다.`,
+          useDefault: '기본으로 전환'
+        }
       }
     },
     localModels: {
@@ -2502,7 +2617,7 @@ export const koOverrides = {
       } as Record<string, string>,
       noRecommendationTitle: '이 머신에 대한 자동 추천 없음',
       noRecommendationDetail:
-        '자동 설정에는 GPU 또는 통합 메모리에 전부 들어가는 선별 모델이 필요합니다. 아래에서 직접 고르거나 더 많은 모델을 둘러볼 수 있습니다.',
+        '자동 설정에는 GPU 또는 통합 메모리에서 전부 최고 속도로 구동되는 선별 모델이 필요합니다. 아래에서 직접 고르거나 더 많은 모델을 둘러볼 수 있습니다.',
       noRecommendationAction: '모델 둘러보기',
       downloaded: '다운로드됨',
       downloadAction: size => `다운로드 · ${size}`,
@@ -2700,6 +2815,15 @@ export const koOverrides = {
         effectScheduled: (targetName, effectiveAt, creditsDelta) =>
           `${targetName}(으)로 변경 — ${effectiveAt}에 적용됩니다. 지금 청구되지 않으며 그때까지 현재 요금제를 유지합니다.${creditsDelta ? ` 월 크레딧 변동: ${creditsDelta}.` : ''}`
       },
+      keepGoingOnCredits: {
+        title: '크레딧으로 계속 사용',
+        description: '포함 사용량을 다 쓰면 크레딧을 씁니다. 끄면 Hermes가 초기화를 기다립니다.',
+        approveInBrowser: '변경하려면 브라우저에서 원격 지출을 승인하세요. 승인하는 즉시 적용됩니다.',
+        openAgain: '다시 열기',
+        cancel: '취소',
+        approvedRetry: '원격 지출은 승인되었지만 변경 사항이 저장되지 않았습니다.',
+        tryAgain: '재시도'
+      },
       autoReload: {
         threshold: '기준액',
         thresholdAria: '자동 충전 기준액',
@@ -2776,6 +2900,20 @@ export const koOverrides = {
             captionDefault: '기본 상한',
             captionSpending: '월 원격 지출',
             valueUsed: (spent, limit) => `${limit} 중 ${spent} 사용`
+          },
+          window: {
+            today: '오늘',
+            week: '이번 주',
+            month: '이번 달',
+            topTier: '대형 모델(월간)',
+            barLabel: title => `${title} 포함 사용량 중 사용한 양`,
+            captionPaused: '일시 중지: 구독 결제 실패',
+            captionPausedOther: '일시 중지: 포털의 결제 항목을 확인하세요',
+            captionTopTierUsedUp: '월간 한도 소진, 이후는 크레딧으로 충당',
+            captionTopTierUsedUpKeepGoingOff: '월간 한도 소진, 포함된 다른 모델은 계속 사용 가능',
+            captionResetsIn: duration => `${duration} 후 초기화`,
+            captionIncluded: '포함 사용량',
+            valueUsed: percent => `${percent} 사용`
           }
         },
         planCard: {
@@ -3167,6 +3305,19 @@ export const koOverrides = {
       pinnedProvenance: (sha: string) =>
         `커밋 ${sha}에 고정되었습니다. 새 고정으로 다시 설치하기 전까지 업데이트를 거부합니다.`,
       pinnedBadge: (sha: string) => `고정 @ ${sha}`,
+      folderAccess: {
+        title: '폴더 접근 권한',
+        hint: name => `${name}은(는) 이 폴더들의 파일을 읽고 변경할 수 있습니다. 권한을 취소하면 즉시 적용됩니다.`,
+        revoke: '권한 취소',
+        revokeLabel: path => `${path} 접근 권한 취소`,
+        revoked: (name, path) => `${name}은(는) 이제 ${path}을(를) 쓸 수 없습니다.`,
+        revokeFailed: name => `${name}의 폴더 접근 권한을 취소하지 못했습니다`,
+        pickerTitle: name => `${name}에 허용할 폴더 선택`,
+        pickerButton: '접근 허용',
+        refusedProtected: name =>
+          `${name}은(는) 그 폴더를 쓸 수 없습니다. Hermes 설정, 키 또는 플러그인 데이터가 들어 있는 폴더입니다. 이런 데이터가 없는 폴더를 선택하세요.`,
+        loadFailed: name => `${name}과(와) 공유한 폴더를 불러오지 못했습니다.`
+      },
       updateToPin: (sha: string) => `${sha}(으)로 업데이트`,
       updateFailed: (name: string) => `${name}을(를) 업데이트하지 못했습니다`,
       updated: (name: string) =>
@@ -3182,6 +3333,20 @@ export const koOverrides = {
       updateScanConfirm: '그래도 업데이트',
       updateScanBlocked: name => `보안 검사가 ${name} 업데이트를 차단했습니다(위험 판정). 무시할 수 없습니다.`,
       updatedGit: name => `${name}을(를) 최신 커밋으로 업데이트했습니다.`,
+      previewScriptPromptTitle: plugin => `${plugin}이(가) 이 페이지에서 스크립트를 실행하도록 허용할까요?`,
+      previewScriptPromptBody: (plugin, origin) =>
+        `${plugin}이(가) ${origin}의 미리보기 브라우저에서 JavaScript를 실행하려고 합니다.`,
+      previewScriptPromptRisk:
+        '스크립트는 그 사이트의 모든 내용을 읽고 바꿀 수 있습니다. 그 사이트에 로그인한 계정의 페이지도 포함됩니다.',
+      previewScriptPromptRevokeHint: '이 사이트에만 적용됩니다. 기능 ▸ 플러그인에서 취소할 수 있습니다.',
+      previewScriptAllow: '이 사이트에서 허용',
+      previewScriptDeny: '허용 안 함',
+      previewScriptAccessLabel: '페이지 스크립트',
+      previewScriptAccessNone: '페이지에서 스크립트를 실행하기 전에 묻습니다',
+      previewScriptRevoke: origin => `${origin} 접근 권한 취소`,
+      previewScriptRevoked: (plugin, origin) => `${plugin}은(는) 이제 ${origin}에서 스크립트를 실행할 수 없습니다.`,
+      previewScriptRevokeUnsaved: (plugin, origin) =>
+        `변경 사항을 저장하지 못해 Hermes를 재시작할 때까지만 유지됩니다. 지금은 ${origin}에서 ${plugin}이(가) 차단됩니다.`,
       uninstall: '제거',
       uninstallTip: (name: string, profile: string) => `${profile}에서 ${name} 제거`,
       uninstallConfirmTitle: (name: string) => `${name}을(를) 제거할까요?`,
@@ -3657,7 +3822,7 @@ export const koOverrides = {
       },
       TELEGRAM_ALLOWED_USERS: {
         label: '허용할 Telegram 사용자 ID',
-        help: '권장합니다. @userinfobot에서 얻은 숫자 ID를 쉼표로 구분해 입력하세요. 설정하지 않으면 누구나 봇에 DM을 보낼 수 있습니다.'
+        help: '권장합니다. @userinfobot에서 얻은 숫자 ID를 칸마다 하나씩 입력하세요. 설정하지 않으면 누구나 봇에 DM을 보낼 수 있습니다.'
       },
       TELEGRAM_PROXY: { label: '프록시 URL', help: 'Telegram이 차단된 네트워크에서만 필요합니다.' },
       DISCORD_BOT_TOKEN: {
@@ -3666,7 +3831,7 @@ export const koOverrides = {
       },
       DISCORD_ALLOWED_USERS: {
         label: '허용할 Discord 사용자 ID',
-        help: '권장합니다. Discord 사용자 ID를 쉼표로 구분해 입력하세요.'
+        help: '권장합니다. Discord 사용자 ID를 칸마다 하나씩 입력하세요.'
       },
       DISCORD_REPLY_TO_MODE: { label: '답장 방식', help: 'first, all, off 중 하나.' },
       DISCORD_ALLOW_ALL_USERS: {
@@ -3702,20 +3867,20 @@ export const koOverrides = {
       },
       SLACK_ALLOWED_USERS: {
         label: '허용할 Slack 사용자 ID',
-        help: '권장합니다. Slack 사용자 ID를 쉼표로 구분해 입력하세요.'
+        help: '권장합니다. Slack 사용자 ID를 칸마다 하나씩 입력하세요.'
       },
       MATTERMOST_URL: { label: '서버 URL', placeholder: 'https://mattermost.example.com' },
       MATTERMOST_TOKEN: { label: '봇 토큰' },
       MATTERMOST_ALLOWED_USERS: {
         label: '허용할 사용자 ID',
-        help: '권장합니다. Mattermost 사용자 ID를 쉼표로 구분해 입력하세요.'
+        help: '권장합니다. Mattermost 사용자 ID를 칸마다 하나씩 입력하세요.'
       },
       MATRIX_HOMESERVER: { label: '홈서버 URL', placeholder: 'https://matrix.org' },
       MATRIX_ACCESS_TOKEN: { label: '액세스 토큰' },
       MATRIX_USER_ID: { label: '봇 사용자 ID', placeholder: '@hermes:example.org' },
       MATRIX_ALLOWED_USERS: {
         label: '허용할 Matrix 사용자 ID',
-        help: '권장합니다. @user:server 형식의 사용자 ID를 쉼표로 구분해 입력하세요.'
+        help: '권장합니다. @user:server 형식의 사용자 ID를 칸마다 하나씩 입력하세요.'
       },
       SIGNAL_HTTP_URL: {
         label: 'Signal 브리지 URL',
@@ -3725,7 +3890,7 @@ export const koOverrides = {
       SIGNAL_ACCOUNT: { label: '전화번호', help: 'signal-cli 브리지에 등록된 번호입니다.' },
       SIGNAL_ALLOWED_USERS: {
         label: '허용할 Signal 사용자',
-        help: '권장합니다. Signal 식별자를 쉼표로 구분해 입력하세요.'
+        help: '권장합니다. Signal 식별자를 칸마다 하나씩 입력하세요.'
       },
       WHATSAPP_ENABLED: {
         label: 'WhatsApp 브리지 사용',
@@ -3734,7 +3899,7 @@ export const koOverrides = {
       WHATSAPP_MODE: { label: '브리지 모드' },
       WHATSAPP_ALLOWED_USERS: {
         label: '허용할 WhatsApp 사용자',
-        help: '권장합니다. 전화번호나 WhatsApp ID를 쉼표로 구분해 입력하세요.'
+        help: '권장합니다. 전화번호나 WhatsApp ID를 칸마다 하나씩 입력하세요.'
       }
     },
     platformIntro: {}
@@ -4520,7 +4685,7 @@ export const koOverrides = {
       '/init': '저장소를 훑어 AGENTS.md 프로젝트 지시문 생성 또는 갱신',
       '/suggestions': '제안된 자동화 검토(수락/거절)',
       '/blueprint': '블루프린트 템플릿으로 자동화 설정',
-      '/browser': '브라우저 CDP 연결 관리 [connect|disconnect|status](로컬 게이트웨이 전용)',
+      '/browser': '에이전트 브라우저 관리 [connect|disconnect|status]',
       '/palette': '퍼지 명령 팔레트 열기(Ctrl+P도 가능)',
       '/usage': '토큰 사용량과 사용 한도 보기. `reset`은 적립된 Codex 한도 초기화를 사용합니다',
       '/subscription': 'Nous 요금제를 보고 브라우저에서 변경',
@@ -5118,27 +5283,25 @@ export const koOverrides = {
     signIn: '로그인',
     signInHeading: 'Nous 계정으로 로그인하면 더 많은 모델과 도구를 쓸 수 있습니다.',
     settingUp: '무료 추론을 설정하는 중…',
-    codeBody: '로그인을 마치려면 브라우저에 이 코드를 입력하세요.',
-    copyLink: '링크 복사',
-    doNotShare: '이 코드를 공유하지 마세요.',
+    finishInBrowser: '브라우저에서 마무리하세요',
+    doNotShare: '공유하지 마세요.',
+    openPageAgain: '페이지 다시 열기',
     waiting: '로그인을 기다리는 중…',
     finishingHeading: '로그인을 마무리하는 중…',
     finishingBody: '브라우저에서 승인되었습니다. 계정 토큰을 받아오는 중입니다.',
-    signedInAs: email => `${email}(으)로 로그인됨`,
+    signedInAsLabel: '로그인 계정',
     signedIn: '로그인되었습니다.',
     completedBody: '이제 계정에 추론과 도구가 포함됩니다.',
+    reconnect: '재연결',
+    openConnectors: '커넥터 열기',
     defaultModel: '기본 모델',
     change: '변경',
     done: '완료',
     notNow: '나중에',
     tryAgain: '재시도',
-    startAgain: '처음부터 다시',
     didNotComplete: '로그인이 끝나지 않았습니다',
-    rejectedBody: '괜찮습니다. 계속 무료 Nous 서비스를 쓰고 있습니다. 준비되면 언제든 로그인하세요.',
-    supersededBody: '더 새로운 로그인 코드가 이 코드를 대체했습니다. 가장 최근 코드를 쓰거나 처음부터 재시작하세요.',
     timedOutHeading: '그 로그인 링크가 만료되었습니다',
     timedOutBody: '준비되면 언제든 재시작하세요. 계속 무료 Nous 서비스를 쓰고 있습니다.',
-    retiredBody: '로그인이 끝나기 전에 세션이 종료되었습니다. Hermes가 새 세션을 시작하니, 준비되면 다시 로그인하세요.',
     errorBody: '로그인이 끝나지 않았습니다. 준비되면 재시도하세요.',
     busyHeading: '거의 다 됐습니다',
     busyBody: wait =>
@@ -5183,6 +5346,34 @@ export const koOverrides = {
     customModel: '사용자 지정 모델',
     addCustomModelAction: '사용자 지정 모델 추가…',
     customModelPlaceholder: '모델 id를 입력하세요. 예: openai/gpt-5',
+    today: '오늘',
+    week: '주간',
+    month: '월간',
+    topTier: '대형 모델(월간)',
+    included: '아래 모델은 모두 포함되어 있습니다',
+    pausedRenewal: '일시 중지: 갱신 미결제',
+    pausedOther: '일시 중지',
+    includedUsedUp: '포함 사용량 소진',
+    limitReached: name => `${name} 한도 도달`,
+    limitNames: {
+      day: '일일',
+      month: '월간',
+      top_tier: '월간 대형 모델',
+      week: '주간'
+    },
+    limitThenCredits: '이제 유료 모델은 크레딧을 씁니다(사용한 만큼 결제)',
+    limitThenCreditsLarge: '이제 대형 모델은 크레딧을 씁니다(사용한 만큼 결제)',
+    limitThenWait: '그때까지 무료 모델만 사용 가능',
+    limitThenWaitLarge: '그때까지 대형 모델 일시 중지',
+    percentUsed: percent => `${percent} 사용`,
+    resetsIn: duration => `${duration} 후 초기화`,
+    usageLevels: {
+      free: '무료',
+      top_tier: '대형'
+    },
+    sectionRecommended: '권장',
+    sectionOther: '기타 모델',
+    largeFootnote: '대형 모델은 월간 대형 모델 한도도 함께 씁니다.',
     addProvider: '공급자 추가',
     loadFailed: '모델을 불러오지 못했습니다',
     loadingIntoMemory: '메모리에 불러오는 중',
@@ -5351,6 +5542,9 @@ export const koOverrides = {
       toggleWorkspace: '작업 공간',
       cacheHitRateTitle: '이번 세션의 프롬프트 캐시 적중률 — 캐시된 토큰은 더 싸므로 높을수록 저렴합니다',
       tokensPerSecondTitle: '최근 10회 모델 호출 평균 초당 출력 토큰',
+      togglePlanUsage: '요금제 사용량',
+      planUsageTitle: (used, resetsIn) =>
+        `요금제 사용량 ${used} 사용${resetsIn ? ` · ${resetsIn} 후 초기화` : ''} · 결제 열기`,
       agents: '에이전트',
       closeAgents: '에이전트 닫기',
       openAgents: '에이전트 열기',
@@ -5392,7 +5586,7 @@ export const koOverrides = {
         title: '컨텍스트 사용량',
         tokenSummary: (used, max) => `${used} / ${max} 토큰`
       },
-      focusedSince: '활성 후 경과',
+      focusedSince: '활성 시간',
       focusedSinceTitle: '이 대화가 활성화된 뒤 지난 시간 — 턴이 실행된 시간이 아닙니다',
       yoloOn: 'YOLO 켜짐 — 위험한 명령도 자동 승인합니다. Shift+클릭하면 전역으로 전환됩니다.',
       yoloOff: 'YOLO 꺼짐. Shift+클릭하면 전역으로 전환됩니다.',
@@ -5738,8 +5932,9 @@ export const koOverrides = {
           body: provider => `${provider}이(가) 서버 오류를 반환했습니다. 잠시 후 재시도하거나 공급자를 바꾸세요.`
         },
         timeout: {
-          title: '답변이 시간 초과되었습니다',
-          body: provider => `${provider}이(가) 제때 응답하지 않았습니다. 재시도해 보내세요.`
+          title: 'AI 서비스에 닿지 못했습니다',
+          body: provider =>
+            `${provider}에 닿지 못했거나 제때 응답이 오지 않았습니다. 인터넷 연결을 확인한 뒤 재시도하세요.`
         },
         stream_drop: {
           title: '답변이 중간에 끊겼습니다',
@@ -5814,6 +6009,10 @@ export const koOverrides = {
           title: '이 대화의 폴더가 사라졌습니다',
           body: '이 대화가 작업하는 폴더가 이동되었거나 삭제되어 메시지가 실행되지 않았습니다. 폴더를 재생성하거나 “프로젝트로 이동”으로 다른 폴더를 지정한 뒤 재시도하세요.'
         },
+        launch_credentials_unavailable: {
+          title: '이 대화의 API 키가 바뀌었습니다',
+          body: '이 대화는 이후 변경되거나 삭제된 API 키로 시작되어 메시지를 보내지 않았습니다. 열려 있는 대화는 스스로 다른 키로 바꾸지 않습니다. 현재 키를 쓰려면 새 세션을 시작하세요.'
+        },
         SESSION_OWNER_UNCONFIRMED: {
           title: '메시지가 이미 대기열에 있을 수 있습니다',
           body: '게이트웨이가 제때 메시지를 확인하지 못했습니다. 대기열에 들어갔다면 이전 턴이 끝나거나 처리된 뒤 실행됩니다. 다시 보내기 전에 대화를 확인하세요.'
@@ -5853,6 +6052,10 @@ export const koOverrides = {
         free_tier_refused: {
           title: '로그인 없이는 보낼 수 없었습니다',
           body: 'Nous 계정 로그인은 무료입니다.'
+        },
+        usage_window: {
+          title: '포함 사용량 소진',
+          body: '요금제에 포함된 사용량을 초기화 전까지 모두 썼습니다. 계속하려면 /topup에서 크레딧을 추가하세요.'
         }
       },
       errorAuthKinds: {
@@ -5875,6 +6078,12 @@ export const koOverrides = {
       errorStartNewSession: '새 세션 시작',
       errorSwitchProvider: '공급자 바꾸기',
       errorChooseModel: '모델 고르기',
+      errorSwitchToModel: (model, note) => (note ? `${model}(으)로 전환(${note})` : `${model}(으)로 전환`),
+      errorSwitchModelFailed: '모델을 전환하지 못했습니다',
+      errorUseCredits: '‘크레딧으로 계속 사용’ 켜기',
+      errorUseCreditsFailed: '‘크레딧으로 계속 사용’을 켜지 못했습니다',
+      errorAddCredits: '크레딧 추가',
+      errorOpenBillingSettings: '결제 설정 열기',
       errorCompressConversation: '대화 압축',
       errorCompressFailed: '대화를 압축하지 못했습니다',
       errorOpenHermesFolder: 'Hermes 폴더 열기',

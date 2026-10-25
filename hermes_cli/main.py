@@ -2361,6 +2361,10 @@ def cmd_update(args):
     retarget_to_owning_install(PROJECT_ROOT)
     if _update_preflight_handled(args):
         return
+    from hermes_cli.doctor_startup_hooks import gate_update_on_startup_hooks
+    # Pre-flight: refuse to update a suspect environment — the update itself runs
+    # Python/pip here and would re-execute any dropped startup hook.
+    gate_update_on_startup_hooks(args)
     gateway_mode = getattr(args, "gateway", False)
 
     _update_io_state = _install_hangup_protection(gateway_mode=gateway_mode)

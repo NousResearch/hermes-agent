@@ -1582,11 +1582,27 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         consumer; both must progress without a later foreground turn.
         """
         await asyncio.sleep(3)  # let platforms finish connecting
-        from tools.async_delegation import ORPHAN_SWEEP_INTERVAL_S
+        from tools.async_delegation import ORPHAN_SWEEP_INTERVAL_S, STALLED_REOFFER_INTERVAL_S, reoffer_stalled_completions
         from tools.process_registry import process_registry as _pr
         last_orphan_sweep = None
+        last_stalled_reoffer = None
         while self._running:
             with _log_suppressed(logging.DEBUG, "Async delegation watcher error: %s"):
+                # A completion whose queued event never reached THIS queue (a long-lived process can
+                # hold producer and watcher on different queue objects) stays pending forever, because
+                # the orphan sweep deliberately skips a live owner. FIRST in the pass and in its own
+                # block with its own WARNING: it must never be skipped by, or hide inside, the orphan
+                # sweep's DEBUG suppression.
+                if last_stalled_reoffer is None or time.monotonic() - last_stalled_reoffer >= STALLED_REOFFER_INTERVAL_S:
+                    last_stalled_reoffer = time.monotonic()
+                    try:
+                        offered = await asyncio.to_thread(reoffer_stalled_completions, _pr.completion_queue)
+                    except Exception:
+                        logger.warning("Stalled async completion re-offer failed", exc_info=True)
+                    else:
+                        if offered:
+                            logger.info("Re-offered %d stalled async completion(s) from the durable ledger",
+                                        offered)
                 # Completions whose owner process died while this gateway runs (#97202).
                 if last_orphan_sweep is None or time.monotonic() - last_orphan_sweep >= ORPHAN_SWEEP_INTERVAL_S:
                     last_orphan_sweep = time.monotonic()
@@ -1596,12 +1612,22 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 # Process completions remain owned by their per-process watchers.
                 requeue = []
                 async_events = []
+                seen_delegations: set[str] = set()
                 while not _pr.completion_queue.empty():
                     try:
                         evt = _pr.completion_queue.get_nowait()
                     except Exception:
                         break
-                    (async_events if evt.get("type") == "async_delegation" else requeue).append(evt)
+                    if evt.get("type") != "async_delegation":
+                        requeue.append(evt)
+                        continue
+                    # A stalled re-offer can duplicate the producer's own copy, and one delegation must
+                    # appear at most once per pass or the group's single durable claim fights itself.
+                    delegation_id = str(evt.get("delegation_id") or "")
+                    if delegation_id and delegation_id in seen_delegations:
+                        continue
+                    seen_delegations.add(delegation_id)
+                    async_events.append(evt)
                 for evt in requeue:
                     _pr.completion_queue.put(evt)
                 # A fan-out finishing together yields N completions for one session; group by full route +

@@ -315,3 +315,42 @@ def test_throttle_runs_at_most_one_sweep_per_home_per_interval(tmp_path, monkeyp
             ad.maybe_sweep_orphaned_completions(q, now=101.0)
         ad.maybe_sweep_orphaned_completions(q, now=100.0 + ad.ORPHAN_SWEEP_INTERVAL_S + 1)
     assert calls == [str(tmp_path / "a"), str(tmp_path / "b"), str(tmp_path / "a")]
+
+
+def test_completion_with_a_live_owner_is_reoffered_when_its_event_never_arrived(tmp_path):
+    """The ledger, not the queue, is the source of truth for a finished delegation.
+
+    A long-lived gateway can hold two different ``completion_queue`` objects (the producer's and the
+    watcher's), so a finished delegation's event is enqueued where no drain loop reads it. The row
+    then stays ``pending`` with ``delivery_attempts=0`` while its owner is alive, which is exactly
+    the row the orphan sweep skips on purpose, so nothing ever retries it and the result only
+    surfaces after a restart replays it. Re-offering from the ledger is the missing half.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    q = queue.Queue()
+    with _Home(home):
+        handle = ad.dispatch_async_delegation(
+            goal="mine", context=None, toolsets=None, role="leaf", model="m", session_key="live",
+            runner=lambda: {"status": "completed", "summary": "done"})
+        deadline = time.monotonic() + 10
+        while ad.active_count() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        row = _row(home, handle["delegation_id"])
+        assert row["owner_pid"] == os.getpid() and row["delivery_state"] == "pending"
+        later = row["updated_at"] + ad._ORPHAN_STALE_S + 1
+        # A live owner is never swept, and a fresh row may still sit on a live consumer's queue.
+        assert ad.sweep_orphaned_completions(q, now=later) == 0
+        assert ad.reoffer_stalled_completions(q, now=row["updated_at"] + 1) == 0
+        assert q.empty()
+        # Stale with no claim: the ledger offers it, once per process.
+        assert ad.reoffer_stalled_completions(q, min_age_seconds=0, now=later) == 1
+        (evt,) = _drain(q)
+        assert evt["delegation_id"] == handle["delegation_id"] and evt["status"] == "completed"
+        assert ad.reoffer_stalled_completions(q, min_age_seconds=0, now=later + 60) == 0
+        assert q.empty()
+        # A consumer that discards its copy hands the row back for the next pass.
+        ad.return_completion_offer(evt)
+        assert ad.reoffer_stalled_completions(q, min_age_seconds=0, now=later + 120) == 1
+        assert _row(home, handle["delegation_id"])["delivery_state"] == "pending"
+    assert [e["delegation_id"] for e in _drain(q)] == [handle["delegation_id"]]

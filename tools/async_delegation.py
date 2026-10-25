@@ -331,6 +331,71 @@ def recover_abandoned_delegations() -> int:
     return recovered
 
 
+_STALLED_REOFFER_MIN_AGE_S = 30.0
+# How often a delivery loop re-reads the ledger for stranded rows (independent of the orphan sweep).
+STALLED_REOFFER_INTERVAL_S = 10.0
+
+
+def reoffer_stalled_completions(
+    target_queue, *, min_age_seconds: Optional[float] = None, limit: int = 50,
+    now: Optional[float] = None,
+) -> int:
+    """Offer pending completions whose in-memory event never reached THIS process's queue.
+
+    The ledger is the source of truth for a finished delegation; the queue is only the fast path.
+    In a long-lived gateway the event a completion enqueues can belong to a queue object no drain
+    loop reads, and the row then sits ``pending`` with ``delivery_attempts=0`` until a restart
+    replays it. The result is lost to the user in the meantime.
+
+    ``sweep_orphaned_completions`` cannot cover this case: it deliberately skips rows whose owner
+    process is alive, and a live owner whose in-memory copy went to the wrong queue is exactly the
+    stranded row. The two are complementary, so both run on the same cadence.
+
+    Offered once per process per row (``_offered``, shared with the orphan sweep);
+    ``return_completion_offer`` hands a discarded copy back for the next pass. Double delivery stays
+    impossible: the consumer's ``claim_completion_delivery`` is the atomic cross-process gate, and a
+    delivered row no longer matches this query.
+    """
+    from agent.runtime_session_store import is_worker_process
+    if is_worker_process():
+        return 0
+    if not _db_path().exists():
+        return 0
+    age = _STALLED_REOFFER_MIN_AGE_S if min_age_seconds is None else float(min_age_seconds)
+    now = time.time() if now is None else now
+    home = hermes_home_key(get_hermes_home())
+    offered = 0
+    with _DB_LOCK, _transaction() as conn:
+        rows = conn.execute(
+            """SELECT delegation_id, event_json, COALESCE(completed_at, dispatched_at) AS age_basis
+                 FROM async_delegations
+                WHERE state != 'running' AND delivery_state='pending' AND event_json IS NOT NULL
+                  AND COALESCE(completed_at, dispatched_at) <= ?
+                ORDER BY completed_at, delegation_id
+                LIMIT ?""",
+            (now - age, limit),
+        ).fetchall()
+    for delegation_id, payload, age_basis in rows:
+        with _orphan_lock:
+            if (home, delegation_id) in _offered:
+                continue
+        try:
+            evt = json.loads(payload)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(evt, dict):
+            continue
+        target_queue.put(redact_completion_event(evt))
+        with _orphan_lock:
+            _offered.add((home, delegation_id))
+        offered += 1
+        logger.info(
+            "Re-offered stalled async completion %s: pending %.0fs and its queued event never "
+            "reached this process's completion queue", delegation_id, max(0.0, now - (age_basis or now)),
+        )
+    return offered
+
+
 def restore_undelivered_completions(target_queue) -> int:
     """Enqueue durable pending completions as fresh turns after process start.
     Restored events are stamped ``restored=True`` in memory only: they came from a PREVIOUS

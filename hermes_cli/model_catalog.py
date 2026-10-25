@@ -50,8 +50,10 @@ _catalog_cache_source_mtime: float = 0.0
 _catalog_cache_source_path: str = ""
 # ``monotonic()`` deadline before which a failed fetch is not retried (see FETCH_RETRY_DELAY_SECONDS),
 # keyed by (profile home key, "manifest" | "override", URL): one gateway process serves many profiles,
-# and a dead override must not skip the manifest's fallback chain when both share a URL.
+# and a dead override must not skip the manifest's fallback chain when both share a URL. Pickers and
+# the gateway's refresh thread touch it concurrently, hence the lock.
 _fetch_retry_after: dict[tuple[str, str, str], float] = {}
+_fetch_retry_lock = threading.Lock()
 
 
 def _backoff_key(kind: str, url: str) -> tuple[str, str, str]:
@@ -60,23 +62,27 @@ def _backoff_key(kind: str, url: str) -> tuple[str, str, str]:
 
 
 def _backing_off(kind: str, url: str) -> bool:
-    return time.monotonic() < _fetch_retry_after.get(_backoff_key(kind, url), 0.0)
+    key = _backoff_key(kind, url)
+    with _fetch_retry_lock:
+        return time.monotonic() < _fetch_retry_after.get(key, 0.0)
 
 
 def _note_fetch_result(kind: str, url: str, ok: bool) -> None:
     key = _backoff_key(kind, url)
-    if ok:
-        _fetch_retry_after.pop(key, None)
-    else:
-        _fetch_retry_after[key] = time.monotonic() + FETCH_RETRY_DELAY_SECONDS
+    with _fetch_retry_lock:
+        if ok:
+            _fetch_retry_after.pop(key, None)
+        else:
+            _fetch_retry_after[key] = time.monotonic() + FETCH_RETRY_DELAY_SECONDS
 
 
 def clear_fetch_backoff() -> None:
     """Forget the active profile's fetch failures so an explicit refresh retries every URL."""
     from hermes_constants import hermes_home_key
     home = hermes_home_key()
-    for key in [k for k in _fetch_retry_after if k[0] == home]:
-        del _fetch_retry_after[key]
+    with _fetch_retry_lock:
+        for key in [k for k in _fetch_retry_after if k[0] == home]:
+            del _fetch_retry_after[key]
 
 
 def _load_catalog_config() -> dict[str, Any]:
@@ -389,7 +395,8 @@ def seed_cache_from_checkout(project_root: Path | str) -> bool:
 def reset_cache() -> None:
     """Clear the in-process cache and fetch-failure backoff. Used by tests and ``hermes model --refresh``."""
     global _catalog_cache, _catalog_cache_source_mtime, _catalog_cache_source_path
-    _fetch_retry_after.clear()
+    with _fetch_retry_lock:
+        _fetch_retry_after.clear()
     _catalog_cache = None
     _catalog_cache_source_mtime = 0.0
     _catalog_cache_source_path = ""

@@ -3,7 +3,7 @@ import path from 'node:path'
 
 import { test } from 'vitest'
 
-import { collectSshConfigHosts, parseSshConfigHosts, parseSshConfigIncludes, parseSshGOutput } from './ssh-config'
+import { collectSshConfigHosts, parseSshConfigHosts, parseSshConfigIncludes, parseSshGOutput, resolveEffectiveSshUser } from './ssh-config'
 
 test('parseSshConfigHosts keeps literal aliases and drops wildcard/negated patterns', () => {
   const cfg = [
@@ -104,4 +104,20 @@ test('parseSshGOutput takes the FIRST identityfile and tolerates missing keys', 
   assert.equal(parsed.identityFile, '~/.ssh/a')
   assert.equal(parsed.user, null)
   assert.equal(parsed.port, null)
+})
+
+test('resolveEffectiveSshUser prefers the config user over the stored username', () => {
+  // Mirrors the desktop OS-login username leaking in while ~/.ssh/config says
+  // otherwise: the config `User deploy` must win so the host account is used.
+  assert.equal(resolveEffectiveSshUser('localuser', 'deploy'), 'deploy')
+})
+
+test('resolveEffectiveSshUser falls back to the stored username when config sets none', () => {
+  assert.equal(resolveEffectiveSshUser('root', ''), 'root')
+})
+
+test('resolveEffectiveSshUser returns empty when neither config nor stored user exists', () => {
+  // Empty means "let ssh resolve from the config", so a bare host stays bare.
+  assert.equal(resolveEffectiveSshUser('', ''), '')
+  assert.equal(resolveEffectiveSshUser(undefined, undefined), '')
 })

@@ -39,6 +39,26 @@ beforeEach(() => {
       }
     }
   )
+  vi.stubGlobal(
+    'MediaRecorder',
+    class {
+      static isTypeSupported() {
+        return true
+      }
+
+      state = 'recording'
+      mimeType = 'audio/webm'
+      ondataavailable: ((event: { data: Blob }) => void) | null = null
+      onstop: (() => void) | null = null
+
+      start() {}
+
+      stop() {
+        this.state = 'inactive'
+        this.onstop?.()
+      }
+    }
+  )
   Object.defineProperty(navigator, 'mediaDevices', {
     configurable: true,
     value: { getUserMedia: async () => ({ getTracks: () => [{ stop: () => undefined }] }) }
@@ -107,5 +127,28 @@ describe('monitorSpeechDuringPlayback — voice.barge_in_threshold_multiplier (#
     for (const value of [null, undefined, 0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
       expect(bargeInTriggerLevels(value)).toEqual(bargeInTriggerLevels(DEFAULT_BARGE_IN_THRESHOLD_MULTIPLIER))
     }
+  })
+
+  it('ends a playback-bleed capture promptly instead of waiting for the 30s cap', async () => {
+    let playing = true
+    const onUtterance = vi.fn()
+    const stop = monitorSpeechDuringPlayback({
+      isPlaying: () => playing,
+      onSpeech: vi.fn(),
+      onUtterance
+    })
+
+    await flushMicrotasks()
+    advance(600)
+    micLevel = 0.16
+    advance(900) // trip after playback grace and sustained speech
+    expect(onUtterance).not.toHaveBeenCalled()
+
+    // 0.16 is playback bleed: it is above MIN_TRIGGER_LEVEL but below the
+    // playback-aware endpoint floor, so the capture can close without the
+    // 30-second fallback even while playback remains audible.
+    advance(1_000)
+    expect(onUtterance).toHaveBeenCalledTimes(1)
+    stop()
   })
 })

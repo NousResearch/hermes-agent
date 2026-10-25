@@ -11,6 +11,7 @@ now ignored with a warning naming the key, matching how the other sections
 from __future__ import annotations
 
 import os
+import secrets
 import tempfile
 from pathlib import Path
 
@@ -78,3 +79,14 @@ def test_legacy_root_max_turns_still_relocates(isolated_home):
     config = load_config()
 
     assert config["agent"]["max_turns"] == 5
+
+
+def test_non_mapping_warning_does_not_echo_configuration_values(isolated_home, caplog):
+    value = secrets.token_hex(24)
+    Path(isolated_home, "config.yaml").write_text(f"agent: [{value}]\n", encoding="utf-8")
+    with caplog.at_level("WARNING"):
+        config = load_config()
+    assert isinstance(config.get("agent"), dict) or "agent" not in config
+    assert "agent" in caplog.text
+    assert "list" in caplog.text
+    assert value not in caplog.text

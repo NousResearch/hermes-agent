@@ -26,9 +26,9 @@ def _tolerant_agent_section(config: dict[str, Any]) -> dict[str, Any]:
         return dict(value)
     if value is not None:
         logger.warning(
-            "Ignoring config.yaml section 'agent': expected a mapping, got %s (%r); "
+            "Ignoring config.yaml section 'agent': expected a mapping, got %s; "
             "config commands keep working so the file can be fixed",
-            type(value).__name__, value,
+            type(value).__name__,
         )
         config.pop("agent", None)
     return {}

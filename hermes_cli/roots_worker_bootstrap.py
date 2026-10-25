@@ -15,6 +15,7 @@ import ipaddress
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import stat
 import subprocess
@@ -22,6 +23,7 @@ import sys
 import tempfile
 import time
 from typing import Any
+import uuid
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -30,7 +32,29 @@ SCHEMA = "hermes.roots-worker-assignment/v1"
 RECEIPT_SCHEMA = "hermes.roots-worker-bootstrap-receipt/v1"
 MAX_TOKEN_BYTES = 16_384
 MAX_ASSIGNMENT_LIFETIME_SECONDS = 900
-_PASSTHROUGH_ENV = ("HOME", "PATH", "SHELL", "TMPDIR", "LANG", "LC_ALL", "TERM")
+MAX_TASK_BYTES = 65_536
+MAX_RESPONSE_BYTES = 1_048_576
+_CORRELATION_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+_READ_ONLY_ROOTS_TOOLS = {
+    "mcp__roots__roots_whoami", "mcp__roots__roots_context", "mcp__roots__roots_decisions",
+    "mcp__roots__roots_dependencies", "mcp__roots__roots_graph_stats", "mcp__roots__roots_holds",
+    "mcp__roots__roots_neighbours", "mcp__roots__roots_node", "mcp__roots__roots_plans",
+    "mcp__roots__roots_search", "mcp__roots__roots_tickets", "mcp__roots__roots_traverse",
+    "mcp__roots__ticket_next", "mcp__roots__ticket_view",
+}
+_PASSTHROUGH_ENV = (
+    "HOME", "PATH", "SHELL", "TMPDIR", "LANG", "LC_ALL", "TERM", "USER", "LOGNAME",
+)
+_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "correlation_id": {"type": "string"},
+        "status": {"type": "string", "enum": ["completed", "blocked"]},
+        "answer": {"type": "string"},
+    },
+    "required": ["correlation_id", "status", "answer"],
+    "additionalProperties": False,
+}
 
 
 class BootstrapRefusal(ValueError):
@@ -152,17 +176,17 @@ def _pin_directory(path: str, name: str) -> int:
     return fd
 
 
-def _stable_directory_path(fd: int, name: str) -> str:
-    """Return an inode-bound directory path, or refuse on platforms without one."""
-    candidate = f"/proc/self/fd/{fd}"
+def _verify_pinned_directory_path(path: str, fd: int, name: str) -> None:
+    """Detect replacement of a reviewed directory while its descriptor is held."""
     try:
-        if Path(candidate).is_dir() and os.path.samefile(candidate, fd):
-            return candidate
-    except OSError:
-        pass
-    raise BootstrapRefusal(
-        f"this platform cannot bind {name} by descriptor without copying provider state"
-    )
+        path_info = os.stat(path, follow_symlinks=False)
+        pinned_info = os.fstat(fd)
+    except OSError as exc:
+        raise BootstrapRefusal(f"cannot revalidate {name}") from exc
+    if not stat.S_ISDIR(path_info.st_mode) or (
+        path_info.st_dev, path_info.st_ino
+    ) != (pinned_info.st_dev, pinned_info.st_ino):
+        raise BootstrapRefusal(f"{name} changed after review")
 
 
 def _stage_executable(source: _PinnedFile, directory: Path, name: str) -> tuple[str, str]:
@@ -219,7 +243,7 @@ def validate_assignment(value: dict[str, Any], *, now: int | None = None) -> dic
         raise BootstrapRefusal("unsupported assignment schema")
     required = (
         "principal", "role", "owner_identity", "ticket_ref", "ticket_updated_at", "roots_url",
-        "channel_plugin", "session_id", "claude_config_dir",
+        "assignment_id", "session_id", "correlation_id", "task", "claude_config_dir", "claim_dir",
     )
     for name in required:
         if not isinstance(value.get(name), str) or not value[name]:
@@ -229,10 +253,40 @@ def validate_assignment(value: dict[str, Any], *, now: int | None = None) -> dic
     capabilities = _string_list(value.get("capabilities"), "capabilities")
     partitions = _string_list(value.get("partitions"), "partitions")
     instructions = _string_list(value.get("instruction_files"), "instruction_files")
+    allowed_tools = _string_list(value.get("allowed_tools"), "allowed_tools")
     if any(Path(item).name not in {"AGENTS.md", "CLAUDE.md"} for item in instructions):
         raise BootstrapRefusal("instruction_files may contain only AGENTS.md or CLAUDE.md")
-    if not value["channel_plugin"].startswith("plugin:") or "@" not in value["channel_plugin"]:
-        raise BootstrapRefusal("channel_plugin must be an approved marketplace plugin reference")
+    if any(item not in _READ_ONLY_ROOTS_TOOLS for item in allowed_tools):
+        raise BootstrapRefusal("allowed_tools must name exact read-only Roots MCP tools")
+    if not _CORRELATION_ID.fullmatch(value["correlation_id"]):
+        raise BootstrapRefusal("correlation_id has an invalid shape")
+    try:
+        if str(uuid.UUID(value["assignment_id"])) != value["assignment_id"].lower():
+            raise ValueError
+    except ValueError as exc:
+        raise BootstrapRefusal("assignment_id must be a canonical UUID") from exc
+    try:
+        if str(uuid.UUID(value["session_id"])) != value["session_id"].lower():
+            raise ValueError
+    except ValueError as exc:
+        raise BootstrapRefusal("session_id must be a canonical UUID") from exc
+    if not value["task"].strip():
+        raise BootstrapRefusal("task must contain non-whitespace text")
+    if len(value["task"].encode()) > MAX_TASK_BYTES:
+        raise BootstrapRefusal("task is too large")
+    if not isinstance(value.get("resume", False), bool):
+        raise BootstrapRefusal("resume must be a boolean")
+    previous = value.get("previous_assignment_id")
+    if value.get("resume", False):
+        try:
+            if not isinstance(previous, str) or str(uuid.UUID(previous)) != previous.lower():
+                raise ValueError
+        except ValueError as exc:
+            raise BootstrapRefusal(
+                "resume requires a canonical previous_assignment_id",
+            ) from exc
+    elif previous is not None:
+        raise BootstrapRefusal("previous_assignment_id is only valid with resume")
     issued_at, expires_at = value.get("issued_at"), value.get("expires_at")
     current = int(time.time()) if now is None else now
     if not isinstance(issued_at, int) or not isinstance(expires_at, int):
@@ -250,12 +304,13 @@ def validate_assignment(value: dict[str, Any], *, now: int | None = None) -> dic
         raise BootstrapRefusal("roots_url must use HTTPS, except explicit loopback test endpoints")
     if not root.hostname or root.username or root.password or root.path not in {"", "/"} or root.query or root.fragment:
         raise BootstrapRefusal("roots_url must be an origin without credentials, path, query, or fragment")
-    for key in ("workdir", "claude_config_dir"):
+    for key in ("workdir", "claude_config_dir", "claim_dir"):
         directory = Path(value.get(key, ""))
         if not directory.is_absolute() or not directory.resolve(strict=True).is_dir() or directory.is_symlink():
             raise BootstrapRefusal(f"{key} must be an existing non-symlink absolute directory")
     return {
-        **value, "capabilities": capabilities, "partitions": partitions,
+        **value, "resume": value.get("resume", False),
+        "capabilities": capabilities, "partitions": partitions, "allowed_tools": allowed_tools,
         "instruction_files": instructions,
         "claude_executable": _owned_executable(value.get("claude_executable"), "claude_executable"),
         "roots_mcp_executable": _owned_executable(value.get("roots_mcp_executable"), "roots_mcp_executable"),
@@ -314,8 +369,6 @@ def verify_proofs(assignment: dict[str, Any], whoami: dict[str, Any], ticket: di
         raise BootstrapRefusal("Roots capability grant is missing or wider than requested")
     if set(whoami.get("partitions", [])) != set(assignment["partitions"]):
         raise BootstrapRefusal("Roots partition grant is missing or wider than requested")
-    if whoami.get("channel_plugins") != [assignment["channel_plugin"]]:
-        raise BootstrapRefusal("Roots channel plugin grant is missing or wider than requested")
     for key, expected in {
         "ref": assignment["ticket_ref"], "status": "IN PROGRESS",
         "updated_at": assignment["ticket_updated_at"], "owner_identity": assignment["owner_identity"],
@@ -348,20 +401,33 @@ def build_receipt(
     assignment_raw: bytes, assignment: dict[str, Any], whoami: dict[str, Any],
     instruction_digests: dict[str, str], *, launched_pid: int | None,
     executable_digests: dict[str, str], launch_stage_dir: str | None = None,
+    result: dict[str, str] | None = None, response_sha256: str | None = None,
 ) -> dict[str, Any]:
-    shape = [assignment["claude_executable"], "--mcp-config", "<anonymous-fd>",
-             "--append-system-prompt-file", "<anonymous-fd>", "--channels", assignment["channel_plugin"]]
+    session_flag = "--resume" if assignment["resume"] else "--session-id"
+    shape = [
+        assignment["claude_executable"], "-p", session_flag, "<session-id>",
+        "--output-format", "json", "--json-schema", "<response-schema>",
+        "--permission-mode", "dontAsk", "--permission-prompts", "none", "--restricted",
+        "--tools", "", "--allowedTools", "<exact-roots-tools>", "--setting-sources", "",
+        "--strict-mcp-config", "--mcp-config", "<anonymous-fd>",
+        "--append-system-prompt-file", "<anonymous-fd>", "--disable-slash-commands", "--no-chrome",
+    ]
     return {
-        "schema": RECEIPT_SCHEMA, "verified": True, "ready": False,
-        "state": "launched" if launched_pid is not None else "verified",
+        "schema": RECEIPT_SCHEMA, "verified": True, "ready": result is not None,
+        "state": "completed" if result is not None else "verified",
         "worker_pid": launched_pid, "principal": whoami["principal"], "role": whoami["role"],
         "launch_stage_dir": launch_stage_dir,
         "ticket_ref": assignment["ticket_ref"], "ticket_updated_at": assignment["ticket_updated_at"],
+        "assignment_id": assignment["assignment_id"],
         "expires_at": assignment["expires_at"], "assignment_sha256": hashlib.sha256(assignment_raw).hexdigest(),
         "instruction_sha256": instruction_digests,
         "claude_executable_sha256": executable_digests["claude"],
         "roots_mcp_executable_sha256": executable_digests["roots_mcp"],
         "command_shape_sha256": hashlib.sha256(json.dumps(shape, separators=(",", ":")).encode()).hexdigest(),
+        "session_id": assignment["session_id"], "correlation_id": assignment["correlation_id"],
+        "resumed": assignment["resume"],
+        "previous_assignment_id": assignment.get("previous_assignment_id"),
+        "result": result, "response_sha256": response_sha256,
     }
 
 
@@ -472,6 +538,158 @@ def _stop_and_reap(process: subprocess.Popen[Any]) -> None:
         raise BootstrapRefusal("credentialed worker process group still exists after SIGKILL")
 
 
+def _write_claim_state(directory_fd: int, name: str, state: dict[str, Any]) -> None:
+    temporary = f".{name}.{os.getpid()}.{os.urandom(8).hex()}.tmp"
+    fd = os.open(
+        temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+        0o600, dir_fd=directory_fd,
+    )
+    try:
+        os.write(fd, json.dumps(state, sort_keys=True, separators=(",", ":")).encode() + b"\n")
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.rename(temporary, name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+    os.fsync(directory_fd)
+
+
+def _authority_context(
+    assignment: dict[str, Any], instruction_digests: dict[str, str],
+) -> dict[str, Any]:
+    return {
+        "principal": assignment["principal"], "role": assignment["role"],
+        "owner_identity": assignment["owner_identity"], "ticket_ref": assignment["ticket_ref"],
+        "authority_scope": assignment["authority_scope"], "roots_url": assignment["roots_url"],
+        "capabilities": sorted(assignment["capabilities"]),
+        "partitions": sorted(assignment["partitions"]),
+        "allowed_tools": sorted(assignment["allowed_tools"]),
+        "instruction_sha256": dict(sorted(instruction_digests.items())),
+    }
+
+
+def _claim_assignment(
+    directory_fd: int, assignment: dict[str, Any], assignment_raw: bytes,
+    instruction_digests: dict[str, str],
+) -> tuple[str, dict[str, Any]]:
+    """Atomically consume an authority-issued assignment before executing it."""
+    previous = assignment.get("previous_assignment_id")
+    if previous is not None:
+        try:
+            previous_raw = os.open(
+                previous + ".json", os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=directory_fd,
+            )
+        except OSError as exc:
+            raise BootstrapRefusal("previous assignment claim is unavailable") from exc
+        try:
+            previous_state = json.loads(os.read(previous_raw, 262_145))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise BootstrapRefusal("previous assignment claim is invalid") from exc
+        finally:
+            os.close(previous_raw)
+        previous_accepted = previous_state.get("accepted_at") if isinstance(previous_state, dict) else None
+        previous_expires = previous_state.get("expires_at") if isinstance(previous_state, dict) else None
+        if (
+            not isinstance(previous_state, dict)
+            or previous_state.get("assignment_id") != previous
+            or previous_state.get("phase") != "completed"
+            or previous_state.get("session_id") != assignment["session_id"]
+            or not isinstance(previous_accepted, (int, float))
+            or not isinstance(previous_expires, int)
+            or previous_accepted >= previous_expires
+            or previous_state.get("authority") != _authority_context(assignment, instruction_digests)
+        ):
+            raise BootstrapRefusal("resume predecessor is not a completed assignment")
+    name = assignment["assignment_id"] + ".json"
+    try:
+        fd = os.open(
+            name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600, dir_fd=directory_fd,
+        )
+    except FileExistsError as exc:
+        raise BootstrapRefusal("assignment_id has already been claimed") from exc
+    try:
+        state = {
+            "schema": "hermes.roots-worker-claim/v1",
+            "assignment_id": assignment["assignment_id"],
+            "assignment_sha256": hashlib.sha256(assignment_raw).hexdigest(),
+            "claimed_at": int(time.time()),
+            "phase": "claimed", "session_id": assignment["session_id"],
+            "correlation_id": assignment["correlation_id"],
+            "previous_assignment_id": previous,
+            "expires_at": assignment["expires_at"],
+            "authority": _authority_context(assignment, instruction_digests),
+        }
+        payload = json.dumps(state, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+        os.write(fd, payload)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.fsync(directory_fd)
+    return name, state
+
+
+def _claim_phase(
+    directory_fd: int, name: str, state: dict[str, Any], phase: str, **evidence: Any,
+) -> dict[str, Any]:
+    state = {**state, "phase": phase, "phase_at": int(time.time()), **evidence}
+    _write_claim_state(directory_fd, name, state)
+    return state
+
+
+def _read_bounded(handle: Any, name: str) -> bytes:
+    handle.flush()
+    if os.fstat(handle.fileno()).st_size > MAX_RESPONSE_BYTES:
+        raise BootstrapRefusal(f"Claude {name} exceeded the response limit")
+    handle.seek(0)
+    return handle.read(MAX_RESPONSE_BYTES + 1)
+
+
+def _contains_secret(value: Any, secret: str) -> bool:
+    if isinstance(value, str):
+        return secret in value
+    if isinstance(value, dict):
+        return any(_contains_secret(key, secret) or _contains_secret(item, secret) for key, item in value.items())
+    if isinstance(value, list):
+        return any(_contains_secret(item, secret) for item in value)
+    return False
+
+
+def _validated_result(
+    raw: bytes, assignment: dict[str, Any], token: str,
+) -> tuple[dict[str, str], str]:
+    try:
+        envelope = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise BootstrapRefusal("Claude response is not JSON") from exc
+    if _contains_secret(envelope, token):
+        raise BootstrapRefusal("Claude response contained credential material")
+    if not isinstance(envelope, dict) or envelope.get("session_id") != assignment["session_id"]:
+        raise BootstrapRefusal("Claude response session_id does not match the assignment")
+    result = envelope.get("structured_output")
+    if not isinstance(result, dict) or set(result) != {"correlation_id", "status", "answer"}:
+        raise BootstrapRefusal("Claude response does not match the required result shape")
+    if result.get("correlation_id") != assignment["correlation_id"]:
+        raise BootstrapRefusal("Claude response correlation_id does not match the assignment")
+    if not isinstance(result.get("answer"), str) or not result["answer"].strip():
+        raise BootstrapRefusal("Claude response answer is empty")
+    if result.get("status") != "completed":
+        raise BootstrapRefusal("Claude reported that the assigned task is blocked")
+    return result, hashlib.sha256(raw).hexdigest()
+
+
+def _task_prompt(assignment: dict[str, Any]) -> bytes:
+    return (json.dumps({
+        "correlation_id": assignment["correlation_id"],
+        "task": assignment["task"],
+        "response_contract": {
+            "correlation_id": "copy the supplied correlation_id exactly",
+            "status": "completed only if the task succeeded; otherwise blocked",
+            "answer": "the completed task response",
+        },
+    }, separators=(",", ":")) + "\n").encode()
+
+
 def run(request_path: Path, token_fd: int, receipt_path: Path, *, verify_only: bool = False) -> None:
     raw_assignment, assignment_raw = _read_assignment(request_path)
     assignment = validate_assignment(raw_assignment)
@@ -501,7 +719,12 @@ def run(request_path: Path, token_fd: int, receipt_path: Path, *, verify_only: b
         resources.callback(os.close, workdir_fd)
         config_fd = _pin_directory(assignment["claude_config_dir"], "claude_config_dir")
         resources.callback(os.close, config_fd)
-        stable_config_dir = _stable_directory_path(config_fd, "claude_config_dir")
+        _verify_pinned_directory_path(assignment["claude_config_dir"], config_fd, "claude_config_dir")
+        claim_dir_fd = _pin_directory(assignment["claim_dir"], "claim_dir")
+        resources.callback(os.close, claim_dir_fd)
+        claim_name, claim_state = _claim_assignment(
+            claim_dir_fd, assignment, assignment_raw, instruction_digests,
+        )
         process: subprocess.Popen[Any] | None = None
         stage_dir, staged_claude, staged_roots_mcp, staged_digests = _create_launch_stage(
             receipt_path.parent, claude, roots_mcp,
@@ -514,30 +737,80 @@ def run(request_path: Path, token_fd: int, receipt_path: Path, *, verify_only: b
             "env": {"ROOTS_URL": assignment["roots_url"], "ROOTS_TOKEN": token},
         }}}, separators=(",", ":")).encode()
         try:
-            with _anonymous_file(mcp_config) as mcp_file, _anonymous_file(instructions) as instruction_file:
+            with (
+                _anonymous_file(mcp_config) as mcp_file,
+                _anonymous_file(instructions) as instruction_file,
+                tempfile.TemporaryFile(mode="w+b") as stdout_file,
+                tempfile.TemporaryFile(mode="w+b") as stderr_file,
+            ):
+                session_flag = "--resume" if assignment["resume"] else "--session-id"
                 argv = [
-                    staged_claude, "--restricted", "--permission-mode", "dontAsk",
+                    staged_claude, "-p", session_flag, assignment["session_id"],
+                    "--output-format", "json", "--json-schema",
+                    json.dumps(_RESPONSE_SCHEMA, separators=(",", ":")),
+                    "--permission-mode", "dontAsk", "--permission-prompts", "none", "--restricted",
+                    "--tools", "", "--allowedTools", *assignment["allowed_tools"],
+                    "--setting-sources", "", "--strict-mcp-config",
                     "--mcp-config", f"/dev/fd/{mcp_file.fileno()}",
                     "--append-system-prompt-file", f"/dev/fd/{instruction_file.fileno()}",
-                    "--channels", assignment["channel_plugin"], "--session-id", assignment["session_id"],
                     "--disable-slash-commands", "--no-chrome",
                 ]
                 child_env = {key: os.environ[key] for key in _PASSTHROUGH_ENV if key in os.environ}
-                child_env["CLAUDE_CONFIG_DIR"] = stable_config_dir
+                child_env["CLAUDE_CONFIG_DIR"] = assignment["claude_config_dir"]
 
                 def enter_pinned_workdir() -> None:
                     os.fchdir(workdir_fd)
 
+                claim_state = _claim_phase(
+                    claim_dir_fd, claim_name, claim_state, "launching",
+                )
                 process = subprocess.Popen(
                     argv, executable=staged_claude, env=child_env, preexec_fn=enter_pinned_workdir,
                     pass_fds=(workdir_fd, config_fd, mcp_file.fileno(), instruction_file.fileno()),
-                    start_new_session=True,
+                    stdin=subprocess.PIPE, stdout=stdout_file, stderr=stderr_file, start_new_session=True,
                 )
+                launched_pid = process.pid
+                claim_state = _claim_phase(
+                    claim_dir_fd, claim_name, claim_state, "spawned", worker_pid=launched_pid,
+                )
+                _verify_pinned_directory_path(
+                    assignment["claude_config_dir"], config_fd, "claude_config_dir",
+                )
+                try:
+                    process.communicate(
+                        input=_task_prompt(assignment),
+                        timeout=max(0.01, assignment["expires_at"] - time.time()),
+                    )
+                except subprocess.TimeoutExpired as exc:
+                    raise BootstrapRefusal("Claude task exceeded the assignment lifetime") from exc
+                stdout = _read_bounded(stdout_file, "stdout")
+                stderr = _read_bounded(stderr_file, "stderr")
+                if process.returncode != 0:
+                    # Both processes are inside the credential TCB and may echo
+                    # the scoped token. Never carry child output into an error,
+                    # receipt, terminal, or orchestrator log.
+                    raise BootstrapRefusal("Claude task failed; child diagnostics withheld")
+                result, response_sha256 = _validated_result(stdout, assignment, token)
+            _stop_and_reap(process)
+            process = None
+            # Same-UID replacement is inside the declared local TCB, but detect
+            # accidental profile replacement before accepting the result.
+            _verify_pinned_directory_path(
+                assignment["claude_config_dir"], config_fd, "claude_config_dir",
+            )
+            accepted_at = time.time()
+            if accepted_at >= assignment["expires_at"]:
+                raise BootstrapRefusal("assignment expired before result acceptance")
+            claim_state = _claim_phase(
+                claim_dir_fd, claim_name, claim_state, "completed",
+                accepted_at=accepted_at, response_sha256=response_sha256, result=result,
+            )
             if int(time.time()) >= assignment["expires_at"]:
-                raise BootstrapRefusal("assignment expired before launch publication")
+                raise BootstrapRefusal("assignment expired before result publication")
             publisher.publish(build_receipt(
-                assignment_raw, assignment, whoami, instruction_digests, launched_pid=process.pid,
+                assignment_raw, assignment, whoami, instruction_digests, launched_pid=launched_pid,
                 executable_digests=staged_digests, launch_stage_dir=str(stage_dir),
+                result=result, response_sha256=response_sha256,
             ))
         except BaseException:
             if process is not None:
@@ -545,6 +818,8 @@ def run(request_path: Path, token_fd: int, receipt_path: Path, *, verify_only: b
             os.chmod(stage_dir, 0o700)
             shutil.rmtree(stage_dir)
             raise
+        os.chmod(stage_dir, 0o700)
+        shutil.rmtree(stage_dir)
 
 
 def main() -> int:

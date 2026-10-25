@@ -2165,6 +2165,80 @@ def _emit_compression_summary(agent, cs):
     agent._compression_feasibility_checked = False
 
 
+def backfill_session_counters_from_row(agent, row: dict[str, Any]) -> None:
+    """Assign persisted session totals onto an agent. Assignment, never addition.
+
+    ``sessions`` stores canonical buckets: uncached input, output, and cache
+    read/write separately (``normalize_usage`` already removed cache from input).
+    Prompt and total follow ``CanonicalUsage`` — prompt is input + both cache
+    buckets, total is prompt + output. Folding cache into input as well would
+    double-count. Missing or NULL values stay at 0 / the existing cost defaults.
+    """
+    if not row:
+        return
+    uncached = int(row.get("input_tokens") or 0)
+    output = int(row.get("output_tokens") or 0)
+    cache_read = int(row.get("cache_read_tokens") or 0)
+    cache_write = int(row.get("cache_write_tokens") or 0)
+    prompt = uncached + cache_read + cache_write
+    agent.session_input_tokens = uncached
+    agent.session_output_tokens = output
+    agent.session_cache_read_tokens = cache_read
+    agent.session_cache_write_tokens = cache_write
+    agent.session_reasoning_tokens = int(row.get("reasoning_tokens") or 0)
+    agent.session_api_calls = int(row.get("api_call_count") or 0)
+    agent.session_prompt_tokens = prompt
+    agent.session_completion_tokens = output
+    agent.session_total_tokens = prompt + output
+    prior_cost = row.get("estimated_cost_usd")
+    if prior_cost is not None:
+        agent.session_estimated_cost_usd = float(prior_cost)
+    if row.get("cost_status"):
+        agent.session_cost_status = row["cost_status"]
+    if row.get("cost_source"):
+        agent.session_cost_source = row["cost_source"]
+
+
+def _session_usage_still_default(agent) -> bool:
+    """True when nothing has restored a live total yet.
+
+    A rebuild starts at the ``_USAGE_STATE`` zeros. Counters upstream already
+    keeps (a resumed in-process agent, a viewer that applied ``session.usage``)
+    must not be replaced by a SessionDB snapshot.
+    """
+    if int(getattr(agent, "session_api_calls", 0) or 0):
+        return False
+    if int(getattr(agent, "session_total_tokens", 0) or 0):
+        return False
+    if int(getattr(agent, "session_input_tokens", 0) or 0):
+        return False
+    if int(getattr(agent, "session_output_tokens", 0) or 0):
+        return False
+    return float(getattr(agent, "session_estimated_cost_usd", 0.0) or 0.0) == 0.0
+
+
+def _backfill_rebuilt_session_counters(agent) -> None:
+    """Seed counters from the SessionDB row when this agent is a rebuild.
+
+    Gateway cache invalidation builds a fresh ``AIAgent`` for the same
+    ``session_id`` (#50675). Per-call deltas in ``update_token_counts`` survive
+    that, so the row is the cumulative total. Brand-new sessions have no row.
+    Fail-open: a DB read must not break agent construction. ``/clear`` and
+    ``/new`` go through ``reset_session_state`` and never call this.
+    """
+    session_db = getattr(agent, "_session_db", None)
+    session_id = getattr(agent, "session_id", None)
+    if session_db is None or not session_id or not _session_usage_still_default(agent):
+        return
+    try:
+        prior = session_db.get_session(session_id)
+    except Exception as exc:
+        _ra().logger.debug("Session counter backfill read failed: %s", exc)
+        return
+    if prior:
+        backfill_session_counters_from_row(agent, prior)
+
+
 def _init_usage_state(agent):
     from agent.runtime_cwd import scope_terminal_cwd
     # Prefer the session's explicitly adopted workspace (a Desktop session created under the
@@ -2174,6 +2248,7 @@ def _init_usage_state(agent):
     agent._subdirectory_hints = SubdirectoryHintTracker(
         working_dir=working_dir, enabled=not agent.skip_context_files)
     _set_defaults(agent, _USAGE_STATE)
+    _backfill_rebuilt_session_counters(agent)
 
 
 # Per-session usage accounting.

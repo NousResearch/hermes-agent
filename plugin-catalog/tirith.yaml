@@ -1,0 +1,37 @@
+name: tirith
+repo: https://github.com/sheeki03/hermes-plugin-tirith
+sha: e6482ffa5df5bafd872c51c71c152a02c27917d8
+subdir: tirith
+version: "0.1.0"
+title: tirith
+description: >-
+  Check every terminal command with your installed tirith before it runs: lookalike and homograph
+  URLs, pipe-to-shell, obfuscated execution, credential and .env exfiltration, malicious packages and
+  terminal injection. tirith blocks and required policy approvals go to Hermes's approval prompt,
+  critical findings are refused, warnings run with the warning added to the result; unattended runs
+  follow approvals.*_mode.
+  Disclosure — runs the user-installed tirith binary (0.5.0 or later; never downloaded, installed or
+  updated by the plugin) on every terminal command and every line sent to a background terminal, in
+  the command's working directory, with the command on stdin; tirith logs each check locally and,
+  unless offline is set, may refresh its signed threat database and query OSV.dev, deps.dev,
+  ecosyste.ms and Google Safe Browsing (only with your key); fails closed (asks, or refuses when
+  unattended) if tirith is missing, older than 0.5.0, times out or gives no verdict.
+maintainer: sheeki03
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/sheeki03/hermes-plugin-tirith/blob/e6482ffa5df5bafd872c51c71c152a02c27917d8/tirith/README.md
+platforms: []
+known_issues:
+  - >-
+    Hermes 0.21.5 still runs a built-in tirith check before plugins; run
+    `hermes config set security.tirith_enabled false` so each command is not checked twice.
+    Hermes 0.21.6 and later do not have it.
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - transform_tool_result
+  provides_middleware: []
+  requires_env: []

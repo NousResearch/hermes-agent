@@ -1,5 +1,7 @@
 """Base platform adapter interface; every platform adapter inherits from BasePlatformAdapter."""
 
+from gateway.platforms.reply_context import _thread_metadata_for_event, _mark_notify_metadata
+
 import asyncio
 import contextlib
 import inspect
@@ -126,6 +128,8 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     scope_id = getattr(source, "scope_id", None) if platform == "slack" else None
     if scope_id:
         metadata["slack_team_id"] = str(scope_id)
+    from gateway.platforms.reply_context import plugin_reply_metadata
+    metadata.update(plugin_reply_metadata(source, reply_to_message_id))
     if not metadata:
         return None
     if platform == "telegram" and getattr(source, "chat_type", None) == "dm":
@@ -141,18 +145,6 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     if profile:
         metadata["hermes_profile"] = profile
     return metadata
-
-
-def _thread_metadata_for_event(event) -> dict | None:
-    """``_thread_metadata_for_source`` for an event, anchored on its reply id."""
-    return _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
-
-
-def _mark_notify_metadata(metadata: dict | None) -> dict:
-    """Clone metadata and mark a user-visible reply as notify-worthy."""
-    notify_metadata = dict(metadata) if metadata else {}
-    notify_metadata["notify"] = True
-    return notify_metadata
 
 
 def _reply_anchor_for_event(event) -> str | None:
@@ -1774,6 +1766,8 @@ def merge_pending_message_event(pending_messages: dict[str, MessageEvent], sessi
             if event.text:
                 existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
             existing.absorb_reply_expected(event)
+            from gateway.platforms.reply_context import absorb_reply_anchor
+            absorb_reply_anchor(existing, event)
             if existing_is_photo or incoming_is_photo:
                 existing.message_type = MessageType.PHOTO
             elif existing_type == MessageType.TEXT and event.message_type != MessageType.TEXT:
@@ -1789,6 +1783,8 @@ def merge_pending_message_event(pending_messages: dict[str, MessageEvent], sessi
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
             existing.absorb_reply_expected(event)
+            from gateway.platforms.reply_context import absorb_reply_anchor
+            absorb_reply_anchor(existing, event)
             return
     pending_messages[session_key] = event
 
@@ -2540,6 +2536,8 @@ class BasePlatformAdapter(ABC):
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
             existing.absorb_reply_expected(event)
+            from gateway.platforms.reply_context import absorb_reply_anchor
+            absorb_reply_anchor(existing, event)
         existing._last_chunk_len = len(event.text or "")  # type: ignore[attr-defined]
         prior_task = self._pending_text_batch_tasks.get(key)
         if prior_task and not prior_task.done():
@@ -3819,6 +3817,8 @@ class BasePlatformAdapter(ABC):
             if event.text:
                 state.event.text = _append_text(state.event.text, event.text)
             state.event.absorb_reply_expected(event)
+            from gateway.platforms.reply_context import absorb_reply_anchor
+            absorb_reply_anchor(state.event, event)
             latest_message_id = getattr(event, "message_id", None)
             latest_anchor = latest_message_id or getattr(event, "reply_to_message_id", None)
             if latest_message_id is not None:

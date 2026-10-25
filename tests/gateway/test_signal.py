@@ -116,6 +116,46 @@ class TestSignalHelpers:
         assert _parse_comma_list("") == []
         assert _parse_comma_list("  ,  ,  ") == []
 
+    def test_signal_quote_params_are_atomic(self):
+        from plugins.platforms.signal.adapter import _signal_quote_params
+
+        assert _signal_quote_params(
+            "1712345678000",
+            {"signal_quote_timestamp": "1712345678000", "signal_quote_author": "68680952-6d86-45bc-85e0-1a4d186d53ee"},
+        ) == {
+            "quoteTimestamp": 1712345678000,
+            "quoteAuthor": "68680952-6d86-45bc-85e0-1a4d186d53ee",
+        }
+        assert _signal_quote_params(
+            None,
+            {
+                "signal_quote_timestamp": "1712345678000",
+                "signal_quote_author": "+15551230000",
+            },
+        ) == {
+            "quoteTimestamp": 1712345678000,
+            "quoteAuthor": "+15551230000",
+        }
+        assert _signal_quote_params("1712345678000", None) == {}
+        assert _signal_quote_params(
+            "1712345678000",
+            {"signal_quote_timestamp": "1712345678000", "signal_quote_author": "group:not-an-author"},
+        ) == {}
+
+    @pytest.mark.parametrize(
+        "reply_to",
+        [True, False, 0, -1, "0", "-1", "1.5", "abc", 1.5],
+    )
+    def test_signal_quote_params_reject_invalid_timestamps(self, reply_to):
+        from plugins.platforms.signal.adapter import _signal_quote_params
+
+        assert _signal_quote_params(
+            reply_to,
+            {
+                "signal_quote_timestamp": "1712345678000",
+                "signal_quote_author": "+15551230000",
+            },
+        ) == {}
 
     def test_guess_extension_wav_routes_to_audio_cache(self):
         """A detected WAV must route to the audio cache, not the document cache.
@@ -341,6 +381,12 @@ class TestSignalAuthorization:
         with patch.dict("os.environ", {}, clear=True):
             result = gw._is_user_authorized(source)
             assert result is False
+
+
+# ---------------------------------------------------------------------------
+# Native outbound quotes
+# ---------------------------------------------------------------------------
+
 
 
 # ---------------------------------------------------------------------------
@@ -893,6 +939,8 @@ class TestSignalStopTypingExplicitRPC:
 # ---------------------------------------------------------------------------
 # Reply quote extraction
 # ---------------------------------------------------------------------------
+
+
 
 class TestSignalQuoteExtraction:
     """Verify Signal reply quote fields are propagated to MessageEvent."""

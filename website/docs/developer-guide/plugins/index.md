@@ -2205,6 +2205,13 @@ optional_env:
     password: false
 ```
 
+Platform plugins may supply `reply_metadata_for_source_fn(source, reply_anchor)` to
+`register_platform`. It returns a dict merged into gateway reply metadata; omitting
+it preserves existing behavior. The anchor is explicit and may be `None` for a
+synthetic send. Signal uses the persisted source message ID to bind a quote's
+native timestamp to its original sender; a redirected or unavailable pair sends
+without a quote. The callback must not perform I/O or mutate the source.
+
 **Full guide:** [Adding Platform Adapters](../adding-platform-adapters.md) — complete `BasePlatformAdapter` contract, message routing, auth gating, setup wizard integration. Look at `plugins/platforms/irc/` for a stdlib-only working example.
 
 ### Memory provider plugins — add a cross-session knowledge backend

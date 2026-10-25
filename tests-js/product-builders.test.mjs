@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { copyFileSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync, statSync, utimesSync } from 'node:fs'
+import { copyFileSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync, symlinkSync, statSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
@@ -445,6 +445,60 @@ test('the Webapp receipt certifies its checkout inputs, not the workspace it com
   writeFileSync(path.join(out, 'index.html'), 'damaged output')
   expect(current()).toBe(false)
 }, 60_000)
+
+test('a Webapp rebuild keeps the previous generation for tabs that booted it, never an older one', async () => {
+  const { productCurrent } = await import('../scripts/build/freshness.mjs')
+  const { buildWebapp, keepPreviousGeneration } = await import('../scripts/build/webapp.mjs')
+  const { mirrorWebappInputs } = await import('../apps/desktop/scripts/build-webapp.mjs')
+  const base = fixture()
+  const source = path.join(base, 'source')
+  const workspace = path.join(base, 'workspace')
+  const out = path.join(source, 'apps/desktop/dist-webapp')
+  webappSource(source)
+  dependency(workspace, '', 'vite')
+  const chunk = marker => readdirSync(path.join(out, 'assets'))
+    .find(name => readFileSync(path.join(out, 'assets', name), 'utf8').includes(marker))
+  for (const generation of ['gen-one', 'gen-two', 'gen-three']) {
+    // The lazy chunk an open tab loads only when it needs it.
+    put(source, 'apps/desktop/src/lazy.ts', `export const text = '${generation}-marker'`)
+    put(source, 'apps/desktop/src/main.ts', 'import("./lazy").then(m => { document.body.textContent = m.text })')
+    mirrorWebappInputs(source, workspace)
+    await buildWebapp({ source, workspace, out })
+    expect(productCurrent({ source, product: 'webapp', out }), generation).toBe(true)
+    if (generation === 'gen-two') {
+      // An update that could not rebuild gen-two marks it (hermes_cli/webapp.py mark_webapp_stale):
+      // the marker still forces the rebuild, and must not cost gen-two's tabs their chunks.
+      writeFileSync(path.join(out, '.hermes-stale'), 'hermes update could not rebuild this bundle\n')
+      expect(productCurrent({ source, product: 'webapp', out })).toBe(false)
+    }
+  }
+  // A tab booted on gen-two still finds its chunk after gen-three published; gen-one's is gone.
+  expect(chunk('gen-three-marker')).toBeTruthy()
+  expect(chunk('gen-two-marker')).toBeTruthy()
+  expect(chunk('gen-one-marker')).toBeUndefined()
+  // Only regular files inside an intact previous generation are kept, never over a new file, and a
+  // bad entry is skipped rather than failing the build.
+  const { buildInputs, outputIntact, recordProduct } = await import('../scripts/build/freshness.mjs')
+  const [previous, next, outside] = [fixture(), fixture(), fixture()]
+  put(outside, 'secret.txt', 'outside')
+  symlinkSync(outside, path.join(previous, 'linked'), 'junction')
+  // ``x`` is a directory in the previous generation and a file in the new one.
+  for (const [name, content] of [['index.html', 'old'], ['assets/ok.js', 'old chunk'], ['assets/same.js', 'old same'], ['x/kept.js', 'old']]) put(previous, name, content)
+  for (const [name, content] of [['index.html', 'new'], ['assets/same.js', 'new same'], ['assets/only-new.js', 'new'], ['x', 'new file']]) put(next, name, content)
+  put(previous, 'renderer-manifest.json', JSON.stringify({ a: { file: 'assets/ok.js', css: ['../escape.css', '/abs.css'],
+    assets: ['index.html', 'assets/same.js', 'assets/only-new.js', 'linked/secret.txt', 'bad\0name.js', 'assets/ok.js/child', 'x/kept.js'] } }))
+  const keep = () => keepPreviousGeneration(previous, next)
+  recordProduct({ source: base, product: 'webapp', out: previous, inputs: buildInputs(base, 'webapp') })
+  expect(keep()).toEqual(['assets/ok.js'])
+  expect(['index.html', 'assets/same.js', 'assets/only-new.js', 'x'].map(name => readFileSync(path.join(next, name), 'utf8'))).toEqual(['new', 'new same', 'new', 'new file'])
+  expect(existsSync(path.join(next, 'linked'))).toBe(false)
+  recordProduct({ source: base, product: 'webapp', out: next, inputs: buildInputs(base, 'webapp') })
+  expect(outputIntact(next, 'webapp')).toBe(true)
+  // A previous generation whose bytes no longer match its receipt gives nothing.
+  rmSync(path.join(next, 'assets/ok.js'))
+  put(previous, 'assets/ok.js', 'damaged')
+  expect(keep()).toEqual([])
+}, 120_000)
 
 test('Webapp builds install privately and never disturb the native Desktop installation', async () => {
   const { buildSourceWebapp } = await import('../apps/desktop/scripts/build-webapp.mjs')

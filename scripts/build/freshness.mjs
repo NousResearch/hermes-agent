@@ -102,10 +102,10 @@ export function sourceEntries(source, product) {
   return entries
 }
 
-function outputHash(out) {
+function outputHash(out, ignored = []) {
   // Native binaries can be signed after compilation. Their ABI validation is
   // owned by native preparation; renderer/main/preload bytes must stay intact.
-  return treeHash(out, readdirSync(out).sort(), name => name === receiptName || name === '.hermes-product',
+  return treeHash(out, readdirSync(out).sort(), name => name === receiptName || name === '.hermes-product' || ignored.includes(name),
     name => !name.split('/').includes('node_modules') && !name.startsWith('native/'))
 }
 
@@ -199,6 +199,16 @@ export function recordProduct({ source, product, out, inputs, stampClock }) {
     schema: 1, product, platform: process.platform, arch: process.arch, node: process.versions.node,
     inputs, stampClock, outputHash: outputHash(out),
   }) + '\n')
+}
+
+/** Validate output bytes against their receipt, independently of current inputs or host, and of
+ *  the marker ``hermes update`` leaves in a product it could not rebuild (hermes_cli/webapp.py),
+ *  which still fails productCurrent. */
+export function outputIntact(out, product) {
+  try {
+    const saved = JSON.parse(readFileSync(join(out, receiptName), 'utf8'))
+    return saved.schema === 1 && saved.product === product && saved.outputHash === outputHash(out, ['.hermes-stale'])
+  } catch { return false }
 }
 
 /** The receipt in ``out`` when it was written for ``product`` by this platform, arch and Node. */

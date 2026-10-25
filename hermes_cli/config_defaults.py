@@ -678,24 +678,20 @@ DEFAULT_CONFIG = {
         # safety margin; explicit values only clamp downward so the server goes first.
         "codex_responses_compact_threshold": None,
         # in_place: compaction rewrites the message list and system prompt WITHOUT rotating the
-        # session id (no parent_session_id chain, no `name #N` renumbering), avoiding the
-        # session-rotation bug cluster. Pre-compaction turns are soft-archived under the same id
-        # (active=0, compacted=1) — still session_search-able. False = legacy rotating-compaction
-        # path.
+        # session id (no parent_session_id chain, no `name #N` renumbering), avoiding the session-rotation
+        # bug cluster. Pre-compaction turns are soft-archived under the same id (active=0, compacted=1) —
+        # still session_search-able. False = legacy rotating-compaction path.
         "in_place": True,
         # Per-model threshold overrides: keys substring-match the model name (longest wins), values
         # replace the global `threshold`, e.g. {"glm-5.2": 0.40}. Prefix a key with "<provider>:" to
         # scope it to one route ({"openai-codex:astra": 0.85} leaves Astra on OpenRouter/Nous at the
         # global value). The <512K floor (0.75) still applies raise-only on top.
         "model_thresholds": {},
-        # Opt-in idle compaction (0 = off): a session resuming after this many idle seconds compacts
-        # up front, before the first reply. Time-based complement to `threshold`; skipped when
-        # already at/below threshold × target_ratio; honors the same cooldown/ anti-thrash/lock
-        # guards. Example: 1800 = 30 min.
+        # Opt-in idle compaction (0 = off): a session resuming after this many idle seconds compacts up
+        # front, before the first reply. Time-based complement to `threshold`; skipped when already at/below
+        # threshold × target_ratio; honors the same cooldown/anti-thrash/lock guards. Example: 1800 = 30 min.
         "idle_compact_after_seconds": 0,
-        # Opt-in: near the trigger, write the next compaction summary in the background (during
-        # tool execution and between turns). Automatic compaction splices it only when the
-        # summarized messages are unchanged; otherwise it summarizes inline as usual.
+        # Opt-in: write the next summary in the background near the trigger; used only if the summarized turns are unchanged.
         "prepare_ahead": False,
     },
     # Anthropic prompt caching (Claude via OpenRouter or native API). cache_ttl: "5m" | "1h" | "auto"

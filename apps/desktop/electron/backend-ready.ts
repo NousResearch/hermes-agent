@@ -24,6 +24,34 @@ const DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS = 90_000
 // (the historical default) so a malformed override can't reintroduce the loop.
 const MIN_PORT_ANNOUNCE_TIMEOUT_MS = 45_000
 
+function parseReadyPort(value: unknown): number | null {
+  const port = Number(value)
+
+  return Number.isInteger(port) && port > 0 && port <= 65_535 ? port : null
+}
+
+function findReadyPort(output: string, pattern: RegExp): number | null {
+  let remaining = output
+
+  while (remaining) {
+    const match = remaining.match(pattern)
+
+    if (!match) {
+      return null
+    }
+
+    const port = parseReadyPort(match[1])
+
+    if (port !== null) {
+      return port
+    }
+
+    remaining = remaining.slice((match.index ?? 0) + match[0].length)
+  }
+
+  return null
+}
+
 // While the backend prints venv_sync's source-update completion banners it is
 // finishing an owed update tail BEFORE `hermes serve` starts, and that tail
 // legitimately runs minutes (dependency sync alone measured at ~19-22 min,
@@ -147,11 +175,11 @@ function waitForDashboardPort(
       while ((nl = buf.indexOf('\n')) !== -1) {
         const line = buf.slice(0, nl)
         buf = buf.slice(nl + 1)
-        const m = line.match(_READY_RE)
+        const port = findReadyPort(line, _READY_RE)
 
-        if (m) {
+        if (port !== null) {
           cleanup()
-          resolve(parseInt(m[1], 10))
+          resolve(port)
 
           return
         }
@@ -189,11 +217,11 @@ function waitForDashboardPort(
     // snapshot is empty; any await reintroduced between them makes this the live path again.
     if (!done) {
       const alreadyBuffered = bufferedOutput()
-      const m = alreadyBuffered ? alreadyBuffered.match(READY_IN_MERGED_OUTPUT_RE) : null
+      const port = findReadyPort(alreadyBuffered, READY_IN_MERGED_OUTPUT_RE)
 
-      if (m) {
+      if (port !== null) {
         cleanup()
-        resolve(parseInt(m[1], 10))
+        resolve(port)
       } else if (alreadyBuffered && SOURCE_COMPLETION_BANNER_RE.test(alreadyBuffered)) {
         // The repair started before this listener attached (the dormant-gap
         // path above): seed the banner so the deadline re-arms like a live one.
@@ -211,9 +239,8 @@ function readDashboardReadyFile(readyFile: fs.PathOrFileDescriptor) {
 
   try {
     const parsed = JSON.parse(fs.readFileSync(readyFile, 'utf8'))
-    const port = Number(parsed?.port)
 
-    return Number.isInteger(port) && port > 0 ? port : null
+    return parseReadyPort(parsed?.port)
   } catch {
     return null
   }

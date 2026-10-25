@@ -50,6 +50,9 @@ from hermes_cli.models_catalog_static import (
     _PROVIDER_RETIRED_ALIASES,
     _SILENT_DEFAULT_PROVIDERS,
     _xai_finalize_catalog)
+from hermes_cli.models_credential_identity import (
+    _auth_store_provider_identity,
+    _custom_endpoint_fingerprint)
 from hermes_cli.models_reasoning_caps import (
     _OPENROUTER_CATALOG_URL,
     _seed_reasoning_caps)
@@ -1954,7 +1957,9 @@ def _credential_fingerprint(provider: str) -> str:
 
     API-key providers include their configured values and credential-file mtimes. Codex uses the
     stable principal selected by its read-only resolver: routine token and pool-state writes must
-    not discard an account-scoped catalog, while a real account switch must invalidate it.
+    not discard an account-scoped catalog, while a real account switch must invalidate it. Other
+    providers key on their own slice of the shared auth.json the same way, via
+    :func:`_auth_store_provider_identity`.
     """
     import hashlib
 
@@ -2032,12 +2037,19 @@ def _credential_fingerprint(provider: str) -> str:
 
         parts.append(f"codex_identity={codex_catalog_credential_identity()}")
     else:
-        try:
-            from hermes_constants import get_hermes_home
-            for rel in ("auth.json", "credentials.json"):
-                _mtime_part(rel, get_hermes_home() / rel)
-        except Exception:
-            pass
+        # Key on this provider's own credentials in the shared auth.json, never the file mtime:
+        # any write to it — an unrelated provider's, or a same-content rewrite — bumps the mtime
+        # and would hide every live-only model from the non-blocking picker (#139795).
+        identity = _auth_store_provider_identity(provider)
+        if identity is not None:
+            parts.append(f"auth_identity={identity}")
+        else:  # unreadable store: degrade to the mtime (a spurious cache miss, never a stale hit)
+            try:
+                from hermes_constants import get_hermes_home
+                for rel in ("auth.json", "credentials.json"):
+                    _mtime_part(rel, get_hermes_home() / rel)
+            except Exception:
+                pass
         for rel in ("~/.codex/auth.json", "~/.claude/.credentials.json",
                     "~/.config/github-copilot/hosts.json", "~/.minimax/credentials.json"):
             path = os.path.expanduser(rel)
@@ -2877,19 +2889,6 @@ def fetch_api_models(
     """Fetch the list of available model IDs from the provider's ``/models`` endpoint."""
     result = probe_api_models(api_key, base_url, timeout=timeout, api_mode=api_mode, request_headers=headers)
     return result.get("models")
-
-
-def _custom_endpoint_fingerprint(
-    api_key: Any, api_mode: Optional[str], headers: Optional[dict[str, str]]) -> str:
-    """Custom endpoints have no ``PROVIDER_REGISTRY`` slug, so hash exactly what callers pass to
-    :func:`fetch_api_models`: a rotated ``api_key``, changed ``api_mode`` or edited ``extra_headers``
-    each bust the cache entry. blake2b for the same CodeQL rationale as ``_credential_fingerprint``."""
-    import hashlib
-
-    from agent.command_token_source import CommandTokenSource
-    identity = api_key.cache_identity if isinstance(api_key, CommandTokenSource) else api_key
-    blob = "|".join((identity or "", api_mode or "", json.dumps(headers or {}, sort_keys=True)))
-    return hashlib.blake2b(blob.encode("utf-8", errors="replace"), digest_size=8).hexdigest()
 
 
 def _cache_entry_valid(

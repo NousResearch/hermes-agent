@@ -7,7 +7,45 @@ import subprocess
 import sys
 import time
 
+import pytest
+
+from gateway.run_startup import GatewayStartupMixin
 from tests.gateway.test_normal_runtime_boot import control
+
+
+class _NoConnections:
+    _start_handle_no_connections = GatewayStartupMixin._start_handle_no_connections
+
+    def __init__(self):
+        self.session_authority = object()
+        self._startup_parked_platforms = False
+        self._startup_ownership_conflict = False
+        self.fatal = []
+
+    def _startup_fail_fatal_config(self, reason):
+        self.fatal.append(reason)
+
+
+@pytest.mark.parametrize("retryable, nonretryable, parked, degraded_write", [
+    ([], ["whatsapp: not paired"], True, []),                         # the exit-78 case: local clients keep the runtime
+    (["telegram: TimedOut"], [], False, ["degraded"]),                 # nothing serves: degraded, not a healthy run
+    (["telegram: TimedOut"], ["whatsapp: not paired"], True, ["degraded"]),
+])
+def test_local_runtime_keeps_failed_startup_degraded(monkeypatch, retryable, nonretryable, parked, degraded_write):
+    import gateway.run as run_mod
+    writes = []
+    monkeypatch.setattr(run_mod, "_write_runtime_status_quiet",
+                        lambda **k: writes.append(k["gateway_state"]), raising=False)
+    runner = _NoConnections()
+    assert runner._start_handle_no_connections(0, 1, list(retryable), list(nonretryable)) is False
+    assert (runner._startup_parked_platforms, writes, runner.fatal) == (parked, degraded_write, [])
+
+
+def test_ownership_conflict_still_exits_with_local_runtime():
+    runner = _NoConnections()
+    runner._startup_ownership_conflict = True
+    assert runner._start_handle_no_connections(0, 1, [], ["telegram: token held by another gateway"]) is True
+    assert runner.fatal
 
 
 def test_unpaired_whatsapp_keeps_local_runtime_available(tmp_path, model_peer):

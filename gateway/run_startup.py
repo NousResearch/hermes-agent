@@ -1436,9 +1436,12 @@ class GatewayStartupMixin:
         race against the gateway it was replacing, and nothing retried).
         """
         from gateway.run import _write_runtime_status_quiet
+        # A local session runtime replaces only the exit-78 outcome (every failure non-retryable, no
+        # ownership conflict): retryable failures keep the degraded/retry path below.
         local_runtime = getattr(self, "session_authority", None) is not None
         if connected_count != 0 or (
-            local_runtime and not getattr(self, "_startup_ownership_conflict", False)
+            local_runtime and startup_nonretryable_errors and not startup_retryable_errors
+            and not getattr(self, "_startup_ownership_conflict", False)
         ):
             if startup_nonretryable_errors:
                 # Parked fatal failures never heal on their own, so the platforms still serving must

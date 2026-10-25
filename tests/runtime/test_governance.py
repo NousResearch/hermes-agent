@@ -108,7 +108,7 @@ class GovernanceIntegrationTests(unittest.TestCase):
     def test_allowlist_lets_safe_through_blocks_unsafe(self) -> None:
         safe = ToolCall.new(name="safe", arguments={}, call_id="a")
         unsafe = ToolCall.new(name="unsafe", arguments={}, call_id="b")
-        final = ToolCall.new(name=FINAL_ANSWER_TOOL, arguments="done", call_id="f")
+        final = ToolCall.new(name=FINAL_ANSWER_TOOL, arguments={"answer": "done"}, call_id="f")
         model = ScriptedModel(
             [
                 ModelOutput(content="mixed batch", tool_calls=(safe, unsafe)),

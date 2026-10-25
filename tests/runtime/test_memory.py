@@ -83,9 +83,9 @@ class MemoryTests(unittest.TestCase):
         restored = AgentMemory.from_jsonl(blob)
         self.assertEqual(len(restored), 3)
         action = restored.steps[1]
-        self.assertIsInstance(action, ActionStep)
-        self.assertEqual(action.tool_calls[0].name, "t")  # type: ignore[union-attr]
-        self.assertEqual(action.tool_outputs[0].output, "ok")  # type: ignore[union-attr]
+        assert isinstance(action, ActionStep)
+        self.assertEqual(action.tool_calls[0].name, "t")
+        self.assertEqual(action.tool_outputs[0].output, "ok")
         self.assertEqual(restored.final_answer(), "done")
 
     def test_replay_includes_step_headers(self) -> None:

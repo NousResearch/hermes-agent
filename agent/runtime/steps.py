@@ -52,9 +52,12 @@ class ToolCall:
     """A single tool invocation requested by the model.
 
     ``id`` is the provider's call id when present (Anthropic/OpenAI return
-    one). The model shim is expected to either pass the provider id through
-    or substitute one from the loop's injected ``IdSource`` — the loop
-    asserts a non-empty id before submitting calls to the governance gate.
+    one). When the provider supplies none, the model shim passes ``""``:
+    the loop replaces every empty id with one from its injected ``IdSource``
+    before governance sees the call, so downstream consumers (governance
+    decisions, tool outputs, replay) can rely on a non-empty ``str``. The
+    type stays ``str`` rather than ``str | None`` to keep that invariant
+    visible to type checkers everywhere after normalization.
     """
 
     id: str
@@ -62,7 +65,7 @@ class ToolCall:
     arguments: dict[str, Any]
 
     @staticmethod
-    def new(name: str, arguments: dict[str, Any], call_id: str | None = None) -> "ToolCall":
+    def new(name: str, arguments: dict[str, Any], call_id: str | None = None) -> ToolCall:
         """Test/construction convenience.
 
         Production code path always goes through the loop's ``IdSource`` —

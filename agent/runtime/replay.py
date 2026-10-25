@@ -154,8 +154,7 @@ def build_replay_loop(memory: AgentMemory, *, governance: GovernanceProtocol | N
                 if output.synthesized:
                     continue
                 tool_outputs_by_id[output.id] = output
-            for decision in step.governance_decisions:
-                recorded_decisions.append(decision)
+            recorded_decisions.extend(step.governance_decisions)
         elif isinstance(step, PlanningStep):
             model_outputs.append(
                 ModelOutput(content=step.plan, tool_calls=(), input_tokens=0, output_tokens=0)

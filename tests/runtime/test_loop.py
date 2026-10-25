@@ -20,6 +20,7 @@ from agent.runtime import (
     ModelOutput,
     MultiStepLoop,
     RunState,
+    SequentialIdSource,
     ToolCall,
     ToolOutput,
 )
@@ -211,7 +212,7 @@ class LoopTests(unittest.TestCase):
 
     def test_planning_interval_inserts_planning_steps(self) -> None:
         call = ToolCall.new(name="x", arguments={}, call_id="c")
-        final_call = ToolCall.new(name=FINAL_ANSWER_TOOL, arguments="done", call_id="f")
+        final_call = ToolCall.new(name=FINAL_ANSWER_TOOL, arguments={"answer": "done"}, call_id="f")
         model = ScriptedModel(
             [
                 ModelOutput(content="step1", tool_calls=(call,)),
@@ -231,6 +232,33 @@ class LoopTests(unittest.TestCase):
         self.assertTrue(result.completed)
         types = [s["type"] for s in result.steps]
         self.assertIn("PlanningStep", types)
+
+    def test_empty_tool_call_id_is_filled_from_id_source(self) -> None:
+        # Providers that return no call id surface as ``ToolCall(id="")``;
+        # the loop must substitute an IdSource id before governance and the
+        # handler see the call.
+        call = ToolCall(id="", name="lookup", arguments={})
+        final_call = ToolCall(id="", name=FINAL_ANSWER_TOOL, arguments={"answer": "done"})
+        model = ScriptedModel(
+            [
+                ModelOutput(content="", tool_calls=(call,)),
+                ModelOutput(content="", tool_calls=(final_call,)),
+            ]
+        )
+        handler = EchoToolHandler()
+        loop = MultiStepLoop(
+            model=model,
+            tool_handler=handler,
+            governance=AllowAllGovernance(),
+            id_source=SequentialIdSource(),
+            max_steps=5,
+        )
+        result = loop.run("t")
+        self.assertTrue(result.completed)
+        self.assertEqual([c.id for c in handler.received], ["call_00000001", "call_00000002"])
+        action = next(s for s in loop.memory if isinstance(s, ActionStep))
+        self.assertEqual(action.tool_calls[0].id, "call_00000001")
+        self.assertEqual(action.governance_decisions[0].call_id, "call_00000001")
 
 
 if __name__ == "__main__":

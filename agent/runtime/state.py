@@ -42,7 +42,7 @@ class RunState:
     ``reason`` so the audit log is meaningful.
     """
 
-    __slots__ = ("_values", "_mutations", "_clock", "_frozen")
+    __slots__ = ("_clock", "_frozen", "_mutations", "_values")
 
     def __init__(self, clock: Clock) -> None:
         self._values: dict[str, Any] = {}

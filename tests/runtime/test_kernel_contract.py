@@ -19,6 +19,7 @@ required by the goal:
 from __future__ import annotations
 
 import dataclasses
+import itertools
 import unittest
 
 from agent.runtime import (
@@ -101,7 +102,7 @@ class KernelContractTests(unittest.TestCase):
         # Legal walk: TaskStep -> ActionStep -> ActionStep -> FinalAnswerStep
         self.assertEqual(step_types[0], "TaskStep")
         self.assertEqual(step_types[-1], "FinalAnswerStep")
-        for prev, nxt in zip(step_types, step_types[1:]):
+        for prev, _nxt in itertools.pairwise(step_types):
             self.assertNotEqual(prev, "FinalAnswerStep", "terminal step had a successor")
 
     def test_every_tool_call_has_a_governance_decision(self) -> None:
@@ -157,9 +158,9 @@ class KernelContractTests(unittest.TestCase):
 
         memory = AgentMemory.from_jsonl(original)
         task_step = memory.task_step()
-        self.assertIsNotNone(task_step)
+        assert task_step is not None
         replay_loop = build_replay_loop(memory)
-        result = replay_loop.run(task_step.task, images=task_step.images)  # type: ignore[union-attr]
+        result = replay_loop.run(task_step.task, images=task_step.images)
         self.assertTrue(result.completed)
 
         # The replayed loop's memory must serialize to the same bytes as
@@ -187,8 +188,8 @@ class KernelContractTests(unittest.TestCase):
         loop = MultiStepLoop(model=model, tool_handler=EchoHandler(), max_steps=2)
         loop.run("do it")
         final = next(s for s in loop.memory if isinstance(s, FinalAnswerStep))
-        self.assertIsInstance(final.failure, StepFailure)
-        self.assertEqual(final.failure.kind, "governance_denied")  # type: ignore[union-attr]
+        assert isinstance(final.failure, StepFailure)
+        self.assertEqual(final.failure.kind, "governance_denied")
 
 
 if __name__ == "__main__":

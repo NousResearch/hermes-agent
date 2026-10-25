@@ -115,7 +115,7 @@ class AgentMemory:
         return "\n".join(json.dumps(_step_to_jsonable(s), ensure_ascii=False) for s in self._steps)
 
     @classmethod
-    def from_jsonl(cls, blob: str) -> "AgentMemory":
+    def from_jsonl(cls, blob: str) -> AgentMemory:
         memory = cls()
         for line in blob.splitlines():
             line = line.strip()

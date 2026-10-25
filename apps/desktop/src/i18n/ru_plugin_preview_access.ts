@@ -5,7 +5,8 @@ export const ruPluginPreviewAccess: PluginPreviewAccessTranslations = {
   previewScriptPromptTitle: (plugin: string) => `Разрешить ${plugin} запускать скрипты на этой странице?`,
   previewScriptPromptBody: (plugin: string, origin: string) =>
     `${plugin} хочет выполнить JavaScript во встроенном браузере на ${origin}.`,
-  previewScriptPromptRisk: 'Скрипты могут читать и изменять всё на этом сайте, включая страницы аккаунтов, в которые вы там вошли.',
+  previewScriptPromptRisk:
+    'Скрипты могут читать и изменять всё на этом сайте, включая страницы аккаунтов, в которые вы там вошли.',
   previewScriptPromptRevokeHint: 'Действует только для этого сайта. Отозвать можно в разделе Возможности ▸ Плагины.',
   previewScriptAllow: 'Разрешить на этом сайте',
   previewScriptDeny: 'Не разрешать',

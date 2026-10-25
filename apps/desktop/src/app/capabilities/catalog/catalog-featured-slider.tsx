@@ -25,7 +25,9 @@ export function CatalogFeaturedSlider({ slides }: { slides: ReactNode[] }) {
   const go = (next: number) => {
     const node = track.current
 
-    if (!node) {return}
+    if (!node) {
+      return
+    }
 
     const target = (next + count) % count
     node.scrollTo({ left: target * node.clientWidth, behavior: reducedMotion() ? 'auto' : 'smooth' })
@@ -36,20 +38,28 @@ export function CatalogFeaturedSlider({ slides }: { slides: ReactNode[] }) {
   const onScroll = () => {
     const node = track.current
 
-    if (node && node.clientWidth) {setIndex(Math.round(node.scrollLeft / node.clientWidth))}
+    if (node && node.clientWidth) {
+      setIndex(Math.round(node.scrollLeft / node.clientWidth))
+    }
   }
 
   useEffect(() => {
-    if (count < 2 || held || reducedMotion()) {return}
+    if (count < 2 || held || reducedMotion()) {
+      return
+    }
 
     const timer = window.setInterval(() => {
-      if (!document.hidden) {go(index + 1)}
+      if (!document.hidden) {
+        go(index + 1)
+      }
     }, SLIDE_MS)
 
     return () => window.clearInterval(timer)
   })
 
-  if (count < 2) {return <>{slides[0]}</>}
+  if (count < 2) {
+    return <>{slides[0]}</>
+  }
 
   return (
     <div

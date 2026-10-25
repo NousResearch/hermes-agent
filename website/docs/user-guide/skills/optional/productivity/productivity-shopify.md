@@ -15,13 +15,13 @@ Query Shopify Admin/Storefront GraphQL APIs via curl.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/productivity/shopify` |
-| Path | `optional-skills/productivity\shopify` |
+| Path | `optional-skills/productivity/shopify` |
 | Version | `1.0.0` |
 | Author | community |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Shopify`, `E-commerce`, `Commerce`, `API`, `GraphQL` |
-| Related skills | [`airtable`](/docs/user-guide/skills/bundled/productivity/productivity-airtable), [`xurl`](/docs/user-guide/skills/bundled/social-media/social-media-xurl) |
+| Related skills | [`airtable`](../../bundled/productivity/productivity-airtable.md), [`xurl`](../../bundled/social-media/social-media-xurl.md) |
 
 ## Reference: full SKILL.md
 

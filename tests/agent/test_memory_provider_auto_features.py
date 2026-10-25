@@ -48,6 +48,7 @@ class TimingProvider:
 def _manager(*providers):
     manager = MemoryManager.__new__(MemoryManager)
     manager._providers = list(providers)
+    manager._bound_scope = None
     return manager
 
 
@@ -135,7 +136,7 @@ def test_real_conversation_entrypoint_always_closes_timing(monkeypatch):
     agent = _agent(_manager(provider))
     monkeypatch.setattr(
         loop,
-        "_run_conversation_impl",
+        "_run_conversation_with_boundary",
         lambda *_args, **_kwargs: {"completed": True, "final_response": "ok"},
     )
 
@@ -153,7 +154,7 @@ def test_real_conversation_entrypoint_closes_escaped_exception(monkeypatch):
     def explode(*_args, **_kwargs):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(loop, "_run_conversation_impl", explode)
+    monkeypatch.setattr(loop, "_run_conversation_with_boundary", explode)
     with pytest.raises(RuntimeError, match="boom"):
         loop.run_conversation(agent, "research this")
     assert provider.events[-1][0] == "finish"

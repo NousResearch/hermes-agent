@@ -1,7 +1,9 @@
 """Sanitize tool JSON schemas for strict LLM backends. llama.cpp's grammar converter fails on
 ``{"type": "object"}`` without ``properties``, bare-string schemas and ``type`` arrays; Anthropic
 rejects nullable ``anyOf`` at the top of ``input_schema``; Fireworks rejects ``default`` beside
-``$ref``; Codex rejects top-level combinators. Walks a deep copy and fixes only those shapes."""
+``$ref``; Codex rejects top-level combinators. Walks a deep copy and fixes only those shapes.
+Legacy boolean ``required`` flags are removed from schema positions, lifting property-level
+``true`` flags into the parent's required-name list; literal defaults/consts are not schemas."""
 
 from __future__ import annotations
 
@@ -9,6 +11,7 @@ import copy
 import logging
 import re
 from typing import Any, Callable
+from urllib.parse import unquote
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +24,7 @@ _UNION_META_KEYS = ("title", "description", "default", "examples")  # copied ont
 
 
 def _empty_object() -> dict:
-    return {"type": "object", "properties": {}}
+    return {"type": "object", "properties": {}, "required": []}
 
 
 def _rewrite(schema: Any, fn: Callable[[dict], Any]) -> Any:
@@ -56,9 +59,60 @@ def _rename_property_keys(props: dict, path: str) -> dict[str, str]:
     return renames
 
 
-def unrename_tool_args(params_schema: Any, args: Any) -> Any:
+# RFC 6901: an array index is "0" or a number without leading zeros; "~" escapes only "~0" and "~1".
+_POINTER_INDEX = re.compile(r"0|[1-9][0-9]*")
+_BAD_POINTER_ESCAPE = re.compile(r"~(?![01])")
+
+
+def resolve_local_schema_ref(schema: Any, root_schema: Any, seen_refs: set[str] | None = None) -> Any:
+    """Follow a document-local ``$ref`` in *schema* against *root_schema*, for dispatch-time
+    decisions (argument coercion, key unrenaming). Remote, malformed or dangling refs come back
+    unchanged; sibling keywords are kept, and the referenced schema wins where they conflict."""
+    if not isinstance(schema, dict) or not isinstance(root_schema, dict):
+        return schema
+
+    ref = schema.get("$ref")
+    if not isinstance(ref, str) or not ref.startswith("#"):
+        return schema
+    # A $ref is a URI reference: percent-decode the fragment, then read it as a JSON Pointer.
+    pointer = unquote(ref[1:])
+    if pointer and not pointer.startswith("/"):
+        return schema  # a plain-name anchor such as "#Address", not a pointer
+    seen = seen_refs or set()
+    if ref in seen:
+        return schema
+
+    target: Any = root_schema
+    for raw_token in pointer.split("/")[1:]:
+        if _BAD_POINTER_ESCAPE.search(raw_token):
+            return schema
+        token = raw_token.replace("~1", "/").replace("~0", "~")
+        if isinstance(target, dict) and token in target:
+            target = target[token]
+        elif isinstance(target, list) and _POINTER_INDEX.fullmatch(token) and int(token) < len(target):
+            # Path refs can pass through arrays, e.g. zod-to-json-schema's "#/properties/a/anyOf/0".
+            target = target[int(token)]
+        else:
+            return schema
+    if not isinstance(target, dict):
+        return schema
+
+    resolved = resolve_local_schema_ref(target, root_schema, seen | {ref})
+    siblings = {key: value for key, value in schema.items() if key != "$ref"}
+    if not siblings or not isinstance(resolved, dict):
+        return resolved
+    combined = dict(resolved)
+    for key, value in siblings.items():
+        combined.setdefault(key, value)
+    return combined
+
+
+def unrename_tool_args(params_schema: Any, args: Any, root_schema: Any = None) -> Any:
     """Map sanitized keys in model-emitted args back to wire names. ``params_schema`` is the
-    ORIGINAL registry schema; recurses into objects/array items; unknown keys pass through."""
+    ORIGINAL registry schema; recurses into objects/array items, following local ``$ref``s
+    (the sanitizer renames keys inside ``$defs`` too); unknown keys pass through."""
+    root = params_schema if root_schema is None else root_schema
+    params_schema = resolve_local_schema_ref(params_schema, root)
     props = params_schema.get("properties") if isinstance(params_schema, dict) else None
     if not isinstance(props, dict) or not isinstance(args, dict):
         return args
@@ -66,11 +120,11 @@ def unrename_tool_args(params_schema: Any, args: Any) -> Any:
     out = {}
     for key, value in args.items():
         orig = reverse.get(key, key)
-        sub = props.get(orig) if isinstance(props.get(orig), dict) else {}
+        sub = resolve_local_schema_ref(props[orig], root) if isinstance(props.get(orig), dict) else {}
         if isinstance(value, dict) and sub:
-            value = unrename_tool_args(sub, value)
+            value = unrename_tool_args(sub, value, root)
         elif isinstance(value, list) and isinstance(sub.get("items"), dict):
-            value = [unrename_tool_args(sub["items"], item) if isinstance(item, dict) else item
+            value = [unrename_tool_args(sub["items"], item, root) if isinstance(item, dict) else item
                      for item in value]
         out[orig] = value
     return out
@@ -96,6 +150,8 @@ def _sanitize_single_tool(tool: dict) -> dict:
     top["type"] = "object"
     if not isinstance(top.get("properties"), dict):
         top["properties"] = {}
+    if not isinstance(top.get("required"), list):
+        top["required"] = []
     # The recursive pass only handles array-form ``type: [X, "null"]``; collapse anyOf unions
     # here, keeping ``nullable: true`` so ``tools.arg_coercion._schema_allows_null`` still coerces.
     top = strip_nullable_unions(top, keep_nullable_hint=True)
@@ -214,6 +270,11 @@ def collapse_const_unions(schema: Any) -> Any:
 _BARE_TYPE_NAMES = frozenset({"object", "string", "number", "integer", "boolean", "array", "null"})
 # Values that are NOT schemas (recursing would treat a required name like "path" as a bare schema).
 _NON_SCHEMA_LIST_KEYS = frozenset({"required", "enum", "examples", "dependentRequired"})
+_SCHEMA_MAP_KEYS = frozenset({"properties", "$defs", "definitions", "patternProperties", "dependentSchemas"})
+_SCHEMA_CHILD_KEYS = frozenset({
+    "items", "additionalItems", "additionalProperties", "unevaluatedItems", "unevaluatedProperties",
+    "contains", "propertyNames", "not", "if", "then", "else", "anyOf", "oneOf", "allOf", "prefixItems",
+})
 
 
 def _normalize_type_array(value: list, out: dict) -> None:
@@ -274,30 +335,44 @@ def _sanitize_node(node: Any, path: str) -> Any:
         # anomalyco/opencode#31877.
         if key == "type" and isinstance(value, list):
             _normalize_type_array(value, out)
-        elif key in {"properties", "$defs", "definitions"} and isinstance(value, dict):
+        elif key in _SCHEMA_MAP_KEYS and isinstance(value, dict):
             renames = prop_renames if key == "properties" else {}
             out[key] = {
                 renames.get(k, k): _sanitize_node(v, f"{path}.{key}.{renames.get(k, k)}")
                 for k, v in value.items()}
+        elif key == "dependencies" and isinstance(value, dict):
+            out[key] = {k: _sanitize_node(v, f"{path}.{key}.{k}") if isinstance(v, dict)
+                        else copy.deepcopy(v) for k, v in value.items()}
         elif key in {"items", "additionalProperties"}:
             # Bool ``additionalProperties`` is valid; bool ``items`` is non-standard but preserved.
             out[key] = value if isinstance(value, bool) else _sanitize_node(value, f"{path}.{key}")
         elif key in _NON_SCHEMA_LIST_KEYS:
+            if key == "required" and isinstance(value, bool):
+                continue  # Legacy property flags are lifted by the parent below.
             if key == "required" and prop_renames and isinstance(value, list):
                 out[key] = [prop_renames.get(r, r) if isinstance(r, str) else r for r in value]
             else:
                 out[key] = copy.deepcopy(value) if isinstance(value, (list, dict)) else value
-        else:  # anyOf/oneOf/allOf and any other nested schema recurse (lists index the path)
-            out[key] = _sanitize_node(value, f"{path}.{key}") if isinstance(value, (dict, list)) else value
+        elif key in _SCHEMA_CHILD_KEYS:
+            out[key] = _sanitize_node(value, f"{path}.{key}")
+        else:
+            # Defaults, consts and extension metadata are literal data, not schemas.
+            out[key] = copy.deepcopy(value)
+    if isinstance(props_in, dict):
+        lifted = [prop_renames.get(k, k) for k, v in props_in.items()
+                  if isinstance(v, dict) and v.get("required") is True]
+        if lifted:
+            required = out.get("required", [])
+            required = required if isinstance(required, list) else []
+            out["required"] = required + [key for key in lifted if key not in required]
     if out.get("type") == "object":
         if not isinstance(out.get("properties"), dict):
             out["properties"] = {}
-        if isinstance(out.get("required"), list):
-            valid = [r for r in out["required"] if isinstance(r, str) and r in out["properties"]]
-            if valid:
-                out["required"] = valid
-            else:
-                del out["required"]
+        # Always emit a list: ``required: []`` is valid everywhere, while a missing or
+        # non-list key reads as ``null`` on strict OpenAI-compatible proxies (#56123).
+        required = out.get("required")
+        out["required"] = ([r for r in required if isinstance(r, str) and r in out["properties"]]
+                           if isinstance(required, list) else [])
     return out
 
 

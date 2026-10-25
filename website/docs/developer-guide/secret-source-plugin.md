@@ -9,7 +9,7 @@ description: "How to build a secret-manager backend plugin for Hermes Agent"
 Secret sources resolve provider credentials from an external secret manager (a vault, a password manager, an OS keystore, a custom script) into environment variables at process startup — after `~/.hermes/.env` loads, before Hermes reads credentials. Bitwarden, 1Password, and a generic command-helper source ship in-tree; **every other backend is a plugin**. This guide covers building one.
 
 :::tip
-The bundled set is deliberately closed, same policy as [memory providers](/developer-guide/memory-provider-plugin): PRs adding new vault backends under `agent/secret_sources/` are closed with a pointer to this guide. Publish your backend as a standalone plugin repo and share it in the Nous Research Discord (`#plugins-skills-and-skins`).
+The bundled set is deliberately closed, same policy as [memory providers](./memory-provider-plugin.md): PRs adding new vault backends under `agent/secret_sources/` are closed with a pointer to this guide. Publish your backend as a standalone plugin repo and share it in the Nous Research Discord (`#plugins-skills-and-skins`).
 :::
 
 ## First-process bootstrap timing
@@ -22,6 +22,10 @@ plugin secret source is configured. Enablement uses the source's
 That closes the "replace Bitwarden with my vault" first-process gap (#64177).
 
 - Re-pull is idempotent and fail-open (never blocks startup).
+- `hermes update` never resolves external sources — not in the updater process
+  and not in the import-health probes it spawns. Nothing in the update path
+  needs credentials, and a slow helper would otherwise be misreported as an
+  import failure (#110823).
 - Sources only supply env vars through the orchestrator; there is **no**
   plugin API to dump other plugins' or the user's entire secret store beyond
   what your source's own config allows.
@@ -143,7 +147,7 @@ def register(ctx):
 Registration is rejected (with a log warning, never a crash) for: non-`SecretSource` instances, invalid/duplicate names, a `scheme` another source owns, wrong `api_version`, or a `shape` outside `mapped`/`bulk`.
 
 :::note Timing
-Plugin discovery runs later in startup than the first `load_hermes_dotenv()` call. Immediately after discovery, Hermes re-pulls enabled plugin secret sources (`reset_secret_source_cache()` + `load_hermes_dotenv()`), so the discovering process *does* pick them up — see [First-process bootstrap timing](#first-process-bootstrap-timing) above (#64177). The re-pull is fail-open and skipped when no plugin source is enabled. Any code that reads `os.environ` during the plugin module's import or `register(ctx)` still runs before the re-pull and cannot depend on credentials supplied by that same source; keep credentialed work inside `fetch()`. Gateway, cron, and subagent processes perform the same discovery/re-pull sequence.
+Plugin discovery runs later in startup than the first `load_hermes_dotenv()` call. Immediately after discovery, Hermes re-pulls enabled plugin secret sources (`reset_secret_source_cache()` + `load_hermes_dotenv()`), so the discovering process *does* pick them up — see [First-process bootstrap timing](#first-process-bootstrap-timing) above (#64177). The re-pull is fail-open and skipped when no plugin source is enabled. Any code that reads `os.environ` during the plugin module's import or `register(ctx)` still runs before the re-pull and cannot depend on credentials supplied by that same source; keep credentialed work inside `fetch()`. Gateway, cron, and subagent processes perform the same discovery/re-pull sequence. The re-pull (and the per-fire cron re-pull) resets only the resolving home's cache, so under a multiplex gateway sibling profiles keep their hydrated snapshots; and a re-pull whose keys already sit in the process environment (`skipped_existing`, e.g. the previous apply's own write-back) still records the home's effective values, so `override_existing` is never required just to survive a re-pull.
 :::
 
 ## Users configure it like any other source
@@ -156,7 +160,7 @@ secrets:
     # ... your config_schema keys
 ```
 
-Multi-source precedence, conflict warnings, and `(from My Vault)` provenance labels all work automatically — see the [user-facing secrets docs](/user-guide/secrets/) for the precedence ladder.
+Multi-source precedence, conflict warnings, and `(from My Vault)` provenance labels all work automatically — see the [user-facing secrets docs](../user-guide/secrets/index.md) for the precedence ladder.
 
 ## Validate with the conformance kit
 

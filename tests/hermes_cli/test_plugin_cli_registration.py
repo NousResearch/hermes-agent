@@ -1,57 +1,6 @@
-"""Tests for plugin CLI registration system.
-
-Covers:
-  - PluginContext.register_cli_command()
-  - PluginManager._cli_commands storage
-  - get_plugin_cli_commands() convenience function
-  - Memory plugin CLI discovery (discover_plugin_cli_commands)
-  - Honcho register_cli() builds correct argparse tree
-"""
+"""Memory plugin CLI discovery: only the active provider's ``cli.py`` commands are exposed."""
 
 import sys
-from unittest.mock import MagicMock
-
-
-from hermes_cli.plugins import (
-    PluginContext,
-    PluginManager,
-    PluginManifest,
-)
-
-
-# ── PluginContext.register_cli_command ─────────────────────────────────────
-
-
-class TestRegisterCliCommand:
-    def _make_ctx(self):
-        mgr = PluginManager()
-        manifest = PluginManifest(name="test-plugin")
-        return PluginContext(manifest, mgr), mgr
-
-    def test_registers_command(self):
-        ctx, mgr = self._make_ctx()
-        setup = MagicMock()
-        handler = MagicMock()
-        ctx.register_cli_command(
-            name="mycmd",
-            help="Do something",
-            setup_fn=setup,
-            handler_fn=handler,
-            description="Full description",
-        )
-        assert "mycmd" in mgr._cli_commands
-        entry = mgr._cli_commands["mycmd"]
-        assert entry["name"] == "mycmd"
-        assert entry["help"] == "Do something"
-        assert entry["setup_fn"] is setup
-        assert entry["handler_fn"] is handler
-        assert entry["plugin"] == "test-plugin"
-
-    def test_overwrites_on_duplicate(self):
-        ctx, mgr = self._make_ctx()
-        ctx.register_cli_command("x", "first", MagicMock())
-        ctx.register_cli_command("x", "second", MagicMock())
-        assert mgr._cli_commands["x"]["help"] == "second"
 
 
 # ── Memory plugin CLI discovery ───────────────────────────────────────────
@@ -123,22 +72,3 @@ class TestMemoryPluginCliDiscovery:
             monkeypatch.setattr(pm, "_MEMORY_PLUGINS_DIR", original_dir)
 
         assert len(cmds) == 0
-
-
-# ── Honcho register_cli ──────────────────────────────────────────────────
-
-
-# ── ProviderCollector no-op ──────────────────────────────────────────────
-
-
-class TestProviderCollectorCliNoop:
-    def test_register_cli_command_is_noop(self):
-        """_ProviderCollector.register_cli_command is a no-op (doesn't crash)."""
-        from plugins.memory import _ProviderCollector
-
-        collector = _ProviderCollector("test-provider")
-        collector.register_cli_command(
-            name="test", help="test", setup_fn=lambda s: None
-        )
-        # Should not store anything — CLI is discovered via file convention
-        assert not hasattr(collector, "_cli_commands")

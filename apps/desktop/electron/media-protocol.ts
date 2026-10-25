@@ -1,3 +1,6 @@
+import { httpStatusError, readStatusCode } from './api-transport'
+import { requestWithOauthFallback } from './oauth-rest-request'
+
 const STREAMABLE_MEDIA_EXTENSIONS = [
   '.avi',
   '.flac',
@@ -33,6 +36,7 @@ export interface MediaRemoteScope {
 export interface MediaRemoteConnection {
   authMode?: 'oauth' | 'token'
   baseUrl: string
+  headers?: Record<string, string>
   mode?: 'local' | 'remote'
   token?: null | string
   sharedRemote?: boolean
@@ -67,6 +71,29 @@ function parseMediaProtocolTarget(rawUrl: string): MediaProtocolTarget {
   const profile = url.searchParams.get('profile')?.trim() || undefined
 
   return { connectionId, filePath, mode, profile }
+}
+
+/**
+ * The file name a native save of a `hermes-media://` URL should offer. The
+ * media path rides percent-encoded in the URL, so Chromium's own guess flattens
+ * the whole path into the name (`C__Users_me_Videos_clip.mp4`). Returns null
+ * for any other URL so ordinary downloads keep Chromium's name.
+ */
+export function mediaProtocolDownloadName(rawUrl: string): null | string {
+  let target: MediaProtocolTarget
+
+  try {
+    if (new URL(rawUrl).protocol !== `${MEDIA_PROTOCOL}:`) {
+      return null
+    }
+
+    target = parseMediaProtocolTarget(rawUrl)
+  } catch {
+    return null
+  }
+
+  // Media paths come from the agent's OS: split on both separators.
+  return target.filePath.split(/[\\/]/).filter(Boolean).pop() || null
 }
 
 export function isStreamableMediaPath(filePath: string): boolean {
@@ -160,16 +187,35 @@ export function createMediaProtocolHandler(dependencies: MediaProtocolDependenci
         connection.sharedRemote ? target.profile : undefined
       )
 
-      if (connection.authMode === 'oauth') {
-        const bearer = await dependencies.ensureRemoteBearer(connection.baseUrl)
-
-        if (bearer) {
-          headers.set('authorization', `Bearer ${bearer}`)
-
-          return await dependencies.fetchRemote(endpoint, headers, method)
+      // The gateway's configured extra headers (access-proxy gates) travel on
+      // every remote request; forwarded range/cache negotiation headers win.
+      for (const [name, value] of Object.entries(connection.headers ?? {})) {
+        if (!headers.has(name)) {
+          headers.set(name, value)
         }
+      }
 
-        return await dependencies.fetchRemoteWithCookies(endpoint, headers, method)
+      if (connection.authMode === 'oauth') {
+        return await requestWithOauthFallback(connection.baseUrl, {
+          ensureNativeAccessToken: dependencies.ensureRemoteBearer,
+          requestWithBearer: bearer => {
+            headers.set('authorization', `Bearer ${bearer}`)
+
+            return dependencies.fetchRemote(endpoint, headers, method)
+          },
+          requestWithCookie: async () => {
+            const response = await dependencies.fetchRemoteWithCookies(endpoint, headers, method)
+
+            // Fetch resolves HTTP errors; translate only the auth verdict so
+            // the shared fallback can preserve a failed native refresh.
+            if (response.status === 401 || response.status === 403) {
+              await response.body?.cancel()
+              throw httpStatusError(response.status, 'Remote media authentication unavailable')
+            }
+
+            return response
+          }
+        })
       }
 
       if (!connection.token) {
@@ -179,8 +225,10 @@ export function createMediaProtocolHandler(dependencies: MediaProtocolDependenci
       headers.set('x-hermes-session-token', connection.token)
 
       return await dependencies.fetchRemote(endpoint, headers, method)
-    } catch {
-      return new Response('Remote media unavailable', { status: 502 })
+    } catch (error) {
+      const status = readStatusCode(error)
+
+      return new Response('Remote media unavailable', { status: status === 401 || status === 403 ? status : 502 })
     }
   }
 }

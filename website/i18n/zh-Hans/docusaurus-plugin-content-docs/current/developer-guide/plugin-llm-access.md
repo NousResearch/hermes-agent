@@ -398,4 +398,4 @@ Plugin id 对于扁平 plugin 是 manifest 中的 `name:` 字段，对于嵌套 
   * [`plugin-llm-example`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-example) — 带图像输入的同步结构化提取
   * [`plugin-llm-async-example`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-async-example) — 使用 `asyncio.gather()` 的异步示例
 * 辅助客户端（底层引擎）：参见
-  [Provider 运行时](/developer-guide/provider-runtime)。
+  [Provider 运行时](./provider-runtime.md)。

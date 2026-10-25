@@ -17,7 +17,7 @@ import json
 
 import pytest
 
-import gateway.relay as relay
+from gateway import relay
 
 
 @pytest.fixture(autouse=True)
@@ -33,7 +33,7 @@ def _clean_env(monkeypatch):
         "GATEWAY_RELAY_BOT_IDS",
     ):
         monkeypatch.delenv(k, raising=False)
-    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {}, raising=False)
+    monkeypatch.setattr("gateway.run._load_gateway_config", dict, raising=False)
 
 
 # ─────────────────────────── identity parsing ───────────────────────────
@@ -100,7 +100,7 @@ def test_self_provision_loops_per_platform(monkeypatch):
 async def test_adapter_stamps_per_frame_platform_from_inbound(monkeypatch):
     """An inbound from a concrete platform makes the reply egress tagged for it."""
     from gateway.config import Platform, PlatformConfig
-    from gateway.platforms.base import MessageEvent, MessageType
+    from gateway.platforms.event import MessageEvent, MessageType
     from gateway.relay.adapter import RelayAdapter
     from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
     from gateway.session import SessionSource

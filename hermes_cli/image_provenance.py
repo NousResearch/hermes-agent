@@ -63,8 +63,10 @@ def read_image_provenance(marker_path: Optional[Path] = None) -> Optional[ImageP
     if not stat.S_ISREG(marker_stat.st_mode):
         return _invalid(path, "marker_not_regular_file")
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:  # may vanish between lstat/read; it was observed present, so fail closed
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception as exc:
+        # The file may disappear between lstat/read; it was nevertheless
+        # observed present, so the decision remains fail-closed.
         return _invalid(path, f"marker_unreadable:{type(exc).__name__}")
     if not isinstance(payload, dict):
         return _invalid(path, "marker_not_object")

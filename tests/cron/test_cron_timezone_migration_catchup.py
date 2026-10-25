@@ -85,13 +85,15 @@ def test_legacy_utc_offset_next_run_still_fires(temp_home, monkeypatch):
 def test_legacy_offset_catchup_fires_at_most_once(temp_home, monkeypatch):
     """The catch-up run is a single fire: once the scheduler advances the
     job, the legacy instant is gone and a second scan finds nothing due."""
-    from cron.jobs import advance_next_run, get_due_jobs, get_job
+    from cron.jobs import advance_next_run, claim_job_for_fire, get_due_jobs, get_job
 
     monkeypatch.setattr("cron.jobs._hermes_now", lambda: _BRUSSELS_NOW)
     jid = _write_cron_job(_DAILY_0400, _LEGACY_UTC_NEXT_RUN)
 
     assert jid in [j["id"] for j in get_due_jobs()]
     assert advance_next_run(jid) is True
+    # The fire claim is what commits the occurrence; without it a restart restores the slot.
+    assert claim_job_for_fire(jid)
 
     # Re-anchored to tomorrow's occurrence, expressed in the configured zone.
     assert get_job(jid)["next_run_at"] == "2026-09-03T04:00:00+02:00"

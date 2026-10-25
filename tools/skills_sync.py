@@ -3,7 +3,8 @@
 ~/.hermes/skills/, tracking each synced skill's origin hash in .bundled_manifest (v2 "name:hash"
 lines; v1 plain names auto-migrate). NEW skills are copied and recorded; EXISTING skills update
 only when bundled changed AND the user copy still matches the origin hash (else user-customized
--> SKIP); user-DELETED skills are not re-added; upstream-REMOVED ones leave the manifest."""
+-> SKIP); user-DELETED skills are not re-added; upstream-REMOVED ones leave the manifest once no active or
+archived copy remains (the entry is that copy's only built-in provenance record)."""
 
 import hashlib
 import logging
@@ -24,9 +25,10 @@ for _stream in (sys.stdout, sys.stderr):
             _stream.reconfigure(encoding="utf-8", errors="replace")
 from hermes_constants import get_bundled_skills_dir, get_hermes_home, get_optional_skills_dir
 from agent.skill_utils import ESSENTIAL_SKILLS, is_excluded_skill_path
-from tools.skill_usage import _read_skill_name, read_suppressed_names
-from tools.skills_sync_bundled_ops import _is_tracked_user_modification
-from tools.skills_sync_optional import _backfill_optional_provenance, _read_hub_install_paths
+from tools.skill_usage import read_skill_name
+from tools.skills_sync_optional import (
+    _backfill_optional_provenance, _ignore_runtime_cache, _is_runtime_cache, _read_hub_install_paths,
+)
 from utils import atomic_write_text
 
 logger = logging.getLogger(__name__)
@@ -95,37 +97,69 @@ def _iter_active_skill_mds(sort: bool = False) -> Iterator[Path]:
     return _iter_skill_mds(_skills_dir(), sort)
 
 
-def _build_external_skill_index() -> Set[str]:
+def _build_external_skill_index() -> set[str]:
     """Names (directory and frontmatter) of every skill provided by external_dirs,
     so sync_skills never shadows an externally-delegated skill."""
     from agent.skill_utils import get_external_skills_dirs, _external_dirs_cache_clear
     _external_dirs_cache_clear()  # so a config edit (or a test patch) is seen
-    external_names: Set[str] = set()
+    external_names: set[str] = set()
     for ext_dir in get_external_skills_dirs():
         for skill_md in _iter_skill_mds(ext_dir):
-            external_names.update({skill_md.parent.name, _read_skill_name(skill_md, "")})
+            external_names.update({skill_md.parent.name, read_skill_name(skill_md, "")})
     external_names.discard("")
     return external_names
 
 
-def _read_manifest() -> Dict[str, str]:
+def _read_manifest() -> dict[str, str]:
     """``{skill_name: origin_hash}``; v1 plain-name lines get an empty hash (migrates next sync)."""
     try:
-        lines = _manifest_file().read_text(encoding="utf-8").splitlines() if _manifest_file().exists() else []
+        result = {}
+        for line in _manifest_file().read_text(encoding="utf-8-sig").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if ":" in line:
+                # v2 format: name:hash
+                name, _, hash_val = line.partition(":")
+                result[name.strip()] = hash_val.strip()
+            else:
+                # v1 format: plain name — empty hash triggers migration
+                result[line] = ""
+        return result
     except OSError:
         return {}
-    pairs = (line.partition(":") for line in map(str.strip, lines) if line)
-    return {name.strip(): hash_val.strip() for name, _, hash_val in pairs}
 
 
 def _read_suppressed_names() -> set:
-    """Built-in skills the curator pruned — must NOT be re-seeded (tests patch this name)."""
-    return read_suppressed_names()
+    """Built-in skills the curator pruned — must NOT be re-seeded on sync.
+
+    Delegates to ``tools.skill_usage`` (single source of truth) and falls back
+    to reading ``~/.hermes/skills/.curator_suppressed`` directly if that import
+    is unavailable in a packaged/update context.
+    """
+    try:
+        from tools.skill_usage import read_suppressed_names
+
+        return read_suppressed_names()
+    except Exception:
+        path = _skills_dir() / ".curator_suppressed"
+        if not path.exists():
+            return set()
+        names = set()
+        try:
+            for line in path.read_text(encoding="utf-8-sig").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    names.add(line)
+        except OSError:
+            pass
+        return names
 
 
-def _write_manifest(entries: Dict[str, str]):
+def _write_manifest(entries: dict[str, str]):
     """Atomic v2 write, preserving an existing file's mode/owner (not mkstemp's 0600)."""
-    _manifest_file().parent.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import mkdir_under_hermes_home
+    mkdir_under_hermes_home(_manifest_file().parent)
     try:
         data = "".join(f"{n}:{h}\n" for n, h in sorted(entries.items()))
         atomic_write_text(_manifest_file(), data, tmp_prefix=".bundled_manifest_", preserve_mode=True)
@@ -133,14 +167,14 @@ def _write_manifest(entries: Dict[str, str]):
         logger.debug("Failed to write skills manifest %s: %s", _manifest_file(), e, exc_info=True)
 
 
-def _discover_bundled_skills(bundled_dir: Path) -> List[Tuple[str, Path]]:
+def _discover_bundled_skills(bundled_dir: Path) -> list[tuple[str, Path]]:
     """``(skill_name, skill_dir)`` per SKILL.md under the bundled dir. Exclusions are evaluated
     relative to the bundled tree: the install prefix itself may contain ``venv``/``site-packages``
     (which once made wheel installs discover zero skills)."""
     if not bundled_dir.exists():
         return []
     return [
-        (_read_skill_name(md, md.parent.name), md.parent)
+        (read_skill_name(md, md.parent.name), md.parent)
         for md in bundled_dir.rglob("SKILL.md")
         if not is_excluded_skill_path(md.relative_to(bundled_dir), root=bundled_dir)]
 
@@ -150,15 +184,32 @@ def _compute_relative_dest(skill_dir: Path, bundled_dir: Path) -> Path:
     return _skills_dir() / skill_dir.relative_to(bundled_dir)
 
 
-def _dir_hash(directory: Path) -> str:
-    """MD5 over relative paths + contents of every file in a directory."""
+def dir_hash(directory: Path, *, include_runtime_cache: bool = False) -> str:
+    """MD5 of package paths/content, excluding generated runtime state.
+
+    The legacy option is only for proving an exact pre-filter origin match.
+    Keep the original path encoding so clean existing manifests remain valid.
+    """
     hasher = hashlib.md5()
     with suppress(OSError):
         for fpath in sorted(directory.rglob("*")):
-            if fpath.is_file():
+            if (include_runtime_cache or not _is_runtime_cache(fpath, directory)) and fpath.is_file():
                 hasher.update(str(fpath.relative_to(directory)).encode("utf-8"))
                 hasher.update(fpath.read_bytes())
     return hasher.hexdigest()
+
+
+def _matches_origin_hash(directory: Path, origin_hash: str, user_hash: Optional[str] = None) -> bool:
+    """Prove unchanged package ownership against a clean OR exact legacy hash.
+
+    Never re-baseline a differing package merely because it contains a cache:
+    if legacy cached bytes changed/disappeared, the old origin cannot be proven.
+    A genuinely edited package must remain protected in that case.
+    """
+    if not origin_hash:
+        return False
+    current = dir_hash(directory) if user_hash is None else user_hash
+    return current == origin_hash or dir_hash(directory, include_runtime_cache=True) == origin_hash
 
 
 def _move_dir(src: Path, dest: Path) -> None:
@@ -168,7 +219,7 @@ def _move_dir(src: Path, dest: Path) -> None:
 
 def _copy_dir(src: Path, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(src, dest)
+    shutil.copytree(src, dest, ignore=_ignore_runtime_cache)
 
 
 def _recover_renamed_skill(st: "_SyncState", skill_name: str, dest: Path) -> Optional[str]:
@@ -181,7 +232,7 @@ def _recover_renamed_skill(st: "_SyncState", skill_name: str, dest: Path) -> Opt
     if st.active_index is None:  # by frontmatter name
         st.active_index = {}
         for md in _iter_active_skill_mds():
-            st.active_index.setdefault(_read_skill_name(md, md.parent.name), []).append(md.parent)
+            st.active_index.setdefault(read_skill_name(md, md.parent.name), []).append(md.parent)
         st.hub_paths = _read_hub_install_paths()
     for candidate in st.active_index.get(skill_name, []):
         if candidate == dest or not candidate.is_dir():
@@ -192,7 +243,7 @@ def _recover_renamed_skill(st: "_SyncState", skill_name: str, dest: Path) -> Opt
             continue
         if rel in st.hub_paths:  # the hub owns its install paths
             continue
-        if _dir_hash(candidate) != origin_hash:  # moving a customized copy would edit user work
+        if not _matches_origin_hash(candidate, origin_hash):  # moving a customized copy would edit user work
             st.say(
                 f"  ⚠ {skill_name}: upstream moved this skill to {_rel_skills_posix(dest)}, but your "
                 f"modified copy at {rel} was kept — it will not receive updates. "
@@ -212,17 +263,17 @@ def _recover_renamed_skill(st: "_SyncState", skill_name: str, dest: Path) -> Opt
 @dataclass
 class _SyncState:
     """Mutable accumulator threaded through one sync_skills() run."""
-    manifest: Dict[str, str]
+    manifest: dict[str, str]
     quiet: bool
     skipped: int = 0
-    copied: List[str] = field(default_factory=list)
-    updated: List[str] = field(default_factory=list)
-    user_modified: List[str] = field(default_factory=list)
-    suppressed: List[str] = field(default_factory=list)
-    relocated: List[str] = field(default_factory=list)
-    shadowed_by_external: List[str] = field(default_factory=list)
-    active_index: Optional[Dict[str, List[Path]]] = None  # rename-recovery indexes are expensive on
-    hub_paths: Set[str] = field(default_factory=set)  # bind mounts: built lazily, only when needed
+    copied: list[str] = field(default_factory=list)
+    updated: list[str] = field(default_factory=list)
+    user_modified: list[str] = field(default_factory=list)
+    suppressed: list[str] = field(default_factory=list)
+    relocated: list[str] = field(default_factory=list)
+    shadowed_by_external: list[str] = field(default_factory=list)
+    active_index: Optional[dict[str, list[Path]]] = None  # rename-recovery indexes are expensive on
+    hub_paths: set[str] = field(default_factory=set)  # bind mounts: built lazily, only when needed
 
     def say(self, msg: str) -> None:
         if not self.quiet:
@@ -248,7 +299,7 @@ def _defer_to_external(st: _SyncState, skill_name: str, dest: Path, bundled_hash
     st.shadowed_by_external.append(skill_name)
     st.skipped += 1
     st.say(f"  ⇢ {skill_name} (deferred to external_dirs, not written to local tree)")
-    if dest.exists() and _dir_hash(dest) == bundled_hash:
+    if dest.exists() and dir_hash(dest) == bundled_hash:
         _rmtree_writable(dest)
         st.say(f"  ✓ removed stale shadow of {skill_name}")
         st.manifest.pop(skill_name, None)
@@ -261,7 +312,7 @@ def _install_new_skill(st: _SyncState, skill_name: str, skill_src: Path, dest: P
             # Never overwrite a same-named user skill. Baseline the manifest only when
             # byte-identical: a differing copy's bundled_hash reads as "user-modified" forever.
             st.skipped += 1
-            if _dir_hash(dest) == bundled_hash:
+            if dir_hash(dest) == bundled_hash:
                 st.manifest[skill_name] = bundled_hash
             else:
                 st.say(
@@ -284,7 +335,7 @@ def _replace_skill_dir(skill_src: Path, dest: Path) -> None:
         _rmtree_writable(backup)
     shutil.move(str(dest), str(backup))
     try:
-        shutil.copytree(skill_src, dest)
+        shutil.copytree(skill_src, dest, ignore=_ignore_runtime_cache)
     except OSError:
         if backup.exists():  # clear a partially-written dest so it can't shadow/block the restore
             if dest.exists():
@@ -308,12 +359,12 @@ def _update_existing_skill(st: _SyncState, skill_name: str, skill_src: Path, des
     if origin_hash and bundled_hash == origin_hash:  # bundled unchanged: skip without hashing the user copy
         st.skipped += 1
         return
-    user_hash = _dir_hash(dest)
+    user_hash = dir_hash(dest)
     if not origin_hash:  # v1 migration: baseline from user's copy (can't tell edit from upstream)
         st.manifest[skill_name] = user_hash
         st.skipped += 1
         return
-    if _is_tracked_user_modification(origin_hash, user_hash):
+    if not _matches_origin_hash(dest, origin_hash, user_hash):
         st.user_modified.append(skill_name)
         st.say(f"  ~ {skill_name} (user-modified, skipping)")
         return
@@ -328,7 +379,7 @@ def _update_existing_skill(st: _SyncState, skill_name: str, skill_src: Path, des
     st.say(f"  ↑ {skill_name} (updated)")
 
 
-def _seed_category_descriptions(bundled_dir: Path, only_dirs: Optional[Set[Path]]) -> None:
+def _seed_category_descriptions(bundled_dir: Path, only_dirs: Optional[set[Path]]) -> None:
     """Copy category DESCRIPTION.md files not already present; ``only_dirs`` restricts
     seeding to the essential skills' categories on opted-out profiles."""
     for desc_md in bundled_dir.rglob("DESCRIPTION.md"):
@@ -367,7 +418,7 @@ def sync_skills(quiet: bool = False) -> dict:
             st.suppressed.append(skill_name)
             continue
         dest = _compute_relative_dest(skill_src, bundled_dir)
-        bundled_hash = _dir_hash(skill_src)
+        bundled_hash = dir_hash(skill_src)
         # Recoveries run BEFORE classification so a missing dest isn't misread as user-deleted.
         _recover_orphan_backup(dest)
         if not dest.exists() and skill_name in st.manifest and _recover_renamed_skill(st, skill_name, dest):
@@ -380,9 +431,17 @@ def sync_skills(quiet: bool = False) -> dict:
             _update_existing_skill(st, skill_name, skill_src, dest, bundled_hash)
         else:
             st.skipped += 1  # in manifest but not on disk — user deleted it
-    # Clean manifest entries for skills removed upstream. Skipped when opted out: bundled_skills
+    # Clean manifest entries for skills removed upstream once no copy is left. A dropped built-in still
+    # on disk (active or archived) keeps its entry: it is the only provenance record, and without it the
+    # copy reads as agent-authored ("Learned", editable) (#95415). Skipped when opted out: bundled_skills
     # is only the essential set there, so cleaning would drop tracking for everything else.
-    cleaned = [] if essential_only else sorted(set(st.manifest) - {name for name, _ in bundled_skills})
+    removed = [] if essential_only else sorted(set(st.manifest) - {name for name, _ in bundled_skills})
+    present = set()
+    if removed:  # curator archive is flat: directory name == skill name
+        archive = _skills_dir() / ".archive"
+        present = {read_skill_name(md, md.parent.name) for md in _iter_active_skill_mds()} | (
+            {p.name for p in archive.iterdir() if p.is_dir()} if archive.is_dir() else set())
+    cleaned = [name for name in removed if name not in present]
     for name in cleaned:
         del st.manifest[name]
     _seed_category_descriptions(
@@ -433,39 +492,3 @@ if __name__ == "__main__":
     if backfilled := result.get("optional_provenance_backfilled"):
         parts.append(f"{len(backfilled)} official optional backfilled")
     print(f"\nDone: {', '.join(parts)}. {result['total_bundled']} total bundled.")
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from pathlib import PurePosixPath  # noqa: F401,E402
-from datetime import datetime  # noqa: F401,E402
-import json  # noqa: F401,E402
-from datetime import timezone  # noqa: F401,E402
-
-def is_bundled_skills_opt_out() -> bool:
-    """Return True if the active profile carries the opt-out marker."""
-    return (_hermes_home() / NO_BUNDLED_SKILLS_MARKER).exists()
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'atomic_replace': ('utils', 'atomic_replace'),
-    'diff_bundled_skill': ('tools.skills_sync_bundled_ops', 'diff_bundled_skill'),
-    'list_user_modified_bundled_skills': ('tools.skills_sync_bundled_ops', 'list_user_modified_bundled_skills'),
-    'remove_pristine_bundled_skills': ('tools.skills_sync_bundled_ops', 'remove_pristine_bundled_skills'),
-    'reset_bundled_skill': ('tools.skills_sync_bundled_ops', 'reset_bundled_skill'),
-    'restore_official_optional_skill': ('tools.skills_sync_optional', 'restore_official_optional_skill'),
-    'set_bundled_skills_opt_out': ('tools.skills_sync_bundled_ops', 'set_bundled_skills_opt_out'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

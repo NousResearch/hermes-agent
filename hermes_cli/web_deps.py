@@ -44,7 +44,7 @@ class LateState:
     defined *after* the router's ``include_router`` point, so a late import would miss it.
     """
 
-    __slots__ = ("_name", "_module")
+    __slots__ = ("_module", "_name")
 
     def __init__(self, name: str, module: str = WEB_SERVER) -> None:
         object.__setattr__(self, "_name", name)
@@ -84,10 +84,10 @@ class LateState:
     def __exit__(self, *exc):
         return self._target().__exit__(*exc)
 
-    def __eq__(self, other: Any) -> bool:
+    def __eq__(self, other: object) -> bool:
         return self._target() == other
 
-    def __ne__(self, other: Any) -> bool:
+    def __ne__(self, other: object) -> bool:
         return self._target() != other
 
     def __lt__(self, other: Any) -> bool:
@@ -107,26 +107,3 @@ class LateState:
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<LateState {object.__getattribute__(self, '_name')} -> {self._target()!r}>"
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def get_dashboard_health():
-    """The ``DASHBOARD_HEALTH`` singleton owned by web_server."""
-    return _server().DASHBOARD_HEALTH
-
-def get_session_token() -> str:
-    """Current dashboard session token (``web_server._SESSION_TOKEN``)."""
-    return _server()._SESSION_TOKEN
-
-def has_valid_session_token(request) -> bool:
-    """Late-bound alias for ``web_server._has_valid_session_token``."""
-    return _server()._has_valid_session_token(request)
-
-def late_attr(name: str) -> Any:
-    """Read ``web_server.<name>`` right now (for non-callable state reads)."""
-    return getattr(_server(), name)
-# ---- END PLUGIN-COMPAT ----

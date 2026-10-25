@@ -55,3 +55,18 @@ class TestVariantTagPreservation:
         assert result == "nvidia/nemotron-3-super-120b-a12b"
 
 
+
+
+class TestColonFormOffAggregators:
+    """``provider:model`` must resolve exactly like ``provider/model`` on a non-aggregator
+    current provider (#9748); an Ollama-style tag whose left side is not a provider is untouched."""
+
+    def test_known_provider_colon_matches_slash_form(self):
+        with patch("hermes_cli.model_switch.resolve_provider_full", return_value=None):
+            colon = _run_switch("Alibaba:qwen3.6-plus", current_provider="alibaba")
+            slash = _run_switch("Alibaba/qwen3.6-plus", current_provider="alibaba")
+        assert colon == slash
+
+    def test_non_provider_left_side_keeps_colon(self):
+        with patch("hermes_cli.model_switch.resolve_provider_full", return_value=None):
+            assert _run_switch("qwen3.5:4b", current_provider="alibaba") == "qwen3.5:4b"

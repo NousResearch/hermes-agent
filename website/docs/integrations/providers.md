@@ -29,6 +29,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Kimi / Moonshot (China)** | `KIMI_CN_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding-cn`; aliases: `kimi-cn`, `moonshot-cn`) |
 | **Arcee AI** | `ARCEEAI_API_KEY` in `~/.hermes/.env` (provider: `arcee`; aliases: `arcee-ai`, `arceeai`) |
 | **GMI Cloud** | `GMI_API_KEY` in `~/.hermes/.env` (provider: `gmi`; aliases: `gmi-cloud`, `gmicloud`) |
+| **Prime Inference** | `PRIME_API_KEY` in `~/.hermes/.env` (provider: `prime`; aliases: `prime-inference`, `primeintellect`, `pinference`) |
 | **Nebius Token Factory** | `NEBIUS_API_KEY` in `~/.hermes/.env` (provider: `nebius-token-factory`; aliases: `nebius`, `nebius-tf`, `tokenfactory`) |
 | **Actual Computer** | `ACTUAL_API_KEY` in `~/.hermes/.env` for the hosted relay; set `model.base_url` in `config.yaml` for a local daemon (no key needed on loopback). Provider: `actual`; aliases: `actual-computer`, `actualcomputer`, `aci`. |
 | **MiniMax** | `MINIMAX_API_KEY` in `~/.hermes/.env` (provider: `minimax`) |
@@ -632,6 +633,26 @@ model:
 ```
 
 The base URL can be overridden with `GMI_BASE_URL` (default: `https://api.gmi-serving.com/v1`).
+
+### Prime Inference
+
+Open and frontier models via [Prime Intellect](https://docs.primeintellect.ai/inference/overview) using its OpenAI-compatible API at `https://api.pinference.ai/api/v1`.
+
+Create an API key at [app.primeintellect.ai](https://app.primeintellect.ai/) with the **Inference** permission enabled. Save it as `PRIME_API_KEY` in `~/.hermes/.env`, then choose **Prime Inference** in `hermes model` or `hermes setup`.
+
+```bash
+hermes chat --provider prime --model deepseek/deepseek-v4.1-flash
+```
+
+Or set it permanently in `config.yaml`:
+
+```yaml
+model:
+  provider: "prime"
+  default: "deepseek/deepseek-v4.1-flash"
+```
+
+Aliases: `prime-inference`, `primeintellect`, `pinference`. Model IDs retain their vendor prefix, so `/model prime:deepseek/deepseek-v4.1-flash` selects the same route. Setup and the model picker discover hosted and gateway models from `https://api.pinference.ai/api/v1/models`, listing models with advertised tool calling and text input/output. Successful discovery determines the offered list; cached models.dev entries and curated tool-calling models are used only when discovery fails. Auxiliary tasks default to `deepseek/deepseek-v4.1-flash`.
 
 ### Actual Computer
 
@@ -1725,7 +1746,7 @@ fallback_model:
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. The chain is tried entry-by-entry; activation is one-shot per session.
 
-Supported providers: `openrouter`, `nous`, `novita`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `ai-gateway`, `azure-foundry`, `opencode-zen`, `opencode-go`, `commandcode`, `commandcode-anthropic`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `actual`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `tencent-tokenplan`, `nebius-token-factory`, `router`, `custom`.
+Supported providers: `openrouter`, `nous`, `novita`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `ai-gateway`, `azure-foundry`, `opencode-zen`, `opencode-go`, `commandcode`, `commandcode-anthropic`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `prime`, `actual`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `tencent-tokenplan`, `nebius-token-factory`, `router`, `custom`.
 
 :::tip
 Fallback is configured exclusively through `config.yaml` — or interactively via `hermes fallback`. For full details on when it triggers, how the chain advances, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](../user-guide/features/fallback-providers.md).

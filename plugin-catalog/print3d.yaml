@@ -1,6 +1,6 @@
 name: print3d
 repo: https://github.com/mfranzon/print3d
-sha: 5bdf547a341f34d718c5d24b7c9962cb6a300660
+sha: ff98a8c07253a90f5e4afefa42c2ffd893797eec
 description: "Turn an idea, a photo of an object, or a shop listing into a sliced Bambu Studio project. The agent writes a Blender script, print3d checks the mesh (overhangs, thin walls, fits between parts, likeness to the photo), slices it and says what to fix, until it prints clean; each run also writes a 3D view the agent opens in the Desktop preview pane. Portable Agent Plugins v1 package: one skill and a stdio MCP server run through uvx, so Blender 4.2+, Bambu Studio and uv are required; at install Hermes looks for Blender in the standard locations (/Applications and Steam on macOS; PATH, flatpak, snap and Steam on Linux) and refuses the install without it. Disclosure: runs Blender and the Bambu Studio CLI as local child processes; Blender runs the agent-written Python with your user's permissions, outside Hermes's terminal sandbox, and the server is marked untrusted, so Hermes asks before every tool that runs a script or writes files; writes jobs under ~/print3d; installs Pillow and mcp from PyPI; the 3D view loads three.js from cdn.jsdelivr.net. Never contacts the printer; no telemetry, no credentials."
 maintainer: mfranzon
 tier: community
@@ -8,11 +8,11 @@ category: tools
 requires_hermes: ">=0.22.2"
 docs_url: https://github.com/mfranzon/print3d#readme
 version: "0.1.0"
-image: https://raw.githubusercontent.com/mfranzon/print3d/5bdf547a341f34d718c5d24b7c9962cb6a300660/docs/social-preview.png
+image: https://raw.githubusercontent.com/mfranzon/print3d/ff98a8c07253a90f5e4afefa42c2ffd893797eec/docs/social-preview.png
 screenshots:
-  - https://raw.githubusercontent.com/mfranzon/print3d/5bdf547a341f34d718c5d24b7c9962cb6a300660/docs/viewer.png
-  - https://raw.githubusercontent.com/mfranzon/print3d/5bdf547a341f34d718c5d24b7c9962cb6a300660/docs/workflow/07-likeness.png
-  - https://raw.githubusercontent.com/mfranzon/print3d/5bdf547a341f34d718c5d24b7c9962cb6a300660/docs/workflow/09-results.png
+  - https://raw.githubusercontent.com/mfranzon/print3d/ff98a8c07253a90f5e4afefa42c2ffd893797eec/docs/viewer.png
+  - https://raw.githubusercontent.com/mfranzon/print3d/ff98a8c07253a90f5e4afefa42c2ffd893797eec/docs/workflow/07-likeness.png
+  - https://raw.githubusercontent.com/mfranzon/print3d/ff98a8c07253a90f5e4afefa42c2ffd893797eec/docs/workflow/09-results.png
 platforms: [macos, linux]
 known_issues:
   - "Tested on macOS, where Blender and Bambu Studio are found automatically. On Linux, Blender must be on PATH or installed with flatpak, snap or Steam for the install to go through; set BAMBU_STUDIO_BIN if Studio is not on PATH."

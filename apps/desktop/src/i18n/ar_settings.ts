@@ -126,6 +126,13 @@ export const arSettings = {
       vault: 'كلمات المرور وتسجيلات الدخول',
       plugins: 'الإضافات'
     },
+    page: {
+      back: 'العودة إلى مساحة العمل',
+      agent: 'الوكيل',
+      connections: 'الاتصالات',
+      app: 'التطبيق',
+      actions: 'إجراءات الإعدادات'
+    },
     vault: {
       title: 'كلمات المرور وتسجيلات الدخول',
       blurb:

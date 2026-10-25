@@ -179,6 +179,7 @@ export interface OverlayNavGroup extends OverlayNavLink {
   /** Visual break before this group — a spacer on the rail, a separator in
    *  the dropdown. */
   gapBefore?: boolean
+  heading?: string
 }
 
 // Data-driven pane nav: one model renders a persistent left rail on wide
@@ -223,7 +224,11 @@ export function OverlayNav({ footer, groups }: { footer?: ReactNode; groups: Ove
 
           return (
             <Fragment key={group.id}>
-              {group.gapBefore && <div aria-hidden className="h-2" />}
+              {group.heading ? (
+                <h2 className="px-2 pt-3 pb-1 text-[0.65rem] font-medium text-(--ui-text-tertiary)">{group.heading}</h2>
+              ) : (
+                group.gapBefore && <div aria-hidden className="h-2" />
+              )}
               <div className="relative">
                 <OverlayNavItem
                   active={group.active}
@@ -314,7 +319,7 @@ export function OverlayNav({ footer, groups }: { footer?: ReactNode; groups: Ove
           and the height matches the strip so the trigger lines up with the X. */}
       <div
         className={cn(
-          'pointer-events-none relative z-20 h-[calc(var(--titlebar-height)+0.1875rem)] items-center justify-between gap-2 pl-3 pr-[calc(var(--titlebar-tools-right,0.75rem)+2.25rem)]',
+          'pointer-events-none relative z-20 h-[calc(var(--titlebar-height)+0.1875rem)] items-center justify-between gap-2 pl-3 pr-[calc(var(--titlebar-tools-right,0.75rem)+var(--overlay-close-space,2.25rem))]',
           BAR_HIDDEN
         )}
       >
@@ -328,7 +333,7 @@ export function OverlayNav({ footer, groups }: { footer?: ReactNode; groups: Ove
                 id: group.id,
                 label: group.label,
                 onSelect: group.onSelect,
-                separatorBefore: group.gapBefore
+                separatorBefore: Boolean(group.heading || group.gapBefore)
               },
               ...(group.children ?? []).flatMap(child => [
                 {

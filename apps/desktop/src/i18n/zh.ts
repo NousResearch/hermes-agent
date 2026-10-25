@@ -18,6 +18,7 @@ import { zhOnboarding } from './zh_onboarding'
 import { zhPluginPreviewAccess } from './zh_plugin_preview_access'
 import { zhPluginUpdate } from './zh_plugin_update'
 import { zhProjects } from './zh_projects'
+import { zhSettingsNav, zhSettingsPage } from './zh_settings_nav'
 import { zhSharedMetrics } from './zh_shared_metrics'
 import { zhThemePicker } from './zh_theme_picker'
 import { zhUpdateChannel } from './zh_update_channel'
@@ -516,26 +517,8 @@ export const zhOverrides = {
       pageCount: (n: number) => `${n} 个页面`,
       missing: '该插件没有设置页面，可能已被禁用或卸载。'
     },
-    nav: {
-      providers: '提供方',
-      providerAccounts: '账号',
-      providerApiKeys: 'API 密钥',
-      providerCustomEndpoints: '自定义端点',
-      providerLocalModels: '本地模型',
-      gateway: '网关',
-      apiKeys: '工具与密钥',
-      keybinds: '键盘快捷键',
-      keysTools: '工具',
-      keysSettings: '设置',
-      mcp: 'MCP',
-      archivedChats: '已归档对话',
-      sessions: '会话',
-      about: '关于',
-      billing: '账单',
-      notifications: '通知',
-      vault: '密码与登录',
-      plugins: '插件'
-    },
+    nav: zhSettingsNav,
+    page: zhSettingsPage,
     vault: {
       title: '密码与登录',
       blurb:

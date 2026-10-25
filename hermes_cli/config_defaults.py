@@ -1466,6 +1466,25 @@ DEFAULT_CONFIG = {
         # host-unapproved skill-author code; community hub installs never auto-execute (#63307).
         "inline_shell": False,
         "inline_shell_timeout": 10,  # seconds per !`cmd` snippet
+        # ── Cron skill-index trim (opt-in) ──────────────────────────────
+        # When a large skill library is installed, the full skill-sub-description
+        # index (~176K tokens for ~2890 skills) is rendered into EVERY agent's
+        # system prompt — including cron jobs. Small/free models (e.g.
+        # tencent/hy3:free, ~128–262K context) then 403 on the first request and
+        # the cron job never completes. Trim it for cron sessions to keep them
+        # under the model's context limit.
+        #
+        # This is OFF unless you set cron_whitelist to a non-empty list. When on,
+        # cron agents (agent.platform == "cron") get ONLY the whitelisted skills
+        # rendered as `name: [category]` (~3–5K tokens) instead of the full
+        # index. Human chat is never affected — it always gets the full index
+        # for skill discovery.
+        #
+        #   cron_whitelist:      [skill names] rendered (trims the rest to tags)
+        #   cron_whitelist_only: True  (default) — when False, the full index is
+        #                        kept; whitelist only narrows which get descriptions
+        "cron_whitelist": [],
+        "cron_whitelist_only": True,
         # Security-scan skills the agent writes via skill_manage. Off: the agent can run the same
         # code via terminal() ungated, so it mostly blocks prose with risky keywords. On: a
         # dangerous verdict is a tool error the agent can retry. Hub installs are always scanned.

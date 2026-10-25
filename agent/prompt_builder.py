@@ -29,6 +29,7 @@ from agent.skill_utils import (
     skill_matches_platform, skill_matches_platform_list,
 )
 from tools.threat_patterns import scan_for_threats as _scan_for_threats
+from hermes_cli.config import load_config_readonly
 from utils import atomic_json_write, file_signature
 
 logger = logging.getLogger(__name__)
@@ -1233,6 +1234,7 @@ def _current_session_platform_hint() -> str:
 def build_skills_system_prompt(
     available_tools: set[str] | None = None, available_toolsets: set[str] | None = None,
     compact_categories: frozenset[str] | None = None, skills_dir_override: Path | None = None,
+    cron_trim: bool | None = None,
 ) -> str:
     """Compact skill index for the system prompt.
 
@@ -1241,6 +1243,7 @@ def build_skills_system_prompt(
     ``compact_categories`` (coding posture) demotes categories to a names-only line — nothing is ever hidden.
     ``skills_dir_override`` makes home resolution EXPLICIT: a build thread that never bound the HERMES_HOME
     ContextVar would otherwise leak the default profile's skills into a bot's prompt.
+    ``cron_trim`` trims skills to an opt-in whitelist for cron sessions to avoid context overflow.
     """
     from agent.safe_worker_policy import safe_worker_enabled
 
@@ -1259,7 +1262,7 @@ def build_skills_system_prompt(
         if not skills_dir.exists() and not extra_roots:
             return ""
         return _build_skills_system_prompt_inner(
-            skills_dir, extra_roots, available_tools, available_toolsets, compact_categories)
+            skills_dir, extra_roots, available_tools, available_toolsets, compact_categories, cron_trim=cron_trim)
     finally:
         if _home_token is not None:
             reset_hermes_home_override(_home_token)
@@ -1367,6 +1370,7 @@ def _oneshot_prompt_variant() -> bool:
 def _build_skills_system_prompt_inner(
     skills_dir: Path, extra_roots: list[tuple[int, Path]], available_tools: set[str] | None,
     available_toolsets: set[str] | None, compact_categories: frozenset[str] | None,
+    cron_trim: bool | None = None,
 ) -> str:
     # The resolved platform is part of the key: per-platform disabled-skill lists need distinct cache entries.
     _platform_hint = _current_session_platform_hint()
@@ -1385,7 +1389,7 @@ def _build_skills_system_prompt_inner(
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
-        _oneshot_prompt_variant(), tuple(plugin_rows),
+        _oneshot_prompt_variant(), tuple(plugin_rows), cron_trim,
     )
     snapshot = _load_skills_snapshot(skills_dir, manifest)
     app_gated = snapshot is not None and any(
@@ -1448,6 +1452,34 @@ def _build_skills_system_prompt_inner(
             })
         except Exception as e:
             logger.debug("Could not write skills prompt snapshot: %s", e)
+
+    if cron_trim:
+        try:
+            from hermes_cli.config import load_config_readonly
+
+            _cron_cfg = (load_config_readonly() or {}).get("skills", {}) or {}
+            _whitelist = set(_cron_cfg.get("cron_whitelist") or [])
+            _whitelisted_only = _cron_cfg.get("cron_whitelist_only", True)
+            if _whitelisted_only and _whitelist:
+                _trimmed: dict[str, list[tuple[str, str]]] = {}
+                for _cat, _skills in skills_by_category.items():
+                    for _name, _desc in _skills:
+                        if _name in _whitelist:
+                            _trimmed.setdefault(_cat, []).append(
+                                (_name, f"[{_cat.split('/')[0]}]")
+                            )
+                skills_by_category = _trimmed
+            elif not _whitelist:
+                # No whitelist provided — fall back to names-only (tag per category)
+                _trimmed = {}
+                for _cat, _skills in skills_by_category.items():
+                    for _name, _desc in _skills:
+                        _trimmed.setdefault(_cat, []).append(
+                            (_name, f"[{_cat.split('/')[0]}]")
+                        )
+                skills_by_category = _trimmed
+        except Exception as _e:
+            logger.debug("cron skill-index trim skipped: %s", _e)
 
     unloadable = sorted({e["name"] for e in visible_entries if not e["load_name"]})
     result = _render_skills_index(skills_by_category, compact_categories, available_tools, unloadable)

@@ -715,11 +715,15 @@ def _finish_codex_turn(agent, turn, messages: list[dict[str, Any]], *, original_
         _call_guarded(getattr(agent, "_sync_external_memory_for_turn", None), "external memory sync raised", kwargs=dict(
             original_user_message=original_user_message, final_response=final_response, interrupted=False, messages=messages,
         ))
-    # Background review fork: only when a trigger tripped AND a real final response exists.
-    if turn.final_text and not turn.interrupted and (should_review_memory or should_review_skills):
-        _call_guarded(getattr(agent, "_spawn_background_review", None), "background review spawn raised", kwargs=dict(
-            messages_snapshot=list(messages), review_memory=should_review_memory, review_skills=should_review_skills,
-        ))
+    # Background review fork: only when a trigger tripped AND a real final response exists. This is
+    # the Codex turn's only review site (run_conversation returns before finalize_turn), so the
+    # candidate goes to the foreground owner the way finalize_turn hands it off: a spawn from inside
+    # the live turn is refused under the gateway's admission token and the turn's own durable lease.
+    if (turn.final_text and not turn.interrupted and not getattr(agent, "skip_background_review", False)
+            and (should_review_memory or should_review_skills)):
+        from agent.turn_finalizer import _hand_off_background_review
+        _call_guarded(_hand_off_background_review, "background review hand-off raised", args=(agent, messages),
+                      kwargs=dict(review_memory=should_review_memory, review_skills=should_review_skills))
     return usage_result
 
 

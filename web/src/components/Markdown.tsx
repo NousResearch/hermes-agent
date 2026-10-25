@@ -2,7 +2,8 @@ import { useMemo, type ReactNode } from "react";
 
 /**
  * Lightweight markdown renderer for LLM output.
- * Handles: code blocks, inline code, bold, italic, headers, links, lists, horizontal rules.
+ * Handles: code blocks, inline code, bold, italic, headers, links, lists,
+ * horizontal rules, GFM tables.
  * NOT a full CommonMark parser — optimized for typical assistant message patterns.
  *
  * `streaming` renders a blinking caret at the tail of the last block so it
@@ -49,16 +50,51 @@ function StreamingCaret() {
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
+type TableAlign = "left" | "center" | "right";
+
 type BlockNode =
   | { type: "code"; lang: string; content: string }
   | { type: "heading"; level: number; content: string }
   | { type: "hr" }
   | { type: "list"; ordered: boolean; items: string[] }
+  | { type: "table"; header: string[]; align: TableAlign[]; rows: string[][] }
   | { type: "paragraph"; content: string };
 
 /* ------------------------------------------------------------------ */
 /*  Block parser                                                       */
 /* ------------------------------------------------------------------ */
+
+const TABLE_DIVIDER_CELL_RE = /^:?-{3,}:?$/;
+
+function splitTableRow(row: string): string[] {
+  return row
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((c) => c.trim());
+}
+
+function isTableDivider(row: string): boolean {
+  const cells = splitTableRow(row);
+  return cells.length > 1 && cells.every((c) => TABLE_DIVIDER_CELL_RE.test(c));
+}
+
+function isTableStart(lines: string[], i: number): boolean {
+  return (
+    lines[i].includes("|") &&
+    i + 1 < lines.length &&
+    isTableDivider(lines[i + 1])
+  );
+}
+
+function parseTableAlign(cell: string): TableAlign {
+  const left = cell.startsWith(":");
+  const right = cell.endsWith(":");
+  if (left && right) return "center";
+  if (right) return "right";
+  return "left";
+}
 
 function parseBlocks(text: string): BlockNode[] {
   const lines = text.split("\n");
@@ -130,6 +166,30 @@ function parseBlocks(text: string): BlockNode[] {
       continue;
     }
 
+    // GFM table — header row containing pipes followed by a divider row
+    if (isTableStart(lines, i)) {
+      const header = splitTableRow(line);
+      const align = splitTableRow(lines[i + 1]).map(parseTableAlign);
+      i += 2;
+      const rows: string[][] = [];
+      while (i < lines.length && lines[i].trim() !== "" && lines[i].includes("|")) {
+        rows.push(splitTableRow(lines[i]));
+        i++;
+      }
+      const numCols = header.length;
+      const normalize = <T extends string>(row: T[], fill: T): T[] =>
+        row.length >= numCols
+          ? row.slice(0, numCols)
+          : [...row, ...Array<T>(numCols - row.length).fill(fill)];
+      blocks.push({
+        type: "table",
+        header,
+        align: normalize(align, "left"),
+        rows: rows.map((row) => normalize(row, "")),
+      });
+      continue;
+    }
+
     // Paragraph — collect consecutive non-empty, non-special lines
     const paraLines: string[] = [];
     while (
@@ -139,7 +199,8 @@ function parseBlocks(text: string): BlockNode[] {
       !lines[i].match(/^#{1,4}\s/) &&
       !lines[i].match(/^[-*+]\s/) &&
       !lines[i].match(/^\d+[.)]\s/) &&
-      !lines[i].match(/^[-*_]{3,}\s*$/)
+      !lines[i].match(/^[-*_]{3,}\s*$/) &&
+      !isTableStart(lines, i)
     ) {
       paraLines.push(lines[i]);
       i++;
@@ -214,6 +275,47 @@ function Block({
             </li>
           ))}
         </Tag>
+      );
+    }
+
+    case "table": {
+      const alignClass: Record<TableAlign, string> = {
+        left: "text-left",
+        center: "text-center",
+        right: "text-right",
+      };
+      return (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr>
+                {block.header.map((cell, i) => (
+                  <th
+                    key={i}
+                    className={`border-b border-border px-2 py-1.5 font-semibold ${alignClass[block.align[i] ?? "left"]}`}
+                  >
+                    <InlineContent text={cell} highlightTerms={highlightTerms} />
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {block.rows.map((row, r) => (
+                <tr key={r}>
+                  {row.map((cell, c) => (
+                    <td
+                      key={c}
+                      className={`border-b border-border/50 px-2 py-1.5 align-top ${alignClass[block.align[c] ?? "left"]}`}
+                    >
+                      <InlineContent text={cell} highlightTerms={highlightTerms} />
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {caret}
+        </div>
       );
     }
 

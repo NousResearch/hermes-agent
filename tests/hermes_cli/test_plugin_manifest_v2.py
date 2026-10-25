@@ -119,6 +119,24 @@ class TestV2Parsing:
         assert mgr._plugins["modern"].enabled
         assert "hovercraft" in caplog.text
 
+    def test_provides_middleware_is_known_and_does_not_warn(self, hermes_home, caplog):
+        """``provides_middleware`` is a declared manifest key (``hermes plugins validate``
+        checks it and plugin-catalog entries document it), so the loader must not report it
+        as an unknown field on every discovery."""
+        _write_plugin(
+            hermes_home / "plugins", "midway",
+            manifest_extra={
+                "manifest_version": 2,
+                "provides_middleware": ["llm_request"],
+            },
+        )
+        _enable(hermes_home, ["midway"])
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            mgr = PluginManager()
+            mgr.discover_and_load()
+        assert mgr._plugins["midway"].enabled
+        assert "provides_middleware" not in caplog.text
+
     def test_future_manifest_version_warns_but_loads(self, hermes_home, caplog):
         _write_plugin(
             hermes_home / "plugins", "fromfuture",

@@ -795,7 +795,7 @@ class TestPollLoop(unittest.TestCase):
             if command == "fetch":
                 uid, spec = args
                 fetch_specs.append((uid, spec))
-                payload = headers[uid] if "BODY.PEEK[HEADER.FIELDS" in spec else full_messages[uid]
+                payload = headers[uid] if "BODY.PEEK[HEADER]" in spec else full_messages[uid]
                 return ("OK", [(uid, payload)])
             if command == "store":
                 return ("OK", [b""])
@@ -818,7 +818,7 @@ class TestPollLoop(unittest.TestCase):
         self.assertNotIn((b"9", "(RFC822)"), fetch_specs)
         self.assertNotIn((b"11", "(RFC822)"), fetch_specs)
         self.assertIn((b"10", "(RFC822)"), fetch_specs)
-        header_specs = [spec for _, spec in fetch_specs if "BODY.PEEK[HEADER.FIELDS" in spec]
+        header_specs = [spec for _, spec in fetch_specs if "BODY.PEEK[HEADER]" in spec]
         self.assertEqual(len(header_specs), 3)
         self.assertTrue(all(f"<0.{_MAX_PREAUTH_HEADER_BYTES + 1}>" in spec for spec in header_specs))
         extract_attachments.assert_called_once()

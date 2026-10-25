@@ -701,30 +701,46 @@ Subcommands: `add`, `list`, `remove`, `reset`, `priority`, `refresh`, `status`, 
 
 ## `hermes usage`
 
-The account-limits block of the `/usage` slash command — Codex 5-hour / weekly windows, plan and banked
-resets; Anthropic OAuth windows; OpenRouter credits — without starting a session, so shell scripts and cron
-jobs can read it.
+Every signed-in account's limits — Codex 5-hour / weekly windows, plan and banked resets; Anthropic OAuth
+windows; OpenRouter credits — without starting a session, so shell scripts and cron jobs can read them.
 
 ```bash
-hermes usage                          # configured model provider, human-readable block
-hermes usage --provider openai-codex  # a specific provider
-hermes usage --all                    # every pooled provider too
-hermes usage --refresh                # first refresh pooled accounts' expired access tokens
-hermes usage --json                   # one JSON document on stdout
+hermes usage                          # one row per account of every signed-in provider
+hermes usage --provider openai-codex  # one provider
+hermes usage --details                # the /usage block: every window, a pool account by account
+hermes usage --refresh                # first renew idle accounts' expired access tokens
+hermes usage --json                   # one JSON document on stdout (the configured provider)
 hermes usage --all --json             # {"providers": [one document per provider]}
 ```
 
-A provider with two or more pooled credentials is shown account by account: a summary line
-(`3 of 5 accounts ready · 2 unknown`), then each account's state, every window (5-hour session, week,
+The default view is a table with one row per account: provider, account label, pool entry id, sign-in
+email, plan, the 5-hour and weekly windows, when the week resets, whether the account is usable now, and a
+note (when a capped account is back, or why a row is blank). Usable accounts come first. A provider with
+no usage endpoint (Copilot) still gets a row per login, marked `?`.
+
+```text
+Provider      Account            ID      Email              Plan     5h  Week  Week resets    Usable  Note
+anthropic     anthropic-oauth-5  5bd616  a@example.com      Max 5x   5%  18%   Oct 30, 21:00  yes
+anthropic     anthropic-oauth-3  ca3fbe  b@example.com      Max 20x  0%  100%  Oct 26, 18:00  no      back Oct 26, 18:00
+openai-codex  device_code        6fa804  a@example.com      Pro          24%   Oct 30, 12:58  yes
+
+anthropic: 1 of 2 accounts usable
+openai-codex: 1 of 1 account usable
+```
+
+With `--details`, a provider with two or more pooled credentials is shown account by account: a summary
+line (`3 of 5 accounts ready · 2 unknown`), then each account's state, every window (5-hour session, week,
 per-model weeks) and how long its access token lives. An account no session has used for a while has an
 expired access token, the provider refuses its usage read, and it shows as `unknown` with `token
-expired`. `--refresh` first refreshes those tokens the way a session does before a request.
+expired`. `--refresh` first renews those tokens, capped accounts included, without returning a capped
+account to rotation.
 
 | Option | Description |
 |--------|-------------|
 | `--provider NAME` | Provider to query (default: the configured `model.provider`). Supported: `openai-codex`, `anthropic`, `openrouter`. |
-| `--json` | Print one JSON document instead of the human-readable block. |
-| `--all` | Also show every other pooled provider that reports usage. With `--json`, prints `{"providers": [...]}`, one document per provider. |
+| `--json` | Print one JSON document (the configured provider's) instead of the table. |
+| `--details` | Print the `/usage` block per provider instead of the table. |
+| `--all` | With `--json` or `--details`, also show every other pooled provider (the table always does). With `--json`, prints `{"providers": [...]}`, one document per provider. |
 | `--refresh` | Renew the expired access tokens of pooled accounts before fetching their usage, capped accounts included. A capped account keeps its cooldown. |
 
 Credentials resolve exactly as they do for `/usage` in a session with no live agent (the auth store, then

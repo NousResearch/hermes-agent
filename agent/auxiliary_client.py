@@ -5087,12 +5087,12 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
             # host base_url names is never intended. Explicit api_key or the placeholder only.
             custom_key = _normalize_api_key(req.explicit_api_key) or "no-key-required"
         else:
-            custom_key = (
-                _normalize_api_key(req.explicit_api_key)
-                or _scoped_key_env("OPENAI_API_KEY")
-                or _read_main_api_key_if_same_origin(custom_base)
-                or "no-key-required"  # local servers don't need auth
-            )
+            from hermes_cli.runtime_provider_custom import openai_alias_model_endpoint_key
+            model_key = openai_alias_model_endpoint_key(custom_base)  # model.base_url keeps OPENAI_API_KEY off it
+            custom_key = _normalize_api_key(req.explicit_api_key) or (
+                model_key if model_key is not None
+                else _scoped_key_env("OPENAI_API_KEY") or _read_main_api_key_if_same_origin(custom_base)
+            ) or "no-key-required"  # local servers don't need auth
         if not custom_base:
             logger.warning("resolve_provider_client: explicit custom endpoint requested but base_url is empty")
             return None, None
@@ -6210,11 +6210,11 @@ def _resolve_task_provider_model(
             cfg_api_key = None
     # One shared alias table with resolve_runtime_provider(): ``provider: openai`` routes the same
     # way here (compression/vision/title) and on the runtime path (background review, curator, MoA).
-    from hermes_cli.runtime_provider_custom import expand_direct_api_alias
+    from hermes_cli.runtime_provider_custom import expand_direct_api_alias_keyed
     if provider:
-        provider, base_url = expand_direct_api_alias(provider, base_url)
+        provider, base_url, api_key = expand_direct_api_alias_keyed(provider, base_url, api_key)
     if cfg_provider:
-        cfg_provider, cfg_base_url = expand_direct_api_alias(cfg_provider, cfg_base_url)
+        cfg_provider, cfg_base_url, cfg_api_key = expand_direct_api_alias_keyed(cfg_provider, cfg_base_url, cfg_api_key)
     # An explicit provider without base_url adopts the task's configured endpoint (same or
     # unnamed provider) so the early return below carries it. Explicit "auto" is excluded — it
     # must keep flowing through auto-resolution.

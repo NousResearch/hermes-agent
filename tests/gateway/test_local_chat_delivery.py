@@ -77,9 +77,14 @@ async def test_overdue_heartbeat_fires_once_with_a_classic_cli_also_polling(tmp_
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('live_adapters', [False, True], ids=['no-local-adapter-yet', 'in-gateway-ticker'])
-async def test_cron_result_for_a_local_origin_is_admitted_not_acknowledged(tmp_path, monkeypatch, live_adapters):
+@pytest.mark.parametrize('viewer', [False, True], ids=['unviewed', 'viewed'])
+async def test_cron_result_for_a_local_origin_is_a_note_not_a_turn(tmp_path, monkeypatch, live_adapters, viewer):
     from cron import scheduler_delivery as sd
-    runner, authority, ref, _ = await _local(tmp_path, monkeypatch)
+    from tests.gateway.test_session_end_delegations import _record_turns
+    from tests.gateway.test_unviewed_completion_notes import _target
+    runner, authority, ref, actor = await _local(tmp_path, monkeypatch)
+    if viewer:
+        authority.sessions[ref.session_id].subscribers['viewer'] = actor
     job = {'id': 'j1', 'name': 'digest', 'deliver': 'origin',
            'origin': {'platform': 'local', 'chat_id': ref.session_id}}
     # The ticker delivers from its own thread; the owner admits on its loop.
@@ -87,7 +92,15 @@ async def test_cron_result_for_a_local_origin_is_admitted_not_acknowledged(tmp_p
                                     adapters=runner.adapters if live_adapters else None,
                                     loop=asyncio.get_running_loop())
     assert error is None
-    assert len(_admissions(authority, ref, 'CRON_RESULT_j1')) == 1
+    turns = _record_turns(runner)
+    await authority._drain(ref)
+    assert turns == [], 'the finished result must not cost a model turn'
+    [row] = _admissions(authority, ref, 'CRON_RESULT_j1')
+    assert row['outcome'] == 'completed'
+    [note] = [m for m in authority.db.get_messages(_target(runner, authority, ref))
+              if 'CRON_RESULT_j1' in str(m.get('content'))]
+    assert note['role'] == 'user' and note['display_metadata']['completion_admission'] == row['admission_id']
+    assert 'summarize for the chat' not in note['content'], 'no model framing on a note'
 
 
 @pytest.mark.asyncio

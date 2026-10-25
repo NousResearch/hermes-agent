@@ -1896,7 +1896,7 @@ def _deliver_result(
             from gateway.session_cron import deliver_to_local_chat
             from hermes_constants import get_hermes_home
             local_error = deliver_to_local_chat(get_hermes_home(), target["chat_id"],
-                                                bot_chat_message(job, content), diagnostic=for_failure)
+                                                cleaned_delivery_content, diagnostic=for_failure)
             if local_error:
                 delivery_errors.append(local_error)
             continue

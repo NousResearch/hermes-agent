@@ -1450,6 +1450,24 @@ class GatewayStartupMixin:
         if startup_nonretryable_errors and not startup_retryable_errors:
             reason = "; ".join(startup_nonretryable_errors)
             logger.error("Gateway hit a non-retryable startup conflict: %s", reason)
+            if self._on_all_adapters_down() == "stay_alive":
+                # One messaging transport's fatal boot error is the same operator question as
+                # "the last adapter left": may it take the process down with it? stay_alive says
+                # no — cron, the control socket and agent ingress need no platform. Exiting 78
+                # here under a launcher with no supervisor is not even recoverable: the 2026-10-24
+                # incident (PRX-6226) was 96 exit-78 boots in 7h27m over one logged-out WhatsApp
+                # link, ~12% availability, and every run that woke during it died
+                # ``adapter_failed / Gateway draining: not_ready``. The platform entry is already
+                # stamped ``fatal`` and never heals on its own, so park it and stay up DEGRADED.
+                self._startup_parked_platforms = True
+                logger.error(
+                    "%d platform(s) fatally misconfigured at startup and parked: %s. "
+                    "on_all_adapters_down=stay_alive — keeping the gateway up for cron, the "
+                    "control socket and agent ingress; fix the reported error, then "
+                    "`hermes gateway restart`.",
+                    len(startup_nonretryable_errors), reason,
+                )
+                return False
             self._startup_fail_fatal_config(reason)
             return True
         if startup_nonretryable_errors:

@@ -24,6 +24,7 @@ class LocalSessionAdapter(BasePlatformAdapter):
     def __init__(self, authority):
         super().__init__(PlatformConfig(enabled=True), Platform.LOCAL)
         self.authority = authority
+        self.gateway_runner = authority.runner
         self.sources = {}
         self.policies = {}
 

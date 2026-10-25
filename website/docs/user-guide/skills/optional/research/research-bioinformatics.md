@@ -40,7 +40,7 @@ This skill is a gateway to two open-source bioinformatics skill libraries. Inste
   Repo: https://github.com/GPTomics/bioSkills
   Format: SKILL.md per topic with code examples. Python/R/CLI.
 
-◆ **ClawBio** — 97 pipeline skills (executable scripts, reproducibility bundles)
+◆ **ClawBio** — 50 registered CLI pipelines plus 49 agent-readable skill folders (clawbio 0.7.1)
   Repo: https://github.com/ClawBio/ClawBio
   Format: Python scripts with demos. Each analysis exports report.md + commands.sh + environment.yml.
 

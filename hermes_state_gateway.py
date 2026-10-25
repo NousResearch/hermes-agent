@@ -267,6 +267,12 @@ class SessionGatewayMixin:
                 query_params,
             )
             if ancestors:
+                # An explicit repoint moved these rows to this lane: a local receipt guarding one of them
+                # is retired in the same write, or the row would match neither lane (#143286).
+                from hermes_state_local import moved_receipts, release_receipts
+                moved = {row[0] for row in conn.execute(
+                    f"{_COMPRESSION_LINEAGE_CTE} SELECT id FROM compression_lineage", (session_id,))}
+                release_receipts(conn, moved_receipts(conn, moved))
                 return
             # The UPDATE silently no-ops on a missing row — insert it with full identity.
             if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone() is None:

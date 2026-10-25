@@ -268,6 +268,7 @@ class SessionAuthority:
         return sid, entry.session_key
 
     def _publish_route(self, source, sid, route):
+        from gateway.config import Platform
         self._require_admission_open()
         live = self.sessions.get(sid)
         if live is None:
@@ -277,6 +278,11 @@ class SessionAuthority:
             for other in self.sessions.values():
                 if other.history_mount and other.route == route and other is not live:
                     other.superseded = True
+        elif (live.source is not None and live.source.platform == Platform.LOCAL
+              and source.platform != Platform.LOCAL):
+            # A local conversation a messaging lane took over (``/handoff``): its repoint retired the
+            # local receipt, so its open viewers follow it onto the lane (#143286).
+            live.source, live.route = source, route
         # The lane itself names *sid* (again): a historic mount becomes its live session.
         live.superseded = live.history_mount = False
         return SessionRef(self.profile_id, sid)
@@ -1454,6 +1460,8 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     await asyncio.to_thread(settle_recovered_unattended, db, epoch)
     await asyncio.to_thread(backfill_legacy_session_owners, db)
     await asyncio.to_thread(backfill_compression_created_sources, db)
+    from gateway.session_local_recovery import release_handed_off_receipts
+    await asyncio.to_thread(release_handed_off_receipts, db, epoch=epoch)
     authority = SessionAuthority(runner, profile_id=profile_id, instance_id=instance_id, db=db, epoch=epoch)
     # A receipt's compression catch-up (#140060) writes: it commits off the loop too, before the
     # authority is published, so the recovery below only reads.

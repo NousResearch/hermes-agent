@@ -167,6 +167,30 @@ def retire_local_receipts(conn, session_ids):
     conn.executemany('DELETE FROM state_meta WHERE key=?', [(key,) for key in gone])
 
 
+def moved_receipts(conn, target_ids=None):
+    """``{owner id: (target id, target source)}`` of local receipts whose current physical target row
+    now carries another lane's route. An explicit repoint (``/handoff``, a platform ``/resume``)
+    rewrote that row's routing identity, so the receipt can never restore it again (the stored
+    identity check in ``gateway.session_local_recovery._checked_entry``). *target_ids* narrows the
+    scan to the rows one repoint rewrote."""
+    rows = conn.execute(
+        "SELECT substr(m.key, ?), s.id, s.source FROM state_meta m JOIN sessions s ON s.id = "
+        "CASE WHEN json_valid(m.value) THEN json_extract(m.value, '$.entry.session_id') END "
+        "WHERE m.key GLOB ? AND s.session_key IS NOT NULL "
+        "AND s.session_key IS NOT json_extract(m.value, '$.route')",
+        (len(POLICY_PREFIX) + 1, POLICY_PREFIX + '*')).fetchall()
+    return {owner: (target, source) for owner, target, source in rows
+            if target_ids is None or target in target_ids}
+
+
+def release_receipts(conn, owners):
+    """Retire *owners*' local receipts (creation policy and legacy binding): the row they guarded now
+    belongs to a messaging lane, which restores it from its route like any other platform session."""
+    from hermes_state_local_migration import LEGACY_PREFIX
+    conn.executemany('DELETE FROM state_meta WHERE key IN (?,?)',
+                     [(POLICY_PREFIX + owner, LEGACY_PREFIX + owner) for owner in owners])
+
+
 def local_lineage_owner(conn, session_id):
     """The creation id whose receipt lineage holds physical segment *session_id* (a reset or
     compression child, which carries the owner as ``chat_id``); *session_id* itself otherwise."""

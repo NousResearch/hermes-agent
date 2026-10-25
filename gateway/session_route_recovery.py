@@ -139,3 +139,17 @@ def messaging_owner_ref(authority, ref):
     from gateway.session_contract import SessionRef
     owner = authority.logical_owner(ref.session_id)
     return ref if owner == ref.session_id else SessionRef(ref.profile_id, owner)
+
+
+def handed_off_ref(authority, session_id):
+    """The mount of *session_id* when it is a local conversation a messaging lane took over
+    (``/handoff``, a platform ``/resume``): created by a local surface, now routed on a lane this
+    authority mounts. Its title stays the conversation's, so ``/resume <title>`` and the Bots roster's
+    registry lookup open it on that lane (#143286). None for any other row."""
+    from gateway.session_contract import SessionRef
+    from hermes_state_local_migration import LEGACY_LOCAL_SOURCES
+    ref = messaging_owner_ref(authority, SessionRef(authority.profile_id, session_id))
+    row = authority.db.get_session(ref.session_id) or {}
+    if row.get('created_source') not in LEGACY_LOCAL_SOURCES or not mountable(authority, ref.session_id):
+        return None
+    return ref

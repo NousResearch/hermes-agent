@@ -388,6 +388,27 @@ def restore_completion_route(runner, session_key):
         restore_local_session(authority, parsed['chat_id'])
 
 
+def release_handed_off_receipts(db, *, epoch):
+    """Boot heal for #143286: an older build's ``/handoff`` (or a platform ``/resume``) moved a local
+    session onto a messaging lane but kept its local receipt, so every open, pin or rename refused it
+    (``stored identity mismatch``) and its title never resolved. Retire each such receipt, so the row
+    restores from its route like any other platform session. Only rows a messaging lane now holds:
+    any other refused receipt stays as it is, logged when it is touched."""
+    from gateway.session_route_recovery import _messaging_platform
+    from hermes_state_local import moved_receipts, release_receipts
+    from hermes_state_runtime import _epoch
+
+    def write(conn):
+        _epoch(conn, epoch)
+        moved = {owner: (target, source) for owner, (target, source) in moved_receipts(conn).items()
+                 if _messaging_platform(source) is not None}
+        release_receipts(conn, moved)
+        return moved
+    for owner, (target, source) in db._execute_write(write).items():
+        logging.getLogger(__name__).info(
+            'Local session %s was handed off to %s (row %s); released its local receipt', owner, source, target)
+
+
 def local_receipt_ids(authority):
     from gateway.session_viewer_close import CLOSE_PREFIX
     start = len(POLICY_PREFIX) + 1

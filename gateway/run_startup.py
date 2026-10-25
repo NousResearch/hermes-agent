@@ -1897,6 +1897,12 @@ class GatewayStartupMixin:
         )
         if switched is None:
             raise RuntimeError(f"could not switch session key {session_key} → {cli_session_id}")
+        # The repoint retired the session's local receipt: a viewer still holding it open (the Desktop
+        # that ran /handoff) follows it onto the lane instead of meeting a receipt that is gone (#143286).
+        from gateway.session_authorities import active_authority
+        authority = active_authority(self)
+        if authority is not None and cli_session_id in authority.sessions:
+            authority._publish_route(dest.source, cli_session_id, session_key)
         # Evict the cached AIAgent (rebuild against the CLI session_id, like /resume) and clear stale
         # running-agent state so the synthetic turn isn't queued behind it.
         self._evict_cached_agent(session_key)

@@ -111,10 +111,10 @@ def test_plugin_workspace_solves_only_for_the_installing_interpreter(layout):
 
     [solved] = tomllib.loads((root / "pyproject.toml").read_text())["tool"]["uv"]["environments"]
     host = default_environment()
-    other = "win32" if host["sys_platform"] != "win32" else "linux"
-    for environment, expected in ((host, True), ({**host, "sys_platform": "android"}, False),
-                                  ({**host, "sys_platform": other}, False),
-                                  ({**host, "platform_machine": "riscv64"}, False),
+    platforms = [p for p in ("android", "win32", "linux") if p != host["sys_platform"]]
+    machine = next(m for m in ("riscv64", "s390x") if m != host["platform_machine"])
+    for environment, expected in ((host, True), *(({**host, "sys_platform": p}, False) for p in platforms),
+                                  ({**host, "platform_machine": machine}, False),
                                   ({**host, "python_version": "3.10"}, False)):
         assert Marker(solved).evaluate(environment) is expected, environment
 

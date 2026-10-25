@@ -295,6 +295,43 @@ def test_task_xml_binds_actual_action_and_principal(case, reason, tmp_path):
         verify_windows_task(xml, home, user, 'S-1-5-21-123')
 
 
+@pytest.mark.parametrize("installed", [True, False])
+def test_task_discovery_skips_listing_lines_that_are_not_task_rows(tmp_path, monkeypatch, installed):
+    """An orphaned TaskCache entry (OEM leftovers) makes ``schtasks /Query /FO CSV`` print a localized
+    one-field diagnostic among the rows (#142140). That refused every cold start with
+    service_state_unknown, task or not. Such lines are skipped; one naming our task still never counts."""
+    from types import SimpleNamespace
+    from hermes_cli import gateway_runtime_service as service
+    from hermes_cli.gateway_windows import _build_scheduled_task_xml
+
+    home = tmp_path / "profile"
+    home.mkdir()
+    script = _installed_vbs(home, str(home))
+    name = "Hermes_Gateway_" + service.service_suffix(home)
+    account, sid = "DESKTOP-1\\owner", "S-1-5-21-123"
+    listing = ('"\\Microsoft\\Windows\\Defrag\\ScheduledDefrag","N/A","Ready"\r\n'
+               '错误: 任务映像已损坏或已篡改。\r\n'
+               f'"\\{name}","N/A"\r\n')
+    if installed:
+        listing += f'"\\{name}","N/A","Ready"\r\n'
+    # whoami first: it is queried with /FO CSV too.
+    out = {"whoami.exe": f'"{account}","{sid}"\r\n', "/XML": _build_scheduled_task_xml(name, script, account),
+           "/FO": listing}
+    queries = []
+
+    def run(argv, *_args, **_kwargs):
+        queries.append(argv)
+        return SimpleNamespace(returncode=0, stdout=next(text for key, text in out.items() if key in argv).encode())
+
+    monkeypatch.setattr(service, "_run", run)
+    monkeypatch.setattr(service.sys, "platform", "win32")
+    found = service.discover_existing_gateway_service(home, deadline=time.monotonic() + 5)
+    if installed:
+        assert found is not None and found.start_argv == ("schtasks.exe", "/Run", "/TN", name)
+    else:
+        assert found is None and len(queries) == 1
+
+
 @pytest.mark.platforms("macos")
 @pytest.mark.parametrize("case,reason", [("loaded_good_disk_wrong", None), ("loaded_wrong_disk_good", "profile_mismatch"), ("bootstrap", None)])
 def test_native_launchd_checks_loaded_job_before_disk(case, reason, tmp_path, monkeypatch):

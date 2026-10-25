@@ -178,8 +178,8 @@ class LocalSessionPolicy:
         """``(config, model)`` the next turn runs, both from ONE read of the owning profile when following
         (the turn's policy scope holds that read): a route never pairs one profile's model with another's
         endpoint. Explicit choices (create-time reasoning / tier / toolsets, a session ``/reasoning`` until
-        reset, a pick that still holds) are applied over the followed defaults; frozen secrets of followed
-        sections are never recovered."""
+        reset, a pick that still holds for the name it recorded) are applied over the followed defaults;
+        frozen secrets of followed sections are never recovered."""
         config = present_sections(json.loads(self.config_json))
         live = self.read_profile(authority)
         if self.config_secret_ref is not None and authority is not None and secrets:
@@ -198,7 +198,8 @@ class LocalSessionPolicy:
         if live:
             frozen, request = config.get('model') or {}, json.loads(self.request_json)
             pick = frozen.get('selection_profile')
-            held = pick is not None and pick == list(profile_target(live)) and entry_serves(frozen, live)
+            held = (pick is not None and pick == list(profile_target(live)) and entry_serves(frozen, live)
+                    and _pick_names(self.model, frozen, request))
             pinned = {'platform_toolsets', 'disabled_toolsets'} if 'toolsets' in request else set()
             chosen = session_pinned(config, 'reasoning', 'reasoning' in request)
             pinned |= {'reasoning_effort', 'reasoning_overrides'} if chosen else set()
@@ -391,6 +392,15 @@ def entry_serves(block, config):
         entries.append(alias)
     return all(normalize_route_base_url(entry.get('base_url')) == url for entry in entries
                if isinstance(entry, dict) and str(entry.get('base_url') or '').strip())
+
+
+def _pick_names(model, frozen, request):
+    """Whether *model* is the name the held pick recorded: a committed ``/model`` writes it as the block's
+    ``default``, a create-time pick as the request's ``model``. Any other name (inherited by a continued chat,
+    or stamped on the receipt while the block came from another route) was never chosen for this route, so
+    pairing it with the block would send one provider's model to another's endpoint."""
+    name = str(model or '').strip()
+    return not name or name in {str(frozen.get('default') or '').strip(), str(request.get('model') or '').strip()}
 
 
 def _held_pick(frozen, live):

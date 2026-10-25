@@ -24,8 +24,11 @@ Agent workflow:
 from __future__ import annotations  # allow PEP 604 `X | None` on Python 3.9+
 
 import argparse
+import functools
 import json
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -95,6 +98,31 @@ def _format_missing_scopes(missing_scopes: list[str]) -> str:
     )
 
 
+@functools.cache
+def _gws_native_status() -> dict | None:
+    """`gws auth status` for gws's own login (`gws auth login`); None if gws is absent or logged out.
+
+    gws refreshes its stored token and calls the userinfo API to answer, so
+    `token_valid` and `user` reflect a real round-trip to Google.
+    """
+    binary = os.getenv("HERMES_GWS_BIN") or shutil.which("gws")
+    if not binary:
+        return None
+    # Same env google_api.py gives gws when there is no Hermes token.
+    env = os.environ.copy()
+    env.pop("GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE", None)
+    try:
+        result = subprocess.run(
+            [binary, "auth", "status"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            env=env, timeout=60,
+        )
+        status = json.loads(result.stdout)
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
+    return status if status.get("auth_method") == "oauth2" else None
+
+
 def install_deps():
     """Sync Hermes' declared Google extra, ready for the next process."""
     if pm is None:
@@ -127,6 +155,16 @@ def check_auth_live():
     # final status line reflects the live-call outcome (OK or FAILED).
     if not check_auth(quiet=True):
         return False
+    if not TOKEN_PATH.exists():
+        # check_auth() passed on gws's own login. Its userinfo lookup is the
+        # live call: it needs no Workspace scope, so a login limited to some
+        # services doesn't fail the check.
+        user = _gws_native_status().get("user")
+        if user:
+            print(f"LIVE_CHECK_OK: Real API call via gws succeeded ({user}).")
+            return True
+        print("LIVE_CHECK_FAILED: gws refreshed its token but the userinfo API call failed.")
+        return False
     try:
         from googleapiclient.discovery import build
         from google.oauth2.credentials import Credentials
@@ -150,8 +188,22 @@ def check_auth_live():
 def check_auth(quiet: bool = False):
     """Check if stored credentials are valid. Prints status, exits 0 or 1."""
     if not TOKEN_PATH.exists():
-        print(f"NOT_AUTHENTICATED: No token at {TOKEN_PATH}")
-        return False
+        status = _gws_native_status()
+        if status is None:
+            print(f"NOT_AUTHENTICATED: No token at {TOKEN_PATH}")
+            return False
+        if not status.get("token_valid"):
+            print(f"GWS_TOKEN_INVALID: {status.get('token_error', 'gws could not refresh its token')}")
+            print("  Re-run: gws auth login")
+            return False
+        missing_scopes = _missing_scopes_from_payload(status)
+        if missing_scopes:
+            print(f"AUTHENTICATED (partial): gws login valid but missing {len(missing_scopes)} scopes:")
+            for s in missing_scopes:
+                print(f"  - {s}")
+        if not quiet:
+            print(f"AUTHENTICATED: Using gws CLI credentials ({status.get('user', 'unknown user')})")
+        return True
 
     _ensure_deps()
     from google.oauth2.credentials import Credentials

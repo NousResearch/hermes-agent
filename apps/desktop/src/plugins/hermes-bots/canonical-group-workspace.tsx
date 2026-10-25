@@ -134,9 +134,14 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     void readCanonicalGroupSend(binding).then(entry => {
       if (cancelled) {return}
 
-      if (entry) {
+      // An intent handed back for editing (nothing of it in the room) reopens as an editable draft.
+      if (entry?.handedBack) {editing.current = entry.params.event_id}
+      else if (entry) {
         setPending(entry)
         setRestoredPending(true)
+      }
+
+      if (entry) {
         draftThread.current = entry.params.payload.thread_id as string | undefined
         setDraft(String(entry.params.payload.text ?? ''))
         setAttachments((entry.params.payload.attachments as Attachment[] | undefined) ?? [])

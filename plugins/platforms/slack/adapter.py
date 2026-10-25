@@ -2772,10 +2772,25 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _set_thread_status(
         self, chat_id: str, team_id: str, thread_ts: str, status: str, fail_label: str) -> None:
-        """``assistant.threads.setStatus`` (empty ``status`` clears); failures are debug-logged."""
+        """Set the thread working status; empty ``status`` clears. Failures are debug-logged.
+
+        slack-sdk >= 3.44 routes to the Agent Sessions API, whose ``status`` must be a
+        lifecycle enum (``active``/``processing``/``suspended``/``closed``) — free text
+        like "is thinking..." is rejected with ``invalid_arguments`` (the silent
+        no-indicator bug). Map non-empty text to ``processing`` (Slack renders its
+        native working UX) and the clear to ``active``; legacy
+        ``assistant.threads.setStatus`` keeps the free-text status.
+        """
         try:
-            _set_status = _session_status_method(self._get_client(chat_id, team_id=team_id))
-            await _set_status(channel_id=chat_id, thread_ts=thread_ts, status=status)
+            _client = self._get_client(chat_id, team_id=team_id)
+            if _sdk_supports_agent_sessions() and getattr(
+                    _client, "agents_sessions_setStatus", None) is not None:
+                _enum_status = "active" if not str(status).strip() else "processing"
+                await _client.agents_sessions_setStatus(
+                    channel_id=chat_id, thread_ts=thread_ts, status=_enum_status)
+            else:
+                await _client.assistant_threads_setStatus(
+                    channel_id=chat_id, thread_ts=thread_ts, status=status)
         except Exception as e:
             logger.debug("[Slack] assistant.threads.setStatus %s: %s", fail_label, e)
 

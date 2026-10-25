@@ -7,9 +7,9 @@ Behaviour contracts, with the summariser stubbed at its model boundary:
 * append-only growth keeps a candidate, which splices at its own boundary with newer messages kept as tail;
 * a rewritten prefix, a moved head, another session's transcript or more than a tail budget of growth past
   the candidate never splices;
-* a completed candidate splices while an extension pass runs; a pass that has not finished is never
-  waited on, and a pass overtaken by compaction or a session boundary cannot publish (a same-session
-  rebind keeps the candidate);
+* a completed candidate splices while an extension pass runs; without one, compaction waits for a running
+  pass whose window fits (forwarding its progress to the host) until the host's deadline, and a pass
+  overtaken by compaction or a session boundary cannot publish (a same-session rebind keeps the candidate);
 * manual, focus, overflow-recovery and memory-context compactions summarise fresh;
 * the no-LLM prune and blank-echo drop between pass and splice do not invalidate the candidate.
 """
@@ -38,6 +38,10 @@ class _StubCompressor(ContextCompressor):
         worker = threading.current_thread().name == "compaction-prepare"
         if worker and self.gate is not None:
             assert self.gate.wait(5.0), "pass never released"
+        if worker and self.stream_progress:
+            from agent.auxiliary_client import _aux_progress
+
+            _aux_progress.hook()  # one streamed chunk
         self.calls.append({
             "worker": worker,
             "n_turns": len(turns_to_summarize),
@@ -57,7 +61,7 @@ def _compressor(*, enabled: bool = True, session_id: str = "S1") -> _StubCompres
         cc.context_length = 40960
     cc.threshold_tokens = 20000
     cc.tail_token_budget = 2500
-    cc.calls, cc.gate = [], None
+    cc.calls, cc.gate, cc.stream_progress = [], None, False
     cc._session_id = session_id
     if enabled:
         cc.prepared_compaction = PreparedCompaction()
@@ -143,7 +147,7 @@ def test_pass_leaves_live_transcript_and_compressor_untouched():
     assert msgs == before
     assert cc._previous_summary is None and cc.compression_count == 0
     assert [c["worker"] for c in cc.calls] == [True]
-    working, _, start, end = cc._plan_compaction_window(msgs)
+    _working, _, start, end = cc._plan_compaction_window(msgs)
     assert (entry.compress_start, entry.compress_end) == (start, end)
     assert entry.body == f"Summary v1 of {end - start} turns."
 
@@ -208,19 +212,31 @@ def test_append_only_growth_splices_at_the_candidate_boundary_keeping_newer_mess
     assert cc.prepared_compaction._entry is None
 
 
-def test_growth_past_the_candidate_beyond_the_tail_budget_summarises_inline():
+@pytest.mark.parametrize("pass_state", ["completed", "running"])
+def test_growth_past_the_candidate_beyond_the_tail_budget_summarises_inline(pass_state):
+    """A stale window never splices, and a running pass with a stale window is not waited on."""
     cc = _compressor()
     msgs = _messages(30)
-    entry = _prepare(cc, msgs)
+    if pass_state == "running":
+        cc.gate = threading.Event()
+        running = pc.maybe_prepare(_agent(cc), msgs, origin="test")
+        assert running is not None
+    else:
+        _prepare(cc, msgs)
+    window = (cc.prepared_compaction._entry or cc.prepared_compaction._pending.window)
     later = _grow(msgs, 24)
     _, _, start, end = cc._plan_compaction_window(later)
-    assert start == entry.compress_start and end > entry.compress_end
-    assert estimate_messages_tokens_rough(later[entry.compress_end:end]) > cc.tail_token_budget
+    assert start == window.compress_start and end > window.compress_end
+    assert estimate_messages_tokens_rough(later[window.compress_end:end]) > cc.tail_token_budget
 
     compressed = cc.compress(later, current_tokens=cc.threshold_tokens + 1)
 
-    assert [c["worker"] for c in cc.calls] == [True, False], "stale candidate: inline summary expected"
-    assert "Summary v2" in _summary_row(compressed)["content"]
+    if pass_state == "running":
+        assert running.is_alive(), "not waited on"
+        cc.gate.set()
+        running.join(5.0)
+    assert sorted(c["worker"] for c in cc.calls) == [False, True], "one pass, one inline summary"
+    assert "Summary v" in _summary_row(compressed)["content"] and cc.prepared_compaction._entry is None
 
 
 @pytest.mark.parametrize("change", ["middle rewritten", "head moved", "other session"])
@@ -322,17 +338,41 @@ def test_completed_candidate_splices_while_an_extension_pass_runs():
     assert cc.prepared_compaction._entry is None, "an overtaken pass cannot publish"
 
 
-def test_unfinished_pass_is_not_waited_on_and_cannot_publish_later():
+def test_compaction_waits_for_a_running_pass_and_forwards_its_progress():
+    """No candidate yet: the compaction waits for the running pass instead of summarising again, and each
+    streamed chunk of the pass touches the compacting thread's progress hook (the host's idle watchdog)."""
+    from agent.auxiliary_client import aux_progress_hook
+
+    cc = _compressor()
+    cc.gate, cc.stream_progress = threading.Event(), True
+    msgs = _messages(30)
+    running = pc.maybe_prepare(_agent(cc), msgs, origin="test")
+    assert running is not None
+    host_progress = []
+    threading.Timer(0.3, cc.gate.set).start()
+    with aux_progress_hook(lambda: host_progress.append(threading.current_thread().name)):
+        compressed = cc.compress(msgs, current_tokens=cc.threshold_tokens + 1)
+    running.join(5.0)
+
+    assert [c["worker"] for c in cc.calls] == [True], "the pass's summary was spliced, no inline call"
+    assert "Summary v1" in _summary_row(compressed)["content"]
+    assert host_progress == ["compaction-prepare"], "pass progress reached the waiting host"
+    assert cc.prepared_compaction._pending is None and cc.prepared_compaction._entry is None
+
+
+def test_wait_ends_at_the_host_deadline_then_summarises_inline_and_the_pass_cannot_publish():
+    from agent.auxiliary_client import aux_stream_deadline
+
     cc = _compressor()
     cc.gate = threading.Event()
     msgs = _messages(30)
     running = pc.maybe_prepare(_agent(cc), msgs, origin="test")
     assert running is not None
 
-    started = time.monotonic()
-    cc.compress(msgs, current_tokens=cc.threshold_tokens + 1)
-    assert time.monotonic() - started < 2.0
-    assert _wait_until(lambda: len(cc.calls) == 1) and cc.calls[0]["worker"] is False, "inline summary"
+    with aux_stream_deadline(time.monotonic() + 0.2):
+        cc.compress(msgs, current_tokens=cc.threshold_tokens + 1)
+    assert running.is_alive(), "the wait ended at the host deadline, not with the pass"
+    assert [c["worker"] for c in cc.calls] == [False], "inline summary after the deadline"
 
     cc.gate.set()
     running.join(5.0)

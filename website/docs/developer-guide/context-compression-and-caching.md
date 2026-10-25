@@ -691,10 +691,15 @@ tail, including those messages a fresh plan would have summarized; tail rules su
 tool stubbing still apply to them. Summary placement and alternation handling are the normal
 Phase 4 assembly.
 
-Everything else runs inline exactly as without the flag: no candidate, a candidate that no longer
-fits, a pass still running (never waited on: the wait would count against the compression idle
-timeout), manual `/compress`, focus compaction, provider-overflow recovery, and compactions where a
-memory provider contributes summary context. A running pass overtaken by compaction or a session
+When no completed candidate fits but the pass still running would, compaction waits for that pass
+instead of writing the same summary again. Each streamed chunk of the pass touches the waiting
+compaction's progress hook, so the host's idle watchdog treats the wait like an inline summary
+stream. The wait ends at the host's deadline (the compression aux timeout when there is none) or on
+cancellation, and compaction then summarizes inline.
+
+Everything else runs inline exactly as without the flag: no candidate, a candidate or running pass
+that no longer fits, manual `/compress`, focus compaction, provider-overflow recovery, and
+compactions where a memory provider contributes summary context. A running pass overtaken by compaction or a session
 boundary (including a rebind to another session id on `/resume` or `/branch`) cannot publish its
 result. A failed pass pauses further passes but never arms the live compressor's failure cooldown. State is per compressor and in memory only, so a gateway agent
 eviction or process restart simply means the next compaction runs inline. Plugin context engines,

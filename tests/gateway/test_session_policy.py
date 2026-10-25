@@ -282,6 +282,43 @@ def test_bare_pick_of_a_shadowed_custom_entry_keeps_the_profiles_route(tmp_path,
         assert model['key_env'] == 'DEEPSEEK_ENTRY_KEY', extra
 
 
+def test_bare_custom_pick_keeps_a_named_entrys_route(tmp_path):
+    """#142101: the Desktop model picker sends the class slug `custom` for a row of a configured
+    named entry. `custom` alone resolves to the bare provider, never to that entry, so the launch
+    fold read the pick as a route change: it dropped the entry's endpoint, wire protocol and
+    credential pointers and froze `{default, provider: custom}`. Every later turn of that session
+    then either raised `provider 'custom' resolved without credentials` or silently answered on a
+    fallback model. A bare `custom` that carries an endpoint of its own names a different host and
+    stays as it came."""
+    from gateway.session_policy import build_policy
+    cfg = {'model': {'default': 'glm-5.3', 'provider': 'custom:my-proxy',
+                     'base_url': 'http://127.0.0.1:8080/v1', 'api_mode': 'chat_completions',
+                     'key_env': 'MY_PROXY_KEY'},
+           'providers': {'my-proxy': {'api': 'http://127.0.0.1:8080/v1', 'key_env': 'MY_PROXY_KEY',
+                                      'transport': 'chat_completions', 'default_model': 'glm-5.3'}}}
+    model = build_policy(dict(cwd=str(tmp_path), model='deepseek-v4.1-flash', provider='custom'),
+                         cfg).config()['model']
+    assert model['provider'] == 'custom:my-proxy'
+    assert model['base_url'] == 'http://127.0.0.1:8080/v1'
+    assert model['api_mode'] == 'chat_completions'
+    assert model['key_env'] == 'MY_PROXY_KEY'
+    assert model['default'] == 'glm-5.3'
+    # The entry's own spelling keeps working, and so does a profile whose route is the bare class.
+    for pick in ('my-proxy', 'custom:my-proxy'):
+        assert build_policy(dict(cwd=str(tmp_path), provider=pick), cfg).config()['model']['provider'] == \
+            'custom:my-proxy', pick
+    plain = {'model': {'default': 'qwen', 'provider': 'custom', 'base_url': 'http://localhost:1234/v1',
+                       'key_env': 'LOCAL_KEY'}}
+    assert build_policy(dict(cwd=str(tmp_path), provider='custom'), plain).config()['model']['base_url'] == \
+        'http://localhost:1234/v1'
+    # A bare `custom` with its own endpoint is a different host: the pick is not this entry.
+    other = build_policy(dict(cwd=str(tmp_path), model='x', provider='custom',
+                              base_url='https://elsewhere.example/v1'), cfg).config()['model']
+    assert other['provider'] == 'custom'
+    assert other['base_url'] == 'https://elsewhere.example/v1'
+    assert 'key_env' not in other
+
+
 def test_unlimited_max_turns_spellings_create_an_uncapped_session(tmp_path):
     """`--max-turns 0` / -1 / none / unlimited meant "no cap" before the gateway cutover: session.create
     freezes them as the unlimited budget, and `hermes chat` sends 0 instead of dropping it as falsy."""

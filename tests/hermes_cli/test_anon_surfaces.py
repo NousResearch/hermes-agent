@@ -21,6 +21,7 @@ import pytest
 from hermes_cli import (
     anon_auth,
     auth_commands,
+    guest_handoff,
     nous_account,
     nous_auth_keepalive,
     portal_cli,
@@ -28,7 +29,7 @@ from hermes_cli import (
 )
 from hermes_cli.auth import _load_auth_store
 from hermes_constants import get_hermes_home
-from tests.hermes_cli.anon_portal import as_local_desktop_backend
+from tests.hermes_cli.anon_portal import as_local_desktop_backend, off_local_desktop
 
 WELCOME = "https://welcome-api.nousresearch.com/v1"
 # Words that must never appear on a user-facing free-tier surface.
@@ -165,15 +166,26 @@ def test_keepalive_does_not_start_for_free_tier(isolated_store, monkeypatch):
             pass
     monkeypatch.setattr(nous_auth_keepalive.threading, "Thread", _Thread)
     monkeypatch.setattr(nous_auth_keepalive, "_keepalive_thread", None)
+    from hermes_cli import guest_handoff
+    monkeypatch.setattr(guest_handoff, "_worker_thread", None)
 
     _write_auth(_guest_state())
     assert nous_auth_keepalive.start_nous_auth_keepalive(interval_seconds=900) is None
-    assert started == []
+    # The free-tier handoff retry worker runs in a guest process too; the token keepalive does not.
+    assert started == ["nous-guest-handoff"]
 
     _write_auth(_account_state())
     thread = nous_auth_keepalive.start_nous_auth_keepalive(interval_seconds=900)
-    assert thread is not None and started == ["nous-auth-keepalive"]
+    assert thread is not None and started == ["nous-guest-handoff", "nous-auth-keepalive"]
     monkeypatch.setattr(nous_auth_keepalive, "_keepalive_thread", None)
+
+
+_HANDOFF_VIEWS = [
+    *({"state": "claimed", "account_email": "person@example.test", "connectors_kind": kind,
+       "moved_toolkits": ["gmail"], "dropped_toolkits": ["slack"]} for kind in ("moved", "conflict", "none")),
+    # The retrying line names Hermes as a subject ("Hermes keeps trying"), not a command; it is not checked here.
+    {"state": "failed", "error": "no_destination"}, {"state": "gone", "probably_moved": True},
+]
 
 
 def test_no_chat_copy_of_any_sign_in_state_leaks_a_terminal_verb_or_a_forbidden_word():
@@ -188,6 +200,9 @@ def test_no_chat_copy_of_any_sign_in_state_leaks_a_terminal_verb_or_a_forbidden_
         "reason": "unknown",
         "detail": "private detail",
         "retry_after": 0.0,
+        # Every handoff result line a completed sign-in can carry.
+        "handoff": tuple(line for view in _HANDOFF_VIEWS for line in guest_handoff.result_lines(view)),
+        "handoff_status": guest_handoff.wire_status(_HANDOFF_VIEWS[0]),
     }
     forbidden = re.compile(r"claim|nous portal|anonymous|guest", re.IGNORECASE)
     terminal_or_url = re.compile(r"hermes |https?://", re.IGNORECASE)
@@ -212,12 +227,11 @@ def test_the_paid_tool_notice_switches_wording_inside_a_chat():
     ) == nous_account.FREE_TIER_NEEDS_ACCOUNT
 
 
-def test_a_claimed_guest_off_the_desktop_backend_is_not_the_free_tier(isolated_store, monkeypatch, capsys):
-    """On the CLI surface the trial carries no inference: the guest reads as not signed in."""
-    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
-    monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+def test_a_claimed_guest_reads_as_the_free_tier_on_the_cli_too(isolated_store, monkeypatch, capsys):
+    """Once the Desktop claimed the trial, the CLI runs on it as well."""
+    off_local_desktop(monkeypatch)
     _write_auth(_guest_state())
 
     auth_commands.auth_status_command(SimpleNamespace(provider="nous"))
     text = capsys.readouterr().out
-    assert "free tier" not in text.lower() and anon_auth.GUEST_MODEL not in text
+    assert "free tier" in text.lower()

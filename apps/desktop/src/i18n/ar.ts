@@ -39,6 +39,7 @@ export const arOverrides = {
     installing: 'جارٍ التثبيت…',
     installComplete: (name: string) => `تم تثبيت «${name}»`,
     destinationChanged: 'تغيرت وجهة التثبيت. أغلق هذا الحوار وافتح رابط التثبيت مجددًا.',
+    install: 'تثبيت',
     installed: 'المثبتة',
     searchSkills: 'البحث في المهارات',
     searchPlugins: 'البحث في الإضافات',

@@ -47,6 +47,9 @@ export const userMessagesEn = {
         'The terminal UI and the Hermes backend are out of sync (different versions). Run /update, or exit and run `hermes update`, then start the TUI again.',
       sessionNotFound:
         'This chat is no longer attached to the backend (it was idle or the backend restarted). Your history is saved: type /resume to reopen it.',
+      /** The owner refused a control on a chat whose launch API key changed or was removed. */
+      launchCredentialsChanged:
+        "This chat can't use the API key it was started with any more (it changed or was removed), so that was not done. A chat never switches to a different key on its own. Type /new to start a new chat on your current key.",
       notConnected:
         'Hermes is not connected right now, so that was not sent. It reconnects automatically; wait a moment and try again, or type /logs if this persists.',
       /** `{0}` = timeout in seconds. */

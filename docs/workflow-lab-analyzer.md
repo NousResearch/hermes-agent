@@ -12,6 +12,8 @@ When present, the analyzer ingests:
 - Atuin SQLite history metadata
 - Codex, Claude Code, and Hermes JSONL session summaries under the standard home
   directories plus project-local `.codex`, `.claude`, and `.hermes`
+- canonical Hermes SessionDB metadata from `~/.hermes/state.db` (message bodies
+  are intentionally not ingested)
 - git repository metadata under a configurable root
 
 The script also records local tool availability, including `ladybugs`,

@@ -43,6 +43,7 @@ SECRET_PATTERNS = [
         r"github_pat_[A-Za-z0-9_]+",
         r"sk-[A-Za-z0-9_-]+",
         r"xox[baprs]-[A-Za-z0-9-]+",
+        r"(?i)(https?://)[^/@\s:]+:[^/@\s]+@",
     ]
 ]
 
@@ -54,7 +55,11 @@ def redact(value: Any) -> str:
     text = str(value).replace("\x00", "")
     for pattern in SECRET_PATTERNS:
         text = pattern.sub(
-            lambda match: f"{match.group(1)}=[REDACTED]" if match.lastindex else "[REDACTED]",
+            lambda match: (
+                f"{match.group(1)}[REDACTED]"
+                if match.lastindex and match.group(1).lower().startswith("http")
+                else (f"{match.group(1)}=[REDACTED]" if match.lastindex else "[REDACTED]")
+            ),
             text,
         )
     text = re.sub(
@@ -185,6 +190,63 @@ def ingest_atuin(rows: list[dict[str, Any]]) -> None:
                 )
         except Exception as exc:
             add_event(rows, "analysis_note", "", f"atuin parse failed: {type(exc).__name__}", path=path)
+
+
+def unix_timestamp(value: Any) -> str:
+    """Normalize Hermes' SQLite timestamps, including millisecond values."""
+    try:
+        stamp = float(value)
+    except (TypeError, ValueError):
+        return ""
+    while stamp > 10_000_000_000:
+        stamp /= 1000
+    try:
+        return dt.datetime.fromtimestamp(stamp, dt.timezone.utc).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return ""
+
+
+def ingest_hermes_state(rows: list[dict[str, Any]]) -> None:
+    """Ingest canonical Hermes SessionDB metadata, not private message bodies."""
+    path = HOME / ".hermes/state.db"
+    if not path.exists():
+        return
+    try:
+        con = sqlite3.connect(path)
+        con.row_factory = sqlite3.Row
+        columns = {record[1] for record in con.execute("pragma table_info(sessions)")}
+        wanted = [
+            name
+            for name in (
+                "id", "source", "model", "started_at", "ended_at", "message_count",
+                "tool_call_count", "cwd", "git_repo_root", "git_branch", "title",
+                "last_activity_description",
+            )
+            if name in columns
+        ]
+        if not wanted:
+            return
+        query = f"select {', '.join(wanted)} from sessions order by started_at desc limit 3000"
+        for record in con.execute(query):
+            item = dict(record)
+            label = item.get("title") or item.get("last_activity_description") or item.get("source") or "session"
+            summary = (
+                f"source={item.get('source', '')} messages={item.get('message_count', 0)} "
+                f"tools={item.get('tool_call_count', 0)} title={label}"
+            )
+            add_event(
+                rows,
+                "hermes-state",
+                unix_timestamp(item.get("started_at")),
+                summary,
+                item.get("cwd") or item.get("git_repo_root") or "",
+                model=item.get("model") or "",
+                agent="hermes",
+                kind="session",
+                path=path,
+            )
+    except Exception as exc:
+        add_event(rows, "analysis_note", "", f"Hermes state parse failed: {type(exc).__name__}", path=path)
 
 
 def iter_jsonl(root: pathlib.Path, limit: int = 3000) -> Iterable[pathlib.Path]:
@@ -487,6 +549,7 @@ def main() -> None:
         (pathlib.Path.cwd() / ".hermes", "hermes-local"),
     ]
     session_roots.extend(discover_project_agent_roots(args.repo_root.expanduser()))
+    ingest_hermes_state(rows)
     ingest_sessions(rows, session_roots)
     if not args.no_git_scan:
         ingest_git_repos(rows, args.repo_root.expanduser())

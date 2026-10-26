@@ -1,0 +1,34 @@
+name: ankle
+title: ANKLE OS
+repo: https://github.com/aleqth/ankle-hermes-plugin
+sha: f7ce94105e3410bfe30f436369f7b25ec435c435
+description: >-
+  Build private websites in ANKLE Worlds, edit drafts with revision checks, search the 409K+ SURF
+  cultural archive, and publish portable .ankl cartridges through the hosted ANKLE OS MCP server
+  (Streamable HTTP at https://aleqth.com/api/mcp). Portable Agent Plugins v1 package (plugin.json +
+  mcp.json + skills/ankle/SKILL.md from live ankle.md), with no local plugin code or dependencies;
+  requires a scoped ANKLE agent key (`ANKLE_AGENT_KEY`) issued at https://aleqth.com/developers and
+  sent via `Authorization: Bearer ${ANKLE_AGENT_KEY}` (or connect with OAuth 2.1 / RFC 8628 device flow:
+  `hermes mcp add ankle --url https://aleqth.com/api/mcp --auth oauth` then `hermes mcp login ankle --flow device`). Disclosure — hosted connector with no local
+  code: all MCP requests (including read-only discovery and SURF archive search) require an active
+  scoped `ANKLE_AGENT_KEY` from https://aleqth.com/developers (unauthenticated requests return HTTP
+  401 `invalid agent key`); tool calls (SURF search queries, World reads/proposals, and authored HTML
+  drafts/patches) go to https://aleqth.com/api/mcp; new websites are saved as private drafts and only
+  become public when `builder_publish` is explicitly called with a publish-scoped key; no wallet,
+  signing, trading, or spending tools are exposed, and no MCP tool debits platform ANKLE credits.
+maintainer: aleqth
+tier: community
+category: platform
+requires_hermes: ">=0.20"
+docs_url: https://ankle.md/SKILL.md
+version: "2.3.0"
+readme: true
+platforms: []
+known_issues:
+  - "Requires an active scoped ANKLE agent key (`ANKLE_AGENT_KEY`, `ak_...`) minted at https://aleqth.com/developers and set in your Hermes profile `.env`. Unauthenticated requests to `POST https://aleqth.com/api/mcp` return HTTP 401 `invalid agent key`."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - ANKLE_AGENT_KEY

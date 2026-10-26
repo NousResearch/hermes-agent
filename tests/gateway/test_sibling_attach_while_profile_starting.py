@@ -374,17 +374,23 @@ async def test_held_frames_run_only_when_their_start_ended_before_the_disconnect
 
 @pytest.mark.asyncio
 async def test_frames_held_for_a_start_that_ended_before_the_disconnect_still_run(rig, monkeypatch):
-    """Frames whose start ended while the client was connected finish as the serial lane's queue does."""
+    """Frames whose start ended while the client was connected finish as the serial lane's queue does:
+    the disconnect reaches the handler while held-0 is still running, and does not stop it."""
     from tui_gateway import ws as ws_mod
 
     real_dispatch = ws_mod._dispatch_request
     ran, first_held_running, first_held_may_finish = [], asyncio.Event(), asyncio.Event()
+    gate_expired = []  # held-0's gate ran out: its reply is then an internal error
 
     async def gated_dispatch(connection, req, method, transport):
         ran.append(req.get('id'))
         if req.get('id') == 'held-0':
             first_held_running.set()
-            await asyncio.wait_for(first_held_may_finish.wait(), timeout=10)
+            try:
+                await asyncio.wait_for(first_held_may_finish.wait(), timeout=10)
+            except TimeoutError:
+                gate_expired.append(req.get('id'))
+                raise
         return await real_dispatch(connection, req, method, transport)
 
     monkeypatch.setattr(ws_mod, '_dispatch_request', gated_dispatch)
@@ -396,8 +402,17 @@ async def test_frames_held_for_a_start_that_ended_before_the_disconnect_still_ru
     rig.release.set()
     await asyncio.wait_for(rig.serving, 30)
     await asyncio.wait_for(first_held_running.wait(), 10)
+    in_disconnect_path = asyncio.Event()
+    _on_disconnect_path(monkeypatch, sock, in_disconnect_path.set)
     sock.inbound.put_nowait(None)  # the client disconnects while the lane runs held-0
+    await asyncio.wait_for(in_disconnect_path.wait(), 10)
+    assert 'held-0' not in sock.replies and 'held-1' not in sock.replies, sock.order
+    assert not sock.task.done()
     first_held_may_finish.set()
 
     await asyncio.wait_for(sock.task, 10)
     assert ran == ['probe', 'held-0', 'held-1'], ran
+    assert not gate_expired, "held-0's gate ran out before the disconnect reached the handler"
+    for request_id in ('held-0', 'held-1'):
+        error = sock.replies[request_id].get('error') or {}
+        assert error.get('message') not in ('profile_mismatch', 'internal error'), sock.replies[request_id]

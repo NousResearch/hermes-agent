@@ -23,34 +23,44 @@ function middleEllipsis(text: string, max: number): string {
   return `${text.slice(0, head)}…${text.slice(text.length - (max - 1 - head))}`
 }
 
-function failureText({ name, reason }: DropFailure, maxName = Infinity): string {
+function failureText({ name, reason }: DropFailure, maxName = Infinity, joined = false): string {
   const label = `Could not attach ${middleEllipsis(name, maxName)}`
+  // A reason ends with a period, which reads '….;' before the '; ' that joins the next item.
+  const text = joined ? reason?.replace(/\.$/, '') : reason
 
-  return reason ? `${label}: ${reason}` : label
+  return text ? `${label}: ${text}` : label
+}
+
+/** The failures joined into one line, then the count of the rest when there is one. */
+function summaryText(failures: DropFailure[], maxName: number, rest?: string): string {
+  const items = failures.map((failure, index) =>
+    failureText(failure, maxName, rest !== undefined || index < failures.length - 1)
+  )
+
+  return (rest === undefined ? items : [...items, rest]).join('; ')
 }
 
 /** One bounded warning for a drop's failures: shortened names, a few of them, and a count of the
  *  rest, so a large drop or long paths can't grow the toast off screen. Whenever anything is
- *  shortened or left out, the full list rides in the collapsible detail. */
+ *  shortened or left out, the full list, each reason whole, rides in the collapsible detail. */
 export function dropWarning(
   failures: DropFailure[],
   more: (count: number) => string
 ): { detail?: string; message: string } {
-  const shown: string[] = []
+  const shown: DropFailure[] = []
 
   for (const failure of failures.slice(0, DROP_FAILURES_SHOWN)) {
-    const text = failureText(failure, DROP_FAILURE_NAME_CHARS)
-
-    if (shown.length && [...shown, text].join('; ').length > DROP_WARNING_CHARS) {
+    if (shown.length && summaryText([...shown, failure], DROP_FAILURE_NAME_CHARS).length > DROP_WARNING_CHARS) {
       break
     }
 
-    shown.push(text)
+    shown.push(failure)
   }
 
   const hidden = failures.length - shown.length
-  const message = hidden > 0 ? `${shown.join('; ')}; ${more(hidden)}` : shown.join('; ')
-  const full = failures.map(failure => failureText(failure))
+  const message = summaryText(shown, DROP_FAILURE_NAME_CHARS, hidden > 0 ? more(hidden) : undefined)
 
-  return message === full.join('; ') ? { message } : { detail: full.join('\n'), message }
+  return message === summaryText(failures, Infinity)
+    ? { message }
+    : { detail: failures.map(failure => failureText(failure)).join('\n'), message }
 }

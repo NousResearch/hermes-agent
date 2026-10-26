@@ -88,8 +88,8 @@ import {
   setIntroSeed,
   setMessages,
   setNewChatWorkspaceTarget,
-  setResumeExhaustedSessionId,
   setResumeFailedSessionId,
+  setResumeReattachSessionId,
   setSelectedStoredSessionId,
   setSessionOwnerHint,
   setSessionStartedAt,
@@ -167,6 +167,7 @@ import {
   withoutEarlyClarifyProjection
 } from './restore-pending-clarify'
 import { projectPendingConnection, restorePendingConnectionFromSnapshot } from './restore-pending-connection'
+import { clearResumeLatches } from './resume-latches'
 import {
   ambientResumeConnectionId,
   openResumeGateway,
@@ -1223,15 +1224,7 @@ export function useSessionActions({
         closeSessionTile(storedSessionId)
       }
 
-      // Optimistically clear any prior resume-failure latch for this session:
-      // we're attempting a fresh resume, so the self-heal in use-route-resume
-      // must not keep treating it as stranded. It's re-armed below only if THIS
-      // attempt fails terminally (RPC reject + REST fallback failure).
-      setResumeFailedSessionId(current => (current === storedSessionId ? null : current))
-      // Also clear the exhausted-latch: a fresh attempt (manual Retry, reconnect,
-      // reselect) gives the bounded auto-retry counter a clean cycle, so the
-      // chat view drops the error state and shows the loader again.
-      setResumeExhaustedSessionId(current => (current === storedSessionId ? null : current))
+      clearResumeLatches(storedSessionId)
 
       // A warm cache entry is only trustworthy when it still BELONGS to the
       // session being resumed. A pooled profile backend that gets idle-reaped
@@ -2531,6 +2524,10 @@ export function useSessionActions({
           // once retries exhaust, blank that visible transcript behind the
           // exhausted-state error overlay (a regression vs. plain fallback success).
           setResumeFailedSessionId(storedSessionId)
+        } else {
+          // Readable, but detached: a turn still running there never streams
+          // in. Re-attach quietly (use-resume-reattach), no error overlay.
+          setResumeReattachSessionId(storedSessionId)
         }
 
         notifyError(err, copy.resumeFailed)

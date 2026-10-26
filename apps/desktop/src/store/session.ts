@@ -1167,6 +1167,12 @@ export const $awaitingResponse = atom(false)
 // resume on the next render/focus/reconnect instead of stranding the window.
 // Null whenever the active route has a healthy (or in-flight) resume.
 export const $resumeFailedSessionId = atom<string | null>(null)
+// Stored-session id whose last resume RPC failed while the REST fallback still
+// painted its history: readable, but bound to no runtime, so a turn running
+// there never streams its reply in. use-resume-reattach re-attempts the resume
+// quietly. Unlike $resumeFailedSessionId it never ends in the exhausted
+// overlay, which would cover the history the window can already show.
+export const $resumeReattachSessionId = atom<string | null>(null)
 export interface SessionResumeRequest {
   authoritativeSnapshot?: boolean
   ownerRoute?: SessionOwnerRoute
@@ -1614,6 +1620,7 @@ export const setFreshDraftReady = (next: Updater<boolean>) => updateAtom($freshD
 export { $freshDraftKey, rotateFreshDraftKey } from './composer'
 
 export const setResumeFailedSessionId = (next: Updater<string | null>) => updateAtom($resumeFailedSessionId, next)
+export const setResumeReattachSessionId = (next: Updater<string | null>) => updateAtom($resumeReattachSessionId, next)
 
 export const requestSessionResume = (
   sessionId: string,

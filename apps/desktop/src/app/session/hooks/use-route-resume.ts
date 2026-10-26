@@ -5,6 +5,8 @@ import { type SessionResumeRequest, setResumeExhaustedSessionId } from '@/store/
 import type { SessionProfileRoute } from '@/store/session-request-router'
 import { markSelectionRestore } from '@/store/session-states'
 
+import { useResumeReattach } from './use-resume-reattach'
+
 interface RouteResumeOptions {
   activeSessionId: string | null
   activeSessionIdRef: MutableRefObject<string | null>
@@ -369,4 +371,15 @@ export function useRouteResume({
     routedSessionId,
     selectedStoredSessionIdRef
   ])
+
+  useResumeReattach({
+    activeSessionId,
+    activeSessionIdRef,
+    creatingSessionRef,
+    currentView,
+    gatewayState,
+    resumeSession,
+    routedSessionId,
+    selectedStoredSessionIdRef
+  })
 }

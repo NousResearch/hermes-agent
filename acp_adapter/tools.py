@@ -11,6 +11,7 @@ import acp
 from acp.schema import ToolCallLocation, ToolCallProgress, ToolCallStart, ToolKind
 
 from agent.display import build_tool_preview
+from utils import split_lf_lines
 
 logger = logging.getLogger(__name__)
 
@@ -653,7 +654,7 @@ def _parse_unified_diff_content(diff_text: str) -> list[Any]:
             ))
         state.update(old=None, new=None, old_lines=[], new_lines=[])
 
-    for line in diff_text.splitlines():
+    for line in split_lf_lines(diff_text, keepends=False):
         if line.startswith("--- "):
             _flush()
             state["old"] = line[4:].strip()

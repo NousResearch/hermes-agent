@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from tools.skills_sync_optional import _ignore_runtime_cache, _skill_file_list, _ss
+from utils import split_lf_lines
 
 
 def _bundled_state():
@@ -187,7 +188,7 @@ def diff_bundled_skill(name: str) -> dict:
                 diffs.append({"path": rel, "status": "binary", "diff": "<binary file differs>"})
         elif user_text != stock_text:
             text = "".join(difflib.unified_diff(
-                stock_text.splitlines(keepends=True), user_text.splitlines(keepends=True),
+                split_lf_lines(stock_text), split_lf_lines(user_text),
                 fromfile=f"stock/{rel}", tofile=f"yours/{rel}"))
             diffs.append({"path": rel, "status": "modified", "diff": text})
     message = (f"'{name}' differs from the stock version in {len(diffs)} file(s)." if diffs

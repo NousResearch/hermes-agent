@@ -389,34 +389,30 @@ class SessionRecoveryMixin:
         explicit reset boundary (with the specific reason so state.db is auditable, e.g.
         ``suspended`` vs plain ``session_reset``), then INSERT the new row + routing
         peer. Both best-effort: failures are warned and self-healed by the next peer refresh."""
-        try:
-            if end_session_id:
-                from hermes_cli.observability.relay_shared_metrics import close_session_run
+        if end_session_id:
+            from hermes_cli.observability.relay_shared_metrics import close_session_run
 
-                close_session_run(end_session_id)
-            if self._db_for_key(session_key) and end_session_id:
-                self._promote_session_reset(
-                    session_key, end_session_id, end_reason,
-                    log=lambda e: logger.warning(
-                        "Failed to end predecessor session row %s for %s%s: %s — the old row remains "
-                        "open and may win restart recovery until the next successful peer refresh",
-                        end_session_id, session_key, during, e),
-                )
-            if self._db_for_key(session_key) and create_kwargs:
-                self._create_session_row(
-                    session_key, create_kwargs, origin, display_name,
-                    log=lambda e: logger.warning(
-                        "Failed to create session row %s for %s%s: %s — deferring to the "
-                        "self-healing peer refresh on the next turn",
-                        create_kwargs.get("session_id"), session_key, during, e),
-                )
-        finally:
-            if create_kwargs:
-                self._row_settled(create_kwargs["session_id"])
+            close_session_run(end_session_id)
+        if self._db_for_key(session_key) and end_session_id:
+            self._promote_session_reset(
+                session_key, end_session_id, end_reason,
+                log=lambda e: logger.warning(
+                    "Failed to end predecessor session row %s for %s%s: %s — the old row remains "
+                    "open and may win restart recovery until the next successful peer refresh",
+                    end_session_id, session_key, during, e),
+            )
+        if self._db_for_key(session_key) and create_kwargs:
+            self._create_session_row(
+                session_key, create_kwargs, origin, display_name,
+                log=lambda e: logger.warning(
+                    "Failed to create session row %s for %s%s: %s — deferring to the "
+                    "self-healing peer refresh on the next turn",
+                    create_kwargs.get("session_id"), session_key, during, e),
+            )
 
     def _row_settled(self, session_id: str) -> None:
-        """The route transition that published *session_id* finished its state.db half: from here
-        a missing or ended row is real again (see ``_is_session_ended_in_db``)."""
+        """The route transition that published *session_id* returned (its state.db half done or
+        failed): from here a missing or ended row is real again (see ``_is_session_ended_in_db``)."""
         with self._lock:
             self._rows_pending.discard(session_id)
 

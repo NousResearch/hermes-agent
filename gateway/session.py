@@ -971,17 +971,21 @@ class SessionStore(
             create_kwargs = self._route_create(
                 decision, session_key, source, now, force_new, observed
             )
-        if decision.needs_save:
-            if decision.metadata_only_save:
-                self._save_entry(session_key)
-            else:
-                self._save_entries()
+        try:
+            if decision.needs_save:
+                if decision.metadata_only_save:
+                    self._save_entry(session_key)
+                else:
+                    self._save_entries()
 
-        self._finish_route_transition(
-            session_key, end_session_id=decision.prev_session_id,
-            end_reason=decision.reset_reason or "session_reset", create_kwargs=create_kwargs,
-            origin=source, display_name=decision.entry.display_name,
-        )
+            self._finish_route_transition(
+                session_key, end_session_id=decision.prev_session_id,
+                end_reason=decision.reset_reason or "session_reset", create_kwargs=create_kwargs,
+                origin=source, display_name=decision.entry.display_name,
+            )
+        finally:
+            if create_kwargs:
+                self._row_settled(create_kwargs["session_id"])
         return decision.entry
 
     def _apply_route_checks(
@@ -1057,20 +1061,19 @@ class SessionStore(
             auto_reset_reason=decision.reset_reason, reset_had_activity=decision.reset_had_activity,
             prev_session_id=decision.prev_session_id, transport_profile=transport_profile_of(source),
         )
-        with self._lock:
-            current = self._entries.get(session_key)
-            if current is None or (force_new and current is observed):
-                self._entries[session_key] = current = candidate
-                self._rows_pending.add(session_id)
-        decision.entry = current
-        decision.needs_save = True
-        if current is not candidate:
-            return None
-        return self._session_create_kwargs(
+        create_kwargs = self._session_create_kwargs(
             session_id=session_id, session_key=session_key, origin=source,
             source_value=source.platform.value, display_name=source.chat_name,
             parent_session_id=decision.prev_session_id,
         )
+        with self._lock:
+            current = self._entries.get(session_key)
+            if current is None or (force_new and current is observed):
+                self._entries[session_key] = current = candidate
+                self._rows_pending.add(session_id)  # the caller settles it once create_kwargs land
+        decision.entry = current
+        decision.needs_save = True
+        return create_kwargs if current is candidate else None
 
     def update_session(
         self, session_key: str, last_prompt_tokens: int | None = None, touch_activity: bool = True,
@@ -1152,21 +1155,24 @@ class SessionStore(
             if old_entry.origin and old_entry.origin.platform == Platform.LOCAL:
                 from gateway.session_local_recovery import reset_local_session
                 return reset_local_session(self, old_entry, session_id, now, display_name)
-            new_entry = self._replace_route_locked(
-                session_key, old_entry, session_id, now,
-                display_name=display_name if display_name is not None else old_entry.display_name,
-                is_fresh_reset=True,
-            )
             db_create_kwargs = self._session_create_kwargs(
                 session_id=session_id, session_key=session_key, origin=old_entry.origin,
                 source_value=old_entry.platform.value if old_entry.platform else "unknown",
                 display_name=old_entry.display_name, parent_session_id=old_entry.session_id,
             )
-        self._finish_route_transition(
-            session_key, end_session_id=old_entry.session_id, end_reason="session_reset",
-            create_kwargs=db_create_kwargs, origin=old_entry.origin,
-            display_name=new_entry.display_name, during=" during reset",
-        )
+            new_entry = self._replace_route_locked(
+                session_key, old_entry, session_id, now,
+                display_name=display_name if display_name is not None else old_entry.display_name,
+                is_fresh_reset=True,
+            )
+        try:
+            self._finish_route_transition(
+                session_key, end_session_id=old_entry.session_id, end_reason="session_reset",
+                create_kwargs=db_create_kwargs, origin=old_entry.origin,
+                display_name=new_entry.display_name, during=" during reset",
+            )
+        finally:
+            self._row_settled(session_id)
         return new_entry
 
     def _replace_route_locked(self, session_key, old_entry, session_id, now, **fields) -> SessionEntry:
@@ -1177,8 +1183,8 @@ class SessionStore(
             transport_profile=old_entry.transport_profile, **fields,
         )
         self._entries[session_key] = new_entry
-        self._rows_pending.add(session_id)
         self._save()
+        self._rows_pending.add(session_id)  # after the save: a raising save leaves nothing pending
         return new_entry
 
     def rekey_profile_routing(self, old_name: str, new_name: str) -> int:

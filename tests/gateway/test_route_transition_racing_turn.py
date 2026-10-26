@@ -12,7 +12,6 @@ handlers. The window is held open at the real SQL statement that ends the predec
 """
 import asyncio
 import threading
-import time
 import weakref
 from pathlib import Path
 
@@ -25,6 +24,7 @@ from gateway.run_runtime import initialize_gateway_runtime
 from gateway.runtime_ownership import process_ownership
 from gateway.session import SessionSource
 from gateway.session_ingress_context import register_transport_home
+from tests.waiting import async_wait_until
 
 
 class _Adapter:
@@ -93,13 +93,6 @@ class _HoldPredecessorEnd:
         self.conn.set_trace_callback(None)
 
 
-async def _until(predicate, what):
-    deadline = time.monotonic() + 10
-    while not predicate():
-        assert time.monotonic() < deadline, what
-        await asyncio.sleep(0.01)
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize('command', ['/new', '/resume First chat'])
 async def test_a_turn_finishing_mid_transition_leaves_the_chat_on_the_conversation_it_named(served, command):
@@ -115,7 +108,7 @@ async def test_a_turn_finishing_mid_transition_leaves_the_chat_on_the_conversati
 
     with _HoldPredecessorEnd(authority.db) as hold:
         transition = asyncio.create_task(_command(runner, chat, command))
-        await _until(hold.reached.is_set, 'the transition reaches state.db')
+        await async_wait_until(hold.reached.is_set, what='the transition reaches state.db')
         named = store.lookup_by_session_key(key)
         assert named.session_id not in (None, before)
         stamp = named.updated_at
@@ -124,8 +117,9 @@ async def test_a_turn_finishing_mid_transition_leaves_the_chat_on_the_conversati
         finishing = asyncio.create_task(runner._run_post_turn_hooks(
             agent_result={'final_response': 'the answer on the old conversation'}, source=chat,
             is_internal=False))
-        await _until(lambda: store.peek_session_id(key) != named.session_id or named.updated_at != stamp,
-                     'the finishing turn resolved the route')
+        await async_wait_until(
+            lambda: store.peek_session_id(key) != named.session_id or named.updated_at != stamp,
+            what='the finishing turn resolved the route')
         hold.release.set()
         await transition
         await finishing

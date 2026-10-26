@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { NO_PROJECT_ID } from '@/app/chat/sidebar/projects/workspace-groups'
 import { $defaultProfileRoute } from '@/store/default-profile'
@@ -9,7 +9,12 @@ import { applyConfiguredDefaultProjectDir } from '@/store/session'
 import { dropTilesForProfile, migrateTilesForProfile } from '@/store/session-states'
 
 import { createBrowserProfileBridge } from './browser-profile'
-import { browserDefaultProjectDirKey, createBrowserSettings } from './browser-settings'
+import {
+  browserDefaultProjectDirKey,
+  createBrowserSettings,
+  dropBrowserFolderPref,
+  migrateBrowserFolderPref
+} from './browser-settings'
 import { browserStartupProfileKey } from './browser-startup-profile'
 
 type BootstrapWindow = Window & { __HERMES_BASE_PATH__?: string; __HERMES_DASHBOARD_PROFILE__?: string }
@@ -259,42 +264,63 @@ describe('browser profile prefs follow rename and delete', () => {
 
 // An older build keyed the folder on the tab's named profile or 'default'. A tab
 // opened without `?profile=` names none, so on a gateway served as `alpha` the
-// folder alpha's tab chose sits under 'default'.
+// folder alpha's tab chose sits under 'default'. A tab that named
+// `?profile=default` saved there too, so whose folder it is stays unknown.
 describe('browser folder saved by an older build', () => {
   const legacyKey = 'hermes:browser:default-project-dir:["/hermes","default"]'
+  const alphaKey = 'hermes:browser:default-project-dir:["/hermes","alpha"]'
 
-  it('moves the folder to the profile the gateway serves, once, so default does not inherit it', () => {
+  function serveAlphaWithLegacy(dir: string) {
     host()
     win.__HERMES_DASHBOARD_PROFILE__ = 'alpha'
-    localStorage.setItem(legacyKey, '/srv/alpha')
+    localStorage.setItem(legacyKey, dir)
+  }
 
-    expect(resolveNewSessionCwd('alpha')).toBe('/srv/alpha')
-    expect(resolveNewSessionCwd('default')).toBe('')
-    expect(localStorage.getItem(legacyKey)).toBeNull()
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
 
-    // Later choices are the new build's own: default's folder stays default's.
+  it('copies the folder to the profile the gateway serves, once, and default keeps it', () => {
+    serveAlphaWithLegacy('/srv/legacy')
+
+    expect(resolveNewSessionCwd('alpha')).toBe('/srv/legacy')
+    expect(resolveNewSessionCwd('default')).toBe('/srv/legacy')
+
+    // Later choices are the new build's own: neither profile takes the other's.
     putFolder('default', '/srv/default')
-    localStorage.removeItem(browserDefaultProjectDirKey('/hermes', 'alpha'))
+    localStorage.removeItem(alphaKey)
 
     expect(resolveNewSessionCwd('alpha')).toBe('')
     expect(resolveNewSessionCwd('default')).toBe('/srv/default')
   })
 
-  it('shows the moved folder in Settings for a tab that names no profile', async () => {
-    host()
-    win.__HERMES_DASHBOARD_PROFILE__ = 'alpha'
-    localStorage.setItem(legacyKey, '/srv/alpha')
+  it('keeps default its folder whichever profile reads first', () => {
+    serveAlphaWithLegacy('/srv/legacy')
 
-    const settings = createBrowserSettings({ basePath: '/hermes', currentProfile: () => null })
+    expect(resolveNewSessionCwd('default')).toBe('/srv/legacy')
+    expect(resolveNewSessionCwd('alpha')).toBe('/srv/legacy')
+    expect(localStorage.getItem(legacyKey)).toBe('/srv/legacy')
 
-    await expect(settings.getDefaultProjectDir()).resolves.toMatchObject({ dir: '/srv/alpha' })
-    expect(localStorage.getItem(legacyKey)).toBeNull()
+    localStorage.clear()
+    serveAlphaWithLegacy('/srv/legacy')
+
+    expect(resolveNewSessionCwd('alpha')).toBe('/srv/legacy')
+    expect(resolveNewSessionCwd('default')).toBe('/srv/legacy')
+    expect(localStorage.getItem(legacyKey)).toBe('/srv/legacy')
+  })
+
+  it('shows the copied folder in Settings for a tab that names no profile, and for default', async () => {
+    serveAlphaWithLegacy('/srv/legacy')
+
+    const unnamed = createBrowserSettings({ basePath: '/hermes', currentProfile: () => null })
+    const named = createBrowserSettings({ basePath: '/hermes', currentProfile: () => 'default' })
+
+    await expect(unnamed.getDefaultProjectDir()).resolves.toMatchObject({ dir: '/srv/legacy' })
+    await expect(named.getDefaultProjectDir()).resolves.toMatchObject({ dir: '/srv/legacy' })
   })
 
   it('keeps a folder the served profile already chose and leaves the old one where it was', () => {
-    host()
-    win.__HERMES_DASHBOARD_PROFILE__ = 'alpha'
-    localStorage.setItem(legacyKey, '/srv/legacy')
+    serveAlphaWithLegacy('/srv/legacy')
     putFolder('alpha', '/srv/alpha-own')
 
     expect(resolveNewSessionCwd('alpha')).toBe('/srv/alpha-own')
@@ -311,5 +337,54 @@ describe('browser folder saved by an older build', () => {
 
     expect(resolveNewSessionCwd('alpha')).toBe('')
     expect(resolveNewSessionCwd('default')).toBe('/srv/default')
+  })
+
+  it('keeps the old folder and retries when storage refuses the copy', () => {
+    serveAlphaWithLegacy('/srv/legacy')
+
+    const storage = window.localStorage
+
+    // jsdom's Storage ignores prototype spies; a full disk refuses alpha's write.
+    vi.spyOn(window, 'localStorage', 'get').mockReturnValue({
+      clear: () => storage.clear(),
+      getItem: (key: string) => storage.getItem(key),
+      key: (index: number) => storage.key(index),
+      removeItem: (key: string) => storage.removeItem(key),
+      setItem: (key: string, value: string) => {
+        if (key === alphaKey) {
+          throw new DOMException('full', 'QuotaExceededError')
+        }
+
+        storage.setItem(key, value)
+      }
+    } as Storage)
+
+    expect(resolveNewSessionCwd('alpha')).toBe('')
+    expect(resolveNewSessionCwd('default')).toBe('/srv/legacy')
+    expect(storage.getItem(legacyKey)).toBe('/srv/legacy')
+    expect(Object.keys(storage).some(key => key.includes('adopted'))).toBe(false)
+
+    vi.restoreAllMocks()
+
+    expect(resolveNewSessionCwd('alpha')).toBe('/srv/legacy')
+    expect(resolveNewSessionCwd('default')).toBe('/srv/legacy')
+  })
+
+  it('renames or drops the copy without touching default, and a drop does not copy it back', () => {
+    serveAlphaWithLegacy('/srv/legacy')
+
+    expect(resolveNewSessionCwd('alpha')).toBe('/srv/legacy')
+
+    migrateBrowserFolderPref('/hermes', 'alpha', 'beta')
+
+    expect(resolveNewSessionCwd('beta')).toBe('/srv/legacy')
+    expect(resolveNewSessionCwd('alpha')).toBe('')
+    expect(resolveNewSessionCwd('default')).toBe('/srv/legacy')
+
+    migrateBrowserFolderPref('/hermes', 'beta', 'alpha')
+    dropBrowserFolderPref('/hermes', 'alpha')
+
+    expect(resolveNewSessionCwd('alpha')).toBe('')
+    expect(resolveNewSessionCwd('default')).toBe('/srv/legacy')
   })
 })

@@ -24,10 +24,12 @@ export function browserDefaultProjectDirKey(basePath: string, profile: string): 
 /**
  * An older build keyed the folder on the profile the tab named, else 'default'.
  * A tab opened without `?profile=` names none, so on a gateway served as
- * another profile the folder that profile's tab chose sits under 'default'.
- * The first read on this build moves it to the served profile, unless that
- * profile already has its own. The marker keeps a later launch as another
- * profile from taking default's own folder.
+ * another profile the folder that profile's tab chose sits under 'default';
+ * so does one a `?profile=default` tab chose. Whose it is stays unknown, so
+ * the first read on this build copies it to the served profile, unless that
+ * profile already has its own, and default keeps it. The marker is written
+ * once the copy reads back, so a refused write retries on the next read, and
+ * keeps a later launch as another profile from taking default's own folder.
  */
 function adoptLegacyLaunchFolder(basePath: string): void {
   const marker = `hermes:browser:default-project-dir-adopted:${JSON.stringify([basePath || '/'])}`
@@ -36,22 +38,22 @@ function adoptLegacyLaunchFolder(basePath: string): void {
     return
   }
 
-  writeKey(marker, '1')
-
   const launch = browserLaunchProfile()
 
-  if (!launch || launch === 'default') {
-    return
+  if (launch && launch !== 'default') {
+    const ownKey = browserDefaultProjectDirKey(basePath, launch)
+    const legacy = readKey(browserDefaultProjectDirKey(basePath, 'default'))?.trim()
+
+    if (legacy && !readKey(ownKey)?.trim()) {
+      writeKey(ownKey, legacy)
+
+      if (readKey(ownKey) !== legacy) {
+        return
+      }
+    }
   }
 
-  const legacyKey = browserDefaultProjectDirKey(basePath, 'default')
-  const ownKey = browserDefaultProjectDirKey(basePath, launch)
-  const legacy = readKey(legacyKey)?.trim()
-
-  if (legacy && !readKey(ownKey)?.trim()) {
-    writeKey(ownKey, legacy)
-    writeKey(legacyKey, null)
-  }
+  writeKey(marker, '1')
 }
 
 function folderKey(basePath: string, profile: string): string {

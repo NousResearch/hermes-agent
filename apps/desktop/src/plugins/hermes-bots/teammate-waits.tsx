@@ -99,13 +99,13 @@ export function failureReasonText(
   return error?.trim() || reasons.unknown
 }
 
-function teammateFor(roster: RosterRow[], sender: RosterRow, row: TeammateDelivery): RosterRow {
+/** The target's own roster row on the sender's connection, or null while the roster has not
+ *  caught up with it (a teammate created since the last roster poll). Never a row built from the
+ *  sender: its route would open the sender's own chat. */
+export function teammateFor(roster: RosterRow[], sender: RosterRow, row: TeammateDelivery): null | RosterRow {
   const sameSource = (bot: RosterRow) => (bot.connectionId || '') === (sender.connectionId || '')
 
-  return (
-    roster.find(bot => sameSource(bot) && bot.name === row.target) ??
-    ({ ...sender, canonical_session: null, name: row.target, title: null } as RosterRow)
-  )
+  return roster.find(bot => sameSource(bot) && bot.name === row.target) ?? null
 }
 
 const compactAge = (since: number, now: number) => {
@@ -137,7 +137,9 @@ function DeliveryRow({ now, row, sender, roster }: DeliveryRowProps) {
   const b = useBots()
   const meta = useValue($botMeta)
   const teammate = teammateFor(roster, sender, row)
-  const look = botAppearance(teammate.name, botRosterMeta(teammate, meta))
+  const name = teammate?.name ?? row.target
+  const teammateMeta = teammate ? botRosterMeta(teammate, meta) : null
+  const look = botAppearance(name, teammateMeta)
   const unknown = row.state === 'failed' && row.reason === 'unknown_outcome'
 
   const label =
@@ -154,14 +156,14 @@ function DeliveryRow({ now, row, sender, roster }: DeliveryRowProps) {
   return (
     <li className="flex min-w-0 items-center gap-2 py-0.5" data-delivery-state={row.state}>
       <BotFace
-        color={avatarColor(look.color, teammate.name)}
+        color={avatarColor(look.color, name)}
         image={look.image ?? null}
-        name={teammate.name}
+        name={name}
         shape={look.shape}
         size={18}
       />
       <span className="max-w-[9rem] shrink-0 truncate font-medium text-(--ui-text-secondary)">
-        {displayName(teammate, botRosterMeta(teammate, meta))}
+        {teammate ? displayName(teammate, teammateMeta) : row.target_handle || row.target}
       </span>
       <Tip label={row.error || row.preview || label}>
         <span
@@ -177,7 +179,12 @@ function DeliveryRow({ now, row, sender, roster }: DeliveryRowProps) {
         </span>
       </Tip>
       <span className="ml-auto shrink-0 tabular-nums text-(--ui-text-quaternary)">{compactAge(row.since, now)}</span>
-      <Button onClick={() => void openRosterBot(teammate)} size="micro" variant="ghost">
+      <Button
+        disabled={!teammate}
+        onClick={teammate ? () => void openRosterBot(teammate) : undefined}
+        size="micro"
+        variant="ghost"
+      >
         {b.waiting.open}
       </Button>
       {row.state === 'failed' ? (

@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
 import { TEAMMATE_WAIT_LOCALES } from './teammate-wait-locales'
-import { failureReasonText, senderForSession, type TeammateDelivery, visibleDeliveries } from './teammate-waits'
+import {
+  failureReasonText,
+  senderForSession,
+  type TeammateDelivery,
+  teammateFor,
+  visibleDeliveries
+} from './teammate-waits'
 import type { RosterRow } from './types'
 
 const bot = (name: string, id: string, resolved = id): RosterRow =>
@@ -45,5 +51,14 @@ describe('teammate-wait strip', () => {
         messages.reasons.provider_auth_or_access
       )
     }
+  })
+
+  it('a teammate the roster has not caught up with is never the sender in disguise', () => {
+    const alice = { ...bot('alice', 'a-root'), connectionId: 'box' } as RosterRow
+    const scribe = { ...bot('scribe', 's-root'), connectionId: 'box' } as RosterRow
+    const delivery = { ...row('1', 'queued'), target: 'scribe' }
+
+    expect(teammateFor([alice, scribe], alice, delivery)).toBe(scribe)
+    expect(teammateFor([alice], alice, { ...delivery, target: 'newcomer' })).toBeNull()
   })
 })

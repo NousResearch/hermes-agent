@@ -9,6 +9,7 @@ category: tools
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/olric3015/hermes-plugins/tree/main/uuid-ref
 version: "1.0.0"
+image: https://raw.githubusercontent.com/olric3015/hermes-plugins/12882e9923ff12eb1ae5cf9074d08fd162999c28/docs/uuid-ref-card.png
 platforms: []
 capabilities:
   provides_tools: []

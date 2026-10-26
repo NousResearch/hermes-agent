@@ -210,7 +210,21 @@ def test_does_not_use_untrusted_systemd_run_on_path(monkeypatch, tmp_path):
     or not _user_systemd_bus_usable(),
     reason="setpriv + /usr/bin/systemd-run + a reachable user systemd bus required for the kernel-latch harness",
 )
-def test_wrapped_sudo_does_not_hit_kernel_no_new_privs_latch(monkeypatch):
+def test_eval_embed_exposes_sudo_inside_pipestatus_trailer():
+    """Main's execute() embed is multiline. A single-line scan misses sudo."""
+    embed = (
+        "source /tmp/snap >/dev/null 2>&1 || true\n"
+        "eval 'printf \"%s\" \"$X\" && sudo -n true\n"
+        "\n"
+        "__hermes_rc=$? __hermes_ps=(\"${PIPESTATUS[@]}\"); (exit $__hermes_rc) && :'\n"
+        "exit $__hermes_ec\n"
+    )
+    exposed = terminal_tool._eval_exposed(embed)
+    assert "sudo -n true" in exposed
+    assert terminal_tool._rewrite_real_sudo_invocations(exposed)[1] == 1
+
+
+def test_wrapped_sudo_does_not_hit_kernel_no_new_privs_latch(monkeypatch, request):
     """setpriv reproduces Electron's latch; wrap must actually reach sudo."""
     raw = subprocess.run(
         ["setpriv", "--no-new-privs", "sudo", "-n", "true"],
@@ -236,6 +250,9 @@ def test_wrapped_sudo_does_not_hit_kernel_no_new_privs_latch(monkeypatch):
     assert sudo_ran, combined
     unit = terminal_tool._nnp_sudo_unit_from_command(wrapped)
     assert unit
+    # This test created the transient unit. The live-system guard refuses
+    # systemctl stop of any other hermes-* unit.
+    request.node.live_system_guard_owned_units = {unit}
     subprocess.run(
         ["/usr/bin/systemctl", "--user", "stop", unit],
         capture_output=True,

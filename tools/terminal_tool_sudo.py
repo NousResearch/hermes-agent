@@ -480,12 +480,21 @@ _NNP_SUDO_UNIT_RE = re.compile(r"--unit=(hermes-nnp-sudo-[0-9]+-[0-9a-f]+\.servi
 # for the detection pass: a line starting ``eval '`` and ending ``'`` is our
 # shape; a user's ``echo 'sudo x'`` does not match it, so quoted data stays
 # data and cannot trigger a spurious wrap.
-_EVAL_EMBED_RE = re.compile(r"(?m)^eval '(.*)'$")
+# ``_wrap_command_script`` embeds the user command as ``eval '...'``. The
+# pipestatus form (# current main) puts a newline and a PIPESTATUS trailer
+# inside that same quoted span, so a single-line ``(.*)'$`` never sees sudo
+# and the NoNewPrivs wrap no-ops on the real execute() path.
+_EVAL_EMBED_RE = re.compile(r"(?m)^eval '((?:.*\n)*.*)'$")
 
 
 def _eval_exposed(command: str) -> str:
     """Detection view of *command* with the wrapper's ``eval '...'`` embed
-    lines unescaped, so command words the quoting buried are scannable."""
+    unescaped, so command words the quoting buried are scannable.
+
+    Matches both the one-line embed and the multiline pipestatus embed. The
+    closing quote is the last ``'`` of that span; ``'\\''`` inside the embed
+    is the wrapper's own escape and is restored before the sudo scan.
+    """
     if "eval '" not in command:
         return command
     return _EVAL_EMBED_RE.sub(lambda m: m.group(1).replace("'\\''", "'"), command)

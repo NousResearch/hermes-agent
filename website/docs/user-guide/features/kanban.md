@@ -60,9 +60,12 @@ The shared `complete_task` boundary covers worker tools, CLI, review approval an
 dashboard completion. It reads classic branch protection and active ruleset
 required contexts, paginates exact-head check runs and legacy statuses, then
 re-reads the PR head/base. Optional failed/skipped telemetry does not veto accepted
-required checks. Missing, pending, failed, cancelled, timed-out, stale, skipped or
-neutral **required** evidence cannot complete the card. Neither can zero-run
-acceptance, unreadable policy or GitHub API failures. A repository without required
+required checks. Missing, pending, failed, cancelled, timed-out, stale or neutral
+**required** evidence cannot complete the card. A required check-run GitHub reports as
+`skipped` is non-blocking, like `success`: a path-filtered required job legitimately
+does not run for a docs-only or workflow-only diff, and GitHub does not withhold the
+merge for it. Zero-run acceptance, unreadable policy and GitHub API failures cannot
+complete the card either. A repository without required
 checks needs a local-only contract. `gh` must be authenticated with read access to
 the repository's checks and rules; no remote writes are performed by this gate.
 Acceptance reads run as the **assignee profile's** `gh` login — its `GH_TOKEN` /

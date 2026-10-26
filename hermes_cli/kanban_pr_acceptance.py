@@ -175,7 +175,7 @@ def collect_acceptance(contract: str, published_pr: str | None,
         if current["head"]["sha"] != sha or current["base"]["ref"] != branch or (current["state"] == "closed" and not current.get("merged")):
             receipt.update(classification="stale", detail="PR head/base changed while collecting evidence; retry.")
             return receipt
-        receipt["classification"] = next((x for x in outcomes if x != "success"), "missing" if not outcomes else "success")
+        receipt["classification"] = _receipt_classification(outcomes)
         receipt["ok"] = receipt["classification"] == "success"
         return receipt
     except _GateAuthError as exc:
@@ -195,4 +195,17 @@ def _classify(check: dict, sha: str, outcome: str | None, is_run: bool) -> str:
         return "stale"
     if is_run and check.get("status") != "completed":
         return "pending"
-    return {"success": "success", "failure": "failure", "error": "infra", "pending": "pending"}.get(outcome, "infra")
+    # A completed run carrying no conclusion at all, or an unmodelled one, is infra.
+    return {"success": "success", "failure": "failure", "skipped": "skipped",
+            "error": "infra", "pending": "pending"}.get(outcome or "", "infra")
+
+
+def _receipt_classification(outcomes: list[str]) -> str:
+    """One verdict for the required contexts collected so far. ``skipped`` joins
+    ``success`` as non-blocking: a required job whose path filter does not match a
+    docs/workflow-only diff is skipped by GitHub and does not block such a PR. Every
+    other classification still fails the receipt, and unaccounted contexts stay
+    ``missing``."""
+    if not outcomes:
+        return "missing"
+    return next((x for x in outcomes if x not in ("success", "skipped")), "success")

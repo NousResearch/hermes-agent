@@ -77,17 +77,25 @@ def github(tmp_path, monkeypatch):
 
 @pytest.mark.platforms("linux")
 def test_pr_completion_requires_current_required_evidence(github):
+    # `skipped` is non-blocking: a required job whose path filter does not match a
+    # docs/workflow-only diff legitimately skips, and GitHub accepts such a PR. Every
+    # other non-success conclusion still fails the receipt.
+    passing = ("success", "skipped")
+    classified = {"failure": "failure", "pending": "pending", "cancelled": "infra",
+                  "timed_out": "infra", "action_required": "infra", "neutral": "infra",
+                  "skipped": "skipped", None: "infra", "success": "success"}
     with connect() as conn:
-        for conclusion in ("failure", "pending", "cancelled", "timed_out", "action_required", "neutral", "skipped", None, "success"):
+        for conclusion, expected in classified.items():
             github.update(conclusion=conclusion, head="a" * 40)
             tid = kb.create_task(conn, title="Publish", completion_contract="acme/repo")
             ok = kb.complete_task(conn, tid, result="done", metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
-            assert ok is (conclusion == "success")
+            assert ok is (conclusion in passing)
             task = kb.get_task(conn, tid)
             assert (task.status == "done") is ok
             receipts = [json.loads(r[0]) for r in conn.execute(
                 "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,))]
             assert receipts and receipts[-1]["head_sha"] == "a" * 40
+            assert receipts[-1]["checks"][0]["classification"] == expected
             if not ok:
                 assert task.status in {"running", "ready", "blocked", "review"}
                 assert "retry" in receipts[-1]["recovery"]
@@ -230,3 +238,25 @@ def test_assigned_card_with_unresolvable_profile_is_auth_not_ambient(tmp_path, m
             "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
     assert receipt["classification"] == "auth"
     assert "'ghost'" in receipt["detail"] and "cannot be resolved" in receipt["detail"]
+
+
+# --- one skipped required-check class: non-blocking, never masking a real failure ---
+
+def test_skipped_required_check_is_non_blocking_but_never_masks_a_failure():
+    """`_classify` names `skipped` own its classification, and the receipt summary ignores
+    only `success`/`skipped`: a skipped required check does not fail the receipt, a real
+    failure beside it still does, and absent evidence stays `missing`."""
+    from hermes_cli.kanban_pr_acceptance import _classify, _receipt_classification
+    sha = "a" * 40
+    completed = {"head_sha": sha, "status": "completed"}
+    assert _classify(completed, sha, "skipped", True) == "skipped"
+    assert _classify(completed, sha, "failure", True) == "failure"
+    assert _classify(completed, sha, "success", True) == "success"
+    # Unchanged neighbours: a running check run is pending, an old head is stale.
+    assert _classify({**completed, "status": "in_progress"}, sha, None, True) == "pending"
+    assert _classify({"head_sha": "b" * 40, "status": "completed"}, sha, "success", True) == "stale"
+    assert _receipt_classification(["skipped"]) == "success"
+    assert _receipt_classification(["success", "skipped"]) == "success"
+    assert _receipt_classification(["skipped", "failure"]) == "failure"
+    assert _receipt_classification(["skipped", "missing"]) == "missing"
+    assert _receipt_classification([]) == "missing"

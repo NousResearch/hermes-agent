@@ -157,6 +157,59 @@ def _ssh_terminal(host: str) -> dict:
     return {"backend": "ssh", "cwd": "/srv/repos", "ssh_host": host, "ssh_user": "dev"}
 
 
+# Notified whenever a fake dial starts or a recording lock sees a contended acquire, so a test can
+# wait for "the other caller is now blocked or dialing" without sleeping.
+_progress = threading.Condition()
+
+
+class _RecordingLock:
+    """A lock that records which thread had to wait for it."""
+
+    def __init__(self, key, waits: list):
+        self._key, self._waits, self._lock = key, waits, threading.Lock()
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        if self._lock.acquire(blocking=False):
+            return True
+        with _progress:
+            self._waits.append((self._key, threading.current_thread().name))
+            _progress.notify_all()
+        return self._lock.acquire(blocking, timeout) if blocking else False
+
+    def release(self) -> None:
+        self._lock.release()
+
+    def locked(self) -> bool:
+        return self._lock.locked()
+
+    __enter__ = acquire
+
+    def __exit__(self, *exc) -> None:
+        self.release()
+
+
+class _RecordingLocks(dict):
+    """Stands in for the factory's lock dicts: every lock it hands out is a ``_RecordingLock``."""
+
+    def __init__(self, waits: list):
+        super().__init__()
+        self.waits = waits
+
+    def setdefault(self, key, default=None):
+        if key not in self:
+            self[key] = _RecordingLock(key, self.waits)
+        return self[key]
+
+
+@pytest.fixture
+def lock_waits(monkeypatch) -> list:
+    """Swap the factory's lock dicts for recording ones; returns the (lock key, thread name) waits."""
+    waits: list = []
+    monkeypatch.setattr(ssh_workspace_fs, "_DIAL_LOCKS", _RecordingLocks(waits))
+    monkeypatch.setattr(ssh_workspace_fs, "_ENDPOINT_LOCKS", _RecordingLocks(waits), raising=False)
+    return waits
+
+
 @pytest.fixture
 def gated_ssh(monkeypatch):
     """A fake SSHEnvironment that records each dial; a dial to a ``hanging`` host blocks until ``release``."""
@@ -170,7 +223,9 @@ def gated_ssh(monkeypatch):
         release = threading.Event()
 
         def __init__(self, **kwargs):
-            self.created.append(kwargs["host"])
+            with _progress:
+                self.created.append(kwargs["host"])
+                _progress.notify_all()
             if kwargs["host"] in self.hanging:
                 self.dialing.set()
                 self.release.wait(5)
@@ -215,17 +270,22 @@ def test_ssh_workspace_factory_serves_other_profiles_while_one_host_hangs(gated_
     assert results["down"] is not None
 
 
-def test_ssh_workspace_factory_dials_one_profile_once_for_concurrent_requests(gated_ssh):
+def test_ssh_workspace_factory_dials_one_profile_once_for_concurrent_requests(gated_ssh, lock_waits):
     gated_ssh.hanging.add("ssh.example")
     backends: list = []
 
     def open_profile() -> None:
         backends.append(ssh_workspace_fs.get_ssh_workspace_fs("remote-dev", _ssh_terminal("ssh.example")))
 
-    threads = [threading.Thread(target=open_profile, daemon=True) for _ in range(2)]
+    threads = [threading.Thread(target=open_profile, name=f"caller-{i}", daemon=True) for i in range(2)]
     threads[0].start()
     assert gated_ssh.dialing.wait(5)
     threads[1].start()
+    # Release the first dial only once the second caller is provably contending: either waiting on
+    # a lock or (without one) already dialing a second connection.
+    with _progress:
+        assert _progress.wait_for(
+            lambda: any(name == "caller-1" for _, name in lock_waits) or len(gated_ssh.created) > 1, timeout=5)
     gated_ssh.release.set()
     for thread in threads:
         thread.join(5)
@@ -295,6 +355,91 @@ def test_ssh_workspace_factory_closes_replaced_connection_before_dialing_new_key
     assert raised.value.code == "ECONN"
     assert events[3:] == [("cleanup", "/keys/new"), ("dial", "/keys/revoked")]
     assert "remote-dev" not in ssh_workspace_fs._BACKENDS
+
+
+def test_ssh_workspace_factory_keeps_same_endpoint_cleanup_and_dial_apart(monkeypatch, lock_waits):
+    """Profiles on one user@host:port share a control socket, so one's cleanup must not overlap
+    another's dial: ``ssh -O exit`` then a peer's fresh master then our unlink deletes the peer's socket."""
+    events: list = []
+    sockets: dict = {}
+    cleaning, release = threading.Event(), threading.Event()
+
+    class SharedSocketSsh:
+        def __init__(self, **kwargs):
+            self.key_path = kwargs["key_path"]
+            self.socket = f"{kwargs['user']}@{kwargs['host']}:{kwargs['port']}"
+            with _progress:
+                events.append(("dial", self.key_path))
+                sockets.setdefault(self.socket, self.key_path)
+                _progress.notify_all()
+            self.cwd = kwargs["cwd"]
+            self.timeout = kwargs["timeout"]
+            self._remote_home = "/home/dev"
+
+        def cleanup(self):
+            events.append(("exit", self.key_path))
+            sockets.pop(self.socket, None)  # the master exits and drops its socket
+            cleaning.set()
+            release.wait(5)
+            events.append(("unlink", self.key_path, sockets.pop(self.socket, None)))
+
+    monkeypatch.setattr(ssh_workspace_fs, "SSHEnvironment", SharedSocketSsh)
+    monkeypatch.setattr(ssh_workspace_fs, "_BACKENDS", {})
+
+    def open_with(profile_key: str, key: str):
+        return ssh_workspace_fs.get_ssh_workspace_fs(profile_key, {**_ssh_terminal("ssh.example"), "ssh_key": key})
+
+    open_with("alpha", "/keys/alpha-old")
+    beta_done = threading.Event()
+
+    def open_beta() -> None:
+        open_with("beta", "/keys/beta")
+        with _progress:
+            beta_done.set()
+            _progress.notify_all()
+
+    alpha = threading.Thread(target=open_with, args=("alpha", "/keys/alpha-new"), name="alpha", daemon=True)
+    beta = threading.Thread(target=open_beta, name="beta", daemon=True)
+    alpha.start()
+    try:
+        assert cleaning.wait(5)
+        beta.start()
+        with _progress:
+            assert _progress.wait_for(
+                lambda: beta_done.is_set() or any(name == "beta" for _, name in lock_waits), timeout=5)
+    finally:
+        release.set()
+        alpha.join(5)
+        if beta.ident is not None:
+            beta.join(5)
+    assert not alpha.is_alive() and not beta.is_alive()
+
+    assert events[:3] == [
+        ("dial", "/keys/alpha-old"), ("exit", "/keys/alpha-old"), ("unlink", "/keys/alpha-old", None)]
+    assert sorted(events[3:]) == [("dial", "/keys/alpha-new"), ("dial", "/keys/beta")]
+    assert set(sockets) == {"dev@ssh.example:22"}
+
+
+def test_ssh_workspace_factory_does_not_hold_unrelated_endpoint_locks(gated_ssh, lock_waits):
+    """Moving a profile off a hanging endpoint waits only for that endpoint; others stay free."""
+    first = ssh_workspace_fs.get_ssh_workspace_fs("remote-dev", _ssh_terminal("old.example"))
+    gated_ssh.hanging.add("new.example")
+    moved: list = []
+    mover = threading.Thread(
+        target=lambda: moved.append(ssh_workspace_fs.get_ssh_workspace_fs("remote-dev", _ssh_terminal("new.example"))),
+        daemon=True)
+    mover.start()
+    try:
+        assert gated_ssh.dialing.wait(5)
+        assert gated_ssh.cleaned == ["old.example"]
+        # The old endpoint's lock was released after cleanup, so another profile can dial it now.
+        other = ssh_workspace_fs.get_ssh_workspace_fs("other", _ssh_terminal("old.example"))
+        assert other is not first
+    finally:
+        gated_ssh.release.set()
+        mover.join(5)
+    assert moved and moved[0] is not first
+    assert lock_waits == []
 
 
 def test_ssh_workspace_factory_failed_cleanup_does_not_wedge_the_profile(gated_ssh, monkeypatch):

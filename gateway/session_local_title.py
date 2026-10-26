@@ -12,7 +12,8 @@ from hermes_state_runtime import RuntimeStoreError
 def resolve_titled_session(authority, actor, name, *, missing_ok=False):
     """Exact session id first, then title (latest ``"<title> #N"`` continuation wins over
     the bare title), projected forward to the compression tip. Only a local session the
-    actor may read is returned; a foreign or non-local match is ``not_found`` so another
+    actor may read is returned, or one a messaging lane took over from a local surface
+    (``handed_off_ref``); a foreign or other non-local match is ``not_found`` so another
     principal's titles are never confirmed."""
     if not isinstance(name, str) or not name.strip():
         raise RuntimeStoreError('invalid_params')
@@ -24,7 +25,12 @@ def resolve_titled_session(authority, actor, name, *, missing_ok=False):
         if missing_ok:
             return None
         raise RuntimeStoreError('not_found')
+    from gateway.session_route_recovery import handed_off_ref
+    moved = handed_off_ref(authority, tip['id'])
     try:
+        if moved is not None:
+            authority.authorize(actor, moved, 'session:read')
+            return moved
         from gateway.session_local_migration import resolve_local_target
         ref = resolve_local_target(authority, actor, tip['id'])
     except RuntimeStoreError as exc:

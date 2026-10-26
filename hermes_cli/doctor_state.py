@@ -16,11 +16,12 @@ from hermes_state_holders import read_only_db_uri
 
 def _doctor_memory_config(hermes_home: Path | None = None) -> dict:
     """Return the effective memory section used by doctor diagnostics."""
+    from hermes_cli.config_backend import config_exists
     from hermes_cli.doctor import HERMES_HOME
     try:
         from hermes_cli.config_effective import load_user_config_effective
         config_path = (hermes_home if hermes_home is not None else HERMES_HOME) / "config.yaml"
-        if not config_path.exists():
+        if not config_exists(config_path):
             return {}
         section = load_user_config_effective(config_path).get("memory")
         return section if isinstance(section, dict) else {}
@@ -661,9 +662,26 @@ def _check_plugins_disabled_by_update(should_fix: bool, f: Finding) -> None:
                                f"or run: hermes plugins enable {name}")
 
 
+@doctor_check("")  # best-effort: an unreadable config is the config check's finding
+def _check_plugins_in_both_lists(should_fix: bool, f: Finding) -> None:
+    """A plugin in both plugins.enabled and plugins.disabled loads nowhere (the disable wins). Older
+    updates left plugins in that state when they had to turn them off. Judged by the loader's gate."""
+    from hermes_cli.plugins_discovery import plugins_in_both_lists
+    both = plugins_in_both_lists()
+    if not both:
+        return
+    _section("Plugins Listed as Both Enabled and Disabled")
+    for name in both:
+        check_warn(f"{name} will not load", "(plugins.disabled wins)")
+        f.manual_issues.append(f"Plugin '{name}' is in both plugins.enabled and plugins.disabled, so it is off. "
+                               f"Turn it on with `hermes plugins enable {name}` (a memory provider also needs "
+                               f"memory.provider set), or keep it off with `hermes plugins disable {name}`")
+
+
 @doctor_check("")  # best-effort: profile enumeration must never break doctor
 def _check_profiles(should_fix: bool, f: Finding) -> None:
     from hermes_constants import PROFILE_ID_RE
+    from hermes_cli.config_backend import config_exists
     from hermes_cli.profiles import _wrapper_path, list_profiles, _get_wrapper_dir, profile_exists
     import re as _re
     named_profiles = [p for p in list_profiles() if not p.is_default]
@@ -675,7 +693,7 @@ def _check_profiles(should_fix: bool, f: Finding) -> None:
     for p in named_profiles:
         parts = [text for cond, text in (
             (p.gateway_running, "gateway running"), (p.model, (p.model or "")[:30]),
-            (not (p.path / "config.yaml").exists(), "⚠ missing config"), (not (p.path / ".env").exists(), "no .env"),
+            (not config_exists(p.path / "config.yaml"), "⚠ missing config"), (not (p.path / ".env").exists(), "no .env"),
             (p.alias_path is None, "no alias")) if cond]
         check_ok(f"  {p.name}: {', '.join(parts) if parts else 'configured'}")
     # Orphan wrappers

@@ -209,23 +209,22 @@ def _raw_config_cache_clear() -> None:
 
 
 def _config_cache_key(config_path: Path) -> Optional[tuple[str, int, int, int, int]]:
-    """``(path, *file_signature)`` identity of config.yaml, or None when unreadable/absent."""
-    try:
-        from utils import file_signature
-        return (str(config_path), *file_signature(config_path.stat()))
-    except OSError:
-        return None
+    """``(path, *backend version)`` identity of config.yaml, or None when unreadable/absent."""
+    from hermes_cli.config_backend import config_version_or_none
+    version = config_version_or_none(config_path)
+    return None if version is None else (str(config_path), *version)
 
 
 def _load_raw_config() -> dict[str, Any]:
-    """Read config.yaml with an mtime+size keyed cache (no hermes_cli.config import)."""
+    """Read config.yaml with a version-keyed cache (no hermes_cli.config import)."""
     from agent.safe_worker_policy import worker_config_snapshot
+    from hermes_cli.config_backend import config_exists, read_config_doc
 
     snapshot = worker_config_snapshot()
     if snapshot is not None:
         return snapshot
     config_path = get_config_path()
-    if not config_path.exists():
+    if not config_exists(config_path):
         return {}
     cache_key = _config_cache_key(config_path)
     with _RAW_CONFIG_CACHE_LOCK:
@@ -233,7 +232,7 @@ def _load_raw_config() -> dict[str, Any]:
     if cached is not None:
         return cached
     try:
-        parsed = yaml_load(config_path.read_text(encoding="utf-8-sig"))
+        parsed = read_config_doc(config_path)
     except Exception as e:
         logger.debug("Could not read skill config %s: %s", config_path, e)
         return {}
@@ -337,8 +336,9 @@ def _config_str_list(raw) -> list[str]:
 def get_external_skills_dirs() -> list[Path]:
     """Validated, deduplicated ``skills.external_dirs`` (existing dirs only). Entries
     are ``~``/``${VAR}`` expanded, relative to HERMES_HOME; the local skills dir is skipped."""
+    from hermes_cli.config_backend import config_exists
     config_path = get_config_path()
-    if not config_path.exists():
+    if not config_exists(config_path):
         return []
     full_key = _config_cache_key(config_path)
     cache_key = full_key

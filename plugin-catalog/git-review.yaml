@@ -1,24 +1,24 @@
 # Catalog entry for NousResearch/hermes-agent: plugin-catalog/git-review.yaml
-# Pinned to the merge commit of v0.1.27 (release published 2026-10-24). Bump sha and version together.
+# Pinned to the merge commit of v0.2.0 (release published 2026-10-25). Bump sha and version together.
 name: git-review
 repo: https://github.com/mister-ideas/git-review
-sha: 0aeaef3810c182b71e8cbf430ad2fb36b2e35c62
+sha: 506b44804fbf90000c2d620975888f47427dfaa6
 title: Git Review
-description: "Read-only Git review pane for Hermes Desktop: shows what the agent's last turn, uncommitted, staged or unstaged work, or any selection of commits changed, in unified or split layout, and cites changed lines into the composer as @line: references. It never fetches, stages, commits or checks out. Disclosure — the backend runs read-only git subprocesses (rev-parse, status, diff, log, show, cat-file, ls-files, for-each-ref, branch, remote, rev-list, hash-object) with timeouts and output caps, external diff and textconv drivers disabled; the only network use is the optional PR/MR badge, which runs the user's own gh or glab CLI for the checked-out branch (the plugin itself makes no network requests); it reads files and history inside authorized repositories only (the focused workspace, configured repos/roots and the latest agent selection), this profile's config.yaml, and the cwd column of the sessions table in state.db (read-only); it writes only $HERMES_HOME/plugin-data/git-review/select.sqlite3 (agent selection requests) and Desktop plugin storage (display settings, turn baselines), never into a repository; while the pane is open it polls the local backend every 3 s (agent selections) and 5 s (live diffs); no background processes, credentials or telemetry."
+description: "Git review pane for Hermes Desktop: every changed file of the agent's last turn, uncommitted, staged or unstaged work, the branch since it left the default branch, or any selection of commits, in one scroll, unified or split, with syntax colours; cites changed lines into the composer as @line: references; and stages, unstages, discards, commits, pushes and opens pull requests from the pane. Disclosure — reads run git subprocesses (rev-parse, status, diff, log, show, cat-file, ls-files, for-each-ref, branch, remote, rev-list, merge-base, symbolic-ref, hash-object) with timeouts and output caps, external diff and textconv drivers disabled. Writes run only when the user clicks: git add, restore, reset, rm, commit and push, on paths validated inside the repository; discard asks first in Desktop's confirmation dialog and deletes only the untracked files it names. By default hooks are skipped and any write that would run a program named by the repository's own config (filter drivers, signing, SSH or credential commands) is refused; the run_repo_programs setting allows them, and the read_only setting hides and refuses every write. Network use: push to the branch's own name on its remote, and the user's own gh or glab CLI for the PR/MR badge and for Create pull request; the plugin itself makes no network requests. Generate commit message sends what the commit will contain and recent commit subjects to the focused chat's model through Hermes's commit_message one-shot template, only when clicked. It reads files and history inside authorized repositories only (the focused workspace, configured repos/roots and the latest agent selection), this profile's config.yaml, and the cwd column of the sessions table in state.db (read-only); it writes $HERMES_HOME/plugin-data/git-review/select.sqlite3 (agent selection requests), Desktop plugin storage (display settings, turn baselines) and, through the actions above, the user's repository. While the pane is open it polls the local backend every 3 s (agent selections) and 5 s (live diffs); the status-bar count and the commit box's branch state refresh every 15 s; no background processes, credentials or telemetry."
 maintainer: mister-ideas
 tier: community
 category: desktop
 requires_hermes: ">=0.21.6"
-version: "0.1.27"
+version: "0.2.0"
 docs_url: https://github.com/mister-ideas/git-review#readme
-image: https://raw.githubusercontent.com/mister-ideas/git-review/0aeaef3810c182b71e8cbf430ad2fb36b2e35c62/docs/banner.jpg
+image: https://raw.githubusercontent.com/mister-ideas/git-review/506b44804fbf90000c2d620975888f47427dfaa6/docs/banner.jpg
 screenshots:
-  - https://raw.githubusercontent.com/mister-ideas/git-review/0aeaef3810c182b71e8cbf430ad2fb36b2e35c62/docs/screenshots/unified-agent-turn.png
-  - https://raw.githubusercontent.com/mister-ideas/git-review/0aeaef3810c182b71e8cbf430ad2fb36b2e35c62/docs/screenshots/split-layout.png
-  - https://raw.githubusercontent.com/mister-ideas/git-review/0aeaef3810c182b71e8cbf430ad2fb36b2e35c62/docs/screenshots/fold-and-expand.png
-  - https://raw.githubusercontent.com/mister-ideas/git-review/0aeaef3810c182b71e8cbf430ad2fb36b2e35c62/docs/screenshots/cite-into-composer.png
-  - https://raw.githubusercontent.com/mister-ideas/git-review/0aeaef3810c182b71e8cbf430ad2fb36b2e35c62/docs/screenshots/commits-scope.png
-  - https://raw.githubusercontent.com/mister-ideas/git-review/0aeaef3810c182b71e8cbf430ad2fb36b2e35c62/docs/screenshots/dark-theme.png
+  - https://raw.githubusercontent.com/mister-ideas/git-review/506b44804fbf90000c2d620975888f47427dfaa6/docs/screenshots/unified-agent-turn.png
+  - https://raw.githubusercontent.com/mister-ideas/git-review/506b44804fbf90000c2d620975888f47427dfaa6/docs/screenshots/split-layout.png
+  - https://raw.githubusercontent.com/mister-ideas/git-review/506b44804fbf90000c2d620975888f47427dfaa6/docs/screenshots/fold-and-expand.png
+  - https://raw.githubusercontent.com/mister-ideas/git-review/506b44804fbf90000c2d620975888f47427dfaa6/docs/screenshots/cite-into-composer.png
+  - https://raw.githubusercontent.com/mister-ideas/git-review/506b44804fbf90000c2d620975888f47427dfaa6/docs/screenshots/commit-box.png
+  - https://raw.githubusercontent.com/mister-ideas/git-review/506b44804fbf90000c2d620975888f47427dfaa6/docs/screenshots/dark-theme.png
 capabilities:
   provides_tools:
     - git_review_select

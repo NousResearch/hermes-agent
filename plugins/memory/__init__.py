@@ -436,10 +436,11 @@ class _ProviderCollector:
             base_ref="agent.memory_provider:MemoryProvider", ctx=self, before_reload=drop_hooks)
         return self.provider
 
-    def register_hook(self, hook_name, callback):
+    def register_hook(self, hook_name, callback, *, hold_stream=False):
         context = self._plugin_context()
         with context._manager._discovery_lock:
-            return context._manager._register_fallback_hook(context, self._hook_source, hook_name, callback)
+            return context._manager._register_fallback_hook(
+                context, self._hook_source, hook_name, callback, hold_stream=hold_stream)
 
     def register_memory_provider(self, provider):
         self.provider = provider

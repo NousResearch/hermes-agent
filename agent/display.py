@@ -1264,7 +1264,10 @@ _CUTE_LINES = {
     "skills_list": lambda a, r: _cute_row("📚", "skills", t("display.cute.skills_list", category=a.get("category") or t("display.cute.skills_all"))),
     "skill_view": _cute_skill_view,
     "image_generate": lambda a, r: _cute_row("🎨", "create", _cute_trunc(a.get("prompt", ""))),
-    "text_to_speech": lambda a, r: _cute_row("🔊", "speak", _cute_trunc(a.get("text", ""))),
+    "text_to_speech": lambda a, r: (
+        _cute_row("🗣️ ", "voices", _cute_trunc((a.get("find_voices") or {}).get("query") or "browse"))
+        if isinstance(a.get("find_voices"), dict)
+        else _cute_row("🔊", "speak", _cute_trunc(a.get("text", "")))),
     "vision_analyze": lambda a, r: _cute_row("👁️ ", "vision", _cute_trunc(a.get("question", ""))),
     "send_message": lambda a, r: _cute_row("📨", "send", f"{a.get('target', '?')}: \"{_cute_trunc(a.get('message', ''))}\""),
     "cronjob_manage": _cute_cronjob,

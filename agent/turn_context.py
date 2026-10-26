@@ -651,7 +651,10 @@ def _reset_per_turn_agent_state(agent: Any) -> None:
     if agent._compression_warning:
         agent._replay_compression_warning()
         agent._compression_warning = None  # send once
-    if getattr(agent, "_pending_startup_notices", None):  # gateway: init ran before its callbacks
+    from agent.status_output import deliver_kept_startup_notices
+    deliver_kept_startup_notices(agent)
+    if getattr(agent, "_pending_startup_notices", None) or getattr(agent, "_pending_startup_prints", None):
+        # gateway: init ran before this turn's callbacks / viewer print sink
         agent._replay_startup_warnings()
 
     agent.iteration_budget = IterationBudget(agent.max_iterations)
@@ -1123,8 +1126,8 @@ def build_turn_context(
     agent._persist_user_message_idx = current_turn_user_idx
 
     agent._user_turn_count += 1
-    # Copilot x-initiator: the first API call of this user turn is user-initiated;
-    # tool-loop follow-ups revert to "agent".
+    # Turn-initiator state for per-request provider headers: the first API call of this
+    # user turn is user-initiated; tool-loop follow-ups are agent-initiated.
     agent._is_user_initiated_turn = True
 
     # Preserve the original user message (no nudge injection).

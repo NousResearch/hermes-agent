@@ -30,7 +30,7 @@ class ProcessCheckpointMixin:
 
     # ----- Checkpoint (crash recovery) -----
 
-    def _write_checkpoint(self, extra_entries: Optional[list[dict[str, Any]]] = None, *, exclude_ids=(), _lock_held=False):
+    def _write_checkpoint(self, extra_entries: Optional[list[dict[str, Any]]] = None, *, exclude_ids=(), retain_ids=(), _lock_held=False):
         """Write running process metadata to the checkpoint file atomically."""
         from tools.process_registry import _checkpoint_path, _CHECKPOINT_FIELDS
 
@@ -38,7 +38,7 @@ class ProcessCheckpointMixin:
             with nullcontext() if _lock_held else self._lock:
                 entries = []
                 for s in {**self._finished, **self._running}.values():
-                    if s.exited and not s._scope_stop_pending and not s.systemd_unit:
+                    if s.exited and not s._scope_stop_pending and not s.systemd_unit and s.id not in retain_ids:
                         continue
                     # Backfill the start time so recovery can detect PID recycling
                     # even for sessions spawned before this field existed.

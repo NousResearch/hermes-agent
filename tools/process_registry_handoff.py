@@ -40,7 +40,7 @@ def transfer_ownership(registry, session_id, *, from_owner, to_owner, to_task_id
         target = (to_owner, to_task_id, to_session_key, to_parent_session_id, note, session.ownership_generation + 1)
         for field, value in zip(OWNERSHIP_FIELDS, target):
             setattr(session, field, value)
-        if not registry._write_checkpoint(_lock_held=True):
+        if not registry._write_checkpoint(retain_ids=(session.id,), _lock_held=True):
             for field, value in zip(OWNERSHIP_FIELDS, previous):
                 setattr(session, field, value)
             return None

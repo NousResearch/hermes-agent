@@ -48,6 +48,34 @@ def test_glyph_layout_scrollback_is_width_independent(monkeypatch, modern):
     assert any("Added multiply to calc.py." in line for line in rows)
 
 
+@pytest.mark.parametrize("reasoning", [
+    "scripted reasoning about gamma zeta-reason",
+    # Longer than the 72-char title cap: a shortened title would still repeat it.
+    "scripted reasoning about gamma zeta-reason that keeps going well past the title length cap here",
+])
+def test_one_line_reasoning_is_shown_once(monkeypatch, reasoning):
+    """Reasoning streams above its ∴ summary, so a one-sentence block must not reappear as the title."""
+    from cli import HermesCLI
+    import cli as climod
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._modern_layout, cli.show_reasoning, cli.reasoning_full = True, True, False
+    cli.final_response_markdown, cli.show_timestamps = "raw", False
+    cli._reset_stream_state()
+    emitted: list[str] = []
+    monkeypatch.setattr(climod, "_cprint", lambda s: emitted.append(_plain(s)))
+    monkeypatch.setattr(climod, "_terminal_width_for_streaming", lambda: 100)
+    monkeypatch.setattr(HermesCLI, "_scrollback_box_width", lambda self: 100)
+    cli._stream_reasoning_delta(reasoning)
+    cli._stream_delta("GAMMA answered.\n")
+    cli._flush_stream()
+
+    rows = "\n".join(emitted).split("\n")
+    assert sum(row.count(reasoning) for row in rows) == 1, emitted
+    thought = [row for row in rows if row.startswith("∴")]
+    assert len(thought) == 1 and "·" not in thought[0], thought
+
+
 @pytest.mark.parametrize("modern", [True, False])
 def test_status_line_sits_under_the_composer_only_in_the_glyph_layout(modern):
     from cli import HermesCLI
@@ -179,3 +207,55 @@ def test_tool_rows_keep_the_classic_tool_emoji():
         assert _plain(tool_row(name, args, 0.2)).startswith(classic_emoji + " "), (name, classic_emoji)
     failed = _plain(tool_row("terminal", {"command": "false"}, 0.2, result='{"exit_code": 1, "output": ""}'))
     assert failed.startswith("✗ ") and "[exit 1]" in failed, failed
+
+
+def test_refused_skill_write_reads_neutral_not_failed():
+    """A skill_manage write the agent will re-plan (size cap, stale old_string) keeps the tool's own
+    emoji and a dim reason: no red ✗ for the agent's routine retry loop."""
+    from agent.display import get_tool_emoji
+    from hermes_cli.cli_modern_layout import _RED, tool_row
+
+    refused = ('{"success": false, "error": "operations[0] (patch on \'hermes-agent-dev\') failed: '
+               'SKILL.md content is 100,193 characters (limit: 100,000).", '
+               '"file_preview": "Never ignore a ROLLBACK FAILED note."}')
+    row = tool_row("skill_manage", {"operations": [{"action": "patch", "name": "hermes-agent-dev"}]}, 1.1, refused)
+    assert _plain(row).startswith(get_tool_emoji("skill_manage") + " "), row
+    assert "[operations[0]" in _plain(row) and _RED not in row, row
+    # A failed rollback left partial changes on disk: that one stays a red failure.
+    broken = refused.replace('(limit: 100,000)."', '(limit: 100,000). — batch aborted, ROLLBACK FAILED for demo."')
+    assert _plain(tool_row("skill_manage", {"operations": []}, 1.1, broken)).startswith("✗ ")
+
+
+def test_every_block_is_framed_by_bars_and_blank_lines(monkeypatch):
+    """User message, reasoning and answer each read as: blank line, bar, content, bar, blank line.
+    The blank line after a closing bar is paid by whatever prints next (a tool row, the footer)
+    and never doubled when the next block opens with its own blank line + bar. Tool rows inside a
+    run stay tight."""
+    from cli import HermesCLI
+    import cli as climod
+    from hermes_cli import cli_modern_layout as layout
+
+    out: list[str] = []
+    monkeypatch.setattr(climod, "_cprint", lambda s: out.extend(_plain(s).split("\n")))
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._modern_layout, cli.show_timestamps = True, False
+    bar = "─" * 40
+
+    cli._print_user_message_preview("read the hostname")
+    for row in layout.thought_rows(2.0, "Plan the read.", full=True):
+        climod._cprint(row)
+    climod._cprint(layout.completed_tool_line(cli, "read_file", {"path": "/etc/hostname"}, 0.2))
+    climod._cprint(layout.completed_tool_line(cli, "terminal", {"command": "echo hi"}, 0.1))
+    climod._cprint(layout.answer_label())
+    climod._cprint("It is LINUX.")
+    climod._cprint(layout.closing_separator(True))
+    climod._cprint(layout.turn_footer("1.0s"))
+
+    rows = [r.rstrip() for r in out]
+    start = rows.index("❯ read the hostname") - 1
+    got = ["BAR" if r == bar else ("" if not r else r.split()[0]) for r in rows[start - 1:]]
+    assert got == ["", "BAR", "❯", "BAR",          # user message
+                   "", "BAR", "Plan", "∴", "BAR",  # reasoning
+                   "", "📖", "💻",                  # tool rows, tight
+                   "", "BAR", "☤", "It", "BAR",    # answer
+                   "", "─"], got                   # footer

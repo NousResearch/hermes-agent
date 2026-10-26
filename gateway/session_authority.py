@@ -80,6 +80,11 @@ class LiveSession:
     # Mounted by that cold path (not published by its lane): the lane publishing ANOTHER conversation
     # on the same route later supersedes it too.
     history_mount: bool = False
+    # A local conversation a messaging lane took over (``/handoff``, a platform ``/resume``): its
+    # viewers follow it onto the lane, and once that lane publishes another conversation (``/new``,
+    # another handoff) it is superseded like a history mount, whatever the lane published since.
+    # Set from the row (``moved_local``) on every mount of it, however constructed (#143286).
+    handed_off: bool = False
     # The background-review guard of a cold ``/refine`` (gateway/session_refine.py): its side agent is
     # per call, so the run token lives here; a second /refine joins it and the next turn cancels it.
     review: SimpleNamespace = field(default_factory=SimpleNamespace)
@@ -164,6 +169,7 @@ class SessionAuthority:
         # session id -> end_reason of a last-viewer close still waiting for an idle FIFO
         # (gateway/session_viewer_close); a viewer attaching again cancels it.
         self.pending_closes = {}
+        self.orphan_closes = {}  # session id -> grace timer of a session left with no viewer, never closed
         # Logical owner rotated away by the exhaustion auto-reset -> its session key: an admission
         # that reserved it before the rotation commits on that key's current route instead.
         self.rotated_owners = {}
@@ -201,9 +207,14 @@ class SessionAuthority:
                 restore_local_session(self, ref.session_id)
             else:
                 from gateway.session_route_recovery import restore_routed_session
-                if restore_routed_session(self, ref.session_id) is None:
+                from gateway.session_history_mount import mount_history
+                if (restore_routed_session(self, ref.session_id) is None
+                        and not mount_history(self, actor, ref.session_id)):
                     from gateway.session_api import restore_api_session
                     restore_api_session(self, ref.session_id)
+        from gateway.session_history_mount import is_history_mount, require_history_access
+        if is_history_mount(self.sessions[ref.session_id]):
+            require_history_access(self, actor, ref.session_id, capability)
         from gateway.config import Platform
         if self.sessions[ref.session_id].superseded and capability != 'session:read':
             # One gateway owns every session and never crosses them: the lane's route now belongs to
@@ -262,14 +273,30 @@ class SessionAuthority:
         return sid, entry.session_key
 
     def _publish_route(self, source, sid, route):
+        from gateway.config import Platform
         self._require_admission_open()
         live = self.sessions.get(sid)
+        # *sid* takes the route over: new here, moved onto it, or back after another conversation had it.
+        took_over = live is None or live.route != route or live.superseded
         if live is None:
-            live = self.sessions[sid] = LiveSession(source, route)
-            # The lane moved on to *sid*: a cold history mount still on its route is now another
-            # conversation's, so it goes read-only (gateway/session_route_recovery.py).
+            from gateway.session_route_recovery import mount
+            live = self.sessions[sid] = mount(self, sid, source, route)
+        elif live.route != route:
+            # *sid* moved lanes: ``/handoff`` or a platform ``/resume`` took a local conversation over
+            # (its repoint retired the local receipt), or a ``/resume`` moved it on to another chat.
+            # Its open viewers follow it, so a turn or a Stop through this mount reaches the lane that
+            # holds it now, never the conversation that replaced it on the old one (#143286).
+            from gateway.session_route_recovery import moved_local
+            left_local = live.source is not None and live.source.platform == Platform.LOCAL
+            live.handed_off = (live.handed_off or (left_local and source.platform != Platform.LOCAL)
+                               or moved_local(self, sid, source))
+            live.source, live.route = source, route
+        if took_over:
+            # The lane moved on to *sid*: a cold history mount or a chat handed off earlier that is
+            # still on its route is now another conversation's, so it goes read-only
+            # (gateway/session_route_recovery.py): a Stop or turn through it would act on *sid*.
             for other in self.sessions.values():
-                if other.history_mount and other.route == route and other is not live:
+                if (other.history_mount or other.handed_off) and other.route == route and other is not live:
                     other.superseded = True
         # The lane itself names *sid* (again): a historic mount becomes its live session.
         live.superseded = live.history_mount = False
@@ -324,7 +351,11 @@ class SessionAuthority:
         self.authorize(actor, ref, 'session:read')
         from gateway.session_local_recovery import local_history, prepare_history
         prepared = await prepare_history(self, ref)  # the lineage read stays off the loop and the lock
-        # A delete or eviction can land during that await: re-check, so it answers not_found, never a KeyError.
+        from gateway.session_onboarding import keep_from_discard
+        # The last await before the viewer joins: a fresh launch's claim is taken back with no yield
+        # before the join, and a delete already past it answers not_found below.
+        await keep_from_discard(self, ref.session_id)
+        # A delete or eviction can land during those awaits: re-check, so it answers not_found, never a KeyError.
         self.authorize(actor, ref, 'session:read')
         live = self.sessions[ref.session_id]
         from gateway.session_queued_controls import pending_rows
@@ -334,6 +365,8 @@ class SessionAuthority:
                                  if member == actor), None) or uuid.uuid4().hex
             live.subscribers[subscription] = actor
             self.pending_closes.pop(ref.session_id, None)
+            from gateway.session_viewer_close import cancel_orphan_close
+            cancel_orphan_close(self, ref.session_id)
             from tools.async_delegation import allow_for_session
             allow_for_session((self.profile_id, ref.session_id))  # a closed session's work may start again
             transport = self.events.get(actor.transport_id)
@@ -360,7 +393,7 @@ class SessionAuthority:
             if self.events.get(member.transport_id) is transport:
                 del live.subscribers[subscription]
 
-    async def detach(self, actor, subscription_id, *, end_reason=None):
+    async def detach(self, actor, subscription_id, *, end_reason=None, orphaned=False):
         for session_id, live in self.sessions.items():
             if subscription_id in live.subscribers:
                 if live.subscribers[subscription_id] != actor:
@@ -381,6 +414,9 @@ class SessionAuthority:
                     # A viewer that attached while the close was off the loop reopens it.
                     await tracked_write(self, partial(end_idle_acp_session, self, session_id),
                                         then=partial(reopen_if_reattached, self, session_id))
+                    if orphaned:  # a plain session.detach is a live client handing the session back
+                        from gateway.session_viewer_close import arm_detached_orphan_close
+                        await arm_detached_orphan_close(self, session_id)
                 return
         raise RuntimeStoreError('not_found')
 
@@ -526,6 +562,8 @@ class SessionAuthority:
         identity = json.dumps([source.profile, source.platform.value, source.chat_id,
                                source.thread_id, source.user_id], separators=(',', ':'))
         request_id = str(payload['native_text_v1']['event']['message_id'] or uuid.uuid4().hex)
+        if revision := payload['native_text_v1']['event'].get('edit_revision'):
+            request_id += ':edit:' + revision  # an edit is its own input, not a changed replay of the send
         committed = [ref]  # the row's target: the write may retarget a rotated-away reservation
         # A /retry re-send carries its transcript rewrite: it commits in this admission's own write.
         from gateway import session_retry_admission
@@ -618,7 +656,9 @@ class SessionAuthority:
                         check_local_input(
                             self, SessionRef(self.profile_id, sid), row, source=source)
                 self._require_admission_open()
-                self.sessions.setdefault(sid, LiveSession(source, route))
+                if sid not in self.sessions:  # ``mount``: a moved local chat keeps ``handed_off`` here too
+                    from gateway.session_route_recovery import mount
+                    self.sessions[sid] = mount(self, sid, source, route)
                 if any(row['status'] == 'unknown' for row in rows):
                     raise RuntimeStoreError('unknown_execution')
                 self._schedule(SessionRef(self.profile_id, sid))
@@ -868,21 +908,22 @@ class SessionAuthority:
             with live.event_stream.lock:
                 adopted_generation, agent = self.adopted.get(ref.session_id, (None, None))
                 if adopted_generation != generation:
-                    agent = self.agent(ref)
-                    if not self._runs_own_agent(ref):
+                    # Its execution returned and only the settlement is left: nothing to stop, and the route's
+                    # agent may already be the NEXT turn's (own-agent runs install it before their claim).
+                    returned = (live.event_stream.execution.get('execution_generation') == generation
+                                and self.executing.get(ref.session_id) != generation)
+                    agent = None if returned else self.agent(ref)
+                    if not returned and not self._runs_own_agent(ref):
                         # Accepted for this exact claim before its turn adopted an agent: whatever agent
                         # the turn adopts for this generation must not run the work as if no Stop arrived.
                         self.pending_stops[ref.session_id] = generation
                 if agent is not None:
                     self.delivered_stops[ref.session_id] = generation
-        # Main's Stop: hard-cancel (aborts compression too) and end the session's own background
-        # delegations (spawned by this session only: a viewer must not kill other gateway work).
+        # Stop hard-cancels this turn (aborts compression too). Background delegations are not the
+        # turn: they keep running and report back; `/stop` and session close/reset end them.
         from agent.interrupt_compat import request_hard_interrupt
-        from tools.async_delegation import interrupt_for_session
         if agent is not None:
             request_hard_interrupt(agent)
-        for parent in dict.fromkeys((ref.session_id, self.physical_target(ref))):
-            interrupt_for_session(session_key=live.route, parent_session_id=parent, reason='user_stop')
         return self._handle(ref)
 
     def _classic_turn_holds(self, route):
@@ -1055,8 +1096,11 @@ class SessionAuthority:
                 if current is None or current['status'] != 'queued':
                     return False, first
             if first is not None and live.source.platform == Platform.API_SERVER:
+                from gateway.session_api import reopen_api_session
                 from gateway.session_api_turn import check_api_turn
+                from gateway.session_runtime_workers import tracked_write
                 check_api_turn(self, ref, first['payload'])
+                await tracked_write(self, partial(reopen_api_session, self, ref))
             if first is not None and self._classic_turn_holds(live.route):
                 # A classic turn (fallback wake, CLI handoff, legacy resume) holds the route's slot:
                 # a claim now would hand this row to its busy path and settle it unrun. The head
@@ -1098,24 +1142,72 @@ class SessionAuthority:
             return True
         return False
 
+    async def _refuse_head(self, ref, admission_id, reason):
+        """Settle the queued head a preclaim check refused as cancelled: its waiters get *reason* (the
+        ingress notice, the API's refusal) and its successors revalidate on their own merits."""
+        from gateway.session_runtime_workers import tracked_write
+        before = get_session_admission(self.db, admission_id=admission_id)
+        if before is not None and before['status'] == 'queued':
+            # Owed from before the write, as in _commit_cancel: storage failing after the commit leaves
+            # it for the drain's retry of this exact refusal (or an explicit cancel) to pay.
+            self.cancel_obligations.add(admission_id)
+        try:
+            row = await tracked_write(self, partial(cancel_session_input, self.db, epoch=self.epoch,
+                                                    admission_id=admission_id))
+        except RuntimeStoreError:
+            self.cancel_obligations.discard(admission_id)
+            return False
+        if (row['status'], row['outcome']) != ('terminal', 'cancelled'):
+            self.cancel_obligations.discard(admission_id)
+            return False
+        if admission_id in self.cancel_obligations:
+            waiter = self.waiters.pop(admission_id, None)
+            if waiter is not None and not waiter.done():
+                waiter.set_exception(RuntimeStoreError(reason))
+            self._settle_cancelled(ref, admission_id)
+        from gateway.session_ingress_media import release_admission_media
+        await asyncio.to_thread(release_admission_media, self.db, admission_id)
+        return True
+
     async def _claim_with_retry(self, ref, live):
         """The drain's next ``(row, first)``, waiting out transient storage and a classic turn on the
         route; None when the drain must exit (paused, or stopping with committed rows left queued)."""
-        backoff = 0.0
+        backoff, conflicted, refusing = 0.0, None, None
         while True:
+            # The refusal handling's own reads and writes share the claim's storage retry, which finishes
+            # that exact refusal first: once its cancellation commits, the claim no longer sees the row.
             try:
-                row, first = await self._claim_next(ref, live)
-            except RuntimeStoreError as exc:
-                if exc.reason == 'unknown_execution':
-                    # An automation turn nobody is waiting on settles interrupted (GW-10); only a
-                    # person's lost turn keeps the FIFO paused for them to resolve.
-                    from gateway.session_unattended_unknown import settle_unattended_unknown
-                    if await settle_unattended_unknown(self, ref):
-                        continue
-                import logging
-                logging.getLogger(__name__).warning('Session %s paused: %s', ref.session_id, exc.reason)
-                self._pause(ref, exc.reason)
-                return None
+                if refusing is not None:
+                    await self._refuse_head(ref, *refusing)
+                    refusing = None
+                try:
+                    row, first = await self._claim_next(ref, live)
+                except RuntimeStoreError as exc:
+                    if exc.reason == 'unknown_execution':
+                        # An automation turn nobody is waiting on settles interrupted (GW-10); only a
+                        # person's lost turn keeps the FIFO paused for them to resolve.
+                        from gateway.session_unattended_unknown import settle_unattended_unknown
+                        if await settle_unattended_unknown(self, ref):
+                            continue
+                    if exc.reason == 'admission_conflict':
+                        # A verdict on the head alone (its route or binding moved under it) that every drain
+                        # repeats: pausing behind it strands the FIFO for good. Refused only once the same
+                        # head conflicted twice, read after each: never a successor a cancel advanced to.
+                        head = next((row['admission_id'] for row in list_session_admissions(
+                            self.db, session_id=ref.session_id) if row['status'] == 'queued'), None)
+                        if head is not None and head != conflicted:
+                            conflicted = head
+                            continue
+                        if head is not None:
+                            refusing = head, exc.reason
+                            refused = await self._refuse_head(ref, *refusing)
+                            refusing = None
+                            if refused:
+                                continue
+                    import logging
+                    logging.getLogger(__name__).warning('Session %s paused: %s', ref.session_id, exc.reason)
+                    self._pause(ref, exc.reason)
+                    return None
             except (OSError, sqlite3.OperationalError) as exc:
                 # A writer held past its patience or a full disk is transient, and every _schedule
                 # caller is event-driven: a dead drain would strand the committed head and hang its
@@ -1350,6 +1442,21 @@ def backfill_legacy_session_owners(db):
     return stamped
 
 
+def backfill_compression_created_sources(db):
+    """List conversations compressed before write-time stamping under their surface again: a chain
+    root without a created_source takes its nearest stamped continuation's. Idempotent and never
+    overwrites a known value, so every start runs it, like the owner backfill above."""
+    import logging
+    try:
+        stamped = db.stamp_legacy_compression_chains()
+    except Exception:
+        logging.getLogger(__name__).warning('Compression created_source repair failed for %s', db.db_path, exc_info=True)
+        return 0
+    if stamped:
+        logging.getLogger(__name__).info('Stamped created_source on %d compressed session row(s)', stamped)
+    return stamped
+
+
 async def initialize_session_authority(runner, *, profile_id, instance_id, db=None, register=True):
     """Call after exclusive profile ownership, before connecting adapters/API.
 
@@ -1369,6 +1476,11 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     from gateway.session_unattended_unknown import settle_recovered_unattended
     await asyncio.to_thread(settle_recovered_unattended, db, epoch)
     await asyncio.to_thread(backfill_legacy_session_owners, db)
+    await asyncio.to_thread(backfill_compression_created_sources, db)
+    from gateway.session_local_recovery import release_handed_off_receipts
+    await asyncio.to_thread(release_handed_off_receipts, db, epoch=epoch)
+    from gateway.session_bot import release_superseded_bot_chat_at_boot
+    await asyncio.to_thread(release_superseded_bot_chat_at_boot, db, runner.session_store)
     authority = SessionAuthority(runner, profile_id=profile_id, instance_id=instance_id, db=db, epoch=epoch)
     # A receipt's compression catch-up (#140060) writes: it commits off the loop too, before the
     # authority is published, so the recovery below only reads.

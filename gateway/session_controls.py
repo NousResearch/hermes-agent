@@ -135,6 +135,7 @@ class AuthorityConnection:
         bind_native_transport(authority, self.actor, identity)
         self.native_owner = identity.get('native_bootstrap') is True
         self.subscriptions = {}
+        self.handed_back = set()  # sessions this live client detached without closing (the TUI's switcher)
         self._identity, self._operator, self._siblings = identity, operator, {}
         authority.events[self.actor.transport_id] = transport
 
@@ -230,6 +231,8 @@ class AuthorityConnection:
         handlers.update(connection_handlers(self))
         from gateway.session_control_actions import control
         handlers['session.control'] = partial(control, self)
+        from gateway.session_onboarding import handlers as onboarding_handlers
+        handlers.update(onboarding_handlers(self))
         return handlers
 
     async def dispatch(self, request):
@@ -462,7 +465,8 @@ class AuthorityConnection:
                     skills_prompt = await asyncio.to_thread(render_launch_skills, params, sid)
             # Host-bound client values apply only over the gateway's own ticketed attach (run_api).
             ref = stage_local_session(self.authority, self.actor, params, skills_prompt=skills_prompt,
-                                      client_local=self.native_owner)
+                                      client_local=self.native_owner,
+                                      desktop_local=getattr(self.transport, 'desktop_local', False))
             if isinstance(ref, dict):
                 # The creation commit runs off the owner loop: a held writer must not freeze
                 # every session behind one new chat (N50).
@@ -495,7 +499,8 @@ class AuthorityConnection:
         from gateway.session_skin import resolved_skin
         return {'instance_id': self.authority.instance_id, 'profile_id': self.authority.profile_id,
                 'authority_epoch': self.authority.epoch,
-                'capabilities': ['durable-admission-v1', 'event-replay-v1', 'local-cli-create-v1', 'acp-editor-policy-v1', 'acp-session-mcp-v1'],
+                'capabilities': ['durable-admission-v1', 'event-replay-v1', 'local-cli-create-v1', 'acp-editor-policy-v1',
+                                 'acp-session-mcp-v1', 'clarify-batch-v1'],
                 'session_create': {'sources': sorted(SURFACES),
                                    'parameters': sorted(CREATE_FIELDS | {'title'})},
                 # Main's ``gateway.ready.skin``: the canonical client's own ready carries it.
@@ -539,30 +544,20 @@ class AuthorityConnection:
                                   'running': found.session_id in self.authority.sessions}],
                     'scope': 'stored'}
         from hermes_state_sessions import INTERNAL_LISTING_SOURCES
+        from gateway.session_live_listing import live_entries
         sessions = []
-        for sid in tuple(self.authority.sessions):
-            candidate = SessionRef(self.actor.profile_id, sid)
-            try:
-                handle = await self.authority.resolve(self.actor, candidate)
-            except RuntimeStoreError as exc:
-                if exc.reason not in {'permission_denied', 'profile_mismatch', 'not_found'}:
-                    raise
-                continue
-            row = self.authority.db.get_session(sid)
+        for entry in await live_entries(self.authority, self.actor):
+            row = entry.row
             # The human picker feed (TUI switcher): kanban workers, `--source tool` integrations and
-            # finite one-shot runs are not conversations, as on every other picker.
-            if row.get('source') in INTERNAL_LISTING_SOURCES or (
+            # finite one-shot runs are not conversations, as on every other picker. Closed by its last
+            # viewer and idle: main lists it as resumable (the stored feed), not as a live session.
+            if row.get('source') in INTERNAL_LISTING_SOURCES or entry.closed or (
                     not params.get('include_hidden') and (row.get('hidden') or row.get('archived'))):
                 continue
-            from gateway.session_local_close import closed_and_unviewed
-            if closed_and_unviewed(self.authority, sid, handle):
-                # Closed by its last viewer and idle: main lists it as resumable (the stored
-                # feed), not as a live session.
-                continue
-            sessions.append({'session_id': sid, 'id': sid, 'title': row.get('title') or '',
+            sessions.append({'session_id': entry.session_id, 'id': entry.session_id, 'title': row.get('title') or '',
                              'source': row.get('source'), 'started_at': row.get('started_at'),
                              'message_count': row.get('message_count', 0), 'model': row.get('model'),
-                             'running': handle.execution_state == 'running'})
+                             'running': entry.handle.execution_state == 'running'})
         sessions.sort(key=lambda row: row['started_at'] or 0, reverse=True)
         return {'sessions': sessions[:limit], 'scope': 'live'}
 
@@ -615,7 +610,9 @@ class AuthorityConnection:
         # reopens it (``reopen_local_session`` in the drain), so opening a finished chat
         # never re-lights DB-derived liveness with no new activity.
         self.authority.authorize(self.actor, ref, 'session:read')
-        if 'session:control' in self.actor.capabilities:
+        mounted = self.authority.sessions[ref.session_id].source
+        # Only a local route has a stored creation policy to refresh; a platform lane's turns read the profile.
+        if 'session:control' in self.actor.capabilities and getattr(mounted, 'platform', None) == Platform.LOCAL:
             # A client attaching (main's `hermes -c` was a new process) re-reads the config-derived settings
             # (CFG-2); a snapshot poll on this attachment does not. Any open still adopts a frozen Bot Chat
             # whose earlier open found it busy (Desktop's warm `session.activate` resumes on one connection).
@@ -623,6 +620,7 @@ class AuthorityConnection:
             await refresh_resumed_policy(self.authority, ref, attached=ref.session_id in self.subscriptions)
         snapshot = await self.authority.attach(self.actor, ref)
         self.subscriptions[ref.session_id] = snapshot.subscription_id
+        self.handed_back.discard(ref.session_id)
         self._spawn_notice(ref)
         # Only local routes have a frozen local launch policy to project; with it, main's banner and
         # status-bar inventory (tools, skills, MCP, version, branch) for that policy.
@@ -633,13 +631,16 @@ class AuthorityConnection:
             await asyncio.to_thread(refresh_profile_hooks, policy_for_source(self.authority.runner, source))
             info = await snapshot_info(self.authority, snapshot.handle.ref)
         from gateway.session_connections import pending_connection
-        display = {}
+        from gateway.session_server_requests import open_requests
+        # Its home module, not tui_gateway.server: importing the stdio sidecar points sys.stdout at stderr.
+        from tui_gateway.tool_progress import _todo_state_from_history
+        history, display = list(snapshot.history), {}
         if params.get('display_projection'):
             # A micro-compaction merge stays in ``messages`` (an undo target); its originals are what shows.
             display['display_messages'] = display_projection(
-                [row for row in snapshot.history if not model_only(row)], self.authority.profile_id)
+                [row for row in history if not model_only(row)], self.authority.profile_id)
         return {'session_id': ref.session_id, 'stored_session_id': ref.session_id,
-                'messages': list(snapshot.history), **display, 'message_count': len(snapshot.history),
+                'messages': history, **display, 'message_count': len(history),
                 'running': snapshot.handle.execution_state == 'running',
                 'authority_epoch': snapshot.handle.authority_epoch,
                 'replay_epoch': snapshot.replay_epoch, 'last_sequence': snapshot.last_sequence,
@@ -647,7 +648,13 @@ class AuthorityConnection:
                 'execution_generation': snapshot.handle.execution_generation,
                 'pending': [asdict(r) for r in snapshot.pending],
                 'prompts': list(snapshot.prompts), 'info': info,
-                'pending_connection': pending_connection(self.authority, ref.session_id)}
+                'pending_connection': pending_connection(self.authority, ref.session_id),
+                # Still-waiting server→client requests: the event ring cannot say "still open".
+                'open_requests': open_requests(self.authority.sessions[snapshot.handle.ref.session_id].event_stream,
+                                               snapshot.handle.ref.session_id),
+                # The newest todo result in the transcript, the snapshot the session's agent hydrates
+                # from and its ``todo.updated`` frames carried: a viewer attaching shows the plan now.
+                'todo_state': _todo_state_from_history(history)}
 
     def _spawn_notice(self, ref):
         """Low-disk auto-prune question for this viewer, off the resume reply's path."""
@@ -678,6 +685,7 @@ class AuthorityConnection:
         await self.authority.detach(self.actor, subscription_id, end_reason=end_reason)
         if self.subscriptions.get(session_id) == subscription_id:
             del self.subscriptions[session_id]
+        (self.handed_back.discard if end_reason else self.handed_back.add)(session_id)
         result['detached'] = True
         return result
 
@@ -687,7 +695,9 @@ class AuthorityConnection:
         epoch = params.get('replay_epoch')
         if type(sequence) is not int or sequence < 0 or (epoch is not None and not isinstance(epoch, str)):
             raise RuntimeStoreError('invalid_params')
-        return self.authority.sessions[ref.session_id].event_stream.since(epoch, sequence)
+        from gateway.session_server_requests import open_requests
+        stream = self.authority.sessions[ref.session_id].event_stream
+        return {**stream.since(epoch, sequence), 'open_requests': open_requests(stream, ref.session_id)}
 
     async def submit(self, ref, params):
         if self._voice_stop_replay(ref, params) or await self._typed_voice_stop(ref, params):
@@ -810,8 +820,22 @@ class AuthorityConnection:
 
     async def cancel(self, ref, params):
         admission_id = params.get('admission_id')
-        if (await self.authority.receipt(self.actor, ref, admission_id)).status != 'queued':
-            return asdict(await self.authority.cancel_queued(self.actor, ref, admission_id))  # started: unaffected
+        receipt = await self.authority.receipt(self.actor, ref, admission_id)
+        from hermes_state_runtime import get_session_admission
+        # A transferred steer also reads started (as its receiving claim): only its own claim is stopped here;
+        # the transfer is refused below and settles with that claim.
+        if receipt.status == 'started' and get_session_admission(
+                self.authority.db, admission_id=admission_id)['status'] == 'started':
+            # Stopped in this RPC: an editor that exits right after its cancel never sends a follow-up
+            # interrupt. A stale generation means the turn already settled.
+            try:
+                await self.interrupt(ref, {'execution_generation': receipt.execution_generation})
+            except RuntimeStoreError as exc:
+                if exc.reason != 'stale_generation':
+                    raise
+            return asdict(await self.authority.receipt(self.actor, ref, admission_id))
+        if receipt.status != 'queued':
+            return asdict(await self.authority.cancel_queued(self.actor, ref, admission_id))
         # Queued at this read, claimed by the drain before the cancel commit: Stop that exact claim (as
         # API and ACP do) instead of refusing while the withdrawn prompt runs.
         row = await self.authority.cancel_or_claimed(self.actor, ref, admission_id)
@@ -833,13 +857,19 @@ class AuthorityConnection:
 
     def _resolve_response(self, frame):
         from gateway.session_server_requests import may_settle, resolve
+        asked = []
 
         def entitled(session_id, events):
-            # The same rule ``clarify.lock`` applies to the same request id (attached + respond).
-            return may_settle(self.authority, self.actor, session_id, events)
+            asked.append(session_id)
+            # The same rule ``clarify.lock`` applies to the same request id (attached + respond). A
+            # response frame names no profile: a host-scoped socket answers a sibling's request as the
+            # sibling connection that attached it.
+            return any(may_settle(connection.authority, connection.actor, session_id, events)
+                       for connection in (self, *self._siblings.values()))
         if not resolve(frame, session_ok=entitled):
             import logging
-            logging.getLogger(__name__).debug('dropping response for unknown server request id=%r', frame.get('id'))
+            what = 'a server request this connection may not settle' if asked else 'unknown server request'
+            logging.getLogger(__name__).debug('dropping response for %s id=%r', what, frame.get('id'))
 
     async def respond(self, ref, params):
         if set(params) != {"session_id", "execution_generation", "prompt_id", "choice"}:
@@ -861,10 +891,17 @@ class AuthorityConnection:
         forget(self)  # nobody is left to read its one-shot replies
         # Deletion may already have evicted a subscribed session; its membership died
         # with it, and one retired ID must not leave the others (or the transport) attached.
-        for session_id, subscription in list(self.subscriptions.items()):
-            live = self.authority.sessions.get(session_id)
-            if live is not None and subscription in live.subscribers:
-                await self.authority.detach(self.actor, subscription)
+        # A sibling's teardown runs under the primary socket's scope: detach as this owner, as dispatch does.
+        from gateway.session_authorities import owner_scope
+        with owner_scope(self.authority):
+            for session_id, subscription in list(self.subscriptions.items()):
+                live = self.authority.sessions.get(session_id)
+                if live is not None and subscription in live.subscribers:
+                    await self.authority.detach(self.actor, subscription, orphaned=True)
+            # Kept in the background by this client: losing it orphans them too, unless another viewer holds one.
+            from gateway.session_viewer_close import arm_detached_orphan_close
+            for session_id in self.handed_back:
+                await arm_detached_orphan_close(self.authority, session_id)
         from gateway.session_local_migration import unbind_native_transport
         unbind_native_transport(self.authority, self.actor)
         self.subscriptions.clear()

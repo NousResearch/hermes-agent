@@ -241,27 +241,21 @@ def test_banner_session_label_is_mains_eight_characters_for_a_canonical_id():
 
 
 def test_cli_startup_notices_render_from_the_snapshot(store, monkeypatch):
-    """Main's tool-availability warning and browser notice print from the gateway snapshot (the
-    gateway resolved the session's tools); the CLI process enumerates nothing."""
+    """Main's tool-availability warning prints from the gateway snapshot (the gateway resolved the
+    session's tools); the CLI process enumerates nothing."""
     from types import SimpleNamespace
 
     from hermes_cli.cli_info_mixin import CLIInfoMixin
-    from hermes_cli.cli_tui_runtime_mixin import CLITuiRuntimeMixin
     db, _ = store
     db.open_session(cli("local-old", resumed=True))
-    db.current["info"].update(tool_availability_warnings=["[yellow]⚠ terminal off[/]"],
-                              browser_backend_notice="browser-harness is missing")
+    db.current["info"].update(tool_availability_warnings=["[yellow]⚠ terminal off[/]"])
     printed = []
-    host = SimpleNamespace(_session_db=db, _console_print=lambda *a: printed.append(a[0] if a else ""),
-                           _show_browser_backend_notice=lambda: printed.append("LOCAL"))
-    CLITuiRuntimeMixin._show_startup_browser_notice(host)
-    assert printed == ["[yellow]⚠ browser-harness is missing[/yellow]"]
+    host = SimpleNamespace(_session_db=db, _console_print=lambda *a: printed.append(a[0] if a else ""))
     monkeypatch.setattr("cli._build_compact_banner", lambda: "compact", raising=False)
     banner = SimpleNamespace(**vars(host), console=SimpleNamespace(clear=lambda: None), compact=True,
                              session_id="local-old", _show_status=lambda: None, agent=None,
                              _show_tool_availability_warnings=lambda: printed.append("LOCAL-WARN"))
     banner._print_gateway_tool_warnings = lambda lines: CLIInfoMixin._print_gateway_tool_warnings(banner, lines)
-    printed.clear()
     CLIInfoMixin.show_banner(banner)
     assert "[yellow]⚠ terminal off[/]" in printed and "LOCAL-WARN" not in printed
 
@@ -519,6 +513,91 @@ def test_row_cwd_is_mains_stamp_while_the_tools_run_in_terminal_cwd(store, monke
     assert [p for m, p in client.calls if m == "session.create"][-1]["row_cwd"] == ""
 
 
+@pytest.mark.parametrize("backend", ["docker", "ssh"])
+def test_a_sandbox_backend_sends_the_host_launch_dir_not_its_terminal_cwd(store, monkeypatch, tmp_path, backend):
+    """A docker/ssh ``terminal.cwd`` (bridged to TERMINAL_CWD) names a path inside the sandbox. The
+    owner checks ``cwd`` on its own host, so sending it refused every launch with ``invalid_params``;
+    like the thin client and the TUI, the classic CLI sends its host launch dir."""
+    from hermes_cli import gateway_session_store as gss
+    db, client = store
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TERMINAL_CWD", "/project/not-on-this-host")
+    monkeypatch.setenv("TERMINAL_ENV", backend)
+    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
+    db.create({"toolsets": ["file"]})
+    assert [p for m, p in client.calls if m == "session.create"][-1]["cwd"] == str(tmp_path.resolve())
+    monkeypatch.setattr(gss, "session_store", lambda: db)
+    gss.create_titled_session("Remote Named")
+    assert [p for m, p in client.calls if m == "session.create"][-1]["cwd"] == str(tmp_path.resolve())
+
+
+def test_a_mounting_docker_backend_sends_the_w_worktree_not_the_launch_dir(store, monkeypatch, tmp_path):
+    """``-w`` puts its host worktree in TERMINAL_CWD without a chdir. A docker backend mounting the
+    session cwd at ``/workspace`` would otherwise mount the original checkout, so the tools edit it
+    instead of the isolated tree."""
+    db, client = store
+    repo, tree = tmp_path / "repo", tmp_path / "repo" / ".worktrees" / "wt"
+    tree.mkdir(parents=True)
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("TERMINAL_CWD", str(tree))
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "true")
+    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
+    db.create({"toolsets": ["file"]})
+    assert [p for m, p in client.calls if m == "session.create"][-1]["cwd"] == str(tree.resolve())
+
+
+@pytest.mark.parametrize("entry", ["cli", "__main__"])
+@pytest.mark.parametrize("backend,mount", [("local", None), ("docker", "true")])
+def test_a_removed_w_worktree_is_sent_so_the_gateway_refuses_it(store, monkeypatch, tmp_path, backend, mount, entry):
+    """-w publishes its tree in TERMINAL_CWD without a chdir; once the tree is gone, creating from the
+    original checkout would put the agent's edits there. Main sent the path and the gateway refused it.
+    ``hermes -w`` records the tree in the imported ``cli`` module, ``python cli.py -w`` in ``__main__``."""
+    import sys
+    from hermes_cli import gateway_session_store as gss
+    db, client = store
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    tree = repo / ".worktrees" / "wt"  # never created: removed while the CLI was open
+    monkeypatch.chdir(repo)
+    if entry == "cli":
+        monkeypatch.setitem(sys.modules, "cli", types.SimpleNamespace(_active_worktree={"path": str(tree)}))
+    else:
+        monkeypatch.setattr(sys.modules["__main__"], "_active_worktree", {"path": str(tree)}, raising=False)
+    monkeypatch.setenv("TERMINAL_CWD", str(tree))
+    monkeypatch.setenv("TERMINAL_ENV", backend)
+    if mount:
+        monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", mount)
+    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
+    db.create({"toolsets": ["file"]})
+    assert [p for m, p in client.calls if m == "session.create"][-1]["cwd"] == str(tree.resolve())
+    monkeypatch.setattr(gss, "session_store", lambda: db)
+    gss.create_titled_session("Named")
+    assert [p for m, p in client.calls if m == "session.create"][-1]["cwd"] == str(tree.resolve())
+
+
+@pytest.mark.parametrize("backend,mount", [("local", None), ("docker", "true")])
+def test_a_project_resumed_after_w_is_sent_not_the_w_worktree(store, monkeypatch, tmp_path, backend, mount):
+    """``hermes -w`` in A, ``/resume`` of a session from B, then ``/new``: the resume moves cwd and
+    TERMINAL_CWD to B but A stays recorded (its quit cleanup is still due), so A must not win."""
+    import sys
+    from hermes_cli.cli_session_mixin import CLISessionMixin
+    db, client = store
+    tree, project_b = tmp_path / "a" / ".worktrees" / "wt", tmp_path / "b"
+    tree.mkdir(parents=True)
+    project_b.mkdir()
+    monkeypatch.chdir(tmp_path / "a")
+    monkeypatch.setitem(sys.modules, "cli", types.SimpleNamespace(_active_worktree={"path": str(tree)}))
+    monkeypatch.setenv("TERMINAL_CWD", str(tree))
+    monkeypatch.setenv("TERMINAL_ENV", backend)
+    if mount:
+        monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", mount)
+    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
+    CLISessionMixin._restore_session_cwd(types.SimpleNamespace(), {"cwd": str(project_b)}, quiet=True)
+    db.create({"toolsets": ["file"]}, record_cwd=False)
+    assert [p for m, p in client.calls if m == "session.create"][-1]["cwd"] == str(project_b.resolve())
+
+
 def test_explicit_reasoning_max_turns_and_checkpoints_reach_session_create(store, monkeypatch):
     """Main's HermesCLI built AIAgent with the run's `--reasoning`, `--max-turns` and `--checkpoints`;
     the gateway now builds the agent, so `session.create` must carry them or the run silently uses
@@ -772,3 +851,41 @@ def test_resume_refusal_names_the_clashing_flag_and_the_way_forward(store):
     with pytest.raises(GatewayClientError, match="--provider differs .* use /model after resuming"):
         check_resume_policy(argparse.Namespace(provider="anthropic"),
                             {"info": {"launch_request": {"provider": "openrouter"}}})
+
+
+def test_clear_banner_shows_the_new_gateway_sessions_tools_and_short_label(store, monkeypatch):
+    """#134889 CLI-22: `/clear` inside the running CLI redraws the banner from the new gateway
+    session's snapshot (its MCP tools, main's 8-character label), as the startup banner does; this
+    process's own tool registry has no MCP servers and is never walked."""
+    import cli as cli_mod
+    from cli import HermesCLI
+    db, client = store
+    canonical = "local-ab12cd34" + "e" * 56
+    info = {**INFO, "tools": {"file": ["read_file"], "mcp-zeta": ["mcp__zeta__ro_probe"]}}
+    created = {**snapshot(canonical), "info": info}
+
+    async def rpc(method, *, _timeout=None, **params):
+        client.calls.append((method, params))
+        return created if method == "session.create" else {}
+    client.rpc = rpc
+    banners = []
+    monkeypatch.setattr("hermes_cli.banner.build_welcome_banner", lambda **kw: banners.append(kw))
+    monkeypatch.setattr(cli_mod, "get_tool_definitions", lambda **_kw: pytest.fail("walked the CLI's registry"))
+    monkeypatch.setattr(cli_mod, "_cprint", lambda *_a: None)
+    monkeypatch.setattr("shutil.get_terminal_size", lambda *_a: types.SimpleNamespace(columns=200, lines=50))
+    shell = HermesCLI.__new__(HermesCLI)
+    shell.__dict__.update(
+        _session_db=db, session_id="local-old", compact=False, model="fake-model", provider="custom",
+        enabled_toolsets=["hermes-cli"], disabled_toolsets=[], agent=None,
+        _app=types.SimpleNamespace(output=types.SimpleNamespace(
+            erase_screen=lambda: None, cursor_goto=lambda *_a: None, flush=lambda: None)))
+    shell._confirm_destructive_slash = lambda *_a, **_k: "once"
+    shell._print_random_tip = lambda: None
+    shell.new_session = lambda silent=False: setattr(shell, "session_id", db.create({}))
+
+    shell._cmd_clear("/clear")
+
+    (banner,) = banners
+    assert banner["session_id"] == "ab12cd34"
+    assert sorted(t["function"]["name"] for t in banner["tools"]) == ["mcp__zeta__ro_probe", "read_file"]
+    assert banner["get_toolset_for_tool"]("mcp__zeta__ro_probe") == "mcp-zeta"

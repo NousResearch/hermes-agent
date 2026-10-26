@@ -7,7 +7,7 @@ _completed: ContextVar[bool] = ContextVar('browser_turn_cleanup_completed', defa
 
 
 def finalize_browser_for_turn(task_id: str) -> bool:
-    from tools.browser_tool_lifecycle import cleanup_browser_for_turn
+    from tools.browser_session_lifecycle import cleanup_browser_for_turn
 
     confirmed = cleanup_browser_for_turn(task_id)
     if confirmed:
@@ -17,7 +17,7 @@ def finalize_browser_for_turn(task_id: str) -> bool:
 
 @contextmanager
 def browser_turn_cleanup_boundary(task_id: str):
-    from tools.browser_tool_lifecycle import cleanup_browser_for_turn
+    from tools.browser_session_lifecycle import cleanup_browser_for_turn
 
     token = _completed.set(False)
     try:

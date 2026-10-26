@@ -435,19 +435,20 @@ async def _write_while_open(session: PtySession, ws: WebSocket, data: bytes, fen
 
 def _input_runs(frames: list[dict], resize_re):
     """``frames`` in order: consecutive keystrokes joined into one run, resizes as ``(cols, rows)``."""
-    run = b""
+    run: list[bytes] = []  # joined once: a batch can hold megabytes of pasted input
     for msg in frames:
         raw = _frame_payload(msg)
         match = resize_re.fullmatch(raw) if raw else None
         if match is None:
-            run += raw
+            if raw:
+                run.append(raw)
             continue
         if run:
-            yield run
-            run = b""
+            yield b"".join(run)
+            run = []
         yield int(match[1]), int(match[2])
     if run:
-        yield run
+        yield b"".join(run)
 
 
 async def _resize(session: PtySession, ws: WebSocket, size: tuple[int, int], undo):

@@ -393,20 +393,22 @@ def revoke(email: Optional[str] = None) -> None:
     _ensure_deps()
     from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
+    import urllib.error
 
     try:
         creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
         if creds.expired and creds.refresh_token:
             creds.refresh(Request())
         import urllib.request
-        urllib.request.urlopen(
-            urllib.request.Request(
-                f"https://oauth2.googleapis.com/revoke?token={creds.token}",
-                method="POST",
-                headers={"Content-Type": "application/x-www-form-urlencoded"}),
-            timeout=15)
+        req = urllib.request.Request(
+            f"https://oauth2.googleapis.com/revoke?token={creds.token}",
+            method="POST",
+            headers={"Content-Type": "application/x-www-form-urlencoded"})
+        urllib.request.urlopen(req, timeout=15).close()
         print("Token revoked with Google.")
     except Exception as exc:
+        if isinstance(exc, urllib.error.HTTPError):
+            exc.close()
         print(f"Remote revocation failed (token may already be invalid): {exc}")
     token_path.unlink(missing_ok=True)
     _pending_auth_path(email).unlink(missing_ok=True)

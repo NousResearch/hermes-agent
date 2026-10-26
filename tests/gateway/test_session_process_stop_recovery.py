@@ -149,3 +149,47 @@ async def test_stop_consumes_ready_own_completion_but_delivers_neighbor(tmp_path
     assert [event['session_id'] for event, _text in events] == [neighbor.id]
     assert own.completion_reason == neighbor.completion_reason == 'exited'
     assert own.exit_code == neighbor.exit_code == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('refuse', [False, True], ids=['verified-stop', 'refused-stop'])
+async def test_idle_stop_recovers_previous_worker_before_clearing_status(tmp_path, monkeypatch, registry, refuse):
+    from tools import process_registry as module
+    from gateway.session_ancillary import process_stop_pending
+    from gateway import session_finite
+    db, authority = _authority(tmp_path, monkeypatch)
+    previous = module.ProcessRegistry()
+    own = _spawn(previous, tmp_path)
+    neighbors = [_spawn(previous, tmp_path, owner='neighbor'),
+                 _spawn(previous, tmp_path, route='other-route')]
+    kill = registry.kill_process
+    if refuse:
+        monkeypatch.setattr(registry, 'kill_process', lambda *a, **kw: {'status': 'error', 'error': 'fixture refusal'})
+    executed = []
+
+    async def execute(owner, ref, row):
+        executed.append(row['request_id'])
+        assert own.exited, 'idle Stop handed off while a previous worker process still lived'
+        return 'done'
+
+    monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
+    try:
+        assert not registry._running, 'the gateway starts without the previous worker process table'
+        await authority.interrupt(ACTOR, REF, authority._handle(REF).execution_generation)
+        if refuse:
+            assert process_stop_pending(db, 's') is not None and not own.exited
+            await _submit(authority, 'held-follower')
+            await asyncio.wait_for(authority.sessions['s'].task, 15)
+            assert executed == [] and not own.exited
+            monkeypatch.setattr(registry, 'kill_process', kill)
+            await authority.interrupt(ACTOR, REF, authority._handle(REF).execution_generation)
+        assert await asyncio.to_thread(own._completion_event.wait, 10)
+        assert process_stop_pending(db, 's') is None
+        assert all(not process.exited for process in neighbors)
+        registry.recover_from_checkpoint()
+        assert all(registry.get(process.id) is not None for process in neighbors)
+    finally:
+        monkeypatch.setattr(registry, 'kill_process', kill)
+        for process in [own, *neighbors]:
+            previous.kill_process(process.id)
+        db.close()

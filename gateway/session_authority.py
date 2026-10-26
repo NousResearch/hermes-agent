@@ -936,11 +936,13 @@ class SessionAuthority:
         if agent is not None:
             request_hard_interrupt(agent)
         if not returned:
-            from gateway.session_ancillary import interrupt_processes, record_process_stop, clear_process_stop
+            from gateway.session_ancillary import interrupt_processes, record_process_stop, retry_process_stop
             from gateway.session_runtime_workers import tracked_write
-            token = await tracked_write(self, partial(record_process_stop, self, ref, generation))
-            if await interrupt_processes(self, ref, agent) and handle.execution_state != 'running':
-                await tracked_write(self, partial(clear_process_stop, self, ref, token))
+            await tracked_write(self, partial(record_process_stop, self, ref, generation))
+            if handle.execution_state == 'running':
+                await interrupt_processes(self, ref, agent)
+            else:
+                await retry_process_stop(self, ref, agent)
         return self._handle(ref)
 
     def _classic_turn_holds(self, route):

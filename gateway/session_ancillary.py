@@ -62,8 +62,10 @@ async def retry_process_stop(authority, ref, agent=None):
     from gateway.session_authorities import owner_scope
     from gateway.session_managed_worker import managed_policy
     from gateway.session_runtime_workers import tracked_write
+    from tools.process_registry import _checkpoint_path
     with owner_scope(authority):
-        if not token.startswith(str(authority.epoch) + ':') or managed_policy(authority, ref) is not None:
+        if (not token.startswith(str(authority.epoch) + ':') or managed_policy(authority, ref) is not None
+                or await asyncio.to_thread(_checkpoint_path().exists)):
             if not await asyncio.to_thread(_recover_stopped_processes, authority, ref):
                 return False
         if not await interrupt_processes(authority, ref, agent):

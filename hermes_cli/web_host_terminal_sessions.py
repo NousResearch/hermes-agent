@@ -30,8 +30,11 @@ from hermes_constants import assert_named_profile_home_live, get_hermes_home
 # No survival across backend restart. Disconnects retain a bounded ANSI tail.
 RETENTION_SECONDS = 15 * 60
 _MAX_SHELLS = 16
-# Inbound frames buffered while one batch is written (backpressure bound).
-_INPUT_BATCH_FRAMES = 64
+# Inbound input buffered while one batch is written (backpressure bound), in bytes; each frame also
+# costs ``_FRAME_OVERHEAD_BYTES``. Bytes, not frames: until it is reached the reader keeps reading the
+# socket, which is where the server's keepalive pongs arrive (``_InputQueue``).
+_INPUT_QUEUE_BYTES = 1024 * 1024
+_FRAME_OVERHEAD_BYTES = 256
 # How often a reader held up by that bound checks that the tab is still there (``_queue_frame``).
 # Once the connection is gone a check fails within about three: the first can still reach the
 # kernel before the peer's reset comes back.
@@ -304,6 +307,40 @@ async def _admit(ws: WebSocket, registry: HostTerminalRegistry):
     return session, owner
 
 
+def _frame_cost(item) -> int:
+    """What a queued item counts against ``_INPUT_QUEUE_BYTES``: its payload and the per-frame overhead."""
+    if not isinstance(item, dict):  # the reader's last item: None or the error that ended reading
+        return _FRAME_OVERHEAD_BYTES
+    return len(item.get("bytes") or item.get("text") or b"") + _FRAME_OVERHEAD_BYTES
+
+
+class _InputQueue(asyncio.Queue):
+    """The frames a tab sent while a batch is written, full at ``_INPUT_QUEUE_BYTES``.
+
+    A full queue stops the reader, and with it the WebSocket library's own read of the socket once
+    that buffers its few frames: keepalive pongs then go unread, and a bind that pings (any
+    non-loopback Webapp) closes a live tab with 1011 after the ping timeout, dropping the input
+    queued behind it. A frame count would fill on a few dozen keys typed while a paste waits on a
+    program that is not reading; a byte bound leaves the reader reading through any typing.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.queued = 0
+
+    def full(self) -> bool:
+        return self.queued >= _INPUT_QUEUE_BYTES
+
+    def _put(self, item):
+        self.queued += _frame_cost(item)
+        super()._put(item)
+
+    def _get(self):
+        item = super()._get()
+        self.queued -= _frame_cost(item)
+        return item
+
+
 async def _queue_frame(ws: WebSocket, inbox: asyncio.Queue, ended: asyncio.Future, msg) -> None:
     """``inbox.put(msg)``, checking that the tab is still there while the inbox stays full.
 
@@ -440,7 +477,7 @@ async def _pump_input(ws: WebSocket, registry: HostTerminalRegistry, token: str,
     buffers input itself, so Windows writes land at once and keep the bridge's deadline.
     """
     from hermes_cli.web_server_chat import _RESIZE_RE
-    inbox: asyncio.Queue = asyncio.Queue(maxsize=_INPUT_BATCH_FRAMES)
+    inbox: asyncio.Queue = _InputQueue()
     ended = asyncio.get_running_loop().create_future()
     reader = asyncio.create_task(_read_frames(ws, inbox, ended))
     undo = None

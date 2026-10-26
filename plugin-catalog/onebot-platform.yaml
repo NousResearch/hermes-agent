@@ -1,13 +1,13 @@
 name: onebot-platform
 repo: https://github.com/mario841859784/hermes-plugin-onebot
-sha: 88bdc278af1aa6d4f2047f19b726e2ed19cb42c7
-version: "1.2.0"
+sha: 086dd7e5c13004e41301f5cea1f352c46b0f3c50
+version: "1.3.0"
 title: QQ (OneBot)
 maintainer: mario841859784
 tier: community
 category: platform
 requires_hermes: ">=0.22.2"
-docs_url: https://github.com/mario841859784/hermes-plugin-onebot/blob/88bdc278af1aa6d4f2047f19b726e2ed19cb42c7/README.md
+docs_url: https://github.com/mario841859784/hermes-plugin-onebot/blob/086dd7e5c13004e41301f5cea1f352c46b0f3c50/README.md
 platforms: []
 description: >-
   QQ bot via the OneBot 11 protocol: connects Hermes to your own self-hosted

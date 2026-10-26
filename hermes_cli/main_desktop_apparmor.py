@@ -37,14 +37,19 @@ def _build_answers_probe(packaged_executable: Path) -> bool:
     """True when this packaged build's entry point honours the probe switch.
 
     A build from before the switch would start the whole app instead of exiting, so the probe is
-    only sent to a build whose ``app.asar`` carries the switch literal.
+    only sent to a build whose main bundle carries the switch literal. electron-builder unpacks
+    ``dist/`` beside the asar; a fully packed asar holds the bundle verbatim.
     """
-    asar = packaged_executable.parent / "resources" / "app.asar"
-    try:
-        with asar.open("rb") as handle, mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as data:
-            return data.find(SANDBOX_PROBE_SWITCH.encode()) != -1
-    except (OSError, ValueError):
-        return False
+    resources = packaged_executable.parent / "resources"
+    needle = SANDBOX_PROBE_SWITCH.encode()
+    for bundle in (resources / "app.asar.unpacked" / "dist" / "electron-main.mjs", resources / "app.asar"):
+        try:
+            with bundle.open("rb") as handle, mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as data:
+                if data.find(needle) != -1:
+                    return True
+        except (OSError, ValueError):
+            continue
+    return False
 
 
 def chromium_userns_sandbox_verdict(packaged_executable: Path) -> Optional[bool]:

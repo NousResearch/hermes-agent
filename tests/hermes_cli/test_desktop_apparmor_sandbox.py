@@ -24,10 +24,13 @@ _ALLOWED = "#!/bin/sh\nexit 0\n"
 
 def _packaged_app(tmp_path, script: str):
     unpacked = tmp_path / "linux-unpacked"
-    (unpacked / "resources").mkdir(parents=True)
-    # The bundled entry point carries the probe switch, so the launcher knows this build answers it.
-    (unpacked / "resources" / "app.asar").write_bytes(
-        b"\0asar\0" + main_desktop_apparmor.SANDBOX_PROBE_SWITCH.encode() + b"\0")
+    # electron-builder's layout: dist/ unpacked beside the asar. The main bundle carries the probe
+    # switch, so the launcher knows this build answers it.
+    dist = unpacked / "resources" / "app.asar.unpacked" / "dist"
+    dist.mkdir(parents=True)
+    (dist / "electron-main.mjs").write_text(
+        f"if (process.argv.includes('{main_desktop_apparmor.SANDBOX_PROBE_SWITCH}')) process.exit(0)\n",
+        encoding="utf-8")
     exe = unpacked / "Hermes"
     exe.write_text(script, encoding="utf-8")
     exe.chmod(0o755)

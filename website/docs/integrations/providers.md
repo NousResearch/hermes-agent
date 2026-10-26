@@ -356,7 +356,9 @@ Base URLs can be overridden with `NOVITA_BASE_URL`, `GLM_BASE_URL`, `KIMI_BASE_U
 
 ### Lanseq
 
-Lanseq is an OpenAI-compatible provider. Set `LANSEQ_API_KEY` in `~/.hermes/.env` and chat:
+[Lanseq](https://lanseq.cloud) builds multi-model inference infrastructure. This Hermes integration uses its OpenAI-compatible real-time API. Batch Execution is a separate integration path; Preflight Intelligence is in development for model selection and execution planning. This adapter does not implement either interface.
+
+Set `LANSEQ_API_KEY` in `~/.hermes/.env` and chat:
 
 ```bash
 hermes chat --provider lanseq --model qwen3.8-27b-int4

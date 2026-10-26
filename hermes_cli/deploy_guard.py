@@ -80,10 +80,10 @@ class DeployCheckResult:
 
 
 def _agent_home() -> str:
-    env = os.environ.get("HERMES_AGENT_HOME") or os.environ.get("HERMES_AGENT")
+    env = os.environ.get("HERMES_AGENT_HOME") or os.environ.get("HERMES_AGENT")  # health: allow HX002 -- the tree to inspect is a deploy-time setting the operator pins, not a per-profile behaviour
     if env and os.path.isabs(env) and os.path.isdir(env):
         return env
-    return DEFAULT_AGENT_HOME
+    return DEFAULT_AGENT_HOME  # health: allow HX001 -- the deploy guard inspects the SHARED agent tree, not one profile's home
 
 
 def _git_available(home: str) -> bool:
@@ -129,7 +129,7 @@ def _rev_parse(home: str, *args: str) -> Optional[str]:
 
 def check_deploy_state() -> DeployCheckResult:
     """Inspect the working tree and return a DeployCheckResult. Pure — no logging, no side effects."""
-    expected = os.environ.get("HERMES_DEPLOY_BRANCH") or DEFAULT_DEPLOY_BRANCH
+    expected = os.environ.get("HERMES_DEPLOY_BRANCH") or DEFAULT_DEPLOY_BRANCH  # health: allow HX002 -- the canonical deploy branch is a deploy-time setting the operator pins, not a per-profile behaviour
     home = _agent_home()
 
     if not _git_available(home):
@@ -246,18 +246,18 @@ def check_deploy_branch(*, strict: Optional[bool] = None) -> DeployCheckResult:
     guard fires — but the banner reaches the operator through both the
     structured log and the cron pump's captured stderr.
     """
-    mode = (os.environ.get("HERMES_DEPLOY_GUARD") or "warn").lower()
+    mode = (os.environ.get("HERMES_DEPLOY_GUARD") or "warn").lower()  # health: allow HX002 -- the guard mode is a deploy-time setting the operator pins, not a per-profile behaviour
     if strict is not None:
         mode = "strict" if strict else "warn"
 
     if mode == "off":
         return DeployCheckResult(
             ok=True,
-            expected_branch=os.environ.get("HERMES_DEPLOY_BRANCH") or DEFAULT_DEPLOY_BRANCH,
+            expected_branch=os.environ.get("HERMES_DEPLOY_BRANCH") or DEFAULT_DEPLOY_BRANCH,  # health: allow HX002 -- deploy-time setting, see check_deploy_state
             observed_branch=None,
             observed_sha=None,
             reason="match",
-            agent_home=_agent_home(),
+            agent_home=_agent_home(),  # health: allow HX001 -- the deploy guard inspects the SHARED agent tree, not one profile's home
         )
 
     result = check_deploy_state()
@@ -271,7 +271,7 @@ def check_deploy_branch(*, strict: Optional[bool] = None) -> DeployCheckResult:
     _LOG.warning(banner)
     try:
         print(banner, file=sys.stderr, flush=True)
-    except Exception:
+    except Exception:  # health: allow BLE001 S110 -- some embedded contexts forbid stderr writes; the log line is enough
         # Some embedded contexts forbid stderr writes; the log line is enough.
         pass
 

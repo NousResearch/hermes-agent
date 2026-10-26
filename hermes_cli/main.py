@@ -365,6 +365,7 @@ from hermes_cli.subcommands.verify import build_verify_parser
 from hermes_cli.subcommands.security import build_security_parser
 from hermes_cli.subcommands.approvals import build_approvals_parser
 from hermes_cli.subcommands.dump import build_dump_parser
+from hermes_cli.subcommands.deploy_guard import build_deploy_guard_parser
 from hermes_cli.subcommands.debug import build_debug_parser
 from hermes_cli.subcommands.backup import build_backup_parser
 from hermes_cli.subcommands.import_cmd import build_import_cmd_parser
@@ -894,6 +895,10 @@ from hermes_cli.main_desktop import (  # frozen updater surface: update_cmd*.py 
 from hermes_cli.main_web_build import (
     _sweep_stale_bytecode_if_checkout_changed,
 )
+from hermes_cli.main_git_fingerprint import (  # checkout fingerprint helpers (split out of main, t_4722df6f)
+    _read_git_revision_fingerprint,
+    _read_packed_ref,
+)
 from hermes_cli.main_web_build import (  # frozen updater surface: update_cmd*.py resolve these via _m()
     _build_web_ui,
     _nixos_build_env,
@@ -917,69 +922,6 @@ def _is_termux_startup_environment(env: dict[str, str] | None = None) -> bool:
         or "com.termux/files/usr" in prefix
         or prefix.startswith("/data/data/com.termux/")
     )
-
-
-def _read_packed_ref(common_dir: Path, ref: str) -> str | None:
-    """Look up a ref in .git/packed-refs without spawning git.
-
-    packed-refs lines look like ``<sha> <ref>`` with optional ``^<sha>``
-    peel lines and ``#``-prefixed comments / ``# pack-refs with:`` header.
-    """
-    try:
-        text = (common_dir / "packed-refs").read_text(encoding="utf-8-sig", errors="replace")
-    except OSError:
-        return None
-    for line in text.splitlines():
-        if not line or line.startswith("#") or line.startswith("^"):
-            continue
-        parts = line.split(" ", 1)
-        if len(parts) == 2 and parts[1].strip() == ref:
-            return parts[0].strip()
-    return None
-
-
-def _read_git_revision_fingerprint(repo_root: Path) -> str | None:
-    """Return a cheap checkout fingerprint without spawning git."""
-    git_dir = repo_root / ".git"
-    try:
-        if git_dir.is_file():
-            for line in git_dir.read_text(encoding="utf-8-sig", errors="replace").splitlines():
-                key, _, value = line.partition(":")
-                if key.strip() == "gitdir" and value.strip():
-                    git_dir = (repo_root / value.strip()).resolve()
-                    break
-        # Worktrees point HEAD at a per-worktree gitdir but pack their refs
-        # in the main repo's gitdir (referenced via ``commondir``). Resolve
-        # that up front so packed-refs lookups hit the right file.
-        common_dir = git_dir
-        commondir_file = git_dir / "commondir"
-        if commondir_file.exists():
-            try:
-                rel = commondir_file.read_text(encoding="utf-8-sig", errors="replace").strip()
-                if rel:
-                    common_dir = (git_dir / rel).resolve()
-            except OSError:
-                pass
-        head = (git_dir / "HEAD").read_text(encoding="utf-8-sig", errors="replace").strip()
-        if head.startswith("ref:"):
-            ref = head.split(":", 1)[1].strip()
-            # Loose refs may live in the worktree gitdir OR the common dir
-            # (branches created via `git worktree add` typically live in the
-            # common dir's refs/heads/).
-            for candidate in (git_dir, common_dir):
-                ref_file = candidate / ref
-                if ref_file.exists():
-                    return f"git:{ref}:{ref_file.read_text(encoding='utf-8-sig', errors='replace').strip()}"
-            packed_sha = _read_packed_ref(common_dir, ref)
-            if packed_sha:
-                return f"git:{ref}:{packed_sha}"
-            # Ref name is known but unresolved — still stable across launches,
-            # and the version/release fallback in the caller will invalidate
-            # after `hermes update`.
-            return f"git:{ref}:unresolved"
-        return f"git:HEAD:{head}"
-    except OSError:
-        return None
 
 
 def _termux_bundled_skills_fingerprint() -> str:
@@ -2334,77 +2276,6 @@ def cmd_backup(args):
         raise SystemExit(1)  # archive written but incomplete: never shell-success for a timer
 
 
-def cmd_deploy_guard(args):
-    """``hermes deploy-guard <subcommand>`` — gate the running tree against the canonical deploy branch.
-
-    Subcommands:
-      - ``check``  — print the current state, exit 0 on match, exit 2 on drift.
-      - ``init``   — write ``HERMES_DEPLOY_BRANCH`` to ``~/.hermes/.env`` if not
-                     already present, so operators can pick up the canonical-branch
-                     invariant with one shell command after pulling a fix.
-
-    The dispatcher calls ``check_deploy_branch`` on every tick already; this
-    subcommand is for ad-hoc verification and for shell scripts that want a
-    reliable exit code (the cron pump can't easily read the dispatcher's stderr).
-    See t_7161d9a9.
-    """
-    sub = getattr(args, "deploy_guard_command", None) or "check"
-    if sub == "check":
-        from hermes_cli.deploy_guard import check_deploy_state
-        result = check_deploy_state()
-        print(f"agent_home       = {result.agent_home}")
-        print(f"expected_branch  = {result.expected_branch}")
-        print(f"observed_branch  = {result.observed_branch or '(none)'}")
-        print(f"observed_sha     = {result.observed_sha or '(none)'}")
-        print(f"reason           = {result.reason}")
-        print(f"ok               = {result.ok}")
-        sys.exit(0 if result.ok else 2)
-    if sub == "init":
-        env_path = os.path.expanduser("~/.hermes/.env")
-        line = "HERMES_DEPLOY_BRANCH=canonical-deploy-t_7161d9a9\n"
-        if os.path.exists(env_path):
-            existing = open(env_path).read()
-            if "HERMES_DEPLOY_BRANCH=" in existing:
-                print(f"HERMES_DEPLOY_BRANCH already set in {env_path}; leaving as-is.")
-                sys.exit(0)
-            with open(env_path, "a") as fh:
-                fh.write(line)
-        else:
-            with open(env_path, "w") as fh:
-                fh.write(line)
-            os.chmod(env_path, 0o600)
-        print(f"wrote {line.strip()} to {env_path}")
-        sys.exit(0)
-    print(f"unknown subcommand: {sub}", file=sys.stderr)
-    sys.exit(2)
-
-
-def _build_deploy_guard_parser(subparsers):
-    """Register ``hermes deploy-guard <subcommand>``. See t_7161d9a9."""
-    p = subparsers.add_parser(
-        "deploy-guard",
-        help="Gate the running tree against the canonical deploy branch (t_7161d9a9).",
-        description=(
-            "Inspects the live working tree's HEAD branch against the canonical "
-            "deploy branch (env HERMES_DEPLOY_BRANCH, default canonical-deploy-t_7161d9a9). "
-            "Returns 0 on match, 2 on drift. The dispatcher already runs this check "
-            "on every tick; this command is for ad-hoc verification and shell scripts."
-        ),
-    )
-    subs = p.add_subparsers(dest="deploy_guard_command")
-    p_check = subs.add_parser("check", help="Print state + exit 0/2.")
-    p_check.set_defaults(func=cmd_deploy_guard)
-    p_init = subs.add_parser(
-        "init",
-        help="Append HERMES_DEPLOY_BRANCH=canonical-deploy-t_7161d9a9 to ~/.hermes/.env if missing.",
-    )
-    p_init.set_defaults(func=cmd_deploy_guard)
-    # When the user runs ``hermes deploy-guard`` with no subcommand, fall back
-    # to ``check`` — argparse subparsers dest= with no value lands as None.
-    p.set_defaults(func=cmd_deploy_guard)
-    return p
-
-
 def _print_version_info(*, check_updates: bool = True) -> None:
     # Shared with the `hermes --version` pre-import fast path.
     _startup_fast.print_fast_version_info(check_updates=check_updates)
@@ -3585,11 +3456,7 @@ def _build_cli_parser():
     build_approvals_parser(subparsers, cmd_approvals=cmd_approvals)
     build_dump_parser(subparsers, cmd_dump=cmd_dump)
     build_debug_parser(subparsers, cmd_debug=cmd_debug)
-    # Deploy-branch guard (t_7161d9a9): gate the running tree against the
-    # canonical deploy branch. ``hermes deploy-guard check`` returns 0 on
-    # match, 2 on drift; ``hermes deploy-guard init`` writes
-    # HERMES_DEPLOY_BRANCH to ~/.hermes/.env for new operators.
-    _build_deploy_guard_parser(subparsers)
+    build_deploy_guard_parser(subparsers)  # deploy-branch guard (t_7161d9a9)
     build_backup_parser(subparsers, cmd_backup=cmd_backup)
     build_checkpoints_parser(subparsers)
     build_import_cmd_parser(subparsers, cmd_import=cmd_import)

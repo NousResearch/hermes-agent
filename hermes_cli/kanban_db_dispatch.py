@@ -1246,7 +1246,7 @@ def _describe_worker_oom(record: dict) -> str:
         from hermes_cli import kanban_worker_oom
 
         return kanban_worker_oom.describe_oom(record)
-    except Exception:  # pragma: no cover
+    except Exception:  # health: allow BLE001 -- forensics must never break a dispatch; a fallback description is better than none
         return "worker OOM-killed by its own systemd scope (infrastructure failure)"
 
 
@@ -2301,7 +2301,7 @@ def dispatch_once(
     try:
         from hermes_cli.deploy_guard import check_deploy_branch
         check_deploy_branch()
-    except Exception:
+    except Exception:  # health: allow BLE001 S110 -- a guard import / parse failure must never block a tick
         # A guard import / parse failure must never block a tick.
         pass
 
@@ -3164,11 +3164,11 @@ class _RedactingLog(io.IOBase):
         if isinstance(data, (bytes, bytearray)):
             try:
                 data = data.decode("utf-8", errors="replace")
-            except Exception:
+            except Exception:  # health: allow BLE001 -- undecodable bytes must not kill the log sink; we pass the bytes through rather than lose the audit trail
                 # totally undecodable bytes: pass through as-is so we don't lose signal
                 try:
                     return self._sink.write(bytes(data))
-                except Exception:
+                except Exception:  # health: allow BLE001 -- the sink is already broken; a second failure has nowhere left to go but the return value
                     return 0
         elif not isinstance(data, str):
             data = str(data)
@@ -3188,11 +3188,11 @@ class _RedactingLog(io.IOBase):
         payload = scrubbed.encode("utf-8", errors="replace")
         try:
             self._sink.write(payload)
-        except Exception:
+        except Exception:  # health: allow BLE001 -- a broken log sink must not take down the worker it is logging
             return
         try:
             self._sink.flush()
-        except Exception:
+        except Exception:  # health: allow BLE001 S110 -- flush is best-effort; the bytes are already written
             pass
 
     def flush(self):
@@ -3200,7 +3200,7 @@ class _RedactingLog(io.IOBase):
         # ask the sink to flush whatever it has buffered downstream.
         try:
             self._sink.flush()
-        except Exception:
+        except Exception:  # health: allow BLE001 S110 -- flush is best-effort
             pass
 
     def close(self):
@@ -3213,7 +3213,7 @@ class _RedactingLog(io.IOBase):
             self._flush_line(tail)
         try:
             self._sink.flush()
-        except Exception:
+        except Exception:  # health: allow BLE001 S110 -- close must not raise out of the worker log sink
             pass
 
     # subprocess.Popen inspects .fileno() when stdout isn't already a real fd.
@@ -3272,7 +3272,7 @@ def _scrub_worker_log_line(line: str) -> str:
     try:
         from agent.redact import redact_sensitive_text
         line = redact_sensitive_text(line)
-    except Exception:
+    except Exception:  # health: allow BLE001 S110 -- redactor crash -> fall through with the raw line; better to log unscrubbed evidence than to silently drop the audit trail
         # redactor crash -> fall through with the raw line; better to log
         # unscrubbed evidence than to silently drop the audit trail
         pass

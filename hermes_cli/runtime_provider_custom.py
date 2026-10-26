@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+from urllib.parse import urlsplit
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug
@@ -59,9 +60,8 @@ def _key_env_secret(entry: dict[str, Any], label: str) -> str:
         return ""
     value = get_secret_str(key_env, "").strip()
     if not value:
-        logger.warning("%s: key_env %s is set but the variable is empty/unset — unless another credential "
-                       "is configured for it, the request carries the placeholder no-key-required and the "
-                       "endpoint will reject it", label, key_env)
+        logger.warning("%s: key_env %s is set but the variable is empty/unset — the request will carry the "
+                       "placeholder no-key-required; the endpoint may require authentication", label, key_env)
     return value
 
 
@@ -73,6 +73,42 @@ def _model_cfg_key_env_for(model_cfg: dict[str, Any], base_url: str) -> str:
     if not cfg_base_url or cfg_base_url != _clean(base_url).rstrip("/"):
         return ""
     return _key_env_secret(model_cfg, "model")
+
+
+def _credential_endpoint(value: Any) -> tuple[str, str, str, str, str]:
+    """Host/scheme are case-insensitive; tenant paths and queries are credential boundaries."""
+    url = urlsplit(_clean(value))
+    userinfo, separator, host = url.netloc.rpartition("@")
+    netloc = f"{userinfo}@{host.lower()}" if separator else url.netloc.lower()
+    return url.scheme.lower(), netloc, url.path.rstrip("/"), url.query, url.fragment
+
+
+def _model_cfg_credential_for_named_provider(model_cfg: dict[str, Any], *, entry_name: str,
+                                             provider_key: str, base_url: str) -> tuple[str, bool]:
+    """Return the inherited key and whether its declared env credential was unresolved.
+
+    A model-level credential only belongs to its configured named endpoint.
+
+    ``providers:`` entries are independently routable, so a key on ``model:`` must never leak to
+    another named provider merely because both happen to be custom.  The main provider identity and
+    endpoint must both match before the runtime-less auxiliary route may inherit it (#118721).
+    """
+    configured_provider = _normalize_custom_provider_name(_clean(model_cfg.get("provider")))
+    entry_aliases = custom_provider_aliases(entry_name, provider_key)
+    if configured_provider not in entry_aliases:
+        return "", False
+    configured_base_url = _clean(model_cfg.get("base_url"))
+    # A named ``model.provider`` commonly keeps its endpoint solely in ``providers.<name>``.
+    # When model.base_url is explicit it is an additional boundary; when absent, the matched entry
+    # is the configured endpoint.
+    if configured_base_url and _credential_endpoint(configured_base_url) != _credential_endpoint(base_url):
+        return "", False
+    inline_key = _clean(model_cfg.get("api_key"))
+    if inline_key:
+        return inline_key, False
+    env_key = _key_env_secret(model_cfg, "model")
+    declared_env = _clean(model_cfg.get("key_env") or model_cfg.get("api_key_env"))
+    return env_key, bool(declared_env and not env_key)
 
 
 def _entry_url(entry: dict[str, Any]) -> str:
@@ -147,6 +183,7 @@ def _shadowed_by_builtin(requested_norm: str) -> bool:
 
 def _match_new_style_provider(
     requested_norm: str, providers: dict[str, Any], *, resolve_credentials: bool = True,
+    explicit_base_url: Optional[str] = None,
 ) -> Optional[tuple[dict[str, Any], Any]]:
     """Scan ``providers:`` (new-style, keyed) for ``requested_norm``; ``(entry, config key)``."""
     from hermes_cli.config import is_provider_enabled
@@ -164,8 +201,16 @@ def _match_new_style_provider(
         # unrelated entry must not read its profile-scoped secret.
         key_env = _clean(entry.get("key_env") or entry.get("api_key_env"))
         api_key = get_secret_str(key_env, "").strip() if key_env and resolve_credentials else ""
+        entry_api_key = api_key or _clean(entry.get("api_key", ""))
+        model_api_key, model_env_unset = _model_cfg_credential_for_named_provider(
+            rp._get_model_config(), entry_name=str(entry.get("name", "") or ep_name),
+            provider_key=str(ep_name), base_url=base_url,
+        ) if (resolve_credentials and not entry_api_key and not key_env and not _clean(entry.get("key_cmd"))
+              and (not explicit_base_url or _credential_endpoint(explicit_base_url) == _credential_endpoint(base_url))) else ("", False)
         result: dict[str, Any] = {"name": entry.get("name", ep_name), "base_url": base_url.strip(),
-                                  "api_key": api_key or _clean(entry.get("api_key", "")), "model": entry.get("default_model", "")}
+                                  "api_key": entry_api_key or model_api_key, "model": entry.get("default_model", "")}
+        if (key_env and not entry_api_key) or model_env_unset:
+            result["credential_env_unset"] = True
         # Command that PRINTS a short-lived credential; wrapped in a per-request token provider.
         key_cmd = _clean(entry.get("key_cmd", ""))
         if key_cmd:
@@ -201,11 +246,14 @@ def _match_legacy_custom_provider(requested_norm: str, custom_providers) -> Opti
 
 def _get_named_custom_provider(
     requested_provider: str, *, config: Optional[dict[str, Any]] = None,
-    resolve_credentials: bool = True,
+    resolve_credentials: bool = True, explicit_base_url: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
     """Resolve a named endpoint. Creation-time config copying supplies its own config snapshot
     and skips credential reads; ordinary runtime callers keep their existing scoped resolution."""
-    found = _select_named_custom_provider(requested_provider, config=config, resolve_credentials=resolve_credentials)
+    found = _select_named_custom_provider(
+        requested_provider, config=config, resolve_credentials=resolve_credentials,
+        explicit_base_url=explicit_base_url,
+    )
     return found[0] if found else None
 
 
@@ -231,6 +279,7 @@ def custom_provider_config_path_for_url(base_url: Any, config: dict[str, Any]) -
 
 def _select_named_custom_provider(
     requested_provider: str, *, config: Optional[dict[str, Any]], resolve_credentials: bool,
+    explicit_base_url: Optional[str] = None,
 ) -> Optional[tuple[dict[str, Any], Optional[tuple]]]:
     """``(resolved entry, its config path)`` for the first usable match: ``providers:`` first,
     then the legacy list view."""
@@ -242,7 +291,10 @@ def _select_named_custom_provider(
         config = rp.load_config()
     providers = config.get("providers")
     found = (
-        _match_new_style_provider(requested_norm, providers, resolve_credentials=resolve_credentials)
+        _match_new_style_provider(
+            requested_norm, providers, resolve_credentials=resolve_credentials,
+            explicit_base_url=explicit_base_url,
+        )
         if isinstance(providers, dict) else None
     )
     if found:
@@ -706,8 +758,13 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     if requested_norm == "custom" and explicit_base_url:
         return _resolve_direct_alias_runtime(requested_provider, explicit_api_key, explicit_base_url)
     if custom_provider is None:
-        custom_provider = (rp._get_named_custom_provider(requested_provider) if config is None
-                           else _get_named_custom_provider(requested_provider, config=config))
+        if config is None:
+            lookup_overrides = {"explicit_base_url": explicit_base_url} if explicit_base_url else {}
+            custom_provider = rp._get_named_custom_provider(requested_provider, **lookup_overrides)
+        else:
+            custom_provider = _get_named_custom_provider(
+                requested_provider, config=config, explicit_base_url=explicit_base_url,
+            )
     if not custom_provider:
         return None
     base_url = ((explicit_base_url or "").strip() or custom_provider.get("base_url", "")).rstrip("/")
@@ -738,6 +795,9 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     result = _custom_runtime(rp, base_url, api_key, custom_provider.get("api_mode"),
                              source=f"custom_provider:{custom_provider.get('name', requested_provider)}",
                              requested_provider=requested_provider)
+    if (result.get("api_key") == "no-key-required"
+            and custom_provider.get("credential_env_unset")):
+        result["credential_env_unset"] = True
     _apply_custom_provider_extras(custom_provider, target_model, result)
     # OpenCode-family custom providers (opencode-go/zen names, or opencode.ai hosts) serve models
     # on different API surfaces — a static api_mode 503s for /v1/responses-only models. Re-derive

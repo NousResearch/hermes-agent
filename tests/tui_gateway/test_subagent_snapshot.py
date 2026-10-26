@@ -1,6 +1,7 @@
 """Shared RPC contracts exercised against real registries and transcript I/O."""
 
 import json
+import re
 import threading
 from types import SimpleNamespace
 
@@ -110,6 +111,11 @@ def test_live_tail_and_steer_share_exact_owner_and_end_with_child(runtime):
         tail = call("subagent.tail", subagent_id="child")["result"]
         assert tail["available"] and tail["truncated"] and len(tail["text"].encode()) <= 16384
         assert "first result" in tail["text"]
+        # The window is cut by BYTES, so it can open mid-line; a reader must never
+        # be shown a fragment of one line as if it were a whole event.
+        assert re.match(r"^\d\d:\d\d:\d\d ", tail["text"]), (
+            f"tail opened mid-line: {tail['text'][:60]!r}"
+        )
         writer.tool_result("read_file", "new live output")
         assert "new live output" in call("subagent.tail", subagent_id="child")["result"]["text"]
         queued = call("subagent.steer", subagent_id="child", text="change course")["result"]

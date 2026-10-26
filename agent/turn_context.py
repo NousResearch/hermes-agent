@@ -1149,8 +1149,8 @@ def build_turn_context(
     from agent.delegation_backends import apply_requested_tool_rebuild
     apply_requested_tool_rebuild(agent)
 
-    # Bot Mode DM tool — injected ONLY into a bot's canonical "Bot Chat" session (same
-    # gate as the protocol section); gate is session-stable, so cache-safe.
+    # Bot Mode DM tool — injected only into a bot's canonical "Bot Chat" session or a Desktop
+    # chat-panel session on a managed install; gate is session-stable, so cache-safe.
     try:
         from tools.bot_mode_dm import ensure_message_agent_tool
 

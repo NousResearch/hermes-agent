@@ -469,6 +469,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._inbound_event_timeout = _INBOUND_EVENT_TIMEOUT_SECONDS
         self._inbound_tasks: set[asyncio.Task] = set()
         self._http_session: Optional["aiohttp.ClientSession"] = None
+        # WhatsApp presence persists until explicitly paused. Track foreground
+        # refresh loops per chat so one turn cannot pause a sibling still running.
+        self._typing_refresh_owners: Dict[str, set[asyncio.Task]] = {}
+        self._typing_presence_paused: set[str] = set()
+        self._typing_presence_locks: Dict[str, asyncio.Lock] = {}
         # Set to True by disconnect() before we SIGTERM our child bridge so
         # _check_managed_bridge_exit() can distinguish an intentional
         # shutdown-time exit (returncode -15 / -2 / 0) from a real crash.
@@ -1013,8 +1018,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     if resp.status == 200:
                         data = await resp.json()
                         last_message_id = data.get("messageId")
-                        if last_message_id:
-                            sent_message_ids.append(str(last_message_id))
+                        if data.get("success") is not True or not isinstance(last_message_id, str) or not last_message_id.strip():
+                            return SendResult(
+                                success=False,
+                                error="WhatsApp bridge refused send or returned no message id",
+                            )
+                        sent_message_ids.append(last_message_id)
                     else:
                         error = await resp.text()
                         return SendResult(success=False, error=error)
@@ -1315,27 +1324,115 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             file_name or os.path.basename(file_path),
         )
 
-    async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """Send typing indicator via bridge."""
-        if not self._running or not self._http_session:
-            return
-        if await self._check_managed_bridge_exit():
-            return
-        
+    async def _keep_typing(
+        self,
+        chat_id: str,
+        interval: float = 2.0,
+        metadata=None,
+        stop_event: Optional[asyncio.Event] = None,
+    ) -> None:
+        """Own WhatsApp typing presence for one foreground processing turn."""
+        chat_key, presence_lock = self._typing_presence_state(chat_id)
+        owner_task = asyncio.current_task()
+        assert owner_task is not None
+        owns_refresh = False
         try:
-            import aiohttp
+            async with presence_lock:
+                self._typing_refresh_owners.setdefault(chat_key, set()).add(owner_task)
+                owns_refresh = True
+            await super()._keep_typing(
+                chat_id,
+                interval=interval,
+                metadata=metadata,
+                stop_event=stop_event,
+            )
+        finally:
+            if owns_refresh:
+                final_owner = False
+                async with presence_lock:
+                    owners = self._typing_refresh_owners.get(chat_key)
+                    if owners is not None:
+                        owners.discard(owner_task)
+                    if not owners:
+                        self._typing_refresh_owners.pop(chat_key, None)
+                        final_owner = True
+                if final_owner:
+                    await self.stop_typing(chat_key)
 
-            # Must wrap in `async with` — a bare `await session.post(...)`
-            # leaves the response object alive until GC, holding its TCP
-            # socket in CLOSE_WAIT. See #18451.
-            async with self._http_session.post(
-                f"http://127.0.0.1:{self._bridge_port}/typing",
-                json={"chatId": to_whatsapp_jid(chat_id)},
-                timeout=aiohttp.ClientTimeout(total=5)
-            ):
-                pass
-        except Exception:
-            pass  # Ignore typing indicator failures
+    def _typing_presence_state(self, chat_id: str) -> tuple[str, asyncio.Lock]:
+        """Return the normalized presence key and its chat-scoped lock."""
+        chat_key = to_whatsapp_jid(chat_id)
+        presence_lock = self._typing_presence_locks.get(chat_key)
+        if presence_lock is None:
+            presence_lock = asyncio.Lock()
+            self._typing_presence_locks[chat_key] = presence_lock
+        return chat_key, presence_lock
+
+    @staticmethod
+    async def _typing_bridge_acknowledged(response: Any) -> bool:
+        """Return true only for an explicit successful bridge response."""
+        if not 200 <= response.status < 300:
+            return False
+        payload = await response.json()
+        return isinstance(payload, dict) and payload.get("success") is True
+
+    async def send_typing(self, chat_id: str, metadata=None) -> None:
+        """Send composing presence without taking foreground ownership."""
+        chat_key, presence_lock = self._typing_presence_state(chat_id)
+        async with presence_lock:
+            if not self._running or not self._http_session:
+                return
+            if await self._check_managed_bridge_exit():
+                return
+
+            # Once composing can be submitted, a lost acknowledgement cannot tell
+            # us whether the bridge applied it. Conservatively require a later
+            # pause while still holding the per-chat serialization lock.
+            self._typing_presence_paused.discard(chat_key)
+            try:
+                import aiohttp
+
+                # Must wrap in `async with` — a bare `await session.post(...)`
+                # leaves the response object alive until GC, holding its TCP
+                # socket in CLOSE_WAIT. See #18451.
+                async with self._http_session.post(
+                    f"http://127.0.0.1:{self._bridge_port}/typing",
+                    json={"chatId": chat_key, "state": "composing"},
+                    timeout=aiohttp.ClientTimeout(total=5),
+                ) as response:
+                    await self._typing_bridge_acknowledged(response)
+            except Exception:
+                pass  # Ignore typing indicator failures
+
+    async def stop_typing(self, chat_id: str) -> None:
+        """Pause WhatsApp presence once the chat has no foreground owners."""
+        chat_key, presence_lock = self._typing_presence_state(chat_id)
+        async with presence_lock:
+            owners = self._typing_refresh_owners.get(chat_key)
+            if owners is not None:
+                owners.difference_update(owner for owner in tuple(owners) if owner.done())
+                if owners:
+                    return
+                self._typing_refresh_owners.pop(chat_key, None)
+            if chat_key in self._typing_presence_paused:
+                return
+            if not self._running or not self._http_session:
+                return
+            if await self._check_managed_bridge_exit():
+                return
+
+            try:
+                import aiohttp
+
+                async with self._http_session.post(
+                    f"http://127.0.0.1:{self._bridge_port}/typing",
+                    json={"chatId": chat_key, "state": "paused"},
+                    timeout=aiohttp.ClientTimeout(total=5),
+                ) as response:
+                    if await self._typing_bridge_acknowledged(response):
+                        self._typing_presence_paused.add(chat_key)
+            except Exception:
+                pass  # Repeated cleanup may retry a failed pause.
     
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a WhatsApp chat."""

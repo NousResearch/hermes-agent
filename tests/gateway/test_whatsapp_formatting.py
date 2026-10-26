@@ -140,7 +140,7 @@ class TestSendChunking:
     async def test_short_message_single_send(self):
         adapter = _make_adapter()
         resp = MagicMock(status=200)
-        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        resp.json = AsyncMock(return_value={"success": True, "messageId": "msg1"})
         adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
 
         result = await adapter.send("chat1", "short message")
@@ -152,7 +152,7 @@ class TestSendChunking:
     async def test_long_message_chunked(self):
         adapter = _make_adapter()
         resp = MagicMock(status=200)
-        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        resp.json = AsyncMock(return_value={"success": True, "messageId": "msg1"})
         adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
 
         # Create a message longer than MAX_MESSAGE_LENGTH (4096)
@@ -169,7 +169,7 @@ class TestSendChunking:
         monkeypatch.delenv("WHATSAPP_REPLY_PREFIX", raising=False)
         monkeypatch.setenv("WHATSAPP_MODE", "self-chat")
         resp = MagicMock(status=200)
-        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        resp.json = AsyncMock(return_value={"success": True, "messageId": "msg1"})
         adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
 
         long_msg = "a " * 3000

@@ -11,7 +11,7 @@
  *   POST /edit           - Edit a sent message { chatId, messageId, message }
  *   POST /send-media     - Send media natively { chatId, filePath, mediaType?, caption?, fileName? }
  *   POST /send-location  - Send location pin { chatId, latitude, longitude, name?, address? }
- *   POST /typing         - Send typing indicator { chatId }
+ *   POST /typing         - Set typing presence { chatId, state?: composing|paused }
  *   GET  /chat/:id       - Get chat info
  *   GET  /health         - Health check
  *
@@ -19,7 +19,7 @@
  *   node bridge.js --port 3000 --session ~/.hermes/whatsapp/session
  */
 
-import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, fetchLatestWaWebVersion, downloadMediaMessage, getAggregateVotesInPollMessage, decryptPollVote, getKeyAuthor, jidNormalizedUser } from '@whiskeysockets/baileys';
+import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, fetchLatestWaWebVersion, downloadMediaMessage, getAggregateVotesInPollMessage, decryptPollVote, getKeyAuthor, jidNormalizedUser, proto } from '@whiskeysockets/baileys';
 import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
@@ -31,6 +31,8 @@ import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
+import { resolveTypingPresence } from './typing_presence.js';
+import { createAckSender, appendAckReceipt } from './send_ack.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
 import {
@@ -155,6 +157,14 @@ function sendWithTimeout(chatId, payload, options = {}, timeoutMs = SEND_TIMEOUT
       .finally(() => clearTimeout(timer))
   );
 }
+
+const { observe: observeSendAck, send: sendWithServerAck } = createAckSender({
+  getSocket: () => sock,
+  send: (chatId, payload, options, timeoutMs) => { rememberSentId(options?.messageId); return sendWithTimeout(chatId, payload, options, timeoutMs); },
+  record: receipt => appendAckReceipt(
+    '/Users/octo/hermes-sandbox/home/outputs/5am-wa-workaround-20261026/send-ack.jsonl', receipt,
+  ),
+});
 
 function formatOutgoingMessage(message) {
   // In bot mode, messages come from a different number so the prefix is
@@ -481,8 +491,23 @@ async function startSocket() {
     }
   });
 
+  // rc13 handles errors on this server event but drops successful ACKs, and
+  // group recipient receipts use message-receipt.update, not messages.update.
+  // Normalize the actual wire ACK (never a local send result) into the status
+  // stream consumed below. Presence of an error attribute is always failure.
+  sock.ws.on('CB:ack,class:message', ({ attrs }) => {
+    if (attrs?.class !== 'message' || !attrs?.id || !attrs?.from) return;
+    sock.ev.emit('messages.update', [{
+      key: { id: attrs.id, remoteJid: attrs.from, fromMe: true },
+      update: {
+        status: attrs.error !== undefined ? proto.WebMessageInfo.Status.ERROR : proto.WebMessageInfo.Status.SERVER_ACK,
+      },
+    }]);
+  });
+
   sock.ev.on('messages.update', async (updates) => {
     for (const { key, update } of updates || []) {
+      observeSendAck(key, update);
       if (!update?.pollUpdates) continue;
       const pollCreationId = key?.id || update.pollUpdates?.[0]?.pollCreationMessageKey?.id;
       const pollCreation = messageStore.get(pollCreationId);
@@ -836,13 +861,15 @@ app.post('/send', async (req, res) => {
   try {
     const chunks = splitLongMessage(formatOutgoingMessage(message));
     const messageIds = [];
+    let status;
     for (let i = 0; i < chunks.length; i += 1) {
       const { content: payload, options } = buildTextSendPayload(chunks[i], {
         chatId,
         replyTo: i === 0 ? replyTo : undefined,
         messageStore,
       });
-      const sent = await sendWithTimeout(chatId, payload, options);
+      const sent = await sendWithServerAck(chatId, payload, options);
+      status = sent.ackStatus;
       trackSentMessageId(sent);
       messageStore.remember(sent);
       if (sent?.key?.id) messageIds.push(sent.key.id);
@@ -855,9 +882,10 @@ app.post('/send', async (req, res) => {
       success: true,
       messageId: messageIds[messageIds.length - 1],
       messageIds,
+      status,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(502).json({ success: false, error: err.message, status: err.status || 'UNKNOWN', messageId: err.messageId });
   }
 });
 
@@ -1040,17 +1068,24 @@ app.post('/send-location', async (req, res) => {
   }
 });
 
-// Typing indicator
+// Typing indicator / presence
 app.post('/typing', async (req, res) => {
   if (!sock || connectionState !== 'connected') {
     return res.status(503).json({ error: 'Not connected' });
   }
 
-  const { chatId } = req.body;
+  const { chatId } = req.body || {};
   if (!chatId) return res.status(400).json({ error: 'chatId required' });
 
+  let presence;
   try {
-    await sock.sendPresenceUpdate('composing', chatId);
+    presence = resolveTypingPresence(req.body);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+
+  try {
+    await sock.sendPresenceUpdate(presence, chatId);
     res.json({ success: true });
   } catch (err) {
     res.json({ success: false });

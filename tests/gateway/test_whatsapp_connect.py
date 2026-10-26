@@ -261,7 +261,7 @@ class TestBridgeRuntimeFailure:
 
         mock_resp = MagicMock()
         mock_resp.status = 200
-        mock_resp.json = AsyncMock(return_value={"messageId": "msg-1"})
+        mock_resp.json = AsyncMock(return_value={"success": True, "messageId": "msg-1"})
         mock_session = MagicMock()
         mock_session.post = MagicMock(return_value=_AsyncCM(mock_resp))
         adapter._http_session = mock_session

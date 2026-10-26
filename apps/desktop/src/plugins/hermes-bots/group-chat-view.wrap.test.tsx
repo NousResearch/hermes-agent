@@ -101,3 +101,30 @@ it('soft-wraps fenced code in room message bodies instead of scrolling sideways'
   const pre = body.querySelector('pre')
   expect(pre?.textContent).toContain('const x = 1')
 })
+
+it('delivers an inline preview intent to the thread that rendered the card', async () => {
+  const { $groupChats } = await import('./group-chat')
+  const { GroupChatWorkspace } = await import('./group-chat-view')
+  const members = [{ name: 'builder' }] as never
+  const detail = { delivered: false, group: 'Room', prompt: 'approve the plan', thread: 'thread-a' }
+
+  $groupChats.set({
+    Room: {
+      log: [{ at: 1, from: { kind: 'member' as const, name: 'builder' }, text: '::preview{file="card.html"}', thread: 'thread-a' }],
+      sessions: {},
+      watermarks: {}
+    }
+  })
+  render(<GroupChatWorkspace group="Room" members={members} />)
+
+  await waitFor(() => expect(document.querySelector('[data-slot="group-chat-message-content"]')).toBeTruthy())
+  await waitFor(() => {
+    window.dispatchEvent(new CustomEvent('hermes:inline-preview-intent', { detail }))
+    expect(detail.delivered).toBe(true)
+  })
+  expect($groupChats.get().Room.log.at(-1)).toMatchObject({
+    from: { kind: 'user' },
+    text: 'approve the plan',
+    thread: 'thread-a'
+  })
+})

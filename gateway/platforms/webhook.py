@@ -737,8 +737,8 @@ class WebhookAdapter(BasePlatformAdapter):
         try:
             response = await self._process_webhook(request, receipt)
         except sqlite3.Error:
-            logger.exception("[webhook] Delivery receipts unavailable for route %s", receipt.get("route"))
-            return _json_error("Delivery receipts unavailable; retry this delivery", 503)
+            logger.exception("[webhook] Delivery storage unavailable for route %s", receipt.get("route"))
+            return _json_error("Storage unavailable; retry this delivery", 503)
         finally:
             receipts.CURRENT.reset(token)
         if "route" in receipt and response.status != 429:  # authenticated, and not a flood-shed answer

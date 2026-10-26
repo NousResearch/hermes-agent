@@ -59,22 +59,26 @@ async def run(params, board_db):
     # for ever and a truly gone owner still fails honestly.
     admission = None
     redial_deadline = None
+    # A connection alone is not progress: receipt reads must succeed before a new
+    # recovery episode can receive a fresh bounded budget.
+    progress = [False]
     while True:
         try:
             async with connect_gateway() as client:
-                # A successful connection ends the previous redial episode. If this socket drops
-                # later, the next recovery episode gets its own bounded budget.
-                redial_deadline = None
+                progress[0] = False
                 # kanban.run subscribes this socket to the card's session, but only receipts matter
                 # here: discard the turn's events, or they fill the client's bounded queue and its
                 # reader stops, with the next receipt behind it.
                 drain = asyncio.create_task(_discard(client.events))
                 try:
-                    return await _submit_claim(client, params, board_db, admission)
+                    return await _submit_claim(client, params, board_db, admission, progress)
                 finally:
                     drain.cancel()
         except _Redial as exc:
             admission = exc.admission
+            if progress[0]:
+                # A successful receipt read proves the prior recovery episode made progress.
+                redial_deadline = None
             if redial_deadline is None:
                 redial_deadline = time.monotonic() + OWNER_WAIT_S
             if time.monotonic() >= redial_deadline:
@@ -114,7 +118,7 @@ async def _receipt(client, session_id, admission_id):
         raise _Redial((session_id, admission_id)) from None
 
 
-async def _submit_claim(client, params, board_db, admission=None):
+async def _submit_claim(client, params, board_db, admission=None, progress=None):
     from hermes_cli.gateway_client import GatewayClientError
     db = str(await asyncio.to_thread(Path(board_db).resolve))
     # The owner answers only after it checks the claim and writes its ``owner_admitted`` marker
@@ -132,9 +136,13 @@ async def _submit_claim(client, params, board_db, admission=None):
     else:
         # A redial re-reads the attempt the owner already holds; it never submits the claim again.
         receipt = await _receipt(client, *admission)
+        if progress is not None:
+            progress[0] = True
     while receipt['status'] not in {'terminal', 'unknown'}:
         await asyncio.sleep(.2)
         receipt = await _receipt(client, *admission)
+        if progress is not None:
+            progress[0] = True
     if receipt['status'] == 'unknown':
         raise GatewayClientError('Kanban execution unknown; retained by owner')
     from gateway.session_kanban import worker_result

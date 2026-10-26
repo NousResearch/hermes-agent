@@ -48,7 +48,10 @@ export interface HandoffResult {
 
 export interface ReleaseHolder {
   pid: number
+  /** Process start time (epoch seconds, as the CLI read it): with the pid, names this exact process. */
+  startTime: number
   name: string
+  /** Empty when Windows would not reveal the program path (a protected process): it cannot be closed from here. */
   exe: string
 }
 
@@ -59,8 +62,15 @@ function toReleaseHolders(raw: unknown): ReleaseHolder[] {
 
   return raw
     .filter(item => item && typeof item === 'object')
-    .map(item => ({ pid: Number(item.pid), name: String(item.name ?? ''), exe: String(item.exe ?? '') }))
-    .filter(holder => Number.isInteger(holder.pid) && holder.pid > 0 && holder.name && holder.exe)
+    .map(item => ({
+      pid: Number(item.pid),
+      startTime: Number(item.start_time),
+      name: String(item.name ?? ''),
+      exe: String(item.exe ?? '')
+    }))
+    .filter(
+      holder => Number.isInteger(holder.pid) && holder.pid > 0 && Number.isFinite(holder.startTime) && holder.name
+    )
 }
 
 export function handoffResultPath(hermesHome: string): string {

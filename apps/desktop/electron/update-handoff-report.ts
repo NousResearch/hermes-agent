@@ -5,6 +5,7 @@ import path from 'node:path'
 import type { Dialog, Shell } from 'electron'
 
 import { readAndConsumeHandoffResult, type ReleaseHolder } from './handoff-result'
+import { closableReleaseHolders } from './release-holder-consent'
 
 export interface HandoffReportHost {
   hermesHome: string
@@ -121,11 +122,25 @@ export function reportHandoffResult(host: HandoffReportHost): void {
 
 /**
  * #101789: the update landed, but a program outside Hermes holds the Desktop app's folder. Name it
- * and offer to close it, only on an explicit click; dismissing leaves it running.
+ * and offer to close it, only on an explicit click; dismissing leaves it running. A holder whose
+ * program path Windows would not reveal cannot be closed from here: it is named for the user to
+ * close, with no Close button that could never work.
  */
 function reportReleaseHolders(host: HandoffReportHost, holders: ReleaseHolder[], message: string): void {
   const names = holders.map(holder => holder.name).join(', ')
-  const listed = holders.map(holder => `• ${holder.name} (pid ${holder.pid})\n   ${holder.exe}`).join('\n')
+  const closable = closableReleaseHolders(holders)
+  const closableNames = closable.map(holder => holder.name).join(', ')
+
+  const listed = holders
+    .map(
+      holder => `• ${holder.name} (pid ${holder.pid})\n   ${holder.exe || 'Close this one yourself (Task Manager).'}`
+    )
+    .join('\n')
+
+  const action = closable.length
+    ? 'Hermes did not close it. Close it and retry the update now, or keep using the current app and update later.'
+    : 'Hermes cannot close it. Close it yourself (Task Manager), then run the update again.'
+
   host.log(`[updates] Desktop app swap blocked by programs outside Hermes: ${names}`)
   void host.dialog
     .showMessageBox({
@@ -134,16 +149,16 @@ function reportReleaseHolders(host: HandoffReportHost, holders: ReleaseHolder[],
       message: `${names} is blocking the Desktop app update`,
       detail:
         `Hermes updated, but Windows would not replace the Desktop app because this program, which is not part of Hermes, is using its folder:\n\n${listed}\n\n` +
-        `Hermes did not close it. Close it and retry the update now, or keep using the current app and update later.\n\nDetails: ${message}`,
-      buttons: [`Close ${names} and retry`, 'Not now'],
-      defaultId: 1,
-      cancelId: 1,
+        `${action}\n\nDetails: ${message}`,
+      buttons: closable.length ? [`Close ${closableNames} and retry`, 'Not now'] : ['OK'],
+      defaultId: closable.length ? 1 : 0,
+      cancelId: closable.length ? 1 : 0,
       noLink: true
     })
     .then(({ response }) => {
-      if (response === 0) {
-        host.log(`[updates] user consented to closing ${names}; retrying the update`)
-        host.closeHoldersAndRetry?.(holders)
+      if (closable.length && response === 0) {
+        host.log(`[updates] user consented to closing ${closableNames}; retrying the update`)
+        host.closeHoldersAndRetry?.(closable)
       }
     })
 }

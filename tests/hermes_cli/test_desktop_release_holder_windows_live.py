@@ -71,13 +71,35 @@ def test_blocked_swap_names_the_foreign_holder_and_leaves_it_running(swap_fixtur
     assert (live_root / "Hermes.exe").read_text(encoding="utf-8") == "old"
 
 
-def test_consented_retry_closes_exactly_the_holder_and_promotes(swap_fixture, capsys):
-    desktop_dir, staging, live_root, helper = swap_fixture
+def _consent_for_run(desktop_dir: Path, helper, run_id: str) -> tuple[Path, list]:
     # The venv python.exe may be a launcher with the real interpreter as its child, both inside
-    # the folder; the Desktop consents to every program the failure named, so this does too.
+    # the folder; the Desktop consents to every process the failure named, so this does too.
     tree = [psutil.Process(helper.pid), *psutil.Process(helper.pid).children(recursive=True)]
     consent = desktop_dir / "release" / ".close-holders-consent.json"
-    consent.write_text(json.dumps({"written_at": time.time(), "exes": [p.exe() for p in tree]}), encoding="utf-8")
+    seen = [{"pid": p.pid, "start_time": p.create_time(), "exe": p.exe()} for p in tree]
+    consent.write_text(json.dumps({"written_at": time.time(), "run_id": run_id,
+                                   "exes": [s["exe"] for s in seen], "holders": seen}), encoding="utf-8")
+    return consent, tree
+
+
+def test_a_consent_given_for_another_run_closes_nothing_and_is_used_up(swap_fixture, monkeypatch):
+    """Review N1: a gateway /update (or any swap not started by the consented retry) never closes."""
+    desktop_dir, staging, live_root, helper = swap_fixture
+    consent, _tree = _consent_for_run(desktop_dir, helper, "desktop-retry-1")
+    monkeypatch.setenv("HERMES_UPDATE_CORRELATION_ID", "gateway-update-7")
+
+    promoted, error = _promote(desktop_dir, staging)
+
+    assert promoted is None and f"pid {helper.pid}" in error, error
+    assert helper.poll() is None, "closed on a consent given for another run"
+    assert not consent.exists(), "the swap attempt consumes the consent, matching or not"
+    assert (live_root / "Hermes.exe").read_text(encoding="utf-8") == "old"
+
+
+def test_consented_retry_closes_exactly_the_holder_and_promotes(swap_fixture, capsys, monkeypatch):
+    desktop_dir, staging, live_root, helper = swap_fixture
+    consent, tree = _consent_for_run(desktop_dir, helper, "desktop-retry-1")
+    monkeypatch.setenv("HERMES_UPDATE_CORRELATION_ID", "desktop-retry-1")  # windows.ps1 exports its run id
 
     promoted, error = _promote(desktop_dir, staging)
 

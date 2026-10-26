@@ -3,6 +3,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import * as path from 'node:path'
 
+import { bindReleaseHolderConsent } from '../release-holder-consent'
 import {
   claimBridgeMarker,
   describeSkippedPrewrite,
@@ -555,6 +556,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): CheckoutStra
       }
 
       plan = planned.plan
+      bindReleaseHolderConsent(updateRoot, plan.runId, deps.rememberLog)
 
       // A bare detached+hidden powershell spawn silently dies before -File
       // processing (console-subsystem init failure — see

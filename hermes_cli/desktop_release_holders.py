@@ -9,8 +9,10 @@ exe-under-release stop never sees it.
 
 These holders belong to the user, not to Hermes: they are NAMED in the failure and closed
 only with the user's consent, given either at an interactive terminal prompt or through the
-Desktop's "close it and retry" choice, which leaves a one-retry consent file in ``release/``.
-A non-interactive run with no consent never closes anything.
+Desktop's "close it and retry" choice. That choice leaves a consent file in ``release/`` bound
+to the hand-off run it starts and to the exact processes (pid + start time) the user saw; the
+next swap attempt consumes it whatever its source, and only that run's swap may act on it.
+A non-interactive run with no matching consent never closes anything.
 """
 
 from __future__ import annotations
@@ -27,10 +29,11 @@ from typing import Callable, Optional
 # windows.ps1 parses this exact prefix out of the update output (one line per holder).
 HOLDER_LINE_PREFIX = "Desktop app folder held by: "
 
-# Written by the Desktop when the user chooses "Close <program> and retry"; read and removed
-# by the next promotion swap, so a consent covers exactly one retry.
+# Written by the Desktop when the user chooses "Close <program> and retry"; removed at the start
+# of the next promotion swap attempt, so a consent covers exactly one retry.
 CONSENT_FILE_NAME = ".close-holders-consent.json"
-CONSENT_MAX_AGE_S = 3600
+# psutil create_time is a float rebuilt from the OS on each read: equal within this tolerance.
+_START_TIME_TOLERANCE_S = 0.5
 
 _CLOSE_WAIT_S = 5
 
@@ -44,6 +47,27 @@ class ReleaseHolder:
 
     def describe(self) -> str:
         return f"{self.name} (pid {self.pid}, {self.exe or 'path unreadable'})"
+
+    def holder_line(self) -> str:
+        """The machine-read line windows.ps1 hands to the Desktop (pid + start time identify it)."""
+        return (f"{HOLDER_LINE_PREFIX}{self.name} (pid {self.pid}, started {self.create_time:.3f}, "
+                f"{self.exe or 'path unreadable'})")
+
+
+@dataclass(frozen=True)
+class HolderConsent:
+    """The processes the user agreed to close, as (pid, start time, normalized exe)."""
+    holders: frozenset[tuple[int, float, str]] = frozenset()
+
+    def covers(self, holder: ReleaseHolder) -> bool:
+        return bool(holder.exe) and any(
+            pid == holder.pid and abs(start - holder.create_time) <= _START_TIME_TOLERANCE_S
+            and exe == _norm(holder.exe)
+            for pid, start, exe in self.holders
+        )
+
+
+NO_CONSENT = HolderConsent()
 
 
 def _norm(path: str) -> str:
@@ -101,34 +125,32 @@ def find_release_cwd_holders(release_dir: Path) -> list[ReleaseHolder]:
     return holders
 
 
-def take_consent(release_dir: Path, *, now: Callable[[], float] = time.time) -> frozenset[str]:
-    """The program paths the user agreed to close for this one retry; the file is consumed."""
+def take_consent(release_dir: Path, run_id: Optional[str]) -> HolderConsent:
+    """Consume the Desktop's consent at the start of a swap attempt: the file is removed whether
+    or not it applies, and it applies only to the hand-off run that the Desktop started for it."""
     path = release_dir / CONSENT_FILE_NAME
     try:
         raw = path.read_text(encoding="utf-8-sig")
     except OSError:
-        return frozenset()
+        return NO_CONSENT
     with contextlib.suppress(OSError):
         path.unlink()
     try:
         data = json.loads(raw)
-        written_at = float(data["written_at"])
-        exes = [e for e in data["exes"] if isinstance(e, str) and e]
-    except (ValueError, TypeError, KeyError):
-        return frozenset()
-    if not 0 <= now() - written_at <= CONSENT_MAX_AGE_S:
-        return frozenset()
-    return frozenset(_norm(e) for e in exes)
-
-
-def discard_consent(release_dir: Path) -> None:
-    with contextlib.suppress(OSError):
-        (release_dir / CONSENT_FILE_NAME).unlink()
+        if not run_id or data.get("run_id") != run_id:
+            return NO_CONSENT
+        holders = frozenset(
+            (int(h["pid"]), float(h["start_time"]), _norm(h["exe"]))
+            for h in data["holders"] if isinstance(h.get("exe"), str) and h["exe"]
+        )
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return NO_CONSENT
+    return HolderConsent(holders)
 
 
 def _ask_at_terminal(holders: list[ReleaseHolder], input_fn: Callable[[str], str]) -> bool:
     """Only a person at a terminal can answer; a hidden hand-off or a pipe never consents."""
-    if not (sys.stdin and sys.stdin.isatty() and sys.stdout and sys.stdout.isatty()):
+    if not holders or not (sys.stdin and sys.stdin.isatty() and sys.stdout and sys.stdout.isatty()):
         return False
     names = ", ".join(h.describe() for h in holders)
     try:
@@ -171,19 +193,25 @@ def close_holders(holders: list[ReleaseHolder], release_dir: Path) -> list[int]:
 
 
 def release_after_refused_rename(
-    release_dir: Path, *, input_fn: Callable[[str], str] = input,
+    release_dir: Path, *, consent: HolderConsent = NO_CONSENT, input_fn: Callable[[str], str] = input,
 ) -> tuple[list[ReleaseHolder], list[int]]:
     """After Windows refused a rename under ``release_dir``: name every cwd holder, then close
-    the ones the user consented to. Returns (holders found, pids closed)."""
+    the ones covered by ``consent`` (taken at the start of this swap attempt) or agreed to at the
+    terminal. Returns (holders found, pids closed)."""
     holders = find_release_cwd_holders(release_dir)
     if not holders:
         return [], []
     for holder in holders:
-        print(f"  {HOLDER_LINE_PREFIX}{holder.describe()}")
-    consented = take_consent(release_dir)
-    chosen = [h for h in holders if h.exe and _norm(h.exe) in consented]
-    if not chosen and _ask_at_terminal(holders, input_fn):
-        chosen = holders
+        print(f"  {holder.holder_line()}")
+    chosen = [h for h in holders if consent.covers(h)]
+    # A holder whose program path cannot be read is usually protected (another user, elevated):
+    # it cannot be closed from here either, so the user closes it themselves.
+    closable = [h for h in holders if h.exe]
+    for holder in holders:
+        if not holder.exe:
+            print(f"  Close {holder.name} (pid {holder.pid}) yourself: Hermes cannot close it.")
+    if not chosen and _ask_at_terminal(closable, input_fn):
+        chosen = closable
     if not chosen:
         return holders, []
     closed = close_holders(chosen, release_dir)

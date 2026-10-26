@@ -29,7 +29,8 @@ def main():
         print('--keep-stash'); return 0
     if sys.argv[1:2] != ['update']:
         return 0
-    print('  Desktop app folder held by: SogouCloud.exe (pid 4242, EXE_PATH)', flush=True)
+    print('  Desktop app folder held by: SogouCloud.exe (pid 4242, started 1761470000.125, EXE_PATH)', flush=True)
+    print('  Desktop app folder held by: AVHelper.exe (pid 5151, started 1761470001.500, path unreadable)', flush=True)
     print('  Desktop app build owed: desktop app build failed', flush=True)
     print('Update complete!', flush=True)
     return 0
@@ -45,6 +46,10 @@ def test_blocked_swap_result_names_the_holder_for_the_desktop(tmp_path: Path) ->
     (install / 'hermes_cli/desktop_update_verify.py').write_text('pass\n', encoding='utf-8')
     home = tmp_path / 'home'
     home.mkdir()
+    # The consent the Desktop recorded for this retry; its swap is never reached (the build failed).
+    consent = install / 'apps/desktop/release/.close-holders-consent.json'
+    consent.parent.mkdir(parents=True, exist_ok=True)
+    consent.write_text('{"run_id": "r", "holders": []}', encoding='utf-8')
     proc = subprocess.run(
         ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(SCRIPT),
          '-InstallRoot', str(install), '-NoUi', '-NoGateway'],
@@ -58,6 +63,10 @@ def test_blocked_swap_result_names_the_holder_for_the_desktop(tmp_path: Path) ->
     result = json.loads(result_path.read_text(encoding='utf-8-sig'))
 
     assert (result['ok'], result['manual']) == (True, True), (proc.stdout, result)
-    assert result['release_holders'] == [{'name': 'SogouCloud.exe', 'pid': 4242, 'exe': EXE}], result
+    assert result['release_holders'] == [
+        {'name': 'SogouCloud.exe', 'pid': 4242, 'start_time': '1761470000.125', 'exe': EXE},
+        {'name': 'AVHelper.exe', 'pid': 5151, 'start_time': '1761470001.500', 'exe': ''},
+    ], result
+    assert not consent.exists(), 'a consent the run never used ends with the run'
     assert 'SogouCloud.exe (pid 4242)' in result['message'], result
     assert 'not part of Hermes' in result['message'], result

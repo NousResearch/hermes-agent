@@ -1723,8 +1723,12 @@ try {
         # component) has its working folder inside release\ and Windows refuses the swap.
         # hermes_cli/desktop_release_holders.py names each one on its own line; the
         # relaunched Desktop offers to close exactly those and retry, never silently.
-        foreach ($m in [regex]::Matches(($res.Output -join "`n"), '(?m)^\s*Desktop app folder held by: (.+?) \(pid (\d+), (.+)\)\s*$')) {
-            $script:ReleaseHolders += [pscustomobject]@{ name = $m.Groups[1].Value; pid = [int]$m.Groups[2].Value; exe = $m.Groups[3].Value }
+        # pid + start time identify the exact process the user is asked about; the start time
+        # stays the CLI's invariant text (no locale-dependent number parsing here). An exe of
+        # 'path unreadable' (a protected process) becomes empty: the Desktop offers no Close for it.
+        foreach ($m in [regex]::Matches(($res.Output -join "`n"), '(?m)^\s*Desktop app folder held by: (.+?) \(pid (\d+), started ([0-9.]+), (.+)\)\s*$')) {
+            $holderExe = if ($m.Groups[4].Value -eq 'path unreadable') { '' } else { $m.Groups[4].Value }
+            $script:ReleaseHolders += [pscustomobject]@{ name = $m.Groups[1].Value; pid = [int]$m.Groups[2].Value; start_time = $m.Groups[3].Value; exe = $holderExe }
         }
         if ($script:ReleaseHolders.Count -gt 0) {
             $holderNames = (@($script:ReleaseHolders) | ForEach-Object { "$($_.name) (pid $($_.pid))" }) -join ', '
@@ -1802,6 +1806,11 @@ try {
         $finalCode = 0
     }
 } finally {
+    if (@('claimed', 'adopted') -contains $script:MarkerClaim -and $InstallRoot) {
+        # #101789: a Desktop "close and retry" consent belongs to this run alone. One its swap
+        # never reached (a failed build) must not let a later update close the program unasked.
+        Remove-Item -LiteralPath (Join-Path $InstallRoot 'apps\desktop\release\.close-holders-consent.json') -Force -ErrorAction SilentlyContinue
+    }
     # Truth ordering (sibling contract to posix.sh finish()):
     #   1. durable result + marker removal (the relaunched Desktop consumes
     #      the result on boot and must not park on our marker);

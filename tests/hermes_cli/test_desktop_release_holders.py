@@ -15,7 +15,8 @@ import time
 import psutil
 import pytest
 
-from hermes_cli.desktop_release_holders import CONSENT_FILE_NAME, release_after_refused_rename
+from hermes_cli import desktop_release_holders, main_desktop
+from hermes_cli.desktop_release_holders import CONSENT_FILE_NAME, release_after_refused_rename, take_consent
 
 _HELPER = "import time\nprint('ready', flush=True)\ntime.sleep(300)\n"
 
@@ -37,39 +38,83 @@ def holder(tmp_path):
             proc.wait(10)
 
 
-def _consent(release, exes, written_at=None):
-    (release / CONSENT_FILE_NAME).write_text(
-        json.dumps({"written_at": time.time() if written_at is None else written_at, "exes": exes}),
-        encoding="utf-8")
+def _desktop_consent(release, proc, run_id, **override):
+    """What the Desktop's "Close <program> and retry" writes for the retry run it starts."""
+    ps = psutil.Process(proc.pid)
+    seen = {"pid": proc.pid, "start_time": ps.create_time(), "exe": ps.exe(), **override}
+    (release / CONSENT_FILE_NAME).write_text(json.dumps({
+        "written_at": time.time(), "run_id": run_id, "exes": [seen["exe"]], "holders": [seen],
+    }), encoding="utf-8")
 
 
 def _never_asked(_prompt):
     raise AssertionError("a non-interactive run must never prompt")
 
 
-def test_holder_is_named_and_left_running_without_a_matching_fresh_consent(holder, capsys):
+def test_a_retry_that_fails_before_the_swap_leaves_no_consent_for_a_later_update(holder, tmp_path, monkeypatch):
+    """Review N1: the consent belongs to one retry. Once that retry's swap attempt has run, a
+    later update from any source (gateway /update, cron) must not close the program unasked."""
     release, proc = holder
-    exe = psutil.Process(proc.pid).exe()
+    _desktop_consent(release, proc, run_id="desktop-retry-1")
 
-    for consent in (None, ["C:/elsewhere/other.exe"], "stale"):
-        if consent == "stale":
-            _consent(release, [exe], written_at=time.time() - 2 * 3600)
-        elif consent is not None:
-            _consent(release, consent)
-        holders, closed = release_after_refused_rename(release, input_fn=_never_asked)
+    # The consented retry runs, but its swap fails before the rename (no launchable staged app).
+    monkeypatch.setenv("HERMES_UPDATE_CORRELATION_ID", "desktop-retry-1")
+    staging = tmp_path / "apps" / "desktop" / ".staging-failed"
+    staging.mkdir()
+    assert main_desktop._swap_staged_desktop_app(tmp_path / "apps" / "desktop", staging) is None
+    assert not (release / CONSENT_FILE_NAME).exists(), "the swap attempt consumes the consent, failed or not"
 
-        assert proc.pid in [h.pid for h in holders], consent
-        assert closed == [], consent
-        assert proc.poll() is None, f"closed without consent ({consent})"
-        assert not (release / CONSENT_FILE_NAME).exists(), "a consent is consumed by the attempt that read it"
-    assert f"Desktop app folder held by: {psutil.Process(proc.pid).name()} (pid {proc.pid}, {exe})" in capsys.readouterr().out
+    # Later, a non-interactive gateway /update hits the refused rename.
+    monkeypatch.delenv("HERMES_UPDATE_CORRELATION_ID")
+    holders, closed = release_after_refused_rename(release, input_fn=_never_asked)
+
+    assert proc.pid in [h.pid for h in holders]
+    assert closed == []
+    assert proc.poll() is None, "closed without asking, on a consent given for another run"
 
 
-def test_consented_holder_is_closed(holder):
+def test_a_consent_closes_only_what_the_user_saw_in_the_run_it_was_given_for(holder, capsys):
     release, proc = holder
-    _consent(release, [psutil.Process(proc.pid).exe()])
+    started = psutil.Process(proc.pid).create_time()
+    refused = {
+        "another run's swap": ("desktop-retry-1", "gateway-update-7", {}),
+        "a swap with no run id": ("desktop-retry-1", None, {}),
+        "a recycled pid": ("desktop-retry-1", "desktop-retry-1", {"start_time": started - 60}),
+        "another program": ("desktop-retry-1", "desktop-retry-1", {"exe": "C:/elsewhere/other.exe"}),
+    }
+    for case, (consented_run, swap_run, override) in refused.items():
+        _desktop_consent(release, proc, consented_run, **override)
+        consent = take_consent(release, swap_run)
+        assert not (release / CONSENT_FILE_NAME).exists(), f"{case}: the attempt consumes the consent"
+        holders, closed = release_after_refused_rename(release, consent=consent, input_fn=_never_asked)
+        assert proc.pid in [h.pid for h in holders], case
+        assert closed == [] and proc.poll() is None, f"closed without consent ({case})"
+    line = f"Desktop app folder held by: {psutil.Process(proc.pid).name()} (pid {proc.pid}, started {started:.3f}, "
+    assert line in capsys.readouterr().out
 
-    _holders, closed = release_after_refused_rename(release, input_fn=_never_asked)
+    _desktop_consent(release, proc, "desktop-retry-1")
+    _holders, closed = release_after_refused_rename(
+        release, consent=take_consent(release, "desktop-retry-1"), input_fn=_never_asked)
 
     assert proc.pid in closed
     assert proc.wait(10) is not None
+
+
+def test_a_holder_whose_program_path_is_unreadable_is_left_for_the_user(holder, monkeypatch, capsys):
+    """Review N3: no close offer that can never be honoured, at the terminal or in the Desktop
+    (windows.ps1 hands the Desktop an empty exe for it, which gets no Close button)."""
+    release, proc = holder
+    # What psutil answers for a protected process (another user's, elevated): no program path.
+    monkeypatch.setattr(desktop_release_holders, "_exe_or_empty", lambda _proc: "")
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True, raising=False)
+    _desktop_consent(release, proc, "desktop-retry-1", exe="")
+
+    holders, closed = release_after_refused_rename(
+        release, consent=take_consent(release, "desktop-retry-1"), input_fn=_never_asked)
+
+    assert [h.pid for h in holders] == [proc.pid] and closed == []
+    assert proc.poll() is None
+    out = capsys.readouterr().out
+    assert f"(pid {proc.pid}, started " in out and "path unreadable)" in out
+    assert f"(pid {proc.pid}) yourself" in out

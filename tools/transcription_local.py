@@ -175,6 +175,17 @@ def _create_whisper_model(model_name: str, *, device: str, compute_type: str):
     from faster_whisper import WhisperModel
 
     kwargs = {"device": device, "compute_type": compute_type}
+    # Keep an explicitly configured/shared Hub cache under its owner's control.
+    # Store downloads use package-owned storage, including on a cache-only load.
+    from hermes_platform.windows_appdata import local_cache_folder
+
+    if local_cache_folder() is not None and not any(
+        os.environ.get(key) for key in ("HF_HOME", "HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE")
+    ):
+        from hermes_cache import managed_cache_dir
+        from hermes_constants import get_hermes_home
+
+        kwargs["download_root"] = str(managed_cache_dir("cache/faster-whisper", home=get_hermes_home()))
     try:
         return WhisperModel(model_name, local_files_only=True, **kwargs)
     except (_hub_cache_miss_error(), RuntimeError) as exc:

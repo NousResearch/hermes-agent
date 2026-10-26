@@ -1,6 +1,7 @@
 """WA-5: a Webapp file route that names a session resolves ``/workspace`` in THAT session's
 per-workspace Docker sandbox (#143655's mapping), and refuses a session it cannot see."""
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -237,6 +238,21 @@ def test_save_never_falls_back_to_the_shared_copy_once_the_sessions_copy_is_gone
     assert (saved.status_code, saved.json()) == (409, {"detail": "File is no longer in this session's workspace"})
     assert (sandboxes["shared"] / "note.txt").read_text(encoding="utf-8") == "session note"
     assert not (sandboxes["own"] / "note.txt").exists()
+
+
+@pytest.mark.parametrize("path", ["/workspace/note.txt", "file:///workspace/note.txt"])
+def test_save_never_falls_back_to_the_shared_copy_once_the_sessions_sandbox_is_gone(client, sandboxes, path):
+    read = client.get("/api/fs/read-text", params={"path": path, "session_id": "sess-ws"})
+    assert read.json()["text"] == "session note"
+    shutil.rmtree(sandboxes["own"].parent)  # the session's whole sandbox, not just its file
+
+    reread = client.get("/api/fs/read-text", params={"path": path, "session_id": "sess-ws"})
+    saved = client.post("/api/fs/write-text", json={"path": path, "content": "edited", "session_id": "sess-ws"})
+
+    assert (reread.status_code, reread.json()["text"]) == (200, "shared note")  # reads still fall back
+    assert (saved.status_code, saved.json()) == (409, {"detail": "File is no longer in this session's workspace"})
+    assert (sandboxes["shared"] / "note.txt").read_text(encoding="utf-8") == "shared note"
+    assert not sandboxes["own"].parent.exists()
 
 
 def test_save_without_a_session_writes_where_a_bare_read_reads(client, sandboxes):

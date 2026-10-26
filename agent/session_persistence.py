@@ -19,7 +19,7 @@ from agent.context_compressor import (
     user_originated_turn_view,
 )
 from agent.lazy_forward import forward as _forward, forward_static as _forward_static
-from agent.memory_manager import sanitize_context
+from agent.memory_context import sanitize_context
 
 from agent.tool_dispatch_helpers import _is_multimodal_tool_result, _multimodal_text_summary
 from agent.trajectory import save_trajectory as _save_trajectory_to_file
@@ -126,11 +126,19 @@ def _durable_content(content: Any) -> Any:
     if not isinstance(content, list):
         return content
     txt = [
-        str(p.get("text", "")) if p.get("type") == "text" else "[screenshot]"
+        str(p.get("text", "")) if p.get("type") == "text" else _image_marker(p)
         for p in content
         if isinstance(p, dict) and (p.get("type") == "text" or p.get("type") in _IMAGE_PART_TYPES)
     ]
     return "\n".join(txt) if txt else None
+
+
+def _image_marker(part: dict) -> str:
+    """``[screenshot]`` at the image's position; a caller-chosen ``detail`` rides along so a replay
+    (``agent.image_replay``) rebuilds the part the live turn sent."""
+    url = part.get("image_url")
+    detail = part.get("detail") or (url.get("detail") if isinstance(url, dict) else None)
+    return f"[screenshot detail={detail}]" if detail in ("low", "high", "auto") else "[screenshot]"
 
 
 def _persist_lock(agent):
@@ -149,11 +157,13 @@ def adopt_unanswered_turn(history: list[dict[str, Any]], query: Any, agent: Any)
     A dispatcher's re-run of a failed delivery turn resumes the DM its first attempt already persisted
     instead of appending it again. Rows loaded from the store are born durable (``_rows_to_conversation``),
     so handing the tail row back as ``agent._pending_cli_user_message`` makes ``_stage_turn_user_message``
-    reuse it as this turn's user dict and the flush writes no second row. The one caller is
-    ``gateway.platforms.api_server`` (``resume_unanswered_turn``): the peer-DM lane re-runs the turn
-    in-process and calls this on the agent it just built for the re-run (#115325). The owner-side Bot
-    Chat retry (``gateway.session_bot._maybe_retry``) does not adopt: its failed turn is already closed
-    by the durable failed-turn boundary, which this function declines by design.
+    reuse it as this turn's user dict and the flush writes no second row. The one user is the peer-DM
+    lane's re-run (``resume_unanswered_turn`` in ``gateway.platforms.api_server``, #115325): in process it
+    calls this on the agent it just built for the re-run; under the session authority the admission
+    carries ``resume_unanswered`` and ``gateway.run_turn_runner`` calls it on the admitted history
+    when its tail is that bare user row (a tool suffix there keeps the completed work in view).
+    The owner-side Bot Chat retry (``gateway.session_bot._maybe_retry``) does not adopt: its failed
+    turn is already closed by the durable failed-turn boundary, which this function declines by design.
 
     The DM is not always the literal tail: a turn that died mid-way persisted its tool scaffolding — assistant
     ``tool_calls`` rows and their ``tool`` results — behind the DM before the failure text was built, and the
@@ -242,6 +252,47 @@ def _db_flush_row(agent, msg: dict, is_current_turn_user: bool) -> dict[str, Any
     if isinstance(msg.get(DB_ROW_SNAPSHOT), str):
         row[DB_ROW_SNAPSHOT] = msg[DB_ROW_SNAPSHOT]
     return row
+
+
+def sync_rewritten_tool_rows(agent, batch: list[dict], contents_before: list[Any]) -> int:
+    """Carry an end-of-batch rewrite of already-flushed tool results (the turn budget's spill
+    stubs) onto their durable rows; returns the rows rewritten.
+
+    Each result was flushed as it landed, so its row holds the full body. Replay reads the
+    store, so a row left stale reloads the spilled bytes next turn: the request grows by
+    everything the budget removed and its cached prefix diverges at the first spilled row.
+    The full body survives as the archived twin ``rewrite_pruned_rows`` keeps, beside the
+    spill file. A store without the in-place writer, or a row another writer moved, keeps
+    today's row.
+    """
+    session_db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
+    rewrite = getattr(session_db, "rewrite_pruned_rows", None)
+    if getattr(agent, "_persist_disabled", False) or not session_id or not callable(rewrite):
+        return 0
+    changed = [
+        (msg, before) for msg, before in zip(batch, contents_before)
+        if msg.get(_DB_PERSISTED_MARKER) and msg.get("role") == "tool" and msg.get("content") != before]
+    if not changed:
+        return 0
+    rows = [(_db_flush_row(agent, {**msg, "content": before}, False), _db_flush_row(agent, msg, False))
+            for msg, before in changed]
+    from hermes_state_errors import PruneRowUnresolvedError, SessionTurnLeaseLostError
+    try:
+        with _persist_lock(agent):
+            written = rewrite(
+                session_id, rows, turn_lease_holder=getattr(agent, "_active_session_turn_lease_holder", None),
+                turn_lease_ttl_seconds=getattr(agent, "_active_session_turn_lease_ttl_seconds", 300.0) or 300.0,
+            )
+    except (PruneRowUnresolvedError, SessionTurnLeaseLostError) as exc:  # another writer owns the row or turn
+        logger.info("Tool-result rewrite not persisted; the stored row keeps the full body: %s", exc)
+        return 0
+    except Exception as exc:  # health: allow BLE001 -- a store failure must not fail the turn; the row keeps its body
+        logger.warning("Tool-result rewrite not persisted: %s", exc)
+        return 0
+    for (msg, _before), (_original, replacement) in zip(changed, rows):
+        if isinstance(replacement.get(DB_ROW_SNAPSHOT), str):
+            msg[DB_ROW_SNAPSHOT] = replacement[DB_ROW_SNAPSHOT]
+    return int(written)
 
 
 def _db_flush_collect(agent, messages: list[dict], conversation_history: Optional[list[dict]],

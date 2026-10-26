@@ -16,16 +16,18 @@ const CREATE_KEYS = new Set(Object.keys(doc.components.schemas[createRef.split('
 const BASE = { cols: 96, source: 'desktop', profile: 'default' }
 
 // [label, desktopSessionCreateParams output, expected owner frame subset | named refusal]
+// RT-26 (#139298): `profile: 'default'` rides the frame. Omitting it let a backend launched as a
+// named profile (active-profile.json) create the chat in that profile instead.
 const CASES: Array<[string, Record<string, unknown>, Record<string, unknown> | RegExp]> = [
-  ['inherited workspace', { ...BASE, cwd: '/w', cwd_explicit: false, fast: false }, { cwd: '/w', cwd_explicit: false, service_tier: 'normal' }],
-  ['picked workspace', { ...BASE, cwd: '/w', cwd_explicit: true, fast: false }, { cwd: '/w', cwd_explicit: true, service_tier: 'normal' }],
-  ['composer effort', { ...BASE, cwd: '/w', cwd_explicit: false, reasoning_effort: 'high', fast: false }, { cwd: '/w', reasoning: 'high', service_tier: 'normal' }],
-  ['onboarding minimal effort', { ...BASE, reasoning_effort: 'minimal', fast: false, title: 'Welcome' }, { reasoning: 'minimal', title: 'Welcome', service_tier: 'normal' }],
-  ['Bot Chat', { ...BASE, title: 'Bot Chat', hidden: true, follow_profile_config: true }, { follow_profile_config: true, hidden: true }],
-  ['Fast speed', { ...BASE, cwd: '/w', cwd_explicit: false, fast: true }, { cwd: '/w', service_tier: 'priority' }],
-  ['Ultrafast speed', { ...BASE, fast: true, service_tier: 'ultrafast' }, { service_tier: 'ultrafast' }],
+  ['inherited workspace', { ...BASE, cwd: '/w', cwd_explicit: false, fast: false }, { profile: 'default', cwd: '/w', cwd_explicit: false, service_tier: 'normal' }],
+  ['picked workspace', { ...BASE, cwd: '/w', cwd_explicit: true, fast: false }, { profile: 'default', cwd: '/w', cwd_explicit: true, service_tier: 'normal' }],
+  ['composer effort', { ...BASE, cwd: '/w', cwd_explicit: false, reasoning_effort: 'high', fast: false }, { profile: 'default', cwd: '/w', reasoning: 'high', service_tier: 'normal' }],
+  ['onboarding minimal effort', { ...BASE, reasoning_effort: 'minimal', fast: false, title: 'Welcome' }, { profile: 'default', reasoning: 'minimal', title: 'Welcome', service_tier: 'normal' }],
+  ['Bot Chat', { ...BASE, title: 'Bot Chat', hidden: true, follow_profile_config: true }, { profile: 'default', follow_profile_config: true, hidden: true }],
+  ['Fast speed', { ...BASE, cwd: '/w', cwd_explicit: false, fast: true }, { profile: 'default', cwd: '/w', service_tier: 'priority' }],
+  ['Ultrafast speed', { ...BASE, fast: true, service_tier: 'ultrafast' }, { profile: 'default', service_tier: 'ultrafast' }],
   // KoNit-K P1: a manual model pick ships its provider; the owner's create contract admits both.
-  ['manual model + provider', { ...BASE, model: 'gpt-5', provider: 'openrouter', fast: false }, { model: 'gpt-5', provider: 'openrouter', service_tier: 'normal' }]
+  ['manual model + provider', { ...BASE, model: 'gpt-5', provider: 'openrouter', fast: false }, { profile: 'default', model: 'gpt-5', provider: 'openrouter', service_tier: 'normal' }]
 ]
 
 test.each(CASES)('%s: the Desktop create frame is admitted by the owner contract or refused by name', async (_label, params, expected) => {
@@ -37,6 +39,7 @@ test.each(CASES)('%s: the Desktop create frame is admitted by the owner contract
   server.on('connection', (socket: any) => {
     socket.on('message', (bytes: Buffer) => {
       const frame = JSON.parse(bytes.toString())
+      if (frame.method === 'client.capabilities') { socket.send(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: { server_requests: [] } })); return }
       sent.push(frame)
       const fields = Object.keys(frame.params).filter(key => !CREATE_KEYS.has(key))
 

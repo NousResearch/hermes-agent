@@ -95,7 +95,7 @@ class TestWeixinPollSessionRecycle(unittest.TestCase):
 
     def _make_adapter(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.weixin import WeixinAdapter
+        from plugins.platforms.weixin.adapter import WeixinAdapter
 
         return WeixinAdapter(
             PlatformConfig(
@@ -106,7 +106,7 @@ class TestWeixinPollSessionRecycle(unittest.TestCase):
         )
 
     def test_recycle_closes_old_and_installs_fresh_session(self):
-        from gateway.platforms import weixin as weixin_mod
+        from plugins.platforms.weixin import adapter as weixin_mod
 
         adapter = self._make_adapter()
         adapter._running = True
@@ -139,7 +139,7 @@ class TestWeixinPollSessionRecycle(unittest.TestCase):
 
 
     def test_poll_loop_recycles_after_max_consecutive_failures(self):
-        from gateway.platforms import weixin as weixin_mod
+        from plugins.platforms.weixin import adapter as weixin_mod
 
         adapter = self._make_adapter()
         adapter._running = True

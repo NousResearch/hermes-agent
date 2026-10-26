@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync, statSync, utimesSync } from 'node:fs'
+import { copyFileSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync, statSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
@@ -51,10 +51,12 @@ test('product outputs exclude the source tree except supported generated destina
   const base = fixture()
   const source = path.join(base, 'source')
   mkdirSync(source)
-  for (const name of ['new-source-file', 'pm/generated', 'hermes_cli/web_dist-copy', 'apps/desktop/dist-copy', 'apps/desktop/build/native-deps-copy', 'hermes_cli/web_dist/assets']) {
+  for (const name of ['new-source-file', 'pm/generated', 'hermes_cli/web_dist-copy', 'apps/desktop/dist-copy', 'apps/desktop/build/native-deps-copy', 'hermes_cli/web_dist/assets',
+    'apps/desktop/build/native-deps-win32-x64/nested', 'apps/desktop/build/native-deps-freebsd-x64', 'apps/desktop/build/native-deps-win32-ia32']) {
     expect(() => productOutput(source, path.join(source, name), inputs), name).toThrow(/output/i)
   }
-  for (const name of ['hermes_cli/web_dist', 'apps/desktop/dist', 'apps/desktop/build/native-deps', 'apps/desktop/build/products/tui', 'apps/desktop/build/products/web', '.build/web', '.build/termux/tui']) {
+  for (const name of ['hermes_cli/web_dist', 'apps/desktop/dist', 'apps/desktop/build/native-deps', 'apps/desktop/build/native-deps-win32-x64',
+    'apps/desktop/build/native-deps-darwin-arm64', 'apps/desktop/build/products/tui', 'apps/desktop/build/products/web', '.build/web', '.build/termux/tui']) {
     const out = path.join(source, name)
     expect(productOutput(source, out, inputs).out).toBe(out)
     expect(existsSync(out)).toBe(false)
@@ -185,12 +187,22 @@ function tuiSource(source) {
   put(source, 'ui-tui/package.json', '{"type":"module"}')
   put(source, 'ui-tui/src/entry.tsx', '#!/usr/bin/env node\nimport { answer } from "@hermes/ink"; console.log(answer);')
   put(source, 'ui-tui/packages/hermes-ink/src/entry-exports.ts', 'import devtools from "react-devtools-core"; devtools.initialize(); export const answer: string = "prepared source";')
+  for (const name of ['gateway_bootstrap.py', 'clipboard_image.py']) {
+    put(source, `ui-tui/scripts/${name}`, `print(${JSON.stringify(name)})\n`)
+  }
 }
 
 test('TUI uses prepared workspace-local tools from an unrelated cwd and publishes a relocatable module product', () => {
   const base = fixture()
   const source = path.join(base, 'source with spaces')
   tuiSource(source)
+  copyFileSync(path.join(repo, 'ui-tui/src/lib/pythonHelpers.ts'), path.join(source, 'ui-tui/src/pythonHelpers.ts'))
+  put(source, 'ui-tui/src/entry.tsx', `#!/usr/bin/env node
+import { readFileSync } from 'node:fs'
+import { answer } from '@hermes/ink'
+import { pythonHelperPath } from './pythonHelpers'
+console.log(JSON.stringify({ answer, helpers: ['gateway_bootstrap.py', 'clipboard_image.py'].map(name =>
+  readFileSync(pythonHelperPath(name, process.env.HERMES_PYTHON_SRC_ROOT), 'utf8')) }))`)
   dependency(source, 'ui-tui', 'esbuild')
   const out = path.join(base, 'product one')
   execFileSync(process.execPath, [path.join(repo, 'scripts/build/tui.mjs'), '--source', source, '--out', out], { cwd: base })
@@ -198,7 +210,16 @@ test('TUI uses prepared workspace-local tools from an unrelated cwd and publishe
   const entry = path.join(out, 'dist/entry.js')
   expect(readFileSync(entry, 'utf8').startsWith('#!')).toBe(false)
   rmSync(source, { recursive: true })
-  expect(execFileSync(process.execPath, [entry], { cwd: base, encoding: 'utf8' }).trim()).toBe('prepared source')
+  // Nix keeps Python's site-packages separate from the compiled TUI (#139208).
+  const pythonRoot = path.join(base, 'site-packages')
+  mkdirSync(pythonRoot)
+  const result = execFileSync(process.execPath, [entry], {
+    cwd: base, encoding: 'utf8', env: { ...process.env, HERMES_PYTHON_SRC_ROOT: pythonRoot },
+  })
+  expect(JSON.parse(result)).toEqual({
+    answer: 'prepared source',
+    helpers: ['gateway_bootstrap.py', 'clipboard_image.py'].map(name => `print(${JSON.stringify(name)})\n`),
+  })
 })
 
 test('TUI failure does not publish or disturb a previous product, and missing prepared tools fail clearly', async () => {
@@ -325,6 +346,7 @@ test('TUI freshness invalidates source, configuration and compiler inputs and da
   }
   for (const name of [
     'ui-tui/src/value.ts', 'apps/shared/src/value.ts',
+    'ui-tui/scripts/gateway_bootstrap.py', 'ui-tui/scripts/clipboard_image.py',
     'ui-tui/packages/hermes-ink/src/entry-exports.ts',
     'ui-tui/tsconfig.json', 'ui-tui/packages/hermes-ink/tsconfig.json', 'apps/shared/tsconfig.json',
     'ui-tui/package.json', 'ui-tui/packages/hermes-ink/package.json', 'apps/shared/package.json',
@@ -347,3 +369,108 @@ test('TUI freshness invalidates source, configuration and compiler inputs and da
   writeFileSync(entry, 'damaged output')
   expect(current()).toBe(false)
 })
+
+test('a browser renderer publish never invalidates the native Desktop inputs', async () => {
+  const { sourceHash } = await import('../scripts/build/freshness.mjs')
+  const source = fixture()
+  put(source, 'apps/desktop/package.json', '{}')
+  put(source, 'apps/desktop/src/main.ts', 'export {}')
+  const before = sourceHash(source, 'desktop')
+  put(source, 'apps/desktop/dist-webapp/index.html', 'browser renderer')
+  put(source, 'apps/desktop/.dist-webapp-build-1/product/index.html', 'staged renderer')
+  expect(sourceHash(source, 'desktop')).toBe(before)
+  put(source, 'apps/desktop/src/main.ts', 'export const changed = true')
+  expect(sourceHash(source, 'desktop')).not.toBe(before)
+})
+
+function webappSource(source) {
+  put(source, 'package.json', JSON.stringify({ private: true, type: 'module', workspaces: ['apps/*', 'web'] }))
+  put(source, 'package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
+    '': { workspaces: ['apps/*', 'web'] },
+    'apps/desktop': { name: 'desktop' }, 'apps/shared': { name: 'shared' }, web: { name: 'web' },
+    'node_modules/desktop': { link: true, resolved: 'apps/desktop' },
+    'node_modules/shared': { link: true, resolved: 'apps/shared' },
+    'node_modules/web': { link: true, resolved: 'web' },
+  } }))
+  put(source, '.npmrc', 'engine-strict=true\n')
+  put(source, 'apps/desktop/package.json', '{"name":"desktop","type":"module"}')
+  put(source, 'apps/desktop/index.html', '<html><body><script type="module" src="/src/main.ts"></script></body></html>')
+  put(source, 'apps/desktop/src/main.ts', 'import { answer } from "../../shared/src/value"; document.body.textContent = answer;')
+  put(source, 'apps/shared/package.json', '{"name":"shared"}')
+  put(source, 'apps/shared/src/value.ts', 'export const answer: string = "browser renderer";')
+  put(source, 'web/package.json', '{"name":"web"}')
+}
+
+test('the Webapp receipt certifies its checkout inputs, not the workspace it compiled in', async () => {
+  const { productCurrent } = await import('../scripts/build/freshness.mjs')
+  const { buildWebapp } = await import('../scripts/build/webapp.mjs')
+  const { mirrorWebappInputs } = await import('../apps/desktop/scripts/build-webapp.mjs')
+  const base = fixture()
+  const source = path.join(base, 'source')
+  const workspace = path.join(base, 'workspace')
+  const out = path.join(source, 'apps/desktop/dist-webapp')
+  webappSource(source)
+  // Only the private workspace has installed dependencies.
+  dependency(workspace, '', 'vite')
+  const build = async () => {
+    mirrorWebappInputs(source, workspace)
+    await buildWebapp({ source, workspace, out })
+  }
+  const current = () => productCurrent({ source, product: 'webapp', out })
+  await build()
+  expect(current()).toBe(true)
+  expect(readFileSync(path.join(out, 'index.html'), 'utf8')).toContain('<script')
+  // Other products' sources, native outputs and release metadata never rebuild the renderer.
+  for (const name of ['web/src/unrelated.ts', 'pyproject.toml', 'assets/icon.svg', 'apps/desktop/dist/index.html', 'scripts/build/tui.mjs']) {
+    put(source, name, 'not a Webapp input')
+    expect(current(), name).toBe(true)
+  }
+  for (const [input, content] of [
+    ['apps/shared/src/value.ts', 'export const answer: string = "edited shared";'],
+    ['apps/desktop/src/main.ts', 'document.body.textContent = "edited desktop";'],
+    ['package-lock.json', readFileSync(path.join(source, 'package-lock.json'), 'utf8').replace('"lockfileVersion":3', '"lockfileVersion":3,"requires":true')],
+    ['.npmrc', 'engine-strict=false\n'],
+    ['pm/lock.json', '{}'],
+    ['scripts/build/webapp.mjs', '// compiler changed'],
+  ]) {
+    put(source, input, content)
+    expect(current(), input).toBe(false)
+    await build()
+    expect(current(), `rebuilt after ${input}`).toBe(true)
+  }
+  // A workspace that no longer mirrors the checkout must not publish under a current receipt.
+  put(workspace, 'apps/desktop/src/main.ts', 'document.body.textContent = "stale mirror";')
+  await expect(buildWebapp({ source, workspace, out })).rejects.toThrow(/does not match/)
+  expect(current()).toBe(true)
+  writeFileSync(path.join(out, 'index.html'), 'damaged output')
+  expect(current()).toBe(false)
+}, 60_000)
+
+test('Webapp builds install privately and never disturb the native Desktop installation', async () => {
+  const { buildSourceWebapp } = await import('../apps/desktop/scripts/build-webapp.mjs')
+  const base = fixture()
+  const source = path.join(base, 'source')
+  const workspace = path.join(base, 'workspace')
+  webappSource(source)
+  put(source, 'node_modules/electron/dist/electron', 'native install')
+  put(source, 'apps/desktop/dist/index.html', 'native renderer')
+  put(source, 'apps/desktop/src/removed-later.ts', 'export {}')
+  const installs = []
+  const prepare = options => {
+    installs.push(options.install)
+    expect(options.source).toBe(workspace)
+    expect(options.env.npm_config_ignore_scripts).toBe('true')
+    // npm ci validates the whole locked graph, not only the compiled workspaces.
+    expect(existsSync(path.join(workspace, 'web/package.json'))).toBe(true)
+    if (!existsSync(path.join(workspace, 'node_modules/vite'))) dependency(workspace, '', 'vite')
+  }
+  await buildSourceWebapp({ source, workspace, prepare, install: false })
+  rmSync(path.join(source, 'apps/desktop/src/removed-later.ts'))
+  await buildSourceWebapp({ source, workspace, prepare })
+  expect(installs).toEqual([false, true])
+  expect(existsSync(path.join(workspace, 'apps/desktop/src/removed-later.ts'))).toBe(false)
+  expect(existsSync(path.join(workspace, 'node_modules/vite/package.json'))).toBe(true)
+  expect(readFileSync(path.join(source, 'node_modules/electron/dist/electron'), 'utf8')).toBe('native install')
+  expect(readFileSync(path.join(source, 'apps/desktop/dist/index.html'), 'utf8')).toBe('native renderer')
+  expect(existsSync(path.join(source, 'apps/desktop/dist-webapp/hermes-build.json'))).toBe(true)
+}, 60_000)

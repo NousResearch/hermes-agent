@@ -16,6 +16,8 @@ from pathlib import Path
 import pytest
 from ruamel.yaml import YAML
 
+from tests.ci.workflow_steps import is_checkout
+
 ROOT = Path(__file__).resolve().parents[2]
 ACTION_DIR = ".github/actions/check-clean-worktree"
 ACTION = ROOT / ACTION_DIR / "action.yml"
@@ -32,7 +34,7 @@ def _checkout_jobs():
     for filename in WORKFLOWS:
         for name, job in (_load(ROOT / ".github/workflows" / filename)["jobs"] or {}).items():
             steps = job.get("steps") or []  # reusable-workflow calls have none
-            if any(str(step.get("uses", "")).startswith("actions/checkout@") for step in steps):
+            if any(is_checkout(step) for step in steps):
                 yield f"{filename}:{name}", job, steps
 
 
@@ -51,7 +53,7 @@ def test_every_checkout_job_ends_with_the_clean_worktree_step():
             problems.append(f"{label}: runs with `if: {last['if']}`; leave `if:` off")
         if "mode" in (last.get("with") or {}):
             problems.append(f"{label}: passes `mode`; the action's default is the only switch")
-        checkout = next(s for s in steps if str(s.get("uses", "")).startswith("actions/checkout@"))
+        checkout = next(s for s in steps if is_checkout(s))
         sparse = str((checkout.get("with") or {}).get("sparse-checkout", ""))
         if sparse and ACTION_DIR not in sparse.split():
             problems.append(f"{label}: sparse checkout omits {ACTION_DIR}, so the step cannot load")

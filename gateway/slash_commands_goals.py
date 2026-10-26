@@ -39,6 +39,12 @@ class GatewayGoalCommandsMixin:
             return t("gateway.goal.unavailable")
 
         def authorize_gate():
+            # A local session's owner is its admin: slash.exec admitted this command only after
+            # authorize_local_source and the session:control capability (T7). Messaging stays
+            # explicit-admin-only.
+            from gateway.session_local import authorize_local_source
+            if event.source is not None and authorize_local_source(self, event.source) is True:
+                return None
             if not self._resume_caller_is_admin(event.source):
                 return t("gateway.goal.gate_add_admin_only")
             return None
@@ -72,9 +78,10 @@ class GatewayGoalCommandsMixin:
     ) -> None:
         """Enqueue *text* as the next turn through the adapter FIFO (the post-turn judge's path).
 
-        A kickoff keeps the triggering message id / channel prompt; a resume continuation carries
-        none. Best-effort: failures only logged. A local ``slash.exec`` returns the turn to the
-        client as its ``send`` directive instead (the client submits it with its own input id).
+        A kickoff keeps the triggering message id / channel prompt / bound skills; a resume
+        continuation carries none. Best-effort: failures only logged. A local ``slash.exec`` returns
+        the turn to the client as its ``send`` directive instead (the client submits it with its own
+        input id).
         """
         from gateway.session_command_sink import active_sink
         if (sink := active_sink()) is not None:
@@ -91,6 +98,8 @@ class GatewayGoalCommandsMixin:
                     source=event.source,
                     message_id=event.message_id if kickoff else None,
                     channel_prompt=event.channel_prompt if kickoff else None,
+                    auto_skill=event.auto_skill if kickoff else None,
+                    inherit_channel_pin=not kickoff,
                 )
                 self._enqueue_fifo(quick_key, turn, adapter)
         except Exception as exc:
@@ -168,17 +177,40 @@ class GatewayGoalCommandsMixin:
         """Handle /refine — run the memory/skill review fork on demand, in a daemon thread against a
         snapshot of the cached AIAgent's conversation (live session and prompt cache untouched)."""
         args = (event.get_command_args() or "").strip()
-        _quick_key, agent, error = self._idle_cached_agent_or_error(event, "refine")
+        quick_key, agent, error = self._idle_cached_agent_or_error(event, "refine")
+        snapshot = list(getattr(agent, "_session_messages", None) or [])
+        session_id = None
+        if not snapshot and quick_key and quick_key not in self._running_agents:
+            # A local session's conversation is its stored transcript, not the cached agent: /moa
+            # (and its settle) drop that agent, so /refine reads the session itself (T7).
+            from gateway.session_refine import refine_local_session
+            local = await refine_local_session(self, event.source, args)
+            if local is not None:
+                return local
+            # A released cached agent (idle TTL, pressure, /moa), or one holding no messages, is not
+            # an empty conversation: refine the stored transcript.
+            from gateway.session_cold_review import stored_transcript
+            from gateway.session_transcript import TranscriptReadError
+            from gateway.slash_commands_status import history_unreadable
+            try:
+                session_id, snapshot = await stored_transcript(self, quick_key)
+            except TranscriptReadError:
+                return history_unreadable()
+            error = None if snapshot else error
         if error:
             return error
-        snapshot = list(getattr(agent, "_session_messages", None) or [])
         if not snapshot:
             return t("gateway.refine.empty")
         try:
-            agent._spawn_background_review(
-                messages_snapshot=snapshot, review_memory=True,
-                review_skills="skill_manage" in getattr(agent, "valid_tool_names", set()), focus=args or None,
-            )
+            if agent is None:
+                from gateway.session_cold_review import start_cold_refine
+                await start_cold_refine(self, event.source, quick_key, session_id, snapshot, args)
+            else:
+                agent._spawn_background_review(
+                    messages_snapshot=snapshot, review_memory=True,
+                    review_skills="skill_manage" in getattr(agent, "valid_tool_names", set()), focus=args or None,
+                    explicit=True,
+                )
         except Exception as exc:
             return t("gateway.refine.start_failed", error=exc)
         tail = t("gateway.refine.focus_suffix", focus=args) if args else ""
@@ -190,16 +222,31 @@ class GatewayGoalCommandsMixin:
         event carries no gateway route and never re-enters this chat."""
         args = (event.get_command_args() or "").strip()
         quick_key, agent, error = self._idle_cached_agent_or_error(event, "review")
+        snapshot = list(getattr(agent, "_session_messages", None) or [])
+        cold_session_id = None
+        if agent is None and quick_key and quick_key not in self._running_agents:
+            # The cached agent was evicted (idle TTL, pressure, /moa): review the stored transcript.
+            from gateway.session_cold_review import cold_review_history
+            from gateway.session_transcript import TranscriptReadError
+            from gateway.slash_commands_status import history_unreadable
+            try:
+                cold_session_id, snapshot = await cold_review_history(self, event.source)
+            except TranscriptReadError:
+                return history_unreadable()
+            error = None
         if error:
             return error
-        snapshot = list(getattr(agent, "_session_messages", None) or [])
         from tools.approval_context import reset_current_session_key, set_current_session_key
 
         def _dispatch():
+            from agent.review_engine import start_review
+            from gateway.session_cold_review import cold_review_parent
             token = set_current_session_key(quick_key)
             try:
-                from agent.review_engine import start_review
-                return start_review(agent, snapshot, args)
+                if cold_session_id is None:
+                    return start_review(agent, snapshot, args)
+                with cold_review_parent(self, event.source, quick_key, cold_session_id) as parent:
+                    return start_review(parent, snapshot, args)
             finally:
                 reset_current_session_key(token)
 

@@ -1,6 +1,8 @@
 """Canonical projections with demonstrated differences from standalone wire."""
 from typing import Literal
 
+from pydantic import model_validator
+
 from .base import JsonValue, Params, Result
 from .common import ProfileParams
 from .canonical_sessions import CanonicalSessionParams
@@ -73,16 +75,27 @@ class CanonicalBotDeliverParams(Params):
 
 
 class CanonicalBotDeliverResult(Result):
+    """A delivery's receipt. It names its admission, unless ``refused``: the FIFO refused the
+    delivery before anything was committed (``gateway/session_bot.py``), a terminal ``failed``
+    receipt with no admission that the relay settles as the sender's answer."""
+
     status: str
     delivery_id: str
     profile_home: str
     session_id: str
-    admission_id: str
+    admission_id: str | None = None
+    refused: Literal[True] | None = None
     message: str
     reply: str | None = None
     retry_admission_id: str | None = None
     error: str | None = None
     reason: str | None = None
+
+    @model_validator(mode='after')
+    def _admitted_or_refused(self):
+        if (self.admission_id is None) != (self.refused is True) or (self.refused and self.status != 'failed'):
+            raise ValueError('a deliver result names its admission, or is a refused failed receipt without one')
+        return self
 
 
 for _name, _params, _result in (
@@ -94,5 +107,8 @@ for _name, _params, _result in (
     ('groups.create', CanonicalRoomCreateParams, GroupsCreateResult),
     ('groups.approve', CanonicalRoomApproveParams, GroupsApproveResult),
     ('bot_relay.deliver', CanonicalBotDeliverParams, CanonicalBotDeliverResult),
+    # The sender's finalize of a refusal marked ``admitted: false``: the same identity, answered
+    # with the id's terminal not-sent receipt or its existing admission (``gateway/session_bot.py``).
+    ('bot_relay.settle', CanonicalBotDeliverParams, CanonicalBotDeliverResult),
 ):
     canonical_method(_name, params=_params, result=_result)

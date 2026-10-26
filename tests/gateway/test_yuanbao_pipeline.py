@@ -23,7 +23,7 @@ if _REPO_ROOT not in sys.path:
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from gateway.platforms.yuanbao import (
+from plugins.platforms.yuanbao.adapter import (
     InboundContext,
     InboundMiddleware,
     InboundPipeline,

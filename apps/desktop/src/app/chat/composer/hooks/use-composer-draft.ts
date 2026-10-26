@@ -1,17 +1,10 @@
-// Register the built-in draft providers with the suggestion bus (side-effect
-// import — the bus itself is provider-agnostic). The repair provider is
-// event-driven and registers through the gateway stream instead.
-import '@/store/suggestion-providers/cron'
-import '@/store/suggestion-providers/github'
-import '@/store/suggestion-providers/mcp'
-import '@/store/suggestion-providers/skill'
-
 import { useAui, useAuiState, useComposerRuntime } from '@assistant-ui/react'
 import { SLASH_COMMAND_RE } from '@hermes/shared'
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { isElementInHiddenPane } from '@/components/pane-shell/pane-visibility'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
+import { isTouchInteraction } from '@/lib/touch-interaction'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import {
   adoptGoneSessionDraft,
@@ -34,7 +27,7 @@ import {
 } from '@/store/composer-draft-retry'
 import { isBrowsingHistory } from '@/store/composer-input-history'
 import { $composerPopout } from '@/store/composer-popout'
-import { clearDraftSuggestions, sampleComposerDraft } from '@/store/composer-suggestions'
+import { migrateQueuedPrompts } from '@/store/composer-queue'
 
 import {
   cloneAttachments,
@@ -221,7 +214,7 @@ export function useComposerDraft({
       }
 
       // 'prefix' puts the value at the START of the draft — slash commands
-      // (the skill-suggestion pill) only route when they lead the message.
+      // only route when they lead the message.
       if (mode === 'prefix') {
         const rest = draftRef.current.trimStart()
 
@@ -246,9 +239,15 @@ export function useComposerDraft({
   // stack, so tiles, pop-outs, and secondary windows still auto-focus.
   useEffect(() => {
     if (!inputDisabled && paneVisible && !floating) {
-      focusInput()
+      // A tab becoming visible or a turn finishing is not a request to open
+      // a phone keyboard. Explicit focus requests below still focus normally.
+      if (isTouchInteraction()) {
+        markActiveComposer(target)
+      } else {
+        focusInput()
+      }
     }
-  }, [floating, focusInput, focusKey, inputDisabled, paneVisible])
+  }, [floating, focusInput, focusKey, inputDisabled, paneVisible, target])
 
   const previousFocusRequest = useRef(focusRequestId)
   // eslint-disable-next-line no-restricted-syntax -- handled request token, not a mirrored atom
@@ -412,7 +411,14 @@ export function useComposerDraft({
     if (editorRef.current) {
       renderComposerContents(editorRef.current, '')
 
-      if (visibleRef.current && getActiveComposer() === target && !isElementInHiddenPane(editorRef.current)) {
+      // A caret placed inside a send tap focuses the editor, and on a phone
+      // raises the keyboard the user put away. Touch keeps it only if focused.
+      if (
+        visibleRef.current &&
+        getActiveComposer() === target &&
+        !isElementInHiddenPane(editorRef.current) &&
+        (!isTouchInteraction() || editorRef.current.contains(document.activeElement))
+      ) {
         placeCaretEnd(editorRef.current)
       }
     }
@@ -458,9 +464,6 @@ export function useComposerDraft({
     const sync = () => {
       const text = composerRuntime.getState().text
       draftRef.current = text
-      // Composer suggestion pills for THIS session's draft (debounced +
-      // change-gated in the bus — this is just a timer reset).
-      sampleComposerDraft(sessionIdRef.current ?? null, text)
 
       const editor = editorRef.current
 
@@ -581,7 +584,14 @@ export function useComposerDraft({
     // of vanishing. Keyed on the scope alone: the runtime id can land a resume
     // later than the route flips the scope, so it is not a usable signal here.
     if ((isFreshDraftScope(draftScopeRef.current) || !draftScopeRef.current) && activeQueueSessionKey) {
-      adoptNewSessionDraft(activeQueueSessionKey)
+      const freshKey = draftScopeRef.current || freshDraftScope()
+
+      // A follow-up queued while session.create was in flight sits under the
+      // fresh key; it belongs to this chat too. The queue re-key never moves
+      // fresh → stored (#139190), so only this announced handoff does.
+      if (adoptNewSessionDraft(activeQueueSessionKey)) {
+        migrateQueuedPrompts(freshKey, activeQueueSessionKey)
+      }
     } else if (!activeQueueSessionKey) {
       // The reverse handoff: a session the user was typing into turned out
       // to be gone and the window dropped to a fresh draft (#111868). The
@@ -607,12 +617,6 @@ export function useComposerDraft({
       } else if (!isBrowsingHistory(sessionId)) {
         stashAt(activeQueueSessionKey, latestText)
       }
-
-      // Withdraw the outgoing session's draft suggestions (and any pending
-      // sample timer). The incoming session re-earns its own from the draft
-      // restore above — without this a leaving session's "Add GitHub" pill
-      // lingers in the map and re-appears stale on the way back.
-      clearDraftSuggestions(sessionIdRef.current)
     }
   }, [activeQueueSessionKey]) // eslint-disable-line react-hooks/exhaustive-deps
 

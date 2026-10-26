@@ -9,6 +9,7 @@ export interface CanonicalGroupRoute {
 
 export interface CanonicalGroupBinding extends CanonicalGroupRoute {
   roomId: string
+  roomName?: string
 }
 
 export interface CanonicalRoomMember {

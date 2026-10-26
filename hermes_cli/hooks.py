@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -87,9 +88,15 @@ def _mtime_drift(shell_hooks, spec, entry) -> tuple[bool | None, str, str]:
     mtime_at = entry.get("script_mtime_at_approval")
     if not (mtime_now and mtime_at):
         return None, mtime_at, mtime_now
-    if mtime_now > mtime_at:
+    # Compare instants, not strings: "...:53.848680Z" sorts BELOW "...:53Z" ('.' < 'Z'), so a
+    # string compare flags an untouched script whose approval record lacks sub-second precision.
+    try:
+        now, at = (datetime.fromisoformat(v.replace("Z", "+00:00")) for v in (mtime_now, mtime_at))
+    except (TypeError, ValueError):
+        return None, mtime_at, mtime_now
+    if now > at:
         return True, mtime_at, mtime_now
-    return (False if mtime_now == mtime_at else None), mtime_at, mtime_now
+    return (False if now == at else None), mtime_at, mtime_now
 
 
 # ---------------------------------------------------------------------------

@@ -480,6 +480,14 @@ def _run_job_script(
         # env itself — no raw copy at the spawn site (test_subprocess_env_guard).
         env = build_subprocess_env(strip_launch_profile=True)
         env.update(env_overlay)
+        # The gateway's cron ticker owns its jobs: a script it fires is not a delegate_task
+        # descendant, but a gateway (re)started from a fenced lineage carries the marker in
+        # os.environ and the factory above re-adds it, so every `hermes kanban <mutation>` in the
+        # script is refused (#87650). Drop it only at that owner boundary; an in-process
+        # delegate child (ContextVar) or a non-gateway lineage keeps its fence.
+        from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER, is_delegated_child_context
+        if os.environ.get("_HERMES_GATEWAY") == "1" and not is_delegated_child_context():
+            env.pop(DELEGATED_CHILD_ENV_MARKER, None)
         # Subprocess cwd only (default: scripts-dir parent). NEVER os.chdir() the process.
         # Use the job's workdir as the subprocess cwd when configured, otherwise default to the scripts-dir
         # parent (back-compat). NEVER mutate the Python process cwd — that would leak into concurrent

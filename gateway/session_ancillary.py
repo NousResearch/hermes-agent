@@ -19,6 +19,83 @@ _SUBAGENT_FIELDS = (
 )
 _TAIL_BYTES = 16384
 _PROCESS_TAIL_CHARS = 32768  # main's dock tail view (cli_process_dock.process_tail)
+_PROCESS_STOP_PREFIX = 'gateway.process_stop.v1:'
+
+
+def process_stop_pending(db, session_id):
+    """Native cleanup status only; process ownership remains in the existing registry."""
+    return db.get_meta(_PROCESS_STOP_PREFIX + session_id)
+
+
+def record_process_stop(authority, ref, generation):
+    from hermes_state_runtime import _epoch
+    token = f'{authority.epoch}:{generation}'
+    def write(conn):
+        _epoch(conn, authority.epoch)
+        authority.db.set_meta(_PROCESS_STOP_PREFIX + ref.session_id, token, cursor=conn)
+    authority.db._execute_write(write)
+    return token
+
+
+def clear_process_stop(authority, ref, token):
+    from hermes_state_runtime import _epoch
+    def write(conn):
+        _epoch(conn, authority.epoch)
+        conn.execute('DELETE FROM state_meta WHERE key=? AND value=?',
+                     (_PROCESS_STOP_PREFIX + ref.session_id, token))
+    authority.db._execute_write(write)
+
+
+async def finish_process_stop(authority, ref):
+    """A managed worker's finished frame follows its verified process cleanup."""
+    token = process_stop_pending(authority.db, ref.session_id)
+    if token is not None:
+        from gateway.session_runtime_workers import tracked_write
+        await tracked_write(authority, partial(clear_process_stop, authority, ref, token))
+
+
+async def retry_process_stop(authority, ref, agent=None):
+    """Reconcile a failed/unfinished Stop before any FIFO handoff, including after reload."""
+    token = process_stop_pending(authority.db, ref.session_id)
+    if token is None:
+        return True
+    from gateway.session_authorities import owner_scope
+    from gateway.session_managed_worker import managed_policy
+    from gateway.session_runtime_workers import tracked_write
+    with owner_scope(authority):
+        if not token.startswith(str(authority.epoch) + ':') or managed_policy(authority, ref) is not None:
+            if not await asyncio.to_thread(_recover_stopped_processes, authority, ref):
+                return False
+        if not await interrupt_processes(authority, ref, agent):
+            return False
+    await tracked_write(authority, partial(clear_process_stop, authority, ref, token))
+    return True
+
+
+def _recover_stopped_processes(authority, ref):
+    """Use native birth-checked recovery for this session only; unreadable evidence stays unknown."""
+    import json
+    from tools.process_registry import process_registry, _checkpoint_path
+    keys, owners = _ownership(authority, ref, None, ())
+    def owned(entry):
+        return entry.get('session_key') in keys and (entry.get('owner_task_id') or entry.get('task_id')) in owners
+    try:
+        entries = json.loads(_checkpoint_path().read_text(encoding='utf-8-sig'))
+        if not isinstance(entries, list) or any(not isinstance(entry, dict) for entry in entries):
+            return False
+        if any(owned(entry) and (entry.get('pid_scope', 'host') != 'host'
+               or type(entry.get('host_start_time')) is not int or type(entry.get('pid')) is not int
+               or entry['host_start_time'] <= 0 or entry['pid'] <= 0) for entry in entries):
+            return False
+        process_registry.recover_from_checkpoint(owns_entry=owned)
+        remaining = json.loads(_checkpoint_path().read_text(encoding='utf-8-sig'))
+        if not isinstance(remaining, list) or any(not isinstance(entry, dict) for entry in remaining):
+            return False
+        with process_registry._lock:
+            tracked = {*process_registry._running, *process_registry._finished}
+        return all(not owned(entry) or entry.get('session_id') in tracked for entry in remaining)
+    except (OSError, ValueError, TypeError):
+        return False
 
 
 def handlers(connection):
@@ -286,10 +363,16 @@ async def interrupt_processes(authority, ref, agent):
         lookup = (getattr(authority.runner, '_resident_agent_for', None)
                   or getattr(authority.runner, '_cached_agent_for', None))
         agent = lookup(authority.sessions[ref.session_id].route) if lookup is not None else None
+    registry = getattr(sys.modules.get('tools.process_registry'), 'process_registry', None)
     # Turn Stop leaves detached delegations running; their raw owners are not this agent's.
     registry, targets = _process_targets(authority, ref, agent, (),
-        select=lambda p: not p.exited or p._scope_stop_pending)
+        select=lambda p: not p.exited or p._scope_stop_pending
+        or (p.notify_on_complete and not registry.is_completion_consumed(p.id)))
     if targets:
+        # Stop cancels these autonomous notices even if termination is refused or a reader
+        # is still publishing its exit. Output remains in the native process result.
+        with registry._lock:
+            registry._completion_consumed.update(targets)
         def kill():
             results = [registry.kill_process(pid, source='session.interrupt', consume_output=True) for pid in targets]
             return all(r.get('status') in {'killed', 'already_exited'} and 'scope_stop_failed' not in r for r in results)
@@ -602,6 +685,7 @@ def _ownership(authority, ref, agent, records):
     routing key AND an owner among the session, its agent and its subagents."""
     target = physical_target(authority, ref)
     keys, owners = {authority.sessions[ref.session_id].route, target}, {target}
+    owners.update(_compression_lineage(authority.db, authority.db.get_compression_tip(target) or target))
     if agent is not None:
         owners.add(getattr(agent, 'session_id', None))
         owners.update(getattr(agent, '_process_owner_task_ids', ()))

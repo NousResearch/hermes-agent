@@ -348,6 +348,8 @@ def interrupt_managed(authority, actor, ref, generation):
         return False
     authority.authorize(actor, ref, 'session:control')
     authority.check_approval_generation(ref.session_id, generation)
+    from gateway.session_ancillary import record_process_stop
+    record_process_stop(authority, ref, generation)
     worker.control({'type': 'stop', 'processes': True})
     return True
 
@@ -666,6 +668,8 @@ async def execute_managed(authority, ref, row, policy):
                 with suppress(subprocess.TimeoutExpired):
                     await asyncio.to_thread(process.wait, 10)
                 accepted = _with_stop_cause(accepted, worker)
+                from gateway.session_ancillary import finish_process_stop
+                await finish_process_stop(authority, ref)
                 # Like in-process execution, settlement belongs to the drain's stream lock.
                 authority.pending_results[row['admission_id']] = {
                     'result': {**accepted, 'local_viewer': True}, 'usage': usage,

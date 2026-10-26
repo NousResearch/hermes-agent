@@ -46,14 +46,19 @@ def test_worker_stop_ends_own_persisted_processes_and_preserves_neighbors(tmp_pa
 def test_native_managed_stop_frame_sets_deadline_and_decodes_process_cleanup(tmp_path, monkeypatch, registry):
     from agent.managed_worker import WorkerControls, encode_frame
     from gateway.session_managed_worker import ManagedWorker, interrupt_managed
-    from gateway.session_contract import SessionRef
     command = shlex.join([sys.executable, '-c', 'import threading; threading.Event().wait(40)'])
     process = registry.spawn_local(command, cwd=str(tmp_path), task_id='s', owner_task_id='s', session_key='route',
                                    persist_on_release=True)
     worker = ManagedWorker(None)  # production command queue and deadline latch, without a pipe writer
-    authority = SimpleNamespace(_managed_workers={'s': worker}, authorize=lambda *a: None,
-                                check_approval_generation=lambda *a: None)
-    assert interrupt_managed(authority, object(), SessionRef('profile', 's'), 1)
+    from tests.gateway.test_session_authority_cancel_settlement import ACTOR, REF, _authority
+    from hermes_state_runtime import admit_session_input, claim_session_input
+    db, authority = _authority(tmp_path, monkeypatch)
+    authority._managed_workers = {'s': worker}
+    admit_session_input(db, epoch=authority.epoch, principal_id=ACTOR.subject, session_id='s',
+                        request_id='stopped', payload={'text': 'work'})
+    row = claim_session_input(db, epoch=authority.epoch, session_id='s')
+    authority._stamp_claim(REF, authority.sessions['s'], row)
+    assert interrupt_managed(authority, ACTOR, REF, row['generation'])
     assert worker.stop.is_set() and worker.stopped_at is not None
     frames = worker.commands.get_nowait()
     controls = WorkerControls.__new__(WorkerControls)
@@ -65,3 +70,4 @@ def test_native_managed_stop_frame_sets_deadline_and_decodes_process_cleanup(tmp
     controls.read()
     assert controls.finish.is_set() and controls.stopped.is_set()
     assert process.exited and process.completion_reason == 'killed'
+    db.close()

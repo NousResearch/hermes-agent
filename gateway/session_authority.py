@@ -851,6 +851,9 @@ class SessionAuthority:
         """``resolve_unknown`` past authorization: also the owner's own call when the last viewer
         closed a session whose turn recovered ``unknown`` (gateway/session_viewer_close), or when an
         unattended automation turn settles itself (``notice``: its transcript copy, GW-10)."""
+        from gateway.session_ancillary import retry_process_stop
+        if not await retry_process_stop(self, ref):
+            raise RuntimeStoreError('process_stop_unknown')
         captured = self.pending_results.get(admission_id)
         before = get_session_admission(self.db, admission_id=admission_id)
         prepared = None
@@ -898,6 +901,13 @@ class SessionAuthority:
 
     async def interrupt(self, actor, ref, generation):
         self.authorize(actor, ref, 'session:control')
+        # An idle Stop and a queued claim must order at the same boundary. A cleanup
+        # that yields cannot let the next admission start before its verdict is durable.
+        async with self.sessions[ref.session_id].claim_gate:
+            return await self._interrupt_at_boundary(actor, ref, generation)
+
+    async def _interrupt_at_boundary(self, actor, ref, generation):
+        self.authorize(actor, ref, 'session:control')
         handle = self._handle(ref)
         if handle.execution_generation != generation:
             raise RuntimeStoreError('stale_generation')
@@ -926,8 +936,11 @@ class SessionAuthority:
         if agent is not None:
             request_hard_interrupt(agent)
         if not returned:
-            from gateway.session_ancillary import interrupt_processes
-            await interrupt_processes(self, ref, agent)
+            from gateway.session_ancillary import interrupt_processes, record_process_stop, clear_process_stop
+            from gateway.session_runtime_workers import tracked_write
+            token = await tracked_write(self, partial(record_process_stop, self, ref, generation))
+            if await interrupt_processes(self, ref, agent) and handle.execution_state != 'running':
+                await tracked_write(self, partial(clear_process_stop, self, ref, token))
         return self._handle(ref)
 
     def _classic_turn_holds(self, route):
@@ -1047,6 +1060,9 @@ class SessionAuthority:
     async def _claim_next(self, ref, live):
         # False asks the pump to re-read after a queued head changed during preflight.
         async with live.claim_gate, live.mutation_lock:
+            from gateway.session_ancillary import retry_process_stop
+            if not await retry_process_stop(self, ref):
+                raise RuntimeStoreError('process_stop_unknown')
             pending = list_session_admissions(self.db, session_id=ref.session_id)
             if any(row['status'] == 'unknown' for row in pending):
                 raise RuntimeStoreError('unknown_execution')
@@ -1253,8 +1269,8 @@ class SessionAuthority:
                 with live.event_stream.lock:
                     self.executing.pop(ref.session_id, None)
                 if self.delivered_stops.get(ref.session_id) == row['generation']:
-                    from gateway.session_ancillary import interrupt_processes
-                    if not await interrupt_processes(self, ref, self.adopted.get(ref.session_id, (None, None))[1]):
+                    from gateway.session_ancillary import retry_process_stop
+                    if not await retry_process_stop(self, ref, self.adopted.get(ref.session_id, (None, None))[1]):
                         from gateway.session_settlement_recovery import recover_failed_settlement
                         await recover_failed_settlement(self, row)
                         self.pending_results.pop(row['admission_id'], None)
@@ -1270,7 +1286,8 @@ class SessionAuthority:
             # An automation turn nobody waits on settles here, at the exit that fenced it (GW-10),
             # so the followers already queued run in this drain; a person's turn still pauses.
             from gateway.session_unattended_unknown import settle_unattended_unknown
-            if await settle_unattended_unknown(self, ref):
+            from gateway.session_ancillary import process_stop_pending
+            if process_stop_pending(self.db, ref.session_id) is None and await settle_unattended_unknown(self, ref):
                 return None, 'settled_unknown'
             self._pause(ref, 'unknown_execution')
             raise

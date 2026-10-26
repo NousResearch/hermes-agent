@@ -156,7 +156,7 @@ def send(frame):
 send({'type': 'hello', 'pid': me.pid, 'birth': worker_birth(me), 'ancestors': [p.pid for p in me.parents()[:3]]})
 for line in sys.stdin.buffer:
     frame = json.loads(line)
-    if frame == {'type': 'stop'}:
+    if frame in ({'type': 'stop'}, {'type': 'stop', 'processes': True}):
         send({'type': 'result', 'result': {'final_response': '', 'interrupted': True, 'completed': False}})
     elif frame == {'type': 'finish'}:
         send({'type': 'finished'})

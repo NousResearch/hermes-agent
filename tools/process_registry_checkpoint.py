@@ -46,9 +46,8 @@ class ProcessCheckpointMixin:
             from hermes_cli.active_sessions import _FileLock
             from utils import atomic_json_write
             path = _checkpoint_path()
-            # Every interpreter of the profile (owner, each managed worker) rewrites this file from
-            # its own table; a worker's output-log handoff is its only path to the next one, so a
-            # writer keeps the handoffs it does not track (read-merge-write under one file lock).
+            # Every interpreter of the profile rewrites this file from its own table. Keep
+            # untracked live processes and worker output-log handoffs under the same file lock.
             with _FileLock(path.with_name(path.name + ".lock")):
                 entries.extend(self._foreign_handoffs(path, known))
                 atomic_json_write(path, entries)
@@ -56,8 +55,8 @@ class ProcessCheckpointMixin:
             logger.debug("Failed to write checkpoint file: %s", e, exc_info=True)
 
     def _foreign_handoffs(self, path, known) -> list[dict[str, Any]]:
-        """On-disk worker handoffs this registry never tracked whose log still decides an outcome:
-        the process is alive (same start time) or its recorded exit is waiting to be read."""
+        """Native processes and worker handoffs this writer never tracked must remain recoverable.
+        No signals here: an unrelated live PID or unresolved scope keeps its existing metadata."""
         from pathlib import Path
         from tools.process_registry_output_log import _exit_path, adoptable_log
         try:
@@ -65,11 +64,13 @@ class ProcessCheckpointMixin:
         except (OSError, ValueError):
             return []
         return [entry for entry in on_disk if isinstance(entry, dict) and entry.get("session_id") not in known
-                and (log := adoptable_log(entry.get("output_log"))) and Path(log).exists()
-                and (_exit_path(log).exists() or self._detached_host_fate(
-                    entry.get("pid"), entry.get("host_start_time")) == "running")]
+                and (entry.get("systemd_unit")
+                     or (entry.get("pid_scope", "host") == "host" and self._detached_host_fate(
+                         entry.get("pid"), entry.get("host_start_time")) == "running")
+                     or ((log := adoptable_log(entry.get("output_log"))) and Path(log).exists()
+                         and _exit_path(log).exists()))]
 
-    def recover_from_checkpoint(self) -> int:
+    def recover_from_checkpoint(self, *, owns_entry=None) -> int:
         """On gateway startup, probe PIDs from the checkpoint file; returns how many
         were recovered as detached sessions."""
         from tools.process_registry import (
@@ -88,6 +89,9 @@ class ProcessCheckpointMixin:
         recovered = 0
         unresolved_scope_entries: list[dict[str, Any]] = []
         for entry in entries:
+            if owns_entry is not None and not owns_entry(entry):
+                unresolved_scope_entries.append(entry)
+                continue
             pid, pid_scope = entry.get("pid"), entry.get("pid_scope", "host")
             if not pid:
                 continue

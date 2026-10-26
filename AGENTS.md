@@ -55,41 +55,8 @@ hardening is ordinary public work. Name the §2 boundary crossed, with a repro o
 
 **Footprint ladder** (take the highest rung that solves it): extend existing code → CLI command +
 skill → service-gated tool (`check_fn` answers reachability/opt-in, never per-session surface:
-`tools/AGENTS.md`) → plugin → MCP server in the catalog → new core tool (fundamental, broadly useful,
-unreachable otherwise).
-
-## Working in the Production Tree — Read Before You Check Out a Branch
-
-**Never use the production tree as a checkout.** The directory
-`/home/serveradmin/.hermes/hermes-agent` is the live source for the whole
-agent fleet (gateways, dispatcher, kanban, watchers). Checking a fix branch
-into it silently clobbers whatever was deployed — that bug class caused two
-silent-fix-loss incidents on 2026-09-17 and 2026-09-23.
-
-If you are working under this repo as a kanban worker, your task workspace
-is already provided by the dispatcher as a worktree under
-`~/.hermes/hermes-agent/.worktrees/<task-id>` (or the repo's equivalent
-`.worktrees/<task-id>`). Work there.
-
-If you are an operator editing the production tree directly (reviewing a
-hotfix, applying a security patch), follow the
-[Canonical Deploy Branch wiki page](docs/wiki/services/canonical-deploy-branch.md):
-commit to `canonical-deploy-t_7161d9a9` (or whatever `HERMES_DEPLOY_BRANCH`
-names), push, then re-point the deployed tree — do not check out a
-non-canonical branch and leave it there.
-
-**As of t_ff7d30cc this rule is mechanically enforced** for kanban-spawned
-workers: the dispatcher wraps every worker in an unprivileged user+mount
-namespace where the production tree is `EROFS` at the syscall level. A worker
-attempting `git checkout`, `git reset --hard`, `git pull`, or
-`git update-ref canonical-deploy` inside the production tree is denied by
-the kernel, not by convention. The carve-out set (the only writable paths)
-is the per-task worktree plus a minimal git bookkeeping set under
-`<agent_home>/.git/`. Config gate `kanban.worker_isolation = off|warn|enforce`;
-env kill switch `HERMES_WORKER_ISOLATION=off`. See the wiki page for the
-full set + caveats (lost supplementary groups — lxd unix.socket still
-authenticates as host serveradmin via `SO_PEERCRED`; no `git fetch`
-inside the sandbox; cron scheduler is a separate spawn path).
+`tools/AGENTS.md`) → plugin → MCP server in the catalog → new core tool (fundamental, broadly
+useful, unreachable otherwise).
 
 ## Development Environment
 
@@ -148,6 +115,9 @@ Every former god file is a **facade** (public entry points + the names other pac
   in a sibling, never a facade; name ladders become a dict → handler.
 - **No re-export shims for internal moves;** internal paths are not API. Moving a symbol means
   fixing its docs in the same PR (grep `website/docs`, `skills/`, every `AGENTS.md`).
+- **Never check a fix branch out into `/home/serveradmin/.hermes/hermes-agent`** — the live source
+  for the fleet; it silently clobbers what was deployed (silent-fix-loss 2026-09-17/23/24). Use
+  your per-task worktree; see `cron/AGENTS.md`.
 
 ## Rules that apply everywhere
 
@@ -159,44 +129,44 @@ Every former god file is a **facade** (public entry points + the names other pac
 - **Never hardcode `~/.hermes`:** `get_hermes_home()` for paths, `display_hermes_home()` for text
   (HX001). `_get_profiles_root()` is HOME-anchored on purpose.
 - **One process serves many profiles.** Code that runs outside a turn (boot probes, eviction,
-  tickers, deferred callbacks, RPC methods, thread hops, child spawns) binds the owning profile scope
-  explicitly; `os.environ`, module globals and import-time values hold the launch profile's, so an
-  unbound read is a silent default-profile leak. Binding points and seams: `gateway/AGENTS.md`
+  tickers, deferred callbacks, RPC methods, thread hops, child spawns) binds the owning profile
+  scope explicitly; `os.environ`, module globals and import-time values hold the launch profile's,
+  so an unbound read is a silent default-profile leak. Binding points: `gateway/AGENTS.md`
   § Profile scope (HX002/HX004/HX005/HX012, PS-P05/P06).
 - **Machine facts and executable lookup go through `hermes_platform`** (`hermes_platform/AGENTS.md`).
 - **Dependencies carry upper bounds** (`>=floor,<next_major`; git URLs and Actions pinned to a SHA);
   after editing `pyproject.toml` run `hermes pm lock` and commit `uv.lock`; never mutate a Hermes
-  environment with raw pip/uv. Full policy: `pm/AGENTS.md`.
+  environment with raw pip/uv. Policy: `pm/AGENTS.md`.
 - **TypeScript (desktop, TUI, website):** feature-owned nanostores over threaded state, thin route
   roots, narrow hooks and colocated action modules, `interface` for props and shared shapes,
-  table-driven dispatch over condition ladders; `src/app` routes, `src/store` atoms, `src/lib` pure
+  table-driven dispatch over condition ladders; `src/app` routes, `src/store` atoms, `src/lib`
   helpers.
 - **Commits and PRs:** rebase onto `main` before merging (a squash from a stale branch silently
   reverts newer fixes); 1–2 invariant tests per fix, proven red on the base.
 - **Tests:** always `scripts/run_tests.sh`, never bare `pytest`; behaviour contracts, never
   change-detectors or source-reading tests; host-specific behaviour is tested on that host with
   `@pytest.mark.platforms(...)`, never by faking `sys.platform`; tests never write to `~/.hermes/`.
-  Everything else: `tests/AGENTS.md`.
+  More: `tests/AGENTS.md`.
 
 ## Routing Table — working in X → read X/AGENTS.md
 
 | Area | Read | Covers |
 |---|---|---|
-| `run_agent.py`, `agent/` | `agent/AGENTS.md` | turn phases, caching and message-flow invariants, compression, model/aux resolution |
-| `cli.py`, `hermes_cli/` | `hermes_cli/AGENTS.md` | CLI mixins, slash registry, config system, skins, `hermes update`, profiles / multiplex |
+| `run_agent.py`, `agent/` | `agent/AGENTS.md` | turn phases, caching, message-flow invariants, compression, model/aux resolution |
+| `cli.py`, `hermes_cli/` | `hermes_cli/AGENTS.md` | CLI mixins, slash registry, config, skins, `hermes update`, profiles / multiplex |
 | `gateway/` | `gateway/AGENTS.md` | adapters, message guards, streaming, notifications, token locks, § Profile scope |
 | `gateway/platforms/` new adapter | `gateway/platforms/ADDING_A_PLATFORM.md` | step-by-step adapter guide |
-| `tools/`, `toolsets.py`, `model_tools.py` | `tools/AGENTS.md` | adding tools, registry, toolsets, delegation, session-scoped surface tools |
+| `tools/`, `toolsets.py`, `model_tools.py` | `tools/AGENTS.md` | adding tools, registry, delegation, session-scoped surface tools |
 | `plugins/`, `hermes_cli/plugins*.py` | `plugins/AGENTS.md` | plugin kinds, native compat contract, in-tree policy |
-| `plugin-catalog/` | `plugin-catalog/README.md` | catalog admission rules (mirrored in the developer guide; keep identical) |
+| `plugin-catalog/` | `plugin-catalog/README.md` | catalog admission rules (mirror the developer guide; keep identical) |
 | `tui_gateway/`, `ui-tui/` | `tui_gateway/AGENTS.md` | process model, JSON-RPC transport, slash flow |
 | `web/`, `hermes_cli/web_routers/` | `web/AGENTS.md` | dashboard embeds the real TUI |
 | `apps/desktop/` | `apps/desktop/AGENTS.md`, `apps/desktop/src/AGENTS.md` | `serve` backend, slash palette, Bot Mode |
 | `skills/`, `optional-skills/`, `agent/curator*.py` | `skills/AGENTS.md` | frontmatter, authoring standards, curator |
-| `cron/`, kanban | `cron/AGENTS.md` | scheduler invariants, job fields, kanban dispatcher |
+| `cron/`, kanban | `cron/AGENTS.md` | scheduler invariants, job fields, kanban dispatcher, worker isolation |
 | `tests/` | `tests/AGENTS.md` | runner, placement, OS markers, `wine2e`, banned test shapes |
 | `pm/`, `pyproject.toml` | `pm/AGENTS.md` | pinning policy, PM-owned environments, plugin quarantine |
 | `hermes_platform/` | `hermes_platform/AGENTS.md` | host facts, resolvers |
 
-Long-form background: `website/docs/developer-guide/`. Workflow rules (PR/issue/review/salvage
-process) live in the `hermes-agent-dev` skill, not here.
+Long-form background: `website/docs/developer-guide/`. Workflow rules (PR/issue/review/salvage)
+live in the `hermes-agent-dev` skill, not here.

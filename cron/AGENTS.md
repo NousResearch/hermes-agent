@@ -192,6 +192,17 @@ recycled PID gets killed on reclaim.
   `kanban_path_is_fenced(path)` denies mutations only on the dispatcher-pinned `HERMES_KANBAN_DB`
   or under that root, so a child working against a scratch `HERMES_HOME` keeps a writable board.
 
+### Worker mount-namespace isolation
+
+The production tree is `EROFS` at the syscall level for every kanban-spawned worker: the
+dispatcher wraps the worker argv with `unshare -Urm <launcher>`, and the launcher binds the
+production tree `mount -o bind,ro`, carving the writable paths back out. `git checkout` /
+`reset --hard` / `pull` / `update-ref` against the production tree are denied by the kernel, not
+by convention — the rule three silent-revert incidents (2026-09-17, 2026-09-23, 2026-09-24)
+needed enforced. Gate `kanban.worker_isolation` = `off|warn|enforce`; kill switch
+`HERMES_WORKER_ISOLATION=off`. Cron is a second spawn path (`cron/scheduler.py`). Long form,
+carve-out set and kernel caveats: `cron/WORKER_ISOLATION.md`.
+
 ## Tests
 
 `tests/cron/`, `tests/hermes_cli/test_kanban*.py`, `tests/tools/test_kanban*.py`. Schedule parsing

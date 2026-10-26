@@ -165,3 +165,48 @@ def test_button_click_in_a_thread_resolves_a_thread_scoped_route(monkeypatch):
         assert adapter._component_live_auth(_click(USER, _thread())) is True
     finally:
         secret_scope.set_multiplex_active(prev)
+
+
+@pytest.mark.parametrize("user_id,expected", [(USER, True), (STRANGER, False)])
+def test_secondary_profiles_own_bot_honors_its_config_allow_from_in_guild_channels(
+    monkeypatch, user_id, expected
+):
+    """A profile running its own Discord bot keeps its allowlist in its own config.yaml.
+
+    Under multiplex only the default profile's list reaches the env, so the guild-channel verdict for
+    the secondary's bot can come only from its adapter's ``allow_from`` (copied into
+    ``PlatformConfig.extra`` by the config loader), as its DMs already do.
+    """
+    from agent import secret_scope
+    from gateway.config import GatewayConfig, PlatformConfig
+    from gateway.pairing import PairingStore
+    from gateway.run import GatewayRunner
+    from plugins.platforms.discord.adapter import DiscordAdapter
+
+    home = Path(os.environ["HERMES_HOME"])
+    (home / "profiles" / "kody").mkdir(parents=True)
+    (home / "profiles" / "kody" / "config.yaml").write_text(
+        f"discord:\n  require_mention: true\n  allow_from: {USER}\n", encoding="utf-8")
+    (home / "profiles" / "kody" / ".env").write_text("DISCORD_BOT_TOKEN=kody-token\n", encoding="utf-8")
+    (home / "config.yaml").write_text("gateway:\n  multiplex_profiles: true\n", encoding="utf-8")
+    (home / ".env").write_text("DISCORD_BOT_TOKEN=test-token\nDISCORD_ALLOWED_USERS=999\n", encoding="utf-8")
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "999")  # the default profile's live env
+    prev = secret_scope.is_multiplex_active()
+    secret_scope.set_multiplex_active(True)
+    try:
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner.pairing_store = PairingStore(profile="default")
+        runner.pairing_stores = {"default": runner.pairing_store, "kody": PairingStore(profile="kody")}
+        runner._primary_profile_name = "default"
+        runner.adapters = {}
+        adapter = DiscordAdapter(PlatformConfig(
+            enabled=True, token="kody-token", extra={"allow_from": USER, "require_mention": True}))
+        adapter._hermes_profile_name = "kody"
+        runner._profile_adapters = {"kody": {Platform.DISCORD: adapter}}
+        adapter.set_authorization_check(runner._make_adapter_auth_check(Platform.DISCORD, profile_name="kody"))
+
+        assert adapter._is_sender_authorized(user_id, "dm", CHANNEL) is expected
+        assert adapter._is_sender_authorized(user_id, "group", CHANNEL) is expected
+    finally:
+        secret_scope.set_multiplex_active(prev)

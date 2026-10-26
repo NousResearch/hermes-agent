@@ -13,7 +13,7 @@ import os
 import sys
 import tempfile
 from collections.abc import Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 _MARKER_FILENAME = ".gateway-planned-stop.json"
@@ -24,7 +24,7 @@ def _get_process_hermes_home() -> Path:
     value = os.environ.get("HERMES_HOME", "").strip()
     if value:
         return Path(value)
-    return Path.home() / ".hermes"
+    return Path.home() / ".hermes"  # health: allow HX001 -- stdlib-only ExecStop must mirror the process default
 
 
 def _get_process_start_time(pid: int) -> int | None:
@@ -66,7 +66,7 @@ def write_planned_stop_marker(target_pid: int) -> bool:
             # The systemd ExecStop marker belongs to the real SIGTERM handler;
             # the polling watcher must not consume it first.
             "trigger_watcher": False,
-            "written_at": datetime.now(timezone.utc).isoformat(),
+            "written_at": datetime.now(UTC).isoformat(),
         }
         _write_json_file(_get_process_hermes_home() / _MARKER_FILENAME, record)
         return True

@@ -1906,7 +1906,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # Forward-only default: the checkout already contains the release; nothing to fetch.
             fetch_args = None
         elif release_sha:
-            fetch_args = ["fetch", "--no-tags", "origin", target_ref]
+            fetch_args = _check.release_fetch_args(target_ref, completion_request)
         else:
             fetch_args = ["fetch", "origin", _check.tracking_refspec("origin", branch)]
         from hermes_cli.gitlock import fetch_with_partial_clone_recovery, is_partial_clone_pack_objects_crash

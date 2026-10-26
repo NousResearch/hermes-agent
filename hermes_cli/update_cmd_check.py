@@ -263,10 +263,24 @@ def select_apply_target(args, branch: str, request: dict, *, git_cmd, stop) -> t
     if target.commit:
         print(f"→ {'Release' if target.ahead else 'Latest release'}: {target.label}")
         request["expected_sha"] = target.commit
+        if target.channel == "stable" and target.version and not target.ahead:
+            request["release_tag"] = f"v{target.version}"  # verified on origin by the resolver
         return target.commit, target.commit, target.ahead, target.repository
     assert target.branch is not None  # a SourceTarget without a commit names its branch
     request["branch"] = target.branch
     return f"origin/{target.branch}", None, False, target.repository
+
+
+def release_fetch_args(target_ref: str, request: dict) -> list[str]:
+    """Fetch a pinned release commit together with its own release tag.
+
+    The checkout's version is the newest release tag merged into HEAD (version_info), so a
+    tagless fetch moved HEAD to vX.Y.Z while every reader -- /health, the install stamp, the
+    receipt, About -- still named the previous release (#143656). Only that one tag: other
+    tags would drag their histories into a shallow checkout.
+    """
+    tag = request.get("release_tag")
+    return ["fetch", "--no-tags", "origin", target_ref, *([f"+refs/tags/{tag}:refs/tags/{tag}"] if tag else [])]
 
 
 def hold_channel_release_behind_runtime(git_cmd, target_ref: str, channel: str) -> str | None:

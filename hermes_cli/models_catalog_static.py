@@ -23,7 +23,7 @@ _OPENROUTER_DESCRIPTIONS = {
     "deepseek/deepseek-v4.1-flash-1017": "dated snapshot of v4.1-flash",
     "deepseek/deepseek-v4-flash-0731": "dated snapshot of v4-flash",
     "moonshotai/kimi-k3": "recommended",
-    "z-ai/glm-5.2": "default",
+    "z-ai/glm-5.3": "default",
     "z-ai/glm-5.3-flashx": "high-speed tier of glm-5.3-flash",
     "openrouter/pareto-code": "auto-routes to cheapest coder meeting openrouter.min_coding_score",
     "openai/gpt-6-astra-fast": "2x price, priority tier",
@@ -544,7 +544,7 @@ _PROVIDER_ALIASES = dict((
 # MUST match the labeled entry in website/static/api/model-catalog.json. Deliberately a capable
 # low-cost model rather than the curated lists' entry [0]: aggregator lists are ordered
 # most-capable-first, so [0] is the priciest Anthropic flagship.
-PREFERRED_SILENT_DEFAULT_MODEL = "z-ai/glm-5.2"
+PREFERRED_SILENT_DEFAULT_MODEL = "z-ai/glm-5.3"
 
 
 # Providers whose *silent* auto-default goes through the cost-safe catalog-labeled default

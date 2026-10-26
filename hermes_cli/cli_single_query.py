@@ -443,6 +443,9 @@ def _install_single_query_signal_handlers(cli):
                 # store here or the worker's turn (and its usage deltas) never become durable (#88583 /
                 # #50881 class). Best-effort under the SIGALRM deadman above.
                 _flush_one_shot_session_store(cli)
+            # The one-shot exit's shared_metrics shutdown_runtimes is skipped too: bounded inside the deadman.
+            from hermes_cli.observability.shared_metrics_process import flush_before_hard_exit
+            flush_before_hard_exit()
             _flush_logging_and_stdio()
             _kill_foreground_and_exit()
         raise KeyboardInterrupt()

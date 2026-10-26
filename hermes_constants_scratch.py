@@ -245,7 +245,7 @@ def _registered_live_pids(home: Path) -> set[int]:
     matches is a reused pid, not ownership."""
     import psutil
 
-    from hermes_cli.process_identity import spawner_is_dead
+    from hermes_cli.process_identity import entry_still_running, spawner_is_dead
     from hermes_constants import get_default_hermes_root
 
     root = get_default_hermes_root(home=home)
@@ -267,10 +267,10 @@ def _registered_live_pids(home: Path) -> set[int]:
             if entry.get("purpose") == "mcp-helper" and spawner_is_dead(entry) is True:
                 continue
             try:
-                if stamp is None:
+                if stamp_key == "create_time":
+                    alive = entry_still_running(entry)  # boot ticks survive a clock step
+                elif stamp is None:
                     alive = psutil.pid_exists(pid)
-                elif stamp_key == "create_time":
-                    alive = abs(psutil.Process(pid).create_time() - float(stamp)) < 2.0
                 else:
                     from gateway.status import get_process_start_time
 

@@ -136,7 +136,7 @@ def _run_import(source: ImportSource, hermes_home: Path) -> bool:
     selector = [] if hermes_home.resolve().parent.name == "profiles" else ["--profile", "default"]
     # --from-setup: the plugin's import speaks as a step of this setup (no "run hermes setup" pointers,
     # OpenClaw's skipped items folded into one line).
-    argv = [sys.executable, "-m", "hermes_cli.main", *selector, "import-agent", source.name, *source.extra_args,
+    argv = [sys.executable, "-P", "-m", "hermes_cli.main", *selector, "import-agent", source.name, *source.extra_args,
             "--from-setup"]
     env = served_profile_child_env(target_home=hermes_home)
     if os.environ.get("PYTHONPATH"):  # this same interpreter running Hermes: keep the source tree

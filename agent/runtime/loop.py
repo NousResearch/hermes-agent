@@ -340,11 +340,15 @@ class MultiStepLoop:
                 )
 
         # 5. Fail-closed: if every call was denied, surface a governance_denied failure.
+        # Name the policy from the recorded decisions, not the live gate, so a
+        # replay under ScriptedGovernance reproduces the step byte for byte.
+        # str() and the blank filter keep a sloppy custom policy from raising.
         if normalized_calls and not allowed_calls and failure is None:
+            policies = sorted({str(d.policy) for d in decisions if d.policy})
             failure = StepFailure(
                 kind="governance_denied",
                 message=f"all {len(normalized_calls)} tool calls denied by governance",
-                details={"policy": getattr(self._gate.policy, "policy_id", type(self._gate.policy).__name__)},
+                details={"policy": ", ".join(policies) or "unknown"},
             )
 
         return ActionStep(

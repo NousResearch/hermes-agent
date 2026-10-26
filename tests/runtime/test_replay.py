@@ -107,6 +107,31 @@ class ReplayTests(unittest.TestCase):
         self.assertFalse(result.completed)
         self.assertEqual(result.termination_reason, "tool_error")
 
+    def test_replayed_loop_memory_is_byte_identical(self) -> None:
+        # The replayed loop's own memory, not just the JSONL round-trip, must
+        # match the original. Covers both an allowed run and the default
+        # deny-all run, whose governance_denied failure names the policy.
+        call = ToolCall.new(name="search", arguments={"q": "x"}, call_id="search_1")
+        denied_loop = MultiStepLoop(
+            model=ScriptedModel([ModelOutput(content="searching", tool_calls=(call,))]),
+            tool_handler=EchoHandler(),
+            clock=FrozenClock(),
+            id_source=SequentialIdSource(),
+            max_steps=5,
+        )
+        denied = denied_loop.run("find x")
+        self.assertEqual(denied.termination_reason, "governance_denied")
+
+        allowed_memory, _ = deterministic_run()
+        for name, memory in (("allowed", allowed_memory), ("denied", denied_loop.memory)):
+            with self.subTest(name):
+                original = memory.to_jsonl()
+                replay = build_replay_loop(AgentMemory.from_jsonl(original))
+                task_step = memory.task_step()
+                assert task_step is not None
+                replay.run(task_step.task)
+                self.assertEqual(replay.memory.to_jsonl(), original)
+
 
 if __name__ == "__main__":
     unittest.main()

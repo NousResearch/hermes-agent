@@ -36,7 +36,9 @@ class StepFailure:
     ``kind`` is the discriminator. ``message`` is a one-line human summary.
     ``details`` carries any extra structured context (provider name, policy
     id, exception type, …) — kept as a plain dict because the dataclass is
-    frozen anyway.
+    frozen anyway. For ``governance_denied``, ``details["policy"]`` is the
+    sorted, comma-joined set of policy ids from the step's recorded
+    decisions (``"unknown"`` if none named one).
     """
 
     kind: FailureKind

@@ -11,6 +11,7 @@ Tests that:
 from __future__ import annotations
 
 import unittest
+from typing import Any
 
 from agent.runtime import (
     AllowAllGovernance,
@@ -18,6 +19,7 @@ from agent.runtime import (
     DenyAllGovernance,
     FINAL_ANSWER_TOOL,
     GovernanceContext,
+    GovernanceDecision,
     ModelOutput,
     MultiStepLoop,
     ToolCall,
@@ -104,6 +106,43 @@ class GovernanceIntegrationTests(unittest.TestCase):
         self.assertEqual(len(action["tool_outputs"]), 1)
         self.assertTrue(action["tool_outputs"][0]["is_error"])
         self.assertEqual(action["tool_outputs"][0]["output"]["denied"], True)
+
+    def test_denied_step_names_policies_from_recorded_decisions(self) -> None:
+        # The governance_denied failure names policies from the decisions, so
+        # replay reproduces it. A custom policy that leaves ``policy`` blank
+        # or sets a non-str must not make the loop raise.
+        class PerCallPolicy:
+            def __init__(self, policies: dict[str, Any]) -> None:
+                self._policies = policies
+
+            def decide(self, call: ToolCall, context: GovernanceContext) -> GovernanceDecision:
+                return GovernanceDecision(
+                    call_id=call.id,
+                    tool_name=call.name,
+                    verdict="deny",
+                    policy=self._policies[call.name],
+                )
+
+        cases = {
+            "mixed": ({"a": "zeta", "b": "alpha", "c": "zeta"}, "alpha, zeta"),
+            "blank": ({"a": "", "b": None, "c": ""}, "unknown"),
+            "non-str": ({"a": 7, "b": None, "c": "beta"}, "7, beta"),
+        }
+        for label, (policies, expected) in cases.items():
+            with self.subTest(label):
+                calls = tuple(
+                    ToolCall.new(name=name, arguments={}, call_id=f"id_{name}") for name in policies
+                )
+                loop = MultiStepLoop(
+                    model=ScriptedModel([ModelOutput(content="trying", tool_calls=calls)]),
+                    tool_handler=RecordingHandler(),
+                    governance=PerCallPolicy(policies),
+                    max_steps=2,
+                )
+                result = loop.run("t")
+                self.assertEqual(result.termination_reason, "governance_denied")
+                action = next(s for s in result.steps if s["type"] == "ActionStep")
+                self.assertEqual(action["failure"]["details"]["policy"], expected)
 
     def test_allowlist_lets_safe_through_blocks_unsafe(self) -> None:
         safe = ToolCall.new(name="safe", arguments={}, call_id="a")

@@ -90,6 +90,8 @@ class CanonicalBotDeliverResult(Result):
     retry_admission_id: str | None = None
     error: str | None = None
     reason: str | None = None
+    # The target Bot Chat's live state at answer time (``gateway/session_bot_state.py``); never stored.
+    target_state: Literal['idle', 'working', 'waiting_approval', 'waiting_clarify', 'paused'] | None = None
 
     @model_validator(mode='after')
     def _admitted_or_refused(self):

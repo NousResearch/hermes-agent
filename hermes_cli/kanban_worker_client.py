@@ -62,6 +62,9 @@ async def run(params, board_db):
     while True:
         try:
             async with connect_gateway() as client:
+                # A successful connection ends the previous redial episode. If this socket drops
+                # later, the next recovery episode gets its own bounded budget.
+                redial_deadline = None
                 # kanban.run subscribes this socket to the card's session, but only receipts matter
                 # here: discard the turn's events, or they fill the client's bounded queue and its
                 # reader stops, with the next receipt behind it.
@@ -85,7 +88,11 @@ async def run(params, board_db):
                 raise
             await asyncio.sleep(1)
         except GatewayUnavailableError as exc:
-            if exc.state not in _TRANSIENT_OWNER_STATES or time.monotonic() >= deadline:
+            # Before admission, use the initial owner-startup deadline. While recovering an
+            # admitted attempt, use that recovery episode's deadline instead.
+            wait_deadline = (redial_deadline if admission is not None and redial_deadline is not None
+                             else deadline)
+            if exc.state not in _TRANSIENT_OWNER_STATES or time.monotonic() >= wait_deadline:
                 raise
             await asyncio.sleep(1)
 

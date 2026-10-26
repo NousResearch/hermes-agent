@@ -81,3 +81,16 @@ def test_torn_config_keeps_the_last_known_good_chain_but_removal_still_applies(m
     agent._rate_limited_until = time.monotonic() + 600
     _admit_turn(monkeypatch, tmp_path, session, "model:\n  provider: openai\n")
     assert agent._fallback_chain == FALLBACK
+
+
+def test_ignore_user_config_keeps_the_startup_chain_at_turn_admission(monkeypatch, tmp_path):
+    """``--ignore-user-config`` / ``--safe-mode`` (#134954): startup skipped config.yaml, so the per-turn
+    sync must not re-adopt its ``fallback_providers`` and fail over to a user-configured provider."""
+    monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "1")
+    session, agent = _session()
+
+    _admit_turn(monkeypatch, tmp_path, session,
+                "fallback_providers:\n  - provider: xai-oauth\n    model: grok-4.6\n")
+
+    assert agent._fallback_chain == []
+    assert agent._fallback_model is None

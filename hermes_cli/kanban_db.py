@@ -3126,6 +3126,18 @@ def block_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
     kind: Optional[str] = None, expected_run_id: Optional[int] = None,
 ) -> bool:
+    """Commit the native block before requesting scoped Stop for prior owner sessions."""
+    stops = []
+    changed = _block_task(conn, task_id, reason=reason, kind=kind, expected_run_id=expected_run_id, stops=stops)
+    if changed and stops:
+        from hermes_cli.kanban_process_stop import request_native_stop
+        request_native_stop(conn, task_id, stops[-1])
+    return changed
+
+
+def _block_task(
+    conn: sqlite3.Connection, task_id: str, *, reason, kind, expected_run_id, stops,
+) -> bool:
     """``running``/``ready`` -> ``blocked`` (or ``todo`` / ``triage``, see
     :func:`_route_block`). ``kind='dependency'`` with no incomplete parent is
     re-kinded to ``needs_input`` (sticky) so ``recompute_ready`` cannot
@@ -3169,6 +3181,7 @@ def block_task(
             _append_event(conn, task_id, "blocked", {
                 "kind": kind, "reason": reason, "classified_in_place": True,
             })
+            stops.append(conn.execute('SELECT last_insert_rowid()').fetchone()[0])
             return True
         source_status = _retry_status_for_run(conn, task_id) if cur_row["status"] == "running" else "ready"
         requested_kind = kind
@@ -3207,6 +3220,8 @@ def block_task(
             conn, task_id, outcome="blocked", status="blocked", summary=reason, synthesize=bool(reason),
         )
         _append_event(conn, task_id, event_kind, payload, run_id=run_id)
+        if event_kind in {'blocked', 'block_loop_detected'}:
+            stops.append(conn.execute('SELECT last_insert_rowid()').fetchone()[0])
         blocked_task = get_task(conn, task_id)
         if kind == "dependency":
             # Historical ordering: the dependency lane fires inside the txn.

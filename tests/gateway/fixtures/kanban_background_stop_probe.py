@@ -14,7 +14,7 @@ def child(persist):
     import time
     from tests.waiting import wait_until
     sys.path.insert(0, str(SOURCE / 'tests/gateway/fixtures'))
-    from local_recovery_probe import daemon, control
+    from local_recovery_probe import daemon
     from hermes_cli import kanban_db as kb, kanban_db_dispatch as dispatch
     from hermes_cli.kanban_db_connect import connect
     root = Path(os.environ['HERMES_HOME']).parent
@@ -79,6 +79,7 @@ def child(persist):
         'terminal': {'backend': 'local'}, 'agent': {'api_max_retries': 1, 'max_turns': 8},
         'kanban': {'dispatch_in_gateway': False}}))
     receipt = {'persist_on_release': persist}
+    early = bool(int(sys.argv[3]))
     def wait_for(predicate, description, timeout=40):
         return wait_until(predicate, timeout=timeout, what=description)
     bgpid = None
@@ -103,16 +104,22 @@ def child(persist):
                 latest = conn.execute('SELECT MAX(id) FROM task_events WHERE task_id=?', (tid,)).fetchone()[0]
                 stopped = time.monotonic()
                 assert kb.block_task(conn, tid, reason='operator Stop audit', kind='needs_input', expected_event_id=latest)
+                if early:
+                    peer.successor = True
+                    assert kb.unblock_task(conn, tid)
+                    successor = dispatch.dispatch_once(conn, board='audit', max_spawn=1)
+                    assert [x[0] for x in successor.spawned] == [tid], successor
                 wait_for(lambda: not kb._pid_alive(submitter) and not kb._pid_alive(bound), 'native worker survived Stop')
                 receipt.update(task_id=tid, old_run_id=runid, submitter_pid=submitter, bound_worker_pid=bound,
                     background_pid=bgpid, workers_gone_seconds=round(time.monotonic()-stopped, 3),
                     background_alive_after_workers_gone=kb._pid_alive(bgpid), old_effect_at_worker_exit=effect.exists())
                 assert not effect.exists(), 'effect occurred too early for useful Stop evidence'
                 # Explicit authorized resume admits a successor through the real dispatcher.
-                peer.successor = True
-                assert kb.unblock_task(conn, tid)
-                successor = dispatch.dispatch_once(conn, board='audit', max_spawn=1)
-                assert [x[0] for x in successor.spawned] == [tid], successor
+                if not early:
+                    peer.successor = True
+                    assert kb.unblock_task(conn, tid)
+                    successor = dispatch.dispatch_once(conn, board='audit', max_spawn=1)
+                    assert [x[0] for x in successor.spawned] == [tid], successor
                 wait_for(lambda: len([e for e in kb.list_events(conn, tid) if e.kind == 'owner_admitted']) == 2,
                     'successor never admitted')
                 receipt['successor_admitted_before_old_effect'] = not effect.exists()

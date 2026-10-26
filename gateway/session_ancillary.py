@@ -51,11 +51,9 @@ def clear_process_stop(authority, ref, token):
 
 
 async def finish_process_stop(authority, ref):
-    """A managed worker's finished frame follows its verified process cleanup."""
-    token = process_stop_pending(authority.db, ref.session_id)
-    if token is not None:
-        from gateway.session_runtime_workers import tracked_write
-        await tracked_write(authority, partial(clear_process_stop, authority, ref, token))
+    """A finished frame can predate Stop; only physical cleanup may clear its fence."""
+    if not await retry_process_stop(authority, ref):
+        raise RuntimeStoreError('process_stop_unknown')
 
 
 async def retry_process_stop(authority, ref, agent=None):
@@ -81,9 +79,11 @@ def _recover_stopped_processes(authority, ref):
     """Use native birth-checked recovery for this session only; unreadable evidence stays unknown."""
     import json
     from tools.process_registry import process_registry, _checkpoint_path
-    keys, owners = _ownership(authority, ref, None, ())
+    keys, owners, parents = _ownership(authority, ref, None, ())
     def owned(entry):
-        return entry.get('session_key') in keys and (entry.get('owner_task_id') or entry.get('task_id')) in owners
+        return entry.get('session_key') in keys and (
+            entry['parent_session_id'] in parents if entry.get('parent_session_id')
+            else (entry.get('owner_task_id') or entry.get('task_id')) in owners)
     try:
         entries = json.loads(_checkpoint_path().read_text(encoding='utf-8-sig'))
         if not isinstance(entries, list) or any(not isinstance(entry, dict) for entry in entries):
@@ -351,9 +351,9 @@ def _process_targets(authority, ref, agent, records, *, select):
     if module is None:
         return None, []
     registry = module.process_registry
-    keys, owners = _ownership(authority, ref, agent, records)
+    keys, owners, parents = _ownership(authority, ref, agent, records)
     with registry._lock:
-        return registry, [p.id for p in _owned_locked(registry, keys, owners) if select(p)]
+        return registry, [p.id for p in _owned_locked(registry, keys, owners, parents) if select(p)]
 
 
 async def interrupt_processes(authority, ref, agent):
@@ -690,25 +690,28 @@ def subagent_tail(records, subagent_id):
 
 
 def _ownership(authority, ref, agent, records):
-    """``(routing keys, owners)`` a registry process must match to belong to this session: its
-    routing key AND an owner among the session, its agent and its subagents."""
+    """Exact route plus native parent lineage; legacy unparented jobs retain raw-owner matching."""
     target = physical_target(authority, ref)
-    keys, owners = {authority.sessions[ref.session_id].route, target}, {target}
+    keys, owners = {authority.sessions[ref.session_id].route, target}, {target, ref.session_id}
     owners.update(_compression_lineage(authority.db, authority.db.get_compression_tip(target) or target))
+    parents = set(owners)
     if agent is not None:
         owners.add(getattr(agent, 'session_id', None))
+        parents.add(getattr(agent, 'session_id', None))
         owners.update(getattr(agent, '_process_owner_task_ids', ()))
     owners.update(r.get('subagent_id') for r in records)
+    parents.update(r.get('subagent_id') for r in records)
     owners.discard(None)
     owners.discard('')
-    return keys, owners
+    return keys, owners, parents - {None, ''}
 
 
-def _owned_locked(registry, keys, owners):
+def _owned_locked(registry, keys, owners, parents):
     """Matching process objects; the caller holds ``registry._lock``. Read directly:
     ``list_sessions`` refreshes recovered processes and writes checkpoints."""
     return [p for p in (*registry._running.values(), *registry._finished.values())
-            if p.session_key in keys and (p.owner_task_id or p.task_id) in owners]
+            if p.session_key in keys and (p.parent_session_id in parents if p.parent_session_id
+                                         else (p.owner_task_id or p.task_id) in owners)]
 
 
 def process_snapshot(authority, ref, agent, records):
@@ -716,7 +719,7 @@ def process_snapshot(authority, ref, agent, records):
     if module is None:
         return []
     registry = module.process_registry
-    keys, owners = _ownership(authority, ref, agent, records)
+    keys, owners, parents = _ownership(authority, ref, agent, records)
     # Keep ownership and output together.
     with registry._lock:
         return [{'session_id': p.id, 'command': p.command[:200],
@@ -724,4 +727,4 @@ def process_snapshot(authority, ref, agent, records):
                  # The classic CLI dock's elapsed / exit-age / verdict and its 32k tail view.
                  'started_epoch': p.started_at, 'exited_at': p.exited_at or None,
                  'completion_reason': p.completion_reason if p.exited else None,
-                 'output_tail': p.output_buffer[-_PROCESS_TAIL_CHARS:]} for p in _owned_locked(registry, keys, owners)]
+                 'output_tail': p.output_buffer[-_PROCESS_TAIL_CHARS:]} for p in _owned_locked(registry, keys, owners, parents)]

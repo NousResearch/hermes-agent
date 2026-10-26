@@ -39,7 +39,9 @@ def previous_attempts(context):
         rows = conn.execute(
             "SELECT e.run_id,e.payload FROM task_events e LEFT JOIN task_runs r ON r.id=e.run_id "
             "WHERE e.task_id=? AND e.kind='owner_admitted' AND e.run_id<>? "
-            "AND (r.status IS NULL OR r.status NOT IN ('done','review','scheduled')) ORDER BY e.id",
+            "AND (r.status IS NULL OR r.status NOT IN ('done','review','scheduled') OR EXISTS ("
+            "SELECT 1 FROM task_events stop WHERE stop.task_id=e.task_id AND stop.id>e.id "
+            "AND stop.kind IN ('blocked','block_loop_detected'))) ORDER BY e.id",
             (context['task_id'], context['run_id'])).fetchall()
     return [{**json.loads(row[1]), 'run_id': row[0]} for row in rows]
 
@@ -60,7 +62,7 @@ def check_previous(authority, context, binding):
 
 def previous_workers_gone(context, binding):
     from hermes_cli import kanban_db as kb
-    from hermes_cli.kanban_db_dispatch import _process_fingerprint, _worker_alive
+    from hermes_cli.kanban_db_dispatch import _poll_worker_exit, _process_fingerprint, _worker_alive
     with closing(sqlite3.connect(Path(context['db']).as_uri() + '?mode=ro', uri=True)) as conn:
         rows = conn.execute(
             "SELECT payload FROM task_events WHERE task_id=? AND run_id=? "
@@ -70,8 +72,11 @@ def previous_workers_gone(context, binding):
         pid = worker.get('pid')
         if type(pid) is not int or pid <= 0:
             return False
-        if kb._pid_alive(pid) and (_process_fingerprint(pid) is None or _worker_alive(pid, worker.get('started_at'))):
-            return False
+        if kb._pid_alive(pid):
+            if _process_fingerprint(pid) is None or not _poll_worker_exit(pid, worker.get('started_at')):
+                return False
+            if kb._pid_alive(pid) and (_process_fingerprint(pid) is None or _worker_alive(pid, worker.get('started_at'))):
+                return False
     return True
 
 
@@ -101,7 +106,7 @@ async def retire_previous_attempts(connection, context):
         handle = await authority.resolve(connection.actor, ref)
         if sid in authority.executing:
             try:
-                await authority.interrupt(connection.actor, ref, handle.execution_generation)
+                await connection.interrupt(ref, {'execution_generation': handle.execution_generation})
             except RuntimeStoreError as exc:
                 if exc.reason != 'managed_worker_lost':
                     raise

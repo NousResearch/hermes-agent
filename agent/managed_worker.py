@@ -210,9 +210,11 @@ class WorkerControls:
         owners.add(getattr(self.agent, 'session_id', None))
         owners.discard(None)
         owners.discard('')
+        parents = {getattr(self, 'session_id', None), getattr(self.agent, 'session_id', None)} - {None, ''}
         with process_registry._lock:
             targets = [p.id for p in (*process_registry._running.values(), *process_registry._finished.values())
-                       if p.session_key == self.route and p.owner_task_id in owners
+                       if p.session_key == self.route and (p.parent_session_id in parents if p.parent_session_id
+                                                          else p.owner_task_id in owners)
                        and (not p.exited or p._scope_stop_pending or p.systemd_unit
                             or (p.notify_on_complete and not process_registry.is_completion_consumed(p.id)))]
             process_registry._completion_consumed.update(targets)
@@ -382,6 +384,7 @@ def execute(frame, channel):
     from gateway.session_worker_construct import checkpoint_agent_kwargs, construct_kwargs, routing_agent_kwargs
     construct = {'ephemeral_system_prompt': policy.skills_prompt, **construct_kwargs(frame)}
     controls = WorkerControls(channel, frame['route'])
+    controls.session_id = scope['session_id']
     from gateway.session_kanban import watch_worker_task
     watch_worker_task(frame, lambda: channel.send('kanban_stop'))
     register_gateway_notify(frame['route'], controls.approval)

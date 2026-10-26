@@ -32,6 +32,9 @@ def native_attempt(tmp_path, monkeypatch):
     monkeypatch.setattr(module, 'process_registry', registry)
     actor = replace(ACTOR, capabilities=ACTOR.capabilities | {'session:read'})
     connection = SimpleNamespace(authority=authority, actor=actor, resume=AsyncMock())
+    async def interrupt(ref, params):
+        return await authority.interrupt(actor, ref, params['execution_generation'])
+    connection.interrupt = interrupt
     yield db, authority, context, connection, registry
     for process in list(registry._running.values()):
         registry.kill_process(process.id)

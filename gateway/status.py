@@ -489,8 +489,8 @@ def _get_process_start_time(pid: int) -> Optional[int]:
     """
     stat_path = Path(f"/proc/{pid}/stat")
     try:
-        # Field 22 in /proc/<pid>/stat is process start time (clock ticks).
-        return int(stat_path.read_text(encoding="utf-8").split()[21])  # windows-footgun: ok (/proc is BOM-free)
+        # Field 22 (ticks) after comm's last ")": comm may hold spaces or non-UTF-8 bytes.
+        return int(stat_path.read_bytes().rsplit(b")", 1)[1].split()[19])
     except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
         pass
 

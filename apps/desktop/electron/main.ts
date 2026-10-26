@@ -433,7 +433,7 @@ import { registerPreparedSubmissions } from './prepared-submissions'
 import { capturePreviewContents } from './preview-capture'
 import { onPreviewWatchOwnerDestroyed, sendPreviewFileChangedToOwner } from './preview-file-watch'
 import { hasClosePreviewFlag, previewGuestInputAction } from './preview-guest-escape'
-import { commandFocusedGuest, notePreviewGuestHidden } from './preview-guest-offscreen'
+import { notePreviewGuestHidden } from './preview-guest-offscreen'
 import { applyPreviewGuestAttachPrefs } from './preview-guest-throttle'
 import { PreviewReachRegistry } from './preview-reach'
 import { previewHttpUrlTarget } from './preview-url-target'
@@ -652,9 +652,9 @@ import { isExternalVenvHolder, isHermesOwnedVenvDaemon } from './venv-holder-sel
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
 import { guardedWatch } from './watch-storm-breaker'
-import { windowAcceleratorAction } from './window-accelerator'
 import { enumerateWindowsFrontToBack, enumerationFailed, readWindowBelow } from './window-below'
 import { bindWindowChromeEvents } from './window-chrome-events'
+import { createWindowCommands } from './window-commands'
 import {
   appliedPrimaryWindowRoute,
   registrySshPoolScopeByConnectionId,
@@ -6155,88 +6155,20 @@ function sendBackendExit(payload) {
   webContents.send('hermes:backend-exit', payload)
 }
 
-function sendClosePreviewRequested() {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return
-  }
-
-  const { webContents } = mainWindow
-
-  if (!webContents || webContents.isDestroyed()) {
-    return
-  }
-
-  webContents.send('hermes:close-preview-requested')
-}
-
-/**
- * Ask the renderer to run a browser-navigation gesture on its focused preview
- * pane. `reload` also has an app-level fallback (reload the window); `back` and
- * `forward` mean nothing outside the browser, so the renderer just ignores them.
- */
-function sendPreviewNavCommand(command: 'back' | 'forward' | 'reload') {
-  // The user is inside the page itself — main is the only party that can see
-  // that, so act here and never round-trip.
-  if (commandFocusedGuest(command, electronWebContents.getFocusedWebContents())) {
-    return
-  }
-
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return
-  }
-
-  const { webContents } = mainWindow
-
-  if (!webContents || webContents.isDestroyed()) {
-    return
-  }
-
-  webContents.send('hermes:preview-nav', command)
-}
-
-/**
- * The native back/forward gestures, which never reach the renderer on their own.
- *
- * - macOS: a two/three-finger swipe. Chromium's own overscroll navigation is
- *   off in an Electron window, so the OS gesture surfaces as this event and
- *   nothing consumes it. Requires "Swipe between pages" in System Settings.
- * - Windows/Linux: the dedicated back/forward buttons on a mouse, delivered as
- *   `WM_APPCOMMAND`.
- */
-function installBrowserNavGestures(window) {
-  window.on('swipe', (_event, direction) => {
-    if (direction === 'left' || direction === 'right') {
-      // Swipe LEFT moves the page left, revealing what's behind it — that's
-      // back. Matches Safari, Chrome, and Finder.
-      sendPreviewNavCommand(direction === 'left' ? 'back' : 'forward')
+// ⌘W / ⌘R, the back/forward gestures, the zoom chords and their menu items act
+// on the window they came from; the primary is only the fallback.
+const windowCommands = createWindowCommands({
+  focusedWebContents: () => electronWebContents.getFocusedWebContents(),
+  isHud: window => hudWindows.has(window),
+  isMac: IS_MAC,
+  leaveHud: window => {
+    if (window === hudWindow) {
+      closeHudWindow()
     }
-  })
-
-  window.on('app-command', (event, command) => {
-    if (command !== 'browser-backward' && command !== 'browser-forward') {
-      return
-    }
-
-    // Claim it either way: unhandled, Chromium walks the HOST document's
-    // history, which would navigate the app shell itself.
-    event.preventDefault()
-    sendPreviewNavCommand(command === 'browser-backward' ? 'back' : 'forward')
-  })
-}
-
-function sendOpenFolderRequested() {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return
-  }
-
-  const webContents = mainWindow.webContents
-
-  if (!webContents || webContents.isDestroyed()) {
-    return
-  }
-
-  webContents.send('hermes:open-folder-requested')
-}
+  },
+  primaryWindow: () => mainWindow,
+  setZoomLevel: setAndPersistZoomLevel
+})
 
 // Tell the renderer the machine just woke. Sleep silently drops the
 // renderer's WebSocket to the local backend; the renderer reconnects on this
@@ -6414,17 +6346,17 @@ function buildApplicationMenu() {
       // Same no-accelerator rationale: ⌘O is the rebindable renderer keybind
       // (workspace.openFolder). Clicking runs the same open-folder-as-project
       // flow through the renderer.
-      { click: () => sendOpenFolderRequested(), label: 'Open Folder…' },
+      { click: (_menuItem, browserWindow) => windowCommands.openFolder(browserWindow), label: 'Open Folder…' },
       { type: 'separator' },
       IS_MAC
         ? {
             // NO accelerator: on macOS a registered ⌘W is consumed by the OS
             // menu before the web contents ever sees it (and registerAccelerator
             // false is a no-op on mac — electron#18295). Leaving it off lets the
-            // `before-input-event` handler below intercept ⌘W and route it to the
-            // renderer's close-active-tab. Clicking the item still closes the tab
-            // (or window) via the same request.
-            click: () => sendClosePreviewRequested(),
+            // `before-input-event` hook (window-commands.ts) intercept ⌘W and route
+            // it to the renderer's close-active-tab. Clicking the item still closes
+            // the tab (or window) via the same request.
+            click: (_menuItem, browserWindow) => windowCommands.closeTab(browserWindow),
             label: 'Close'
           }
         : { role: 'quit' }
@@ -6469,7 +6401,7 @@ function buildApplicationMenu() {
       // No accelerator: ⌘R is claimed in `installPreviewShortcut`, which works
       // on every platform (this menu exists only on macOS). Declaring it here
       // too would fire the item and the input hook for one keypress.
-      { click: () => sendPreviewNavCommand('reload'), label: 'Reload' },
+      { click: (_menuItem, browserWindow) => windowCommands.previewNav(browserWindow, 'reload'), label: 'Reload' },
       { role: 'forceReload' },
       {
         label: 'Toggle Developer Tools',
@@ -6480,27 +6412,17 @@ function buildApplicationMenu() {
       {
         label: 'Actual Size',
         accelerator: 'CommandOrControl+0',
-        click: () => {
-          setAndPersistZoomLevel(mainWindow, DEFAULT_ZOOM_LEVEL)
-        }
+        click: (_menuItem, browserWindow) => windowCommands.zoom(browserWindow, 'zoom-reset')
       },
       {
         label: 'Zoom In',
         accelerator: 'CommandOrControl+Plus',
-        click: () => {
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            setAndPersistZoomLevel(mainWindow, mainWindow.webContents.getZoomLevel() + ZOOM_STEP)
-          }
-        }
+        click: (_menuItem, browserWindow) => windowCommands.zoom(browserWindow, 'zoom-in')
       },
       {
         label: 'Zoom Out',
         accelerator: 'CommandOrControl+-',
-        click: () => {
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            setAndPersistZoomLevel(mainWindow, mainWindow.webContents.getZoomLevel() - ZOOM_STEP)
-          }
-        }
+        click: (_menuItem, browserWindow) => windowCommands.zoom(browserWindow, 'zoom-out')
       },
       { type: 'separator' },
       { role: 'togglefullscreen' }
@@ -6575,64 +6497,6 @@ function installDevToolsShortcut(window) {
   })
 }
 
-function installPreviewShortcut(window) {
-  let focusedAt = 0
-
-  window.on('focus', () => {
-    focusedAt = Date.now()
-  })
-
-  window.webContents.on('before-input-event', (event, input) => {
-    const action = windowAcceleratorAction(input, IS_MAC, Date.now() - focusedAt)
-
-    // A ⌘W/⌘R that auto-repeats or lands right as focus arrives belongs to
-    // the app that just lost focus (#105498). Claim it so the renderer's
-    // keybind doesn't act on it either, and do nothing.
-    if (action === 'swallow') {
-      event.preventDefault()
-
-      return
-    }
-
-    // Always claim ⌘W here (the File>Close item deliberately has no
-    // accelerator, so nothing else does). The renderer decides tab-vs-window
-    // — no `previewShortcutActive` gate, so it works for every closeable tab.
-    // keyUp is not a claim: a chord that started in another app can deliver
-    // its leftover keyup when this window inherits focus (#105498).
-    if (action === 'close-tab') {
-      event.preventDefault()
-
-      // ⌘W in the HUD is "leave HUD mode", not "close a tab in the app
-      // window". Routing it to the main renderer closed the app's tab out
-      // from under the user while the HUD stayed put; routing it through the
-      // HUD's own close path hands the session back like the exit button.
-      // Keep a closing (or superseded) HUD from sending a second ⌘W to the
-      // hidden main window while its 1.5s close grace is still running.
-      if (hudWindows.has(window)) {
-        if (window === hudWindow && !window.isDestroyed()) {
-          closeHudWindow()
-        }
-
-        return
-      }
-
-      sendClosePreviewRequested()
-
-      return
-    }
-
-    // ⌘R rides here rather than on the View menu item for the same reason:
-    // the application menu only exists on macOS (it is set to null elsewhere,
-    // see #77845), so a menu accelerator would leave Windows and Linux with no
-    // way to reload a page at all. ⇧⌘R is left alone — that is `forceReload`,
-    // the unconditional whole-window escape hatch.
-    if (action === 'reload') {
-      event.preventDefault()
-      sendPreviewNavCommand('reload')
-    }
-  })
-}
-
 // Zoom level is persisted in the renderer's own localStorage (per-origin,
 // survives reloads/restarts) rather than a main-process JSON file. The main
 // process owns setZoomLevel, so we mirror each change into localStorage and
@@ -6643,7 +6507,6 @@ import {
   installZoomReassertOnNavigation,
   installZoomReassertOnWindowEvents,
   percentToZoomLevel,
-  ZOOM_STEP,
   ZOOM_STORAGE_KEY,
   zoomLevelToPercent,
   zoomWiringForWindowKind
@@ -6726,44 +6589,6 @@ function restorePersistedZoomLevel(window) {
       applyTitleBarOverlay(window)
     })
     .catch(error => rememberLog(`[zoom] restore failed: ${error?.message || error}`))
-}
-
-function installZoomShortcuts(window) {
-  // Override Ctrl/Cmd + +/-/0 with half Chromium's default zoom step (ZOOM_STEP
-  // is 0.1 vs Chromium's 0.2). The menu items handle this on macOS (where the
-  // menu is always present), but on Linux/Windows the menu is null and
-  // Chromium's default handler would use the full 0.2 step, so we intercept
-  // here for consistency. Ctrl/Cmd+0 resets to DEFAULT_ZOOM_LEVEL, not Chromium 0.
-  window.webContents.on('before-input-event', (event, input) => {
-    const action = windowAcceleratorAction(input, IS_MAC)
-
-    if (action === 'zoom-reset') {
-      event.preventDefault()
-      setAndPersistZoomLevel(window, DEFAULT_ZOOM_LEVEL)
-    } else if (action === 'zoom-in') {
-      // Zoom-in must accept the shift modifier: on US layouts Plus is
-      // physically Shift+=, so Cmd+Plus arrives as Cmd+Shift+'+' (or '='
-      // depending on platform). The old blanket shift guard silently
-      // dropped keyboard zoom-in on macOS (#43517).
-      event.preventDefault()
-      setAndPersistZoomLevel(window, window.webContents.getZoomLevel() + ZOOM_STEP)
-    } else if (action === 'zoom-out') {
-      event.preventDefault()
-      setAndPersistZoomLevel(window, window.webContents.getZoomLevel() - ZOOM_STEP)
-    }
-  })
-
-  // Ctrl/Cmd + mouse wheel — the standard desktop/browser zoom gesture
-  // (#40295). Chromium surfaces it as the main-process 'zoom-changed' event
-  // (wheel events are DOM-side, so before-input-event never sees them).
-  // Route through the same persist+notify funnel as the keyboard shortcuts
-  // so wheel zoom survives restarts and the settings Scale control stays in
-  // sync, and use the same half step for consistency.
-  window.webContents.on('zoom-changed', (event, zoomDirection) => {
-    event.preventDefault()
-    const delta = zoomDirection === 'in' ? ZOOM_STEP : -ZOOM_STEP
-    setAndPersistZoomLevel(window, window.webContents.getZoomLevel() + delta)
-  })
 }
 
 /**
@@ -12144,9 +11969,9 @@ async function startHermes(requestedProfile?: string) {
 // Alt+wheel scale, so inheriting the global UI zoom would render the mascot
 // larger than its window and crop it. Chat windows keep zoom on.
 function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {}) {
-  installPreviewShortcut(win)
+  windowCommands.installPreviewShortcut(win)
   installDevToolsShortcut(win)
-  installBrowserNavGestures(win)
+  windowCommands.installBrowserNavGestures(win)
 
   // Claim Ctrl/Cmd+F in the main process — on Pop!_OS / GNOME-based Linux
   // distros the Ctrl+F keydown does not reach the renderer's `view.findInPage`
@@ -12159,7 +11984,7 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
   }
 
   if (zoom) {
-    installZoomShortcuts(win)
+    windowCommands.installZoomShortcuts(win)
     // Re-apply persisted zoom on show/restore/resize/cross-display move
     // (Chromium can drop webContents zoom after these window transitions), on
     // EVERY full load — not once, since crash recovery reloads and would
@@ -12256,7 +12081,7 @@ function installPreviewGuestEscapeHatch() {
 
         case 'close-preview': {
           event.preventDefault()
-          sendClosePreviewRequested()
+          windowCommands.closePreview(owner)
 
           break
         }
@@ -17738,7 +17563,7 @@ function handleDeepLink(url) {
         mainWindow.setFullScreen(false)
       }
 
-      sendClosePreviewRequested()
+      windowCommands.closePreview(mainWindow)
     }
 
     return

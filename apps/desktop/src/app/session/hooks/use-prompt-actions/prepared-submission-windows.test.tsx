@@ -22,10 +22,16 @@ function sharedLocks() {
       const callback = rest.at(-1) as (lock: { name: string } | null) => Promise<unknown>
       const options = (rest.length > 1 ? rest[0] : {}) as { ifAvailable?: boolean }
 
-      if (held.has(name) && options.ifAvailable) { return callback(null) }
+      if (held.has(name) && options.ifAvailable) {
+        return callback(null)
+      }
       held.add(name)
 
-      try { return await callback({ name }) } finally { held.delete(name) }
+      try {
+        return await callback({ name })
+      } finally {
+        held.delete(name)
+      }
     }
   }
 }
@@ -35,8 +41,10 @@ async function openWindow(submit: (params: Record<string, unknown>) => unknown) 
   vi.resetModules()
   const { useSubmitPrompt } = await import('./submit')
 
-  const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) =>
-    (method === 'prompt.submit' ? submit(params!) : {}) as never)
+  const requestGateway = vi.fn(
+    async (method: string, params?: Record<string, unknown>) =>
+      (method === 'prompt.submit' ? submit(params!) : {}) as never
+  )
 
   const state = createClientSessionState()
 
@@ -58,7 +66,9 @@ async function openWindow(submit: (params: Record<string, unknown>) => unknown) 
 
   const hook = renderHook(() => useSubmitPrompt(deps))
 
-  return { send: (text: string, options?: { submission_id: string }) => act(async () => hook.result.current(text, options)) }
+  return {
+    send: (text: string, options?: { submission_id: string }) => act(async () => hook.result.current(text, options))
+  }
 }
 
 afterEach(() => {
@@ -76,7 +86,10 @@ it('two windows sending the same text keep separate identities; only the writer 
   const admit = (params: Record<string, unknown>) => {
     ids.push(String(params.submission_id))
 
-    if (loseAck) { loseAck = false; throw new Error('connection closed') }
+    if (loseAck) {
+      loseAck = false
+      throw new Error('connection closed')
+    }
 
     return { admission_id: params.submission_id, status: 'started' }
   }

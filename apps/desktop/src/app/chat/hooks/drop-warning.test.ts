@@ -17,9 +17,7 @@ describe('dropWarning', () => {
       more
     )
 
-    expect(message).toBe(
-      `Could not attach somefolder: ${folder.slice(0, -1)}; Could not attach huge.zip: ${limit}`
-    )
+    expect(message).toBe(`Could not attach somefolder: ${folder.slice(0, -1)}; Could not attach huge.zip: ${limit}`)
     expect(message).not.toContain('.;')
     expect(detail).toBeUndefined()
   })

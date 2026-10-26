@@ -109,7 +109,9 @@ describe('narrow overlay in native Desktop', () => {
     )
     expect(queryByTestId('bots-body')).toBeTruthy()
 
-    act(() => window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id: 'bots', mode: 'close' } })))
+    act(() =>
+      window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id: 'bots', mode: 'close' } }))
+    )
     expect(queryByTestId('bots-body')).toBeNull()
   })
 })

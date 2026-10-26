@@ -37,7 +37,11 @@ it('shows tool.progress on its running row and drops it when the call completes'
   // MCP rows render each batched call as `<call id>:<index>`.
   expect(formatToolProgress($toolProgressFor('s1', 'call_0:0').get())).toBe('42% · refining')
 
-  deliver({ type: 'tool.complete', session_id: 's1', payload: { tool_id: 'call_0', name: 'mcp__meshy__refine' } } as GatewayEvent)
+  deliver({
+    type: 'tool.complete',
+    session_id: 's1',
+    payload: { tool_id: 'call_0', name: 'mcp__meshy__refine' }
+  } as GatewayEvent)
   expect($toolProgressFor('s1', 'call_0:0').get()).toBeUndefined()
 })
 

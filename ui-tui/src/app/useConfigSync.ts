@@ -408,7 +408,9 @@ export function useConfigSync({
     setVoiceEnabled(process.env.HERMES_VOICE === '1')
     void hydrateVoiceMode(gw, setVoiceEnabled, scope)
     quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime', session_id: sid }).then(r => {
-      if (!scope.isCurrent()) {return}
+      if (!scope.isCurrent()) {
+        return
+      }
       mtimeRef.current = Number(r?.mtime ?? 0)
       // Seed the MCP revision baseline too: after a normal boot mtime is
       // already non-zero, so the poller's baseline branch never runs, and an
@@ -433,7 +435,9 @@ export function useConfigSync({
 
     const id = setInterval(() => {
       quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime', session_id: sid }).then(r => {
-        if (!scope.isCurrent()) {return}
+        if (!scope.isCurrent()) {
+          return
+        }
         const next = Number(r?.mtime ?? 0)
         const nextMcpRev = String(r?.mcp_rev ?? '')
 

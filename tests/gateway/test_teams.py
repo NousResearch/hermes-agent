@@ -1140,3 +1140,106 @@ class TestTeamsRequireMention:
         adapter = self._make_adapter(**extra)
         assert adapter._require_mention is expected
         assert adapter._extra.get("require_mention") == yaml_value  # extras stay readable on the instance
+
+# ---------------------------------------------------------------------------
+# Tests: inbound <at> mention tag resolution (#134734)
+# ---------------------------------------------------------------------------
+
+
+class TestTeamsMentionTagResolution:
+    """The bot's own ``<at>`` tags must vanish, but other people's mentions must survive as
+    readable ``@Name`` text so the agent can tell a group-chat message was addressed to
+    someone else. Payloads without mention entities keep the legacy blanket strip."""
+
+    APP_ID = "bot-id"
+
+    def _make_adapter(self):
+        adapter = TeamsAdapter(
+            _make_config(
+                client_id=self.APP_ID, client_secret="secret", tenant_id="tenant"
+            )
+        )
+        adapter._app = MagicMock()
+        adapter._app.id = self.APP_ID
+        adapter.handle_message = AsyncMock()
+        adapter._fetch_attachment_bytes = AsyncMock(
+            return_value=b"\x89PNG" + b"\0" * 32
+        )
+        return adapter
+
+    @staticmethod
+    def _entity(mentioned_id, mentioned_name, tag):
+        entity = MagicMock(type="mention")
+        entity.mentioned = MagicMock()
+        entity.mentioned.id = mentioned_id
+        entity.mentioned.name = mentioned_name
+        entity.text = tag
+        return entity
+
+    _seq = 0
+
+    async def _run(self, text, entities):
+        type(self)._seq += 1
+        adapter = self._make_adapter()
+        activity = MagicMock()
+        activity.text = text
+        activity.id = f"act-mention-{type(self)._seq}"
+        activity.from_ = MagicMock(aad_object_id="aad-456", name="Test User")
+        activity.from_.id = "29:user-123"
+        activity.recipient = MagicMock()
+        activity.recipient.id = f"28:{self.APP_ID}"
+        activity.conversation = MagicMock(conversation_type="groupChat", tenant_id="t")
+        activity.conversation.id = "19:conv@thread.v2"
+        activity.conversation.name = "Conv"
+        activity.attachments = []
+        activity.reply_to_id = None
+        activity.entities = entities
+        ctx = MagicMock()
+        ctx.activity = activity
+        await adapter._on_message(ctx)
+        return adapter.handle_message.await_args.args[0].text
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        "text, entities, expected",
+        [
+            # other-person mention survives as @Name; the bot's own tag is dropped
+            (
+                "<at>Hermes</at> <at>UserB</at>, what do you think?",
+                [
+                    ("28:bot-id", "Hermes", "<at>Hermes</at>"),
+                    ("29:user-b", "UserB", "<at>UserB</at>"),
+                ],
+                "@UserB, what do you think?",
+            ),
+            # only another person mentioned: theirs kept, nothing of the agent's remains
+            (
+                "<at>UserB</at>, can you answer this?",
+                [("29:user-b", "UserB", "<at>UserB</at>")],
+                "@UserB, can you answer this?",
+            ),
+            # bot mentioned mid-sentence: tag and its trailing space go, no double space left
+            (
+                "hey <at>Hermes</at> there",
+                [("28:bot-id", "Hermes", "<at>Hermes</at>")],
+                "hey there",
+            ),
+            # bare app-id spelling of the bot (no 28: prefix) is recognized too
+            (
+                "hey <at>Hermes</at> there",
+                [("bot-id", "Hermes", "<at>Hermes</at>")],
+                "hey there",
+            ),
+            # mention entity whose tag never matched: the rendered name still survives
+            (
+                "ping <at>Late Joiner</at>",
+                [("29:late", "Late Joiner", None)],
+                "ping @Late Joiner",
+            ),
+            # no mention entities at all: legacy blanket strip keeps working
+            ("<at>Hermes</at> <at>UserB</at> hi", [], "hi"),
+        ],
+    )
+    async def test_mention_tag_resolution(self, text, entities, expected):
+        built = [self._entity(mid, name, tag) for mid, name, tag in entities]
+        assert await self._run(text, built) == expected

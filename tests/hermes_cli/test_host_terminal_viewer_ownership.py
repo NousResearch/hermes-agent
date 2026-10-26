@@ -3,8 +3,10 @@ import asyncio
 from contextlib import contextmanager, suppress
 import os
 from pathlib import Path
+import select
 import socket
 import threading
+import time
 
 import pytest
 
@@ -21,12 +23,26 @@ class Socket:
         self.closed.append(code)
 
 
+def read_pty_through(fd, marker, timeout=3.0):
+    """What a pseudo-terminal's slave reads up to and including ``marker``, written to the master
+    after everything else. A write to the master returns before the slave can read it: the kernel
+    hands the bytes over later (Linux from a worker thread), so earlier writes can still be on
+    their way when the first read returns. They arrive in order, so the marker comes last."""
+    got = bytearray()
+    deadline = time.monotonic() + timeout
+    while not got.endswith(marker):
+        readable, _, _ = select.select([fd], [], [], max(0.0, deadline - time.monotonic()))
+        if not readable:
+            break
+        got += os.read(fd, 1024)
+    return bytes(got)
+
+
 @pytest.mark.platforms("posix")
 @pytest.mark.asyncio
 @pytest.mark.parametrize("pause_at_sink", [False, True])
 async def test_takeover_revokes_waiting_workers_and_waits_for_an_admitted_write(tmp_path, monkeypatch, pause_at_sink):
     import pty
-    import select
     import tty
     from hermes_cli import pty_bridge
 
@@ -82,9 +98,9 @@ async def test_takeover_revokes_waiting_workers_and_waits_for_an_admitted_write(
         assert await session.write(new, b"NEW\n", fence=owner.admit)
         release.set()
         assert await asyncio.to_thread(finished.wait, 3)
-        readable, _, _ = await asyncio.to_thread(select.select, [slave], [], [], 3)
-        assert readable
-        assert os.read(slave, 1024) == (b"OLD\nNEW\n" if pause_at_sink else b"NEW\n")
+        real_write(master, b"END\n")
+        expected = b"OLD\nNEW\n" if pause_at_sink else b"NEW\n"
+        assert await asyncio.to_thread(read_pty_through, slave, b"END\n") == expected + b"END\n"
         assert session.alive
     finally:
         release.set()

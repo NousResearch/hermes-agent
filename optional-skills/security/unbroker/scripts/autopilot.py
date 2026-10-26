@@ -201,6 +201,46 @@ def _optout_action(row: dict, playbook: dict[str, dict], subject_id: str, dossie
     return action, None
 
 
+def _registry_one_shots(dossier: dict, registry_recs: list, residency: str,
+                        subject_id: str, confirm_first: bool) -> list[dict]:
+    """One-shot registrations beyond the per-broker casework, each surfaced once per subject
+    until `--filed` records it: the CA DROP deletion (ONE verified request deletes from every
+    registered data broker - the highest-leverage removal there is) and the FTC National Do
+    Not Call Registry (US personal numbers; lawful telemarketers must stop within 31 days -
+    complementary to broker removal, which is what cuts the lead lists scammers buy)."""
+    prefs = dossier.get("preferences") or {}
+    actions: list[dict] = []
+    if registry_recs and residency.startswith("US-CA") and not prefs.get("drop_filed_at"):
+        actions.append({
+            "type": "drop_submit",
+            "one_shot": True,
+            "registry_count": len(registry_recs),
+            "url": registry.DROP_URL,
+            "command": f"python3 scripts/pdd.py drop {subject_id}",
+            "why": f"CA resident: one DROP request deletes from all {len(registry_recs)} registered "
+                   "data brokers at once (superset of what commercial services cover).",
+            "after": f"python3 scripts/pdd.py drop {subject_id} --filed",
+        })
+    phones = list((dossier.get("identity") or {}).get("phones") or [])
+    if residency.startswith("US") and phones and not prefs.get("dnc_filed_at"):
+        actions.append({
+            "type": "dnc_register",
+            "one_shot": True,
+            "url": registry.DNC_URL,
+            "confirm_first": confirm_first,
+            "command": f"python3 scripts/pdd.py dnc {subject_id}",
+            "why": "US personal number(s) not yet on the National Do Not Call Registry: lawful "
+                   "telemarketers must stop within 31 days; registration never expires.",
+            "how": "drive the FTC form with browser_exec (up to 3 numbers per pass + the subject's "
+                   "contact email; the FTC emails a confirmation PER NUMBER -- open each link "
+                   "within 72 hours or that number is not registered). If the form defeats the "
+                   "configured browser, present it as a manual step in the end-of-run digest "
+                   "instead of fighting it.",
+            "after": f"python3 scripts/pdd.py dnc {subject_id} --filed",
+        })
+    return actions
+
+
 def next_actions(dossier: dict, brokers_list: list[dict], cfg: dict,
                  ledger: dict | None = None, env: dict | None = None) -> dict:
     env = os.environ if env is None else env
@@ -231,44 +271,12 @@ def next_actions(dossier: dict, brokers_list: list[dict], cfg: dict,
             "command": "python3 scripts/pdd.py refresh-brokers",
         })
 
-    # 0b) DROP one-shot: for a CA resident, ONE request deletes from every registered
-    # broker (the whole CA Data Broker Registry) -- the highest-leverage removal there is.
+    # 0b/0c) registry-level one-shots: the CA DROP deletion (one request covers every
+    # registered broker) and the FTC National Do Not Call Registry (US personal numbers).
     registry_recs = brokers_mod.load_registry_cache()
     residency = (dossier.get("residency_jurisdiction") or "US").upper()
     drop_filed = bool((dossier.get("preferences") or {}).get("drop_filed_at"))
-    if registry_recs and residency.startswith("US-CA") and not drop_filed:
-        actions.append({
-            "type": "drop_submit",
-            "one_shot": True,
-            "registry_count": len(registry_recs),
-            "url": registry.DROP_URL,
-            "command": f"python3 scripts/pdd.py drop {subject_id}",
-            "why": f"CA resident: one DROP request deletes from all {len(registry_recs)} registered "
-                   "data brokers at once (superset of what commercial services cover).",
-            "after": f"python3 scripts/pdd.py drop {subject_id} --filed",
-        })
-
-    # 0c) National Do Not Call Registry one-shot (US personal numbers): the spam-call lever
-    # lawful telemarketers must honor (within 31 days). Complementary to broker removal --
-    # the people-search listings are where lead lists come from. Surfaced once until `dnc --filed`.
-    dnc_filed = bool((dossier.get("preferences") or {}).get("dnc_filed_at"))
-    dnc_phones = list(((dossier.get("identity") or {}).get("phones")) or [])
-    if residency.startswith("US") and dnc_phones and not dnc_filed:
-        actions.append({
-            "type": "dnc_register",
-            "one_shot": True,
-            "url": registry.DNC_URL,
-            "confirm_first": confirm_first,
-            "command": f"python3 scripts/pdd.py dnc {subject_id}",
-            "why": "US personal number(s) not yet on the National Do Not Call Registry: lawful "
-                   "telemarketers must stop within 31 days; registration never expires.",
-            "how": "drive the FTC form with browser_exec (up to 3 numbers per pass + the subject's "
-                   "contact email; the FTC emails a confirmation PER NUMBER -- open each link "
-                   "within 72 hours or that number is not registered). If the form defeats the "
-                   "configured browser, present it as a manual step in the end-of-run digest "
-                   "instead of fighting it.",
-            "after": f"python3 scripts/pdd.py dnc {subject_id} --filed",
-        })
+    actions.extend(_registry_one_shots(dossier, registry_recs, residency, subject_id, confirm_first))
 
     # 1) Phase 1 crawl: everything unscanned (read-only, parallel-safe)
     unscanned = groups.get("unscanned") or []

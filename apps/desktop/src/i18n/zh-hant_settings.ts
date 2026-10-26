@@ -1,6 +1,7 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import type { TranslationOverrides } from './define-locale'
+import { zhHantDelegationRouting } from './zh-hant_delegation_routing'
 import { zhHantUpdateChannel } from './zh-hant_update_channel'
 
 export const zhHantSettings = {
@@ -238,6 +239,8 @@ export const zhHantSettings = {
       testBody: '通知運作正常。',
       testSent: '測試已傳送。若沒有出現，請檢查系統通知權限與專注模式／勿擾模式。',
       testUnsupported: '此系統不支援原生通知。',
+      muteSoundsTitle: '靜音介面提示音',
+      muteSoundsDesc: '關閉自動完成、喚醒詞和思考提示音、觸感回饋以及系統通知聲音。聲音預覽和語音回覆仍會播放。',
       completionSoundTitle: '完成提示音',
       completionSoundDesc: '代理回合結束時播放。可在此選擇預設並預覽。',
       completionSoundPreview: '預覽'
@@ -866,6 +869,9 @@ export const zhHantSettings = {
       loading: '正在載入閘道設定...',
       unavailableTitle: '閘道設定不可用',
       unavailableDesc: '桌面 IPC 橋接器未公開閘道設定。',
+      webappHostTitle: 'Hermes 主機',
+      webappHostDesc:
+        'Webapp 一律使用提供它的 Hermes 主機。如需切換閘道、登入 Hermes Cloud 或管理已儲存的連線，請使用 Hermes Desktop 應用程式。',
       title: '閘道連線',
       envOverride: '環境變數覆寫',
       intro:
@@ -968,7 +974,39 @@ export const zhHantSettings = {
       sshErrUpdateRequired: '使用 Desktop SSH 連線前，請更新遠端主機上的 Hermes。',
       sshErrInteractiveAuth:
         'Tailscale SSH 需要互動式瀏覽器驗證。請在終端機執行 `ssh <host> true` 完成驗證後重試——Hermes 以非互動方式執行 SSH。',
-      sshErrUnknown: 'SSH 連線失敗。'
+      sshErrUnknown: 'SSH 連線失敗。',
+      webAccess: {
+        title: '網頁存取',
+        intro: '用手機或其他電腦，以你的 Nous 帳戶登入並開啟這台電腦上的 Hermes。登入的人可以在這台電腦上執行指令。',
+        failed: '無法變更網頁存取',
+        running: '執行中',
+        stopped: '已停止',
+        starting: '正在啟動',
+        stopping: '正在停止',
+        restartNeeded: '需要重新啟動',
+        unavailable: '無法使用',
+        notRunningDetail: '啟動後即可從其他裝置開啟 Hermes。',
+        needsNous: '請先在「供應商」中登入你的 Nous 帳戶。',
+        runningLan: '在同一網路中的裝置上開啟此網址。',
+        runningPublic: '透過你的網址提供服務。',
+        runningLocal: '只有這台電腦可以開啟。要從其他裝置開啟，請先停止，再重新啟動。',
+        pendingOn: '已儲存。閘道重新啟動後將提供網頁應用程式。',
+        pendingOff: '已關閉，但閘道在重新啟動前仍會繼續提供網頁應用程式。',
+        unavailableDetail: reason => `閘道無法提供網頁應用程式：${reason}`,
+        restartBusy: '已儲存。有對話正在進行，因此閘道沒有重新啟動。對話結束後請選擇「重新啟動閘道」。',
+        restartFailed: '已儲存，但閘道無法重新啟動。請選擇「重新啟動閘道」重試。',
+        startTimedOut: '閘道未能在 90 秒內提供網頁應用程式。',
+        stopTimedOut: '閘道未能在 90 秒內停止提供網頁應用程式。',
+        start: '啟動',
+        stop: '停止',
+        restartGateway: '重新啟動閘道',
+        modeLan: '目前網路',
+        modeLanDetail: url => `你的 Wi-Fi 中的裝置可開啟 ${url}。僅在你信任的網路中使用。`,
+        lanUnencrypted: '連線未加密：同一網路中的其他人可能讀取你傳送和接收的內容。',
+        noLan: '這台電腦沒有其他裝置可以連到的網路位址。',
+        modePublic: '我自己的網址',
+        modePublicDetail: port => `你已有的 HTTPS 網址（例如 Tailscale Serve 或通道），並轉送到 http://127.0.0.1:${port}。`
+      }
     },
     keys: {
       loading: '正在載入 API 金鑰和憑證...',
@@ -1094,7 +1132,8 @@ export const zhHantSettings = {
         directActive: '直接端點已啟用，優先於已儲存的提供方。選擇此模式時會保留其端點與憑證。',
         directClear: '套用此路由會清除直接端點及其儲存的金鑰。其他請求設定維持不變。',
         catalogFailed: '模型目錄無法使用。請手動輸入提供方與模型，或重試。',
-        draftHint: '套用前，變更只保留在本機。'
+        draftHint: '套用前，變更只保留在本機。',
+        routing: zhHantDelegationRouting
       }
     },
     localModels: {
@@ -1295,6 +1334,15 @@ export const zhHantSettings = {
         effectScheduled: (targetName, effectiveAt, creditsDelta) =>
           `變更為 ${targetName}，於 ${effectiveAt} 生效。現在不扣款；在此之前保留目前方案。${creditsDelta ? `每月額度變化：${creditsDelta}。` : ''}`
       },
+      keepGoingOnCredits: {
+        title: '用額度繼續',
+        description: '包含的用量用完後，使用你的額度。關閉時，Hermes 等待重設。',
+        approveInBrowser: '請在瀏覽器中核准 Remote Spending 以變更此設定。核准後立即生效。',
+        openAgain: '再次開啟',
+        cancel: '取消',
+        approvedRetry: 'Remote Spending 已核准，但變更未儲存。',
+        tryAgain: '重試'
+      },
       autoReload: {
         threshold: '門檻',
         thresholdAria: '自動儲值門檻',
@@ -1365,6 +1413,20 @@ export const zhHantSettings = {
             captionDefault: '預設上限',
             captionSpending: '每月遠端支出',
             valueUsed: (spent, limit) => `${limit} 中已用 ${spent}`
+          },
+          window: {
+            today: '今天',
+            week: '本週',
+            month: '本月',
+            topTier: '大型模型（每月）',
+            barLabel: title => `${title}已用包含用量`,
+            captionPaused: '已暫停：訂閱付款失敗',
+            captionPausedOther: '已暫停：請在 Portal 的帳單頁查看',
+            captionTopTierUsedUp: '每月額度已用完，剩餘部分由你的額度支付',
+            captionTopTierUsedUpKeepGoingOff: '每月額度已用完，其他包含的模型仍可使用',
+            captionResetsIn: duration => `${duration}後重設`,
+            captionIncluded: '包含用量',
+            valueUsed: percent => `已用 ${percent}`
           }
         },
         planCard: {
@@ -1596,7 +1658,27 @@ export const zhHantSettings = {
     wasPrice: '原價',
     customModel: '自訂模型',
     addCustomModelAction: '新增自訂模型…',
-    customModelPlaceholder: '輸入模型 ID，例如 openai/gpt-5'
+    customModelPlaceholder: '輸入模型 ID，例如 openai/gpt-5',
+    today: '今日',
+    week: '本週',
+    month: '本月',
+    topTier: '大型模型（每月）',
+    included: '下列模型均已包含',
+    pausedRenewal: '已暫停：續費未到帳',
+    pausedOther: '已暫停',
+    includedUsedUp: '包含用量已用完',
+    limitReached: name => `已達${name}上限`,
+    limitNames: { day: '每日', month: '每月', top_tier: '每月大型模型', week: '每週' },
+    limitThenCredits: '付費模型現在使用你的額度（按量付費）',
+    limitThenCreditsLarge: '大型模型現在使用你的額度（按量付費）',
+    limitThenWait: '在此之前僅可使用免費模型',
+    limitThenWaitLarge: '在此之前大型模型已暫停',
+    percentUsed: percent => `已用 ${percent}`,
+    resetsIn: duration => `${duration}後重設`,
+    usageLevels: { free: '免費', top_tier: '大' },
+    sectionRecommended: '推薦',
+    sectionOther: '其他模型',
+    largeFootnote: '大型模型也會消耗你的每月大型模型額度。'
   },
 
   modelVisibility: {

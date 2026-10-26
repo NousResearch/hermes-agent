@@ -45,10 +45,12 @@ export function errorCardText(
   if ('code' in key) {
     const copy = thread.errorCodes[key.code]
 
-    // A free-tier refusal arrives with the backend's own sentence (the wait, the
-    // model, the way forward); the table body is only the fallback for an older backend.
+    // Free-tier and usage-window refusals arrive with the backend's own sentence (the
+    // wait, the model, the way forward); the table body is only the fallback for an older backend.
+    const ownSentence = isFreeTierSurface(surface) || surface?.code === 'usage_window'
+
     return {
-      body: (isFreeTierSurface(surface) && surface?.message) || render(copy.body, provider),
+      body: (ownSentence && surface?.message) || render(copy.body, provider),
       title: render(copy.title, provider)
     }
   }

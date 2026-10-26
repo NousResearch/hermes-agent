@@ -43,7 +43,9 @@ async def _build_profile_authority(runner, name, home, *, register):
     # the handle every later scoped read of that profile uses (one writer per state.db).
     with _profile_runtime_scope(home, hydrate_secrets=False):
         db = getattr(runner._session_db, '_db', runner._session_db)
-        if db is None or (await asyncio.to_thread(Path(db.db_path).resolve)).parent != home:
+        if db is None:
+            raise RuntimeError(_store_open_failure(runner, home))
+        if (await asyncio.to_thread(Path(db.db_path).resolve)).parent != home:
             raise RuntimeError(f'session authority database does not belong to the reserved profile {home}')
         registry.add(home, None, name=name)
         try:
@@ -54,6 +56,21 @@ async def _build_profile_authority(runner, name, home, *, register):
             raise
     registry.replace(home, authority)
     return authority
+
+
+def _store_open_failure(runner, home):
+    """Why *home*'s ``state.db`` has no handle: the scoped handle caches answer None for a failed open
+    (and while they back off), so the park reason named an ownership mismatch over the real cause, a
+    legacy store that crashed its migration on every open (#141467). The reason is the exception the
+    failed open recorded; reopening here to learn it could create or migrate the store, and would skip
+    the caches' backoff."""
+    path = home / 'state.db'
+    caches = (getattr(getattr(runner, 'session_store', None), '_db_handle_cache', None),
+              getattr(runner, '_session_db_handle_cache', None))
+    error = next((e for e in (c.last_error(path) for c in caches if c is not None) if e), '')
+    if error:
+        return f'{path} did not open: {error}'
+    return f'{path} is unavailable (its last open failed; retry pending)'
 
 
 def _park_reserved_profile(runner, name, home, exc):
@@ -229,17 +246,21 @@ def managed_turn_count(runner):
     return uncounted_runtime_work(runner)
 
 
-def stop_authority_turns(authority, *, in_process=False):
+def stop_authority_turns(authority, *, in_process=False, reason=None):
     """Cooperative Stop for every turn *authority* is executing: the control a user's Stop sends to a
     managed worker (acknowledged, or terminated within STOP_ACK_SECONDS, and the admission settles
     through its own fenced path). ``in_process`` also hard-interrupts the running agent of each
-    executing in-process turn, or latches the generation ``adopt_agent`` consumes before it exists."""
+    executing in-process turn, or latches the generation ``adopt_agent`` consumes before it exists.
+    ``reason`` (a gateway restart/shutdown) is recorded on each worker it signals, so the turn settles
+    with that cause; a worker already stopped (the user's Stop came first) keeps none. A worker
+    still being spawned gets the same Stop and cause through latches (``_stop_spawning_managed``)."""
     from hermes_state_runtime import RuntimeStoreError
     signalled = 0
     workers = getattr(authority, '_managed_workers', {})
     for worker in list(workers.values()):
         if worker.closed.is_set() or (getattr(worker, 'stop', None) is not None and worker.stop.is_set()):
             continue
+        worker.stop_cause = reason
         try:
             worker.control({'type': 'stop'})
         except RuntimeStoreError as exc:
@@ -247,6 +268,7 @@ def stop_authority_turns(authority, *, in_process=False):
             # loop escalates on that latch alone (terminate after STOP_ACK_SECONDS).
             logger.debug('managed Stop not queued (%s); the latch escalates it', exc.reason)
         signalled += 1
+    signalled += _stop_spawning_managed(authority, workers, reason)
     if not in_process:
         return signalled
     from agent.interrupt_compat import request_hard_interrupt
@@ -254,7 +276,7 @@ def stop_authority_turns(authority, *, in_process=False):
     running = getattr(authority.runner, '_running_agents', {})
     for sid, live in list(authority.sessions.items()):
         generation = live.event_stream.execution.get('execution_generation')
-        if generation is None or sid in workers:
+        if generation is None or sid in workers or sid in getattr(authority, '_managed_spawning', {}):
             continue
         adopted_generation, agent = authority.adopted.get(sid, (None, None))
         if adopted_generation != generation:
@@ -267,9 +289,29 @@ def stop_authority_turns(authority, *, in_process=False):
     return signalled
 
 
-def stop_managed_turns(runner):
+def _stop_spawning_managed(authority, workers, reason):
+    """A managed turn whose worker is still being spawned has nothing to signal yet: latch the
+    Stop for its generation (``adopt_agent`` delivers it to the worker, which is never
+    bootstrapped) and, for a gateway restart/shutdown, the cause its pre-bootstrap interrupted
+    result carries (#134889 GW-22). A user's Stop latched first keeps no cause."""
+    stopped = 0
+    for sid, generation in list(getattr(authority, '_managed_spawning', {}).items()):
+        if sid in workers:
+            continue
+        stops = authority.pending_stops
+        if reason and stops.get(sid) != generation:
+            causes = getattr(authority, 'pending_stop_causes', None)
+            if causes is None:
+                causes = authority.pending_stop_causes = {}
+            causes[sid] = (generation, reason)
+        stops[sid] = generation
+        stopped += 1
+    return stopped
+
+
+def stop_managed_turns(runner, reason=None):
     """``stop_authority_turns`` across every served authority (whole-runtime shutdown)."""
-    return sum(stop_authority_turns(authority) for authority in _authorities(runner))
+    return sum(stop_authority_turns(authority, reason=reason) for authority in _authorities(runner))
 
 
 def interrupt_side_agents(runner, reason):
@@ -453,8 +495,53 @@ async def recover_bot_mailbox(authority):
 
 
 async def start_gateway_runtime_api(runner):
-    from gateway.run_api import start_gateway_api
-    runner.session_api = await start_gateway_api(runner)
+    from gateway import run_api
+    from gateway.webapp_listener import (
+        STARTING, BrowserCredentialError, browser_session_token, dial_origin, listener_plan, register_control_verbs,
+    )
+    from hermes_constants import get_hermes_home
+    home = get_hermes_home()
+    # The bootstrap registered these before its control socket answered; a runner started without it
+    # (an embedded gateway) gets them here, before the listener's slow start.
+    register_control_verbs(runner, home)
+    host, port, webapp, unusable = listener_plan(home)
+    # A webapp: block that asks for the Webapp but cannot be used is reported with its reason.
+    runner.webapp_status = ({"state": "unavailable", "url": None, "reason": unusable} if unusable
+                            else {"state": "off", "url": None, "reason": None} if webapp is None
+                            else dict(STARTING))
+    try:
+        # Without the Webapp the listener is main's: the same call, a private ephemeral port.
+        runner.session_api = await (run_api.start_gateway_api(runner, host=host, port=port, webapp=webapp)
+                                    if webapp is not None else run_api.start_gateway_api(runner))
+    except (Exception, SystemExit) as exc:
+        if webapp is None:
+            raise
+        # The Webapp's listener could not start (port taken, address unavailable, its browser credential
+        # not storable in the home, or the dashboard's auth gate exiting on a wildcard bind with no
+        # sign-in provider): native clients still need this gateway, so it keeps main's private
+        # listener and reports why the Webapp is not served.
+        if isinstance(exc, SystemExit):
+            reason = str(exc.code).strip()  # the gate's own message names the fix
+        elif isinstance(exc, BrowserCredentialError):
+            reason = str(exc)  # names the file and why it cannot be stored
+        elif isinstance(exc, OSError) and exc.filename:  # the browser credential's file, not the port
+            reason = f"could not use {exc.filename} ({exc.strerror or exc})"
+        else:
+            cause = (exc.strerror or exc) if isinstance(exc, OSError) else exc
+            reason = f"could not listen on {host}:{port} ({cause})"
+        logger.error("Webapp unavailable: %s", reason)
+        runner.webapp_status = {"state": "unavailable", "url": None, "reason": reason}
+        # Open tabs keep sending their credential to whatever answers on the Webapp's port, and that
+        # is not this gateway now. Replace it, so one captured there never opens this gateway; the
+        # tabs sign in again once the Webapp is back.
+        try:
+            browser_session_token(home, rotate=True)
+        except OSError as write_error:
+            logger.warning("Could not replace the Webapp's browser credential: %s", write_error)
+        runner.session_api = await run_api.start_gateway_api(runner)
+    else:
+        if webapp is not None:
+            runner.webapp_status = {"state": "serving", "url": dial_origin(host, port), "reason": None}
     runner.session_runtime_descriptor['api_origin'] = runner.session_api.api_origin
     for authority in _authorities(runner):
         await _recover_profile_bot_mailbox(runner, authority)
@@ -577,7 +664,7 @@ async def drain_gateway_runtime(runner):
             adapter.set_message_handler(None)
 
 
-async def settle_gateway_runtime(runner, budget=None):
+async def settle_gateway_runtime(runner, budget=None, reason=None):
     """Keep authority tasks alive until their last durable settlement write, within a bound.
 
     A managed turn still running here gets its Stop first (its worker acknowledges or is
@@ -587,7 +674,7 @@ async def settle_gateway_runtime(runner, budget=None):
     the executor quiesce skips the DB close while a writer is live, and process exit releases
     the ownership lock, so raising here would only skip teardown and disarm the watchdog."""
     authorities = _authorities(runner)
-    stop_managed_turns(runner)
+    stop_managed_turns(runner, reason)
     from gateway.session_llm_oneshot import stop as stop_oneshots
     for authority in authorities:
         stop_oneshots(authority)  # an answer is no durable settlement: never waited for

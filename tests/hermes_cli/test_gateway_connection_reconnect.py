@@ -264,6 +264,40 @@ def test_close_after_a_failed_resume_is_still_final(gateway, conn):
     assert len(gateway.lives) == 2
 
 
+class _Unanswered:
+    """A socket that takes every request and never answers one (a gateway stalled mid-reconnect)."""
+
+    def __init__(self):
+        self.sent = asyncio.Event()
+
+    async def send(self, raw):
+        self.sent.set()
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        return await asyncio.Future()
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_reconnect_cancels_its_session_resume():
+    """The viewer closes while a reconnect's ``session.resume`` goes unanswered: cancelling the
+    resubscribe cancels the request with it. One left pending on the client held a worker thread
+    that process exit joins until the request timed out."""
+    from hermes_cli.gateway_client import GatewayClient
+    conn = GatewayConnection()
+    conn.state(SID).subscription_id = "sub-1"
+    socket = _Unanswered()
+    async with GatewayClient(socket) as client:
+        resubscribe = asyncio.create_task(conn._resubscribe(client))
+        await asyncio.wait_for(socket.sent.wait(), 5)
+        resubscribe.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await resubscribe
+        assert client.pending == {}
+
+
 def _cli(store):
     return types.SimpleNamespace(_session_db=store, _gateway_session_open=True)
 

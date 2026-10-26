@@ -958,9 +958,11 @@ def _panel_box_width(title: str, content_lines: list[str], min_width: int = 46, 
 
 
 def _wrap_panel_text(text: str, width: int, subsequent_indent: str = "", *, keep_ws: bool = False) -> list[str]:
-    """Wrap panel text; ``keep_ws`` preserves whitespace (command/detail previews)."""
+    """Wrap panel text; ``keep_ws`` preserves whitespace (command/detail previews). Each source
+    line wraps on its own: a newline inside a row would break the panel's right border."""
     kw = dict(replace_whitespace=False, drop_whitespace=False) if keep_ws else dict(break_long_words=False, break_on_hyphens=False)
-    wrapped = textwrap.wrap(text, width=max(8, width), subsequent_indent=subsequent_indent, **kw)
+    wrapped = [row for part in (text.expandtabs(4).splitlines() if keep_ws else [text])
+               for row in (textwrap.wrap(part, width=max(8, width), subsequent_indent=subsequent_indent, **kw) or [""])]
     return wrapped or [""]
 
 

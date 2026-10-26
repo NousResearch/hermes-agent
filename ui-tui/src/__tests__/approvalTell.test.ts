@@ -1,9 +1,18 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { steerOrQueue } from '../app/steerOrQueue.js'
+import { captureDestination } from '../app/submissionDestination.js'
+import { patchUiState, resetUiState } from '../app/uiStore.js'
 import { approvalAction, approvalRows } from '../components/prompts.js'
 
 const req = { command: 'rm -rf build', description: 'recursive delete', requestId: 'r1' }
+
+const owner = () => ({ ...captureDestination(), sid: 'owner' })
+
+beforeEach(() => {
+  resetUiState()
+  patchUiState({ sid: 'owner' })
+})
 
 describe('"No, and tell Hermes what to do instead" (#25693)', () => {
   it('is offered after Deny on every prompt that has Deny, and picked by its number', () => {
@@ -25,7 +34,7 @@ describe('"No, and tell Hermes what to do instead" (#25693)', () => {
     const enqueue = vi.fn()
     const sys = vi.fn()
 
-    await steerOrQueue({ enqueue, generation: 3, rpc: rpc as any, sid: 'owner', sys, text: 'use INSERT OR REPLACE' })
+    await steerOrQueue({ destination: owner(), enqueue, generation: 3, rpc: rpc as any, sys, text: 'use INSERT OR REPLACE' })
 
     expect(rpc).toHaveBeenCalledWith('session.steer', {
       execution_generation: 3,
@@ -39,9 +48,24 @@ describe('"No, and tell Hermes what to do instead" (#25693)', () => {
     for (const rpc of [vi.fn(async () => ({ status: 'rejected' })), vi.fn(async () => Promise.reject(new Error('gone')))]) {
       const enqueue = vi.fn()
 
-      await steerOrQueue({ enqueue, rpc: rpc as any, sid: 'owner', sys: vi.fn(), text: 'do X instead' })
+      await steerOrQueue({ destination: owner(), enqueue, rpc: rpc as any, sys: vi.fn(), text: 'do X instead' })
 
-      expect(enqueue).toHaveBeenCalledWith('do X instead')
+      expect(enqueue).toHaveBeenCalledWith('do X instead', 'do X instead', expect.objectContaining({ sid: 'owner' }))
     }
+  })
+
+  it('a late refusal queues into the session it was steered at, even after the user switched away', async () => {
+    let refuse!: (value: unknown) => void
+    const rpc = vi.fn(() => new Promise(resolve => (refuse = resolve)))
+    const enqueue = vi.fn()
+    const sys = vi.fn()
+    const steered = steerOrQueue({ destination: owner(), enqueue, rpc: rpc as any, sys, text: 'do X instead' })
+
+    patchUiState({ sid: 'other' })
+    refuse({ status: 'rejected' })
+    await steered
+
+    expect(enqueue).toHaveBeenCalledWith('do X instead', 'do X instead', expect.objectContaining({ sid: 'owner' }))
+    expect(sys).not.toHaveBeenCalled()
   })
 })

@@ -22,7 +22,7 @@ import logging
 import os
 import threading
 from pathlib import Path
-from typing import Dict, Iterator, Optional
+from typing import Any, Dict, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +183,55 @@ def launch_body() -> Iterator[None]:
         reset_launch_body_scope(token)
 
 
+def build_launch_runtime_scope(launch_home: str | Path) -> tuple[dict[str, str], tuple[bool, Any]]:
+    """Everything :func:`launch_profile_runtime_scope` binds, as DATA — file reads included.
+
+    Both halves read the launch profile's ``.env`` (and its ``config.yaml`` for the terminal
+    policy), so an async caller must run this in a worker thread (``asyncio.to_thread``) and bind
+    the result with :func:`install_launch_profile_runtime_scope`. Under multiplexing this is
+    called on the gateway's event loop once per handoff-watcher tick, and a disk read that stalls
+    there stalls every other task with it: a wedged read once held the loop past the liveness
+    probe, so ``gateway.shutdown_watchdog`` dumped the stacks and exited the process (75).
+    """
+    from tools.terminal_scope import build_profile_terminal_scope_or_refusal
+    home = Path(launch_home)
+    return (
+        launch_secret_scope(home),
+        build_profile_terminal_scope_or_refusal(home, env_overlay=launch_terminal_env()),
+    )
+
+
+@contextlib.contextmanager
+def install_launch_profile_runtime_scope(
+    launch_home: str | Path,
+    secret_scope: dict[str, str],
+    terminal_scope: tuple[bool, Any],
+) -> Iterator[None]:
+    """Bind an already-built launch-profile scope for one body.
+
+    Only ``ContextVar`` writes happen here — they must run in the context the body runs in, which
+    is why the build (:func:`build_launch_runtime_scope`) can be offloaded and this cannot.
+    """
+    from agent.secret_scope import reset_secret_scope, set_secret_scope
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.terminal_scope import install_prebuilt_terminal_scope, reset_terminal_scope
+
+    home = Path(launch_home)
+    home_token = secret_token = terminal_token = None
+    try:
+        home_token = set_hermes_home_override(str(home))
+        secret_token = set_secret_scope(secret_scope)  # own home: no foreign stamp
+        terminal_token = install_prebuilt_terminal_scope(terminal_scope)
+        yield
+    finally:
+        if terminal_token is not None:
+            reset_terminal_scope(terminal_token)
+        if secret_token is not None:
+            reset_secret_scope(secret_token)
+        if home_token is not None:
+            reset_hermes_home_override(home_token)
+
+
 @contextlib.contextmanager
 def launch_profile_runtime_scope(launch_home: str | Path) -> Iterator[None]:
     """Bind the launch profile's own runtime scope for one body: HERMES_HOME override naming the
@@ -196,24 +245,8 @@ def launch_profile_runtime_scope(launch_home: str | Path) -> Iterator[None]:
     override), so a launch-profile turn without it was indistinguishable from no turn at all and
     every plugin hook it fired saw an unscoped process (#118538). Routed turns already bind theirs
     (``gateway/run.py::_profile_runtime_scope``); the launch profile is a tenant like any other."""
-    from agent.secret_scope import reset_secret_scope, set_secret_scope
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
-
-    home = Path(launch_home)
-    home_token = secret_token = terminal_token = None
-    try:
-        home_token = set_hermes_home_override(str(home))
-        secret_token = set_secret_scope(launch_secret_scope(home))  # own home: no foreign stamp
-        terminal_token = install_profile_terminal_scope(home, env_overlay=launch_terminal_env())
+    with install_launch_profile_runtime_scope(launch_home, *build_launch_runtime_scope(launch_home)):
         yield
-    finally:
-        if terminal_token is not None:
-            reset_terminal_scope(terminal_token)
-        if secret_token is not None:
-            reset_secret_scope(secret_token)
-        if home_token is not None:
-            reset_hermes_home_override(home_token)
 
 
 def launch_profile_scope_if_multiplexed():
@@ -237,7 +270,23 @@ def launch_profile_scope_if_multiplexed():
 
 @contextlib.asynccontextmanager
 async def async_launch_profile_scope_if_multiplexed():
-    """``async with`` twin of :func:`launch_profile_scope_if_multiplexed` (no I/O of its own: the
-    launch scope is rebuilt from already-hydrated sources, so there is nothing to move off-loop)."""
-    with launch_profile_scope_if_multiplexed():
+    """``async with`` twin of :func:`launch_profile_scope_if_multiplexed`.
+
+    The build is NOT I/O-free: it reads the launch profile's ``.env`` and ``config.yaml``, which
+    is exactly the kind of call that must never run on the event loop. This seam is entered from
+    the handoff watcher's per-tick loop, so a stalled read here stalls every other task — a wedged
+    90 s read held the loop past three 30 s liveness probes and ``gateway.shutdown_watchdog``
+    exited the gateway with 75. Build in a worker thread; keep only the ``ContextVar`` writes on
+    the loop, where the body runs and where they are undone. Single-profile hosts still bind
+    nothing.
+    """
+    from agent.secret_scope import is_multiplex_active
+    if not is_multiplex_active():
+        yield
+        return
+    import asyncio
+    from hermes_constants import get_process_hermes_home
+    home = get_process_hermes_home()
+    secret_scope, terminal_scope = await asyncio.to_thread(build_launch_runtime_scope, home)
+    with install_launch_profile_runtime_scope(home, secret_scope, terminal_scope):
         yield

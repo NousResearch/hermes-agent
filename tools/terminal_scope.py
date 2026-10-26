@@ -203,14 +203,46 @@ def _resolve_scope_cwd_placeholder(scope: dict[str, str]) -> None:
         scope["TERMINAL_CWD"] = resolved
 
 
+def build_profile_terminal_scope_or_refusal(
+    hermes_home: Any, *, env_overlay: Optional[dict[str, str]] = None
+) -> tuple[bool, Any]:
+    """The BUILD half of :func:`install_profile_terminal_scope`, never raising.
+
+    Returns ``(True, scope)`` or ``(False, reason)``. Split out so a caller that must keep these
+    file reads (``<home>/.env`` + ``config.yaml``) off an event loop can run the build in a worker
+    thread and do only the ``ContextVar.set`` on the loop thread the body actually runs in.
+    """
+    try:
+        return True, build_profile_terminal_scope(hermes_home, env_overlay=env_overlay)
+    except TerminalPolicyUnavailable as exc:
+        logger.warning("terminal policy unavailable: %s", exc)
+        return False, str(exc)
+
+
+def install_prebuilt_terminal_scope(built: tuple[bool, Any]) -> Token:
+    """Install what :func:`build_profile_terminal_scope_or_refusal` produced (refusal scope on
+    failure). The ``set`` must happen in the context that will use the scope."""
+    ok, payload = built
+    if ok:
+        return set_terminal_scope(payload)
+    return _terminal_scope_var.set(TerminalPolicyRefusal(payload))
+
+
 def install_profile_terminal_scope(
     hermes_home: Any, *, env_overlay: Optional[dict[str, str]] = None) -> Token:
     """Build AND install a profile's policy; on failure install the refusal scope. Never raises."""
+    return install_prebuilt_terminal_scope(
+        build_profile_terminal_scope_or_refusal(hermes_home, env_overlay=env_overlay))
+
+
+@contextmanager
+def install_and_reset_prebuilt_terminal_scope(built: tuple[bool, Any]) -> Iterator[None]:
+    """Install a policy built off-loop for a bounded turn/fire, then reset it. Never raises."""
+    token = install_prebuilt_terminal_scope(built)
     try:
-        return set_terminal_scope(build_profile_terminal_scope(hermes_home, env_overlay=env_overlay))
-    except TerminalPolicyUnavailable as exc:
-        logger.warning("terminal policy unavailable: %s", exc)
-        return _terminal_scope_var.set(TerminalPolicyRefusal(str(exc)))
+        yield
+    finally:
+        reset_terminal_scope(token)
 
 
 @contextmanager

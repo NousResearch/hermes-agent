@@ -1636,12 +1636,12 @@ def check_respawn_guard(
     # captured output, which is context rather than a diagnosis and may contain
     # benign commands such as ``claude auth status`` (#117097).
     #
-    # The column is a CACHE of the last run that failed, not of the latest run: a
-    # rate-limited requeue stamps it (line ~1238) and a later handoff run never
-    # clears it. Reading the text alone therefore parks a card forever on evidence
-    # about a run that has since been superseded — the review lane first, because
-    # this check runs before its exemption. Attribute the text to the latest run
-    # before trusting it; a superseded one leaves nothing for ``blocker_auth``.
+    # The column is a CACHE of the last run that failed, not of the latest run: the
+    # rate-limited requeue stamps it (``_reclaim_dead_workers``) and a later handoff
+    # run never clears it. Reading the text alone therefore parks a card forever on
+    # evidence about a run that has since been superseded — the review lane first,
+    # because this check runs before its exemption. Attribute the text to the latest
+    # run before trusting it; a superseded one leaves nothing for ``blocker_auth``.
     err = _kb._lossy_text(row["last_failure_error"])
     latest_outcome = latest_run["outcome"] if latest_run is not None else None
     if (err and latest_outcome not in _RESPAWN_SUPERSEDING_OUTCOMES

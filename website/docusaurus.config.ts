@@ -97,7 +97,9 @@ const config: Config = {
   ],
 
   themeConfig: {
-    image: 'img/hermes-agent-banner.png',
+    // 1200x630 card for Open Graph / X link previews; regenerate with
+    // scripts/generate-social-card.py. The wide banner crops badly at 1.91:1.
+    image: 'img/social-card.png',
     // Algolia DocSearch (replaces @easyops-cn/docusaurus-search-local).
     // The local plugin shipped a ~16 MB client-side lunr index that every
     // visitor downloaded and hydrated before their first result; DocSearch

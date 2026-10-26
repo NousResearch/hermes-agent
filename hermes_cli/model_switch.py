@@ -1481,13 +1481,15 @@ def _creds_for_switched_provider(st: _Switch) -> Optional[ModelSwitchResult]:
         ucfg = st.user_providers.get(explicit_norm) or st.user_providers.get(st.target_provider) or {}
         # Key reads go through the per-profile secret scope (multiplexed gateway).
         ukey = _entry_configured_key(ucfg, _scoped_key_env)
-        st.validation_headers = _extra_headers_from_config(ucfg)
         try:
             st.resolve_runtime(
                 requested=st.target_provider, explicit_api_key=ukey or None, explicit_base_url=user_pdef.base_url)
             st.api_key, st.base_url = st.api_key or ukey, st.base_url or user_pdef.base_url
         except Exception:
             st.api_key, st.base_url, st.api_mode = ukey, user_pdef.base_url, ""
+        # The entry's own headers, not the resolver's: it reads the on-disk copy, which an unsaved
+        # edit may have moved to a new host (those headers belong to the previous one).
+        st.validation_headers = _extra_headers_from_config(ucfg)
     elif st.target_provider == "custom" and st.current_base_url:
         # A bare-custom session switching models stays on its endpoint (#45597). Arriving from
         # ANOTHER provider (the per-turn config sync adopting ``provider: custom``) the configured

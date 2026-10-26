@@ -68,3 +68,13 @@ export function isBrowserHostedDesktop() {
   return document.documentElement.dataset.hermesDesktopHost === 'browser' ||
     (!window.hermesDesktop && hasBrowserHostBootstrap())
 }
+
+/**
+ * The profile the renderer's gateway route starts on, before boot adopts its primary. A browser
+ * host's boot adopts the profile its server runs as, and requests that name the tab's profile can
+ * go out before that: on `default` they would name a profile a gateway launched as another one may
+ * not serve, and it refuses them (`profile_mismatch`). Native Desktop starts on `default`.
+ */
+export function initialGatewayProfile(): string {
+  return (isBrowserHostedDesktop() && browserLaunchProfile()) || 'default'
+}

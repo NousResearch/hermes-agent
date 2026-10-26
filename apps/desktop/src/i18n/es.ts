@@ -3197,6 +3197,7 @@ export const esOverrides = {
     exportNeedsHost: name => `El navegador no puede guardar un archivo de perfil. En el host de Hermes, ejecuta: hermes profile export ${name}`,
     allProfiles: 'Todos los perfiles',
     showAllProfiles: 'Mostrar todos los perfiles',
+    notServedHere: 'No se ofrece aquí',
     switchToProfile: name => `Cambiar a ${name}`,
     switchToConnection: name => `Cambiar a ${name}`,
     switchConnectionFailed: name => `No se pudo conectar a ${name}`,

@@ -2442,6 +2442,7 @@ catalog: CatalogTranslations
     exportNeedsHost: (name: string) => string
     allProfiles: string
     showAllProfiles: string
+    notServedHere: string
     switchToProfile: (name: string) => string
     switchToConnection: (name: string) => string
     switchConnectionFailed: (name: string) => string

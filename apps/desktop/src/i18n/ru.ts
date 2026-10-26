@@ -2074,6 +2074,7 @@ export const ruOverrides = {
     exportNeedsHost: name => `Браузер не может сохранить архив профиля. На хосте Hermes выполните: hermes profile export ${name}`,
     allProfiles: 'Все профили',
     showAllProfiles: 'Показать все профили',
+    notServedHere: 'Здесь не обслуживается',
     switchToProfile: name => `Переключиться на ${name}`,
     switchToConnection: name => `Переключиться на ${name}`,
     switchConnectionFailed: name => `Не удалось подключиться к ${name}`,

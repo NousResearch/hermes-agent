@@ -2773,6 +2773,7 @@ export const en: Translations = {
     exportNeedsHost: name => `The browser can't save a profile archive. On the Hermes host, run: hermes profile export ${name}`,
     allProfiles: 'All profiles',
     showAllProfiles: 'Show all profiles',
+    notServedHere: 'Not served here',
     switchToProfile: name => `Switch to ${name}`,
     switchToConnection: name => `Switch to ${name}`,
     switchConnectionFailed: name => `Could not connect to ${name}`,

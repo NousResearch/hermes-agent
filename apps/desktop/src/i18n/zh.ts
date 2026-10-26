@@ -2692,6 +2692,7 @@ export const zhOverrides = {
     exportNeedsHost: name => `浏览器无法保存配置档案归档。请在 Hermes 主机上运行：hermes profile export ${name}`,
     allProfiles: '全部配置档案',
     showAllProfiles: '显示全部配置档案',
+    notServedHere: '此处未提供',
     switchToProfile: name => `切换到 ${name}`,
     switchToConnection: name => `切换到 ${name}`,
     switchConnectionFailed: name => `无法连接到 ${name}`,

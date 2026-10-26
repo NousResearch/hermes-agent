@@ -1782,6 +1782,7 @@ export const jaOverrides = {
     exportNeedsHost: name => `ブラウザーではプロファイルのアーカイブを保存できません。Hermes ホストで次を実行してください: hermes profile export ${name}`,
     allProfiles: 'すべてのプロファイル',
     showAllProfiles: 'すべてのプロファイルを表示',
+    notServedHere: 'ここでは提供されていません',
     switchToProfile: name => `${name} に切り替え`,
     switchToConnection: name => `${name} に切り替え`,
     switchConnectionFailed: name => `${name} に接続できませんでした`,

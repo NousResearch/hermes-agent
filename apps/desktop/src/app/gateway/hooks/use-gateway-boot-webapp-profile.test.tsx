@@ -227,3 +227,19 @@ it('picking a profile the gateway does not serve is refused with the reason and 
   expect(FakeWebSocket.instances).toHaveLength(1)
   expect(mints.map(url => url.searchParams.get('profile'))).toEqual([null])
 })
+
+it('a refused pick is final: the store does not redial the profile the gateway does not serve', async () => {
+  installed = ['default', 'research', 'solo']
+  served = ['default', 'research']
+  await bootWebappTab('/?profile=research#/')
+  const dials = vi.spyOn(window.hermesDesktop!, 'getGatewayWsUrl')
+
+  await expect(ensureGatewayProfile('solo')).rejects.toThrow('This gateway does not serve profile "solo"')
+  // Well past the redial ladder's ceiling: every scheduled redial would have run by now.
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(120_000)
+  })
+
+  expect(dials.mock.calls.filter(([profile]) => profile === 'solo')).toHaveLength(1)
+  expect(FakeWebSocket.instances).toHaveLength(1)
+})

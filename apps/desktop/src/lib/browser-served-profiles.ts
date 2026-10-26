@@ -10,6 +10,18 @@ const SERVED_SET_READ_TIMEOUT_MS = 5_000
 const profileKey = (profile?: null | string) => profile?.trim() || 'default'
 
 /**
+ * The tab refused to open a socket for a profile its gateway does not serve. No redial can change
+ * the answer, since serving the profile takes a change on the gateway, so the store parks the dial
+ * on it until the next explicit open asks again.
+ */
+export class UnservedProfileError extends Error {
+  constructor(readonly profile: string) {
+    super(`This gateway does not serve profile "${profile}", so this tab cannot open it.`)
+    this.name = 'UnservedProfileError'
+  }
+}
+
+/**
  * The profiles the gateway serving this tab answers for. `/api/profiles` lists every installed
  * profile, but the tab's one socket reaches only the gateway's own profile and, on a multiplexer,
  * the rest of its served set (`/api/status` `gateway_shared_with`). A standalone or parked profile,

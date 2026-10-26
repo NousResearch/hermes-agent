@@ -2,7 +2,7 @@ import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 
 import type { HermesApiRequest, HermesConnection } from '@/global'
 import { webappSignInRequired } from '@/lib/browser-launch-session'
-import { createServedProfiles } from '@/lib/browser-served-profiles'
+import { createServedProfiles, UnservedProfileError } from '@/lib/browser-served-profiles'
 import {
   type AudioSocketPath,
   type BrowserBootstrap,
@@ -108,7 +108,7 @@ export function createBrowserConnectionBridge({ api, bootstrap }: BrowserConnect
   const getGatewayWsUrl = async (profile?: null | string) => {
     // Its ticket would mint, then the gateway would close the dial (4403) without a reason to show.
     if (!reachesSocket(profile)) {
-      throw new Error(`This gateway does not serve profile "${profile?.trim()}", so this tab cannot open it.`)
+      throw new UnservedProfileError((profile ?? '').trim())
     }
 
     try {

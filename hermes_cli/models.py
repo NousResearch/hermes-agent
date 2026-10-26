@@ -2015,29 +2015,15 @@ def _credential_fingerprint(provider: str) -> str:
             + json.dumps(provider_cfg.get("extra_headers", {}), sort_keys=True, default=str),
         ]
 
-    def _mtime_part(label: str, path) -> None:
-        try:
-            parts.append(f"{label}@{os.stat(path).st_mtime_ns}")
-        except FileNotFoundError:
-            parts.append(f"{label}@missing")
-        except Exception:
-            pass
-
     if provider == "openai-codex":
         from hermes_cli.codex_models import codex_catalog_credential_identity
 
         parts.append(f"codex_identity={codex_catalog_credential_identity()}")
     else:
-        try:
-            from hermes_constants import get_hermes_home
-            for rel in ("auth.json", "credentials.json"):
-                _mtime_part(rel, get_hermes_home() / rel)
-        except Exception:
-            pass
-        for rel in ("~/.codex/auth.json", "~/.claude/.credentials.json",
-                    "~/.config/github-copilot/hosts.json", "~/.minimax/credentials.json"):
-            path = os.path.expanduser(rel)
-            _mtime_part(path, path)
+        # Hermes auth store + ONLY the external token files this provider's fetch can read; a
+        # Claude Code token refresh must not evict the Copilot row (#139795).
+        from hermes_cli.models_credential_files import append_credential_file_parts
+        append_credential_file_parts(parts, provider)
 
     blob = "|".join(parts).encode("utf-8", errors="replace")
     # blake2b, not sha256: fingerprint only (collisions = a harmless cache miss), and CodeQL's

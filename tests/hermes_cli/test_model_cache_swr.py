@@ -277,3 +277,69 @@ class TestCorruptCacheRowDegradation:
             out = mod.cached_provider_model_ids("openrouter")
         assert out == ["live-model"]
         live.assert_called_once()
+
+
+class TestExternalCredentialFileScoping:
+    """Rotating external credential stores (Claude Code's ``~/.claude/.credentials.json``, the
+    Copilot CLI's ``~/.copilot/config.json``) only fingerprint the provider that reads them, so an
+    unrelated token refresh never evicts another provider's cached catalog (#139795, #129094)."""
+
+    @staticmethod
+    def _isolate(tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HOME", str(tmp_path))
+        for var in ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "ANTHROPIC_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
+        (tmp_path / "auth.json").write_text('{"version": 1, "providers": {}}', encoding="utf-8")
+
+    @staticmethod
+    def _write(path, mtime_ns):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}", encoding="utf-8")
+        os.utime(path, ns=(mtime_ns, mtime_ns))
+
+    def test_claude_code_token_refresh_keeps_copilot_fingerprint(self, tmp_path, monkeypatch):
+        import hermes_cli.models as mod
+
+        self._isolate(tmp_path, monkeypatch)
+        claude_creds = tmp_path / ".claude" / ".credentials.json"
+        self._write(claude_creds, 1_000_000_000)
+        before = {p: mod._credential_fingerprint(p) for p in ("copilot", "anthropic", "openrouter")}
+
+        self._write(claude_creds, 2_000_000_000)  # Claude Code rotated its OAuth token
+        after = {p: mod._credential_fingerprint(p) for p in before}
+
+        assert after["anthropic"] != before["anthropic"]  # the reader of that file re-keys
+        assert after["copilot"] == before["copilot"]
+        assert after["openrouter"] == before["openrouter"]
+
+    def test_copilot_cli_login_only_rekeys_copilot(self, tmp_path, monkeypatch):
+        import hermes_cli.models as mod
+
+        self._isolate(tmp_path, monkeypatch)
+        cli_config = tmp_path / ".copilot" / "config.json"
+        self._write(cli_config, 1_000_000_000)
+        before = {p: mod._credential_fingerprint(p) for p in ("copilot", "copilot-acp", "anthropic")}
+
+        self._write(cli_config, 2_000_000_000)  # `copilot login` switched accounts
+        after = {p: mod._credential_fingerprint(p) for p in before}
+
+        assert after["copilot"] != before["copilot"]
+        assert after["copilot-acp"] != before["copilot-acp"]
+        assert after["anthropic"] == before["anthropic"]
+
+    def test_non_blocking_picker_keeps_copilot_row_across_claude_refresh(self, tmp_path, monkeypatch):
+        import hermes_cli.models as mod
+
+        self._isolate(tmp_path, monkeypatch)
+        claude_creds = tmp_path / ".claude" / ".credentials.json"
+        self._write(claude_creds, 1_000_000_000)
+        live = ["claude-opus-5.5", "claude-opus-5", "gpt-6-luna"]
+        monkeypatch.setattr(mod, "_provider_models_cache_path", lambda: tmp_path / "provider_models_cache.json")
+        mod._save_provider_models_cache({"copilot": {
+            "fp": mod._credential_fingerprint("copilot"), "at": time.time(), "models": live}})
+
+        self._write(claude_creds, 2_000_000_000)
+        with patch.object(mod, "_spawn_swr_refresh") as spawn:
+            assert mod.cached_provider_model_ids("copilot", non_blocking=True) == live
+        spawn.assert_not_called()

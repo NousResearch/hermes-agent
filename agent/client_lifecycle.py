@@ -889,9 +889,10 @@ class ClientLifecycleMixin:
             return False
         # A key the route was bound with explicitly (fallback entry api_key/key_env) is the operator's choice:
         # re-resolving globally would swap in the ~/.claude OAuth token and silently undo the fallback.
-        # An explicit OAuth token is still the rotating kind, so it keeps refreshing below.
+        # An explicit OAuth token is still the rotating kind, so it keeps refreshing below. The skip only
+        # applies while that explicit key is the one in use, so any restore path that moves off it re-enables refresh.
         explicit_key = getattr(self, "_explicit_route_api_key", None)
-        if explicit_key and not self._anthropic_oauth_flag(explicit_key):
+        if explicit_key and explicit_key == self._anthropic_api_key and not self._anthropic_oauth_flag(explicit_key):
             return False
         # Off the official hosts (a /anthropic proxy the resolver accepts, or a URL-bearing alias,
         # #28660) rotate only a credential the endpoint already holds: swapping a custom key for

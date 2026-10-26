@@ -15,10 +15,10 @@ from typing import Any, Dict, Iterable, Iterator, List, Literal, Optional, Tuple
 from hermes_cli.timefmt import coerce_epoch
 
 
-ExportFormat = Literal["jsonl", "markdown"]
+ExportFormat = Literal["jsonl", "markdown", "csv"]
 ExportOnly = Literal["user-prompts"]
 
-_EXPORT_FORMATS = {"jsonl": "jsonl", "markdown": "markdown", "md": "markdown"}
+_EXPORT_FORMATS = {"jsonl": "jsonl", "markdown": "markdown", "md": "markdown", "csv": "csv"}
 _ONLY_ALIASES = {"user", "prompts", "user-prompts", "user_prompts"}
 
 
@@ -49,6 +49,9 @@ def render_sessions_export(sessions: Iterable[dict[str, Any]], *, fmt: str = "js
     session_list = list(sessions)
     export_format = normalize_export_format(fmt)
     prompts_only = normalize_export_only(only) == "user-prompts"
+    if export_format == "csv":
+        from hermes_cli.session_export_csv import render_csv_export
+        return render_csv_export(session_list, prompts_only=prompts_only)
     if export_format == "jsonl":
         rows = iter_user_prompt_records(session_list) if prompts_only else session_list
         lines = [json.dumps(row, ensure_ascii=False) for row in rows]

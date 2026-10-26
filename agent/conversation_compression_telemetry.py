@@ -146,6 +146,10 @@ def _emit_compression_attempt_telemetry(
         finish_compression_attempt(
             commit_status, payload.get("failure_class"), getattr(agent.context_compressor, "context_length", None), agent=agent,
         )
+        if payload.get("prepared_summary") and commit_status != "committed":
+            from hermes_cli.observability.shared_metrics_prepared_compaction import record_prepared_compaction
+
+            record_prepared_compaction("compaction_failed", failure_class=payload.get("failure_class") or "")
     except Exception as exc:
         logger.debug("failed to emit compression attempt telemetry: %s", exc, exc_info=True)
 

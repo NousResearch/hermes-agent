@@ -75,6 +75,26 @@ _SUMMARY_CALL_TELEMETRY = (
 
 # Per message: (structure, durable uid or None, text digest).
 _Identity = tuple[str, Optional[str], str]
+# Why a compaction stopped waiting on a running pass; the pass then records it as its cancel reason.
+_WAIT_CANCEL_REASONS = frozenset({"wait_timeout", "host_cancelled"})
+
+
+class _Miss(str):
+    """A splice-miss reason: the log text, plus the closed code opt-in shared metrics count."""
+
+    code: str
+
+    def __new__(cls, code: str, text: str) -> _Miss:
+        miss = super().__new__(cls, text)
+        miss.code = code
+        return miss
+
+
+def _record(event: str, **dims: Any) -> None:
+    """Count one event in opt-in shared metrics (a no-op when off; never raises)."""
+    from hermes_cli.observability.shared_metrics_prepared_compaction import record_prepared_compaction
+
+    record_prepared_compaction(event, **dims)
 
 
 @dataclass(frozen=True)
@@ -102,8 +122,14 @@ class _PendingPass:
         self.done = threading.Event()
         # Set once nothing can use the pass any more; its summary stream is closed (the aux hard-cancel path).
         self.cancelled = threading.Event()
+        self.cancel_reason = "superseded"  # set by whoever cancels first; the pass records it
         self.on_progress: Optional[Callable[[], None]] = None
         self.on_reading: Optional[Callable[[float], None]] = None
+
+    def cancel(self, reason: str) -> None:
+        if not self.cancelled.is_set():
+            self.cancel_reason = reason
+        self.cancelled.set()
 
     def touch(self) -> None:
         hook = self.on_progress
@@ -150,25 +176,25 @@ def prefix_identities(messages: list[dict[str, Any]], end: int) -> tuple[_Identi
 
 def _mismatch(
     window: _Window, messages: list[dict[str, Any]], session_id: str, start: int, end: int,
-) -> Optional[str]:
+) -> Optional[_Miss]:
     """Why *window* cannot splice into the planned window ``[start, end)`` of ``messages``, or None."""
     if window.session_id != session_id:
-        return "another session"
+        return _Miss("other_session", "another session")
     if window.compress_start != start:
-        return f"head moved ({window.compress_start} -> {start})"
+        return _Miss("head_moved", f"head moved ({window.compress_start} -> {start})")
     if window.compress_end > end:
-        return f"prepared boundary {window.compress_end} is inside the protected tail (cut {end})"
+        return _Miss("inside_tail", f"prepared boundary {window.compress_end} is inside the protected tail (cut {end})")
     if window.compress_end > len(messages):
-        return "transcript shorter than the prepared window"
+        return _Miss("transcript_shorter", "transcript shorter than the prepared window")
     for idx, ((structure, uid, digest), msg) in enumerate(zip(window.identities, messages)):
         now_structure, now_uid, now_digest = _message_identity(msg)
         if now_structure != structure:
-            return f"message {idx} changed shape"
+            return _Miss("shape_changed", f"message {idx} changed shape")
         if uid and now_uid:
             if uid != now_uid:
-                return f"message {idx} is a different message (rewound or branched)"
+                return _Miss("rewound", f"message {idx} is a different message (rewound or branched)")
         elif digest != now_digest:
-            return f"message {idx} changed and has no durable id to vouch for it"
+            return _Miss("text_changed", f"message {idx} changed and has no durable id to vouch for it")
     return None
 
 
@@ -207,7 +233,9 @@ class PreparedCompaction:
         with self._lock:
             entry, pending, self._entry, self._pending = self._entry, self._pending, None, None
         if pending is not None:
-            pending.cancelled.set()
+            pending.cancel("session_boundary")
+        if entry is not None or pending is not None:
+            _record("discarded", reason="session_boundary")
         if entry is not None:
             logger.info(
                 "prepared compaction: dropped window=%d-%d reason=%s", entry.compress_start, entry.compress_end, reason,
@@ -218,6 +246,7 @@ class PreparedCompaction:
         if not self._needs_provider_context:
             self._needs_provider_context = True
             logger.info("prepared compaction: off for this agent (memory provider supplies compaction context)")
+            _record("auto_disabled", reason="provider_context")
 
     def take(
         self, messages: list[dict[str, Any]], session_id: str, start: int, end: int, *, eligible: bool,
@@ -228,15 +257,22 @@ class PreparedCompaction:
         with self._lock:
             entry, pending = self._entry, self._pending
             self._entry = None
-        reason = None if eligible else "fresh summary required"
+        reason = None if eligible else _Miss(
+            "provider_context" if self._needs_provider_context else "fresh_required", "fresh summary required",
+        )
         if reason is None and entry is not None:
             reason = _mismatch(entry, messages, session_id, start, end)
+        waited = None
         try:
             if eligible and (entry is None or reason is not None):
                 if pending is not None and _mismatch(pending.window, messages, session_id, start, end) is None:
+                    wait_started = time.monotonic()
                     entry, reason = self._await(pending)
+                    waited = time.monotonic() - wait_started
                 elif entry is None:
-                    reason = "running pass does not fit" if pending is not None else "no candidate"
+                    reason = _Miss(
+                        "running_not_fit", "running pass does not fit",
+                    ) if pending is not None else _Miss("none", "no candidate")
         finally:
             with self._lock:
                 if self._pending is pending:
@@ -244,17 +280,21 @@ class PreparedCompaction:
                 # A pass that published after the snapshot above planned on the pre-compaction transcript.
                 self._entry = None
             if pending is not None:
-                pending.cancelled.set()  # done already, or superseded: stop paying for it
+                # Done already, or superseded: stop paying for it.
+                code = getattr(reason, "code", None)
+                pending.cancel(code if code in _WAIT_CANCEL_REASONS else "superseded")
         if reason is not None or entry is None:
             if entry is not None or pending is not None:
                 logger.info("prepared compaction: splice miss reason=%s", reason)
+                _record("discarded", reason=reason.code, wait_seconds=waited)
             return None
         logger.info(
             "prepared compaction: splice hit window=%d-%d (fresh cut %d)", entry.compress_start, entry.compress_end, end,
         )
+        _record("used", reason="aux_fallback_main" if entry.telemetry.get("fallback_used") else None, wait_seconds=waited)
         return entry
 
-    def _await(self, pending: _PendingPass) -> tuple[Optional[PreparedSummary], Optional[str]]:
+    def _await(self, pending: _PendingPass) -> tuple[Optional[PreparedSummary], Optional[_Miss]]:
         """Wait on the compacting thread for *pending*: what it published, or None and why (the host's
         deadline, or the compression aux timeout without one; a host cancel; a discard; a failed pass).
         Meanwhile the pass's streamed progress and local prompt reading feed this thread's hooks, so the
@@ -280,19 +320,19 @@ class PreparedCompaction:
                 max(0.0, min(_WAIT_POLL_SECONDS, (_current_aux_stream_deadline() or fallback) - time.monotonic())),
             ):
                 if pending.cancelled.is_set():
-                    return None, "running pass discarded"
+                    return None, _Miss("discarded_while_waiting", "running pass discarded")
                 if cancel_check is not None and _captured_aux_cancel_requested(cancel_check):
-                    return None, "host cancelled the wait"
+                    return None, _Miss("host_cancelled", "host cancelled the wait")
                 if time.monotonic() >= (_current_aux_stream_deadline() or fallback):
-                    return None, "running pass did not finish in time"
+                    return None, _Miss("wait_timeout", "running pass did not finish in time")
         finally:
             pending.on_progress = pending.on_reading = None
         if pending.cancelled.is_set():
-            return None, "running pass discarded"
+            return None, _Miss("discarded_while_waiting", "running pass discarded")
         with self._lock:
             entry, self._entry = self._entry, None
         if entry is None or entry.identities != pending.window.identities:
-            return None, "running pass failed"
+            return None, _Miss("pass_failed_while_waiting", "running pass failed")
         return entry, None
 
     def _blocked(self, agent: Any, compressor: Any, origin: str) -> bool:
@@ -342,6 +382,7 @@ class PreparedCompaction:
             window = _Window(compressor._session_id, start, end, prefix_identities(working, end))
             # Never queue threads that retain transcripts while every slot is busy.
             if not _slots.acquire(blocking=False):
+                _record("skipped_busy", origin=origin)
                 return None
             with self._lock:
                 if self._pending is not None or self._entry is not None:
@@ -355,6 +396,7 @@ class PreparedCompaction:
                 self._run_pass, name="compaction-prepare", args=(worker, copy.deepcopy(turns), focus, token, origin),
             )
             thread.start()
+            _record("pass_started", origin=origin)
             return thread
         except Exception:
             if token is not None:
@@ -364,6 +406,7 @@ class PreparedCompaction:
                 token.done.set()
                 _slots.release()
             logger.debug("prepared compaction: maybe_prepare failed", exc_info=True)
+            _record("internal_error", origin=origin, failure_class="exception")
             return None
 
     def _run_pass(
@@ -375,6 +418,7 @@ class PreparedCompaction:
 
         window = token.window
         entry: Optional[PreparedSummary] = None
+        event, failure_class = "pass_cancelled", None  # a published summary records pass_completed instead
         started = time.monotonic()
         try:
             logger.info(
@@ -401,13 +445,17 @@ class PreparedCompaction:
             else:
                 logger.warning("prepared compaction: pass failed after %.1fs: %s", time.monotonic() - started,
                                worker._last_summary_error or "summariser returned nothing")
+                event, failure_class = "pass_failed", _pass_failure_class(worker)
         except AuxiliaryExplicitCancellation:
             # The closed stream raises a BaseException; it must not reach the thread's excepthook (stderr).
             logger.info("prepared compaction: pass cancelled after %.1fs (superseded)", time.monotonic() - started)
         except Exception:
             logger.warning("prepared compaction: pass crashed", exc_info=True)
+            event, failure_class = "internal_error", "exception"
         finally:
             with self._lock:
+                if entry is not None and self._pending is token:
+                    event = "pass_completed"
                 if self._pending is token:
                     self._pending = None
                     if entry is not None:
@@ -418,6 +466,18 @@ class PreparedCompaction:
                         )
             token.done.set()
             _slots.release()
+            _record(
+                event, origin=origin, reason=token.cancel_reason if event == "pass_cancelled" else None,
+                failure_class=failure_class,
+            )
+
+
+def _pass_failure_class(worker: Any) -> str:
+    """The class an inline attempt logs for this failed summary call: a terminal failure first."""
+    from agent.context_compressor import _TERMINAL_SUMMARY_FAILURES
+
+    terminal = next((cls for flag, cls, _ in _TERMINAL_SUMMARY_FAILURES if getattr(worker, flag, False)), None)
+    return terminal or (worker._active_compression_telemetry or {}).get("failure_class") or "summary_generation_failed"
 
 
 def adopt(compressor: Any, prepared: PreparedSummary) -> None:

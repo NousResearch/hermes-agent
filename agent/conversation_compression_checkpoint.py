@@ -177,3 +177,28 @@ def _prune_would_have_run(compressor: Any, current_tokens: int) -> bool:
     except Exception:
         logger.debug("would_proactively_prune() failed; counting the withheld prune", exc_info=True)
         return True
+
+
+def _checkpoint_gate_withholds_turn_hook(agent: Any, engine: Any) -> bool:
+    """Whether the armed gate withholds ``on_turn_complete`` from ``engine`` this turn.
+
+    The init refuse fires once, but the engine slot and the hook are plain attributes a later code
+    path can rebind (on_session_start, a class monkeypatch, a rebound context_compressor), so the
+    verdict is re-resolved per turn. Withheld rather than raised: the dispatch swallows exceptions.
+    An engine declaring ``compacts_outside_compress = False`` keeps observing turns.
+    """
+    try:
+        from agent.context_engine import engine_compacts_outside_compress
+
+        unsafe = engine_compacts_outside_compress(engine)[0]
+    except Exception:
+        # Fail closed: a failed resolution (the lazy import, a raising descriptor on the engine)
+        # must not read as "safe".
+        logger.debug("compaction-authority resolution failed; withholding on_turn_complete", exc_info=True)
+        unsafe = True
+    if unsafe:
+        _record_checkpoint_gate_suppression(
+            agent, "the context engine's on_turn_complete hook (an engine that only observes may "
+            "declare compacts_outside_compress = False)",
+        )
+    return unsafe

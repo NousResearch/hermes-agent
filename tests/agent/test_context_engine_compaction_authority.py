@@ -217,3 +217,124 @@ def test_refuse_message_survives_a_hostile_name_property():
         refuse(True, _HostileNameEngine())
     assert "_HostileNameEngine" in str(excinfo.value)
     assert "name getter exploded" not in str(excinfo.value)
+
+
+# --- Per-turn gate at the on_turn_complete dispatch (conversation_loop) ---------------
+
+
+def _turn_agent(engine, *, checkpoint_required: bool):
+    return SimpleNamespace(context_compressor=engine, compression_checkpoint_required=checkpoint_required,
+                           session_id="s1")
+
+
+def _counting_hook(calls):
+    """Counts instead of asserting: the dispatch swallows exceptions."""
+
+    def _hook(messages, usage=None, **meta):
+        calls.append(messages)
+
+    return _hook
+
+
+def _notify(agent):
+    import logging
+
+    from agent.conversation_loop import _notify_context_engine_turn_complete
+
+    _notify_context_engine_turn_complete(agent, [{"role": "user", "content": "hi"}], usage=None,
+                                         logger=logging.getLogger("test"))
+
+
+def test_on_turn_complete_attached_after_init_is_suppressed_when_checkpoint_required():
+    """The bypass window: an engine that passed the init refuse grows ``on_turn_complete``
+    as an instance attribute; only the per-turn gate can catch it."""
+    compress_only, _turn_complete = _engine_stubs()
+    engine = compress_only()
+    agent = _init_agent_with_engine(engine, checkpoint_required=True)
+    calls = []
+    engine.on_turn_complete = _counting_hook(calls)
+
+    _notify(agent)
+
+    assert calls == []
+    assert agent._checkpoint_gate_suppression_count == 1
+
+
+def test_on_turn_complete_still_dispatches_when_gate_is_off():
+    """Sabotage control: gate off, a late-attached hook is still dispatched."""
+    compress_only, _turn_complete = _engine_stubs()
+    engine = compress_only()
+    agent = _init_agent_with_engine(engine, checkpoint_required=False)
+    calls = []
+    engine.on_turn_complete = _counting_hook(calls)
+
+    _notify(agent)
+
+    assert len(calls) == 1
+
+
+def test_declared_observer_engine_still_receives_on_turn_complete():
+    _compress_only, turn_complete = _engine_stubs()
+    calls = []
+
+    class _DeclaredObserver(turn_complete):
+        compacts_outside_compress = False
+
+        def on_turn_complete(self, messages, usage=None, **kwargs):
+            calls.append(messages)
+
+    agent = _turn_agent(_DeclaredObserver(), checkpoint_required=True)
+    _notify(agent)
+
+    assert len(calls) == 1
+    assert getattr(agent, "_checkpoint_gate_suppression_count", 0) == 0
+
+
+def test_on_turn_complete_suppression_logs_once(caplog, monkeypatch):
+    """One warning per process; the shared counter keeps rising every turn."""
+    import logging
+
+    from agent import conversation_compression_checkpoint as gate
+
+    monkeypatch.setattr(gate, "_checkpoint_gate_warned", set())
+    _compress_only, turn_complete = _engine_stubs()
+    calls = []
+
+    class _CompactingEngine(turn_complete):
+        def on_turn_complete(self, messages, usage=None, **kwargs):
+            calls.append(messages)
+
+    agent = _turn_agent(_CompactingEngine(), checkpoint_required=True)
+    with caplog.at_level(logging.WARNING, logger="agent.conversation_compression"):
+        _notify(agent)
+        _notify(agent)
+
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING and "checkpoint_required" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "on_turn_complete" in warnings[0].getMessage()
+    assert "halt" in warnings[0].getMessage()
+    assert calls == []
+    assert agent._checkpoint_gate_suppression_count == 2
+
+
+def test_turn_gate_fails_closed_when_the_resolver_cannot_be_imported():
+    """The resolver import is lazy (cycle with agent.context_engine), so it is a failure mode
+    of its own. Negative probe (by hand, reverted): ``unsafe = False`` in the except branch
+    fails this test with the hook dispatched."""
+    import sys
+    from unittest.mock import patch
+
+    _compress_only, turn_complete = _engine_stubs()
+    calls = []
+
+    class _CompactingEngine(turn_complete):
+        def on_turn_complete(self, messages, usage=None, **kwargs):
+            calls.append(messages)
+
+    agent = _turn_agent(_CompactingEngine(), checkpoint_required=True)
+    # A None entry in sys.modules makes the lazy import raise ImportError.
+    with patch.dict(sys.modules, {"agent.context_engine": None}):
+        _notify(agent)
+
+    assert calls == []
+    assert agent._checkpoint_gate_suppression_count == 1

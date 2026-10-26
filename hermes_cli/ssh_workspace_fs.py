@@ -34,12 +34,12 @@ class _SshFsConfig:
     timeout: int
 
 
-# ``_CACHE_LOCK`` guards only the dicts; a dial holds just its profile's lock, so one unreachable host
-# cannot stall file requests on every other SSH profile. Profiles on one user@host:port share a
-# control socket, so that endpoint's lock also covers each dial and cleanup: one profile's cleanup
-# would otherwise unlink the socket another profile's dial just created. At most one endpoint lock
-# is held at a time, always inside the profile's lock.
-_CACHE_LOCK = threading.RLock()
+# ``_CACHE_LOCK`` guards only the dicts and is never held across a dial or cleanup, so one
+# unreachable host cannot stall file requests on every other SSH profile. A dial or cleanup holds
+# its profile's lock plus that endpoint's lock: profiles on one user@host:port share a control
+# socket, and one profile's cleanup would otherwise unlink the socket another profile's dial just
+# created. At most one endpoint lock is held at a time, always inside the profile's lock.
+_CACHE_LOCK = threading.Lock()
 _BACKENDS: dict[str, tuple[_SshFsConfig, SshWorkspaceFs]] = {}
 _DIAL_LOCKS: dict[str, threading.Lock] = {}
 _ENDPOINT_LOCKS: dict[tuple[str, str, int], threading.Lock] = {}

@@ -414,7 +414,20 @@ FAIL = 0
 
 def chk(label, expect, args, cwd=None, env=None):
     global FAIL
-    r = subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True, timeout=20)
+    try:
+        r = subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True, timeout=20)
+    except subprocess.TimeoutExpired:
+        # A hang is a denial too: the forbidden op never completed, so it
+        # certainly did not succeed. This host's kernel blocks
+        # ``remount,bind,rw`` by hanging (state D) rather than returning
+        # EACCES/EPERM, so the timeout must be classified, not raised --
+        # an uncaught TimeoutExpired would abort the probe before it can
+        # report the remaining checks.
+        denied = (expect == "deny")
+        print(("PASS  " if denied else "FAIL  ") + label + " :: timed out (blocked)")
+        if not denied:
+            FAIL = 1
+        return
     denied = (
         r.returncode != 0
         or "Read-only file system" in (r.stderr + r.stdout)
@@ -450,8 +463,11 @@ chk("git branch -f canon", "deny",
 chk("worktree add", "deny", ["git", "-C", PROD, "worktree", "add", "/tmp/esc-wt", "HEAD"])
 chk("worktree add -B", "deny", ["git", "-C", PROD, "worktree", "add", "-B", "stray", "/tmp/esc-wt-b", "HEAD"])
 # Nested namespace escape: remounting prod rw from inside a child userns is locked.
+# ``timeout 10`` bounds it: on this host the kernel blocks the remount by
+# hanging (state D) rather than returning EACCES/EPERM, so without the
+# bound the check would sit until the harness's own 20s timeout.
 chk("nested remount rw", "deny", ["bash", "-c",
-    "unshare -Urm sh -c 'mount -o remount,bind,rw '%s''" % PROD])
+    "timeout 10 unshare -Urm sh -c 'mount -o remount,bind,rw '%s''" % PROD])
 # Allowed: read the production tree.
 chk("read prod tree", "allow", ["cat", os.path.join(PROD, "app.py")])
 # Allowed: commit inside the worker's own worktree.

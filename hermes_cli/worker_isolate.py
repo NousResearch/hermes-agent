@@ -100,6 +100,11 @@ _VALID_MODES = (MODE_OFF, MODE_WARN, MODE_ENFORCE)
 # Environment kill switch (sets the floor for any non-off config).
 _KILL_SWITCH = "HERMES_WORKER_ISOLATION"
 
+# How long a single ``mount`` call may take before we treat it as failed.
+# A mount that exceeds this is hung in uninterruptible sleep (state D) on
+# this host -- see ``_mount`` -- and must not block the worker spawn.
+_MOUNT_TIMEOUT_SECONDS = 15
+
 
 @dataclass(frozen=True)
 class IsolationConfig:
@@ -208,7 +213,7 @@ def _userns_available() -> bool:
             timeout=5,
             stdin=_sp.DEVNULL,
         ).returncode
-    except Exception:
+    except Exception:  # health: allow BLE001 -- a failed userns probe means "unavailable"; any probe error must read as unavailable rather than crash the caller
         rc = 1
     _USERN_PROBE = rc == 0
     return _USERN_PROBE
@@ -227,7 +232,7 @@ def load_configured_isolation_mode() -> Optional[str]:
     try:
         from hermes_cli.config import load_config_readonly
         raw = (load_config_readonly() or {}).get("kanban", {}).get("worker_isolation")
-    except Exception:
+    except Exception:  # health: allow BLE001 -- an unreadable config must read as "unset" so the resolver's default-mode path runs
         return None
     if raw is None:
         return None
@@ -634,7 +639,7 @@ def _worker_branch_ref_dir(agent_home: str, worktree: str) -> Optional[str]:
         # containing ``gitdir: <path>``. The real HEAD lives at
         # ``<path>/HEAD``.
         try:
-            line = open(worktree_git, "r").read().strip()
+            line = open(worktree_git, "r", encoding="utf-8").read().strip()
         except OSError:
             return None
         if not line.startswith("gitdir:"):
@@ -650,7 +655,7 @@ def _worker_branch_ref_dir(agent_home: str, worktree: str) -> Optional[str]:
     if not head_path or not os.path.isfile(head_path):
         return None
     try:
-        head = open(head_path, "r").read().strip()
+        head = open(head_path, "r", encoding="utf-8").read().strip()
     except OSError:
         return None
     # Detached HEAD (``<sha>``) -- no branch ref dir to carve out.
@@ -710,7 +715,7 @@ def _agent_home_branch_ref_dir(agent_home: str) -> Optional[str]:
     if not os.path.isfile(head_path):
         return None
     try:
-        head = open(head_path, "r").read().strip()
+        head = open(head_path, "r", encoding="utf-8").read().strip()
     except OSError:
         return None
     if not head.startswith("ref:"):
@@ -740,13 +745,35 @@ def _agent_home_branch_ref_dir(agent_home: str) -> Optional[str]:
 
 
 def _mount(args: List[str]) -> int:
-    """Run ``mount <args>`` and return 0 on success, 1 on failure."""
+    """Run ``mount <args>`` and return 0 on success, 1 on failure.
+
+    The timeout is load-bearing, not defensive boilerplate: on this host the
+    kernel blocks a ``remount,bind,*`` on a bind mount by hanging in
+    uninterruptible sleep (process state D) rather than returning an error
+    (measured 2026-10-26, t_4722df6f). A ``mount`` without a timeout would
+    therefore hang the launcher forever and the worker would never start --
+    the exact failure this module exists to prevent. The launcher now uses
+    the single-step ``-o bind,ro`` form, which does not hang, but the
+    timeout keeps a future mount form from hanging the dispatcher.
+    """
     import subprocess as _sp
     binary = shutil.which("mount") or "/usr/bin/mount"
     try:
-        return _sp.call([binary, *args], stdin=_sp.DEVNULL, stdout=_sp.DEVNULL, stderr=_sp.PIPE)
+        completed = _sp.run(
+            [binary, *args],
+            stdin=_sp.DEVNULL,
+            stdout=_sp.DEVNULL,
+            stderr=_sp.PIPE,
+            timeout=_MOUNT_TIMEOUT_SECONDS,
+        )
     except FileNotFoundError:
         return 1
+    except _sp.TimeoutExpired:
+        # A hung mount is a failed mount. Report it as a failure so the
+        # launcher takes its documented error exit path instead of
+        # blocking the worker spawn indefinitely.
+        return 1
+    return completed.returncode
 
 
 # ----------------------------------------------------------------------

@@ -3720,7 +3720,7 @@ def _cron_isolation_argv(dispatch_argv, repo_root):
             load_configured_isolation_mode,
             resolve_isolation_mode,
         )
-    except Exception as exc:
+    except Exception as exc:  # health: allow BLE001 -- an import failure must never crash the cron loop; the warning below carries the reason
         # Import failure (e.g. very early bootstrap) -- never crash the
         # cron loop on a missing helper; spawn unwrapped and let the
         # dispatcher's own log capture the issue.

@@ -738,7 +738,10 @@ def _run_setup_wizard_impl(args):
         label, runner = _FIRST_TIME_MODES[setup_mode]
         if runner is not None:
             from hermes_cli import setup_quick
-            _run_setup_steps([(label, lambda: getattr(setup_quick, runner)(config, hermes_home, is_existing))])
+            # Quick Setup offers to keep a model the import brought (Full setup acknowledges it below).
+            run_args = (config, hermes_home, is_existing) + (
+                (imported_from,) if runner == "_run_first_time_quick_setup" else ())
+            _run_setup_steps([(label, lambda: getattr(setup_quick, runner)(*run_args))])
             _record_setup_completed(config)
             return
     _run_full_setup(config, hermes_home, is_existing=is_existing, imported_from=imported_from)

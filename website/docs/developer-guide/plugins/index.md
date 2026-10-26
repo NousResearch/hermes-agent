@@ -86,9 +86,12 @@ them. An enabled package may provide immediate `skills/*/SKILL.md` directories
 and stdio MCP servers from root `mcp.json`. Skills are read-only, namespaced,
 and loaded through `skills_list` plus `skill_view`. MCP commands are passed as
 one executable token with a separate argument list, never through a shell.
-Use `skills_list` to discover the full qualified skill name. Portable skill
-namespaces have the deterministic form `agent-plugin-<slug>-<hash>`, derived
-from the discovered plugin key so sanitized names cannot collide. A portable
+A portable package's skills are named after the plugin, `<plugin-name>:<skill>`
+(`blender:blender`), the same form as a native plugin's; when two loaded plugins
+would register the same qualified name, the second one's skill is skipped with a
+warning naming both. Its data directory, `plugin-data/agent-plugin-<slug>-<hash>`,
+keeps a name derived from the discovered plugin key so sanitized names cannot
+collide on disk. A portable
 package's MCP servers keep the names their `mcp.json` gives them, the same rule
 as a user's own `mcp_servers` block, so the model-facing `mcp__<server>__<tool>`
 name keeps the tool verb inside the 64-character provider cap. A duplicate server
@@ -141,7 +144,7 @@ write-capable call instead of relying on the skill's instructions alone:
 
 The server name must match an `mcp.json` entry. With `untrusted`, every tool
 call to that server that is not annotated `readOnlyHint: true` asks the user
-first, and fails closed where nobody can answer (cron, unattended runs). The
+first (Once, Session or Always, per tool), and fails closed where nobody can answer (cron, unattended runs). The
 only other accepted value is `full`, the default, so a package can narrow
 access but never widen it. A `config.yaml` server with the same name replaces
 the package's entry, including its trust, but keeps the package's declared costs
@@ -210,7 +213,10 @@ A server entry key this Hermes does not know (one a newer release added) is
 ignored with a warning, which `hermes plugins validate` lists, and the package
 still installs. Releases from before this rule reject the package instead, and a
 release that ignores a key may behave less safely than intended, so declare a new
-key together with a catalog `requires_hermes` floor.
+key together with a catalog `requires_hermes` floor. `plugin.json` has no
+`requires_hermes` field, so that catalog floor is a portable package's only one: an install by
+catalog name refuses on an older Hermes, and `hermes plugins update` keeps the
+installed pin until Hermes is updated.
 
 An explicit per-server MCP call budget also reaches Hermes' outer tool executor. A call
 whose budget exceeds the shared concurrent-batch deadline becomes a sequential
@@ -401,7 +407,9 @@ def register(ctx):
 
 Known capability ids: `tools.override`, `llm.provider_override`,
 `llm.model_override`, `llm.agent_id_override`, `llm.profile_override`,
-`llm.task_override` (see `hermes_cli/plugin_capabilities.py` for the
+`llm.task_override`, `llm.side_question` (ask the session's own agent after
+a turn, see [Plugin LLM Access](../plugin-llm-access.md#asking-the-sessions-own-agent-ctxside_question)),
+`gateway.platform_actions` (see `hermes_cli/plugin_capabilities.py` for the
 canonical registry). Unknown ids are ignored. The older per-capability
 config keys (`plugins.entries.<id>.allow_tool_override`, …) still work but
 are deprecated — declare capabilities instead so users get a single,
@@ -1360,7 +1368,9 @@ legacy `pip_dependencies` and `python_dependencies` lists from `plugin.yaml` or
 Consent, workspace membership, and currency checks use the same declaration.
 PM prepares their dependencies together with core requirements before enabling
 the plugin. The generated workspace does not rewrite the plugin directory or
-the shipped lockfile. Dependency conflicts refuse admission and preserve the
+the shipped lockfile, and it is solved only for the installing interpreter's
+platform: a dependency that ships no wheels for another platform does not
+block the plugin. Dependency conflicts refuse admission and preserve the
 previous selection. PM does not automatically disable other plugins.
 
 Dependencies installed manually with pip are not durable PM declarations.
@@ -1434,17 +1444,16 @@ ctx.register_tool(
 
 ### Overriding a built-in tool
 
-To replace a built-in tool with your own implementation (e.g. swap the
-default browser tool for a headed-Chrome CDP backend, or replace
+To replace a built-in tool with your own implementation (e.g. replace
 `web_search` with a custom corporate index), pass `override=True`:
 
 ```python
 def register(ctx):
     ctx.register_tool(
-        name="browser_navigate",             # same name as the built-in
-        toolset="plugin_my_browser",         # your own toolset namespace
+        name="web_search",                   # same name as the built-in
+        toolset="plugin_my_search",          # your own toolset namespace
         schema={...},
-        handler=my_custom_navigate,
+        handler=my_corporate_search,
         override=True,                       # explicit opt-in
     )
 ```
@@ -1501,6 +1510,17 @@ def register(ctx):
     ctx.register_hook("on_session_start", on_new_session)
     ctx.register_hook("on_session_end", on_session_end)
 ```
+
+### Rewrite the reply before the user sees it
+
+A `transform_llm_output` hook rewrites the finished reply, which the user has usually watched stream already. When your plugin must see the reply first (it redacts, filters or blocks content), pass `hold_stream=True`:
+
+```python
+def register(ctx):
+    ctx.register_hook("transform_llm_output", redact, hold_stream=True)
+```
+
+Every session in the profile that loads the plugin then stops streaming its replies: the user sees the typing or thinking indicator, and then only your rewritten final, on the surfaces listed in the reference. Commentary between tool calls is dropped for those turns, and if your hook raises or times out the user gets a short "reply withheld" notice instead of the original. Leave the flag off for cosmetic transforms (footers, styling) so replies keep streaming. Details per surface: [Holding the reply until it is rewritten](../../user-guide/features/hooks.md#hold-stream).
 
 ### Hook reference
 

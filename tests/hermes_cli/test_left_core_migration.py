@@ -433,7 +433,7 @@ def test_old_langfuse_plugin_key_keeps_naming_the_catalog_plugin(tmp_path, monke
     """`observability/langfuse` (every pre-move doc, an administrator's pinned list) names the install
     while the plugin is absent, and selects/resolves the installed plugin once it is there."""
     from hermes_cli.plugins_cmd import _find_plugin_entry, _unknown_plugin_message
-    from hermes_cli.plugins_discovery import gate_manifest
+    from hermes_cli.plugins_discovery import IN_BOTH_LISTS, gate_manifest
     from hermes_cli.plugins_manifest import PluginManifest
     home = _home(tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -450,4 +450,6 @@ def test_old_langfuse_plugin_key_keeps_naming_the_catalog_plugin(tmp_path, monke
     assert _find_plugin_entry("observability/langfuse")[5] == "langfuse"
     manifest = PluginManifest(name="langfuse", source="user", path=str(plugin_dir), key="langfuse")
     assert gate_manifest(manifest, set(), {"observability/langfuse"}).action == "load"
-    assert gate_manifest(manifest, {"observability/langfuse"}, {"langfuse"}).error == "disabled via config"
+    # The old key in plugins.disabled still names the plugin, so with the new key enabled both lists do.
+    assert gate_manifest(manifest, {"observability/langfuse"}, {"langfuse"}).error == IN_BOTH_LISTS
+    assert gate_manifest(manifest, {"observability/langfuse"}, None).error == "disabled via config"

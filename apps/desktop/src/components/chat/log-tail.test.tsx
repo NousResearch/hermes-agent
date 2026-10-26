@@ -71,3 +71,18 @@ describe('LogTail search', () => {
     expect(scroller.scrollTop).toBe(900)
   })
 })
+
+describe('LogTail layout', () => {
+  // Command Center and the MCP editor show logs in this pane: a long line wraps at the pane's
+  // width. Nothing may size the log's <pre> to its longest line, which would turn every line into
+  // one long row behind a horizontal scrollbar.
+  it('wraps long lines instead of sizing the log to its longest line', () => {
+    const { container } = render(<Harness lines={[`ERROR ${'x'.repeat(400)}`]} />)
+    const pre = container.querySelector('pre')!
+    const body = pre.closest('[data-slot="code-card-body"]')!
+
+    expect(pre.className).toContain('whitespace-pre-wrap')
+    expect(pre.className).not.toContain('min-w-max')
+    expect(body.className).not.toContain('min-w-max')
+  })
+})

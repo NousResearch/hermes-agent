@@ -130,7 +130,7 @@ def desktop_home(env: Any) -> str:
 
 
 def browser_profile_dir(env: Any) -> str:
-    """The ONE ``--user-data-dir`` the agent's agent-browser and the dock's Browser icon share inside the
+    """The ONE ``--user-data-dir`` the agent's browser and the dock's Browser icon share inside the
     sandbox (same rule as the host: two profiles would mean the human logs into a jar the bot never sees)."""
     return f"{desktop_home(env).rstrip('/')}/.hermes/bot-desktop/browser-profile"
 
@@ -144,7 +144,7 @@ _CHROMIUM_PROBE = (
 
 
 def chromium_executable(env: Any) -> Optional[str]:
-    """Path of the Playwright Chromium agent-browser uses inside ``env`` (the dock's Browser icon must run
+    """Path of the Playwright Chromium the agent's browser uses inside ``env`` (the dock's Browser icon must run
     the same binary), or None when the image has none. Cached on the env."""
     cached = getattr(env, "_bd_chromium", "unset")
     if cached != "unset":

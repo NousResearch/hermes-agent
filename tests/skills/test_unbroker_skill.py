@@ -41,6 +41,7 @@ import emailer
 import pdd
 import legal
 import ledger
+import paths
 import report
 import storage
 import tiers
@@ -86,9 +87,19 @@ def _consenting(full_name="Jane Q. Public"):
 
 def test_browser_clears_captcha_logic():
     assert config.browser_clears_captcha({"browser_backend": "browserbase"}) is True
-    assert config.browser_clears_captcha({"browser_backend": "agent-browser"}) is False
+    assert config.browser_clears_captcha({"browser_backend": "local"}) is False
     assert config.browser_clears_captcha({"browser_backend": "auto"}, env={}) is False
     assert config.browser_clears_captcha({"browser_backend": "auto"}, env={"BROWSERBASE_API_KEY": "x"}) is True
+
+
+def test_legacy_agent_browser_backend_loads_and_resaves_as_local():
+    """Configs saved before agent-browser was removed must keep loading and saving."""
+    with temp_env():
+        storage.write_json(paths.config_path(), {"browser_backend": "agent-browser"})
+        cfg = config.load_config()
+        assert cfg["browser_backend"] == "local"
+        config.save_config(cfg)
+        assert config.load_config()["browser_backend"] == "local"
 
 
 # --- storage ------------------------------------------------------------------

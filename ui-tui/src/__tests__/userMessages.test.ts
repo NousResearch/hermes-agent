@@ -103,6 +103,14 @@ describe('describeRpcError', () => {
     expect(text).toContain('/resume')
   })
 
+  it('explains a read-only stored chat instead of echoing its reason code', () => {
+    const text = describeRpcError(new JsonRpcGatewayError('session_read_only', { code: 4001 }))
+
+    expect(text).not.toContain('session_read_only')
+    expect(text).toContain('/new')
+    expect(describeRpcError(new JsonRpcGatewayError('session_has_children', { code: 4001 }))).toMatch(/not deleted/)
+  })
+
   it('passes ordinary domain errors through unchanged', () => {
     expect(describeRpcError(new JsonRpcGatewayError('hash required', { code: 4014 }))).toBe('hash required')
   })
@@ -115,6 +123,13 @@ describe('describeRpcError', () => {
     expect(
       describeRpcError(new JsonRpcGatewayError('session not found or not owned by this transport', { code: 4001 }))
     ).toContain('/resume')
+  })
+
+  it('names /new for a refusal on a chat whose launch API key changed, never the bare code', () => {
+    const text = describeRpcError(new JsonRpcGatewayError('launch_credentials_unavailable', { code: 4001 }))
+
+    expect(text).toContain('/new')
+    expect(text).not.toContain('launch_credentials_unavailable')
   })
 
   it('records the raw wire text it replaced in the log sink', () => {

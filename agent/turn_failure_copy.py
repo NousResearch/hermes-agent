@@ -22,6 +22,22 @@ SITE_FAILURE_CODES = frozenset({
 })
 
 
+def launch_credentials_copy(error: Any) -> str:
+    """The refusal for a session whose own launch/route API key changed or is gone (``RuntimeStoreError``
+    or an RPC refusal carrying ``field``/``detail``). A session never sends a different key than it
+    started with, so /retry repeats the refusal: the copy names /new on every surface."""
+    from agent.i18n import t
+
+    data = getattr(error, "data", None)
+    data = data if isinstance(data, dict) else {}
+    field = getattr(error, "field", None) or data.get("field")
+    detail = getattr(error, "detail", None) or data.get("detail")
+    named = f" ({field}: {detail or 'unavailable'})" if field else ""
+    text = t("gateway.errors.launch_credentials_unavailable", detail=named)
+    # The raw code + field stay greppable for bug reports and log matching (untranslated, last line).
+    return f"{text}\n\nDetails: launch_credentials_unavailable{named}" if field else text
+
+
 def stamp_failure(result: dict[str, Any], reason: str, retryable: bool) -> dict[str, Any]:
     """Stamp the UI verdict fields on a terminal result (in place; returns it)."""
     result["failure_reason"] = reason

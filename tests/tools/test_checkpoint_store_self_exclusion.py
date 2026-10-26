@@ -96,7 +96,6 @@ class TestStoreNeverStagesItself:
     def test_diff_and_restore_paths_do_not_stage_the_store(self, home_as_workdir):
         home = home_as_workdir
         mgr = CheckpointManager(enabled=True, max_snapshots=50)
-        store = _store_path()
         assert mgr.ensure_checkpoint(str(home), "first") is True
         commit = mgr.list_checkpoints(str(home))[0]["hash"]
 

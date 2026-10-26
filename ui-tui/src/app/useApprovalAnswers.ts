@@ -7,6 +7,7 @@ import { t } from '../i18n/runtime.js'
 import type { ComposerActions, GatewayRpc, OverlayState } from './interfaces.js'
 import { capturePromptResponseGuard, patchOverlayState } from './overlayStore.js'
 import { steerOrQueue } from './steerOrQueue.js'
+import { captureDestination } from './submissionDestination.js'
 import { patchTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
@@ -58,17 +59,18 @@ export function useApprovalAnswers(
   // ending) keeps the words as the next prompt, the same fallback /steer uses.
   const answerApprovalTell = useCallback(
     (text: string) => {
-      const sid = getUiState().sid
+      const destination = captureDestination()
+      const sid = destination.sid
 
       if (!sid || !capturePromptResponseGuard('approval', approval)()) {
         return
       }
 
       void steerOrQueue({
-        enqueue: enqueue,
+        destination: { ...destination, sid },
+        enqueue,
         generation: canonical ? getUiState().info?.execution_generation : undefined,
         rpc,
-        sid,
         sys,
         text
       }).finally(() => answerApproval('deny'))

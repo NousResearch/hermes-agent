@@ -81,13 +81,17 @@ def test_blocked_swap_result_names_the_holder_for_the_desktop(tmp_path: Path) ->
 
 
 # The Desktop that clicked "Close X and retry": it quits once the hand-off has adopted its bridge.
+# The hand-off holds the marker open while it rewrites it, so a read can be refused mid-adoption.
 QUITTING_DESKTOP = """
 import sys, time
 from pathlib import Path
 marker, bridge = Path(sys.argv[1]), None
 end = time.monotonic() + 180
 while time.monotonic() < end:
-    owner = marker.read_bytes().split(b'\\n')[0] if marker.exists() else None
+    try:
+        owner = marker.read_bytes().split(b'\\n')[0] if marker.exists() else None
+    except OSError:
+        owner = bridge
     if bridge is None:
         bridge = owner
     elif owner != bridge:
@@ -95,22 +99,34 @@ while time.monotonic() < end:
     time.sleep(0.05)
 """
 
-# A relaunched Desktop: records the correlation id it inherited, but only when it was started by a
-# rung that hands on the hand-off's own environment (the tethered Start-Process fallback). The WMI
-# and explorer rungs start it without RELAUNCH_PROBE_OUT, so it exits at once and they fall through.
+# A relaunched Desktop, whichever relaunch rung starts it: records the correlation id it inherited
+# beside its own exe, then stays up without a window. It never exits early, so the first rung wins
+# on every runner, and that rung spends its focus wait polling for a window while the test looks.
 RELAUNCHED_DESKTOP = """
 using System; using System.IO; using System.Threading;
 public static class RelaunchedDesktop {
     public static int Main() {
-        string probe = Environment.GetEnvironmentVariable("RELAUNCH_PROBE_OUT");
-        if (String.IsNullOrEmpty(probe)) { return 0; }
         string corr = Environment.GetEnvironmentVariable("HERMES_UPDATE_CORRELATION_ID");
-        File.WriteAllText(probe, System.Diagnostics.Process.GetCurrentProcess().Id + " " + (corr ?? "<unset>"));
-        Thread.Sleep(90000);
+        File.AppendAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "launches.txt"),
+            System.Diagnostics.Process.GetCurrentProcess().Id + " " + (corr ?? "<unset>") + Environment.NewLine);
+        Thread.Sleep(120000);
         return 0;
     }
 }
 """
+
+
+def _env_when_relaunching(proc: subprocess.Popen, launches: Path) -> dict[str, str] | None:
+    """The hand-off's own environment once it has started the Desktop: what an inheriting rung hands on."""
+    deadline = time.monotonic() + 240
+    while proc.poll() is None and time.monotonic() < deadline:
+        if launches.is_file() and launches.read_text(encoding='utf-8').strip():
+            try:
+                return psutil.Process(proc.pid).environ()
+            except psutil.NoSuchProcess:
+                return None
+        time.sleep(0.05)
+    return None
 
 
 @pytest.mark.platforms('windows')
@@ -127,38 +143,39 @@ def test_close_and_retry_runs_under_its_own_run_even_from_a_relaunched_desktop(t
     source = tmp_path / 'desktop.cs'
     source.write_text(RELAUNCHED_DESKTOP, encoding='utf-8')
     # Named apart from other tests' stand-in Hermes.exe: the explorer rung takes any fresh process of
-    # this name as its launch.
+    # this name as its launch. A GUI-subsystem exe, so no console window satisfies the focus wait.
     relaunch = tmp_path / 'release' / 'win-unpacked' / 'HermesRetryDesktop.exe'
     relaunch.parent.mkdir(parents=True)
     subprocess.run([POWERSHELL, '-NoProfile', '-Command',
-                    f"Add-Type -Path '{source}' -OutputAssembly '{relaunch}' -OutputType ConsoleApplication"],
+                    f"Add-Type -Path '{source}' -OutputAssembly '{relaunch}' -OutputType WindowsApplication"],
                    check=True, capture_output=True, timeout=120)
+    launches = relaunch.parent / 'launches.txt'
     # The quitting Desktop's protocol-2 bridge for this run (checkout.ts claimBridgeMarker), and the
     # program the user agreed to close in that run.
     run = 'desk-2-retry-ab12'
     (tmp_path / 'desktop.py').write_text(QUITTING_DESKTOP, encoding='utf-8')
     desktop = subprocess.Popen([sys.executable, str(tmp_path / 'desktop.py'), str(home / MARKER)])
     holder = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)'])
-    corr_out, relaunch_out = tmp_path / 'corr.txt', tmp_path / 'relaunched.txt'
-    relaunched = None
+    corr_out, out = tmp_path / 'corr.txt', tmp_path / 'handoff.out'
     try:
         (home / MARKER).write_bytes(
             f'{desktop.pid}\n{int(time.time())}\nct:{_creation_time(desktop.pid)}\nrun:{run}\n'.encode())
-        proc = subprocess.run(
-            [POWERSHELL, '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(SCRIPT),
-             '-InstallRoot', str(install), '-NoUi', '-NoGateway', '-DesktopPid', str(desktop.pid),
-             '-HandoffRun', run, '-RelaunchExe', str(relaunch)],
-            check=False, cwd=tmp_path, capture_output=True, text=True, timeout=240,
-            env={**os.environ, 'HERMES_HOME': str(home), 'HERMES_RUNTIME_DIR': str(tmp_path / 'empty-store'),
-                 'PYTHONIOENCODING': 'utf-8', 'HERMES_UPDATE_CORRELATION_ID': 'desk-1-previous-run',
-                 'CORRELATION_OUT': str(corr_out), 'RELAUNCH_PROBE_OUT': str(relaunch_out)},
-        )
+        with out.open('w', encoding='utf-8') as sink:
+            proc = subprocess.Popen(
+                [POWERSHELL, '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(SCRIPT),
+                 '-InstallRoot', str(install), '-NoUi', '-NoGateway', '-DesktopPid', str(desktop.pid),
+                 '-HandoffRun', run, '-RelaunchExe', str(relaunch)],
+                cwd=tmp_path, stdout=sink, stderr=subprocess.STDOUT, text=True,
+                env={**os.environ, 'HERMES_HOME': str(home), 'HERMES_RUNTIME_DIR': str(tmp_path / 'empty-store'),
+                     'PYTHONIOENCODING': 'utf-8', 'HERMES_UPDATE_CORRELATION_ID': 'desk-1-previous-run',
+                     'CORRELATION_OUT': str(corr_out)},
+            )
+            handoff_env = _env_when_relaunching(proc, launches)
+            proc.wait(timeout=240)
         log = home / 'logs' / 'desktop-update-handoff.log'
-        detail = (proc.returncode, desktop.poll(), proc.stdout[-2000:], log.read_text(encoding='utf-8', errors='replace')[-4000:]
-                  if log.is_file() else '')
-        assert corr_out.is_file() and relaunch_out.is_file(), detail
-        relaunched_pid, relaunched_corr = relaunch_out.read_text(encoding='utf-8').split(' ', 1)
-        relaunched = int(relaunched_pid)
+        detail = (proc.returncode, desktop.poll(), out.read_text(encoding='utf-8', errors='replace')[-2000:],
+                  log.read_text(encoding='utf-8', errors='replace')[-4000:] if log.is_file() else '')
+        assert corr_out.is_file() and launches.is_file() and handoff_env is not None, detail
         corr = corr_out.read_text(encoding='utf-8')
 
         # The real consumer of that id: the consent the Desktop bound to this run.
@@ -173,7 +190,10 @@ def test_close_and_retry_runs_under_its_own_run_even_from_a_relaunched_desktop(t
     finally:
         desktop.kill()
         holder.kill()
-        if relaunched:
-            subprocess.run(['taskkill', '/T', '/F', '/PID', str(relaunched)], capture_output=True, check=False)
+        for line in launches.read_text(encoding='utf-8').splitlines() if launches.is_file() else ():
+            subprocess.run(['taskkill', '/T', '/F', '/PID', line.split(' ', 1)[0]], capture_output=True, check=False)
     assert (corr, covered) == (run, True), detail
-    assert relaunched_corr == '<unset>', detail
+    # Only the tethered Start-Process rung inherits the hand-off's environment, so check both ends:
+    # what the hand-off itself carried while it relaunched, and what the Desktop it started saw.
+    assert 'HERMES_UPDATE_CORRELATION_ID' not in {k.upper() for k in handoff_env}, (handoff_env, detail)
+    assert [line.split(' ', 1)[1] for line in launches.read_text(encoding='utf-8').splitlines()] == ['<unset>'], detail

@@ -10,6 +10,13 @@ import { readDesktopLaunchConfig } from './renderer-heap-flags'
 import { wslgLaunchArgs } from './wslg-launch'
 import { spawnWslgLaunch } from './wslg-launch-process'
 
+// `hermes desktop` asks this binary whether Chromium's namespace sandbox starts under the host's
+// AppArmor policy (#130177). Chromium creates its sandboxed zygote before any JS runs, so reaching
+// this line answers yes; exit before any window, single-instance lock, backend or relaunch.
+if (process.argv.includes('--hermes-sandbox-probe')) {
+  process.exit(0)
+}
+
 // Run before main creates windows/IME integrations or spawns resident helpers.
 // Closing Hermes cannot release a CWD inherited by an out-of-tree process.
 releasePackagedWorkingDirectory(app.isPackaged || Boolean(process.env.HERMES_DESKTOP_IS_PACKAGED))

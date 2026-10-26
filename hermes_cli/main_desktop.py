@@ -1246,7 +1246,10 @@ def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
     if _sandbox_helper_is_setuid_root(st):
         return True
 
-    if _desktop_linux_userns_sandbox_available():
+    from hermes_cli.main_desktop_apparmor import chromium_userns_sandbox_verdict
+
+    verdict = chromium_userns_sandbox_verdict(packaged_executable)
+    if verdict if verdict is not None else _desktop_linux_userns_sandbox_available():
         print("✓ Using Chromium's user-namespace sandbox (setuid helper not needed).")
         return True
 
@@ -1622,10 +1625,13 @@ def _check_desktop_skip_build(
 
 def _packaged_desktop_launch_command(packaged_executable: Path) -> list[str]:
     """``[exe, *sandbox flags]`` after the Linux sandbox fixup; exits when the sandbox can't be configured."""
+    from hermes_cli.main_desktop_apparmor import print_blocked_remedies
+
     launch_command = [str(packaged_executable)]
     if not _desktop_linux_sandbox_fixup(packaged_executable):
         if _desktop_linux_needs_no_sandbox() and _desktop_linux_sandbox_helper_is_regular_file(packaged_executable):
             print("⚠ Falling back to --no-sandbox because this Linux host restricts unprivileged user namespaces and the Electron sandbox helper could not be configured.")
+            print_blocked_remedies(packaged_executable)
             launch_command.append("--no-sandbox")
         else:
             sys.exit(1)
@@ -1668,6 +1674,27 @@ def _launch_installed_macos_desktop_app() -> bool:
     return True
 
 
+def _run_desktop_one_shot(args: argparse.Namespace, desktop_dir: Path, *, bundled: bool) -> None:
+    """Run a host-setup one-shot flag, then exit without building or launching."""
+    # macOS: a self-signed code-signing identity so TCC grants survive rebuilds.
+    if getattr(args, "setup_tcc_identity", False):
+        from hermes_cli.main_desktop_tcc import _desktop_macos_setup_tcc_identity
+        identity = getattr(args, "identity", None) or "Hermes Local Signing"
+        sys.exit(0 if _desktop_macos_setup_tcc_identity(identity) else 1)
+    # Linux: the per-binary AppArmor profile for Chromium's namespace sandbox (#130177).
+    if getattr(args, "install_apparmor_profile", False):
+        from hermes_cli.bundled_app import NotBundledApp, resolve_bundle_layout
+        from hermes_cli.main import PROJECT_ROOT
+        from hermes_cli.main_desktop_apparmor import install_profile
+        exe = _desktop_packaged_executable(desktop_dir)
+        if bundled:
+            with contextlib.suppress(NotBundledApp):
+                exe = resolve_bundle_layout(PROJECT_ROOT).launcher
+        if exe is None:
+            print(f"✗ No packaged Hermes Desktop found under {desktop_dir / 'release'}; run `hermes desktop` first.")
+        sys.exit(0 if exe is not None and install_profile(exe) else 1)
+
+
 def cmd_gui(args: argparse.Namespace):
     """Build and launch the native Electron desktop GUI."""
     from hermes_cli.main import PROJECT_ROOT
@@ -1708,12 +1735,7 @@ def cmd_gui(args: argparse.Namespace):
     skip_build = getattr(args, "skip_build", False)
     force_build = getattr(args, "force_build", False)
 
-    # macOS-only one-shot: create a self-signed code-signing identity so TCC
-    # grants survive rebuilds, then exit without building/launching.
-    if getattr(args, "setup_tcc_identity", False):
-        from hermes_cli.main_desktop_tcc import _desktop_macos_setup_tcc_identity
-        identity = getattr(args, "identity", None) or "Hermes Local Signing"
-        sys.exit(0 if _desktop_macos_setup_tcc_identity(identity) else 1)
+    _run_desktop_one_shot(args, desktop_dir, bundled=bundled)
 
     if bundled:
         _launch_bundled_desktop(args, env, config_electron_flags)
@@ -1958,10 +1980,13 @@ def _launch_bundled_desktop(
         print("  The install is damaged — reinstall Hermes from the website.")
         sys.exit(1)
 
+    from hermes_cli.main_desktop_apparmor import print_blocked_remedies
+
     launch_command = [str(layout.launcher)]
     if not _desktop_linux_sandbox_fixup(layout.launcher):
         if _desktop_linux_needs_no_sandbox() and _desktop_linux_sandbox_helper_is_regular_file(layout.launcher):
             print("⚠ Falling back to --no-sandbox because this Linux host restricts unprivileged user namespaces and the Electron sandbox helper could not be configured.")
+            print_blocked_remedies(layout.launcher)
             launch_command.append("--no-sandbox")
         else:
             sys.exit(1)

@@ -158,7 +158,9 @@ def plan(mode: str, public_url: Optional[str] = None) -> tuple[str, Optional[int
     the bind host, the port to write (None to keep the config's, :func:`_port_to_serve`) and the URL to
     pin for :func:`serve`, and the sign-in callback for :func:`register`. Changes nothing but the port
     claim of a standalone profile that has none (:func:`_port_to_serve`), so Start runs it, in the
-    config write scope, before any slow or lasting step."""
+    config write scope, before any slow or lasting step. A refusal before that claim writes nothing."""
+    if not nous_signed_in():
+        raise WebappAccessError("Sign in to your Nous account under Providers first.")
     if mode == "lan":
         address = lan_address()
         if address is None:

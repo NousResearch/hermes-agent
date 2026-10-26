@@ -136,6 +136,14 @@ def test_with_no_free_port_start_refuses_and_names_the_setting(machine):
     assert "port" not in _webapp_block(machine["solo"])
 
 
+@pytest.mark.parametrize("mode, url", [("lan", None), ("public", "https://solo.example.test")])
+def test_a_start_refused_for_no_nous_account_saves_no_port(machine, mode, url):
+    machine["monkeypatch"].setattr(webapp_access, "nous_signed_in", lambda: False)
+    with pytest.raises(webapp_access.WebappAccessError, match="Sign in to your Nous account"):
+        webapp_access.plan(mode, url)
+    assert _webapp_block(machine["solo"]) == {} and machine["probed"] == []
+
+
 #: How long one Start waits for the other to reach its step in the test below before it fails.
 _SYNC_SECONDS = 20
 

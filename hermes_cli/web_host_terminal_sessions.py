@@ -152,10 +152,7 @@ class HostTerminalRegistry(PtySessionRegistry):
         session = self._sessions.get(token)
         owner = self.owners.get(token)
         if session is None or owner is None:
-            gone = self.exits.get(token)
-            if gone is not None and gone[0] == identity:
-                raise TerminalExited()
-            raise TerminalExpired()
+            raise self._gone(token, identity)
         if owner.identity != identity:
             raise TerminalDenied()
 
@@ -168,12 +165,19 @@ class HostTerminalRegistry(PtySessionRegistry):
         # No await between the final check and the caller's attach claim. The
         # home was just checked off-loop; every input write checks it again.
         if self._sessions.get(token) is not session:
-            raise TerminalExpired()
+            # The reaper took the shell during validation; it may have exited first.
+            raise self._gone(token, identity)
         if not closing and _exited(session):
             raise TerminalExited()
         if not closing and self.expired(session):
             raise TerminalExpired()
         return session, owner
+
+    def _gone(self, token: str, identity: tuple[str, str]) -> TerminalExpired:
+        """The refusal of a token with no registered shell: ``TerminalExited`` if *identity*'s shell
+        exited by itself, else ``TerminalExpired``."""
+        gone = self.exits.get(token)
+        return TerminalExited() if gone is not None and gone[0] == identity else TerminalExpired()
 
     async def remove(self, token: str):
         session = self._sessions.pop(token, None)

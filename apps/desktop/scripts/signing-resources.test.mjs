@@ -139,7 +139,8 @@ test.skipIf(process.platform === 'win32')('probe errors release complete operati
   try {
     const tree = path.join(root, 'tree')
     fs.mkdirSync(tree)
-    for (let i = 0; i < 100; i++) fs.writeFileSync(path.join(tree, `f${i}`), 'text')
+    const files = 100
+    for (let i = 0; i < files; i++) fs.writeFileSync(path.join(tree, `f${i}`), 'text')
     const result = run(root, `
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -151,23 +152,35 @@ ${tracking.replaceAll("import assert from 'node:assert/strict'", '').replaceAll(
 const tree = ${JSON.stringify(tree)}
 await assert.rejects(walk(tree + '/missing'), { code: 'ENOENT' })
 const measuredOpen = fs.promises.open
-let failed = false
-fs.promises.open = async (...args) => {
-  if (!failed) { failed = true; throw Object.assign(new Error('open failure'), { code: 'EACCES' }) }
-  return measuredOpen(...args)
+// A rejected walk's Promise.all leaves its other probes running, and their lstat
+// callbacks can land after a later walk has finished. Fault the first open of each
+// case, then wait until every file of the failed walk has opened and closed, so a
+// straggler can never consume the next case's one-shot fault.
+function inject(fault) {
+  let calls = 0, opening = 0
+  fs.promises.open = async (...args) => {
+    const call = ++calls
+    opening++
+    try { return await fault(call, args) } finally { opening-- }
+  }
+  return async () => { while (calls < ${files} || opening || live) await new Promise(resolve => setImmediate(resolve)) }
 }
+const accessDrained = inject(async (call, args) => {
+  if (call === 1) throw Object.assign(new Error('open failure'), { code: 'EACCES' })
+  return measuredOpen(...args)
+})
 await assert.rejects(walk(tree), { code: 'EACCES' })
-// Drain the rest of Promise.all by completing a second walk through the same queue.
+await accessDrained()
 assert.deepEqual(await walk(tree), [])
-failed = false
-fs.promises.open = async (...args) => {
+const readDrained = inject(async (call, args) => {
   const handle = await measuredOpen(...args)
-  if (!failed) { failed = true; handle.read = async () => { throw Object.assign(new Error('read failure'), { code: 'EIO' }) } }
+  if (call === 1) handle.read = async () => { throw Object.assign(new Error('read failure'), { code: 'EIO' }) }
   const closeHandle = handle.close.bind(handle)
   handle.close = async () => { await new Promise(resolve => setTimeout(resolve, 2)); await closeHandle() }
   return handle
-}
+})
 await assert.rejects(walk(tree), { code: 'EIO' })
+await readDrained()
 assert.deepEqual(await Promise.all([walk(tree), walk(tree), walk(tree)]), [[], [], []])
 assert.equal(live, 0)
 assert.ok(peak <= 16, String(peak))

@@ -9,6 +9,7 @@ returns a ``TurnContext`` with only the locals the loop reads back.
 from __future__ import annotations
 
 import logging
+import math
 import sys
 import threading
 import time
@@ -684,7 +685,9 @@ def note_completed_api_call(agent: Any, api_duration: Any) -> None:
         seconds = float(api_duration)
     except (TypeError, ValueError):
         return
-    if seconds != seconds or seconds < 0:
+    # math.isfinite rejects nan, +inf and -inf in one check; the accumulated
+    # per-turn total would otherwise poison formatters (round(inf) raises).
+    if not math.isfinite(seconds) or seconds < 0:
         return
     agent._turn_model_seconds = float(getattr(agent, "_turn_model_seconds", 0.0) or 0.0) + seconds
     if getattr(agent, "_turn_first_token_at", None) is None:

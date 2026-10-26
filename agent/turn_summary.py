@@ -10,6 +10,7 @@ into one dim line: ``⋯ 12.4s · edited 2 files +18 -3 · read 4 files · ran 3
 from __future__ import annotations
 
 import json
+import math
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -149,7 +150,9 @@ class TurnSummaryCollector:
 
 
 def format_elapsed(seconds: float) -> str:
-    """``12.4s`` / ``2m05s``."""
+    """``12.4s`` / ``2m05s``; ``""`` for non-finite values (round(inf) raises)."""
+    if not math.isfinite(seconds):
+        return ""
     seconds = max(seconds, 0.0)
     if seconds < 60:
         return f"{seconds:.1f}s"
@@ -178,7 +181,9 @@ def format_turn_stamps(started_at: Any, first_token_at: Any) -> str:
             moment = float(value)
         except (TypeError, ValueError):
             return ""
-        if moment != moment or moment <= 0:
+        # isfinite rejects +inf/-inf: localtime(inf) raises, and any returned
+        # clock for an insane epoch would be a fabricated timestamp anyway.
+        if not math.isfinite(moment) or moment <= 0:
             return ""
         return time.strftime("%H:%M:%S", time.localtime(moment))
 
@@ -246,7 +251,7 @@ def _format_model_segment(model_seconds: Any) -> str:
         seconds = float(model_seconds)
     except (TypeError, ValueError):
         return ""
-    if seconds != seconds or seconds < 0:
+    if not math.isfinite(seconds) or seconds < 0:
         return ""
     return f"{format_elapsed(seconds)} model"
 

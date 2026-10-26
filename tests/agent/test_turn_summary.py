@@ -126,9 +126,16 @@ def test_format_token_flow_bad_input_is_empty():
 
 
 class _StubAgent:
-    def __init__(self, quiet_mode=False, session_output_tokens=0):
+    def __init__(self, quiet_mode=False, session_output_tokens=0,
+                 _turn_model_seconds=None, _current_turn_timestamp=None,
+                 _turn_first_token_at=None):
         self.quiet_mode = quiet_mode
         self.session_output_tokens = session_output_tokens
+        # Timing attrs exist so tests can set per-turn values via __init__
+        # (the emit path reads them with getattr and tolerates absence).
+        self._turn_model_seconds = _turn_model_seconds
+        self._current_turn_timestamp = _current_turn_timestamp
+        self._turn_first_token_at = _turn_first_token_at
 
 
 def _make_cli(**overrides):
@@ -256,7 +263,7 @@ def test_model_zero_is_truthful_not_hidden():
 
 
 def test_unavailable_model_never_fabricates():
-    for bad in ("bogus", -3.0, float("nan")):
+    for bad in ("bogus", -3.0, float("nan"), float("inf"), float("-inf"), 1e309):
         assert "model" not in _read_collector().render(5.0, model_seconds=bad)
 
 
@@ -278,6 +285,7 @@ def test_stamps_need_second_resolution():
     assert re.fullmatch(r"start \d{2}:\d{2}:\d{2} → first-token \d{2}:\d{2}:\d{2}", line)
     assert format_turn_stamps(None, None) == ""
     assert format_turn_stamps(0, "bogus") == ""
+    assert format_turn_stamps(float("inf"), float("inf")) == ""
     start_only = format_turn_stamps(1700000000.0, None)
     assert start_only.startswith("start ") and "first-token" not in start_only
 
@@ -301,6 +309,22 @@ def test_emit_split_mode_reads_agent_timing(monkeypatch):
 def test_emit_off_suppresses_line(monkeypatch):
     stub = _make_cli(_turn_timing_mode="off")
     assert _emit_and_capture(stub, monkeypatch) == []
+
+
+def test_emit_verbose_survives_infinite_timestamps(monkeypatch):
+    """An insane (infinite) timestamp must not throw away the whole turn summary.
+
+    Before the guard, ``format_turn_stamps`` sent +inf to ``time.localtime``,
+    raising OverflowError inside the emit-wide except, silently dropping even
+    the still-valid wall-clock/segment line.
+    """
+    agent = _StubAgent(_turn_model_seconds=6.2, _current_turn_timestamp=float("inf"),
+                       _turn_first_token_at=float("inf"))
+    stub = _make_cli(_turn_timing_mode="verbose", agent=agent)
+    printed = _emit_and_capture(stub, monkeypatch)
+    assert len(printed) == 1
+    assert "6.2s model" in printed[0]
+    assert "start" not in printed[0]
 
 
 def test_emit_total_matches_today(monkeypatch):

@@ -63,7 +63,7 @@ class TestNoteCompletedApiCall:
 
     def test_ignores_nonsense_durations(self):
         agent = _agent()
-        for bad in (None, "fast", float("nan"), -1.0):
+        for bad in (None, "fast", float("nan"), float("inf"), float("-inf"), -1.0):
             note_completed_api_call(agent, bad)
         assert agent._turn_model_seconds == pytest.approx(0.0)
 

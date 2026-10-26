@@ -28,9 +28,10 @@ async def _reply(acp, sid, text):
 def _selectors(result):
     assert 'models' not in result, result
     options = {option['id']: option for option in result['configOptions']}
-    assert set(options) == {'model', 'edit_approval_policy'}, result
-    assert options['model']['category'] == 'model_config'
+    assert set(options) == {'model', 'edit_approval_policy', 'reasoning_effort'}, result
+    assert options['model']['category'] == 'model'
     assert options['edit_approval_policy']['category'] == 'mode'
+    assert options['reasoning_effort']['category'] == 'thought_level'
     assert all(option['type'] == 'select' for option in options.values())
     return options
 
@@ -60,6 +61,11 @@ async def test_new_session_carries_picker_modes_provenance_and_commands(daemon, 
         picked = await acp.rpc('session/set_config_option', sessionId=sid, configId='model', value=model)
         assert _selectors(picked['result'])['model']['currentValue'] == model
         assert _selectors(picked['result'])['edit_approval_policy']['currentValue'] == 'workspace_session'
+        effort = await acp.rpc('session/set_config_option', sessionId=sid,
+                               configId='reasoning_effort', value='high')
+        assert _selectors(effort['result'])['reasoning_effort']['currentValue'] == 'high'
+        assert _selectors(effort['result'])['model']['currentValue'] == model
+        assert _selectors(effort['result'])['edit_approval_policy']['currentValue'] == 'workspace_session'
         for config_id in ('model', 'edit_approval_policy'):
             refused = await acp.rpc('session/set_config_option', sessionId=sid, configId=config_id, value=False)
             assert refused['error']['code'] == -32602, refused

@@ -390,6 +390,7 @@ def _build_gateway_cmd_script(python_path: str, working_dir: str, hermes_home: s
     pythonpath = ";".join([*_launcher_pythonpath_entries(extra_pythonpath), "%PYTHONPATH%"])
     lines = [
         "@echo off",
+        "chcp 65001 >nul",
         f"rem {_TASK_DESCRIPTION}",
         f"cd /d {_quote_cmd_script_arg(working_dir)}",
         f'set "HERMES_HOME={hermes_home}"',

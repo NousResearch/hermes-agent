@@ -206,13 +206,12 @@ async def test_frames_held_for_a_starting_profile_still_park_the_reader(rig, mon
     # The reader parks once it took the held bound, the queue bound and one frame each in the
     # dispatcher's and the reader's hands. Wait until it has taken that many, so the reader and the
     # dispatcher really ran, then give it room to read on before checking it did not.
-    parked = 2 * bound + 2
+    from tests.waiting import async_wait_until
 
-    async def taken(count):
-        while flood - sock.inbound.qsize() < count:
-            await asyncio.sleep(0.01)
-    await asyncio.wait_for(taken(parked), timeout=10)
-    await asyncio.sleep(0.2)
+    parked = 2 * bound + 2
+    await async_wait_until(lambda: flood - sock.inbound.qsize() >= parked, timeout=10,
+                           what='the reader took the frames that park it')
+    await asyncio.sleep(0.2)  # health: allow HX013 -- a parked reader sets no event; reading no further needs a delay
     assert flood - sock.inbound.qsize() == parked, 'held frames escaped the dispatch bound'
     assert not sock.replies  # all still waiting for beta
 

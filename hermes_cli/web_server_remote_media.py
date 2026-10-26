@@ -17,6 +17,16 @@ from fastapi import HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 
 _SINGLE_RANGE = re.compile(r"^\s*bytes\s*=\s*(\d*)\s*-\s*(\d*)\s*$", re.IGNORECASE)
+# More digits than any file this route serves can need. A longer number is read as one value past
+# every file instead of being converted: int() refuses a few thousand digits (a 500).
+_MAX_POSITION_DIGITS = 19
+_PAST_ANY_FILE = 10**_MAX_POSITION_DIGITS
+
+
+def _position(digits: str) -> int:
+    """A ``Range`` byte position, or ``_PAST_ANY_FILE`` for one too long to be in any file."""
+    digits = digits.lstrip("0") or "0"
+    return int(digits) if len(digits) <= _MAX_POSITION_DIGITS else _PAST_ANY_FILE
 
 
 def _unsatisfiable(size: int) -> HTTPException:
@@ -29,20 +39,24 @@ def byte_range(header: str | None, size: int) -> tuple[int, int] | None:
     """The inclusive ``(first, last)`` byte span one ``bytes=`` range asks of a *size*-byte file,
     or None to serve the whole file. A header this does not read (several ranges, another unit, a
     last byte before the first) is ignored, as RFC 9110 allows; a range the file cannot satisfy
-    raises 416."""
+    raises 416. A last byte past the end is the end, and a suffix longer than the file is all of it,
+    however many digits either has."""
     match = _SINGLE_RANGE.match(header or "")
     if match is None or match.groups() == ("", ""):
         return None
-    first, last = match.groups()
-    if not first:  # a suffix: the last N bytes
-        if int(last) == 0 or size == 0:
+    first_digits, last_digits = match.groups()
+    if not first_digits:  # a suffix: the last N bytes
+        suffix = _position(last_digits)
+        if suffix == 0 or size == 0:
             raise _unsatisfiable(size)
-        return max(size - int(last), 0), size - 1
-    if last and int(last) < int(first):
+        return max(size - suffix, 0), size - 1
+    first = _position(first_digits)
+    last = _position(last_digits) if last_digits else None
+    if last is not None and last < first:
         return None
-    if int(first) >= size:
+    if first >= size:
         raise _unsatisfiable(size)
-    return int(first), min(int(last), size - 1) if last else size - 1
+    return first, min(last, size - 1) if last is not None else size - 1
 
 
 def remote_media_response(request: Request, workspace: Any, target: str, size: int, media_type: str) -> Response:

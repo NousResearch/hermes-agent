@@ -133,6 +133,44 @@ def test_ssh_stream_answers_an_unsatisfiable_range_with_416(client, ssh, header)
     assert workspace.reads == []
 
 
+LONG = "9" * 5000  # past Python's int() digit limit
+
+
+@pytest.mark.parametrize(("header", "first", "last"), [
+    (f"bytes=2-{LONG}", 2, 15),  # a last byte past the end is the end
+    (f"bytes=-{LONG}", 0, 15),  # a suffix longer than the file is all of it
+    (f"bytes={'0' * 5000}3-{'0' * 5000}5", 3, 5),  # leading zeros are still a small number
+])
+def test_ssh_stream_reads_an_oversized_range_number_without_converting_it(client, ssh, header, first, last):
+    _profile, workspace = ssh
+
+    partial = _stream(client, headers={"Range": header})
+
+    assert (partial.status_code, partial.content) == (206, BYTES[first:last + 1])
+    assert partial.headers["content-range"] == f"bytes {first}-{last}/{len(BYTES)}"
+    assert workspace.reads == [(CLIP, first, last - first + 1)]
+
+
+@pytest.mark.parametrize("header", [f"bytes={LONG}-", f"bytes={LONG}-{LONG}"])
+def test_ssh_stream_answers_an_oversized_first_byte_with_416(client, ssh, header):
+    _profile, workspace = ssh
+
+    response = _stream(client, headers={"Range": header})
+
+    assert response.status_code == 416
+    assert response.headers["content-range"] == f"bytes */{len(BYTES)}"
+    assert workspace.reads == []
+
+
+def test_ssh_stream_ignores_an_oversized_range_that_ends_before_it_starts(client, ssh):
+    _profile, workspace = ssh
+
+    whole = _stream(client, headers={"Range": f"bytes={LONG}-3"})
+
+    assert (whole.status_code, whole.content) == (200, BYTES)
+    assert workspace.reads == [(CLIP, 0, None)]
+
+
 @pytest.mark.parametrize(("path", "status"), [
     ("/srv/media/linked.mp4", 403),  # resolves into a credential folder on the SSH machine
     ("/srv/media/notes.txt", 415),

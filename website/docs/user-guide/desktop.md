@@ -83,7 +83,8 @@ links serve only a Webapp that needs no sign-in. HTTPS is strongly recommended r
 
 **What plain HTTP loses.** Browsers turn off features that need a secure context on a plain-HTTP
 address other than loopback (`http://localhost` and `http://127.0.0.1` count as secure): the bot
-screen viewer, the microphone (dictation and live voice) and system notifications. The bot screen and
+screen viewer, the microphone (dictation, live voice and the remote wake word), reading the clipboard
+(terminal paste, pasting an image) and system notifications. The bot screen and
 live voice say so instead of opening. `hermes webapp` and `hermes webapp --status` print a note when
 the address a browser opens (`webapp.public_url`, else the LAN address **Start** registered sign-in
 for) is plain HTTP on another host. To keep these features, open the Webapp over

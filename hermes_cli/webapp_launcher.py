@@ -32,11 +32,12 @@ STARTED_BEFORE_ON = f"The gateway started before the Webapp was turned on. Resta
 # socket answers, so the gateway running predates them (an upgrade it has not restarted onto).
 OLDER_GATEWAY = ("The running gateway is older than the Webapp and does not know its commands. Restart it "
                  f"onto this version of Hermes: {RESTART_COMMAND}")
-# Browsers keep secure-context APIs (crypto.subtle, mediaDevices, Notification) from a plain-HTTP origin
-# that is not loopback.
+# Browsers keep secure-context APIs (crypto.subtle, mediaDevices, navigator.clipboard, Notification) from a
+# plain-HTTP origin that is not loopback.
 PLAIN_HTTP_NOTE = ("This address is plain HTTP, so the browser turns off what needs a secure connection: the bot "
-                   "screen, the microphone (dictation and live voice) and system notifications. Open the Webapp "
-                   "over HTTPS (webapp.public_url) or through an SSH tunnel to 127.0.0.1 to use them.")
+                   "screen, the microphone (dictation, live voice and the remote wake word), reading the clipboard "
+                   "(terminal paste, pasting an image) and system notifications. Open the Webapp over HTTPS "
+                   "(webapp.public_url) or through an SSH tunnel to 127.0.0.1 to use them.")
 # How long --sign-out waits for a gateway that is still starting to answer (30 s).
 _START_WAIT_ATTEMPTS, _START_WAIT_INTERVAL = 60, 0.5
 

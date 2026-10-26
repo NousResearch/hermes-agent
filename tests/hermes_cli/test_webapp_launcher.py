@@ -431,7 +431,8 @@ def test_a_link_for_the_user_to_open_by_hand_is_printed_and_never_handed_to_a_br
 
 def _says_what_plain_http_loses(out: str) -> bool:
     lowered = out.lower()
-    return all(part in lowered for part in ("plain http", "bot screen", "microphone", "notifications", "https"))
+    return all(part in lowered for part in ("plain http", "bot screen", "microphone", "wake word",
+                                            "reading the clipboard", "notifications", "https"))
 
 
 @pytest.mark.parametrize("no_open", [False, True])

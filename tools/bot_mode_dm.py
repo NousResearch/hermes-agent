@@ -274,7 +274,9 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
         return _err(f"message too long ({len(body)} chars > {MESSAGE_MAX_CHARS}). "
                     "Send the essentials; share large content as a file path instead.")
 
-    targets = list(dict.fromkeys(t.strip().lstrip("@") for t in str(target or "").split(",") if t.strip()))
+    from tools.bot_mode_dm_coordination import fan_out, split_targets
+
+    targets = split_targets(target, sender)
     if not targets:
         return sender.roster_err("target is required.")
     if len(targets) > FAN_OUT_MAX:
@@ -285,8 +287,6 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
                + ("" if reply else f"{NO_REPLY_MARKER} ") + body)
     if len(targets) == 1:
         return _dispatch(targets[0], content, sender, wake="notify" if reply else "none")
-    from tools.bot_mode_dm_coordination import fan_out
-
     return fan_out(targets, content, sender, expects_reply=reply)
 
 

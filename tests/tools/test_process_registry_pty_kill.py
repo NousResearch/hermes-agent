@@ -7,7 +7,6 @@ exercise the reader's buffer-lock behavior.
 """
 
 import shutil
-import sys
 import threading
 import time
 
@@ -17,7 +16,7 @@ import tools.process_registry as module
 from tools.process_registry import ProcessRegistry
 
 _POSIX_PTY = pytest.mark.skipif(
-    sys.platform != "linux" or shutil.which("setsid") is None, reason="Linux native job scope + PTY + setsid")
+    shutil.which("setsid") is None, reason="setsid executable required")
 
 # Natural lifetime exceeds the Stop deadline, so a passing Stop requires cleanup.
 _ESCAPEE_LIFETIME_S = 8
@@ -86,6 +85,7 @@ def _wait_for_reader_close(session):
     assert session._pty.closed
 
 
+@pytest.mark.platforms("linux")
 @_POSIX_PTY
 def test_kill_reaps_escaped_descendant_without_blocking_on_pty_reader(tmp_path, native_local):
     pytest.importorskip("ptyprocess")
@@ -100,6 +100,7 @@ def test_kill_reaps_escaped_descendant_without_blocking_on_pty_reader(tmp_path, 
     _wait_for_reader_close(session)
 
 
+@pytest.mark.platforms("linux")
 @_POSIX_PTY
 def test_output_after_the_kill_is_not_added_to_the_killed_session(tmp_path, monkeypatch, native_local):
     pytest.importorskip("ptyprocess")
@@ -125,6 +126,7 @@ def test_output_after_the_kill_is_not_added_to_the_killed_session(tmp_path, monk
     assert not any("LATE-ESCAPEE-OUTPUT" in text for text in emitted)
 
 
+@pytest.mark.platforms("linux")
 @_POSIX_PTY
 def test_chunk_read_before_the_kill_is_not_added_after_it(tmp_path, native_local):
     # The reader has read a chunk but not yet buffered it when the kill snapshots the output

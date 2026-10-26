@@ -95,13 +95,18 @@ def _exc_str(exc: BaseException) -> str:
 
 
 def _prepend_path(env: dict, directory: str) -> dict:
-    """Prepend *directory* to env PATH if it is not already present."""
+    """Prepend *directory* to env PATH unless an entry already names it.
+
+    Entries compare as normalized paths (``B/`` names ``B``) and are kept verbatim, empty
+    ones included: an empty POSIX entry is a cwd lookup, and rewriting the configured PATH
+    changes which ``node``/``python3``/``git`` the child's own lookups find."""
     updated = dict(env or {})
     if directory:
-        parts = [part for part in updated.get("PATH", "").split(os.pathsep) if part]
-        if directory not in parts:
-            parts = [directory, *parts]
-        updated["PATH"] = os.pathsep.join(parts) if parts else directory
+        path = updated.get("PATH")
+        entries = path.split(os.pathsep) if path is not None else []
+        key = os.path.normcase(os.path.normpath(directory))
+        if not any(entry and os.path.normcase(os.path.normpath(entry)) == key for entry in entries):
+            updated["PATH"] = os.pathsep.join([directory, *entries])
     return updated
 
 

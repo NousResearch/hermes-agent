@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect } from 'react'
 
 import { $restartPreviewServer } from '@/app/contrib/panes'
-import { $previewReloadRequest, $previewTabs, adoptPersistedBrowserTab } from '@/store/preview'
+import { $previewReloadRequest, $previewTabs, adoptPersistedBrowserTab, previewTabInAnyProfile } from '@/store/preview'
 import { isBrowserWindow } from '@/store/windows'
 
 import { PreviewPane } from './preview-pane'
@@ -39,7 +39,10 @@ export function PreviewTilePane({ onClose, tabId }: PreviewTilePaneProps) {
     }
   }, [previewTabs, tabId])
 
-  const tab = previewTabs.find(candidate => candidate.id === tabId)
+  // A hidden page of another profile's chat (the rail now shows the next bot's
+  // bucket) is still an open tab: read it from its own bucket, or this parked
+  // body would render nothing and tear its guest down.
+  const tab = previewTabs.find(candidate => candidate.id === tabId) ?? previewTabInAnyProfile(tabId)
   const target = tab?.target
 
   // The tab closed while this pane was still mounted (the mirror disposes it a

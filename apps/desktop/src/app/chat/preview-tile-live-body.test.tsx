@@ -101,3 +101,47 @@ it("keeps a hidden session's live Browser body alive and shows the same one on r
   expect(disconnected).not.toContain(aGuest)
   expect(mounts.get(aTab)).toBe(1)
 })
+
+// Bots are profiles: opening another bot's chat swaps the rail onto that
+// profile's bucket. The page left behind is a hidden session's page all the
+// same, so coming back to the bot shows the very same guest, not a reload.
+it("keeps the live Browser body when the next chat on screen belongs to another profile", async () => {
+  const { setPreviewScope } = await import('@/store/preview')
+
+  registry.register({
+    area: 'panes',
+    data: { placement: 'main', uncloseable: true },
+    id: 'workspace',
+    render: () => null,
+    title: 'workspace'
+  })
+  declareDefaultTree(group(['workspace'], { active: 'workspace', id: 'grp-main' }))
+  watchContributedPanes()
+  watchPreviewTiles()
+
+  $selectedStoredSessionId.set('sess-bot-a')
+  act(() => openPreview({ kind: 'url', label: 'A', source: 'http://localhost:4321', url: 'http://localhost:4321' }))
+  const aTab = $previewTabs.get().find(tab => tab.target.source === 'http://localhost:4321')!.id
+
+  const { container } = render(createElement(LayoutTreeRoot))
+  const guestFor = (tabId: string) => container.querySelector<HTMLElement>(`preview-live-guest[data-tab="${tabId}"]`)
+  const aGuest = guestFor(aTab)!
+
+  aGuest.querySelector('input')!.value = 'typed in bot A'
+
+  act(() => {
+    setPreviewScope('bot-b')
+    $selectedStoredSessionId.set('sess-bot-b')
+  })
+  expect(treePanesWithPrefix('preview-tile:')).not.toContain(`preview-tile:${aTab}`)
+  expect(aGuest.isConnected).toBe(true)
+
+  act(() => {
+    setPreviewScope('default')
+    $selectedStoredSessionId.set('sess-bot-a')
+  })
+  expect(guestFor(aTab)).toBe(aGuest)
+  expect(aGuest.querySelector('input')!.value).toBe('typed in bot A')
+  expect(disconnected).not.toContain(aGuest)
+  expect(mounts.get(aTab)).toBe(1)
+})

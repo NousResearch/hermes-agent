@@ -387,6 +387,20 @@ export function previewTabsFor(owner: PreviewOwner = $focusedStoredSessionId.get
   return bucketTabsFor($previewTabs.get(), ownerIdentity(owner), viewKey, viewKey)
 }
 
+/** The open tab `tabId` in ANY profile's rail: the view's own list first, then
+ *  every other bucket. A hidden session's live page may belong to a profile
+ *  that is not in view (switching bots swaps the rail onto the next profile),
+ *  and it is still an open tab whose body must survive. */
+export function previewTabInAnyProfile(tabId: string): PreviewTab | undefined {
+  return (
+    $previewTabs.get().find(tab => tab.id === tabId) ??
+    Object.entries(tabsByProfile)
+      .filter(([key]) => key !== viewKey)
+      .flatMap(([, tabs]) => tabs)
+      .find(tab => tab.id === tabId)
+  )
+}
+
 /** Ids of the tabs `owner` may see in ANY profile's rail, for scoping a
  *  request to a popped-out Browser window: a background session's Browser
  *  can be popped out while another profile is in view. Its own tabs count in

@@ -40,6 +40,7 @@ import {
   newBrowserTab,
   popOutBrowserTab,
   preferredVisibleTabId,
+  previewTabInAnyProfile,
   type PreviewTarget,
   setPreviewTabPinned
 } from '@/store/preview'
@@ -324,16 +325,18 @@ export function watchPreviewTiles(): void {
 const HIDDEN_LIVE_PREVIEW_LIMIT = 8
 
 /** A page (live Browser guest or rendered HTML) whose body must survive
- *  being out of view; a text peek is cheap to re-render. */
+ *  being out of view; a text peek is cheap to re-render. Looked up in every
+ *  profile's rail: switching to another bot's chat swaps the view onto that
+ *  profile, and the page left behind is still an open, hidden tab. */
 function keepsLiveBody(tabId: string): boolean {
-  const target = targetFor(tabId)
+  const target = previewTabInAnyProfile(tabId)?.target
 
   return target?.kind === 'url' || target?.previewKind === 'html'
 }
 
 /** A tab whose session left the screen keeps its live body when it is a page
- *  still open in this profile's rail (`targetFor` reads it) and not popped
- *  out (the pop-out window owns that guest). */
+ *  still open in some profile's rail (`keepsLiveBody` reads them all) and not
+ *  popped out (the pop-out window owns that guest). */
 const retainHiddenPreview = (tabId: string) => keepsLiveBody(tabId) && !$poppedBrowserTabIds.get().has(tabId)
 
 const watchPreviewTileMirror = paneMirror<{ id: string }>({

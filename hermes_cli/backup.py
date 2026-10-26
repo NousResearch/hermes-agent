@@ -19,7 +19,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from hermes_constants import (
     LOCAL_RUNTIME_ROOT_DIRS, _get_platform_default_hermes_home, get_default_hermes_root, get_hermes_home,
-    display_hermes_home,
+    display_hermes_home, named_profile_is_deleted,
 )
 from hermes_state_dbfile import RETIRED_GENERATION_DIR_SUFFIX
 from hermes_state_holders import read_only_db_uri
@@ -1805,7 +1805,7 @@ def _sibling_profile_homes(invoking_home: Path) -> list[tuple[str, Path]]:
                     entry.is_dir()
                     and entry.name != "default"
                     and _PROFILE_ID_RE.match(entry.name)
-                    and entry.resolve() != invoking
+                    and entry.resolve() != invoking and not named_profile_is_deleted(entry)  # husk of a deleted profile
                 ):
                     homes.append((entry.name, entry))
     except Exception as exc:

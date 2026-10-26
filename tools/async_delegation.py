@@ -792,6 +792,28 @@ def _batch_crash(error: str, duration: float) -> dict[str, Any]:
     return {"results": [], "error": error, "total_duration_seconds": duration}
 
 
+def _hold_gateway_approval(session_key: str) -> tuple[str, bool]:
+    """Pin the parent turn's approval notifier for the lifetime of one async child.
+
+    The parent turn unregisters that callback as soon as it returns. Without a pin the
+    child's dangerous command finds no route and comes back ``pending_approval`` with
+    nobody to ask. Returns the key that was pinned and whether the pin landed.
+    """
+    from tools.approval import pin_gateway_notify
+    from tools.approval_context import get_current_session_key
+    key = get_current_session_key() or session_key or ""
+    if not key:
+        return "", False
+    return key, pin_gateway_notify(key)
+
+
+def _release_gateway_approval(session_key: str, held: bool) -> None:
+    if not held or not session_key:
+        return
+    from tools.approval import unpin_gateway_notify
+    unpin_gateway_notify(session_key)
+
+
 def _batch_status(combined: dict[str, Any]) -> str:
     """Batch status: completed unless every child errored/was interrupted."""
     child_results = combined.get("results") or []
@@ -858,6 +880,9 @@ def _dispatch_admitted(
     # Units of one call share a slot, so live units can exceed slots: size the pool by units or a
     # unit queues behind a full pool and the stale monitor kills it before its child ever starts.
     executor = _get_executor(max(max_async_children, live_units))
+    # Filled in just before submit. The worker releases the same cell; the parent turn
+    # unregisters the notifier in its finally, which can run as soon as this function returns.
+    hold_key, approval_held = "", False
 
     def _worker() -> None:
         result: dict[str, Any] = {}
@@ -874,7 +899,10 @@ def _dispatch_admitted(
             logger.exception(f"Async delegation{label} %s crashed", delegation_id)
             result = crash_result(f"{type(exc).__name__}: {exc}", round(time.time() - dispatched_at, 2))
         finally:
-            _finalize(delegation_id, result, status)
+            try:
+                _finalize(delegation_id, result, status)
+            finally:
+                _release_gateway_approval(hold_key, approval_held)
 
     from hermes_cli.backend_retirement import retirement
 
@@ -882,10 +910,12 @@ def _dispatch_admitted(
     # reservation too: the stall monitor may finalize its registry record before it really exits.
     retirement.acquire()
     try:
+        hold_key, approval_held = _hold_gateway_approval(session_key)
         future = executor.submit(propagate_context_to_thread(_worker))
         future.add_done_callback(lambda _: retirement.release())
     except Exception as exc:  # pragma: no cover — pool submit failure is rare
         retirement.release()
+        _release_gateway_approval(hold_key, approval_held)
         with _records_lock:
             _records.pop(delegation_id, None)
         if remote := worker_ledger():

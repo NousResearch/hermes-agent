@@ -37,8 +37,11 @@ def _cfg() -> dict:
 # callback, so prompt_dangerous_approval() would fall back to input() and
 # deadlock the parent's prompt_toolkit TUI. Every worker gets a non-interactive
 # callback via ThreadPoolExecutor(initializer=...): deny by default, approve when
-# delegation.subagent_auto_approve is true. Both warn for audit. Gateway sessions
-# are unaffected (they resolve approvals via tools/approval.py's per-session queue).
+# delegation.subagent_auto_approve is true. Both warn for audit.
+# Gateway sessions do not use this callback. A child spawned from a gateway turn
+# posts on the parent session's notify callback (tools.approval); with no route
+# to a user the gate returns a definitive block, not a pending_approval nobody
+# can resolve. subagent_auto_approve still skips that prompt.
 def _subagent_auto_deny(command: str, description: str, **kwargs) -> str:
     """Auto-deny (safe default): returns 'deny' so the child sees a recoverable refusal."""
     logger.warning(

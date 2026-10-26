@@ -684,16 +684,42 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 logger.debug("resume_typing_for_chat after clarify answer failed", exc_info=True)
         return response, answered
 
-    def _approval_notify_sync(self, approval_data: dict) -> None:
-        if self._approval_owner is not None:
-            authority, session_id, generation = self._approval_owner
+    def _subagent_approval_outlived_turn(self, approval_data: dict) -> bool:
+        """True when a delegated child's prompt is still worth posting after the parent turn.
+
+        ``check_approval_generation`` fails closed once the turn is no longer running, which
+        is correct for the parent session's own waits (a late callback must not publish a
+        card). A pinned sub-agent approval still has to reach that same chat, so only the
+        stale-generation error on a ``delegated_child`` prompt is swallowed here. The caller
+        skips ``register_approval``, which repeats the same generation check.
+        """
+        owner = self._approval_owner
+        if owner is None:
+            return False
+        from hermes_state_runtime import RuntimeStoreError
+        authority, session_id, generation = owner
+        try:
             authority.check_approval_generation(session_id, generation)
+        except RuntimeStoreError as exc:
+            if approval_data.get("delegated_child") and exc.reason == "stale_generation":
+                logger.info(
+                    "Posting sub-agent approval after the parent turn ended (session %s)",
+                    session_id,
+                )
+                return True
+            raise
+        return False
+
+    def _approval_notify_sync(self, approval_data: dict) -> None:
+        past_turn = self._subagent_approval_outlived_turn(approval_data)
         # A native decline must finish before any observer can authorize work.
         self._render_approval_sync(approval_data)
-        if self._approval_owner is not None:
-            from gateway import local_viewer_events
-            authority.register_approval(session_id, generation, self._ctx.session_key, approval_data,
-                                        timeout_s=local_viewer_events.prompt_timeout_s(self, "approval"))
+        if past_turn or self._approval_owner is None:
+            return
+        from gateway import local_viewer_events
+        authority, session_id, generation = self._approval_owner
+        authority.register_approval(session_id, generation, self._ctx.session_key, approval_data,
+                                    timeout_s=local_viewer_events.prompt_timeout_s(self, "approval"))
 
     def _render_approval_sync(self, approval_data: dict) -> None:
         """Send the approval request from the agent thread: the adapter's interactive button

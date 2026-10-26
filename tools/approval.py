@@ -12,11 +12,13 @@ call time; sibling-defined names are imported from their defining module.
 """
 
 from dataclasses import dataclass
+import contextvars
 import hashlib
 import importlib
 import logging
 import os
 import threading
+from contextlib import contextmanager
 from typing import Optional
 
 from utils import env_var_enabled, is_truthy_value
@@ -121,6 +123,19 @@ def _denial_breaker_addendum(session_key: str) -> str:
 # instead of only hearing "denied". Ported from qwibitai/nanoclaw#2832.
 _gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, …]
 _gateway_notify_cbs: dict[str, object] = {}  # session_key → callable(approval_data)
+# Async delegate_task children outlive the parent turn. A pin keeps the parent's notify
+# callback registered after that turn's unregister, and release_pending records that the
+# turn already asked to drop it. The last unpin applies the drop.
+_gateway_notify_pins: dict[str, int] = {}
+_gateway_notify_release_pending: set[str] = set()
+# Parent gateway session key and task label for a delegated child. The child inherits the
+# parent's approval key via context copy; these survive a later rebind of that key.
+_delegated_parent_approval_key: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "hermes_delegated_parent_approval_key", default="",
+)
+_delegated_approval_task: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "hermes_delegated_approval_task", default="",
+)
 
 
 def register_gateway_notify(session_key: str, cb) -> None:
@@ -128,15 +143,110 @@ def register_gateway_notify(session_key: str, cb) -> None:
     bridges sync→async: it runs in the agent thread and must schedule the send on the loop."""
     with _lock:
         _gateway_notify_cbs[session_key] = cb
+        # This turn owns the callback. A deferred drop from the previous turn must not fire
+        # when an older sub-agent pin releases.
+        _gateway_notify_release_pending.discard(session_key)
+
+
+def _drop_gateway_notify_locked(session_key: str) -> None:
+    """Pop the callback and wake every waiter. Caller holds ``_lock``."""
+    _gateway_notify_release_pending.discard(session_key)
+    _gateway_notify_cbs.pop(session_key, None)
+    for entry in _gateway_queues.pop(session_key, []):
+        entry.event.set()
+
+
+def _wake_turn_local_approvals_locked(session_key: str) -> None:
+    """Wake waits that belong to the turn that just ended. Delegated-child prompts stay queued:
+    their pin is what kept the callback alive, and waking them would report a false cancel."""
+    queue = _gateway_queues.get(session_key)
+    if not queue:
+        return
+    keep = []
+    for entry in queue:
+        if entry.data.get("delegated_child"):
+            keep.append(entry)
+        else:
+            entry.event.set()
+    if keep:
+        _gateway_queues[session_key] = keep
+    else:
+        _gateway_queues.pop(session_key, None)
 
 
 def unregister_gateway_notify(session_key: str) -> None:
-    """Unregister the callback and wake ALL blocked threads for this session so
-    they don't hang forever (agent run finished or interrupted)."""
+    """Unregister the callback and wake blocked threads so they don't hang forever.
+
+    A delegated sub-agent may still be running after the parent turn returns (async
+    delegation). While that child holds a pin, keep the callback so its approval can still
+    reach the parent session's chat, and wake only waits that belong to the turn that just
+    ended. The last unpin drops the callback and wakes whatever is still queued.
+    """
     with _lock:
-        _gateway_notify_cbs.pop(session_key, None)
-        for entry in _gateway_queues.pop(session_key, []):
-            entry.event.set()
+        if _gateway_notify_pins.get(session_key, 0) > 0:
+            _gateway_notify_release_pending.add(session_key)
+            _wake_turn_local_approvals_locked(session_key)
+            return
+        _drop_gateway_notify_locked(session_key)
+
+
+def pin_gateway_notify(session_key: str) -> bool:
+    """Hold ``session_key``'s notify callback past :func:`unregister_gateway_notify`.
+
+    Returns False when nothing is registered — there is no prompt to keep alive, and a later
+    unpin must not drop a callback a newer turn installed. Each successful pin needs one
+    :func:`unpin_gateway_notify`.
+    """
+    if not session_key:
+        return False
+    with _lock:
+        if session_key not in _gateway_notify_cbs:
+            return False
+        _gateway_notify_pins[session_key] = _gateway_notify_pins.get(session_key, 0) + 1
+        return True
+
+
+def unpin_gateway_notify(session_key: str) -> None:
+    """Release one pin. The last pin applies a deferred unregister, if the turn already ended.
+
+    An extra unpin (nothing pinned) is a no-op so a worker that always releases cannot drop a
+    live turn's callback.
+    """
+    if not session_key:
+        return
+    with _lock:
+        count = _gateway_notify_pins.get(session_key, 0)
+        if count <= 0:
+            return
+        count -= 1
+        if count:
+            _gateway_notify_pins[session_key] = count
+            return
+        _gateway_notify_pins.pop(session_key, None)
+        if session_key in _gateway_notify_release_pending:
+            _drop_gateway_notify_locked(session_key)
+
+
+@contextmanager
+def delegated_gateway_approval_scope(task: str = ""):
+    """Remember which gateway session can post this child's approval prompt.
+
+    The notifier is registered on the parent turn's session key. Capture that key while the
+    callback is still visible so a later rebind still routes the prompt there, and keep *task*
+    so the card names the sub-agent that asked.
+    """
+    parent = _delegated_parent_approval_key.get()
+    current = get_current_session_key() or ""
+    if current and _gateway_notify_cb(current) is not None:
+        parent = current
+    key_token = _delegated_parent_approval_key.set(parent)
+    shown = " ".join((task or "").split())
+    task_token = _delegated_approval_task.set(shown or _delegated_approval_task.get())
+    try:
+        yield
+    finally:
+        _delegated_parent_approval_key.reset(key_token)
+        _delegated_approval_task.reset(task_token)
 
 
 def resolve_gateway_approval(session_key: str, choice: str,
@@ -564,6 +674,90 @@ def _gateway_notify_cb(session_key: str):
         return _gateway_notify_cbs.get(session_key)
 
 
+def _is_delegated_child() -> bool:
+    from agent.delegation_context import is_delegated_child_context
+    return is_delegated_child_context()
+
+
+def _delegated_subagent_auto_approves() -> bool:
+    """``delegation.subagent_auto_approve`` (default false). Lazy: approval must not import
+    the delegate facade at module load."""
+    from tools.delegate_tool_config import _cfg
+    return is_truthy_value(_cfg().get("subagent_auto_approve", False))
+
+
+def _gateway_notify_target(session_key: str) -> tuple[str, object | None]:
+    """Session key whose notifier can actually post this prompt, and that callback.
+
+    A delegated child often runs under its own key, or under the parent's key after that
+    turn unregistered. The scope captured at spawn still names the parent session.
+    """
+    own = _gateway_notify_cb(session_key)
+    if own is not None:
+        return session_key, own
+    parent = _delegated_parent_approval_key.get()
+    if not parent or parent == session_key:
+        return session_key, None
+    parent_cb = _gateway_notify_cb(parent)
+    if parent_cb is None:
+        return session_key, None
+    return parent, parent_cb
+
+
+def _approval_route_key(session_key: str | None = None) -> str:
+    """Key the gate should queue, persist, and short-circuit on.
+
+    When a parent notifier is the only route, session/always approvals stick to that parent
+    session — the button the user clicked, and the key ``/approve`` resolves.
+    """
+    key = session_key if session_key is not None else (get_current_session_key() or "")
+    route, cb = _gateway_notify_target(key)
+    if cb is None:
+        return key
+    return route
+
+
+def _stamp_delegated_approval(data: dict) -> None:
+    """Mark a child prompt so the parent card names the task, and so turn-end bookkeeping
+    can tell a sub-agent wait from the parent turn's own wait."""
+    if not _is_delegated_child():
+        return
+    data["delegated_child"] = True
+    task = " ".join(_delegated_approval_task.get().split())
+    if not task:
+        return
+    data["subagent_task"] = task
+    label = f"sub-agent: {task[:80]}"
+    desc = data.get("description") or ""
+    if str(desc).startswith("sub-agent:"):
+        return
+    data["description"] = f"{label} — {desc}" if desc else label
+
+
+def _subagent_auto_grant(command: str, description: str, grant):
+    """Opt-in YOLO for gateway children: the CLI callback never runs on this branch."""
+    if not _is_delegated_child() or not _delegated_subagent_auto_approves():
+        return None
+    from tools.delegate_tool_config import _subagent_auto_approve
+    _subagent_auto_approve(command, description)
+    return grant("once")
+
+
+def _unroutable_subagent_block(spec: "_GateSpec", *, pattern_key: str, description: str) -> dict:
+    """A child approval with nowhere to ask. Not ``pending_approval``: nothing will ever resolve it."""
+    message = (
+        f"BLOCKED: This {spec.noun} was requested by a delegated sub-agent, but no approval "
+        "prompt can reach the user. Run it in the main session, or set "
+        "delegation.subagent_auto_approve: true to auto-approve sub-agent actions. "
+        "Do NOT retry this from the sub-agent."
+    )
+    task = " ".join(_delegated_approval_task.get().split())
+    if task:
+        message = f"{message} Sub-agent task: {task[:120]}."
+    return _denied(message, pattern_key=pattern_key, description=description,
+                   outcome="blocked", noun=spec.noun)
+
+
 def _pending_result(spec, session_key: str, *, command: str, description: str,
                     pattern_key: str, pattern_keys: list[str], body: str | None,
                     smart_denied: bool) -> dict:
@@ -793,6 +987,95 @@ def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: st
     }, True
 
 
+def _gateway_prompt_data(*, display_command: str, display_description: str, pattern_key: str,
+                         pattern_keys: list[str], smart_denied: bool) -> dict:
+    data = {
+        "command": display_command, "pattern_key": pattern_key,
+        "pattern_keys": pattern_keys, "description": display_description,
+        "allow_permanent": not smart_denied, "allow_session": not smart_denied,
+    }
+    if smart_denied:
+        data["smart_denied"] = True
+    _stamp_delegated_approval(data)
+    return data
+
+
+def _gateway_decision_result(spec: _GateSpec, *, session_key: str, notify_cb, data: dict,
+                             pattern_key: str, description: str, deny, grant) -> dict:
+    """Block on the gateway prompt and map the answer. Same consent contract as before:
+    silence is not consent, and a withdrawn prompt is not a user deny."""
+    decision = _await_gateway_decision(session_key, notify_cb, data, surface="gateway")
+    if decision.get("notify_failed"):
+        return _denied(spec.notify_failed, pattern_key=pattern_key, description=description,
+                       outcome="notify_failed", noun=spec.noun)
+    choice, deny_reason = decision["choice"], decision.get("reason")
+    if decision.get("cancelled"):
+        return deny(spec.gateway_refused, "cancelled",
+                    reason=f"approval was withdrawn before the user answered ({decision['cancelled']})",
+                    reason_addendum="", timeout_addendum="", deny_reason=None)
+    if not decision["resolved"]:
+        return deny(spec.gateway_refused, "timeout", reason="timed out without user response",
+                    reason_addendum="", timeout_addendum=" Silence is not consent.",
+                    deny_reason=deny_reason)
+    if choice is None or choice == "deny":
+        return deny(spec.gateway_refused, "denied", reason="denied by user",
+                    reason_addendum=(f' Reason given by the user: "{deny_reason}".' if deny_reason else ""),
+                    timeout_addendum="", deny_reason=deny_reason)
+    return grant(choice, on_key=session_key)
+
+
+def _gateway_unrouted(spec: _GateSpec, *, command: str, description: str, pattern_key: str,
+                      pattern_keys: list[str], session_key: str, approval_callback, is_cli: bool,
+                      smart_denied: bool, pending_body, display_command: str,
+                      display_description: str) -> dict | None:
+    """No notifier. Interactive CLI falls through to its panel; a delegated child fails closed
+    with a definitive block; everyone else keeps the reviewable pending shape."""
+    if _should_fall_through_to_cli_approval(
+        is_cli=is_cli, approval_callback=approval_callback, notify_cb=None,
+    ):
+        return None
+    if _is_delegated_child():
+        return _unroutable_subagent_block(spec, pattern_key=pattern_key, description=description)
+    if not spec.pending_keys:
+        display_command, display_description = command, description
+    return _pending_result(
+        spec, session_key, command=display_command, description=display_description,
+        pattern_key=pattern_key, pattern_keys=pattern_keys, body=pending_body,
+        smart_denied=smart_denied,
+    )
+
+
+def _route_gateway_approval(spec: _GateSpec, *, command: str, description: str, pattern_key: str,
+                            pattern_keys: list[str], session_key: str, approval_callback,
+                            is_cli: bool, smart_denied: bool, pending_body, deny, grant) -> dict | None:
+    """Gateway/ask round-trip. ``None`` means fall through to the CLI prompt."""
+    auto = _subagent_auto_grant(command, description, grant)
+    if auto is not None:
+        return auto
+    from agent.redact import redact_sensitive_text
+    display_command = redact_sensitive_text(command)
+    display_description = redact_sensitive_text(description)
+    route_key, notify_cb = _gateway_notify_target(session_key)
+    if notify_cb is None:
+        return _gateway_unrouted(
+            spec, command=command, description=description, pattern_key=pattern_key,
+            pattern_keys=pattern_keys, session_key=session_key, approval_callback=approval_callback,
+            is_cli=is_cli, smart_denied=smart_denied, pending_body=pending_body,
+            display_command=display_command, display_description=display_description,
+        )
+    # Queue and persist on the session the button resolves, which may be the parent.
+    if route_key != session_key:
+        session_key = route_key
+    data = _gateway_prompt_data(
+        display_command=display_command, display_description=display_description,
+        pattern_key=pattern_key, pattern_keys=pattern_keys, smart_denied=smart_denied,
+    )
+    return _gateway_decision_result(
+        spec, session_key=session_key, notify_cb=notify_cb, data=data,
+        pattern_key=pattern_key, description=description, deny=deny, grant=grant,
+    )
+
+
 def _human_decision(spec: _GateSpec, *, command: str, description: str,
                     pattern_key: str, pattern_keys: list[str],
                     session_key: str, approval_callback, is_cli: bool, is_gateway: bool,
@@ -824,12 +1107,14 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                        pattern_key=pattern_key, description=description,
                        outcome=outcome, noun=spec.noun, **extra)
 
-    def grant(choice: str) -> dict:
+    def grant(choice: str, on_key: str | None = None) -> dict:
         # A smart-DENY owner override is always one operation, even if an older client returns "session" or "always".
+        # ``on_key`` is the parent session when a sub-agent prompt was posted there.
+        key = session_key if on_key is None else on_key
         if not smart_denied:
-            _persist_choice(session_key, choice, pattern_keys)
+            _persist_choice(key, choice, pattern_keys)
         if spec.user_approved:
-            return _user_approved(session_key, description)
+            return _user_approved(key, description)
         return _approved()
 
     if spec.transport:
@@ -848,60 +1133,16 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             return grant(choice)
 
     # Gateway/async approval: block the agent thread until /approve or /deny, mirroring the CLI's synchronous input()
-    # flow. The agent never sees "approval_required" here — it gets output or a definitive BLOCKED.
+    # flow. The agent never sees "approval_required" here — it gets output or a definitive BLOCKED. A delegated
+    # child with no route to a user is a hard block, not a pending_approval nothing can resolve.
     if is_gateway or is_ask:
-        # Redacted copies for user-visible rendering only (the gateway paints them into Discord/Slack); the raw
-        # command still executes after approval and persistence keys off pattern_key.
-        display_command = redact_sensitive_text(command)
-        display_description = redact_sensitive_text(description)
-        notify_cb = _gateway_notify_cb(session_key)
-        if notify_cb is not None:
-            # Smart DENY overrides are one-operation decisions, so the UI must not offer a
-            # permanent or session scope.
-            data = {
-                "command": display_command, "pattern_key": pattern_key,
-                "pattern_keys": pattern_keys, "description": display_description,
-                "allow_permanent": not smart_denied,
-                "allow_session": not smart_denied,
-            }
-            if smart_denied:
-                data["smart_denied"] = True
-            decision = _await_gateway_decision(session_key, notify_cb, data, surface="gateway")
-            if decision.get("notify_failed"):
-                return _denied(spec.notify_failed, pattern_key=pattern_key,
-                               description=description, outcome="notify_failed", noun=spec.noun)
-            # Consent contract: silence is NOT consent, and an explicit deny is a hard
-            # halt — both produce a BLOCKED outcome. ``/deny <reason>`` free text is
-            # relayed verbatim so the agent can adapt rather than only hearing "denied".
-            choice, deny_reason = decision["choice"], decision.get("reason")
-            if decision.get("cancelled"):
-                # The prompt was withdrawn (turn interrupted or ended) before anyone answered:
-                # still fail closed, but do not attribute a refusal to the user.
-                return deny(spec.gateway_refused, "cancelled",
-                            reason=f"approval was withdrawn before the user answered ({decision['cancelled']})",
-                            reason_addendum="", timeout_addendum="", deny_reason=None)
-            if not decision["resolved"]:
-                return deny(spec.gateway_refused, "timeout", reason="timed out without user response",
-                            reason_addendum="", timeout_addendum=" Silence is not consent.",
-                            deny_reason=deny_reason)
-            if choice is None or choice == "deny":
-                return deny(spec.gateway_refused, "denied", reason="denied by user",
-                            reason_addendum=(f' Reason given by the user: "{deny_reason}".' if deny_reason else ""),
-                            timeout_addendum="", deny_reason=deny_reason)
-            return grant(choice)
-
-        # No gateway callback (cron, batch, or ask-mode leaked into an interactive CLI, historically via `import
-        # gateway.run`): paint the local panel when possible instead of a pending_approval that makes the agent look
-        # "auto-blocked".
-        if not _should_fall_through_to_cli_approval(
-            is_cli=is_cli, approval_callback=approval_callback, notify_cb=notify_cb,
-        ):
-            if not spec.pending_keys:
-                display_command, display_description = command, description
-            return _pending_result(
-                spec, session_key, command=display_command, description=display_description, pattern_key=pattern_key,
-                pattern_keys=pattern_keys, body=pending_body, smart_denied=smart_denied,
-            )
+        routed = _route_gateway_approval(
+            spec, command=command, description=description, pattern_key=pattern_key, pattern_keys=pattern_keys,
+            session_key=session_key, approval_callback=approval_callback, is_cli=is_cli, smart_denied=smart_denied,
+            pending_body=pending_body, deny=deny, grant=grant,
+        )
+        if routed is not None:
+            return routed
 
     # CLI interactive: single combined prompt, wrapped in the pre/post plugin hooks.
     prompt_command, prompt_description = command, description
@@ -989,7 +1230,7 @@ def _run_approval_gate(
     # dangerous-pattern prompts) must too, or "off" still prompts on those surfaces.
     if _yolo_active() or approval_context._get_approval_mode() == "off":
         return _approved()
-    session_key = get_current_session_key()
+    session_key = _approval_route_key()
     if is_approved(session_key, pattern_key):
         return _approved()
 
@@ -1183,7 +1424,7 @@ def check_all_command_guards(command: str, env_type: str,
         return _approved()
 
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
-    session_key = get_current_session_key()
+    session_key = _approval_route_key()
     if not is_dangerous or is_approved(session_key, pattern_key):
         return _approved()
     return _human_decision(
@@ -1264,7 +1505,7 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     if (not is_gateway and not is_ask) or _is_local_viewer_turn():
         return _approved()
 
-    session_key = get_current_session_key()
+    session_key = _approval_route_key()
     # Built only past the early-return gates so common paths don't copy a potentially-large script into this string.
     command = f"execute_code <<'PY'\n{code}\nPY"
 

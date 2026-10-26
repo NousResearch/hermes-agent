@@ -192,6 +192,12 @@ export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): (
 
     active.stop()
   }
+
+  // No mediaDevices (an insecure origin): there is no mic to monitor. The conversation's own
+  // listening start already reports that, through the recorder's "microphone unsupported" copy.
+  if (!navigator.mediaDevices?.getUserMedia) {
+    return cleanup
+  }
   void (async () => {
     try {
       // Don't open a second capture context while the recorder's is still

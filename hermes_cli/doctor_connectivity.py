@@ -16,9 +16,9 @@ from typing import NamedTuple
 from urllib.parse import urlsplit
 
 from hermes_cli.colors import Colors, color
-from hermes_cli.models import _HERMES_USER_AGENT
+from hermes_cli.version_info import hermes_user_agent
 from hermes_constants import OPENROUTER_MODELS_URL
-from utils import base_url_host_matches
+from utils import base_url_host_matches, normalize_proxy_env_vars
 
 _APIKEY_PROVIDERS_CACHE: list | None = None
 
@@ -109,7 +109,7 @@ def _build_apikey_providers_list() -> list:
             if {_normalize_provider(a) for a in (_pp.name, *(_pp.aliases or ()))} & _dedicated_canonical:
                 continue
             # Key vars vs base-URL vars: the first found value goes out as Authorization: Bearer, never a URL.
-            _is_url = lambda v: v.endswith("_BASE_URL") or v.endswith("_URL")  # noqa: E731
+            _is_url = lambda v: v.endswith("_BASE_URL") or v.endswith("_URL")
             _key_vars = tuple(v for v in _pp.env_vars if not _is_url(v))
             if not _key_vars:
                 continue
@@ -211,7 +211,7 @@ def _anthropic_messages_probe(base: str, key: str):
     from agent.anthropic_endpoints import _requires_bearer_auth
     normalized, kwargs = _base_client_kwargs(base, None)
     auth = {"Authorization": f"Bearer {key}"} if _requires_bearer_auth(normalized) else {"x-api-key": key}
-    headers = {"anthropic-version": "2023-06-01", "User-Agent": _HERMES_USER_AGENT, **auth}
+    headers = {"anthropic-version": "2023-06-01", "User-Agent": hermes_user_agent(), **auth}
     model = str(_model_cfg().get("default") or "").strip() or "claude-sonnet-4-5"
     body = {"model": model, "max_tokens": 1, "messages": [{"role": "user", "content": "ping"}]}
     return httpx.post(normalized + "/v1/messages", headers=headers, params=kwargs.get("default_query"), json=body, timeout=10)
@@ -242,7 +242,7 @@ def _apikey_request(key: str, base_env, default_url) -> tuple:
     if base_url_host_matches(base, "api.kimi.com") and base.rstrip("/").endswith("/coding"):
         base = base.rstrip("/") + "/v1"
     url = (base.rstrip("/") + "/models") if base else default_url
-    headers = {"Authorization": f"Bearer {key}", "User-Agent": _HERMES_USER_AGENT}
+    headers = {"Authorization": f"Bearer {key}", "User-Agent": hermes_user_agent()}
     if base_url_host_matches(base, "api.kimi.com"):
         headers["User-Agent"] = "claude-code/0.1.0"
     # Google's Generative Language API rejects ``Authorization: Bearer <api-key>`` with 401
@@ -395,7 +395,7 @@ def _probe_github_token() -> ProbeResult:
     try:
         import httpx
         r = httpx.get(GITHUB_API_PROBE_URL, timeout=10, headers={
-            "Authorization": f"Bearer {get_env_value(var)}", "User-Agent": _HERMES_USER_AGENT,
+            "Authorization": f"Bearer {get_env_value(var)}", "User-Agent": hermes_user_agent(),
             "Accept": "application/vnd.github+json"})
     except Exception as e:
         return _row(name, "fail", f"({e})", ["Check network connectivity"])
@@ -430,6 +430,9 @@ def run_probes(probes: list) -> list:
     """
     # Disable boto3's EC2 instance-metadata probe (169.254.169.254, multi-second timeout off-EC2). Set on the
     # parent thread before submitting so it never races a worker; has_aws_credentials() already gates on real creds.
+    normalize_proxy_env_vars()  # a bracketed-IPv6 NO_PROXY entry ([::1], Clash Verge/mihomo) makes every bare
+    # trust_env client a probe builds raise InvalidURL at construction (#118159) — sanitize once, before any
+    # worker runs, so no probe ever reports "(Invalid port: :1])" as provider downtime.
     _imds_prev = os.environ.get("AWS_EC2_METADATA_DISABLED")
     os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
     try:

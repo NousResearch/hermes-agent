@@ -99,6 +99,8 @@ class CLIVoiceMixin:
 
         # Config-driven silence params, numeric-guarded against YAML scalar corruption.
         rec = self._voice_recorder
+        self._voice_live_text = ""
+        rec.on_live_partial = self._voice_on_live_partial
         rec._silence_threshold = _numeric_or(voice_cfg.get("silence_threshold"), 200)
         rec._silence_duration = _numeric_or(voice_cfg.get("silence_duration"), 3.0)
         # voice.max_recording_seconds — hard cap on one recording; explicit <= 0 disables it.
@@ -181,6 +183,11 @@ class CLIVoiceMixin:
                 _cprint(f"{_DIM}{t('cli.voice.autorestart_failed', error=e)}{_RST}")
         threading.Thread(target=_restart_recording, daemon=True).start()
 
+    def _voice_on_live_partial(self, text: str) -> None:
+        """Live STT partial (``stt.streaming``): shown in the input placeholder while recording."""
+        self._voice_live_text = text
+        self._voice_invalidate()
+
     def _voice_stop_and_transcribe(self):
         """Stop recording, transcribe via STT, and queue the transcript as input."""
         from cli import _DIM, _RST, _VoiceInputMessage, _cprint
@@ -235,6 +242,7 @@ class CLIVoiceMixin:
         finally:
             with self._voice_lock:
                 self._voice_processing = False
+            self._voice_live_text = ""
             self._voice_invalidate()
             # On failure keep the source recording so long dictation is not lost.
             try:

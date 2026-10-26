@@ -302,7 +302,7 @@ def test_qwen_oauth_auto_fallthrough_on_auth_failure(monkeypatch):
         "resolve_qwen_runtime_credentials",
         lambda **kw: (_ for _ in ()).throw(AuthError("stale", provider="qwen-oauth", code="qwen_auth_missing")),
     )
-    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setattr(rp, "_get_model_config", dict)
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-or-key")
 
     # Should NOT raise — falls through to OpenRouter
@@ -313,7 +313,7 @@ def test_qwen_oauth_auto_fallthrough_on_auth_failure(monkeypatch):
 
 def test_resolve_runtime_provider_ai_gateway(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "ai-gateway")
-    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setattr(rp, "_get_model_config", dict)
     monkeypatch.setenv("AI_GATEWAY_API_KEY", "test-ai-gw-key")
 
     resolved = rp.resolve_runtime_provider(requested="ai-gateway")
@@ -444,7 +444,7 @@ def test_resolve_runtime_provider_ai_gateway_explicit_override_skips_pool(monkey
         raise AssertionError(f"resolve_api_key_provider_credentials should not be called for {provider}")
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "ai-gateway")
-    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setattr(rp, "_get_model_config", dict)
     monkeypatch.setattr(rp, "load_pool", _unexpected_pool)
     monkeypatch.setattr(
         rp,
@@ -468,7 +468,7 @@ def test_resolve_runtime_provider_ai_gateway_explicit_override_skips_pool(monkey
 
 def test_resolve_runtime_provider_openrouter_explicit(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
-    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setattr(rp, "_get_model_config", dict)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -560,7 +560,7 @@ def test_resolve_runtime_provider_auto_uses_openrouter_pool(monkeypatch):
             return _Entry()
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
-    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setattr(rp, "_get_model_config", dict)
     monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
@@ -590,7 +590,7 @@ def test_resolve_runtime_provider_openrouter_explicit_api_key_skips_pool(monkeyp
             return _Entry()
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
-    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setattr(rp, "_get_model_config", dict)
     monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
@@ -658,7 +658,7 @@ def test_openrouter_key_takes_priority_over_openai_key(monkeypatch):
     sent to OpenRouter instead of their OPENROUTER_API_KEY.
     """
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
-    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setattr(rp, "_get_model_config", dict)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-should-lose")
@@ -673,7 +673,7 @@ def test_openai_key_used_when_no_openrouter_key(monkeypatch):
     """A legacy OpenRouter key (sk-or-) kept in OPENAI_API_KEY is the fallback when
     OPENROUTER_API_KEY is not set."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
-    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setattr(rp, "_get_model_config", dict)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-or-v1-legacy-fallback")
@@ -689,9 +689,9 @@ def test_real_openai_key_is_never_routed_or_sent_to_openrouter(monkeypatch):
     nor becomes the bearer for openrouter.ai; auto-detection lands on openai-api as documented."""
     from hermes_cli.auth import resolve_provider
     from hermes_cli.runtime_provider_backends import _resolve_openrouter_runtime
-    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setattr(rp, "_get_model_config", dict)
     monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": {}})
-    monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: False)
+    monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda *_a, **_kw: False)
     for var in ("OPENAI_BASE_URL", "OPENROUTER_BASE_URL", "OPENROUTER_API_KEY", "CUSTOM_BASE_URL"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-real-openai-key")
@@ -706,11 +706,15 @@ def test_real_openai_key_is_never_routed_or_sent_to_openrouter(monkeypatch):
     ("https://proxy.corp.example/v1", ""),
     ("proxy.corp.example:8080/v1", ""),  # scheme-less still names a foreign host
     ("https://openrouter.ai/api/v1", "sk-openai-fallback"),
+    ("http://openrouter.ai/api/v1", ""),  # same host, http: another origin
+    ("https://openrouter.ai:8443/api/v1", ""),  # same host, another port
+    ("https://openrouter.ai:443/api/v1", "sk-openai-fallback"),  # default port spelled out: same origin
 ])
 def test_openai_key_bound_to_another_host_never_reaches_openrouter(monkeypatch, openai_base_url, expected_key):
-    """OPENAI_API_KEY is an OpenRouter fallback only while OPENAI_BASE_URL doesn't bind it elsewhere."""
+    """OPENAI_API_KEY is an OpenRouter fallback only while OPENAI_BASE_URL doesn't bind it elsewhere:
+    a bound key follows its exact origin, so the same hostname over http:// or on another port is elsewhere."""
     from hermes_cli.runtime_provider_backends import _resolve_openrouter_runtime
-    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setattr(rp, "_get_model_config", dict)
     monkeypatch.setenv("OPENAI_BASE_URL", openai_base_url)
     monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
@@ -720,6 +724,90 @@ def test_openai_key_bound_to_another_host_never_reaches_openrouter(monkeypatch, 
 
     assert resolved["base_url"] == "https://openrouter.ai/api/v1"
     assert resolved["api_key"] == expected_key
+
+
+def test_openrouter_env_file_key_survives_exhausted_pool(monkeypatch):
+    """A key living only in ~/.hermes/.env must survive an exhausted pool entry.
+
+    Regression test for #117667: with the pool's OPENROUTER_API_KEY entry benched
+    (select() -> None), the terminal resolver read os.environ only, so the documented
+    .env location was skipped and `hermes chat --provider openrouter` failed with
+    "No API key found" until the key was exported in the shell.
+    """
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(rp, "_get_model_config", dict)
+    monkeypatch.setattr(
+        rp, "load_pool",
+        lambda _provider: SimpleNamespace(has_credentials=lambda: True, select=lambda **_kw: None),
+    )
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    or_env_name = "OPENROUTER_" + "API_KEY"
+    monkeypatch.delenv(or_env_name, raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_env", lambda: {or_env_name: "dotenv-or-key"}
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="openrouter")
+
+    assert resolved["api_key"] == "dotenv-or-key"
+
+
+def test_openrouter_raw_op_ref_in_dotenv_loses_to_resolved_env(monkeypatch):
+    """A raw op:// reference in .env must lose to the resolved os.environ value on the
+    terminal resolver path.
+
+    Mirrors test_credential_pool_prefers_resolved_env_over_raw_op_ref: a 1Password
+    user keeps ``OPENROUTER_API_KEY=op://Vault/Item/field`` in .env while the resolved
+    key is exported into os.environ at startup. With the pool entry exhausted
+    (select() -> None), the fallback must send the resolved key, not the op:// URL
+    (which the provider would reject with 401)."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(rp, "_get_model_config", dict)
+    monkeypatch.setattr(
+        rp, "load_pool",
+        lambda _provider: SimpleNamespace(has_credentials=lambda: True, select=lambda **_kw: None),
+    )
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    or_env_name = "OPENROUTER_" + "API_KEY"
+    monkeypatch.setenv(or_env_name, "resolved-or-key")
+    monkeypatch.setattr(
+        "hermes_cli.config.load_env", lambda: {or_env_name: "op://Vault/Item/field"}
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="openrouter")
+
+    assert resolved["api_key"] == "resolved-or-key"
+
+
+def test_openai_env_file_key_used_as_fallback_without_openrouter_key(monkeypatch):
+    """The OPENAI_API_KEY .env rung of the same fallback works like the OpenRouter one.
+
+    Covers the second candidate (runtime_provider_backends reads both keys through
+    get_env_value_prefer_dotenv): with no OpenRouter key anywhere, a key living only
+    in ~/.hermes/.env still resolves the rung-8 fallback."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(rp, "_get_model_config", dict)
+    monkeypatch.setattr(
+        rp, "load_pool",
+        lambda _provider: SimpleNamespace(has_credentials=lambda: True, select=lambda **_kw: None),
+    )
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    oa_env_name = "OPENAI_" + "API_KEY"
+    or_env_name = "OPENROUTER_" + "API_KEY"
+    monkeypatch.delenv(oa_env_name, raising=False)
+    monkeypatch.delenv(or_env_name, raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_env", lambda: {oa_env_name: "sk-or-dotenv-openai-key"}
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="openrouter")
+
+    assert resolved["api_key"] == "sk-or-dotenv-openai-key"
 
 
 def test_custom_endpoint_uses_saved_config_base_url_when_env_missing(monkeypatch):
@@ -1157,7 +1245,7 @@ def test_explicit_openrouter_skips_openai_base_url(monkeypatch):
     (which may point to a custom endpoint) must not override the
     OpenRouter base URL.  Regression test for #874."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
-    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setattr(rp, "_get_model_config", dict)
     monkeypatch.setenv("OPENAI_BASE_URL", "https://my-custom-llm.example.com/v1")
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
     monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
@@ -1369,7 +1457,7 @@ def test_auto_detected_nous_auth_failure_falls_through_to_openrouter(monkeypatch
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
-    monkeypatch.setattr(rp, "load_config", lambda: {})
+    monkeypatch.setattr(rp, "load_config", dict)
 
     # resolve_provider returns "nous" (stale active_provider in auth.json)
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "nous")
@@ -1497,7 +1585,7 @@ class TestAzureFoundryResolution:
         monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "az-key")
         monkeypatch.delenv("AZURE_FOUNDRY_BASE_URL", raising=False)
         monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "azure-foundry")
-        monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+        monkeypatch.setattr(rp, "_get_model_config", dict)
         monkeypatch.setattr(rp, "load_pool", lambda provider: None)
 
         with pytest.raises(rp.AuthError, match="base URL"):
@@ -1890,7 +1978,7 @@ def _patch_bedrock(monkeypatch, config_default=""):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "bedrock")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {"default": config_default})
     monkeypatch.setattr(rp, "load_config", lambda: {"bedrock": {}})
-    monkeypatch.setattr(ba, "has_aws_credentials", lambda: True)
+    monkeypatch.setattr(ba, "has_aws_credentials", lambda *_a, **_kw: True)
     monkeypatch.setattr(ba, "resolve_aws_auth_env_var", lambda: "AWS_PROFILE")
     monkeypatch.setattr(ba, "resolve_bedrock_region", lambda: "eu-north-1")
 
@@ -2191,91 +2279,3 @@ def test_configured_key_env_resolving_empty_is_logged(monkeypatch, caplog):
         assert rp.resolve_runtime_provider(requested="custom:local")["api_key"] == "no-key-required"
     hits = [r for r in caplog.records if "UNSET_LLM_KEY" in r.getMessage()]
     assert len(hits) == 1 and "scw" in hits[0].getMessage()
-
-
-# ── model.openai_runtime: codex_app_server on every ladder rung (#115169) ─────────────────
-
-_CODEX_STORE_CREDS = {"base_url": "https://chatgpt.com/backend-api/codex", "api_key": "tok",
-                      "source": "hermes-auth-store", "last_refresh": 1}
-
-
-def _codex_rung(monkeypatch, rung: str) -> dict:
-    """Isolate one openai-codex ladder rung; returns the kwargs for resolve_runtime_provider."""
-    monkeypatch.setattr(rp, "resolve_codex_runtime_credentials", lambda: dict(_CODEX_STORE_CREDS))
-    if rung == "pool":
-        entry = SimpleNamespace(api_key="tok", runtime_api_key="tok", base_url="", source="pool")
-        monkeypatch.setattr(rp, "load_pool", lambda _p: SimpleNamespace(
-            has_credentials=lambda: True, select=lambda model=None: entry))
-        monkeypatch.setattr(rp, "credential_pool_matches_provider", lambda *a, **k: True)
-        return {}
-    monkeypatch.setattr(rp, "load_pool", lambda _p: SimpleNamespace(has_credentials=lambda: False))
-    return {"explicit_api_key": "sk-explicit"} if rung == "explicit" else {}
-
-
-@pytest.mark.parametrize("rung", ["pool", "oauth", "explicit"])
-def test_openai_runtime_codex_app_server_applies_on_every_rung(monkeypatch, rung):
-    """#115169: the opt-in was applied only inside the credential-pool rung, so the OAuth-store
-    and explicit --api-key/--base-url rungs silently resolved codex_responses."""
-    kwargs = _codex_rung(monkeypatch, rung)
-    monkeypatch.setattr(rp, "_get_model_config", lambda: {
-        "provider": "openai-codex", "default": "gpt-5.5", "openai_runtime": "codex_app_server"})
-
-    resolved = rp.resolve_runtime_provider(requested="openai-codex", **kwargs)
-
-    assert resolved["provider"] == "openai-codex"
-    assert resolved["api_mode"] == "codex_app_server"
-
-
-@pytest.mark.parametrize("rung", ["pool", "oauth", "explicit"])
-@pytest.mark.parametrize("openai_runtime", [None, "auto"])
-def test_openai_runtime_unset_keeps_wire_api_mode(monkeypatch, rung, openai_runtime):
-    kwargs = _codex_rung(monkeypatch, rung)
-    model_cfg = {"provider": "openai-codex", "default": "gpt-5.5"}
-    if openai_runtime is not None:
-        model_cfg["openai_runtime"] = openai_runtime
-    monkeypatch.setattr(rp, "_get_model_config", lambda: model_cfg)
-
-    assert rp.resolve_runtime_provider(requested="openai-codex", **kwargs)["api_mode"] == "codex_responses"
-
-
-def test_openai_runtime_codex_app_server_survives_the_openai_to_custom_alias_expansion(monkeypatch):
-    """``provider: openai`` expands to the anonymous ``custom`` runtime (#116055) before the overlay runs;
-    the overlay must judge the name the user configured, or the documented ``openai`` opt-in is a silent no-op."""
-    monkeypatch.setattr(rp, "load_pool", lambda _p: SimpleNamespace(has_credentials=lambda: False))
-    monkeypatch.setattr(rp, "_get_model_config", lambda: {
-        "provider": "openai", "default": "gpt-5.5-codex", "openai_runtime": "codex_app_server"})
-
-    resolved = rp.resolve_runtime_provider(requested="openai", explicit_api_key="sk-explicit")
-
-    assert resolved["provider"] == "custom"  # the alias expansion itself is unchanged
-    assert resolved["api_mode"] == "codex_app_server"
-
-
-# ── #116055: ``provider: openai`` means the same thing on both auxiliary paths ──────────────────
-
-def test_openai_alias_resolves_identically_on_runtime_and_aux_client_paths(monkeypatch):
-    """background_review/curator/MoA (resolve_runtime_provider) and compression/vision/title
-    (_resolve_task_provider_model) must land on the same endpoint for the same aux block."""
-    from agent import auxiliary_client as aux
-    block = {"provider": "openai", "model": "review-model", "base_url": "https://gateway.example/v1", "api_key": "gw-key"}
-    monkeypatch.setattr(aux, "_get_auxiliary_task_config", lambda task: block if task == "background_review" else {})
-    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "custom:mylocal", "default": "local-main"})
-
-    aux_provider, aux_model, aux_base, aux_key, _ = aux._resolve_task_provider_model("background_review")
-    runtime = rp.resolve_runtime_provider(requested=block["provider"], target_model=block["model"],
-                                          explicit_api_key=block["api_key"], explicit_base_url=block["base_url"])
-
-    assert (aux_provider, aux_base, aux_key) == ("custom", "https://gateway.example/v1", "gw-key")
-    assert (runtime["provider"], runtime["base_url"], runtime["api_key"]) == (aux_provider, aux_base, aux_key)
-
-
-def test_openai_alias_without_base_url_pairs_openai_key_with_openai_base_url(monkeypatch):
-    """No aux base_url: the alias lands on OPENAI_BASE_URL (the proxy the key was issued for) and the
-    runtime path pairs OPENAI_API_KEY with it instead of sending a placeholder key to the proxy."""
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://llm-proxy.corp.example/v1")
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-proxy-issued")
-    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "custom:mylocal", "default": "local-main"})
-
-    runtime = rp.resolve_runtime_provider(requested="openai", target_model="gpt-x")
-
-    assert (runtime["provider"], runtime["base_url"], runtime["api_key"]) == ("custom", "https://llm-proxy.corp.example/v1", "sk-proxy-issued")

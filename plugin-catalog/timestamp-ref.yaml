@@ -1,0 +1,18 @@
+name: timestamp-ref
+repo: https://github.com/olric3015/hermes-plugins
+sha: 241fccb904c63c6d7540b0b8f932a9c810343572
+subdir: timestamp-ref
+description: "@ts: context references that turn timestamps into readable times for the model: @ts:1729468800123 attaches the moment in UTC, in the local time zone and as ISO 8601, with its weekday, how long ago or ahead it is, the same moment in Unix seconds, milliseconds and microseconds, and its ISO week; bare numbers are read as seconds, milliseconds, microseconds or nanoseconds by their length (or an s/ms/us/ns suffix) and the block says which; ISO 8601 and RFC 2822 dates and now work too, and up to 10 values in one reference also get the gaps between them; the TUI and Desktop composer preview a value as you type it. Disclosure — reads only the text of the reference itself and the system clock, using Python's datetime; no network, no files read or written, no subprocess, no credentials; register() only adds the @ts: reference provider"
+maintainer: olric3015
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/olric3015/hermes-plugins/tree/main/timestamp-ref
+version: "1.0.0"
+image: https://raw.githubusercontent.com/olric3015/hermes-plugins/241fccb904c63c6d7540b0b8f932a9c810343572/docs/timestamp-ref-card.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -160,7 +160,6 @@ class ProfileRow(Result):
     display_name: str = ""
     skill_count: int = 0
     previous_names: list[str] = Field(default_factory=list)
-    role: Literal["setup"] | None = None
     last_session: ProfileSessionPreview | None = None
     worker_session: ProfileWorkerSession | None = None
     canonical_session: ProfileCanonicalSession | None = None
@@ -174,10 +173,12 @@ class ProfilesListParams(ProfileParams):
 
 
 class ProfilesListResult(Result):
-    """``bot_mode_protocol`` tells clients this backend injects the teammate protocol itself."""
+    """``bot_mode_protocol`` tells clients this backend injects the teammate protocol itself;
+    ``install_id`` (as on ``/api/status``) names the machine that answered."""
 
     profiles: list[ProfileRow] = Field(default_factory=list)
     bot_mode_protocol: bool = True
+    install_id: str = ""
 
 
 method("profiles.list", params=ProfilesListParams, result=ProfilesListResult,
@@ -351,60 +352,92 @@ method("profiles.get_asset", params=ProfilesGetAssetParams, result=ProfilesGetAs
        doc="A profile asset as a data URL.")
 
 
-class OnboardingAnswers(Params):
-    """``tui_gateway/onboarding_personalization.py`` — the facts agreed during onboarding."""
-
-    name: str | None = None
-    context: str | None = None
-    theme: str | None = None
-    accent: str | None = None
-    layout: str | None = None
-    focus: list[str] | None = None
-    connectors: list[str] | None = None
-    plugins: list[str] | None = None
-    # The onboarding store may carry extra UI-only keys; the writer ignores unknown ones.
-    model_config = Params.model_config | {"extra": "allow"}
-
-
-class ProfilesRememberOnboardingParams(ProfileParams):
-    answers: OnboardingAnswers | None = None
-
-
-class ProfilesRememberOnboardingResult(Result):
-    saved: bool = True
-    profile: str = "default"
-    target: str = "user"
-
-
-method("profiles.remember_onboarding", params=ProfilesRememberOnboardingParams,
-       result=ProfilesRememberOnboardingResult,
-       doc="Write the onboarding facts into the default profile's user memory and confirm they landed.")
-
-
 # ── onboarding (methods_onboarding) ───────────────────────────────────────────────────────────
 
 
-class OnboardingEnsureSetupProfileResult(Result):
-    """``created`` is false when an existing setup profile was found (and returned untouched)."""
+class OnboardingStateParams(Params):
+    """``assume_fresh``: the unpackaged desktop's ``--fresh-install`` launch; the backend treats this
+    machine as one that never used Hermes. Packaged builds never send it."""
 
-    name: str
-    path: str
-    created: bool
-    role: Literal["setup"] = "setup"
+    assume_fresh: bool = False
 
 
-method("onboarding.ensure_setup_profile", params=Params, result=OnboardingEnsureSetupProfileResult,
-       doc="Create-or-read the backend-owned setup profile; the backend picks the name and finds it by role.")
+class OnboardingRunStateResult(Result):
+    """``run``: onboarding opens on this launch (root config ``onboarding.run``, else a machine that
+    never used Hermes). ``eligible``: this is the desktop's local backend and the welcome trial or a
+    configured provider can carry the first chat.
+    ``session_id``: the stored id of the onboarding chat still in progress, so a relaunch reopens it;
+    ``run_id``: that run's id, which ``onboarding.ended`` names."""
+
+    run: bool
+    eligible: bool
+    session_id: str | None = None
+    run_id: str | None = None
 
 
-class OnboardingResetSetupProfileResult(Result):
-    name: str
-    path: str
-    reset: bool = True
+method("onboarding.state", params=OnboardingStateParams, result=OnboardingRunStateResult,
+       doc="Whether desktop first-run onboarding is due, and the chat in progress; reads the root profile's config.")
 
 
-method("onboarding.reset_setup_profile", params=Params, result=OnboardingResetSetupProfileResult,
-       doc="Restore the setup profile to its created state in place (soul, memories, skills, sessions).")
+class OnboardingSetRunParams(Params):
+    """``mark_profile_offered`` also latches ``onboarding.seen.profile_build_offered`` in the root config,
+    so the first chat after onboarding gets the plain intro instead of the profile offer."""
+
+    run: bool
+    mark_profile_offered: bool = False
+
+
+method("onboarding.set_run", params=OnboardingSetRunParams, result=OnboardingRunStateResult,
+       doc="Write onboarding.run in the root profile's config.yaml; answers the new state.")
+
+
+class OnboardingFactsSource(WireEnum):
+    local = "local"
+    remote = "remote"
+
+
+class OnboardingStartParams(Params):
+    """``rerun``: start a new onboarding chat even when one is in progress (Settings, Run onboarding
+    again; it never claims the welcome trial). ``fresh_launch``: the app's once-per-launch start; a run
+    the app was closed on does not count, so its chat is deleted and the run starts over.
+    ``facts_source``: whether the backend runs on the user's own computer. ``locale``: the desktop's UI
+    language, preferred over the backend OS locale. ``assume_fresh``: as on ``onboarding.state``. A new
+    run on a first install claims the welcome trial before its chat exists; a failed claim is error
+    5079 and leaves no guest and no chat. A claim that is blocked (another install took the trial) with
+    no trial or provider to run on is error 5080 and opens no chat."""
+
+    rerun: bool = False
+    fresh_launch: bool = False
+    assume_fresh: bool = False
+    facts_source: OnboardingFactsSource = OnboardingFactsSource.local
+    locale: str | None = None
+
+
+class OnboardingStartResult(Result):
+    """``session_id`` is the runtime id the client attaches to; ``resumed`` is true when an onboarding
+    chat already in progress was reopened instead of a new one started. ``run_id`` names the run in
+    ``onboarding.ended``."""
+
+    session_id: str
+    stored_session_id: str
+    resumed: bool
+    run_id: str
+
+
+method("onboarding.start", params=OnboardingStartParams, result=OnboardingStartResult,
+       doc="Open the onboarding chat in the default profile: create it, write its run record and play the opening.")
+
+
+class OnboardingSkipParams(SessionParams):
+    pass
+
+
+class OnboardingSkipResult(Result):
+    skipped: bool
+
+
+method("onboarding.skip", params=OnboardingSkipParams, result=OnboardingSkipResult,
+       doc="Skip setup: end the session's onboarding run and close the card that waits.")
 
 
 # ── vault (methods_vault) ─────────────────────────────────────────────────────────────────────

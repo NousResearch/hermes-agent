@@ -4,6 +4,7 @@ import { canUseQuickEntry } from '@/store/quick-entry'
 import { TRANSLUCENCY_SUPPORTED } from '@/store/translucency'
 
 import type { AppearanceSubpageId } from './appearance-subpages'
+import { nativeHostOnly } from './other-subpages'
 import type { SettingsView } from './types'
 
 interface SettingCopy {
@@ -154,23 +155,13 @@ export const SETTINGS_MANIFEST = {
   advanced: {
     keepAwake: {
       subpage: 'desktop',
-      keywords: ['sleep', 'awake', 'caffeinate', 'idle', 'overnight', 'power'],
+      keywords: ['sleep', 'awake', 'caffeinate', 'idle', 'overnight', 'power', 'while working', 'turn'],
       copy: t => ({ label: t.settings.config.keepAwakeTitle, description: t.settings.config.keepAwakeDesc })
     },
     disableF12: {
       subpage: 'desktop',
       keywords: ['devtools', 'developer tools', 'f12', 'inspector', 'debug'],
       copy: t => ({ label: t.settings.config.disableF12Title, description: t.settings.config.disableF12Desc })
-    },
-    warmBotBackends: {
-      subpage: 'desktop',
-      keywords: ['pool', 'backends', 'bots', 'warm', 'concurrency', 'limit'],
-      copy: t => ({ label: t.settings.poolLimits.warmBotBackendsTitle })
-    },
-    backendIdleTimeout: {
-      subpage: 'desktop',
-      keywords: ['pool', 'backends', 'idle', 'timeout', 'milliseconds'],
-      copy: t => ({ label: t.settings.poolLimits.backendIdleTimeoutTitle })
     },
     quickEntry: {
       subpage: 'desktop',
@@ -218,9 +209,17 @@ export const SETTINGS_MANIFEST = {
         } satisfies SettingDefinition
       ])
     ),
+    muteSounds: {
+      subpage: 'sounds',
+      keywords: ['mute', 'silence', 'quiet', 'sound', 'chime', 'wake', 'haptics'],
+      copy: t => ({
+        label: t.settings.notifications.muteSoundsTitle,
+        description: t.settings.notifications.muteSoundsDesc
+      })
+    },
     completionSound: {
       subpage: 'sounds',
-      keywords: ['sound', 'chime', 'ding', 'audio', 'done', 'complete', 'mute'],
+      keywords: ['sound', 'chime', 'ding', 'audio', 'done', 'complete', 'mute', 'off', 'none', 'silence'],
       copy: t => ({
         label: t.settings.notifications.completionSoundTitle,
         description: t.settings.notifications.completionSoundDesc
@@ -236,11 +235,13 @@ export const SETTINGS_MANIFEST = {
   },
   gateway: {
     connectionMode: {
+      available: nativeHostOnly,
       subpage: 'connection',
       keywords: ['gateway', 'connection', 'local', 'cloud', 'remote', 'ssh', 'url', 'token', 'host', 'port', 'key'],
       copy: t => ({ label: t.settings.gateway.modeTitle, description: t.settings.gateway.intro })
     },
     keychainEncryption: {
+      available: nativeHostOnly,
       subpage: 'connection',
       keywords: ['keychain', 'encrypt', 'secrets', 'secure storage', 'plain text'],
       copy: t => ({
@@ -249,6 +250,7 @@ export const SETTINGS_MANIFEST = {
       })
     },
     diagnostics: {
+      available: nativeHostOnly,
       subpage: 'connection',
       keywords: ['diagnostics', 'logs', 'debug', 'report', 'troubleshoot'],
       copy: t => ({ label: t.settings.gateway.diagnostics, description: t.settings.gateway.diagnosticsDesc })

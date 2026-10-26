@@ -273,7 +273,7 @@ Hermes 会在执行器或调度提供程序分派之前，将每次已领取的 
 | `"mattermost"` | Mattermost 主频道 | |
 | `"email"` | 邮件 | |
 | `"sms"` | 通过 Twilio 发送 SMS | |
-| `"homeassistant"` | Home Assistant | |
+| `"homeassistant"` | Home Assistant（插件） | 使用 `HASS_HOME_CHANNEL`；需要 [`homeassistant` 插件](../messaging/homeassistant.md) |
 | `"dingtalk"` | 钉钉 | |
 | `"feishu"` | 飞书/Lark | |
 | `"wecom"` | 企业微信 | |
@@ -745,6 +745,8 @@ cronjob(action="create", name="daily-digest",
 如果手动编辑使 `jobs.json` 格式出错，调度器会在下次加载时修复它，而不是停止运行：`jobs` 列表中不是 JSON 对象的条目会被丢弃，不是非负整数的 `repeat.completed` 会被规范化为非负整数（无法解析时为 0）。每次修复都会记录一条警告（只记录值的类型，不记录内容）。
 
 任务可能将 `model` 和 `provider` 存储为 `null`。省略这些字段时，Hermes 在执行时从全局配置中解析它们。只有设置了单任务覆盖时，这些字段才会出现在任务记录中。
+
+单任务的 `base_url` 覆盖必须同时指定 `provider`。对于保存了密钥的 provider（具名自定义 provider 或内置 provider），覆盖地址必须与该 provider 配置的端点同源：协议、主机和端口都相同。其他协议、端口或子域名都会被拒绝，因此保存的密钥只会发往你配置的地址。单独的 `provider: custom` 可以使用任何不会携带保存密钥的 `base_url`。如果某个保存的密钥与该 URL 的主机名匹配（例如 `api.deepseek.com` 对应 `DEEPSEEK_API_KEY`），则适用同样的规则：`base_url` 必须与你配置的端点或内置 provider 的端点同源。
 
 存储使用原子文件写入，因此中断的写入不会留下部分写入的任务文件。
 

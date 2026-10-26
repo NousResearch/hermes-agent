@@ -12,6 +12,7 @@ Those stay on AIAgent.
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -38,6 +39,105 @@ def _profile_user_agent() -> str:
         return "hermes-cli"
 
 
+_RESOLVE_LOCK = threading.RLock()  # re-entrant: a callback may read another LazyHeaders
+
+
+class LazyHeaders(dict[str, str]):
+    """``default_headers`` whose callable values (a User-Agent carrying the release) run on first read.
+
+    A source checkout resolves the release from git, and every CLI start imports all provider plugins
+    (``hermes_cli.config`` lists their env vars), so headers built at import made every command pay git
+    subprocesses for a request it may never send. Keys are stored up front, so ``in``/``len`` stay lazy,
+    and the class stays a real ``dict``: plugins copy, merge, mutate and serialize ``default_headers``.
+
+    Every method that reads or writes a value resolves first; ``__iter__`` is overridden so CPython's
+    ``dict(x)``/``{**x}``/``f(**x)`` merge leaves its raw-storage fast path for ``keys()`` +
+    ``__getitem__``, and ``json.dumps`` takes ``items()`` because the stored keys make the dict
+    non-empty. Copies (``.copy()``, ``|``, ``copy``/``pickle``) are plain resolved dicts.
+    """
+
+    __slots__ = ("_pending",)
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._pending = any(callable(value) for value in dict.values(self))
+
+    def _resolved(self) -> LazyHeaders:
+        if self._pending:
+            # One resolver: concurrent first reads (parallel aux clients) would each walk git.
+            with _RESOLVE_LOCK:
+                if self._pending:
+                    for key, value in list(dict.items(self)):
+                        if callable(value):
+                            dict.__setitem__(self, key, value())
+                    self._pending = False
+        return self
+
+    def __getitem__(self, key: str) -> str:
+        return dict.__getitem__(self._resolved(), key)
+
+    def __iter__(self):
+        return dict.__iter__(self._resolved())
+
+    def __reversed__(self):
+        return dict.__reversed__(self._resolved())
+
+    def __repr__(self) -> str:
+        return dict.__repr__(self._resolved())
+
+    def __eq__(self, other: object) -> bool:
+        return dict.__eq__(self._resolved(), other._resolved() if isinstance(other, LazyHeaders) else other)
+
+    def __ne__(self, other: object) -> bool:
+        equal = self.__eq__(other)
+        return equal if equal is NotImplemented else not equal
+
+    def __or__(self, other: Any) -> Any:
+        return dict.__or__(self._resolved(), other)
+
+    def __ror__(self, other: Any) -> Any:
+        return dict.__or__(other, self._resolved()) if isinstance(other, dict) else NotImplemented
+
+    def __ior__(self, other: Any) -> LazyHeaders:
+        return dict.__ior__(self._resolved(), other)
+
+    def __reduce__(self) -> tuple:
+        return (dict, (dict.copy(self._resolved()),))
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return dict.get(self._resolved(), key, default)
+
+    def keys(self):
+        return dict.keys(self._resolved())
+
+    def values(self):
+        return dict.values(self._resolved())
+
+    def items(self):
+        return dict.items(self._resolved())
+
+    def copy(self) -> dict[str, str]:
+        return dict.copy(self._resolved())
+
+    def __setitem__(self, key: str, value: str) -> None:
+        dict.__setitem__(self._resolved(), key, value)
+
+    def __delitem__(self, key: str) -> None:
+        dict.__delitem__(self._resolved(), key)
+
+    def pop(self, *args: Any) -> Any:
+        return dict.pop(self._resolved(), *args)
+
+    def popitem(self) -> tuple[str, str]:
+        return dict.popitem(self._resolved())
+
+    def setdefault(self, key: str, default: Any = None) -> Any:
+        return dict.setdefault(self._resolved(), key, default)
+
+    def update(self, *args: Any, **kwargs: Any) -> None:
+        dict.update(self._resolved(), *args, **kwargs)
+
+
 @dataclass
 class ProviderProfile:
     """Base provider profile — subclass or instantiate with overrides."""
@@ -52,11 +152,20 @@ class ProviderProfile:
     description: str = ""        # e.g. "GMI Cloud (multi-model direct API)" — picker subtitle
     signup_url: str = ""         # e.g. "https://www.gmicloud.ai/" — shown during setup
 
+    # True when the provider is pre-release / not for public listing. Discovery surfaces (provider
+    # pickers, the setup provider list, the dashboard accounts tab) skip it unless ``listed()``
+    # says otherwise; resolution by name is untouched, so an explicit ``model.provider`` /
+    # ``hermes auth add <name>`` keeps working.
+    hidden: bool = False
+
     # ── Auth & endpoints ─────────────────────────────────────
     env_vars: tuple = ()
     base_url: str = ""
     models_url: str = ""  # explicit models endpoint; falls back to {base_url}/models
     auth_type: str = "api_key"   # api_key|oauth_device_code|oauth_external|copilot|aws_sdk
+    # None preserves transport defaults (external-process clients default to non-streaming).
+    # True opts a streaming-capable process client in; False disables streaming for this provider.
+    supports_streaming: bool | None = field(default=None, kw_only=True)
     supports_health_check: bool = True  # False → doctor skips /models probe for this provider
     # False → fetch_models returns None without a network call (catalog comes from an SDK/subprocess).
     supports_model_listing: bool = True
@@ -304,6 +413,18 @@ class ProviderProfile:
         cold.
         """
         return None
+
+    def listed(self) -> bool:
+        """Whether discovery surfaces may offer this provider.
+
+        Every non-``hidden`` profile is listed. A ``hidden`` (pre-release) one surfaces once the user
+        opted in by name (``hermes auth add <name>`` put a row in its credential pool), so the
+        pickers can then offer it. Reads auth.json only: it runs on every picker build.
+        """
+        if not self.hidden:
+            return True
+        from hermes_cli.auth import read_credential_pool  # lazy: providers/ must not import hermes_cli at load
+        return bool(read_credential_pool(self.name))
 
     def create_client(self, **client_kwargs: Any) -> Any | None:
         """Return a provider-specific client, or ``None`` for the standard one.

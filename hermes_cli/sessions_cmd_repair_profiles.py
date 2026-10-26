@@ -27,14 +27,14 @@ _KIND_LABELS = {
 }
 
 
-def _group(findings: List[Finding]) -> Dict[str, List[Finding]]:
-    grouped: Dict[str, List[Finding]] = {}
+def _group(findings: list[Finding]) -> dict[str, list[Finding]]:
+    grouped: dict[str, list[Finding]] = {}
     for finding in findings:
         grouped.setdefault(finding.kind, []).append(finding)
     return grouped
 
 
-def _print_report(findings: List[Finding]) -> None:
+def _print_report(findings: list[Finding]) -> None:
     for kind, rows in _group(findings).items():
         print(f"\n{_KIND_LABELS.get(kind, kind)} ({len(rows)}):")
         for finding in rows:
@@ -88,10 +88,12 @@ def cmd_repair_profiles(args) -> int:
             return 0
 
         if not getattr(args, "yes", False) and not as_json:
-            from hermes_cli.sessions_cmd import _confirm_prompt
-            if not _confirm_prompt(f"\nApply {len(repairable)} repair(s)? A snapshot of every store is taken first. [y/N] "):
-                print("Aborted — nothing was changed.")
-                return 0
+            from hermes_cli.sessions_cmd import _confirm_or_exit_code
+            refused = _confirm_or_exit_code(
+                f"\nApply {len(repairable)} repair(s)? A snapshot of every store is taken first. [y/N] ",
+                declined="Aborted — nothing was changed.")
+            if refused is not None:
+                return refused
         result = plan.apply(session, snapshot=default_snapshot)
     finally:
         session.close()

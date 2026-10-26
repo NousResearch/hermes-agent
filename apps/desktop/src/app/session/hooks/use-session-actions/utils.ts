@@ -1,3 +1,5 @@
+import { mergeUsage } from '@hermes/shared'
+
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
 import { getSession } from '@/hermes'
@@ -15,8 +17,8 @@ import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-ima
 import { parseErrorSurface } from '@/lib/error-surface'
 import { isMessagingSource, normalizeSessionSource } from '@/lib/session-source'
 import { isLiveTailReplyId } from '@/lib/spoken-reply'
-import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
+import { pendingSnapshotFence, reconcilePendingSubmissions } from '@/store/pending-submissions'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $projectTree } from '@/store/projects'
 import {
@@ -74,6 +76,9 @@ import {
   persistedTurnsEquivalent,
   transcriptRowIds
 } from './pending-turn-identity'
+import { reconcileOwnerApprovalMode } from './runtime-owner'
+
+export { goneSessionVerdict, isSessionGoneError, resolveResumedBusy } from './resume-verdicts'
 
 function withAppendedText(message: ChatMessage, suffix: string): ChatMessage {
   let appended = false
@@ -119,6 +124,29 @@ export function isStrictAnswerTextExtension(next: string, previous: string): boo
   }
 
   return n.startsWith(p)
+}
+
+/**
+ * Whether a committed bubble already holds the reply a stale live snapshot was
+ * streaming. History folds a tool turn's narration, tools and answer into one
+ * bubble while the snapshot carries the turn's whole text, so compare the
+ * bubble's text with whitespace collapsed. The bubble must end in a reply: a
+ * mid-turn commit ends on a tool call and the turn is still running.
+ */
+function committedReplyCovers(message: ChatMessage, snapshot: string): boolean {
+  const text = message.parts
+    .flatMap(part => (part.type === 'text' ? [part.text] : []))
+    .join(' ')
+    .replace(/\s+/g, ' ')
+
+  return Boolean(replyAfterLastTool(message).trim()) && isStrictAnswerTextExtension(text, snapshot.replace(/\s+/g, ' '))
+}
+
+/** A folded tool-turn bubble's answer: its text after the last tool call. */
+function replyAfterLastTool(message: ChatMessage): string {
+  const lastTool = message.parts.findLastIndex(part => part.type === 'tool-call')
+
+  return chatMessageText({ ...message, parts: message.parts.slice(lastTool + 1) })
 }
 
 /**
@@ -199,10 +227,6 @@ function preserveStructuralParts(message: ChatMessage, previous: ChatMessage): C
 //   attachmentRefs — composer-side metadata; already reconciled in reconcileResumeMessages
 //   serverRowSpan — backend rows the folded message covers; the older-page offset
 //                   accounting reads it, the transcript never paints it
-//   systemNotice  — hydration's provenance flag for a backend-authored notice
-//                   (a model switch, a process completion); the stale-transcript
-//                   compare reads it, while the visible system row is painted
-//                   from role + parts, and role is already COMPARED
 //
 // If your new field affects what the user sees in the transcript, add it to
 // COMPARED. If it's metadata that shouldn't trigger a re-render, add it to
@@ -237,7 +261,7 @@ const COMPARED_FIELDS = [
   'durationS'
 ] as const
 
-const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'serverRowSpan', 'systemNotice'] as const
+const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'serverRowSpan'] as const
 
 // Compile-time check: every ChatMessagePart discriminant must be handled by
 // chatPartsEquivalent. If @assistant-ui adds a new part type, this fails tsc.
@@ -1308,8 +1332,7 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
     liveAssistantOfCurrentTurn &&
     !isLiveTailRow(liveAssistantOfCurrentTurn) &&
     committedDuringTurn(turnStartedAt, committedAt) &&
-    !liveAssistantOfCurrentTurn.parts.some(part => part.type === 'tool-call') &&
-    isStrictAnswerTextExtension(chatMessageText(liveAssistantOfCurrentTurn), inflightAssistant)
+    committedReplyCovers(liveAssistantOfCurrentTurn, inflightAssistant)
   )
 
   const wantsAssistantRow = Boolean(
@@ -1619,11 +1642,88 @@ export function overlayConcurrentMessageChanges(
   const nextIndexById = new Map(nextMessages.map((message, index) => [message.id, index]))
   let changed = false
   const overlaid = [...nextMessages]
+  const dropped = new Set<string>()
 
   let activationStreamIndex = overlaid.findIndex(
     message =>
       message.role === 'assistant' && message.id.startsWith('assistant-stream-') && !baselineById.has(message.id)
   )
+
+  // message.complete settled this stream row while REST was in flight, and
+  // the page already carries the same reply under its committed id (#70209).
+  // Only a row the page newly added counts: one already in the baseline is an
+  // earlier turn's answer (a resent prompt can repeat it word for word). An
+  // errored row carries a failure the committed text cannot show.
+  const committedOnPage = (current: ChatMessage): boolean => {
+    const text = textWithoutReferenceLines(chatMessageText(current)).trim()
+    const lastUser = overlaid.findLastIndex(message => message.role === 'user')
+    const liveRows = transcriptRowIds(current)
+
+    return (
+      Boolean(text) &&
+      overlaid.some((message, index) => {
+        if (
+          !(index > lastUser) ||
+          message.role !== 'assistant' ||
+          baselineById.has(message.id) ||
+          isLiveTailRow(message)
+        ) {
+          return false
+        }
+
+        // The completion bound the reply to its stored row. A tool turn's
+        // history folds that row into the bubble that opened the turn, whose
+        // text also carries the narration, so match the row, not the words.
+        if (liveRows.length && transcriptRowIds(message).some(id => liveRows.includes(id))) {
+          return true
+        }
+
+        // The committed row and the settled live row capture the same reply
+        // at two moments while it kept streaming, so neither side is
+        // guaranteed to be textually identical: accept either as a forward
+        // text-extension of the other, the same trade
+        // removeRepresentedLocalLiveProjection made in 2494b95929. A folded
+        // tool turn is compared by its answer, the text after its last tool.
+        return [chatMessageText(message), replyAfterLastTool(message)].some(full => {
+          const candidate = textWithoutReferenceLines(full).trim()
+
+          return (
+            candidate === text ||
+            isStrictAnswerTextExtension(candidate, text) ||
+            isStrictAnswerTextExtension(text, candidate)
+          )
+        })
+      })
+    )
+  }
+
+  const representedByStoredRow = (current: ChatMessage): boolean => {
+    const rows = transcriptRowIds(current)
+
+    return (
+      rows.length > 0 &&
+      rows.every(id =>
+        overlaid.some(
+          message =>
+            message.id !== current.id && message.role === current.role && transcriptRowIds(message).includes(id)
+        )
+      )
+    )
+  }
+
+  const representedOnPage = (current: ChatMessage): boolean =>
+    // The page can still carry the row's older streaming copy by id when it
+    // was composed from the baseline; the committed row replaces both.
+    (current.role === 'assistant' &&
+      current.pending !== true &&
+      !current.error &&
+      isLiveTailReplyId(current.id) &&
+      committedOnPage(current)) ||
+    // A completion receipt bound this optimistic prompt to its stored row
+    // while REST was in flight, so it differs from the pre-bind baseline only
+    // by that row id. The page already carries the stored row under its own
+    // id: the prompt is represented, not a new concurrent row.
+    (current.role === 'user' && representedByStoredRow(current))
 
   for (const current of currentMessages) {
     const baseline = baselineById.get(current.id)
@@ -1635,6 +1735,14 @@ export function overlayConcurrentMessageChanges(
 
     const nextIndex = nextIndexById.get(current.id)
 
+    if (representedOnPage(current)) {
+      if (nextIndex !== undefined) {
+        dropped.add(current.id)
+      }
+
+      continue
+    }
+
     if (nextIndex !== undefined) {
       if (!chatMessagesEquivalent(overlaid[nextIndex], current)) {
         overlaid[nextIndex] = current
@@ -1642,44 +1750,6 @@ export function overlayConcurrentMessageChanges(
       }
 
       continue
-    }
-
-    // message.complete settled this stream row while REST was in flight, and
-    // the page already carries the same reply under its committed id (#70209).
-    // Only a row the page newly added counts: one already in the baseline is an
-    // earlier turn's answer (a resent prompt can repeat it word for word). An
-    // errored row carries a failure the committed text cannot show.
-    if (current.role === 'assistant' && current.pending !== true && !current.error && isLiveTailReplyId(current.id)) {
-      const text = textWithoutReferenceLines(chatMessageText(current)).trim()
-      const lastUser = overlaid.findLastIndex(message => message.role === 'user')
-
-      const committed = overlaid.some((message, index) => {
-        if (
-          !(index > lastUser) ||
-          message.role !== 'assistant' ||
-          baselineById.has(message.id) ||
-          isLiveTailRow(message)
-        ) {
-          return false
-        }
-
-        // The committed row and the settled live row capture the same reply
-        // at two moments while it kept streaming, so neither side is
-        // guaranteed to be textually identical: accept either as a forward
-        // text-extension of the other, the same trade
-        // removeRepresentedLocalLiveProjection made in 2494b95929.
-        const candidate = textWithoutReferenceLines(chatMessageText(message)).trim()
-
-        return (
-          candidate === text ||
-          isStrictAnswerTextExtension(candidate, text) ||
-          isStrictAnswerTextExtension(text, candidate)
-        )
-      })
-
-      if (text && committed) {
-        continue
-      }
     }
 
     if (activationStreamIndex >= 0 && current.role === 'assistant' && current.id.startsWith('assistant-stream-')) {
@@ -1704,6 +1774,18 @@ export function overlayConcurrentMessageChanges(
     nextIndexById.set(current.id, overlaid.length)
     overlaid.push(current)
     changed = true
+  }
+
+  // A live row the store retired while REST was in flight (message.complete
+  // settled it into the committed reply) stays retired: the page was composed
+  // from the older baseline, so it can still carry that row by id.
+  const currentIds = new Set(currentMessages.map(message => message.id))
+
+  const retired = (message: ChatMessage) =>
+    dropped.has(message.id) || (isLiveTailRow(message) && baselineById.has(message.id) && !currentIds.has(message.id))
+
+  if (currentMessages.length && overlaid.some(retired)) {
+    return overlaid.filter(message => !retired(message))
   }
 
   return changed ? overlaid : nextMessages
@@ -2290,6 +2372,8 @@ interface ApplyRuntimeInfoOptions {
    * per-session state is unaffected.
    */
   foreground?: boolean
+  /** The backend that produced `info` when it is not the ambient gateway. */
+  owner?: SessionOwnerScope
 }
 
 /** Mirror a session's runtime state into the composer atoms the MAIN pane
@@ -2345,25 +2429,33 @@ function publishRuntimeToComposer(state: SessionRuntimeStatePatch): void {
   }
 }
 
+/** Session-independent side effects of one runtime info snapshot. */
+function reportRuntimeInfoAppState(info: SessionRuntimeInfo, owner: SessionOwnerScope): void {
+  if (info.stored_session_id) {
+    reconcilePendingSubmissions(info.stored_session_id, info.pending_submissions,
+      pendingSnapshotFence(info.replay_epoch, info.last_sequence))
+  }
+
+  // App/profile-level reporting is session-independent — a tile's runtime
+  // reports backend skew and credential warnings just as usefully.
+  reportBackendContract(info.desktop_contract, info.desktop_protocol)
+
+  reconcileOwnerApprovalMode(info, owner)
+
+  requestDesktopOnboardingForCredentialWarning(info.credential_warning)
+
+  reportInstallMethodWarning(info.install_warning)
+}
+
 export function applyRuntimeInfo(
   info: SessionRuntimeInfo | undefined,
-  { foreground = true }: ApplyRuntimeInfoOptions = {}
+  { foreground = true, owner }: ApplyRuntimeInfoOptions = {}
 ): SessionRuntimeStatePatch | null {
   if (!info) {
     return null
   }
 
-  // App/profile-level reporting is session-independent — a tile's runtime
-  // reports backend skew and credential warnings just as usefully.
-  reportBackendContract(info.desktop_contract)
-
-  if (info.approval_mode !== undefined) {
-    reconcileApprovalModeForProfile($activeGatewayProfile.get(), info.approval_mode)
-  }
-
-  requestDesktopOnboardingForCredentialWarning(info.credential_warning)
-
-  reportInstallMethodWarning(info.install_warning)
+  reportRuntimeInfoAppState(info, owner)
 
   const sessionState: SessionRuntimeStatePatch = {}
 
@@ -2431,10 +2523,8 @@ export function applyRuntimeInfo(
     publishRuntimeToComposer(sessionState)
 
     if (info.usage) {
-      // session.info/session.resume is an authoritative session snapshot, not a
-      // partial live tick. Clear a missing compression count so switching from
-      // a counted session to an older/cold runtime cannot leak the old value.
-      setCurrentUsage(current => ({ ...current, ...info.usage, compressions: info.usage?.compressions }))
+      // session.info/resume is an authoritative snapshot: an omitted compression count or plan gauge clears.
+      setCurrentUsage(current => ({ ...mergeUsage(current, info.usage), compressions: info.usage?.compressions }))
     }
   }
 
@@ -2492,61 +2582,4 @@ export function applyStoredSessionPreviewRuntimeInfo(
   // Same window, same reasoning: the branch is derived from the workspace, so
   // carrying the previous conversation's label across a switch is never right.
   setCurrentBranch('')
-}
-
-// A "session genuinely doesn't exist" failure (deleted, or an id from a wiped /
-// rotated backend) — the REST transcript 404s with `Session not found`. Distinct
-// from a transient/wedged backend (ECONNREFUSED, timeout), which must still
-// retry rather than discard the id.
-export function isSessionGoneError(err: unknown): boolean {
-  const message = err instanceof Error ? err.message : String(err ?? '')
-
-  return message.includes('404') || /session not found/i.test(message)
-}
-
-/**
- * What to do when a resume's RPC and REST fallback BOTH came back
- * gone-looking (#88540).
- *
- * A 404 is only proof of deletion when it came from the backend that owns
- * the session. During (or moments after) a profile/connection switch the
- * request can land on a backend that has never heard of the id — the
- * cross-profile Bots-pane open is the reproducer: the route is written
- * correctly, the resume races the gateway swap, both lookups 404 on the
- * wrong backend, and the "genuinely gone" branch yanks the window to the
- * blank new-chat route while the target session is perfectly alive.
- *
- * `'retry'` keeps the route and arms the bounded auto-retry (which re-runs
- * the resume once the swap settles); `'draft'` is reserved for a session
- * that is verifiably gone in calm conditions.
- */
-export function goneSessionVerdict(options: {
-  /** The session was created by this window in this run — never discard. */
-  createdThisRun: boolean
-  /** A post-failure re-resolve still finds the row on SOME profile. */
-  stillListed: boolean
-  /** A profile swap or connection switch is in flight (or just targeted). */
-  switchInFlight: boolean
-}): 'draft' | 'retry' {
-  return options.createdThisRun || options.stillListed || options.switchInFlight ? 'retry' : 'draft'
-}
-
-/**
- * The busy value a resume/activate response should land with (#70449).
- *
- * `running` in a `session.activate` / `session.resume` payload is a snapshot
- * taken when the RPC was issued. A turn that started — or streamed — after
- * that snapshot has already marked the runtime busy in the live cache, so a
- * stale `running: false` must never rewind it: that is exactly how opening an
- * in-progress chat cleared its working indicator while the agent was still
- * going. Preserving the newer live busy is safe, because the turn's own
- * terminal signal (running:false via session.info / the settle path) remains
- * the only authority that ends it, and the background-sync reaper clears
- * truly lost turns.
- *
- * A snapshot that says `running: true` always wins — adopting a live turn is
- * never stale.
- */
-export function resolveResumedBusy(snapshotRunning: boolean | null | undefined, liveBusy: boolean): boolean {
-  return Boolean(snapshotRunning) || liveBusy
 }

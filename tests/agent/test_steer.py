@@ -11,6 +11,7 @@ import threading
 
 import pytest
 
+from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
 from agent.prompt_builder import STEER_MARKER_OPEN, format_steer_marker
 from run_agent import AIAgent
 from tools.registry import registry
@@ -78,6 +79,55 @@ class TestSteerDrain:
         agent.steer("hello")
         assert agent._drain_pending_steer() == "hello"
         assert agent._pending_steer is None
+
+    def test_withdraw_takes_back_one_unconsumed_ticket_and_keeps_the_rest(self):
+        agent = _bare_agent()
+        agent.steer("first")
+        agent.steer("  two\nlines  ", ticket="t2")
+        agent.steer("two")  # the same text as a line of t2, without a ticket
+        agent.steer("last", ticket="t4")
+        assert agent.withdraw_steer("t2") is True
+        assert agent._pending_steer == "first\ntwo\nlast"
+        assert agent.withdraw_steer("missing") is False
+        assert agent.withdraw_steer("t4") is True
+        assert agent._pending_steer == "first\ntwo"
+
+    def test_withdraw_after_a_drain_took_the_ticket_is_refused_even_if_its_text_is_buffered_again(self):
+        agent = _bare_agent()
+        agent.steer("alpha", ticket="a")
+        assert agent._drain_pending_steer() == "alpha"
+        agent.steer("alpha", ticket="b")
+        assert agent.withdraw_steer("a") is False, "a drain consumed a"
+        assert agent.withdraw_steer("b") is True
+        assert agent._pending_steer is None
+
+    def test_a_drained_steer_put_back_undelivered_keeps_its_ticket(self):
+        from agent.agent_runtime_helpers import _requeue_pending_steer
+        agent = _bare_agent()
+        agent.steer("note")
+        agent.steer("queued prompt", ticket="t")
+        drained = agent._drain_pending_steer() or ""
+        _requeue_pending_steer(agent, drained)  # no tool result took it
+        assert agent._pending_steer == "note\nqueued prompt"
+        assert agent.withdraw_steer("t") is True
+        assert agent._pending_steer == "note"
+
+    def test_the_leftover_drain_hands_back_only_ticketless_steers(self):
+        agent = _bare_agent()
+        agent.steer("typed /steer")
+        agent.steer("queued prompt", ticket="t")
+        assert agent._drain_leftover_steer() == "typed /steer"
+        assert agent._pending_steer == "queued prompt"
+        assert agent._drain_leftover_steer() is None
+        assert agent.withdraw_steer("t") is True
+        assert agent._pending_steer is None
+
+    def test_a_hard_stop_drops_a_ticket_unread(self):
+        agent = _bare_agent()
+        agent.steer("queued prompt", ticket="t")
+        agent.clear_interrupt(hard_cancel=True)
+        assert agent._pending_steer is None
+        assert agent.withdraw_steer("t") is True, "dropped unread: never delivered"
 
 
 
@@ -388,7 +438,7 @@ class TestEmptyHiddenAssistantRehealRegression:
         assert placeholder["role"] == "assistant"
         assert placeholder["content"] == ""
         assert placeholder["display_kind"] == "hidden"
-        assert placeholder["api_content"] == "[response interrupted]"
+        assert placeholder["api_content"] == _INTERRUPTED_PLACEHOLDER
         # The user correction keeps clean text in content and the interruption
         # context only in its own api_content sidecar.
         assert correction["role"] == "user"
@@ -418,7 +468,7 @@ class TestEmptyHiddenAssistantRehealRegression:
         ]
         healed = repair_empty_non_final_messages(rows)
         assistant = next(m for m in healed if m.get("role") == "assistant")
-        assert assistant["content"] == "[response interrupted]"
+        assert assistant["content"] == _INTERRUPTED_PLACEHOLDER
         # The durable list is not mutated (wire-copy-only design).
         assert rows[1]["content"] == ""
 
@@ -773,7 +823,7 @@ class TestLegacyHiddenPlaceholderWireSubstitution:
     """Projection-side half of #88955: rows persisted BEFORE the writer-side
     ``api_content`` stamp are ``content=""`` + ``display_kind="hidden"`` with
     no sidecar. The send-time projection must give the WIRE copy the neutral
-    ``[response interrupted]`` payload so legacy sessions converge instead of
+    interrupt-placeholder payload so legacy sessions converge instead of
     re-healing forever — while the durable row stays hidden and empty."""
 
     def _loop_agent(self):
@@ -861,7 +911,7 @@ class TestLegacyHiddenPlaceholderWireSubstitution:
         wire_assistants = [m for m in wire if m.get("role") == "assistant"]
         legacy = wire_assistants[0]
         # Substituted on the wire by the projection (not the sanitizer):
-        assert legacy["content"] == "[response interrupted]"
+        assert legacy["content"] == _INTERRUPTED_PLACEHOLDER
         assert "display_kind" not in legacy
         # #81841: never the interrupt scaffold.
         assert "[This response was interrupted" not in legacy["content"]
@@ -871,7 +921,7 @@ class TestLegacyHiddenPlaceholderWireSubstitution:
         assert "api_content" not in history[1]
 
     def test_hidden_row_with_tool_calls_or_text_is_not_touched(self):
-        from agent.conversation_loop import _clone_message_for_send  # noqa: F401
+        from agent.conversation_loop import _clone_message_for_send
         from unittest.mock import patch
 
         from tests.agent.test_run_agent import _mock_response

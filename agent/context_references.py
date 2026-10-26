@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Awaitable, Callable
 
+from agent.file_safety import HOME_CREDENTIAL_DIRS
 from agent.model_metadata import CHARS_PER_TOKEN, estimate_tokens_rough
 from hermes_cli._subprocess_compat import IS_WINDOWS, harden_git_argv, noninteractive_git_env, windows_hide_flags
 from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
@@ -26,18 +27,20 @@ from hermes_cli.sizefmt import format_bytes
 # provider API (Issue #26193) ---------------------------------------------------------------------------
 BUILTIN_PREFIXES = frozenset({"diff", "staged", "file", "folder", "git", "url"})
 
-_context_reference_providers: dict[str, "ContextReferenceProvider"] = {}
+_context_reference_providers: dict[str, ContextReferenceProvider] = {}
 
 
+@dataclass(slots=True)
 class ContextCompletionItem:
-    """A single autocomplete result from a context reference provider."""
+    """A single autocomplete result from a context reference provider (a dataclass, so it crosses
+    the plugin-host wire as data)."""
 
-    __slots__ = ("text", "display", "meta")
+    text: str
+    display: str = ""
+    meta: str = ""
 
-    def __init__(self, text: str, display: str = "", meta: str = "") -> None:
-        self.text = text
-        self.display = display or text
-        self.meta = meta
+    def __post_init__(self) -> None:
+        self.display = self.display or self.text
 
 
 class ContextReferenceProvider(ABC):
@@ -90,7 +93,6 @@ _FILE_VALUE_PATTERN = re.compile(
 TRAILING_PUNCTUATION = ",.;!?"
 _OPENERS = {")": "(", "]": "[", "}": "{"}
 _NEEDS_QUOTING = re.compile(r"""[\s()\[\]{}<>"'`]""")
-_SENSITIVE_HOME_DIRS = (".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".config/gh")
 _SENSITIVE_HERMES_DIRS = (Path("skills") / ".hub",)
 _SENSITIVE_HOME_FILES = tuple(Path(p) for p in (
     ".ssh/authorized_keys", ".ssh/id_rsa", ".ssh/id_ed25519", ".ssh/config", ".bashrc", ".zshrc",
@@ -149,7 +151,8 @@ def format_reference_value(value: str) -> str:
     return value
 
 
-def parse_context_references(message: str) -> list[ContextReference]:
+def parse_context_references(message: str, *, plugins: bool = True) -> list[ContextReference]:
+    """``plugins=False`` reads built-in kinds only (a safe-mode / config-bypass session loads no plugins)."""
     refs: list[ContextReference] = []
     if not message:
         return refs
@@ -165,7 +168,7 @@ def parse_context_references(message: str) -> list[ContextReference]:
         refs.append(ContextReference(match.group(0), kind, target, match.start(), match.end(), line_start, line_end))
 
     # Second pass: plugin-registered prefixes the built-in pattern missed.
-    for match in _PLUGIN_REFERENCE_PATTERN.finditer(message) if _context_reference_providers else ():
+    for match in _PLUGIN_REFERENCE_PATTERN.finditer(message) if plugins and _context_reference_providers else ():
         kind = match.group("kind")
         if kind in BUILTIN_PREFIXES or kind not in _context_reference_providers:
             continue
@@ -198,9 +201,9 @@ def preprocess_context_references(
 
 async def preprocess_context_references_async(
     message: str, *, cwd: str | Path, context_length: int, url_fetcher: UrlFetcher = None,
-    allowed_root: str | Path | None = None,
+    allowed_root: str | Path | None = None, plugins: bool = True,
 ) -> ContextReferenceResult:
-    refs = parse_context_references(message)
+    refs = parse_context_references(message, plugins=plugins)
     if not refs:
         return ContextReferenceResult(message=message, original_message=message)
     cwd_path = Path(cwd).expanduser().resolve()
@@ -525,7 +528,7 @@ def _ensure_reference_path_allowed(path: Path) -> None:
     from hermes_constants import get_hermes_home
     home, hermes_home = Path(os.path.expanduser("~")).resolve(), get_hermes_home().resolve()
     blocked_exact = {home / rel for rel in _SENSITIVE_HOME_FILES} | {hermes_home / ".env"}
-    blocked_dirs = [home / rel for rel in _SENSITIVE_HOME_DIRS] + [hermes_home / rel for rel in _SENSITIVE_HERMES_DIRS]
+    blocked_dirs = [home / rel for rel in HOME_CREDENTIAL_DIRS] + [hermes_home / rel for rel in _SENSITIVE_HERMES_DIRS]
     if path in blocked_exact:
         raise ValueError("path is a sensitive credential file and cannot be attached")
     if any(_is_under(path, blocked_dir) for blocked_dir in blocked_dirs):

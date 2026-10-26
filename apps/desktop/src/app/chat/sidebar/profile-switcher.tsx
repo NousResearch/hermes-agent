@@ -50,6 +50,7 @@ import { type Translations, useI18n } from '@/i18n'
 import { sortConnectionsForDisplay } from '@/lib/connection-display'
 import { triggerHaptic } from '@/lib/haptics'
 import { Loader2 } from '@/lib/icons'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { PROFILE_SWATCHES, profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
 import { profileShortLabel } from '@/lib/profile-short-label'
 import {
@@ -77,6 +78,7 @@ import {
   $profileScope,
   ALL_PROFILES,
   normalizeProfileKey,
+  prewarmProfilePick,
   profileLabel,
   refreshActiveProfile,
   selectProfile,
@@ -116,6 +118,16 @@ const RAIL_GAP = 4 // px — matches gap-1 between squares.
 // drag targets, endless horizontal scroll), so the rail collapses to a compact
 // menu. Drag-reorder and long-press-recolor live only on the squares path.
 const PROFILE_DROPDOWN_THRESHOLD = 13
+
+// The Webapp always takes the dropdown: squares are a native-window gesture
+// surface (drag, hold-to-recolor), and in a browser tab they read as chrome.
+const ALWAYS_CONDENSED = isBrowserHostedDesktop()
+
+// The threshold counts the whole fleet: fourteen squares are fourteen squares
+// wherever they live.
+function railCondensed(profileCount: number, restGroups: readonly FleetGroup[]): boolean {
+  return ALWAYS_CONDENSED || profileCount + countRestAgents(restGroups) > PROFILE_DROPDOWN_THRESHOLD
+}
 
 // #91710: a profile that finished (or blocked, or is still working) while
 // another was selected carries an indicator on its rail square and dropdown
@@ -277,9 +289,7 @@ export function ProfileRail() {
 
   // Too many profiles for the square strip → collapse to the select. Declared
   // ahead of the wheel effect, which re-binds when the strip mounts/unmounts.
-  // The threshold counts the whole fleet: fourteen squares are fourteen
-  // squares wherever they live.
-  const condensed = profiles.length + countRestAgents(restGroups) > PROFILE_DROPDOWN_THRESHOLD
+  const condensed = railCondensed(profiles.length, restGroups)
 
   const measureScroll = useCallback(() => {
     const el = scrollRef.current
@@ -575,11 +585,14 @@ export function ProfileRail() {
             activeKey={isAll ? null : activeKey}
             colors={colors}
             connectionId={namedProfileConnectionId}
+            homeConnectionId={activeConnectionId}
             onCreate={() => setCreateOpen(true)}
             onImport={() => void runImportProfileFlow()}
             onSelect={selectProfile}
             onSelectRest={switchToRest}
-            profiles={named}
+            // Fleet drops the home pill, so the menu is the active default's
+            // only door; every at-rest group already lists its own (#106017, #131632).
+            profiles={fleet && defaultProfile ? [defaultProfile, ...named] : named}
             restGroups={restGroups}
           />
         </div>
@@ -860,13 +873,15 @@ function ImportProfileButton({ label }: { label: string }) {
   )
 }
 
-// The condensed rail: every named profile in one compact menu. The trigger
-// shows the active profile (tinted initial + name); on default/all scope it
-// falls back to the placeholder since the left toggle pill carries that state.
+// The condensed rail: the active gateway's profiles in one compact menu. The
+// trigger shows the active profile (tinted initial, or home for the default);
+// on all scope — or on a default the left toggle pill carries — it falls back
+// to the placeholder.
 function ProfileDropdown({
   activeKey,
   colors,
   connectionId,
+  homeConnectionId,
   onCreate,
   onImport,
   onSelect,
@@ -877,6 +892,8 @@ function ProfileDropdown({
   activeKey: null | string
   colors: Record<string, string>
   connectionId: null | string
+  /** The default row's route, like the home pill's: the active connection. */
+  homeConnectionId: null | string
   onCreate: () => void
   onImport: () => void
   onSelect: (name: string) => void
@@ -908,7 +925,7 @@ function ProfileDropdown({
                 <ProfileGlyph
                   aria-hidden="true"
                   color={resolveProfileColor(activeProfile.name, colors)}
-                  isDefault={false}
+                  isDefault={activeProfile.is_default}
                   name={activeProfile.name}
                 />
                 <span className="truncate">{profileLabel(activeProfile)}</span>
@@ -934,8 +951,9 @@ function ProfileDropdown({
           {profiles.map(profile => (
             <ProfileDropdownItem
               color={resolveProfileColor(profile.name, colors)}
-              connectionId={connectionId}
+              connectionId={profile.is_default ? homeConnectionId : connectionId}
               hideStatus={profile.name === value}
+              isDefault={profile.is_default}
               key={profile.name}
               label={profileLabel(profile)}
               name={profile.name}
@@ -971,6 +989,7 @@ function ProfileDropdownItem({
   color,
   connectionId,
   hideStatus,
+  isDefault,
   label,
   name
 }: {
@@ -979,12 +998,13 @@ function ProfileDropdownItem({
   /** The dropdown's own selected row: its sessions are on screen in the
    *  sidebar, so its rollup is suppressed like the active square (#91710). */
   hideStatus?: boolean
+  isDefault: boolean
   label: string
   name: string
 }) {
   const { t } = useI18n()
   const p = t.profiles
-  const { cancelPrewarm, notePointerMove, startPrewarm } = useProfilePrewarm(name)
+  const { cancelPrewarm, notePointerMove, startPrewarm } = useProfilePrewarm(name, prewarmProfilePick)
   const summary = useProfileStatus(name, connectionId)
   const statusText = summary && !hideStatus ? profileStatusLabel(p, summary) : null
 
@@ -998,7 +1018,7 @@ function ProfileDropdownItem({
         value={name}
       >
         <span className="flex min-w-0 items-center gap-1.5">
-          <ProfileGlyph aria-hidden="true" color={color} isDefault={false} name={name} />
+          <ProfileGlyph aria-hidden="true" color={color} isDefault={isDefault} name={name} />
           <span className="truncate">{label}</span>
           {summary && !hideStatus && <ProfileStatusDot summary={summary} />}
         </span>
@@ -1421,7 +1441,7 @@ function ProfileSquare({
   const suppressClick = useRef(false)
   // Hovering a square telegraphs the switch — start that profile's backend
   // spawn now so a cold click doesn't pay the full boot.
-  const { cancelPrewarm, notePointerMove, startPrewarm } = useProfilePrewarm(name)
+  const { cancelPrewarm, notePointerMove, startPrewarm } = useProfilePrewarm(name, prewarmProfilePick)
 
   // The square carries its profile's session rollup — but never when active:
   // the workspace is homed there and the sidebar below already shows that

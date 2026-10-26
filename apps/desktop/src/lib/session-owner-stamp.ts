@@ -13,9 +13,12 @@ import type { SessionInfo } from '@/types/hermes'
  * an active NON-local source get stamped: the gateway's HTTP APIs correctly
  * know nothing about Desktop-local registry ids, and an untagged remote row
  * would let a later resume fall back to a same-named local profile
- * ("session not found" on turn two). `local` is never stamped — a bare local
- * row already routes correctly and a `local` tag would only pin it against
- * the fail-closed owner resolution for no benefit.
+ * ("session not found" on turn two). `local` is never stamped here — a bare
+ * local row already routes correctly while local is the primary, and a `local`
+ * tag would only pin it against the fail-closed owner resolution. The one
+ * exception, `local` serving as a registry SECONDARY, is stamped by its caller
+ * (`stampProjectSessions` in store/projects), because there a bare row would
+ * route to the remote primary.
  */
 export function stampRowsWithOwningConnection(
   sessions: SessionInfo[],

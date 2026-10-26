@@ -16,6 +16,7 @@ def test_cron_timeout_closes_the_descendant_snapshot_fork_window(tmp_path):
         [sys.executable, str(probe)],
         env={**os.environ, "HOME": str(tmp_path), "HERMES_HOME": str(tmp_path)},
         stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=35,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
 

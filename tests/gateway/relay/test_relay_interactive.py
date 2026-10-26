@@ -69,7 +69,7 @@ def _adapter(**desc_kw) -> tuple[RelayAdapter, StubConnector]:
 
 
 def _event(
-    prompt_response: Optional[Dict[str, Any]] = None,
+    prompt_response: Optional[dict[str, Any]] = None,
     text: str = "/once",
     chat_id: str = "c1",
 ) -> MessageEvent:

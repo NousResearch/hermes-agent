@@ -27,7 +27,7 @@ class _Plain(BasePlatformAdapter):
     async def send(self, *a: Any, **k: Any) -> SendResult:
         return SendResult(success=True)
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         return {}
 
 

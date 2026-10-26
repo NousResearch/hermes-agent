@@ -6,7 +6,7 @@ import contextvars
 import json
 import sqlite3
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from types import SimpleNamespace
 from typing import Any
 
@@ -349,6 +349,10 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
         interrupted=False,
         turn_exit_reason="text_response(stop)",
     )
+    # The daily package is cut by the first export that runs. Let the one the task
+    # close scheduled finish before the session closes, so the package holds exactly the
+    # task's metrics instead of racing the session-summary rows.
+    _join_export_workers()
     lifecycle.finalize_session(session_id=base["session_id"])
 
     starts = [event for event in direct_runtime.events if event[0] == "llm.call"]
@@ -636,15 +640,15 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
         "pre_tool_call",
         **cancelled,
         tool_call_id="sensitive-cancelled-tool-call",
-        tool_name="browser_navigate",
-        args={"url": prompt_canary},
+        tool_name="browser_exec",
+        args={"code": prompt_canary},
     )
     lifecycle.invoke_hook(
         "post_tool_call",
         **cancelled,
         tool_call_id="sensitive-cancelled-tool-call",
-        tool_name="browser_navigate",
-        args={"url": prompt_canary},
+        tool_name="browser_exec",
+        args={"code": prompt_canary},
         result={"error": tool_canary},
         status="cancelled",
         duration_ms=31_000,
@@ -664,7 +668,7 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
     _join_export_workers()
     root = tmp_path / "hermes-home" / "telemetry" / "shared_metrics"
     store = SharedMetricsStore(root / "metrics.sqlite3", root / "outbox")
-    tomorrow = datetime.now(timezone.utc) + timedelta(days=1)
+    tomorrow = datetime.now(UTC) + timedelta(days=1)
     monkeypatch.setattr(
         "hermes_cli.observability.shared_metrics._utc_now",
         lambda: tomorrow,
@@ -705,7 +709,7 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
     } == {
         ("terminal", "success", "none"),
         ("read_file", "failed", "unknown"),
-        ("browser_navigate", "cancelled", "interrupted"),
+        ("browser_exec", "cancelled", "interrupted"),
     }
     assert {
         counter["dimensions"]["outcome"]
@@ -781,7 +785,7 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
         json.loads(package.read_text(encoding="utf-8")) for package in packages
     ]
     for package in package_payloads:
-        assert package["schema_version"] == "hermes.shared_metrics.v3"
+        assert package["schema_version"] == "hermes.shared_metrics.v4"
         for metric in package["metrics"]:
             key = (metric["name"], tuple(sorted(metric["dimensions"].items())))
             package_values[key] = package_values.get(key, 0) + metric["value"]
@@ -814,8 +818,8 @@ def test_real_binding_correlates_plugin_approval_denial_to_tool_metric(
 ):
     from hermes_cli.observability.shared_metrics import SharedMetricsStore
     from tools import approval
-    import tools.approval_prompt as approval_prompt
-    import tools.approval_context as approval_context
+    from tools import approval_prompt
+    from tools import approval_context
 
     assert real_binding_runtime._native is not None
     base = {
@@ -957,6 +961,7 @@ def test_real_binding_aggregates_tool_and_approval_timeouts(
     )
     lifecycle.finalize_session(session_id=base["session_id"])
 
+    _join_export_workers()
     root = tmp_path / "hermes-home" / "telemetry" / "shared_metrics"
     snapshot = SharedMetricsStore(
         root / "metrics.sqlite3",
@@ -2455,7 +2460,7 @@ def test_task_retry_count_survives_provider_fallback_ordinal_reset(direct_runtim
 def test_failed_flush_keeps_daily_export_open_for_later_task(
     direct_runtime, tmp_path, monkeypatch, caplog
 ):
-    current_time = datetime(2026, 7, 28, 9, tzinfo=timezone.utc)
+    current_time = datetime(2026, 7, 28, 9, tzinfo=UTC)
     monkeypatch.setattr(
         "hermes_cli.observability.shared_metrics._utc_now",
         lambda: current_time,
@@ -2527,7 +2532,7 @@ def parked_flush(direct_runtime, monkeypatch):
     """A flush that blocks like the real barrier does while another session's tool runs."""
     monkeypatch.setattr(
         "hermes_cli.observability.shared_metrics._utc_now",
-        lambda: datetime(2026, 7, 28, 9, tzinfo=timezone.utc),
+        lambda: datetime(2026, 7, 28, 9, tzinfo=UTC),
     )
     state = SimpleNamespace(attempts=0, entered=threading.Event(), release=threading.Event())
 
@@ -2993,3 +2998,58 @@ def test_recovered_rows_report_saved_only_once_the_store_holds_them(real_binding
     assert relay_shared_metrics.record_process_marks_saved([row]) == 1
     saved = [(r["metric_name"], r["dimensions"], r["value"]) for r in SharedMetricsStore().counter_snapshot()]
     assert saved == [("hermes.process.exit", row[1], 1)]
+
+
+def _cli_turn(session_id: str, parent_session_id: str = "") -> None:
+    hook = dict(session_id=session_id, task_id=f"{session_id}-t", platform="cli")
+    lifecycle.invoke_hook("pre_llm_call", **hook, parent_session_id=parent_session_id)
+    relay_shared_metrics.finish_task_run(**hook, result={"completed": True})
+
+
+def test_finite_cli_runs_report_their_own_entrypoint(direct_runtime, tmp_path, monkeypatch):
+    """`hermes -z` / `chat -q` / `-Q` runs (HERMES_SINGLE_QUERY_SESSION) report `one_shot`, a
+    dispatcher-spawned one (kanban worker, A2A forward) `background`; the REPL stays `interactive`,
+    and a delegated child or a non-CLI surface keeps its own entrypoint inside a finite run."""
+    monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
+    _cli_turn("repl")
+    monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+    _cli_turn("oneshot")
+    _cli_turn("child", parent_session_id="oneshot")
+    _finish_desktop_task("desktop", "desktop-t")
+    monkeypatch.setenv("HERMES_SESSION_SOURCE", "kanban")
+    _cli_turn("kanban")
+    for session_id in ("repl", "oneshot", "child", "desktop", "kanban"):
+        lifecycle.finalize_session(session_id=session_id)
+    _join_export_workers()
+
+    started = sorted((d["entrypoint"], d["execution_surface"], v)
+                     for d, v in _stored_values(tmp_path, "hermes.task_run.started"))
+    assert started == [
+        ("background", "cli", 1), ("delegated", "cli", 1), ("interactive", "cli", 1),
+        ("interactive", "desktop", 1), ("one_shot", "cli", 1),
+    ]
+    finished = {d["entrypoint"] for d, _ in _stored_values(tmp_path, "hermes.task_run.finished")}
+    assert finished == {"background", "delegated", "interactive", "one_shot"}
+    # Delegated children are not sessions of their own.
+    sessions = sorted((d["entrypoint"], d["execution_surface"], d["turn_count_bucket"])
+                      for d, _ in _stored_values(tmp_path, "hermes.session.count"))
+    assert sessions == [
+        ("background", "cli", "1"), ("interactive", "cli", "1"), ("interactive", "desktop", "1"),
+        ("one_shot", "cli", "1"),
+    ]
+
+
+def test_oneshot_hard_exit_cleanup_records_the_session_summary(direct_runtime, tmp_path, monkeypatch):
+    """`hermes -z` leaves through os._exit, past the atexit hook that closes the metrics session; its
+    pre-exit cleanup must write the run's session.count itself."""
+    from hermes_cli import main as hermes_main
+
+    monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+    monkeypatch.setattr(hermes_main, "_oneshot_cleanup_done", False)
+    _cli_turn("z-run")
+    hermes_main._cleanup_oneshot_runtime()
+    _join_export_workers()
+
+    sessions = _stored_values(tmp_path, "hermes.session.count")
+    assert [(d["entrypoint"], d["turn_count_bucket"], v) for d, v in sessions] == [("one_shot", "1", 1)]

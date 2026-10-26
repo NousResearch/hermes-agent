@@ -203,7 +203,7 @@ import threading
 from pathlib import Path
 
 
-from gateway.scale_to_zero import (  # noqa: E402 - grouped with their section
+from gateway.scale_to_zero import (
     FLY_APP_NAME_ENV,
     FLY_MACHINE_ID_ENV,
     self_suspend_available,
@@ -313,7 +313,7 @@ def test_self_suspend_available_needs_identity_and_socket():
 # Brokered suspend: Azure's stop verb needs a credential the sandbox lacks, so
 # NAS stamps a signed sleep URL and stops the machine on our POST.
 
-from gateway.scale_to_zero import (  # noqa: E402 - grouped with their section
+from gateway.scale_to_zero import (
     SLEEP_URL_ENV,
     brokered_sleep_url,
     request_brokered_suspend,

@@ -4,7 +4,7 @@ stdout used to exit 0, so scripts treated a half-done job as success)."""
 
 from unittest import mock
 
-import hermes_cli.oneshot as oneshot
+from hermes_cli import oneshot
 
 
 def _run(monkeypatch, tmp_path, response, result):

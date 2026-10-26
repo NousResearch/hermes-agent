@@ -57,6 +57,23 @@ class TestCuratedModelsForProvider:
         ):
             assert curated_models_for_provider("nous") == [("m-static", "")]
 
+    def test_stepfun_merges_live_and_static(self):
+        """StepFun Step Plan API returns a subset; curated list merges with static."""
+        with patch(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            return_value={"api_key": "***", "base_url": "https://api.stepfun.ai/step_plan/v1"},
+        ), patch(
+            "hermes_cli.models.fetch_api_models",
+            return_value=["step-3.5-flash", "step-3.5-flash-2603"],
+        ):
+            models = curated_models_for_provider("stepfun")
+        model_ids = [m[0] for m in models]
+        # Live models appear first, static-only models appended
+        assert model_ids[0] == "step-3.5-flash"
+        assert "step-3.7-flash" in model_ids
+        # No duplicates
+        assert len(model_ids) == len(set(model_ids))
+
 
 # -- normalize_provider ------------------------------------------------------
 
@@ -214,6 +231,9 @@ class TestCopilotNormalization:
         assert opencode_model_api_mode("opencode-go", "opencode-go/minimax-m2.5") == "anthropic_messages"
         assert opencode_model_api_mode("opencode-go", "qwen3.7-max") == "anthropic_messages"
         assert opencode_model_api_mode("opencode-go", "opencode-go/qwen3.7-max") == "anthropic_messages"
+        # claude-haiku-5-5 400s ModelProtocolUnsupported on chat/completions and responses (#134844).
+        assert opencode_model_api_mode("opencode-go", "claude-haiku-5-5") == "anthropic_messages"
+        assert opencode_model_api_mode("opencode-go", "opencode-go/claude-haiku-5-5") == "anthropic_messages"
         # All Qwen models on Go route via /v1/messages (Go endpoint table).
         assert opencode_model_api_mode("opencode-go", "qwen3.7-plus") == "anthropic_messages"
         assert opencode_model_api_mode("opencode-go", "qwen3.6-plus") == "anthropic_messages"

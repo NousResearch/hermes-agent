@@ -14,6 +14,7 @@ import type {
   McpTestResult,
 } from "@/lib/api";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
+import { McpTokenAuthInput } from "@/components/McpTokenAuthInput";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
@@ -25,6 +26,8 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
 import {
   buildMcpServerCreate,
+  MCP_AUTH_LABELS,
+  mcpTokenAuthFields,
   type McpTransport,
 } from "@/lib/mcp-server-create";
 import { completeMcpDashboardOAuth } from "@/lib/mcp-dashboard-oauth";
@@ -422,7 +425,7 @@ export default function McpPage() {
                       onValueChange={(value) => {
                         const nextAuth = value as McpHttpAuth;
                         setHttpAuth(nextAuth);
-                        if (nextAuth !== "header" && nextAuth !== "query") {
+                        if (!mcpTokenAuthFields(nextAuth)) {
                           setBearerToken("");
                         }
                       }}
@@ -433,30 +436,13 @@ export default function McpPage() {
                       <SelectOption value="oauth">OAuth</SelectOption>
                     </Select>
                   </div>
-                  {(httpAuth === "header" || httpAuth === "query") && (
-                    <div className="grid gap-2">
-                      <Label htmlFor="mcp-bearer-token">
-                        {httpAuth === "query" ? "URL query token" : "Bearer token"}
-                      </Label>
-                      <Input
-                        id="mcp-bearer-token"
-                        type="password"
-                        autoComplete="new-password"
-                        placeholder={
-                          httpAuth === "query"
-                            ? "Token appended as ?token=..."
-                            : "Token or Bearer token"
-                        }
-                        value={bearerToken}
-                        onChange={(e) => setBearerToken(e.target.value)}
-                      />
-                      <p className="text-xs text-muted-foreground">
-                        {httpAuth === "query"
-                          ? "Stored in this profile's .env; added as ?token= when connecting and hidden in the dashboard."
-                          : "Stored in this profile's .env; config.yaml keeps only an environment-variable reference."}
-                      </p>
-                    </div>
-                  )}
+                  <McpTokenAuthInput
+                    auth={httpAuth}
+                    id="mcp-bearer-token"
+                    value={bearerToken}
+                    onChange={setBearerToken}
+                    className="grid gap-2"
+                  />
                   {httpAuth === "oauth" && (
                     <p className="text-xs text-muted-foreground">
                       Add the server, then use Authenticate. Hermes opens the
@@ -659,11 +645,7 @@ export default function McpPage() {
                     {server.auth && (
                       <Badge tone="outline">
                         auth:{" "}
-                        {server.auth === "header"
-                          ? "bearer"
-                          : server.auth === "query"
-                            ? "query token"
-                            : server.auth}
+                        {MCP_AUTH_LABELS[server.auth]}
                       </Badge>
                     )}
                     {!server.enabled && <Badge tone="outline">disabled</Badge>}

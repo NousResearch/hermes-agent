@@ -396,7 +396,22 @@ def test_launch_external_worker_uses_restart_safe_scope_and_acknowledges(
         clear_env_passthrough()
         set_multiplex_active(False)
     assert wrapped_commands[0][1] == "cron-job-1-exec-exec-1"
-    assert spawned[0][0][0:2] == ["scope", "--"]
+    # The restart-safe scope wrapper is still applied. When worker isolation is
+    # enforced the argv is ``unshare -Urm <launcher> -- scope -- ...``: the
+    # namespace must be OUTERMOST, so the scoped unit itself runs inside the
+    # read-only bind and cannot mutate the production tree. Assert both the
+    # scope and the isolation wrapper, and their order.
+    spawned_argv = spawned[0][0]
+    assert "scope" in spawned_argv, spawned_argv
+    scope_at = spawned_argv.index("scope")
+    assert spawned_argv[scope_at + 1] == "--", spawned_argv
+    if spawned_argv[0] == "unshare":
+        # Isolation enforced: the scope sits BEHIND the launcher, so it runs
+        # inside the namespace rather than beside it.
+        launcher_at = next(
+            i for i, part in enumerate(spawned_argv) if "worker_isolate" in part
+        )
+        assert launcher_at < scope_at, spawned_argv
     assert spawned[0][1]["start_new_session"] is True
     assert "ANTHROPIC_API_KEY" not in spawned[0][1]["env"]
     assert spawned[0][1]["env"]["SERVICE_TOKEN"] == "target-profile-token"

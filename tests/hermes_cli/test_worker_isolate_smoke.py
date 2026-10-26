@@ -35,6 +35,13 @@ _SMOKE = os.environ.get("HERMES_SMOKE_LAUNCHER") == "1"
 
 @pytest.mark.skipif(not _SMOKE, reason="set HERMES_SMOKE_LAUNCHER=1 to run the live launcher smoke test")
 @pytest.mark.skipif(shutil.which("unshare") is None, reason="unshare not on PATH")
+# This test's whole point is to touch the REAL production tree: the launcher
+# binds it read-only and the probe asserts the forbidden ops are denied. The
+# home-IO guard would refuse the guard's own ``os.path.isdir(prod/.git)``
+# probe before the sandbox is ever entered, so the test would fail for a
+# reason that has nothing to do with isolation. Opt out explicitly — the
+# assertions below (post-state == pre-state) are what keep it honest.
+@pytest.mark.allow_real_home_io
 def test_smoke_launcher_against_real_production_tree(tmp_path):
     from hermes_cli.worker_isolate import _launcher_module_target
 

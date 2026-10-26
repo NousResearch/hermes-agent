@@ -179,3 +179,14 @@ def test_memory_agent_context_reaches_the_provider_initialize():
     assert seen["agent_context"] == "primary"
     _build_agent_with_recording_provider(seen, platform="subagent")
     assert seen["agent_context"] == "subagent"
+
+
+def test_parent_session_id_reaches_the_provider_initialize():
+    """Documented in ``MemoryProvider.initialize``; it never left ``agent._parent_session_id``."""
+    seen = {}
+    _build_agent_with_recording_provider(seen, memory_agent_context="subagent", platform="subagent",
+                                         parent_session_id="parent-sid")
+    assert seen["parent_session_id"] == "parent-sid"
+
+    _build_agent_with_recording_provider(seen)
+    assert "parent_session_id" not in seen

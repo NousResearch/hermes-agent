@@ -68,6 +68,20 @@ def test_back_to_back_restart_refunds_are_bounded(flag):
     assert agent.steered == (["last correction"] if flag == "restart_with_redirected_messages" else [])
 
 
+def test_rebuilt_restart_bound_covers_the_whole_fallback_chain():
+    """Each failover arms one rebuilt restart: a chain longer than ``max_retries`` must still
+    reach its last entry, and the bound still ends a turn that keeps re-arming after that."""
+    agent = _agent()
+    agent._fallback_chain = [{"provider": "p", "model": f"m{i}"} for i in range(MAX_RETRIES + 3)]
+    restart_count, actions = 0, []
+    while not actions or actions[-1] != "break":
+        verdict = _apply(agent, "restart_with_rebuilt_messages", restart_count)
+        actions.append(verdict.action)
+        restart_count = verdict.restart_count
+    assert actions == ["continue"] * (MAX_RETRIES + len(agent._fallback_chain)) + ["break"]
+    assert verdict._turn_exit_reason == "rebuilt_restart_limit_exceeded"
+
+
 def _interrupted_agent(tool_interrupt_reason):
     agent = SimpleNamespace(
         _interrupt_requested=True, _tool_interrupt_reason=tool_interrupt_reason, quiet_mode=True,

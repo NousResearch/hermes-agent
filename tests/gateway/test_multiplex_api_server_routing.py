@@ -96,23 +96,37 @@ class TestApiServerProfileResolution:
         )
 
 
+_UNKNOWN = {"error": "Unknown or unconfigured profile"}
+_NOT_SERVED = "profile_not_served"
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("gateway_home,answers", [
-    ("", {"hermes": 200, "default": 200, "worker": 404}),                # default-profile gateway
-    ("profiles/worker", {"hermes": 404, "default": 404, "worker": 200}),  # another named profile
-    ("profiles/hermes", {"hermes": 200, "default": 404, "worker": 404}),  # a real legacy 'hermes'
+@pytest.mark.parametrize("multiplex,gateway_home,legacy_hermes,answers", [
+    # Single-profile gateways: the handle is the default profile's, and nobody else's.
+    (False, "", None, {"hermes": None, "default": None, "worker": _UNKNOWN}),
+    (False, "profiles/worker", None, {"hermes": _UNKNOWN, "default": _UNKNOWN, "worker": None}),
+    (False, "profiles/hermes", "live", {"hermes": None, "default": _UNKNOWN}),
+    # A real legacy 'hermes' profile the gateway does not serve is never answered by default.
+    (False, "", "live", {"hermes": _NOT_SERVED, "default": None}),
+    (True, "", None, {"hermes": "default", "worker": "worker"}),
+    (True, "", "live", {"hermes": "hermes", "default": "default"}),
+    (True, "", "parked", {"hermes": _NOT_SERVED, "default": "default"}),
 ])
-async def test_single_profile_gateway_answers_the_hermes_handle_only_for_its_own_profile(
-        tmp_path, monkeypatch, gateway_home, answers):
-    """Multiplexing off: '/p/hermes/' is Bot Mode's handle for the default profile (#118076), so a
-    default-profile gateway serves it, a gateway running another profile refuses it with the
-    unknown-profile 404 peers key their fallback on, and a real 'hermes' profile keeps its name."""
+async def test_hermes_handle_reaches_the_default_profile_only_when_no_hermes_profile_exists(
+        tmp_path, monkeypatch, multiplex, gateway_home, legacy_hermes, answers):
+    """'/p/hermes/' is Bot Mode's handle for the default profile (#118076): a gateway serving the
+    default profile answers it, one running another profile refuses it with the unknown-profile
+    404 peers key their /p/default fallback on, and a host with a real pre-reservation 'hermes'
+    profile keeps the name for it (refusing distinctly when this gateway does not serve it)."""
     root = tmp_path / "root"
-    for home in (root, root / "profiles" / "worker", root / "profiles" / "hermes"):
+    homes = [root, root / "profiles" / "worker"] + ([root / "profiles" / "hermes"] if legacy_hermes else [])
+    for home in homes:
         home.mkdir(parents=True, exist_ok=True)
         (home / "config.yaml").write_text("{}\n", encoding="utf-8")
+    if legacy_hermes == "parked":
+        (root / "profiles" / "hermes" / "gateway.parked").write_text("", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(root / gateway_home))
-    adapter = _make_adapter(multiplex=False)
+    adapter = _make_adapter(multiplex=multiplex)
 
     async def handler(request):
         return web.json_response({"profile": _api_request_profile.get()})
@@ -120,11 +134,15 @@ async def test_single_profile_gateway_answers_the_hermes_handle_only_for_its_own
     app = web.Application(middlewares=[adapter._make_profile_prefix_middleware()])
     app.router.add_get("/p/{profile}/v1/test", handler)
     async with TestClient(TestServer(app)) as cli:
-        for prefix, status in answers.items():
+        for prefix, expected in answers.items():
             resp = await cli.get(f"/p/{prefix}/v1/test")
             body = await resp.json()
-            assert (prefix, resp.status) == (prefix, status)
-            assert body == ({"profile": None} if status == 200 else {"error": "Unknown or unconfigured profile"})
+            if expected == _NOT_SERVED:
+                assert (prefix, resp.status, body["error"]["code"]) == (prefix, 404, _NOT_SERVED)
+            elif expected == _UNKNOWN:
+                assert (prefix, resp.status, body) == (prefix, 404, _UNKNOWN)
+            else:
+                assert (prefix, resp.status, body) == (prefix, 200, {"profile": expected})
 
 
 

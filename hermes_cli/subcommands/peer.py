@@ -24,8 +24,9 @@ BOT_CHAT_TITLE = "Bot Chat"
 _PEER_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _PROFILE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 
-# The @handle Bot Mode shows for a host's default profile, and the body of the 404 a peer's
-# /p/<profile>/ prefix middleware returns for a profile it does not serve (gateway/platforms/api_server.py).
+# The @handle Bot Mode shows for a host's default profile, and the body of the 404 a peer returns for
+# a /p/<profile>/ prefix naming no profile it has (UNKNOWN_PROFILE_ERROR in
+# gateway/platforms/api_server_profile_prefix.py; a 'hermes' profile it has but does not serve differs).
 DEFAULT_PROFILE_HANDLE = "hermes"
 _UNKNOWN_PROFILE_ERROR = "Unknown or unconfigured profile"
 

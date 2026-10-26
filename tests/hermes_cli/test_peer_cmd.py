@@ -47,13 +47,14 @@ class _ProfilePeer(BaseHTTPRequestHandler):
 
     served: set = set()
     probe_status: int = 200
+    refusal: dict = {"error": "Unknown or unconfigured profile"}
     hits: list = []
 
     def _answer(self):
         _, _, profile, rest = (self.path.split("/", 3) + ["", "", "", ""])[:4]
         type(self).hits.append(self.path)
         if profile not in type(self).served:
-            return 404, {"error": "Unknown or unconfigured profile"}
+            return 404, type(self).refusal
         if rest == "health":
             return type(self).probe_status, {"status": "ok"}
         if rest.startswith("api/sessions?"):
@@ -78,16 +79,22 @@ class _ProfilePeer(BaseHTTPRequestHandler):
         pass
 
 
-@pytest.mark.parametrize("served,probe_status,expected", [
-    ({"default", "hermes"}, 200, "hermes"),   # a real legacy 'hermes' profile keeps precedence
-    ({"default"}, 200, "default"),            # the peer says it has none: the @hermes handle is its default
-    ({"default", "hermes"}, 503, "hermes"),   # a transient failure is no verdict, so never reroute
+_NOT_SERVED = {"error": {"message": "Profile 'hermes' exists on this host but this gateway does not serve it"}}
+
+
+@pytest.mark.parametrize("served,probe_status,refusal,expected", [
+    ({"default", "hermes"}, 200, None, "hermes"),   # a real legacy 'hermes' profile keeps precedence
+    ({"default"}, 200, None, "default"),            # the peer says it has none: @hermes is its default
+    ({"default", "hermes"}, 503, None, "hermes"),   # a transient failure is no verdict, so never reroute
+    ({"default"}, 200, _NOT_SERVED, None),          # it has one but does not serve it: an error, not default
 ])
-def test_hermes_handle_reaches_the_profile_the_peer_serves(monkeypatch, capsys, served, probe_status, expected):
+def test_hermes_handle_reaches_the_profile_the_peer_serves(
+        monkeypatch, capsys, served, probe_status, refusal, expected):
     """``box/hermes`` names the peer's real 'hermes' profile when it has one, and its default
     profile (Bot Mode's @hermes handle, #118076) only when the peer answers it has no such profile;
     dm, status and stop all address the same mirror."""
     _ProfilePeer.served, _ProfilePeer.probe_status, _ProfilePeer.hits = served, probe_status, []
+    _ProfilePeer.refusal = refusal or {"error": "Unknown or unconfigured profile"}
     server = HTTPServer(("127.0.0.1", 0), _ProfilePeer)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"box": {"url": f"http://127.0.0.1:{server.server_port}"}})
@@ -101,6 +108,10 @@ def test_hermes_handle_reaches_the_profile_the_peer_serves(monkeypatch, capsys, 
     finally:
         server.shutdown()
     out = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    if expected is None:
+        assert (replies, out) == ([1, 1, 1], [])
+        assert {hit.split("/")[2] for hit in _ProfilePeer.hits} == {"hermes"}
+        return
     assert replies == [0, 0, 0]
     assert [out[0]["reply"], out[1]["status"], out[2]["status"]] == [
         f"from {expected}", f"run in {expected}", f"run in {expected}"]

@@ -374,13 +374,15 @@ def unread_posix_pty(_monkeypatch):
 
 def keys_filling_the_input_queue(extra=0, *, text=False):
     """``(frames, filled)``: keystroke frames whose first ``filled`` fill the host terminal's input
-    queue, then ``extra`` more. Each frame repeats one letter; the next frame has the next letter.
-    With ``text``, the frames are text frames, as a browser sends them, of 4-byte emoji: each has a
-    quarter as many characters as UTF-8 bytes."""
+    queue, its frame bound of frames that together reach its byte bound, then ``extra`` more. Each
+    frame repeats one letter; the next frame has the next letter. With ``text``, the frames are text
+    frames, as a browser sends them, of 4-byte emoji: each has a quarter as many characters as UTF-8
+    bytes."""
     from hermes_cli import web_host_terminal_sessions as host_sessions
 
-    size = host_sessions._INPUT_QUEUE_BYTES // 16
-    filled = -(-host_sessions._INPUT_QUEUE_BYTES // (size + host_sessions._FRAME_OVERHEAD_BYTES))
+    filled = host_sessions._INPUT_QUEUE_FRAMES
+    size = host_sessions._INPUT_QUEUE_BYTES // filled
+    assert filled * (size + host_sessions._FRAME_OVERHEAD_BYTES) >= host_sessions._INPUT_QUEUE_BYTES
     if text:
         return [chr(0x1F600 + n % 26) * (size // 4) for n in range(filled + extra)], filled
     return [bytes([65 + n % 26]) * size for n in range(filled + extra)], filled
@@ -409,6 +411,23 @@ def test_text_frames_count_their_utf8_bytes_against_the_input_queue():
     # A lone surrogate never comes off a WebSocket (text frames are valid UTF-8), but counting one
     # must not fail the reader.
     assert host_sessions._frame_cost({"text": "\ud800"}) == 3 + host_sessions._FRAME_OVERHEAD_BYTES
+
+
+def test_a_paste_or_keys_alone_do_not_fill_the_input_queue():
+    """The reader stops taking frames only once the input queue holds both its byte bound and 64
+    frames. One paste over the byte bound, or many keys, leave it reading the socket, where the
+    server's keepalive pongs arrive."""
+    from hermes_cli import web_host_terminal_sessions as host_sessions
+
+    inbox = host_sessions._InputQueue()
+    for frame in [b"P" * 2 * host_sessions._INPUT_QUEUE_BYTES, *[b"k"] * 48]:
+        inbox.put_nowait({"type": "websocket.receive", "bytes": frame})
+        assert not inbox.full(), "a paste over the byte bound filled the input queue"
+    while not inbox.empty():
+        inbox.get_nowait()
+    for _ in range(1024):
+        inbox.put_nowait({"type": "websocket.receive", "bytes": b"k"})
+        assert not inbox.full(), "keys filled the input queue by count alone"
 
 
 @pytest.mark.asyncio
@@ -544,6 +563,18 @@ class AnsweringTab(BrowserTab):
         with self._lock:
             super().send(*frames)
 
+    def _flush(self):
+        # The socket's short timeout is for the answering thread's reads; a paste can take longer
+        # than that to send.
+        data = memoryview(b"".join(self.protocol.data_to_send()))
+        deadline = time.monotonic() + 10
+        while data:
+            try:
+                data = data[self.sock.send(data):]
+            except TimeoutError:
+                if time.monotonic() > deadline:
+                    raise
+
     @property
     def closed_by_server(self):
         """Whether the server's close frame has arrived, as a browser sees it before the route returns."""
@@ -653,11 +684,19 @@ def test_a_tab_closed_behind_more_keys_than_the_input_queue_holds_is_detached(tm
         assert not session.attached and session._ws is None
 
 
-def test_a_live_tab_typing_behind_a_waiting_write_answers_keepalive_pings(tmp_path, monkeypatch):
+@pytest.mark.parametrize("typed", [
+    # Far more frames than the WebSocket library buffers unread (32) and than 64 queued frames.
+    [bytes([65 + n % 26]) for n in range(1024)],
+    # A paste over the input queue's byte bound (one text frame from the browser), then more keys
+    # than the WebSocket library buffers unread, but fewer frames than 64.
+    [b"P" * 2 * 1024 * 1024, *(bytes([97 + n % 26]) for n in range(48))],
+], ids=["keys", "paste-then-keys"])
+def test_a_live_tab_typing_behind_a_waiting_write_answers_keepalive_pings(tmp_path, monkeypatch, typed):
     """A non-loopback Webapp pings its sockets (``web_server._build_uvicorn_server``) and closes one
-    whose pong does not come back in time. Keys typed while a write waits on a slow program must not
-    stop the server reading the socket, where the pongs arrive: the tab, answering every ping, stays
-    attached through several ping timeouts, and every key reaches the program once it reads."""
+    whose pong does not come back in time. Keys or a paste typed while a write waits on a slow
+    program must not stop the server reading the socket, where the pongs arrive: the tab, answering
+    every ping, stays attached through several ping timeouts, and everything reaches the program in
+    order once it reads."""
     home = tmp_path / ".hermes"
     profile = home / "profiles" / "worker"
     profile.mkdir(parents=True)
@@ -666,8 +705,6 @@ def test_a_live_tab_typing_behind_a_waiting_write_answers_keepalive_pings(tmp_pa
     owner = HostOwner(("loopback", "test"), profile, "sh", str(tmp_path))
     bridge = SlowAccept()
     session = PtySession("terminal", bridge, buffer_cap=32, read_timeout=0.01)
-    # Far more frames than the WebSocket library buffers unread (32) and than 64 queued frames.
-    typed = [bytes([65 + n % 26]) for n in range(1024)]
     with served_host_terminal(monkeypatch, session, owner, ws_ping=(1.0, 2.0)) as (port, taken, finished):
         tab = AnsweringTab(port)
         try:

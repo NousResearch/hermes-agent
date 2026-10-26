@@ -30,9 +30,11 @@ from hermes_constants import assert_named_profile_home_live, get_hermes_home
 # No survival across backend restart. Disconnects retain a bounded ANSI tail.
 RETENTION_SECONDS = 15 * 60
 _MAX_SHELLS = 16
-# Inbound input buffered while one batch is written (backpressure bound), in bytes; each frame also
-# costs ``_FRAME_OVERHEAD_BYTES``. Bytes, not frames: until it is reached the reader keeps reading the
-# socket, which is where the server's keepalive pongs arrive (``_InputQueue``).
+# Inbound input buffered while one batch is written (backpressure bound): full only once it holds
+# both ``_INPUT_QUEUE_FRAMES`` frames and ``_INPUT_QUEUE_BYTES`` bytes, each frame also costing
+# ``_FRAME_OVERHEAD_BYTES``. Until then the reader keeps reading the socket, which is where the
+# server's keepalive pongs arrive (``_InputQueue``).
+_INPUT_QUEUE_FRAMES = 64
 _INPUT_QUEUE_BYTES = 1024 * 1024
 _FRAME_OVERHEAD_BYTES = 256
 # How often a reader held up by that bound checks that the tab is still there (``_queue_frame``).
@@ -320,13 +322,15 @@ def _frame_cost(item) -> int:
 
 
 class _InputQueue(asyncio.Queue):
-    """The frames a tab sent while a batch is written, full at ``_INPUT_QUEUE_BYTES``.
+    """The frames a tab sent while a batch is written, full at ``_INPUT_QUEUE_FRAMES`` frames that
+    together reach ``_INPUT_QUEUE_BYTES``.
 
     A full queue stops the reader, and with it the WebSocket library's own read of the socket once
-    that buffers its few frames: keepalive pongs then go unread, and a bind that pings (any
+    that buffers 32 unread frames: keepalive pongs then go unread, and a bind that pings (any
     non-loopback Webapp) closes a live tab with 1011 after the ping timeout, dropping the input
-    queued behind it. A frame count would fill on a few dozen keys typed while a paste waits on a
-    program that is not reading; a byte bound leaves the reader reading through any typing.
+    queued behind it. A frame count alone fills on a few dozen keys typed while a paste waits on a
+    program that is not reading, and a byte count alone on one large paste; needing both leaves the
+    reader reading through any typing, and never stops it before the frame count alone would.
     """
 
     def __init__(self):
@@ -334,7 +338,7 @@ class _InputQueue(asyncio.Queue):
         self.queued = 0
 
     def full(self) -> bool:
-        return self.queued >= _INPUT_QUEUE_BYTES
+        return self.qsize() >= _INPUT_QUEUE_FRAMES and self.queued >= _INPUT_QUEUE_BYTES
 
     def _put(self, item):
         self.queued += _frame_cost(item)

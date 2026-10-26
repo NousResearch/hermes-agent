@@ -946,17 +946,11 @@ def _pid_exists(pid: int) -> bool:
     dead: treating one as alive makes --replace wait forever under systemd Restart=always."""
     pid = int(pid)
     if os.name == "nt":
-        # psutil's Windows liveness path (psutil_pid_is_running -> EnumProcesses, and
-        # Process.status -> NtQuerySystemInformation) does NOT release the GIL, so one slow native
-        # call freezes every other Python thread in the process — the Desktop backend and gateway
-        # stall for minutes under load (#142085). The ctypes probe below releases the GIL and is
-        # cheaper. Windows has no POSIX zombies, so the status read this skips did not apply here.
+        # psutil's Windows liveness calls (EnumProcesses, NtQuerySystemInformation) hold the GIL, so a
+        # slow one froze every thread for minutes (#142085); ctypes releases it. No zombies on Windows.
         return pid_exists_stdlib(pid)
     try:
         import psutil  # type: ignore
-        # Best-effort zombie check: status-read failures fall through to pid_exists().
-        # This probe is POSIX-only (the Windows branch returned above), where psutil's status read
-        # is cheap and the zombie distinction is the whole point.
         try:
             # A zombie (defunct) process is still in the process table, so ``psutil.pid_exists()`` returns
             # True for it — but it is already dead: SIGKILL has no effect and it cannot be a running

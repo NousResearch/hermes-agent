@@ -356,3 +356,72 @@ def test_x_search_bearer_helper_falls_back_to_oauth_without_api_key(monkeypatch)
         "https://api.x.ai/v1",
         "xai-oauth",
     )
+
+
+# ---------------------------------------------------------------------------
+# Citation grounding — a bare query makes Grok answer from its own weights, and
+# xAI exposes url_citation annotations on the message body while leaving the
+# top-level ``citations`` field empty. Both must be handled or the caller sees
+# "no sources" even though the server-side search ran.
+# ---------------------------------------------------------------------------
+
+def test_x_search_wraps_query_in_citation_instruction(monkeypatch):
+    from tools.x_search_tool import x_search_tool
+
+    captured = {}
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        captured["payload"] = json
+        return _FakeResponse({"output_text": "ok", "citations": [{"url": "https://x.com/a/status/1"}]})
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    monkeypatch.setattr("requests.post", _fake_post)
+
+    x_search_tool(query="宅食 まずい")
+    ja = captured["payload"]["input"][0]["content"]
+    assert "宅食 まずい" in ja
+    assert "引用元URL" in ja
+
+    x_search_tool(query="meal kit taste")
+    en = captured["payload"]["input"][0]["content"]
+    assert "meal kit taste" in en
+    assert "Cite the source URL" in en
+
+
+def test_x_search_mirrors_annotations_into_citations(monkeypatch):
+    """Annotations-only responses must still report sources and count as grounded."""
+    from tools.x_search_tool import x_search_tool
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    monkeypatch.setattr(
+        "requests.post",
+        lambda *a, **k: _FakeResponse(
+            {
+                "citations": [],
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": "posts found",
+                                "annotations": [
+                                    {"type": "url_citation", "url": "https://x.com/a/status/1", "title": "1"},
+                                    {"type": "url_citation", "url": "https://x.com/b/status/2", "title": "2"},
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ),
+    )
+
+    result = json.loads(x_search_tool(query="anything", from_date="2026-10-01"))
+
+    assert result["grounded"] is True
+    assert [c["url"] for c in result["citations"]] == [
+        "https://x.com/a/status/1",
+        "https://x.com/b/status/2",
+    ]
+    assert result["degraded"] is False

@@ -50,21 +50,26 @@ def normalize_route_base_url(base_url: Any) -> str:
     return normalized
 
 
-def is_copilot_plan_route(provider: str, base_url: Any) -> bool:
-    """Whether *base_url* is the bare HTTPS root of a GitHub Copilot host.
+def is_claimed_root_route(profile: Any, base_url: Any) -> bool:
+    """Whether *base_url* is the bare HTTPS root of a host that *profile* claims.
 
-    The token exchange reports the account's plan host (``api.individual.``, ``api.business.``,
-    ``api.enterprise.githubcopilot.com``) as ``endpoints.api``, so ``model.base_url`` can carry it.
-    That host is Copilot's own, not a relay. A path, query, user info, non-default port or plain
-    HTTP keeps relay handling, so a relay mounted under a Copilot host is still a relay.
+    A profile claims hosts through ``hostnames`` (``providers.profile_for_host``): the host
+    itself and its subdomains. An account can carry such a host in ``model.base_url`` (a plan
+    or regional host), and that host is the provider's own endpoint, not a relay. A path, query,
+    user info, non-default port or plain HTTP keeps relay handling, so a relay mounted under a
+    claimed host is still a relay. A host that another profile claims, or none does, is no match.
     """
-    from utils import base_url_host_matches
+    from providers import profile_for_host
+    from utils import base_url_hostname
 
-    if provider != "copilot":
-        return False
     normalized = normalize_route_base_url(str(base_url or "").strip())
-    host = urlsplit(normalized).hostname or ""
-    return normalized == f"https://{host}" and base_url_host_matches(host, "githubcopilot.com")
+    owner = profile_for_host(normalized)
+    return (
+        profile is not None
+        and owner is not None
+        and owner.name == profile.name
+        and normalized == f"https://{base_url_hostname(normalized)}"
+    )
 
 
 def provider_owns_route(provider: Any, base_url: Any, config: Any = None) -> Optional[bool]:

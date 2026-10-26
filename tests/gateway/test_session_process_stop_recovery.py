@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.session_authority import LiveSession, SessionAuthority
-from hermes_state_runtime import admit_session_input, begin_runtime_epoch, list_session_admissions, recover_session_inputs
+from hermes_state_runtime import RuntimeStoreError, admit_session_input, begin_runtime_epoch, list_session_admissions, recover_session_inputs
 from tests.gateway.test_session_authority_cancel_settlement import ACTOR, REF, _authority, _submit, _wire_turn_agent
 from tests.gateway.test_session_authority_preadopt_stop import Agent
 
@@ -69,7 +69,8 @@ async def test_failed_stop_fences_later_inputs_until_actual_cleanup(tmp_path, mo
                                 request_id='automation-head', payload={'text': 'work'})
             authority._schedule(REF)
             await asyncio.wait_for(started.wait(), 10)
-        await authority.interrupt(ACTOR, REF, authority._handle(REF).execution_generation)
+        with pytest.raises(RuntimeStoreError, match='process_stop_unknown'):
+            await authority.interrupt(ACTOR, REF, authority._handle(REF).execution_generation)
         await _submit(authority, 'follower')
         finish.set()
         await asyncio.wait_for(authority.sessions['s'].task, 15)
@@ -175,7 +176,11 @@ async def test_idle_stop_recovers_previous_worker_before_clearing_status(tmp_pat
     monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
     try:
         assert not registry._running, 'the gateway starts without the previous worker process table'
-        await authority.interrupt(ACTOR, REF, authority._handle(REF).execution_generation)
+        if refuse:
+            with pytest.raises(RuntimeStoreError, match='process_stop_unknown'):
+                await authority.interrupt(ACTOR, REF, authority._handle(REF).execution_generation)
+        else:
+            await authority.interrupt(ACTOR, REF, authority._handle(REF).execution_generation)
         if refuse:
             assert process_stop_pending(db, 's') is not None and not own.exited
             await _submit(authority, 'held-follower')
@@ -183,6 +188,8 @@ async def test_idle_stop_recovers_previous_worker_before_clearing_status(tmp_pat
             assert executed == [] and not own.exited
             monkeypatch.setattr(registry, 'kill_process', kill)
             await authority.interrupt(ACTOR, REF, authority._handle(REF).execution_generation)
+            await asyncio.wait_for(authority.sessions['s'].task, 15)
+            assert executed == ['held-follower']
         assert await asyncio.to_thread(own._completion_event.wait, 10)
         assert process_stop_pending(db, 's') is None
         assert all(not process.exited for process in neighbors)

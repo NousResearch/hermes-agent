@@ -1264,6 +1264,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
     ) -> Optional[bool]:
         from gateway.session_local_recovery import restore_completion_route
         from gateway.wake import WakeNotAccepted
+        from tools.process_registry import process_registry
         from tools.process_registry_notifications import should_surface_notification
         if not should_surface_notification(evt):
             return None  # Suppressed noise is terminal, not a consumed process result.
@@ -1275,6 +1276,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             claim = await self._preflight_completion_delivery(evt)
             if not claim.proceed:
                 return claim.early_result
+            if evt.get('type', 'completion') == 'completion' and process_registry.is_completion_consumed(evt.get('session_id')):
+                return None
             if getattr(self, 'session_authority', None) is not None:
                 from gateway.session_automation import completion_admission
                 if completion_admission(self, evt) is not None:
@@ -1373,14 +1376,18 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 self._completion_notification_batch_tasks.pop(key, None)
             if not entries:
                 return
+            from tools.process_registry import process_registry
+            entries_to_deliver = [item for item in entries
+                                  if not process_registry.is_completion_consumed(item[1].get('session_id'))]
+            if not entries_to_deliver:
+                delivered = None
+                return
             if getattr(self, 'session_authority', None) is not None:
                 from gateway.session_automation import completion_admission, producer_identity
-                entries_to_deliver = [item for item in entries if completion_admission(self, item[1]) is None]
+                entries_to_deliver = [item for item in entries_to_deliver if completion_admission(self, item[1]) is None]
                 if not entries_to_deliver:
                     delivered = True
                     return
-            else:
-                entries_to_deliver = entries
             synth_text = (entries_to_deliver[0][0] if len(entries_to_deliver) == 1
                           else self._format_coalesced_process_completions(entries_to_deliver))
             from tools.process_registry_notifications import process_completion_display_text

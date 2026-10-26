@@ -32,9 +32,13 @@ def record_process_stop(authority, ref, generation):
     token = f'{authority.epoch}:{generation}'
     def write(conn):
         _epoch(conn, authority.epoch)
+        pending = conn.execute('SELECT value FROM state_meta WHERE key=?',
+                               (_PROCESS_STOP_PREFIX + ref.session_id,)).fetchone()
+        if pending is not None:
+            return pending[0]
         authority.db.set_meta(_PROCESS_STOP_PREFIX + ref.session_id, token, cursor=conn)
-    authority.db._execute_write(write)
-    return token
+        return token
+    return authority.db._execute_write(write)
 
 
 def clear_process_stop(authority, ref, token):
@@ -60,11 +64,10 @@ async def retry_process_stop(authority, ref, agent=None):
     if token is None:
         return True
     from gateway.session_authorities import owner_scope
-    from gateway.session_managed_worker import managed_policy
     from gateway.session_runtime_workers import tracked_write
     from tools.process_registry import _checkpoint_path
     with owner_scope(authority):
-        if (not token.startswith(str(authority.epoch) + ':') or managed_policy(authority, ref) is not None
+        if (not token.startswith(str(authority.epoch) + ':')
                 or await asyncio.to_thread(_checkpoint_path().exists)):
             if not await asyncio.to_thread(_recover_stopped_processes, authority, ref):
                 return False
@@ -378,8 +381,12 @@ async def interrupt_processes(authority, ref, agent):
         def kill():
             results = [registry.kill_process(pid, source='session.interrupt', consume_output=True) for pid in targets]
             return all(r.get('status') in {'killed', 'already_exited'} and 'scope_stop_failed' not in r for r in results)
-        return await asyncio.to_thread(kill)
-    return True
+        killed = await asyncio.to_thread(kill)
+    else:
+        killed = True
+    from gateway.session_automation import withdraw_consumed_process_notices
+    withdrawn = await withdraw_consumed_process_notices(authority, ref)
+    return killed and withdrawn
 
 
 async def kill_process(connection, ref, params):

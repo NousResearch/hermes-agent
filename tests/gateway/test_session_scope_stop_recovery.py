@@ -8,6 +8,7 @@ import pytest
 
 from gateway.session_authority import LiveSession, SessionAuthority
 from hermes_state_runtime import begin_runtime_epoch
+from hermes_state_runtime import RuntimeStoreError
 from tests.gateway.test_session_authority_cancel_settlement import ACTOR, REF, _authority
 
 
@@ -30,7 +31,8 @@ async def test_refused_owned_scope_survives_reload_without_signaling_foreign_pid
     attempts = []
     monkeypatch.setattr(module, '_stop_systemd_unit', lambda value: attempts.append(value) or False)
     try:
-        await authority.interrupt(ACTOR, REF, authority._handle(REF).execution_generation)
+        with pytest.raises(RuntimeStoreError, match='process_stop_unknown'):
+            await authority.interrupt(ACTOR, REF, authority._handle(REF).execution_generation)
         assert await asyncio.to_thread(own._completion_event.wait, 10)
         assert own._scope_stop_pending and process_stop_pending(db, 's') is not None
         if reused_pid:

@@ -940,9 +940,14 @@ class SessionAuthority:
             from gateway.session_runtime_workers import tracked_write
             await tracked_write(self, partial(record_process_stop, self, ref, generation))
             if handle.execution_state == 'running':
-                await interrupt_processes(self, ref, agent)
+                stopped = await interrupt_processes(self, ref, agent)
             else:
-                await retry_process_stop(self, ref, agent)
+                stopped = await retry_process_stop(self, ref, agent)
+                if stopped and any(row['status'] == 'queued' for row in list_session_admissions(
+                        self.db, session_id=ref.session_id)):
+                    self._schedule(ref)
+            if not stopped:
+                raise RuntimeStoreError('process_stop_unknown')
         return self._handle(ref)
 
     def _classic_turn_holds(self, route):

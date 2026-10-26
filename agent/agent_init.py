@@ -1294,6 +1294,7 @@ def _apply_agent_section(agent, _agent_cfg):
     # Both: "auto" (model-list match), true, false, or list of model substrings; independent
     # of each other (gates in agent/system_prompt.py).
     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
+    agent._tool_choice = _agent_section.get("tool_choice", "auto")  # agent/tool_choice.py
     agent._execution_guidance = _agent_section.get("execution_guidance", "auto")
 
     # Wall-clock run budget from config — only when the constructor arg was not given.

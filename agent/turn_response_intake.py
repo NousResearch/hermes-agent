@@ -13,6 +13,7 @@ import re
 from typing import Any, Dict, Optional
 
 from agent.provider_projection import splice_provider_projection
+from agent.tool_choice import unwrap_respond_call
 from agent.trajectory import has_incomplete_scratchpad
 from agent.turn_truncation import (
     CODEX_FALLBACK_ACTIVATED, continue_codex_incomplete, normalize_response_for_agent, partial_result,
@@ -125,6 +126,9 @@ def normalize_model_response(
     """Normalize ``response`` into ``assistant_message`` (str content, never dict/list) and run
     the post-response hooks and continuation guards, in the original order."""
     assistant_message = normalize_response_for_agent(agent, response)
+    # agent.tool_choice: required — a respond-only reply becomes the turn's plain-text answer
+    # (finish_reason "stop"); before the capture below so the dropped-tool-call retry never sees it.
+    unwrap_respond_call(assistant_message)
     finish_reason = assistant_message.finish_reason
 
     def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> ResponseIntakeVerdict:

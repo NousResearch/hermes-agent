@@ -205,7 +205,9 @@ def _send(fork: Any, capture: SideQuestionCapture, prompt: str, audit: _Audit) -
 def _answer_text(fork: Any, assistant_message: Any) -> Optional[str]:
     """Visible text of the reply; its ``tool_calls`` are dropped, never dispatched."""
     from agent.message_content import flatten_message_text
+    from agent.tool_choice import unwrap_respond_call
 
+    unwrap_respond_call(assistant_message)  # parent's tool_choice=required -> reply via respond
     content = assistant_message.content
     text = content if isinstance(content, str) else flatten_message_text(content)
     return fork._strip_think_blocks(text or "").strip() or None

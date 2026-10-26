@@ -36,6 +36,7 @@ from agent.chat_completion_headers import _chat_completion_capturing_headers
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
 from agent.fast_mode import effective_request_overrides
+from agent.tool_choice import tool_choice_required, with_respond_tool
 from agent.turn_context import substitute_api_content
 from agent.gemini_native_adapter import is_native_gemini_base_url
 # Remote endpoints must never be fingerprinted: the probe waterfall is only valid for local/LM-Studio/Ollama
@@ -1528,6 +1529,11 @@ def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | 
     # The one place request_overrides are consumed: static /fast values are already pinned
     # in agent.request_overrides; auto/cold windows layer the fast override per request.
     request_overrides = effective_request_overrides(agent)
+    # agent.tool_choice: required — force a tool call every request and add the respond tool
+    # as the model's only way to reply (see agent/tool_choice.py). Explicit overrides win.
+    if tools_for_api and tool_choice_required(agent) and "tool_choice" not in request_overrides:
+        tools_for_api = with_respond_tool(tools_for_api)
+        request_overrides = {**request_overrides, "tool_choice": "required"}
     if agent.api_mode == "anthropic_messages":
         return _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides)
     if agent.api_mode == "bedrock_converse":

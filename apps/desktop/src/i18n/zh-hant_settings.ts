@@ -277,6 +277,8 @@ export const zhHantSettings = {
       colorModeDesc: '選擇固定模式，或讓 Hermes 跟隨系統設定。',
       toolViewTitle: '工具呼叫顯示',
       toolViewDesc: '產品模式會隱藏原始工具 payload；技術模式會顯示完整輸入/輸出。',
+      groupWorkTitle: '將回覆之間的工作分組',
+      groupWorkDesc: '每段思考和工具呼叫顯示為一行。點擊即可查看步驟。',
       hideCodeDiffsTitle: '隱藏程式碼差異',
       hideCodeDiffsDesc: '將檔案編輯顯示為附有新增和刪除行數的行內工具列，不顯示程式碼。',
       hideThreadTimelineTitle: '隱藏對話時間軸列',

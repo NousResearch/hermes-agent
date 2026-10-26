@@ -9,6 +9,7 @@ type ToolDisclosureStates = Record<string, boolean>
 
 const TOOL_VIEW_TECHNICAL_STORAGE_KEY = 'hermes.desktop.toolView.technical'
 const HIDE_CODE_DIFFS_STORAGE_KEY = 'hermes.desktop.toolView.hideCodeDiffs'
+const GROUP_WORK_STORAGE_KEY = 'hermes.desktop.toolView.groupWork'
 const TOOL_DISCLOSURE_STORAGE_KEY = 'hermes.desktop.toolDisclosure.v1'
 const MAX_DISCLOSURE_STATES = 240
 
@@ -19,15 +20,19 @@ const $toolViewModePref = atom<ToolViewMode>(
 )
 
 const $hideCodeDiffsPref = atom(storedBoolean(HIDE_CODE_DIFFS_STORAGE_KEY, false))
+const $groupWorkPref = atom(storedBoolean(GROUP_WORK_STORAGE_KEY, false))
 
 export const $toolViewMode = modeBound('toolViewMode', $toolViewModePref, mode => $toolViewModePref.set(mode))
 export const $hideCodeDiffs = modeBound('hideCodeDiffs', $hideCodeDiffsPref, hidden => $hideCodeDiffsPref.set(hidden))
+/** Fold each stretch of thinking + tool calls between two replies into one line. */
+export const $groupWork = modeBound('groupWork', $groupWorkPref, grouped => $groupWorkPref.set(grouped))
 export const $toolDisclosureStates = atom<ToolDisclosureStates>(loadToolDisclosureStates())
 const disclosureOpenCache = new Map<string, ReadableAtom<boolean | undefined>>()
 const anyDisclosureOpenCache = new Map<string, ReadableAtom<boolean>>()
 
 $toolViewModePref.subscribe(mode => persistBoolean(TOOL_VIEW_TECHNICAL_STORAGE_KEY, mode === 'technical'))
 $hideCodeDiffsPref.subscribe(hidden => persistBoolean(HIDE_CODE_DIFFS_STORAGE_KEY, hidden))
+$groupWorkPref.subscribe(grouped => persistBoolean(GROUP_WORK_STORAGE_KEY, grouped))
 $toolDisclosureStates.subscribe(persistToolDisclosureStates)
 
 export function setToolViewMode(mode: ToolViewMode) {
@@ -36,6 +41,10 @@ export function setToolViewMode(mode: ToolViewMode) {
 
 export function setHideCodeDiffs(hidden: boolean) {
   $hideCodeDiffs.set(hidden)
+}
+
+export function setGroupWork(grouped: boolean) {
+  $groupWork.set(grouped)
 }
 
 export function $toolDisclosureOpen(id: string): ReadableAtom<boolean | undefined> {

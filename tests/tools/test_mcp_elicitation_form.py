@@ -84,3 +84,37 @@ def test_headless_session_declines_without_asking(monkeypatch):
     result = asyncio.run(handler(context=None, params=_params(SCHEMA)))
     assert result.action == "decline"
     assert asked == []
+
+
+@pytest.mark.parametrize("spec, answer, value", [
+    ({"type": "integer"}, "9007199254740993", 9007199254740993),  # past 2**53: no float round trip
+    ({"type": "integer"}, "1e3", 1000),
+    ({"type": "number"}, "2.5", 2.5),
+    ({"type": "string", "format": "uri"}, "mailto:user@example.com", "mailto:user@example.com"),
+    ({"type": "string", "format": "uri"}, "https://example.com/x", "https://example.com/x"),
+    ({"type": "string", "format": "date-time"}, "2026-10-25T09:30:00Z", "2026-10-25T09:30:00Z"),
+    ({"type": "string", "format": "date-time"}, "2026-10-25T09:30:00.5-07:00", "2026-10-25T09:30:00.5-07:00"),
+    ({"type": "string", "format": "date"}, "2026-10-25", "2026-10-25"),
+])
+def test_valid_answers_keep_their_exact_value(spec, answer, value):
+    from tools.mcp_elicitation_form import coerce_answer, parse_form
+    field = parse_form({"properties": {"x": spec}})[0]
+    assert coerce_answer(field, answer) == (True, value, "")
+
+
+@pytest.mark.parametrize("spec, answer", [
+    ({"type": "number"}, "inf"),
+    ({"type": "number"}, "NaN"),
+    ({"type": "number"}, "1e999"),
+    ({"type": "integer"}, "2.5"),
+    ({"type": "string", "format": "uri"}, "not a uri"),
+    ({"type": "string", "format": "date-time"}, "2026-10-25T09:30:00"),  # RFC 3339 needs an offset
+    ({"type": "string", "format": "date-time"}, "2026-10-25"),
+    ({"type": "string", "format": "date"}, "20261025"),
+])
+def test_invalid_answers_are_reasked(spec, answer):
+    from tools.mcp_elicitation_form import coerce_answer, parse_form
+    field = parse_form({"properties": {"x": spec}})[0]
+    present, _value, error = coerce_answer(field, answer)
+    assert not present and error
+

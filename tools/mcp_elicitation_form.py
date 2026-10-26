@@ -14,11 +14,12 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Iterator, Optional
-from urllib.parse import urlparse
 
 from tools.clarify_tool import MAX_CHOICES, MAX_QUESTIONS
 
@@ -30,6 +31,9 @@ MAX_REASKS = 2
 _YES = ("yes", "y", "true", "t", "1", "on")
 _NO = ("no", "n", "false", "f", "0", "off")
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_URI = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:\S+$")
+_RFC3339_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_RFC3339_DATE_TIME = re.compile(r"^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$")
 
 
 @contextlib.contextmanager
@@ -166,14 +170,21 @@ def _coerce_multi(f: FormField, raw: Any) -> tuple[Any, str]:
 
 
 def _coerce_number(f: FormField, text: str) -> tuple[Any, str]:
+    # Decimal, not float: a float round trip silently changes integers past 2**53.
     try:
-        number = float(text)
-    except ValueError:
+        exact = Decimal(text)
+    except InvalidOperation:
+        return None, f"'{text}' is not a number"
+    if not exact.is_finite():
         return None, f"'{text}' is not a number"
     if f.kind == "integer":
-        if not number.is_integer():
+        if exact != exact.to_integral_value():
             return None, f"'{text}' is not a whole number"
-        number = int(number)
+        number: Any = int(exact)
+    else:
+        number = float(exact)
+        if not math.isfinite(number):
+            return None, f"'{text}' is out of range"
     if "minimum" in f.spec and number < f.spec["minimum"]:
         return None, f"must be at least {f.spec['minimum']}"
     if "maximum" in f.spec and number > f.spec["maximum"]:
@@ -181,12 +192,21 @@ def _coerce_number(f: FormField, text: str) -> tuple[Any, str]:
     return number, ""
 
 
+def _is_rfc3339_date_time(text: str) -> bool:
+    """RFC 3339 ``date-time``: a full date, ``T`` (or space), a full time and a mandatory offset."""
+    if not _RFC3339_DATE_TIME.match(text):
+        return False
+    datetime.fromisoformat(text.upper())  # out-of-range fields raise ValueError
+    return True
+
+
 def _format_error(fmt: str, text: str) -> str:
     checks = {
         "email": lambda: bool(_EMAIL.match(text)),
-        "uri": lambda: bool(urlparse(text).scheme and urlparse(text).netloc),
-        "date": lambda: bool(date.fromisoformat(text)),
-        "date-time": lambda: bool(datetime.fromisoformat(text)),
+        # RFC 3986: a scheme, then anything; ``mailto:`` and ``urn:`` URIs have no authority.
+        "uri": lambda: bool(_URI.match(text)),
+        "date": lambda: bool(_RFC3339_DATE.match(text) and date.fromisoformat(text)),
+        "date-time": lambda: _is_rfc3339_date_time(text),
     }
     check = checks.get(fmt)
     try:

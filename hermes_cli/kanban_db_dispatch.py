@@ -3458,18 +3458,97 @@ def _isolation_worker_argv(task: Task, command: list[str], workspace: Optional[s
     return command
 
 
-def _resolve_worker_agent_home(task: Task) -> Optional[str]:
+def _production_code_repo_root() -> Optional[str]:
+    """Git root of the code tree this dispatcher is executing from.
+
+    The mount-namespace sandbox protects the PRODUCTION CODE TREE -- the
+    checkout the agent's own source lives in. On this fleet that is
+    ``~/.hermes/hermes-agent`` (the ``hermes-agent`` repo), which is a
+    DIFFERENT git checkout from ``~/.hermes`` itself (the ``hermes-config``
+    repo that holds the profiles).
+
+    Resolving the wrong one is not a harmless mismatch: the launcher flips
+    ``agent_home`` read-only and carves the writable paths out of a staging
+    bind of ``dirname(agent_home)``. Pointing it at the config repo leaves
+    the code tree writable AND makes every scratch workspace
+    (``<config-repo>/kanban/boards/<board>/workspaces/<id>``) look like it
+    lives INSIDE the protected subtree -- which refused the wrap outright.
+    That is exactly the 2026-10-26 regression where zero workers were
+    isolated.
+
+    The authoritative source is the running package: ``hermes_cli`` lives
+    inside the code tree the dispatcher is running from, so its git toplevel
+    IS the production tree. Falls back to the parent of the package
+    directory for non-git (editable-install / vendored) layouts.
+    """
+    try:
+        import hermes_cli
+
+        pkg_dir = Path(hermes_cli.__file__).resolve().parent
+    except Exception:  # health: allow BLE001 -- a broken import must degrade, not crash the dispatcher
+        return None
+    try:
+        root = _kbw._git_toplevel(pkg_dir)
+    except Exception:  # health: allow BLE001 -- git may be unavailable; degrade to the fallback
+        root = None
+    if root is not None:
+        return str(root)
+    # Not a git checkout (or git unavailable): the package's parent dir is
+    # still the best approximation of "the tree the code lives in".
+    parent = pkg_dir.parent
+    try:
+        if parent.is_dir():
+            return str(parent)
+    except OSError:
+        return None
+    return None
+
+
+def _resolve_worker_agent_home(task: Optional[Task] = None) -> Optional[str]:
     """Best-effort path to the agent tree the worker should be sandboxed against.
 
-    Order: explicit ``HERMES_AGENT_HOME`` -> ``HERMES_AGENT`` -> the dispatcher's
-    own resolved profile home's parent (``<HERMES_HOME>/..`` is unreliable when
-    HERMES_HOME is a profile, so we also accept ``<HERMES_HOME>`` itself when
-    it is a git checkout). Returns ``None`` when nothing reasonable can be
-    inferred -- the caller then skips isolation rather than wrap a bogus path.
+    Order: explicit ``HERMES_AGENT_HOME`` -> the PRODUCTION CODE TREE (the
+    git root of the running ``hermes_cli`` package) -> ``HERMES_AGENT`` ->
+    the dispatcher's own resolved profile home's parent (``<HERMES_HOME>/..``
+    is unreliable when HERMES_HOME is a profile, so we also accept
+    ``<HERMES_HOME>`` itself when it is a git checkout).
+
+    The production code tree ranks ABOVE the ``HERMES_HOME`` candidates
+    because it is the tree the sandbox must actually protect, and the only
+    source that cannot drift: ``HERMES_HOME`` on this fleet is either the
+    PROFILE (``~/.hermes/profiles/friday``) or the config repo
+    (``~/.hermes``, a DIFFERENT git checkout from the ``hermes-agent`` code
+    tree). Resolving that config repo left the code tree writable AND made
+    every scratch workspace (``<config-repo>/kanban/boards/<board>/workspaces/<id>``)
+    look like it lived inside the protected subtree -- so the dispatcher
+    refused to wrap anything and ZERO workers were isolated
+    (2026-10-26, t_a968012b).
+
+    ``HERMES_AGENT_HOME`` stays the top candidate because it is an explicit
+    operator override: when it is set it names the tree to protect, full
+    stop.
+
+    Returns ``None`` when nothing reasonable can be inferred -- the caller
+    then skips isolation rather than wrap a bogus path.
     """
-    candidates: list[str] = []
-    for env_name in ("HERMES_AGENT_HOME", "HERMES_AGENT"):
+    # ``HERMES_AGENT_HOME`` is the explicit operator override: when it is
+    # set it names the tree to protect, full stop.
+    for env_name in ("HERMES_AGENT_HOME",):
         val = os.environ.get(env_name, "").strip()
+        if val:
+            try:
+                if os.path.isdir(os.path.join(val, ".git")):
+                    return os.path.realpath(val)
+            except OSError:
+                pass
+
+    code_repo = _production_code_repo_root()
+    if code_repo:
+        return code_repo
+
+    candidates: list[str] = []
+    for env_name in ("HERMES_AGENT",):
+        val = os.environ.get(env_name, "").strip()  # health: allow HX002 -- the tree to sandbox is an operator-pinned deploy-time setting, not a per-profile behaviour
         if val:
             candidates.append(val)
     # HERMES_HOME may be the agent home itself, or the parent dir of a profile.

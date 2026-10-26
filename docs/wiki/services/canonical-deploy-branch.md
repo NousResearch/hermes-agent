@@ -91,6 +91,17 @@ Three pieces, all in the canonical-deploy branch:
    - `<agent_home>/.git/worktrees/<this-worktree-name>` (this worktree's
      `index`/`HEAD` — carved out per name, never the whole `.git/worktrees`).
 
+   **`<agent_home>` IS the production code tree** — `~/.hermes/hermes-agent`
+   (the `hermes-agent` repo), NOT `~/.hermes` (the `hermes-config` repo).
+   The launcher flips `<agent_home>` read-only, so resolving the config
+   repo instead would leave the code tree writable. The dispatcher
+   resolves it from the git toplevel of the RUNNING `hermes_cli` package
+   (`HERMES_AGENT_HOME` overrides). Scratch-workspace tasks are carved out
+   their own directory instead of a worktree; the scratch path must
+   resolve OUTSIDE `<agent_home>` (the fleet layout puts it at
+   `~/.hermes/kanban/boards/<board>/workspaces/<id>`, a sibling of the code
+   tree).
+
    **Caveats** (measured, not surprises):
 
    - Supplementary groups are lost inside the user namespace; local
@@ -194,6 +205,42 @@ containerized deploys (`HERMES_AGENT_HOME=/var/lib/hermes-agent`) and
 on the host (`HERMES_AGENT` set by `start-gateway.sh`).
 
 ## Troubleshooting
+
+### Symptom: `kanban worker isolation skipped for <task>` in the agent log
+
+The dispatcher decided it could NOT safely wrap the worker, so it spawned
+the worker UNWRAPPED — the worker can then write to the production tree.
+This is the 2026-10-26 regression shape: the agent home resolved to the
+CONFIG repo (`~/.hermes`) instead of the CODE repo (`~/.hermes/hermes-agent`),
+which made every scratch workspace look like it lived INSIDE the protected
+subtree and the wrap was refused for every task.
+
+Check what it resolved:
+
+```bash
+cd /home/serveradmin/.hermes/hermes-agent
+python -c "import hermes_cli, pathlib; print(pathlib.Path(hermes_cli.__file__).resolve().parent)"
+```
+
+That must print a path inside `/home/serveradmin/.hermes/hermes-agent`. If
+it prints something else, the dispatcher is running different code than the
+deployed tree.
+
+The other skip reasons:
+
+- `workspace ... is not a dispatcher-provisioned worktree under <home>/.worktrees`
+  — a `worktree`-kind task whose workspace is not under
+  `<code-repo>/.worktrees/<id>`. The dispatcher materialises the worktree
+  before wrapping, so this usually means the task's `workspace_path` points
+  somewhere unexpected.
+- `no agent_home resolvable` — neither `HERMES_AGENT_HOME` nor the running
+  package's git toplevel could be found.
+
+A wrapped worker shows a mount namespace DIFFERENT from the host's
+(`readlink /proc/<pid>/ns/mnt`). The `unshare` token is NOT visible in
+`ps` output for a running worker: the launcher `execvp`s the worker, so
+`ps` shows the WORKER's argv after the exec. Check the namespace ID, or
+look for `unshare` in the dispatcher's own argv before the exec.
 
 ### Symptom: every dispatch tick logs `[deploy-guard] DRIFT`
 

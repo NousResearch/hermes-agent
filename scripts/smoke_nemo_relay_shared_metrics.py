@@ -12,6 +12,7 @@ import sys
 import tempfile
 import threading
 import time
+from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -432,10 +433,9 @@ EXPECTED_METRIC_NAMES = frozenset({
 })
 
 
-def _validate_store(database_path: Path) -> list[dict[str, Any]]:
-    if not database_path.is_file():
-        raise AssertionError(f"Metrics database was not created: {database_path}")
-    with sqlite3.connect(database_path) as connection:
+def _read_counters(database_path: Path) -> list[dict[str, Any]]:
+    # Read-only: polling must never create the store before the gateway does.
+    with closing(sqlite3.connect(f"{database_path.as_uri()}?mode=ro", uri=True)) as connection:
         rows = connection.execute(
             """
             SELECT metric_name, dimensions_json, value, packaged_value
@@ -443,7 +443,7 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
             ORDER BY metric_name, dimensions_json
             """
         ).fetchall()
-    counters = [
+    return [
         {
             "name": name,
             "dimensions": json.loads(dimensions),
@@ -452,9 +452,38 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
         }
         for name, dimensions, value, packaged_value in rows
     ]
+
+
+def _by_name(counters: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     by_name: dict[str, list[dict[str, Any]]] = {}
     for counter in counters:
         by_name.setdefault(counter["name"], []).append(counter)
+    return by_name
+
+
+def _wait_for_gateway_turn_rows(database_path: Path, timeout: float = 30.0) -> bool:
+    """Poll the probe home's store until the auto-started gateway's turn rows have landed.
+
+    The gateway records them after the reply reached the chat client, and stopping it does not
+    settle them: its graceful exit ends in ``os._exit``, which skips the shared-metrics flush. So the
+    smoke waits for the rows before it stops the gateway. False when ``timeout`` passed first.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            _validate_gateway_turn_rows(_by_name(_read_counters(database_path)))
+            return True
+        except (sqlite3.Error, KeyError, AssertionError):
+            if time.monotonic() >= deadline:
+                return False
+        time.sleep(0.25)
+
+
+def _validate_store(database_path: Path) -> list[dict[str, Any]]:
+    if not database_path.is_file():
+        raise AssertionError(f"Metrics database was not created: {database_path}")
+    counters = _read_counters(database_path)
+    by_name = _by_name(counters)
     if set(by_name) != EXPECTED_METRIC_NAMES:
         raise AssertionError(
             f"Unexpected SQLite counters:\n{json.dumps(counters, indent=2)}"
@@ -824,6 +853,9 @@ def main() -> int:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+        metrics_db = home / "telemetry" / "shared_metrics" / "metrics.sqlite3"
+        if not _wait_for_gateway_turn_rows(metrics_db):
+            print(f"Gateway turn rows did not reach {metrics_db} in time", file=sys.stderr)
         _stop_auto_started_gateway(home)
 
     (root / "hermes.stdout.txt").write_text(result.stdout, encoding="utf-8")

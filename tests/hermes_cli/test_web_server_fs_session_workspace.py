@@ -200,6 +200,21 @@ def test_save_writes_the_file_the_preview_read(client, sandboxes, path):
     assert _notes(sandboxes) == {"own": "edited", "foreign": "foreign note", "shared": "shared note"}
 
 
+@pytest.mark.parametrize("path", ["/workspace/note.txt", "file:///workspace/note.txt"])
+def test_save_never_falls_back_to_the_shared_copy_once_the_sessions_copy_is_gone(client, sandboxes, path):
+    (sandboxes["shared"] / "note.txt").write_text("session note", encoding="utf-8")  # the same text
+    (sandboxes["own"] / "note.txt").unlink()
+
+    # A read still falls back, so the editor's stale-file check sees the text it opened.
+    read = client.get("/api/fs/read-text", params={"path": path, "session_id": "sess-ws"})
+    saved = client.post("/api/fs/write-text", json={"path": path, "content": "edited", "session_id": "sess-ws"})
+
+    assert (read.status_code, read.json()["text"]) == (200, "session note")
+    assert (saved.status_code, saved.json()) == (409, {"detail": "File is no longer in this session's workspace"})
+    assert (sandboxes["shared"] / "note.txt").read_text(encoding="utf-8") == "session note"
+    assert not (sandboxes["own"] / "note.txt").exists()
+
+
 def test_save_without_a_session_writes_where_a_bare_read_reads(client, sandboxes):
     read = client.get("/api/fs/read-text", params={"path": "/workspace/note.txt"})
     saved = client.post("/api/fs/write-text", json={"path": "/workspace/note.txt", "content": "edited"})

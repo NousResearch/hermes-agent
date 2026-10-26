@@ -1087,7 +1087,9 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
             _raise_fs_backend_error(exc)
         return {"ok": True, "path": target, "byteSize": byte_size}
 
-    target = await _fs_download_path(payload.path, profile, payload.session_id, decode_fallback=False)
+    target = await _fs_download_path(
+        payload.path, profile, payload.session_id, decode_fallback=False, own_sandbox_only=True,
+    )
     if len(text.encode("utf-8")) > _FS_TEXT_WRITE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Content too large")
 
@@ -1122,9 +1124,12 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
 
 async def _fs_download_path(
     path: str, profile: Optional[str], session_id: Optional[str], *, decode_fallback: bool = True,
+    own_sandbox_only: bool = False,
 ) -> Path:
     # Resolve container paths in the requested profile's sandbox, not the active one's.
     # A write passes decode_fallback=False: it must never land on a decoded twin of its name.
+    # A session's write also passes own_sandbox_only: reads fall back to the shared sandbox
+    # when the session's own copy is gone, a Save must not (409 instead).
     profile_home = _fs_profile_home(profile)
     if session_id is not None:
         session = await _fs_owned_session(session_id, profile) or {}
@@ -1133,6 +1138,7 @@ async def _fs_download_path(
         return _agent_fs_path(
             path, cwd=cwd, profile_home=profile_home,
             workspace_key=_session_workspace_key(session_id, cwd), decode_fallback=decode_fallback,
+            own_sandbox_only=own_sandbox_only,
         )
     return _agent_fs_path(path, profile_home=profile_home, decode_fallback=decode_fallback)
 

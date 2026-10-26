@@ -133,19 +133,41 @@ def _is_container_cwd(host: str) -> bool:
     return any(host == root or host.startswith(root + "/") for root in ("/workspace", "/root"))
 
 
-def _translate_agent_path(candidate: Path, workspace_key: str = "") -> Path | None:
+def _translate_agent_path(
+    candidate: Path, workspace_key: str = "", own_sandbox_only: bool = False,
+) -> Path | None:
     """One translation attempt under whatever scope is bound; None off the docker backend.
 
     The gate keeps a local-backend gateway with leftover ``docker_volumes`` from serving
     mount sources in place of real host files. Quiet: fs callers also see ordinary host
-    paths, which are not MEDIA misses worth a warning."""
+    paths, which are not MEDIA misses worth a warning. ``own_sandbox_only`` (a session's
+    Save) refuses with 409 a file the translator found only in a fallback sandbox."""
     from gateway.platforms.base import _docker_env_active, _translate_docker_container_media_path
     from tools.terminal_tool import _ensure_terminal_env_bridged
 
     _ensure_terminal_env_bridged()
     if not _docker_env_active():
         return None
-    return _translate_docker_container_media_path(candidate, quiet=True, workspace_key=workspace_key)
+    translated = _translate_docker_container_media_path(candidate, quiet=True, workspace_key=workspace_key)
+    if own_sandbox_only and translated is not None and _in_fallback_sandbox(translated, workspace_key):
+        raise HTTPException(status_code=409, detail=SANDBOX_COPY_MISSING)
+    return translated
+
+
+SANDBOX_COPY_MISSING = "File is no longer in this session's workspace"
+
+
+def _in_fallback_sandbox(target: Path, workspace_key: str) -> bool:
+    """Whether *target* is in a Docker sandbox after the first existing one in the translator's
+    order (the session's own, then the profile's shared ones). Reads fall through to those copies
+    when the session's own is missing; a Save that did would change another sandbox's file."""
+    from gateway.platforms.docker_media_paths import _docker_sandbox_dir_candidates
+    from tools.environments.base import get_sandbox_dir
+
+    base = get_sandbox_dir() / "docker"
+    sandboxes = [d for d in ((base / name).resolve(strict=False)
+                             for name in _docker_sandbox_dir_candidates("", workspace_key)) if d.is_dir()]
+    return any(_path_is_under(sandbox, target) for sandbox in sandboxes[1:])
 
 
 @contextmanager
@@ -184,7 +206,7 @@ def _agent_path_scope(profile_home: Path | None = None) -> Iterator[None]:
 
 
 def _agent_container_path(
-    raw: str, *, profile_home: Path | None = None, workspace_key: str = "",
+    raw: str, *, profile_home: Path | None = None, workspace_key: str = "", own_sandbox_only: bool = False,
 ) -> Path | None:
     """Map an agent-visible container path to its host bind mount, or None.
 
@@ -211,14 +233,16 @@ def _agent_container_path(
 
         candidate = Path(raw)
         with _agent_path_scope(profile_home):
-            translated = _translate_agent_path(candidate, workspace_key)
+            translated = _translate_agent_path(candidate, workspace_key, own_sandbox_only)
             if translated is not None or get_terminal_scope() is not None:
                 return translated
             token = set_terminal_scope(build_profile_terminal_scope(get_hermes_home()))
             try:
-                return _translate_agent_path(candidate, workspace_key)
+                return _translate_agent_path(candidate, workspace_key, own_sandbox_only)
             finally:
                 reset_terminal_scope(token)
+    except HTTPException:
+        raise  # a Save refused in a fallback sandbox
     except Exception:  # fail open: translation is additive, the host path still serves
         logger.debug("agent container path translation failed for %s", raw, exc_info=True)
         return None
@@ -229,10 +253,11 @@ SANDBOX_NOT_FOUND = "File not found on the gateway host: the path may live insid
 
 def _agent_fs_path(
     raw_path: str, *, cwd: str | None = None, profile_home: Path | None = None,
-    workspace_key: str = "", decode_fallback: bool = True,
+    workspace_key: str = "", decode_fallback: bool = True, own_sandbox_only: bool = False,
 ) -> Path:
     """``_fs_path`` for agent-facing reads; container paths resolve to their host
-    mount, so callers' boundary guards see the real host target.
+    mount, so callers' boundary guards see the real host target. A session's Save passes
+    ``own_sandbox_only``: a container path stays in the session's own sandbox (else 409).
 
     POSIX: a readable host path wins, and translation only runs when the host
     lookup misses, so a root-run gateway can still browse its own ``/root``.
@@ -246,9 +271,12 @@ def _agent_fs_path(
             return host
         translated = _agent_container_path(
             _file_url_container_text(raw), profile_home=profile_home, workspace_key=workspace_key,
+            own_sandbox_only=own_sandbox_only,
         )
         return translated if translated is not None else host
-    translated = _agent_container_path(raw, profile_home=profile_home, workspace_key=workspace_key)
+    translated = _agent_container_path(
+        raw, profile_home=profile_home, workspace_key=workspace_key, own_sandbox_only=own_sandbox_only,
+    )
     if translated is not None:
         return translated
     if _is_unmapped_container_path(raw, profile_home=profile_home):

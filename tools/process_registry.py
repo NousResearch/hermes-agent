@@ -2519,7 +2519,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             targets = [
                 s for s in (*self._running.values(), *self._finished.values())
                 if (task_id is None or s.owner_task_id == task_id)
-                and s.id not in exclude_ids and (not s.exited or s._scope_stop_pending)
+                and s.id not in exclude_ids and (not s.exited or s._scope_stop_pending or s.systemd_unit)
                 and not (lifecycle and s.persist_on_release)
             ]
         results = [self.kill_process(s.id, source=source, consume_output=consume_output) for s in targets]
@@ -2534,7 +2534,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         from tools.process_registry_awaiting import retained_for_delivery
         now = time.time()
         prunable = {sid: s for sid, s in self._finished.items()
-                    if not getattr(s, "_scope_stop_pending", False) and not retained_for_delivery(s)}
+                    if not s.systemd_unit and not getattr(s, "_scope_stop_pending", False) and not retained_for_delivery(s)}
         expired = [sid for sid, s in prunable.items() if (now - s.started_at) > FINISHED_TTL_SECONDS]
         over_cap = len(self._running) + len(self._finished) - len(expired) >= MAX_PROCESSES
         if over_cap and (survivors := [sid for sid in prunable if sid not in expired]):

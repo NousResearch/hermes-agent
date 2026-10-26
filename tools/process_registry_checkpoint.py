@@ -22,6 +22,8 @@ class ProcessCheckpointMixin:
         from tools.process_registry import _stop_systemd_unit
         stopped = _stop_systemd_unit(session.systemd_unit)
         session._scope_stop_pending = not stopped
+        if stopped:
+            session.systemd_unit = ''  # The active binding is discharged only by affirmative Stop.
         self._write_checkpoint()
         return stopped
 
@@ -35,7 +37,7 @@ class ProcessCheckpointMixin:
             with self._lock:
                 entries = []
                 for s in {**self._finished, **self._running}.values():
-                    if s.exited and not s._scope_stop_pending:
+                    if s.exited and not s._scope_stop_pending and not s.systemd_unit:
                         continue
                     # Backfill the start time so recovery can detect PID recycling
                     # even for sessions spawned before this field existed.
@@ -81,7 +83,7 @@ class ProcessCheckpointMixin:
                      or ((log := adoptable_log(entry.get("output_log"))) and Path(log).exists()
                          and _exit_path(log).exists()))]
 
-    def recover_from_checkpoint(self, *, owns_entry=None) -> int:
+    def recover_from_checkpoint(self, *, owns_entry=None, stop_scopes=False) -> int:
         """On gateway startup, probe PIDs from the checkpoint file; returns how many
         were recovered as detached sessions."""
         from tools.process_registry import (
@@ -137,6 +139,13 @@ class ProcessCheckpointMixin:
                 continue
             if fate != "running":
                 systemd_unit = entry.get("systemd_unit", "")
+                if (systemd_unit and entry.get('persist_on_release')
+                        and not entry.get('_scope_stop_pending') and not stop_scopes):
+                    # A collected wrapper exit does not mean its native scope is
+                    # empty. Ordinary startup preserves intentionally persisted jobs;
+                    # an explicit Stop or a prior refused Stop may reap this scope.
+                    unresolved_scope_entries.append(entry)
+                    continue
                 if systemd_unit and not _stop_systemd_unit(systemd_unit):
                     logger.warning(
                         "Could not reap persisted scope %s for dead wrapper pid %s; "

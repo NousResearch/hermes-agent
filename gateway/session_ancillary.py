@@ -92,7 +92,7 @@ def _recover_stopped_processes(authority, ref):
                or type(entry.get('host_start_time')) is not int or type(entry.get('pid')) is not int
                or entry['host_start_time'] <= 0 or entry['pid'] <= 0) for entry in entries):
             return False
-        process_registry.recover_from_checkpoint(owns_entry=owned)
+        process_registry.recover_from_checkpoint(owns_entry=owned, stop_scopes=True)
         remaining = json.loads(_checkpoint_path().read_text(encoding='utf-8-sig'))
         if not isinstance(remaining, list) or any(not isinstance(entry, dict) for entry in remaining):
             return False

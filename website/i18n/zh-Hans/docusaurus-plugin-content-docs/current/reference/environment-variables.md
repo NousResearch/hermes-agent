@@ -45,6 +45,8 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `XIAOMI_BASE_URL` | 覆盖小米 MiMo base URL（默认：`https://api.xiaomimimo.com/v1`） |
 | `TOKENHUB_API_KEY` | 腾讯 TokenHub API 密钥（[tokenhub.tencentmaas.com](https://tokenhub.tencentmaas.com)） |
 | `TOKENHUB_BASE_URL` | 覆盖腾讯 TokenHub base URL（默认：`https://tokenhub.tencentmaas.com/v1`） |
+| `TOKENPLAN_API_KEY` | 腾讯 TokenPlan API 密钥（[api.lkeap.cloud.tencent.com](https://api.lkeap.cloud.tencent.com)） |
+| `TOKENPLAN_BASE_URL` | 覆盖腾讯 TokenPlan base URL（默认：`https://api.lkeap.cloud.tencent.com/plan/anthropic/v1/messages`） |
 | `AZURE_FOUNDRY_API_KEY` | Microsoft Foundry / Azure OpenAI API 密钥（[ai.azure.com](https://ai.azure.com/)）。当 `model.auth_mode: entra_id` 时不需要 |
 | `AZURE_FOUNDRY_BASE_URL` | Microsoft Foundry 端点 URL（例如 OpenAI 风格：`https://<resource>.openai.azure.com/openai/v1`，Anthropic 风格：`https://<resource>.services.ai.azure.com/anthropic`） |
 | `AZURE_ANTHROPIC_KEY` | 用于 `provider: anthropic` + `base_url` 指向 Microsoft Foundry Claude 部署的 Azure Anthropic API 密钥（当同时配置了 Anthropic 和 Azure Anthropic 时，作为 `ANTHROPIC_API_KEY` 的替代） |

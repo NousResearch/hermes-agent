@@ -29,6 +29,87 @@ def _close_quietly(conn: Optional[sqlite3.Connection]) -> None:
             conn.close()
 
 
+class _SQLiteBackupRestarted(RuntimeError):
+    """Raised when a foreign write restarted a stepped snapshot from page one."""
+
+
+# A rollback-journal reader blocks every writer's commit while it holds the read
+# lock, so that copy releases it after each step; a waiting writer's PENDING lock
+# refuses the next step, so it waits for one step at most.  Activity writes give
+# up after 0.5s (SessionDB._ACTIVITY_WRITE_PATIENCE_S); every hold stays under it.
+_ROLLBACK_STEP_SECONDS = 0.1
+_ROLLBACK_FIRST_STEP_PAGES = 256
+_ROLLBACK_BUSY_SLEEP_SECONDS = 0.01
+# Each foreign write restarts a stepped copy, so a continuous writer gets a bounded
+# number of attempts, then one whole-copy hold if it fits the budget, else a refusal.
+_ROLLBACK_MAX_RESTARTS = 20
+_ROLLBACK_LOCK_HOLD_SECONDS = 0.25
+
+
+def _uses_wal(src: Path) -> bool:
+    # Header byte 18 (file format write version) is 2 for WAL; reading it takes no lock.
+    with open(src, "rb") as handle:
+        header = handle.read(19)
+    return len(header) == 19 and header[18] == 2
+
+
+class _CopyRate:
+    def __init__(self) -> None:
+        self.seconds = 0.0
+        self.pages = 0
+        self.total = 0
+
+    def pages_per_second(self) -> float:
+        return self.pages / max(self.seconds, 1e-6)
+
+
+def _stepped_attempt(conn: sqlite3.Connection, backup_conn: sqlite3.Connection, pages: int,
+                     check_busy, rate: _CopyRate) -> bool:
+    """One stepped backup; False when a foreign write restarted it."""
+    last_remaining: Optional[int] = None
+    last_tick, last_busy = time.monotonic(), False
+
+    def _progress(status: int, remaining: int, total: int) -> None:
+        nonlocal last_remaining, last_tick, last_busy
+        check_busy(status, remaining, total)
+        now = time.monotonic()
+        # Copy time only: drop the sleep sqlite3 takes after a busy step.
+        step_seconds = max(0.0, now - last_tick - (_ROLLBACK_BUSY_SLEEP_SECONDS if last_busy else 0.0))
+        last_tick, last_busy = now, status in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
+        if status not in (sqlite3.SQLITE_OK, sqlite3.SQLITE_DONE):
+            return
+        restarted = last_remaining is not None and remaining >= last_remaining
+        rate.seconds += step_seconds
+        rate.pages += total - remaining if last_remaining is None or restarted else last_remaining - remaining
+        rate.total = total
+        if restarted:
+            raise _SQLiteBackupRestarted()
+        last_remaining = remaining
+
+    try:
+        conn.backup(backup_conn, pages=pages, progress=_progress, sleep=_ROLLBACK_BUSY_SLEEP_SECONDS)
+    except _SQLiteBackupRestarted:
+        return False
+    return True
+
+
+def _stepped_rollback_journal_copy(conn: sqlite3.Connection, backup_conn: sqlite3.Connection,
+                                   check_busy) -> None:
+    rate = _CopyRate()
+    pages = _ROLLBACK_FIRST_STEP_PAGES
+    for _attempt in range(_ROLLBACK_MAX_RESTARTS + 1):
+        if _stepped_attempt(conn, backup_conn, pages, check_busy, rate):
+            return
+        pages = max(_ROLLBACK_FIRST_STEP_PAGES, int(rate.pages_per_second() * _ROLLBACK_STEP_SECONDS))
+    expected_hold = rate.total / rate.pages_per_second()
+    if expected_hold > _ROLLBACK_LOCK_HOLD_SECONDS:
+        raise RuntimeError(
+            "state.db uses a rollback journal and is written continuously; a consistent snapshot "
+            f"would block those writes for about {expected_hold:.1f}s, so it was not taken. "
+            "Retry when no agent turn is running.")
+    conn.backup(backup_conn, pages=-1, progress=check_busy, sleep=_ROLLBACK_BUSY_SLEEP_SECONDS)
+
+
 def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> bool:
     """Copy a SQLite database with the backup() API (WAL-safe consistent snapshot).
 
@@ -66,9 +147,12 @@ def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> boo
             else:
                 busy_deadline = now + max(0.0, timeout_seconds)
 
-        # One step: SQLite restarts a multi-step backup whenever another connection writes the
-        # source, so a live agent turn kept the 30s Desktop update pre-flight from ever finishing.
-        conn.backup(backup_conn, pages=-1, progress=_check_backup_progress, sleep=0.1)
+        if _uses_wal(src):
+            # One step: SQLite restarts a multi-step backup whenever another connection writes the
+            # source, and a WAL reader never blocks a writer however long the copy takes.
+            conn.backup(backup_conn, pages=-1, progress=_check_backup_progress, sleep=0.1)
+        else:
+            _stepped_rollback_journal_copy(conn, backup_conn, _check_backup_progress)
         return True
     except Exception as exc:
         logger.warning("SQLite safe copy failed for %s: %s", src, exc)

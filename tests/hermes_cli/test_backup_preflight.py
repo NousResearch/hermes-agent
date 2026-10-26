@@ -87,3 +87,53 @@ runpy.run_path(sys.argv[0], run_name='__main__')
     assert result.returncode != 0
     assert sorted(home.glob("state.db.pre-update-emergency-*.bak")) == previous
     assert not list(home.glob("*.partial"))
+
+
+def test_rollback_journal_copy_lets_a_live_writer_commit_between_steps(tmp_path, monkeypatch):
+    # A rollback-journal reader blocks every commit while it holds the read lock, so a
+    # one-step copy of a large state.db stalls the live backend's writes for the whole copy.
+    from hermes_cli import backup_sqlite
+
+    db = tmp_path / "state.db"
+    with sqlite3.connect(db) as setup:
+        setup.execute("PRAGMA journal_mode=DELETE")
+        setup.execute("CREATE TABLE messages (body TEXT)")
+        setup.executemany("INSERT INTO messages VALUES (?)", [("x" * 4000,)] * 2000)
+    writer = sqlite3.connect(db, timeout=0, isolation_level=None)  # a held lock fails at once
+    unread_pages_at_commit, write_errors = [], []
+    real_connect = sqlite3.connect
+
+    class WriterCommitsBetweenSteps(sqlite3.Connection):
+        def backup(self, target, *, pages=-1, progress=None, name="main", sleep=0.25):
+            def between_steps(status, remaining, total):
+                if status == sqlite3.SQLITE_OK:
+                    try:
+                        writer.execute("INSERT INTO messages VALUES ('live turn')")
+                        unread_pages_at_commit.append(remaining)
+                    except sqlite3.OperationalError as exc:
+                        write_errors.append(str(exc))
+                if progress is not None:
+                    progress(status, remaining, total)
+            return super().backup(target, pages=pages, progress=between_steps, name=name, sleep=sleep)
+
+    def connect(database, *args, **kwargs):
+        if "mode=ro" in str(database):
+            kwargs["factory"] = WriterCommitsBetweenSteps
+        return real_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(backup_sqlite.sqlite3, "connect", connect)
+    snapshot = tmp_path / "snapshot.db"
+    try:
+        copied = backup_sqlite._safe_copy_db(db, snapshot)
+    finally:
+        writer.close()
+
+    assert write_errors == []
+    # The writer got in before the copy had read the whole database.
+    assert any(remaining > 0 for remaining in unread_pages_at_commit)
+    # Each commit restarts the copy; the restarts are bounded and end in a snapshot or a refusal.
+    if copied:
+        with real_connect(snapshot) as copy:
+            assert copy.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    else:
+        assert not snapshot.exists()

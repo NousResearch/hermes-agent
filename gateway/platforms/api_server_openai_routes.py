@@ -853,9 +853,9 @@ class OpenAICompatRoutesMixin:
 
         # X-Hermes-Session-Key scopes long-term memory per channel; independent of
         # X-Hermes-Session-Id (the key persists across transcripts, the id rotates on /new).
-        gateway_session_key, key_err = self._parse_session_key_header(request)
-        if key_err is not None:
-            return key_err
+        gateway_session_key, header_user_id, scope_err = self._parse_memory_scope_headers(request)
+        if scope_err is not None:
+            return scope_err
         # X-Hermes-Session-Id continues an existing session (history from state.db, not the body);
         # requires a configured API key or any client could read history by guessing ids.
         provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
@@ -905,10 +905,13 @@ class OpenAICompatRoutesMixin:
             model_alias=model_name)
         if selection_error is not None:
             return selection_error
+        memory_user_id = self._memory_user_id(header_user_id, session_id)
+        echo_user_id = self._echo_user_id(header_user_id, memory_user_id)
         run_kwargs = dict(
             user_message=user_message, conversation_history=history,
             ephemeral_system_prompt=system_prompt, session_id=session_id,
-            gateway_session_key=gateway_session_key, **agent_overrides, route=route,
+            gateway_session_key=gateway_session_key, user_id=memory_user_id,
+            **agent_overrides, route=route,
             relay_metadata=relay_metadata,
             # #98619: only an explicitly provided X-Hermes-Session-Id is wake-capable (the
             # header is 403-gated on API_SERVER_KEY, so the wake self-post can authenticate
@@ -963,7 +966,7 @@ class OpenAICompatRoutesMixin:
             return await self._write_sse_chat_completion(
                 request, completion_id, model_name, created, _stream_q,
                 agent_task, agent_ref, session_id=(provided_session_id or session_id),
-                gateway_session_key=gateway_session_key)
+                gateway_session_key=gateway_session_key, user_id=echo_user_id)
 
         async def _compute_completion():
             return await self._run_agent(**run_kwargs)
@@ -971,7 +974,8 @@ class OpenAICompatRoutesMixin:
             request, body, _compute_completion, log_label="chat completions",
             fingerprint_keys=["model", "provider", "model_options", "messages", "tools", "tool_choice", "stream",
                               "hermes_notification_category"],
-            route="chat_completions",
+            route="chat_completions", user_id=header_user_id,
+            gateway_session_key=gateway_session_key, session_id=session_id,
         )
         if err is not None:
             return err
@@ -989,6 +993,7 @@ class OpenAICompatRoutesMixin:
         response_headers = {"X-Hermes-Session-Id": (provided_session_id or result.get("session_id", session_id))}
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
+        self._stamp_user_id_header(response_headers, echo_user_id)
         # Hard fail (no usable text AND a real failure) -> 502 OpenAI error envelope so SDK
         # clients raise instead of rendering the failure string as message.content.
         if not final_response and (is_failed or is_partial):
@@ -1064,7 +1069,9 @@ class OpenAICompatRoutesMixin:
 
     async def _run_idempotent(
         self, request: web.Request, body: dict[str, Any], compute, *,
-        log_label: str, fingerprint_keys: list[str], route: str) -> tuple:
+        log_label: str, fingerprint_keys: list[str], route: str,
+        user_id: Optional[str] = None, gateway_session_key: Optional[str] = None,
+        session_id: Optional[str] = None) -> tuple:
         """Run ``compute()`` once per (principal scope, logical route, Idempotency-Key) + body fingerprint
         -> ``((result, usage), None)`` or ``(None, 500 response)``.
 
@@ -1084,7 +1091,9 @@ class OpenAICompatRoutesMixin:
             if idempotency_key and getattr(self.gateway_runner, 'session_authority', None) is None:
                 principal_scope = self._run_idempotency_scope(request)
                 scoped_key = f"{principal_scope}\0{route}\0{idempotency_key}"
-                fp = _make_request_fingerprint(body, keys=fingerprint_keys)
+                fp = _make_request_fingerprint(
+                    body, keys=fingerprint_keys, user_id=user_id,
+                    gateway_session_key=gateway_session_key, session_id=session_id)
                 result, usage = await _idem_cache.get_or_set(scoped_key, fp, compute)
             else:
                 result, usage = await compute()
@@ -1100,6 +1109,7 @@ class OpenAICompatRoutesMixin:
 
     async def _prepare_sse_response(
         self, request: web.Request, session_id: Optional[str], gateway_session_key: Optional[str],
+        user_id: Optional[str] = None,
     ) -> web.StreamResponse:
         """Open a prepared SSE StreamResponse with CORS + session headers (the CORS middleware
         can't inject headers after ``prepare()`` flushes them, so they are resolved here)."""
@@ -1108,6 +1118,8 @@ class OpenAICompatRoutesMixin:
             sse_headers["X-Hermes-Session-Id"] = session_id
         if gateway_session_key:
             sse_headers["X-Hermes-Session-Key"] = gateway_session_key
+        if user_id:
+            sse_headers["X-Hermes-User-Id"] = user_id
         response = web.StreamResponse(status=200, headers=sse_headers)
         await response.prepare(request)
         return response
@@ -1115,12 +1127,14 @@ class OpenAICompatRoutesMixin:
     async def _write_sse_chat_completion(
         self, request: web.Request, completion_id: str, model: str,
         created: int, stream_q, agent_task, agent_ref=None, session_id: str | None = None,
-        gateway_session_key: str | None = None) -> web.StreamResponse:
+        gateway_session_key: str | None = None,
+        user_id: str | None = None) -> web.StreamResponse:
         """Stream ``chat.completion.chunk`` frames from the agent's delta queue. On client
         disconnect the agent is interrupted (stops LLM calls), then its task wrapper cancelled."""
         from gateway.platforms.api_server import (
             _abandon_agent_task, _chat_usage_payload, _resolve_media_to_data_urls, _sse_frame)
-        response = await self._prepare_sse_response(request, session_id, gateway_session_key)
+        response = await self._prepare_sse_response(
+            request, session_id, gateway_session_key, user_id=user_id)
 
         def _chunk(delta: dict[str, Any], finish_reason=None, **extra) -> dict[str, Any]:
             return {"id": completion_id, "object": "chat.completion.chunk", "created": created,
@@ -1210,7 +1224,8 @@ class OpenAICompatRoutesMixin:
         self, request: web.Request, response_id: str, model: str, created_at: int, stream_q,
         agent_task, agent_ref, conversation_history: list[dict[str, str]], user_message: str,
         instructions: Optional[str], conversation: Optional[str], store: bool, session_id: str,
-        gateway_session_key: Optional[str] = None, durable_key=None, terminal_replay=False) -> web.StreamResponse:
+        gateway_session_key: Optional[str] = None, user_id: Optional[str] = None,
+        durable_key=None, terminal_replay=False) -> web.StreamResponse:
         """Write the SSE stream for POST /v1/responses.
 
         Events: ``response.created`` -> ``output_text.delta/done`` + ``output_item.added/done``
@@ -1222,7 +1237,8 @@ class OpenAICompatRoutesMixin:
         settled, so an exact retry replays this stream instead of admitting different history.
         """
         from gateway.platforms.api_server import _abandon_agent_task, _redact_api_error_text
-        response = await self._prepare_sse_response(request, session_id, gateway_session_key)
+        response = await self._prepare_sse_response(
+            request, session_id, gateway_session_key, user_id=user_id)
         st = _ResponsesStream(
             self, response, response_id=response_id, model=model, created_at=created_at,
             conversation_history=conversation_history, user_message=user_message,
@@ -1272,7 +1288,8 @@ class OpenAICompatRoutesMixin:
         from gateway.platforms.api_server import _sse_frame
         headers = replay.get('headers') or {}
         response = await self._prepare_sse_response(
-            request, headers.get('X-Hermes-Session-Id'), headers.get('X-Hermes-Session-Key'))
+            request, headers.get('X-Hermes-Session-Id'), headers.get('X-Hermes-Session-Key'),
+            user_id=headers.get('X-Hermes-User-Id'))
         events = replay.get('events')
         if not events:
             env = replay['response']
@@ -1285,7 +1302,9 @@ class OpenAICompatRoutesMixin:
             await response.write(_sse_frame(data, event=event_type))
         return response
 
-    async def _responses_durable_replay(self, request: web.Request, body: dict[str, Any], stream: bool) -> tuple:
+    async def _responses_durable_replay(
+        self, request: web.Request, body: dict[str, Any], stream: bool, *,
+        header_user_id: Optional[str] = None, gateway_session_key: Optional[str] = None) -> tuple:
         """Canonical Idempotency-Key record for POST /v1/responses ->
         ``(durable_key, idempotency_scope, idempotency_key, replayed_response_or_None)``."""
         durable_key = idempotency_scope = None
@@ -1299,7 +1318,9 @@ class OpenAICompatRoutesMixin:
             from gateway.platforms.api_server import _make_request_fingerprint
             idempotency_scope = self._run_idempotency_scope(request)
             durable_key = (f'idem:{idempotency_scope}:{idempotency_key}',
-                           _make_request_fingerprint(body, keys=_responses_fingerprint_keys(body)))
+                           _make_request_fingerprint(
+                               body, keys=_responses_fingerprint_keys(body),
+                               user_id=header_user_id, gateway_session_key=gateway_session_key))
             from gateway.platforms.api_server import _openai_error
             from gateway.platforms.api_server_response_admissions import request_binding
             response_store = self._current_response_store()
@@ -1333,9 +1354,9 @@ class OpenAICompatRoutesMixin:
         limited = self._concurrency_limited_response()
         if limited is not None:
             return limited
-        gateway_session_key, key_err = self._parse_session_key_header(request)
-        if key_err is not None:
-            return key_err
+        gateway_session_key, header_user_id, scope_err = self._parse_memory_scope_headers(request)
+        if scope_err is not None:
+            return scope_err
         try:
             body = await request.json()
         except Exception:
@@ -1351,7 +1372,8 @@ class OpenAICompatRoutesMixin:
             return _error_response("Cannot use both 'conversation' and 'previous_response_id'", 400)
         stream = _coerce_request_bool(body.get("stream"), default=False)
         durable_key, idempotency_scope, idempotency_key, replayed = await self._responses_durable_replay(
-            request, body, stream)
+            request, body, stream, header_user_id=header_user_id,
+            gateway_session_key=gateway_session_key)
         if replayed is not None:
             return replayed
         from gateway.platforms.api_server_response_admissions import prepare_context
@@ -1368,6 +1390,8 @@ class OpenAICompatRoutesMixin:
         session_id, user_message = context['session_id'], context['user_message']
         conversation_history, instructions = context['conversation_history'], context['instructions']
         run_kwargs, run_agent = context['run_kwargs'], context['run_agent']
+        memory_user_id = run_kwargs.get("user_id")
+        echo_user_id = self._echo_user_id(header_user_id, memory_user_id)
         response_id, created_at = _response_identity(self._current_response_store(), durable_key)
         response_model = body.get('model', self._model_name)
         if durable_key:
@@ -1404,13 +1428,15 @@ class OpenAICompatRoutesMixin:
                 conversation_history=conversation_history, user_message=user_message,
                 instructions=instructions, conversation=conversation, store=store,
                 session_id=session_id, gateway_session_key=gateway_session_key,
-                durable_key=durable_key, terminal_replay=context.get('terminal_replay', False))
+                user_id=echo_user_id, durable_key=durable_key,
+                terminal_replay=context.get('terminal_replay', False))
 
         async def _compute_response():
             return await run_agent(**run_kwargs)
         outcome, err = await self._run_idempotent(
             request, body, _compute_response, log_label="responses",
             fingerprint_keys=list(_responses_fingerprint_keys(body)), route="responses",
+            user_id=header_user_id, gateway_session_key=gateway_session_key,
         )
         if err is not None:
             return err
@@ -1457,6 +1483,7 @@ class OpenAICompatRoutesMixin:
         response_headers = {"X-Hermes-Session-Id": _effective_session_id}
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
+        self._stamp_user_id_header(response_headers, echo_user_id)
         if durable_key is not None:
             self._current_response_store().put(durable_key[0], {
                 'fingerprint': durable_key[1], 'response': response_data, 'headers': response_headers})

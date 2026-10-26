@@ -2554,6 +2554,217 @@ class TestSessionKeyHeader:
             assert call_kwargs["gateway_session_key"] == "webui:chan-1"
 
 
+# ---------------------------------------------------------------------------
+# X-Hermes-User-Id header (per-user memory scope)
+# ---------------------------------------------------------------------------
+
+
+class TestUserIdHeader:
+    """Opt-in end-user id for long-term memory. Same auth gate as the session key."""
+
+    def test_resolve_keeps_stronger_identity(self):
+        from gateway.platforms.api_server import resolve_memory_user_id
+
+        assert resolve_memory_user_id("person-42", "oauth-user") == "oauth-user"
+        assert resolve_memory_user_id("person-42", "api") == "person-42"
+        assert resolve_memory_user_id("person-42", None) == "person-42"
+        assert resolve_memory_user_id("person-42", "person-42") == "person-42"
+        assert resolve_memory_user_id(None, "oauth-user") == "oauth-user"
+
+    @pytest.mark.asyncio
+    async def test_header_threads_and_echoes(self, auth_adapter):
+        captured = {}
+
+        def _fake_create_agent(**kwargs):
+            captured.update(kwargs)
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok", "messages": []}
+            mock_agent.session_prompt_tokens = 0
+            mock_agent.session_completion_tokens = 0
+            mock_agent.session_total_tokens = 0
+            return mock_agent
+
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_create_agent", side_effect=_fake_create_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={
+                        "X-Hermes-User-Id": "person-42",
+                        "X-Hermes-Session-Key": "agent:main:webui:dm:person-42",
+                        "Authorization": "Bearer sk-secret",
+                    },
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]},
+                )
+        assert resp.status == 200
+        assert resp.headers.get("X-Hermes-User-Id") == "person-42"
+        assert captured.get("user_id") == "person-42"
+        assert captured.get("gateway_session_key") == "agent:main:webui:dm:person-42"
+
+    @pytest.mark.asyncio
+    async def test_absent_header_leaves_user_id_unset(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "ok", "messages": []},
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"Authorization": "Bearer sk-secret"},
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]},
+                )
+        assert resp.status == 200
+        assert resp.headers.get("X-Hermes-User-Id") is None
+        assert mock_run.call_args.kwargs.get("user_id") is None
+
+    @pytest.mark.asyncio
+    async def test_rejected_without_api_key(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"X-Hermes-User-Id": "person-42"},
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]},
+                )
+        assert resp.status == 403
+        mock_run.assert_not_called()
+
+    def test_parser_rejects_control_characters(self, auth_adapter):
+        class _Req:
+            headers = {"X-Hermes-User-Id": "bad\nid"}
+
+        _id, err = auth_adapter._parse_user_id_header(_Req())
+        assert _id is None
+        assert err.status == 400
+
+    @pytest.mark.asyncio
+    async def test_rejects_oversize(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/chat/completions",
+                headers={
+                    "X-Hermes-User-Id": "x" * 257,
+                    "Authorization": "Bearer sk-secret",
+                },
+                json={"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]},
+            )
+            assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_capabilities_advertises_header(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get(
+                "/v1/capabilities", headers={"Authorization": "Bearer sk-secret"})
+            assert resp.status == 200
+            data = await resp.json()
+        assert data["features"]["user_id_header"] == "X-Hermes-User-Id"
+
+    @pytest.mark.asyncio
+    async def test_cors_allows_user_id_header(self):
+        adapter = _make_adapter(cors_origins=["http://localhost:3000"])
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.options(
+                "/v1/chat/completions",
+                headers={
+                    "Origin": "http://localhost:3000",
+                    "Access-Control-Request-Method": "POST",
+                    "Access-Control-Request-Headers": "X-Hermes-User-Id",
+                },
+            )
+        assert resp.status == 200
+        assert "X-Hermes-User-Id" in resp.headers.get("Access-Control-Allow-Headers", "")
+
+    @pytest.mark.asyncio
+    async def test_responses_echoes_header(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/responses",
+                    headers={"X-Hermes-User-Id": "person-7", "Authorization": "Bearer sk-secret"},
+                    json={"model": "hermes-agent", "input": "hello", "store": False},
+                )
+        assert resp.status == 200
+        assert resp.headers.get("X-Hermes-User-Id") == "person-7"
+        assert mock_run.call_args.kwargs.get("user_id") == "person-7"
+
+    @pytest.mark.asyncio
+    async def test_idempotency_isolated_by_user_id(self, auth_adapter):
+        calls = []
+
+        async def _fake(**kwargs):
+            calls.append(kwargs.get("user_id"))
+            return (
+                {"final_response": kwargs.get("user_id") or "", "messages": []},
+                {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            )
+
+        body = {"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]}
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", side_effect=_fake):
+                first = await cli.post(
+                    "/v1/chat/completions", json=body,
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "Idempotency-Key": "user-scope",
+                        "X-Hermes-User-Id": "person-a",
+                    },
+                )
+                replay = await cli.post(
+                    "/v1/chat/completions", json=body,
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "Idempotency-Key": "user-scope",
+                        "X-Hermes-User-Id": "person-a",
+                    },
+                )
+                other = await cli.post(
+                    "/v1/chat/completions", json=body,
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "Idempotency-Key": "user-scope",
+                        "X-Hermes-User-Id": "person-b",
+                    },
+                )
+                assert first.status == replay.status == other.status == 200
+                first_body = await first.json()
+                replay_body = await replay.json()
+                other_body = await other.json()
+        assert first_body["choices"][0]["message"]["content"] == "person-a"
+        assert replay_body["choices"][0]["message"]["content"] == "person-a"
+        assert other_body["choices"][0]["message"]["content"] == "person-b"
+        assert calls == ["person-a", "person-b"]
+
+    @pytest.mark.asyncio
+    async def test_stored_identity_wins_over_header(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_stored_session_user_id", return_value="oauth-user"), \
+                    patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "ok", "messages": []},
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"X-Hermes-User-Id": "person-42", "Authorization": "Bearer sk-secret"},
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]},
+                )
+        assert resp.status == 200
+        assert resp.headers.get("X-Hermes-User-Id") is None
+        assert mock_run.call_args.kwargs.get("user_id") == "oauth-user"
+
 
 # ---------------------------------------------------------------------------
 # Per-client model routing (model_routes)

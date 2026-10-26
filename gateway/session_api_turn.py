@@ -22,7 +22,7 @@ _TOOL_SINKS = {'tool_start_callback', 'tool_complete_callback'}
 _SETTING_KEYS = ('ephemeral_system_prompt', 'requested_model', 'requested_provider',
                  'model_options', 'route', 'session_model', 'confirmed_runtime_lock',
                  'requested_runtime', 'route_source', 'room_dispatch', 'room_execution_policy',
-                 'session_history_delivery')
+                 'session_history_delivery', 'user_id')
 _OWNER_SCOPE_RE = re.compile(r'[0-9a-f]{64}')
 
 
@@ -73,6 +73,22 @@ def check_api_turn(authority, ref, payload):
 
 def _valid_owner_scope(value):
     return isinstance(value, str) and _OWNER_SCOPE_RE.fullmatch(value) is not None
+
+
+def api_memory_user_id(source_user_id: str | None) -> str | None:
+    """User id an API turn's agent is built with.
+
+    No header, or not an API turn: the source id, unchanged. A header fills
+    memory scope unless a stronger authenticated id is already bound.
+    """
+    current = api_execution.get()
+    header = ""
+    if current:
+        header = str((current.get("settings") or {}).get("user_id") or "").strip()
+    if not header:
+        return source_user_id
+    from gateway.platforms.api_server import resolve_memory_user_id
+    return resolve_memory_user_id(header, source_user_id)
 
 
 def api_session_vars():
@@ -151,6 +167,9 @@ def admit_api_steps(adapter, **kwargs):
     sid = authority.logical_owner(sid)
     authority._require_admission_open()
     settings = {key: kwargs.get(key) for key in _SETTING_KEYS}
+    # Omit an absent header so admissions recorded before this field still match.
+    if not settings.get("user_id"):
+        settings.pop("user_id", None)
     # Route credentials remain in the server's configuration, never admission JSON.
     route = settings.get('route')
     if route and route.get('api_key'):

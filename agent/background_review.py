@@ -621,11 +621,14 @@ _CALL_DETAIL_DEFAULTS = (
 )
 
 
-def _collect_review_call_details(review_messages: list[dict]) -> tuple[set, dict]:
+def _collect_review_call_details(
+    review_messages: list[dict], extra_notify_tools: frozenset = frozenset(),
+) -> tuple[set, dict]:
     """Map review-agent tool_call ids -> parsed call arguments for notify tools. Result JSON only
     says "Entry added"; the call arguments carry action, target and content previews. Restricting
-    to notify tools keeps helper tools from surfacing as memory work just because they succeeded."""
-    notify_tools = {"memory", "skill_manage"}
+    to notify tools keeps helper tools from surfacing as memory work just because they succeeded.
+    ``extra_notify_tools``: the tools of this review's plugin destinations."""
+    notify_tools = {"memory", "skill_manage"} | extra_notify_tools
     all_tool_call_ids: set = set()
     call_details: dict = {}
     for msg in review_messages or []:
@@ -705,14 +708,22 @@ def _action_lines(data: dict, detail: dict, verbose: bool) -> list[str]:
     return [t("display.review.label_updated", label=label)] if hit else []
 
 
+def _destination_action_lines(data: dict) -> list[str]:
+    """A plugin destination tool reports its own one-line result (``message``)."""
+    message = data.get("message")
+    return [_preview(message.strip(), 200)] if isinstance(message, str) and message.strip() else []
+
+
 def summarize_background_review_actions(
-    review_messages: list[dict], prior_snapshot: list[dict], notification_mode: str = "on"
+    review_messages: list[dict], prior_snapshot: list[dict], notification_mode: str = "on",
+    extra_notify_tools: frozenset = frozenset(),
 ) -> list[str]:
     """Human-facing action summary for a background review pass: successful memory /
     skill-management tool results from the review agent's messages, skipping tool messages already
     present in ``prior_snapshot`` so inherited results are not re-surfaced as fresh work.
     ``notification_mode``: ``off`` -> no actions; ``on`` -> generic "Memory updated"/tool messages;
-    ``verbose`` -> content previews from the tool-call arguments.
+    ``verbose`` -> content previews from the tool-call arguments. ``extra_notify_tools`` (plugin
+    destination tools) surface their own result ``message`` in either mode.
 
     See #14944.
     """
@@ -721,7 +732,7 @@ def summarize_background_review_actions(
         return []
     verbose = mode == "verbose"
     existing_tool_call_ids, existing_tool_contents = _prior_tool_keys(prior_snapshot)
-    all_tool_call_ids, call_details = _collect_review_call_details(review_messages)
+    all_tool_call_ids, call_details = _collect_review_call_details(review_messages, extra_notify_tools)
     actions: list[str] = []
     for msg in _tool_messages(review_messages):
         tcid = msg.get("tool_call_id")
@@ -738,7 +749,11 @@ def summarize_background_review_actions(
         # ``success``/``_change``.
         if not isinstance(data, dict) or not data.get("success"):
             continue
-        actions.extend(_action_lines(data, call_details.get(tcid) or {}, verbose))
+        detail = call_details.get(tcid) or {}
+        if detail.get("tool") in extra_notify_tools:
+            actions.extend(_destination_action_lines(data))
+        else:
+            actions.extend(_action_lines(data, detail, verbose))
     return actions
 
 
@@ -1165,19 +1180,22 @@ def release_cache_parity_fork(
 def _run_review_fork(
     agent: Any, messages_snapshot: list[dict], prompt: str, task_cfg: Optional[dict[str, Any]],
     review_run: Optional[_BackgroundReviewRun], st: _ReviewForkState, review_memory: bool = False,
-    explicit: bool = False,
+    explicit: bool = False, destination_tools: frozenset = frozenset(),
 ) -> None:
     """Fork phase (inside thread-scoped silence): build the fork, run the prompt under the tool
     whitelist, snapshot its messages/usage, release its clients. Partial progress lands on ``st``
     so the caller's error path still sees usage and the fork to clean up. ``explicit`` (/refine)
     keeps the ``background_review`` origin (curator/skill guards still apply) but marks the fork
-    attended, so the unattended-only memory delete gate leaves the full operation set available."""
+    attended, so the unattended-only memory delete gate leaves the full operation set available.
+    ``destination_tools``: tools of the enabled plugin destinations, admitted like ``extra_tools``."""
     st.review_agent, _rt, _routed = build_cache_parity_fork(
         agent, task_cfg, max_iterations=_REVIEW_MAX_ITERATIONS)
     st.review_agent._review_attended = explicit
     _track_review_fork(agent, st.review_agent, register=True)
     from hermes_cli.plugins import set_thread_tool_whitelist, clear_thread_tool_whitelist
     review_whitelist, configured_extra_tools = _review_tool_whitelist(st.review_agent, task_cfg, review_memory)
+    review_whitelist |= destination_tools
+    configured_extra_tools |= destination_tools
     extra_list = ", ".join(sorted(configured_extra_tools))
     deny_extra = f" Configured extra tools also allowed: {extra_list}." if configured_extra_tools else ""
     prompt_extra = f" Exception — these configured tools are also allowed: {extra_list}." if configured_extra_tools else ""
@@ -1237,12 +1255,13 @@ def _publish_review_summary(agent: Any, actions: list[str]) -> None:
 def _run_review_in_thread(
     agent: Any, messages_snapshot: list[dict], prompt: str,
     task_cfg: Optional[dict[str, Any]] = None, review_run: Optional[_BackgroundReviewRun] = None,
-    review_memory: bool = False, explicit: bool = False,
+    review_memory: bool = False, explicit: bool = False, destination_tools: frozenset = frozenset(),
 ) -> None:
     """Daemon-thread worker: build the fork, run the prompt, surface the action summary via
     ``agent._safe_print`` / ``background_review_callback``. ``review_run`` (from
     :func:`prepare_background_review_run`) cancelled before the first provider call aborts
-    without entering ``run_conversation()``.
+    without entering ``run_conversation()``. ``destination_tools`` (enabled plugin destinations)
+    are admitted for this review and reported in its summary.
 
     See #84423.
     """
@@ -1272,7 +1291,8 @@ def _run_review_in_thread(
         # their console output (#55769 / #55925). ``thread_scoped_silence`` routes only this thread's writes
         # to devnull and leaves all other threads on the real streams.
         with thread_scoped_silence():
-            _run_review_fork(agent, messages_snapshot, prompt, task_cfg, review_run, st, review_memory, explicit)
+            _run_review_fork(agent, messages_snapshot, prompt, task_cfg, review_run, st, review_memory, explicit,
+                             destination_tools)
         # A buggy/legacy tool response shape must NOT take down the whole review (the outer
         # except would discard every action the fork DID complete), so coerce to an empty list.
         try:
@@ -1288,6 +1308,7 @@ def _run_review_in_thread(
             actions = summarize_background_review_actions(
                 st.review_messages, messages_snapshot,
                 notification_mode=getattr(agent, "memory_notifications", "on"),
+                extra_notify_tools=destination_tools,
             )
         except Exception as e:
             logger.warning(
@@ -1325,6 +1346,58 @@ _PROMPT_NAME_BY_SCOPE = {
 }
 
 
+# Plugin review destinations (``ctx.register_review_destination``): the user lists ids in
+# ``auxiliary.background_review.destinations``; each adds a section after the chosen prompt and
+# before any /refine focus, and admits its own tools for this review only.
+_REVIEW_DESTINATIONS_HEADER = (
+    "**Plugin destinations**: the user enabled these for this review. Each is a place beyond "
+    "memory and skills for one kind of thing, with its own tools. Check each one before you "
+    "stop. Keep every item in ONE place: what belongs to a destination does not also go into "
+    "memory or a skill. If the conversation changed nothing a destination covers, leave it "
+    "untouched."
+)
+
+
+def _configured_destination_ids(task_cfg: Optional[dict[str, Any]]) -> tuple[str, ...]:
+    """Ids listed in ``auxiliary.background_review.destinations`` (default: none)."""
+    raw = _background_review_task_config(task_cfg).get("destinations") or []
+    if not isinstance(raw, list):
+        logger.warning("auxiliary.background_review.destinations must be a list of ids; ignoring %r", raw)
+        return ()
+    return tuple(dict.fromkeys(item.strip() for item in raw if isinstance(item, str) and item.strip()))
+
+
+def _with_review_destinations(
+    agent: Any, prompt: str, destination_ids: tuple[str, ...], review_memory: bool,
+    review_skills: bool, explicit: bool,
+) -> tuple[str, dict[str, Any]]:
+    """``(prompt + destination sections, worker kwargs)``; any failure reviews without them."""
+    # Same rule as _PROMPT_NAME_BY_SCOPE: with neither flag the skill prompt runs.
+    scopes = {"memory"} if review_memory else set()
+    if review_skills or not review_memory:
+        scopes.add("skills")
+    session_info = {
+        "session_id": getattr(agent, "session_id", None), "platform": getattr(agent, "platform", None),
+        "model": getattr(agent, "model", None), "provider": getattr(agent, "provider", None),
+        "scopes": tuple(sorted(scopes)), "explicit": explicit,
+    }
+    try:
+        from hermes_cli.plugins import render_review_destinations
+
+        rendered = render_review_destinations(
+            destination_ids, scopes, session_info, getattr(agent, "valid_tool_names", None) or ())
+    except Exception:  # the review thread must reach _run_review_in_thread, which releases the run
+        logger.warning("Background review destinations skipped; reviewing without them", exc_info=True)
+        return prompt, {}
+    if not rendered:
+        return prompt, {}
+    sections = "\n\n".join(
+        f"• {item.id} (from the {item.plugin} plugin; tools: {', '.join(item.tools)}):\n{item.text}"
+        for item in rendered)
+    tools = frozenset(name for item in rendered for name in item.tools)
+    return f"{prompt}\n\n{_REVIEW_DESTINATIONS_HEADER}\n\n{sections}", {"destination_tools": tools}
+
+
 def spawn_background_review_thread(
     agent: Any, messages_snapshot: list[dict], review_memory: bool = False,
     review_skills: bool = False, focus: Optional[str] = None,
@@ -1336,24 +1409,33 @@ def spawn_background_review_thread(
     to the chosen prompt; automatic reviews pass ``None``. ``task_cfg`` is the pre-loaded
     ``auxiliary.background_review`` block; when omitted it is read once here. ``explicit``
     (/refine) propagates to the fork's write origin so user-requested reviews keep the full
-    memory operation set."""
+    memory operation set. Enabled plugin destinations are rendered in the review thread (plugin
+    code never runs on the turn path) and sit between the chosen prompt and the focus; the
+    returned ``prompt`` omits them."""
     if task_cfg is None:
         task_cfg = _background_review_task_config()
     # Per-agent overrides (agent._MEMORY_REVIEW_PROMPT etc.) keep working.
     name = _PROMPT_NAME_BY_SCOPE[(review_memory, review_skills)]
     prompt = getattr(agent, name, globals()[name])
+    focus_block = ""
     if focus := (focus or "").strip():
-        prompt = (
-            f"{prompt}\n\nThe user explicitly requested this review with the following "
+        focus_block = (
+            "\n\nThe user explicitly requested this review with the following "
             f"focus — prioritize it over the general instructions above:\n{focus}"
         )
+    destination_ids = _configured_destination_ids(task_cfg)
 
     def _target() -> None:  # resolves _run_review_in_thread at call time (tests patch it)
+        review_prompt, destination_kwargs = prompt, {}
+        if destination_ids:
+            review_prompt, destination_kwargs = _with_review_destinations(
+                agent, prompt, destination_ids, review_memory, review_skills, explicit)
         _run_review_in_thread(
-            agent, messages_snapshot, prompt, task_cfg=task_cfg, review_run=review_run,
-            review_memory=review_memory, explicit=explicit)
+            agent, messages_snapshot, review_prompt + focus_block, task_cfg=task_cfg,
+            review_run=review_run, review_memory=review_memory, explicit=explicit,
+            **destination_kwargs)
 
-    return _target, prompt
+    return _target, prompt + focus_block
 
 
 __all__ = [

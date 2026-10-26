@@ -24,7 +24,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from functools import cached_property, wraps
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Set, Tuple, Union
 
 from hermes_constants import get_hermes_home, get_process_hermes_home, hermes_home_key
 from registration_lifecycle import replacement_coordinator
@@ -54,8 +54,9 @@ from hermes_cli.plugins_dispatch import (
     SYSTEM_PROMPT_SECTION_POSITIONS, _EVENT_EMIT_DEPTH_CAP, _EVENT_PENDING_CAP,
     _HOOK_CALLBACK_TIMEOUT_SECS, _HOOK_TIMEOUT_SUPPRESSION_SECONDS, _MAX_HOOK_CALLBACK_TIMEOUT_SECS,
     _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE, PluginDispatchMixin, PluginSystemPromptSection,
-    RenderedPluginSystemPromptSection, _EventSubscription, format_system_prompt_sections,
-    is_valid_system_prompt_section_id, resolve_plugin_command_result,
+    RenderedPluginSystemPromptSection, RenderedReviewDestination, ReviewDestination,
+    _EventSubscription, format_system_prompt_sections, is_valid_system_prompt_section_id,
+    resolve_plugin_command_result,
 )
 from hermes_cli.plugins_capability_ctx import PluginCapabilityCtxMixin
 from hermes_cli.plugins_prompt_ctx import PluginPromptCtxMixin
@@ -1071,9 +1072,10 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._tui_message_injector: tuple[object, Callable] | None = None
         self._context_engine = None  # Set by a plugin via register_context_engine()
         # Manager-local registries keyed by name (see the matching ``PluginContext.register_*``):
-        # plugins, hooks, middleware, CLI + slash commands, prompt sections, skills (qualified name ->
-        # metadata), portable MCP servers, auxiliary tasks, approval transports, Slack action handlers
-        # (matcher, callback, plugin_name), platform handler factories (lowercase platform -> list).
+        # plugins, hooks, middleware, CLI + slash commands, prompt sections, review destinations,
+        # skills (qualified name -> metadata), portable MCP servers, auxiliary tasks, approval
+        # transports, Slack action handlers (matcher, callback, plugin_name), platform handler
+        # factories (lowercase platform -> list).
         self._plugins: dict[str, LoadedPlugin] = {}
         self._hooks: dict[str, list[Callable]] = {}
         # Fallback hooks registered by a memory provider before general discovery.
@@ -1084,6 +1086,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._cli_commands: dict[str, dict] = {}
         self._plugin_commands: dict[str, dict] = {}
         self._system_prompt_sections: dict[str, PluginSystemPromptSection] = {}
+        self._review_destinations: dict[str, ReviewDestination] = {}
         self._plugin_skills: dict[str, dict[str, Any]] = {}
         self._automation_blueprints: dict[str, Any] = {}  # "<plugin>:<key>" -> AutomationBlueprint
         self._portable_mcp_servers: dict[str, dict[str, Any]] = {}
@@ -1794,6 +1797,13 @@ async def ainvoke_hook(hook_name: str, **kwargs: Any) -> list[Any]:
 def render_system_prompt_sections(session_info: Mapping[str, Any]) -> list[RenderedPluginSystemPromptSection]:
     """Render plugin prompt sections after idempotent plugin discovery."""
     return _ensure_plugins_discovered().render_system_prompt_sections(session_info)
+def render_review_destinations(
+    enabled_ids: Iterable[str], scopes: Iterable[str], session_info: Mapping[str, Any],
+    available_tools: Iterable[str],
+) -> list[RenderedReviewDestination]:
+    """Render the background-review destinations the user enabled, after idempotent discovery."""
+    return _ensure_plugins_discovered().render_review_destinations(
+        enabled_ids, scopes, session_info, available_tools)
 
 
 def invoke_middleware(kind: str, **kwargs: Any) -> list[Any]:

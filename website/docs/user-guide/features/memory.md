@@ -481,6 +481,29 @@ and tools not listed here remain denied. Keep the list narrow and prefer tools
 that stage a proposal for human review rather than applying external or
 destructive changes directly. The default is an empty list.
 
+### Plugin destinations (`destinations`)
+
+Some things worth keeping are neither a fact about you nor a skill: a trip
+being planned, a purchase being decided, a promise to someone. A plugin that
+keeps them can register a **review destination**: a short instruction and its
+own tool(s). Turn one on by listing its ID:
+
+```yaml
+auxiliary:
+  background_review:
+    destinations:
+      - matters.updates     # the ID from the plugin's docs
+```
+
+Each review then also checks that destination and is told to keep every item
+in one place, so a plan filed with the plugin should not also be copied into
+`USER.md`. Only the plugin's own named tools are admitted, for that review
+only; the main conversation and its prompt cache are untouched. Changes show up in the
+review summary next to "Memory updated" (unless `display.memory_notifications`
+is `off`). An ID no enabled plugin registers is skipped with a warning. The
+default is an empty list. Plugin authors: see
+[Background-review destinations](hooks.md#background-review-destinations).
+
 ### Local models: reviews wait for an idle GPU (`defer`)
 
 On a cloud provider the review finishes in seconds and runs alongside

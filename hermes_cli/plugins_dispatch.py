@@ -1,4 +1,4 @@
-"""Plugin hook / middleware / event-bus / system-prompt-section dispatch.
+"""Plugin hook / middleware / event-bus / system-prompt-section / review-destination dispatch.
 
 Mixed into :class:`hermes_cli.plugins.PluginManager`. ``_resolve_hook_callback_timeout`` stays on
 the origin (tests patch it there) and is looked up lazily.
@@ -17,7 +17,7 @@ import threading
 import time
 import types
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Union
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Set, Union
 
 from hermes_cli.middleware import OBSERVER_SCHEMA_VERSION
 
@@ -153,6 +153,38 @@ class RenderedPluginSystemPromptSection:
     id: str
     content: str
     position: str
+    plugin: str
+
+
+# Background-review destinations: bounded like prompt sections, but appended to the review fork's
+# user message (never the system prompt), and only for ids the user lists in
+# ``auxiliary.background_review.destinations``.
+REVIEW_DESTINATION_SCOPES = frozenset({"memory", "skills"})
+DEFAULT_REVIEW_DESTINATION_MAX_CHARS = 2_000
+MAX_REVIEW_DESTINATION_CHARS = 4_000
+MAX_REVIEW_DESTINATIONS_TOTAL_CHARS = 8_000
+MAX_REVIEW_DESTINATION_TOOLS = 4
+
+
+@dataclass(frozen=True)
+class ReviewDestination:
+    """A plugin-owned place the background review may keep things, beside memory and skills."""
+
+    id: str
+    instructions: str | Callable[[Mapping[str, Any]], str]
+    tools: tuple[str, ...]
+    scopes: frozenset[str]
+    max_chars: int
+    plugin: str
+
+
+@dataclass(frozen=True)
+class RenderedReviewDestination:
+    """One destination's validated text for a single review, and the tools it admits."""
+
+    id: str
+    text: str
+    tools: tuple[str, ...]
     plugin: str
 
 
@@ -720,6 +752,74 @@ class PluginDispatchMixin:
             _skip("exceeded max_chars (%d > %d) and was skipped", len(text), section.max_chars)
             return None
         return text
+
+    def render_review_destinations(
+        self, enabled_ids: Iterable[str], scopes: Iterable[str],
+        session_info: Mapping[str, Any], available_tools: Iterable[str],
+    ) -> list[RenderedReviewDestination]:
+        """Render the destinations the user enabled for one review, in config order. Fail open
+        per destination: an id no loaded plugin registered, a trigger outside its ``on``, a tool
+        the session does not offer or the plugin no longer owns, a bad render, or the aggregate
+        budget skips that destination and the review runs without it."""
+        from agent.safe_worker_policy import safe_worker_enabled
+
+        if safe_worker_enabled():
+            return []
+        frozen_info = types.MappingProxyType(dict(session_info))
+        fired, offered = frozenset(scopes), frozenset(available_tools)
+        rendered: list[RenderedReviewDestination] = []
+        total_chars = 0
+        for destination_id in dict.fromkeys(enabled_ids):
+            destination = self._review_destinations.get(destination_id)
+            if destination is None:
+                logger.warning("auxiliary.background_review.destinations lists %r, but no loaded "
+                               "plugin registered it; skipped", destination_id)
+                continue
+            if not destination.scopes & fired:
+                continue
+            unavailable = [name for name in destination.tools if name not in offered
+                           or not self._owns_registration(destination.plugin, "tool", name)]
+            if unavailable:
+                logger.warning("Review destination %s (%s) skipped: tool(s) not available in this "
+                               "session: %s", destination.id, destination.plugin, ", ".join(unavailable))
+                continue
+            text = self._render_review_destination_text(destination, frozen_info)
+            if text is None:
+                continue
+            if total_chars + len(text) > MAX_REVIEW_DESTINATIONS_TOTAL_CHARS:
+                logger.warning("Review destination %s (%s) exceeded the aggregate review budget "
+                               "(%d chars) and was skipped", destination.id, destination.plugin,
+                               MAX_REVIEW_DESTINATIONS_TOTAL_CHARS)
+                continue
+            rendered.append(RenderedReviewDestination(
+                id=destination.id, text=text, tools=destination.tools, plugin=destination.plugin))
+            total_chars += len(text)
+            logger.info("Review destination: id=%s plugin=%s chars=%d tools=%s", destination.id,
+                        destination.plugin, len(text), ",".join(destination.tools))
+        return rendered
+
+    @staticmethod
+    def _render_review_destination_text(
+        destination: ReviewDestination, frozen_info: Mapping[str, Any]
+    ) -> Optional[str]:
+        """Evaluate one destination; its stripped text, or None (with a warning) when skipped."""
+        label = (destination.id, destination.plugin)
+        try:
+            value = (destination.instructions(frozen_info) if callable(destination.instructions)
+                     else destination.instructions)
+        except (Exception, SystemExit):  # plugin code in the review thread must not end the review
+            logger.warning("Review destination %s (%s) raised and was skipped", *label, exc_info=True)
+            return None
+        if not isinstance(value, str):
+            logger.warning("Review destination %s (%s) returned %s, not str; skipped", *label,
+                           type(value).__name__)
+            return None
+        text = value.strip()
+        if len(text) > destination.max_chars:
+            logger.warning("Review destination %s (%s) exceeded max_chars (%d > %d) and was skipped",
+                           *label, len(text), destination.max_chars)
+            return None
+        return text or None
 
     def has_middleware(self, kind: str) -> bool:
         """Return True when at least one callback is registered for middleware."""

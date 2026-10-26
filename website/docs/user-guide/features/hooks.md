@@ -442,6 +442,58 @@ other environment data must not silently mutate a session's cached prompt.
 Such a hook needs a concrete consumer and the same frozen/resume-safe semantics
 before it can be added.
 
+### Background-review destinations
+
+The background review decides what in a session is worth keeping and puts it
+in memory or a skill. A plugin that keeps a different kind of thing can offer
+the review another place: bounded instructions plus some of its own tools.
+Users enable it per destination
+([`destinations`](memory.md#plugin-destinations-destinations)).
+
+```python
+def register(ctx):
+    ctx.register_tool(name="matters_update", toolset="matters", schema=SCHEMA,
+                      handler=update_matter)  # register the tools first
+    ctx.register_review_destination(
+        "matters.updates",
+        MATTERS_TEXT,                 # or a callable(session_info) -> str
+        tools=("matters_update",),
+        on=("memory",),               # review triggers: "memory", "skills"
+        max_chars=2000,
+    )
+```
+
+Registering does nothing by itself. A destination is live only when the user
+lists its ID under `auxiliary.background_review.destinations`, so the user
+decides which plugins take part in the unattended review. Then:
+
+- Each review whose trigger is in `on` appends the instructions after the
+  built-in review prompt and before any `/refine` focus, under a short header
+  that tells the review to keep each item in one place and to leave the
+  destination alone when the session changed nothing it covers. The review's
+  instructions are its user message, so the system prompt, `tools[]` and the
+  cached transcript prefix do not change.
+- The destination's tools join the review's runtime whitelist for that review,
+  like `extra_tools`. A destination can only name tools its plugin registered
+  itself and still owns (at most four), and each must be in the session's tool
+  list, or the destination is skipped. It cannot open the review to core tools
+  such as `terminal` or to another plugin's tools.
+- A tool result shaped `{"success": true, "message": "..."}` appears in the
+  review summary next to "Memory updated", so the user can see what the
+  review changed. Keep the message short; it is shown verbatim (capped at 200
+  characters).
+
+The contract follows the system prompt sections above: IDs use the same
+grammar and are unique; `max_chars` is capped at 4,000, and all destinations
+in one review at 8,000 characters. A callable receives a read-only mapping
+with `session_id`, `platform`, `model`, `provider`, `scopes` (the review
+triggers that fired) and `explicit` (`True` for `/refine`); it runs in the
+review thread, once per review. Empty, non-string, oversized, over-budget or
+raising instructions, unknown IDs and missing tools are skipped with a
+warning; the review runs without that destination. Reviews run often and
+unattended, so write instructions that default to doing nothing unless the
+session changed something the destination covers.
+
 ### Shipped plugin-hook catalog
 
 Payload fields below are the exact event-specific fields supplied by each call site. For backward compatibility, `PluginManager` also adds `telemetry_schema_version="hermes.observer.v1"` to every plugin-hook callback. That legacy envelope marker does not mean all hook payloads share one semantic schema; new versioned contracts belong to their concrete event or capability family.

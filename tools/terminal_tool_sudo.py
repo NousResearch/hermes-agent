@@ -36,32 +36,34 @@ def get_sudo_prompt_command() -> str:
     return _sudo_prompt_command.get()
 
 
-def _get_sudo_password_cache_scope() -> str:
-    """Return the cache scope for interactive sudo passwords."""
+def _get_sudo_password_cache_scope(target: str = "") -> str:
+    """Return the cache scope for interactive sudo passwords (remote targets isolated)."""
     from tools.terminal_tool import _current_session_key, _get_sudo_password_callback
     session_key = _current_session_key()
     if session_key:
-        return f"session:{session_key}"
-    callback = _get_sudo_password_callback()
-    if callback is None:
-        return f"thread:{threading.get_ident()}"
-    owner = getattr(callback, "__self__", None)
-    func = getattr(callback, "__func__", None)
-    if owner is not None and func is not None:
-        return f"callback-owner:{id(owner)}:{id(func)}"
-    return f"callback:{id(callback)}"
+        scope = f"session:{session_key}"
+    else:
+        callback = _get_sudo_password_callback()
+        if callback is None:
+            scope = f"thread:{threading.get_ident()}"
+        else:
+            owner = getattr(callback, "__self__", None)
+            func = getattr(callback, "__func__", None)
+            scope = (f"callback-owner:{id(owner)}:{id(func)}" if owner is not None and func is not None
+                     else f"callback:{id(callback)}")
+    return f"{scope}:target:{target}" if target else scope
 
 
-def _get_cached_sudo_password() -> str:
+def _get_cached_sudo_password(target: str = "") -> str:
     """Return the cached sudo password for the current scope."""
-    scope = _get_sudo_password_cache_scope()
+    scope = _get_sudo_password_cache_scope(target)
     with _sudo_password_cache_lock:
         return _sudo_password_cache.get(scope, "")
 
 
-def _set_cached_sudo_password(password: str) -> None:
+def _set_cached_sudo_password(password: str, target: str = "") -> None:
     """Persist a sudo password for the current scope ("" drops the entry)."""
-    scope = _get_sudo_password_cache_scope()
+    scope = _get_sudo_password_cache_scope(target)
     with _sudo_password_cache_lock:
         if password:
             _sudo_password_cache[scope] = password
@@ -123,17 +125,17 @@ def _sudo_wrong_password_failure(output: str) -> bool:
     return any(marker in lowered for marker in _SUDO_WRONG_PASSWORD_MARKERS)
 
 
-def _invalidate_cached_sudo_on_auth_failure(command: str | None, output: str) -> bool:
+def _invalidate_cached_sudo_on_auth_failure(command: str | None, output: str, target: str = "") -> bool:
     """Drop a session-cached sudo password after sudo rejects it. Env-configured
     ``SUDO_PASSWORD`` is left alone — an explicit operator choice, not a cache entry."""
     if (
         "SUDO_PASSWORD" in os.environ
         or not _sudo_wrong_password_failure(output)
         or _count_real_sudo_invocations(command or "") == 0
-        or not _get_cached_sudo_password()
+        or not _get_cached_sudo_password(target)
     ):
         return False
-    _set_cached_sudo_password("")
+    _set_cached_sudo_password("", target)
     return True
 
 
@@ -449,6 +451,7 @@ def _no_sudo_user() -> bool:
 def _transform_sudo_command(
     command: str | None,
     sudo_nopasswd_check: Callable[[], bool] | None = None,
+    cache_target: str = "",
 ) -> tuple[str | None, str | None]:
     """Rewrite command-position ``sudo`` executables to ``sudo -S -p ''`` when a password is available (shared by every
     execution environment). Returns ``(command, sudo_stdin)``: ``sudo_stdin`` is one password
@@ -476,7 +479,7 @@ def _transform_sudo_command(
     except Exception:
         _configured_password = os.environ.get("SUDO_PASSWORD")
     has_configured_password = _configured_password is not None
-    sudo_password = _configured_password if has_configured_password else _get_cached_sudo_password()
+    sudo_password = _configured_password if has_configured_password else _get_cached_sudo_password(cache_target)
 
     # delegate_task children and `hermes chat -q` inherit HERMES_INTERACTIVE=1 and (for -q) the CLI
     # panel callback, but have no user on the other side — always headless; configured password and
@@ -493,7 +496,7 @@ def _transform_sudo_command(
             return command, None
         sudo_password = _prompt_for_sudo_password(timeout_seconds=45, command=command)
         if sudo_password:
-            _set_cached_sudo_password(sudo_password)
+            _set_cached_sudo_password(sudo_password, cache_target)
 
     if has_configured_password or sudo_password:
         # sudo -S reads one line per invocation: compound `sudo a && sudo b` needs one line each.

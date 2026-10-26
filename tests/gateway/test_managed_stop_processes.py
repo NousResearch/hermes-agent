@@ -7,6 +7,8 @@ from io import BytesIO
 
 import pytest
 
+from tests.waiting import wait_until
+
 
 @pytest.fixture
 def registry(monkeypatch):
@@ -18,11 +20,19 @@ def registry(monkeypatch):
         registry.kill_process(process.id)
 
 
+def _spawn(registry, root, owner, route, persist=False):
+    ready = root / f'managed-ready-{owner}-{route}-{len(registry._running)}'
+    body = f'import pathlib,threading; pathlib.Path({str(ready)!r}).touch(); threading.Event().wait(120)'
+    command = 'exec ' + shlex.join([sys.executable, '-c', body])
+    process = registry.spawn_local(command, cwd=str(root), task_id=owner, owner_task_id=owner,
+                                  session_key=route, persist_on_release=persist)
+    wait_until(ready.exists, timeout=20, what='managed Stop Python process ready')
+    return process
+
+
 def test_worker_stop_ends_own_persisted_processes_and_preserves_neighbors(tmp_path, registry):
     from agent.managed_worker import WorkerControls
-    command = shlex.join([sys.executable, '-c', 'import threading; threading.Event().wait(40)'])
-    processes = [registry.spawn_local(command, cwd=str(tmp_path), task_id=owner, owner_task_id=owner,
-        session_key=route, persist_on_release=persist) for owner, route, persist in [
+    processes = [_spawn(registry, tmp_path, owner, route, persist) for owner, route, persist in [
             ('worker-session', 'worker-route', False), ('worker-session', 'worker-route', True),
             ('other-owner', 'worker-route', True), ('worker-session', 'other-route', True)]]
     controls = WorkerControls.__new__(WorkerControls)
@@ -37,8 +47,7 @@ def test_worker_stop_ends_own_persisted_processes_and_preserves_neighbors(tmp_pa
     assert interrupted.is_set()
     assert [p.exited for p in processes] == [True, True, False, False]
     # Work that crossed the first Stop snapshot is also reaped at the turn boundary.
-    late = registry.spawn_local(command, cwd=str(tmp_path), task_id='worker-session',
-        owner_task_id='worker-session', session_key='worker-route')
+    late = _spawn(registry, tmp_path, 'worker-session', 'worker-route')
     controls.stop_processes()
     assert late.exited
 
@@ -46,9 +55,7 @@ def test_worker_stop_ends_own_persisted_processes_and_preserves_neighbors(tmp_pa
 def test_native_managed_stop_frame_sets_deadline_and_decodes_process_cleanup(tmp_path, monkeypatch, registry):
     from agent.managed_worker import WorkerControls, encode_frame
     from gateway.session_managed_worker import ManagedWorker, interrupt_managed
-    command = shlex.join([sys.executable, '-c', 'import threading; threading.Event().wait(40)'])
-    process = registry.spawn_local(command, cwd=str(tmp_path), task_id='s', owner_task_id='s', session_key='route',
-                                   persist_on_release=True)
+    process = _spawn(registry, tmp_path, 's', 'route', True)
     worker = ManagedWorker(None)  # production command queue and deadline latch, without a pipe writer
     from tests.gateway.test_session_authority_cancel_settlement import ACTOR, REF, _authority
     from hermes_state_runtime import admit_session_input, claim_session_input

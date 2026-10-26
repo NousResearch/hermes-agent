@@ -72,6 +72,7 @@ def _spawn_python_sleep(seconds: float) -> subprocess.Popen:
 
 
 def test_kill_started_since_preserves_preexisting_and_foreign_processes(registry):
+    from tools.process_registry_handoff import ownership_identity
     old = _make_session(sid="proc_old", task_id="session-a")
     finished = _make_session(
         sid="proc_finished", task_id="session-a", exited=True, exit_code=0
@@ -103,6 +104,7 @@ def test_kill_started_since_preserves_preexisting_and_foreign_processes(registry
             {
                 "source": "gateway_turn_timeout",
                 "consume_output": True,
+                "expected_ownership": ownership_identity(new),
             },
         )
     ]

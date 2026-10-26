@@ -34,11 +34,21 @@ async def retain_failed_stop(authority, ref, row, policy):
         await tracked_write(authority, partial(record_process_stop, authority, ref, row['generation']))
 
 
+def require_current_claim(conn, context):
+    row = conn.execute(
+        'SELECT t.status,t.current_run_id,t.claim_lock,r.status,r.claim_lock '
+        'FROM tasks t JOIN task_runs r ON r.task_id=t.id WHERE t.id=? AND r.id=?',
+        (context['task_id'], context['run_id'])).fetchone()
+    if row is None or tuple(row) != ('running', context['run_id'], context['claim_lock'], 'running', context['claim_lock']):
+        raise RuntimeStoreError('stale_kanban_claim')
+
+
 def previous_attempts(context):
     with closing(sqlite3.connect(Path(context['db']).as_uri() + '?mode=ro', uri=True)) as conn:
+        require_current_claim(conn, context)
         rows = conn.execute(
             "SELECT e.run_id,e.payload FROM task_events e LEFT JOIN task_runs r ON r.id=e.run_id "
-            "WHERE e.task_id=? AND e.kind='owner_admitted' AND e.run_id<>? "
+            "WHERE e.task_id=? AND e.kind='owner_admitted' AND e.run_id<? "
             "AND (r.status IS NULL OR r.status NOT IN ('done','review','scheduled') OR EXISTS ("
             "SELECT 1 FROM task_events stop WHERE stop.task_id=e.task_id AND stop.id>e.id "
             "AND stop.kind IN ('blocked','block_loop_detected'))) ORDER BY e.id",

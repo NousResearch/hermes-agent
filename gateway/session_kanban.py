@@ -92,9 +92,19 @@ async def run_task(connection, params):
     if saved:
         policy = restore_policy(saved['policy'])
         context = json.loads(policy.kanban_json or '{}')
-        if (not connection.native_owner or set(params) not in ({'board', 'task_id', 'run_id', 'claim_lock'}, {'board', 'task_id', 'run_id', 'claim_lock', 'db'})
+        if (not connection.native_owner or connection.actor.profile_id != authority.profile_id
+                or set(params) not in ({'board', 'task_id', 'run_id', 'claim_lock'}, {'board', 'task_id', 'run_id', 'claim_lock', 'db'})
                 or any(params[k] != context.get(k) for k in params)):
             raise RuntimeStoreError('permission_denied')
+        from hermes_state_runtime import find_session_admission
+        committed = await asyncio.to_thread(find_session_admission, authority.db,
+            principal_id=connection.actor.subject, session_id=sid, request_id=request_id)
+        if committed is not None:
+            # A saved request is readback, not a new handoff. In particular it
+            # cannot retire work admitted by a later run or wake a stopped turn.
+            receipt = authority._receipt(committed)
+            authority.authorize(connection.actor, receipt.ref, 'session:read')
+            return {'session_id': sid, 'receipt': asdict(receipt)}
         from gateway.session_local_recovery import restore_local_session
         ref = restore_local_session(authority, sid)
     else:
@@ -107,16 +117,16 @@ async def run_task(connection, params):
     import psutil
     from hermes_cli.process_identity import worker_birth
     context = json.loads(policy.kanban_json)
-    from gateway.session_kanban_stop import retire_previous_attempts
+    from gateway.session_kanban_stop import require_current_claim, retire_previous_attempts
     await retire_previous_attempts(connection, context)
 
     def admit_claim():
         # The Kanban DB is the cross-profile dispatch bus (busy_timeout up to 120 s): the claim
         # check and its marker share one write transaction, off the owner loop.
         with connect_closing(Path(context['db'])) as conn, kb.write_txn(conn):
-            # Either this exact attempt was already admitted to this session (retry after a
-            # crash between session creation and admission), or the claim is still current
-            # now; a reclaimed/closed task never reaches resume/submit.
+            # Even a retry after session/marker creation but before input commit
+            # needs its current claim. Fully committed retries returned readback above.
+            require_current_claim(conn, context)
             marker = conn.execute("SELECT payload FROM task_events WHERE task_id=? AND run_id=? AND kind='owner_admitted' ORDER BY id DESC LIMIT 1",
                                   (params['task_id'], params['run_id'])).fetchone()
             if marker:
@@ -124,8 +134,6 @@ async def run_task(connection, params):
                     raise RuntimeStoreError('stale_kanban_claim')
             else:
                 task = kb.get_task(conn, params['task_id'])
-                if not (task and task.status == 'running' and task.current_run_id == params['run_id'] and task.claim_lock == params['claim_lock']):
-                    raise RuntimeStoreError('stale_kanban_claim')
                 kb._append_event(conn, task.id, 'owner_admitted',
                     {'db': owner_db, 'session_id': ref.session_id,
                      'request_id': request_id, 'pid': os.getpid(), 'birth': worker_birth(psutil.Process())},
@@ -135,20 +143,10 @@ async def run_task(connection, params):
     await connection.resume(ref, {})
     # Finite like the `chat -q` worker it replaced: nobody can answer an approval or clarify in a
     # card (approvals.single_query_mode applies). Never unattended: that is `-z`'s auto-approval.
-    # A retry of an attempt admitted before cards were finite resubmits its committed payload,
-    # so the store returns the original receipt instead of admission_conflict.
-    from hermes_state_runtime import find_session_admission
-    committed = None if not saved else await asyncio.to_thread(find_session_admission, authority.db,
-        principal_id=connection.actor.subject, session_id=ref.session_id, request_id=request_id)
-    payload: dict = {'text': f'work kanban task {params["task_id"]}'}
-    if committed is None or 'finite' in committed['payload']:
-        payload['finite'] = True
+    payload: dict = {'text': f'work kanban task {params["task_id"]}', 'finite': True}
     # The dispatcher's trusted producer marker (#134889 KB-8): nobody waits on a card attempt, so one
-    # lost across an owner restart settles interrupted instead of pausing the card session. An
-    # attempt main committed without it resubmits unmarked (same digest, original receipt).
-    card = None
-    if committed is None or 'kanban_card_v1' in committed['payload']:
-        card = {'board': context.get('board'), 'task_id': params['task_id'], 'run_id': params['run_id']}
+    # lost across an owner restart settles interrupted instead of pausing the card session.
+    card = {'board': context.get('board'), 'task_id': params['task_id'], 'run_id': params['run_id']}
     receipt = await authority.submit(connection.actor, Submission(request_id, ref, payload, 'queue'),
                                      _kanban_card=card)
     return {'session_id': ref.session_id, 'receipt': asdict(receipt)}

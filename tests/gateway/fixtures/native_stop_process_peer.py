@@ -130,12 +130,19 @@ async def probe():
                 'persist_on_release': proc.persist_on_release, 'host_start_time': proc.host_start_time}
             identity = psutil.Process(proc.pid)
             birth = identity.create_time()
-            for name, owner, route in [('other-owner', 'foreign-owner', proc.session_key),
-                                       ('other-route', sid, 'foreign-route')]:
-                from gateway.session_context import scoped_current_session_id
-                with scoped_current_session_id(owner):
+            foreign = await rpc('session.create', request_id='foreign-neighbor', source='gui',
+                                toolsets=[], cwd=str(HOME))
+            foreign_sid = foreign['session_id']
+            foreign_route = authority.sessions[foreign_sid].route
+            from gateway.session_context import clear_session_vars, set_session_vars
+            for name, owner, parent, route in [('other-owner', 'foreign-owner', foreign_sid, proc.session_key),
+                                               ('other-route', sid, sid, foreign_route)]:
+                tokens = set_session_vars(session_id=parent, session_key=route)
+                try:
                     neighbors.append(process_registry.spawn_local(command(name), cwd=str(HOME),
                         task_id=owner, owner_task_id=owner, session_key=route, persist_on_release=True))
+                finally:
+                    clear_session_vars(tokens)
             receipt['stop_attempt'] = time.time()
             receipt['stop_ack'] = await rpc('session.interrupt', session_id=sid,
                                           execution_generation=snapshot['execution_generation'])

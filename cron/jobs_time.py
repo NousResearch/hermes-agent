@@ -1,8 +1,9 @@
-"""Per-job ``timezone`` knob (sibling of ``cron/jobs.py``).
+"""Per-job ``timezone`` and ``grace_minutes`` knobs (sibling of ``cron/jobs.py``).
 
 A job may pin its own IANA ``timezone``: its cron expression is then that zone's WALL CLOCK,
 independent of the profile's configured zone. Absent/None means "inherit the profile", so a
-store written before this field existed keeps byte-identical behaviour.
+store written before this field existed keeps byte-identical behaviour. ``grace_minutes``
+overrides the computed half-period catch-up window for one job (``0`` = never catch up).
 
 Behaviour lives here, not in the facade: ``cron/jobs.py`` is already past the file-lines
 ratchet. The facade keeps the call sites (``compute_next_run``, the due scan, and every write
@@ -26,6 +27,12 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 logger = logging.getLogger(__name__)
 
 TIMEZONE_KEY = "timezone"
+GRACE_KEY = "grace_minutes"
+
+# ``0`` is a real value ("skip a missed occurrence instead of running it late"); a whole day is
+# the most a late run can usefully be.
+MIN_GRACE_MINUTES = 0
+MAX_GRACE_MINUTES = 24 * 60
 
 # A corrupt persisted value would otherwise log on every 60s scan. Warn once per distinct value.
 _warned: set[str] = set()
@@ -70,6 +77,40 @@ def normalize_timezone(value: Any) -> Optional[str]:
             f"`zoneinfo.available_timezones()`, e.g. 'Asia/Hong_Kong'.") from exc
 
 
+def normalize_grace_minutes(value: Any) -> Optional[int]:
+    """Validate a job's ``grace_minutes`` override; None means "use the computed window".
+
+    ``0`` is a real value (never catch up), so it must never be collapsed into absent:
+    ``0 == False`` in Python, which is exactly the trap the ``workdir`` update lambda
+    (``v in {None, "", False}``) would spring. Bools are therefore rejected explicitly.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(
+            "grace_minutes must be a whole number of minutes (0 = never catch up), "
+            "not a boolean.")
+    if isinstance(value, str):
+        if not value.strip():
+            return None
+        if not value.strip().lstrip("+-").isdigit():
+            raise ValueError(
+                f"grace_minutes must be a whole number of minutes, not {value!r}.")
+    try:
+        minutes = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"grace_minutes must be a whole number of minutes, not {value!r}.") from exc
+    if isinstance(value, float) and value != minutes:
+        raise ValueError(
+            f"grace_minutes must be a whole number of minutes, not {value!r}.")
+    if not MIN_GRACE_MINUTES <= minutes <= MAX_GRACE_MINUTES:
+        raise ValueError(
+            f"grace_minutes must be between {MIN_GRACE_MINUTES} and "
+            f"{MAX_GRACE_MINUTES} (0 = never catch up), got {minutes}.")
+    return minutes
+
+
 def zone_for_job(job_or_timezone: Any) -> Optional[ZoneInfo]:
     """The zone a job's schedule is expressed in, or None to inherit the profile's.
 
@@ -90,12 +131,33 @@ def zone_for_job(job_or_timezone: Any) -> Optional[ZoneInfo]:
         return None
 
 
-def prune_inherited_timezone(record: dict[str, Any]) -> None:
-    """``timezone: ''`` / null means "inherit the profile", so the key is DROPPED, not stored as
-    null — an absent optional key is this repo's spelling for "unset" (see ``cron/jobs.py``'s
-    optional-field write loop) and a stored null would render as a pinned-but-blank zone."""
+def grace_seconds_override(grace_minutes: Any) -> Optional[int]:
+    """Catch-up window in seconds from an explicit override, or None to compute it from cadence.
+
+    Tolerant read (the record may have been hand-edited): a bad value is ignored rather than
+    crashing the scan.
+    """
+    try:
+        minutes = normalize_grace_minutes(grace_minutes)
+    except ValueError as exc:
+        _warn_once(GRACE_KEY, grace_minutes, str(exc))
+        return None
+    return None if minutes is None else minutes * 60
+
+
+def prune_inherited_knobs(record: dict[str, Any]) -> None:
+    """An explicitly cleared knob is stored by DROPPING the key, not as null: an absent optional
+    key is this repo's spelling for "unset" (see ``cron/jobs.py``'s optional-field write loop),
+    and a stored null would render as a pinned-but-blank zone.
+
+    ``grace_minutes`` is tested with ``is None`` — ``0`` is the real "never catch up" value and
+    must survive, which is exactly the ``0 == False`` trap an ``in {None, "", False}`` test
+    would spring.
+    """
     if TIMEZONE_KEY in record and not record.get(TIMEZONE_KEY):
         record.pop(TIMEZONE_KEY, None)
+    if GRACE_KEY in record and record.get(GRACE_KEY) is None:
+        record.pop(GRACE_KEY, None)
 
 
 def oneshot_instant(value: Any, zone: Optional[ZoneInfo] = None) -> Optional[datetime]:

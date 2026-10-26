@@ -13,7 +13,7 @@ The cron subsystem provides scheduled task execution — from simple one-shot de
 | File | Purpose |
 |------|---------|
 | `cron/jobs.py` | Job model, storage, atomic read/write to `jobs.json` |
-| `cron/jobs_time.py` | Per-job `timezone` knob: validation, tolerant reads, due-scan zone |
+| `cron/jobs_time.py` | Per-job `timezone` / `grace_minutes` knobs: validation, tolerant reads, due-scan zone |
 | `cron/scheduler.py` | Scheduler loop — due-job detection, execution, repeat tracking |
 | `tools/cronjob_tools.py` | Model-facing `cronjob_manage` tool registration and handler |
 | `gateway/run.py` | Gateway integration — cron ticking in the long-running loop |
@@ -49,7 +49,7 @@ stored offset legitimately differs from the profile's, and the repair's wall-clo
 to the next one — the job silently never fires. This is why a fix to `compute_next_run` alone is
 not enough.
 
-`timezone` is a top-level record field (not inside `schedule`), validated by
+`timezone` and `grace_minutes` are top-level record fields (not inside `schedule`), validated by
 `jobs_time.normalize_*` at both the create and update door. A corrupt persisted value degrades to
 the profile zone with one warning per value — the 60s scan must not die on one bad record. No
 migration is needed: the keys simply do not exist in older stores, and every reader uses `.get()`.

@@ -62,11 +62,11 @@ def cron_store(tmp_path, monkeypatch):
         yield clock
 
 
-def _add_job(schedule, *, timezone=None, next_run_at):
+def _add_job(schedule, *, timezone=None, grace_minutes=None, next_run_at):
     """Create a real job through the public door, then park its instant where the test needs it."""
     job = jobs.create_job(
         prompt="probe", schedule=schedule, model="fixture", deliver="local",
-        timezone=timezone)
+        timezone=timezone, grace_minutes=grace_minutes)
     stored = jobs.load_jobs()
     row = next(r for r in stored if r["id"] == job["id"])
     row["next_run_at"] = next_run_at.isoformat()
@@ -200,3 +200,70 @@ class TestInheritanceAndDegradation:
         due = [j["id"] for j in jobs.get_due_jobs()]
 
         assert due == [job_id], "a bad zone degrades to the profile zone, it does not hide the job"
+
+
+class TestGraceMinutesOverride:
+    """``grace_minutes`` replaces the cadence-derived window for ONE job.
+
+    Each case uses an hourly job 45 minutes late: the computed window for a 1h cadence is 30min
+    (half the period, floored at 120s... capped at 2h), so the late run is a ``catch_up``;
+    a 120-minute override puts the same run inside the window and it is merely ``late``. The
+    dispatch stamp is what the dashboard and health check read, so it must follow the override.
+    """
+
+    def _stamp_for(self, la_profile, cron_store, *, grace_minutes):
+        now = datetime(2026, 10, 22, 12, 45, tzinfo=LA)
+        cron_store.set(now)
+        job_id = _add_job(
+            "0 * * * *", timezone="America/Los_Angeles", grace_minutes=grace_minutes,
+            next_run_at=datetime(2026, 10, 22, 12, 0, tzinfo=LA))
+        due = [j["id"] for j in jobs.get_due_jobs()]
+        assert due == [job_id], "the missed occurrence still fires; only its classification moves"
+        stored = next(r for r in jobs.load_jobs() if r["id"] == job_id)
+        return stored["last_dispatch"]["kind"]
+
+    def test_computed_window_classifies_a_45_min_late_hourly_run_as_catch_up(
+        self, la_profile, cron_store,
+    ):
+        assert self._stamp_for(la_profile, cron_store, grace_minutes=None) == "catch_up"
+
+    def test_override_widens_the_window_so_the_same_run_is_only_late(
+        self, la_profile, cron_store,
+    ):
+        assert self._stamp_for(la_profile, cron_store, grace_minutes=120) == "late"
+
+    def test_zero_grace_skips_outright_when_catch_up_is_disabled(
+        self, la_profile, cron_store, tmp_path,
+    ):
+        """``0`` = never catch up. Hermes still runs a beyond-window miss once by default
+        (``cron.catch_up_missed``); with catch-up disabled the zero window is what makes the
+        skip, while a job with a wide override still fires."""
+        (tmp_path / "config.yaml").write_text(
+            "cron:\n  catch_up_missed: false\n", encoding="utf-8")
+        now = datetime(2026, 10, 22, 12, 0, tzinfo=LA)
+        cron_store.set(now)
+        instant = datetime(2026, 10, 22, 11, 0, tzinfo=LA)  # one hour late, on the lattice
+        never = _add_job("0 11 * * *", timezone="America/Los_Angeles", grace_minutes=0,
+                         next_run_at=instant)
+        tolerant = _add_job("0 11 * * *", timezone="America/Los_Angeles", grace_minutes=120,
+                            next_run_at=instant)
+
+        due = {j["id"] for j in jobs.get_due_jobs()}
+
+        assert tolerant in due, "a 2h window covers a 1h-late run"
+        assert never not in due, "grace 0 + catch-up disabled means the miss is skipped"
+
+    def test_grace_is_refused_on_a_non_cron_schedule(self, la_profile, cron_store):
+        with pytest.raises(ValueError, match="grace_minutes only applies to cron"):
+            jobs.create_job(
+                prompt="p", schedule="every 5m", model="fixture", deliver="local",
+                grace_minutes=30)
+
+    @pytest.mark.parametrize("minutes, expected", [(0, 0), (45, 45 * 60)])
+    def test_stored_grace_round_trips(self, la_profile, cron_store, minutes, expected):
+        job = jobs.create_job(
+            prompt="p", schedule=WEEKDAY_9AM, model="fixture", deliver="local",
+            grace_minutes=minutes)
+        stored = next(r for r in jobs.load_jobs() if r["id"] == job["id"])
+        assert stored["grace_minutes"] == minutes, "0 must not be dropped as falsy"
+        assert jobs._compute_grace_seconds(stored["schedule"], stored["grace_minutes"]) == expected

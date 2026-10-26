@@ -944,9 +944,15 @@ _MIN_GRACE_SECONDS = 120
 _MAX_GRACE_SECONDS = 7200
 
 
-def _compute_grace_seconds(schedule: dict) -> int:
+def _compute_grace_seconds(schedule: dict, grace_minutes: Any = None) -> int:
     """How late a job can be and still catch up rather than fast-forward: half the period, clamped
-    to [120s, 2h], so daily jobs catch up but frequent jobs fast-forward quickly."""
+    to [120s, 2h], so daily jobs catch up but frequent jobs fast-forward quickly.
+
+    A per-job ``grace_minutes`` overrides that window outright (0 = never catch up: a missed
+    occurrence is skipped, not run late)."""
+    override = jobs_time.grace_seconds_override(grace_minutes)
+    if override is not None:
+        return override
     period_seconds = _schedule_cadence_seconds(schedule)
     if not period_seconds:
         return _MIN_GRACE_SECONDS
@@ -1751,6 +1757,7 @@ _CREATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     "failure_deliver": _normalize_failure_deliver,
     "interpreter": _normalize_job_optional_text,
     "timezone": jobs_time.normalize_timezone,
+    "grace_minutes": jobs_time.normalize_grace_minutes,
 }
 _UPDATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     # [] is an explicit zero-tool allowlist and must survive the update path as [] too (#82010).
@@ -1760,7 +1767,10 @@ _UPDATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     "monitor_url": _normalize_job_optional_text,
     "interpreter": _normalize_job_optional_text,
     "reasoning_effort": _normalize_reasoning_effort,
+    # ``0`` is a real grace value (never catch up), so this normalizer must never use an
+    # ``in {None, "", False}`` test — ``0 == False`` would silently clear it.
     "timezone": jobs_time.normalize_timezone,
+    "grace_minutes": jobs_time.normalize_grace_minutes,
 }
 
 
@@ -1813,6 +1823,7 @@ def create_job(
     pinned: bool = False,
     interpreter: Optional[str] = None,
     timezone: Optional[str] = None,
+    grace_minutes: Optional[int] = None,
 ) -> dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1824,7 +1835,8 @@ def create_job(
     incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated.
     interpreter: absolute/``~`` Python for ``.py`` script/monitor_script, validated at run time
     (a venv can be rebuilt or moved after creation). timezone: IANA key pinning the schedule's
-    wall clock (None/'' = inherit the profile zone)."""
+    wall clock (None/'' = inherit the profile zone). grace_minutes: catch-up window override
+    (0 = never catch up)."""
     if not isinstance(paused, bool):
         raise ValueError("paused must be a boolean.")
     if paused_reason is not None and not isinstance(paused_reason, str):
@@ -1850,7 +1862,7 @@ def create_job(
     normalized_reasoning_effort = _normalize_reasoning_effort(reasoning_effort)
 
     _validate_job_mode_invariants(f["monitor_script"], f["monitor_url"], f["no_agent"], f["script"])
-    validate_schedule_knobs(parsed_schedule, f["timezone"])
+    validate_schedule_knobs(parsed_schedule, f["timezone"], f["grace_minutes"])
     prompt_text = _coerce_job_text(prompt).strip()
     if not prompt_text and not f["script"] and not normalized_skills:
         raise ValueError(EMPTY_PAYLOAD_ERROR)
@@ -1914,7 +1926,7 @@ def create_job(
     for key, value in (
         ("attach_to_session", normalized_attach), ("reasoning_effort", normalized_reasoning_effort),
         ("failure_deliver", f["failure_deliver"]), ("interpreter", f["interpreter"]),
-        ("timezone", f["timezone"]),
+        ("timezone", f["timezone"]), ("grace_minutes", f["grace_minutes"]),
     ):
         if value is not None:
             job[key] = value
@@ -2112,9 +2124,11 @@ def update_job(job_id: str, updates: dict[str, Any]) -> Optional[dict[str, Any]]
                 _normalize_job_optional_text(updated.get("script")))
         if any(k in updates for k in _PAYLOAD_FIELDS) and job_payload_is_empty(updated):
             raise ValueError(EMPTY_PAYLOAD_ERROR)
-        if "timezone" in updates:
-            validate_schedule_knobs(updated.get("schedule") or {}, updated.get("timezone"))
-            jobs_time.prune_inherited_timezone(updated)
+        if {"timezone", "grace_minutes"}.intersection(updates):
+            validate_schedule_knobs(
+                updated.get("schedule") or {}, updated.get("timezone"),
+                updated.get("grace_minutes"))
+            jobs_time.prune_inherited_knobs(updated)
         if "schedule" in updates:
             _apply_schedule_update(updated, updates, job_id)
             # next_run_at now follows the new schedule; a stale quota_hold_until would only shield
@@ -3242,7 +3256,7 @@ def _evaluate_due_job(job: dict[str, Any], scan: _DueScan, run_claim_ttl: float)
 
     if not manual_run and kind == "cron" and _reanchor_stale_cron(d):
         return False
-    grace = _compute_grace_seconds(d.schedule)
+    grace = _compute_grace_seconds(d.schedule, job.get("grace_minutes"))
     if not manual_run and recurring and _fast_forward_missed_recurring(d, grace):
         return False
     if kind == "once":

@@ -42,15 +42,29 @@ def _validate_job_mode_invariants(
             scripts_dir=display_hermes_home() + "/scripts/", script=script))
 
 
-def validate_schedule_knobs(schedule: dict, timezone: Optional[str]) -> None:
-    """Per-job schedule knobs are validated at BOTH doors — ``create_job`` and ``update_job`` — so
-    an update cannot store a value a create would reject.
+def validate_schedule_knobs(
+    schedule: dict, timezone: Optional[str], grace_minutes: Optional[int],
+) -> None:
+    """Per-job schedule knobs (``timezone``/``grace_minutes``) are validated at BOTH doors —
+    ``create_job`` and ``update_job`` — so an update cannot store a schedule knob a create
+    would reject.
 
-    Raises ValueError for an unknown IANA zone.
+    Raises ValueError for an unknown IANA zone, and for ``grace_minutes`` on a schedule that has
+    no wall clock to be late for (``once``/``interval``): the catch-up window only means
+    something to a recurring cron cadence, so accepting it silently would suggest an effect it
+    cannot have.
     """
-    from cron.jobs_time import normalize_timezone
+    from cron.jobs_time import normalize_grace_minutes, normalize_timezone
 
     normalize_timezone(timezone)
+    minutes = normalize_grace_minutes(grace_minutes)
+    if minutes is None:
+        return
+    kind = (schedule or {}).get("kind")
+    if kind != "cron":
+        raise ValueError(
+            f"grace_minutes only applies to cron schedules (a fixed wall clock that can be "
+            f"missed); this job's schedule kind is {kind!r}.")
 
 
 def _script_is_command_line(script: str) -> bool:

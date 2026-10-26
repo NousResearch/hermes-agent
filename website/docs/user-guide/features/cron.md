@@ -225,6 +225,17 @@ hermes cron create "0 9 * * 1-5" --timezone America/New_York "US market open bri
 - Changing the zone recomputes `next_run_at` immediately, so the next fire happens at the new zone's wall clock.
 - An `interval` job has a fixed duration and no wall clock, so a pin has no effect on it.
 
+## Catch-up window
+
+A missed cron occurrence is run late only inside a catch-up window: half the job's period, clamped to 2 minutes–2 hours. `--grace-minutes` overrides that per job (0–1440):
+
+```bash
+hermes cron edit market-open --grace-minutes 0    # never catch up: skip a missed occurrence
+hermes cron edit market-open --grace-minutes 180  # run up to 3h late
+```
+
+`0` means never catch up; `--grace-minutes ""` restores the computed window. It only applies to cron expressions — `once` and `interval` schedules have no missed wall clock to catch up on.
+
 ## Editing jobs
 
 You do not need to delete and recreate jobs just to change them.

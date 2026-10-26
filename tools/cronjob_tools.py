@@ -731,6 +731,7 @@ def _action_create(a: dict[str, Any]) -> str:
             # CLI-only lane: absent from CRONJOB_SCHEMA and the model dispatch (models don't pick models).
             reasoning_effort=a["reasoning_effort"], interpreter=a["interpreter"],
             timezone=_normalize_optional_job_value(a["timezone"]),
+            grace_minutes=a["grace_minutes"],
             pinned=bool(a["pinned"]),
             failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
             **({"paused": a["paused"], "paused_reason": a["paused_reason"]}
@@ -963,6 +964,15 @@ def _update_run_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[str
     if a["timezone"] is not None:
         # '' clears the pin (the job inherits the profile timezone); update_job validates the key.
         updates["timezone"] = _normalize_optional_job_value(a["timezone"]) or ""
+    if a["grace_minutes"] is not None:
+        # '' / null clears the override; 0 is a real value ("never catch up") and passes through.
+        updates["grace_minutes"] = (
+            None if isinstance(a["grace_minutes"], str) and not a["grace_minutes"].strip()
+            else a["grace_minutes"])
+        if _pick(updates, job, "grace_minutes") is not None:
+            kind = (_pick(updates, job, "schedule") or {}).get("kind")
+            if kind != "cron":
+                return "grace_minutes only applies to cron schedules."
     if a["schedule"] is not None:
         parsed_schedule = parse_schedule(a["schedule"])
         updates["schedule"] = parsed_schedule
@@ -1053,7 +1063,8 @@ def cronjob(
     paused_reason: Optional[str] = None,
     pinned: Optional[bool] = None,
     interpreter: Optional[str] = None,
-    timezone: Optional[str] = None) -> str:
+    timezone: Optional[str] = None,
+    grace_minutes: Optional[int | str] = None) -> str:
     """Unified cron job management tool."""
     a = dict(locals())
     del a["task_id"]  # unused but kept for handler signature compatibility
@@ -1179,6 +1190,10 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
                 "type": "string",
                 "description": "Optional IANA timezone for the job's schedule, e.g. 'Asia/Hong_Kong' or 'America/New_York': the cron expression is then read as THIS zone's wall clock, whatever the profile's own timezone is. Use it for a job that must fire at a fixed local time in another market. Omit to inherit the profile timezone. On update, '' clears the pin."
             },
+            "grace_minutes": {
+                "type": ["integer", "string"],
+                "description": "Optional catch-up window override for a cron job, in minutes (0-1440). The default is half the job's period, clamped to 2-120 minutes. 0 means never catch up: a missed occurrence is skipped instead of being run late. Cron schedules only. On update, '' (empty string) restores the computed window."
+            },
             "attach_to_session": {
                 "type": "boolean",
                 "description": "True = the job's delivery is CONTINUABLE — the user can reply and the agent has the brief in context (threads on thread-capable platforms, mirrored into the DM elsewhere). Use for conversational recurring jobs (briefings); leave unset for fire-and-forget alerts. Scope: the job's own conversation only — the origin chat, the home-channel fallback when deliver='origin' captured no origin (script-created jobs), a user-written bare platform target (deliver='slack' — that platform's home channel), or the job's single explicit platform:chat target (this flag is the only way to attach an explicit target). Broadcast targets are never attached; no effect when deliver='local'."
@@ -1211,7 +1226,7 @@ def check_cronjob_requirements() -> bool:
 _HANDLER_FORWARDED_ARGS = (
     "job_id", "prompt", "schedule", "name", "repeat", "deliver", "failure_deliver", "skill", "skills", "reason",
     "script", "context_from", "continuity", "enabled_toolsets", "workdir", "no_agent", "attach_to_session",
-    "paused_reason", "pinned", "timezone")
+    "paused_reason", "pinned", "timezone", "grace_minutes")
 
 
 def _cronjob_handler(args, **kw):

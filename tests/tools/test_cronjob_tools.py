@@ -4,6 +4,7 @@ import json
 import pytest
 
 from tools.cronjob_tools import (
+    CRONJOB_SCHEMA,
     _scan_cron_prompt,
     check_cronjob_requirements,
     cronjob,
@@ -805,7 +806,7 @@ class TestGithubExemptionAbuse:
 
 
 class TestScheduleKnobToolSurface:
-    """The model-facing tool must expose the per-job timezone knob (§4)."""
+    """The model-facing tool must expose the per-job timezone and grace knobs (§4/§5)."""
 
     @pytest.fixture(autouse=True)
     def _setup_cron_dir(self, tmp_path, monkeypatch):
@@ -817,13 +818,14 @@ class TestScheduleKnobToolSurface:
         from cron.jobs import load_jobs
         return load_jobs()[0]
 
-    def test_create_stores_timezone(self):
+    def test_create_stores_timezone_and_grace(self):
         created = json.loads(cronjob(
             action="create", prompt="HK open", schedule="0 9 * * 1-5",
-            timezone="Asia/Hong_Kong"))
+            timezone="Asia/Hong_Kong", grace_minutes=45))
         assert created["success"] is True, created
         job = self._stored()
         assert job["timezone"] == "Asia/Hong_Kong"
+        assert job["grace_minutes"] == 45
         assert job["next_run_at"].endswith("+08:00") or job["next_run_at"].endswith("+09:00")
 
     def test_create_rejects_an_unknown_zone(self):
@@ -833,12 +835,32 @@ class TestScheduleKnobToolSurface:
         assert created["success"] is False
         assert "timezone" in created["error"].lower()
 
-    def test_update_clears_the_zone(self):
+    def test_grace_zero_is_stored_not_dropped(self):
+        cronjob(action="create", prompt="x", schedule="0 9 * * *", grace_minutes=0)
+        assert self._stored()["grace_minutes"] == 0
+
+    def test_update_clears_the_zone_and_the_override(self):
         created = json.loads(cronjob(
             action="create", prompt="x", schedule="0 9 * * *",
-            timezone="Asia/Hong_Kong"))
+            timezone="Asia/Hong_Kong", grace_minutes=30))
         job_id = created["job_id"]
 
-        updated = json.loads(cronjob(action="update", job_id=job_id, timezone=""))
+        updated = json.loads(cronjob(
+            action="update", job_id=job_id, timezone="", grace_minutes=""))
         assert updated["success"] is True, updated
-        assert "timezone" not in self._stored(), "'' clears the pin; the key is dropped"
+        job = self._stored()
+        assert "timezone" not in job, "'' clears the pin; the key is dropped"
+        assert "grace_minutes" not in job
+
+    def test_grace_schema_accepts_a_string_so_the_model_can_clear_it(self):
+        """``''`` means "restore the computed window"; an integer-only schema would leave the
+        model no way to express it (the sanitizer normalizes ``type: [...]`` per provider)."""
+        prop = CRONJOB_SCHEMA["parameters"]["properties"]["grace_minutes"]
+        assert "string" in prop["type"] and "integer" in prop["type"]
+        assert "''" in prop["description"]
+
+    def test_grace_on_a_non_cron_schedule_is_an_error(self):
+        created = json.loads(cronjob(
+            action="create", prompt="x", schedule="every 2h", grace_minutes=30))
+        assert created["success"] is False
+        assert "grace_minutes" in created["error"]

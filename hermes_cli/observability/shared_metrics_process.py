@@ -11,6 +11,7 @@ runtime; a claimed-but-unreported marker (the reporter died mid-way) is reclaime
 from __future__ import annotations
 
 import atexit
+import contextvars
 import json
 import logging
 import os
@@ -29,6 +30,8 @@ _CRASH_CLASSES = (
     (MemoryError, "memory_error"), (ImportError, "import_error"), (OSError, "os_error"),
     (RuntimeError, "runtime_error"),
 )
+#: Ceiling on ``flush_before_hard_exit``: a wedged flush costs its pending rows, never the exit.
+EXIT_FLUSH_TIMEOUT_S = 3.0
 _STATE: dict[str, Any] = {}
 _STATE_LOCK = threading.Lock()
 
@@ -60,6 +63,33 @@ def stamp_exit(exit_kind: str, crash: str = "none") -> None:
             _write_marker(path, record)
     except Exception:
         logger.debug("Process exit marker not stamped", exc_info=True)
+
+
+def flush_before_hard_exit(timeout_s: float = EXIT_FLUSH_TIMEOUT_S) -> bool:
+    """For a graceful stop about to ``os._exit``: run the shared-metrics exit flush its skipped atexit
+    hook would have run (close each live runtime's sessions, write queued rows to the local store).
+
+    Joined for at most ``timeout_s`` on a daemon thread, because the Relay flush waits on every managed
+    call still in flight and a wedged one must not hold the exit. Never imports the runtime module:
+    collection off (or never started) means nothing to flush and nothing created. Never raises; True
+    when the flush finished in time."""
+    runtimes = sys.modules.get("hermes_cli.observability.relay_shared_metrics")
+    if runtimes is None:
+        return True
+    try:
+        # The caller's context, as the atexit hook would have had: the export reads profile config.
+        worker = threading.Thread(
+            target=contextvars.copy_context().run, args=(runtimes.shutdown_runtimes,),
+            name="hermes-shared-metrics-exit-flush", daemon=True)
+        worker.start()
+        worker.join(max(0.0, timeout_s))
+    except Exception:
+        logger.debug("Shared-metrics exit flush not started", exc_info=True)
+        return False
+    if worker.is_alive():
+        logger.warning("Shared-metrics exit flush still running after %.1fs; exiting without it", timeout_s)
+        return False
+    return True
 
 
 def _excepthook(previous: Any) -> Any:

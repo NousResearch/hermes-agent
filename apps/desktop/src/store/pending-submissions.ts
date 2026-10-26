@@ -54,6 +54,28 @@ export function readPendingSubmissions(session: string): Record<string, PendingS
   return entries
 }
 
+/** Sessions the journal still holds an unsettled admission for (queued, started or unknown when
+ *  last observed): the ones whose owner may have moved on while no window was watching. */
+export function journaledPendingSessions(): string[] {
+  const sessions = new Set<string>()
+  const unsettled = (entry: null | PendingSubmission | undefined) => Boolean(entry?.status && entry.status !== 'retired')
+
+  for (const [session, entries] of Object.entries(parse(window.localStorage.getItem(LEGACY_KEY), {} as Record<string, Record<string, PendingSubmission>>))) {
+    if (Object.values(entries ?? {}).some(unsettled)) { sessions.add(session) }
+  }
+
+  for (let index = 0; index < window.localStorage.length; index += 1) {
+    const key = window.localStorage.key(index)
+
+    if (!key?.startsWith(ENTRY_PREFIX)) { continue }
+    const [owner] = parse(key.slice(ENTRY_PREFIX.length), [] as unknown[])
+
+    if (typeof owner === 'string' && unsettled(parse<null | PendingSubmission>(window.localStorage.getItem(key), null))) { sessions.add(owner) }
+  }
+
+  return [...sessions]
+}
+
 /** One admission's record without enumerating the journal: its v2 key, else the legacy blob. */
 function readPendingSubmission(session: string, id: string): PendingSubmission | undefined {
   return parse<null | PendingSubmission>(window.localStorage.getItem(entryKey(session, id)), null) ??

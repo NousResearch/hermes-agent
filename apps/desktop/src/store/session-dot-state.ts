@@ -28,6 +28,7 @@ import { computed } from 'nanostores'
 import { stableArray, stableRecord } from '@/lib/stable-array'
 
 import { $backgroundRunningSessionIds } from './composer-status'
+import { $pausedQueueSessionIds } from './owner-queue-reconcile'
 import { $messagingSessions, $sessions, $unreadFinishedSessionIds, lineageAliases } from './session'
 import {
   $attentionSessionIds,
@@ -109,9 +110,10 @@ export const $sessionDotStateById = computed(
     $unreadFinishedSessionIds,
     $draftSessionIds,
     $sessions,
-    $unreadWriteGuard
+    $unreadWriteGuard,
+    $pausedQueueSessionIds
   ],
-  (attention, working, stalled, background, delegating, unread, draft, sessions, unreadWriteGuard) => {
+  (attention, working, stalled, background, delegating, unread, draft, sessions, unreadWriteGuard, paused) => {
     const next: Record<string, SessionDotState> = {}
 
     const claim = (ids: readonly string[], state: SessionDotState) => {
@@ -177,6 +179,9 @@ export const $sessionDotStateById = computed(
       }
     }
 
+    // A queue paused behind a turn lost in a restart waits on the user's Discard, and a turn that
+    // never finished must not read as finished-unread.
+    claim(paused, 'needs-input')
     claim(attention, 'needs-input')
 
     return (dotStates = stableRecord(dotStates, next))

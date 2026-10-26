@@ -147,19 +147,27 @@ def start_loop_liveness_watchdog(
     return _LoopLivenessWatchdogHandle(stop_event, thread)
 
 
+def stop_cua_backends_quietly() -> None:
+    """Stop every cached computer-use backend so no ``cua-driver`` daemon outlives this process.
+
+    ``os._exit`` bypasses ``atexit``, so the registered computer-use teardown never runs on
+    the hard-exit paths. A private embedded daemon is launched through LaunchServices on
+    macOS, so it is a child of launchd and not of Hermes: nothing else reaps it, and it
+    keeps serving on its socket with ``--dangerously-bypass-approvals`` and the CuaDriver
+    TCC grants intact (#126364). Never raises; every caller is already on an exit path.
+    """
+    with contextlib.suppress(Exception):
+        from tools.computer_use.tool import stop_all_computer_use_backends
+        stop_all_computer_use_backends()
+
+
 def _hard_exit(exit_code: int) -> None:
     """``os._exit`` skips every cleanup: SIGKILL in-flight foreground commands first, they run in their
     own process group and would outlive the gateway, reparented to init."""
     with contextlib.suppress(Exception):
         from tools.environments.base import kill_live_foreground_processes
         kill_live_foreground_processes(now=True)
-    with contextlib.suppress(Exception):
-        # os._exit bypasses atexit, so the @atexit-registered computer-use teardown never runs here.
-        # A private embedded cua-driver daemon is a child of launchd (LaunchServices launch on macOS),
-        # not of the gateway, so it survives the forced exit with its approval bypass and TCC grants
-        # intact (#126364). Best-effort: the watchdog is already on a hard-exit path.
-        from tools.computer_use.tool import stop_all_computer_use_backends
-        stop_all_computer_use_backends()
+    stop_cua_backends_quietly()
     os._exit(exit_code)
 
 

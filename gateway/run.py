@@ -2,6 +2,8 @@
 
 Provides ``start_gateway()`` (start all configured adapters) and ``GatewayRunner`` (lifecycle).
 Run via ``python -m gateway.run`` or ``python cli.py --gateway``."""
+# health: allow FILE_LINES -- the os._exit funnel gains one teardown step (stop the embedded cua-driver daemon, #126364); the funnel stays in this module because hermes_cli/gateway.py and the exit tests import and monkeypatch it from gateway.run
+
 
 # hermes_bootstrap must be the very first import (UTF-8 stdio on Windows; no-op on POSIX).
 try:
@@ -5222,16 +5224,8 @@ def _exit_after_graceful_shutdown(exit_code: int) -> None:
         from hermes_logging import drain_log_queue
         drain_log_queue(timeout=1.0)
 
-    def _stop_cua_backends() -> None:
-        # os._exit bypasses atexit, so the @atexit-registered computer-use teardown never runs on this
-        # path. A private embedded cua-driver daemon is launched through LaunchServices on macOS, so it
-        # is a child of launchd and not of Hermes: nothing else reaps it, and it keeps serving on its
-        # socket with --dangerously-bypass-approvals and the CuaDriver TCC grants intact (#126364).
-        # Stop it before the hard exit. Runs AFTER the log drain so its warnings still reach the file.
-        from tools.computer_use.tool import stop_all_computer_use_backends
-        stop_all_computer_use_backends()
-
-    for _step in (_release_locks, _mark_exited, _flush_metrics, _drain_logs, _stop_cua_backends):
+    from gateway.shutdown_watchdog import stop_cua_backends_quietly
+    for _step in (_release_locks, _mark_exited, _flush_metrics, _drain_logs, stop_cua_backends_quietly):
         _best_effort(_step)
     os._exit(exit_code)
 

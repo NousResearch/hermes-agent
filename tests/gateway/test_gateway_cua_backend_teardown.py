@@ -32,16 +32,21 @@ class _Recorder:
 
 
 def test_exit_path_calls_cua_backend_teardown():
-    """``os._exit`` skips atexit, so the exit path must stop the backends itself."""
+    """``os._exit`` skips atexit, so the exit path must stop the backends itself.
+
+    The funnel delegates to the shared ``stop_cua_backends_quietly`` seam rather than calling
+    the tool module directly, so the assert names the seam (the chain down to
+    ``stop_all_computer_use_backends`` is pinned by ``test_teardown_seam_reaches_the_tool``).
+    """
     source = inspect.getsource(gateway_run._exit_after_graceful_shutdown)
-    assert "stop_all_computer_use_backends" in source
+    assert "stop_cua_backends_quietly" in source
 
 
 def test_exit_path_teardown_runs_before_os_exit(monkeypatch):
     """The teardown must be part of the step sequence that precedes ``os._exit``."""
     source = inspect.getsource(gateway_run._exit_after_graceful_shutdown)
     steps_line = next(line for line in source.splitlines() if "for _step in" in line)
-    assert "_stop_cua_backends" in steps_line
+    assert "stop_cua_backends_quietly" in steps_line
     # The teardown must not be the very last step before os._exit either way: it has to run while
     # the interpreter is still alive, and os._exit must remain the final statement.
     assert source.rstrip().endswith("os._exit(exit_code)")
@@ -73,7 +78,13 @@ def test_public_teardown_api_never_raises():
         cu_tool.stop_all_computer_use_backends()
 
 
-def test_watchdog_hard_exit_calls_cua_backend_teardown():
+def test_watchdog_hard_exit_calls_the_teardown_seam():
     """The shutdown watchdog's forced exit is the other os._exit path and must tear down too."""
     source = inspect.getsource(shutdown_watchdog._hard_exit)
+    assert "stop_cua_backends_quietly" in source
+
+
+def test_teardown_seam_reaches_the_tool():
+    """The shared seam is what both os._exit paths call, so it must reach the real teardown."""
+    source = inspect.getsource(shutdown_watchdog.stop_cua_backends_quietly)
     assert "stop_all_computer_use_backends" in source

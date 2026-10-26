@@ -102,26 +102,36 @@ def _owner_start_fingerprint(pid: int) -> Optional[int]:
         from gateway.status import get_process_start_time
         return get_process_start_time(pid)
     except Exception:
+        # An unreadable fingerprint only weakens the PID-reuse guard (the reap then errs toward
+        # "alive"), so a failure here must not stop the daemon. The traceback is logged so the
+        # cause is still diagnosable.
+        logger.debug("could not read the start-time fingerprint for pid %s", pid, exc_info=True)
         return None
 
 def _owner_alive(pid: int, recorded_start: Optional[int]) -> bool:
-    """pidfile-style liveness probe with a PID-reuse guard. Only ProcessLookupError counts as dead.
-    PermissionError (the pid exists under another uid) still falls through to the start-time check:
-    psutil reads other users' start times on macOS as a normal user, so a readable fingerprint that
-    no longer matches unmasked a recycled pid even when it landed on a root process. A recorded
-    fingerprint that no longer matches the live pid counts as dead too — the kernel recycled the
-    number, so the recorded owner is gone even though the pid answers. Every ambiguity (no recorded
-    fingerprint for a pre-upgrade marker, current fingerprint unreadable, comparator junk, any other
-    os.kill error) resolves to "alive", so the reap below errs toward leaving a daemon running
-    rather than stopping one another Hermes still owns."""
+    """pidfile-style liveness probe with a PID-reuse guard. Only a confirmed-dead pid counts as dead.
+    A pid that exists under another uid still falls through to the start-time check: psutil reads
+    other users' start times on macOS as a normal user, so a readable fingerprint that no longer
+    matches unmasked a recycled pid even when it landed on a root process. A recorded fingerprint
+    that no longer matches the live pid counts as dead too — the kernel recycled the number, so the
+    recorded owner is gone even though the pid answers. Every ambiguity (no recorded fingerprint for
+    a pre-upgrade marker, current fingerprint unreadable, comparator junk, any other liveness error)
+    resolves to "alive", so the reap below errs toward leaving a daemon running rather than stopping
+    one another Hermes still owns."""
+    # ``os.kill(pid, 0)`` is NOT a no-op on Windows — it sends CTRL_C_EVENT to the target's console
+    # process group (bpo-14484). ``gateway.status._pid_exists`` is the cross-platform liveness probe
+    # (psutil, with a ctypes/std-lib fallback) that this repo already uses for the same question.
+    from gateway.status import _pid_exists
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        pass
-    except OSError:
+        alive = _pid_exists(pid)
+    except Exception:
+        # An unreadable liveness probe must never stop a daemon: the whole point of this check
+        # is to err toward "alive" when the answer is ambiguous. The traceback is logged so the
+        # cause is still diagnosable.
+        logger.debug("could not probe pid %s for liveness", pid, exc_info=True)
         return True
+    if not alive:
+        return False
     if recorded_start is None:
         return True
     current_start = _owner_start_fingerprint(pid)
@@ -157,7 +167,7 @@ def _reap_orphaned_cua_daemons(driver_cmd: str, env: dict[str, str]) -> None:
     for socket_path in glob.glob(os.path.join(tempfile.gettempdir(), "hc-*.sock")):
         marker = _owner_marker_path(socket_path)
         try:
-            with open(marker, "r", encoding="utf-8") as fh:
+            with open(marker, "r", encoding="utf-8-sig") as fh:
                 fields = fh.read().split()
             pid = int(fields[0])
             start = int(fields[1]) if len(fields) > 1 else None
@@ -294,7 +304,9 @@ class _EmbeddedCuaDaemon:
             return
         with contextlib.suppress(OSError):
             start = _owner_start_fingerprint(os.getpid())
-            with open(_owner_marker_path(self.socket_path), "w", encoding="utf-8") as fh:
+            # ``mode="w"`` as a keyword: a positional mode after a call with its own parentheses
+            # defeats the reader/writer classification, and a write must never carry a BOM.
+            with open(_owner_marker_path(self.socket_path), mode="w", encoding="utf-8") as fh:
                 fh.write(str(os.getpid()) if start is None else f"{os.getpid()} {start}")
 
     def _socket_ready(self, env: dict[str, str]) -> bool:

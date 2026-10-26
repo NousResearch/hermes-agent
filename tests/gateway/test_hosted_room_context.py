@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -104,3 +106,17 @@ def test_context_is_bounded(room_db: Path):
     with pytest.raises(hosted_rooms.HostedRoomError):
         context.set_room_context(
             room_db, room_id=ROOM_ID, event_id="c", purpose="", notes="x" * (context.MAX_NOTES_BYTES + 1))
+
+
+def test_settings_reads_seek_an_index_even_on_a_store_made_before_it(room_db: Path):
+    with closing(sqlite3.connect(room_db)) as conn, conn:
+        conn.execute("DROP INDEX IF EXISTS idx_hosted_room_events_kind")
+
+    context.set_room_context(room_db, room_id=ROOM_ID, event_id="ctx-1", purpose="Ship it", notes="")
+
+    with closing(sqlite3.connect(room_db)) as conn:
+        plan = " ".join(str(row[-1]) for row in conn.execute(
+            "EXPLAIN QUERY PLAN SELECT payload_json FROM hosted_room_events WHERE room_id=? AND kind=? "
+            "ORDER BY seq DESC LIMIT 1", (ROOM_ID, context.CONTEXT_EVENT_KIND)))
+    assert "idx_hosted_room_events_kind" in plan
+    assert context.room_context(room_db, room_id=ROOM_ID)["purpose"] == "Ship it"

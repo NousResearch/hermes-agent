@@ -1467,7 +1467,9 @@ class CheckpointManager:
             return False
 
         if self.max_file_size_mb > 0:
-            self._drop_oversize_from_index(store, working_dir, index_file)
+            if not self._drop_oversize_from_index(store, working_dir, index_file):
+                logger.debug("Checkpoint oversize index cleanup failed")
+                return False
 
         # Compare against the current ref tip (not HEAD — HEAD points to a
         # branch that doesn't exist on a bare store, so ``diff --cached``
@@ -1629,20 +1631,22 @@ class CheckpointManager:
 
     def _drop_oversize_from_index(
         self, store: Path, working_dir: str, index_file: Path,
-    ) -> None:
+    ) -> bool:
         """Remove any staged file larger than ``max_file_size_mb`` from the index.
 
         Lets the agent keep snapshotting source code while refusing to
         swallow generated assets (datasets, model weights, logs, videos).
         """
         if self.max_file_size_mb <= 0:
-            return
+            return True
         ok, stdout, _ = _run_git(
             ["ls-files", "--cached", "-z"],
             store, working_dir, index_file=index_file,
         )
-        if not ok or not stdout:
-            return
+        if not ok:
+            return False
+        if not stdout:
+            return True
         # NUL separators preserve whitespace within each literal filename.
         paths = [p for p in stdout.split("\x00") if p]
         abs_workdir = _normalize_path(working_dir)
@@ -1654,7 +1658,7 @@ class CheckpointManager:
             rel for rel in paths if self._exceeds_size_cap(abs_workdir / rel)
         ]
         if not oversize:
-            return
+            return True
         logger.debug(
             "Checkpoint: dropping %d oversize file(s) (>%d MB) from index",
             len(oversize), self.max_file_size_mb,
@@ -1664,11 +1668,13 @@ class CheckpointManager:
         BATCH = 200
         for i in range(0, len(oversize), BATCH):
             chunk = oversize[i:i + BATCH]
-            _run_git(
-                ["rm", "--cached", "--quiet", "--"] + chunk,
+            ok, _, _ = _run_git(
+                ["update-index", "--force-remove", "--"] + chunk,
                 store, working_dir, index_file=index_file,
-                allowed_returncodes={128},
             )
+            if not ok:
+                return False
+        return True
 
     def _prune(self, store: Path, working_dir: str, ref: str) -> None:
         """Checkpoint-take path: snapshot-count budget plus one size round, gc deferred to the

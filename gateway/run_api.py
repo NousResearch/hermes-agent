@@ -428,10 +428,12 @@ class GatewayRuntimeAPI:
         ticket, reason = _gateway_ws_ticket_from_subprotocol(ws)
         if reason == 'none' or ws.headers.get('origin'):
             if draining_socket:
-                # Let a Webapp tab's ticket reach its normal upgrade gate during restart wait: only the
-                # Webapp's gate redeems it there (elsewhere the loopback gate takes ``?token=``).
+                # Let a Webapp tab's ticket reach its normal upgrade gate during restart wait: only a
+                # surface that mints browser tickets redeems one there (elsewhere the loopback gate
+                # takes ``?token=``).
+                from hermes_cli.web_server_surface import policy
                 admitted_in_wait = (reason == 'ok' and 'internal' not in ws.query_params
-                                    and getattr(state, 'ui_surface', None) == 'webapp'
+                                    and policy(state).gateway_ticket
                                     and restart_wait_open(self.runner))
                 if not admitted_in_wait:
                     await ws.close(code=1013)

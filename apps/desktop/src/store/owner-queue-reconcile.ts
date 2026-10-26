@@ -7,7 +7,7 @@ import type { SessionResumeResult } from '@/types/hermes'
 
 import { $queuedPromptsBySession, serverOwnsComposerQueue } from './composer-queue'
 import { journaledPendingSessions, pendingSnapshotFence, reconcilePendingSubmissions } from './pending-submissions'
-import { $gatewayState, $selectedStoredSessionId, $sessions } from './session'
+import { $gatewayState, $selectedStoredSessionId, $sessions, resolveComposerSessionKey } from './session'
 import { knownOwnerForSession, requestForOwnedSession } from './session-states'
 
 type GatewayRequest = <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
@@ -74,8 +74,13 @@ async function reconcileOne(request: GatewayRequest, key: string): Promise<void>
  * start a billed model turn in a chat the user never opened.
  */
 export async function reconcileOwnerQueues(request: GatewayRequest): Promise<void> {
-  const selected = $selectedStoredSessionId.get()
-  const queue = sessionsWithOwnerWork().filter(key => key !== selected && serverOwnsComposerQueue(key))
+  // Queue keys are lineage roots; the selection is the stored tip, which differs after compression.
+  const sessions = $sessions.get()
+  const selected = resolveComposerSessionKey($selectedStoredSessionId.get(), sessions)
+
+  const queue = sessionsWithOwnerWork().filter(
+    key => resolveComposerSessionKey(key, sessions) !== selected && serverOwnsComposerQueue(key)
+  )
 
   const worker = async () => {
     for (let key = queue.shift(); key !== undefined; key = queue.shift()) {

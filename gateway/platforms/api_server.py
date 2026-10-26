@@ -4543,7 +4543,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             assert self._app is not None
             # Native routes + multiplex /p/<profile>/ mirrors (the prefix middleware validates and
             # scopes config/credentials when multiplexing is on).
-            for method, path, handler in self._http_route_table():
+            from gateway.browser_webapp_tickets import http_routes as _webapp_ticket_routes
+            for method, path, handler in [*self._http_route_table(), *_webapp_ticket_routes(self)]:
                 self._app.router.add_route(method, path, handler)
                 self._app.router.add_route(method, f"/p/{{profile}}{path}", handler)
             # Registered LAST so every native mirror above wins: anything else under /p/<profile>/ is a

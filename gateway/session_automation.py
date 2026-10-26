@@ -488,7 +488,13 @@ async def admit_automation(authority, adapter, event, identity, replaces=None):
     from gateway.session_authority import LiveSession
     sid = (payload.get('local_automation_v1') or payload['native_text_v1']['automation'])['owner']
     ref = SessionRef(authority.profile_id, sid)
-    authority.sessions.setdefault(ref.session_id, LiveSession(event.source, entry.session_key))
+    source, envelope = event.source, payload.get('native_text_v1')
+    if envelope is not None and 'relay' in envelope['provenance']:
+        # A restored origin carries no relay trust: bind the source the snapshot verified, or the
+        # drain resolves no adapter for this session after a restart.
+        from gateway.session_envelope import restore_native_source
+        source = restore_native_source(payload, authority.runner)
+    authority.sessions.setdefault(ref.session_id, LiveSession(source, entry.session_key))
     from functools import partial
     from gateway.session_runtime_workers import tracked_write
     admitted, replaced = partial(authority._admitted, ref, event), []

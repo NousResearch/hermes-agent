@@ -9,12 +9,11 @@ auth:
   type: none
 tools:
   default_enabled:
-    - ghl_agency_quickstart
-    - ghl_agency_catalog_overview
-    - ghl_agency_search_tools
-    - ghl_agency_list_packs
-    - ghl_agency_auth_status
-    - ghl_agency_connect_guide
+    - ghl_agency_connection_health
+    - ghl_agency_tools_search
+    - ghl_agency_tools_enable
+    - ghl_agency_contexts
+    - ghl_agency_doctor
     - ghl_snapshot_diff_audit
     - ghl_custom_values_audit
     - ghl_phone_wallet_audit
@@ -31,4 +30,4 @@ suggest:
     - ghlmcp.dev
     - ghlmcp.app
 post_install: |
-  No API key is required for onboarding and catalog exploration tools. For live GoHighLevel agency or sub-account operations, connect via OAuth 2.1 or pass a Private Integration Token as explained in ghl_agency_connect_guide.
+  No API key is required for onboarding and catalog exploration tools. For live GoHighLevel agency or sub-account operations, connect via OAuth 2.1 or pass a Private Integration Token and verify readiness with ghl_agency_connection_health or ghl_agency_doctor.

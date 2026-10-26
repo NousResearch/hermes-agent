@@ -382,6 +382,8 @@ def execute(frame, channel):
     from gateway.session_worker_construct import checkpoint_agent_kwargs, construct_kwargs, routing_agent_kwargs
     construct = {'ephemeral_system_prompt': policy.skills_prompt, **construct_kwargs(frame)}
     controls = WorkerControls(channel, frame['route'])
+    from gateway.session_kanban import watch_worker_task
+    watch_worker_task(frame, lambda: channel.send('kanban_stop'))
     register_gateway_notify(frame['route'], controls.approval)
     agent = None
     try:

@@ -647,7 +647,8 @@ async def execute_managed(authority, ref, row, policy):
             if frame == {'type': 'error', 'reason': 'managed_worker_failed'}:
                 raise RuntimeStoreError('managed_worker_failed')
             kind = frame.get('type')
-            if kind == 'ready' and set(frame) == {'type', 'pid'} and frame['pid'] == scope['pid']:
+            from gateway.session_kanban_stop import worker_control_frame
+            if await worker_control_frame(authority, ref, row, policy, worker, scope, frame):
                 continue
             if kind == 'delta' and set(frame) == {'type', 'text'} and isinstance(frame['text'], str):
                 authority.publish_execution(ref.session_id, row['generation'], 'message.delta', {'text': frame['text']})
@@ -689,6 +690,8 @@ async def execute_managed(authority, ref, row, policy):
             raise
         from gateway.session_worker_reservation import lose_admission_worker
         from gateway.session_runtime_workers import tracked_write
+        from gateway.session_kanban_stop import retain_failed_stop
+        await retain_failed_stop(authority, ref, row, policy)
         await tracked_write(authority, partial(lose_admission_worker, authority, row, scope))
         live = authority.sessions[ref.session_id]
         with live.event_stream.lock:

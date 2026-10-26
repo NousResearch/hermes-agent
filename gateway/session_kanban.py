@@ -107,6 +107,8 @@ async def run_task(connection, params):
     import psutil
     from hermes_cli.process_identity import worker_birth
     context = json.loads(policy.kanban_json)
+    from gateway.session_kanban_stop import retire_previous_attempts
+    await retire_previous_attempts(connection, context)
 
     def admit_claim():
         # The Kanban DB is the cross-profile dispatch bus (busy_timeout up to 120 s): the claim
@@ -197,7 +199,6 @@ def bind_worker_context(frame):
     expires = json.loads(claimed[0]).get('expires') if claimed else None
     if isinstance(expires, int) and claimed[1]:
         env['HERMES_KANBAN_CLAIM_TTL_SECONDS'] = str(max(1, expires - int(claimed[1])))
-    _watch_submitter(Path(context['db']), context['run_id'])
     os.environ.update(env)
     os.chdir(context['workspace'])
 
@@ -205,11 +206,19 @@ def bind_worker_context(frame):
 _TURNS_DONE = threading.Event()
 
 
-def _watch_submitter(db, run_id):
-    """The dispatcher's spawned worker is this attempt's handle: killing it (an operator, a
-    timeout, an OOM kill) must end the attempt, as it did when the worker ran the agent itself.
-    Exiting hard leaves no ``worker_result``, so the dead-worker sweep books this run's crash.
-    The run row is re-read each tick: the dispatcher records the pid only after its spawn returns."""
+def watch_worker_task(frame, stop):
+    context = json.loads(frame['policy'].get('kanban_json') or 'null')
+    if context is not None:
+        _watch_submitter(Path(context['db']), context['run_id'], stop=stop)
+
+
+def _watch_submitter(db, run_id, *, stop=None):
+    """An aborted run or dead submitter asks the owner to stop this attempt and its processes.
+
+    The callback reaches the existing durable Stop path; a worker's hard exit alone cannot
+    terminate its detached terminal jobs. Legacy direct watchers retain their exit behavior.
+    Terminal reaping clears the mutable handle, so retain this run's immutable spawn identity.
+    """
     import os
     from hermes_cli.kanban_db_dispatch import _worker_alive
 
@@ -217,10 +226,19 @@ def _watch_submitter(db, run_id):
         with closing(sqlite3.connect(db.resolve().as_uri() + '?mode=ro', uri=True)) as conn:
             while not _TURNS_DONE.wait(1.0):
                 try:
-                    row = conn.execute('SELECT worker_pid, worker_started_at FROM task_runs WHERE id=?', (run_id,)).fetchone()
+                    row = conn.execute('SELECT worker_pid, worker_started_at, status FROM task_runs WHERE id=?', (run_id,)).fetchone()
+                    aborted = row is not None and row[2] not in {'running', 'done', 'review', 'scheduled'}
+                    completed = row is not None and row[2] in {'done', 'review', 'scheduled'}
+                    if row and not row[0]:
+                        row = conn.execute("SELECT json_extract(payload, '$.pid'), json_extract(payload, '$.started_at') "
+                            "FROM task_events WHERE run_id=? AND kind IN ('spawned','worker_registered') "
+                            "ORDER BY id DESC LIMIT 1", (run_id,)).fetchone()
                 except sqlite3.Error:
                     continue
-                if row and row[0] and row[0] != os.getpid() and not _worker_alive(row[0], row[1]):
+                if (aborted and stop is not None) or (row and row[0] and row[0] != os.getpid() and not _worker_alive(row[0], row[1])):
+                    if stop is not None and not completed:
+                        stop()  # the owner sends the existing scoped Stop and retains cleanup uncertainty
+                        return
                     os._exit(1)
     threading.Thread(target=watch, name='kanban-submitter-watch', daemon=True).start()
 

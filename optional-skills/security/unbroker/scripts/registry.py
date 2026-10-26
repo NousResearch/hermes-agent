@@ -37,6 +37,33 @@ DEFAULT_URL = _CA_CSV.format(year=_CA_FLOOR_YEAR)
 DROP_URL = "https://privacy.ca.gov/drop"
 # National Do Not Call Registry (FTC): the US-wide personal-number list for spam-call runs.
 DNC_URL = "https://www.donotcall.gov/register.html"
+
+
+def phone_digits(phone: str) -> str:
+    """Best-effort NANP normalization: keep digits, strip a leading country-code 1."""
+    d = re.sub(r"\D", "", str(phone or ""))
+    return d[1:] if len(d) == 11 and d.startswith("1") else d
+
+
+_NANP = re.compile(r"^[2-9]\d{2}[2-9]\d{6}$")
+
+
+def dnc_eligible(dossier: dict) -> list:
+    """The subject's numbers eligible for the National Do Not Call Registry: NANP only.
+
+    A US-residency subject can still carry a non-NANP number (or a Canadian NANP one -- the
+    residency check lives with the caller), and the FTC form rejects non-US numbers, so the
+    surfaced list is digits-normalized and deduped: "555-123-4567" and "5551234567" are ONE
+    number, never two registrations.
+    """
+    out: list = []
+    seen: set = set()
+    for p in (dossier.get("identity") or {}).get("phones") or []:
+        d = phone_digits(p)
+        if _NANP.match(d) and d not in seen:
+            seen.add(d)
+            out.append(d)
+    return out
 USER_AGENT = "Mozilla/5.0 (compatible; unbroker/1.0; data opt-out)"
 
 

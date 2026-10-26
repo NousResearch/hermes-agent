@@ -306,13 +306,20 @@ def cmd_intake(args) -> None:
         identity = data["identity"]
         consent = data.get("consent", {})
         residency = data.get("residency_jurisdiction", "US")
-        prefs = data.get("preferences")
+        prefs = data.get("preferences") or {}
+        if getattr(args, "focus_phone", None):
+            # --focus-phone applies to --json intake too (it was silently ignored before):
+            # same normalized-digits dedupe as the CLI path, same preferences marker.
+            if registry.phone_digits(args.focus_phone) not in {
+                    registry.phone_digits(p) for p in identity.get("phones") or []}:
+                identity.setdefault("phones", []).append(args.focus_phone)
+            prefs["focus_phone"] = args.focus_phone
     else:
         # Phone-led intake: a spam-call run starts from the number. At least ONE identifier
         # is required (name, phone, or email). The full name is not required to SCAN
         # (phone/email/address vectors run; name-only brokers group as `unsearchable`), but
         # every opt-out form and legal request needs it -- warned below, not refused.
-        if not (args.full_name or args.phone or args.email):
+        if not (args.full_name or args.phone or args.email or getattr(args, "focus_phone", None)):
             sys.exit("error: intake needs at least one identifier: --full-name, --phone, or --email")
         identity = {"full_name": args.full_name, "emails": args.email or [], "phones": args.phone or []}
         if args.alias:
@@ -348,7 +355,10 @@ def cmd_intake(args) -> None:
         if getattr(args, "focus_phone", None):
             # Phone-led (spam-call) run: the number being scrubbed. Add it to the dossier
             # phones so search vectors cover it even when it was not listed separately.
-            if args.focus_phone not in identity["phones"]:
+            # Compare on normalized digits: "--phone 555-123-4567 --focus-phone 5551234567"
+            # is ONE number, and a duplicate would double the phone vectors and the DNC list.
+            if registry.phone_digits(args.focus_phone) not in {
+                    registry.phone_digits(p) for p in identity["phones"]}:
                 identity["phones"].append(args.focus_phone)
             prefs["focus_phone"] = args.focus_phone
     d = dossier_mod.create(identity, consent, residency, prefs)
@@ -422,6 +432,15 @@ def cmd_registry(args) -> None:
     _out(out)
 
 
+def _mark_one_shot(d: dict, subject: str, key: str, label: str) -> dict:
+    """Record a registry one-shot marker (drop_filed_at / dnc_filed_at / dnc_declined_at)."""
+    prefs = d.setdefault("preferences", {})
+    prefs[key] = dossier_mod.now()
+    dossier_mod.save(d)
+    return {"subject": subject, key: prefs[key],
+            "note": f"recorded; `next` will stop surfacing the {label} one-shot"}
+
+
 def cmd_drop(args) -> None:
     """The one-shot legal lever: CA DROP deletes from ALL registered brokers at once."""
     d = _require_subject(args.subject)
@@ -430,11 +449,7 @@ def cmd_drop(args) -> None:
     res = (d.get("residency_jurisdiction") or "US").upper()
     eligible = res.startswith("US-CA")
     if args.filed:
-        prefs = d.setdefault("preferences", {})
-        prefs["drop_filed_at"] = dossier_mod.now()
-        dossier_mod.save(d)
-        _out({"subject": args.subject, "drop_filed_at": prefs["drop_filed_at"],
-              "note": "recorded; `next` will stop surfacing the DROP one-shot"})
+        _out(_mark_one_shot(d, args.subject, "drop_filed_at", "DROP"))
         return
     _out({
         "subject": args.subject,
@@ -467,33 +482,32 @@ def cmd_dnc(args) -> None:
     d = _require_subject(args.subject)
     dossier_mod.require_authorized(d)
     res = (d.get("residency_jurisdiction") or "US").upper()
-    phones = list((d.get("identity") or {}).get("phones") or [])
-    eligible = res.startswith("US") and bool(phones)
+    numbers = registry.dnc_eligible(d)
+    eligible = res.startswith("US") and bool(numbers)
     if args.filed:
-        prefs = d.setdefault("preferences", {})
-        prefs["dnc_filed_at"] = dossier_mod.now()
-        dossier_mod.save(d)
-        _out({"subject": args.subject, "dnc_filed_at": prefs["dnc_filed_at"],
-              "note": "recorded; `next` will stop surfacing the DNC one-shot"})
+        _out(_mark_one_shot(d, args.subject, "dnc_filed_at", "DNC"))
+        return
+    if getattr(args, "declined", False):
+        _out(_mark_one_shot(d, args.subject, "dnc_declined_at", "DNC (declined)"))
         return
     _out({
         "subject": args.subject,
         "eligible": eligible,
         "residency": res,
-        "numbers": phones,
+        "numbers": numbers,
         "dnc_url": registry.DNC_URL,
         "steps": ([
             f"Open {registry.DNC_URL} and enter the subject's personal number(s) -- up to "
-            f"three per pass ({len(phones)} on file here) -- with the subject's contact email.",
+            f"three per pass ({len(numbers)} eligible here) -- with the subject's contact email.",
             "The FTC sends a confirmation email PER NUMBER; open each link within 72 hours "
             "or that number is not registered.",
             "Sales calls stop within 31 days; registration never expires (personal numbers "
             "only -- business/fax lines are not covered).",
             f"After submitting, run `dnc {args.subject} --filed` so the loop stops "
-            "re-surfacing it.",
+            "re-surfacing it (or `dnc {args.subject} --declined` if the subject opts out).",
         ] if eligible else [
-            "The National Do Not Call Registry covers US personal numbers only; this subject "
-            "has no US residency or no phone on file.",
+            "The National Do Not Call Registry covers US (NANP) personal numbers only; this "
+            "subject has no US residency or no eligible US number on file.",
             "The broker-removal lane (`next`) is what cuts the lead lists scammers buy, in "
             "any jurisdiction.",
         ]),
@@ -591,6 +605,11 @@ def _email_request(d: dict, b: dict, kind: str, listings, identifiers) -> tuple[
     ident = d.get("identity", {})
     if ident.get("full_name"):
         fields.setdefault("full_name", ident["full_name"])
+    else:
+        # Never render the literal None. Generic drafts are operator-edited, so an explicit
+        # placeholder is the honest stand-in; the legal kinds are refused upstream when the
+        # subject is nameless (see _require_email_identity).
+        fields.setdefault("full_name", "[your full name]")
     fields.setdefault("contact_email", dossier_mod.contact_email(d) or "")
     if listings:
         fields["listing_urls"] = listings
@@ -602,7 +621,10 @@ def _email_request(d: dict, b: dict, kind: str, listings, identifiers) -> tuple[
         ids = list(identifiers or [])
         if not ids:
             ids = [contact for contact in [dossier_mod.contact_email(d)] if contact]
-            ids.append(f'the name "{ident.get("full_name")}" where it appears as a relative/associated person')
+            # Only when a name exists -- a nameless subject must never emit the literal
+            # None into a legal email.
+            if ident.get("full_name"):
+                ids.append(f'the name "{ident["full_name"]}" where it appears as a relative/associated person')
         fields = {
             "full_name": fields.get("full_name"),
             "contact_email": fields.get("contact_email"),
@@ -613,6 +635,26 @@ def _email_request(d: dict, b: dict, kind: str, listings, identifiers) -> tuple[
     return fields, sorted(fields.keys())
 
 
+def _require_email_identity(d: dict, kind: str, sending: bool) -> None:
+    """Enforce the intake warning at the send boundary: a removal request must self-identify.
+
+    Intake only WARNS when the name/contact email is missing (scans run fine without them);
+    this is where it turns fatal. `generic` drafts are operator-edited ([your name]), so
+    rendering one without a name is allowed -- but SENDING any request without a name is
+    not, and the contact email (the confirm-to address) is required in every mode.
+    """
+    missing = []
+    if (sending or kind != "generic") and not ((d.get("identity") or {}).get("full_name") or "").strip():
+        missing.append("full name")
+    if not dossier_mod.contact_email(d):
+        missing.append("contact email")
+    if missing:
+        sys.exit("error: a removal request must self-identify, and the subject's "
+                 + " and ".join(missing) + " is missing. Collect it first "
+                 "(intake --full-name / --contact-email, or a dossier edit), then re-run; "
+                 "scans do not need it, sending does.")
+
+
 def cmd_render_email(args) -> None:
     d = _require_subject(args.subject)
     dossier_mod.require_authorized(d)
@@ -620,6 +662,7 @@ def cmd_render_email(args) -> None:
     if not b:
         sys.exit(f"error: unknown broker {args.broker!r}")
     kind = getattr(args, "kind", "generic") or "generic"
+    _require_email_identity(d, kind, sending=False)
     fields, disclosed = _email_request(d, b, kind, args.listing, getattr(args, "identifier", None))
     if kind == "generic":
         draft = email_modes.render_draft(b, fields)
@@ -658,6 +701,7 @@ def cmd_send_email(args) -> None:
               "note": "already submitted; not re-sending (idempotent). Use --force to re-send."})
         return
     kind = getattr(args, "kind", "generic") or "generic"
+    _require_email_identity(d, kind, sending=True)
     fields, disclosed = _email_request(d, b, kind, args.listing, getattr(args, "identifier", None))
     body = legal.render_optout_email(b, fields) if kind == "generic" else legal.render_request(kind, b, fields)
 
@@ -881,6 +925,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("subject")
     s.add_argument("--filed", action="store_true",
                    help="mark the DNC registration as filed (stops `next` surfacing it)")
+    s.add_argument("--declined", action="store_true",
+                   help="record that the subject declines DNC registration (stops `next` "
+                        "surfacing it WITHOUT recording a filing that never happened)")
     s.set_defaults(func=cmd_dnc)
 
     s = sub.add_parser("plan", help="compute per-broker tier + next action for a subject")

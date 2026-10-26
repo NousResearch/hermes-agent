@@ -46,10 +46,10 @@
     ],
     "notes": "Reverse-phone + people-search. Opt-out: paste the listing URL, provide an email, confirm via the emailed link.",
     "quirks": [
+      "ENTRY GATE (verified live 2026-10-26): /opt-out lands on /removal asking first/last/email + a reCAPTCHA ENTERPRISE checkbox; on submit it emails a verify link (24h TTL) to the record-selection form, ~3 days processing. The checkbox refused synthetic automation clicks (see methods.md CAPTCHA policy) - T2 unless the operator's everyday browser clears it.",
       "Opt-out URL is the documented public endpoint; datacenter IPs get 403 (anti-bot), so confirm the live flow via the operator's residential browser before the first submission, then set last_verified.",
       "Needs the confirmed profile_url.",
-      "Email verification required.",
-      "ENTRY GATE (verified live 2026-10-26): /opt-out lands on /removal asking first/last/email + a reCAPTCHA ENTERPRISE checkbox; on submit it emails a verify link (24h TTL) to the record-selection form, ~3 days processing. The checkbox refused synthetic automation clicks (see methods.md CAPTCHA policy) - T2 unless the operator's everyday browser clears it."
+      "Email verification required."
     ],
     "est_processing_days": 3,
     "reappearance_risk": "medium"

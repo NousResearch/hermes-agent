@@ -693,8 +693,8 @@ def test_phone_led_intake_without_name():
         # intake with no identifier at all is refused
         try:
             _run(["intake", "--consent"])
-        except SystemExit:
-            pass
+        except SystemExit as e:
+            assert "at least one identifier" in str(e)   # not just any argparse exit
         else:
             raise AssertionError("intake without any identifier must be refused")
 
@@ -716,7 +716,8 @@ def test_focus_phone_drives_disclosure_and_vectors():
 def test_dnc_one_shot_surfaced_once_then_filed():
     with temp_env():
         sid = _run(["intake", "--full-name", "Jane Q. Public", "--email", "jane@example.com",
-                    "--phone", "+1-415-555-0137", "--consent"])["subject_id"]
+                    "--phone", "+1-415-555-0137", "--focus-phone", "+1-415-555-0137",
+                    "--consent"])["subject_id"]
         d = dossier.load(sid)
         d["residency_jurisdiction"] = "US-CA"
         dossier.save(d)
@@ -725,7 +726,9 @@ def test_dnc_one_shot_surfaced_once_then_filed():
         assert out["dnc_url"] == "https://www.donotcall.gov/register.html"
         assert "72 hours" in " ".join(out["steps"])
         q = autopilot.next_actions(dossier.load(sid), [], _auto_cfg(), {}, env={})
-        assert any(a["type"] == "dnc_register" for a in q["actions"])
+        act = next(a for a in q["actions"] if a["type"] == "dnc_register")
+        assert act["confirm_first"] is True   # a new registry disclosure always asks
+        assert act["declined"]
         filed = _run(["dnc", sid, "--filed"])
         assert "dnc_filed_at" in filed
         q2 = autopilot.next_actions(dossier.load(sid), [], _auto_cfg(), {}, env={})
@@ -757,9 +760,165 @@ def test_unsearchable_group_and_fanout_skip_for_nameless_subject():
         # fanout batches only brokers this subject can actually be searched on
         fan = _run(["fanout", sid])
         ids = [b for batch in fan["batches"] for b in batch["brokers"]]
-        assert fan["skipped_unsearchable"] >= 1
+        assert fan["skipped_unsearchable"] == 3   # 22 curated - 5 defunct - 14 live phone-capable
         for bid in ids:
             assert "phone" in (brokers.get(bid).get("search") or {}).get("by", ["name"])
+
+
+
+# --- review fixes: nameless emails, dnc scope/decline, defunct brokers, focus-phone edges ---
+
+def test_email_requests_refuse_nameless_subject():
+    """A nameless subject must never render/send a legal email that says 'None'."""
+    with temp_env():
+        sid = _run(["intake", "--phone", "+1-415-555-0137", "--email", "t@example.com",
+                    "--consent"])["subject_id"]
+        try:
+            _run(["render-email", sid, "spokeo", "--kind", "ccpa_indirect",
+                  "--listing", "https://www.spokeo.com/x"])
+        except SystemExit as e:
+            assert "full name" in str(e)
+        else:
+            raise AssertionError("render-email must refuse a nameless legal request")
+        # send-email needs a real email mode to reach the identity gate (not draft_only)
+        config.save_config({**config.DEFAULT_CONFIG, "email_mode": "browser"})
+        try:
+            _run(["send-email", sid, "spokeo", "--kind", "generic",
+                  "--listing", "https://www.spokeo.com/x"])
+        except SystemExit as e:
+            assert "full name" in str(e)   # sending needs the name even for generic
+        else:
+            raise AssertionError("send-email must refuse a nameless subject")
+        # generic drafts stay renderable (operator-edited signature) and never say "None"
+        out = _run(["render-email", sid, "spokeo", "--kind", "generic",
+                    "--listing", "https://www.spokeo.com/x"])
+        draft_text = Path(out["draft"]).read_text(encoding="utf-8")
+        assert "None" not in draft_text and "[your full name]" in draft_text
+
+
+def test_email_request_omits_name_identifier_when_nameless():
+    with temp_env():
+        sid = _run(["intake", "--phone", "+1-415-555-0137", "--consent"])["subject_id"]
+        d = dossier.load(sid)
+        fields, _disclosed = pdd._email_request(d, brokers.get("spokeo"), "ccpa_indirect",
+                                                 ["https://www.spokeo.com/x"], None)
+        assert "None" not in " ".join(fields["my_identifiers"])
+
+
+def test_optout_email_lane_requires_identity_in_next():
+    """The autonomous email lane digests (never queues) for a nameless subject."""
+    with temp_env():
+        mailer = _mini_broker("mailer")
+        mailer["optout"] = {**mailer["optout"], "method": "email", "email": "privacy@mailer.example"}
+        led = {"mailer": {"state": "found"}}
+        sid = _run(["intake", "--phone", "+1-415-555-0137", "--consent"])["subject_id"]
+        q = autopilot.next_actions(dossier.load(sid), [mailer], _auto_cfg(email_mode="browser"),
+                                   led, env={})
+        assert not any(a["type"] == "optout_email_send" for a in q["actions"])
+        assert "full name" in _json.dumps(q["human_digest"])
+        sid2 = _run(["intake", "--full-name", "Jane Q. Public", "--email", "jane@example.com",
+                     "--consent"])["subject_id"]
+        q2 = autopilot.next_actions(dossier.load(sid2), [mailer], _auto_cfg(email_mode="browser"),
+                                    led, env={})
+        assert any(a["type"] == "optout_email_send" for a in q2["actions"])
+
+
+def test_dnc_register_needs_phone_led_run_and_can_be_declined():
+    with temp_env():
+        # name-led subject: no dnc action, and `next` must terminate
+        sid = _run(["intake", "--full-name", "Jane Q. Public", "--email", "jane@example.com",
+                    "--consent"])["subject_id"]
+        _age = autopilot.cache_age_days
+        autopilot.cache_age_days = lambda: 0.0   # fresh broker cache: no refresh action
+        try:
+            q = autopilot.next_actions(dossier.load(sid), [], _auto_cfg(), {}, env={})
+        finally:
+            autopilot.cache_age_days = _age
+        assert not any(a["type"] == "dnc_register" for a in q["actions"])
+        assert q["done_for_now"] is True   # a name-led run must terminate, not wedge on DNC
+        # phone-led subject: surfaced once with confirm_first, then --declined clears it
+        sid2 = _run(["intake", "--phone", "+1-415-555-0137", "--focus-phone", "+1-415-555-0137",
+                     "--consent"])["subject_id"]
+        q2 = autopilot.next_actions(dossier.load(sid2), [], _auto_cfg(), {}, env={})
+        assert next(a for a in q2["actions"] if a["type"] == "dnc_register")["confirm_first"] is True
+        dec = _run(["dnc", sid2, "--declined"])
+        assert "dnc_declined_at" in dec
+        q3 = autopilot.next_actions(dossier.load(sid2), [], _auto_cfg(), {}, env={})
+        assert not any(a["type"] == "dnc_register" for a in q3["actions"])
+        # a non-NANP number is not registrable even on a phone-led run
+        sid3 = _run(["intake", "--phone", "+44 20 7946 0958", "--focus-phone", "+44 20 7946 0958",
+                     "--consent"])["subject_id"]
+        q4 = autopilot.next_actions(dossier.load(sid3), [], _auto_cfg(), {}, env={})
+        assert not any(a["type"] == "dnc_register" for a in q4["actions"])
+        assert _run(["dnc", sid3])["eligible"] is False
+
+
+def test_defunct_brokers_excluded_from_all_planning():
+    with temp_env():
+        d = _consenting()
+        dead = _mini_broker("deadbroker")
+        dead["defunct"] = {"since": "2026-08-27", "evidence": "domain seized"}
+        deadrest = _mini_broker("deadrest")
+        deadrest["defunct"] = {"since": "2026-08-27", "evidence": "NXDOMAIN"}
+        live = _mini_broker("livebroker")
+        bl = [dead, deadrest, live]
+        assert [a["broker_id"] for a in tiers.plan(d, bl, config.DEFAULT_CONFIG)] == ["livebroker"]
+        bp = tiers.batch_plan(d, bl, config.DEFAULT_CONFIG, {})
+        assert bp["defunct"] == ["deadbroker", "deadrest"]
+        assert not any(r["broker_id"].startswith("dead") for g in bp["groups"].values() for r in g)
+        runnable, unsearchable = tiers.runnable_for(d, bl)
+        assert [b["id"] for b in runnable + unsearchable] == ["livebroker"]
+        assert all("deadbroker" not in batch and "deadrest" not in batch
+                   for batch in tiers.fanout(bl)["batches"])
+        # open cases of dead brokers: no re-checks, one close-out digest entry instead
+        led = {"deadbroker": {"broker_id": "deadbroker", "state": "submitted"},
+               "deadrest": {"broker_id": "deadrest", "state": "confirmed_removed",
+                            "next_recheck_at": "2020-01-01T00:00:00Z"},
+               "livebroker": {"broker_id": "livebroker", "state": "confirmed_removed",
+                               "next_recheck_at": "2020-01-01T00:00:00Z"}}
+        q = autopilot.next_actions(d, bl, _auto_cfg(), led, env={})
+        kinds = [(a["type"], a.get("broker_id")) for a in q["actions"]]
+        assert ("verify_removal", "deadrest") not in kinds   # never re-scan a corpse
+        assert ("verify_removal", "livebroker") in kinds     # live brokers still recheck
+        close = [t for t in q["human_digest"] if "deadbroker" in _json.dumps(t)]
+        assert close and "not_found" in _json.dumps(close)
+
+
+def test_ledger_allows_not_found_close_out_for_dead_brokers():
+    for st in ("found", "action_selected", "submitted", "verification_pending",
+               "awaiting_processing", "human_task_queued"):
+        assert "not_found" in ledger.TRANSITIONS[st], st
+
+
+def test_focus_phone_edge_cases():
+    with temp_env():
+        # focus-phone alone satisfies the identifier requirement
+        out = _run(["intake", "--focus-phone", "+1-415-555-0137", "--consent"])
+        assert out["phones"] == 1 and out["focus_phone"] == "+1-415-555-0137"
+        # a differently-formatted duplicate is ONE number, not two vectors
+        out2 = _run(["intake", "--phone", "555-123-4567", "--focus-phone", "5551234567",
+                     "--consent"])
+        assert out2["phones"] == 1
+        # --json intake honors --focus-phone too (was silently ignored)
+        import tempfile as _tf
+        with _tf.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            _json.dump({"identity": {"full_name": "Json Subject", "emails": ["j@example.com"]},
+                        "consent": {"authorized": True, "method": "self"},
+                        "residency_jurisdiction": "US"}, f)
+            jpath = f.name
+        out3 = _run(["intake", "--json", jpath, "--focus-phone", "+1-510-555-0199"])
+        assert out3["focus_phone"] == "+1-510-555-0199"
+        d = dossier.load(out3["subject_id"])
+        assert d["preferences"]["focus_phone"] == "+1-510-555-0199"
+        assert "+1-510-555-0199" in d["identity"]["phones"]
+
+
+def test_synthesize_steps_keep_gate_quirks_within_cap():
+    r = {"optout_url": "https://x.example/optout",
+         "optout_quirks": ["q1", "q2", "q3", "q4 GATE", "q5"]}
+    steps = tiers.synthesize_steps(r)
+    assert any("q4 GATE" in s for s in steps)        # the 4th quirk (a gate finding) survives
+    assert any("+1 more quirk" in s for s in steps)  # truncation is disclosed, never silent
 
 
 if __name__ == "__main__":

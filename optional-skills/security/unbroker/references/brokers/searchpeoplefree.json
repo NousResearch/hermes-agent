@@ -46,10 +46,10 @@
     ],
     "notes": "Free people-search. Opt-out: find the listing, submit with an email, confirm the link.",
     "quirks": [
+      "ENTRY GATE (verified live 2026-10-26): /opt-out takes first/last/email + a terms checkbox + Cloudflare Turnstile, then 'Begin removal process' emails a verify button (24h TTL) leading to the removal form; ~3 days processing. The Turnstile AUTO-CLEARED as normal operation on a residential automation browser (token observed) - stays automated, unlike reCAPTCHA checkboxes.",
       "Opt-out URL is the documented public endpoint; datacenter IPs get 403 (anti-bot), so confirm the live flow via the operator's residential browser before the first submission, then set last_verified.",
       "Needs the confirmed profile_url.",
-      "Email verification required.",
-      "ENTRY GATE (verified live 2026-10-26): /opt-out takes first/last/email + a terms checkbox + Cloudflare Turnstile, then 'Begin removal process' emails a verify button (24h TTL) leading to the removal form; ~3 days processing. The Turnstile AUTO-CLEARED as normal operation on a residential automation browser (token observed) - stays automated, unlike reCAPTCHA checkboxes."
+      "Email verification required."
     ],
     "est_processing_days": 3,
     "reappearance_risk": "medium"

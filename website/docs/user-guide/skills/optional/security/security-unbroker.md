@@ -137,7 +137,7 @@ breaks reading the dossier).
 | `$PDD drop <subject> [--filed]` | **The one-shot legal lever**: one CA DROP request deletes from ALL registered brokers; `--filed` records it |
 | `$PDD dnc <subject> [--filed]` | **The spam-call lever**: register the subject's US personal numbers on the FTC National Do Not Call Registry (sales calls stop within 31 days, never expires); `--filed` records it |
 | `$PDD plan <subject> [--priority crucial]` | Per-broker tier + method + `search_vectors` + the exact fields to disclose |
-| `$PDD plan <subject> --batch` | **Reduce view**: overlays ledger state, groups brokers by next action (unscanned/found/indirect/blocked/in_progress/done), collapses ownership clusters, **orders `found` cluster-parents-first + emits a tailored `parent_playbook`**, prints `next_actions` |
+| `$PDD plan <subject> --batch` | **Reduce view**: overlays ledger state, groups brokers by next action (unscanned/unsearchable/found/indirect/blocked/in_progress/human/done/not_found; defunct brokers are excluded and listed under `defunct`), collapses ownership clusters, **orders `found` cluster-parents-first + emits a tailored `parent_playbook`**, prints `next_actions` |
 | `$PDD fanout <subject> [--priority crucial] [--size 5]` | Batch brokers into parallel `delegate_task` subagents (auto for large runs; batches of 5 - 8+ time out) |
 | `$PDD record <subject> <broker> <state> [--found true] [--evidence JSON] [--disclosed F --channel C] [--reason "..."]` | Update the ledger (validated state machine); **auto-stamps `next_recheck_at`** |
 | `$PDD show <subject> <broker>` | Read back a case's recorded state + evidence + disclosure log (so the parent re-verifies a subagent's `found` without re-deriving the listing URL) |
@@ -301,13 +301,17 @@ is where lead buyers get it. The same engine, entered from the number:
    but collect the full name + contact email at intake anyway: every opt-out form and legal request
    needs them.
 2. **The loop is unchanged.** `$PDD next <subject>` drives the same crawl / opt-out / re-check
-   queue; the reverse-phone sites (18 of the 22 curated people-search records declare `by: phone`)
-   are scanned with the phone vector, and the re-check schedule watches for the number re-listing
+   queue; the reverse-phone sites (14 of the live curated records declare `by: phone`; five curated
+   brokers are defunct - dead domains, excluded from planning) are scanned with the phone vector, and the re-check schedule watches for the number re-listing
    (per the subject's `rescan_interval_days`).
 3. **DNC one-shot.** For a US personal number, `next` also surfaces `dnc_register` once: the FTC
    National Do Not Call Registry (free, never expires, sales calls stop within 31 days; up to 3
    numbers per pass, one confirmation email per number - open each link within 72 hours). `$PDD
-   dnc <subject>` prints the steps; `$PDD dnc <subject> --filed` records it. DNC stops lawful
+   dnc <subject>` prints the steps; `$PDD dnc <subject> --filed` records it and
+   `$PDD dnc <subject> --declined` opts the subject out without recording a filing that never
+   happened. Surfaced only for phone-led runs (`--focus-phone`) and only for NANP numbers,
+   always with `confirm_first` - intake consent covers broker removal, not a new registry
+   disclosure. DNC stops lawful
    telemarketers, not scammers - broker removal is what cuts the lead lists, so do both.
 
 ## Pitfalls

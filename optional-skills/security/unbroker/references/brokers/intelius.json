@@ -3,7 +3,9 @@
   "name": "Intelius",
   "category": "people_search",
   "priority": "crucial",
-  "jurisdictions": ["US"],
+  "jurisdictions": [
+    "US"
+  ],
   "parent": "peopleconnect",
   "owns": [
     "truthfinder",
@@ -22,7 +24,11 @@
     "url": "https://www.intelius.com/",
     "fetch": "web_extract",
     "match_signal": "result",
-    "by": ["name", "phone", "address"],
+    "by": [
+      "name",
+      "phone",
+      "address"
+    ],
     "url_patterns": {
       "name": "https://www.intelius.com/people-search/{First}-{Last}/",
       "name_state": "https://www.intelius.com/people-search/{first}-{last}/{state-name}/",
@@ -52,7 +58,11 @@
       "payment": false,
       "dob": true
     },
-    "inputs": ["contact_email", "full_name", "date_of_birth"],
+    "inputs": [
+      "contact_email",
+      "full_name",
+      "date_of_birth"
+    ],
     "deletion": {
       "via": "in_flow",
       "prefer": false,

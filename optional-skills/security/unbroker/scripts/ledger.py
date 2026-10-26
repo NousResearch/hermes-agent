@@ -30,18 +30,24 @@ TRANSITIONS: dict[str, set[str]] = {
     # request (-> submitted) or a human task. Re-scan can clear it (-> not_found) or upgrade it to a
     # direct listing (-> found).
     "indirect_exposure": {"submitted", "human_task_queued", "not_found", "found", "blocked"},
-    "action_selected": {"submitted", "human_task_queued", "blocked"},
-    "submitted": {"verification_pending", "awaiting_processing", "human_task_queued", "blocked"},
+    "action_selected": {"submitted", "human_task_queued", "blocked", "not_found"},
+    # not_found from the in-flight states exists for ONE reason: the broker died (domain
+    # seized by court order / NXDOMAIN). A dead site cannot hold the listing, so the honest
+    # close-out is not_found citing the defunct record -- never used for a LIVE broker's
+    # in-flight request, which waits out its processing window instead.
+    "submitted": {"verification_pending", "awaiting_processing", "human_task_queued", "blocked",
+                  "not_found"},
     # verification_pending -> awaiting_processing: the verify link was opened/acknowledged and the
     # broker is now processing the removal (their stated window). confirmed_removed still requires a
     # verifying re-scan, never the submission flow's own say-so.
-    "verification_pending": {"awaiting_processing", "confirmed_removed", "human_task_queued", "blocked"},
-    "awaiting_processing": {"confirmed_removed", "human_task_queued", "blocked"},
+    "verification_pending": {"awaiting_processing", "confirmed_removed", "human_task_queued",
+                              "blocked", "not_found"},
+    "awaiting_processing": {"confirmed_removed", "human_task_queued", "blocked", "not_found"},
     "confirmed_removed": {"reappeared", "confirmed_removed"},
     "reappeared": {"found", "indirect_exposure"},
     "human_task_queued": {
         "found", "indirect_exposure", "action_selected", "submitted", "verification_pending",
-        "awaiting_processing", "confirmed_removed", "blocked",
+        "awaiting_processing", "confirmed_removed", "blocked", "not_found",
     },
     # blocked: automated tools (web_extract/proxyless browser) couldn't read the site. A later pass
     # -- a stealth/cloud browser OR guiding the operator's own (residential) browser -- can resolve it

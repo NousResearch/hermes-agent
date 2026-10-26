@@ -121,10 +121,10 @@ The underlying CLI (run via `terminal`, as `python3 scripts/pdd.py <cmd>`):
   a single verified request deletes their data from **every registered broker at once**, and
   `pdd.py next` surfaces it as the highest-leverage action.
 - **Spam-call lane.** A run can be entered from the phone number ("my number keeps getting spam
-  calls"): the number is scanned across the reverse-phone people-search sites (18 of the 22
-  curated records), opted out, and re-checked on the same schedule - and `pdd.py dnc` registers it
-  on the FTC's National Do Not Call Registry (surfaced by `next` for US personal numbers until
-  filed).
+  calls"): the number is scanned across the reverse-phone people-search sites (14 of the live
+  curated records; five curated brokers are defunct and excluded from planning), opted out, and
+  re-checked on the same schedule - and `pdd.py dnc` registers it on the FTC's National Do Not
+  Call Registry (surfaced by `next` for phone-led US runs until filed or declined).
 - **Ledger, audit, and re-scan.** Every case is a validated state machine, every PII disclosure is
   logged (field names only), and confirmed removals are re-scanned on a schedule so a re-listing is
   caught and re-filed. Ledger writes are file-locked for safe concurrent runs.
@@ -133,7 +133,7 @@ The underlying CLI (run via `terminal`, as `python3 scripts/pdd.py <cmd>`):
 
 ## Tests
 
-34 hermetic tests (no network, browser, or email; SMTP and IMAP are exercised through injected
+42 hermetic tests (no network, browser, or email; SMTP and IMAP are exercised through injected
 fakes):
 
 ```bash
@@ -158,7 +158,7 @@ python3 tests/skills/test_unbroker_skill.py                        # dependency-
 
 **v1.0.** The deterministic engine, the autonomous loop, the verified cluster-parent deletion lanes,
 and full broker-registry coverage (the CA Data Broker Registry plus the DROP one-shot) are built and
-covered by 34 hermetic tests. The skill ships placeholder data only. Live agent-driven submission
+covered by 42 hermetic tests. The skill ships placeholder data only. Live agent-driven submission
 against broker sites is the active field-testing frontier.
 
 ## Credits and license

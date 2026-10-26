@@ -3,7 +3,9 @@
   "name": "Rehold",
   "category": "property_records",
   "priority": "long_tail",
-  "jurisdictions": ["US"],
+  "jurisdictions": [
+    "US"
+  ],
   "search": {
     "method": "url_pattern",
     "url": "https://rehold.com/",
@@ -11,9 +13,8 @@
     "match_signal": "result",
     "match_signal_notes": "PROPERTY-RECORD, NOT PII. An address match here shows only PUBLIC PROPERTY RECORDS (build year, beds/baths, last sale price, incident history). Resident/owner NAMES sit behind 'View full report', which leads to a paywall/signup, so no personal PII is publicly exposed. Public property records are NOT removable. Record `found` ONLY if a resident NAME matching the subject is publicly displayed on the free page; an address-only match is `not_found` (nothing to opt out of).",
     "access": "paywall",
-    "by": ["address"],
-    "url_format_quirks": [
-      "DEFUNCT: rehold.com named in the same Atlas v. Radaris final judgment (2026-08-27); domain serves the court notice (verified live 2026-10-26). Scan/opt-out moot; record not_found citing this."
+    "by": [
+      "address"
     ]
   },
   "optout": {
@@ -29,18 +30,23 @@
       "phone_callback": false,
       "payment": false
     },
-    "inputs": ["profile_url"],
-    "notes": "Address-anchored property/reverse-address site. Only pursue an opt-out if the scan found a publicly displayed resident NAME for the subject (see match_signal_notes); a bare public property record is not personal PII and is not removable. If the subject's personal profile IS shown, submit the profile URL to the opt-out endpoint and confirm the live flow in a residential browser before the first submission, then set last_verified. DEFUNCT: rehold.com named in the same Atlas v. Radaris final judgment (2026-08-27); domain serves the court notice (verified live 2026-10-26). Scan/opt-out moot; record not_found citing this.",
+    "inputs": [
+      "profile_url"
+    ],
+    "notes": "Address-anchored property/reverse-address site. Only pursue an opt-out if the scan found a publicly displayed resident NAME for the subject (see match_signal_notes); a bare public property record is not personal PII and is not removable. If the subject's personal profile IS shown, submit the profile URL to the opt-out endpoint and confirm the live flow in a residential browser before the first submission, then set last_verified. DEFUNCT since 2026-08-27: domain dead per the same NJ Daniel's Law final judgment (Atlas Data Privacy Corp, 2026-08-27). Excluded from all planning/scanning/re-checks; close any open case as not_found citing this record.",
     "quirks": [
       "Distinguish 'address exists in a public property DB' (non-removable) from 'the subject's personal profile is displayed' (removable). Only the latter is an actionable exposure.",
       "'View full report' is a paywall/signup, not proof of a public listing.",
-      "Opt-out endpoint UNVERIFIED: confirm the live flow before the first submission.",
-      "DEFUNCT: rehold.com named in the same Atlas v. Radaris final judgment (2026-08-27); domain serves the court notice (verified live 2026-10-26). Scan/opt-out moot; record not_found citing this."
+      "Opt-out endpoint UNVERIFIED: confirm the live flow before the first submission."
     ],
     "est_processing_days": 3,
     "reappearance_risk": "low"
   },
   "last_verified": "2026-10-26",
   "source": "curated",
-  "confidence": "documented"
+  "confidence": "documented",
+  "defunct": {
+    "since": "2026-08-27",
+    "evidence": "domain dead per the same NJ Daniel's Law final judgment (Atlas Data Privacy Corp, 2026-08-27)"
+  }
 }

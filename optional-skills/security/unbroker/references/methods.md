@@ -281,8 +281,8 @@ T2 and become human tasks. **Never use a third-party CAPTCHA-defeating service.*
 A phone-led run ("my number keeps getting spam calls") is the same loop entered from the number:
 `intake --phone ... --focus-phone ...` (the focus number is what phone-asking opt-out forms
 disclose), then `next` as usual. `search_vectors` already emits one `by: phone` vector per dossier
-phone on every broker that declares phone search (18 of the 22 curated records). Two
-phone-specific notes:
+phone on every broker that declares phone search (14 of the live records; five curated
+brokers are defunct - dead domains excluded from planning). Three phone-specific notes:
 
 - **Reverse-phone pages SEO-echo the number too.** The title/H1 templating trap applies: a real
   result is a card naming the subscriber (name / age / city), not the query echo. Corroborate

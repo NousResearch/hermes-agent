@@ -43,6 +43,11 @@ def plan(subject_dossier: dict, brokers_list: list[dict], cfg: dict,
         or cfg.get("email_mode", "draft_only")
     actions: list[dict] = []
     for b in brokers_list:
+        if b.get("defunct"):
+            # Dead domain (seized/NXDOMAIN): excluded from every scan/act surface so it
+            # never wedges a crawl, queues an opt-out against a corpse, or re-checks one.
+            # batch_plan surfaces the ids so the run book can say why they are absent.
+            continue
         opt = b.get("optout") or {}
         search = b.get("search") or {}
         # Defensive shape coercion: a subagent may have written a malformed record (requires as a
@@ -96,7 +101,7 @@ def fanout(brokers_list: list[dict], batch_size: int = 5) -> dict:
     Scanning many brokers serially is slow and burns context; above `batch_size`
     the agent is expected to spawn one subagent per batch (see SKILL.md).
     """
-    ids = [b.get("id") for b in brokers_list if b.get("id")]
+    ids = [b.get("id") for b in brokers_list if b.get("id") and not b.get("defunct")]
     batches = [ids[i:i + batch_size] for i in range(0, len(ids), batch_size)]
     return {
         "broker_count": len(ids),
@@ -116,6 +121,8 @@ def runnable_for(subject_dossier: dict, brokers_list: list[dict]) -> tuple[list[
     runnable: list[dict] = []
     unsearchable: list[dict] = []
     for b in brokers_list:
+        if b.get("defunct"):
+            continue  # dead domains are neither runnable nor unsearchable: they are absent
         (runnable if vectors_mod.search_vectors(subject_dossier, b) else unsearchable).append(b)
     return runnable, unsearchable
 
@@ -137,8 +144,9 @@ def batch_plan(subject_dossier: dict, brokers_list: list[dict], cfg: dict,
     children is ONE action, not N. Read-only: computes, never mutates the ledger.
     """
     ledger = ledger or {}
+    defunct = [b.get("id") for b in brokers_list if b.get("defunct")]
     actions = plan(subject_dossier, brokers_list, cfg, browser_clears_captcha)
-    vcount = {a["broker_id"]: a.get("search_vectors_count", 1) for a in actions}
+    vcount = {a["broker_id"]: a["search_vectors_count"] for a in actions}
 
     # child id -> parent id (only for parents present in this plan set)
     child_to_parent: dict[str, str] = {}
@@ -194,7 +202,7 @@ def batch_plan(subject_dossier: dict, brokers_list: list[dict], cfg: dict,
         elif st in groups:
             groups[st].append(row)
         elif st not in _SCANNED_STATES:
-            if not vcount.get(bid, 1):
+            if not vcount.get(bid):
                 groups["unsearchable"].append(row)
             else:
                 groups["unscanned"].append(row)
@@ -211,6 +219,7 @@ def batch_plan(subject_dossier: dict, brokers_list: list[dict], cfg: dict,
     return {
         "subject": subject_dossier.get("subject_id"),
         "phase": "discover" if groups["unscanned"] else "delete",
+        "defunct": defunct,
         "counts": {k: len(v) for k, v in groups.items()},
         "groups": groups,
         "cluster_savings": {p: kids for p, kids in covered_by_parent.items()},
@@ -244,8 +253,12 @@ def synthesize_steps(r: dict) -> list[str]:
                      + " -- prefer deletion over suppression.")
     if r.get("notes"):
         steps.append(str(r["notes"]))
-    for q in (r.get("optout_quirks") or [])[:3]:
+    quirks = r.get("optout_quirks") or []
+    for q in quirks[:4]:
         steps.append(str(q))
+    if len(quirks) > 4:
+        steps.append(f"(+{len(quirks) - 4} more quirks in this broker's record -- read them "
+                     "before filing; the record is the source of truth)")
     return steps
 
 

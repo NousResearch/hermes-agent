@@ -1658,9 +1658,9 @@ def _configured_relay_base_url(provider: str) -> str:
     base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
     if not base_url:
         return ""
-    # A base_url equal to the provider's own endpoint (the profile's or the registry row's: TokenHub's
-    # profile leaves it empty; OpenRouter has no registry row) is not a relay: setup persists
-    # canonical URLs, and OAuth providers (Codex) need native discovery.
+    # Not a relay: the provider's own endpoint (the profile's or the registry row's: TokenHub's profile leaves it
+    # empty; OpenRouter has no registry row) or the bare HTTPS root of a host the profile claims. Setup persists
+    # canonical URLs; Codex (OAuth) needs native discovery. The check reads the raw URL: a stripped ``//`` looks bare.
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY
         from providers import get_provider_profile

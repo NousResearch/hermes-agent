@@ -34,7 +34,8 @@ def catalog_calls(request, monkeypatch):
     providers.list_providers()  # discovery first, so the registrations below are not shadowed
     providers.register_provider(_ClaimingProfile(
         calls, name=CLAIMING, base_url="https://api.claimed-host.test/v1",
-        hostnames=("claimed-host.test",), picker_catalog=native_catalog,
+        hostnames=("claimed-host.test",), metadata_hostnames=("metadata-host.test",),
+        picker_catalog=native_catalog,
     ))
     providers.register_provider(ProviderProfile(
         name=NEIGHBOUR, base_url="https://api.other-claim.test/v1", hostnames=("other-claim.test",),
@@ -78,6 +79,8 @@ def test_bare_https_root_of_a_claimed_host_is_the_providers_own_endpoint(base_ur
     "https://user@claimed-host.test",
     "https://claimed-host.test?relay=1",
     "https://claimed-host.test?",
+    "https://[broken",
+    "https://claimed-host.test\uff1a443",
 ])
 def test_a_claimed_host_with_more_than_a_bare_https_root_stays_a_relay(base_url, catalog_calls):
     assert _discover(base_url) == ["relay-model"]
@@ -90,6 +93,7 @@ def test_a_claimed_host_with_more_than_a_bare_https_root_stays_a_relay(base_url,
     "https://unclaimed.test",
     "https://claimed-host.test.example.com",
     "https://notclaimed-host.test",
+    "https://metadata-host.test",
 ])
 def test_a_host_the_provider_does_not_claim_stays_a_relay(base_url, catalog_calls):
     assert _discover(base_url) == ["relay-model"]

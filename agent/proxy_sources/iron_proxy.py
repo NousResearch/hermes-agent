@@ -476,11 +476,11 @@ def allowed_host_problem(raw) -> Optional[str]:
     return _bare_host_hint("")
 
 
-def normalize_allowed_hosts(entries, *, warn, source: str = "proxy.extra_allowed_hosts") -> List[str]:
+def normalize_allowed_hosts(entries, *, warn, source: str = "proxy.extra_allowed_hosts") -> list[str]:
     """Lower-cased, de-duplicated allowlist entries; each invalid one is dropped with ONE ``warn``
     naming ``source``, the entry and the fix. Dropping only narrows egress (the entry could never
     match anyway), so the rest of setup proceeds instead of shipping a silently dead allowlist."""
-    out: List[str] = []
+    out: list[str] = []
     for entry in entries or []:
         problem = allowed_host_problem(entry)
         if problem:

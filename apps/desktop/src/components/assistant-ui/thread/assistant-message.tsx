@@ -68,6 +68,7 @@ import {
   VolumeXIcon,
   XIcon
 } from '@/lib/icons'
+import { renderedMessageHtml, renderedResponseHtml } from '@/lib/message-clipboard-html'
 import { extractPreviewTargets } from '@/lib/preview-targets'
 import { markAssistantIdSpoken } from '@/lib/spoken-reply'
 import { $touchPointer } from '@/lib/touch-interaction'
@@ -1277,6 +1278,7 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
     <CopyButton
       appearance="icon"
       buttonSize="icon"
+      html={renderedMessageHtml}
       label={copy.copy}
       onCopied={() => recordAction(DESKTOP_BUTTON_ACTIONS.messageCopy, 'click')}
       text={getMessageText}
@@ -1316,7 +1318,13 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
           )}
           {copyButton}
           {fullResponseAvailable && (
-            <CopyButton appearance="icon" buttonSize="icon" label={copy.copyFullResponse} text={getFullResponseText} />
+            <CopyButton
+              appearance="icon"
+              buttonSize="icon"
+              html={renderedResponseHtml}
+              label={copy.copyFullResponse}
+              text={getFullResponseText}
+            />
           )}
           <ReadAloudButton action={readAloud} />
           <TooltipIconButton disabled={reloadDisabled} onClick={reload} tooltip={copy.refresh}>

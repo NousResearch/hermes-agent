@@ -7,8 +7,16 @@ const nativeWrites = new WeakMap<Clipboard, Clipboard['writeText'] | undefined>(
 // loses focus (a portaled Radix menu), where the renderer's clipboard API refuses with "Write
 // permission denied". The native API is the fallback. The browser-hosted Desktop has only the native
 // API; its bridge's writeClipboard calls that same API.
-export async function writeClipboardText(text: string) {
+//
+// With `html`, rich targets (mail, docs) paste formatting while plain targets (editors, terminals)
+// still receive `text` — the Markdown the agent wrote. Shells without writeClipboardRich, and
+// renderers without ClipboardItem, fall back to the text-only path unchanged.
+export async function writeClipboardText(text: string, html?: null | string) {
   if (!text) {
+    return
+  }
+
+  if (html && (await writeClipboardRich(text, html))) {
     return
   }
 
@@ -36,6 +44,39 @@ export async function writeClipboardText(text: string) {
   }
 
   await native(text)
+}
+
+async function writeClipboardRich(text: string, html: string): Promise<boolean> {
+  const ipc = isBrowserHostedDesktop() ? undefined : window.hermesDesktop?.writeClipboardRich
+
+  if (ipc) {
+    try {
+      if (await ipc({ html, text })) {
+        return true
+      }
+    } catch {
+      // Fall through to the native rich write, then the text-only policy.
+    }
+  }
+
+  const clipboard = navigator.clipboard
+
+  if (!clipboard?.write || typeof ClipboardItem === 'undefined') {
+    return false
+  }
+
+  try {
+    await clipboard.write([
+      new ClipboardItem({
+        'text/html': new Blob([html], { type: 'text/html' }),
+        'text/plain': new Blob([text], { type: 'text/plain' })
+      })
+    ])
+
+    return true
+  } catch {
+    return false
+  }
 }
 
 export function installClipboardShim() {

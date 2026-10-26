@@ -24,6 +24,10 @@ export interface CopyButtonProps {
   disabled?: boolean
   errorMessage?: string
   haptic?: boolean
+  /** Optional HTML flavour of `text`, resolved at copy time from the button
+   *  element (so callers can read the rendered DOM it sits in). Null/empty
+   *  keeps the copy text-only. */
+  html?: (anchor: HTMLElement | null) => null | string | undefined
   iconClassName?: string
   label?: string
   onCopied?: () => void
@@ -45,6 +49,7 @@ export function CopyButton({
   disabled = false,
   errorMessage,
   haptic = true,
+  html,
   iconClassName,
   label,
   onCopied,
@@ -87,7 +92,9 @@ export function CopyButton({
           return
         }
 
-        await writeClipboardText(value)
+        const anchor = event?.currentTarget instanceof HTMLElement ? event.currentTarget : null
+
+        await writeClipboardText(value, html?.(anchor))
 
         if (haptic) {
           triggerHaptic('selection')
@@ -117,7 +124,7 @@ export function CopyButton({
         }, COPIED_RESET_MS)
       }
     },
-    [haptic, onCopied, onCopyError, preventDefault, stopPropagation, text]
+    [haptic, html, onCopied, onCopyError, preventDefault, stopPropagation, text]
   )
 
   const Icon = status === 'copied' ? Check : status === 'error' ? X : Copy

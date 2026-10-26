@@ -101,6 +101,10 @@ export const zhHantAssistant = {
           title: '此聊天屬於一個排程工作',
           body: '它只會執行該工作，因此你的訊息未被執行。請開始新的聊天後再傳送。'
         },
+        session_read_only: {
+          title: '此聊天為唯讀',
+          body: '它是 Hermes 只能顯示、無法繼續的已儲存歷史記錄，因此你的訊息未被執行。請開始新的聊天後再傳送。'
+        },
         usage_window: {
           title: '包含用量已用完',
           body: '你的方案包含的用量已用完，將在重設後恢復。在 /topup 中新增額度即可繼續。'

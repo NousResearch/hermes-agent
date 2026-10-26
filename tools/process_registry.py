@@ -40,6 +40,7 @@ from tools.process_registry_termination import ProcessTerminationMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
 from tools.process_registry_env_log import log_delta_command
 from tools.process_registry_wsl import _is_wsl_launcher_command
+from tools.process_registry_pty import pty_terminal_defaults
 
 logger = logging.getLogger(__name__)
 
@@ -1161,11 +1162,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         pty_env = self._spawn_env(env_vars)
         if session.systemd_unit:
             pty_env = systemd_user_bus_env(pty_env)
-        # A PTY is a real TTY, so pager-happy tools (git log/diff, man) WILL page and
-        # hang waiting for `q` — default them to cat, honoring any pager the user set.
-        pty_env.setdefault("GIT_PAGER", "cat")
-        pty_env.setdefault("PAGER", "cat")
-        pty_proc = _PtyProcessCls.spawn(pty_argv, cwd=session.cwd, env=pty_env, dimensions=(30, 120))
+        dimensions = pty_terminal_defaults(pty_env)  # pagers to cat; window sized like the real terminal
+        pty_proc = _PtyProcessCls.spawn(pty_argv, cwd=session.cwd, env=pty_env, dimensions=dimensions)
         session.pid = pty_proc.pid
         session.host_start_time = self._safe_host_start_time(session.pid)
         session._pty = pty_proc

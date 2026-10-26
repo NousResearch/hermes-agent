@@ -16,6 +16,11 @@ LEGACY_SANDBOX_IMAGE = LEGACY_SANDBOX_IMAGES[0]
 DEFAULT_VERCEL_IMAGE = "vercel/sandbox/universal:latest"
 LEGACY_VERCEL_RUNTIME = "node24"  # the seeded pre-49 default, never a user choice
 
+# Default per-container PID ceiling for Docker sandboxes. Keep this in the
+# pure-data leaf so config.yaml, env bridging, backend shaping, and the Docker
+# command builder cannot silently drift apart.
+DEFAULT_DOCKER_PIDS_LIMIT = "2048"
+
 
 def _aux(timeout, *, reasoning_effort=True, **extra):
     """Standard auxiliary-task model block (see DEFAULT_CONFIG["auxiliary"]).
@@ -373,6 +378,10 @@ DEFAULT_CONFIG = {
         # Chromium/Playwright and PyTorch DataLoader workers; tmpfs is lazily allocated so the
         # higher ceiling is free until used. "" or "0" = omit the flag (Docker default).
         "docker_shm_size": "1g",
+        # Per-container PID ceiling. The cgroup counts threads as well as
+        # processes; 0, -1, or an empty value omits the flag and defers to the
+        # Docker daemon's own default.
+        "docker_pids_limit": DEFAULT_DOCKER_PIDS_LIMIT,
         # Run the container as the host uid:gid (`--user`) so files written to bind mounts
         # (docker_volumes, persistent workspace, mounted cwd) are owned by you, not root. Off by
         # default for images whose entrypoints must start as root (e.g. the bundled Hermes image,

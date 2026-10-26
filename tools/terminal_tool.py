@@ -782,7 +782,7 @@ def _resolve_config_cwd(env_type: str, mount_docker_cwd: bool) -> tuple:
 
 def _get_env_config() -> dict[str, Any]:
     """Resolve the terminal configuration dict from TERMINAL_* env vars."""
-    from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE as default_image
+    from hermes_cli.config_defaults import DEFAULT_DOCKER_PIDS_LIMIT, DEFAULT_SANDBOX_IMAGE as default_image
     _ensure_terminal_env_bridged()
     env_type = _tenv("TERMINAL_ENV", "local")
     mount_docker_cwd = _tenv_bool("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false")
@@ -803,8 +803,10 @@ def _get_env_config() -> dict[str, Any]:
         docker_env = _parse_env_var("TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON")
         docker_extra_args = _parse_env_var("TERMINAL_DOCKER_EXTRA_ARGS", "[]", json.loads, "valid JSON")
         docker_shm_size = _tenv("TERMINAL_DOCKER_SHM_SIZE", "1g")
+        docker_pids_limit = _tenv("TERMINAL_DOCKER_PIDS_LIMIT", DEFAULT_DOCKER_PIDS_LIMIT)
     else:
         docker_forward_env, docker_volumes, docker_env, docker_extra_args, docker_shm_size = [], [], {}, [], "1g"
+        docker_pids_limit = DEFAULT_DOCKER_PIDS_LIMIT
 
     cwd, host_cwd = _resolve_config_cwd(env_type, mount_docker_cwd)
 
@@ -846,6 +848,7 @@ def _get_env_config() -> dict[str, Any]:
         "docker_network": _tenv_bool("TERMINAL_DOCKER_NETWORK", "true"),
         "docker_extra_args": docker_extra_args,
         "docker_shm_size": docker_shm_size,
+        "docker_pids_limit": docker_pids_limit,
         # Cross-process reuse: attach to a labeled container at startup
         # instead of starting fresh; false = per-process isolation.
         "docker_persist_across_processes": _tenv_bool("TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES", "true"),

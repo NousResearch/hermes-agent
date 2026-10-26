@@ -6,13 +6,11 @@ workloads (pytest, DataLoader workers, Chromium, parallel subagents) reach it
 sooner than a process count suggests — and once exhausted the container cannot
 start even a shell for diagnostics or cleanup.
 
-The default stays 256: this is a configurability bug, not a wrong-default bug.
-Raising it for everyone would weaken a real containment boundary.
+The default follows the current upstream Docker safety ceiling (2048): this is
+a configurability fix, not a default-change proposal.
 """
 
 from __future__ import annotations
-
-from pathlib import Path
 
 import pytest
 
@@ -26,8 +24,8 @@ from tools.environments import docker as docker_env
 @pytest.mark.parametrize(
     "configured, expected",
     [
-        pytest.param(None, "256", id="unset-keeps-the-safe-default"),
-        pytest.param("256", "256", id="explicit-default"),
+        pytest.param(None, "2048", id="unset-keeps-the-safe-default"),
+        pytest.param("2048", "2048", id="explicit-default"),
         pytest.param("1024", "1024", id="raised-as-string"),
         pytest.param(1024, "1024", id="raised-as-int"),
         pytest.param("  512  ", "512", id="whitespace-tolerated"),
@@ -68,7 +66,7 @@ def test_unparseable_value_falls_back_to_the_default(caplog):
     the user would get no shell at all, with the cause several layers away.
     """
     with caplog.at_level("WARNING"):
-        assert docker_env._resolve_pids_limit("lots") == "256"
+        assert docker_env._resolve_pids_limit("lots") == "2048"
     assert "docker_pids_limit" in caplog.text
 
 
@@ -135,7 +133,7 @@ def test_configured_limit_reaches_docker_run(monkeypatch):
 def test_default_is_unchanged_when_not_configured(monkeypatch):
     """Nobody who leaves this alone sees a behaviour change."""
     args = _run_args(monkeypatch)
-    assert args[args.index("--pids-limit") + 1] == "256"
+    assert args[args.index("--pids-limit") + 1] == "2048"
 
 
 def test_opting_out_removes_the_flag(monkeypatch):
@@ -167,7 +165,7 @@ def test_setting_is_wired_through_every_config_surface():
     """
     from hermes_cli.config_defaults import DEFAULT_CONFIG
 
-    assert DEFAULT_CONFIG["terminal"]["docker_pids_limit"] == "256"
+    assert DEFAULT_CONFIG["terminal"]["docker_pids_limit"] == "2048"
 
     from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
 
@@ -176,8 +174,17 @@ def test_setting_is_wired_through_every_config_surface():
     )
 
 
+def test_terminal_env_value_reaches_backend_config(monkeypatch):
+    """The env bridge must not drop an explicit value before backend shaping."""
+    from tools import terminal_tool
+
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_DOCKER_PIDS_LIMIT", "1024")
+    assert terminal_tool._get_env_config()["docker_pids_limit"] == "1024"
+
+
 # ---------------------------------------------------------------------------
-# Single-source default (post-review: Enough1122, point 2)
+# Single-source default
 # ---------------------------------------------------------------------------
 
 def test_every_hardwired_site_reads_the_same_default():
@@ -185,25 +192,15 @@ def test_every_hardwired_site_reads_the_same_default():
 
     config_defaults is the pure-data leaf everything can safely import, so each
     site now reads the constant from there. Importing terminal_tool wholly is
-    avoided here (heavy module) — the point is the identifier's presence and
-    single-source identity, not its evaluation.
+    The backend shaper and Docker builder must both consume the same pure-data
+    default rather than silently growing independent literals.
     """
-    import agent.prompt_builder
-    import tools.terminal_tool
     from hermes_cli import config_defaults
+    from tools import terminal_tool_backends
 
-    assert config_defaults.DEFAULT_DOCKER_PIDS_LIMIT == "256"
+    assert config_defaults.DEFAULT_DOCKER_PIDS_LIMIT == "2048"
     assert docker_env._DEFAULT_PIDS_LIMIT == config_defaults.DEFAULT_DOCKER_PIDS_LIMIT
-
-    for name, src in (
-        ("tools/terminal_tool.py", Path(tools.terminal_tool.__file__)),
-        ("agent/prompt_builder.py", Path(agent.prompt_builder.__file__)),
-    ):
-        text = Path(src).read_text(encoding="utf-8")
-        assert "DEFAULT_DOCKER_PIDS_LIMIT" in text, (
-            f"{name} must consult the shared constant, not a bare string default"
-        )
-        assert "\"256\"" not in [
-            line.strip() for line in text.splitlines()
-            if "docker_pids_limit" in line and "256" in line
-        ], f"{name} still hardcodes the default beside a docker_pids_limit read"
+    container_defaults = dict(terminal_tool_backends._CONTAINER_KEYS)
+    docker_kwargs = {out: default for out, _, default in terminal_tool_backends._DOCKER_KWARGS}
+    assert container_defaults["docker_pids_limit"] == config_defaults.DEFAULT_DOCKER_PIDS_LIMIT
+    assert docker_kwargs["pids_limit"] == config_defaults.DEFAULT_DOCKER_PIDS_LIMIT

@@ -12,6 +12,7 @@ from pathlib import Path
 import threading
 
 from gateway.session_contract import SessionActor, SessionRef
+from gateway.session_authorities import authority_home
 from hermes_state_keys import CRON_PRINCIPAL_ID, cron_request_id
 from hermes_state_runtime import RuntimeStoreError, admit_session_input, get_session_admission
 
@@ -20,12 +21,12 @@ _owners = {}
 
 
 def bind_owner(authority):
-    home = Path(authority.db.db_path).resolve().parent
+    home = authority_home(authority).resolve()
     _owners[home] = (os.getpid(), authority, asyncio.get_running_loop())
 
 
 def unbind_owner(authority):
-    home = Path(authority.db.db_path).resolve().parent
+    home = authority_home(authority).resolve()
     bound = _owners.get(home)
     if bound is not None and bound[1] is authority:
         del _owners[home]
@@ -298,8 +299,7 @@ async def execute(authority, ref, row, policy):
     try:
         from cron.cancellation import CancelRequest, _CombinedCancelEvent
 
-        db_path = await asyncio.to_thread(Path(authority.db.db_path).resolve)
-        with _profile_runtime_scope(db_path.parent):
+        with _profile_runtime_scope(authority_home(authority)):
             # The forwarded ``cron.cancel`` carries no reason, so the operator's marker is read here
             # first: a stopped agent run reports "cancelled on request", not a lost fire claim.
             stop = _CombinedCancelEvent(CancelRequest(execution_id), cancel)

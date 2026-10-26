@@ -129,6 +129,10 @@ async def test_completed_scope_survives_normal_finish_and_cold_stop(tmp_path, mo
         if not expired_result:
             restored = load_completed_results(owns_entry=lambda row: row['id'] == own.id, strict=True)[own.id]
             assert history == (restored.exit_code, restored.completion_reason, restored.output_buffer)
+            # A late ordinary reader keeps its actual primary status; a unit
+            # cleanup receipt proves quiescence, not that primary's exit code.
+            registry._finish_exited(restored, history[0])
+            assert history == (restored.exit_code, restored.completion_reason, restored.output_buffer)
         release.touch()
         assert not effects.exists()
     finally:

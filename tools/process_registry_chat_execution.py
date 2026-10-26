@@ -64,7 +64,7 @@ def reap_untracked(registry, session, proc):
         if session.systemd_unit:
             # Scope teardown is the authoritative cleanup for the worker cgroup;
             # the systemd-run wrapper PID is terminated below as fallback.
-            facade._stop_systemd_unit(session.systemd_unit)
+            registry._stop_scope(session)
         # _terminate_host_pid revalidates the kernel start time captured at
         # spawn before signalling: pgid == pid would only prove the pid leads a
         # group, and a reaped child can be recycled onto an unrelated leader.
@@ -75,8 +75,11 @@ def reap_untracked(registry, session, proc):
 
 def retain_failed_start(registry, session):
     """Keep partial native launch evidence; failure never authorizes command replay."""
-    session._scope_stop_pending = True
+    from tools.process_registry_job import job_quiescent
+    session._scope_stop_pending = not job_quiescent(session)
     with registry._lock:
         if session.id not in registry._finished:
             registry._running[session.id] = session
     registry._write_checkpoint()
+    if session.systemd_unit:
+        registry._stop_scope(session)

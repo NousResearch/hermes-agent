@@ -339,3 +339,26 @@ def test_zero_grace_preserves_no_escalation_and_reports_unknown(jobs, monkeypatc
                 os.kill(identity['pid'], signal.SIGKILL)
         job.evidence(lambda row: row['quiescent'])
     assert not _same_process(stubborn) and not _same_process(late)
+
+
+@pytest.mark.platforms('linux')
+def test_stop_waits_for_ready_receipt_within_existing_native_deadline(jobs, monkeypatch):
+    from tools import process_registry_job as native
+    from tools.process_registry import ProcessRegistry
+    job = jobs('crash')
+    job.fixture_identity('primary')
+    read = native.read_job_receipt
+    reads = []
+
+    def delayed_read(session):
+        reads.append(session)
+        # The captured launch is real; early receipt reads can precede ready.
+        # No positive receipt or identity is fabricated at this boundary.
+        return None if len(reads) <= 2 else read(session)
+
+    monkeypatch.setattr(native, 'read_job_receipt', delayed_read)
+    assert native.request_job_stop(ProcessRegistry(), job.session)
+    assert len(reads) > 2
+    job.proc.wait(timeout=5)
+    assert native.job_quiescent(job.session)
+    assert not _same_process(job.fixture_identity('primary'))

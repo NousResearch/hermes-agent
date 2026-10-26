@@ -232,7 +232,11 @@ def test_explicit_kill_returns_output_before_consuming_notification(monkeypatch)
     session.process = MagicMock()
     session.process.pid = 4242
     registry._running[session.id] = session
-    monkeypatch.setattr(registry, "_terminate_host_pid", lambda *_a, **_kw: None)
+    # This notification component uses the native unit transport boundary;
+    # kernel job cleanup is exercised by the actual native job integration tests.
+    session.systemd_unit = 'hermes-worker-proc_kill_consumed.scope'
+    monkeypatch.setattr(registry, '_signal_kill', lambda *_a, **_kw: None)
+    monkeypatch.setattr(registry, '_stop_scope', lambda *_a, **_kw: True)
     monkeypatch.setattr(registry, "_write_checkpoint", lambda: None)
     monkeypatch.setattr(pr_module, "process_registry", registry)
 

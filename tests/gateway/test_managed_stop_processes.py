@@ -55,11 +55,11 @@ def test_worker_stop_ends_own_persisted_processes_and_preserves_neighbors(tmp_pa
 def test_native_managed_stop_frame_sets_deadline_and_decodes_process_cleanup(tmp_path, monkeypatch, registry):
     from agent.managed_worker import WorkerControls, encode_frame
     from gateway.session_managed_worker import ManagedWorker, interrupt_managed
-    process = _spawn(registry, tmp_path, 's', 'route', True)
     worker = ManagedWorker(None)  # production command queue and deadline latch, without a pipe writer
     from tests.gateway.test_session_authority_cancel_settlement import ACTOR, REF, _authority
     from hermes_state_runtime import admit_session_input, claim_session_input
     db, authority = _authority(tmp_path, monkeypatch)
+    process = _spawn(registry, tmp_path, 's', 'route', True)
     authority._managed_workers = {'s': worker}
     admit_session_input(db, epoch=authority.epoch, principal_id=ACTOR.subject, session_id='s',
                         request_id='stopped', payload={'text': 'work'})

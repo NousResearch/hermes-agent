@@ -14,7 +14,7 @@ import psutil
 import pytest
 
 
-@pytest.mark.platforms("linux", "macos")
+@pytest.mark.platforms("linux")
 def test_owner_checkpoint_write_keeps_a_live_worker_handoff(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     from tools import process_registry as pr
@@ -23,13 +23,22 @@ def test_owner_checkpoint_write_keeps_a_live_worker_handoff(tmp_path, monkeypatc
     monkeypatch.setattr(pr, 'CHECKPOINT_PATH', checkpoint)
     logs = output_dir()
     logs.mkdir(parents=True)
-    worker_proc = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], stdin=subprocess.DEVNULL)
+    from tools.process_registry_job import job_argv, request_job_stop
+    from tests.waiting import wait_until
+    worker_session = pr.ProcessSession(id='proc_worker', command='dev-server', task_id='worker', started_at=time.time())
+    worker_session.output_log = str(logs / 'proc_worker.log')
+    argv = job_argv(worker_session, [sys.executable, '-c',
+        'print("serving",flush=True); import threading; threading.Event().wait(60)'], .2)
+    with (logs / 'proc_worker.log').open('w') as output:
+        worker_proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT)
+    worker_session.pid = worker_proc.pid
+    worker_session.host_start_time = pr.ProcessRegistry._safe_host_start_time(worker_proc.pid)
+    wait_until(lambda: (logs / 'proc_worker.log').read_text().startswith('serving'), timeout=10)
     owner_proc = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], stdin=subprocess.DEVNULL)
     try:
         handoff = {'session_id': 'proc_worker', 'command': 'dev-server', 'pid': worker_proc.pid, 'pid_scope': 'host',
-                   'host_start_time': pr.ProcessRegistry._safe_host_start_time(worker_proc.pid),
+                   'host_start_time': worker_session.host_start_time, 'native_job_scope': worker_session.native_job_scope,
                    'started_at': time.time(), 'output_log': str(logs / 'proc_worker.log'), 'notify_on_complete': True}
-        (logs / 'proc_worker.log').write_text('serving\n')
         gone = {**handoff, 'session_id': 'proc_gone', 'pid': 2 ** 22 + 7, 'output_log': str(logs / 'proc_gone.log')}
         (logs / 'proc_gone.log').write_text('')
         checkpoint.write_text(json.dumps([handoff, gone]))  # what the exiting worker left behind
@@ -43,14 +52,14 @@ def test_owner_checkpoint_write_keeps_a_live_worker_handoff(tmp_path, monkeypatc
         # The next interpreter still adopts the worker's process from the file.
         successor = pr.ProcessRegistry()
         successor._running['proc_owner'] = owner._running['proc_owner']
-        assert successor.recover_from_checkpoint() == 2
+        assert successor.recover_from_checkpoint() == 1
         assert successor.get('proc_worker') is not None
-        # The unrelated writer preserved the record; actual native recovery
-        # now collects its lost log-backed result and retires the checkpoint.
-        gone_session = successor.get('proc_gone')
-        assert gone_session._completion_event.wait(10)
+        # A log and an absent wrapper alone cannot discharge an unknown job.
+        assert successor.get('proc_gone') is None
+        assert 'proc_gone' in {entry['session_id'] for entry in json.loads(checkpoint.read_text())}
     finally:
-        for proc in (worker_proc, owner_proc):
-            proc.kill()
-            proc.wait(timeout=10)
+        assert request_job_stop(pr.ProcessRegistry(), worker_session)
+        worker_proc.wait(timeout=10)
+        owner_proc.kill()
+        owner_proc.wait(timeout=10)
     assert not psutil.pid_exists(worker_proc.pid) or psutil.Process(worker_proc.pid).status() == psutil.STATUS_ZOMBIE

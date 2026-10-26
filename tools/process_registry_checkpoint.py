@@ -142,6 +142,14 @@ class ProcessCheckpointMixin:
                         entries.append(entry)
                         retiring.add(entry['session_id'])
                         present.add(entry['session_id'])
+                # A cached completed result can predate the recorded backend
+                # scope. Reinserting it while output commits cannot downgrade
+                # that resource to an ordinary host PID.
+                opaque = {row['session_id']: row for row in previous
+                          if row.get('pid_scope', 'host') != 'host' or row.get('wsl_chain')}
+                for entry in entries:
+                    if entry['session_id'] in retiring and (old := opaque.get(entry['session_id'])):
+                        entry['pid_scope'], entry['wsl_chain'] = old.get('pid_scope', 'host'), old.get('wsl_chain', False)
                 updates = merge_ownership(entries, previous)
                 updates.update(merge_ownership(entries, receipts))
                 capabilities = inherit_job_scope(entries, [*previous, *receipts])

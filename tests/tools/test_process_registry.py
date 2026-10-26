@@ -2408,32 +2408,87 @@ class TestSystemdCgroupIsolation:
         assert session.systemd_unit == f"hermes-worker-{session.id}.scope"
 
     @pytest.mark.platforms("linux")
-    @pytest.mark.parametrize("scope_stop_would_succeed", [True, False])
-    def test_partial_pty_scope_start_retains_evidence_without_pipe_replay(
-        self, registry, monkeypatch, _gateway_identity, scope_stop_would_succeed
+    def test_pty_spawn_failure_reaps_scope_without_replaying_command(
+        self, registry, monkeypatch, _gateway_identity
     ):
-        """An uncertain PTY launch cannot authorize a second execution of its command."""
-        import json
+        """A failed PTY scope must not collide with the pipe fallback scope."""
         from ptyprocess import PtyProcess
-        from tools.process_registry import _checkpoint_path
+
+        events = []
+        fake_proc = MagicMock()
+        fake_proc.pid = 4321
+        fake_proc.stdout = iter([])
+        fake_proc.stdin = MagicMock()
+        fake_proc.poll.return_value = None
+
+        def fake_popen(argv, **_kwargs):
+            events.append(("pipe", list(argv)))
+            return fake_proc
+
+        def fake_stop(unit_name):
+            events.append(("stop", unit_name))
+            return True
+
+        def fail_pty(*_args, **_kwargs):
+            events.append(("pty", None))
+            raise RuntimeError("PTY wrapper failed after scope creation")
 
         monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
-        monkeypatch.setattr("tools.process_registry._systemd_run_user_scope_available", lambda: True)
-        monkeypatch.setattr("gateway.restart.is_gateway_supervisor_process", lambda environ=None: True)
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "gateway.restart.is_gateway_supervisor_process",
+            lambda environ=None: True,
+        )
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
-        with patch.object(PtyProcess, "spawn", side_effect=RuntimeError("PTY launch outcome unknown")), \
-             patch("subprocess.Popen") as pipe_spawn, \
-             patch("tools.process_registry._stop_systemd_unit", return_value=scope_stop_would_succeed) as stop_unit:
+
+        with patch.object(PtyProcess, "spawn", side_effect=fail_pty), \
+            patch("subprocess.Popen", side_effect=fake_popen), \
+            patch("tools.process_registry._stop_systemd_unit", side_effect=fake_stop), \
+            patch("threading.Thread", return_value=MagicMock()), \
+            patch.object(registry, "_write_checkpoint"):
             with pytest.raises(RuntimeError, match="original command was not retried"):
                 registry.spawn_local("codex", cwd="/tmp", use_pty=True)
+
+        assert [event[0] for event in events] == ["pty", "stop"]
+        session = next(iter(registry._running.values()))
+        assert events[1][1] == f"hermes-worker-{session.id}.scope"
+        assert session.systemd_unit == '' and not session._scope_stop_pending
+
+    @pytest.mark.platforms("linux")
+    def test_pty_spawn_failure_does_not_fallback_when_scope_reap_fails(
+        self, registry, monkeypatch, _gateway_identity
+    ):
+        """Do not launch a duplicate command while the failed PTY scope may live."""
+        from ptyprocess import PtyProcess
+
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "gateway.restart.is_gateway_supervisor_process",
+            lambda environ=None: True,
+        )
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+
+        with patch.object(
+            PtyProcess,
+            "spawn",
+            side_effect=RuntimeError("PTY wrapper failed after scope creation"),
+        ), patch("subprocess.Popen") as pipe_spawn, patch(
+            "tools.process_registry._stop_systemd_unit", return_value=False
+        ) as stop_unit:
+            with pytest.raises(RuntimeError, match="original command was not retried"):
+                registry.spawn_local("codex", cwd="/tmp", use_pty=True)
+
+        stop_unit.assert_called_once()
         pipe_spawn.assert_not_called()
-        stop_unit.assert_not_called()
-        session, = registry._running.values()
-        assert session._scope_stop_pending and session.pid is None
-        assert session.systemd_unit == f"hermes-worker-{session.id}.scope"
-        checkpoint, = json.loads(_checkpoint_path().read_text())
-        assert checkpoint['session_id'] == session.id and checkpoint['_scope_stop_pending']
-        assert checkpoint['systemd_unit'] == session.systemd_unit
+        session = next(iter(registry._running.values()))
+        assert session.systemd_unit and session._scope_stop_pending
 
     def test_worker_memory_limit_honors_local_guard_mb_override(self, monkeypatch):
         import tools.process_registry as pr

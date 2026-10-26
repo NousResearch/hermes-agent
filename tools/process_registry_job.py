@@ -80,7 +80,7 @@ def job_exit_result(session, exit_code, reason, source):
     if not session.native_job_scope:
         return exit_code, reason, source
     row = read_job_receipt(session)
-    if row and type(row['exit_code']) is int:
+    if row and not row.get('unit') and type(row['exit_code']) is int:
         exit_code = row['exit_code']
     if not job_quiescent(session):
         session._scope_stop_pending = True
@@ -154,6 +154,15 @@ def request_job_stop(registry, session):
         return True
     if session.native_job_scope is not True:
         return False
+    if not registry._host_pid_is_ours(session.pid, session.host_start_time):
+        return False
+    end = time.monotonic() + max(1.0, 2 * registry._daemon_term_grace_seconds() + 1.0)
+    # A concurrent Stop can reach the captured launch before its helper installs
+    # handlers and writes readiness. Wait within the same native Stop deadline.
+    while not read_job_receipt(session) and time.monotonic() < end:
+        time.sleep(.02)
+    if job_quiescent(session):
+        return True
     if (not read_job_receipt(session)
             or not registry._host_pid_is_ours(session.pid, session.host_start_time)):
         return False
@@ -162,7 +171,6 @@ def request_job_stop(registry, session):
     except OSError:
         return job_quiescent(session)
     # This is the existing native Stop grace, not a new scheduler or retry owner.
-    end = time.monotonic() + max(1.0, 2 * registry._daemon_term_grace_seconds() + 1.0)
     while time.monotonic() < end:
         if job_quiescent(session):
             return True

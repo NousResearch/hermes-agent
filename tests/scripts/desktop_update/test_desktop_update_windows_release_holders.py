@@ -195,5 +195,6 @@ def test_close_and_retry_runs_under_its_own_run_even_from_a_relaunched_desktop(t
     assert (corr, covered) == (run, True), detail
     # Only the tethered Start-Process rung inherits the hand-off's environment, so check both ends:
     # what the hand-off itself carried while it relaunched, and what the Desktop it started saw.
-    assert 'HERMES_UPDATE_CORRELATION_ID' not in {k.upper() for k in handoff_env}, (handoff_env, detail)
+    leaked = {k: v for k, v in handoff_env.items() if k.upper() == 'HERMES_UPDATE_CORRELATION_ID'}
+    assert leaked == {}, detail
     assert [line.split(' ', 1)[1] for line in launches.read_text(encoding='utf-8').splitlines()] == ['<unset>'], detail

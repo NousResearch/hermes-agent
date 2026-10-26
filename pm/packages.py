@@ -233,6 +233,11 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
     binary_rel = {"win32": "python.exe", "posix": "bin/python3"}
     # The staged .deb's main binary: DebPackage.verify checks it.
     main_bin_rel = "bin/python3.14"
+    # site-packages is the user-mutable layer: a desktop bundle preinstalls
+    # its gateway deps there and users `pip install` into it afterwards
+    # (#138689). A digest that counts those bytes sees drift and repairs
+    # the entry from the bare upstream archive, wiping both.
+    digest_skip_dirs = ("site-packages",)
 
     def main_rel(self, target: str) -> str:
         return self.main_bin_rel

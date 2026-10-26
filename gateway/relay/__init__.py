@@ -12,6 +12,7 @@ unless the effective relay platform configuration explicitly disables it.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -57,6 +58,25 @@ def _gateway_cfg() -> dict:
     """The ``gateway:`` block of config.yaml, or ``{}``."""
     block = _load_cfg().get("gateway")
     return block if isinstance(block, dict) else {}
+
+
+def _launch_profile_scope():
+    """The launch profile's runtime scope once the gateway multiplexes, ``nullcontext`` before.
+
+    Self-provision runs at startup, before any turn binds a profile, and under multiplexing the
+    Nous Portal and inference routing overrides only resolve inside a profile scope. The scope is
+    built from the profile's files like a turn's (``gateway.run._profile_runtime_scope``), not via
+    ``launch_profile_scope_if_multiplexed``, whose first entry freezes the launch env snapshot
+    before startup has written ``GATEWAY_RELAY_*`` into ``os.environ``.
+    """
+    from agent.secret_scope import is_multiplex_active
+
+    if not is_multiplex_active():
+        return contextlib.nullcontext()
+    from gateway.run import _profile_runtime_scope  # late import to avoid cycle
+    from hermes_constants import get_process_hermes_home
+
+    return _profile_runtime_scope(get_process_hermes_home())
 
 
 def _env_or_cfg(env_var: str, cfg_key: str) -> str:
@@ -427,7 +447,10 @@ def _resolve_relay_identity_token() -> str:
     if not token_url:
         from hermes_cli.auth import resolve_nous_access_token
 
-        return resolve_nous_access_token()
+        # Only the Nous refresh is scoped: the gateway config read above and the IdP modes below
+        # keep resolving ``${VAR}`` refs from the launch env, as they always have.
+        with _launch_profile_scope():
+            return resolve_nous_access_token()
 
     if not client_id and not client_secret:
         # Mode 1b — plain GET; the body is the token, raw or JSON-enveloped.

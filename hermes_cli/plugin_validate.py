@@ -185,6 +185,20 @@ def _check_requires_env(report: ValidationReport, manifest: dict) -> None:
         report.add("requires_env", True, "all entries UPPER_SNAKE")
 
 
+def _check_oauth(report: ValidationReport, manifest: dict, plugin_dir: Path) -> None:
+    """``oauth:`` clients (hermes_cli.plugin_oauth): shape, https and declared variables fail admission; a
+    host outside the IdP's domains and plugin code that names a token URL are reviewer warnings."""
+    from hermes_cli.plugin_oauth import oauth_admission_problems, oauth_admission_warnings
+
+    if manifest.get("oauth") in (None, []):
+        report.add("oauth", True, "not declared")
+        return
+    problems = oauth_admission_problems(manifest, plugin_dir)
+    report.add("oauth", not problems, "; ".join(problems) or "clients valid")
+    for warning in oauth_admission_warnings(manifest, plugin_dir):
+        report.warn(warning)
+
+
 # ─── Capability probe (subprocess-isolated) ──────────────────────────────────
 
 # Self-contained harness run in a scratch child process. Imports the plugin
@@ -529,6 +543,7 @@ def validate_plugin_dir(
     _check_requires_hermes(report, manifest)
     _check_config_spec(report, manifest)
     _check_requires_env(report, manifest)
+    _check_oauth(report, manifest, plugin_dir)
     _check_loadable(report, plugin_dir, manifest)
     _check_python_dependencies(report, plugin_dir)
     recorded = _check_capabilities(report, manifest, plugin_dir, probe)
@@ -646,10 +661,18 @@ def _validate_portable_plugin(report: ValidationReport, plugin_dir: Path) -> Val
         bool(name),
         "name present" if name else "plugin.json missing required 'name'",
     )
+    from hermes_cli.agent_plugins import manifest_config_schema
+    _check_config_spec(report, {"config_schema": manifest_config_schema(manifest)})
     for server_name, config in package.mcp_servers.items():
         if config.get("trust") == "untrusted":
             report.add(f"server trust: {server_name}", True,
                        "untrusted (Hermes asks before every write-capable tool call)")
+        if config.get("tool_costs"):
+            limit = config.get("spend_limit") or 0
+            report.add(f"server costs: {server_name}", True,
+                       f"{len(config['tool_costs'])} costed tool(s), "
+                       + (f"spend limit {limit} {config.get('cost_unit') or 'credits'} per chat" if limit
+                          else "no spend limit"))
     for server_name, server_decl in package.server_declarations.items():
         result = availability(server_decl.declaration)
         detail = result.state

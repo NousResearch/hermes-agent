@@ -1,0 +1,17 @@
+name: llmslim
+title: LLMSlim
+repo: https://github.com/Thanatos9404/llmslim
+sha: 3dfd4978add7da277b65b8201998bce019c93d83
+subdir: plugins/hermes
+description: "Context engine that compresses older tool output and turns locally with LLMSlim instead of asking a model for a summary: no LLM call, deterministic output, and the start of the prompt is sent unchanged, so prompt caching keeps working. Select it with context.engine: llmslim. Disclosure: installs llmslim==0.11.1 from PyPI (with numpy, scikit-learn and jsonschema); registers no tools, hooks or middleware; makes no network calls, runs no shell commands, needs no credentials, writes no files and sends no telemetry; reads its settings from config.yaml through Hermes's config loader. Token counts use a character estimate unless tiktoken is already installed in Hermes's environment, in which case tiktoken may download its encoding file once."
+maintainer: Thanatos9404
+tier: community
+category: general
+requires_hermes: ">=0.21.7"
+docs_url: https://github.com/Thanatos9404/llmslim/blob/main/docs/integrations/HERMES.md
+version: "0.11.1"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

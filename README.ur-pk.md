@@ -187,6 +187,7 @@ hermes setup --portal
 <div dir="ltr">
 
 ```bash
+hermes plugins install agent-importers  # ایک بار: OpenClaw، Claude Code، Codex اور Cursor
 hermes claw migrate              # انٹرایکٹو مائیگریشن (مکمل پری سیٹ)
 hermes claw migrate --dry-run    # جائزہ لیں کہ کیا کیا مائیگریٹ ہوگا
 hermes claw migrate --preset user-data   # حساس معلومات (secrets) کے بغیر مائیگریٹ کریں

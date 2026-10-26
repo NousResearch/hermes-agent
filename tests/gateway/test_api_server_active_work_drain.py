@@ -128,13 +128,22 @@ class TestDrainWaitsForApiWork:
         task_started = asyncio.Event()
         allow_task = asyncio.Event()
 
-        def delayed_create_task(coro):
+        def delayed_create_task(coro, **kwargs):
+            # The patch replaces asyncio.create_task process-wide, and aiohttp >= 3.14.4
+            # schedules its own client/connector tasks through it (with eager_start=True).
+            # Hold only the /v1/runs task; everything else runs unchanged.
+            if getattr(coro, "__name__", None) not in {
+                "_execute_run",
+                "_execute_run_via_live_owner",
+            }:
+                return original_create_task(coro, **kwargs)
+
             async def delayed():
                 task_started.set()
                 await allow_task.wait()
                 return await coro
 
-            return original_create_task(delayed())
+            return original_create_task(delayed(), **kwargs)
 
         mock_agent = MagicMock()
         mock_agent.run_conversation.return_value = {"final_response": "done"}

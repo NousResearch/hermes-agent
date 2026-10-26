@@ -157,10 +157,11 @@ async def build_channel_directory(adapters: dict[Any, Any]) -> dict[str, Any]:
         platforms[plat_name] = await asyncio.to_thread(_build_from_sessions, plat_name)
     for plat in Platform:
         await _discover(plat.value)
-    # Plugin platforms are dynamic enum members missing from Platform.__members__.
+    # Plugin platforms are dynamic enum members missing from Platform.__members__. Only connected
+    # adapters are discovered, so loaded entries suffice (never import an unused adapter here).
     with contextlib.suppress(Exception):
         from gateway.platform_registry import platform_registry
-        for entry in platform_registry.plugin_entries():
+        for entry in platform_registry.loaded_entries():
             await _discover(entry.name)
     _apply_channel_aliases(platforms)
     directory = {"updated_at": datetime.now().isoformat(), "platforms": platforms}

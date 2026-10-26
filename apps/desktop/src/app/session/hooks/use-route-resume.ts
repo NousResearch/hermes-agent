@@ -13,7 +13,12 @@ interface RouteResumeOptions {
   freshDraftReady: boolean
   gatewayState: string | undefined
   locationPathname: string
-  resumeSession: (sessionId: string, focus: boolean, ownerRoute?: SessionProfileRoute) => Promise<unknown>
+  resumeSession: (
+    sessionId: string,
+    focus: boolean,
+    ownerRoute?: SessionProfileRoute,
+    options?: { authoritativeSnapshot?: boolean }
+  ) => Promise<unknown>
   // Stored-session id whose most recent resume failed terminally (set by
   // useSessionActions, mirrored from $resumeFailedSessionId). While this equals
   // routedSessionId the window would otherwise latch on the loader forever, so
@@ -44,6 +49,25 @@ const RESUME_RETRY_MAX_MS = 8_000
 
 function resumeRetryDelayMs(attempt: number): number {
   return Math.min(RESUME_RETRY_MAX_MS, RESUME_RETRY_BASE_MS * 2 ** attempt)
+}
+
+// Resume the routed session with the owner route / snapshot mode carried by an
+// explicit resume request for that same session.
+function dispatchRouteResume(
+  resumeSession: RouteResumeOptions['resumeSession'],
+  routedSessionId: string,
+  sessionResumeRequest: SessionResumeRequest | null,
+  explicitlyRequested: boolean
+): void {
+  const ownerRoute = sessionResumeRequest?.sessionId === routedSessionId ? sessionResumeRequest.ownerRoute : undefined
+
+  if (explicitlyRequested && sessionResumeRequest?.authoritativeSnapshot) {
+    void resumeSession(routedSessionId, true, ownerRoute, { authoritativeSnapshot: true })
+  } else if (ownerRoute) {
+    void resumeSession(routedSessionId, true, ownerRoute)
+  } else {
+    void resumeSession(routedSessionId, true)
+  }
 }
 
 // HashRouter boot edge case: pathname briefly reads `/` before the hash is
@@ -197,14 +221,7 @@ export function useRouteResume({
 
         bootResumeRef.current = false
 
-        const ownerRoute =
-          sessionResumeRequest?.sessionId === routedSessionId ? sessionResumeRequest.ownerRoute : undefined
-
-        if (ownerRoute) {
-          void resumeSession(routedSessionId, true, ownerRoute)
-        } else {
-          void resumeSession(routedSessionId, true)
-        }
+        dispatchRouteResume(resumeSession, routedSessionId, sessionResumeRequest, explicitlyRequested)
       }
 
       return

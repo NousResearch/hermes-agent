@@ -1,4 +1,5 @@
-import { QueryClient, type QueryKey } from '@tanstack/react-query'
+import type { ModelOptionProvider, ModelOptionsResult } from '@hermes/shared'
+import { QueryClient, type QueryKey, replaceEqualDeep } from '@tanstack/react-query'
 
 // Shared React Query client. Lives in its own module (not main.tsx) so non-React
 // code — e.g. the profile store on a gateway swap — can invalidate cached,
@@ -11,6 +12,56 @@ export const queryClient = new QueryClient({
     }
   }
 })
+
+// A cache-only `model.options` read can answer for Nous before the backend has re-warmed its catalog /
+// entitlement caches (`pricing_pending` / `free_tier_pending`): no Large / Free tags and, while the
+// entitlement is unknown, every model locked. The model menu re-reads every 2s until a warm row lands,
+// so a warm reply followed by a pending one made the tags blink off and on. Keep what the last warm row
+// said until a warm one replaces it. Window plans only: only their rows carry `usage_levels`.
+const WARM_NOUS_FIELDS = ['usage_levels', 'pricing', 'unavailable_models', 'free_tier', 'warning'] as const
+
+const isPendingNous = (row: ModelOptionProvider) =>
+  row.slug === 'nous' && Boolean(row.pricing_pending || row.free_tier_pending)
+
+// A merged result keeps its pending flags, so its own row no longer reads as warm: remember which warm row
+// it was built from, or a second pending reply in a row would drop the tags again.
+const warmSource = new WeakMap<object, ModelOptionProvider>()
+
+export function keepWarmNousRow(oldData: unknown, newData: unknown): unknown {
+  const prev = oldData as ModelOptionsResult | undefined
+  const next = newData as ModelOptionsResult | undefined
+
+  const warm =
+    (prev && warmSource.get(prev)) ??
+    prev?.providers?.find(row => row.slug === 'nous' && row.usage_levels && !isPendingNous(row))
+
+  if (!warm || !next?.providers?.some(isPendingNous)) {
+    return replaceEqualDeep(oldData, newData)
+  }
+
+  const providers = next.providers.map(row => {
+    if (!isPendingNous(row)) {
+      return row
+    }
+
+    // The pending flags stay, so the menu's bounded re-read still picks up the warm row.
+    const kept: Record<string, unknown> = {}
+
+    for (const field of WARM_NOUS_FIELDS) {
+      kept[field] = warm[field]
+    }
+
+    return { ...row, ...kept } as ModelOptionProvider
+  })
+
+  const merged = replaceEqualDeep(oldData, { ...next, providers })
+
+  warmSource.set(merged, warm)
+
+  return merged
+}
+
+queryClient.setQueryDefaults(['model-options'], { structuralSharing: keepWarmNousRow })
 
 // Curried, setState-shaped cache writer for optimistic write-through: keeps
 // mutation sites terse (`setX(next)` or `setX(prev => …)`) over one query key.

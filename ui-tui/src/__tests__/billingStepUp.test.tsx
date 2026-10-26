@@ -79,6 +79,7 @@ const billState = (overrides: Partial<BillingStateResponse> = {}): BillingStateR
 
 const ctx = {
   applyAutoReload: vi.fn(() => Promise.resolve(true)),
+  applyKeepGoingOnCredits: vi.fn(() => Promise.resolve(true)),
   charge: vi.fn(() => Promise.resolve('submitted' as const)),
   openPortal: vi.fn(),
   refreshState: vi.fn(() => Promise.resolve(null)),

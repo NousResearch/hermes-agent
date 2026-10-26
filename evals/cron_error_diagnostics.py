@@ -28,7 +28,7 @@ def main():
         os.environ.update(HOME=home, HERMES_HOME=home)
         sys.path.insert(0, str(checkout))
         from cron import jobs, scheduler
-        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+        from hermes_cli.cli_cron_lines import cron_list_lines
         from openai import OpenAI
         from tools.cronjob_job_args import _format_job
 
@@ -52,7 +52,7 @@ def main():
             formatted = _format_job(jobs.get_job(job["id"]))
             console = io.StringIO()
             with contextlib.redirect_stdout(console):
-                CLICommandsMixin._cron_list(object(), "list", {"all": False})
+                print(*cron_list_lines(), sep="\n")
             checks = {
                 "persisted_traceback": "Traceback (most recent call last)" in saved,
                 "persisted_connection_cause": "Connection refused" in saved,

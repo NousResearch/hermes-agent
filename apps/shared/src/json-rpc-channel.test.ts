@@ -193,6 +193,22 @@ describe('JsonRpcRequestChannel', () => {
     expect(sent).toHaveLength(1)
   })
 
+  it('says it is the local Desktop first on the socket, in a call of its own', () => {
+    let local = true
+    const channel = new JsonRpcRequestChannel({ desktopLocal: () => local, requestIdPrefix: 'c' })
+    const { sent, transport } = spyTransport()
+    const params = () => sent.map(frame => JSON.parse(frame).params)
+
+    channel.attach(transport)
+    void channel.request('onboarding.state', { assume_fresh: true }).catch(() => undefined)
+    channel.handleFrame(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } }))
+    expect(params()).toEqual([{ desktop_local: true }, { assume_fresh: true }, { server_requests: true }])
+
+    local = false
+    channel.attach(spyTransport().transport)
+    expect(params()).toHaveLength(3)
+  })
+
   it('sends a not-shown decline only to a backend that advertised counting it', async () => {
     // An older backend settles a request on the first error frame, so a bystander window's decline
     // would beat the owner's answer (#113348): there `decline` must stay silent.

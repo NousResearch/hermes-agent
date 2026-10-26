@@ -94,8 +94,16 @@ def test_startup_fast_import_weight():
     )
 
 
+# A dead local proxy: every HTTP(S) call (GitHub's API, a git https fetch) fails at once.
+_OFFLINE = {"HTTPS_PROXY": "http://127.0.0.1:9", "HTTP_PROXY": "http://127.0.0.1:9",
+            "https_proxy": "http://127.0.0.1:9", "http_proxy": "http://127.0.0.1:9",
+            "NO_PROXY": "", "no_proxy": ""}
+
+
 def _run_version(env_overrides: dict) -> subprocess.CompletedProcess:
-    env = {**os.environ, **env_overrides}
+    # --version's update check is not under test; offline it answers at once instead of
+    # waiting out GitHub's 30 s API and 60 s ls-remote timeouts (the test's own budget).
+    env = {**os.environ, **_OFFLINE, **env_overrides}
     env.pop("HERMES_DEV", None)
     return subprocess.run(
         [sys.executable, "-m", "hermes_cli.main", "--version"],

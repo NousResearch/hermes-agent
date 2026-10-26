@@ -136,3 +136,19 @@ def test_cross_session_attached_images_allocate_unique_paths(sessions, tmp_path)
     assert path_b.read_bytes() == img_bytes_b
     assert path_a.exists() and path_b.exists()
 
+
+
+def test_upload_never_writes_through_a_planted_symlink(sessions, tmp_path):
+    """A repo-shipped dangling symlink at the candidate name must not redirect the upload."""
+    root = tmp_path / "profile" / "attachments"
+    root.mkdir(parents=True)
+    outside = tmp_path / "outside.txt"
+    (root / "notes.txt").symlink_to(outside)
+
+    response = upload("first", "notes.txt", b"user upload")
+
+    assert "error" not in response, response
+    stored = Path(response["result"]["path"])
+    assert not outside.exists()
+    assert stored.parent == root.resolve() and stored.name == "notes-2.txt"
+    assert stored.read_bytes() == b"user upload"

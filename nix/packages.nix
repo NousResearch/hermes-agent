@@ -37,6 +37,7 @@
       minimal = pkgs.callPackage ./hermes-agent.nix {
         inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
         npm-lockfile-fix = inputs'.npm-lockfile-fix.packages.default;
+        inherit pmPackages;
         inherit
           rev
           branch
@@ -74,6 +75,7 @@
         node-gyp =
           (pkgs.callPackage ./lib.nix {
             inherit (pkgs) npm-lockfile-fix;
+            inherit pmPackages;
           }).node-gyp;
         default = full;
 

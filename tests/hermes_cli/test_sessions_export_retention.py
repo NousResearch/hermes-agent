@@ -16,6 +16,10 @@ def store(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    # `hermes sessions` opens the ACTIVE home's store by explicit path (a served-profile process has
+    # no single default store); the hermetic conftest re-pins hermes_state's argless default to its
+    # own home, so point that default here too or the seeded rows land in a store the CLI never reads.
+    monkeypatch.setattr("hermes_state.DEFAULT_DB_PATH", home / "state.db")
     with SessionDB() as db:
         for session_id in ("normal", "pinned", "archived"):
             db.create_session(session_id, "cli")

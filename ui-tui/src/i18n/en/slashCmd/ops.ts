@@ -47,7 +47,13 @@ export const slashCmdOpsEn = {
       workspaceTarget: 'workspace',
       restoredDetail: 'restored',
       // {0}=target (file path or "workspace"), {1}=detail
-      restored: (target: string, detail: string) => `rollback restored ${target}: ${detail}`
+      restored: (target: string, detail: string) => `rollback restored ${target}: ${detail}`,
+      // {0}=summarized paths; main's CLI lines for what a safe whole-tree restore left alone
+      keptUserEdits: (files: string) => `↷ Kept your hand-edits: ${files}\nUse /rollback <N> --all to restore those too.`,
+      keptOversize: (files: string) => `↷ Kept (too large for checkpoints, no stored copy to revert to): ${files}`,
+      failedDeletes: (files: string) => `⚠️ Could not remove (left in place): ${files}`,
+      // {0}=count of paths not listed
+      morePaths: (count: number) => ` (+${count} more)`
     },
     agents: {
       paused: 'delegation · paused',

@@ -1,16 +1,20 @@
+// health: allow FILE_LINES -- locale data: translated copy for the usage-window plan UI (allowance gauges, Large/Free tags, the limit card), one key per string
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
-import { frAuxTasks } from './fr_aux_tasks'
 import { frBoot } from './fr_boot'
 import { frClarify } from './fr_clarify'
 import { frConnectorAccounts } from './fr_connector_accounts'
 import { frConnectorCard } from './fr_connector_card'
+import { frErrorLayers } from './fr_error_layers'
 import { frFirstRun } from './fr_first_run'
 import { frLocalModels } from './fr_local_models'
 import { frModelMenu } from './fr_model_menu'
+import { frModelSettings } from './fr_model_settings'
 import { frNotices } from './fr_notices'
+import { frNotifications } from './fr_notifications'
 import { frOnboarding } from './fr_onboarding'
+import { frPluginUpdate } from './fr_plugin_update'
 import { frProjects } from './fr_projects'
 import { frSharedMetrics } from './fr_shared_metrics'
 import { frThemePicker } from './fr_theme_picker'
@@ -493,14 +497,6 @@ export const frOverrides = {
     }
   },
   ...frNotices,
-  billingBlock: {
-    titleNous: 'Plus de crédits Nous',
-    titleProvider: provider => `Plus de crédits — ${provider}`,
-    fallbackMessage: 'Votre compte est à court de crédits. Ajoutez-en pour continuer.',
-    openBilling: 'Ouvrir la facturation',
-    addCredits: 'Ajouter des crédits',
-    dismiss: 'Fermer'
-  },
   sendDiagnostics: {
     title: 'Envoyer les diagnostics à Nous',
     privacyNotice:
@@ -930,52 +926,7 @@ export const frOverrides = {
         masterPasswordPlaceholder: 'Mot de passe principal'
       }
     },
-    notifications: {
-      title: 'Notifications',
-      intro: "Notifications système (pas les toasts de l'application). Par appareil.",
-      enableAll: 'Activer les notifications',
-      enableAllDesc: 'Désactivé coupe toutes les notifications ci-dessous.',
-      focusedHint: 'Les alertes de fin ne se déclenchent que quand Hermes est en arrière-plan.',
-      kinds: {
-        approval: {
-          label: 'Approbation requise',
-          description: "Une commande attend que vous l'approuviez ou la rejetiez."
-        },
-        input: {
-          label: 'Saisie requise',
-          description: "Hermes a posé une question ou a besoin d'un mot de passe ou d'un secret."
-        },
-        turnDone: {
-          label: 'Réponse prête',
-          description: "Un tour s'est terminé pendant que Hermes était en arrière-plan."
-        },
-        turnError: {
-          label: 'Échec du tour',
-          description: 'Erreurs de tour en arrière-plan.'
-        },
-        backgroundDone: {
-          label: 'Tâche en arrière-plan terminée',
-          description: "Une commande terminal en arrière-plan s'est terminée."
-        },
-        credits: {
-          label: 'Alertes de crédits',
-          description: "L'accès aux crédits est suspendu ou rétabli."
-        },
-        plugin: {
-          label: 'Notifications des plugins',
-          description: 'Un plugin desktop a envoyé une notification pendant que Hermes était en arrière-plan.'
-        }
-      },
-      test: 'Envoyer une notification de test',
-      testTitle: 'Hermes',
-      testBody: 'Les notifications fonctionnent.',
-      testSent:
-        "Test envoyé. Si rien n'apparaît, vérifiez les autorisations de notification de votre système et le mode Ne pas déranger.",
-      testUnsupported: 'Ce système ne prend pas en charge les notifications natives.',
-      completionSoundTitle: 'Son de fin',
-      completionSoundDesc: "Se joue à la fin d'un tour d'agent. Choisissez un préréglage et prévisualisez-le ici.",
-      completionSoundPreview: 'Aperçu'
-    },
+    notifications: frNotifications,
     sections: {
       model: 'Modèle',
       chat: 'Conversation',
@@ -1219,9 +1170,7 @@ export const frOverrides = {
         maxLines: 'Limite de pagination de fichier',
         maxLineLength: 'Limite de longueur de ligne'
       },
-      codeExecution: {
-        mode: "Mode d'exécution du code"
-      },
+      codeExecution: { mode: "Mode d'exécution du code" },
       approvals: {
         mode: "Mode d'approbation",
         timeout: "Délai d'expiration de l'approbation",
@@ -1493,12 +1442,6 @@ export const frOverrides = {
             'TOUT — l’interface de chat, l’agent Hermes et l’ensemble de votre configuration, de vos conversations, secrets et journaux'
         }
       }
-    },
-    poolLimits: {
-      warmBotBackendsAria: 'Backends de bots maintenus actifs',
-      warmBotBackendsTitle: 'Backends de bots actifs',
-      backendIdleTimeoutAria: "Délai d'inactivité du backend en millisecondes",
-      backendIdleTimeoutTitle: "Délai d'inactivité du backend"
     },
     customEndpoints: {
       active: 'Actif',
@@ -1954,71 +1897,7 @@ export const frOverrides = {
       deepLinkErrorUrl: 'Seules les URL de serveur http:// et https:// sont autorisées.',
       deepLinkErrorTooLarge: 'La configuration dépasse la limite de 32 Ko.'
     },
-    model: {
-      setupProviderFallback: 'fournisseur',
-      setUpProvider: name => `Configurer ${name}`,
-      staleAuxBefore: (count, names) =>
-        count > 1
-          ? `${count} tâches auxiliaires (${names}) s'exécutent encore sur `
-          : `${count} tâche auxiliaire (${names}) s'exécute encore sur `,
-      staleAuxAfter: ', et non sur votre modèle principal.',
-      staleAuxOtherProviders: "d'autres fournisseurs",
-      moaEnabled: 'Activé',
-      moaSetDefault: 'Définir par défaut',
-      moaNewPresetPlaceholder: 'nouveau préréglage',
-      moaAddPreset: 'Ajouter un préréglage',
-      customModel: 'Modèle personnalisé…',
-      customModelPlaceholder: 'ID du modèle',
-      chooseFromList: 'Choisir dans la liste',
-      moaDefault: 'Par défaut :',
-      moaReferenceToggle: (enabled, index) => `${enabled ? 'Désactiver' : 'Activer'} la référence ${index}`,
-      moaReferenceTitle: index => `Référence ${index}`,
-      moaAddReference: 'Ajouter un modèle de référence',
-      loading: 'Chargement de la configuration du modèle...',
-      appliesDesc:
-        "S'applique aux nouvelles sessions. Utilisez le sélecteur de modèle dans le compositeur pour changer à chaud la conversation active.",
-      provider: 'Fournisseur',
-      model: 'Modèle',
-      applying: 'Application...',
-      mainAppliedTitle: 'Modèle principal mis à jour',
-      mainAppliedMessage: model => `Les nouvelles sessions utiliseront ${model}.`,
-      defaultsLabel: 'Par défaut',
-      reasoning: 'Raisonnement',
-      reasoningOff: 'Désactivé',
-      speed: 'Vitesse',
-      speedStandard: 'Standard',
-      defaultsFailed: "Échec de l'enregistrement des modèles par défaut",
-      loadFailed: 'Impossible de charger les modèles',
-      restartRequired:
-        "Ce backend exécute encore l'ancien code après une mise à jour. Redémarrez-le pour charger le nouveau code.",
-      restartBackend: 'Redémarrer le backend',
-      restartingBackend: 'Redémarrage du backend...',
-      restartFailed: 'Impossible de redémarrer le backend',
-      auxiliaryTitle: 'Modèles auxiliaires',
-      resetAllToMain: 'Tout réinitialiser au principal',
-      staleAuxDismiss: 'Ne plus afficher',
-      auxiliaryDesc:
-        "Les tâches d'assistance s'exécutent sur le modèle principal par défaut. Attribuez un modèle dédié à toute tâche pour remplacer.",
-      setToMain: 'Définir comme principal',
-      change: 'Modifier',
-      autoUseMain: 'auto · utiliser le modèle principal',
-      inheritMainEffort: 'hériter · effort du modèle principal',
-      inheritsFrom: task => `hérite de ${task}`,
-      followTask: task => `Suivre ${task}`,
-      providerDefault: '(par défaut du fournisseur)',
-      fallbackAdd: 'Ajouter un secours',
-      fallbackEmpty: "Aucun modèle de secours — le modèle par défaut est utilisé sauf en cas d'échec.",
-      notInCatalog:
-        "n'est pas dans la liste des modèles de ce fournisseur — les appels peuvent basculer sur un secours.",
-      moaTitle: "Mélange d'agents",
-      moaPreset: 'Préréglage',
-      moaDescription:
-        "Configurez des préréglages nommés qui apparaissent comme modèles chez le fournisseur Mélange d'agents. L'agrégateur est le modèle actif : il exécute chaque étape de la boucle d'outils et son fournisseur facture presque tout le coût de l'exécution. Par défaut, les modèles de référence ne donnent qu'un avis par tour utilisateur.",
-      moaAggregator: 'Agrégateur',
-      moaAggregatorBilled: "modèle actif · facturé pour l'exécution",
-      moaReferenceHint: 'donne un avis une fois par tour par défaut',
-      tasks: frAuxTasks
-    },
+    model: frModelSettings,
     localModels: frLocalModels,
     billing: {
       perMonth: (amount: string) => `${amount}/mois`,
@@ -2121,6 +2000,17 @@ export const frOverrides = {
         effectScheduled: (targetName: string, effectiveAt: string, creditsDelta?: string) =>
           `Passage à ${targetName} — effectif ${effectiveAt}. Aucun débit maintenant ; vous conservez votre forfait actuel jusque-là.${creditsDelta ? ` Variation des crédits mensuels : ${creditsDelta}.` : ''}`
       },
+      keepGoingOnCredits: {
+        title: 'Continuer avec les crédits',
+        description:
+          'Utilise vos crédits quand l’usage inclus est épuisé. Désactivé : Hermes attend la réinitialisation.',
+        approveInBrowser:
+          "Approuvez Remote Spending dans votre navigateur pour modifier ce réglage. Il s'applique dès votre approbation.",
+        openAgain: 'Rouvrir',
+        cancel: 'Annuler',
+        approvedRetry: "Remote Spending est approuvé, mais la modification n'a pas été enregistrée.",
+        tryAgain: 'Réessayer'
+      },
       autoReload: {
         threshold: 'Seuil',
         thresholdAria: 'Seuil de recharge automatique',
@@ -2201,6 +2091,20 @@ export const frOverrides = {
             captionDefault: 'Plafond par défaut',
             captionSpending: 'Dépenses mensuelles à distance',
             valueUsed: (spent: string, limit: string) => `${spent} sur ${limit} utilisés`
+          },
+          window: {
+            today: "Aujourd'hui",
+            week: 'Cette semaine',
+            month: 'Ce mois-ci',
+            topTier: 'Grands modèles (mensuel)',
+            barLabel: (title: string) => `${title} : usage inclus consommé`,
+            captionPaused: "En pause : échec du paiement de l'abonnement",
+            captionPausedOther: 'En pause : voir Facturation dans le Portail',
+            captionTopTierUsedUp: 'Quota mensuel épuisé, les crédits couvrent le reste',
+            captionTopTierUsedUpKeepGoingOff: 'Quota mensuel épuisé, les autres modèles inclus fonctionnent toujours',
+            captionResetsIn: (duration: string) => `Réinitialisation dans ${duration}`,
+            captionIncluded: 'Usage inclus',
+            valueUsed: (percent: string) => `${percent} utilisé`
           }
         },
         planCard: {
@@ -2591,27 +2495,13 @@ export const frOverrides = {
         unsupported_gpu: 'GPU non prise en charge',
         unknown: 'état inconnu'
       },
-      catalogTitle: 'Catalogue de plugins',
-      catalogBrowse: 'Parcourir',
-      catalogHide: 'Masquer le catalogue',
-      catalogHint:
-        'Utilisez « + Ajouter à cet agent » sur un plugin : les entrées vérifiées sont installées depuis leur commit épinglé dans le profil sélectionné.',
       alreadyInstalled: (name: string) => `${name} est déjà installé dans ce profil.`,
       catalogProvenance: (sha: string) =>
         `Installé depuis le catalogue Hermes${sha ? ` au commit épinglé ${sha}` : ''}.`,
       pinnedProvenance: (sha: string) =>
         `Épinglé au commit ${sha}. Les mises à jour sont refusées tant qu’il n’est pas réinstallé avec un nouvel épinglage.`,
       pinnedBadge: (sha: string) => `épinglé @ ${sha}`,
-      tierOfficial: 'officiel',
-      tierCommunity: 'communauté',
-      updateToPin: (sha: string) => `Mettre à jour vers ${sha}`,
-      updateFailed: (name: string) => `Impossible de mettre à jour ${name}`,
-      updated: (name: string) =>
-        `${name} mis à jour vers l’épinglage actuel du catalogue. Redémarrez le gateway pour l’appliquer.`,
-      updateConsentTitle: (name: string) => `${name} demande davantage`,
-      updateConsentBody: (name: string, sha: string) =>
-        `Le nouvel épinglage de ${name} dans le catalogue (${sha}) ajoute des surfaces que la version installée n’a pas. Appliquez-le uniquement si vous leur faites confiance :`,
-      updateConsentConfirm: 'Appliquer la mise à jour',
+      ...frPluginUpdate,
       uninstall: 'Désinstaller',
       uninstallTip: (name: string, profile: string) => `Désinstaller ${name} de ${profile}`,
       uninstallConfirmTitle: (name: string) => `Désinstaller ${name} ?`,
@@ -3842,6 +3732,7 @@ export const frOverrides = {
     openDirective: 'Ouvrir',
     queueMessage: "Mettre le message en file d'attente",
     steer: "Diriger l'exécution en cours",
+    redirect: "Rediriger l'exécution en cours",
     stop: 'Arrêter',
     send: 'Envoyer',
     speaking: 'Parle',
@@ -3992,6 +3883,12 @@ export const frOverrides = {
     queueDelete: 'Supprimer',
     queueResume: 'Reprendre',
     queueResumeTip: "Mis en pause par Arrêter — reprendre l'envoi des tours en file d'attente",
+    queueLostNote: 'Tour perdu pendant le redémarrage',
+    restoreImageDraft: "Restaurer le brouillon d'image",
+    queueCancelFailed: "Impossible de retirer le tour en file d'attente",
+    queueLostDiscard: 'Ignorer',
+    queueLostDiscardTip:
+      "La passerelle a redémarré en plein tour et ne peut pas le terminer. Ignorez-le pour que les tours en file d'attente derrière lui s'exécutent.",
     queueStuckTitle: "Message en file d'attente non envoyé",
     queueStuckBody:
       "Un tour en file d'attente a continué à échouer lors de l'envoi. Il est toujours en file d'attente — essayez de l'envoyer à nouveau.",
@@ -4023,43 +3920,6 @@ export const frOverrides = {
     snippetsDesc: 'Choisissez une invite de démarrage à insérer dans le compositeur.',
     dropFiles: 'Déposez des fichiers pour les attacher',
     dropSession: 'Déposez pour lier cette conversation',
-    mcpSuggestions: {
-      label: server => `Ajouter ${server}`,
-      tip: keyword => `Suggéré car vous avez mentionné « ${keyword} » — cliquez pour vous connecter`,
-      connecting: server => `Connexion à ${server}…`,
-      cancelTip: 'Cliquez pour annuler',
-      added: server => `${server} ajouté`,
-      addedTip: 'Connecté — ses outils sont prêts dans cette conversation',
-      connectFailed: server => `Impossible de se connecter à ${server}`
-    },
-    skillSuggestions: {
-      label: skill => `Utiliser le skill : ${skill}`,
-      tip: skill => `Vous avez mentionné « ${skill} » — cliquez pour commencer avec ce skill`,
-      done: skill => `/${skill} ajouté`,
-      doneTip: "Le skill se charge lors de l'envoi"
-    },
-    githubSuggestions: {
-      label: 'Configurer GitHub',
-      tip: 'GitHub fonctionne ici grâce aux skills de la CLI gh ; cliquez pour connecter votre compte',
-      done: 'Ajout de /github-auth',
-      doneTip: "Envoyez le message et l'agent vous guidera dans la connexion à GitHub"
-    },
-    repairSuggestions: {
-      label: server => `Reconnecter ${server}`,
-      tip: server => `Un appel à ${server} vient d'échouer à cause d'une erreur de connexion`,
-      working: server => `Reconnexion à ${server}…`,
-      workingTip: 'Cliquez pour annuler',
-      done: server => `${server} reconnecté`,
-      doneTip: 'Les nouveaux identifiants sont actifs dans cette conversation',
-      failed: server => `Impossible de reconnecter ${server}`
-    },
-    cronSuggestions: {
-      label: 'Planifier ceci',
-      tip: phrase => `« ${phrase} » semble récurrent — exécutez-le plutôt selon une planification`,
-      prefix: 'Configurer ceci comme tâche planifiée :',
-      done: 'Marqué pour planification',
-      doneTip: "Envoyez-le pour que l'agent crée la tâche"
-    },
     snippets: {
       codeReview: {
         label: 'Revue de code',
@@ -4166,7 +4026,7 @@ export const frOverrides = {
       heartbeatEveryHours: hours => `toutes les ${hours} h`,
       heartbeatEverySeconds: seconds => `toutes les ${seconds} s`,
       heartbeatNext: time => `prochain : ${time}`,
-      heartbeatDueWaitingForIdle: 'échu — en attente de disponibilité',
+      dueWaitingForIdle: 'échu — en attente de disponibilité',
       heartbeatActions: 'Actions du suivi périodique',
       pauseHeartbeat: 'Mettre le suivi en pause',
       resumeHeartbeat: 'Reprendre le suivi',
@@ -4491,28 +4351,25 @@ export const frOverrides = {
     signIn: 'Se connecter',
     signInHeading: 'Connectez-vous avec un compte Nous pour débloquer davantage de modèles et outils.',
     settingUp: "Configuration de l'inférence gratuite…",
-    codeBody: 'Saisissez ce code dans votre navigateur pour terminer la connexion.',
-    copyLink: 'Copier le lien',
+    finishInBrowser: 'Terminez dans votre navigateur',
     doNotShare: 'Ne partagez pas ce code.',
+    openPageAgain: 'Rouvrir la page',
     waiting: 'En attente de la connexion…',
     finishingHeading: 'Finalisation de la connexion…',
     finishingBody: 'Autorisation accordée dans le navigateur. Récupération des jetons de votre compte.',
-    signedInAs: email => `Connecté en tant que ${email}`,
+    signedInAsLabel: 'Connecté en tant que',
     signedIn: 'Connecté.',
     completedBody: "Votre compte donne maintenant accès à l'inférence et aux outils.",
+    reconnect: 'Reconnecter',
+    openConnectors: 'Ouvrir les connecteurs',
     defaultModel: 'Modèle par défaut',
     change: 'Modifier',
     done: 'Terminé',
     notNow: 'Pas maintenant',
     tryAgain: 'Réessayer',
-    startAgain: 'Recommencer',
     didNotComplete: "La connexion n'a pas abouti",
-    rejectedBody: "La connexion a été refusée dans le navigateur. Vous restez sur l'offre gratuite.",
-    supersededBody: 'Un code de connexion plus récent a remplacé celui-ci.',
     timedOutHeading: 'Délai de connexion dépassé',
     timedOutBody: "Le code n'a pas été utilisé à temps. Vous restez sur l'offre gratuite.",
-    retiredBody:
-      "Cette identité d'offre gratuite a déjà été utilisée ou a expiré ; une nouvelle sera créée au prochain démarrage.",
     errorBody: "La connexion n'a pas abouti ; relancez-la.",
     busyHeading: 'Presque terminé',
     busyBody: wait =>
@@ -4569,7 +4426,32 @@ export const frOverrides = {
     wasPrice: 'était',
     customModel: 'Modèle personnalisé',
     addCustomModelAction: 'Ajouter un modèle personnalisé…',
-    customModelPlaceholder: 'Saisissez un ID de modèle, p. ex. openai/gpt-5'
+    customModelPlaceholder: 'Saisissez un ID de modèle, p. ex. openai/gpt-5',
+    today: "Aujourd'hui",
+    week: 'Semaine',
+    month: 'Mois',
+    topTier: 'Grands modèles (mensuel)',
+    included: 'Tous les modèles ci-dessous sont inclus',
+    pausedRenewal: 'en pause : renouvellement impayé',
+    pausedOther: 'en pause',
+    includedUsedUp: 'Usage inclus épuisé',
+    limitReached: (name: string) => `Limite ${name} atteinte`,
+    limitNames: {
+      day: 'quotidienne',
+      month: 'mensuelle',
+      top_tier: 'mensuelle des grands modèles',
+      week: 'hebdomadaire'
+    },
+    limitThenCredits: "les modèles payants utilisent maintenant vos crédits (paiement à l'usage)",
+    limitThenCreditsLarge: "les grands modèles utilisent maintenant vos crédits (paiement à l'usage)",
+    limitThenWait: "uniquement les modèles gratuits d'ici là",
+    limitThenWaitLarge: "grands modèles en pause d'ici là",
+    percentUsed: (percent: string) => `${percent} utilisé`,
+    resetsIn: (duration: string) => `réinitialisation dans ${duration}`,
+    usageLevels: { free: 'Gratuit', top_tier: 'Grand' },
+    sectionRecommended: 'Recommandés',
+    sectionOther: 'Autres modèles',
+    largeFootnote: 'Les grands modèles comptent aussi dans votre limite mensuelle des grands modèles.'
   },
   modelVisibility: {
     title: 'Modèles',
@@ -5009,34 +4891,7 @@ export const frOverrides = {
       react: 'Réagir',
       dismissError: "Ignorer l'erreur",
       responseStopped: 'Réponse interrompue',
-      errorLayers: {
-        auth: "Erreur d'authentification",
-        billing: 'Crédits épuisés',
-        disk: 'Disque plein',
-        endpoint: 'Erreur du point de terminaison personnalisé',
-        gateway: 'Erreur du gateway',
-        generic: 'Échec du tour',
-        provider: 'Erreur du fournisseur',
-        runtime: "Erreur d'exécution locale",
-        streaming: 'Erreur de connexion au flux'
-      },
-      errorLayerBodies: {
-        auth: "Le service d'IA a refusé votre connexion. Vérifiez les identifiants de ce fournisseur, puis renvoyez votre message.",
-        billing:
-          "Votre compte n'a plus de crédits chez ce fournisseur. Rechargez-le ou changez de fournisseur, puis réessayez.",
-        disk: "Votre disque est plein ; Hermes n'a pas pu enregistrer cette conversation. Libérez de l'espace, puis réessayez.",
-        endpoint:
-          "Hermes ne parvient pas à joindre votre serveur de modèle personnalisé. Vérifiez qu'il fonctionne, puis renvoyez votre message.",
-        gateway:
-          'Hermes a rencontré un problème interne au démarrage de cette réponse. Renvoyez votre message ; si cela persiste, envoyez les diagnostics.',
-        generic:
-          "Une erreur s'est produite pendant la réponse de Hermes. Réessayez ou copiez les détails si cela persiste.",
-        provider:
-          "Le service d'IA n'a pas pu traiter cette demande. Réessayez dans un instant ou changez de fournisseur.",
-        runtime:
-          'Hermes a rencontré un problème interne au démarrage de cette réponse. Renvoyez votre message ; si cela persiste, envoyez les diagnostics.',
-        streaming: 'La connexion a été interrompue avant la fin de la réponse. Réessayez pour la renvoyer.'
-      },
+      ...frErrorLayers,
       errorCodes: {
         auth: {
           title: provider => `${provider} a refusé votre connexion`,
@@ -5137,6 +4992,14 @@ export const frOverrides = {
           title: 'Hermes est resté bloqué dans une boucle',
           body: 'La réponse répétait les mêmes étapes ; Hermes l’a donc arrêtée. Réessayez ou démarrez une nouvelle conversation.'
         },
+        cron_session_read_only: {
+          title: 'Cette conversation appartient à une tâche planifiée',
+          body: 'Elle n’exécute que cette tâche ; votre message n’a donc pas été exécuté. Démarrez une nouvelle conversation pour l’envoyer.'
+        },
+        workspace_unavailable: {
+          title: 'Le dossier de cette conversation a disparu',
+          body: "Le dossier dans lequel travaille cette conversation a été déplacé ou supprimé ; votre message n'a donc pas été exécuté. Recréez le dossier ou utilisez « Déplacer vers un projet » pour lui en attribuer un autre, puis réessayez."
+        },
         SESSION_NOT_OWNED: {
           title: 'Cette conversation est ouverte ailleurs',
           body: 'Cette conversation est déjà ouverte dans une autre fenêtre Hermes ou un terminal. Fermez-la là-bas puis réessayez, ou démarrez-en une nouvelle ici.'
@@ -5172,6 +5035,10 @@ export const frOverrides = {
         free_tier_refused: {
           title: "Hermes n'a pas pu envoyer ce message sans connexion",
           body: 'La connexion avec un compte Nous est gratuite.'
+        },
+        usage_window: {
+          title: 'Usage inclus épuisé',
+          body: 'L’usage inclus de votre forfait est épuisé jusqu’à la réinitialisation. Ajoutez des crédits dans /topup pour continuer.'
         }
       },
       errorAuthKinds: {
@@ -5188,6 +5055,12 @@ export const frOverrides = {
       errorGenericProvider: "Le service d'IA",
       errorToastTitle: "Hermes n'a pas pu terminer la réponse",
       errorRetry: 'Réessayer',
+      errorSwitchToModel: (model, note) => (note ? `Passer à ${model} (${note})` : `Passer à ${model}`),
+      errorSwitchModelFailed: 'Impossible de changer de modèle',
+      errorUseCredits: 'Activer Continuer avec les crédits',
+      errorUseCreditsFailed: 'Impossible d’activer Continuer avec les crédits',
+      errorAddCredits: 'Ajouter des crédits',
+      errorOpenBillingSettings: 'Ouvrir les réglages de facturation',
       errorLimitResets: (time: string) => `Le quota se réinitialise à ${time}`,
       errorRetryAtReset: (time: string) => `Réessayer à la réinitialisation du quota (${time})`,
       errorRetryScheduled: (time: string, wait: string) => `Nouvel essai à ${time} — dans ${wait}`,
@@ -5270,10 +5143,7 @@ export const frOverrides = {
         plugin: 'plugin',
         skill: 'skill'
       },
-      tier: {
-        official: 'officiel',
-        community: 'communauté'
-      },
+      tier: { official: 'officiel', verified: 'vérifié', community: 'communauté' },
       targetProfile: (profile: string) => `S’installe dans votre profil ${profile}`,
       sendFailed: 'Impossible d’envoyer votre réponse. Réessayez.',
       commitLabel: 'Commit',

@@ -28,6 +28,7 @@ const tuiInputs = [
   ]),
   'tsconfig.json', 'package.json', 'package-lock.json', '.npmrc', 'pm/lock.json',
   'scripts/build/tui.mjs', 'scripts/build/frontend-common.mjs', 'scripts/build/freshness.mjs',
+  'ui-tui/scripts/gateway_bootstrap.py', 'ui-tui/scripts/clipboard_image.py',
 ]
 
 function treeHash(root, inputs, skip, contents = () => true) {

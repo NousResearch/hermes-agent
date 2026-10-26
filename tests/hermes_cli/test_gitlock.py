@@ -41,10 +41,13 @@ def repo(tmp_path: Path) -> Path:
     subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
     (root / "a.txt").write_text("one\n", encoding="utf-8")
     subprocess.run(["git", "add", "a.txt"], cwd=root, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "first"], cwd=root, check=True)
+    # No detached `maintenance run --auto` / `gc --auto` (git >= 2.55 spawns several per commit): one
+    # still working in the checkout is a live git to the lock reclaim and races copytree. Flag, not config.
+    quiet = ["git", "-c", "maintenance.auto=false", "-c", "gc.auto=0", "commit", "-q", "-m"]
+    subprocess.run([*quiet, "first"], cwd=root, check=True)
     (root / "b.txt").write_text("two\n", encoding="utf-8")
     subprocess.run(["git", "add", "b.txt"], cwd=root, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "second"], cwd=root, check=True)
+    subprocess.run([*quiet, "second"], cwd=root, check=True)
     return root
 
 
@@ -459,7 +462,14 @@ def test_a_killed_updates_lock_stays_while_any_git_works_in_the_checkout(repo: P
             proc.kill()
             proc.wait()
     if not form.startswith("dashed"):
-        assert release_dead_index_lock(repo) is True, "once the checkout's git is gone the killed update's lock goes"
+        released = release_dead_index_lock(repo)
+        why = None
+        if not released:  # name which leg kept it: owner proof, an unreadable process, or a holder
+            from hermes_cli import _early_recovery as er
+            from hermes_cli.gitlock import _killed_update_owns
+            why = {"killed_update_owns": _killed_update_owns(lock),
+                   "held_open": er._held_open(lock, repo, any_git=True)}
+        assert released is True, f"once the checkout's git is gone the killed update's lock goes: {why}"
 
 
 @pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="ownership proof via /proc (Linux)")
@@ -472,7 +482,9 @@ def test_a_git_elsewhere_exiting_mid_scan_is_gone_not_a_hidden_holder(repo: Path
     from tests.waiting import wait_until
 
     other = tmp_path / "other"
-    shutil.copytree(repo, other)
+    # git >= 2.55 detaches `git maintenance run --auto` after the fixture's commits; it can delete
+    # .git/objects/maintenance.lock mid-copy (shutil.Error). Copy only what the scan needs.
+    shutil.copytree(repo, other, ignore=shutil.ignore_patterns("*.lock"))
     lock = repo / ".git" / "index.lock"
     lock.write_bytes(b"")  # a killed git's: nothing holds it
     marker = "hermes.test=exits-mid-scan"

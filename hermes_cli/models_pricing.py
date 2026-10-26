@@ -260,6 +260,18 @@ def fetch_models_with_pricing(
             # Nous Portal-only: the gateway bills this row to a subscription the account holds, not to credits.
             if include_sale_original and item.get("billing_mode") == "subscription":
                 entry["billing_mode"] = "subscription"
+            # Usage-window plans only (only those callers ever see the mark): the gateway marks the
+            # models that count against the plan's monthly large-model limit.
+            if include_sale_original and item.get("top_tier") is True:
+                entry["top_tier"] = True
+            # Same callers: the gateway's per-plan picker label (free / low / medium / top_tier).
+            if include_sale_original and isinstance(item.get("usage_level"), str):
+                entry["usage_level"] = item["usage_level"]
+            # Nous only: the catalog's display name, so a limit line can name a model the way the
+            # picker does ("Model A", not the routed id).
+            if include_sale_original and isinstance(item.get("name"), str) and item["name"].strip() \
+                    and item["name"].strip() != mid:
+                entry["name"] = item["name"].strip()
             # Nous Portal-only: on-sale rows join the picker, which must not offer a tool-less model.
             if include_sale_original and not _openrouter_model_supports_tools(item):
                 entry["tools"] = False

@@ -49,12 +49,12 @@ concurrency:
 jobs:
   install-update:
     name: Windows install.ps1 + hermes update E2E
-    runs-on: windows-latest-32-core
+    runs-on: blacksmith-32vcpu-windows-2025
     # A typical run is ~17 min; one slow runner took 28 min for the same work (run 36295230146).
     timeout-minutes: 75
     steps:
       - name: Checkout code
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit }}
           # serve.git is a bare clone of this checkout: the installer's treeless clone and
@@ -107,6 +107,21 @@ jobs:
             throw "test_crash_cells.py ran no crash cells: $manifest is missing"
           }
           Get-Content -LiteralPath $manifest
+
+      - name: No machine install left behind
+        if: always()
+        # Each journey's teardown deletes its fake profile (a full install: checkout, venv with
+        # every extra, PM tools, caches) and its serve.git. All of them on the runner's one drive
+        # outgrew its free space once the suite reached 13 files (run 39853224877: 92 MB left).
+        shell: pwsh
+        run: |
+          $left = @(Get-ChildItem -LiteralPath 'C:\Users' -Directory -Filter '*hermes-e2e-*' -ErrorAction SilentlyContinue)
+          $left += @(Get-ChildItem -Path "${{ runner.temp }}\wm\*\serve.git" -Directory -ErrorAction SilentlyContinue)
+          if ($left.Count -eq 0) { 'every machine install was removed'; exit 0 }
+          foreach ($d in $left) { "::error::left behind by a journey teardown: $($d.FullName)" }
+          Get-ChildItem -Path "${{ runner.temp }}\win-update-e2e\*\teardown-leftovers.txt" -ErrorAction SilentlyContinue |
+            ForEach-Object { Get-Content -LiteralPath $_.FullName }
+          exit 1
 
       - name: Upload transcripts, logs and receipts
         if: always()

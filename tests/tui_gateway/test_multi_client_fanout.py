@@ -273,7 +273,7 @@ def test_backpressure_never_blocks_later_frames_or_other_subscribers(slow_first,
                 "message.start", "message.delta", "message.complete"]
             # Exhaust only the slow peer's bounded backlog; pace the healthy
             # reader by receipts so scheduler latency cannot make it overflow.
-            for n in range(1024):
+            for n in range(FanoutTransport._MAX_PENDING_FRAMES + 64):
                 frame = {"params": {"type": "message.delta", "n": n}}
                 assert fan.write(frame)
                 assert healthy.receive() == frame

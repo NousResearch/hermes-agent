@@ -10,7 +10,7 @@ import pytest
 
 from agent import secret_scope
 from gateway.config import PlatformConfig
-from gateway.platforms.yuanbao import AccessPolicy, YuanbaoAdapter
+from plugins.platforms.yuanbao.adapter import AccessPolicy, YuanbaoAdapter
 
 
 @pytest.fixture()

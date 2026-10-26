@@ -60,6 +60,8 @@ def _runner_stub(store):
         _served_profile_signatures={},
         _agent_cache={},
         _evict_cached_agent=lambda key: None,
+        # unserve shrinks the boot reservation; an unreserved stub has nothing to release
+        config=SimpleNamespace(_runtime_profile_homes=()),
     )
 
 

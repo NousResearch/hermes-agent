@@ -134,8 +134,11 @@ class DownloadTransportError(DownloadError):
         # A host that does not resolve is not worth a retry, but the pinned
         # mirror is a different host and the hash still guards the bytes.
         unresolved = isinstance(getattr(cause, "reason", cause), socket.gaierror)
+        # Any 5xx is the upstream host failing, not its bytes changing: a CDN's
+        # origin-down codes (520-527) are what a dead third-party host returns.
         self.fallback_allowed = (
-            self.status in (401, 403, 404, 410) or unresolved or is_transient(cause)
+            self.status in (401, 403, 404, 410) or (self.status or 0) >= 500
+            or unresolved or is_transient(cause)
         )
         refused = edge_block(cause) or ("the host refused access" if self.status in (401, 403) else None)
         reason = f"{cause}; {refused}" if refused else str(cause)

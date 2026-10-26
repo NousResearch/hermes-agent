@@ -105,7 +105,7 @@ def _voice_reasoning(agent: Any, effort: Optional[dict[str, Any]]) -> Optional[d
 
 
 def _capture(agent: Any) -> dict[str, Any]:
-    from agent.agent_runtime_helpers import _build_primary_runtime_snapshot
+    from agent.primary_runtime_snapshot import _build_primary_runtime_snapshot
     return {
         "snapshot": _build_primary_runtime_snapshot(agent, agent.api_mode),
         **{name: getattr(agent, name, None) for name in _EXTRA_FIELDS},

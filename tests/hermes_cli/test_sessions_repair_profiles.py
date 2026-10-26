@@ -334,3 +334,77 @@ def test_a_failing_row_moves_alone_and_its_lineage_waits_with_it(homes, monkeypa
         root.close()
         acme.close()
     assert not any(f["kind"] == "wrong_store" for f in _report()["findings"])
+
+
+def _admit(path: Path, sid: str, status: str) -> None:
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute(
+            "INSERT INTO session_admissions(admission_id,request_id,principal_id,target_session_id,lineage_json,"
+            "payload_json,payload_digest,intent,status,outcome,owner_epoch,generation) "
+            "VALUES(?,?,'p','" + sid + "','[]','{}','d','queue',?,?,1,1)",
+            (f"adm-{sid}-{status}", f"req-{sid}", status, "completed" if status == "terminal" else None))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("status", ["terminal", "queued"])
+def test_a_ledgered_stray_is_reported_never_copied(homes, monkeypatch, status):
+    """``session_admissions``/``worker_executions`` reference ``sessions(id) ON DELETE RESTRICT``.
+    The move used to copy such a row into the target and then fail the source delete on the FK,
+    leaving the conversation in BOTH stores on every run. A row with ledger history (settled or
+    live) is report-only, together with the stray lineage linked to it; unrelated strays move."""
+    monkeypatch.setattr("hermes_cli.sessions_cmd_repair_profiles.default_snapshot", lambda store: "snap")
+    root = SessionDB(homes["default"] / "state.db")
+    try:
+        _session(root, "led", "agent:acme:telegram:dm:230", profile="acme")
+        _session(root, "led-kid", "agent:acme:telegram:dm:230", profile="acme", parent="led")
+        _session(root, "free", "agent:acme:telegram:dm:231", profile="acme")
+    finally:
+        root.close()
+    _admit(homes["default"] / "state.db", "led", status)
+
+    findings = {f["subject"]: f for f in _report()["findings"] if f["kind"] == "wrong_store"}
+    assert findings["led"]["action"] is None and "admission" in findings["led"]["reason"]
+    assert findings["led-kid"]["action"] is None and "led" in findings["led-kid"]["reason"]
+    assert findings["free"]["action"] == "move to the acme store"
+
+    assert _run(apply=True) == 0
+    assert _run(apply=True) == 0
+    root = SessionDB(homes["default"] / "state.db")
+    acme = SessionDB(homes["acme"] / "state.db")
+    try:
+        for sid in ("led", "led-kid"):
+            assert root.get_session(sid) is not None and acme.get_session(sid) is None, sid
+        assert root.get_session("led-kid")["parent_session_id"] == "led"
+        assert root.get_session("free") is None and len(acme.get_messages("free")) == 2
+    finally:
+        root.close()
+        acme.close()
+
+
+def test_ledger_rows_that_appear_after_the_scan_still_block_the_copy(homes, monkeypatch):
+    """The fence is re-checked at export: a scan that predates the row's first admission must
+    not copy it (the source delete would then fail and strand a duplicate)."""
+    from hermes_cli.sessions_repair_profiles import scan_stores
+    root = SessionDB(homes["default"] / "state.db")
+    try:
+        _session(root, "late", "agent:acme:telegram:dm:240", profile="acme")
+    finally:
+        root.close()
+    plan, session = scan_stores(read_only=False)
+    try:
+        _admit(homes["default"] / "state.db", "late", "terminal")
+        result = plan.apply(session, snapshot=lambda store: "snap")
+    finally:
+        session.close()
+    assert [f["subject"] for f in result["failures"]] == ["late"]
+    assert "admission/worker history" in result["failures"][0]["error"]
+    root = SessionDB(homes["default"] / "state.db")
+    acme = SessionDB(homes["acme"] / "state.db")
+    try:
+        assert root.get_session("late") is not None and acme.get_session("late") is None
+    finally:
+        root.close()
+        acme.close()

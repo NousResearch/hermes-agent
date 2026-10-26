@@ -62,6 +62,25 @@ def report_pack_tidy(root: Path) -> None:
         print(f"  (git cleanup stopped at its {TIDY_BUDGET_SECONDS}s limit; the next update continues it)")
 
 
+def _refuses(git_cmd: list[str], root: Path, target: str, repository: str) -> bool:
+    """`hermes update` would refuse ``target`` (see update_downgrade_guard), so --check must not offer it."""
+    from hermes_cli.update_downgrade_guard import would_refuse
+    from hermes_cli._subprocess_compat import NO_LAZY_FETCH_ENV, noninteractive_git_env
+    from hermes_cli.source_check import _github_predates_runtime
+    from hermes_constants import get_hermes_home
+
+    def git(*args: str) -> int:
+        try:
+            return _git(git_cmd, root, list(args), env={**noninteractive_git_env(), **NO_LAZY_FETCH_ENV},
+                        timeout=20).returncode
+        except (OSError, subprocess.SubprocessError):
+            return -1
+
+    def remote(sha: str):
+        return _github_predates_runtime(repository, sha, get_hermes_home() / "source-checks" / "release-runtime.json")
+    return would_refuse(root, target, git=git, remote=remote)
+
+
 def channel_compare_branch(selected_channel: str, git_cmd: list[str], root: Path) -> str | None:
     """Report a release-pinned channel's verdict, or return the branch to compare against.
 
@@ -88,6 +107,11 @@ def channel_compare_branch(selected_channel: str, git_cmd: list[str], root: Path
         print(f"✓ No newer release: {target.label}.")
     elif _uc()._capture_head_sha(git_cmd, root) == target.commit:
         print(f"✓ Up to date with the latest release ({target.label}).")
+    elif _refuses(git_cmd, root, target.commit, target.repository):
+        # Before the rollback branch: a release this checkout contains is held too, not moved back to.
+        print(f"→ Holding at this build: {target.label} predates the gateway runtime your sessions use.")
+        print("  `hermes update` stays on this build; the next release that includes the runtime"
+              " installs normally (`hermes update --set-channel main` follows every commit).")
     elif _git(git_cmd, root, ["merge-base", "--is-ancestor", target.commit, "HEAD"]).returncode == 0:
         print(f"→ This checkout is newer than the selected release: {target.label}.")
         print("  `hermes update` moves it back to that release"
@@ -243,3 +267,24 @@ def select_apply_target(args, branch: str, request: dict, *, git_cmd, stop) -> t
     assert target.branch is not None  # a SourceTarget without a commit names its branch
     request["branch"] = target.branch
     return f"origin/{target.branch}", None, False, target.repository
+
+
+def hold_channel_release_behind_runtime(git_cmd, target_ref: str, channel: str) -> str | None:
+    """HEAD's sha when the channel's release predates the gateway runtime these stores use, else None.
+
+    The channel picked the release, the user did not ask for that commit: moving there is the
+    refused downgrade, so the update stays where it is and says why (#140729). An explicit
+    ``--branch`` never reaches here and keeps the refusal in ``update_cmd._refuse_before_commit_point``.
+    """
+    from hermes_cli.update_downgrade_guard import downgrade_refusal
+    if downgrade_refusal(git_cmd, _uc()._m().PROJECT_ROOT, target_ref) is None:
+        return None
+    head = _uc()._capture_head_sha(git_cmd, _uc()._m().PROJECT_ROOT)
+    if not head:
+        return None  # HEAD unreadable: the caller's refusal still stops the move
+    # "newer", not "ahead": the release may sit beside HEAD's line rather than behind it (#140729).
+    print(f"→ This build is newer than the {channel} release {target_ref[:12]}: that release predates the "
+          "gateway runtime your sessions use, so there is nothing to update to yet.")
+    print(f"  Hermes stays on {head[:12]} until a newer {channel} release ships. "
+          "To follow every commit instead: `hermes update --set-channel main`.")
+    return head

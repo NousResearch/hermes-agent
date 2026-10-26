@@ -36,6 +36,20 @@ def _no_host_browser_use_cli():
 
 
 @pytest.fixture(autouse=True)
+def _no_shared_temp_socket_dirs():
+    """A served profile's over-budget harness runtime dir is moved to a private ``hbh-<hash>`` dir
+    in the shared temp root (sun_path budget). Unit tests never claim one there: fake CLIs would
+    leave latch files behind. The dir keeps its long path; tests of the claim restore the real one."""
+    try:
+        import tools.browser_harness_dirs as harness_dirs
+    except Exception:
+        yield
+        return
+    with patch.object(harness_dirs, "claim_private_dir", lambda path: False):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _no_host_bot_desktop_autostart():
     """Keep the host's TigerVNC/Xfce install out of tests.
 

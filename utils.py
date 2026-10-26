@@ -49,6 +49,17 @@ def file_signature(st: os.stat_result) -> tuple[int, int, int, int]:
     return (st.st_mtime_ns, st.st_size, st.st_ino, st.st_ctime_ns)
 
 
+# Filesystem timestamps tick coarsely (~4 ms; whole seconds on some filesystems), so a write in the
+# same tick as a stat leaves the signature unchanged. A signature this fresh is "racily clean" (as in
+# git's index) and must not be trusted as "nothing changed since".
+RACY_MTIME_WINDOW_NS = 2_000_000_000
+
+
+def mtime_is_racy(mtime_ns: int) -> bool:
+    """True while ``mtime_ns`` is too recent to rule out a same-tick write after the stat."""
+    return time.time_ns() - mtime_ns < RACY_MTIME_WINDOW_NS
+
+
 def _preserve_file_mode(path: Path) -> int | None:
     """Permission bits of *path* if it exists, else ``None``."""
     try:

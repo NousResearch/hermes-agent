@@ -126,11 +126,12 @@ def test_stable_phase_result_requires_smoke_but_preserves_other_phases(tmp_path,
     group_jobs['termux'] = [termux_builder(jobs)]
     verdict = phase_result(jobs)
     members = {member for group in group_jobs.values() for member in group}
-    # What the verdict needs beyond admission and the build groups is the
-    # publication itself; the Store submission follows the file publication.
-    (publish,) = [name for name in needs_of(jobs[verdict]) if name not in members | {'validate'}
-                  and not set(needs_of(jobs[name])) - {'validate'}]
-    (store,) = [name for name in needs_of(jobs[verdict]) if publish in needs_of(jobs[name])]
+    # Beyond admission and the build groups, the verdict needs the file publication
+    # and the Store submission; both run off validate, and only the Store is advisory.
+    publication = [name for name in needs_of(jobs[verdict]) if name not in members | {'validate'}
+                   and not set(needs_of(jobs[name])) - {'validate'}]
+    (store,) = [name for name in publication if jobs[name].get('continue-on-error') is True]
+    (publish,) = [name for name in publication if name != store]
 
     def run_phase(phase, selected, failed=None, skip_tests=False, skip_signed=False):
         needs = {name: {'result': 'success'} for name in needs_of(jobs[verdict])}

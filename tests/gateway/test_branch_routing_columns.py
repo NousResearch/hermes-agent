@@ -139,7 +139,7 @@ class TestBranchRoutingColumns:
         )
         # origin_json completes the identity (#82633 reset-path pattern):
         # consumers reading routing/presentation data from state.db
-        # (mcp_serve, mirror, channel directory) need the full origin on
+        # (the mcp-serve plugin, mirror, channel directory) need the full origin on
         # the branch row without waiting for any backfill.
         assert row["origin_json"], (
             "branched session lost origin_json — state.db consumers see an "

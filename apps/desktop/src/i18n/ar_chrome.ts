@@ -349,6 +349,7 @@ export const arChrome = {
     paneControls: 'تحكم اللوحات',
     appControls: 'تحكم التطبيق',
     modelMenu: {
+      pickDeferred: (model: string) => `سيُطبَّق ${model} بدءًا من رسالتك التالية`,
       search: 'البحث عن نموذج...',
       noModels: 'لا توجد نماذج',
       editModels: 'تحرير النماذج',

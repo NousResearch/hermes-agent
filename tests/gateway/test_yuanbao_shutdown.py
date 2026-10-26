@@ -23,7 +23,7 @@ if _REPO_ROOT not in sys.path:
 
 import pytest
 from gateway.config import PlatformConfig
-from gateway.platforms.yuanbao import (
+from plugins.platforms.yuanbao.adapter import (
     YuanbaoAdapter,
     ConnectionManager,
     WS_CLOSE_TIMEOUT_S,

@@ -75,7 +75,7 @@ _ALL_GATEWAY_KEYS = tuple(_GATEWAY_SECTION_FIELDS)
 _GATEWAY_TOOL_LABELS = {k: _FEATURES[k].offer_label for k in _ALL_GATEWAY_KEYS}
 # Sections apply_*_defaults always materialise before writing selections.
 _DEFAULT_SECTIONS = ("web", "tts", "stt", "browser")
-MANAGED_IMAGE_DEFAULT_KREA_MODEL = "krea-2-medium-turbo"
+MANAGED_IMAGE_DEFAULT_KREA_MODEL = "krea-3"
 
 
 def _uses_gateway(section: object) -> bool:
@@ -479,8 +479,8 @@ def _has_managed_default_direct(key: str) -> bool:
 
 
 def _krea_image_default(config: dict[str, object], account_info) -> Optional[str]:
-    """Krea 2 Medium Turbo for accounts entitled to Krea when no image model is stored; the free
-    pool is not entitled and keeps the FAL default."""
+    """Krea 3 for accounts entitled to Krea when no image model is stored; the free pool is not
+    entitled and keeps the FAL default."""
     if _section(config, "image_gen").get("model") or not (account_info and account_info.tool_gateway_entitled_for("krea")):
         return None
     return MANAGED_IMAGE_DEFAULT_KREA_MODEL
@@ -708,17 +708,23 @@ def _run_nous_portal_login_only(*, capability: str) -> bool:
             auth_state = auth._try_import_shared_nous_state(timeout_seconds=15.0)
         if auth_state is None:
             auth_state = auth._nous_device_code_login()
-        with auth._auth_store_lock():
-            auth_store = auth._load_auth_store()
-            auth._save_provider_state(auth_store, "nous", auth_state)
-            if prior_active_provider:
-                auth_store["active_provider"] = prior_active_provider
-            else:
-                auth_store.pop("active_provider", None)
-            auth._save_auth_store(auth_store)
-        auth._write_shared_nous_state(auth_state)
+        from hermes_cli.anon_auth import settle_after_upgrade
+        from hermes_cli.guest_handoff import deferred, result_lines
+        with deferred() as handoff:  # a replaced free tier hands its apps over once both saves land
+            with auth._auth_store_lock():
+                auth_store = auth._load_auth_store()
+                auth._save_provider_state(auth_store, "nous", auth_state)
+                if prior_active_provider:
+                    auth_store["active_provider"] = prior_active_provider
+                else:
+                    auth_store.pop("active_provider", None)
+                auth._save_auth_store(auth_store)
+            auth._write_shared_nous_state(auth_state)
         auth._sync_nous_pool_from_auth_store()
+        settle_after_upgrade(auth_state)  # a config left on the free tier's route moves to the account
         print("  Nous Portal login successful.")
+        for line in (line for view in handoff.results for line in result_lines(view)):
+            print(f"  {line}")
         return True
     except KeyboardInterrupt:
         print("\n  Login cancelled.")

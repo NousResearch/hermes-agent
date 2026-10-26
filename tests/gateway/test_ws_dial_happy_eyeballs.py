@@ -42,7 +42,7 @@ async def test_relay_ws_transport_dial_races_ipv6_ipv4(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_yuanbao_dial_races_ipv6_ipv4():
-    from gateway.platforms.yuanbao import ConnectionManager, YuanbaoAdapter
+    from plugins.platforms.yuanbao.adapter import ConnectionManager, YuanbaoAdapter
 
     adapter = MagicMock(spec=YuanbaoAdapter)
     adapter.name = "yuanbao"
@@ -50,7 +50,7 @@ async def test_yuanbao_dial_races_ipv6_ipv4():
     adapter._ws_url = "wss://test.example.com/ws"
     cm = ConnectionManager(adapter)
     rec = _Recorder()
-    with patch("gateway.platforms.yuanbao.websockets.connect", rec), pytest.raises(ConnectionRefusedError):
+    with patch("plugins.platforms.yuanbao.adapter.websockets.connect", rec), pytest.raises(ConnectionRefusedError):
         await cm._dial({"bot_id": "b", "token": "t"})
     assert rec.kwargs["happy_eyeballs_delay"] == EXPECTED_DELAY
 

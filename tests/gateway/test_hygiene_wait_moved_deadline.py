@@ -34,12 +34,12 @@ class _ReadingFence:
 
 def test_hygiene_wait_reads_the_moved_deadline_after_each_slice():
     async def drive():
-        fence = _ReadingFence(ceiling=0.6)
+        fence = _ReadingFence(ceiling=2.0)
         future = asyncio.get_running_loop().create_future()
-        asyncio.get_running_loop().call_later(1.2, future.set_result, ("compressed", None))
+        asyncio.get_running_loop().call_later(4.0, future.set_result, ("compressed", None))
         attempt = GatewayRunner._HygieneAttempt(
             agent=None, meta=None, commit_fence=fence, future=future, wait_started=fence.wait_started)
-        hs = SimpleNamespace(timeout_seconds=30.0, total_ceiling_seconds=0.6, max_turn_hold_seconds=30.0)
+        hs = SimpleNamespace(timeout_seconds=30.0, total_ceiling_seconds=2.0, max_turn_hold_seconds=30.0)
         return await GatewayRunner._hmwa_hygiene_wait_for_summary(
             None, attempt, hs, SimpleNamespace(session_id="sess-1"))
 

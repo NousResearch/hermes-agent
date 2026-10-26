@@ -7,6 +7,12 @@ import pytest
 from tools import bot_relay
 
 
+def _delivery_argv(profile, query_file):
+    # Bot-chat delivery runs over the gateway here; the DM path (tools/bot_mode_dm.py) still spawns
+    # ``_hermes_cli() -p <profile> ...``, so the launcher it picks is the invariant under test.
+    return [bot_relay._hermes_cli(), "-p", profile, "--query-file", query_file]
+
+
 @pytest.fixture
 def launchers(tmp_path, monkeypatch):
     root = tmp_path / "source install"
@@ -28,23 +34,21 @@ def launchers(tmp_path, monkeypatch):
 def test_delivery_prefers_install_launcher_over_old_generation(launchers):
     published, sibling = launchers
     published.touch()
-    argv = bot_relay.local_delivery_command("researcher", "message with spaces.txt")
+    argv = _delivery_argv("researcher", "message with spaces.txt")
     assert argv[0] == str(published)
     assert str(sibling) not in argv
-    assert argv[1:] == ["-p", "researcher", *bot_relay.BOT_CHAT_TURN_ARGS,
-                       "--query-file", "message with spaces.txt"]
 
 
 def test_unpublished_install_retains_interpreter_sibling(launchers):
     _, sibling = launchers
-    assert bot_relay.local_delivery_command("default", "body.txt")[0] == str(sibling)
+    assert _delivery_argv("default", "body.txt")[0] == str(sibling)
 
 
 @pytest.mark.platforms("windows")
 def test_windows_delivery_does_not_select_batch_shims(launchers):
     published, sibling = launchers
     published.with_suffix(".cmd").touch()
-    assert bot_relay.local_delivery_command("default", "body.txt")[0] == str(sibling)
+    assert _delivery_argv("default", "body.txt")[0] == str(sibling)
 
 
 def test_path_then_bare_fallback_remain_available(launchers, monkeypatch):
@@ -106,7 +110,7 @@ def test_real_delivery_launcher_imports_new_generation(tmp_path, monkeypatch):
     assert _launchers.mint_launcher("hermes", old_package.parent, old_bin, real_python, None)
     monkeypatch.setattr(bot_relay, "__file__", str(root / "tools" / "bot_relay.py"))
     monkeypatch.setattr(sys, "executable", str(old_bin / "python.exe"))
-    argv = bot_relay.local_delivery_command("researcher", str(tmp_path / "message&extra.txt"))
+    argv = _delivery_argv("researcher", str(tmp_path / "message&extra.txt"))
     for generation in ("first", "new-plugin"):
         selected = record.parent / "environments" / generation / "venv"
         packages = site_packages(selected)

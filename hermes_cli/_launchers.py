@@ -11,6 +11,7 @@ interpreter before it publishes either command.
 
 from __future__ import annotations
 
+from contextlib import suppress
 import json
 import os
 import shlex
@@ -166,6 +167,39 @@ def _load_script_maker():
         return None
 
 
+def _store_script_maker(python_exe: Path):
+    """ScriptMaker from the pip that ships with the interpreter being bound.
+
+    A launch activates only the dependency environment, which carries no
+    distlib and drops the store's site-packages, so the update that repins
+    Python could only publish a .cmd and retire hermes.exe -- which Desktop's
+    backend sweep, shortcuts and terminal profiles name. python-build-standalone
+    ships pip (the installer mints the first hermes.exe through it), and its
+    vendored distlib is self-contained. It loads under a private name so the
+    store's pip never answers an ``import pip`` in this process."""
+    package = Path(python_exe).parent / "Lib" / "site-packages" / "pip" / "_vendor" / "distlib"
+    if not (package / "scripts.py").is_file():
+        return None
+    import hashlib
+    import importlib
+    import importlib.util
+
+    # One private package per store copy: a later repin's pip never reuses the first one's.
+    name = f"_hermes_store_distlib_{hashlib.sha256(str(package).encode()).hexdigest()[:12]}"
+    try:
+        if name not in sys.modules:
+            spec = importlib.util.spec_from_file_location(
+                name, package / "__init__.py", submodule_search_locations=[str(package)])
+            if spec is None or spec.loader is None:
+                return None
+            sys.modules[name] = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(sys.modules[name])
+        return importlib.import_module(f"{name}.scripts").ScriptMaker
+    except (ImportError, OSError, SyntaxError, AttributeError):  # a torn or foreign pip: mint a .cmd
+        sys.modules.pop(name, None)
+        return None
+
+
 def exe_is_venv_bound(exe: Path, venv_dir: Path | None) -> bool:
     """True when an existing launcher exe embeds the venv interpreter —
     i.e. it is a copied venv console-script trampoline from the pre-pm
@@ -226,7 +260,7 @@ def mint_launcher(
     if not _is_windows():
         return _mint_shell_launcher(name, out_dir, python_exe, script)
 
-    script_maker_cls = _load_script_maker()
+    script_maker_cls = _load_script_maker() or _store_script_maker(python_exe)
     if script_maker_cls is not None:
         class _PathedScriptMaker(script_maker_cls):  # type: ignore[misc,valid-type]
             def _get_script_text(self, entry):
@@ -556,15 +590,50 @@ def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
     store_python = resolve_store_python(repo_root, publication=True)
     if store_python is not None:
         path = mint_launcher(name, repo_root, out_dir, store_python, None)
-        if path is not None and path.suffix == ".cmd":
+        if path is None:
+            return None
+        # Any publication collects copies retired by an earlier one, whatever
+        # launcher form it writes now (distlib may be back since).
+        _collect_retired(Path(out_dir) / f"{name}.exe")
+        if path.suffix == ".cmd":
             # cmd.exe prefers .exe. An older launcher must not shadow the
             # newly published command when distlib is unavailable.
-            try:
-                (Path(out_dir) / f"{name}.exe").unlink(missing_ok=True)
-            except OSError:
+            if not _retire_exe(Path(out_dir) / f"{name}.exe"):
                 return None
         return path
     return None
+
+
+def _collect_retired(exe: Path) -> None:
+    """Delete aside copies of ``exe`` whose process has since exited: ours
+    (``.<pid>.deleteme``) and distlib's own (``.deleteme``)."""
+    for leftover in exe.parent.glob(f"{exe.name}*.deleteme"):
+        with suppress(OSError):
+            leftover.unlink()
+
+
+def _retire_exe(exe: Path) -> bool:
+    """Remove ``exe``; a running one is renamed aside instead.
+
+    Windows refuses to delete a mapped image but allows renaming it, and the
+    launcher a Python repin has to retire is usually the one running
+    ``hermes update`` (or the launch retrying its owed launcher step), so a
+    plain unlink left every repinned update owing launchers -- and the install
+    stamp -- forever. The aside copy goes on the next publication once its
+    process has exited."""
+    try:
+        exe.unlink(missing_ok=True)
+        return True
+    except OSError:
+        pass
+    aside = exe.with_name(f"{exe.name}.{os.getpid()}.deleteme")
+    try:
+        os.replace(exe, aside)
+    except OSError:
+        return False
+    with suppress(OSError):
+        aside.unlink()
+    return True
 
 
 def _first_token(line: str) -> Path | None:
@@ -740,7 +809,8 @@ def expose_cli(project_root: Path | None = None, *, create: bool = True) -> dict
 
     macOS CLI-first launches link the bundle's signed shims directly; Electron
     need not have run. Source installs converge on the store launcher owner.
-    Shell rc/PATH registration remains installer-owned.
+    POSIX shell rc registration remains installer-owned. On Windows the User
+    PATH entry is repaired only for the home new consoles use (owns_user_path).
 
     Before dependency sync succeeds, create=False maintains only commands we
     already own, without loading application config or enabling new exposure.
@@ -793,6 +863,96 @@ def expose_cli(project_root: Path | None = None, *, create: bool = True) -> dict
         return {"ok": True, "written": written}
     except OSError as exc:
         return {"ok": False, "error": str(exc)}
+
+
+_TOKEN_DUPLICATE = 0x0002
+_TOKEN_QUERY = 0x0008
+
+
+def _new_console_environment() -> dict[str, str] | None:
+    """The environment Windows gives a new process of this user, or None.
+
+    CreateEnvironmentBlock builds it from the user's stored variables
+    (HKCU\\Environment, the profile folders, the system variables) and ignores
+    this process's environment. A sandbox that overrides HERMES_HOME or
+    LOCALAPPDATA for its own processes does not change the result. Names are
+    upper-cased because Windows compares them case-insensitively.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    userenv = ctypes.WinDLL("userenv", use_last_error=True)
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    advapi32.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+    userenv.CreateEnvironmentBlock.argtypes = [ctypes.POINTER(ctypes.c_void_p), wintypes.HANDLE, wintypes.BOOL]
+    userenv.DestroyEnvironmentBlock.argtypes = [ctypes.c_void_p]
+
+    token = wintypes.HANDLE()
+    if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), _TOKEN_QUERY | _TOKEN_DUPLICATE,
+                                     ctypes.byref(token)):
+        return None
+    block = ctypes.c_void_p()
+    try:
+        if not userenv.CreateEnvironmentBlock(ctypes.byref(block), token, False):
+            return None
+        return _read_environment_block(block.value)
+    finally:
+        if block.value:
+            userenv.DestroyEnvironmentBlock(block)
+        kernel32.CloseHandle(token)
+
+
+def _read_environment_block(address: int) -> dict[str, str]:
+    """Parse a Windows environment block: NUL-terminated UTF-16 ``NAME=value`` entries, then an empty one.
+
+    The cursor advances by UTF-16 code units, not Python characters: a value
+    holding a character outside the Basic Multilingual Plane (an emoji) takes
+    two units and one character.
+    """
+    import ctypes
+
+    environ: dict[str, str] = {}
+    cursor = address
+    while entry := ctypes.wstring_at(cursor):
+        name, _, value = entry.partition("=")
+        if name:  # "=C:=C:\..." entries carry per-drive directories, not variables
+            environ[name.upper()] = value
+        cursor += len(entry.encode("utf-16-le", "surrogatepass")) + ctypes.sizeof(ctypes.c_wchar)
+    return environ
+
+
+def new_console_hermes_root() -> Path | None:
+    """The Hermes root that a newly opened console resolves, or None when Windows cannot say."""
+    from hermes_constants import hermes_root_for_environment
+
+    environ = _new_console_environment()
+    return None if environ is None else hermes_root_for_environment(environ)
+
+
+def owns_user_path(root: Path) -> bool:
+    """May ``root`` put its commands on the User PATH?
+
+    Every console the user opens reads the User PATH, so only the root that
+    new consoles resolve may register there. A custom root qualifies only when
+    HERMES_HOME is stored as a user variable. A process whose own HERMES_HOME,
+    LOCALAPPDATA or USERPROFILE override selects a different root (a review
+    sandbox, a test home, a suffixed data directory) gets False. So does any
+    root when Windows cannot report the console environment.
+    """
+    console_root = new_console_hermes_root()
+    if console_root is not None and (
+        os.path.normcase(os.path.realpath(root)) == os.path.normcase(os.path.realpath(console_root))
+    ):
+        return True
+    import logging
+
+    logging.getLogger(__name__).info(
+        "User PATH left unchanged: new consoles use %s, not %s",
+        console_root or "an unknown Hermes home", root)
+    return False
 
 
 def _merge_user_path(existing: str, entry: str) -> str | None:
@@ -849,7 +1009,8 @@ def _expose_windows_user_bin(root: Path, *, create: bool) -> dict:
     Stage the user-facing commands into ``$HERMES_HOME\\bin`` and register that
     directory in the User PATH -- the same two things scripts/install.ps1 does --
     so an update converges a machine installed under the older venv\\Scripts
-    convention instead of leaving it there forever.
+    convention instead of leaving it there forever. The registration happens
+    only when new consoles resolve this home (``owns_user_path``).
     """
     from hermes_constants import get_default_hermes_root
 
@@ -863,8 +1024,11 @@ def _expose_windows_user_bin(root: Path, *, create: bool) -> dict:
         written = ensure_install_launchers(root, directory)
         if len(written) != len(WINDOWS_BIN_LAUNCHERS):
             return {"ok": False, "error": "source launcher publication failed"}
-        return {"ok": True, "path": _register_windows_user_path(directory),
-                "written": [Path(path).name for path in written]}
+        names = [Path(path).name for path in written]
+        if not owns_user_path(directory.parent):
+            # New consoles resolve another home; its launchers stay in its own bin.
+            return {"ok": True, "skipped": "User PATH belongs to the home new consoles use", "written": names}
+        return {"ok": True, "path": _register_windows_user_path(directory), "written": names}
     except OSError as exc:
         return {"ok": False, "error": str(exc)}
 

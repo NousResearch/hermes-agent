@@ -96,6 +96,24 @@ def resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=No
     return target
 
 
+def _probe(git_cmd, cwd, *args):
+    """``git <args>`` in ``cwd``, or None when git did not answer: an unknown relation, not a claim.
+
+    Before the updater's fetch the release commit is usually absent, and git 2.43 spends 7-12 s
+    of CPU on a blobless clone failing to find it even with lazy fetch off (#137646).
+    """
+    from hermes_cli.source_check import source_git_env
+
+    try:
+        return subprocess.run(
+            [*git_cmd, *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=10, stdin=subprocess.DEVNULL, env=source_git_env(),
+            check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.debug("git %s did not answer: %s", " ".join(args), exc)
+        return None
+
+
 def _head_containing(git_cmd, cwd, commit: str, repository: str) -> str | None:
     """HEAD's sha unless HEAD is PROVEN not to contain ``commit``, then None.
 
@@ -104,20 +122,21 @@ def _head_containing(git_cmd, cwd, commit: str, repository: str) -> str | None:
     """
     from hermes_cli.source_check import _github_compare, source_git_env
 
-    def run(*args):
-        return subprocess.run(
-            [*git_cmd, *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=10, stdin=subprocess.DEVNULL, env=source_git_env(), check=False)
-
-    head = run("rev-parse", "HEAD").stdout.strip()
+    head = subprocess.run(
+        [*git_cmd, "rev-parse", "HEAD"], cwd=cwd, capture_output=True, text=True, encoding="utf-8",
+        errors="replace", timeout=10, stdin=subprocess.DEVNULL, env=source_git_env(), check=False,
+    ).stdout.strip()
     if not _SHA.fullmatch(head):
         return None
-    ancestry = run("merge-base", "--is-ancestor", commit, head).returncode
-    if ancestry == 0:
+    # An unanswered probe falls through to the comparison API, as a shallow checkout's does.
+    ancestry = _probe(git_cmd, cwd, "merge-base", "--is-ancestor", commit, head)
+    if ancestry is not None and ancestry.returncode == 0:
         return head
     # A shallow boundary makes exit 1 a guess; full history makes it proof.
-    if ancestry == 1 and run("rev-parse", "--is-shallow-repository").stdout.strip() == "false":
-        return None
+    if ancestry is not None and ancestry.returncode == 1:
+        shallow = _probe(git_cmd, cwd, "rev-parse", "--is-shallow-repository")
+        if shallow is not None and shallow.stdout.strip() == "false":
+            return None
     status = (_github_compare(commit, head, repository) or {}).get("status")
     return None if status in ("behind", "diverged") else head
 

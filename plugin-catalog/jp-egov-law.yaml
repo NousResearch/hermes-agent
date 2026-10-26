@@ -1,13 +1,13 @@
 name: jp-egov-law
 repo: https://github.com/TakeshiTGAL/hermes-plugin-egov-law
-sha: f1dd47e0a501d21f67089b2da5e2e9b16734a552
-description: |-
-  Japanese laws for Hermes Agent, built on the e-Gov Law API: find a law by name, abbreviation or phrase, read one article as in force today or on a given date, and check amendment history and enforcement dates, with the source credit e-Gov's terms ask for. Disclosure — sends the law names, article numbers, dates and search phrases you look up to laws.e-gov.go.jp (public API, no key); no other host, nothing written to disk. Registers blueprint jp-egov-law:weekly-amendments and does not create a cron job. When you create a job from that blueprint, one model turn runs once a week (default Mon 09:00, Hermes tz or the host clock if unset, not converted to Japan). A turn that calls a tool is at least two model requests, and there is no daily cap. The agent can schedule it, and scheduling it twice creates two jobs. Silence is not "no amendment". Uninstall leaves the cron until hermes cron remove. Tools stay on every platform, including gateways (a guest can call them; hermes tools disables one). v0.21.4 and v0.21.5 load the tools and skip the blueprint.
+sha: 2e96dd28108250b374160077d6e1d9fa4dea55f1
+description: 'Japanese laws for Hermes Agent, built on the e-Gov Law API: find a law by name, abbreviation or phrase, read one article as in force today or on a given date, and check amendment history and enforcement dates, with the source credit e-Gov''s terms ask for. Ask for one Japanese law article, such as Article 32 of the Labor Standards Act, and it returns the official law text with the law number and the date that version took effect. Disclosure — sends the law names, article numbers, dates and search phrases you look up to laws.e-gov.go.jp (public API, no key); no other host, nothing written to disk. Registers blueprint jp-egov-law:weekly-amendments and does not create a cron job. When you create a job from that blueprint, one model turn runs once a week (default Mon 09:00, Hermes tz or the host clock if unset, not converted to Japan). A turn that calls a tool is at least two model requests, and there is no daily cap. The agent can schedule it, and scheduling it twice creates two jobs. Silence is not "no amendment". Uninstall leaves the cron until hermes cron remove. Tools stay on every platform, including gateways (a guest can call them; hermes tools disables one). While the plugin is enabled, its skill adds one line to the skills index of every session, including surfaces where the tools are turned off. v0.21.4 and v0.21.5 load the tools and skip the blueprint.'
 maintainer: TakeshiTGAL
 tier: community
 category: tools
 docs_url: https://github.com/TakeshiTGAL/hermes-plugin-egov-law#readme
-version: "0.1.2"
+version: 0.1.3
+image: https://raw.githubusercontent.com/TakeshiTGAL/hermes-plugin-egov-law/2e96dd28108250b374160077d6e1d9fa4dea55f1/assets/catalog-banner.png
 requires_hermes: ">=0.21.4"
 platforms: []
 capabilities:

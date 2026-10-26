@@ -526,6 +526,9 @@ _CIRCUIT_BREAKER_THRESHOLD, _CIRCUIT_BREAKER_COOLDOWN_SEC = 3, 60.0
 # ``_tool_read_only_hints`` by the connection key (the server's own tool annotations).
 _server_trust_levels: dict[Any, str] = {}
 _tool_read_only_hints: dict[Any, dict[str, bool]] = {}
+# Declared per-tool costs + per-chat spend limit (``tools.mcp_tool_costs.CostPolicy``), keyed like
+# ``_server_trust_levels``: the consuming profile's policy. Absent = no costs, behaviour unchanged.
+_server_cost_policies: dict[Any, Any] = {}
 
 _TRUST_FULL, _TRUST_UNTRUSTED = "full", "untrusted"
 
@@ -690,12 +693,17 @@ def _update_death_supervisor(verb: str, pgids) -> None:
 
 
 def _mcp_registry_scope() -> Optional[str]:
-    """Registry scope for MCP registrations: a profile overlay when this process serves profiles,
-    else None. Under ``gateway.multiplex_profiles`` every turn runs scoped; a process that serves a
-    routed profile through the HERMES_HOME override (dashboard/desktop backend, per-profile cron
-    ticker) is a multiplexer too, even with the flag off — keying its connections by the bare name
-    would hand one profile's credentialed connection to every other served profile (#111151).
-    Single-profile processes (no override, or an override naming their own home) keep bare names."""
+    """Registry scope for MCP registrations: the session's own tool scope when one is bound, else a
+    profile overlay when this process serves profiles, else None. Under ``gateway.multiplex_profiles``
+    every turn runs scoped; a process that serves a routed profile through the HERMES_HOME override
+    (dashboard/desktop backend, per-profile cron ticker) is a multiplexer too, even with the flag
+    off — keying its connections by the bare name would hand one profile's credentialed connection
+    to every other served profile (#111151). Single-profile processes (no override, or an override
+    naming their own home) keep bare names."""
+    from tools.registry import current_session_tool_scope
+    session_scope = current_session_tool_scope()
+    if session_scope is not None:
+        return session_scope
     from agent.secret_scope import serves_routed_profile
     if not serves_routed_profile():
         return None

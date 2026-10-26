@@ -158,7 +158,7 @@ def _without_release_age(text: str) -> str:
 
 
 def _is_member_candidate(plugin_dir: Path) -> bool:
-    return read_python_declaration(plugin_dir).is_member
+    return read_python_declaration(plugin_dir).installs_packages
 
 
 def enabled_plugin_entries(*, proposed_home=None, enabled=None, disabled=None,
@@ -218,7 +218,7 @@ def enabled_member_dirs(*, proposed_home=None, enabled=None, disabled=None) -> l
         reason = manifest_version_error(declaration.manifest, path.name)
         if reason:
             raise InstallError("venv", reason)
-        if declaration.is_member:
+        if declaration.installs_packages:
             members.append(path)
     return members
 

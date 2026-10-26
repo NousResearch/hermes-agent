@@ -101,6 +101,16 @@ class MessageEvent:
     # knows the message was meant for someone else); None means unknown and keeps the visible
     # fallback, like True.
     reply_expected: Optional[bool] = None
+    # Set for synthetic turns that carry no channel inputs of their own (goal continuation,
+    # heartbeat due-prompts, /goal resume) so the turn reuses the session's pinned channel
+    # prompt/parent instead of overwriting it with this event's own None (#126109). Independent
+    # of ``internal``: these events still go through user authorization. Appended after
+    # ``reply_expected`` for positional compat (see the field-order rule above).
+    inherit_channel_pin: bool = False
+    # Identity of one edit of a message (Telegram: its ``update_id``). An edit re-sends its message's own
+    # ``message_id`` with new text, so native admission keys it apart from the original send.
+    # Appended for positional compat (see the field-order rule above).
+    edit_revision: Optional[str] = None
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)

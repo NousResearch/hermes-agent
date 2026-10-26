@@ -311,13 +311,16 @@ def _job_warnings(job: dict[str, Any]) -> list[str]:
 
 
 def cron_tick():
-    """Run due jobs once and exit."""
+    """Run due jobs once and exit (external-scheduler mode: a system crontab calls this).
+
+    No gateway runs here by definition, and none is started: agent jobs are skipped with a logged
+    reason until the gateway is up (headless surfaces refuse rather than spawn)."""
     from cron.scheduler import CronTickYielded, tick
     from hermes_cli.observability.shared_metrics_process import begin_process
 
     begin_process("cron")
     try:
-        tick(verbose=True)
+        tick(verbose=True, headless=True)
     except CronTickYielded as exc:
         # Inert for a one-shot CLI (no boot fingerprint); report cleanly rather than traceback.
         print(color(f"✗ {exc}", Colors.YELLOW))
@@ -880,6 +883,9 @@ def _job_action(action: str, job_id: str, success_verb: str) -> int:
         print(f"  Next run: {result['job']['next_run_at']}")
     if action == "run":
         print(f"  {_run_outcome(result.get('job', {}))}")
+        if (job.get('executed') and job.get('execution_success') is False
+                and not job.get('delegation_id') and job.get('execution_mode') != 'background'):
+            return 1
     return 0
 
 

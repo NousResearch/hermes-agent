@@ -6,6 +6,7 @@ import {
   getGlobalModelOptions,
   getRecommendedDefaultModel,
   listOAuthProviders,
+  OAUTH_LONG_POLL_SECONDS,
   pollOAuthSession,
   type ProfileScope,
   setEnvVar,
@@ -14,6 +15,7 @@ import {
   validateProviderCredential
 } from '@/hermes'
 import { translateNow } from '@/i18n'
+import { restOfLongPollGap } from '@/lib/long-poll'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import {
@@ -23,6 +25,7 @@ import {
   refreshFreeTierStatus,
   setFreeTierRoute
 } from '@/store/free-tier'
+import { showFreeTierSignInResult } from '@/store/free-tier-sign-in'
 import { $gatewayBootGeneration } from '@/store/live-sync'
 import { setMainModelAssignment } from '@/store/model-assignment'
 import { dismissNotification, notify, notifyError } from '@/store/notifications'
@@ -104,7 +107,6 @@ export interface OnboardingContext {
 
 const CONFIGURED_CACHE_KEY = 'hermes-desktop-onboarded-v1'
 const SKIP_CACHE_KEY = 'hermes-onboarding-skipped-v1'
-const POLL_MS = 2000
 const COPY_FLASH_MS = 1500
 export const DEFAULT_ONBOARDING_REASON = 'No inference provider is configured.'
 export const DEFAULT_MANUAL_ONBOARDING_REASON = 'Add or switch inference provider.'
@@ -182,7 +184,6 @@ export const $desktopOnboarding = atom<DesktopOnboardingState>(INITIAL)
 
 let flowGeneration = 0
 let flowScope: OnboardingScope | undefined
-let pollTimer: number | null = null
 let providersRefreshPromise: null | Promise<void> = null
 
 const errMessage = (e: unknown) => (e instanceof Error ? e.message : String(e))
@@ -206,12 +207,8 @@ const setFlow = (flow: OnboardingFlow) => patch(flow.status === 'idle' ? { flow 
 
 const sessionIdFor = (flow: OnboardingFlow) => ('start' in flow && flow.start ? flow.start.session_id : undefined)
 
+// The poll loop itself ends with its flow (see `pollSession`); only the expiry floor is a timer.
 function clearPoll() {
-  if (pollTimer !== null) {
-    window.clearInterval(pollTimer)
-    pollTimer = null
-  }
-
   clearPollExpiry()
 }
 
@@ -946,7 +943,7 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
         message: translateNow('onboarding.signInExpired')
       })
     )
-    pollTimer = window.setInterval(() => void pollSession(provider, start, ctx, generation), POLL_MS)
+    void pollSession(provider, start, ctx, generation)
   } catch (error) {
     if (generation !== flowGeneration) {
       return
@@ -956,31 +953,61 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
   }
 }
 
-// Poll a session-backed device-code flow until it resolves.
+// Long-poll a session-backed device-code flow until it resolves. The loop ends with its flow: a
+// cancel, a newer flow, or the local expiry floor all move the flow off this session's `polling`.
 async function pollSession(provider: OAuthProvider, start: DeviceStart, ctx: OnboardingContext, generation: number) {
+  const live = () => {
+    const { flow } = $desktopOnboarding.get()
+
+    return generation === flowGeneration && flow.status === 'polling' && sessionIdFor(flow) === start.session_id
+  }
+
   try {
-    const { error_message, status } = await pollOAuthSession(provider.id, start.session_id, ctx.scope)
+    for (;;) {
+      const askedAt = Date.now()
+      const result = await pollOAuthSession(provider.id, start.session_id, ctx.scope, OAUTH_LONG_POLL_SECONDS)
 
-    if (generation !== flowGeneration) {
-      return
-    }
+      if (!live()) {
+        return
+      }
 
-    if (status === 'approved') {
-      clearPoll()
-      setFlow({ status: 'success', provider })
-      await completeWithModelConfirm(ctx, provider.name, [provider.id], reason =>
+      if (result.status === 'approved') {
+        clearPoll()
+        setFlow({ status: 'success', provider })
+        // A Nous sign-in that replaced the free tier shows what moved, the same screen the
+        // free-tier sign-in shows; onboarding carries on underneath.
+        showFreeTierSignInResult(result, ctx.scope)
+        await completeWithModelConfirm(ctx, provider.name, [provider.id], reason =>
+          setFlow({
+            status: 'error',
+            provider,
+            message: providerResolutionFailure(reason)
+          })
+        )
+
+        return
+      }
+
+      if (result.status !== 'pending') {
+        clearPoll()
         setFlow({
           status: 'error',
           provider,
-          message: providerResolutionFailure(reason)
+          start,
+          ...signInDidNotFinish(provider, result.error_message || result.status)
         })
-      )
-    } else if (status !== 'pending') {
-      clearPoll()
-      setFlow({ status: 'error', provider, start, ...signInDidNotFinish(provider, error_message || status) })
+
+        return
+      }
+
+      await restOfLongPollGap(askedAt)
+
+      if (!live()) {
+        return
+      }
     }
   } catch (error) {
-    if (generation !== flowGeneration) {
+    if (!live()) {
       return
     }
 

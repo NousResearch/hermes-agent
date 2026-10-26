@@ -1,3 +1,5 @@
+import { mergeUsage } from '@hermes/shared'
+
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
 import { getSession } from '@/hermes'
@@ -15,8 +17,8 @@ import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-ima
 import { parseErrorSurface } from '@/lib/error-surface'
 import { isMessagingSource, normalizeSessionSource } from '@/lib/session-source'
 import { isLiveTailReplyId } from '@/lib/spoken-reply'
-import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
+import { pendingSnapshotFence, reconcilePendingSubmissions } from '@/store/pending-submissions'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $projectTree } from '@/store/projects'
 import {
@@ -74,6 +76,9 @@ import {
   persistedTurnsEquivalent,
   transcriptRowIds
 } from './pending-turn-identity'
+import { reconcileOwnerApprovalMode } from './runtime-owner'
+
+export { goneSessionVerdict, isSessionGoneError, resolveResumedBusy } from './resume-verdicts'
 
 function withAppendedText(message: ChatMessage, suffix: string): ChatMessage {
   let appended = false
@@ -1692,6 +1697,34 @@ export function overlayConcurrentMessageChanges(
     )
   }
 
+  const representedByStoredRow = (current: ChatMessage): boolean => {
+    const rows = transcriptRowIds(current)
+
+    return (
+      rows.length > 0 &&
+      rows.every(id =>
+        overlaid.some(
+          message =>
+            message.id !== current.id && message.role === current.role && transcriptRowIds(message).includes(id)
+        )
+      )
+    )
+  }
+
+  const representedOnPage = (current: ChatMessage): boolean =>
+    // The page can still carry the row's older streaming copy by id when it
+    // was composed from the baseline; the committed row replaces both.
+    (current.role === 'assistant' &&
+      current.pending !== true &&
+      !current.error &&
+      isLiveTailReplyId(current.id) &&
+      committedOnPage(current)) ||
+    // A completion receipt bound this optimistic prompt to its stored row
+    // while REST was in flight, so it differs from the pre-bind baseline only
+    // by that row id. The page already carries the stored row under its own
+    // id: the prompt is represented, not a new concurrent row.
+    (current.role === 'user' && representedByStoredRow(current))
+
   for (const current of currentMessages) {
     const baseline = baselineById.get(current.id)
     const changedSinceBaseline = !baseline || !chatMessagesEquivalent(baseline, current)
@@ -1702,15 +1735,7 @@ export function overlayConcurrentMessageChanges(
 
     const nextIndex = nextIndexById.get(current.id)
 
-    // The page can still carry the row's older streaming copy by id when it
-    // was composed from the baseline; the committed row replaces both.
-    if (
-      current.role === 'assistant' &&
-      current.pending !== true &&
-      !current.error &&
-      isLiveTailReplyId(current.id) &&
-      committedOnPage(current)
-    ) {
+    if (representedOnPage(current)) {
       if (nextIndex !== undefined) {
         dropped.add(current.id)
       }
@@ -2347,6 +2372,8 @@ interface ApplyRuntimeInfoOptions {
    * per-session state is unaffected.
    */
   foreground?: boolean
+  /** The backend that produced `info` when it is not the ambient gateway. */
+  owner?: SessionOwnerScope
 }
 
 /** Mirror a session's runtime state into the composer atoms the MAIN pane
@@ -2402,25 +2429,33 @@ function publishRuntimeToComposer(state: SessionRuntimeStatePatch): void {
   }
 }
 
+/** Session-independent side effects of one runtime info snapshot. */
+function reportRuntimeInfoAppState(info: SessionRuntimeInfo, owner: SessionOwnerScope): void {
+  if (info.stored_session_id) {
+    reconcilePendingSubmissions(info.stored_session_id, info.pending_submissions,
+      pendingSnapshotFence(info.replay_epoch, info.last_sequence))
+  }
+
+  // App/profile-level reporting is session-independent — a tile's runtime
+  // reports backend skew and credential warnings just as usefully.
+  reportBackendContract(info.desktop_contract, info.desktop_protocol)
+
+  reconcileOwnerApprovalMode(info, owner)
+
+  requestDesktopOnboardingForCredentialWarning(info.credential_warning)
+
+  reportInstallMethodWarning(info.install_warning)
+}
+
 export function applyRuntimeInfo(
   info: SessionRuntimeInfo | undefined,
-  { foreground = true }: ApplyRuntimeInfoOptions = {}
+  { foreground = true, owner }: ApplyRuntimeInfoOptions = {}
 ): SessionRuntimeStatePatch | null {
   if (!info) {
     return null
   }
 
-  // App/profile-level reporting is session-independent — a tile's runtime
-  // reports backend skew and credential warnings just as usefully.
-  reportBackendContract(info.desktop_contract)
-
-  if (info.approval_mode !== undefined) {
-    reconcileApprovalModeForProfile($activeGatewayProfile.get(), info.approval_mode)
-  }
-
-  requestDesktopOnboardingForCredentialWarning(info.credential_warning)
-
-  reportInstallMethodWarning(info.install_warning)
+  reportRuntimeInfoAppState(info, owner)
 
   const sessionState: SessionRuntimeStatePatch = {}
 
@@ -2488,10 +2523,8 @@ export function applyRuntimeInfo(
     publishRuntimeToComposer(sessionState)
 
     if (info.usage) {
-      // session.info/session.resume is an authoritative session snapshot, not a
-      // partial live tick. Clear a missing compression count so switching from
-      // a counted session to an older/cold runtime cannot leak the old value.
-      setCurrentUsage(current => ({ ...current, ...info.usage, compressions: info.usage?.compressions }))
+      // session.info/resume is an authoritative snapshot: an omitted compression count or plan gauge clears.
+      setCurrentUsage(current => ({ ...mergeUsage(current, info.usage), compressions: info.usage?.compressions }))
     }
   }
 
@@ -2549,61 +2582,4 @@ export function applyStoredSessionPreviewRuntimeInfo(
   // Same window, same reasoning: the branch is derived from the workspace, so
   // carrying the previous conversation's label across a switch is never right.
   setCurrentBranch('')
-}
-
-// A "session genuinely doesn't exist" failure (deleted, or an id from a wiped /
-// rotated backend) — the REST transcript 404s with `Session not found`. Distinct
-// from a transient/wedged backend (ECONNREFUSED, timeout), which must still
-// retry rather than discard the id.
-export function isSessionGoneError(err: unknown): boolean {
-  const message = err instanceof Error ? err.message : String(err ?? '')
-
-  return message.includes('404') || /session not found/i.test(message)
-}
-
-/**
- * What to do when a resume's RPC and REST fallback BOTH came back
- * gone-looking (#88540).
- *
- * A 404 is only proof of deletion when it came from the backend that owns
- * the session. During (or moments after) a profile/connection switch the
- * request can land on a backend that has never heard of the id — the
- * cross-profile Bots-pane open is the reproducer: the route is written
- * correctly, the resume races the gateway swap, both lookups 404 on the
- * wrong backend, and the "genuinely gone" branch yanks the window to the
- * blank new-chat route while the target session is perfectly alive.
- *
- * `'retry'` keeps the route and arms the bounded auto-retry (which re-runs
- * the resume once the swap settles); `'draft'` is reserved for a session
- * that is verifiably gone in calm conditions.
- */
-export function goneSessionVerdict(options: {
-  /** The session was created by this window in this run — never discard. */
-  createdThisRun: boolean
-  /** A post-failure re-resolve still finds the row on SOME profile. */
-  stillListed: boolean
-  /** A profile swap or connection switch is in flight (or just targeted). */
-  switchInFlight: boolean
-}): 'draft' | 'retry' {
-  return options.createdThisRun || options.stillListed || options.switchInFlight ? 'retry' : 'draft'
-}
-
-/**
- * The busy value a resume/activate response should land with (#70449).
- *
- * `running` in a `session.activate` / `session.resume` payload is a snapshot
- * taken when the RPC was issued. A turn that started — or streamed — after
- * that snapshot has already marked the runtime busy in the live cache, so a
- * stale `running: false` must never rewind it: that is exactly how opening an
- * in-progress chat cleared its working indicator while the agent was still
- * going. Preserving the newer live busy is safe, because the turn's own
- * terminal signal (running:false via session.info / the settle path) remains
- * the only authority that ends it, and the background-sync reaper clears
- * truly lost turns.
- *
- * A snapshot that says `running: true` always wins — adopting a live turn is
- * never stale.
- */
-export function resolveResumedBusy(snapshotRunning: boolean | null | undefined, liveBusy: boolean): boolean {
-  return Boolean(snapshotRunning) || liveBusy
 }

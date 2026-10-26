@@ -14,7 +14,7 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent
-from gateway.platforms.yuanbao import DispatchMiddleware, InboundContext, YuanbaoAdapter
+from plugins.platforms.yuanbao.adapter import DispatchMiddleware, InboundContext, YuanbaoAdapter
 from gateway.profile_routing import parse_profile_routes
 
 

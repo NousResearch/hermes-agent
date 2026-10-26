@@ -189,6 +189,8 @@ def _fake_response(status, url, body):
     resp = MagicMock()
     resp.status_code = status
     resp.request = SimpleNamespace(url=url)
+    # Not a redirect: mcp's RedirectAwareAuth follows any truthy next_request.
+    resp.next_request = None
 
     async def _aread():
         return body

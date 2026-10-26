@@ -471,26 +471,19 @@ describe('renderRpcResult', () => {
       )
     })
 
-    it('appends account_lines before credits_lines when present', () => {
+    it('appends credits_lines when present', () => {
       const body = renderRpcResult(
         {
           calls: 1,
           input: 10,
           output: 20,
           total: 30,
-          account_lines: ['📈 Account limits', 'Provider: openai-codex (Plus)', 'Weekly: 12% used'],
           credits_lines: ['Nous credits: 8,420 remaining', 'Resets: 2026-08-01']
         },
         'usage'
       )
 
-      expect(body.split('\n').slice(1)).toEqual([
-        '📈 Account limits',
-        'Provider: openai-codex (Plus)',
-        'Weekly: 12% used',
-        'Nous credits: 8,420 remaining',
-        'Resets: 2026-08-01'
-      ])
+      expect(body.split('\n').slice(1)).toEqual(['Nous credits: 8,420 remaining', 'Resets: 2026-08-01'])
     })
   })
 

@@ -282,7 +282,9 @@ def test_requirements_build_installs_offline_markers_and_seals_only_build_pth(tm
     wheels = tmp_path / "wheels with spaces"
     wheels.mkdir()
     _wheel(wheels, "leaf_dep")
-    _wheel(wheels, "app_dep", requirements=["leaf-dep==1.0"])
+    # A build-machine pointer sealing must strip, beside one that must survive.
+    _wheel(wheels, "app_dep", requirements=["leaf-dep==1.0"],
+           extra={"__editable__.app_dep-1.0.pth": "# build machine path\n", "app_dep.pth": "\n"})
     out = tmp_path / "destination with spaces"
     # Ambient project and interpreter settings cannot escape the explicit build.
     (tmp_path / "uv.toml").write_text('required-version="<0.1"\n', encoding="utf-8")
@@ -301,7 +303,8 @@ def test_requirements_build_installs_offline_markers_and_seals_only_build_pth(tm
     ))
     assert result == ["1.0", "1.0", sys.base_prefix, True]
     assert executable.parent.parent == out
-    assert bool(list(out.rglob("_virtualenv.pth"))) is not sealed
+    assert bool(list(out.rglob("__editable__.app_dep-1.0.pth"))) is not sealed
+    assert list(out.rglob("app_dep.pth")), "load-bearing .pth must survive sealing"
     assert not poison.exists()
     assert not Path(build_tools["HERMES_HOME"]).exists()
     assert dict(os.environ) == before

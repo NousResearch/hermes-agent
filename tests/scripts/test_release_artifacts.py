@@ -15,8 +15,8 @@ import hermes_yaml
 import pytest
 
 from scripts.bundles.release_artifacts import materialize, record, stamp_matches
-from tests.scripts.test_release_r2 import r2_server
-from tests.scripts.test_stable_release import https_origin
+from tests.scripts.test_release_r2 import r2_server as r2_server  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
+from tests.scripts.test_stable_release import https_origin as https_origin  # noqa: PLC0414 -- same self-alias, for the https_origin fixture
 from tests.scripts.test_release_darwin import _inputs
 from scripts.bundles import release_artifacts as artifacts
 from scripts.releases import lanes as lane_set
@@ -182,6 +182,30 @@ def test_assemble_rejects_missing_and_changed_receipts(tmp_path, staged_candidat
         assemble(fetched, tag, commit, base, tmp_path / 'changed.json',
                  smoke_results=SMOKE_RESULTS, release_epoch=RELEASE_EPOCH, archive=manifest['archive'],
                  lanes=lane_set.NAMES)
+
+
+def test_publish_rejects_a_universal_bundle_whose_identity_differs_from_its_packages(
+        tmp_path, r2_server, staged_candidate):
+    """Candidate staging binds the bundle by digest only; publish opens it before anything goes live."""
+    manifest, _, base = staged_candidate
+    key = f"releases/tag/{manifest['archive']}/Product-win.msixbundle"
+    forged = tmp_path / 'forged.msixbundle'
+    with zipfile.ZipFile(forged, 'w') as archive:
+        archive.writestr('AppxMetadata/AppxBundleManifest.xml', f'<Bundle><Identity Name="Other" Publisher="CN=Test" Version="{WINDOWS_VERSION}"/><Packages><Package Type="application" Architecture="arm64"/><Package Type="application" Architecture="x64"/></Packages></Bundle>')
+    body = forged.read_bytes()
+    r2_server.store[key] = (body, *r2_server.store[key][1:])
+    tampered = copy.deepcopy(manifest)
+    digest = hashlib.sha256(body).hexdigest()
+    for item in tampered['files']:
+        if item['path'] == 'Product-win.msixbundle':
+            item['sha256'], item['size'] = digest, len(body)
+    for row in tampered['packages']:
+        if row['platform'] == 'windows':
+            row['artifact']['sha256'] = digest
+    r2_server.requests.clear()
+    with pytest.raises(ValueError, match='Universal bundle identity'):
+        artifacts.publish(tampered, tmp_path / 'publish', base)
+    assert not [path for method, path, _ in r2_server.requests if method == 'PUT']
 
 
 def test_candidate_publication_and_store_selection(tmp_path, monkeypatch, r2_server, staged_candidate):

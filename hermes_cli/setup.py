@@ -284,15 +284,17 @@ def is_noninteractive() -> bool:
     return os.environ.get("HERMES_NONINTERACTIVE", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def prompt_yes_no(question: str, default: bool = True) -> bool:
+def prompt_yes_no(question: str, default: bool = True, description: str | None = None) -> bool:
     """Prompt for yes/no. Ctrl+C exits; empty input, ``HERMES_NONINTERACTIVE=1`` or a
-    closed/redirected stdin return ``default`` instead of aborting the whole process."""
+    closed/redirected stdin return ``default`` instead of aborting the whole process.
+    ``description`` is the context the question refers to, shown above it in setup's full-screen
+    menu, which hides everything printed before it; the line prompt keeps that text on screen."""
     if is_noninteractive():
         return default
     # Inside setup, route binary selections through the curses menu so ESC and left-arrow work
     # consistently; every other caller keeps the traditional line prompt.
     if _SETUP_NAVIGATION.get() is not None:
-        return _curses_prompt_choice(question, ["Yes", "No"], 0 if default else 1) == 0
+        return _curses_prompt_choice(question, ["Yes", "No"], 0 if default else 1, description=description) == 0
     default_str = "Y/n" if default else "y/N"
     while True:
         try:
@@ -511,7 +513,7 @@ def setup_tools(config: dict, first_install: bool = False):
 
 
 _SEND_CONSENT_EXPLAINER = (
-    "", "Sending uploads each daily package to the Nous telemetry",
+    "", "Sharing uploads each daily package to the Nous telemetry",
     "service. Packages carry your profile-scoped install ID, a",
     "stable random UUID that identifies this profile across days",
     "(it contains no personal information and is reset by deleting",
@@ -519,13 +521,13 @@ _SEND_CONSENT_EXPLAINER = (
     "collection period falls inside a recorded consent window are",
     "ever sent. Apart from the fresh-install note (noted on this",
     "machine and counted only once you opt in), data from before",
-    "you opt in, or from any gap while sending was off, stays on",
-    "this machine. Sending can be turned off again at any time.",
+    "you opt in is never sent. Sharing can be turned off again at",
+    "any time.",
 )
 
 
 def setup_telemetry(config: dict):
-    """Configure the local shared-metrics subscriber and optional sending."""
+    """Turn shared metrics on (collect and send to Nous) or off: one answer sets both keys."""
     print_header("Shared Metrics")
     _info("Shared metrics contain only bounded counters: activity, session length,",
           "outcomes, error classes (with a fixed-list reason when a memory write or",
@@ -539,27 +541,21 @@ def setup_telemetry(config: dict):
           "settings are used or switched off, provider setup outcomes), and coarse",
           "machine facts (RAM range, GPU type, version age and channel, updates behind,",
           "local model server yes/no). Never prompts, files, paths, setting values or",
-          "error text.",
-          "Collection is local. Sending them to Nous is a separate opt-in.")
+          "error text.")
+    _info(*_SEND_CONSENT_EXPLAINER)
     # The answer is written to config.yaml here, not by the caller's later save: that save strips
     # values equal to the defaults, so a "no" would vanish and every surface would ask again.
     from hermes_cli.observability.shared_metrics_consent import save_consent
 
     shared_metrics = _sub_dict(_sub_dict(config, "telemetry"), "shared_metrics")
-    if not prompt_yes_no("Enable local shared metrics?", default=shared_metrics.get("enabled") is True):
-        print_info("Local shared metrics disabled.")
-        # Sending cannot outlive collection; turning collection off withdraws send consent too.
-        if shared_metrics.get("send") is True:
-            print_info("Sending shared metrics disabled as well.")
-        save_consent(False, False, config)
-        return
-    print_success("Local shared metrics enabled.")
-    _info(*_SEND_CONSENT_EXPLAINER)
-    save_consent(True, prompt_yes_no("Send shared metrics to Nous?", default=shared_metrics.get("send") is True), config)
-    if shared_metrics["send"]:
-        print_success("Sending shared metrics enabled.")
+    sharing = shared_metrics.get("enabled") is True and shared_metrics.get("send") is True
+    # One answer for both keys: off also withdraws send consent and stops collection.
+    share = prompt_yes_no("Send shared metrics to Nous?", default=sharing)
+    save_consent(share, share, config)
+    if share:
+        print_success("Shared metrics sent to Nous once a day.")
     else:
-        print_info("Sending shared metrics disabled (collection stays local).")
+        print_info("Shared metrics off.")
 
 
 def _record_send_consent_change(*, enabled: bool) -> None:
@@ -583,7 +579,8 @@ from hermes_cli.setup_tts import setup_tts
 from hermes_cli.setup_terminal import setup_terminal_backend
 from hermes_cli.setup_platforms import setup_gateway
 from hermes_cli.setup_summary import _print_setup_summary
-from hermes_cli.setup_migration import _offer_openclaw_migration, _skip_configured_section
+from hermes_cli.setup_migration import _skip_configured_section
+from hermes_cli.setup_agent_import import offer_agent_import
 from hermes_cli.setup_quick import _run_portal_one_shot, _run_quick_setup
 
 
@@ -625,32 +622,32 @@ def _run_setup_section(config: dict, section: str) -> None:
     print_success(f"{label} configuration complete!")
 
 
-def _run_full_setup(config: dict, hermes_home, *, is_existing: bool, migration_ran: bool) -> None:
-    """Full Setup — run all sections, honoring post-migration skips."""
+def _run_full_setup(config: dict, hermes_home, *, is_existing: bool, imported_from: str = "") -> None:
+    """Full Setup — run all sections; after an import (*imported_from* names the agents) each
+    already-configured section offers to skip."""
     print_header("Configuration Location")
     _info(f"Config file:  {get_config_path()}", f"Secrets file: {get_env_path()}",
           f"Data folder:  {hermes_home}", f"Install dir:  {PROJECT_ROOT}", None,
           "You can edit these files directly or use 'hermes config edit'")
-    if migration_ran:
-        _info(None, "Settings were imported from OpenClaw.",
-              "Each section below will show what was imported — press Enter to keep,",
-              "or choose to reconfigure if needed.")
+    if imported_from:
+        _info(None, f"Settings were imported from {imported_from}.",
+              "Each section below shows what is already set up — keep it,",
+              "or choose to reconfigure it.")
 
     # Agent Settings are not prompted: first installs get defaults, existing keep theirs.
     if not is_existing:
         _apply_default_agent_settings(config)
 
     def _skip(key: str, label: str) -> bool:
-        return migration_ran and _skip_configured_section(config, key, label)
+        return bool(imported_from) and _skip_configured_section(config, key, label)
 
     def _gateway_step() -> None:
         if not _skip("gateway", "Messaging Platforms"):
             setup_gateway(config)
             return
-        # A skipped (migrated) gateway section still needs its service so imported platforms
-        # and cron jobs become active.
-        from hermes_cli.gateway import ensure_gateway_service
-        ensure_gateway_service(context="setup")
+        # An import does not imply consent to install a persistent service.
+        from hermes_cli.gateway_setup_service import ensure_gateway_service
+        ensure_gateway_service(context="setup", interactive=True, config=config)
 
     def _step(key: str, label: str, run) -> tuple:
         return label, lambda: None if _skip(key, label) else run()
@@ -713,10 +710,10 @@ def _run_setup_wizard_impl(args):
                   "├─────────────────────────────────────────────────────────┤",
                   "│  Let's configure your Hermes Agent installation.       │",
                   "│  Press Ctrl+C at any time to exit.                     │")
-    migration_ran = False
+    imported_from = ""
     if is_existing:
         # Full reconfigure wizard is the default (Enter keeps each current value); `--quick`
-        # narrows it to missing items (partial OpenClaw import, cleared key). --reconfigure is a
+        # narrows it to missing items (partial import, cleared key). --reconfigure is a
         # backwards-compatible no-op here.
         if quick_requested:
             _run_setup_steps([("Quick Setup", lambda: _run_quick_setup(config, hermes_home))])
@@ -733,9 +730,10 @@ def _run_setup_wizard_impl(args):
         print()
         if reconfigure_requested or quick_requested:
             _info("No existing configuration found — running first-time setup.", None)
-        migration_ran = _offer_openclaw_migration(hermes_home)  # before configuration begins
-        if migration_ran:
-            config = load_config()
+        # Before configuration begins. The plugin install and the import write config.yaml from
+        # outside this dict (the import from another process), so reload it.
+        imported_from = offer_agent_import(hermes_home)
+        config = load_config()
         setup_mode = prompt_choice("How would you like to set up Hermes?", [label for label, _ in _FIRST_TIME_MODES], 0)
         label, runner = _FIRST_TIME_MODES[setup_mode]
         if runner is not None:
@@ -743,7 +741,7 @@ def _run_setup_wizard_impl(args):
             _run_setup_steps([(label, lambda: getattr(setup_quick, runner)(config, hermes_home, is_existing))])
             _record_setup_completed(config)
             return
-    _run_full_setup(config, hermes_home, is_existing=is_existing, migration_ran=migration_ran)
+    _run_full_setup(config, hermes_home, is_existing=is_existing, imported_from=imported_from)
 
     # Save and show summary
     save_config(config)

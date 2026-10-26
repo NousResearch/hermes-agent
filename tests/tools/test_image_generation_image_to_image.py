@@ -37,7 +37,7 @@ def cfg_home(tmp_path, monkeypatch):
 
 
 def _write_cfg(home, cfg: dict):
-    (home / "config.yaml").write_text(yaml.safe_dump(cfg))
+    (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +113,9 @@ class TestMandatoryKeysSurviveWhitelist:
 class TestFalRouting:
     def _patch_submit(self, monkeypatch, image_tool, capture: dict):
         class _Handler:
+            def iter_events(self_inner, **_):
+                return iter(())
+
             def get(self_inner):
                 return {"images": [{"url": "https://out/img.png", "width": 1, "height": 1}]}
 

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, NamedTuple, Optional
 from urllib.parse import urlparse
 import httpx
+from hermes_dir_acl import make_user_dir
 
 # ``agent.auxiliary_client`` costs ~50 ms cold; only the handlers need it. Both names stay
 # module attributes so tests can patch ``tools.vision_tools.async_call_llm`` (truthy-skip: mocks win).
@@ -215,7 +216,7 @@ def _secure_cache_dir(new_subpath: str, old_name: str) -> Path:
         return cache_dir
     # mode= is honored only for the leaf and is not further masked by umask
     # for the bits we care about; _secure_dir reconciles anything unusual.
-    cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    make_user_dir(cache_dir, parents=True, exist_ok=True, mode=0o700)
     try:
         from hermes_cli.config import _secure_dir
 

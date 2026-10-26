@@ -79,7 +79,7 @@ replaces the other browser tools when `browser.backend` is `browser-use`.
 ## Backends and providers inside tools/
 
 Several tools front pluggable backends: terminal environments in `tools/environments/` (local,
-docker, ssh, modal, daytona, singularity; `terminal_tool_backends.py`, `tool_backend_helpers.py`),
+docker, ssh, modal, daytona; `terminal_tool_backends.py`, `tool_backend_helpers.py`),
 browser (`browser_tool_*.py`: cdp, cloud, install, lifecycle, session, real_profile, vision), MCP
 client (`mcp_tool_*.py`: config, discovery, transport, registration, content, errors), TTS
 (`tts_tool_providers.py`, `tts_command_provider.py`), skills hub sources (`skills_hub_official.py`
@@ -137,7 +137,14 @@ no `delegate_task`, `clarify`, `memory`, `send_message`, `cronjob`; keeps `execu
 `orchestrator` (keeps `delegate_task`; gated by `delegation.orchestrator_enabled`, bounded by
 `delegation.max_spawn_depth`, default 2). Config knobs under `delegation:`:
 `max_concurrent_children, independent_completions, max_spawn_depth, child_timeout_seconds, orchestrator_enabled,
-subagent_auto_approve, inherit_mcp_toolsets, max_iterations`. **Child processes:** a child's background
+subagent_auto_approve, inherit_mcp_toolsets, max_iterations, backend, backends`. **Routes:** `delegation.backend` picks a
+delegation provider (`agent/delegation_provider.py`, `ctx.register_delegation_provider`; its settings live in
+`delegation.backends.<name>`) that answers each task's route (`tools/delegate_tool_routes.py`: model/provider fields
+resolved like the `delegation` section, `service_tier` checked like `/fast` in `delegate_tool_tuning.py`, or `profile` →
+the child is built, leases and converses inside that profile's scope) and may add enum-checked per-task schema params; it
+never owns lifecycle. The `default` strategy is the bundled `plugins/delegation/default` plugin (no core special case
+beyond selecting it). Fails closed: an unusable backend is a tool error naming it (never a silent `default`), an
+unroutable task is refused alone (`TaskRoute.error`); a session override (`agent/delegation_backends.py`) beats config. Internal `credentials_cfg` callers (/review) and the lifecycle API bypass it. **Child processes:** a child's background
 processes are killed at its teardown and their notices are suppressed in the parent; `process_manage(action="handoff")`
 (children only) flips `ProcessSession.owner_task_id` to the parent under the registry lock
 (`process_registry.transfer_ownership`) so the completion routes and reaps by the new owner; un-handed leftovers land on

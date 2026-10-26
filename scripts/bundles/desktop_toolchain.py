@@ -32,7 +32,7 @@ def bootstrap_environment(source: Path, work: Path, cache: Path,
              "HERMES_PYTHON_SRC_ROOT", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME",
              "UV_CACHE_DIR", "NPM_CONFIG_CACHE", "NPM_EXECPATH", "NPM_NODE_EXECPATH",
              "NPM_CONFIG_USERCONFIG", "NPM_CONFIG_GLOBALCONFIG", "NPM_CONFIG_PREFIX",
-             "PYTHONUTF8", "PYTHONDONTWRITEBYTECODE", "CARGO_HOME", "RUSTUP_HOME"}
+             "PYTHONUTF8", "PYTHONDONTWRITEBYTECODE", "CARGO_HOME", "RUSTUP_HOME", "CARGO_TARGET_DIR"}
     result = {key: value for key, value in env.items() if key.upper() not in _INSTALL_ENV | owned}
     canonical = {key.upper(): value for key, value in env.items()}
     # Rustup must still find the runner's installed toolchain after HOME moves.
@@ -51,6 +51,13 @@ def bootstrap_environment(source: Path, work: Path, cache: Path,
         "XDG_CONFIG_HOME": str(home / "config"), "XDG_CACHE_HOME": str(home / "cache"),
         "XDG_DATA_HOME": str(home / "data"), "XDG_STATE_HOME": str(home / "state"),
         "UV_CACHE_DIR": str(cache / "python/runtime"),
+        # Rust sdists (obstore via maturin) otherwise compile into target/ inside uv's
+        # nested sdist cache entry; on Windows that pushes build-script paths past
+        # MAX_PATH and link.exe fails with LNK1104. A job-local root keeps them short.
+        "CARGO_TARGET_DIR": str(work / "cargo"),
+        # vcpkg's default binary cache is under LOCALAPPDATA, which moved into the
+        # job-local home above; keep its archives in the transported native domain.
+        "VCPKG_DEFAULT_BINARY_CACHE": str(cache / "native/vcpkg-archives"),
         "npm_config_cache": str(cache / "npm"),
         "npm_config_userconfig": os.devnull,
         "PYTHONUTF8": "1", "PYTHONDONTWRITEBYTECODE": "1",
@@ -117,9 +124,60 @@ def prepare_tools(source: Path, work: Path, cache: Path,
             raise FileNotFoundError(f"PM did not prepare a native {name} executable")
         binaries[name] = installed.binary
     prepared = pm.env_for("python", "npm", base_env=prepared)
+    uv_cache = native_cache_path(cache, prepared)
+    if os.name == "nt":
+        uv_cache = short_alias(uv_cache, work / "uv")
     prepared.update({"HERMES_PYTHON": str(binaries["python"]), "HERMES_NODE": str(binaries["node"]),
-                     "UV_CACHE_DIR": str(native_cache_path(cache, prepared))})
+                     "UV_CACHE_DIR": str(uv_cache)})
     return binaries["python"], binaries["node"], prepared
+
+
+def short_alias(directory: Path, link: Path) -> Path:
+    """Reach a transported cache directory through a short job-local junction.
+
+    uv builds each sdist in <cache>/sdists-v10/pypi/<name>/<version>/<id>/src, and
+    MSVC link.exe cannot open paths past MAX_PATH, so a deep cache root pushes
+    native build outputs over 260 characters (LNK1104). uv keeps the spelling it
+    is given, so builds run under the junction while the bytes stay in the cache.
+    """
+    import _winapi
+
+    from pm.filesystem import is_junction
+
+    directory.mkdir(parents=True, exist_ok=True)
+    link.parent.mkdir(parents=True, exist_ok=True)
+    if is_junction(link):
+        os.rmdir(link)  # Removes only the reparse point, never the cache behind it.
+    _winapi.CreateJunction(str(directory), str(link))
+    return link
+
+
+def _msvc_identity() -> dict[str, str] | None:
+    """The newest VC toolset vswhere reports, with its default tools version."""
+    from hermes_platform.resolver import locate_command
+    from hermes_platform.resolver.known_dirs import visual_studio_installer_dirs
+
+    vswhere = locate_command("vswhere.exe", known_dirs=visual_studio_installer_dirs())
+    if not vswhere.found:
+        print("warning: MSVC cache identity unavailable: vswhere.exe was not found", file=sys.stderr, flush=True)
+        return None
+    try:
+        result = subprocess.run([*vswhere.command, "-latest", "-products", "*", "-requires",
+                                 "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-format", "json"],
+                                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                timeout=30, stdin=subprocess.DEVNULL, check=False)
+        instances = json.loads(result.stdout or "[]")
+        if not instances:
+            print("warning: MSVC cache identity unavailable: vswhere found no matching installations",
+                  file=sys.stderr, flush=True)
+            return None
+        instance = instances[0]
+        tools = Path(instance["installationPath"], "VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt")
+        return {"installationVersion": instance["installationVersion"],
+                "VCToolsVersion": tools.read_text(encoding="utf-8-sig").strip()}
+    except (OSError, subprocess.TimeoutExpired, ValueError, IndexError, KeyError) as error:
+        print(f"warning: MSVC cache identity unavailable: {error}", file=sys.stderr, flush=True)
+        return None
 
 
 def native_cache_path(cache: Path, env: Mapping[str, str]) -> Path:
@@ -140,8 +198,15 @@ def native_cache_path(cache: Path, env: Mapping[str, str]) -> Path:
                 "libc": platform.libc_ver(), "inputs": selected, "probes": [], "openssl": {}}
     commands = [["rustc", "-vV"]]
     if target.startswith("win32"):
-        commands.append(["cl", "/Bv"])
-        complete = bool(env.get("WindowsSDKVersion") and env.get("VCToolsVersion"))
+        if env.get("VCToolsVersion"):
+            commands.append(["cl", "/Bv"])
+            complete = bool(env.get("WindowsSDKVersion"))
+        else:
+            # No developer environment (win32-x64 builds never run VsDevCmd): rustc's cc
+            # crate finds MSVC through vswhere, so identify the toolchain the same way.
+            msvc = _msvc_identity()
+            identity["msvc"] = msvc
+            complete = msvc is not None
     else:
         commands.extend([[env.get("CC") or "cc", "--version"], [env.get("CXX") or "c++", "--version"]])
         complete = True

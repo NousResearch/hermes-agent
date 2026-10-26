@@ -12,7 +12,7 @@ browser act on, streamed live into Hermes Desktop. Watch what the bot does,
 **hand control back** and let it continue with the session you just signed in
 to. The bot keeps working after you close the app or turn off your laptop; the
 screen lives on the gateway host, not on your machine. If the gateway runs its
-`terminal` in a sandbox (`terminal.backend: docker`, `ssh` or `singularity`),
+`terminal` in a sandbox (`terminal.backend: docker`, `ssh`, or a streaming plugin backend such as `singularity`),
 the screen lives **inside that sandbox** instead, alongside the shell, so the
 bot's `computer_use` and browser never act outside the boundary you drew (see
 [Where the screen runs](#where-the-screen-runs)).
@@ -234,8 +234,9 @@ same place. `bot_desktop.placement` decides where:
 | `terminal.backend` | `placement: auto` (default) | What that means |
 |---|---|---|
 | `local` | gateway host | The terminal, the screen, the browser and `computer_use` all share the machine running the gateway. |
-| `docker`, `ssh`, `singularity` | **inside the sandbox** | Xvnc + Xfce, Chromium and cua-driver run in the container / on the SSH host, spawned through the same `docker exec` / `ssh` channel the terminal uses. The pane streams the sandbox's screen; nothing of the host desktop is reachable. |
-| `modal`, `daytona`, `vercel_sandbox` | **refused** | These backends cannot host a display yet. Rather than quietly running the screen on the host beside the sandbox you chose for the agent, `Start` explains and points at `placement: gateway`. |
+| `docker`, `ssh`, `singularity` (plugin) | **inside the sandbox** | Xvnc + Xfce, Chromium and cua-driver run in the container / on the SSH host, spawned through the same `docker exec` / `ssh` channel the terminal uses. The pane streams the sandbox's screen; nothing of the host desktop is reachable. |
+| A plugin backend that declares `supports_streams` | **inside the sandbox** | Same as above, through the plugin's own exec channel. |
+| `modal`, `daytona`, `vercel_sandbox`, other plugin backends | **refused** | These backends cannot host a display yet. Rather than quietly running the screen on the host beside the sandbox you chose for the agent, `Start` explains and points at `placement: gateway`. |
 
 `placement: gateway` forces the pre-existing behaviour (screen on the gateway
 host even with a sandboxed terminal) as an explicit opt-in; `placement:

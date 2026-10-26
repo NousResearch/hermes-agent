@@ -265,3 +265,42 @@ print(json.dumps({"host_send": host_send, "cron": cron,
     assert payload["host_send"]["chat_id"] == "@alice@example.com"
     assert payload["cron"]["chat_id"] == "@alice@example.com"
     assert payload["model_registered"] is False
+
+
+def test_declared_target_syntax_and_standalone_policy_drive_send_routing():
+    """Core routes from the entry's ``target_ref_syntax_fn`` / ``standalone_send``, not a per-platform
+    table: a third-party plugin declaring them gets the bundled platforms' semantics."""
+    import asyncio
+
+    from gateway.platforms.send_targets import NOT_EXPLICIT, StandaloneSendPolicy
+    from tools.send_message_tool import _send_to_platform
+
+    calls: list[dict] = []
+
+    async def sender(pconfig, chat_id, message, **kw):
+        calls.append({"chat_id": chat_id, "message": message, **kw})
+        return {"success": True}
+
+    def syntax(ref):
+        if ref.startswith("room-"):
+            return ref.partition(":")[::2] if ":" in ref else (ref, None)
+        return NOT_EXPLICIT if ref == "7" else None
+
+    name = "fmsg-syntax-test"
+    platform_registry.register(PlatformEntry(
+        name=name, label="Fixture Syntax", adapter_factory=lambda cfg: None, check_fn=lambda: True,
+        target_ref_syntax_fn=syntax, standalone_sender_fn=sender,
+        standalone_send=StandaloneSendPolicy(label="Fixture", media=True, captionable=True)))
+    try:
+        with patch("gateway.channel_directory.resolve_channel_name", return_value=None):
+            assert resolve_send_target(name, "room-1:th") == ("room-1", "th", None)
+            # NOT_EXPLICIT skips the generic numeric rule; None falls through to it.
+            assert resolve_send_target(name, "42") == ("42", None, None)
+            assert resolve_send_target(name, "7")[2]
+        media = [(os.path.abspath(__file__).replace(".py", ".png"), False)]
+        result = asyncio.run(_send_to_platform(Platform(name), SimpleNamespace(extra={}), "room-1", "hi",
+                                               media_files=media))
+    finally:
+        platform_registry.unregister(name)
+    assert result == {"success": True}
+    assert calls == [{"chat_id": "room-1", "message": "", "thread_id": None, "media_files": media, "caption": "hi"}]

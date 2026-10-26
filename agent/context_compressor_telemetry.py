@@ -10,6 +10,7 @@ import uuid
 from typing import Any
 
 from agent.model_metadata import estimate_messages_tokens_rough
+from agent.model_metadata_token_memo import forget_message_token_memo
 
 
 def _safe_int(value: Any) -> int | None:
@@ -78,6 +79,8 @@ class CompressionTelemetryMixin:
         if not isinstance(telemetry, dict):
             return
         telemetry["aux_prompt_tokens"] = estimate_messages_tokens_rough(prompt_messages)
+        # The summary prompt is built fresh per attempt and never estimated again; don't let the memo pin it.
+        forget_message_token_memo(prompt_messages)
         telemetry["aux_output_reservation"] = _safe_int(max_tokens)
         if aux_provider:
             telemetry["aux_provider"] = aux_provider

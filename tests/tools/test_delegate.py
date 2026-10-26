@@ -2495,5 +2495,144 @@ class TestFallbackModelInheritance(unittest.TestCase):
         self.assertIsNone(kwargs["fallback_model"])
 
 
+class TestBackgroundDelegation(unittest.TestCase):
+    """Tests for delegate_task(background=True) — fire-and-forget mode."""
+
+    def _make_fast_parent(self):
+        parent = _make_mock_parent()
+        parent._interrupt_requested = False
+        parent._delegate_spinner = None
+        parent._memory_manager = None
+        return parent
+
+    @patch("tools.delegate_tool._run_children_sync")
+    @patch("tools.delegate_tool._build_child_agent")
+    def test_background_returns_immediately_with_session_id(self, mock_build, mock_run):
+        """background=True should return before _run_children_sync completes."""
+        mock_child = MagicMock()
+        mock_child._delegate_role = "leaf"
+        mock_build.return_value = mock_child
+
+        # _run_children_sync takes 2 s — background should not wait for it
+        run_started = threading.Event()
+        run_finished = threading.Event()
+
+        def slow_run(*args, **kwargs):
+            run_started.set()
+            time.sleep(2.0)
+            run_finished.set()
+            return [{"task_index": 0, "status": "completed", "summary": "done",
+                     "error": None, "api_calls": 1, "duration_seconds": 2.0,
+                     "_child_role": "leaf", "_child_cost_usd": 0.0}]
+        mock_run.side_effect = slow_run
+
+        parent = self._make_fast_parent()
+        result_str = delegate_task(goal="test bg task", parent_agent=parent, background=True)
+
+        # Must return immediately — before slow_run has finished
+        self.assertFalse(run_finished.is_set(), "background=True blocked until _run_children_sync completed")
+
+        result = json.loads(result_str)
+        self.assertEqual(result["status"], "running")
+        self.assertIn("session_id", result)
+        self.assertTrue(result["session_id"].startswith("dlg_"))
+        self.assertEqual(result["n_tasks"], 1)
+
+    @patch("tools.delegate_tool._run_children_sync")
+    @patch("tools.delegate_tool._build_child_agent")
+    def test_background_session_registered_in_process_registry(self, mock_build, mock_run):
+        """The returned session_id must appear in process_registry._running."""
+        from tools.process_registry import process_registry
+
+        mock_child = MagicMock()
+        mock_child._delegate_role = "leaf"
+        mock_build.return_value = mock_child
+
+        ready = threading.Event()
+
+        def slow_run(*args, **kwargs):
+            ready.wait(timeout=2.0)
+            return [{"task_index": 0, "status": "completed", "summary": "done",
+                     "error": None, "api_calls": 1, "duration_seconds": 0.1,
+                     "_child_role": "leaf", "_child_cost_usd": 0.0}]
+        mock_run.side_effect = slow_run
+
+        parent = self._make_fast_parent()
+        result_str = delegate_task(goal="registry test", parent_agent=parent, background=True)
+        session_id = json.loads(result_str)["session_id"]
+
+        with process_registry._lock:
+            in_running = session_id in process_registry._running
+
+        self.assertTrue(in_running, f"session_id {session_id!r} not in process_registry._running")
+        ready.set()  # let thread finish
+
+    @patch("tools.delegate_tool._run_children_sync")
+    @patch("tools.delegate_tool._build_child_agent")
+    def test_background_session_moves_to_finished_on_completion(self, mock_build, mock_run):
+        """After children finish, session should move to _finished."""
+        from tools.process_registry import process_registry
+
+        mock_child = MagicMock()
+        mock_child._delegate_role = "leaf"
+        mock_build.return_value = mock_child
+
+        mock_run.return_value = [{"task_index": 0, "status": "completed", "summary": "ok",
+                                   "error": None, "api_calls": 1, "duration_seconds": 0.05,
+                                   "_child_role": "leaf", "_child_cost_usd": 0.0}]
+
+        parent = self._make_fast_parent()
+        result_str = delegate_task(goal="finish test", parent_agent=parent, background=True)
+        session_id = json.loads(result_str)["session_id"]
+
+        # Give background thread time to complete
+        deadline = time.monotonic() + 3.0
+        in_finished = False
+        while time.monotonic() < deadline:
+            with process_registry._lock:
+                if session_id in process_registry._finished:
+                    in_finished = True
+                    break
+            time.sleep(0.05)
+
+        self.assertTrue(in_finished, f"session {session_id!r} never moved to _finished")
+
+        # Output buffer should contain JSON results
+        sess = process_registry._finished[session_id]
+        self.assertTrue(sess.exited)
+        self.assertEqual(sess.exit_code, 0)
+        payload = json.loads(sess.output_buffer)
+        self.assertIn("results", payload)
+
+    @patch("tools.delegate_tool._build_child_agent")
+    def test_background_false_still_blocks(self, mock_build):
+        """background=False (default) must still block synchronously."""
+        mock_child = MagicMock()
+        mock_child._delegate_role = "leaf"
+        mock_build.return_value = mock_child
+
+        parent = self._make_fast_parent()
+
+        results_payload = [{"task_index": 0, "status": "completed", "summary": "sync ok",
+                             "error": None, "api_calls": 1, "duration_seconds": 0.05,
+                             "_child_role": "leaf", "_child_cost_usd": 0.0}]
+
+        with patch("tools.delegate_tool._run_children_sync", return_value=results_payload):
+            result_str = delegate_task(goal="sync test", parent_agent=parent, background=False)
+
+        result = json.loads(result_str)
+        self.assertIn("results", result, "Sync mode should return results directly")
+        self.assertNotIn("session_id", result, "Sync mode must not return a session_id")
+
+    @patch("tools.delegate_tool._run_children_sync")
+    @patch("tools.delegate_tool._build_child_agent")
+    def test_background_schema_has_background_property(self, mock_build, mock_run):
+        """The MCP tool schema must advertise the background parameter."""
+        from tools.delegate_tool import DELEGATE_TASK_SCHEMA
+        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+        self.assertIn("background", props)
+        self.assertEqual(props["background"]["type"], "boolean")
+
+
 if __name__ == "__main__":
     unittest.main()

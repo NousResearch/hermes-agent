@@ -1846,6 +1846,185 @@ def _run_single_child(
             logger.debug("Failed to close child agent after delegation")
 
 
+def _dispatch_background_delegation(
+    task_list: List[Dict[str, Any]],
+    children: list,
+    parent_agent,
+    n_tasks: int,
+) -> str:
+    """
+    Fire-and-forget delegation: spawn a daemon thread that runs all children,
+    register the work as a synthetic ProcessSession so process(poll/wait/log)
+    works on the returned session_id, and return immediately.
+    """
+    import uuid
+    import time as _time
+    from tools.process_registry import ProcessSession, process_registry
+    from tools.delegation_registry import DelegationSession, register as _dreg_register
+
+    session_id = "dlg_" + uuid.uuid4().hex[:12]
+    first_goal = task_list[0].get("goal", "") if task_list else ""
+
+    # Register in delegation registry (lightweight, human-readable status)
+    dlg_session = DelegationSession(id=session_id, goal=first_goal, n_tasks=n_tasks)
+    _dreg_register(dlg_session)
+
+    # Create a synthetic ProcessSession so process(poll/wait/log) works
+    proc_session = ProcessSession(
+        id=session_id,
+        command=f"delegate_task: {first_goal[:60]}",
+        started_at=_time.time(),
+        notify_on_complete=True,
+    )
+    with process_registry._lock:
+        process_registry._running[session_id] = proc_session
+
+    def _bg_thread():
+        try:
+            # Reuse the existing sync execution logic inline
+            results = _run_children_sync(task_list, children, parent_agent, n_tasks)
+            output = json.dumps({"results": results, "total_duration_seconds": 0, "session_id": session_id}, ensure_ascii=False)
+            dlg_session.status = "completed"
+            dlg_session.results = results
+        except Exception as exc:
+            output = json.dumps({"error": str(exc), "session_id": session_id})
+            dlg_session.status = "error"
+            dlg_session.error = str(exc)
+        finally:
+            with proc_session._lock:
+                proc_session.output_buffer = output
+                proc_session.exited = True
+                proc_session.exit_code = 0 if dlg_session.status == "completed" else 1
+            process_registry._move_to_finished(proc_session)
+
+    t = threading.Thread(target=_bg_thread, daemon=True, name=f"delegate-bg-{session_id}")
+    t.start()
+
+    return json.dumps({
+        "session_id": session_id,
+        "status": "running",
+        "n_tasks": n_tasks,
+        "message": (
+            f"Delegated {n_tasks} task(s) running in background. "
+            f"Use process(action='poll', session_id='{session_id}') to check status, "
+            f"or process(action='wait', session_id='{session_id}') to block until done."
+        ),
+    })
+
+
+def _run_children_sync(
+    task_list: List[Dict[str, Any]],
+    children: list,
+    parent_agent,
+    n_tasks: int,
+) -> list:
+    """
+    Execute children synchronously (the original fan-out logic),
+    returning the results list.  Extracted so both the sync path and
+    the background thread can share it without duplication.
+    """
+    results: list = []
+    max_children = _get_max_concurrent_children()
+    task_labels = [t["goal"][:40] for t in task_list]
+    _child_by_index = {i: child for (i, _, child) in children}
+
+    if n_tasks == 1:
+        _i, _t, child = children[0]
+        result = _run_single_child(0, _t["goal"], child, parent_agent)
+        results.append(result)
+    else:
+        completed_count = 0
+        spinner_ref = getattr(parent_agent, "_delegate_spinner", None)
+
+        with ThreadPoolExecutor(max_workers=max_children) as executor:
+            futures = {}
+            for i, t, child in children:
+                future = executor.submit(
+                    _run_single_child,
+                    task_index=i,
+                    goal=t["goal"],
+                    child=child,
+                    parent_agent=parent_agent,
+                )
+                futures[future] = i
+
+            pending = set(futures.keys())
+            while pending:
+                if getattr(parent_agent, "_interrupt_requested", False) is True:
+                    for f in pending:
+                        idx = futures[f]
+                        if f.done():
+                            try:
+                                entry = f.result()
+                            except Exception as exc:
+                                entry = {
+                                    "task_index": idx,
+                                    "status": "error",
+                                    "summary": None,
+                                    "error": str(exc),
+                                    "api_calls": 0,
+                                    "duration_seconds": 0,
+                                    "_child_role": getattr(_child_by_index.get(idx), "_delegate_role", None),
+                                }
+                        else:
+                            entry = {
+                                "task_index": idx,
+                                "status": "interrupted",
+                                "summary": None,
+                                "error": "Parent agent interrupted — child did not finish in time",
+                                "api_calls": 0,
+                                "duration_seconds": 0,
+                                "_child_role": getattr(_child_by_index.get(idx), "_delegate_role", None),
+                            }
+                        results.append(entry)
+                        completed_count += 1
+                    break
+
+                from concurrent.futures import wait as _cf_wait, FIRST_COMPLETED
+                done, pending = _cf_wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
+                for future in done:
+                    try:
+                        entry = future.result()
+                    except Exception as exc:
+                        idx = futures[future]
+                        entry = {
+                            "task_index": idx,
+                            "status": "error",
+                            "summary": None,
+                            "error": str(exc),
+                            "api_calls": 0,
+                            "duration_seconds": 0,
+                            "_child_role": getattr(_child_by_index.get(idx), "_delegate_role", None),
+                        }
+                    results.append(entry)
+                    completed_count += 1
+
+                    idx = entry["task_index"]
+                    label = task_labels[idx] if idx < len(task_labels) else f"Task {idx}"
+                    dur = entry.get("duration_seconds", 0)
+                    status = entry.get("status", "?")
+                    icon = "✓" if status == "completed" else "✗"
+                    remaining = n_tasks - completed_count
+                    completion_line = f"{icon} [{idx+1}/{n_tasks}] {label}  ({dur}s)"
+                    if spinner_ref:
+                        try:
+                            spinner_ref.print_above(completion_line)
+                        except Exception:
+                            print(f"  {completion_line}")
+                    else:
+                        print(f"  {completion_line}")
+
+                    if spinner_ref and remaining > 0:
+                        try:
+                            spinner_ref.update_text(f"🔀 {remaining} task{'s' if remaining != 1 else ''} remaining")
+                        except Exception as e:
+                            logger.debug("Spinner update_text failed: %s", e)
+
+        results.sort(key=lambda r: r["task_index"])
+
+    return results
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
@@ -1856,6 +2035,7 @@ def delegate_task(
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
     parent_agent=None,
+    background: Optional[bool] = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -1868,6 +2048,11 @@ def delegate_task(
     'leaf' (default) cannot; 'orchestrator' retains the delegation
     toolset and can spawn its own workers, bounded by
     delegation.max_spawn_depth.  Per-task role beats the top-level one.
+
+    Set background=True to return immediately with a session_id handle
+    instead of blocking until children finish. Use process(action='poll',
+    session_id=...) to check status, or process(action='wait', session_id=...)
+    to block until done.
 
     Returns JSON with results array, one entry per task.
     """
@@ -2009,129 +2194,17 @@ def delegate_task(
         # Authoritative restore: reset global to parent's tool names after all children built
         _model_tools._last_resolved_tool_names = _parent_tool_names
 
-    if n_tasks == 1:
-        # Single task -- run directly (no thread pool overhead)
-        _i, _t, child = children[0]
-        result = _run_single_child(0, _t["goal"], child, parent_agent)
-        results.append(result)
-    else:
-        # Batch -- run in parallel with per-task progress lines
-        completed_count = 0
-        spinner_ref = getattr(parent_agent, "_delegate_spinner", None)
+    # Background (async) dispatch — return a session_id handle immediately
+    # and run children in a daemon thread.  The caller polls via process().
+    if background:
+        return _dispatch_background_delegation(
+            task_list=task_list,
+            children=children,
+            parent_agent=parent_agent,
+            n_tasks=n_tasks,
+        )
 
-        with ThreadPoolExecutor(max_workers=max_children) as executor:
-            futures = {}
-            for i, t, child in children:
-                future = executor.submit(
-                    _run_single_child,
-                    task_index=i,
-                    goal=t["goal"],
-                    child=child,
-                    parent_agent=parent_agent,
-                )
-                futures[future] = i
-
-            # Poll futures with interrupt checking.  as_completed() blocks
-            # until ALL futures finish — if a child agent gets stuck,
-            # the parent blocks forever even after interrupt propagation.
-            # Instead, use wait() with a short timeout so we can bail
-            # when the parent is interrupted.
-            # Map task_index -> child agent, so fabricated entries for
-            # still-pending futures can carry the correct _delegate_role.
-            _child_by_index = {i: child for (i, _, child) in children}
-
-            pending = set(futures.keys())
-            while pending:
-                if getattr(parent_agent, "_interrupt_requested", False) is True:
-                    # Parent interrupted — collect whatever finished and
-                    # abandon the rest.  Children already received the
-                    # interrupt signal; we just can't wait forever.
-                    for f in pending:
-                        idx = futures[f]
-                        if f.done():
-                            try:
-                                entry = f.result()
-                            except Exception as exc:
-                                entry = {
-                                    "task_index": idx,
-                                    "status": "error",
-                                    "summary": None,
-                                    "error": str(exc),
-                                    "api_calls": 0,
-                                    "duration_seconds": 0,
-                                    "_child_role": getattr(
-                                        _child_by_index.get(idx), "_delegate_role", None
-                                    ),
-                                }
-                        else:
-                            entry = {
-                                "task_index": idx,
-                                "status": "interrupted",
-                                "summary": None,
-                                "error": "Parent agent interrupted — child did not finish in time",
-                                "api_calls": 0,
-                                "duration_seconds": 0,
-                                "_child_role": getattr(
-                                    _child_by_index.get(idx), "_delegate_role", None
-                                ),
-                            }
-                        results.append(entry)
-                        completed_count += 1
-                    break
-
-                from concurrent.futures import wait as _cf_wait, FIRST_COMPLETED
-
-                done, pending = _cf_wait(
-                    pending, timeout=0.5, return_when=FIRST_COMPLETED
-                )
-                for future in done:
-                    try:
-                        entry = future.result()
-                    except Exception as exc:
-                        idx = futures[future]
-                        entry = {
-                            "task_index": idx,
-                            "status": "error",
-                            "summary": None,
-                            "error": str(exc),
-                            "api_calls": 0,
-                            "duration_seconds": 0,
-                            "_child_role": getattr(
-                                _child_by_index.get(idx), "_delegate_role", None
-                            ),
-                        }
-                    results.append(entry)
-                    completed_count += 1
-
-                    # Print per-task completion line above the spinner
-                    idx = entry["task_index"]
-                    label = (
-                        task_labels[idx] if idx < len(task_labels) else f"Task {idx}"
-                    )
-                    dur = entry.get("duration_seconds", 0)
-                    status = entry.get("status", "?")
-                    icon = "✓" if status == "completed" else "✗"
-                    remaining = n_tasks - completed_count
-                    completion_line = f"{icon} [{idx+1}/{n_tasks}] {label}  ({dur}s)"
-                    if spinner_ref:
-                        try:
-                            spinner_ref.print_above(completion_line)
-                        except Exception:
-                            print(f"  {completion_line}")
-                    else:
-                        print(f"  {completion_line}")
-
-                    # Update spinner text to show remaining count
-                    if spinner_ref and remaining > 0:
-                        try:
-                            spinner_ref.update_text(
-                                f"🔀 {remaining} task{'s' if remaining != 1 else ''} remaining"
-                            )
-                        except Exception as e:
-                            logger.debug("Spinner update_text failed: %s", e)
-
-        # Sort by task_index so results match input order
-        results.sort(key=lambda r: r["task_index"])
+    results = _run_children_sync(task_list, children, parent_agent, n_tasks)
 
     # Notify parent's memory provider of delegation outcomes
     if (
@@ -2411,13 +2484,15 @@ DELEGATE_TASK_SCHEMA = {
         "- Mechanical multi-step work with no reasoning needed -> use execute_code\n"
         "- Single tool call -> just call the tool directly\n"
         "- Tasks needing user interaction -> subagents cannot use clarify\n"
+        "- Durable long-running work where you want to keep doing other things "
+        "in this turn -> set background=True (returns a session_id; poll with "
+        "process(action='poll', session_id=...)).\n"
         "- Durable long-running work that must outlive the current turn -> "
         "use cronjob (action='create') or terminal(background=True, "
-        "notify_on_complete=True) instead. delegate_task runs SYNCHRONOUSLY "
-        "inside the parent turn: if the parent is interrupted (user sends a "
-        "new message, /stop, /new) the child is cancelled with status="
-        "'interrupted' and its work is discarded. Children cannot continue "
-        "in the background.\n\n"
+        "notify_on_complete=True) instead. When background=False (default), "
+        "delegate_task runs SYNCHRONOUSLY inside the parent turn: if the parent "
+        "is interrupted (user sends a new message, /stop, /new) the child is "
+        "cancelled with status='interrupted' and its work is discarded.\n\n"
         "IMPORTANT:\n"
         "- Subagents have NO memory of your conversation. Pass all relevant "
         "info (file paths, error messages, constraints) via the 'context' field.\n"
@@ -2546,6 +2621,17 @@ DELEGATE_TASK_SCHEMA = {
                     "Only used when acp_command is set. Example: ['--acp', '--stdio', '--model', 'claude-opus-4-6']"
                 ),
             },
+            "background": {
+                "type": "boolean",
+                "description": (
+                    "Default: False (synchronous — blocks until all children complete). "
+                    "Set True to return immediately with a session_id handle; children "
+                    "run in a background thread. Use process(action='poll', session_id=...) "
+                    "to check progress, process(action='wait', session_id=...) to block "
+                    "until done, or process(action='log', session_id=...) for full results. "
+                    "When True, notify_on_complete fires automatically when all children finish."
+                ),
+            },
         },
         "required": [],
     },
@@ -2568,6 +2654,7 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        background=args.get("background"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

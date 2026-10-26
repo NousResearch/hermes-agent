@@ -1900,6 +1900,87 @@ describe('appendLiveSessionProjection', () => {
 
     expect(untimed.filter(message => message.role === 'assistant')).toHaveLength(2)
   })
+
+  // #145196: on a tool-heavy turn, interim progress text is committed BEFORE a
+  // mid-turn steer arrives, so the persisted order is prompt → committed
+  // progress … → user (steer). The walk-back stops at the first committed
+  // assistant row and collects only the steer, so the opening prompt no longer
+  // counts as "persisted in the latest run" and gets repainted at the tail —
+  // users read it as a resend and stop the turn. Keep walking back past
+  // committed assistant rows while the run opens on one of this turn's
+  // corrections, until the opening prompt is reached.
+  it('walks past committed progress rows to the opening prompt behind a steer (#145196)', () => {
+    const PROMPT = 'yes lets build it. any possibility of handing it over to claude code cloud?'
+    const STEER = 'actually just do it by yourself, forget claude code cloud'
+
+    const stored: ChatMessage[] = [
+      msg('a0', 'assistant', 'previous turn answer'),
+      msg('u1', 'user', PROMPT),
+      msg('a1', 'assistant', 'Checking how the desktop app talks to the backend.'),
+      msg('a2', 'assistant', 'Probing the live connection directly.'),
+      msg('u2', 'user', STEER),
+      msg('a3', 'assistant', 'Building it myself.', { pending: true })
+    ]
+
+    const restored = appendLiveSessionProjection(stored, {
+      session_id: 'sid',
+      inflight: {
+        user: PROMPT,
+        corrections: [STEER],
+        assistant: 'Building it myself. More work',
+        streaming: true
+      }
+    })
+
+    const promptRows = restored.filter(message => message.role === 'user' && chatMessageText(message) === PROMPT)
+    expect(promptRows).toHaveLength(1)
+    expect(promptRows[0].id).toBe('u1')
+    expect(restored.some(message => message.id === 'user-inflight-sid')).toBe(false)
+  })
+
+  // A steer run whose opening prompt is NOT in the transcript keeps behaving
+  // as before: the walk-back runs off the top without finding a non-correction
+  // user row, so the prompt is still projected (nothing regressed into a
+  // silent swallow when history was trimmed).
+  it('still projects the inflight prompt when no opening prompt precedes the steer run (#145196)', () => {
+    const PROMPT = 'fresh prompt with no persisted twin'
+    const STEER = 'take another pass at it'
+
+    const stored: ChatMessage[] = [
+      msg('a0', 'assistant', 'previous turn answer'),
+      msg('u1', 'user', STEER),
+      msg('a1', 'assistant', 'Working on it.', { pending: true })
+    ]
+
+    const restored = appendLiveSessionProjection(stored, {
+      session_id: 'sid',
+      inflight: { user: PROMPT, corrections: [STEER], assistant: 'Still working. + more', streaming: true }
+    })
+
+    expect(restored.some(message => message.id === 'user-inflight-sid')).toBe(true)
+  })
+
+  // The extended walk-back is gated on the run OPENING on a persisted
+  // correction. A steer the transcript has never seen yet leaves the run
+  // opening on an ordinary user row, so the walk still stops at the first
+  // committed assistant row exactly as before.
+  it('does not extend the walk-back when the steer itself is not persisted yet', () => {
+    const PROMPT = 'same text the transcript already holds'
+    const STEER = 'a steer that has not been persisted'
+
+    const stored: ChatMessage[] = [
+      msg('a0', 'assistant', 'previous turn answer'),
+      msg('u1', 'user', PROMPT),
+      msg('a1', 'assistant', 'First answer, fully committed.')
+    ]
+
+    const restored = appendLiveSessionProjection(stored, {
+      session_id: 'sid',
+      inflight: { user: PROMPT, corrections: [STEER], assistant: 'Steered answer. + more', streaming: true }
+    })
+
+    expect(restored.some(message => message.id === 'user-inflight-sid')).toBe(false)
+  })
 })
 
 describe('resolveResumedBusy', () => {

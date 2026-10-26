@@ -9,6 +9,9 @@ quota wall stays parked before its lane exemption is ever reached.
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -74,6 +77,29 @@ def _seed_superseded_blocker_run(conn, *, title, latest_outcome, latest_status=N
     )
     conn.commit()
     return tid
+
+
+def test_dispatcher_facade_imports_first_without_a_cycle():
+    """The facade must import cleanly when NOTHING has imported ``kanban_db`` yet.
+
+    ``kanban_db`` imports names BACK from the dispatcher facade at the bottom of its
+    own module, while the facade imports its topical siblings at the bottom of its
+    module. A name the facade only defines after those sibling imports therefore
+    raises ``ImportError: cannot import name ... from partially initialized module``
+    - but only for the import order that starts at the dispatcher, which is the order
+    ``gateway/kanban_watchers_dispatcher.py`` uses (``from hermes_cli import
+    kanban_db_dispatch`` inside ``_kbd()``). Every other test imports ``kanban_db``
+    first and never sees it. A fresh interpreter is the only honest way to pin it.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    probe = "import hermes_cli.kanban_db_dispatch as kbd; print(callable(kbd.check_respawn_guard))"
+    proc = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=str(repo_root), env={**os.environ, "PYTHONPATH": str(repo_root)},
+        capture_output=True, text=True, encoding="utf-8", timeout=180, check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "True", proc.stdout
 
 
 def test_respawn_guard_ignores_failure_text_a_later_handoff_superseded(kanban_home, monkeypatch):

@@ -71,6 +71,65 @@ describe('scanGitRepos', () => {
     ])
   })
 
+  it('bounds readdir concurrency across the entire branching traversal', async () => {
+    const root = path.resolve(path.sep, 'synthetic-repo-scan-root')
+    const branching = 32
+    const maxDepth = 3
+    const concurrencyLimit = 32
+
+    const directories = Array.from({ length: branching }, (_, index) => ({
+      name: `branch-${index}`,
+      isDirectory: () => true
+    })) as fs.Dirent[]
+
+    let activeReads = 0
+    let peakActiveReads = 0
+
+    const syntheticReaddir = async (dir: fs.PathLike): Promise<fs.Dirent[]> => {
+      activeReads += 1
+      peakActiveReads = Math.max(peakActiveReads, activeReads)
+      await Promise.resolve()
+      activeReads -= 1
+
+      const relative = path.relative(root, String(dir))
+      const depth = relative === '' ? 0 : relative.split(path.sep).length
+
+      return depth < maxDepth ? directories : []
+    }
+
+    vi.spyOn(fs.promises, 'readdir').mockImplementation(
+      syntheticReaddir as unknown as typeof fs.promises.readdir
+    )
+
+    await expect(scanGitRepos([root], { enabled: true, maxDepth })).resolves.toEqual([])
+    expect(peakActiveReads).toBeLessThanOrEqual(concurrencyLimit)
+  })
+
+  it('returns repositories in deterministic path order despite read completion order', async () => {
+    const root = tempDir()
+    const first = path.join(root, 'a-repo')
+    const second = path.join(root, 'z-repo')
+    makeRepo(first)
+    makeRepo(second)
+
+    const readdir = fs.promises.readdir
+
+    const delayedReaddir = async (dir: fs.PathLike, options: { withFileTypes: true }): Promise<fs.Dirent[]> => {
+      if (String(dir) === first) {
+        await new Promise(resolve => setTimeout(resolve, 10))
+      }
+
+      return readdir(dir, options)
+    }
+
+    vi.spyOn(fs.promises, 'readdir').mockImplementation(delayedReaddir as unknown as typeof fs.promises.readdir)
+
+    await expect(scanGitRepos([first, second], { enabled: true })).resolves.toEqual([
+      { label: 'a-repo', root: first },
+      { label: 'z-repo', root: second }
+    ])
+  })
+
   it('deduplicates overlapping roots', async () => {
     const root = tempDir()
     const repo = path.join(root, 'repo')

@@ -42,7 +42,7 @@ def resolve_room_target(job: dict, address: str) -> Optional[dict]:
 
 
 def _room_stores(profile: Optional[str]) -> list[Path]:
-    """Where a room can live: the hosting profile's session store (rooms the gateway owns), then the
+    """Where a room can live: the hosting profile's session store (rooms its gateway owns), then the
     install's shared room store (rooms the dashboard backend owns)."""
     from gateway.hosted_rooms import default_db_path
     from hermes_constants import get_hermes_home
@@ -55,8 +55,15 @@ def _room_stores(profile: Optional[str]) -> list[Path]:
 
 
 def _find_room_store(room_id: str, profile: Optional[str]) -> Optional[Path]:
+    """The store whose worker serves ``room_id``. The session store counts only when its gateway holds
+    the room's owner entry: the shared-store import copies rooms out of ``state.db`` without deleting
+    them, and nothing serves that leftover copy, so a post there would never reach the visible room."""
     from gateway.hosted_rooms import probe_hosted_room
-    return next((path for path in _room_stores(profile) if probe_hosted_room(path, room_id=room_id)), None)
+    from gateway.session_hosted_service import probe_native_room_owner
+    session_store, shared_store = _room_stores(profile)
+    if probe_hosted_room(session_store, room_id=room_id) and probe_native_room_owner(session_store, room_id=room_id):
+        return session_store
+    return shared_store if probe_hosted_room(shared_store, room_id=room_id) else None
 
 
 def deliver_to_room(job: dict, content: str, address: str, *, for_failure: bool = False) -> Optional[str]:

@@ -1487,7 +1487,8 @@ export const host = {
       () =>
         hermesApi<SessionMutationSnapshot>({
           ...scope,
-          path: `${path}/mutation-snapshot?profile=${encodeURIComponent(profile)}`
+          path: `${path}/mutation-snapshot?profile=${encodeURIComponent(profile)}`,
+          passive: false
         }),
       identity =>
         hermesApi<{ ok: boolean; hidden: boolean }>({

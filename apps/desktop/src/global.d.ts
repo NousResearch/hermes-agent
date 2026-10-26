@@ -1655,6 +1655,8 @@ export interface HermesApiRequest {
   // When true and the target profile has no warm pool entry, the main process
   // fails fast without spawning a child or consuming a pool slot, so background
   // tile reconciles cannot starve interactive opens.
+  // An explicit false on a prewrite snapshot allows the same cold backend
+  // dial as its following mutation; omitted forced-local GETs remain passive.
   passive?: boolean
   // An interactive Settings scope selection may cold-start a profile backend.
   // Keep that intent separate from passive hydration so the pool can reserve a

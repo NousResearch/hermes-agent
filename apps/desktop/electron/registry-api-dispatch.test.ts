@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
+import { createSessionMutationClient } from '../../shared/src/session-http-mutations'
+
 import { resolveRegistryLocalRoute } from './connection-registry'
 import { dispatchRegistryApiRequest } from './registry-api-dispatch'
 
@@ -10,6 +12,7 @@ function fixture(globalRemote: boolean, profileRemoteOverride = false) {
   const starts: string[] = []
   const claims: string[] = []
   const sent: string[] = []
+  let beforeEnsure = () => {}
 
   const localRoute = (profile: string | undefined) =>
     resolveRegistryLocalRoute(profile, {
@@ -25,6 +28,7 @@ function fixture(globalRemote: boolean, profileRemoteOverride = false) {
       return ensure()
     },
     ensure: async (id: string, profile: string | undefined, passive: boolean) => {
+      beforeEnsure()
       const scope = id === 'local' ? localRoute(profile).poolKey : `conn:${id}::${profile || 'default'}`
       let backend = pool.get(scope)
 
@@ -47,7 +51,6 @@ function fixture(globalRemote: boolean, profileRemoteOverride = false) {
     },
     localRoute,
     path: (path: string, profile: string | undefined) => `${path}?profile=${profile}`,
-    poolKeys: () => pool.keys(),
     timeout: (ms: number | undefined) => ms || 1000,
     tag: (_path: string, response: { rows: string[] }, connectionId: string) => ({
       ...response,
@@ -55,10 +58,10 @@ function fixture(globalRemote: boolean, profileRemoteOverride = false) {
     })
   }
 
-  const dispatch = (method: string, id = 'local', profile = 'research', passive = false) =>
+  const dispatch = (method: string, id = 'local', profile = 'research', passive?: boolean) =>
     dispatchRegistryApiRequest({ method, path: '/api/sessions/s-1', profile, passive }, id, profile, profile, deps)
 
-  return { claims, dispatch, pool, sent, starts }
+  return { claims, dispatch, pool, sent, starts, beforeBackendLookup: (fn: () => void) => { beforeEnsure = fn } }
 }
 
 test('stale local owner GET does not start a forced-local backend on a remote-primary desktop', async () => {
@@ -81,6 +84,66 @@ test('an already-pooled This-device child serves a GET without changing the owne
   assert.deepEqual(await desktop.dispatch('GET'), { rows: ['session-1'], connectionId: 'local' })
   assert.deepEqual(desktop.sent, ['conn:local::research:/api/sessions/s-1?profile=research'])
   assert.deepEqual(desktop.starts, [])
+})
+
+test('an evicted forced-local child cannot be restarted by a stale-hint GET', async () => {
+  const desktop = fixture(true)
+  const key = 'conn:local::research'
+  desktop.pool.set(key, { mode: 'local', scope: key })
+  desktop.beforeBackendLookup(() => {
+    desktop.pool.delete(key)
+  })
+  await assert.rejects(desktop.dispatch('GET'), /Passive read: no warm backend/)
+  assert.deepEqual(desktop.starts, [])
+  assert.deepEqual(desktop.sent, [])
+})
+
+test('a cold forced-local snapshot and its write use the same backend and CAS identity', async () => {
+  const pool = new Map<string, { mode: string }>()
+  const wire: Array<{ backend: { mode: string }; path: string; method: string; body?: unknown }> = []
+  const route = (profile: string | undefined) => resolveRegistryLocalRoute(profile, {
+    globalRemote: true, profileRemoteOverride: false
+  })
+  const dispatch = (path: string, method: string, body?: unknown, passive?: boolean) =>
+    dispatchRegistryApiRequest({ path, method, body, passive }, 'local', 'research', 'research', {
+      afterProfileRequest: () => {},
+      claim: (_key, ensure) => ensure(),
+      ensure: async (_id, profile, noSpawn) => {
+        const key = route(profile).poolKey
+        let backend = pool.get(key)
+        if (!backend) {
+          if (noSpawn) { throw new Error('Passive read: no warm backend') }
+          backend = { mode: 'local' }
+          pool.set(key, backend)
+        }
+        return backend
+      },
+      fetch: async (backend, requestPath, options) => {
+        wire.push({ backend, path: requestPath, method: options.method || 'GET', body: options.body })
+        return options.method === 'PATCH'
+          ? { session_id: 'cold', ok: true, exists: true, runtime_revision: 19, runtime_generation: 4 }
+          : { session_id: 'cold', ok: false, exists: true, runtime_revision: 19, runtime_generation: 4 }
+      },
+      localRoute: route,
+      path: path => path,
+      timeout: () => 1000,
+      tag: (_path, response) => response
+    })
+
+  const mutate = createSessionMutationClient()
+  const path = '/api/sessions/cold'
+  const result = await mutate('[["local","research"],"cold","PATCH"]',
+    () => dispatch(`${path}/mutation-snapshot?profile=research`, 'GET', undefined, false),
+    identity => dispatch(path, 'PATCH', { archived: true, profile: 'research', ...identity }))
+  assert.equal(result.ok, true)
+  assert.deepEqual(wire.map(({ method, path }) => [method, path]), [
+    ['GET', '/api/sessions/cold/mutation-snapshot?profile=research'], ['PATCH', '/api/sessions/cold']
+  ])
+  assert.equal(wire[0].backend, wire[1].backend)
+  const { request_id, ...write } = wire[1].body as Record<string, unknown>
+  assert.deepEqual(write, { archived: true, profile: 'research', expected_revision: 19, expected_generation: 4 })
+  assert.ok(typeof request_id === 'string' && request_id.length > 0)
+  assert.deepEqual([...pool.keys()], ['conn:local::research'])
 })
 
 test('local writes and deliberate dials still start a cold child; delegate and remote reads keep their routes', async () => {

@@ -637,6 +637,12 @@ class ChatCompletionsTransport(ProviderTransport):
             elif raw_thinking_config:
                 extra_body["thinking_config"] = raw_thinking_config
 
+        # OpenRouter free models (nvidia/nemotron-*, etc.) may return content=null
+        # with all text in the reasoning field. include_reasoning=false tells
+        # OpenRouter to put everything in content instead.
+        if is_openrouter and supports_reasoning and "include_reasoning" not in extra_body:
+            extra_body["include_reasoning"] = False
+
         if params.get("extra_body_additions"):
             extra_body.update(params["extra_body_additions"])
         if extra_body:

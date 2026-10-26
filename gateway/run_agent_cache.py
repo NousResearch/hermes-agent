@@ -363,6 +363,22 @@ class GatewayAgentCacheMixin:
             return None
         return registry, tokens
 
+    def _invalidate_turn_lease_waiters(self, session_key: str = "", session_id: str = "") -> bool:
+        """Invalidate turns already waiting on the session lease that ``session_key``'s turn holds
+        (or on ``session_id``). Alias routing keys have their own generations, so /stop and /new
+        must fence the shared session too, before the holder releases."""
+        registry = getattr(self, "_turn_leases", None)
+        if registry is None:
+            return False
+        session_ids = {session_id} if session_id else set()
+        state = self._peek_session_state(session_key) if session_key else None
+        if state is not None:
+            session_ids.update(t.session_id for t in state.turn.lease_tokens.values() if t is not None)
+        invalidated = False
+        for sid in session_ids:
+            invalidated = registry.invalidate(sid) or invalidated
+        return invalidated
+
     def _release_turn_lease(self, session_key: str, run_generation: int) -> bool:
         """Release the turn lease acquired by (``session_key``, ``run_generation``). Keyed by (routing
         key, run generation) so a stale unwind pops only ITS token; the registry's identity check
@@ -540,6 +556,8 @@ class GatewayAgentCacheMixin:
         """Interrupt the current run and clear queued session state consistently."""
         if not session_key:
             return
+        # Fence waiters on the held session lease before anything releases it (alias keys).
+        self._invalidate_turn_lease_waiters(session_key)
         state = self._peek_session_state(session_key)
         running_agent = state.turn.agent if state else None
         _generation_at_interrupt = self._interrupt_running_turn(

@@ -322,7 +322,7 @@ import { linuxOzoneBackend, resolveHudWindowing } from './hud-windowing'
 import { INSTALL_STAMP, installShape } from './install-stamp'
 import type { InstallStamp } from './install-stamp'
 import { createKeepAwakeController } from './keep-awake-controller'
-import { applyLaunchProfileOverride } from './launch-profile'
+import { applyLaunchProfileOverride, parseLaunchProfile } from './launch-profile'
 import { fetchLinkTitle, resolveFaviconCached } from './link-metadata'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
 import {
@@ -437,13 +437,10 @@ import { commandFocusedGuest, notePreviewGuestHidden } from './preview-guest-off
 import { applyPreviewGuestAttachPrefs } from './preview-guest-throttle'
 import { PreviewReachRegistry } from './preview-reach'
 import { previewHttpUrlTarget } from './preview-url-target'
-import {
-  createPrimaryRemoteConnection,
-  FirstRunSetupResetError,
-  runPrimaryBackendStartup
-} from './primary-backend-startup'
+import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
 import { PrimaryProfilePin, resolveLaunchProfile } from './primary-profile-pin'
+import { connectPrimaryRemote } from './primary-remote-startup'
 import { applyDesktopIdentity, PRODUCT_IDENTITY } from './product-identity'
 import {
   assertLocalProfileCanStart,
@@ -11876,16 +11873,12 @@ async function startHermes(requestedProfile?: string) {
   // hermes:profile:remember landing mid-startup becomes the NEXT boot's
   // preference instead of splitting routing identity from the launch
   // argument. An explicit profile-scoped caller names both.
-  const { argvProfile: activeProfile, routingProfile: primaryProfile } = requestedProfile
+  let { argvProfile: activeProfile, routingProfile: primaryProfile } = requestedProfile
     ? { argvProfile: requestedProfile, routingProfile: requestedProfile }
     : resolveLaunchProfile(readActiveDesktopProfile)
 
-  // Pin the routing table to the profile this primary actually boots as; a
-  // later hermes:profile:remember must not retarget requests mid-life.
+  // Keep routing and native paths on this attempt's effective launch profile.
   primaryProfilePin.pin(primaryProfile)
-
-  // Legacy path callers without an explicit profile belong to the primary
-  // window backend. Profile-scoped callers still pass their key directly.
   setActiveGatewayProfile(primaryProfile)
 
   // Classify this boot BEFORE the throwing resolve/mint runs: a remote failure
@@ -11894,29 +11887,32 @@ async function startHermes(requestedProfile?: string) {
   let attemptedRemote = managedPrimaryRestoreOwners.size > 0 || primaryBackendIsRemote()
 
   const connectionPromise = (async () => {
-    const connectRemote = async remote => {
-      // resolveRemote() may take arbitrarily long (settings resolve / ws-ticket
-      // mint). If a newer attempt started meanwhile (e.g. the user switched
-      // remotes and Apply invalidated this attempt), bail before probing.
-      backendConnectionState.assertCurrentAttempt(connectionAttempt)
+    const connectRemote = remote =>
+      connectPrimaryRemote(remote, {
+        profile: primaryProfile,
+        restoreRememberedProfile: () =>
+          !requestedProfile && !parseLaunchProfile(process.argv) && !readDesktopConnectionConfig().profiles?.default,
+        signal: localBackendLifecycle.signal,
+        assertCurrentAttempt: () => backendConnectionState.assertCurrentAttempt(connectionAttempt),
+        advanceBootProgress,
+        waitForRemote: waitForRemoteHermes,
+        readProfiles: descriptor => getJsonForBackend(descriptor, '/api/profiles', { timeoutMs: 8_000 }),
+        onProfileRestored: profile => {
+          primaryProfile = primaryProfilePin.pin(profile)
+          setActiveGatewayProfile(profile)
 
-      await advanceBootProgress('backend.remote', `Connecting to remote Hermes backend at ${remote.baseUrl}`, 24)
-      await waitForRemoteHermes(remote)
-
-      // Second async boundary: the health probe itself can outlive the
-      // attempt. A late success here must not publish a stale descriptor.
-      backendConnectionState.assertCurrentAttempt(connectionAttempt)
-
-      updateBootProgress({
-        phase: 'backend.ready',
-        message: 'Remote Hermes backend is ready',
-        progress: 94,
-        running: true,
-        error: null
+          if (readActiveDesktopProfile() === activeProfile) {
+            try {
+              writeActiveDesktopProfile(profile)
+            } catch (error) {
+              rememberLog(`[profile] could not remember restored profile: ${error}`)
+            }
+          }
+        },
+        updateBootProgress,
+        logs: () => hermesLog.slice(-80),
+        windowState: getWindowState
       })
-
-      return createPrimaryRemoteConnection(remote, hermesLog.slice(-80), getWindowState())
-    }
 
     await advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
     // Resolve for the desktop's primary profile so a per-profile remote

@@ -6,6 +6,7 @@ over the control socket and opens it. It never serves anything itself. ``--sign-
 the gateway did, waits for a gateway that is still starting, and replaces the stored credential
 itself only when no gateway runs.
 """
+import json
 from argparse import Namespace
 from pathlib import Path
 
@@ -444,11 +445,39 @@ def test_a_webapp_opened_over_plain_http_on_the_lan_says_what_the_browser_loses(
     assert _says_what_plain_http_loses(capsys.readouterr().out)
 
 
-def test_status_of_a_webapp_served_over_plain_http_on_the_lan_says_what_the_browser_loses(world, capsys):
-    world["answers"]["webapp-status"] = {"ok": True, "result": {
-        "state": "serving", "url": "http://10.0.1.170:9120", "reason": None}}
+def _register_lan_sign_in(world, address: str, port: int = 9120) -> None:
+    """Web Access Start registered Nous sign-in for ``http://<address>:<port>``, this machine's LAN address."""
+    from hermes_cli import webapp_access
+    record = world["root"] / "webapp" / "sign-in-registration.json"
+    record.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    record.write_text(json.dumps({"portal": "https://portal.example", "client_id": "agent:x",
+                                  "callback": f"http://{address}:{port}/auth/callback"}) + "\n", encoding="utf-8")
+    world["monkeypatch"].setattr(webapp_access, "lan_address", lambda: address)
+
+
+@pytest.mark.parametrize("browser_address", ["public_url", "lan_sign_in"])
+def test_status_of_a_webapp_browsers_open_over_plain_http_on_the_lan_says_what_the_browser_loses(
+        world, capsys, browser_address):
+    """The gateway reports its loopback dial origin; browsers open webapp.public_url, else the LAN address
+    Web Access registered sign-in for, as hermes webapp does. --status warns about that address."""
+    if browser_address == "public_url":
+        _home(world["root"], "webapp:\n  enabled: true\n  host: 0.0.0.0\n  public_url: http://192.168.1.20:9120\n")
+    else:
+        _home(world["root"], "webapp:\n  enabled: true\n  host: 0.0.0.0\n")
+        _register_lan_sign_in(world, "192.168.1.20")
     assert launcher.cmd_webapp(_args(status=True)) == 0
-    assert _says_what_plain_http_loses(capsys.readouterr().out)
+    out = capsys.readouterr().out
+    assert "Serving at http://127.0.0.1:9120" in out
+    assert _says_what_plain_http_loses(out)
+
+
+@pytest.mark.parametrize("public_url", ["", "https://hermes.example.ts.net"])
+def test_status_gets_no_plain_http_warning_when_browsers_open_a_secure_address(world, capsys, public_url):
+    """A wildcard bind with no public URL or LAN sign-in opens loopback; an HTTPS public URL is secure."""
+    _home(world["root"], "webapp:\n  enabled: true\n  host: 0.0.0.0\n"
+          + (f"  public_url: {public_url}\n" if public_url else ""))
+    assert launcher.cmd_webapp(_args(status=True)) == 0
+    assert "plain http" not in capsys.readouterr().out.lower()
 
 
 @pytest.mark.parametrize("url", ["http://127.0.0.1:9120/", "http://127.0.0.2:9120/", "http://localhost:9120/",

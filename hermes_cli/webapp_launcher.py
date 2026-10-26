@@ -203,6 +203,15 @@ def _plain_http_note(url: str) -> str | None:
         return PLAIN_HTTP_NOTE
 
 
+def _browser_address(target: Path, settings, served_url: str) -> str:
+    """Where a browser opens the Webapp the gateway serves at *served_url* (its loopback dial origin), as
+    ``webapp-launch`` works it out behind sign-in: ``webapp.public_url`` when set, else the LAN address
+    Web Access registered Nous sign-in for, else *served_url*. Read from *target*'s config now, not from
+    when the gateway started."""
+    from hermes_cli.webapp_access import registered_lan_origin
+    return settings.public_url or registered_lan_origin(target, urlsplit(served_url).port) or served_url
+
+
 def _status(target: Path) -> int:
     try:
         response = _control(target, "webapp-status")
@@ -219,10 +228,11 @@ def _status(target: Path) -> int:
     status = response["result"]
     if status["state"] == "serving":
         print(f"Serving at {status['url']}")
-        if note := _plain_http_note(status["url"]):
-            print(note)
         from gateway.webapp_listener import webapp_settings
-        if not webapp_settings(target).enabled:
+        settings = webapp_settings(target)
+        if note := _plain_http_note(_browser_address(target, settings, status["url"])):
+            print(note)
+        if not settings.enabled:
             print(f"{target / 'config.yaml'} no longer turns the Webapp on: it stops at the next gateway restart "
                   f"({RESTART_COMMAND}).")
     elif status["state"] == "starting":

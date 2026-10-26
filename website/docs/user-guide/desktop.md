@@ -85,7 +85,8 @@ links serve only a Webapp that needs no sign-in. HTTPS is strongly recommended r
 address other than loopback (`http://localhost` and `http://127.0.0.1` count as secure): the bot
 screen viewer, the microphone (dictation and live voice) and system notifications. The bot screen and
 live voice say so instead of opening. `hermes webapp` and `hermes webapp --status` print a note when
-the address they give is plain HTTP on another host. To keep these features, open the Webapp over
+the address a browser opens (`webapp.public_url`, else the LAN address **Start** registered sign-in
+for) is plain HTTP on another host. To keep these features, open the Webapp over
 HTTPS (`webapp.public_url`) or through an SSH tunnel to `127.0.0.1`.
 
 :::warning Treat Webapp access like access to Hermes on the host

@@ -119,23 +119,28 @@ def test_a_tightened_authorization_value_reaches_the_process(monkeypatch, name):
     assert shared.os.environ[bridged_env_marker(name)] == "111"
 
 
-def test_every_authorization_name_is_one_the_bridge_can_write():
-    """Guard the list above against drifting from what the two adapters actually bridge."""
-    import ast
-    import re
-    from pathlib import Path as _Path
+def test_every_authorization_name_is_refreshed_by_the_real_adapter_hooks(monkeypatch):
+    """Execute both hooks rather than infer their writes from source text."""
+    from plugins.platforms.discord.adapter import _apply_yaml_config as discord_hook
+    from plugins.platforms.telegram.adapter import _apply_yaml_config as telegram_hook
 
-    root = _Path(__file__).resolve().parents[2]
-    written = set()
-    for platform in ("telegram", "discord"):
-        src = (root / "plugins" / "platforms" / platform / "adapter.py").read_text(encoding="utf-8")
-        tree = ast.parse(src)
-        for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef) and "yaml_config" in node.name:
-                seg = ast.get_source_segment(src, node) or ""
-                written |= set(re.findall(r'"([A-Z]+_[A-Z0-9_]+)"', seg))
+    for name in AUTHORIZATION_ENV_NAMES:
+        monkeypatch.setenv(name, "111,222")
+        monkeypatch.setenv(bridged_env_marker(name), "111,222")
+    telegram_hook({}, {
+        "allow_from": ["111"], "allowed_chats": ["111"], "allowed_topics": ["111"],
+        "group_allow_from": ["111"], "group_allowed_chats": ["111"], "allow_bots": False,
+    })
+    discord_hook({}, {
+        "allow_from": ["111"], "allowed_roles": ["111"], "allow_all_users": False,
+        "allow_bots": False, "allowed_channels": ["111"], "ignored_channels": ["111"],
+        "no_thread_channels": ["111"],
+    })
 
-    assert set(AUTHORIZATION_ENV_NAMES) <= written
+    for name in AUTHORIZATION_ENV_NAMES:
+        expected = "false" if name.endswith(("ALLOW_BOTS", "ALLOW_ALL_USERS")) else "111"
+        assert shared.os.environ[name] == expected
+        assert shared.os.environ[bridged_env_marker(name)] == expected
 
 
 def test_the_restart_child_env_keeps_the_value_and_its_marker(monkeypatch, tmp_path):
@@ -167,7 +172,7 @@ def test_the_restart_child_env_keeps_the_value_and_its_marker(monkeypatch, tmp_p
 
 def test_a_dotenv_value_survives_even_when_it_matches_the_bridge(monkeypatch):
     """#109032 holds when .env happens to hold the same string the bridge wrote earlier."""
-    import hermes_cli.env_loader as env_loader
+    from hermes_cli import env_loader
 
     monkeypatch.setattr(env_loader, "_LOADED_DOTENV_KEYS", {"TELEGRAM_REACTIONS"}, raising=False)
     monkeypatch.setenv("TELEGRAM_REACTIONS", "false")

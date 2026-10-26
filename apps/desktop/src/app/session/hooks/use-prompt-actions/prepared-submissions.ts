@@ -12,8 +12,9 @@ const STORAGE_KEY = 'hermes.desktop.preparedSubmissions.v1'
 const ENTRY_PREFIX = 'hermes.desktop.preparedSubmissions.v2:'
 // The blob may still hold an earlier build's uncertain sends. They stay adoptable from it, behind
 // any entry under its own key, and the blob is never rewritten: retiring a key also retires the
-// blob's entry there, recorded under its own key as that entry's id. So no tab can undo another's
-// retirement, and a newer entry that a still-open tab of the earlier build writes stays visible.
+// blob's entry there only when that entry carries the retired id, recorded as that id under a
+// marker key of its own. So no tab can undo another's retirement, and a different send that a
+// still-open tab of the earlier build writes under the same key stays visible.
 const LEGACY_RETIRED_PREFIX = 'hermes.desktop.preparedSubmissions.v1.retired:'
 
 export interface PreparedSubmission {
@@ -105,7 +106,8 @@ async function readJournal(): Promise<Record<string, PreparedSubmission>> {
       // Storage may have recovered since: finish the retirement so the stale entry stops lingering.
       await retireJournalEntry(key, id).then(() => clearSpent(key), error => console.warn('[prepared-submission-retire]', error))
     } else {
-      // Gone, or replaced by a newer send under the same key: the spent entry no longer exists.
+      // No entry read under this key carries the spent id: it is gone, or what reads there now is a
+      // different send (under its own key, or the earlier build's blob). Nothing is left to hide.
       clearSpent(key)
     }
   }

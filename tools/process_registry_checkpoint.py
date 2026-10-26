@@ -17,7 +17,7 @@ class ProcessCheckpointMixin:
 
     # ----- Checkpoint (crash recovery) -----
 
-    def _write_checkpoint(self, extra_entries: Optional[list[dict[str, Any]]] = None):
+    def _write_checkpoint(self, extra_entries: Optional[list[dict[str, Any]]] = None, *, exclude_ids=()):
         """Write running process metadata to the checkpoint file atomically."""
         from tools.process_registry import _checkpoint_path, _CHECKPOINT_FIELDS
 
@@ -42,7 +42,8 @@ class ProcessCheckpointMixin:
                 if extra_entries:
                     tracked_ids = {item.get("session_id") for item in entries}
                     entries.extend(item for item in extra_entries if item.get("session_id") not in tracked_ids)
-                known = {*self._running, *self._finished}
+                known = {*self._running, *self._finished, *exclude_ids}
+                known.update(item.get('session_id') for item in entries)
             from hermes_cli.active_sessions import _FileLock
             from utils import atomic_json_write
             path = _checkpoint_path()
@@ -159,5 +160,8 @@ class ProcessCheckpointMixin:
                     "notify_on_complete": session.notify_on_complete,
                     "parent_session_id": session.parent_session_id,
                 })
-        self._write_checkpoint(extra_entries=unresolved_scope_entries)
+        # Recovery decided these records (including reaped scopes). The merge must not
+        # resurrect them from its old image; explicitly retained neighbors/scopes are above.
+        self._write_checkpoint(extra_entries=unresolved_scope_entries,
+                               exclude_ids={entry.get('session_id') for entry in entries})
         return recovered

@@ -2728,6 +2728,17 @@ DEFAULT_CONFIG = {
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },
+    # Large-file transfers (PM packages and local models) — every path that fetches a
+    # multi-gigabyte artifact, on one code path.
+    "download": {
+        # Fall back to curl when the downloader's own client cannot establish a
+        # connection at all — a host that resets the TLS handshake, for instance. Only a
+        # connection-level failure triggers it: an HTTP status (a 503 curl gets past
+        # would publish bytes the other client reports as an error) and a certificate
+        # failure (trust is not transport) never do. Disable to prove a failure is not
+        # this fallback masking one.
+        "allow_curl_fallback": True,
+    },
     "_config_version": 51,  # Config schema version - bump this when adding new required fields
 }
 

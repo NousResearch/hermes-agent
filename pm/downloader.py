@@ -37,8 +37,9 @@ import urllib.request
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional, Sequence
+from typing import Callable, Optional, Sequence, cast
 
+from pm import curl_transport
 from pm.network import edge_block, is_transient, retry_network
 
 # GitHub's release-asset CDN (release-assets.githubusercontent.com, which
@@ -76,8 +77,94 @@ def _https_context() -> ssl.SSLContext:
     return context
 
 
+def _server_hostname(host: str) -> str:
+    """Hostname for SNI/verification: an IPv6 literal's brackets are not part of it."""
+    return host[1:-1] if host.startswith("[") and host.endswith("]") else host
+
+
+def _address_families(host: str, port: int) -> list[tuple[int, tuple]]:
+    """Resolved (family, sockaddr) pairs for a host, IPv4 first.
+
+    IPv4 first is a deliberate bias, not a limitation — IPv6 is still tried, so an
+    IPv6-only host works. On a network whose IPv6 path is broken (observed: a host
+    whose IPv6 TCP handshake is accepted and whose TLS ClientHello is then reset,
+    ~85% of the time) this turns a near-total failure into a clean fallback.
+    """
+    infos = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+    ordered = sorted(infos, key=lambda info: info[0] != socket.AF_INET)
+    seen: set = set()
+    out = []
+    for info in ordered:
+        key = (info[0], info[4])
+        if key not in seen:
+            seen.add(key)
+            out.append(key)
+    return out
+
+
+class _AddressRacingHTTPSConnection(http.client.HTTPSConnection):
+    """An HTTPS connection that tries every resolved address, TLS handshake included.
+
+    ``socket.create_connection`` falls through to the next address only when the
+    TCP connect itself fails. A middlebox that completes the IPv6 TCP handshake and
+    then resets the TLS ClientHello fails *after* ``connect()`` returns, so the
+    failure is invisible to the address loop and IPv4 is never tried — the caller
+    just sees a reset handshake from a perfectly good network.
+
+    The three attributes below are set by the base class ``__init__``; they are
+    annotated here because the base declares them dynamically, so a type checker
+    cannot see them.
+    """
+
+    _context: ssl.SSLContext
+    _tunnel_host: Optional[str]
+    source_address: Optional[tuple]
+
+    def connect(self) -> None:
+        if self.sock is not None:
+            return
+        if self._tunnel_host:
+            super().connect()  # A proxy tunnel is one address, not a race.
+            return
+        addresses = _address_families(self.host, self.port)
+        if not addresses:
+            raise OSError(f"no address for {self.host}")
+        last: OSError | None = None
+        for family, sockaddr in addresses:
+            sock = None
+            try:
+                sock = socket.socket(family, socket.SOCK_STREAM)
+                sock.settimeout(self.timeout)
+                if self.source_address:
+                    sock.bind(self.source_address)
+                sock.connect(sockaddr)
+                hostname = _server_hostname(self.host)
+                self.sock = self._context.wrap_socket(sock, server_hostname=hostname)
+                return
+            except OSError as exc:
+                last = exc
+                with suppress(Exception):
+                    if sock is not None:
+                        sock.close()
+        raise OSError(f"could not connect to {self.host}:{self.port}") from last
+
+
+class _AddressRacingHTTPSHandler(urllib.request.HTTPSHandler):
+    """Serve HTTPS over :class:`_AddressRacingHTTPSConnection`.
+
+    Mirrors the base class's own ``https_open``; ``check_hostname`` is applied to
+    the context by ``HTTPSHandler.__init__`` rather than stored, so there is nothing
+    extra to forward.
+    """
+
+    _context: ssl.SSLContext
+
+    def https_open(self, req):
+        return self.do_open(_AddressRacingHTTPSConnection, req, context=self._context)
+
+
 _OPENER = urllib.request.build_opener(
-    _HttpsRedirectHandler(), urllib.request.HTTPSHandler(context=_https_context())
+    _HttpsRedirectHandler(), _AddressRacingHTTPSHandler(context=_https_context())
 )
 
 
@@ -279,6 +366,9 @@ class Download:
             self.partials_dir = paths.partials_root()
         self._owns_pause_event = pause_event is None
         self._paused = pause_event if pause_event is not None else threading.Event()
+        # URLs urllib could not reach. A plan fetches several files from one host;
+        # re-paying the urllib retry budget per file only stalls the progress bar.
+        self._urllib_dead: set[str] = set()
 
     def pause(self) -> None:
         """Request a stop between chunks; run() raises DownloadPaused."""
@@ -364,6 +454,101 @@ class Download:
                 logging.getLogger(__name__).debug("%s; trying pinned mirror %s", exc, urls[index + 1])
 
     def _transfer(self, source: Source, tick) -> int:
+        """Transfer one source, falling back to curl when urllib cannot connect.
+
+        A host that resets TLS handshakes never yields to retrying inside urllib — the
+        reset happens before any byte moves, so the probe and every range worker die
+        identically. curl survives the same host because its own retry budget
+        (``--retry 20 --retry-all-errors``) rides out the bursts that a 4-attempt
+        urllib budget cannot, so it is the escape hatch.
+        Tried only after urllib has failed, and only for a connection-level failure:
+        a definitive 404 is a missing file, not a broken transport, and must not be
+        re-fetched through a different client.
+
+        Once a URL is known unreachable over urllib it stays known for the rest of the
+        job — a model plan fetches several files from one host, and paying the urllib
+        retry budget again for each would stall the progress bar for no gain.
+        """
+        if source.url not in self._urllib_dead:
+            try:
+                return self._transfer_urllib(source, tick)
+            except DownloadTransportError as exc:
+                if not self._curl_fallback_allowed(exc):
+                    raise
+                logging.getLogger(__name__).warning(
+                    "urllib could not reach %s (%s); retrying with curl", source.url, exc)
+        self._urllib_dead.add(source.url)
+        return self._transfer_curl(source, tick)
+
+    def _curl_fallback_allowed(self, exc: DownloadTransportError) -> bool:
+        """True only when the transport never got a usable answer.
+
+        The fallback exists for a host that resets the handshake, so it is limited to
+        connection-establishment failures. Anything meaning the server *replied* keeps
+        the existing behaviour: a truncated body is one the ranged path already resumes
+        byte by byte, and an HTTP status is the server's answer — re-asking through a
+        different client would silently change what a failure means (a 503 curl happens
+        to get past would publish bytes the urllib path reports as an error).
+
+        A certificate failure is deliberately excluded too, even though it is also an
+        ssl.SSLError: trust is not transport. Falling back to a client with a different
+        trust store would launder an untrusted certificate into a successful download,
+        which is the one outcome this fallback must never produce.
+        """
+        if not curl_transport.enabled():
+            return False
+        # __cause__ is the exception urllib raised: a URLError wrapping a
+        # ConnectionResetError, a socket.gaierror, a timeout. is_transient already
+        # separates a dropped TLS connection (SSLEOFError, SSLZeroReturnError) from a
+        # trust failure (any other ssl.SSLError), so it is the right gate here.
+        cause = cast(Exception, exc.__cause__ or exc)
+        if isinstance(cause, (urllib.error.HTTPError, http.client.IncompleteRead)):
+            return False
+        return is_transient(cause)
+
+    def _transfer_curl(self, source: Source, tick) -> int:
+        """Fetch one source with curl, then publish it through the same finalize.
+
+        The bytes land in the managed partial so sha256 verification, destination-local
+        staging and the atomic replace all behave exactly as they do for urllib — the
+        fallback changes only how the bytes travel, never how they are trusted.
+        """
+        key = self._key(source.url)
+        part = self.partials_dir / f"{key}.part"
+        side = self.partials_dir / f"{key}.ranges"
+        from pm.download_state import partial_lock
+
+        with partial_lock(self.partials_dir, key, cancelled=self._paused.is_set) as acquired:
+            if not acquired:
+                raise DownloadPaused(source.url)
+            self._check_pause()
+            if _existing_dest_ok(source):
+                return source.dest.stat().st_size
+            return self._curl_fetch(source, part, side, tick)
+
+    def _curl_fetch(self, source: Source, part: Path, side: Path, tick) -> int:
+        """Write one source through curl into the managed partial, then publish it."""
+        # A partial written by the ranged path is a preallocated skeleton until its
+        # workers land bytes. curl's own resume continues from end-of-file, which on a
+        # skeleton is the wrong offset — so curl always starts this file fresh.
+        part.write_bytes(b"")
+        remote = self._probe(source.url)
+        if remote.total:
+            tick([], remote.total)
+
+        def report(written: _Ranges) -> None:
+            tick(written, remote.total)
+
+        written = curl_transport.fetch(source.url, part, on_progress=lambda size: report([(0, size)]))
+        if remote.total and written != remote.total:
+            raise DownloadError(
+                f"curl download incomplete for {source.url}: "
+                f"{written} bytes, expected {remote.total}")
+        self._write_sidecar(side, part, [(0, written)], remote, source.sha256)
+        self._finalize(source, part, side)
+        return written
+
+    def _transfer_urllib(self, source: Source, tick) -> int:
         from pm.download_state import partial_lock
 
         with partial_lock(self.partials_dir, self._key(source.url), cancelled=self._paused.is_set) as acquired:
@@ -410,6 +595,34 @@ class Download:
             raise DownloadPaused("download paused during retry backoff")
 
     def _probe(self, url: str) -> _Remote:
+        """Size, Range support and validator for ``url``, over either transport.
+
+        urllib first, so a healthy network behaves exactly as before. When urllib
+        cannot complete the handshake, curl answers the same question: a transport
+        that cannot connect tells us nothing about the file, so it is not a reason to
+        abandon a download that another client can make.
+        """
+        failure: Optional[DownloadTransportError] = None
+        if url not in self._urllib_dead:
+            try:
+                return self._probe_urllib(url)
+            except DownloadTransportError as exc:
+                if not self._curl_fallback_allowed(exc):
+                    raise
+                failure = exc
+        probed = curl_transport.probe(url)
+        if probed is None:
+            # Report the urllib failure when there is one: it names the transport the
+            # user's own client speaks. Otherwise the URL was already known dead.
+            raise failure or DownloadTransportError(
+                url, urllib.error.URLError(RuntimeError("no transport could reach this host")))
+        total, ranged, etag = probed
+        logging.getLogger(__name__).warning(
+            "urllib could not probe %s (%s); probed with curl instead", url, failure)
+        self._urllib_dead.add(url)
+        return _Remote(total, ranged, etag)
+
+    def _probe_urllib(self, url: str) -> _Remote:
         def request():
             self._check_pause()
             req = urllib.request.Request(url, headers={**_UA, "Range": "bytes=0-0"})

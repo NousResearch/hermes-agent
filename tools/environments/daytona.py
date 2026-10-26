@@ -86,7 +86,8 @@ class DaytonaEnvironment(BaseEnvironment):
         self._sync_manager = FileSyncManager(
             get_files_fn=lambda: iter_sync_files(f"{self._remote_home}/.hermes"),
             upload_fn=self._daytona_upload, delete_fn=self._daytona_delete,
-            bulk_upload_fn=self._daytona_bulk_upload, bulk_download_fn=self._daytona_bulk_download)
+            bulk_upload_fn=self._daytona_bulk_upload, bulk_download_fn=self._daytona_bulk_download,
+            get_remote_time_fn=self._daytona_remote_time)
         self._sync_manager.sync(force=True)
         self.init_session()
 
@@ -109,6 +110,13 @@ class DaytonaEnvironment(BaseEnvironment):
             self._sandbox.process.exec(quoted_mkdir_command(parents))
         self._sandbox.fs.upload_files(
             [FileUpload(source=host_path, destination=remote_path) for host_path, remote_path in files])
+
+    def _daytona_remote_time(self) -> float:
+        """Read the sandbox clock before the initial file push."""
+        result = self._sandbox.process.exec("date +%s")
+        if result.exit_code != 0:
+            raise RuntimeError(f"Daytona remote clock failed: {result.result}")
+        return float(result.result.strip())
 
     def _daytona_bulk_download(self, dest: Path) -> None:
         """Download remote .hermes/ as a tar archive."""

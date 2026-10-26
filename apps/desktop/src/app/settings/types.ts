@@ -15,6 +15,7 @@ export type SettingsView =
   | 'plugins'
   | 'providers'
   | 'sessions'
+  | 'storage'
   | 'vault'
   | 'web-access'
   | `config:${string}`

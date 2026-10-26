@@ -440,8 +440,9 @@ def _written_core(start: int, window: str, hunk: Hunk) -> Optional[Span]:
     if len(parts) != len(added):
         return start, start + len(window)
     lead, trail = added.index(True), added[::-1].index(True)
-    return (start + sum(len(p) + 1 for p in parts[:lead]),
-            start + len(window) - sum(len(p) + 1 for p in parts[len(parts) - trail:]))
+    first = start + sum(len(p) + 1 for p in parts[:lead])
+    last = start + len(window) - sum(len(p) + 1 for p in parts[len(parts) - trail:])
+    return first, max(last, first + 1)  # a blank written line still takes one char, as in _edit_ranges
 
 
 def _shift(spans: list[Span], at: int, delta: int) -> list[Span]:

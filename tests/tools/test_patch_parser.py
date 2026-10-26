@@ -1592,6 +1592,44 @@ class TestHunkSelectionReviewRegressions:
         assert "ambiguous" in result.error
         assert fo.writes == [] and final == source
 
+    def test_a_blank_line_an_earlier_hunk_wrote_is_not_removable_by_a_later_hunk(self, tmp_path):
+        source = "a = 1\nz = 0\n"
+        body = "@@\n-a = 1\n+\n@@\n-\n-z = 0\n+b = 2"
+
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is False
+        assert fo.writes == [] and final == source
+
+    def test_an_exact_site_outside_the_hint_window_does_not_shadow_a_normalized_one_in_it(self, tmp_path):
+        source = ("def second():\n    active  = False\n# " + "x" * 2500
+                  + "\ndef third():\n    active = False\n")
+        body = "@@ def second(): @@\n-    active = False\n+    active = True"
+
+        result, _fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is True, result.error
+        assert final == source.replace("active  = False", "active = True")
+
+    def test_a_written_context_line_matching_only_after_strip_is_rewritten_with_the_models_whitespace(self, tmp_path):
+        source = "a = 1\nc = 3\n"
+        body = "@@\n-a = 1\n+a = 1\n+    b = 2\n@@\n b = 2\n-c = 3\n+c = 4"
+
+        result, _fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is True, result.error
+        assert final == "a = 1\n    b = 2\nc = 4\n"
+
+    def test_first_ordered_hunk_takes_a_normalized_site_before_a_later_exact_one(self, tmp_path):
+        source = "def second():\n    active  = False\ndef third():\n    active = False\n"
+        body = ("@@\n-    active = False\n+    active = True\n"
+                "@@\n-    active = False\n+    active = True")
+
+        result, _fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is True, result.error
+        assert final == "def second():\n    active = True\ndef third():\n    active = True\n"
+
     def test_an_ordered_hunk_takes_the_nearest_of_exact_and_normalized_sites(self, tmp_path):
         source = "# top\ndef second():\n    active  = False\ndef third():\n    active = False\n"
         body = ("@@\n def second():\n@@\n-    active = False\n+    active = True\n"

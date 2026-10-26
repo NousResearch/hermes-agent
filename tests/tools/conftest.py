@@ -8,9 +8,28 @@ depend on the registry being populated should use it explicitly or via
 ``@pytest.mark.usefixtures("web_registry_populated")``.
 """
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
+
+
+def _ensure_zulip_mock() -> None:
+    """Install a minimal zulip mock in sys.modules when the SDK is absent.
+
+    The ``zulip`` extra is lazy-installable, so it is not part of the
+    ``all`` feature set the test environment syncs — the Zulip platform
+    plugin's tools tests still need ``zulip.Client`` patchable. Mirrors
+    ``_ensure_telegram_mock`` in tests/gateway/conftest.py; idempotent and
+    skipped when the real library is installed.
+    """
+    import sys
+
+    if "zulip" in sys.modules and hasattr(sys.modules["zulip"], "__file__"):
+        return
+    sys.modules["zulip"] = MagicMock()
+
+
+_ensure_zulip_mock()
 
 
 @pytest.fixture(autouse=True)

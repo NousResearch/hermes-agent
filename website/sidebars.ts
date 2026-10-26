@@ -719,6 +719,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/messaging/open-webui',
             'user-guide/messaging/relay',
             'user-guide/messaging/webhooks',
+            'user-guide/messaging/zulip',
           ],
         },
       ],

@@ -278,6 +278,7 @@ messaging = [
 ] # aiohttp 3.14.5: prior CVEs + GHSA-9xw5-w5jj-pvcg/GHSA-2g87-pp6c-29x5/GHSA-5wr8-gcqf-gqf3 family
 cron = [] # croniter is now a core dependency; this extra kept for back-compat
 slack = ["slack-bolt==1.30.0", "slack-sdk==3.45.0", "aiohttp==3.14.5"]
+zulip = ["zulip==0.9.1"]
 # Matrix gateway deps. `mautrix[encryption]` pulls `python-olm`, whose
 # vendored libolm (archived 2023) cannot build on Windows or modern macOS:
 # no wheels for those targets AND the sdist fails to compile on current

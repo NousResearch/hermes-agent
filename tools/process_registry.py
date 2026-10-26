@@ -570,9 +570,9 @@ class ProcessSession:
     persist_on_release: bool = False           # opt out of agent-lifecycle cleanup (release()/turn-abandon kill
                                                 # sweeps), per terminal(background=true, persist_on_release=true) (#41225)
     output_log: str = ""                        # file the process writes to (worker spawns; no pipe to lose)
-    # Watcher/notification routing (persisted for crash recovery)
     watcher_platform: str = ""
     watcher_chat_id: str = ""
+    watcher_chat_name: str = ""                 # names the chat on an event rebuilt without a stored origin
     watcher_user_id: str = ""
     watcher_user_name: str = ""
     watcher_thread_id: str = ""
@@ -648,7 +648,7 @@ class ProcessSession:
 
 
 # Watcher routing fields, in event-dict key order (``watcher_<key>`` on the session).
-_WATCHER_ROUTE_KEYS = ("platform", "chat_id", "user_id", "user_name", "thread_id", "message_id")
+_WATCHER_ROUTE_KEYS = ("platform", "chat_id", "chat_name", "user_id", "user_name", "thread_id", "message_id")
 # Session fields persisted verbatim in the crash-recovery checkpoint (plus
 # ``session_id``; ``command`` is redacted and ``owner_task_id`` defaulted on write).
 _CHECKPOINT_FIELDS = (

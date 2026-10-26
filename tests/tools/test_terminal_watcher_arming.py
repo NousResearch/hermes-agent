@@ -13,7 +13,7 @@ from tools.terminal_tool_background import _register_completion_watcher
 
 def _proc_session():
     return SimpleNamespace(
-        id="proc_active", watcher_platform="telegram", watcher_chat_id="123",
+        id="proc_active", watcher_platform="telegram", watcher_chat_id="123", watcher_chat_name="Ada",
         watcher_user_id="u", watcher_user_name="Ada", watcher_thread_id="",
         watcher_message_id="", parent_session_id="",
     )

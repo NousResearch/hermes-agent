@@ -504,6 +504,73 @@ def test_ambiguous_friendly_name_fails_closed(tmp_path, monkeypatch):
     assert [_runner_parts(c["command"])[2][1:3] for c in calls] == [["-p", "default"]]
 
 
+def test_bare_peer_name_shadowing_a_local_teammate_is_ambiguous(tmp_path, monkeypatch):
+    """#145241: a bare target that names both a local profile and a registered peer must
+    not silently take the peer HTTP route — it crosses an identity/privacy boundary the
+    caller never chose. Same fail-closed contract as the friendly-name collision above."""
+    _capture_spawn(monkeypatch)
+    monkeypatch.setattr(bot_relay, "_hermes_cli", lambda: "hermes")
+    home = _managed_home(tmp_path, teammates=("ops",), peers=("ops",))
+    agent = _FakeAgent(home, title="Bot Chat")
+
+    result = json.loads(bot_mode_dm.message_agent_tool(target="ops", message="ping", agent=agent))
+
+    assert "error" in result
+    assert "ambiguous" in result["error"]
+    assert "ops/<agent>" in result["error"]
+    assert result["peers"] == ["ops"]
+
+
+def test_peer_agent_form_still_reaches_the_peer_when_names_collide(tmp_path, monkeypatch):
+    """The explicit '<peer>/<agent>' form is unambiguous even under a name collision —
+    the refusal above must not take it away."""
+    calls = _capture_spawn(monkeypatch)
+    monkeypatch.setattr(bot_relay, "_hermes_cli", lambda: "hermes")
+    monkeypatch.setattr("socket.gethostname", lambda: "eri-mac.local")
+    home = _managed_home(tmp_path, teammates=("ops",), peers=("ops",))
+    agent = _FakeAgent(home, title="Bot Chat")
+
+    result = json.loads(
+        bot_mode_dm.message_agent_tool(target="ops/researcher", message="ping", agent=agent)
+    )
+
+    assert result["status"] == "queued"
+    _mode, _dm_file, transport_argv, _home = _runner_parts(calls[0]["command"])
+    assert transport_argv == ["hermes", "-p", "default", "peer", "dm", "ops/researcher"]
+
+
+def test_bare_peer_name_without_a_local_collision_still_reaches_the_peer(tmp_path, monkeypatch):
+    """No local profile named like the peer: today's routing is correct and stays."""
+    calls = _capture_spawn(monkeypatch)
+    monkeypatch.setattr(bot_relay, "_hermes_cli", lambda: "hermes")
+    monkeypatch.setattr("socket.gethostname", lambda: "eri-mac.local")
+    home = _managed_home(tmp_path, teammates=("researcher",), peers=("ops",))
+    agent = _FakeAgent(home, title="Bot Chat")
+
+    result = json.loads(bot_mode_dm.message_agent_tool(target="ops", message="ping", agent=agent))
+
+    assert result["status"] == "queued"
+    _mode, _dm_file, transport_argv, _home = _runner_parts(calls[0]["command"])
+    assert transport_argv == ["hermes", "-p", "default", "peer", "dm", "ops"]
+
+
+def test_bare_peer_name_matching_only_the_caller_stays_peer_bound(tmp_path, monkeypatch):
+    """A collision with the caller's own profile is not ambiguous: local delivery to
+    yourself is refused anyway, so the peer is the only sensible reading and keeps
+    today's route."""
+    calls = _capture_spawn(monkeypatch)
+    monkeypatch.setattr(bot_relay, "_hermes_cli", lambda: "hermes")
+    monkeypatch.setattr("socket.gethostname", lambda: "eri-mac.local")
+    home = _managed_home(tmp_path, teammates=("ops",), peers=("ops",))
+    agent = _FakeAgent(home / "profiles" / "ops", title="Bot Chat")
+
+    result = json.loads(bot_mode_dm.message_agent_tool(target="ops", message="ping", agent=agent))
+
+    assert result["status"] == "queued"
+    _mode, _dm_file, transport_argv, _home = _runner_parts(calls[0]["command"])
+    assert transport_argv == ["hermes", "-p", "default", "peer", "dm", "ops"]
+
+
 def test_peer_delivery_command_pins_registry_profile_for_secondary_bots(
     tmp_path, monkeypatch
 ):

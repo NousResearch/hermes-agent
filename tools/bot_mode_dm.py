@@ -312,6 +312,18 @@ def _dispatch(raw_target: str, content: str, sender: Sender, *, wake: Any) -> st
         peer_name, peer_profile = peer_match.groups() if peer_match else (raw_target.lower(), None)
         if peer_name not in peers:
             return sender.roster_err(f"No registered peer named '{peer_name}'.")
+        # A bare name that also resolves to a local teammate is ambiguous (#145241): the peer
+        # route crosses an identity/privacy boundary, so neither side may take it silently.
+        # Refuse and name both routes — 'peer/<agent>' still reaches the peer, a friendly
+        # name / @-slug still reaches the local bot. A name that only matches the caller's
+        # own profile stays peer-bound: local delivery to yourself is refused anyway.
+        if peer_match is None:
+            local_hit = _resolve_local_name(raw_target, roster, root)
+            if local_hit is not None and local_hit != me:
+                return sender.roster_err(
+                    f"'{raw_target}' is ambiguous: it names both a local profile and a "
+                    f"registered peer. Use '{peer_name}/<agent>' for the peer, or the local "
+                    "bot's friendly name to reach it on this install.")
         dm_target = f"{peer_name}/{peer_profile}" if peer_profile else peer_name
         # A peer dm crosses installs: qualify the id with this host so the peer's own '<me>' stays distinct.
         from agent.turn_author import bot_author_id, local_origin

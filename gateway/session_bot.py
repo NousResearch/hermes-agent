@@ -771,8 +771,11 @@ def _watch_reply(authority, home, key, admission_id):
 
 async def deliver(connection, params):
     from gateway.session_runtime_workers import track_mutation
+    from gateway.session_bot_state import bot_chat_state
     connection.authority._require_admission_open()
-    return await asyncio.shield(track_mutation(connection.authority, _deliver(connection, params)))
+    answer = await asyncio.shield(track_mutation(connection.authority, _deliver(connection, params)))
+    # Not part of the receipt (it is stale a second later): the sender's ack and its runner's replays.
+    return {**answer, 'target_state': bot_chat_state(connection.authority, answer['session_id'])}
 
 
 def _require_same_delivery(record, actor, message, author, category):

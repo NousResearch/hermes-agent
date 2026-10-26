@@ -8002,6 +8002,25 @@
             ],
             "default": null,
             "title": "Reason"
+          },
+          "target_state": {
+            "anyOf": [
+              {
+                "enum": [
+                  "idle",
+                  "working",
+                  "waiting_approval",
+                  "waiting_clarify",
+                  "paused"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target State"
           }
         },
         "required": [

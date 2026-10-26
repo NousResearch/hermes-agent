@@ -5380,6 +5380,7 @@ export interface CanonicalBotDeliverResult {
   retry_admission_id?: string | null
   error?: string | null
   reason?: string | null
+  target_state?: 'idle' | 'working' | 'waiting_approval' | 'waiting_clarify' | 'paused' | null
 }
 /** ``answers`` rides only on a reconnect replay (locks the server already accepted; null = skipped). */
 export interface ClarifyRequestParams {

@@ -259,6 +259,7 @@ _RAW_INLINE_TOOL_EXECUTORS: dict[str, InlineToolExecutor] = {
     # Chat session carries the schema, and the tool re-gates on the title.
     "message_agent": _tool(
         "tools.bot_mode_dm", "message_agent_tool", ("target", "target", ""), ("message", "message", ""),
+        ("expects_reply", "expects_reply", True), ("cancel", "cancel", ""),
         task_id=lambda agent, ctx: ctx.effective_task_id, agent=lambda agent, ctx: agent,
     ),
     "session_search": _session_search,

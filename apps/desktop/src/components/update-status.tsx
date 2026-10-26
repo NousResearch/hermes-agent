@@ -334,6 +334,22 @@ export function UpdateStatusCard({
   target: UpdateTarget
   version: DesktopVersionInfo | null
 }): ReactElement {
+  // An installed bundle waiting only for a restart owns the client status; a
+  // stale check error beside it contradicts it (#128195).
+  if (target === 'client' && version?.bundleSwapPending) {
+    return <></>
+  }
+
+  return <UpdateStatusCardBody showReleaseNotes={showReleaseNotes} target={target} />
+}
+
+function UpdateStatusCardBody({
+  showReleaseNotes,
+  target
+}: {
+  showReleaseNotes: boolean
+  target: UpdateTarget
+}): ReactElement {
   const { t } = useI18n()
   const u = t.updates
   const isBackend = target === 'backend'
@@ -352,10 +368,6 @@ export function UpdateStatusCard({
     target,
     u
   })
-
-  if (target === 'client' && version?.bundleSwapPending) {
-    return <></>
-  }
 
   const handleCheck = async (): Promise<void> => {
     setJustChecked(false)

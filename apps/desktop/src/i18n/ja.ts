@@ -2662,6 +2662,8 @@ export const jaOverrides = {
     gitUnusable: 'このコンピューターで Git を実行できなかったため、更新を確認できませんでした。',
     latestBody: '最新バージョンを実行しています。',
     versionDetailsDistributionStore: 'Microsoft Store',
+    versionDetailsClient: 'このデバイス',
+    versionDetailsBackend: '接続中のバックエンド',
     latestBodyBackend: 'バックエンドは最新バージョンを実行しています。',
     allSetTitle: '準備完了',
     availableTitle: '新しい更新が利用可能',

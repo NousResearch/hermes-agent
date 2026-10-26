@@ -2914,6 +2914,8 @@ export const ruOverrides = {
     gitUnusable: 'Hermes не удалось запустить Git на этом компьютере, поэтому проверить обновления не получилось.',
     latestBody: 'У вас последняя версия.',
     versionDetailsDistributionStore: 'Microsoft Store',
+    versionDetailsClient: 'Это устройство',
+    versionDetailsBackend: 'Подключённый бэкенд',
     latestBodyBackend: 'Бэкенд работает на последней версии.',
     allSetTitle: 'Всё готово',
     availableTitle: 'Доступно новое обновление',

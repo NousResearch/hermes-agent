@@ -120,6 +120,8 @@ export const zhHantBoot = {
     gitUnusable: 'Hermes 無法在這台電腦上執行 Git，因此無法檢查更新。',
     latestBody: '您正在執行最新版本。',
     versionDetailsDistributionStore: 'Microsoft Store',
+    versionDetailsClient: '本裝置',
+    versionDetailsBackend: '已連線的後端',
     latestBodyBackend: '後端正在執行最新版本。',
     allSetTitle: '已是最新版本',
     availableTitle: '有可用更新',

@@ -457,10 +457,18 @@ export async function pluginSdkMock(host: Record<string, unknown>) {
   const nanostores = await import('nanostores')
   const { Textarea } = await import('@/components/ui/textarea')
   const { cn } = await import('@/lib/utils')
+  const { CopyButton } = await import('@/components/ui/copy-button')
+  const { ScrollArea } = await import('@/components/ui/scroll-area')
+  const { Codicon } = await import('@/components/ui/codicon')
+  const { Tip } = await import('@/components/ui/tooltip')
 
   return {
     Textarea,
     cn,
+    CopyButton,
+    ScrollArea,
+    Codicon,
+    Tip,
     // Real value: approval.respond forwards it as its client deadline (#60654).
     APPROVAL_RESPOND_TIMEOUT_MS: 300_000,
     atom: nanostores.atom,

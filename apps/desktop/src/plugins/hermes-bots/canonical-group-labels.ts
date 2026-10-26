@@ -9,6 +9,8 @@ export function useCanonicalGroupLabels() {
 
   return {
     ...canonical,
+    you: group.you,
+    scrollToBottom: t.assistant.thread.scrollToBottom,
     back: t.common.back,
     cancel: t.common.cancel,
     refresh: t.common.refresh,

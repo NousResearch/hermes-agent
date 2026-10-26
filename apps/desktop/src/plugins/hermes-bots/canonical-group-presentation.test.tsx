@@ -6,12 +6,14 @@ vi.mock('@hermes/plugin-sdk', async () => {
   const { Streamdown } = await import('streamdown')
   const { en } = await import('@/i18n/en')
   const { relativeTime } = await import('@/lib/time')
+  const { CopyButton } = await import('@/components/ui/copy-button')
+  const { cn } = await import('@/lib/utils')
 
   // The shell's shared message renderer; media marks whether MEDIA: paths would resolve locally.
   const MessageTextContent = ({ media = true, text }: { media?: boolean; text: string }) =>
     <div data-media={String(media)} data-testid="message-text"><Streamdown>{text}</Streamdown></div>
 
-  return { MessageTextContent, Streamdown, relativeTime, useI18n: () => ({ locale: 'en', t: en }),
+  return { CopyButton, cn, MessageTextContent, Streamdown, relativeTime, useI18n: () => ({ locale: 'en', t: en }),
     Button: (props: ComponentProps<'button'>) => <button {...props} />,
     Codicon: () => <span />, Tip: ({ children }: { children: ReactNode }) => <>{children}</> }
 })

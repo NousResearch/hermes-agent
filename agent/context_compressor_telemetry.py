@@ -111,7 +111,9 @@ class CompressionTelemetryMixin:
         if isinstance(telemetry, dict):
             telemetry["fallback_used"] = True
             telemetry["failure_class"] = telemetry.get("failure_class") or "aux_model_fallback"
-        if route.get("model") == self.model:  # the user warning says "summarised with your main model"
+        # The user warning says "summarised with your main model": only the main-agent route earns it, never a
+        # fallback_chain entry that happens to share the model name on another provider.
+        if str(route.get("fallback_label") or "").startswith("main-agent("):
             self._last_aux_model_failure_model = failed_model
             failure = route.get("failure") or "unknown error"
             self._last_aux_model_failure_error = failure if len(failure) <= 220 else failure[:217].rstrip() + "..."

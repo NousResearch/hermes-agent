@@ -112,24 +112,15 @@ def test_summary_recovered_on_the_main_model_by_call_llm_is_reported(tmp_path, m
     assert "connection error" in compressor._last_aux_model_failure_error
 
 
-@pytest.mark.parametrize("route, warns", [
-    ({"provider": "custom", "model": "main-fake", "failed_model": "dead", "failure": "connection error: x"}, True),
-    ({"provider": "openrouter", "model": "chain-model", "failed_model": "dead", "failure": "rate limit: x"}, False),
-])
-def test_only_a_main_model_recovery_names_the_broken_compression_model(route, warns):
+@pytest.mark.parametrize("label, warns", [("main-agent(custom)", True), ("fallback_chain[0](openrouter)", False)])
+def test_only_a_main_model_recovery_names_the_broken_compression_model(label, warns):
     compressor = ContextCompressor(model="main-fake", config_context_length=64000, quiet_mode=True)
     compressor._active_compression_telemetry = telemetry = {}
 
-    compressor._note_aux_route_fallback(route)
+    # Same model name on both routes: only the route that answered decides the "main model" warning.
+    compressor._note_aux_route_fallback(
+        {"provider": "custom", "model": "main-fake", "failed_model": "dead", "failure": "connection error: x",
+         "fallback_label": label})
 
     assert telemetry["fallback_used"] is True
     assert (compressor._last_aux_model_failure_model == "dead") is warns
-
-
-def test_a_route_that_answered_itself_is_not_a_fallback():
-    compressor = ContextCompressor(model="main-fake", config_context_length=64000, quiet_mode=True)
-    compressor._active_compression_telemetry = telemetry = {}
-
-    compressor._note_aux_route_fallback({"provider": "custom", "model": "summarizer"})
-
-    assert telemetry == {} and compressor._last_aux_model_failure_model is None

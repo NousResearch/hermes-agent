@@ -7907,7 +7907,8 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
         fb_resp = yield _LadderStep("fallback", (fb_client, fb_model, fb_label))
         if fb_resp is not None:
             if route.route_info is not None:  # tell the caller its own route failed, not only where it landed
-                route.route_info.update(failed_model=route.final_model or "", failure=f"{reason}: {first_err}")
+                route.route_info.update(failed_model=route.final_model or "", failure=f"{reason}: {first_err}",
+                                        fallback_label=fb_label)
             return fb_resp
         fb_client, fb_model, fb_label = _next_fallback_after_quarantine(
             task, resolved_provider, is_auto, route, _chain_failed_model, _chain_failure_scope,

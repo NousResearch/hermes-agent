@@ -64,6 +64,35 @@ def test_lists_only_this_senders_unsettled_deliveries_and_never_writes(tmp_path)
     assert after == before  # read-only: no claim, no lock file, no rewrite
 
 
+def test_a_poll_reparses_only_receipts_written_since_the_last_one(tmp_path, monkeypatch):
+    import tools.bot_delivery_status as status
+
+    root = tmp_path / "hermes"
+    _profile(root, "default")
+    scribe = _profile(root, "scribe")
+    for i in range(5):
+        _receipt(scribe, f"{i}" * 32, sender="alice", status="settled", reply="done")
+    live = _receipt(scribe, "a" * 32, sender="alice", status="queued")
+    reads = []
+    real_read = status._read_receipt
+    monkeypatch.setattr(status, "_read_receipt", lambda path: reads.append(path.name) or real_read(path))
+
+    def poll():
+        return list_sender_deliveries(root, "alice", profiles=[("scribe", scribe)], live_state=lambda *_: (None, None))
+
+    assert [row["state"] for row in poll()] == ["queued"]
+    reads.clear()
+    assert [row["state"] for row in poll()] == ["queued"]
+    assert reads == []  # settled history and the unchanged live receipt are not re-read
+
+    record = json.loads(live.read_text(encoding="utf-8-sig"))
+    tmp = live.with_suffix(".tmp")
+    tmp.write_text(json.dumps({**record, "status": "failed", "reason": "rate_limit"}), encoding="utf-8")
+    os.replace(tmp, live)  # the owner's atomic rewrite
+    assert [(row["state"], row["reason"]) for row in poll()] == [("failed", "rate_limit")]
+    assert reads == [live.name]
+
+
 class _Events:
     def __init__(self):
         self.lock = threading.RLock()

@@ -106,11 +106,41 @@ def stored_live_state(_name: str, home: Path, record: dict) -> tuple[str | None,
     return stored_admission_status(home, record.get("retry_admission_id") or record.get("admission_id") or ""), None
 
 
-def _receipts(home: Path) -> Iterable[tuple[Path, dict]]:
+# receipts dir -> {file name: (stat identity, record)}. Receipts are kept on disk for recovery and
+# replaced atomically (new inode) on every write, so an unchanged identity means unchanged content:
+# a poll re-parses only what changed since the last one. A settled receipt is cached as its status
+# alone, so the cache stays small however much history the directory holds.
+_RECEIPT_CACHE: dict[Path, dict[str, tuple[tuple[int, int, int], dict]]] = {}
+
+
+def _receipts(home: Path) -> list[tuple[Path, dict, float]]:
+    """``(path, record, mtime)`` for every readable receipt under ``home``."""
     root = home / "runtime" / "bot_live_delivery"
     if not root.is_dir():
-        return ()
-    return ((path, record) for path in root.glob("*.json") if (record := _read_receipt(path)) is not None)
+        return []
+    seen = _RECEIPT_CACHE.get(root, {})
+    fresh: dict[str, tuple[tuple[int, int, int], dict]] = {}
+    out: list[tuple[Path, dict, float]] = []
+    for path in root.glob("*.json"):
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        identity = (st.st_ino, st.st_mtime_ns, st.st_size)
+        hit = seen.get(path.name)
+        if hit is not None and hit[0] == identity:
+            record = hit[1]
+        else:
+            record = _read_receipt(path)
+            if record is None:
+                continue
+            if str(record.get("status") or "") not in _PENDING_RECEIPTS | _FAILED_RECEIPTS:
+                record = {"status": record.get("status")}
+        fresh[path.name] = (identity, record)
+        out.append((path, record, st.st_mtime))
+    # Swapped whole, never mutated in place: a concurrent poll iterates its own snapshot.
+    _RECEIPT_CACHE[root] = fresh
+    return out
 
 
 def list_sender_deliveries(
@@ -130,16 +160,12 @@ def list_sender_deliveries(
     for name, home in (_roster(root) if profiles is None else profiles):
         if name == sender:
             continue
-        for path, record in _receipts(Path(home)):
-            author = record.get("author")
-            if not isinstance(author, dict) or author.get("id") != author_id:
-                continue
+        for path, record, since in _receipts(Path(home)):
             status = str(record.get("status") or "")
             if status not in _PENDING_RECEIPTS | _FAILED_RECEIPTS:
                 continue
-            try:
-                since = path.stat().st_mtime
-            except OSError:
+            author = record.get("author")
+            if not isinstance(author, dict) or author.get("id") != author_id:
                 continue
             if status in _FAILED_RECEIPTS:
                 if now - since > FAILED_VISIBLE_SECONDS:

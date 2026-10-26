@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import contextlib
+import io
 import logging
 import os
 import re
@@ -2285,7 +2286,25 @@ def dispatch_once(
     frames. The loser returns an empty ``DispatchResult`` with
     ``skipped_locked=True`` and writes nothing; the lock is keyed on the
     resolved DB path so unrelated boards tick in parallel.
+
+    Side effect: ``deploy_guard.check_deploy_branch()`` runs on every tick
+    (gated by ``HERMES_DEPLOY_GUARD``, default ``warn``). When the running
+    tree is on a non-canonical branch the dispatcher logs a structured
+    WARNING + writes a stderr banner — the same path that hid Friday's
+    restored gates for ~15 minutes before they were silently checked out
+    (t_7161d9a9). The guard is intentionally never fatal: a stalled board
+    is worse than a drifted one, and the visible warning surfaces faster
+    than an exception that the cron pump would silently swallow. To force
+    an abort on drift, set ``HERMES_DEPLOY_GUARD=strict`` (raises
+    ``DeployBranchDriftError`` from the guard call here).
     """
+    try:
+        from hermes_cli.deploy_guard import check_deploy_branch
+        check_deploy_branch()
+    except Exception:
+        # A guard import / parse failure must never block a tick.
+        pass
+
     def _locked_tick() -> DispatchResult:
         return _dispatch_once_locked(
             conn,
@@ -3099,17 +3118,225 @@ def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> li
     return cmd
 
 
+# ---------------------------------------------------------------------------
+# Worker log redaction + filesystem-hygiene defense (t_ad15582c).
+#
+# Kanban worker logs captured raw subprocess stdout/stderr; live Infisical
+# machine-identity client secrets and Cloudflare tokens leaked into plaintext
+# on disk in a 0664 file under a 0775 board subdir. ``_RedactingLog`` wraps the
+# stdout sink and scrubs every line through ``agent.redact.redact_sensitive_text``
+# + a credential-labeled-hex pass before the bytes hit disk. ``_ensure_owner_only_perms``
+# chmods the per-task log to 0600 and its dir to 0700 at open time, so a future
+# umask drift can't reopen the group-readable hole.
+# ---------------------------------------------------------------------------
+
+
+class _RedactingLog(io.IOBase):
+    """File-like wrapper around the worker's stdout sink.
+
+    Buffers partial writes; flushes one full line at a time through
+    ``_scrub_worker_log_line`` so a credential that straddles two writes is
+    caught when the newline arrives. The trailing partial line (no newline yet)
+    is flushed on ``close()`` so the last bytes are never lost.
+
+    The redactor is wrapped in a try/except: a crash in ``agent.redact``
+    falls through and the line is written unscrubbed. Dropping the line on a
+    redactor crash would silently break the audit trail; surfacing the bytes
+    unscrubbed keeps evidence intact and lets the next operator notice the
+    redactor regression.
+
+    Inherits from ``io.IOBase`` so ``subprocess.Popen`` accepts it as a stdout
+    file handle (Pyright otherwise rejects a bare custom class on the type
+    signature ``_FILE = int | IO[Any] | None``).
+    """
+
+    def __init__(self, sink):
+        self._sink = sink
+        self._buffer = ""
+        self._closed = False
+
+    def writable(self):
+        return True
+
+    def write(self, data):  # type: ignore[override]
+        if self._closed:
+            return 0
+        if isinstance(data, (bytes, bytearray)):
+            try:
+                data = data.decode("utf-8", errors="replace")
+            except Exception:
+                # totally undecodable bytes: pass through as-is so we don't lose signal
+                try:
+                    return self._sink.write(bytes(data))
+                except Exception:
+                    return 0
+        elif not isinstance(data, str):
+            data = str(data)
+        self._buffer += data
+        # flush complete lines immediately; keep the trailing partial in buffer
+        while True:
+            nl = self._buffer.find("\n")
+            if nl < 0:
+                break
+            line = self._buffer[: nl + 1]
+            self._buffer = self._buffer[nl + 1:]
+            self._flush_line(line)
+        return len(data)
+
+    def _flush_line(self, line):
+        scrubbed = _scrub_worker_log_line(line)
+        payload = scrubbed.encode("utf-8", errors="replace")
+        try:
+            self._sink.write(payload)
+        except Exception:
+            return
+        try:
+            self._sink.flush()
+        except Exception:
+            pass
+
+    def flush(self):
+        # partial-line buffer cannot meaningfully flush until a newline arrives;
+        # ask the sink to flush whatever it has buffered downstream.
+        try:
+            self._sink.flush()
+        except Exception:
+            pass
+
+    def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        if self._buffer:
+            tail = self._buffer
+            self._buffer = ""
+            self._flush_line(tail)
+        try:
+            self._sink.flush()
+        except Exception:
+            pass
+
+    # subprocess.Popen inspects .fileno() when stdout isn't already a real fd.
+    # Pass through so Popen can wire it up the same way it wired the raw file.
+    def fileno(self):
+        return self._sink.fileno()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        self.close()
+
+
+# Credential-labeled 64-hex blob: ``client-secret: <hex>``, ``CLIENT_SECRET=<hex>``,
+# ``access_token: <hex>``, ``secret: <hex>``, ``--client-secret <hex>`` (CLI flag,
+# no separator — Infisical ``--client-secret <hex>`` is the dominant leak shape
+# in real worker logs), and ``"clientSecret": "<hex>"`` (JSON with camelCase
+# suffix key — the upstream ``_JSON_FIELD_RE`` requires exact quoted match and
+# misses ``clientSecret``). The keyword anchor keeps bare sha256 research
+# fingerprints (``(sha256 9d1d30c2…)``) untouched — only hex under a
+# credential-shaped label is masked. The hex class is bounded to exactly 64
+# chars so a long path or uuid never matches; an extra hex character
+# (``g``, ``h``, …) disqualifies the match.
+_CREDENTIAL_LABEL_KEYWORDS = (
+    r"client[-_]?secret"            # client-secret / client_secret / clientSecret
+    r"|access[-_]?token"            # access-token / access_token / accessToken
+    r"|api[-_]?secret"              # api-secret / api_secret / apiSecret
+    r"|secret[-_]?key"              # secret-key / secret_key / secretKey
+    r"|secret"
+    r"|token"
+)
+# Separator set: ``=`` / ``:`` / whitespace (CLI flag style) / ``":`` (JSON).
+# Capture the actual separator (``sep``) so the substitution preserves the
+# original shape (``client-secret: 3e76e…`` vs ``client-secret=3e76e…``).
+_CREDENTIAL_LABEL_HEX_RE = re.compile(
+    rf"(?P<key>\b(?:{_CREDENTIAL_LABEL_KEYWORDS})\b)"
+    r"(?P<sep>\s*[:=]\s*|\s+|\"\s*:\s*\")"
+    r"(?P<hex>[0-9a-f]{64})"
+    r"|(?P<qhex>[\"\'\`])"            # any quoted 64-char hex blob: credential-shaped,
+    r"(?P<qhexval>[0-9a-f]{64})"      # independent of the preceding keyword (catches
+    r"(?P=qhex)",                     # shell ``CSEC="<hex>"``, ``Values:`<hex>``, etc.)
+    re.IGNORECASE,
+)
+
+
+def _scrub_worker_log_line(line: str) -> str:
+    """Two-pass scrub: upstream ``redact_sensitive_text`` first, then the
+    credential-labeled-hex pass. ``redact_sensitive_text`` covers the generic
+    cases (``cfut_…`` tokens, ``*_PASSWORD=…`` assignments, Bearer headers);
+    this function adds the targeted ``client-secret: <hex>`` shape that the
+    upstream regex suite doesn't carry (hyphen-delimited label with colon
+    separator + optional backticks).
+    """
+    # first pass: generic redaction (covers cfut_, *_PASSWORD=*** Bearer headers, etc.)
+    try:
+        from agent.redact import redact_sensitive_text
+        line = redact_sensitive_text(line)
+    except Exception:
+        # redactor crash -> fall through with the raw line; better to log
+        # unscrubbed evidence than to silently drop the audit trail
+        pass
+    # second pass: credential-labeled 64-hex blob
+    def _sub(m):
+        # alternative branch: any quoted 64-char hex (no preceding keyword needed)
+        if m.group("qhex") is not None:
+            quote = m.group("qhex")
+            hex_blob = m.group("qhexval")
+            return f"{quote}{hex_blob[:6]}…{hex_blob[-4:]}{quote}"
+        # primary branch: credential keyword + separator + hex
+        key = m.group("key")
+        sep = m.group("sep")
+        hex_blob = m.group("hex")
+        # head=6, tail=4 keeps a non-reusable but recognizable fingerprint;
+        # preserve the original separator (``:``, ``=``, whitespace, ``":``)
+        # so the rendered line still parses cleanly downstream.
+        return f"{key}{sep}{hex_blob[:6]}…{hex_blob[-4:]}"
+    line = _CREDENTIAL_LABEL_HEX_RE.sub(_sub, line)
+    return line
+
+
+def _ensure_owner_only_perms(log_dir, log_path):
+    """Chmod the per-task log to 0600 and its dir to 0700 (idempotent).
+
+    Defense-in-depth: ``_open_worker_log`` opens the file with the OS umask,
+    which on this host defaults to ``0022`` (group-writable). Forcing 0700/0600
+    here closes the group/world-readable hole that previously leaked plaintext
+    credentials into board logs. Both calls are tolerant: a vanished dir or
+    file (race with rotation, GC) silently no-ops rather than crash the spawn.
+    """
+    try:
+        os.chmod(log_dir, 0o700)
+    except (FileNotFoundError, NotADirectoryError, PermissionError):
+        pass
+    except OSError:
+        pass
+    try:
+        os.chmod(log_path, 0o600)
+    except (FileNotFoundError, PermissionError):
+        pass
+    except OSError:
+        pass
+
+
 def _open_worker_log(task: Task, board: Optional[str]):
     """Append-mode per-task log (a re-run on unblock appends, never overwrites),
     rotated first. Anchored at the board root (not the shared kanban root) so
     `hermes kanban log` reads its own file and boards sharing task ids don't
-    collide."""
+    collide.
+
+    The returned file handle is wrapped in ``_RedactingLog`` so every line is
+    scrubbed before it reaches disk, and the dir + log are chmod'd to 0700/0600
+    at open time so a future umask drift can't reopen the group-readable hole
+    (t_ad15582c).
+    """
     log_dir = _kb.worker_logs_dir(board=board)
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{task.id}.log"
     rotate_bytes, backup_count = worker_log_rotation_config()
     _rotate_worker_log(log_path, rotate_bytes, backup_count)
-    return open(log_path, "ab")
+    raw = open(log_path, "ab")
+    _ensure_owner_only_perms(log_dir, log_path)
+    return _RedactingLog(raw)
 
 
 def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
@@ -3148,6 +3375,131 @@ def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
         require_restart_safe_scope=True,
         outlives_parent=True,
     ).argv
+
+
+def _isolation_worker_argv(task: Task, command: list[str], workspace: Optional[str]) -> list[str]:
+    """Apply mount-namespace isolation to a worker argv (t_ff7d30cc).
+
+    Reads ``kanban.worker_isolation`` from config (off|warn|enforce; default
+    ``enforce`` on Linux+userns) and the ``HERMES_WORKER_ISOLATION`` kill
+    switch. Degrades HONESTLY -- if isolation cannot be applied (kill switch,
+    non-Linux, userns unavailable, sandboxed inside another userns already),
+    the helper returns the unwrapped ``command`` and emits a single
+    once-per-process warning. Never silently pretends isolation happened.
+
+    The helper only wraps worktree-anchored tasks (``workspace_kind == "worktree"``
+    AND the workspace resolves to ``<agent_home>/.worktrees/<id>``). For
+    everything else (scratch tasks, dir workspaces, or a non-resolvable
+    agent home) isolation is SKIPPED with a one-shot warning -- we never
+    wrap an arbitrary cwd into the carve-out set, because doing so would
+    either over-grant (carve out a path the policy should keep ro) or
+    hide a bug by accidentally writing into a path the policy never
+    permitted in the first place.
+
+    Layer 1 (the dispatcher provisioning the worktree before the sandbox
+    exists) is enforced by ``kanban_db_workspace._resolve_worktree_workspace``
+    which runs before ``_default_spawn`` and is therefore guaranteed to have
+    materialized the worktree by the time we get here.
+    """
+    from hermes_cli.worker_isolate import (
+        build_isolated_worker_argv, load_configured_isolation_mode, resolve_isolation_mode,
+    )
+
+    policy = resolve_isolation_mode(load_configured_isolation_mode())
+    if policy.effective != "enforce":
+        # Off / warn / degrade path -- no wrapping. The resolver already
+        # logged a single-shot warning when degrading from enforce.
+        return command
+
+    agent_home = _resolve_worker_agent_home(task)
+    if not agent_home:
+        # No agent home to protect; do not pretend we isolated anything.
+        _log_isolation_skip(task, reason=f"no agent_home resolvable for task {task.id}")
+        return command
+
+    # The carve-out set is only safe when the workspace is a real
+    # dispatcher-provisioned worktree path under agent_home/.worktrees/<id>.
+    # We refuse to carve out anything else (see docstring); skip the wrap
+    # in that case so a non-worktree task still spawns.
+    if not (task.workspace_kind == "worktree"
+            and workspace
+            and os.path.isdir(workspace)
+            and _is_worktree_under_agent_home(workspace, agent_home)):
+        _log_isolation_skip(
+            task,
+            reason=(
+                f"workspace {workspace!r} is not a dispatcher-provisioned worktree "
+                f"under {agent_home}/.worktrees (kind={task.workspace_kind!r})"
+            ),
+        )
+        return command
+
+    return build_isolated_worker_argv(
+        command,
+        agent_home=agent_home,
+        worktree=workspace,
+    )
+
+
+def _resolve_worker_agent_home(task: Task) -> Optional[str]:
+    """Best-effort path to the agent tree the worker should be sandboxed against.
+
+    Order: explicit ``HERMES_AGENT_HOME`` -> ``HERMES_AGENT`` -> the dispatcher's
+    own resolved profile home's parent (``<HERMES_HOME>/..`` is unreliable when
+    HERMES_HOME is a profile, so we also accept ``<HERMES_HOME>`` itself when
+    it is a git checkout). Returns ``None`` when nothing reasonable can be
+    inferred -- the caller then skips isolation rather than wrap a bogus path.
+    """
+    candidates: list[str] = []
+    for env_name in ("HERMES_AGENT_HOME", "HERMES_AGENT"):
+        val = os.environ.get(env_name, "").strip()
+        if val:
+            candidates.append(val)
+    # HERMES_HOME may be the agent home itself, or the parent dir of a profile.
+    hh = os.environ.get("HERMES_HOME", "").strip()
+    if hh:
+        candidates.append(hh)
+        candidates.append(str(Path(hh).parent))
+
+    for cand in candidates:
+        try:
+            if os.path.isdir(os.path.join(cand, ".git")):
+                return os.path.realpath(cand)
+        except OSError:
+            continue
+    return None
+
+
+def _is_worktree_under_agent_home(workspace: str, agent_home: str) -> bool:
+    """True iff ``workspace`` resolves under ``<agent_home>/.worktrees/``.
+
+    Used to detect the decompose / specifier workflow's reuse of a worktree
+    anchor (a child task inherits the parent's workspace_path verbatim, but
+    a dispatcher's _kbw._resolve_worktree_workspace has already redirected
+    it to ``<repo>/.worktrees/<id>``). We carve the path out exactly when
+    it sits under that tree, and never more.
+    """
+    try:
+        ws = os.path.realpath(workspace)
+        wt = os.path.realpath(os.path.join(agent_home, ".worktrees"))
+        # commonpath() raises ValueError on different drives / unrelated paths.
+        os.path.commonpath([ws, wt])
+    except (OSError, ValueError):
+        return False
+    return ws == wt or ws.startswith(wt + os.sep)
+
+
+_ISOLATION_SKIP_LOGGED: set[str] = set()
+
+
+def _log_isolation_skip(task: Task, *, reason: str) -> None:
+    """One-shot per task id -- the dispatcher fires every claim tick; this
+    must NOT spam the worker log on every retry.
+    """
+    if task.id in _ISOLATION_SKIP_LOGGED:
+        return
+    _ISOLATION_SKIP_LOGGED.add(task.id)
+    _kb._log.warning("kanban worker isolation skipped for %s: %s", task.id, reason)
 
 
 def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -> Optional[int]:
@@ -3267,6 +3619,14 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # cgroup before startup; otherwise restarting the service kills the worker
     # that is performing the handoff.
     cmd = _restart_safe_worker_argv(task, cmd)
+    # Mount-namespace isolation: wrap the worker argv in
+    # ``unshare -Urm <launcher> -- <worker argv>`` so the production agent
+    # tree is read-only inside the worker (EROFS at the syscall level) and
+    # only the per-task worktree + a minimal git carve-out set is writable.
+    # The launcher itself is gated by ``kanban.worker_isolation`` (off/warn/
+    # enforce; default enforce on Linux+userns) and by the
+    # ``HERMES_WORKER_ISOLATION`` env kill switch.
+    cmd = _isolation_worker_argv(task, cmd, workspace)
     from tools.process_registry import systemd_user_bus_env
     env = systemd_user_bus_env(env)
     log_f = _open_worker_log(task, board)

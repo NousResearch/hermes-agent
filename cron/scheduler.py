@@ -3686,6 +3686,68 @@ def _run_one_job_body(
             reset_terminal_scope(_terminal_scope_token)
 
 
+def _cron_isolation_argv(dispatch_argv, repo_root):
+    """Wrap a cron-restart-safe argv in ``unshare -Urm`` isolation (t_102333c4).
+
+    Counterpart to ``hermes_cli.kanban_db_dispatch._isolation_worker_argv``
+    for the cron subprocess path. The dispatch path gates on a ``Task``
+    object whose ``workspace_kind == "worktree"`` resolves under
+    ``<agent_home>/.worktrees/<id>``; cron workers run against
+    ``cwd=<agent_home>`` itself with no per-task worktree, so the carve-out
+    set must be computed against the agent home's own ``.git/HEAD``.
+
+    Returns ``dispatch_argv`` unchanged when:
+
+    * the cron subprocess mode is ``in_process`` (no subprocess to wrap),
+    * the ``kanban.worker_isolation`` policy resolves to off / warn /
+      degraded (kill switch, unknown config, no userns, etc),
+    * the launcher's arg-builder rejects the input (defensive -- the
+      helper raises ``ValueError`` on empty commands / empty agent_home;
+      we degrade rather than crash the cron loop).
+
+    The ``kanban.worker_isolation`` config is reused as-is. We deliberately
+    do NOT introduce a separate ``cron.worker_isolation`` config: a
+    single gate makes the failure mode homogeneous across both spawn
+    paths, and operators who want one path unprivileged while keeping
+    the other gated can use ``HERMES_WORKER_ISOLATION=off`` selectively
+    (cron inherits ``os.environ`` from the gateway process).
+    """
+    if not dispatch_argv:
+        return dispatch_argv
+    try:
+        from hermes_cli.worker_isolate import (
+            build_isolated_cron_worker_argv,
+            load_configured_isolation_mode,
+            resolve_isolation_mode,
+        )
+    except Exception as exc:
+        # Import failure (e.g. very early bootstrap) -- never crash the
+        # cron loop on a missing helper; spawn unwrapped and let the
+        # dispatcher's own log capture the issue.
+        logger.warning(
+            "cron worker isolation helper unavailable (%s); spawning unwrapped", exc,
+        )
+        return list(dispatch_argv)
+    policy = resolve_isolation_mode(load_configured_isolation_mode())
+    if policy.effective != "enforce":
+        return list(dispatch_argv)
+    try:
+        wrapped = build_isolated_cron_worker_argv(
+            list(dispatch_argv),
+            agent_home=str(repo_root),
+        )
+    except ValueError as exc:
+        logger.warning(
+            "cron worker isolation refused to wrap argv (%s); spawning unwrapped", exc,
+        )
+        return list(dispatch_argv)
+    logger.info(
+        "cron external worker wrapping isolated (argv len %d -> %d, agent_home=%s)",
+        len(dispatch_argv), len(wrapped), str(repo_root),
+    )
+    return wrapped
+
+
 def _wait_for_external_cron_worker_body(
     process: subprocess.Popen,
     *,
@@ -3909,11 +3971,23 @@ def _launch_external_cron_worker(job: dict) -> bool:
     repo_root = Path(__file__).resolve().parent.parent
     worker_env = pin_hermes_tree_on_pythonpath(worker_env, repo_root)
     worker_env[WORKER_MARKER] = "1"
+    # Mount-namespace isolation: cron-spawned workers are a SECOND spawn
+    # path (`subprocess.Popen` here, vs `_default_spawn` in the kanban
+    # dispatcher) and previously ran with full filesystem privileges
+    # against ``repo_root``. Wrap the argv in the same `unshare -Urm`
+    # launcher the dispatch path uses (``t_102333c4``) so a cron agent
+    # cannot mutate the production tree -- ``git switch -c`` against the
+    # agent home, ``echo x >> app.py``, ``git reset --hard`` all fail at
+    # the syscall level (EROFS / EACCES). Gated by the same
+    # ``kanban.worker_isolation`` config + ``HERMES_WORKER_ISOLATION``
+    # kill switch; degrade follows the dispatch path's single-shot
+    # warning semantics so a noisy cron does not flood logs.
+    dispatch_argv = _cron_isolation_argv(dispatch.argv, repo_root)
     try:
         stderr_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
             process = subprocess.Popen(
-                dispatch.argv,
+                dispatch_argv,
                 cwd=str(repo_root),
                 env=worker_env,
                 stdin=subprocess.DEVNULL,

@@ -65,6 +65,29 @@ async def test_wake_queued_before_drain_survives_the_pending_discard():
 
 
 @pytest.mark.asyncio
+async def test_wake_queued_behind_human_follow_ups_still_runs_during_the_drain():
+    """Two human follow-ups ahead of the wake: the drain discards the first and stages the second
+    for the drain gate to reject, which used to strand the receipted wake behind it. The wake runs
+    next; the follow-ups around it stay queued in order, as they do without a wake."""
+    runner, adapter, source, _turns = wake_route()
+    key = adapter._event_session_key(MessageEvent(text="", source=source))
+    adapter._active_sessions[key] = asyncio.Event()  # a turn is running in this chat
+    for text in ("first human follow-up", "second human follow-up"):
+        runner._enqueue_fifo(key, MessageEvent(text=text, source=source), adapter)
+    await deliver_wake(adapter, text=WAKE, source=source)
+    runner._enqueue_fifo(key, MessageEvent(text="third human follow-up", source=source), adapter)
+    runner._draining = True
+    # A turn that ended without a result leaves the queue to the adapter.
+    assert await runner._run_agent_drain_pending(None, adapter, source, key) == (None, None)
+    event, text = await runner._run_agent_drain_pending(
+        {"final_response": "done"}, adapter, source, key
+    )
+    assert text == WAKE and event.internal
+    assert adapter._pending_messages[key].text == "second human follow-up"
+    assert [e.text for e in runner._overflow_queue(key)] == ["third human follow-up"]
+
+
+@pytest.mark.asyncio
 async def test_wake_queued_before_a_drain_that_starts_in_the_busy_handlers_later_awaits_runs():
     """Guard for a busy handler that awaits after it stores the wake (no in-tree handler does
     today): a drain that begins there must not turn an admitted wake, whose producer already holds

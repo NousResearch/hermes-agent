@@ -5,6 +5,16 @@ import { deriveDraftTitle } from '@/lib/draft-title'
 import { triggerHaptic } from '@/lib/haptics'
 import { persistString, storedString } from '@/lib/storage'
 
+import {
+  compactDraftStash,
+  DRAFT_STASH_STORAGE_KEY,
+  newerEntry,
+  readDraftStash,
+  readLegacyDrafts,
+  type StashEntries,
+  type StashEntry,
+  writeDraftStash
+} from './composer-draft-stash'
 import { recordDislike, recordFriction } from './desktop-metrics'
 
 /** Release blob: chip previews created for OS image drops (see #63682). */
@@ -302,24 +312,22 @@ const cloneDraft = (draft: SessionDraft): SessionDraft => ({
   text: draft.text
 })
 
-function loadPersistedDraftTexts(): Map<string, string> {
-  try {
-    const raw = window.localStorage.getItem(SESSION_DRAFTS_STORAGE_KEY)
+// What this window last read from or wrote to the shared stash, cleared
+// markers included. A reload applies only entries newer than this, and a write
+// puts back any entry here that storage has since lost to a stale writer.
+let persistedDrafts: StashEntries = readDraftStash()
 
-    return new Map(raw ? Object.entries(JSON.parse(raw) as Record<string, string>) : [])
-  } catch {
-    return new Map()
+// A pre-v4 list is read once, never over a newer entry or a cleared marker.
+for (const [key, entry] of readLegacyDrafts(SESSION_DRAFTS_STORAGE_KEY)) {
+  if (!persistedDrafts.has(key)) {
+    persistedDrafts.set(key, entry)
   }
 }
 
-// The draft texts as this window last read or wrote them in the shared stash.
-// A cross-window reload applies only what changed there since: a key absent
-// from both snapshots was never persisted (an attachment-only draft, one past
-// MAX_PERSISTED_DRAFTS), so nobody deleted it.
-let persistedDraftTexts = loadPersistedDraftTexts()
-
 const draftsBySession = new Map<string, SessionDraft>(
-  [...persistedDraftTexts].map(([key, text]) => [key, { attachments: [], text }])
+  [...persistedDrafts]
+    .filter((entry): entry is [string, StashEntry & { text: string }] => entry[1].text !== null)
+    .map(([key, { text }]) => [key, { attachments: [], text }])
 )
 
 /**
@@ -404,48 +412,70 @@ function publishDraftTitle(key: string, title: string): void {
  * whichever window mounted first keeps its stale copy forever, so text typed
  * in the HUD is simply gone when you return to the app.
  *
- * Merge, don't clobber: only texts the stash changed since this window last
- * saw it move, and attachments (memory-only, so no other window can have seen
- * or sent them) stay put. An image-only draft is still a draft.
+ * Merge, don't clobber: only entries saved after this window's own copy move,
+ * and attachments (memory-only, so no other window can have seen or sent them)
+ * stay put. An image-only draft is still a draft. An entry this window saved
+ * later than storage now shows was overwritten from another window's stale
+ * copy, so it is written back rather than taken as sent elsewhere.
  */
 export function reloadPersistedDrafts(): void {
-  const incoming = loadPersistedDraftTexts()
+  syncPersistedDrafts()
+}
 
-  for (const [key, text] of incoming) {
-    if (persistedDraftTexts.get(key) === text) {
-      continue
-    }
+function applyStoredDraft(key: string, entry: StashEntry): void {
+  const attachments = draftsBySession.get(key)?.attachments ?? []
 
-    draftsBySession.set(key, { attachments: draftsBySession.get(key)?.attachments ?? [], text })
-    publishDraftTitle(key, deriveDraftTitle(text))
+  if (entry.text !== null) {
+    draftsBySession.set(key, { attachments, text: entry.text })
+  } else if (attachments.length > 0) {
+    draftsBySession.set(key, { attachments, text: '' })
+  } else {
+    draftsBySession.delete(key)
   }
 
-  // A key that vanished from storage was cleared (sent) in the other window.
-  for (const key of persistedDraftTexts.keys()) {
-    if (incoming.has(key)) {
-      continue
+  publishDraftTitle(key, deriveDraftTitle(entry.text ?? ''))
+}
+
+/** Merge storage with this window's copy (plus `local`, this window's new save) and write back what storage lacks. */
+function syncPersistedDrafts(local?: { entry: StashEntry; key: string }): void {
+  const stored = readDraftStash()
+  const merged: StashEntries = new Map()
+  let rewrite = Boolean(local)
+
+  for (const key of new Set([...stored.keys(), ...persistedDrafts.keys()])) {
+    const theirs = stored.get(key)
+    const mine = persistedDrafts.get(key)
+
+    if (newerEntry(theirs, mine)) {
+      applyStoredDraft(key, theirs!)
+      merged.set(key, theirs!)
+    } else if (newerEntry(mine, theirs) && !(mine!.text === null && !theirs)) {
+      merged.set(key, mine!)
+      rewrite = true
+    } else if (theirs) {
+      merged.set(key, theirs)
     }
-
-    const attachments = draftsBySession.get(key)?.attachments ?? []
-
-    if (attachments.length > 0) {
-      draftsBySession.set(key, { attachments, text: '' })
-    } else {
-      draftsBySession.delete(key)
-    }
-
-    publishDraftTitle(key, '')
   }
 
-  persistedDraftTexts = incoming
+  if (local) {
+    merged.set(local.key, local.entry)
+  }
+
+  persistedDrafts = rewrite ? compactDraftStash(merged, MAX_PERSISTED_DRAFTS, Date.now()) : merged
+
+  if (rewrite) {
+    // Best-effort only — quota/private-mode must never break typing. A failed
+    // write stays in persistedDrafts, so the next sync retries it.
+    writeDraftStash(persistedDrafts, SESSION_DRAFTS_STORAGE_KEY)
+  }
 }
 
 // localStorage `storage` events fire across Electron BrowserWindows of the
 // same origin, so the other window's write is the sync signal.
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', event => {
-    if (event.key === SESSION_DRAFTS_STORAGE_KEY) {
-      reloadPersistedDrafts()
+    if (event.key === DRAFT_STASH_STORAGE_KEY || event.key === null) {
+      syncPersistedDrafts()
     }
   })
 }
@@ -490,29 +520,9 @@ export function onComposerDraftSyncRequest(handler: (detail: ComposerDraftSyncDe
   return () => window.removeEventListener(DRAFT_SYNC_EVENT, listener)
 }
 
-function persistDraftTexts() {
-  try {
-    const entries = [...draftsBySession]
-      .filter(([, draft]) => draft.text)
-      .slice(-MAX_PERSISTED_DRAFTS)
-      .map(([key, draft]) => [key, draft.text] as const)
-
-    if (entries.length === 0) {
-      window.localStorage.removeItem(SESSION_DRAFTS_STORAGE_KEY)
-    } else {
-      window.localStorage.setItem(SESSION_DRAFTS_STORAGE_KEY, JSON.stringify(Object.fromEntries(entries)))
-    }
-
-    persistedDraftTexts = new Map(entries)
-  } catch {
-    // Best-effort only — quota/private-mode must never break typing.
-  }
-}
-
 export function stashSessionDraft(scope: string | null | undefined, text: string, attachments: ComposerAttachment[]) {
   const key = draftKey(scope)
 
-  // Delete-then-set keeps MRU order for MAX_PERSISTED_DRAFTS eviction.
   draftsBySession.delete(key)
 
   if (text.trim() || attachments.length > 0) {
@@ -523,7 +533,16 @@ export function stashSessionDraft(scope: string | null | undefined, text: string
     $restoredDraftNotice.set(null)
   }
 
-  persistDraftTexts()
+  const saved = draftsBySession.get(key)?.text || null
+  const previous = persistedDrafts.get(key)
+
+  // Clearing a draft this window never saw saved has nothing to clear.
+  if (saved !== null || previous?.text) {
+    // Stamped later than any copy of this key this window has seen, so the
+    // save wins the merge in every window.
+    syncPersistedDrafts({ entry: { at: Math.max(Date.now(), (previous?.at ?? 0) + 1), text: saved }, key })
+  }
+
   publishDraftTitle(key, deriveDraftTitle(text))
 }
 

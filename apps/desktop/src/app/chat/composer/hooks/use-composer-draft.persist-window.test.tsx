@@ -1,13 +1,8 @@
 import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import {
-  clearSessionDraft,
-  mainComposerScope,
-  SESSION_DRAFTS_STORAGE_KEY,
-  stashSessionDraft,
-  takeSessionDraft
-} from '@/store/composer'
+import { clearSessionDraft, mainComposerScope, stashSessionDraft, takeSessionDraft } from '@/store/composer'
+import { DRAFT_STASH_STORAGE_KEY } from '@/store/composer-draft-stash'
 
 import { TYPING_STORE_IDLE_MS } from '../composer-store-writer'
 import { DRAFT_PERSIST_DEBOUNCE_MS, type QueueEditState } from '../composer-utils'
@@ -172,13 +167,19 @@ describe('useComposerDraft — the draft stash window starts at the keystroke', 
     stashSessionDraft(OTHER_SCOPE, 'sent from the other window', [])
     const { rerender } = render(<Harness scope={SCOPE} />)
     act(() => {
-      mainComposerScope.$attachments.set([{ id: 'shot.png', kind: 'image', label: 'shot.png', occurrenceId: 'occ-img' }])
+      mainComposerScope.$attachments.set([
+        { id: 'shot.png', kind: 'image', label: 'shot.png', occurrenceId: 'occ-img' }
+      ])
     })
     rerender(<Harness scope={OTHER_SCOPE} />)
 
     // The other window sends OTHER_SCOPE's draft and saves one in a third session.
-    window.localStorage.setItem(SESSION_DRAFTS_STORAGE_KEY, JSON.stringify({ [THIRD_SCOPE]: 'typed elsewhere' }))
-    window.dispatchEvent(new StorageEvent('storage', { key: SESSION_DRAFTS_STORAGE_KEY }))
+    const at = Date.now() + 1_000
+    window.localStorage.setItem(
+      DRAFT_STASH_STORAGE_KEY,
+      JSON.stringify({ cleared: { [OTHER_SCOPE]: at }, drafts: { [THIRD_SCOPE]: { at, text: 'typed elsewhere' } } })
+    )
+    window.dispatchEvent(new StorageEvent('storage', { key: DRAFT_STASH_STORAGE_KEY }))
     expect(takeSessionDraft(THIRD_SCOPE).text).toBe('typed elsewhere')
     expect(takeSessionDraft(OTHER_SCOPE).text).toBe('')
 

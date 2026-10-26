@@ -24,6 +24,15 @@ class FakeSshWorkspace:
         self.files = {CLIP: BYTES, "/srv/media/notes.txt": b"notes"}
         self.links = {"/srv/media/linked.mp4": "/home/dev/.hermes/mcp-tokens/token.mp4"}
         self.reads = []
+        self.writes = []
+
+    def read_bytes(self, path, max_bytes=None, read_limit=None):
+        data = self.files[path]
+        return data[:read_limit] if read_limit else data, len(data), path
+
+    def write_text(self, path, text, max_bytes=None):
+        self.writes.append((path, text))
+        return path, len(text.encode("utf-8"))
 
     def inspect_file(self, path):
         target = self.links.get(path, path)
@@ -211,6 +220,114 @@ def test_a_down_ssh_host_is_unavailable_to_the_stream(client, ssh, monkeypatch):
 
     assert (direct.status_code, direct.json()) == UNAVAILABLE
     assert (minted.status_code, minted.json()) == UNAVAILABLE
+
+
+# A session_id is checked against the profile before the SSH backend is chosen.
+
+
+@pytest.fixture
+def sessions(monkeypatch):
+    """``ssh-sess`` belongs to the SSH profile, ``host-sess`` to the default one; the real lookup
+    reads only the requested profile's state.db."""
+    from fastapi import HTTPException
+
+    rows = {"ssh-sess": "remote-dev", "host-sess": "default"}
+
+    async def detail(session_id, profile=None):
+        if rows.get(session_id) != (profile or "default"):
+            raise HTTPException(status_code=404, detail="Session not found")
+        return {"cwd": "/srv", "id": session_id}
+
+    monkeypatch.setattr("hermes_cli.web_routers.sessions.get_session_detail", detail)
+    return rows
+
+
+NOT_OWNED = ["host-sess", "missing-session", " ", ""]
+
+
+@pytest.mark.parametrize("session_id", NOT_OWNED)
+def test_ssh_stream_and_tickets_refuse_a_session_the_profile_does_not_own(client, ssh, sessions, session_id):
+    _profile, workspace = ssh
+    query = {"path": CLIP, "profile": "remote-dev", "session_id": session_id}
+
+    direct = _stream(client, session_id=session_id, headers={"Range": "bytes=0-3"})
+    head = _stream(client, method="HEAD", session_id=session_id)
+    minted = client.post("/api/files/ticket", json={"route": "stream", **query})
+    download = client.post("/api/files/ticket", json={"route": "download", **query})
+
+    assert [r.status_code for r in (direct, head, minted, download)] == [404] * 4, minted.text
+    assert workspace.reads == []
+
+
+@pytest.mark.parametrize("session_id", NOT_OWNED)
+def test_an_ssh_stream_ticket_never_plays_for_a_session_the_profile_does_not_own(client, ssh, sessions, session_id):
+    _profile, workspace = ssh
+    query = {"path": CLIP, "profile": "remote-dev"}
+    player = TestClient(web_server.app)  # a media element sends no session header
+    try:
+        minted = client.post("/api/files/ticket", json={"route": "stream", **query, "session_id": session_id})
+        assert minted.status_code == 404, minted.text
+        bare = client.post("/api/files/ticket", json={"route": "stream", **query})
+        assert bare.status_code == 200, bare.text
+
+        redeemed = player.get(
+            "/api/files/stream", params={**query, "session_id": session_id, "ticket": bare.json()["ticket"]},
+        )
+
+        assert redeemed.status_code in (401, 404), redeemed.text
+        assert workspace.reads == []
+    finally:
+        player.close()
+
+
+def test_an_ssh_stream_ticket_stops_playing_once_its_session_is_gone(client, ssh, sessions, monkeypatch):
+    _profile, workspace = ssh
+    query = {"path": CLIP, "profile": "remote-dev", "session_id": "ssh-sess"}
+    minted = client.post("/api/files/ticket", json={"route": "stream", **query})
+    assert minted.status_code == 200, minted.text
+    ticketed = {**query, "ticket": minted.json()["ticket"]}
+    player = TestClient(web_server.app)
+    try:
+        played = player.get("/api/files/stream", params=ticketed, headers={"Range": "bytes=0-3"})
+        assert (played.status_code, played.content) == (206, BYTES[:4])
+
+        monkeypatch.delitem(sessions, "ssh-sess")
+        gone = player.get("/api/files/stream", params=ticketed, headers={"Range": "bytes=0-3"})
+
+        assert gone.status_code == 404, gone.text
+        assert workspace.reads == [(CLIP, 0, 4)]
+    finally:
+        player.close()
+
+
+def test_an_ssh_profile_streams_reads_and_saves_for_its_own_session(client, ssh, sessions):
+    _profile, workspace = ssh
+
+    streamed = _stream(client, session_id="ssh-sess")
+    read = client.get("/api/fs/read-text", params={"path": "/srv/media/notes.txt", "profile": "remote-dev",
+                                                   "session_id": "ssh-sess"})
+    saved = client.post("/api/fs/write-text", params={"profile": "remote-dev"},
+                        json={"path": "/srv/media/notes.txt", "content": "edited", "session_id": "ssh-sess"})
+
+    assert (streamed.status_code, streamed.content) == (200, BYTES)
+    assert (read.status_code, read.json()["text"]) == (200, "notes")
+    assert saved.status_code == 200, saved.text
+    assert workspace.writes == [("/srv/media/notes.txt", "edited")]
+
+
+@pytest.mark.parametrize("session_id", NOT_OWNED)
+def test_ssh_reads_and_saves_refuse_a_session_the_profile_does_not_own(client, ssh, sessions, session_id):
+    _profile, workspace = ssh
+    note = {"path": "/srv/media/notes.txt", "profile": "remote-dev", "session_id": session_id}
+
+    read = client.get("/api/fs/read-text", params=note)
+    data_url = client.get("/api/fs/read-data-url", params=note)
+    download = client.get("/api/fs/download", params=note)
+    saved = client.post("/api/fs/write-text", params={"profile": "remote-dev"},
+                        json={"path": note["path"], "content": "edited", "session_id": session_id})
+
+    assert [r.status_code for r in (read, data_url, download, saved)] == [404] * 4, read.text
+    assert workspace.writes == []
 
 
 def test_the_adapter_reads_one_range_with_the_path_quoted(monkeypatch):

@@ -772,6 +772,8 @@ async def issue_file_ticket(payload: FileTicketRequest, request: Request):
         # Capture the session/profile owner BEFORE looking up its cwd. The file
         # may be outside that home, but the ticket must still die with its owner.
         owner = await asyncio.to_thread(owner_home)
+        # Before the backend is chosen: an SSH profile's ticket checks its session too.
+        await _fs_owned_session(payload.session_id, payload.profile)
         if payload.route == "download":
             authority = await _fs_download_authority(
                 request, payload.path, payload.profile, payload.session_id, owner,
@@ -826,7 +828,9 @@ async def stream_managed_file(
     Same size cap, sensitive guard and MIME detection as download. A
     ``session_id`` resolves ``/workspace`` in that session's own sandbox, as the
     ticket route does. An SSH profile's clip streams from its SSH machine
-    (``_remote_fs_backend``, the rule download uses), one Range at a time."""
+    (``_remote_fs_backend``, the rule download uses), one Range at a time.
+    Every request checks its ``session_id`` first, a ticketed one included."""
+    await _fs_owned_session(session_id, profile)
     authority = getattr(request.state, "file_ticket_authority", None)
     if authority is not None and authority.workspace is not None:
         target, size = await _ticketed_remote_target(authority, _remote_stream_target)
@@ -1009,6 +1013,7 @@ async def fs_list(path: str, request: Request, profile: Optional[str] = None):
 async def fs_read_text(
     path: str, request: Request = None, profile: Optional[str] = None, session_id: Optional[str] = None,
 ):
+    await _fs_owned_session(session_id, profile)
     # A staged paste or pick previews from this host, as read-data-url reads it back to send.
     backend = await asyncio.to_thread(_remote_fs_backend, path, profile)
     if backend is not None:
@@ -1067,6 +1072,7 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     file saves to the same place it was read from.
     """
     text = payload.content or ""
+    await _fs_owned_session(payload.session_id, profile)
     # Save where read-text read: a staged paste or pick on this host, all else on the SSH machine.
     backend = await asyncio.to_thread(_remote_fs_backend, payload.path, profile)
     if backend is not None:
@@ -1121,11 +1127,7 @@ async def _fs_download_path(
     # A write passes decode_fallback=False: it must never land on a decoded twin of its name.
     profile_home = _fs_profile_home(profile)
     if session_id is not None:
-        from hermes_cli.web_routers.sessions import get_session_detail
-
-        if not session_id.strip():
-            raise HTTPException(status_code=404, detail="Session not found")
-        session = await get_session_detail(session_id, profile)
+        session = await _fs_owned_session(session_id, profile) or {}
         # Validate ownership even for absolute paths; never trust a client cwd.
         cwd = session.get("cwd") or ""
         return _agent_fs_path(
@@ -1133,6 +1135,20 @@ async def _fs_download_path(
             workspace_key=_session_workspace_key(session_id, cwd), decode_fallback=decode_fallback,
         )
     return _agent_fs_path(path, profile_home=profile_home, decode_fallback=decode_fallback)
+
+
+async def _fs_owned_session(session_id: Optional[str], profile: Optional[str]) -> Optional[dict]:
+    """The session *session_id* names, looked up in *profile*'s own sessions, or None when the
+    request names none. A blank id, or one that profile does not own, is 404. A route that takes a
+    ``session_id`` calls this before it picks a backend, so an SSH profile refuses the same
+    sessions a host or Docker one does."""
+    if session_id is None:
+        return None
+    from hermes_cli.web_routers.sessions import get_session_detail
+
+    if not session_id.strip():
+        raise HTTPException(status_code=404, detail="Session not found")
+    return await get_session_detail(session_id, profile)
 
 
 def _fs_profile_home(profile: Optional[str]) -> Optional[Path]:
@@ -1152,6 +1168,7 @@ async def fs_read_data_url(
     path: str, request: Request, profile: Optional[str] = None, session_id: Optional[str] = None,
 ):
     from hermes_cli.web_server import _FS_DATA_URL_MAX_BYTES
+    await _fs_owned_session(session_id, profile)
     backend = await asyncio.to_thread(_remote_fs_backend, path, profile)
     if backend is not None:
         try:
@@ -1296,6 +1313,7 @@ async def fs_download(
 ):
     """A workspace file as an attachment: from the profile's SSH workspace when it has one, else
     from this host. A browser download link authenticates with a path-bound ``?ticket=``."""
+    await _fs_owned_session(session_id, profile)
     authority = getattr(getattr(request, "state", None), "file_ticket_authority", None)
     if authority is not None:
         return await _ticketed_fs_download(request, authority, profile)

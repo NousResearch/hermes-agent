@@ -32,6 +32,7 @@ from hermes_constants import get_hermes_home
 from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM, FIRE_CLAIM_SKEW_SECONDS, FIRE_CLAIM_TTL_SECONDS
 from cron.env_settings import cron_env_setting
 from cron.jobs_invariants import _validate_job_mode_invariants
+from cron.jobs_interval import _interval_schedule
 from cron.scheduler_ownership import _claim_owner_is_dead
 from cron import store_health
 from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Collection
@@ -776,10 +777,6 @@ def _cron_schedule(
     return {"kind": "cron", "expr": expr, "display": display}
 
 
-def _interval_schedule(minutes: int) -> dict[str, Any]:
-    return {"kind": "interval", "minutes": minutes, "display": f"every {minutes}m"}
-
-
 def parse_schedule(schedule: str) -> dict[str, Any]:
     """Parse a schedule string into ``{"kind": "once"|"interval"|"cron", ...}`` with ``run_at`` /
     ``minutes`` / ``expr``. "30m" and "every 30m" are recurring intervals; "every monday 9am" and
@@ -800,7 +797,7 @@ def parse_schedule(schedule: str) -> dict[str, Any]:
             cron_expr, original,
             f"Weekday/time schedules like '{example}' require the 'croniter' package.", "schedule")
     if is_every:
-        return _interval_schedule(parse_duration(rest))
+        return _interval_schedule(parse_duration(rest), original)
 
     # Cron expression (5-6 fields). Letters are allowed so named months/weekdays (JAN-DEC, MON-FRI)
     # reach croniter, which supports them.
@@ -843,8 +840,11 @@ def parse_schedule(schedule: str) -> dict[str, Any]:
         # Durations measure elapsed time, not wall-clock hours across a DST transition.
         run_at = (now.astimezone(UTC) + timedelta(minutes=minutes)).astimezone(now.tzinfo)
         return {"kind": "once", "run_at": run_at.isoformat(), "display": f"once in {duration_str}"}
-    with contextlib.suppress(ValueError):
-        return _interval_schedule(parse_duration(schedule))
+    bare_minutes = None
+    with contextlib.suppress(ValueError):  # only "not a duration": a "0m" interval raises below
+        bare_minutes = parse_duration(schedule)
+    if bare_minutes is not None:
+        return _interval_schedule(bare_minutes, original)
 
     raise ValueError(
         f"Invalid schedule '{original}'. Use:\n"
@@ -1186,7 +1186,7 @@ def compute_next_run(schedule: dict[str, Any], last_run_at: Optional[str] = None
         if minutes is None:
             return None
         # Add in UTC so an interval keeps its duration when the profile's UTC offset changes.
-        next_run = base_time.astimezone(UTC) + timedelta(minutes=minutes)
+        next_run = base_time.astimezone(UTC) + timedelta(minutes=max(1, minutes))  # a stored 0m row looped
         return next_run.astimezone(base_time.tzinfo).isoformat()
     if kind == "cron":
         expr = schedule.get("expr")

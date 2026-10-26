@@ -41,11 +41,13 @@ const LATE_WINDOW_MS = 30_000
 // parameter names (`announceWebappWindow`).
 const HELLO_PARAM = 'hello'
 
-const helloChannel = (id: string) => `hermes.webapp.hello:${id}`
+// The pop-out's channels, each named by a randomUuid() (crypto.randomUUID exists only in secure
+// contexts, and a gated host may be served over plain HTTP from another machine). The handoff page
+// (hermes_cli/web_routers/webapp.py) opens the window channel by the same name.
+const HELLO_CHANNEL_PREFIX = 'hermes.webapp.hello:'
+const WINDOW_CHANNEL_PREFIX = 'hermes.webapp.window:'
 
-// Not crypto.randomUUID: it exists only in secure contexts, and a gated host may be served over
-// plain HTTP from another machine.
-const helloId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('')
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 const asError = (error: unknown) => (error instanceof Error ? error : new Error(String(error)))
 
@@ -56,8 +58,8 @@ export function createBrowserWindowOpener({ api, basePath, privateSession }: Bro
 }
 
 function openGatedWindow(target: URL): Promise<{ ok: true }> {
-  const id = helloId()
-  const channel = new BroadcastChannel(helloChannel(id))
+  const id = randomUuid()
+  const channel = new BroadcastChannel(HELLO_CHANNEL_PREFIX + id)
   const href = new URL(target)
   href.searchParams.set(HELLO_PARAM, id)
 
@@ -104,7 +106,7 @@ function openLaunchLinkWindow(
   basePath: string
 ): Promise<{ ok: true }> {
   const id = randomUuid()
-  const channel = new BroadcastChannel(`hermes.webapp.window:${id}`)
+  const channel = new BroadcastChannel(WINDOW_CHANNEL_PREFIX + id)
   const launch = new URL(`${basePath}/webapp/window`, window.location.origin)
   launch.hash = new URLSearchParams({ channel: id, query: target.search, route: target.hash.slice(1) }).toString()
 
@@ -173,8 +175,8 @@ export function announceWebappWindow(): void {
   url.searchParams.delete(HELLO_PARAM)
   window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`)
 
-  if (!/^[a-f0-9]{32}$/.test(id)) {return}
-  const channel = new BroadcastChannel(helloChannel(id))
+  if (!UUID_PATTERN.test(id)) {return}
+  const channel = new BroadcastChannel(HELLO_CHANNEL_PREFIX + id)
   channel.postMessage({ type: 'ready' })
   channel.close()
 }

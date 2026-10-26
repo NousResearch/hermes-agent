@@ -82,10 +82,7 @@ describe('a window that says ready after the deadline', () => {
     const channels = stubBroadcastChannels()
     const open = vi.spyOn(window, 'open').mockReturnValue(null)
     const api = vi.fn().mockResolvedValue({ ticket })
-
-    ;(window as unknown as { hermesDesktop: object }).hermesDesktop = {
-      openWindow: () => opener(privateSession, api)(target())
-    }
+    Reflect.set(window, 'hermesDesktop', { openWindow: () => opener(privateSession, api)(target()) })
 
     const opening = openNewWindow()
     await vi.advanceTimersByTimeAsync(3_000)

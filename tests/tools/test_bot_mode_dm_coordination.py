@@ -40,8 +40,8 @@ def test_fan_out_runner_prints_one_typed_outcome_per_teammate(tmp_path, monkeypa
                       "if mode == 'json': print('{\"status\": \"settled\", \"reply\": \"done\", \"target_state\": \"idle\"}')\n"
                       "elif mode == 'fail': print('Delivery to @x failed [reason: runtime_offline]: gone'); sys.exit(1)\n"
                       "else: time.sleep(30)\n", encoding="utf-8")
-    entries = [{"command": shlex.join([sys.executable, str(script), mode]), "label": f"@{mode}", "delivery_id": mode}
-               for mode in ("json", "fail", "slow")]
+    entries = [{"command": shlex.join([sys.executable, str(script), mode]), "label": f"@{mode}", "delivery_id": mode,
+                "output": "json" if mode == "json" else "text"} for mode in ("json", "fail", "slow")]
     spec = tmp_path / "fanout-1.json"
     spec.write_text(json.dumps(entries), encoding="utf-8")
     monkeypatch.setattr(coordination, "FAN_OUT_WAIT_SECONDS", 3)
@@ -118,3 +118,84 @@ def test_ack_reports_a_teammate_parked_on_its_user(tmp_path, monkeypatch):
 
     assert ack["target_state"] == "waiting_approval"
     assert "waiting for its user to approve" in ack["detail"]
+
+
+def _run_children(tmp_path, monkeypatch, capsys, body: str) -> dict:
+    script = tmp_path / "child.py"
+    script.write_text(body, encoding="utf-8")
+    spec = tmp_path / "fanout-2.json"
+    spec.write_text(json.dumps([{"command": shlex.join([sys.executable, str(script)]), "label": "@peer",
+                                 "delivery_id": "d1", "output": "text"}]), encoding="utf-8")
+    coordination.run_fan_out(str(spec))
+    return json.loads(capsys.readouterr().out)["replies"][0]
+
+
+def test_a_text_reply_that_looks_like_json_stays_the_reply(tmp_path, monkeypatch, capsys):
+    reply = _run_children(tmp_path, monkeypatch, capsys, "print('Reply from @peer:')\nprint('{\"status\": \"x\"}')\n")
+
+    assert reply["status"] == "settled" and reply["reply"].endswith('{"status": "x"}')
+
+
+def test_an_accepted_but_unfinished_peer_request_is_pending_with_its_warning(tmp_path, monkeypatch, capsys):
+    reply = _run_children(tmp_path, monkeypatch, capsys,
+                          "import sys\nprint(\"Peer 'p' accepted the message but its turn is still running. \"\n"
+                          "      \"Do NOT resend.\", file=sys.stderr)\nsys.exit(1)\n")
+
+    assert reply["status"] == "pending" and "accepted the message" in reply["detail"]
+
+
+def test_one_name_for_one_bot_sends_once_and_a_comma_name_resolves_whole(tmp_path, monkeypatch):
+    home = _managed_home(tmp_path, teammates=("researcher", "scribe"))
+    (home / "profiles" / "scribe" / "profile.yaml").write_text("display_name: QA, Release\n", encoding="utf-8")
+    authority = _canonical_target(monkeypatch, home / "profiles" / "researcher", home / "profiles" / "scribe")
+    _capture_spawn(monkeypatch)
+
+    bot_mode_dm.message_agent_tool("researcher, RESEARCHER", "status?", agent=_FakeAgent(home))
+    bot_mode_dm.message_agent_tool("QA, Release", "ship?", agent=_FakeAgent(home))
+
+    assert [target.name for target, _ in authority.calls] == ["researcher", "scribe"]
+
+
+def test_one_targets_setup_failure_keeps_the_others_combined_reply(tmp_path, monkeypatch):
+    home = _managed_home(tmp_path, teammates=("researcher", "scribe"))
+    _canonical_target(monkeypatch, home / "profiles" / "researcher", home / "profiles" / "scribe")
+    calls = _capture_spawn(monkeypatch)
+    dispatch = bot_mode_dm._dispatch
+
+    def flaky(target, *args, **kwargs):
+        if target == "scribe":
+            raise OSError("disk full")
+        return dispatch(target, *args, **kwargs)
+
+    monkeypatch.setattr(bot_mode_dm, "_dispatch", flaky)
+    ack = json.loads(bot_mode_dm.message_agent_tool("researcher, scribe", "status?", agent=_FakeAgent(home)))
+
+    assert [entry["label"] for entry in _spec(calls)] == ["@researcher"]
+    assert "disk full" in ack["fan_out"][1]["error"] and not ack["fan_out"][0].get("error")
+
+
+def test_cancel_follows_the_retry_the_owner_is_admitting(tmp_path, monkeypatch):
+    home = _managed_home(tmp_path)
+    target = home / "profiles" / "researcher"
+    _canonical_target(monkeypatch, target)
+    _capture_spawn(monkeypatch)
+    ack = json.loads(bot_mode_dm.message_agent_tool("researcher", "long job", agent=_FakeAgent(home)))
+    with live._locked(target) as root:
+        path = root / f"{ack['delivery_id']}.json"
+        record = {**json.loads(path.read_text(encoding="utf-8-sig")),
+                  "author": {"id": "bot:default", "name": "hermes", "is_bot": True}}
+        live._write(path, record)
+    rpcs = []
+
+    def owner(h, method, params):
+        rpcs.append(params["admission_id"])
+        if params["admission_id"] == record["admission_id"]:  # the first attempt failed; the owner admits its retry
+            with live._locked(target) as root:
+                live._write(root / f"{ack['delivery_id']}.json", {**record, "retry_admission_id": "retry-1"})
+            return {"status": "terminal", "outcome": "failed"}
+        return {"status": "terminal", "outcome": "cancelled"}
+
+    monkeypatch.setattr(live, "_authority_rpc", owner)
+    done = json.loads(bot_mode_dm.message_agent_tool("researcher", cancel=ack["delivery_id"], agent=_FakeAgent(home)))
+
+    assert done["status"] == "cancelled" and rpcs == [record["admission_id"], "retry-1"]

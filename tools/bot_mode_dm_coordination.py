@@ -25,14 +25,35 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 # Every sub-runner bounds its own wait (the live lane at 30 min, the relay waiter by its budget);
 # this only reaps one that outlives that, reported as pending rather than lost.
 FAN_OUT_WAIT_SECONDS = 32 * 60
 _HEX_ID_RE = re.compile(r"[0-9a-f]{32,64}")
+# How long a cancel waits for the owner to record a scheduled retry's admission (one receipt write).
+_RETRY_SETTLE_SECONDS = 2.0
 logger = logging.getLogger(__name__)
+
+
+def split_targets(target: str, sender: Any) -> list[str]:
+    """``target`` as the recipients it names: one name, or a comma-separated list deduplicated by
+    the bot each name resolves to (``hermes`` and ``default`` are one recipient). A friendly name
+    that itself contains a comma ('QA, Release') still resolves whole."""
+    from tools.bot_mode_dm import _resolve_local_name
+
+    raw = str(target or "").strip().lstrip("@")
+    roster = list(sender.roster_homes)
+    if "," not in raw or _resolve_local_name(raw, roster, sender.root) is not None:
+        return [raw] if raw else []
+    named: dict[str, str] = {}
+    for part in raw.split(","):
+        name = part.strip().lstrip("@")
+        if name:
+            named.setdefault(_resolve_local_name(name, roster, sender.root) or name.lower(), name)
+    return list(named.values())
 
 
 def fan_out(targets: list[str], content: str, sender: Any, *, expects_reply: bool) -> str:
@@ -42,7 +63,13 @@ def fan_out(targets: list[str], content: str, sender: Any, *, expects_reply: boo
     collected: list[dict] = []
     acks = []
     for target in targets:
-        ack = json.loads(_dispatch(target, content, sender, wake=collected if expects_reply else "none"))
+        try:
+            ack = json.loads(_dispatch(target, content, sender, wake=collected if expects_reply else "none"))
+        except Exception as exc:
+            # One target's setup failure stays that target's: requests already admitted still get
+            # their combined waiter below.
+            logger.debug("message_agent fan-out to %s failed", target, exc_info=True)
+            ack = {"error": f"NOT sent: {exc}"}
         acks.append({"to": f"@{target}", **ack})
     sent = [ack for ack in acks if not ack.get("error")]
     if not collected:
@@ -71,7 +98,8 @@ def _start_combined(collected: list[dict], sender: Any) -> dict:
 
     fd, spec = tempfile.mkstemp(prefix="fanout-", suffix=".json", dir=_dm_dir(), text=True)
     with os.fdopen(fd, "w", encoding="utf-8") as stream:
-        json.dump([{k: entry[k] for k in ("command", "label", "delivery_id")} for entry in collected], stream)
+        json.dump([{**{k: entry[k] for k in ("command", "label", "delivery_id")},
+                    "output": _runner_output(entry["command"])} for entry in collected], stream)
     argv = [sys.executable, str(Path(__file__).resolve().parent / "bot_mode_dm.py"), "--fan-out", spec]
     if sys.platform == "win32":
         argv = [part.replace("\\", "/") for part in argv]  # Git Bash runs the tracked command (see _delivery_command)
@@ -85,6 +113,17 @@ def _start_combined(collected: list[dict], sender: Any) -> dict:
     return started
 
 
+def _runner_output(command: str) -> str:
+    """How a sub-runner reports: the live lane (``--run-delivery query-file``) prints one JSON
+    payload; the relay waiter and the ``hermes peer dm`` transport print the reply as text."""
+    from tools.bot_mode_dm import _runner_argv
+
+    argv = shlex.split(command)
+    marker = argv.index("--run-delivery") if "--run-delivery" in argv else len(argv)
+    parsed = _runner_argv(argv[marker:])
+    return "json" if parsed is not None and parsed[1] == "query-file" else "text"
+
+
 def run_fan_out(spec_path: str) -> int:
     """Runner entry: run each target's runner concurrently, print one JSON outcome list."""
     with open(spec_path, encoding="utf-8-sig") as stream:
@@ -96,12 +135,16 @@ def run_fan_out(spec_path: str) -> int:
     def run(index: int, entry: dict) -> None:
         base = {"to": entry["label"], "delivery_id": entry["delivery_id"]}
         try:
-            done = subprocess.run(shlex.split(entry["command"]), capture_output=True, text=True, encoding="utf-8",
-                                  errors="replace", timeout=FAN_OUT_WAIT_SECONDS, check=False)
+            done = subprocess.run(shlex.split(entry["command"]), stdin=subprocess.DEVNULL, capture_output=True,
+                                  text=True, encoding="utf-8", errors="replace", timeout=FAN_OUT_WAIT_SECONDS,
+                                  check=False)
         except subprocess.TimeoutExpired:
             results[index] = {**base, "status": "pending", "detail": "No outcome within the bound. Do not resend."}
             return
-        results[index] = {**base, **_outcome(done.returncode, done.stdout)}
+        except (OSError, ValueError) as exc:
+            results[index] = {**base, "status": "failed", "error": f"Its delivery runner could not start: {exc}"}
+            return
+        results[index] = {**base, **_outcome(entry.get("output", "text"), done.returncode, done.stdout, done.stderr)}
 
     threads = [threading.Thread(target=run, args=item, daemon=True) for item in enumerate(entries)]
     for thread in threads:
@@ -113,21 +156,27 @@ def run_fan_out(spec_path: str) -> int:
     return 0 if settled == len(results) else 1
 
 
-def _outcome(returncode: int, stdout: str) -> dict:
-    """A sub-runner's stdout as a typed outcome: the live lane prints one JSON payload; the relay
-    waiter and ``hermes peer dm`` print the reply (or the failure) as text."""
+def _outcome(output: str, returncode: int, stdout: str, stderr: str = "") -> dict:
+    """A sub-runner's result as a typed outcome. Only a ``json`` runner's stdout is a delivery
+    record; a ``text`` runner's successful stdout is the teammate's answer verbatim (even one that
+    looks like JSON). A failing text runner may still have been accepted: every runner says "do not
+    resend" exactly when the request is still in flight, which is pending, never failed."""
     text = stdout.strip()
-    try:
-        parsed = json.loads(text.splitlines()[-1]) if text else None
-    except ValueError:
-        parsed = None
-    if isinstance(parsed, dict):
-        outcome = {k: v for k, v in parsed.items() if k != "delivery_id"}
-        outcome.setdefault("status", "failed" if parsed.get("error") else "settled")
-        return outcome
+    if output == "json" or returncode != 0:
+        try:
+            parsed = json.loads(text.splitlines()[-1]) if text else None
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict):
+            outcome = {k: v for k, v in parsed.items() if k != "delivery_id"}
+            outcome.setdefault("status", "failed" if parsed.get("error") else "settled")
+            return outcome
     if returncode == 0:
         return {"status": "settled", "reply": text or "(empty reply)"}
-    return {"status": "failed", "error": text or f"delivery runner exited {returncode}"}
+    said = "\n".join(part for part in (text, stderr.strip()) if part)
+    if "do not resend" in said.lower():
+        return {"status": "pending", "detail": said}
+    return {"status": "failed", "error": said or f"delivery runner exited {returncode}"}
 
 
 def cancel_own_delivery(delivery_id: str, raw_target: str, sender: Any) -> str:
@@ -154,8 +203,23 @@ def cancel_own_delivery(delivery_id: str, raw_target: str, sender: Any) -> str:
     admission = record.get("retry_admission_id") or record.get("admission_id")
     if not admission:
         return _err("That request has no admission to cancel (its outcome is unknown). Do not retry.")
+
+    def cancel(admission_id: str) -> dict:
+        return _authority_rpc(home, "prompt.cancel", {"session_id": record["session_id"], "admission_id": admission_id})
+
     try:
-        answer = _authority_rpc(home, "prompt.cancel", {"session_id": record["session_id"], "admission_id": admission})
+        answer = cancel(admission)
+        if answer.get("status") == "terminal" and answer.get("outcome") != "cancelled" and admission == record.get(
+                "admission_id"):
+            # The first attempt is over but the receipt was still pending: the owner may be admitting
+            # the delivery's one retry. That retry is the request now.
+            retry = _await_retry_admission(home, delivery_id)
+            if retry == "":
+                return json.dumps({"status": "pending", "delivery_id": delivery_id,
+                                   "detail": "Its first attempt has ended but its receipt is not final yet (its one "
+                                             "automatic retry may be starting): cancel again in a few seconds."})
+            if retry:
+                answer = cancel(retry)
     except Exception as exc:
         # The owner may be down or refuse: the sender gets that as a tool error, never a crash.
         logger.debug("message_agent cancel of %s failed", delivery_id, exc_info=True)
@@ -168,3 +232,20 @@ def cancel_own_delivery(delivery_id: str, raw_target: str, sender: Any) -> str:
                            "detail": "That request already finished; nothing to cancel."})
     return json.dumps({"status": "stopping", "delivery_id": delivery_id,
                        "detail": "Its turn was running and was told to stop; its delivery process reports how it ended."})
+
+
+def _await_retry_admission(home: Any, delivery_id: str) -> Optional[str]:
+    """The delivery's retry admission once the owner records it; None when the receipt settled with
+    no retry (nothing left to cancel); "" when it is still pending after a short wait."""
+    from tools.bot_live_delivery import _TERMINAL, read_delivery_result
+
+    deadline = time.monotonic() + _RETRY_SETTLE_SECONDS
+    while True:
+        record = read_delivery_result(home, delivery_id) or {}
+        if record.get("retry_admission_id"):
+            return record["retry_admission_id"]
+        if record.get("status") in _TERMINAL or (record.get("retry") or {}).get("refused"):
+            return None
+        if time.monotonic() >= deadline:
+            return ""
+        time.sleep(0.25)

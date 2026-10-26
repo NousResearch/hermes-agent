@@ -508,7 +508,9 @@ class TestMaybeAutoTitle:
         card = "Investigate why the swap modal intermittently fails to render its confirmation step on mobile Safari after a retry"
         assert len(card) > SessionDB.MAX_TITLE_LENGTH
         with kanban_db_connect.connect_closing(board="default") as conn:
-            task_id = kanban_db.create_task(conn, title=card, board="default")
+            task_id = kanban_db.create_task(
+                conn, title=card, board="default", max_runtime_seconds=1800,
+            )
             conn.commit()
         monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
         db = SessionDB(tmp_path / "state.db")

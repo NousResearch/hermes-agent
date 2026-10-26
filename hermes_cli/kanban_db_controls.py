@@ -143,15 +143,24 @@ def _route_block(
 
 def unblock_task(
     conn: sqlite3.Connection, task_id: str, *, expected_event_id: Optional[int] = None,
+    request_id: Optional[str] = None,
 ) -> bool:
     """Resume blocked/scheduled work, optionally only from its observed event.
 
     Callers preparing an activation retain their original event token across
     retries. Reading a fresh token after a newer Stop is a new resume decision,
     not a safe retry. The guard runs before any dangling-run recovery.
+
+    A caller may label a guarded transition with ``request_id``. The existing
+    native event retains that label and its observed predecessor so a lost
+    response can be reconciled without mistaking another operator's resume
+    for this request. The label is provenance, not permission or a new grant.
     """
     from hermes_cli import kanban_db as kb
 
+    if request_id is not None and (expected_event_id is None or not isinstance(request_id, str)
+                                   or not request_id.strip() or len(request_id) > 200):
+        raise ValueError("request_id requires an event guard and a nonempty label of at most 200 characters")
     now = int(time.time())
     with kb.write_txn(conn):
         if not _event_matches(conn, task_id, expected_event_id):
@@ -178,12 +187,9 @@ def unblock_task(
         )
         if cur.rowcount != 1:
             return False
-        kb._append_event(
-            conn, task_id, "unblocked",
-            (
-                {"status": new_status, "resume_status": resume_status}
-                if new_status != "ready" or resume_status != "ready"
-                else None
-            ),
-        )
+        payload = ({"status": new_status, "resume_status": resume_status}
+                   if new_status != "ready" or resume_status != "ready" else None)
+        if request_id is not None:
+            payload = {**(payload or {}), "request_id": request_id, "expected_event_id": expected_event_id}
+        kb._append_event(conn, task_id, "unblocked", payload)
         return True

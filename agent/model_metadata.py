@@ -343,8 +343,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     "grok-2-vision": 8192, "grok-4-fast": 2000000, "grok-4.20": 2000000,
     "grok-4.6": 500000, "grok-4.5": 500000, "grok-4.3": 1000000, "grok-4": 256000,
     "grok-3": 131072, "grok-2": 131072, "grok": 131072,
-    # Kimi — K3 is 1 Mi (matches the endpoint-scoped override); older Kimi 256K.
-    "kimi-k3": 1_048_576, "kimi": 262144,
+    # Kimi — K3 is 1 Mi (matches the endpoint-scoped override); older Kimi 256K. Sakana Fugu: 1M (OpenRouter, Nous Portal).
+    "kimi-k3": 1_048_576, "kimi": 262144, "fugu": 1_000_000,
     # Upstage Solar — /v1/models returns no context_length. Later generations and new lineups
     # default to 512K (Upstage /v1/solar/models max_model_len, 2026-09).
     "solar-open2": 262144, "solar-pro3": 131072, "solar-pro2": 65536, "solar-mini": 32768, "solar-": 524288,
@@ -1511,7 +1511,7 @@ def _model_name_suggests_minimax_m3(model: str) -> bool:
 # shorter matching key and the 256K fallback — the threshold is inferred from them.
 _PRE_CATALOG_STALE_KEYS = frozenset({
     "minimax-m3",  # 1M; "minimax" catch-all persisted 204,800
-    "muse-spark-1.3", "muse-spark",  # 1M; pre-entry builds fell through to the 256K fallback
+    "muse-spark-1.3", "muse-spark", "fugu",  # 1M; pre-entry builds fell through to the 256K fallback
     "grok-4.3", "grok-4.6",  # 1M / 500K; "grok-4" catch-all persisted 256,000
     "grok-4-fast", "grok-4.20",  # 2M; fell through to the 256K fallback
     "qwen3.6-plus",  # 1M; "qwen" catch-all persisted 131,072

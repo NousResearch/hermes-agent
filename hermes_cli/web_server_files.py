@@ -154,7 +154,9 @@ def _translate_agent_path(
     translated = _translate_docker_container_media_path(
         candidate, quiet=True, workspace_key=workspace_key, workspace_cwd=workspace_cwd,
     )
-    if own_sandbox_only and translated is not None and _in_fallback_sandbox(translated, workspace_key):
+    if own_sandbox_only and translated is not None and (
+        _in_fallback_sandbox(translated, workspace_key) or _in_shared_cwd_mount_guess(translated, workspace_key)
+    ):
         raise HTTPException(status_code=409, detail=SANDBOX_COPY_MISSING)
     return translated
 
@@ -174,6 +176,15 @@ def _in_fallback_sandbox(target: Path, workspace_key: str) -> bool:
     names = _docker_sandbox_dir_candidates("", workspace_key)
     fallbacks = [(base / name).resolve(strict=False) for name in names[1:]]
     return any(_path_is_under(sandbox, target) for sandbox in fallbacks)
+
+
+def _in_shared_cwd_mount_guess(target: Path, workspace_key: str) -> bool:
+    """Whether *target* is in the cwd a shared container's ``/workspace`` is only assumed to mount:
+    that container mounts its first session's cwd, which nothing records, so a Save there could
+    change a file the agent never sees."""
+    from gateway.platforms.docker_media_paths import _shared_cwd_mount_guess
+
+    return any(_path_is_under(root, target) for root in _shared_cwd_mount_guess(workspace_key))
 
 
 @contextmanager

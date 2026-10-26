@@ -104,6 +104,26 @@ def _session_mounted_workspace(workspace_key: str, workspace_cwd: str) -> list[P
     return _mounted_workspace_cwd(cwd)
 
 
+def _shared_cwd_mount_guess(workspace_key: str) -> list[Path]:
+    """The profile cwd that stands in for a shared container's ``/workspace``, or nothing.
+
+    With ``TERMINAL_DOCKER_SHARED_CONTAINER_KEY`` every session reuses one
+    ``shared:<key>`` container, which mounts whatever cwd the session that
+    created it brought, so a session's own cwd is not its mount. Nothing records
+    that first cwd: shared containers carry no mount fingerprint label, and a
+    cross-process attach never inspects the container's mounts. Reads keep the
+    profile cwd, as before; a session Save there is a guess the caller refuses.
+    """
+    tenv, truthy, persistent = _scope()
+    if not persistent() or not _WORKSPACE_KEY_RE.fullmatch(workspace_key or ""):
+        return []
+    if tenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").strip().lower() not in truthy:
+        return []
+    if not tenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip():
+        return []
+    return _mounted_workspace_cwd()
+
+
 def _default_docker_workspace_host_roots(
     session_key: str = "", workspace_key: str = "", workspace_cwd: str = "",
 ) -> list[Path]:
@@ -112,7 +132,8 @@ def _default_docker_workspace_host_roots(
     A cwd mount is tried first. With no workspace digest that mount is the
     profile's cwd and the only candidate, so MEDIA delivery (which has no
     session) stays cwd-only. A download that names a digest mounts that
-    session's own cwd (``workspace_cwd``) instead, then tries that session's
+    session's own cwd (``workspace_cwd``) instead, unless its container is a
+    shared one (``_shared_cwd_mount_guess``), then tries that session's
     sandbox: the container key can be ``default:ws:<digest>`` while
     ``/workspace`` is still the sandbox directory, because the host cwd was
     not bind-mounted when the container was created.
@@ -125,7 +146,10 @@ def _default_docker_workspace_host_roots(
     if mounted:
         if not _WORKSPACE_KEY_RE.fullmatch(workspace_key or ""):
             return _mounted_workspace_cwd()
-        roots.extend(_session_mounted_workspace(workspace_key, workspace_cwd))
+        if tenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip():
+            roots.extend(_shared_cwd_mount_guess(workspace_key))
+        else:
+            roots.extend(_session_mounted_workspace(workspace_key, workspace_cwd))
     for root in _docker_persistent_sandbox_roots(session_key, "workspace", workspace_key):
         if root not in roots:
             roots.append(root)

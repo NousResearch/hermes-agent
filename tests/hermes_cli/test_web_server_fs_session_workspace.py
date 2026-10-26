@@ -325,6 +325,34 @@ def test_a_cwd_mounted_session_reads_and_saves_its_own_workspace(client, bound, 
     assert _mount_notes(bound) == {"workspace": "edited", "profile_cwd": "profile note"}
 
 
+@pytest.mark.parametrize("path", ["/workspace/note.txt", "file:///workspace/note.txt"])
+def test_a_session_on_a_shared_container_never_reads_or_saves_its_unmounted_workspace(
+    client, bound, monkeypatch, path,
+):
+    """``terminal.docker_shared_container_key``: every session reuses ONE ``shared:<key>`` container,
+    which mounts the cwd of the session that created it (P), so ``sess-ws``'s own W is not its
+    ``/workspace``. Nothing records P, so reads keep the profile cwd and Save refuses."""
+    from gateway.session_policy import unbind_turn_workspace
+    from tools.terminal_tool import _resolve_container_task_id, register_task_env_overrides, workspace_key_for
+
+    monkeypatch.setenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "team")
+    first = str(bound["profile_cwd"])
+    register_task_env_overrides("sess-first", {
+        "cwd": first, "cwd_source": "session", "workspace_key": workspace_key_for(first),
+    })
+    try:
+        assert _resolve_container_task_id("sess-first") == _resolve_container_task_id("sess-ws") == "shared:team"
+        read = client.get("/api/fs/read-text", params={"path": path, "session_id": "sess-ws"})
+        saved = client.post("/api/fs/write-text", json={"path": path, "content": "edited", "session_id": "sess-ws"})
+    finally:
+        unbind_turn_workspace("sess-first")
+
+    assert (read.status_code, read.json()["text"]) == (200, "profile note"), read.text
+    assert read.json()["path"] == str(bound["profile_cwd"] / "note.txt")
+    assert (saved.status_code, saved.json()) == (409, {"detail": "File is no longer in this session's workspace"})
+    assert _mount_notes(bound) == {"workspace": "workspace note", "profile_cwd": "profile note"}
+
+
 def test_a_cwd_mounted_session_without_a_workspace_binding_keeps_the_profile_cwd(client, cwd_mount):
     for params in ({"session_id": "sess-container"}, {}):
         read = client.get("/api/fs/read-text", params={"path": "/workspace/note.txt", **params})

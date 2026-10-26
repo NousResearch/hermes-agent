@@ -26,9 +26,14 @@ from __future__ import annotations  # allow PEP 604 `X | None` on Python 3.9+
 import argparse
 import json
 import os
-import subprocess
 import sys
 from pathlib import Path
+
+try:
+    import pm
+except ImportError:
+    # A copied skill must not install into an unrelated Python environment.
+    pm = None
 
 # Ensure sibling modules (_hermes_home) are importable when run standalone.
 _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
@@ -53,8 +58,6 @@ SCOPES = [
     "https://www.googleapis.com/auth/documents",
 ]
 
-REQUIRED_PACKAGES = ["google-api-python-client", "google-auth-oauthlib", "google-auth-httplib2"]
-
 # OAuth redirect for "out of band" manual code copy flow.
 # Google deprecated OOB, so we use a localhost redirect and tell the user to
 # copy the code from the browser's URL bar (or the page body).
@@ -70,7 +73,7 @@ def _normalize_authorized_user_payload(payload: dict) -> dict:
 
 def _load_token_payload(path: Path = TOKEN_PATH) -> dict:
     try:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
 
@@ -93,41 +96,29 @@ def _format_missing_scopes(missing_scopes: list[str]) -> str:
 
 
 def install_deps():
-    """Install Google API packages if missing. Returns True on success."""
-    try:
-        import googleapiclient  # noqa: F401
-        import google_auth_oauthlib  # noqa: F401
-        print("Dependencies already installed.")
-        return True
-    except ImportError:
-        pass
-
-    print("Installing Google API dependencies...")
-    try:
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "--quiet"] + REQUIRED_PACKAGES,
-            stdout=subprocess.DEVNULL,
-        )
-        print("Dependencies installed.")
-        return True
-    except subprocess.CalledProcessError as e:
-        print(f"ERROR: Failed to install dependencies: {e}")
-        print(
-            "On environments without pip (e.g. Nix), install the optional extra instead:"
-        )
-        print("  pip install 'hermes-agent[google]'")
-        print(f"Or manually: {sys.executable} -m pip install {' '.join(REQUIRED_PACKAGES)}")
+    """Sync Hermes' declared Google extra, ready for the next process."""
+    if pm is None:
+        print("ERROR: Run this script in the Hermes environment; use hermes setup first.")
         return False
+    try:
+        pm.sync_venv(["google"], explicit=True)
+    except Exception as exc:
+        print(f"ERROR: Failed to install Google dependencies: {exc}")
+        return False
+    print("Google dependencies synced. Restart Hermes, then rerun setup to continue OAuth.")
+    return True
 
 
 def _ensure_deps():
-    """Check deps are available, install if not, exit on failure."""
+    """Let PM check imports and stop if activation needs a new process."""
+    if pm is None:
+        print("ERROR: Run this script in the Hermes environment; use hermes setup first.")
+        sys.exit(1)
     try:
-        import googleapiclient  # noqa: F401
-        import google_auth_oauthlib  # noqa: F401
-    except ImportError:
-        if not install_deps():
-            sys.exit(1)
+        pm.ensure_import("google")
+    except Exception as exc:
+        print(f"ERROR: Google dependencies unavailable: {exc}")
+        sys.exit(1)
 
 
 def check_auth_live():
@@ -194,7 +185,7 @@ def check_auth(quiet: bool = False):
                 json.dumps(
                     _normalize_authorized_user_payload(json.loads(creds.to_json())),
                     indent=2,
-                )
+                ), encoding="utf-8"
             )
             missing_scopes = _missing_scopes_from_payload(_load_token_payload(TOKEN_PATH))
             if missing_scopes:
@@ -234,7 +225,7 @@ def store_client_secret(path: str):
         sys.exit(1)
 
     try:
-        data = json.loads(src.read_text())
+        data = json.loads(src.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         print("ERROR: File is not valid JSON.")
         sys.exit(1)
@@ -244,7 +235,7 @@ def store_client_secret(path: str):
         print("Download the correct file from: https://console.cloud.google.com/apis/credentials")
         sys.exit(1)
 
-    CLIENT_SECRET_PATH.write_text(json.dumps(data, indent=2))
+    CLIENT_SECRET_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
     print(f"OK: Client secret saved to {CLIENT_SECRET_PATH}")
 
 
@@ -258,7 +249,7 @@ def _save_pending_auth(*, state: str, code_verifier: str):
                 "redirect_uri": REDIRECT_URI,
             },
             indent=2,
-        )
+        ), encoding="utf-8"
     )
 
 
@@ -269,7 +260,7 @@ def _load_pending_auth() -> dict:
         sys.exit(1)
 
     try:
-        data = json.loads(PENDING_AUTH_PATH.read_text())
+        data = json.loads(PENDING_AUTH_PATH.read_text(encoding="utf-8"))
     except Exception as e:
         print(f"ERROR: Could not read pending OAuth session: {e}")
         print("Run --auth-url again to start a fresh OAuth session.")
@@ -384,7 +375,7 @@ def exchange_auth_code(code: str):
         print(f"WARNING: Token missing some Google Workspace scopes: {', '.join(missing_scopes)}")
         print("Some services may not be available.")
 
-    TOKEN_PATH.write_text(json.dumps(token_payload, indent=2))
+    TOKEN_PATH.write_text(json.dumps(token_payload, indent=2), encoding="utf-8")
     PENDING_AUTH_PATH.unlink(missing_ok=True)
     print(f"OK: Authenticated. Token saved to {TOKEN_PATH}")
     print(f"Profile-scoped token location: {display_hermes_home()}/google_token.json")
@@ -411,7 +402,8 @@ def revoke():
                 f"https://oauth2.googleapis.com/revoke?token={creds.token}",
                 method="POST",
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
-            )
+            ),
+            timeout=15,
         )
         print("Token revoked with Google.")
     except Exception as e:

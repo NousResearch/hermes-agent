@@ -6,19 +6,32 @@ description: "Complete guide to migrating your OpenClaw / Clawdbot setup to Herm
 
 # Migrate from OpenClaw
 
-`hermes claw migrate` imports your OpenClaw (or legacy Clawdbot/Moldbot) setup into Hermes. This guide covers exactly what gets migrated, the config key mappings, and what to verify after migration.
+`hermes import-agent openclaw` imports your OpenClaw (or legacy Clawdbot/Moldbot) setup into Hermes. This guide covers exactly what gets migrated, the config key mappings, and what to verify after migration.
+
+The command comes from the official **`agent-importers` plugin** in the [plugin catalog](../user-guide/features/plugins.md), which also imports Claude Code, Codex CLI and Cursor setups ([Import from Other Agents](../user-guide/import-from-other-agents.md)). The older spelling `hermes claw migrate` still works once the plugin is installed and runs the same import.
+
+:::tip The easy way
+On a fresh install, run `hermes setup`. When it finds `~/.openclaw` it asks **"Import your setup from OpenClaw?"**. Say yes and setup installs the plugin and runs `hermes import-agent openclaw --migrate-secrets`, preview and confirmation included, then continues with the sections the import did not already fill in.
+:::
+
+:::tip
+If your OpenClaw setup was multi-provider, `hermes setup --portal` collapses it to one OAuth — 300+ models plus the Tool Gateway in a single login. See [Nous Portal](../integrations/nous-portal.md).
+:::
 
 ## Quick start
 
 ```bash
+# Once per profile: the command comes from this plugin
+hermes plugins install agent-importers
+
 # Preview then migrate (always shows a preview first, then asks to confirm)
-hermes claw migrate
+hermes import-agent openclaw
 
 # Preview only, no changes
-hermes claw migrate --dry-run
+hermes import-agent openclaw --dry-run
 
 # Full migration including API keys, skip confirmation
-hermes claw migrate --preset full --migrate-secrets --yes
+hermes import-agent openclaw --preset full --migrate-secrets --yes
 ```
 
 The migration always shows a full preview of what will be imported before making any changes. Review the list, then confirm to proceed.
@@ -69,7 +82,7 @@ Skill conflicts are handled by `--skill-conflict`: `skip` leaves the existing He
 | What | OpenClaw config path | Hermes destination | Notes |
 |------|---------------------|-------------------|-------|
 | Default model | `agents.defaults.model` | `config.yaml` → `model` | Can be a string or `{primary, fallbacks}` object |
-| Custom providers | `models.providers.*` | `config.yaml` → `custom_providers` | Maps `baseUrl`, `apiType`/`api` — handles both short ("openai", "anthropic") and hyphenated ("openai-completions", "anthropic-messages", "google-generative-ai") values |
+| Custom providers | `models.providers.*` | `config.yaml` → `custom_providers` (auto-migrated to the canonical `providers:` dict on the next `hermes update` config migration) | Maps `baseUrl`, `apiType`/`api` — handles both short ("openai", "anthropic") and hyphenated ("openai-completions", "anthropic-messages", "google-generative-ai") values |
 | Provider API keys | `models.providers.*.apiKey` | `~/.hermes/.env` | Requires `--migrate-secrets`. See [API key resolution](#api-key-resolution) below. |
 
 ### Agent behavior
@@ -88,15 +101,9 @@ Skill conflicts are handled by `--skill-conflict`: `skip` leaves the existing He
 | Docker sandbox | `agents.defaults.sandbox.backend` | `terminal.backend` | "docker" → "docker" |
 | Docker image | `agents.defaults.sandbox.docker.image` | `terminal.docker_image` | Direct copy |
 
-### Session reset policies
+### Session lifetime
 
-| OpenClaw config path | Hermes config path | Notes |
-|---------------------|-------------------|-------|
-| `session.reset.mode` | `session_reset.mode` | "daily", "idle", or both |
-| `session.reset.atHour` | `session_reset.at_hour` | Hour (0–23) for daily reset |
-| `session.reset.idleMinutes` | `session_reset.idle_minutes` | Minutes of inactivity |
-
-Note: OpenClaw also has `session.resetTriggers` (a simple string array like `["daily", "idle"]`). If the structured `session.reset` isn't present, the migration falls back to inferring from `resetTriggers`.
+Idle and daily reset timers are not imported: Hermes conversations persist until an explicit `/new` or `/reset`. Advanced session settings (identity links, thread bindings, maintenance, scope and send policy) remain archived for reference.
 
 ### MCP servers
 
@@ -156,7 +163,7 @@ TTS settings are read from **two** OpenClaw config locations with this priority:
 | Browser headless | `browser.headless` | `config.yaml` → `browser.headless` | |
 | Brave search key | `tools.web.search.brave.apiKey` | `.env` → `BRAVE_API_KEY` | Requires `--migrate-secrets` |
 | Gateway auth token | `gateway.auth.token` | `.env` → `HERMES_GATEWAY_TOKEN` | Requires `--migrate-secrets` |
-| Working directory | `agents.defaults.workspace` | `.env` → `MESSAGING_CWD` | |
+| Working directory | `agents.defaults.workspace` | `config.yaml` → `terminal.cwd` | Legacy migrations may still emit `MESSAGING_CWD` as a compatibility fallback |
 
 ### Archived (no direct Hermes equivalent)
 
@@ -169,7 +176,7 @@ These are saved to `~/.hermes/migration/openclaw/<timestamp>/archive/` for manua
 | `HEARTBEAT.md` | `archive/workspace/HEARTBEAT.md` | Use cron jobs for periodic tasks |
 | `BOOTSTRAP.md` | `archive/workspace/BOOTSTRAP.md` | Use context files or skills |
 | Cron jobs | `archive/cron-config.json` | Recreate with `hermes cron create` |
-| Plugins | `archive/plugins-config.json` | See [plugins guide](/docs/user-guide/features/hooks) |
+| Plugins | `archive/plugins-config.json` | See [plugins guide](../user-guide/features/hooks.md) |
 | Hooks/webhooks | `archive/hooks-config.json` | Use `hermes webhook` or gateway hooks |
 | Memory backend | `archive/memory-backend-config.json` | Configure via `hermes honcho` |
 | Skills registry | `archive/skills-registry-config.json` | Use `hermes skills config` |
@@ -225,7 +232,7 @@ The migration resolves all three formats. For env templates and SecretRef object
 
 5. **Test messaging** — if you migrated platform tokens, restart the gateway: `systemctl --user restart hermes-gateway`
 
-6. **Check session policies** — verify `hermes config get session_reset` matches your expectations.
+6. **Check session archives** — review archived advanced settings; idle and daily reset timers are intentionally not imported.
 
 7. **Re-pair WhatsApp** — WhatsApp uses QR code pairing (Baileys), not token migration. Run `hermes whatsapp` to pair.
 
@@ -248,3 +255,7 @@ Imported skills land in `~/.hermes/skills/openclaw-imports/`. Start a new sessio
 ### TTS voice not migrated
 
 OpenClaw stores TTS settings in two places: `messages.tts.providers.*` and the top-level `talk` config. The migration checks both. If your voice ID was set via the OpenClaw UI (stored in a different path), you may need to set it manually: `hermes config set tts.elevenlabs.voice_id YOUR_VOICE_ID`.
+
+## Upgrading from a version with `hermes claw` built in
+
+OpenClaw migration used to ship inside Hermes core as `hermes claw migrate` and the optional `openclaw-migration` skill. Both moved into the `agent-importers` plugin, with the same flags and the same secrets rule (keys come over only with `--migrate-secrets`). Running `hermes claw` without the plugin prints the install command, and a fresh `hermes setup` that finds `~/.openclaw` offers to install it. The guided migration skill comes with the plugin as `agent-importers:openclaw-migration`. The old `official/migration/openclaw-migration` optional skill is gone. Nothing changes for an OpenClaw setup you have already migrated.

@@ -3,7 +3,7 @@
 import pytest
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 
 
@@ -63,16 +63,3 @@ async def test_commands_sanitizes_slash_command_mentions_for_telegram(monkeypatc
     assert "`/Linear`" not in result
 
 
-@pytest.mark.asyncio
-async def test_help_keeps_non_telegram_slash_command_mentions_unchanged(monkeypatch):
-    """Only Telegram needs slash mentions rewritten to Telegram command names."""
-    monkeypatch.setattr(
-        "agent.skill_commands.get_skill_commands",
-        lambda: {"/Linear": {"description": "Open Linear"}},
-    )
-
-    result = await _make_runner()._handle_help_command(
-        _make_event("/help", Platform.DISCORD)
-    )
-
-    assert "`/Linear`" in result

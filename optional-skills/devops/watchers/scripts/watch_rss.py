@@ -43,7 +43,7 @@ def _parse_feed(xml_bytes: bytes):
     entries = []
     for item in root.iter():
         tag = _strip_ns(item.tag)
-        if tag not in ("item", "entry"):
+        if tag not in {"item", "entry"}:
             continue
         # ElementTree Elements without children are *falsy* — use `is not None`.
         children = {_strip_ns(c.tag): c for c in item}

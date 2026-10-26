@@ -1,17 +1,18 @@
 """Tests for the bundled ``openai-codex`` image_gen plugin.
 
-Mirrors ``test_openai_provider.py`` but targets the standalone
-Codex/ChatGPT-OAuth-backed provider that uses the Responses
-``image_generation`` tool path instead of the ``images.generate`` REST
-endpoint.
+Mirrors ``test_openai_provider.py`` but targets the ChatGPT-OAuth-backed provider that posts to
+the Codex backend's native ``images/generations`` / ``images/edits`` endpoints (the route the
+official Codex client uses) — no chat host model, no hosted-tool SSE stream (#105398, #107076).
 """
 
 from __future__ import annotations
 
+import base64
 import importlib
+import json
 from pathlib import Path
-from types import SimpleNamespace
 
+import httpx
 import pytest
 
 # The plugin directory uses a hyphen, which is not a valid Python identifier
@@ -28,32 +29,18 @@ _PNG_HEX = (
 )
 
 
+def _png_bytes() -> bytes:
+    return bytes.fromhex(_PNG_HEX)
+
+
 def _b64_png() -> str:
-    import base64
-    return base64.b64encode(bytes.fromhex(_PNG_HEX)).decode()
-
-
-class _FakeStream:
-    def __init__(self, events, final_response):
-        self._events = list(events)
-        self._final = final_response
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def __iter__(self):
-        return iter(self._events)
-
-    def get_final_response(self):
-        return self._final
+    return base64.b64encode(_png_bytes()).decode()
 
 
 @pytest.fixture(autouse=True)
 def _tmp_hermes_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("OPENAI_IMAGE_MODEL", raising=False)
     yield tmp_path
 
 
@@ -64,27 +51,53 @@ def provider(monkeypatch):
     return codex_plugin.OpenAICodexImageGenProvider()
 
 
+@pytest.fixture
+def codex_backend(monkeypatch):
+    """Route the plugin's ``httpx.Client`` at a fake Codex images backend; returns the request log
+    and lets a test swap the response via ``state["respond"]``."""
+    # Seed the auth.json token below the credential/base resolver so generate() exercises the real
+    # (token, base_url) binding; no pool present.
+    from agent import auxiliary_client
+    monkeypatch.setattr(auxiliary_client, "_select_pool_entry", lambda provider: (False, None))
+    monkeypatch.setattr(auxiliary_client, "_read_codex_singleton_token", lambda: "codex-token")
+    state = {"requests": [], "respond": None}
+
+    def _default(request):
+        return httpx.Response(200, json={
+            "created": 1, "data": [{"b64_json": _b64_png(), "generation_id": "gen_1"}],
+            "background": "opaque", "output_format": "png", "quality": "low", "size": "1254x1254",
+        }, headers={"x-codex-imagegen-request-id": "req_abc"}, request=request)
+
+    def _handler(request):
+        state["requests"].append(request)
+        return (state["respond"] or _default)(request)
+
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        httpx, "Client",
+        lambda *args, **kwargs: real_client(
+            transport=httpx.MockTransport(_handler), headers=kwargs.get("headers"),
+            timeout=kwargs.get("timeout")),
+    )
+    return state
+
+
 # ── Metadata ────────────────────────────────────────────────────────────────
 
 
 class TestMetadata:
-    def test_name(self, provider):
-        assert provider.name == "openai-codex"
 
-    def test_display_name(self, provider):
-        assert provider.display_name == "OpenAI (Codex auth)"
 
-    def test_default_model(self, provider):
-        assert provider.default_model() == "gpt-image-2-medium"
 
-    def test_list_models_three_tiers(self, provider):
-        ids = [m["id"] for m in provider.list_models()]
-        assert ids == ["gpt-image-2-low", "gpt-image-2-medium", "gpt-image-2-high"]
 
     def test_setup_schema_has_no_required_env_vars(self, provider):
+        """#102144: the keyless row must declare the shared Codex OAuth bootstrap hook (otherwise setup
+        saves the backend without ever signing in) and its hint must name a command that exists."""
         schema = provider.get_setup_schema()
         assert schema["env_vars"] == []
-        assert schema["badge"] == "free"
+        assert schema["post_setup"] == "openai_codex"
+        assert "hermes auth add openai-codex" in schema["post_setup_hint"]
+        assert "hermes auth codex`" not in schema["post_setup_hint"]
 
 
 # ── Availability ────────────────────────────────────────────────────────────
@@ -92,195 +105,202 @@ class TestMetadata:
 
 class TestAvailability:
     def test_unavailable_without_codex_token(self, monkeypatch):
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: None)
+        monkeypatch.setattr(codex_plugin, "_read_codex_credential", lambda: (None, None))
         assert codex_plugin.OpenAICodexImageGenProvider().is_available() is False
 
     def test_available_with_codex_token(self, monkeypatch):
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        monkeypatch.setattr(codex_plugin, "_read_codex_credential", lambda: ("tok", "https://chatgpt.com/backend-api/codex"))
         assert codex_plugin.OpenAICodexImageGenProvider().is_available() is True
 
     def test_openai_api_key_alone_is_not_enough(self, monkeypatch):
-        # Codex plugin is intentionally orthogonal to the API-key plugin —
-        # the API key alone must NOT make it appear available.
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: None)
+        monkeypatch.setattr(codex_plugin, "_read_codex_credential", lambda: (None, None))
         assert codex_plugin.OpenAICodexImageGenProvider().is_available() is False
 
 
-# ── Generate ────────────────────────────────────────────────────────────────
+# ── Generation ──────────────────────────────────────────────────────────────
 
 
 class TestGenerate:
+    @pytest.mark.parametrize("edit", [False, True])
+    def test_custom_codex_route_keeps_image_request_on_configured_host(
+        self, provider, codex_backend, monkeypatch, edit,
+    ):
+        monkeypatch.setenv("HERMES_CODEX_BASE_URL", "https://images.example.test/codex/")
+        kwargs = {"image_url": "data:image/png;base64," + _b64_png()} if edit else {}
+        result = provider.generate("a cat", **kwargs)
+        assert result["success"] is True
+        (request,) = codex_backend["requests"]
+        path = "images/edits" if edit else "images/generations"
+        assert str(request.url) == f"https://images.example.test/codex/{path}"
+        assert request.headers["Authorization"] == "Bearer codex-token"
+        assert request.headers["originator"] == "codex_cli_rs"
+
+    @pytest.mark.parametrize("override", ["", "   "])
+    def test_blank_override_preserves_official_route(
+        self, provider, codex_backend, monkeypatch, override,
+    ):
+        monkeypatch.setenv("HERMES_CODEX_BASE_URL", override)
+        assert provider.generate("a cat")["success"] is True
+        (request,) = codex_backend["requests"]
+        assert str(request.url) == "https://chatgpt.com/backend-api/codex/images/generations"
+        assert request.headers["originator"] == "hermes-agent"
+
+    def test_profile_scope_routes_each_request_without_borrowing_process_override(
+        self, provider, codex_backend, monkeypatch,
+    ):
+        from agent import secret_scope
+        from agent.secret_scope import reset_secret_scope, set_secret_scope
+
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+        monkeypatch.setenv("HERMES_CODEX_BASE_URL", "https://other-profile.example.test/codex")
+        for scope, expected in [
+            ({"HERMES_CODEX_BASE_URL": "https://profile.example.test/images-api/"},
+             "https://profile.example.test/images-api/images/generations"),
+            ({}, "https://chatgpt.com/backend-api/codex/images/generations"),
+        ]:
+            token = set_secret_scope(scope)
+            try:
+                assert provider.generate("a cat")["success"] is True
+            finally:
+                reset_secret_scope(token)
+            assert str(codex_backend["requests"][-1].url) == expected
+
+    @pytest.mark.parametrize("failure", ["http", "empty", "exception"])
+    def test_custom_route_failure_never_retries_on_official_host(
+        self, provider, codex_backend, monkeypatch, failure,
+    ):
+        monkeypatch.setenv("HERMES_CODEX_BASE_URL", "https://images.example.test/codex")
+
+        def respond(request):
+            if failure == "exception":
+                raise httpx.ConnectError("fixture connection failed", request=request)
+            if failure == "http":
+                return httpx.Response(403, json={"error": {"message": "denied"}})
+            return httpx.Response(200, json={"data": []})
+
+        codex_backend["respond"] = respond
+        assert provider.generate("a cat")["success"] is False
+        (request,) = codex_backend["requests"]
+        assert request.url.host == "images.example.test"
+
     def test_returns_auth_error_without_codex_token(self, provider, monkeypatch):
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: None)
+        from agent import auxiliary_client
+        monkeypatch.setattr(auxiliary_client, "_select_pool_entry", lambda provider: (False, None))
+        monkeypatch.setattr(auxiliary_client, "_read_codex_singleton_token", lambda: None)
         result = provider.generate("a cat")
         assert result["success"] is False
         assert result["error_type"] == "auth_required"
 
-    def test_returns_invalid_argument_for_empty_prompt(self, provider, monkeypatch):
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
-        result = provider.generate("   ")
-        assert result["success"] is False
-        assert result["error_type"] == "invalid_argument"
-
-    def test_generate_uses_codex_stream_path(self, provider, monkeypatch, tmp_path):
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
-
-        output_item = SimpleNamespace(
-            type="image_generation_call",
-            status="generating",
-            id="ig_test",
-            result=_b64_png(),
-        )
-        done_event = SimpleNamespace(type="response.output_item.done", item=output_item)
-        final_response = SimpleNamespace(output=[], status="completed", output_text="")
-
-        fake_client = SimpleNamespace(
-            responses=SimpleNamespace(
-                stream=lambda **kwargs: _FakeStream([done_event], final_response)
-            )
-        )
-        monkeypatch.setattr(codex_plugin, "_build_codex_client", lambda: fake_client)
-
-        result = provider.generate("a cat", aspect_ratio="landscape")
+    def test_text_to_image_posts_generations_with_no_host_model(self, provider, codex_backend, tmp_path):
+        result = provider.generate("a cat", aspect_ratio="portrait")
 
         assert result["success"] is True
         assert result["model"] == "gpt-image-2-medium"
         assert result["provider"] == "openai-codex"
         assert result["quality"] == "medium"
-
+        assert result["pixel_size"] == "1x1"
+        # Backend-reported values travel separately from what we asked for (#107233).
+        assert result["reported_quality"] == "low"
+        assert result["reported_size"] == "1254x1254"
+        assert result["imagegen_request_id"] == "req_abc"
         saved = Path(result["image"])
-        assert saved.exists()
-        assert saved.parent == tmp_path / "cache" / "images"
-        # Filename prefix differs from the API-key plugin so cache audits can
-        # tell the two backends apart.
+        assert saved.exists() and saved.parent == tmp_path / "cache" / "generated" / "images"
         assert saved.name.startswith("openai_codex_")
 
-    def test_codex_stream_request_shape(self, provider, monkeypatch):
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        (request,) = codex_backend["requests"]
+        assert request.url.path.endswith("/backend-api/codex/images/generations")
+        assert request.headers["Authorization"] == "Bearer codex-token"
+        assert request.headers["x-codex-image-turn-id"]
+        body = json.loads(request.content)
+        assert body == {
+            "prompt": "a cat", "model": "gpt-image-2", "n": 1, "quality": "medium",
+            "size": "1024x1536", "background": "opaque",
+        }
+        # The whole point of the native route: nothing about a chat model in the request.
+        assert not any(key in body for key in ("tools", "input", "instructions"))
 
-        captured = {}
-
-        def _stream(**kwargs):
-            captured.update(kwargs)
-            output_item = SimpleNamespace(
-                type="image_generation_call",
-                status="generating",
-                id="ig_test",
-                result=_b64_png(),
-            )
-            done_event = SimpleNamespace(type="response.output_item.done", item=output_item)
-            final_response = SimpleNamespace(output=[], status="completed", output_text="")
-            return _FakeStream([done_event], final_response)
-
-        fake_client = SimpleNamespace(responses=SimpleNamespace(stream=_stream))
-        monkeypatch.setattr(codex_plugin, "_build_codex_client", lambda: fake_client)
-
-        result = provider.generate("a cat", aspect_ratio="portrait")
-        assert result["success"] is True
-
-        assert captured["model"] == "gpt-5.4"
-        assert captured["store"] is False
-        assert captured["input"][0]["type"] == "message"
-        assert captured["input"][0]["role"] == "user"
-        assert captured["input"][0]["content"][0]["type"] == "input_text"
-        assert captured["tool_choice"]["type"] == "allowed_tools"
-        assert captured["tool_choice"]["mode"] == "required"
-        assert captured["tool_choice"]["tools"] == [{"type": "image_generation"}]
-
-        tool = captured["tools"][0]
-        assert tool["type"] == "image_generation"
-        assert tool["model"] == "gpt-image-2"
-        assert tool["quality"] == "medium"
-        assert tool["size"] == "1024x1536"
-        assert tool["output_format"] == "png"
-        assert tool["background"] == "opaque"
-        assert tool["partial_images"] == 1
-
-    def test_partial_image_event_used_when_done_missing(self, provider, monkeypatch):
-        """If the stream never emits output_item.done, fall back to the
-        partial_image event so users at least get the latest preview frame."""
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
-
-        partial_event = SimpleNamespace(
-            type="response.image_generation_call.partial_image",
-            partial_image_b64=_b64_png(),
-        )
-        final_response = SimpleNamespace(output=[], status="completed", output_text="")
-
-        fake_client = SimpleNamespace(
-            responses=SimpleNamespace(
-                stream=lambda **kwargs: _FakeStream([partial_event], final_response)
-            )
-        )
-        monkeypatch.setattr(codex_plugin, "_build_codex_client", lambda: fake_client)
+    def test_custom_codex_base_receives_the_image_request(self, provider, codex_backend, tmp_path, monkeypatch):
+        """With ``HERMES_CODEX_BASE_URL`` set, image requests go to the gateway's base instead of
+        the hard-coded chatgpt.com host (#121486) — the text client honours the same override."""
+        monkeypatch.setenv("HERMES_CODEX_BASE_URL", "https://codex-gw.example/backend-api/codex")
 
         result = provider.generate("a cat")
+
         assert result["success"] is True
-        assert Path(result["image"]).exists()
+        (request,) = codex_backend["requests"]
+        assert request.url.host == "codex-gw.example"
+        assert request.url.path.endswith("/backend-api/codex/images/generations")
 
-    def test_final_response_sweep_recovers_image(self, provider, monkeypatch):
-        """If no image_generation_call event arrives mid-stream, the
-        post-stream final-response sweep should still find the image."""
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+    def test_source_images_post_edits_with_inline_data_urls(self, provider, codex_backend, tmp_path):
+        local = tmp_path / "ref.png"
+        local.write_bytes(_png_bytes())
+        data_url = "data:image/png;base64," + _b64_png()
 
-        final_item = SimpleNamespace(
-            type="image_generation_call",
-            status="completed",
-            id="ig_final",
-            result=_b64_png(),
-        )
-        final_response = SimpleNamespace(output=[final_item], status="completed", output_text="")
+        result = provider.generate("edit these", image_url=str(local), reference_image_urls=[data_url])
 
-        fake_client = SimpleNamespace(
-            responses=SimpleNamespace(
-                stream=lambda **kwargs: _FakeStream([], final_response)
-            )
-        )
-        monkeypatch.setattr(codex_plugin, "_build_codex_client", lambda: fake_client)
-
-        result = provider.generate("a cat")
         assert result["success"] is True
-        assert Path(result["image"]).exists()
+        assert result["modality"] == "image"
+        assert result["input_image_count"] == 2
+        (request,) = codex_backend["requests"]
+        assert request.url.path.endswith("/backend-api/codex/images/edits")
+        body = json.loads(request.content)
+        assert [img["image_url"] for img in body["images"]] == [data_url, data_url]
 
-    def test_empty_response_returns_error(self, provider, monkeypatch):
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+    def test_remote_source_url_is_fetched_and_inlined(self, provider, codex_backend, monkeypatch):
+        # The backend's own URL downloader 400s on ordinary public images; we fetch client-side.
+        monkeypatch.setattr("tools.url_safety.is_safe_url", lambda url: True)
+        # codex_backend monkeypatches httpx.Client; build the fetch client from
+        # the unpatched class so the ref-image download gets the PNG responder.
+        real_client = httpx._client.Client
+        monkeypatch.setattr(
+            "tools.url_safety.create_ssrf_safe_client",
+            lambda **kw: real_client(
+                transport=httpx.MockTransport(
+                    lambda request: httpx.Response(200, content=_png_bytes(), request=request)),
+                **kw))
 
-        final_response = SimpleNamespace(output=[], status="completed", output_text="")
-        fake_client = SimpleNamespace(
-            responses=SimpleNamespace(
-                stream=lambda **kwargs: _FakeStream([], final_response)
-            )
-        )
-        monkeypatch.setattr(codex_plugin, "_build_codex_client", lambda: fake_client)
+        result = provider.generate("edit", image_url="https://example.com/ref.png")
 
-        result = provider.generate("a cat")
+        assert result["success"] is True
+        body = json.loads(codex_backend["requests"][0].content)
+        assert body["images"] == [{"image_url": "data:image/png;base64," + _b64_png()}]
+
+
+    def test_rejects_non_image_local_source(self, provider, codex_backend, tmp_path):
+        text_path = tmp_path / "not-image.txt"
+        text_path.write_text("hello", encoding="utf-8")
+
+        result = provider.generate("edit this", image_url=str(text_path))
+
         assert result["success"] is False
-        assert result["error_type"] == "empty_response"
+        assert result["error_type"] == "invalid_image_input"
+        assert "not a supported image" in result["error"]
+        assert codex_backend["requests"] == []
 
-    def test_client_init_failure_returns_auth_error(self, provider, monkeypatch):
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
-        monkeypatch.setattr(codex_plugin, "_build_codex_client", lambda: None)
-
-        result = provider.generate("a cat")
-        assert result["success"] is False
-        assert result["error_type"] == "auth_required"
-
-    def test_stream_exception_returns_api_error(self, provider, monkeypatch):
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
-
-        def _boom(**kwargs):
-            raise RuntimeError("cloudflare 403")
-
-        fake_client = SimpleNamespace(responses=SimpleNamespace(stream=_boom))
-        monkeypatch.setattr(codex_plugin, "_build_codex_client", lambda: fake_client)
+    def test_http_error_message_surfaces_verbatim_and_bounded(self, provider, codex_backend):
+        body = json.dumps({
+            "metadata": "x" * 600,
+            "error": {"message": "Missing required parameter: 'prompt'.", "type": "invalid_request_error"},
+        })
+        codex_backend["respond"] = lambda request: httpx.Response(400, text=body, request=request)
 
         result = provider.generate("a cat")
+
         assert result["success"] is False
         assert result["error_type"] == "api_error"
-        assert "cloudflare 403" in result["error"]
+        assert "HTTP 400" in result["error"]
+        assert "Missing required parameter: 'prompt'." in result["error"]
+        assert len(result["error"]) < len(body)
+
+    def test_missing_image_data_is_empty_response(self, provider, codex_backend):
+        codex_backend["respond"] = lambda request: httpx.Response(
+            200, json={"created": 1, "data": []}, request=request)
+
+        result = provider.generate("a cat")
+
+        assert result["success"] is False
+        assert result["error_type"] == "empty_response"
 
 
 # ── Plugin entry point ──────────────────────────────────────────────────────

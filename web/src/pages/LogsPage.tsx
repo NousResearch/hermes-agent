@@ -6,48 +6,60 @@ import {
   useRef,
 } from "react";
 import { FileText, RefreshCw } from "lucide-react";
+import { useSearchParams } from "react-router";
 import { api } from "@/lib/api";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { FilterGroup, Segmented } from "@nous-research/ui/ui/components/segmented";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Switch } from "@nous-research/ui/ui/components/switch";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Label } from "@/components/ui/label";
+import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
+import { Label } from "@nous-research/ui/ui/components/label";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
+// Level classification is unit-tested in @/lib/log-classify; it prefers the
+// structured level token and falls back to word-boundary matching so payload
+// text like "parse_errors=0" can't render an INFO line red.
+import { classifyLine } from "@/lib/log-classify";
+import { errorMessage } from "@/lib/api-error";
 
 const FILES = ["agent", "errors", "gateway"] as const;
 const LEVELS = ["ALL", "DEBUG", "INFO", "WARNING", "ERROR"] as const;
 const COMPONENTS = ["all", "gateway", "agent", "tools", "cli", "cron"] as const;
 const LINE_COUNTS = [50, 100, 200, 500] as const;
 
-function classifyLine(line: string): "error" | "warning" | "info" | "debug" {
-  const upper = line.toUpperCase();
-  if (
-    upper.includes("ERROR") ||
-    upper.includes("CRITICAL") ||
-    upper.includes("FATAL")
-  )
-    return "error";
-  if (upper.includes("WARNING") || upper.includes("WARN")) return "warning";
-  if (upper.includes("DEBUG")) return "debug";
-  return "info";
-}
-
 const LINE_COLORS: Record<string, string> = {
   error: "text-destructive",
   warning: "text-warning",
   info: "text-foreground",
-  debug: "text-muted-foreground/60",
+  debug: "text-text-tertiary",
 };
 
-const toOptions = <T extends string>(values: readonly T[]) =>
-  values.map((v) => ({ value: v, label: v }));
+const formatFilterLabel = (value: string) => value.toUpperCase();
+
+const toSegmentOptions = <T extends string>(values: readonly T[]) =>
+  values.map((v) => ({ value: v, label: formatFilterLabel(v) }));
+
+const filterGroupClass =
+  "flex min-w-0 w-full flex-col items-start gap-1.5 sm:w-auto sm:max-w-full sm:flex-row sm:items-center";
+
+const segmentedClass =
+  "w-fit max-w-full flex-wrap justify-start self-start";
+
+type LogFile = (typeof FILES)[number];
+
+function isLogFile(value: string | null): value is LogFile {
+  return (FILES as readonly string[]).includes(value ?? "");
+}
 
 export default function LogsPage() {
-  const [file, setFile] = useState<(typeof FILES)[number]>("agent");
+  // `?file=gateway` deep link (System page "Open logs" next to a failed gateway).
+  const [searchParams] = useSearchParams();
+  const requestedFile = searchParams.get("file");
+  const [file, setFile] = useState<LogFile>(() =>
+    isLogFile(requestedFile) ? requestedFile : "agent",
+  );
   const [level, setLevel] = useState<(typeof LEVELS)[number]>("ALL");
   const [component, setComponent] =
     useState<(typeof COMPONENTS)[number]>("all");
@@ -73,47 +85,48 @@ export default function LogsPage() {
           }
         }, 50);
       })
-      .catch((err) => setError(String(err)))
+      .catch((err) => setError(errorMessage(err)))
       .finally(() => setLoading(false));
   }, [file, lineCount, level, component]);
 
   useLayoutEffect(() => {
     setAfterTitle(
-      <span className="flex items-center gap-2">
-        {loading && <Spinner className="shrink-0 text-base text-primary" />}
-        <Badge tone="secondary" className="text-[10px]">
-          {file} · {level} · {component}
+      <span className="flex items-center gap-1.5">
+        <Badge tone="secondary" className="text-xs">
+          {formatFilterLabel(file)} · {formatFilterLabel(level)} ·{" "}
+          {formatFilterLabel(component)}
         </Badge>
+        <Button
+          type="button"
+          ghost
+          size="icon"
+          className="text-muted-foreground hover:text-foreground"
+          onClick={fetchLogs}
+          disabled={loading}
+          aria-label={t.common.refresh}
+        >
+          {loading ? <Spinner /> : <RefreshCw />}
+        </Button>
       </span>,
     );
     setEnd(
-      <div className="flex w-full min-w-0 flex-wrap items-center justify-end gap-2 sm:gap-3">
+      <div className="flex w-full min-w-0 flex-wrap items-center justify-start gap-2 sm:justify-end sm:gap-3">
         <div className="flex items-center gap-2">
+          <Label htmlFor="logs-auto-refresh" className="text-xs cursor-pointer">
+            {t.logs.autoRefresh}
+          </Label>
           <Switch
             checked={autoRefresh}
             onCheckedChange={setAutoRefresh}
             id="logs-auto-refresh"
           />
-          <Label htmlFor="logs-auto-refresh" className="text-xs cursor-pointer">
-            {t.logs.autoRefresh}
-          </Label>
           {autoRefresh && (
-            <Badge tone="success" className="text-[10px]">
+            <Badge tone="success" className="text-xs">
               <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
               {t.common.live}
             </Badge>
           )}
         </div>
-        <Button
-          type="button"
-          size="sm"
-          outlined
-          onClick={fetchLogs}
-          disabled={loading}
-          prefix={loading ? <Spinner /> : <RefreshCw />}
-        >
-          {t.common.refresh}
-        </Button>
       </div>,
     );
     return () => {
@@ -145,39 +158,43 @@ export default function LogsPage() {
   }, [autoRefresh, fetchLogs]);
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex min-w-0 max-w-full flex-col gap-4">
       <PluginSlot name="logs:top" />
       <div
         role="toolbar"
         aria-label={t.logs.title}
-        className="flex flex-wrap items-center gap-x-6 gap-y-2"
+        className="flex min-w-0 max-w-full flex-col items-start gap-3 sm:flex-row sm:flex-wrap sm:items-start sm:gap-x-6 sm:gap-y-3"
       >
-        <FilterGroup label={t.logs.file}>
+        <FilterGroup label={t.logs.file} className={filterGroupClass}>
           <Segmented
+            className={segmentedClass}
             value={file}
             onChange={setFile}
-            options={toOptions(FILES)}
+            options={toSegmentOptions(FILES)}
           />
         </FilterGroup>
 
-        <FilterGroup label={t.logs.level}>
+        <FilterGroup label={t.logs.level} className={filterGroupClass}>
           <Segmented
+            className={segmentedClass}
             value={level}
             onChange={setLevel}
-            options={toOptions(LEVELS)}
+            options={toSegmentOptions(LEVELS)}
           />
         </FilterGroup>
 
-        <FilterGroup label={t.logs.component}>
+        <FilterGroup label={t.logs.component} className={filterGroupClass}>
           <Segmented
+            className={segmentedClass}
             value={component}
             onChange={setComponent}
-            options={toOptions(COMPONENTS)}
+            options={toSegmentOptions(COMPONENTS)}
           />
         </FilterGroup>
 
-        <FilterGroup label={t.logs.lines}>
+        <FilterGroup label={t.logs.lines} className={filterGroupClass}>
           <Segmented
+            className={segmentedClass}
             value={String(lineCount)}
             onChange={(v) =>
               setLineCount(Number(v) as (typeof LINE_COUNTS)[number])
@@ -190,7 +207,7 @@ export default function LogsPage() {
         </FilterGroup>
       </div>
 
-      <Card>
+      <Card className="min-w-0 max-w-full overflow-hidden">
         <CardHeader className="py-3 px-4">
           <CardTitle className="text-sm flex items-center gap-2">
             <FileText className="h-4 w-4" />
@@ -206,7 +223,7 @@ export default function LogsPage() {
 
           <div
             ref={scrollRef}
-            className="p-4 font-mono-ui text-xs leading-5 overflow-auto min-h-[400px] max-h-[calc(100vh-220px)]"
+            className="max-w-full min-h-[400px] max-h-[calc(100vh-220px)] overflow-auto p-4 font-mono-ui text-xs leading-5 break-words"
           >
             {lines.length === 0 && !loading && (
               <p className="text-muted-foreground text-center py-8">

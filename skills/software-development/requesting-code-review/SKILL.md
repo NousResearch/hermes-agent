@@ -1,14 +1,14 @@
 ---
 name: requesting-code-review
 description: "Pre-commit review: security scan, quality gates, auto-fix."
-version: 2.0.0
+version: 2.1.0
 author: Hermes Agent (adapted from obra/superpowers + MorAlekss)
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [code-review, security, verification, quality, pre-commit, auto-fix]
-    related_skills: [subagent-driven-development, writing-plans, test-driven-development, github-code-review]
+    related_skills: [subagent-driven-development, test-driven-development, github]
 ---
 
 # Pre-Commit Code Verification
@@ -27,8 +27,8 @@ quality gates, an independent reviewer subagent, and an auto-fix loop.
 
 **Skip for:** documentation-only changes, pure config tweaks, or when user says "skip verification".
 
-**This skill vs github-code-review:** This skill verifies YOUR changes before committing.
-`github-code-review` reviews OTHER people's PRs on GitHub with inline comments.
+**This skill vs github:** This skill verifies YOUR changes before committing.
+`github` reviews OTHER people's PRs on GitHub with inline comments.
 
 ## Step 1 — Get the diff
 
@@ -124,6 +124,11 @@ Quick scan before dispatching the reviewer:
 
 ## Step 5 — Independent reviewer subagent
 
+**Interactive sessions only.** In a one-shot run (`hermes chat -q`, `--oneshot`, a
+benchmark harness) there is no one to hand the verdict to and a fresh subagent re-pays
+the whole system prompt plus a repo re-read: skip Steps 5 and 7, apply the Step 4
+checklist to the diff yourself, run the tests, and go to Step 8.
+
 Call `delegate_task` directly — it is NOT available inside execute_code or scripts.
 
 The reviewer gets ONLY the diff and static scan results. No shared context with
@@ -193,7 +198,7 @@ Suggestions (non-blocking): [list]
 
 ## Step 7 — Auto-fix loop
 
-**Maximum 2 fix-and-reverify cycles.**
+**Maximum 2 fix-and-reverify cycles. Interactive sessions only (see Step 5).**
 
 Spawn a THIRD agent context — not you (the implementer), not the reviewer.
 It fixes ONLY the reported issues:
@@ -266,7 +271,7 @@ The two-stage review (spec compliance + code quality) uses this pipeline.
 **test-driven-development:** This pipeline verifies TDD discipline was followed —
 tests exist, tests pass, no regressions.
 
-**writing-plans:** Validates implementation matches the plan requirements.
+**plan:** Validates implementation matches the plan requirements.
 
 ## Pitfalls
 

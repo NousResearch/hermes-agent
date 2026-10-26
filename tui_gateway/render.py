@@ -6,44 +6,31 @@ everything returns None and the TUI falls back to its own markdown.tsx.
 
 from __future__ import annotations
 
+import importlib
 
-def render_message(text: str, cols: int = 80) -> str | None:
+
+def _rich(name: str, *args, cols: int):
+    """Call ``agent.rich_output.<name>(*args, cols=cols)``; retry without ``cols`` for older
+    signatures; None when the module is missing or the renderer fails."""
     try:
-        from agent.rich_output import format_response
-    except ImportError:
+        fn = getattr(importlib.import_module("agent.rich_output"), name)
+    except (ImportError, AttributeError):
         return None
-
     try:
-        return format_response(text, cols=cols)
+        return fn(*args, cols=cols)
     except TypeError:
-        return format_response(text)
+        return fn(*args)
     except Exception:
         return None
+
+
+def render_message(text: str, cols: int = 80) -> str | None:
+    return _rich("format_response", text, cols=cols)
 
 
 def render_diff(text: str, cols: int = 80) -> str | None:
-    try:
-        from agent.rich_output import render_diff as _rd
-    except ImportError:
-        return None
-
-    try:
-        return _rd(text, cols=cols)
-    except TypeError:
-        return _rd(text)
-    except Exception:
-        return None
+    return _rich("render_diff", text, cols=cols)
 
 
 def make_stream_renderer(cols: int = 80):
-    try:
-        from agent.rich_output import StreamingRenderer
-    except ImportError:
-        return None
-
-    try:
-        return StreamingRenderer(cols=cols)
-    except TypeError:
-        return StreamingRenderer()
-    except Exception:
-        return None
+    return _rich("StreamingRenderer", cols=cols)

@@ -12,13 +12,130 @@ Those stay on AIAgent.
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from agent.account_usage import AccountUsageSnapshot
 
 logger = logging.getLogger(__name__)
 
 # Sentinel for "omit temperature entirely" (Kimi: server manages it)
 OMIT_TEMPERATURE = object()
+
+
+def _profile_user_agent() -> str:
+    """Return a ``hermes-cli/<version>`` UA string, with a stable fallback.
+
+    Used by ``ProviderProfile.fetch_models`` so the catalog probe is not
+    served the default ``Python-urllib/<ver>`` UA — some providers
+    (OpenCode Zen, etc.) sit behind a WAF that returns 403 for that.
+    """
+    try:
+        from hermes_cli.version_info import get_version_info  # lazy: avoid layer cycle at import time
+        return f"hermes-cli/{get_version_info().base_version}"
+    except Exception:
+        return "hermes-cli"
+
+
+_RESOLVE_LOCK = threading.RLock()  # re-entrant: a callback may read another LazyHeaders
+
+
+class LazyHeaders(dict[str, str]):
+    """``default_headers`` whose callable values (a User-Agent carrying the release) run on first read.
+
+    A source checkout resolves the release from git, and every CLI start imports all provider plugins
+    (``hermes_cli.config`` lists their env vars), so headers built at import made every command pay git
+    subprocesses for a request it may never send. Keys are stored up front, so ``in``/``len`` stay lazy,
+    and the class stays a real ``dict``: plugins copy, merge, mutate and serialize ``default_headers``.
+
+    Every method that reads or writes a value resolves first; ``__iter__`` is overridden so CPython's
+    ``dict(x)``/``{**x}``/``f(**x)`` merge leaves its raw-storage fast path for ``keys()`` +
+    ``__getitem__``, and ``json.dumps`` takes ``items()`` because the stored keys make the dict
+    non-empty. Copies (``.copy()``, ``|``, ``copy``/``pickle``) are plain resolved dicts.
+    """
+
+    __slots__ = ("_pending",)
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._pending = any(callable(value) for value in dict.values(self))
+
+    def _resolved(self) -> LazyHeaders:
+        if self._pending:
+            # One resolver: concurrent first reads (parallel aux clients) would each walk git.
+            with _RESOLVE_LOCK:
+                if self._pending:
+                    for key, value in list(dict.items(self)):
+                        if callable(value):
+                            dict.__setitem__(self, key, value())
+                    self._pending = False
+        return self
+
+    def __getitem__(self, key: str) -> str:
+        return dict.__getitem__(self._resolved(), key)
+
+    def __iter__(self):
+        return dict.__iter__(self._resolved())
+
+    def __reversed__(self):
+        return dict.__reversed__(self._resolved())
+
+    def __repr__(self) -> str:
+        return dict.__repr__(self._resolved())
+
+    def __eq__(self, other: object) -> bool:
+        return dict.__eq__(self._resolved(), other._resolved() if isinstance(other, LazyHeaders) else other)
+
+    def __ne__(self, other: object) -> bool:
+        equal = self.__eq__(other)
+        return equal if equal is NotImplemented else not equal
+
+    def __or__(self, other: Any) -> Any:
+        return dict.__or__(self._resolved(), other)
+
+    def __ror__(self, other: Any) -> Any:
+        return dict.__or__(other, self._resolved()) if isinstance(other, dict) else NotImplemented
+
+    def __ior__(self, other: Any) -> LazyHeaders:
+        return dict.__ior__(self._resolved(), other)
+
+    def __reduce__(self) -> tuple:
+        return (dict, (dict.copy(self._resolved()),))
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return dict.get(self._resolved(), key, default)
+
+    def keys(self):
+        return dict.keys(self._resolved())
+
+    def values(self):
+        return dict.values(self._resolved())
+
+    def items(self):
+        return dict.items(self._resolved())
+
+    def copy(self) -> dict[str, str]:
+        return dict.copy(self._resolved())
+
+    def __setitem__(self, key: str, value: str) -> None:
+        dict.__setitem__(self._resolved(), key, value)
+
+    def __delitem__(self, key: str) -> None:
+        dict.__delitem__(self._resolved(), key)
+
+    def pop(self, *args: Any) -> Any:
+        return dict.pop(self._resolved(), *args)
+
+    def popitem(self) -> tuple[str, str]:
+        return dict.popitem(self._resolved())
+
+    def setdefault(self, key: str, default: Any = None) -> Any:
+        return dict.setdefault(self._resolved(), key, default)
+
+    def update(self, *args: Any, **kwargs: Any) -> None:
+        dict.update(self._resolved(), *args, **kwargs)
 
 
 @dataclass
@@ -35,16 +152,83 @@ class ProviderProfile:
     description: str = ""        # e.g. "GMI Cloud (multi-model direct API)" — picker subtitle
     signup_url: str = ""         # e.g. "https://www.gmicloud.ai/" — shown during setup
 
+    # True when the provider is pre-release / not for public listing. Discovery surfaces (provider
+    # pickers, the setup provider list, the dashboard accounts tab) skip it unless ``listed()``
+    # says otherwise; resolution by name is untouched, so an explicit ``model.provider`` /
+    # ``hermes auth add <name>`` keeps working.
+    hidden: bool = False
+
     # ── Auth & endpoints ─────────────────────────────────────
     env_vars: tuple = ()
     base_url: str = ""
     models_url: str = ""  # explicit models endpoint; falls back to {base_url}/models
     auth_type: str = "api_key"   # api_key|oauth_device_code|oauth_external|copilot|aws_sdk
+    # None preserves transport defaults (external-process clients default to non-streaming).
+    # True opts a streaming-capable process client in; False disables streaming for this provider.
+    supports_streaming: bool | None = field(default=None, kw_only=True)
+    supports_health_check: bool = True  # False → doctor skips /models probe for this provider
+    # False → fetch_models returns None without a network call (catalog comes from an SDK/subprocess).
+    supports_model_listing: bool = True
+
+    # ── Provider-owned auth (optional; non-api-key plugins) ──────────
+    # ``auth_handler(action, args) -> bool``: ``hermes auth add|status|logout|refresh <name>`` calls it
+    # FIRST with the parsed CLI namespace; truthy = the plugin owned the action, falsy = built-in path.
+    # ``refresh_credential(entry) -> Mapping | None``: the credential pool's refresh of a pooled OAuth
+    # row — return the rotated fields (``access_token``, ``refresh_token``, ``expires_at_ms`` …) or raise.
+    # Both own their own token endpoints; Hermes passes no secrets beyond the pooled row itself.
+    # ``classify_api_error(error, *, status_code, error_code, message, body, model) -> Mapping | None``:
+    # consulted by ``agent.error_classifier.classify_api_error`` for THIS provider's failures only, after
+    # the generic ``transform_api_error_classification`` plugin hooks and before the built-in pipeline.
+    # Return ``{"reason": <FailoverReason name>, ...hint flags}`` to override, ``None`` to decline.
+    auth_handler: Callable[[str, Any], Any] | None = None
+    refresh_credential: Callable[[Any], Any] | None = None
+    classify_api_error: Callable[..., Any] | None = None
+
+    # ── Vision support ────────────────────────────────────────
+    # True when the provider's API accepts image content inside
+    # tool-result messages natively.  Set on providers that expose
+    # multimodal models via tool results (Anthropic Messages API,
+    # OpenAI Chat Completions, Gemini, MiniMax, etc.).
+    # Falls back to model-catalog lookup when False and the provider
+    # has no registered profile.
+    supports_vision: bool = False
+
+    # True when the provider's API accepts list-type tool message
+    # content (multipart with image_url parts).  Defaults to True for
+    # backward compatibility.  Set to False for providers that accept
+    # multimodal user messages but reject list-type tool content
+    # (e.g. Xiaomi MiMo, which returns 400 "text is not set").
+    supports_vision_tool_messages: bool = True
+
+    # True only when this provider's Chat Completions endpoint explicitly
+    # documents ``prompt_cache_key`` as an accepted request body field.  This
+    # is deliberately opt-in: many OpenAI-compatible endpoints reject unknown
+    # top-level fields rather than ignoring them.
+    supports_prompt_cache_key: bool = False
+
+    # Private replay carriers use a namespaced '<provider>.native_assistant' type
+    # in reasoning_details. Only this profile may receive its matching carrier;
+    # other providers (including an unregistered fallback) get ordinary details only.
+    native_reasoning_details_type: str | None = None
+
+    # ── External-process providers (auth_type="external_process") ──
+    # An agent CLI driven over stdio (ACP) rather than an HTTP endpoint. These
+    # describe how to launch it; hermes_cli/auth.py's
+    # resolve_external_process_provider_credentials() reads them instead of
+    # hardcoding one vendor's binary. Env vars are checked in order and win
+    # over the static defaults, so an operator can point at a custom build.
+    process_command: str = ""            # default binary, e.g. "copilot"
+    process_args: tuple = ()             # default argv tail, e.g. ("--acp", "--stdio")
+    process_command_env_vars: tuple = ()  # env overrides for the binary, in priority order
+    process_args_env_var: str = ""       # env override for argv (shlex-split)
 
     # ── Model catalog ─────────────────────────────────────────
     # fallback_models: curated list shown in /model picker when live fetch fails.
     # Only agentic models that support tool calling should appear here.
     fallback_models: tuple = ()
+    # model_aliases: short name -> id in fallback_models, for providers whose catalog is not
+    # in models.dev (external processes); `/model <alias>` resolves here before core guessing.
+    model_aliases: dict = field(default_factory=dict)
 
     # hostname: base hostname for URL→provider reverse-mapping in model_metadata.py
     # e.g. "api.gmi-serving.com". Derived from base_url when empty.
@@ -57,12 +241,46 @@ class ProviderProfile:
     # Temperature: None = use caller's default, OMIT_TEMPERATURE = don't send
     fixed_temperature: Any = None
     default_max_tokens: int | None = None
+    # ``response_format`` types the API rejects outright (e.g. ("json_schema",)); aux requests omit them up front.
+    unsupported_response_formats: tuple = ()
     default_aux_model: str = (
         ""  # cheap model for auxiliary tasks (compression, vision, etc.)
     )
     # empty = use main model
 
+    # Per-model metadata in the canonical model_overrides schema. Partial entries
+    # patch catalog metadata; explicit user overrides still win. Exact model IDs.
+    model_capabilities: dict[str, dict[str, Any]] = field(default_factory=dict)
+
     # ── Hooks (override in subclass for complex providers) ───
+
+    def fetch_account_usage(
+        self, *, base_url: str | None = None, api_key: str | None = None
+    ) -> AccountUsageSnapshot | None:
+        """Return an account-usage snapshot for this provider, if available.
+
+        The ``/usage`` command invokes this only when no built-in account
+        usage fetcher owns the provider. Implementations may make their
+        provider-specific request and must return an ``AccountUsageSnapshot``
+        or ``None``; exceptions fail open at the dispatch boundary.
+        """
+        return None
+
+    def resolve_aux_model(self, *, vision: bool = False) -> str:
+        """Return a LIVE cheap-model id for auxiliary tasks, or "".
+
+        ``default_aux_model`` is a hardcoded id in source, so it rots: when the
+        provider retires that model every auxiliary call spends a round-trip
+        404ing before the retry net catches it. Providers that publish a
+        machine-readable recommendation should override this and query it, so
+        the cheap tier tracks the upstream catalog instead of a constant a human
+        has to remember to bump.
+
+        Contract: cheap to call (implementations must cache — this runs on
+        client-resolution paths), never raises, and returns "" when it has no
+        answer so the caller falls through to ``default_aux_model``.
+        """
+        return ""
 
     def get_hostname(self) -> str:
         """Return the provider's base hostname for URL-based detection.
@@ -94,6 +312,16 @@ class ProviderProfile:
         """
         return {}
 
+    def default_reasoning_config(self, model: str | None = None) -> dict | None:
+        """Reasoning config the main loop sends when ``agent.reasoning_effort`` is unset.
+
+        None (default) hands the unset state to ``build_api_kwargs_extras`` as ``reasoning_config=None``,
+        where each profile already decides (Nous/OpenRouter fill medium; Anthropic omits). A profile
+        that would otherwise leave the route's own default in charge returns the config here so the
+        agent records it as what went on the wire (the reasoning-rejection ladder reads that).
+        """
+        return None
+
     def build_api_kwargs_extras(
         self,
         *,
@@ -114,10 +342,130 @@ class ProviderProfile:
         """
         return {}, {}
 
+    def build_client_kwargs_extras(self, **context: Any) -> dict[str, Any]:
+        """Provider-specific OpenAI client keyword arguments.
+
+        Values are defaults: explicit runtime/custom-provider settings win.
+        The returned mapping must be cheap to build and must not perform I/O.
+        """
+        return {}
+
+    def default_vision_model(self) -> str | None:
+        """Return a default vision model id for this provider, or None.
+
+        Overrideable hook for providers that discover their vision default at
+        runtime (e.g. from a live catalog) rather than pinning one in code.
+        Keeps provider-specific vision discovery inside the provider's plugin
+        instead of a name-check branch in shared vision resolution.
+
+        Default: None (no provider-specific vision model — the caller falls
+        back to the user's chat model or the aggregator chain).
+        """
+        return None
+
+    def get_model_context_length(self, model: str) -> int | None:
+        """Provider-qualified context bound; explicit user overrides take precedence."""
+        return None
+
+    def get_usage_cost(self, model: str, usage: Any) -> Any | None:
+        """Optional CostResult from canonical usage; distinguish estimates from invoices."""
+        return None
+
+    def get_max_tokens(self, model: str | None) -> int | None:
+        """Return the default max_tokens cap for *model*.
+
+        Overrideable hook for providers that need per-model output caps —
+        e.g. a relay that fronts several upstream backends, each with a
+        different completion-token limit. The transport calls this when
+        the user hasn't set an explicit max_tokens.
+
+        Default: return self.default_max_tokens (the static profile field),
+        ignoring the model name. Override in a subclass to vary the cap
+        per-model.
+        """
+        return self.default_max_tokens
+
+    def supported_reasoning_efforts(
+        self, model: str | None
+    ) -> tuple[str, ...] | None:
+        """Declared reasoning-effort vocabulary for *model* on this provider.
+
+        Overrideable hook for providers whose gateway validates
+        ``reasoning.effort`` per model instead of ignoring or clamping
+        unknown levels server-side (Ramp Router derives this from its live
+        ``/v1/models`` catalog). The Responses transport consults it before
+        falling back to its built-in per-backend vocabularies; it is the
+        profile-declared analog of the OpenRouter catalog clamp on the
+        chat-completions path (``openrouter_model_reasoning_capabilities``).
+
+        Tri-state contract:
+          - ``None`` — unknown/undeclared: the transport keeps its default
+            vocabulary for the wire (this base implementation).
+          - ``()`` — the model accepts NO reasoning parameters at all; the
+            transport must omit reasoning fields entirely (some gateways
+            return HTTP 400 rather than ignoring them).
+          - non-empty tuple — clamp the requested effort onto these levels
+            (``agent.reasoning_effort.clamp_effort`` semantics: nearest
+            weaker supported level, never escalate).
+
+        Implementations are called on the per-request hot path and must not
+        block on network I/O — answer from a cache and return None while
+        cold.
+        """
+        return None
+
+    def listed(self) -> bool:
+        """Whether discovery surfaces may offer this provider.
+
+        Every non-``hidden`` profile is listed. A ``hidden`` (pre-release) one surfaces once the user
+        opted in by name (``hermes auth add <name>`` put a row in its credential pool), so the
+        pickers can then offer it. Reads auth.json only: it runs on every picker build.
+        """
+        if not self.hidden:
+            return True
+        from hermes_cli.auth import read_credential_pool  # lazy: providers/ must not import hermes_cli at load
+        return bool(read_credential_pool(self.name))
+
+    def create_client(self, **client_kwargs: Any) -> Any | None:
+        """Return a provider-specific client, or ``None`` for the standard one.
+
+        Most providers speak OpenAI-compatible HTTP and want the shared
+        ``openai.OpenAI`` client the core builds — they inherit this and return
+        ``None``. A provider whose wire protocol is not HTTP at all (the ACP
+        subprocess shims) or which needs a native SDK overrides this and
+        returns its own client object.
+
+        ``client_kwargs`` is the same mapping the core would have passed to
+        ``openai.OpenAI`` (``api_key``, ``base_url``, ``command``, ``args``,
+        timeouts, headers…). Unknown keys must be tolerated: the core adds to
+        this mapping over time, so an override should accept ``**kwargs`` and
+        pick what it needs rather than enumerate.
+
+        Returning ``None`` (the default) is always safe — the caller falls
+        through to its existing construction path.
+
+        This is the hook that lets a provider ship *outside* this tree: with it,
+        a profile registered from ``~/.hermes/plugins/model-providers/`` or a
+        pip entry point can supply its own transport without any core edit. See
+        ``plugins/model-providers/copilot-acp/`` for the in-tree example.
+        """
+        return None
+
+    def setup_status(self, **kwargs: Any) -> dict[str, Any] | None:
+        """External-process providers: ``{available, logged_in, plan, detail, login_command}`` from the
+        CLI itself so setup can gate on login. ``None`` = nothing to report beyond executable presence."""
+        return None
+
+    def discover_models(self, **kwargs: Any) -> list[dict[str, Any]] | None:
+        """External-process providers: the account's live picker as ``[{id, label, note}]`` without
+        any inference request; ``None`` falls back to ``fallback_models``."""
+        return None
+
     def fetch_models(
         self,
         *,
         api_key: str | None = None,
+        base_url: str | None = None,
         timeout: float = 8.0,
     ) -> list[str] | None:
         """Fetch the live model list from the provider's models endpoint.
@@ -126,11 +474,18 @@ class ProviderProfile:
         the provider does not support live model listing.
 
         Resolution order for the endpoint URL:
-          1. self.models_url  (explicit override — use when the models
+          1. base_url + "/models", but ONLY when the caller passed a base_url
+             that differs from this profile's default (a user-configured
+             model.base_url pointing at a proxy/custom endpoint). Callers
+             pass base_url unconditionally — falling back to the profile
+             default when the user configured nothing — so equality with
+             self.base_url means "not customised" and must not shadow
+             models_url.
+          2. self.models_url  (explicit override — use when the models
              endpoint differs from the inference base URL, e.g. OpenRouter
              exposes a public catalog at /api/v1/models while inference is
              at /api/v1)
-          2. self.base_url + "/models"  (standard OpenAI-compat fallback)
+          3. self.base_url + "/models"  (standard OpenAI-compat fallback)
 
         The default implementation sends Bearer auth when api_key is given
         and forwards self.default_headers. Override to customise auth, path,
@@ -139,27 +494,45 @@ class ProviderProfile:
         Callers must always fall back to the static _PROVIDER_MODELS list
         when this returns None.
         """
-        url = (self.models_url or "").strip()
-        if not url:
-            if not self.base_url:
-                return None
-            url = self.base_url.rstrip("/") + "/models"
+        if not self.supports_model_listing:
+            return None
+        caller_base = (base_url or "").strip()
+        effective_base = caller_base or self.base_url
+        custom_base = bool(caller_base) and (
+            caller_base.rstrip("/") != (self.base_url or "").rstrip("/")
+        )
+        if custom_base:
+            url = caller_base.rstrip("/") + "/models"
+        else:
+            url = (self.models_url or "").strip()
+            if not url:
+                if not effective_base:
+                    return None
+                url = effective_base.rstrip("/") + "/models"
 
         import json
         import urllib.request
+
+        from hermes_cli.urllib_security import open_credentialed_url
 
         req = urllib.request.Request(url)
         if api_key:
             req.add_header("Authorization", f"Bearer {api_key}")
         req.add_header("Accept", "application/json")
+        # Some providers (e.g. OpenCode Zen) sit behind a WAF that blocks
+        # the default ``Python-urllib/<ver>`` User-Agent.  Set a generic
+        # hermes-cli UA so the catalog endpoint is reachable.
+        req.add_header("User-Agent", _profile_user_agent())
         for k, v in self.default_headers.items():
             req.add_header(k, v)
 
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with open_credentialed_url(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
             items = data if isinstance(data, list) else data.get("data", [])
-            return [m["id"] for m in items if isinstance(m, dict) and "id" in m]
+            from hermes_cli.chat_catalog import chat_catalog_ids
+
+            return chat_catalog_ids(items)
         except Exception as exc:
             logger.debug("fetch_models(%s): %s", self.name, exc)
             return None

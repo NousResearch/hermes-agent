@@ -1,6 +1,6 @@
 ---
 name: 3-statement-model
-description: Build fully-integrated 3-statement models (IS, BS, CF) in Excel with working capital schedules, D&A roll-forwards, debt schedule, and the plugs that make cash and retained earnings tie. Pairs with excel-author.
+description: Build integrated IS/BS/CF financial workbooks in Excel.
 version: 1.0.0
 author: Anthropic (adapted by Nous Research)
 license: Apache-2.0
@@ -424,7 +424,7 @@ Many passages below say "use the S&P Kensho MCP / Daloopa MCP / FactSet MCP". Th
 - **Otherwise**, fall back to:
   - `web_search` / `web_extract` against SEC EDGAR (`https://www.sec.gov/cgi-bin/browse-edgar`) for US filings
   - Company IR pages for press releases, earnings decks
-  - `browser_navigate` for interactive data portals
+  - `browser_exec` for interactive data portals
   - User-provided data (explicitly ask when the context doesn't have it)
 - **Never fabricate**. If a multiple, precedent, or filing number can't be sourced, flag the cell as `[UNSOURCED]` and surface it to the user.
 

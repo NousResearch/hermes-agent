@@ -70,8 +70,9 @@ function bootLate(href: string) {
   window.history.replaceState(null, '', opener)
 }
 
-// A window that boots after the deadline (a slow machine, or a gated window landing on the login
-// page or a 503) opened after all: its late `ready` takes the "Allow popups" toast back down.
+// A window that boots after the deadline (a slow machine) opened after all: its late `ready` takes
+// the "Allow popups" toast back down. A gated window held on the server-rendered login page or a
+// stale bundle's 503 never boots the app, so it never says `ready` and its toast stays.
 describe('a window that says ready after the deadline', () => {
   it.each([
     ['gated host', false],

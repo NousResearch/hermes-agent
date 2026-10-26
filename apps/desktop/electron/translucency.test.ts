@@ -44,6 +44,7 @@ import {
   windowBackgroundMaterialOptions,
   windowBackingOptions,
   windowOpacityFor,
+  windowOpacityForSupported,
   windowOpacityOptions,
   WINDOWS_BACKGROUND_MATERIALS,
   WINDOWS_GLASS_MIN_BUILD
@@ -512,6 +513,23 @@ describe('windowOpacityOptions', () => {
 
       expect(windowOpacityOptions(state), appearance).toStrictEqual({})
     }
+  })
+
+  // Linux: Settings hides the lever, but the resolved state still carries the
+  // macOS 29% default and Electron's X11 path really does honour setOpacity.
+  // A window nobody can un-fade must never be faded in the first place.
+  it('keeps unsupported platforms fully opaque whatever the state says', () => {
+    for (const state of [clear(29), clear(100), glass(60, DEFAULT_GLASS_MATERIAL, 40)]) {
+      expect(windowOpacityForSupported(state, false)).toBe(1)
+      expect(windowOpacityOptions(state, false)).toStrictEqual({})
+    }
+  })
+
+  it('leaves supported platforms on the same ramp as before', () => {
+    const state = clear(29)
+
+    expect(windowOpacityForSupported(state, true)).toBe(windowOpacityFor(state))
+    expect(windowOpacityOptions(state, true)).toStrictEqual({ opacity: windowOpacityFor(state) })
   })
 })
 

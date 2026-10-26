@@ -142,11 +142,29 @@ export function opacityNeedsSetting(next: number, current = 1): boolean {
 }
 
 /**
+ * Native window opacity, pinned fully opaque on platforms with no translucency.
+ *
+ * Linux is the case that matters, and it is not theoretical: Settings hides the
+ * lever there (`translucencySupportedOn`), but `defaultTranslucencyValues` still
+ * resolves the macOS 29% default, the renderer mirrors that resolved state to
+ * main on load, and main persists it — so a brand-new Linux profile asks for
+ * opacity 0.94 forever. Electron documents `setOpacity` as a no-op on Linux, yet
+ * the X11 path does set `_NET_WM_WINDOW_OPACITY`, so the window really was born
+ * ~94% opaque with no row in the UI to undo it.
+ *
+ * The gate lives in main rather than only in the renderer because main applies
+ * the persisted state at window CREATION, before any renderer has reported.
+ */
+export function windowOpacityForSupported(state: TranslucencyState, supported: boolean): number {
+  return supported ? windowOpacityFor(state) : 1
+}
+
+/**
  * BrowserWindow constructor options for a chat window's native opacity. Empty
  * unless the state actually asks the window to fade — see opacityNeedsSetting.
  */
-export function windowOpacityOptions(state: TranslucencyState): { opacity?: number } {
-  const opacity = windowOpacityFor(state)
+export function windowOpacityOptions(state: TranslucencyState, supported = true): { opacity?: number } {
+  const opacity = windowOpacityForSupported(state, supported)
 
   return opacityNeedsSetting(opacity) ? { opacity } : {}
 }

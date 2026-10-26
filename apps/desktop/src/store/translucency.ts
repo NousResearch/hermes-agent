@@ -366,7 +366,16 @@ if (typeof window !== 'undefined') {
   // exactly right: the window's tint and native opacity change with it.
   $translucency.subscribe(state => {
     applyGlassSurfaces(state)
-    window.hermesDesktop?.setTranslucency?.(state)
+
+    // Platforms with no translucency never had a lever (Settings hides the row),
+    // so what resolves here is not a user setting — it is the macOS 29% default
+    // leaking into main, which then fades a Linux window at creation and
+    // persists it with nothing in the UI to undo. Main pins those platforms to
+    // opaque as the backstop (windowOpacityForSupported); not sending at all
+    // keeps a meaningless translucency.json from being written there too.
+    if (TRANSLUCENCY_SUPPORTED) {
+      window.hermesDesktop?.setTranslucency?.(state)
+    }
   })
 
   // Persistence follows the BOOK, so an appearance switch (which changes the

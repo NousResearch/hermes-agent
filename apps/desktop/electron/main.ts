@@ -128,7 +128,7 @@ import { registerChallengeWindowIpc } from './challenge-window-ipc'
 import { provisionCliLinks } from './cli-provision'
 import { readClipboardImagePng } from './clipboard-image'
 import { registerClipboardTextIpc } from './clipboard-ipc'
-import { closeStopFailureMessage, finishWindowsCloseStop, type RuntimeLock } from './close-stop-kill'
+import { closeStopFailureMessage, collectCloseStopLocks, finishWindowsCloseStop } from './close-stop-kill'
 import { shouldAttemptCloudBootCascade } from './cloud-boot-cascade'
 import { discoverWithTeamFallback } from './cloud-discovery'
 import { createCloudSessionRecovery } from './cloud-session-recovery'
@@ -635,6 +635,7 @@ import { inspectRunningChannelApp } from './updater/channel-native'
 import { ChannelStrategy } from './updater/channel-strategy'
 import { verifyPreparedChannelInstaller } from './updater/channel-windows-host'
 import { type CheckoutStrategy, createCheckoutStrategy } from './updater/checkout'
+import { createCheckoutQuitLifecycle } from './updater/checkout-quit'
 import { readSourceUpdate, sourceChannelName, type SourceUpdate } from './updater/checkout-source'
 import { ExternalStrategy } from './updater/external'
 import { readUpdatesFeedBaseFromConfig, resolveFeedBaseUrl } from './updater/feed-config'
@@ -3680,47 +3681,7 @@ function resolveCheckoutUpdateStrategy(): CheckoutStrategy {
     startHermes,
     stopBackendsForUpdate,
     repairMacUpdaterHelper: updater => repairMacUpdaterHelper(updater, { isMac: IS_MAC, log: rememberLog }),
-    preflightStateDb: async (home: string, log: (message: string) => void): Promise<void> => {
-      const root: string = resolveUpdateRoot()
-
-      // `updates.pre_update_backup: off` is the CLI's opt-out for the whole
-      // pre-update backup family; the Desktop's emergency snapshot honours it
-      // too (4de06d1dbf7b). An unreadable answer keeps the snapshot.
-      if (
-        !(await readPreUpdateBackupEnabled(
-          resolveHermesBackend(['config', 'get', 'updates.pre_update_backup', '--json']),
-          home
-        ))
-      ) {
-        log('[updates] emergency state.db backup disabled by updates.pre_update_backup')
-
-        return
-      }
-
-      // PM-managed checkouts carry no venv of their own: the installation
-      // launcher owns interpreter and generation selection there — same
-      // contract as readSourceUpdate and the hand-off script.
-      const managed: boolean = directoryExists(path.join(root, 'pm'))
-
-      const launcher: string | null = managed ? resolveInstallationLauncher(root, IS_WINDOWS, HERMES_HOME) : null
-
-      if (managed && !launcher) {
-        const message =
-          `state.db pre-flight failed: the installation launcher under ${root} is missing. ` +
-          'Update cancelled before backend shutdown. Repair this installation before retrying.'
-
-        log(`[updates] ${message}`)
-        throw new Error(message)
-      }
-
-      preflightStateDb({
-        python: managed ? null : await findPythonForRoot(root),
-        launcher,
-        script: path.join(root, 'hermes_cli', 'backup_sqlite.py'),
-        home,
-        log
-      })
-    },
+    preflightStateDb: (home, log) => checkoutQuitLifecycle.preflightStateDb(home, log),
     runningAppBundle,
     markQuittingForHandoff: () => {
       isQuittingForHandoff = true
@@ -3728,6 +3689,64 @@ function resolveCheckoutUpdateStrategy(): CheckoutStrategy {
     quit: () => app.quit()
   })
 }
+
+const checkoutQuitLifecycle = createCheckoutQuitLifecycle<Electron.Event>({
+  preflightStateDb: async (home: string, log: (message: string) => void): Promise<void> => {
+    const root: string = resolveUpdateRoot()
+
+    // `updates.pre_update_backup: off` is the CLI's opt-out for the whole
+    // pre-update backup family; the Desktop's emergency snapshot honours it
+    // too (4de06d1dbf7b). An unreadable answer keeps the snapshot.
+    if (
+      !(await readPreUpdateBackupEnabled(
+        resolveHermesBackend(['config', 'get', 'updates.pre_update_backup', '--json']),
+        home
+      ))
+    ) {
+      log('[updates] emergency state.db backup disabled by updates.pre_update_backup')
+
+      return
+    }
+
+    // PM-managed checkouts carry no venv of their own: the installation
+    // launcher owns interpreter and generation selection there — same
+    // contract as readSourceUpdate and the hand-off script.
+    const managed: boolean = directoryExists(path.join(root, 'pm'))
+
+    const launcher: string | null = managed ? resolveInstallationLauncher(root, IS_WINDOWS, HERMES_HOME) : null
+
+    if (managed && !launcher) {
+      const message =
+        `state.db pre-flight failed: the installation launcher under ${root} is missing. ` +
+        'Update cancelled before backend shutdown. Repair this installation before retrying.'
+
+      log(`[updates] ${message}`)
+      throw new Error(message)
+    }
+
+    await preflightStateDb({
+      python: managed ? null : await findPythonForRoot(root),
+      launcher,
+      script: path.join(root, 'hermes_cli', 'backup_sqlite.py'),
+      home,
+      log
+    })
+  },
+  heldQuitForActiveWork: event => {
+    // "Keep Running" precedes preflight cancellation and all teardown; don't
+    // leak the overlay-suppression latch into the next close (#130810).
+    if (!heldQuitForActiveWork(event)) {
+      return false
+    }
+
+    appQuitting = false
+    quitInProgress = false
+
+    return true
+  },
+  teardown: teardownForQuit,
+  quit: () => app.quit()
+})
 
 /**
  * The App Installer feed base URL for a bundled MSIX install: config.yaml's
@@ -3967,65 +3986,6 @@ function forceKillProcessTree(pid) {
   execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], hiddenWindowsChildOptions({ stdio: 'ignore' }))
 }
 
-function holderPidsFromLockFile(lockPath: string): Pick<RuntimeLock, 'holderPids' | 'held'> {
-  try {
-    const raw = fs.readFileSync(lockPath, 'utf8').trim()
-
-    if (!raw) {
-      return { holderPids: [] }
-    }
-
-    let pid = Number(raw)
-
-    if (!Number.isInteger(pid)) {
-      const parsed = JSON.parse(raw) as { pid?: unknown }
-      pid = Number(typeof parsed === 'object' && parsed ? parsed.pid : parsed)
-    }
-
-    return Number.isInteger(pid) && pid > 0 ? { holderPids: [pid] } : { holderPids: [] }
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException | null)?.code
-
-    // Can't read the file: a live holder may be why. Do not clear it.
-    if (code === 'EBUSY' || code === 'EPERM' || code === 'EACCES') {
-      return { holderPids: [], held: true }
-    }
-
-    return { holderPids: [] }
-  }
-}
-
-function collectCloseStopLocks(): RuntimeLock[] {
-  const roots = [HERMES_HOME]
-  const profilesRoot = path.join(HERMES_HOME, 'profiles')
-
-  try {
-    for (const name of fs.readdirSync(profilesRoot)) {
-      roots.push(path.join(profilesRoot, name))
-    }
-  } catch {
-    // No profiles directory — the default home lock is enough.
-  }
-
-  const locks: RuntimeLock[] = []
-
-  for (const root of roots) {
-    const lockPath = path.join(root, 'gateway.lock')
-
-    try {
-      if (!fs.statSync(lockPath).isFile()) {
-        continue
-      }
-    } catch {
-      continue
-    }
-
-    locks.push({ path: lockPath, ...holderPidsFromLockFile(lockPath) })
-  }
-
-  return locks
-}
-
 // Captured before teardown drops the handles. Node keeps each process handle
 // open until exit is observed, so a PID read from a still-running child here
 // cannot have been reused by an unrelated process.
@@ -4051,7 +4011,7 @@ function windowsCloseStopOwnedBackends(children: ChildProcess[]): Error | null {
 
     const result = finishWindowsCloseStop(
       running.map(child => child.pid as number),
-      collectCloseStopLocks(),
+      collectCloseStopLocks(HERMES_HOME),
       {
         killTree: forceKillProcessTree,
         isPidAlive: isPidAliveWindows,
@@ -18177,17 +18137,34 @@ function quitIfNoSurfaceLeft() {
   }
 }
 
-app.on('before-quit', event => {
-  // Runs ahead of every teardown below, so "Keep Running" leaves the app
-  // exactly as it was: a held quit is not a quit in progress, and the
-  // overlay-suppression latch must not leak into the next close (#130810).
-  if (heldQuitForActiveWork(event)) {
-    appQuitting = false
-    quitInProgress = false
-
-    return
+function holdQuitForManagedUpdate(event: Electron.Event): boolean {
+  // A detached remote updater can outlive this Electron process. Join its SSH
+  // observer/restore transaction before generic teardown, then re-enter quit.
+  if (
+    managedUpdateQuitWaitDone ||
+    (!managedUpdateQuitWait && managedConnectionUpdates.size === 0 && managedConnectionRecoveries.size === 0)
+  ) {
+    return false
   }
 
+  event.preventDefault()
+
+  if (!managedUpdateQuitWait) {
+    managedUpdateQuitWait = waitForManagedUpdateOperations(() => [
+      ...managedConnectionUpdates.values(),
+      ...managedConnectionRecoveries.values()
+    ]).finally(() => {
+      managedUpdateQuitWaitDone = true
+      app.quit()
+    })
+  }
+
+  return true
+}
+
+app.on('before-quit', checkoutQuitLifecycle.beforeQuit)
+
+function teardownForQuit(event: Electron.Event): void {
   // Quit is really proceeding: latch both before ANY teardown below closes
   // the pet overlay — its 'closed' handler must not echo pop-in during quit,
   // or the persisted popped-out state is wiped and the overlay never restores
@@ -18198,29 +18175,7 @@ app.on('before-quit', event => {
   minimizeToTray.beginQuit()
   mainProcessLagWatchdog.stop()
 
-  // A detached remote updater can outlive this Electron process. Do not tear
-  // down its SSH observer/restore transaction at the generic SSH shutdown
-  // deadline: join it first (BEFORE sealing the bootstrap coordinator, whose
-  // shutdown would refuse the restore dials), then re-enter before-quit for
-  // normal teardown. A crash still fails closed on next launch via the remote
-  // install-marker preflight in both POSIX and Windows lifecycle
-  // implementations.
-  if (
-    !managedUpdateQuitWaitDone &&
-    (managedUpdateQuitWait || managedConnectionUpdates.size > 0 || managedConnectionRecoveries.size > 0)
-  ) {
-    event.preventDefault()
-
-    if (!managedUpdateQuitWait) {
-      managedUpdateQuitWait = waitForManagedUpdateOperations(() => [
-        ...managedConnectionUpdates.values(),
-        ...managedConnectionRecoveries.values()
-      ]).finally(() => {
-        managedUpdateQuitWaitDone = true
-        app.quit()
-      })
-    }
-
+  if (holdQuitForManagedUpdate(event)) {
     return
   }
 
@@ -18317,7 +18272,7 @@ app.on('before-quit', event => {
   terminalIpc.disposeAllTerminalSessions()
 
   void backendShutdown.run()
-})
+}
 
 app.on('window-all-closed', () => {
   // macOS convention: keep the process alive in the Dock when the user closes

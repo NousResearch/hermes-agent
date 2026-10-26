@@ -498,6 +498,8 @@ A dedicated profile starts out signed out of everything. If you want the agent t
 
 When connected, `browser_exec`, `browser_cdp`, `browser_dialog` and `browser_vault` all drive your live browser instead of launching their own. The endpoint can also be set persistently with `browser.cdp_url` in `config.yaml` or the `BROWSER_CDP_URL` environment variable.
 
+Chrome throttles, freezes, and (with Memory Saver on) discards tabs that aren't the selected one, judging idleness by visibility rather than CDP traffic, so a session driving a background tab stalls. Chromium that Hermes launches, including the one `/browser connect` starts, already passes `--disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding`; if you start the browser yourself, add those flags and turn Memory Saver off (Settings → Performance).
+
 ### WSL2 + Windows Chrome: prefer MCP over `/browser connect`
 
 If Hermes runs inside WSL2 but the Chrome window you want to control runs on the Windows host, `/browser connect` is often not the best path.

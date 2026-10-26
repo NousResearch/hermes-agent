@@ -210,3 +210,21 @@ def _alive(pid: int) -> bool:
         return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
     except psutil.NoSuchProcess:
         return False
+
+
+def test_a_cancel_lands_on_a_filesystem_without_hard_links(monkeypatch):
+    import errno
+    import os
+
+    from cron.cancellation import CancelRequest, request_cancel
+
+    def no_links(src, dst):
+        raise OSError(errno.EPERM, "hard links not supported")
+
+    monkeypatch.setattr(os, "link", no_links)
+    request_cancel("exec-exfat", reason="first ask")
+    request_cancel("exec-exfat", reason="second ask")
+
+    request = CancelRequest("exec-exfat")
+    assert request.is_set()
+    assert request.reason == "first ask"

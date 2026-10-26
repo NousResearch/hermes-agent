@@ -63,18 +63,34 @@ def request_cancel(execution_id: str, *, reason: Optional[str] = None) -> Path:
     path = _marker_path(execution_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
-        # A private temp file published with link(): create-if-absent, so overlapping requests
-        # never share a temp path and the first reason is never overwritten or seen half-written.
-        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write((reason or _DEFAULT_REASON).strip())
-            with contextlib.suppress(FileExistsError):
-                os.link(tmp, path)
-        finally:
-            os.unlink(tmp)
+        _publish_first(path, (reason or _DEFAULT_REASON).strip().encode("utf-8"))
     _prune_stale_markers()
     return path
+
+
+def _publish_first(path: Path, body: bytes) -> None:
+    """Create ``path`` holding ``body`` unless it already exists (the first reason wins).
+
+    A private temp file published with link() means overlapping requests never share a temp path
+    and a reader never sees the reason half-written. A filesystem without hard links (exFAT, some
+    network shares) falls back to an exclusive create: a reader racing that write sees an empty
+    marker, which still reads as a cancel, with the default reason.
+    """
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(body)
+        with contextlib.suppress(FileExistsError):
+            os.link(tmp, path)
+        linked = True
+    except OSError:  # no hard links on this filesystem
+        linked = False
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+    if not linked:
+        with contextlib.suppress(FileExistsError), open(path, "xb") as handle:
+            handle.write(body)
 
 
 def cancel_requested(execution_id: str) -> bool:

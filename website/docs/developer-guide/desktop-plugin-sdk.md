@@ -43,6 +43,10 @@ plugin, and fail to resolve in a disk plugin). Capability comes in tiers:
   model, profile, viewport. `gateway` is the WebSocket, not turn-busy.
 - **`host.*` actions** — curated safe verbs: toast, navigate, tail logs,
   restart the gateway, subscribe to the gateway event stream.
+- **`ctx.preview`** — run JavaScript in the focused session's preview Browser
+  page. Closed by default: the plugin declares `capabilities:
+  ['preview.executeJavaScript']` and the user allows it per page origin
+  ([Preview page scripts](#preview-page-scripts)).
 - **`host.request`** — the gateway JSON-RPC door: sessions, config, skills,
   cron — everything the app itself calls.
 - **`captureGatewayFileDownload()`** — capture a gateway file-save action
@@ -164,6 +168,9 @@ interface HermesPlugin {
    *  for opt-in plugins: they inventory in Capabilities ▸ Plugins, off until the
    *  user flips the switch. */
   defaultEnabled?: boolean
+  /** Sensitive doors this plugin uses, declared up front. Today:
+   *  'preview.executeJavaScript' (ctx.preview). An undeclared door refuses. */
+  capabilities?: readonly string[]
   /** Called once at load; wire contributions through `ctx`. */
   register: (ctx: PluginContext) => void
 }
@@ -200,6 +207,9 @@ interface PluginContext {
   os: PluginOs
   /** Lines in the core pet's speech bubble, attributed to this plugin (see "Pet bubble"). */
   pet: PluginPet
+  /** Script in the preview Browser page — declared capability + per-origin user consent
+   *  (see "Preview page scripts"). */
+  preview: PluginPreview
   /** Plugin-scoped JSON persistence (keys live under `hermes.plugin.<id>.`). */
   storage: PluginStorage
 }
@@ -239,7 +249,9 @@ Import the area constants from the SDK; each area has its own `data` payload.
 | Theme | `THEMES_AREA` | `data` as a `DesktopTheme` |
 | Composer | `COMPOSER_AREAS.*` | render slots, or middleware / attachment providers |
 | Model menu rows | `MODEL_MENU_ROW_AREA` | `data: ModelMenuRowContribution` — a leading icon / trailing badge per model |
+| Kanban card badges | `KANBAN_CARD_AREAS.badges` | `data: KanbanCardBadgeContribution` — short text labels per card, painted by the board |
 | Appearance settings | `APPEARANCE_AREAS.extra` | `render` — controls appended to Settings → Appearance |
+| Tool media | `TOOL_MEDIA_RENDERER_AREA` (`'transcript.toolMedia'`) | `data: { tools, render }` — draw the `MEDIA:` files your package's own tools produced ([Tool media renderers](#tool-media-renderers)) |
 | Plugin settings page | `SETTINGS_PLUGINS_AREA` (`'settings.plugins'`) | Use `ctx.registerSettingsPage({ id, title, render, icon?, order?, children? })` — your own entry (with sub-pages) under Settings → Plugins |
 
 ### Panes
@@ -474,7 +486,7 @@ whole migration.
 ### Composer extensions
 
 `COMPOSER_AREAS` (`top`, `bottom`, `underside`, `leading`, `actions`,
-`attachments`, `middleware`) let a plugin add controls around the message
+`attachments`, `middleware`, `contextMenu`) let a plugin add controls around the message
 composer, provide an attachment source, or transform a draft before it is sent
 (`ComposerMiddleware` with a `handler(draft) => draft | null`). `top` is a
 banner strip above the input and `bottom` a row below the input grid, both
@@ -482,6 +494,89 @@ inside the composer chrome; `underside` is the floating strip BELOW the whole
 composer with no chrome of its own — the seat for a suggestion pill or a status
 hint that should sit outside the input frame (the next-prompt plugin renders its
 "next prompt" pill there).
+
+### Composer context menu — rows on a right-click in the input {#composer-context-menu}
+
+`COMPOSER_AREAS.contextMenu` adds rows to the menu the app opens when the user
+right-clicks **the composer** (the main input or the message-edit composer).
+A contribution is data: an `items(context)` function the app calls once per
+right-click. The app renders the rows with its own menu items, so they focus,
+style and keyboard-navigate like the built-in ones; a plugin never touches the
+menu's DOM.
+
+```javascript
+import { COMPOSER_AREAS, host } from '@hermes/plugin-sdk'
+
+ctx.register({
+  id: 'spelling',
+  area: COMPOSER_AREAS.contextMenu,
+  data: {
+    // context = { word: string | null, selection: string } — nothing else.
+    items: ({ word }) => {
+      if (!word || isKnown(word)) return []
+
+      return [
+        ...suggest(word).slice(0, 5).map(suggestion => ({
+          label: suggestion,
+          // Runs after the menu closed, with the caret back in the composer.
+          onSelect: action => action.replaceWord(suggestion)
+        })),
+        { label: ctx.i18n.t('addToDictionary'), onSelect: () => void host.spellcheck.addWord(word) }
+      ]
+    }
+  }
+})
+```
+
+```ts
+interface ComposerContextMenuContext {
+  word: string | null // the word under the caret (or at the selection's start)
+  selection: string // the selected composer text, '' when the caret is collapsed
+}
+
+interface ComposerContextMenuItem {
+  label: string // plain text: controls/bidi overrides stripped, clamped to 80 chars
+  disabled?: boolean
+  onSelect: (action: ComposerContextMenuAction) => void
+}
+
+interface ComposerContextMenuAction extends ComposerContextMenuContext {
+  replaceWord(text: string): boolean // one line, <= 200 chars
+}
+```
+
+**What the app owns.** It decides the click landed on a composer; any other
+field (Settings inputs, API keys, dialogs, the transcript) never consults a
+provider. A provider sees two strings — the word and the composer selection
+(capped at 2,000 chars) — never the element, a `Range` or other text.
+`replaceWord` is the only edit it offers: it replaces exactly the word the user
+right-clicked through Chromium's own editing command, works once, and returns
+`false` (changing nothing) when the composer no longer holds that word in that
+place. For anything else, use [`host.composer`](#composer-draft-api--read-and-write-the-live-input).
+
+**Arbitration.** Each plugin gets its own section, placed after the app's own
+spell-check rows and before Cut / Copy / Paste. Plugins are ordered by plugin id
+(code-point order, then contribution id); load order and `order` play no part.
+A plugin shows at most **six rows** across all its contributions; extra rows are
+dropped. A provider that throws, returns a non-array, or a row without a string
+label or an `onSelect` function contributes nothing and leaves every other row
+standing; a throwing `onSelect` is logged, not raised. Rows registered through
+`ctx.register` disappear when the plugin unloads or is disabled — including
+from a menu that is open at the time.
+
+#### Spell-check dictionary — `host.spellcheck`
+
+```ts
+host.spellcheck.addWord(word: string): Promise<boolean>
+host.spellcheck.removeWord(word: string): Promise<boolean>
+```
+
+Adds or removes one word in the app's Chromium spell-check dictionary, so the
+red underline clears (or returns) everywhere in the app. The main process takes
+only one bounded word: letters, combining marks, digits and inner `'` / `-`,
+at least one letter, at most 64 characters. Anything else resolves `false`
+without touching the dictionary; so does an older desktop shell. There is no
+way to list or read the dictionary.
 
 ### Composer draft API — read and write the live input
 
@@ -759,6 +854,96 @@ images onto them. The same marks come from `decorate({ provider })` returning
 `{ icon: <img alt="" src={providerSvgDataUrl(provider)} /> }` — no DOM reads,
 and the row keeps working when the menu's markup changes.
 
+#### Kanban card badges {#kanban-card-badges}
+
+`KANBAN_CARD_AREAS.badges` puts small text labels on Kanban card tiles: a
+tenant, a CI state, an estimate. A contribution supplies `decorate(card)`; the
+board paints what it returns as chips in a fixed row above the card's title.
+The card's markup, layout, drag and drop, click and context menu stay the
+board's, and the row takes no space on cards no plugin has a badge for.
+
+```ts
+import {
+  KANBAN_CARD_AREAS,
+  KANBAN_CARD_BADGE_HUES,
+  type KanbanCardBadgeContribution
+} from '@hermes/plugin-sdk'
+
+interface KanbanCard {            // frozen; identity and routing fields only
+  id: string                      // task id (t_…): key your own per-card data by it
+  status: string                  // the column: 'triage', 'ready', 'running', …
+  tenant: string | null
+  assignee: string | null
+}
+interface KanbanCardBoard {       // frozen; shared by every card on the board
+  tenants: readonly string[]      // every tenant on the board (its filter menu's list)
+}
+interface KanbanCardBadge {
+  label: string                   // plain text
+  tone?: KanbanCardBadgeTone      // 'neutral' (default) or one of KANBAN_CARD_BADGE_HUES
+  tooltip?: string                // plain text hover line
+}
+
+ctx.register({
+  area: KANBAN_CARD_AREAS.badges,
+  id: 'tenant',
+  data: {
+    // `tenants` lets you give each tenant on the board its own hue instead of
+    // hashing blind (two tenants can hash to the same one).
+    decorate: ({ tenant }, { tenants }) =>
+      tenant
+        ? { label: tenant, tone: KANBAN_CARD_BADGE_HUES[distinctIndex(tenant, tenants) % 12], tooltip: `Tenant: ${tenant}` }
+        : null
+  } satisfies KanbanCardBadgeContribution
+})
+```
+
+`decorate(card, board)` may return one badge, an array, or `null` for cards it
+has nothing to say about. The card view carries no prose (title, body, summaries,
+comments, run output); look up anything else you need by `id` in your own data
+(`ctx.rest` to your backend, `ctx.storage`). Both views are frozen.
+
+**What the board accepts** (`KANBAN_CARD_BADGE_LIMITS`):
+
+- **Text only.** `label` and `tooltip` must be strings and render as text, never
+  markup. Control characters, bidi overrides and zero-width characters are
+  removed, whitespace is collapsed, and text past 24 characters (`label`) or
+  160 characters (`tooltip`) is shortened with an ellipsis. An empty or
+  non-string label is ignored. Any other field (`render`, `html`, a style) is
+  ignored.
+- **A fixed palette.** `tone` is `'neutral'` or one of the twelve
+  `KANBAN_CARD_BADGE_HUES` (`'red'`, `'orange'`, … `'pink'`, the app's identity
+  hues in hue order, the same set as `PROFILE_SWATCHES`). Anything else paints
+  neutral. The board picks the actual colors for the theme.
+- **Two badges per plugin per card**, counted across all of the plugin's
+  contributions to this area. Extra badges are dropped.
+- **Attribution.** Every badge's tooltip ends with the plugin's name, so a user
+  can always tell which plugin painted it.
+
+**Arbitration.** Every plugin's badges show side by side; no plugin can hide,
+reorder or restyle another's. The row is ordered by plugin id, then
+contribution id, then the order `decorate` returned them. A contribution's
+`order` field is ignored here, so load order and bidding cannot move a badge.
+A decorator that **throws** contributes nothing (logged once) and the rest of
+the row still paints.
+
+**Updates and teardown.** `decorate()` re-runs when the registry changes,
+when the card's id, status, tenant or assignee changes, or when the board's
+tenant list changes, so keep it a pure lookup. When your own data changes (a user pins a new color in your settings
+page), call `ctx.register` again with the same `id`: the new registration
+replaces the old one and the board repaints. Keep the latest disposer; the
+first one would remove the replacement. On disable, reload or unload, the
+host removes the contribution and the cards repaint without its badges;
+nothing to undo in `ctx.onDispose`.
+
+**Migrating a DOM-decorating plugin** (kanban-tenant-labels): delete the route
+poll, the `MutationObserver`, the tile matching, the inserted `<span>` and the
+reads of the Kanban plugin's query cache. The whole decoration becomes the
+`ctx.register` call above. Its collision-free assignment runs on
+`board.tenants` instead of the query-cache snapshot, and its color pins map to
+`KANBAN_CARD_BADGE_HUES` (its twelve hues are the same `hsl(n×30 68% 58%)`
+set, in the same order).
+
 ### Appearance settings
 
 `APPEARANCE_AREAS.extra` renders contributions at the end of **Settings →
@@ -909,10 +1094,31 @@ ctx.register({
   area: TRANSCRIPT_DIRECTIVE_AREA,
   data: {
     name: 'task', // the model writes ::task{id="BB-12"}
-    render: ({ attrs, streaming }) => jsx(TaskCard, { taskId: attrs.id, streaming })
+    render: ({ attrs, sessionId, streaming }) => jsx(TaskCard, { taskId: attrs.id, sessionId, streaming })
   }
 })
 ```
+
+`render` receives `{ attrs, source, streaming, sessionId }`. `sessionId` names
+the chat whose transcript shows the card (its stored id, else its runtime id;
+`null` while that chat has no session yet). Pass it to the `host.composer`
+verbs so a card action lands in **that** chat, even when another chat open
+side by side holds the active composer:
+
+```javascript
+function TaskCard({ taskId, sessionId }) {
+  const next = () => {
+    // Older hosts don't pass sessionId (undefined): fall back to the active
+    // composer, which is what `null` addresses.
+    const sent = host.composer.submit(sessionId ?? null, `Continue task ${taskId}`)
+    if (!sent) host.notify({ kind: 'warning', message: 'Open that chat to continue' })
+  }
+  return jsx('button', { onClick: next, children: 'Next' })
+}
+```
+
+Addressed verbs fail closed: when the card's chat has no visible composer,
+`submit` returns `false` and nothing is sent anywhere else.
 
 Rules the host enforces so the surface stays safe:
 
@@ -954,6 +1160,101 @@ prompt reaches the chat's composer, or `{ ok: false, error }` where `error` is
 `too_long` (with `maxLength`), `throttled` (with `retryAfterMs`), `invalid`,
 or `undelivered` (no visible composer took it). Check it before showing a
 widget as saved.
+
+### Tool media renderers — draw the files your own tools produce {#tool-media-renderers}
+
+A unified package (agent tools + a desktop half) can decide how Desktop shows
+the media **its own tools** produce. When an assistant reply delivers a file
+with a `MEDIA:` line, Desktop looks for the tool call whose result first named
+the path, earlier in the transcript. If the plugin that owns that tool registered a renderer for
+the tool's name, your component replaces the built-in player:
+
+```javascript
+import * as sdk from '@hermes/plugin-sdk'
+import { useEffect, useState } from 'react'
+import { jsx, jsxs } from 'react/jsx-runtime'
+
+export default {
+  id: 'sound-fx', // the desktop half of the `sound-fx` package
+  register(ctx) {
+    // Older Desktops don't export the area: keep your old path there.
+    if (typeof sdk.TOOL_MEDIA_RENDERER_AREA !== 'string') return
+
+    ctx.register({
+      id: 'sound-card',
+      area: sdk.TOOL_MEDIA_RENDERER_AREA,
+      data: {
+        tools: ['sound_fx_generate'], // a tool this package's plugin.yaml registers
+        render: props => jsx(SoundCard, props)
+      }
+    })
+  }
+}
+
+function SoundCard({ file, args, result, sessionId, fallback }) {
+  const [src, setSrc] = useState(null)
+  useEffect(() => {
+    let live = true
+    file.resolveUrl().then(url => live && setSrc(url), () => live && setSrc(''))
+    return () => { live = false }
+  }, [file])
+
+  if (file.kind !== 'audio' || src === '') return fallback // the built-in player
+  return jsxs('figure', {
+    children: [
+      jsx('figcaption', { children: args.prompt ?? file.name }),
+      src && jsx('audio', { controls: true, src })
+    ]
+  })
+}
+```
+
+`render` receives:
+
+| Prop | What it is |
+|------|------------|
+| `file` | `{ path, name, kind, mime, resolveUrl() }`. `path` is the path on the **backend's** machine exactly as the `MEDIA:` line wrote it; never open it yourself. `resolveUrl()` returns a URL this window can load with a local or a remote backend: a range-streaming route for audio and video, a data URL for anything else (capped by the host's file reader), read from the backend that owns the chat. A large file (a 3D model) is better served by your own `plugin_api.py` route, called with `ctx.rest` and the `path`. |
+| `toolName`, `toolCallId` | The producing call. |
+| `args`, `result` | The call's arguments and result payload (the result as the tool returned it: an object, or a string). A reopened chat rebuilds them from history, so read fields defensively: `args` can carry display keys (`context`, labels) and `result` can arrive parsed where it was a JSON string live. |
+| `sessionId` | The chat whose transcript shows the file (same meaning as a directive's `sessionId`), or `null`. |
+| `fallback` | The built-in player for this file. Return it (or `null`) for anything you don't draw. |
+
+What the host guarantees:
+
+- **Ownership is provenance, never file type.** A claim counts only for tools
+  your package's own code registered: native tools from `ctx.register_tool` in
+  the same package's `plugin.yaml` plugin, or the tools of the MCP servers your
+  portable package declares (a trailing `*` matches by prefix, e.g.
+  `mcp__meshy__*`). The backend reports the exact tool names per package
+  (`plugins.manage list` → `tools`, from the chat's own backend and profile),
+  so a claim on a core tool
+  (`text_to_speech`), another plugin's tool, or from a standalone desktop
+  plugin with no agent half is refused with a console warning.
+- **Everything else keeps the built-in player:** core voice replies, files
+  from other tools, user uploads, and any path no tool produced. The earliest
+  successful call whose result names the whole path is the producer, so a
+  later `ls`, a read, or a plugin tool that takes the file as input does not
+  count, and rewriting a file in place does not move it to another tool. A
+  path the user named first (an upload, or an output path typed in the
+  prompt) has no producer. A failed call (live, or a stored result carrying
+  `error` / `success: false`) never produces anything.
+- **Fail-safe:** a renderer that throws or returns `null`, a plugin that is
+  disabled, a backend too old to report ownership, or a tool whose agent half
+  is not loaded all fall back to the built-in player. An MCP server that has
+  not connected yet owns nothing; Desktop re-reads ownership on a bounded
+  backoff while a claimed tool has no owner, and after `reload.mcp` or a
+  plugin-list change, so the card appears once the server is up.
+- **Only this app pairs a desktop half with a package.** The
+  `.hermes-package.json` marker is written by the installer and the reconcile
+  pass; one shipped inside a desktop-only repository is dropped on install.
+- **Other surfaces are unchanged.** Tools keep emitting plain `MEDIA:` lines;
+  the CLI, the TUI and messaging platforms deliver the file as before.
+
+Before this area existed, a plugin had to make the model emit its own
+`::directive` to get a custom card, which needs a skill instruction and leaves
+non-Desktop users with a raw directive line. With a renderer, the tool returns
+the ordinary `MEDIA:` tag every surface understands and Desktop alone upgrades
+it.
 
 ### Mount-scoped chrome (`Contribute`)
 
@@ -1102,6 +1403,8 @@ ctx.os.notify({ title, body?, silent?, icon?, activate?, onActivate?, actions? }
 ctx.os.openExternal(url)                   // OS default handler (browser, mail, spotify:) → Promise<boolean>
 ctx.os.revealPath(path)                    // reveal in Finder / Explorer → Promise<boolean>
 ctx.os.writeClipboard(text)                // system clipboard → Promise<boolean>
+ctx.files.requestFolder()                  // the app's folder picker → { ok, folder: { id, name, path } | null }
+ctx.files.readText(folder, 'notes/a.md')   // folder = 'data' or a granted folder's id; path is relative
 ctx.pet.say(text, { id?, tone?, ttlMs? })   // line in the core pet's speech bubble → disposer
 ctx.pet.clear(id?)                         // drop one line (or all of yours)
 ctx.pet.visible                            // ReadableAtom<boolean> — is a pet on screen?
@@ -1223,6 +1526,35 @@ listener can't affect app dispatch. Every `host` door is async-safe: a sync thro
 from an internal helper (e.g. no desktop bridge in a plain browser) becomes a
 rejection your `.catch()` sees, never an error-boundary crash.
 
+#### Live tool progress — `tool.progress` {#tool-progress-event}
+
+While a tool call runs, an MCP server that sends `notifications/progress` (the
+MCP spec's progress channel; Hermes opts in by sending `_meta.progressToken` on
+every `tools/call`) reaches the renderer as a `tool.progress` event. The native
+tool row shows it as `42% · <message>` next to its timer; a plugin can render
+its own view:
+
+```javascript
+ctx.onEvent('tool.progress', ({ session_id, payload }) => {
+  // payload: { tool_id, name, progress, total, percent, message }
+  if (payload.name.startsWith('mcp__meshy__')) showRefineProgress(payload.tool_id, payload.percent, payload.message)
+})
+ctx.onEvent('tool.complete', ({ payload }) => clearRefineProgress(payload.tool_id))
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `tool_id` | `string` | The call id; the same `tool_id` as the call's `tool.start` / `tool.complete` |
+| `name` | `string` | Registered tool name (`mcp__<server>__<tool>`) |
+| `progress` | `number` | The server's raw progress value |
+| `total` | `number \| null` | The server's total, when it sent one |
+| `percent` | `number \| null` | `0`–`100` (rounded, clamped) when `total` is set, else `null` |
+| `message` | `string \| null` | The server's progress message |
+
+Events are throttled to at most one per 500 ms per call; the first update and
+the one that reaches `total` always arrive. They are never stored in the
+transcript, so a reopened session shows only the finished row.
+
 `ctx.os` is the curated OS door — every way a plugin reaches outside the app
 window, in one namespace attributed to your plugin. `ctx.os.notify` posts a
 **native OS notification** — the same Electron pipeline the app's own
@@ -1260,6 +1592,73 @@ happens on user click — never from a background event alone.
 The other doors (`openExternal`, `revealPath`, `writeClipboard`) resolve
 `false` instead of throwing when the capability isn't available (older desktop
 shell, plain browser) — branch on the result rather than sniffing the bridge.
+
+### Files — `ctx.files` {#plugin-files}
+
+`ctx.files` is the one sanctioned way for a plugin to touch files on the
+computer running Desktop. A plugin reaches exactly two kinds of folder:
+
+- **Its own data folder**, handle `'data'`: private to the plugin, always
+  available, no prompt. Use it for caches, indexes and exports that are too big
+  for `ctx.storage`.
+- **Folders the user granted it**: `ctx.files.requestFolder()` opens the app's
+  own folder picker (titled with your plugin's name; you cannot change its
+  copy). The grant is remembered for your plugin across restarts, listed under
+  your plugin in **Capabilities → Plugins → Folder access**, and the user can
+  revoke it there at any time. Uninstalling the plugin drops its grants.
+
+Every call names a folder handle and a path **relative to that folder**. The
+app's main process checks each call: `..`, absolute paths, drive letters and
+symlinks that resolve outside the folder are refused, never normalized, and
+nothing inside Hermes' own data (the Hermes home with `config.yaml`, `.env`,
+auth and profiles; the app data folder with every plugin's data and the grants
+record) is reachable. A folder that holds or sits inside Hermes data (however
+it is spelled: a bind mount, a macOS firmlink, a WSL share or a
+`\\localhost\C$` share counts), a key folder such as `~/.ssh`, or a kernel
+filesystem such as `/proc` (wherever it is mounted) cannot be granted at all;
+the app tells the user why. Only plain files are read or written: a pipe, a
+device or a hard-linked file is refused, and a file swapped for a link between
+the app's check and its open is refused rather than followed.
+
+```ts
+// First run: ask once, remember the handle.
+let vault = (await ctx.files.folders())[0]
+if (!vault) {
+  const picked = await ctx.files.requestFolder()
+  if (!picked.ok || !picked.folder) return   // cancelled, refused, or an older app
+  vault = picked.folder
+}
+
+const listing = await ctx.files.list(vault.id, 'notes')        // { ok, entries: [{ name, path, isDirectory }], truncated }
+const note = await ctx.files.readText(vault.id, 'notes/a.md')  // { ok, text, size, mtimeMs }
+await ctx.files.writeText(vault.id, 'notes/b.md', '# B\n', { exclusive: true }) // refuses to replace a file
+await ctx.files.rename(vault.id, 'notes/b.md', 'c.md')         // same folder only
+await ctx.files.trash(vault.id, 'notes/c.md')                  // OS trash, recoverable
+await ctx.files.readDataUrl(vault.id, 'img/cover.png')         // { ok, url: 'data:image/png;base64,…' }
+await ctx.files.stat(vault.id, 'notes/a.md')                   // { ok, exists, isDirectory?, size?, mtimeMs? }
+await ctx.files.writeText('data', 'index.json', JSON.stringify(index))
+await ctx.files.release(vault.id)                              // give the folder back
+```
+
+No member throws. `dataFolder` is the string `'data'`; `folders()` resolves
+an array of `{ id, name, path }` (empty when the app has no door);
+`release(id)` resolves `true` when it gave a folder back and `false`
+otherwise. Every other member resolves `{ ok: true, … }` or
+`{ ok: false, error, message }`, where `error` is one of `invalid-path`, `outside-folder`, `protected`,
+`not-granted` (revoked, or another plugin's folder), `folder-missing`,
+`folder-changed` (the granted folder was moved or replaced: ask again),
+`not-found`, `exists`, `is-directory`, `not-a-directory`, `not-a-file`,
+`binary`, `too-large`, `sensitive-file` (`.env`, SSH keys and similar are
+refused even inside a granted folder, under any spelling the OS treats as the
+same name, and cannot be renamed or trashed),
+`io-error`, or `unavailable` (an app build without
+the door: feature-detect with `ctx.files?.…`). Limits: text reads and writes up
+to 4 MiB, data URLs up to 16 MiB, listings up to 10,000 entries. Reads are
+refused past the limit, never truncated. A write needs its parent folder to
+exist.
+
+Paths are on the machine running Desktop, not on a remote backend. To work
+with the backend's files, go through your plugin's `ctx.rest` routes.
 
 ### Pet bubble — `ctx.pet` {#pet-bubble}
 
@@ -1394,6 +1793,56 @@ signing out, approvals, model/provider changes, updates, quitting) are not app
 actions a plugin can run.
 
 Feature-detect on older hosts: `ctx.runAction?.('view.showBrowser')`.
+
+### Preview page scripts — `ctx.preview` {#preview-page-scripts}
+
+`ctx.preview.executeJavaScript(code)` runs `code` in the focused session's
+preview Browser tab (the same guest runner `drive_preview` and the preview tour
+use) and resolves the script's completion value. That page can be one the user
+is signed in to, so script there can read their session. The door is closed by
+default and the **app** arbitrates every call:
+
+1. **Declare it.** The plugin's default export lists the capability:
+
+   ```js
+   export default {
+     id: 'page-tools',
+     name: 'Page Tools',
+     capabilities: ['preview.executeJavaScript'],
+     register(ctx) {
+       ctx.register({ area: PALETTE_AREA, id: 'title', data: {
+         id: 'pageTools.title', label: 'Copy page title',
+         run: async () => ctx.os.writeClipboard(String(await ctx.preview.executeJavaScript('document.title')))
+       } })
+     }
+   }
+   ```
+
+   A plugin that did not declare it is refused on every call; nothing is asked
+   and nothing runs.
+2. **The user allows it per origin.** The first call on a page origin raises an
+   app-owned dialog naming the plugin and the origin (`https://mail.example.com`).
+   *Allow on this site* persists a grant for that plugin and origin; *Don't
+   allow* (or Esc) refuses for the rest of the app run, then asks again next
+   launch. Grants are listed on the plugin's row in **Capabilities → Plugins**,
+   each with its own revoke; a revoked origin asks again.
+3. **Web origins only.** `http(s)://host[:port]`; `about:blank`, `data:` and
+   `file:` pages are refused because a grant could not be scoped to one site.
+4. **The origin is re-checked in the page.** The script runs behind an
+   in-page `window.location.origin` guard, so a navigation between the consent
+   check and the run refuses instead of landing on another site.
+
+```js
+ctx.preview.isAvailable()             // declared AND a live Browser page in this window (not consent)
+await ctx.preview.executeJavaScript(code)
+// rejects: undeclared · 'No preview page is open.' · non-web origin ·
+//          '<Plugin> is not allowed to run scripts on <origin>.' · page changed origin
+```
+
+Reach the page only through this door. Querying or creating a `<webview>`
+(`document.querySelector('webview')`) bypasses the declaration and the
+consent, and fails the catalog's `desktop surface` lint (`preview guest
+reach`). A popped-out Browser window is not bridged.
 
 ### Desktop appearance settings — `host.settings`
 
@@ -1925,6 +2374,9 @@ const tab = ctx.storage.get('lastTab', 'summary')
 ctx.storage.remove('lastTab')
 ```
 
+For files (a vault, a notes folder, exports) use [`ctx.files`](#plugin-files):
+your own data folder plus folders the user grants you.
+
 ## Bundled plugins
 
 A plugin can ship in-tree at `apps/desktop/src/plugins/<id>/plugin.tsx` (default
@@ -1960,7 +2412,15 @@ installs the trust comes from admission — a human reviewed the exact pinned
 commit — backed by two tripwires: the `desktop surface` lint at admission and
 the loader's import allowlist (`@hermes/plugin-sdk` and `react*` only; a static
 or dynamic `import` of anything else, including `https:` URLs, fails the load).
-Neither is a sandbox. A future remote-source door will need a real boundary
+Neither is a sandbox. Doors that touch user data outside the app are gated
+on top of that: `ctx.preview.executeJavaScript` needs a declared capability
+and the user's per-origin consent ([Preview page scripts](#preview-page-scripts)).
+File access follows the same rule: a catalog plugin
+should read and write through [`ctx.files`](#plugin-files), not the raw
+`window.hermesDesktop` file bridge. `ctx.files` is enforced in the main
+process, so a plugin that uses it (or untrusted text it handles, such as a
+note name from the model) cannot leave the folders the user granted; the raw
+bridge has no such limit, which is why catalog review asks for `ctx.files`. A future remote-source door will need a real boundary
 (iframe/worker + CSP + capability gating) before it can land; do not treat this
 pipeline as a trust boundary.
 
@@ -2002,10 +2462,10 @@ pipeline as a trust boundary.
 
 | Category | Exports |
 |----------|---------|
-| Host | `host` (`.state.*`, `.settings`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`, `.sessions`, `.skills`, `.toolsets`, `.profiles`, `.pluginDecisions`) |
-| Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginPet`, `PetSayOptions`, `PetMessageTone`, `PluginAppActionId`, `PluginAppActionInfo`, `PluginRunActionResult`, `PLUGIN_APP_ACTIONS`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
-| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `MODEL_MENU_ROW_AREA`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS`, `SETTINGS_PLUGINS_AREA` |
-| Area payloads | `PluginSettingsPage`, `PluginSettingsSubpage` (+ `pluginSettingsHref`), `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `SessionRowSlotContribution`, `SidebarNavPrefsContribution` |
+| Host | `host` (`.state.*`, `.settings`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`, `.spellcheck`, `.sessions`, `.skills`, `.toolsets`, `.profiles`, `.pluginDecisions`) |
+| Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginFiles`, `PluginFolder`, `PluginFileEntry`, `PluginFilesResult`, `PluginOs`, `PluginPet`, `PetSayOptions`, `PetMessageTone`, `PluginAppActionId`, `PluginAppActionInfo`, `PluginRunActionResult`, `PLUGIN_APP_ACTIONS`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
+| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `MODEL_MENU_ROW_AREA`, `KANBAN_CARD_AREAS`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS`, `SETTINGS_PLUGINS_AREA` |
+| Area payloads | `PluginSettingsPage`, `PluginSettingsSubpage` (+ `pluginSettingsHref`), `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `ComposerContextMenuProvider` (+ `ComposerContextMenuItem`, `ComposerContextMenuContext`, `ComposerContextMenuAction`), `SessionRowSlotContribution`, `KanbanCardBadgeContribution` (+ `KanbanCard`, `KanbanCardBoard`, `KanbanCardBadge`, `KanbanCardBadgeTone`, `KANBAN_CARD_BADGE_HUES`, `KANBAN_CARD_BADGE_LIMITS`), `SidebarNavPrefsContribution` |
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute`, `WorkspacePageHeaderControl` |
 | Theming | `useTheme`, `requestTheme`, `setAccentOverride`, `$accentOverride`, `retintTheme`, `themeHue`, `DesktopTheme`, `DesktopThemeColors`, plus OKLCH math (`hexToOklch`, `oklchToHex`, `oklchToSrgb255`, `mixOklab`, `maxChroma`, `hueDelta`, `normalizeHex`) and sRGB measures (`contrastRatio` — `number | null`, null for unparseable input — `readableOn`) |
 | UI kit | `Button`, `Input`, `Textarea`, `Select*`, `Switch`, `Checkbox`, `SegmentedControl`, `Tabs*`, `Dialog*`, `ConfirmDialog`, `DropdownMenu*`, `ContextMenu*`, `Popover*`, `Tip`/`Tooltip*`, `Badge`, `Kbd`/`KbdGroup`, `SearchField`, `ScrollArea`, `Separator`, `Skeleton`, `GlyphSpinner`, `Loader`, `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`, `DecodeText`, `SandboxedFrame` |

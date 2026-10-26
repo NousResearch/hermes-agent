@@ -41,6 +41,8 @@ from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.tcp_site import start_tcp_site
 from gateway.platforms.webhook_coalesce import WebhookCoalescer, validate_coalesce_config
 from gateway.platforms.webhook_filters import DEFAULT_SCRIPT_TIMEOUT_SECONDS, WebhookRouteProcessor
+from gateway.platforms.webhook_mcp_events import (
+    handle_mcp_event_control, mcp_event_delivery_id, render_mcp_event_prompt)
 from gateway.response_filters import is_autonomous_silence_response
 
 logger = logging.getLogger(__name__)
@@ -70,6 +72,12 @@ _TEMPLATE_KEY_RE = re.compile(r"\{([a-zA-Z0-9_.]+)\}")
 _REPO_RE = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
 # Credentials `gh` reads; a routed profile's github_comment must use its own, never the process env's.
 _GH_TOKEN_VARS = ("GH_TOKEN", "GITHUB_TOKEN")
+
+
+def _header_delivery_id(headers) -> str:
+    """The provider's delivery id (GitHub, Svix, Standard Webhooks, generic), else a fresh one."""
+    return headers.get("X-GitHub-Delivery", headers.get("svix-id", headers.get(
+        "webhook-id", headers.get("X-Request-ID", uuid.uuid4().hex))))
 
 
 @dataclass(frozen=True)
@@ -657,9 +665,16 @@ class WebhookAdapter(BasePlatformAdapter):
         route_name, route_config, profile, error_response = self._resolve_route(request)
         if error_response is None:
             raw_body, error_response = await self._read_authenticated_body(request, route_name, route_config)
-        if error_response is None:  # a parked profile is retried, before any delivery id is recorded
-            from gateway.platforms.webhook_ingress import parked_profile_refusal
-            error_response = parked_profile_refusal(self.gateway_runner, profile)
+        if error_response is not None:
+            return error_response
+        headers = request.headers
+        delivery_id = _header_delivery_id(headers)
+        # A parked profile is retried, before any delivery id is recorded. The check resolves
+        # ``profile_routes`` against the very source admission builds for this delivery.
+        from gateway.platforms.webhook_ingress import parked_profile_refusal
+        error_response = parked_profile_refusal(
+            self.gateway_runner, profile, route_config,
+            lambda: self._admission_source(route_name, profile, delivery_id))
         if error_response is not None:
             return error_response
         # Rate limiting (after auth)
@@ -668,7 +683,10 @@ class WebhookAdapter(BasePlatformAdapter):
         payload = self._parse_body(raw_body)
         if payload is _UNPARSEABLE:
             return _json_error("Cannot parse body", 400)
-        headers = request.headers
+        mcp_control = await handle_mcp_event_control(self, route_name, route_config, payload, profile)
+        if mcp_control is not None:
+            return mcp_control
+        delivery_id = mcp_event_delivery_id(route_config, payload) or delivery_id
         event_type = (headers.get("X-GitHub-Event", "") or headers.get("X-GitLab-Event", "")
                       or payload.get("event_type", "") or payload.get("type", "") or "unknown")
         allowed_events = route_config.get("events", [])
@@ -693,12 +711,11 @@ class WebhookAdapter(BasePlatformAdapter):
                     logger.info("[webhook] script ignored event=%s route=%s", event_type, route_name)
                     return web.json_response({"status": "ignored", "reason": "script", "route": route_name})
                 payload = transformed_payload or payload
-            prompt = self._render_prompt(route_config.get("prompt", ""), payload, event_type, route_name)
+            prompt = (render_mcp_event_prompt(self, route_config, payload, event_type, route_name)
+                      or self._render_prompt(route_config.get("prompt", ""), payload, event_type, route_name))
             # cron_job routes: the job's own skills apply; the rendered prompt is only per-run context.
             if (skills := route_config.get("skills", [])) and not route_config.get("cron_job"):
                 prompt = self._apply_skills(prompt, skills)
-        delivery_id = headers.get("X-GitHub-Delivery", headers.get("svix-id", headers.get(
-            "webhook-id", headers.get("X-Request-ID", uuid.uuid4().hex))))
         now = time.time()  # idempotency: skip duplicate deliveries (webhook retries)
         delivery_identity = _WebhookDeliveryIdentity.from_parts(profile, route_name, delivery_id)
         coalesce = route_config.get("coalesce")
@@ -755,6 +772,21 @@ class WebhookAdapter(BasePlatformAdapter):
         task.add_done_callback(self._background_tasks.discard)
         return task
 
+    def _admission_source(self, route_name: str, profile, delivery_id: str):
+        """The ``SessionSource`` admission builds for one delivery, ``profile_routes`` resolved on it.
+        The edge's coalesced-route check (``parked_profile_refusal``) asks this same source, so a
+        route rule matches there exactly when it matches at admission."""
+        identity = _WebhookDeliveryIdentity.from_parts(profile, route_name, delivery_id)
+        source = self.build_source(chat_id=identity.session_chat_id, chat_name=f"webhook/{route_name}",
+                                   chat_type="webhook", user_id=f"webhook:{route_name}", user_name=route_name)
+        if profile and isinstance(profile, str):
+            # The ``/p/<profile>/`` prefix names the profile and wins over ``profile_routes``; the
+            # edge already refused it (retryable 503) when that profile is not served. Drop what
+            # ``build_source`` resolved from the routes, or a rejected route would refuse it here.
+            source.profile = profile
+            source.profile_route_rejected, source._rejected_route_profile = False, None
+        return source
+
     async def _admit_agent_run(self, payload: Any, prompt: str, delivery_id: str, now: float, *, route_config: dict,
                                route_name: str, profile, event_type: str) -> Optional[str]:
         """Record delivery info and admit the run through the durable producer (shared by the immediate
@@ -772,10 +804,7 @@ class WebhookAdapter(BasePlatformAdapter):
         self._delivery_info_created[session_chat_id] = now
         self._delivery_info_order.append((now, session_chat_id))
         self._prune_delivery_info(now)
-        source = self.build_source(chat_id=session_chat_id, chat_name=f"webhook/{route_name}", chat_type="webhook",
-                                   user_id=f"webhook:{route_name}", user_name=route_name)
-        if profile and isinstance(profile, str):
-            source.profile = profile
+        source = self._admission_source(route_name, profile, delivery_id)
         event = MessageEvent(text=prompt, message_type=MessageType.TEXT, source=source, raw_message=payload,
                              message_id=delivery_id, timestamp=datetime.fromtimestamp(0, UTC))
         from gateway.platforms.webhook_ingress import admit_producer

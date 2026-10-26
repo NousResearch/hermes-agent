@@ -93,3 +93,33 @@ async def test_editor_reconnects_to_a_restarted_gateway_without_resending(monkey
         await agent.aclose()
         for owner in owners:
             owner.server.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["reconnect", "gap"])
+async def test_a_recovered_snapshot_repaints_the_sessions_edit_mode(path):
+    """ACP-7: a reconnect or replay gap adopts a fresh snapshot and skips the events before it, so the
+    snapshot's own edit policy is what the editor is shown (owner Don't Ask is never left as Default)."""
+    agent = GatewayACPAgent()
+    agent._conn = AsyncMock()
+    agent._snapshots["s"] = {"pending": [], "replay_epoch": "old", "last_sequence": 0}
+    agent._modes["s"] = "default"
+    snapshot = {"session_id": "s", "pending": [], "prompts": [], "replay_epoch": "new", "last_sequence": 99,
+                "info": {"edit_approval_policy": "session"}}
+
+    async def rpc(method, **kwargs):
+        assert method in {"session.resume", "config.set"}, method
+        return snapshot if method == "session.resume" else {}
+
+    agent._gateway = type("Gateway", (), {"rpc": staticmethod(rpc)})()
+    try:
+        if path == "reconnect":
+            await agent._reattach(agent._gateway)
+        else:
+            await agent._gap_guard("session.replay_gap", "s", None)
+        modes = [call.kwargs["update"].current_mode_id for call in agent._conn.session_update.await_args_list
+                 if call.kwargs["update"].session_update == "current_mode_update"]
+        assert agent._modes["s"] == "dont_ask" and modes == ["dont_ask"]
+    finally:
+        for task in agent._background:
+            task.cancel()

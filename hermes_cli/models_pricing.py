@@ -225,7 +225,8 @@ def fetch_models_with_pricing(
     another's read. *include_sale_original* (Nous Portal only) copies the gateway's pre-discount
     ``pricing.original`` rates through as a nested ``original`` dict for sale chrome."""
     from hermes_cli.chat_catalog import catalog_item_is_generation
-    from hermes_cli.models import _HERMES_USER_AGENT, _openrouter_model_supports_tools
+    from hermes_cli.models import _openrouter_model_supports_tools
+    from hermes_cli.version_info import hermes_user_agent
     url_root = (base_url or "").rstrip("/")
     cache_key = url_root + _pricing_auth_fingerprint(api_key)
     if not force_refresh:
@@ -234,7 +235,7 @@ def fetch_models_with_pricing(
             return cached
 
     url = url_root + "/v1/models"
-    headers = {"Accept": "application/json", "User-Agent": _HERMES_USER_AGENT}
+    headers = {"Accept": "application/json", "User-Agent": hermes_user_agent()}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     payload = _get_json(url, headers, timeout)
@@ -260,6 +261,18 @@ def fetch_models_with_pricing(
             # Nous Portal-only: the gateway bills this row to a subscription the account holds, not to credits.
             if include_sale_original and item.get("billing_mode") == "subscription":
                 entry["billing_mode"] = "subscription"
+            # Usage-window plans only (only those callers ever see the mark): the gateway marks the
+            # models that count against the plan's monthly large-model limit.
+            if include_sale_original and item.get("top_tier") is True:
+                entry["top_tier"] = True
+            # Same callers: the gateway's per-plan picker label (free / low / medium / top_tier).
+            if include_sale_original and isinstance(item.get("usage_level"), str):
+                entry["usage_level"] = item["usage_level"]
+            # Nous only: the catalog's display name, so a limit line can name a model the way the
+            # picker does ("Model A", not the routed id).
+            if include_sale_original and isinstance(item.get("name"), str) and item["name"].strip() \
+                    and item["name"].strip() != mid:
+                entry["name"] = item["name"].strip()
             # Nous Portal-only: on-sale rows join the picker, which must not offer a tool-less model.
             if include_sale_original and not _openrouter_model_supports_tools(item):
                 entry["tools"] = False
@@ -439,7 +452,7 @@ def _fetch_kilocode_pricing(timeout: float = 8.0, *, force_refresh: bool = False
     The gateway's ``-1`` rate sentinel means "varies" (auto-router models); no price is shown
     rather than a fabricated one, so such rows are skipped.
     """
-    from hermes_cli.models import _HERMES_USER_AGENT
+    from hermes_cli.version_info import hermes_user_agent
 
     cache_key = _kilo_pricing_scope()
     if not cache_key:
@@ -449,7 +462,7 @@ def _fetch_kilocode_pricing(timeout: float = 8.0, *, force_refresh: bool = False
         if cached is not None:
             return cached
 
-    headers = {"Accept": "application/json", "User-Agent": _HERMES_USER_AGENT}
+    headers = {"Accept": "application/json", "User-Agent": hermes_user_agent()}
     api_key = os.getenv("KILOCODE_API_KEY", "").strip()
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
@@ -661,7 +674,7 @@ def _fireworks_pricing_from_models_dev(*, force_refresh: bool = False) -> dict[s
 def _fetch_novita_pricing(timeout: float = 8.0, *, force_refresh: bool = False) -> dict[str, dict[str, str]]:
     """NovitaAI /v1/models pricing (per-million prices in units of 0.0001 USD → per-token strings),
     cached on the resolved base URL so menu renders don't re-hit the network."""
-    from hermes_cli.models import _HERMES_USER_AGENT
+    from hermes_cli.version_info import hermes_user_agent
     api_key = os.getenv("NOVITA_API_KEY", "").strip()
     if not api_key:
         return {}
@@ -672,7 +685,7 @@ def _fetch_novita_pricing(timeout: float = 8.0, *, force_refresh: bool = False) 
         if cached is not None:
             return cached
 
-    headers = {"Authorization": f"Bearer {api_key}", "Accept": "application/json", "User-Agent": _HERMES_USER_AGENT}
+    headers = {"Authorization": f"Bearer {api_key}", "Accept": "application/json", "User-Agent": hermes_user_agent()}
     payload = _get_json(cache_key + "/models", headers, timeout)
     if payload is None:
         return _cache_catalog(cache_key, {})

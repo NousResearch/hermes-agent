@@ -6,6 +6,7 @@ import sys
 
 import psutil
 
+from hermes_cli.process_identity import worker_birth
 from agent.runtime_session_store import RuntimeSessionStore, WorkerRPC
 
 
@@ -36,7 +37,7 @@ def main():
     rpc = WorkerRPC(home)
     scope = dict(profile_id=str(home), session_id=command['session_id'],
                  execution_id='agent-worker', generation=0, pid=os.getpid(),
-                 birth=psutil.Process().create_time(), secret='private-agent-worker')
+                 birth=worker_birth(psutil.Process()), secret='private-agent-worker')
     registered = rpc('worker.register', **scope, kind='compute')
     scope['epoch'] = registered['owner_epoch']
     store = RuntimeSessionStore(rpc, scope, home / 'worker-outboxes' / 'agent-worker')
@@ -60,7 +61,7 @@ def main():
                     opened = fn()
                     if opened is not None:
                         release_or_close(opened)
-                    return name, 'unexpected_success'
+                    return name, 'opened:' + type(opened).__name__
                 except Exception as exc:
                     return name, str(exc)
             with ThreadPoolExecutor(max_workers=1) as pool:

@@ -6,6 +6,7 @@ of those trip the breaker and park a card that never ran (the in-flight handoff 
 must never submit the claim twice, and a non-transient refusal still fails at once.
 """
 
+import asyncio
 from contextlib import asynccontextmanager
 
 import pytest
@@ -25,6 +26,8 @@ def _owner(states, submitted):
             raise unavailable(f"Gateway {state}: update_paused", state)
 
         class _Client:
+            events = asyncio.Queue()
+
             async def rpc(self, method, **params):
                 submitted.append(method)
                 return {"session_id": "s1", "receipt": {"status": "terminal", "admission_id": "a1"}}

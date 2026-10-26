@@ -10,6 +10,7 @@ from dataclasses import replace
 from datetime import datetime
 import json
 import logging
+import os
 
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
@@ -23,7 +24,9 @@ _EVENT_FIELDS = (
     'reply_to_message_id', 'reply_to_text', 'reply_to_author_id',
     'reply_to_author_name', 'reply_to_is_own_message', 'allow_gateway_control',
 )
-_CONTEXT_FIELDS = ('auto_skill', 'channel_prompt', 'channel_context', 'reply_expected')
+# ``reply_anchor_override`` = '' is Telegram topic transfer's "do not quote the root DM" (#139136).
+_CONTEXT_FIELDS = ('auto_skill', 'channel_prompt', 'channel_context', 'reply_expected', 'reply_anchor_override',
+                   'edit_revision')
 # Closed metadata contract: only the keys the Baileys adapter stamps on ordinary inbound
 # (``WhatsAppAdapter._build_message_event``) cross native admission; any other key refuses.
 _WHATSAPP_METADATA = frozenset({'whatsapp_native_type', 'whatsapp_native', 'whatsapp_from_owner'})
@@ -63,7 +66,24 @@ def _adapter_event(event, **changes):
     """An adapter's event at the envelope boundary: an absent media list (``None``) is no media.
     Any other non-list still reaches ``_validate_native`` and refuses."""
     changes.update({name: [] for name in _MEDIA_FIELDS if getattr(event, name) is None})
-    return replace(event, **changes) if changes else event
+    return _drop_remote_media(replace(event, **changes) if changes else event)
+
+
+def _drop_remote_media(event):
+    """An adapter that could not cache a download leaves its remote URL in ``media_urls`` (DingTalk
+    always does). Capture takes only local files, so that one entry refused the whole message, text
+    included: drop it and tell the agent instead. Malformed media lists still reach validation."""
+    urls, types = event.media_urls, event.media_types
+    if not isinstance(event.text, str) or _media_clause(event) is not None or all(map(os.path.isabs, urls)):
+        return event
+    kept = [index for index, url in enumerate(urls) if os.path.isabs(url)]
+    notes = [f"[The user sent an attachment ({types[index] if types else 'file'}) that could not be retrieved.]"
+             for index in range(len(urls)) if index not in kept]
+
+    def keep(values):
+        return [values[index] for index in kept] if values else values
+    return replace(event, text='\n'.join(filter(None, [event.text, *notes])), media_urls=keep(urls),
+                   media_types=keep(types), media_text_inlined=keep(event.media_text_inlined))
 
 
 def _refuse(event, reason, clause):
@@ -99,7 +119,7 @@ def _event_clause(runner, event, provenance, fresh_roles):
     if not isinstance(event.message_type, MessageType):
         return 'message_type'
     # The ingress router's own classifier: ``/tmp/x is broken`` is text, not a command.
-    if event.message_type == MessageType.COMMAND or event.get_command():
+    if event.get_command():
         return 'command'
     if event.internal:
         return 'internal'
@@ -138,7 +158,7 @@ def _validate_native(runner, event, provenance=None, fresh_roles=False):
             source.platform, "authorization_is_upstream", runner._adapter_profile_for_source(source))
     if not runner._is_user_authorized_for_source(source, allow_adapter_delegation=delegated):
         _refuse(event, 'permission_denied', 'user_not_authorized')
-    for name in ('channel_prompt', 'channel_context'):
+    for name in ('channel_prompt', 'channel_context', 'reply_anchor_override'):
         if getattr(event, name) is not None and not isinstance(getattr(event, name), str):
             _refuse(event, 'invalid_params', name)
     if event.reply_expected is not None and type(event.reply_expected) is not bool:
@@ -178,7 +198,30 @@ async def prepare_native(runner, event):
     encoded_source = _validate_native(runner, frozen, provenance, fresh_roles)
     # Copy + SHA-256 + fsyncs of up to max_inbound_media_bytes stay off the owner loop; the
     # copied context carries the admission's capture lease.
-    media = await asyncio.to_thread(capture_native_media, frozen.media_urls) if frozen.media_urls else None
+    media = None
+    if frozen.media_urls:
+        from gateway.session_ingress_media import _lease_scope, abandon_capture, release_abandoned_capture
+        from gateway.session_runtime_workers import track_mutation
+        scope = _lease_scope.get()
+        work = asyncio.to_thread(capture_native_media, frozen.media_urls)
+        capture = (track_mutation(scope.authority, work) if scope is not None and scope.authority is not None
+                   else asyncio.create_task(work))
+        try:
+            # Cancelling this waiter must not cancel the thread's completion observer: the thread
+            # may publish a path after the caller's lease context has already exited.
+            media = await asyncio.shield(capture)
+        except asyncio.CancelledError:
+            if scope is not None and scope.authority is not None:
+                scope.abandoned = True
+                def finished(done):
+                    if not done.cancelled():
+                        done.exception()  # observe a failed copy too; partial publishes still collect
+                    track_mutation(scope.authority, release_abandoned_capture(scope))
+                capture.add_done_callback(finished)
+            raise
+        except BaseException:
+            await abandon_capture(scope)
+            raise
     return _snapshot_native(runner, frozen, provenance, fresh_roles, encoded_source, media)
 
 
@@ -209,7 +252,8 @@ def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_sourc
         envelope['event']['inherit_channel_pin'] = True
     if metadata := _native_metadata(event):
         envelope['event']['metadata'] = metadata
-    if event.message_type != MessageType.TEXT:
+    # COMMAND that passed admission is path text (``/Users/x is broken``): replay it as text.
+    if event.message_type not in (MessageType.TEXT, MessageType.COMMAND):
         envelope['message_type'] = event.message_type.value
     if event.media_urls:
         envelope['media'] = media if media is not None else capture_native_media(event.media_urls)

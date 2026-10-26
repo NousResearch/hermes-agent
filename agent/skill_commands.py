@@ -595,9 +595,9 @@ def _skill_dirs_signature() -> Optional[tuple]:
     it cannot be computed (a root that cannot be stat'ed), which keeps the published map rather than
     rescanning on every lookup. Any other error raises: the catalog scan itself takes the same signature
     unguarded (``tools.skills_tool._skill_catalog``), and a swallowed bug would pin a stale map silently."""
-    from tools.skills_tool import _get_disabled_skill_names, _skill_search_dirs, _skills_scan_signature
+    from tools.skills_tool import _get_disabled_skill_names, skill_search_dirs, _skills_scan_signature
     try:
-        roots, _active = _skill_search_dirs()
+        roots, _active = skill_search_dirs()
         return _skills_scan_signature([d for _tier, d in roots], _get_disabled_skill_names())
     except OSError:
         logger.debug("Skill dir signature failed", exc_info=True)
@@ -656,6 +656,7 @@ def get_plugin_skill_commands() -> dict[str, dict[str, Any]]:
     """
     from agent.skill_utils import get_disabled_skill_names
     from hermes_cli.plugins import discover_plugins, get_plugin_manager
+    from hermes_cli.plugins_content import plugin_skill_owners
     from hermes_cli.plugins_discovery import _get_disabled_plugins
     from hermes_constants import get_hermes_home
 
@@ -674,7 +675,7 @@ def get_plugin_skill_commands() -> dict[str, dict[str, Any]]:
     return {
         key: info for key, info in cached.items()
         if not (info["name"] in disabled or info["name"].split(":", 1)[1] in disabled
-                or info["name"].split(":", 1)[0] in disabled_plugins)
+                or plugin_skill_owners(manager, info["name"]) & disabled_plugins)
     }
 
 

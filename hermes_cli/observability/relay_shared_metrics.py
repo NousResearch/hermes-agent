@@ -1394,10 +1394,30 @@ def _reconcile_send_consent_once() -> None:
         logger.warning("Unable to reconcile shared-metrics send consent", exc_info=True)
 
 
+# Hooks whose only effect is a process mark (no task, no scope): gated like record_process_mark.
+_PROCESS_MARK_HOOKS = frozenset({"post_auxiliary_call"})
+
+
+def _process_marks_admitted() -> bool:
+    """Whether the inherited turn lets a process-level mark through.
+
+    A process mark has no owning task and opens no scope, so a turn that has CLOSED does not gate
+    it: background work spawned under the turn (a turn-end compaction pass, title generation)
+    inherits that turn through its copied context and still reports after it ends. A turn Relay
+    skipped (a concurrent turn on the session) keeps gating, open or closed."""
+    turn = relay_runtime.current_turn()
+    return turn is None or turn.relay_enabled
+
+
 def observe_lifecycle(hook_name: str, **kwargs: Any) -> None:
     """Project one Hermes lifecycle event into the core Relay integration."""
     _reconcile_send_consent_once()
-    if not handles_hook(hook_name) or not relay_runtime.relay_instrumentation_enabled():
+    if not handles_hook(hook_name):
+        return
+    if not (
+        _process_marks_admitted() if hook_name in _PROCESS_MARK_HOOKS
+        else relay_runtime.relay_instrumentation_enabled()
+    ):
         return
     runtime = _get_runtime()
     if runtime is None:
@@ -1507,7 +1527,7 @@ def finish_task_run(
 
 def record_process_mark(mark: str, data: dict[str, Any]) -> None:
     """Emit one process-level decision mark when shared metrics are on (never raises)."""
-    if not enabled() or not relay_runtime.relay_instrumentation_enabled():
+    if not enabled() or not _process_marks_admitted():
         return
     runtime = _get_runtime(retry_failed=True)
     if runtime is not None:
@@ -1518,7 +1538,7 @@ def record_process_marks_saved(marks: list[tuple[str, dict[str, Any]]]) -> int:
     """``record_process_mark`` for facts recovered from a file the caller deletes only once they are
     saved (a busy store would otherwise lose them for good). How many rows are settled: saved, rejected
     by the contract, or nothing to record because collection is off."""
-    if not enabled() or not relay_runtime.relay_instrumentation_enabled():
+    if not enabled() or not _process_marks_admitted():
         return len(marks)
     runtime = _get_runtime(retry_failed=True)
     return (runtime._safe(runtime.record_process_marks_saved, marks) or 0) if runtime is not None else 0

@@ -50,10 +50,36 @@ PERSISTENCE_ONLY_MESSAGE_FIELDS = frozenset(
 ) | REPAIR_BOOKKEEPING_FIELDS
 
 
+# Connector data-use requirement on a tool message; persisted inside ``display_metadata``, never sent to a model.
+DATA_USE = "data_use"
+
+
+def data_use_requirement(messages: Any) -> frozenset[str]:
+    """The union of ``data_use`` over *messages*: what the model receiving them must guarantee."""
+    return frozenset(r for m in messages or () if isinstance(m, Mapping) for r in m.get(DATA_USE) or ())
+
+
+def stamp_data_use(message: MutableMapping[str, Any], requires: list[str]) -> None:
+    """Mark a tool message with its requirement. The ``display_metadata`` copy is the durable one: that
+    column already rides every writer, branch and compaction copy, and replay lifts it back (SessionDB)."""
+    if not requires:
+        return
+    message[DATA_USE] = list(requires)
+    metadata = message.get("display_metadata")
+    message["display_metadata"] = {**(metadata if isinstance(metadata, dict) else {}), DATA_USE: list(requires)}
+
+
+def lift_data_use(message: MutableMapping[str, Any]) -> None:
+    """Restore a replayed row's ``data_use`` key from its durable ``display_metadata`` copy."""
+    metadata = message.get("display_metadata")
+    if isinstance(metadata, dict) and metadata.get(DATA_USE):
+        message[DATA_USE] = list(metadata[DATA_USE])
+
+
 # Replay carriers the preflight estimate prices at 0, exactly as the compaction tail walk does (opaque signatures,
 # duplicate reasoning copies, ordered sidecars); a mismatch between the two estimates loops compaction.
 UNPRICED_REPLAY_FIELDS = frozenset({"_anthropic_content_blocks", "reasoning_details", "extra_content",
-                                    "reasoning_opaque", "reasoning_text", "bedrock_content_blocks"})
+                                    "reasoning_opaque", "reasoning_text", "bedrock_content_blocks", DATA_USE})
 
 
 def without_persistence_fields(msg: Mapping[str, Any]) -> Mapping[str, Any]:

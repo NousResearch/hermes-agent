@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
 from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.urllib_security import open_credentialed_url
-from hermes_cli.version_info import get_version_info
+from hermes_cli.version_info import hermes_user_agent
 from hermes_cli.models_catalog_static import (
     CuratedFallbackModels,
     CANONICAL_PROVIDERS,
@@ -66,10 +66,6 @@ from hermes_cli.models_local import (
     fetch_ollama_cloud_models)
 
 logger = logging.getLogger(__name__)
-
-# Identify ourselves so endpoints fronted by Cloudflare's Browser Integrity
-# Check (error 1010) don't reject the default ``Python-urllib/*`` signature.
-_HERMES_USER_AGENT = f"hermes-cli/{get_version_info().base_version}"
 
 COPILOT_BASE_URL = "https://api.githubcopilot.com"
 COPILOT_MODELS_URL = f"{COPILOT_BASE_URL}/models"
@@ -550,9 +546,8 @@ def recommended_nous_default_model() -> dict[str, Any]:
     is selectable (callers degrade). Shared by ``GET /api/model/recommended-default`` and the
     sign-in completion in ``hermes_cli.anon_auth`` so both land on the same model.
     """
-    from hermes_cli import models_pricing as mp
+    from hermes_cli import model_picker_usage, models_pricing as mp
     from hermes_cli.auth import get_provider_auth_state
-
     model_ids = get_curated_nous_model_ids()
     pricing = mp.get_pricing_for_provider("nous") or {}
     free_tier = check_nous_free_tier(force_fresh=True)
@@ -569,7 +564,8 @@ def recommended_nous_default_model() -> dict[str, Any]:
         model_ids, _unavailable = partition_nous_models_by_tier(model_ids, pricing, free_tier=True)
         # Never default onto a subscription-billed row: spending that plan is the user's call.
         model_ids = [mid for mid in model_ids if not _is_subscription_billed(pricing.get(mid))] or model_ids
-    return {"provider": "nous", "model": pick_silent_default_model(model_ids, provider="nous"),
+    model = "" if free_tier else model_picker_usage.window_plan_default(model_ids, pricing)
+    return {"provider": "nous", "model": model or pick_silent_default_model(model_ids, provider="nous"),
             "free_tier": bool(free_tier)}
 
 
@@ -2159,14 +2155,14 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
     """Drop one provider's cache entry, or wipe the whole cache (``provider=None``). Used by
     ``/model --refresh`` and ``hermes model --refresh``."""
     try:
-        # Native Ollama tags are keyed by root URL, not provider slug — a targeted refresh can't
-        # identify the root from the name alone, so clear this small in-process cache every time.
+        from hermes_cli.model_catalog import clear_fetch_backoff
+        clear_fetch_backoff()  # a recovered catalog is fetched now, not after the offline backoff
+        # Native Ollama tags are keyed by root URL, not provider slug: clear them on every refresh.
         _OLLAMA_LOCAL_MODELS_CACHE.clear()
         _OLLAMA_LOCAL_PROBE_FAILURE_CACHE.clear()
         _OLLAMA_LOCAL_PROBE_REACHABLE.clear()
-        # A fresh copilot-acp CLI login must be visible to the next /model switch (this helper is
-        # what ``--refresh`` runs): don't let the 5-min session memo (or its failure memo) serve
-        # a stale signed-out probe past an explicit refresh.
+        # A fresh copilot-acp CLI login must show on the next /model switch: ``--refresh`` drops the
+        # 5-min session memo (and its failure memo) so it never serves a stale signed-out probe.
         global _copilot_acp_session_memo
         _copilot_acp_session_memo = None
         from hermes_cli.models_cache_lock import write_under_cache_lock
@@ -2680,9 +2676,9 @@ def probe_api_models(
             return _probe_result(
                 None, normalized.rstrip("/") + "/models", normalized,
                 alternate_base if alternate_base != normalized else None)
-    headers: dict[str, str] = {"User-Agent": _HERMES_USER_AGENT}
+    headers: dict[str, str] = {"User-Agent": hermes_user_agent()}
     if urllib.parse.urlparse(normalized).hostname == "generativelanguage.googleapis.com":
-        headers["X-Goog-Api-Client"] = f"hermes-agent/{get_version_info().base_version}"
+        headers["X-Goog-Api-Client"] = hermes_user_agent("hermes-agent")
     if api_key and api_mode == "anthropic_messages":
         headers["x-api-key"] = api_key
         headers["anthropic-version"] = "2023-06-01"
@@ -2784,7 +2780,7 @@ def _fetch_deepinfra_catalog(
         if last_fail is not None and (time.monotonic() - last_fail) < _DEEPINFRA_CATALOG_NEG_TTL:
             return None
 
-    headers: dict[str, str] = {"User-Agent": _HERMES_USER_AGENT}
+    headers: dict[str, str] = {"User-Agent": hermes_user_agent()}
     api_key = _deepinfra_env("DEEPINFRA_API_KEY")
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
@@ -2859,7 +2855,7 @@ def _fetch_ai_gateway_models(timeout: float = 5.0) -> Optional[list[str]]:
         from hermes_constants import AI_GATEWAY_BASE_URL
         base_url = AI_GATEWAY_BASE_URL
 
-    headers = {"Authorization": f"Bearer {api_key}", "User-Agent": _HERMES_USER_AGENT}
+    headers = {"Authorization": f"Bearer {api_key}", "User-Agent": hermes_user_agent()}
     try:
         url = base_url.rstrip("/") + "/models"
         data = _get_json(url, timeout=timeout, headers=headers)

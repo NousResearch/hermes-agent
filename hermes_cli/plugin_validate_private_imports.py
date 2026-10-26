@@ -27,6 +27,7 @@ from hermes_cli.plugin_validate_core_override import _hermes_top_level, _python_
 _PUBLIC = frozenset({
     # developer-guide / plugins docs
     "agent.account_usage", "agent.browser_provider", "agent.context_engine", "agent.credential_pool",
+    "agent.delegation_backends", "agent.delegation_provider", "hermes_cli.auth_model_picker:prompt_model_selection",
     "agent.image_gen_provider", "agent.memory_manager", "agent.memory_provider", "agent.secret_scope",
     "agent.secret_sources.base", "agent.subagent_lifecycle", "agent.terminal_env_provider",
     "agent.transports", "agent.transports.chat_completions", "agent.video_gen_provider",
@@ -46,6 +47,20 @@ _PUBLIC = frozenset({
     "agent.runtime_cwd:resolve_agent_cwd", "agent.usage_pricing:CostResult", "hermes_cli.auth_constants:AuthError",
     "tools.environments.base:BaseEnvironment", "tools.environments:BaseEnvironment",  # package ``__all__``
     "utils:atomic_json_write", "utils:read_json_or_empty",
+    # adding-platform-adapters.md § Public helpers for platform plugins
+    "gateway.platforms.access_policy_mixin:OwnAccessPolicyMixin", "tools.approval:resolve_gateway_approval",
+    "tools.clarify_gateway:get_pending", "tools.clarify_gateway:resolve_gateway_clarify",
+    "tools.clarify_gateway:mark_awaiting_text", "tools.clarify_gateway:SKIPPED",
+    "tools.url_safety:is_safe_url", "tools.url_safety:create_ssrf_safe_async_client",
+    "gateway.platforms._http_client_limits:platform_httpx_limits",
+    "hermes_cli.gateway_setup_wizard:print_setup_header", "hermes_cli.gateway_setup_wizard:confirm_reconfigure",
+    "hermes_cli.gateway_setup_wizard:offer_home_channel", "hermes_cli.gateway_setup_wizard:save_env_values",
+    "hermes_cli.gateway_setup_wizard:prompt_csv", "hermes_cli.setup:prompt", "hermes_cli.setup:prompt_choice",
+    "hermes_cli.setup:prompt_yes_no", "hermes_cli.cli_output",
+    # plugins/index.md § Read the skill catalog
+    "tools.skills_tool:find_all_skills", "tools.skills_tool:sort_skills", "tools.skills_tool:skill_search_dirs",
+    "tools.skills_tool:locate_skill", "tools.skills_tool:skill_lookup_path_error",
+    "tools.skills_sync:dir_hash", "tools.skill_usage:read_skill_name",
 })
 
 _SHOWN = 10

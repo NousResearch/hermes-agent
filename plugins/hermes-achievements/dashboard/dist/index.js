@@ -19,6 +19,12 @@
   // host SDK.  English fallback strings live alongside each call site.
   const useI18n = SDK.useI18n || function () { return { t: { achievements: null }, locale: "en" }; };
 
+  // Current dashboard locale, set by AchievementsPage on each render and read by
+  // api() to forward Accept-Language so the backend localizes the DYNAMIC payload
+  // (achievement names/descriptions/categories/criteria). Static UI chrome stays
+  // with the host's shared web/src/i18n catalogs via tx() — not duplicated here.
+  let _pluginLocale = "en";
+
   // Resolve a translation by dotted path (e.g. "card.share_text"); fall back to
   // the English string passed in.  Used inside components after they call
   // useI18n() so they can still render against an older host SDK that doesn't
@@ -57,7 +63,16 @@
     // Error("<status>: <body>") on non-2xx — the call sites' .catch() relies
     // on that to surface errors, so we let it propagate (don't swallow).
     const url = "/api/plugins/hermes-achievements" + path;
-    return SDK.fetchJSON(url, options);
+    const opts = options || {};
+    // Forward the dashboard locale (when non-English) so the backend overlays
+    // translated achievement data on the English snapshot. fetchJSON preserves
+    // caller-supplied headers and only injects auth on top.
+    if (_pluginLocale && _pluginLocale !== "en" && !new Headers(opts.headers || {}).has("Accept-Language")) {
+      const headers = new Headers(opts.headers || {});
+      headers.set("Accept-Language", _pluginLocale);
+      return SDK.fetchJSON(url, { ...opts, headers });
+    }
+    return SDK.fetchJSON(url, opts);
   }
 
   function AchievementIcon({ icon }) {
@@ -562,7 +577,11 @@
   }
 
   function AchievementsPage() {
-    const { t } = useI18n();
+    const { t, locale } = useI18n();
+    // Publish the dashboard locale to api() so subsequent fetches carry
+    // Accept-Language and receive localized achievement data. Assigned during
+    // render, before load()/refresh() fire their api() calls.
+    _pluginLocale = locale || "en";
     const [data, setData] = hooks.useState(null);
     const [loading, setLoading] = hooks.useState(true);
     const [error, setError] = hooks.useState(null);

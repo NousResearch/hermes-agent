@@ -28,18 +28,44 @@ MALFORMED = {
 }
 
 
+# Process-wide state a load_hermes_dotenv() pass writes. Snapshotted and restored in place (other modules
+# hold references to these containers) so these tests leave the process as they found it.
+_ENV_LOADER_STATE = ("_APPLIED_HOMES", "_SECRET_SOURCES", "_SOURCE_SUPPLIED_NAMES", "_SECRET_SOURCE_VALUES_BY_HOME",
+                     "_SECRET_SOURCE_RESTORE_BY_HOME", "_SECRET_SOURCE_WRITES_BY_HOME", "_LOADED_DOTENV_KEYS",
+                     "_DOTENV_PUBLISHED")
+_REGISTRY_STATE = ("_SOURCES", "_SOURCE_ORIGINS", "_SCOPED_SOURCES")
+
+
+def _snapshot(module, names):
+    saved = {}
+    for name in names:
+        value = getattr(module, name)
+        saved[name] = set(value) if isinstance(value, set) else {
+            k: dict(v) if isinstance(v, dict) else v for k, v in value.items()}
+    return saved
+
+
+def _restore(module, saved):
+    for name, value in saved.items():
+        target = getattr(module, name)
+        target.clear()
+        target.update(value)
+
+
 @pytest.fixture(autouse=True)
 def _clean_secret_state(monkeypatch):
+    from agent.secret_sources import registry
+
     monkeypatch.delenv("BWS_ACCESS_TOKEN", raising=False)
     monkeypatch.delenv("ZZ_NONMAP_DOTENV", raising=False)
     monkeypatch.delenv("ZZ_NONMAP_FROM_BW", raising=False)
-    env_loader._SECRET_SOURCES.clear()
-    env_loader._SECRET_SOURCE_VALUES_BY_HOME.clear()
+    monkeypatch.setattr(registry, "_BUILTINS_LOADED", registry._BUILTINS_LOADED)
+    saved_env_loader = _snapshot(env_loader, _ENV_LOADER_STATE)
+    saved_registry = _snapshot(registry, _REGISTRY_STATE)
     env_loader.reset_secret_source_cache()
     yield
-    env_loader._SECRET_SOURCES.clear()
-    env_loader._SECRET_SOURCE_VALUES_BY_HOME.clear()
-    env_loader.reset_secret_source_cache()
+    _restore(env_loader, saved_env_loader)
+    _restore(registry, saved_registry)
     os.environ.pop("ZZ_NONMAP_DOTENV", None)
     os.environ.pop("ZZ_NONMAP_FROM_BW", None)
 

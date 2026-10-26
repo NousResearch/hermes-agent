@@ -24,6 +24,21 @@ test('image recovery never offers expanded slash intent as an ordinary draft and
   expect((await readPreparedSubmission(slash))?.text).toBe('expanded skill instructions')
 })
 
+test('a browser journal read lists the storage keys once, however many stores it reads', async () => {
+  vi.stubGlobal('hermesDesktop', undefined)
+  const owner = { connectionId: 'local', profile: 'default' }
+
+  for (const id of ['a', 'b', 'c']) {
+    await writePreparedSubmission(id, { id, text: id, attachments: [], params: {}, owner })
+  }
+
+  await removePreparedSubmission('c', 'c')
+  const key = vi.spyOn(window.localStorage, 'key')
+  expect((await readPreparedSubmission('a'))?.text).toBe('a')
+  expect(await readPreparedSubmission('c')).toBeUndefined()
+  expect(key).toHaveBeenCalledTimes(2 * window.localStorage.length)
+})
+
 test('native preparation waits for acknowledgement and never downgrades a write failure to browser storage', async () => {
   let ack!: () => void
   const gate = new Promise<void>(resolve => { ack = resolve })

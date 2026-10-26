@@ -49,22 +49,27 @@ function readLegacySpent(): Record<string, string> {
   return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, string> : {}
 }
 
-// Every value stored under a key starting with `prefix`, by the rest of that key.
-function readPrefixed(prefix: string): Record<string, string> {
-  const values: Record<string, string> = {}
+const PREFIXES = [SPENT_PREFIX, LEGACY_RETIRED_PREFIX, ENTRY_PREFIX] as const
+type Prefixed = Record<(typeof PREFIXES)[number], Record<string, string>>
+
+// Every value stored under a key starting with one of the prefixes, by prefix and then by the
+// rest of that key, in one pass over localStorage.
+function readPrefixed(): Prefixed {
+  const values = Object.fromEntries(PREFIXES.map(prefix => [prefix, {}])) as Prefixed
 
   for (let index = 0; index < window.localStorage.length; index += 1) {
     const key = window.localStorage.key(index)
-    const value = key?.startsWith(prefix) ? window.localStorage.getItem(key) : null
+    const prefix = PREFIXES.find(candidate => key?.startsWith(candidate))
+    const value = key && prefix ? window.localStorage.getItem(key) : null
 
-    if (key && value) { values[key.slice(prefix.length)] = value }
+    if (key && prefix && value) { values[prefix][key.slice(prefix.length)] = value }
   }
 
   return values
 }
 
-function readSpent(): Record<string, string> {
-  return { ...readLegacySpent(), ...readPrefixed(SPENT_PREFIX), ...Object.fromEntries(retired) }
+function readSpent(prefixed: Prefixed): Record<string, string> {
+  return { ...readLegacySpent(), ...prefixed[SPENT_PREFIX], ...Object.fromEntries(retired) }
 }
 
 function writeSpent(key: string, id: string | undefined): void {
@@ -98,9 +103,10 @@ async function readJournal(): Promise<Record<string, PreparedSubmission>> {
   }
 
   const stored = parsed as Record<string, PreparedSubmission>
-  const journal = native ? stored : readBrowserJournal(stored)
+  const prefixed = readPrefixed()
+  const journal = native ? stored : readBrowserJournal(stored, prefixed)
 
-  for (const [key, id] of Object.entries(readSpent())) {
+  for (const [key, id] of Object.entries(readSpent(prefixed))) {
     if (journal[key]?.id === id) {
       delete journal[key]
       // Storage may have recovered since: finish the retirement so the stale entry stops lingering.
@@ -116,12 +122,12 @@ async function readJournal(): Promise<Record<string, PreparedSubmission>> {
 }
 
 // The entries under their own keys, over the legacy blob's entries not yet retired.
-function readBrowserJournal(legacy: Record<string, PreparedSubmission>): Record<string, PreparedSubmission> {
-  for (const [key, id] of Object.entries(readPrefixed(LEGACY_RETIRED_PREFIX))) {
+function readBrowserJournal(legacy: Record<string, PreparedSubmission>, prefixed: Prefixed): Record<string, PreparedSubmission> {
+  for (const [key, id] of Object.entries(prefixed[LEGACY_RETIRED_PREFIX])) {
     if (legacy[key]?.id === id) { delete legacy[key] }
   }
 
-  const entries = Object.entries(readPrefixed(ENTRY_PREFIX)).map(([key, entry]) => [key, JSON.parse(entry)])
+  const entries = Object.entries(prefixed[ENTRY_PREFIX]).map(([key, entry]) => [key, JSON.parse(entry)])
 
   return { ...legacy, ...Object.fromEntries(entries) }
 }

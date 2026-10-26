@@ -143,6 +143,10 @@ export function useComposerDraft({
   // session switch mid-flight files one session's draft under another's key
   // (#54527).
   const draftScopeRef = useRef(activeQueueSessionKey)
+  // The text this window last loaded from or stashed for draftScopeRef's scope.
+  // Another window can send (clear) that draft while this editor still shows
+  // it, so the unload flush saves only text that differs from this baseline.
+  const savedDraftTextRef = useRef('')
   const sessionIdRef = useRef(sessionId)
   sessionIdRef.current = sessionId
   const queueEditStateRef = useRef<QueueEditState | null>(queueEditRef.current)
@@ -315,11 +319,16 @@ export function useComposerDraft({
     }
   }, [appendExternalText, focusInput, inputDisabled, paintDraft, target])
 
-  const stashAt = (scope: string | null, text = draftRef.current, attachments = attachmentScope.$attachments.get()) =>
-    stashSessionDraft(scope, text, attachments)
-
   const sameDraftScope = (a: string | null | undefined, b: string | null | undefined) =>
     (isFreshDraftScope(a) || !a ? null : a) === (isFreshDraftScope(b) || !b ? null : b)
+
+  const stashAt = (scope: string | null, text = draftRef.current, attachments = attachmentScope.$attachments.get()) => {
+    if (sameDraftScope(scope, draftScopeRef.current)) {
+      savedDraftTextRef.current = text
+    }
+
+    stashSessionDraft(scope, text, attachments)
+  }
 
   // A rejected or unconfirmed send is restored with its identity, so Enter on that exact draft is
   // the explicit retry. Recorded per draft scope (it survives a reload with the draft text).
@@ -651,6 +660,7 @@ export function useComposerDraft({
     draftRetryRef.current = readDraftRetry(activeQueueSessionKey)
 
     const { attachments, text } = takeSessionDraft(activeQueueSessionKey)
+    savedDraftTextRef.current = text
     loadIntoComposer(text, attachments, true)
 
     return () => {
@@ -682,6 +692,7 @@ export function useComposerDraft({
     reloadPersistedDrafts()
     draftRetryRef.current = readDraftRetry(draftScopeRef.current)
     const stashed = takeSessionDraft(draftScopeRef.current)
+    savedDraftTextRef.current = stashed.text
     loadIntoComposer(stashed.text, stashed.attachments)
   }
 
@@ -715,6 +726,13 @@ export function useComposerDraft({
       }
 
       const latestText = syncDraftFromEditor()
+
+      // Only this window's own unsaved edits: an untouched editor may still
+      // show a draft another window has since sent, and must not restore it.
+      if (latestText === savedDraftTextRef.current) {
+        return
+      }
+
       pendingDraftPersistRef.current = null
       stashAt(scope, latestText)
     }

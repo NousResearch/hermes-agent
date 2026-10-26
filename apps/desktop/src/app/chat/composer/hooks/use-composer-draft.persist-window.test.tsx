@@ -119,4 +119,18 @@ describe('useComposerDraft — the draft stash window starts at the keystroke', 
 
     expect(takeSessionDraft(SCOPE).text).toBe('hello closing')
   })
+
+  it('does not write a draft another window sent back when this untouched window closes', () => {
+    stashSessionDraft(SCOPE, 'sent from the other window', [])
+    render(<Harness />)
+    act(() => {
+      vi.advanceTimersByTime(DRAFT_PERSIST_DEBOUNCE_MS)
+    })
+
+    // The other window sends it: the shared stash clears, this editor still shows the old text.
+    clearSessionDraft(SCOPE)
+    window.dispatchEvent(new Event('beforeunload'))
+
+    expect(takeSessionDraft(SCOPE).text).toBe('')
+  })
 })

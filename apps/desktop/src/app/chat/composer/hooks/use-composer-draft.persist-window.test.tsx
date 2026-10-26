@@ -1,7 +1,13 @@
 import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { clearSessionDraft, mainComposerScope, stashSessionDraft, takeSessionDraft } from '@/store/composer'
+import {
+  clearSessionDraft,
+  mainComposerScope,
+  SESSION_DRAFTS_STORAGE_KEY,
+  stashSessionDraft,
+  takeSessionDraft
+} from '@/store/composer'
 
 import { TYPING_STORE_IDLE_MS } from '../composer-store-writer'
 import { DRAFT_PERSIST_DEBOUNCE_MS, type QueueEditState } from '../composer-utils'
@@ -45,6 +51,7 @@ vi.mock('@assistant-ui/react', () => ({
 
 const SCOPE = 'session-persist-window'
 const OTHER_SCOPE = 'session-persist-window-other'
+const THIRD_SCOPE = 'session-persist-window-third'
 let draft: ReturnType<typeof useComposerDraft>
 const queueEditRef = { current: null as QueueEditState | null }
 
@@ -83,6 +90,7 @@ describe('useComposerDraft — the draft stash window starts at the keystroke', 
     mainComposerScope.clear()
     clearSessionDraft(SCOPE)
     clearSessionDraft(OTHER_SCOPE)
+    clearSessionDraft(THIRD_SCOPE)
   })
 
   it('stashes typed text one persist debounce after the keystroke, while its store write still coalesces', () => {
@@ -158,5 +166,24 @@ describe('useComposerDraft — the draft stash window starts at the keystroke', 
     })
     rerender(<Harness scope={SCOPE} />)
     expect(takeSessionDraft(OTHER_SCOPE).attachments.map(a => a.occurrenceId)).toEqual(['occ-1'])
+  })
+
+  it("keeps this window's image-only draft when another window saves or sends a different draft", () => {
+    stashSessionDraft(OTHER_SCOPE, 'sent from the other window', [])
+    const { rerender } = render(<Harness scope={SCOPE} />)
+    act(() => {
+      mainComposerScope.$attachments.set([{ id: 'shot.png', kind: 'image', label: 'shot.png', occurrenceId: 'occ-img' }])
+    })
+    rerender(<Harness scope={OTHER_SCOPE} />)
+
+    // The other window sends OTHER_SCOPE's draft and saves one in a third session.
+    window.localStorage.setItem(SESSION_DRAFTS_STORAGE_KEY, JSON.stringify({ [THIRD_SCOPE]: 'typed elsewhere' }))
+    window.dispatchEvent(new StorageEvent('storage', { key: SESSION_DRAFTS_STORAGE_KEY }))
+    expect(takeSessionDraft(THIRD_SCOPE).text).toBe('typed elsewhere')
+    expect(takeSessionDraft(OTHER_SCOPE).text).toBe('')
+
+    // No window ever saw the image-only draft, so none of them could have sent it.
+    rerender(<Harness scope={SCOPE} />)
+    expect(mainComposerScope.$attachments.get().map(a => a.occurrenceId)).toEqual(['occ-img'])
   })
 })

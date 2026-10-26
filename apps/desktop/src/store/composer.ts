@@ -302,24 +302,25 @@ const cloneDraft = (draft: SessionDraft): SessionDraft => ({
   text: draft.text
 })
 
-function loadPersistedDraftTexts(): [string, SessionDraft][] {
+function loadPersistedDraftTexts(): Map<string, string> {
   try {
     const raw = window.localStorage.getItem(SESSION_DRAFTS_STORAGE_KEY)
 
-    if (!raw) {
-      return []
-    }
-
-    return Object.entries(JSON.parse(raw) as Record<string, string>).map(([key, text]) => [
-      key,
-      { attachments: [], text }
-    ])
+    return new Map(raw ? Object.entries(JSON.parse(raw) as Record<string, string>) : [])
   } catch {
-    return []
+    return new Map()
   }
 }
 
-const draftsBySession = new Map<string, SessionDraft>(loadPersistedDraftTexts())
+// The draft texts as this window last read or wrote them in the shared stash.
+// A cross-window reload applies only what changed there since: a key absent
+// from both snapshots was never persisted (an attachment-only draft, one past
+// MAX_PERSISTED_DRAFTS), so nobody deleted it.
+let persistedDraftTexts = loadPersistedDraftTexts()
+
+const draftsBySession = new Map<string, SessionDraft>(
+  [...persistedDraftTexts].map(([key, text]) => [key, { attachments: [], text }])
+)
 
 /**
  * Patch one asynchronous attachment occurrence wherever the main composer owns
@@ -403,25 +404,40 @@ function publishDraftTitle(key: string, title: string): void {
  * whichever window mounted first keeps its stale copy forever, so text typed
  * in the HUD is simply gone when you return to the app.
  *
- * Merge, don't clobber — the local map may hold attachments (never persisted)
- * that the incoming text-only snapshot can't know about.
+ * Merge, don't clobber: only texts the stash changed since this window last
+ * saw it move, and attachments (memory-only, so no other window can have seen
+ * or sent them) stay put. An image-only draft is still a draft.
  */
 export function reloadPersistedDrafts(): void {
-  const incoming = new Map(loadPersistedDraftTexts())
+  const incoming = loadPersistedDraftTexts()
 
-  for (const [key, draft] of incoming) {
-    const local = draftsBySession.get(key)
-    draftsBySession.set(key, local?.attachments.length ? { ...local, text: draft.text } : draft)
-    publishDraftTitle(key, deriveDraftTitle(draft.text))
+  for (const [key, text] of incoming) {
+    if (persistedDraftTexts.get(key) === text) {
+      continue
+    }
+
+    draftsBySession.set(key, { attachments: draftsBySession.get(key)?.attachments ?? [], text })
+    publishDraftTitle(key, deriveDraftTitle(text))
   }
 
   // A key that vanished from storage was cleared (sent) in the other window.
-  for (const key of [...draftsBySession.keys()]) {
-    if (!incoming.has(key)) {
-      draftsBySession.delete(key)
-      publishDraftTitle(key, '')
+  for (const key of persistedDraftTexts.keys()) {
+    if (incoming.has(key)) {
+      continue
     }
+
+    const attachments = draftsBySession.get(key)?.attachments ?? []
+
+    if (attachments.length > 0) {
+      draftsBySession.set(key, { attachments, text: '' })
+    } else {
+      draftsBySession.delete(key)
+    }
+
+    publishDraftTitle(key, '')
   }
+
+  persistedDraftTexts = incoming
 }
 
 // localStorage `storage` events fire across Electron BrowserWindows of the
@@ -486,6 +502,8 @@ function persistDraftTexts() {
     } else {
       window.localStorage.setItem(SESSION_DRAFTS_STORAGE_KEY, JSON.stringify(Object.fromEntries(entries)))
     }
+
+    persistedDraftTexts = new Map(entries)
   } catch {
     // Best-effort only — quota/private-mode must never break typing.
   }

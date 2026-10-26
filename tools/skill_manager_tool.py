@@ -529,7 +529,8 @@ def _clip(text: str, n: int, ellipsis: str) -> str:
 
 def _create_skill(name: str, content: str, category: str | None = None) -> dict[str, Any]:
     if err := (_validate_name(name) or _validate_category(category)
-               or _validate_frontmatter(content) or _validate_content_size(content)):
+               or _validate_frontmatter(content) or _validate_content_size(content)
+               or _description_budget_error(content)):
         return _err(err)
     if existing := _find_skill(name):
         return _err(f"A skill named '{name}' already exists at {existing['path']}.")

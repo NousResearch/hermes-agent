@@ -185,6 +185,7 @@ def test_get_version_info_derives_identity_from_reachable_release_tag(tmp_path, 
     assert info.distance == 1
     assert info.commit == git("rev-parse", "HEAD")
     assert info.source == "git"
+    assert info.base_version_source == "release-tag"
 
 
 def test_get_version_info_takes_the_version_a_calver_only_release_shipped(tmp_path, monkeypatch):
@@ -217,6 +218,9 @@ def test_get_version_info_takes_the_version_a_calver_only_release_shipped(tmp_pa
     assert info.base_version == "0.21.4"
     assert info.distance == 1
     assert info.derived_version == f"0.21.4+1.g{git('rev-parse', '--short=7', 'HEAD')}"
+    # No SemVer release tag is reachable: the base came from the CalVer describe,
+    # so presenters can tell it apart from a real release identity (#140329).
+    assert info.base_version_source == "calver-fallback"
 
 
 def test_get_version_info_reports_the_tag_a_detached_head_sits_on(tmp_path, monkeypatch):
@@ -268,6 +272,7 @@ def test_get_version_info_reports_the_tag_a_detached_head_sits_on(tmp_path, monk
     assert info.base_version == "0.22.2"
     assert info.distance == 0
     assert info.derived_version == "0.22.2"
+    assert info.base_version_source == "release-tag"
 
 
 def test_resolve_stamp_file_honors_install_root(tmp_path, monkeypatch):

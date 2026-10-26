@@ -526,13 +526,14 @@ from cron.jobs import (
 from cron import store_health
 from cron.execution_identity import enter_cron_execution, exit_cron_execution
 from cron.executions import (
-    _TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution, finish_execution,
+    FIRER_FINISHED_STATES, _TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution, finish_execution,
     get_execution, mark_execution_handoff_pending, mark_execution_running,
     recover_interrupted_executions, settle_unstarted_execution, terminalize_dead_owner)
 from cron.scheduler_liveness import ExecutionProgressStamper, _inactivity_watchdog_loop
 from cron.scheduler_bookkeeping import _classify_delivery_outcome
 from cron.cancellation import (CancelRequest, _CancelEventLike, _CombinedCancelEvent, cancel_reason,
-                               clear_cancel, run_job_unless_cancelled as _run_job_unless_cancelled)
+                               clear_cancel, finish_lost_execution,
+                               run_job_unless_cancelled as _run_job_unless_cancelled)
 
 # Response marker that suppresses delivery (output is still saved locally for audit).
 SILENT_MARKER = "[SILENT]"
@@ -2725,7 +2726,7 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
         if not execution_id:
             return
         try:
-            finish_execution(execution_id, success=False, error=error)
+            finish_lost_execution(execution_id, error)
         except Exception:
             logger.warning(
                 "Job '%s': failed to close unstarted execution ledger row",
@@ -2918,9 +2919,8 @@ def _record_fire_ownership_lost(
         )
         finish_execution(execution_id, success=False, error=_OWNERSHIP_LOST_INTERRUPTED)
     else:
-        finish_execution(
-            execution_id, success=False,
-            error="Fire claim ownership lost; stale result was discarded.")
+        finish_lost_execution(
+            execution_id, "Fire claim ownership lost; stale result was discarded.")
 
 
 def _compose_run_delivery(
@@ -3534,7 +3534,7 @@ def _wait_for_external_cron_worker_body(
         # read and wait(). Re-read the exact attempt before declaring that
         # it died without terminalizing.
         current = get_execution(execution_id)
-        if current and current.get("status") in ("completed", "failed"):
+        if current and current.get("status") in FIRER_FINISHED_STATES:
             return True
         # If the adopted worker died without terminalizing, its owner is
         # now provably gone. Recover to ``unknown`` rather than routing the
@@ -3556,7 +3556,7 @@ def _wait_for_external_cron_worker_body(
             # A concurrent sweep may have won the unknown transition. Still
             # surface this waiter's exit code and stderr instead of discarding them.
             current = get_execution(execution_id)
-            if current and current.get("status") in ("completed", "failed"):
+            if current and current.get("status") in FIRER_FINISHED_STATES:
                 return True
         stderr_tail = ""
         if stderr_path is not None:

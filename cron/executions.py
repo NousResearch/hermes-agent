@@ -38,6 +38,9 @@ LIVE_OWNER_STALE_CLAIM_FLOOR_SECONDS = 7200.0
 # ``missed``: never started — one row books every occurrence the scheduler skipped past.
 _TERMINAL_STATES = ("completed", "failed", "unknown", "cancelled", "missed")
 _STATUS_CHECK = "('claimed','running','completed','failed','unknown','cancelled','missed')"
+# Outcomes the attempt's own firer booked: receipt recovery, the external-worker waiter and the
+# dead-owner sweep must treat these as final, never replay or re-book them.
+FIRER_FINISHED_STATES = frozenset({"completed", "failed", "cancelled"})
 _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
 
@@ -682,7 +685,15 @@ def live_inflight_execution(job_id: str) -> Optional[dict[str, Any]]:
     heartbeat yet stays owned, while a run whose process died (watchdog kill, crash) does not.
     Read-only — unlike ``recover_interrupted_executions`` it never rewrites a row.
     """
-    record = latest_execution(job_id)
+    # A ``missed`` row is the due scan's note about skipped slots, not an attempt: one booked while
+    # a long run is still live (machine slept through its next slots) must not hide that run.
+    with _transaction() as conn:
+        row = conn.execute(
+            """SELECT * FROM executions WHERE job_id=? AND status != 'missed'
+               ORDER BY julianday(claimed_at) DESC, claimed_at DESC, id DESC LIMIT 1""",
+            (job_id,),
+        ).fetchone()
+    record = dict(row) if row is not None else None
     if not record or record.get("status") not in ("claimed", "running"):
         return None
     if not _owner_is_live(int(record["pid"]), record.get("process_started_at")):

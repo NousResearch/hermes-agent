@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Protocol
@@ -62,9 +63,16 @@ def request_cancel(execution_id: str, *, reason: Optional[str] = None) -> Path:
     path = _marker_path(execution_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
-        tmp = path.with_suffix(".cancel.tmp")
-        tmp.write_text((reason or _DEFAULT_REASON).strip(), encoding="utf-8")
-        os.replace(tmp, path)
+        # A private temp file published with link(): create-if-absent, so overlapping requests
+        # never share a temp path and the first reason is never overwritten or seen half-written.
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write((reason or _DEFAULT_REASON).strip())
+            with contextlib.suppress(FileExistsError):
+                os.link(tmp, path)
+        finally:
+            os.unlink(tmp)
     _prune_stale_markers()
     return path
 
@@ -151,12 +159,28 @@ def finish_cancelled_run(job: dict[str, Any], execution_id: str, fire_owner: Opt
     job's ``last_status`` — without a failure alert or a failure-streak bump, since the operator
     asked for it. A job removed mid-run has no record left to mark; its ledger row still lands."""
     from cron import scheduler
+    from cron.unreachable_retry import is_retry_run
 
     reason = CancelRequest(execution_id).reason
     if not scheduler.self_removal_delivery_allowed(job["id"]):
         owner = {"expected_fire_owner": fire_owner} if fire_owner is not None else {}
-        scheduler.mark_job_run(job["id"], False, f"Cancelled: {reason}", status="cancelled", **owner)
+        # A stopped ladder re-run re-ran an occurrence that already counted: no second repeat slot.
+        rung = {"ladder_rung": True} if is_retry_run(job) else {}
+        scheduler.mark_job_run(
+            job["id"], False, f"Cancelled: {reason}", status="cancelled", **owner, **rung)
     scheduler.finish_execution(execution_id, success=False, error=reason, cancelled=True)
+
+
+def finish_lost_execution(execution_id: str, error: str) -> Optional[dict[str, Any]]:
+    """Close an attempt whose fire claim vanished. Removing a job mid-run cancels it AND drops the
+    claim, so a run that finds its claim gone books the operator's ``cancelled`` (with the reason)
+    when a cancel marker is waiting, and ``failed`` with ``error`` only for a real claim loss."""
+    from cron import scheduler
+
+    if cancel_requested(execution_id):
+        return scheduler.finish_execution(
+            execution_id, success=False, error=CancelRequest(execution_id).reason, cancelled=True)
+    return scheduler.finish_execution(execution_id, success=False, error=error)
 
 
 def run_job_unless_cancelled(run_job, job, run_kwargs, teardown, fence, execution_id, fire_owner):

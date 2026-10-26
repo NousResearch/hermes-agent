@@ -569,7 +569,7 @@ def _reconcile_cron_runs(
     terminal = [(index, a) for index, a in enumerate(attempts) if a["status"] in _OUTCOME_STATES]
     represented = {index for index, a in terminal if a["id"] in by_execution}
     paired: set = set()
-    merged = list(session_runs)
+    merged = _with_cancel_reasons(session_runs, terminal)
 
     for doc in docs:
         doc_ts = float(doc.get("started_at") or 0)
@@ -603,6 +603,23 @@ def _reconcile_cron_runs(
         })
     merged.sort(key=lambda r: float(r.get("started_at") or 0), reverse=True)
     return merged[:limit]
+
+
+def _with_cancel_reasons(
+    session_runs: list[dict[str, Any]], terminal: list[tuple[int, dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Session rows, with a stopped agent run's title naming the stop and its reason.
+
+    The session stands in for its ledger attempt (richer record), so the attempt's own row is
+    dropped; without this, a cancelled agent run would read like any finished one.
+    """
+    cancelled = {a["id"]: a for _, a in terminal if a["status"] == "cancelled"}
+    return [
+        {**s, "title": _execution_status_title(
+            "cancelled", cancelled[s["cron_execution_id"]]["error"], s.get("title") or "")}
+        if s.get("cron_execution_id") in cancelled else s
+        for s in session_runs
+    ]
 
 
 def _doc_writer(doc_ts: float, attempt: dict[str, Any], session: Optional[dict[str, Any]]) -> tuple:

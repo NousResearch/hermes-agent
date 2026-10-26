@@ -382,13 +382,13 @@ class MissingMutationSnapshotRoute extends Error {}
  *  refusal, conflict, timeout or failed write keeps the canonical CAS path and its retained
  *  identity. */
 export function mutateSessionFenced<T>(key: string, read: () => Promise<SessionMutationSnapshot>,
-  send: (identity: Partial<SessionMutationIdentity>) => Promise<T>): Promise<T> {
+  send: (identity: Partial<SessionMutationIdentity>) => Promise<T>, absent?: () => T): Promise<T> {
   return runSessionMutation(key, () => read().catch(error => {
     // The prepared read is shared by equal concurrent edits; its verdict must
     // travel with that rejection, rather than one caller's local closure.
     if (isUnroutedRestPath(error)) { throw new MissingMutationSnapshotRoute(String(error), { cause: error }) }
     throw error
-  }), send).catch(error => {
+  }), send, false, absent).catch(error => {
     if (!(error instanceof MissingMutationSnapshotRoute)) { throw error }
 
     return send({})
@@ -417,7 +417,16 @@ function mutateSessionHttp<T>(id: string, method: 'PATCH' | 'DELETE', payload: R
       body: { ...payload, ...identity, ...(scope.profile ? { profile: scope.profile } : {}) } })
   }
 
-  return mutateSessionFenced(key, () => hermesApi<SessionMutationSnapshot>({ ...scope, path: `${path}/mutation-snapshot${suffix}` }), send)
+  // A DELETE whose snapshot says the session is already absent is a committed
+  // delete, not a failure: the row the user clicked was removed on this exact
+  // destination scope by an earlier delete (often THIS row's own first attempt,
+  // whose optimistic removal was rolled back by a later-event resurrection).
+  // Throwing here made the row undeletable — the sidebar restored it on every
+  // retry ("Session mutation snapshot unavailable"). Resolve as the server's
+  // own idempotent already-absent DELETE would: {ok: true}, nothing sent.
+  const absentResult = method === 'DELETE' ? () => ({ ok: true, already_absent: true }) as T : undefined
+
+  return mutateSessionFenced(key, () => hermesApi<SessionMutationSnapshot>({ ...scope, path: `${path}/mutation-snapshot${suffix}` }), send, absentResult)
 }
 
 export function setSessionArchived(id: string, archived: boolean, profile?: string | null): Promise<{ ok: boolean }> {

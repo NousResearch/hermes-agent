@@ -1,6 +1,7 @@
 """Durable ``/v1/runs`` admission, status, events, and control handlers."""
 
 import asyncio
+import contextvars
 import hashlib
 import json
 import logging
@@ -56,12 +57,14 @@ def _submit_api_worker(loop, fn):
     count would make the shutdown close gate skip the SessionDB close for the process lifetime.
     """
     global _API_WORKER_LIVE
+    # Executor threads are reused across requests; enter a fresh caller snapshot per job.
+    ctx = contextvars.copy_context()
     with _API_WORKER_LOCK:
         _API_WORKER_LIVE += 1
 
     def _counted():
         try:
-            return fn()
+            return ctx.run(fn)
         finally:
             global _API_WORKER_LIVE
             with _API_WORKER_LOCK:

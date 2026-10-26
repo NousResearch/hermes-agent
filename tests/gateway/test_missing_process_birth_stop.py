@@ -17,7 +17,8 @@ async def test_missing_birth_survives_ordinary_recovery_and_keeps_fifo_fenced(tm
     from tools import process_registry as module
     from tools.process_registry_output_log import output_dir
     db, authority = _authority(tmp_path, monkeypatch)
-    neighbor = subprocess.Popen([sys.executable, '-c', 'import threading; threading.Event().wait(120)'])
+    neighbor = await asyncio.to_thread(subprocess.Popen,
+        [sys.executable, '-c', 'import threading; threading.Event().wait(120)'])
     registry = module.ProcessRegistry()
     monkeypatch.setattr(module, 'process_registry', registry)
     entry = dict(session_id='proc_unproved', command='stale unproved binding', pid=neighbor.pid,

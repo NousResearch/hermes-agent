@@ -3150,6 +3150,131 @@ def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
     ).argv
 
 
+def _isolation_worker_argv(task: Task, command: list[str], workspace: Optional[str]) -> list[str]:
+    """Apply mount-namespace isolation to a worker argv (t_ff7d30cc).
+
+    Reads ``kanban.worker_isolation`` from config (off|warn|enforce; default
+    ``enforce`` on Linux+userns) and the ``HERMES_WORKER_ISOLATION`` kill
+    switch. Degrades HONESTLY -- if isolation cannot be applied (kill switch,
+    non-Linux, userns unavailable, sandboxed inside another userns already),
+    the helper returns the unwrapped ``command`` and emits a single
+    once-per-process warning. Never silently pretends isolation happened.
+
+    The helper only wraps worktree-anchored tasks (``workspace_kind == "worktree"``
+    AND the workspace resolves to ``<agent_home>/.worktrees/<id>``). For
+    everything else (scratch tasks, dir workspaces, or a non-resolvable
+    agent home) isolation is SKIPPED with a one-shot warning -- we never
+    wrap an arbitrary cwd into the carve-out set, because doing so would
+    either over-grant (carve out a path the policy should keep ro) or
+    hide a bug by accidentally writing into a path the policy never
+    permitted in the first place.
+
+    Layer 1 (the dispatcher provisioning the worktree before the sandbox
+    exists) is enforced by ``kanban_db_workspace._resolve_worktree_workspace``
+    which runs before ``_default_spawn`` and is therefore guaranteed to have
+    materialized the worktree by the time we get here.
+    """
+    from hermes_cli.worker_isolate import (
+        build_isolated_worker_argv, load_configured_isolation_mode, resolve_isolation_mode,
+    )
+
+    policy = resolve_isolation_mode(load_configured_isolation_mode())
+    if policy.effective != "enforce":
+        # Off / warn / degrade path -- no wrapping. The resolver already
+        # logged a single-shot warning when degrading from enforce.
+        return command
+
+    agent_home = _resolve_worker_agent_home(task)
+    if not agent_home:
+        # No agent home to protect; do not pretend we isolated anything.
+        _log_isolation_skip(task, reason=f"no agent_home resolvable for task {task.id}")
+        return command
+
+    # The carve-out set is only safe when the workspace is a real
+    # dispatcher-provisioned worktree path under agent_home/.worktrees/<id>.
+    # We refuse to carve out anything else (see docstring); skip the wrap
+    # in that case so a non-worktree task still spawns.
+    if not (task.workspace_kind == "worktree"
+            and workspace
+            and os.path.isdir(workspace)
+            and _is_worktree_under_agent_home(workspace, agent_home)):
+        _log_isolation_skip(
+            task,
+            reason=(
+                f"workspace {workspace!r} is not a dispatcher-provisioned worktree "
+                f"under {agent_home}/.worktrees (kind={task.workspace_kind!r})"
+            ),
+        )
+        return command
+
+    return build_isolated_worker_argv(
+        command,
+        agent_home=agent_home,
+        worktree=workspace,
+    )
+
+
+def _resolve_worker_agent_home(task: Task) -> Optional[str]:
+    """Best-effort path to the agent tree the worker should be sandboxed against.
+
+    Order: explicit ``HERMES_AGENT_HOME`` -> ``HERMES_AGENT`` -> the dispatcher's
+    own resolved profile home's parent (``<HERMES_HOME>/..`` is unreliable when
+    HERMES_HOME is a profile, so we also accept ``<HERMES_HOME>`` itself when
+    it is a git checkout). Returns ``None`` when nothing reasonable can be
+    inferred -- the caller then skips isolation rather than wrap a bogus path.
+    """
+    candidates: list[str] = []
+    for env_name in ("HERMES_AGENT_HOME", "HERMES_AGENT"):
+        val = os.environ.get(env_name, "").strip()
+        if val:
+            candidates.append(val)
+    # HERMES_HOME may be the agent home itself, or the parent dir of a profile.
+    hh = os.environ.get("HERMES_HOME", "").strip()
+    if hh:
+        candidates.append(hh)
+        candidates.append(str(Path(hh).parent))
+
+    for cand in candidates:
+        try:
+            if os.path.isdir(os.path.join(cand, ".git")):
+                return os.path.realpath(cand)
+        except OSError:
+            continue
+    return None
+
+
+def _is_worktree_under_agent_home(workspace: str, agent_home: str) -> bool:
+    """True iff ``workspace`` resolves under ``<agent_home>/.worktrees/``.
+
+    Used to detect the decompose / specifier workflow's reuse of a worktree
+    anchor (a child task inherits the parent's workspace_path verbatim, but
+    a dispatcher's _kbw._resolve_worktree_workspace has already redirected
+    it to ``<repo>/.worktrees/<id>``). We carve the path out exactly when
+    it sits under that tree, and never more.
+    """
+    try:
+        ws = os.path.realpath(workspace)
+        wt = os.path.realpath(os.path.join(agent_home, ".worktrees"))
+        # commonpath() raises ValueError on different drives / unrelated paths.
+        os.path.commonpath([ws, wt])
+    except (OSError, ValueError):
+        return False
+    return ws == wt or ws.startswith(wt + os.sep)
+
+
+_ISOLATION_SKIP_LOGGED: set[str] = set()
+
+
+def _log_isolation_skip(task: Task, *, reason: str) -> None:
+    """One-shot per task id -- the dispatcher fires every claim tick; this
+    must NOT spam the worker log on every retry.
+    """
+    if task.id in _ISOLATION_SKIP_LOGGED:
+        return
+    _ISOLATION_SKIP_LOGGED.add(task.id)
+    _kb._log.warning("kanban worker isolation skipped for %s: %s", task.id, reason)
+
+
 def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -> Optional[int]:
     """Fire-and-forget ``hermes -p <profile> chat -q ...`` subprocess.
 
@@ -3267,6 +3392,14 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # cgroup before startup; otherwise restarting the service kills the worker
     # that is performing the handoff.
     cmd = _restart_safe_worker_argv(task, cmd)
+    # Mount-namespace isolation: wrap the worker argv in
+    # ``unshare -Urm <launcher> -- <worker argv>`` so the production agent
+    # tree is read-only inside the worker (EROFS at the syscall level) and
+    # only the per-task worktree + a minimal git carve-out set is writable.
+    # The launcher itself is gated by ``kanban.worker_isolation`` (off/warn/
+    # enforce; default enforce on Linux+userns) and by the
+    # ``HERMES_WORKER_ISOLATION`` env kill switch.
+    cmd = _isolation_worker_argv(task, cmd, workspace)
     from tools.process_registry import systemd_user_bus_env
     env = systemd_user_bus_env(env)
     log_f = _open_worker_log(task, board)

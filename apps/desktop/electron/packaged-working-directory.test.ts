@@ -4,13 +4,34 @@ import { once } from 'node:events'
 import { mkdir, mkdtemp, rename, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 
 import { build } from 'esbuild'
 import { test } from 'vitest'
 
-// Exercise the real entry point before main loads. The fixture models a resident
-// helper outside the app tree; only its inherited CWD can block the directory swap.
+// The resident helper (an IME cloud service, a WSL/ssh helper) that the app spawns
+// WITHOUT a cwd of its own, so it inherits the app's. It outlives the app and holds
+// that directory as its cwd for as long as it lives. `detached` keeps it out of
+// libuv's kill-on-close job, as a process created natively (by an IME inside the
+// app) never joins it.
+const HELPER = 'console.log(JSON.stringify({ pid: process.pid, cwd: process.cwd() })); setInterval(() => {}, 1000)'
+
+function killPid(pid: number | undefined): void {
+  if (!pid) {
+    return
+  }
+
+  try {
+    process.kill(pid)
+  } catch {
+    // already gone
+  }
+}
+
+// Exercise the real entry point before main loads: the main stand-in spawns the
+// helper, the app is killed, and the directory swap runs with only the orphaned
+// helper (exe outside the app tree) still alive.
 test.skipIf(process.platform !== 'win32')(
   'packaged startup releases the install CWD before main can pass it to resident helpers',
   async () => {
@@ -47,18 +68,36 @@ test.skipIf(process.platform !== 'win32')(
                   contents:
                     name === 'electron'
                       ? `export const app = { isPackaged: ${packaged} }`
-                      : `console.log(process.cwd()); setInterval(() => {}, 1000)`
+                      : [
+                          `import { spawn } from 'node:child_process'`,
+                          `spawn(process.env.FIXTURE_NODE, ['-e', ${JSON.stringify(HELPER)}], { detached: true, stdio: ['ignore', 'inherit', 'ignore'] })`,
+                          `setInterval(() => {}, 1000)`
+                        ].join('\n')
                 }))
               }
             }
           ]
         })
-        const child = spawn(process.execPath, [fixture], { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
-        const exited = once(child, 'exit')
+
+        const app = spawn(process.execPath, [fixture], {
+          cwd,
+          env: { ...process.env, FIXTURE_NODE: process.execPath },
+          stdio: ['ignore', 'pipe', 'ignore']
+        })
+
+        const appExited = once(app, 'exit')
+        let helperPid: number | undefined
 
         try {
-          const [output] = await once(child.stdout!, 'data')
-          assert.equal(String(output).trim().toLowerCase(), expected.toLowerCase())
+          const [line] = await once(createInterface({ input: app.stdout! }), 'line')
+          const helper = JSON.parse(String(line)) as { pid: number; cwd: string }
+          helperPid = helper.pid
+          assert.equal(helper.cwd.toLowerCase(), expected.toLowerCase())
+
+          // Quit the app: the helper is orphaned and keeps its inherited cwd.
+          app.kill()
+          await appExited
+          process.kill(helperPid, 0)
           const moved = `${install}.previous`
 
           if (!packaged) {
@@ -69,8 +108,8 @@ test.skipIf(process.platform !== 'win32')(
             await rename(moved, install)
           }
         } finally {
-          child.kill()
-          await exited
+          app.kill()
+          killPid(helperPid)
         }
       }
     } finally {

@@ -5183,7 +5183,7 @@ def main():
 
 
 def _exit_after_graceful_shutdown(exit_code: int) -> None:
-    """Flush stdio and opt-in shared metrics, release the PID file + runtime lock, then hard-exit.
+    """Flush stdio, release the PID file + lock, stamp the clean exit, flush opt-in metrics, hard-exit.
     ``os._exit`` (not ``sys.exit``): SystemExit runs ``Py_FinalizeEx``, which joins every non-daemon
     thread — exactly the hang a wedged worker causes. It bypasses ``atexit``, so the metrics flush,
     PID/lock release and the bounded log drain (file handlers sit behind a ``QueueListener`` thread)
@@ -5198,10 +5198,6 @@ def _exit_after_graceful_shutdown(exit_code: int) -> None:
     for stream in (sys.stdout, sys.stderr):
         with suppress(Exception):
             stream.flush()
-    def _flush_metrics() -> None:  # first, so its rows land before the PID/lock release (bounded)
-        from hermes_cli.observability.shared_metrics_process import flush_before_hard_exit
-        flush_before_hard_exit()  # the runtimes' atexit flush: open sessions + queued opt-in rows
-
     def _release_locks() -> None:
         # BEFORE the log drain (bounded, but could take its full timeout on a wedged disk); idempotent.
         from gateway.status import remove_pid_file, release_gateway_runtime_lock
@@ -5216,13 +5212,17 @@ def _exit_after_graceful_shutdown(exit_code: int) -> None:
         from gateway.lifecycle_ledger import mark_exited
         mark_exited(exit_code, reason="graceful_shutdown")
 
+    def _flush_metrics() -> None:  # after the clean stamp: a supervisor kill mid-flush is no unclean death
+        from hermes_cli.observability.shared_metrics_process import flush_before_hard_exit
+        flush_before_hard_exit()  # the runtimes' atexit flush: open sessions + queued opt-in rows (bounded)
+
     def _drain_logs() -> None:
         # os._exit bypasses the listener's atexit drain. Bounded, no restart — NOT flush_log_queue():
         # a listener wedged on the rotation lock would re-freeze shutdown in an unbounded stop() join.
         from hermes_logging import drain_log_queue
         drain_log_queue(timeout=1.0)
 
-    for _step in (_flush_metrics, _release_locks, _mark_exited, _drain_logs):
+    for _step in (_release_locks, _mark_exited, _flush_metrics, _drain_logs):
         _best_effort(_step)
     os._exit(exit_code)
 

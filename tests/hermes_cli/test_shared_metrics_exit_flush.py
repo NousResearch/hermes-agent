@@ -9,6 +9,7 @@ own consent (a multiplex gateway exits from the launch profile's scope).
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import sqlite3
@@ -227,12 +228,46 @@ def test_exit_flush_applies_each_profiles_own_consent(tmp_path, monkeypatch):
         relay_runtime._reset_for_tests()
 
 
-def test_a_wedged_exit_flush_never_holds_the_exit(monkeypatch):
-    release = threading.Event()
-    monkeypatch.setattr(relay_shared_metrics, "shutdown_runtimes", lambda: release.wait(30))
+def test_a_wedged_exit_flush_is_bounded_and_runs_after_the_clean_exit_stamp(metrics_home, monkeypatch):
+    """A managed tool call still in flight holds the Relay flush barrier (#53107): the exit still
+    leaves within the flush bound, and the clean-exit sentinel is already written, so a supervisor
+    killing the process during the flush never records a graceful stop as an unclean death."""
+    import gateway.run as gateway_run
+    from agent import relay_tools
+    from gateway.lifecycle_ledger import get_lifecycle_sentinel_path
+
+    home, _ = metrics_home
+    _finished_task_in_open_session()
+    _wait_for(home, "hermes.task_run.finished")
+    entered, release = threading.Event(), threading.Event()
+
+    def wedged_tool(_args):
+        entered.set()
+        release.wait(30)
+        return "late"
+
+    threading.Thread(
+        target=relay_tools.execute, args=("terminal", {"command": "x"}, wedged_tool),
+        kwargs={"session_id": "other-session"}, daemon=True,
+    ).start()
+    assert entered.wait(10)
+    phase_at_flush, finished_in_time = [], []
+    bounded_flush = functools.partial(process_metrics.flush_before_hard_exit, timeout_s=0.5)
+
+    def observed_flush():
+        sentinel = get_lifecycle_sentinel_path()
+        phase_at_flush.append(json.loads(sentinel.read_text()).get("phase") if sentinel.exists() else None)
+        finished_in_time.append(bounded_flush())
+
+    monkeypatch.setattr(process_metrics, "flush_before_hard_exit", observed_flush)
+    monkeypatch.setattr(gateway_run.os, "_exit", _fake_exit)
     started = time.monotonic()
     try:
-        assert process_metrics.flush_before_hard_exit(timeout_s=0.2) is False
+        with pytest.raises(_Exited):
+            gateway_run._exit_after_graceful_shutdown(0)
     finally:
         release.set()
+
+    assert finished_in_time == [False]  # the barrier really was wedged
+    assert phase_at_flush == ["exited"]
     assert time.monotonic() - started < 5

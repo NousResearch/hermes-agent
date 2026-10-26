@@ -123,7 +123,8 @@ def install_profile(packaged_executable: Path) -> bool:
     for command, stdin_text in steps:
         try:
             completed = subprocess.run(
-                command, input=stdin_text, text=True, check=False, timeout=_SUDO_TIMEOUT_S,
+                command, input=stdin_text, text=True, encoding="utf-8", errors="replace",
+                check=False, timeout=_SUDO_TIMEOUT_S,
                 stdout=subprocess.DEVNULL if stdin_text is not None else None)
         except (OSError, subprocess.TimeoutExpired) as exc:
             print(f"✗ {' '.join(command)} failed: {exc}")

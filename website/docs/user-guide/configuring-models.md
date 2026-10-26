@@ -236,6 +236,17 @@ providers:
       openai_native_compaction: true
 ```
 
+**`anthropic_signed_thinking`** — set this capability to `true` on an `anthropic_messages` entry whose relay forwards Anthropic thinking blocks and their signatures byte-for-byte (a transparent proxy in front of Anthropic). Hermes then replays Claude's signed thinking through that relay as it does on the direct API, so Claude keeps its reasoning across tool steps and turns instead of re-planning each step. Off unless set — an undeclared relay gets no thinking back. It covers Claude models only (ids containing `claude`), and every entry sharing the same URL must agree: one `false` turns it off. On a relay that does not forward signatures unchanged, every tool step costs a rejected request and a retry, so remove the flag there:
+
+```yaml
+providers:
+  my-relay:
+    api: https://relay.example.com
+    transport: anthropic_messages
+    capabilities:
+      anthropic_signed_thinking: true
+```
+
 For a gateway that resolves a bare model alias only after receiving the
 request, opt the alias into prompt-cache markers with the per-model
 `prompt_caching` capability:

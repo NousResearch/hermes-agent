@@ -71,23 +71,36 @@ def _is_off_anthropic(base_url: Any) -> bool:
     return _is_third_party_anthropic_endpoint(base_url) and not _is_nous_portal_endpoint(base_url)
 
 
-# First match wins; an unmatched relay host is ``third_party``. DeepSeek models never sign, so they keep
-# the unsigned-only contract on any host but Anthropic's own, Claude platforms included.
+def _declared_signed_relay(base_url: Any, model: Any) -> bool:
+    """A providers.<name> entry vouches (capabilities: {anthropic_signed_thinking: true}) that this relay
+    forwards Anthropic-signed Claude thinking unchanged; every entry stating the flag must agree."""
+    if not isinstance(model, str) or "claude" not in model.lower():
+        return False
+    from hermes_cli.config import _entries_for_route, load_config_readonly
+    flags = {(e.get("capabilities") or {}).get("anthropic_signed_thinking")
+             for e in _entries_for_route(base_url, None, load_config_readonly())} - {None}
+    return flags == {True}
+
+
+# First match wins; an unmatched, undeclared relay host is ``third_party``. DeepSeek models never sign,
+# so they keep the unsigned-only contract on any host but Anthropic's own, Claude platforms included.
 _ROUTE_RULES = (
     ("kimi", lambda url, model: _is_kimi_family_endpoint(url, model)),
     ("deepseek", lambda url, model: _is_deepseek_anthropic_endpoint(url)
         or (_is_off_anthropic(url) and _model_name_is_deepseek_thinking(model))),
     ("native", lambda url, model: not _is_off_anthropic(url) or _is_claude_platform_endpoint(url)),
     ("minimax", lambda url, model: _is_minimax_anthropic_endpoint(url)),
+    ("native", _declared_signed_relay),
 )
 
 
 def anthropic_thinking_route(base_url: Any, model: Any) -> str:
     """Which thinking-replay contract an Anthropic Messages request follows: ``kimi`` (replay as-is),
     ``deepseek`` (unsigned only), ``native`` (Anthropic-signed blocks: the direct API, Nous Portal,
-    Bedrock, Vertex AI, Azure AI Foundry), ``minimax`` (its own signed blocks, returned unchanged on
-    every turn as its docs require) or ``third_party`` (an unknown relay that cannot verify Anthropic
-    signatures: strip all). The converter, accounting and signature-rejection state share this."""
+    Bedrock, Vertex AI, Azure AI Foundry, and for Claude models a relay whose providers entry declares
+    ``capabilities.anthropic_signed_thinking``), ``minimax`` (its own signed blocks, returned unchanged
+    on every turn as its docs require) or ``third_party`` (an undeclared relay that cannot verify
+    Anthropic signatures: strip all). The converter, accounting and signature-rejection state share this."""
     return next((route for route, matches in _ROUTE_RULES if matches(base_url, model)), "third_party")
 
 

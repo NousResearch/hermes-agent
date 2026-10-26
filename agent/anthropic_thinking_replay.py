@@ -43,8 +43,8 @@ def _fingerprint(block: Any) -> str | None:
 
 
 def tracks_rejected_thinking(agent: Any) -> bool:
-    """Signed-replay routes only (Anthropic and its cloud platforms, MiniMax): Kimi, DeepSeek and
-    third-party routes keep their own replay contract and the one-request ``reasoning_details`` repair."""
+    """Signed-replay routes only (Anthropic, its cloud platforms and declared relays; MiniMax): Kimi,
+    DeepSeek and third-party routes keep their own replay contract and the one-request ``reasoning_details`` repair."""
     from agent.anthropic_thinking_policy import SIGNED_REPLAY_ROUTES, anthropic_thinking_route
 
     return getattr(agent, "api_mode", None) == "anthropic_messages" and anthropic_thinking_route(

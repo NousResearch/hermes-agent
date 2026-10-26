@@ -192,6 +192,18 @@ model:
   #   my-proxy:
   #     base_url: "http://127.0.0.1:4000/v1"
   #     session_affinity_header: x-litellm-session-id
+  #
+  # capabilities: {anthropic_signed_thinking: true} on an anthropic_messages
+  # entry says its relay forwards Anthropic thinking blocks and their
+  # signatures byte-for-byte, so Claude models keep their thinking across tool
+  # steps and turns. Off unless set; Claude models only. Never set it for a
+  # relay that rewrites thinking.
+  #
+  # providers:
+  #   my-relay:
+  #     base_url: "https://relay.example.com"
+  #     api_mode: anthropic_messages
+  #     capabilities: {anthropic_signed_thinking: true}
 # providers:
 #   meta:
 #     base_url: https://api.meta.ai/v1

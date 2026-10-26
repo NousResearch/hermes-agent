@@ -2,7 +2,7 @@
 
 Anthropic documents ``signature`` values as valid across the Claude API, Bedrock and Google Cloud;
 Foundry serves the same Claude; MiniMax's Anthropic API asks for its own thinking blocks back
-unchanged. Unknown relays cannot verify them and keep stripping; DeepSeek and Kimi keep their own
+unchanged. Undeclared relays cannot verify them and keep stripping; DeepSeek and Kimi keep their own
 contracts. Within the in-flight tool loop every model gets its thinking back (required by the API);
 earlier turns only where the model keeps prior thinking.
 """
@@ -13,6 +13,8 @@ import copy
 
 import pytest
 
+import hermes_constants
+import hermes_yaml
 from agent.anthropic_thinking_policy import native_anthropic_preserves_prior_thinking
 from agent.anthropic_thinking_replay import tracks_rejected_thinking
 from agent.message_sanitization import stale_thinking_reaches_wire
@@ -24,6 +26,8 @@ FOUNDRY = "https://my-res.services.ai.azure.com/anthropic"
 MINIMAX = "https://api.minimax.io/anthropic"
 MINIMAX_CN = "https://api.minimaxi.com/anthropic"
 RELAY = "https://relay.example.com/anthropic"
+DECLARED = "https://cliproxy.example.test"
+REFUSED = "https://refused.example.test"
 ALL, LOOP, NONE = ["sig_prior", "sig_loop1", "sig_loop2"], ["sig_loop1", "sig_loop2"], []
 
 _CASES = {
@@ -42,12 +46,24 @@ _CASES = {
     "native_opus48": (None, "claude-opus-4-8", ALL, True),
     # Unchanged contracts.
     "unknown_relay": (RELAY, "claude-opus-4-8", NONE, False),
+    # A providers entry vouches that its relay forwards Anthropic-signed Claude thinking unchanged.
+    "declared_relay": (DECLARED, "claude-opus-4-8", ALL, True),
+    "non_claude_on_declared_relay": (DECLARED, "gpt-5.6", NONE, False),
+    "declared_false": (REFUSED, "claude-opus-4-8", NONE, False),
     "bedrock_lookalike_host": ("https://bedrock-runtime.us-east-1.amazonaws.com.evil.test", "claude-opus-4-8", NONE, False),
     "bedrock_lookalike_path": ("https://evil.test/bedrock-runtime.us-east-1.amazonaws.com", "claude-opus-4-8", NONE, False),
     "deepseek": ("https://api.deepseek.com/anthropic", "deepseek-v4-pro", NONE, False),
     "deepseek_on_bedrock_host": (BEDROCK, "deepseek-v4-pro", NONE, False),
     "kimi": ("https://api.kimi.com/coding", "kimi-k2.5", ALL, False),
 }
+
+
+@pytest.fixture(autouse=True)
+def _relay_providers():
+    entry = {"api_mode": "anthropic_messages", "api_key": "sk-test", "context_length": 200000}
+    providers = {"cliproxy": {**entry, "base_url": DECLARED, "capabilities": {"anthropic_signed_thinking": True}},
+                 "refused": {**entry, "base_url": REFUSED, "capabilities": {"anthropic_signed_thinking": False}}}
+    (hermes_constants.get_hermes_home() / "config.yaml").write_text(hermes_yaml.safe_dump({"providers": providers}))
 
 
 def _signed(sig):
@@ -106,3 +122,26 @@ def test_a_steer_merged_into_the_tool_result_turn_keeps_the_loop_thinking():
     _system, wire = AnthropicTransport().convert_messages(history, base_url=None, model="claude-sonnet-4-5")
     sigs = [b.get("signature") for m in wire if m["role"] == "assistant" for b in m["content"] if b.get("type") == "thinking"]
     assert sigs == LOOP
+
+
+def test_a_declared_relay_replays_signed_thinking_through_the_real_resolution_chain(monkeypatch):
+    """config.yaml -> runtime provider resolution -> AIAgent -> request build: the entry that declares
+    ``anthropic_signed_thinking`` puts its relay on the signed-replay route."""
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from run_agent import AIAgent
+
+    monkeypatch.setattr("model_tools.get_tool_definitions", lambda **kw: [])
+    monkeypatch.setattr("model_tools.check_toolset_requirements", dict)
+    rt = resolve_runtime_provider(requested="cliproxy")
+    agent = AIAgent(api_key=rt["api_key"], base_url=rt["base_url"], provider=rt["provider"],
+                    requested_provider=rt.get("requested_provider"), api_mode=rt["api_mode"],
+                    model="claude-opus-4-8", quiet_mode=True, skip_context_files=True, skip_memory=True)
+    history = _history()
+    before = copy.deepcopy(history)
+
+    wire = agent._build_api_kwargs(history)["messages"]
+
+    sigs = [b.get("signature") for m in wire if m["role"] == "assistant" for b in m["content"] if b.get("type") == "thinking"]
+    assert sigs == ALL
+    assert tracks_rejected_thinking(agent)
+    assert history == before

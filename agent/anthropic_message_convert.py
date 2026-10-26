@@ -592,7 +592,8 @@ def _manage_thinking_signatures(result: list[dict[str, Any]], base_url: str | No
     Vertex, Foundry; MiniMax for its own blocks) keep valid signed blocks on every assistant turn
     when the model keeps prior thinking, else on every turn of the in-flight tool loop (the API
     requires those back and strips older turns itself; cutting at the latest assistant message
-    broke the loop's earlier steps). Unknown relays cannot verify signatures and strip all; Kimi
+    broke the loop's earlier steps). A relay declared in its providers entry counts as Anthropic;
+    undeclared relays cannot verify signatures and strip all; Kimi
     replays as-is; DeepSeek needs unsigned blocks round-tripped but rejects signed ones.
     """
     route = anthropic_thinking_route(base_url, model)

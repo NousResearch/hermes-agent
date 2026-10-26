@@ -309,10 +309,17 @@ function domSections(
       sections.push([
         ...spellcheck.suggestions
           .slice(0, 5)
-          .map(suggestion => (
+          .map((suggestion, index) => (
             <Item
               icon="edit"
-              key={`spell-${suggestion}`}
+              // The INDEX, not the label: Chromium can suggest the literal
+              // word "add", and a label-derived key would then collide with
+              // the "Add to dictionary" row's key below. React warns and then
+              // reuses the first element's state for the second, so the two
+              // rows share one identity -- and in a menu that means the wrong
+              // row keeps the focus and the highlight. The index is unique by
+              // construction.
+              key={`spell-${index}`}
               label={suggestion}
               onSelect={() => spellcheckAction({ kind: 'replace', word: suggestion })}
             />
@@ -718,13 +725,20 @@ export function AppContextMenu() {
         portalContainer={open.kind === 'dom' ? open.target.dialogPortalContainer : undefined}
         side="bottom"
       >
-        {sections.map((section, index) => (
-          // Sections are positional by construction, so the index IS the key.
-          <div className="contents" key={index}>
-            {index > 0 && <DropdownMenuSeparator />}
-            {section}
-          </div>
-        ))}
+        {/* Sections are flattened into ONE child list, separated by a
+            separator element: every row is a keyed sibling of every other row.
+            Radix keys its focus registry off the row's element, and React keys
+            a row off its own key — but only while its PARENT stays the same.
+            Wrapping each section in a `<div>` made a section insert (the
+            spell-check facts land a tick after the menu opens) re-parent every
+            row below it, so React unmounted and re-mounted those rows: the
+            focused row was destroyed, focus fell back to the menu surface, and
+            the highlight vanished. Flat siblings make the same insert a keyed
+            reorder, which keeps every row's element (and its focus). */}
+        {sections.flatMap((section, index) => [
+          ...(index > 0 ? [<DropdownMenuSeparator key={`section-separator-${index}`} />] : []),
+          ...section
+        ])}
       </DropdownMenuContent>
     </DropdownMenu>
   )

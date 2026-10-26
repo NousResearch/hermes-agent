@@ -45,6 +45,7 @@ import paths
 import report
 import storage
 import tiers
+import vectors
 
 _AGE = bool(shutil.which("age") and shutil.which("age-keygen"))
 
@@ -680,6 +681,85 @@ def test_report_metrics_removal_rate_and_overdue():
         assert m["confirmed_removed"] == 1
         assert m["open_needs_action"] >= 1 and m["in_flight_claimed"] >= 1
         assert m["overdue_rechecks"] >= 1 and 0 < m["removal_rate"] <= 1
+
+
+# --- spam-call lane: phone-led intake, focus phone, DNC one-shot, unsearchable brokers ------
+
+def test_phone_led_intake_without_name():
+    with temp_env():
+        out = _run(["intake", "--phone", "+1-415-555-0137", "--email", "t@example.com", "--consent"])
+        assert out["phones"] == 1 and out["names"] == []
+        assert any("full_name" in w for w in out["warnings"])
+        # intake with no identifier at all is refused
+        try:
+            _run(["intake", "--consent"])
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("intake without any identifier must be refused")
+
+
+def test_focus_phone_drives_disclosure_and_vectors():
+    with temp_env():
+        out = _run(["intake", "--full-name", "Jane Q. Public", "--email", "jane@example.com",
+                    "--phone", "+1-415-555-0137", "--focus-phone", "+1-510-555-0199", "--consent"])
+        sid = out["subject_id"]
+        assert out["phones"] == 2 and out["focus_phone"] == "+1-510-555-0199"
+        d = dossier.load(sid)
+        assert d["preferences"]["focus_phone"] == "+1-510-555-0199"
+        # the focus number is what a phone-asking opt-out form gets, not phones[0]
+        assert dossier.select_disclosure(d, ["phone"])["phone"] == "+1-510-555-0199"
+        sv = vectors.search_vectors(d, {"search": {"by": ["phone"]}})
+        assert {v["query"]["phone"] for v in sv} == {"+1-415-555-0137", "+1-510-555-0199"}
+
+
+def test_dnc_one_shot_surfaced_once_then_filed():
+    with temp_env():
+        sid = _run(["intake", "--full-name", "Jane Q. Public", "--email", "jane@example.com",
+                    "--phone", "+1-415-555-0137", "--consent"])["subject_id"]
+        d = dossier.load(sid)
+        d["residency_jurisdiction"] = "US-CA"
+        dossier.save(d)
+        out = _run(["dnc", sid])
+        assert out["eligible"] is True
+        assert out["dnc_url"] == "https://www.donotcall.gov/register.html"
+        assert "72 hours" in " ".join(out["steps"])
+        q = autopilot.next_actions(dossier.load(sid), [], _auto_cfg(), {}, env={})
+        assert any(a["type"] == "dnc_register" for a in q["actions"])
+        filed = _run(["dnc", sid, "--filed"])
+        assert "dnc_filed_at" in filed
+        q2 = autopilot.next_actions(dossier.load(sid), [], _auto_cfg(), {}, env={})
+        assert not any(a["type"] == "dnc_register" for a in q2["actions"])
+        # non-US residency -> never surfaced
+        d2 = dossier.load(sid)
+        d2["residency_jurisdiction"] = "EU-DE"
+        dossier.save(d2)
+        q3 = autopilot.next_actions(dossier.load(sid), [], _auto_cfg(), {}, env={})
+        assert not any(a["type"] == "dnc_register" for a in q3["actions"])
+        assert _run(["dnc", sid])["eligible"] is False
+
+
+def test_unsearchable_group_and_fanout_skip_for_nameless_subject():
+    with temp_env():
+        sid = _run(["intake", "--phone", "+1-415-555-0137", "--consent"])["subject_id"]
+        d = dossier.load(sid)
+        bl = [_mini_broker("namesite"),
+              {**_mini_broker("phonesite"), "search": {"by": ["phone"]}}]
+        bp = tiers.batch_plan(d, bl, config.DEFAULT_CONFIG, {})
+        assert bp["counts"]["unsearchable"] == 1
+        assert bp["counts"]["unscanned"] == 1
+        assert [r["broker_id"] for r in bp["groups"]["unsearchable"]] == ["namesite"]
+        assert [r["broker_id"] for r in bp["groups"]["unscanned"]] == ["phonesite"]
+        assert any("no runnable search vector" in t for t in bp["next_actions"])
+        q = autopilot.next_actions(d, bl, _auto_cfg(), {}, env={})
+        scan = next(a for a in q["actions"] if a["type"] == "scan_inline")
+        assert scan["broker_ids"] == ["phonesite"]
+        # fanout batches only brokers this subject can actually be searched on
+        fan = _run(["fanout", sid])
+        ids = [b for batch in fan["batches"] for b in batch["brokers"]]
+        assert fan["skipped_unsearchable"] >= 1
+        for bid in ids:
+            assert "phone" in (brokers.get(bid).get("search") or {}).get("by", ["name"])
 
 
 if __name__ == "__main__":

@@ -308,8 +308,12 @@ def cmd_intake(args) -> None:
         residency = data.get("residency_jurisdiction", "US")
         prefs = data.get("preferences")
     else:
-        if not args.full_name:
-            sys.exit("error: --full-name (or --json) is required")
+        # Phone-led intake: a spam-call run starts from the number. At least ONE identifier
+        # is required (name, phone, or email). The full name is not required to SCAN
+        # (phone/email/address vectors run; name-only brokers group as `unsearchable`), but
+        # every opt-out form and legal request needs it -- warned below, not refused.
+        if not (args.full_name or args.phone or args.email):
+            sys.exit("error: intake needs at least one identifier: --full-name, --phone, or --email")
         identity = {"full_name": args.full_name, "emails": args.email or [], "phones": args.phone or []}
         if args.alias:
             identity["also_known_as"] = args.alias
@@ -341,13 +345,29 @@ def cmd_intake(args) -> None:
         }
         if args.contact_email:
             prefs["contact_email_for_optouts"] = args.contact_email
+        if getattr(args, "focus_phone", None):
+            # Phone-led (spam-call) run: the number being scrubbed. Add it to the dossier
+            # phones so search vectors cover it even when it was not listed separately.
+            if args.focus_phone not in identity["phones"]:
+                identity["phones"].append(args.focus_phone)
+            prefs["focus_phone"] = args.focus_phone
     d = dossier_mod.create(identity, consent, residency, prefs)
+    warnings: list[str] = []
+    if not (d["identity"].get("full_name") or "").strip():
+        warnings.append("no full_name on file: scans run (phone/email/address vectors) but most "
+                        "opt-out forms and every legal request need the subject's legal name -- "
+                        "collect it before Phase 2")
+    if not dossier_mod.contact_email(d):
+        warnings.append("no email on file: opt-out correspondence needs a contact email -- "
+                        "collect one before Phase 2")
     _out({"subject_id": d["subject_id"], "authorized": dossier_mod.is_authorized(d),
           "residency": residency, "email_mode": (prefs or {}).get("email_mode"),
+          "focus_phone": (prefs or {}).get("focus_phone"),
           "names": dossier_mod.all_names(d),
           "emails": len(d["identity"].get("emails") or []),
           "phones": len(d["identity"].get("phones") or []),
-          "addresses": len(dossier_mod.all_addresses(d))})
+          "addresses": len(dossier_mod.all_addresses(d)),
+          "warnings": warnings})
 
 
 def cmd_brokers(args) -> None:
@@ -437,6 +457,52 @@ def cmd_drop(args) -> None:
     })
 
 
+def cmd_dnc(args) -> None:
+    """The spam-call one-shot: the FTC National Do Not Call Registry (US personal numbers).
+
+    Complementary to broker removal -- the registry is what lawful telemarketers must honor
+    (within 31 days); the people-search listings are where lead lists come from. Mirrors
+    `drop`: surfaced by `next` once per subject until `--filed` records it.
+    """
+    d = _require_subject(args.subject)
+    dossier_mod.require_authorized(d)
+    res = (d.get("residency_jurisdiction") or "US").upper()
+    phones = list((d.get("identity") or {}).get("phones") or [])
+    eligible = res.startswith("US") and bool(phones)
+    if args.filed:
+        prefs = d.setdefault("preferences", {})
+        prefs["dnc_filed_at"] = dossier_mod.now()
+        dossier_mod.save(d)
+        _out({"subject": args.subject, "dnc_filed_at": prefs["dnc_filed_at"],
+              "note": "recorded; `next` will stop surfacing the DNC one-shot"})
+        return
+    _out({
+        "subject": args.subject,
+        "eligible": eligible,
+        "residency": res,
+        "numbers": phones,
+        "dnc_url": registry.DNC_URL,
+        "steps": ([
+            f"Open {registry.DNC_URL} and enter the subject's personal number(s) -- up to "
+            f"three per pass ({len(phones)} on file here) -- with the subject's contact email.",
+            "The FTC sends a confirmation email PER NUMBER; open each link within 72 hours "
+            "or that number is not registered.",
+            "Sales calls stop within 31 days; registration never expires (personal numbers "
+            "only -- business/fax lines are not covered).",
+            f"After submitting, run `dnc {args.subject} --filed` so the loop stops "
+            "re-surfacing it.",
+        ] if eligible else [
+            "The National Do Not Call Registry covers US personal numbers only; this subject "
+            "has no US residency or no phone on file.",
+            "The broker-removal lane (`next`) is what cuts the lead lists scammers buy, in "
+            "any jurisdiction.",
+        ]),
+        "note": "DNC stops lawful telemarketers, not scammers; broker removal is the other "
+                "half. It is not a call blocker -- carriers' call-blocking/labeling handles "
+                "the rest.",
+    })
+
+
 def cmd_plan(args) -> None:
     d = _require_subject(args.subject)
     dossier_mod.require_authorized(d)
@@ -453,7 +519,8 @@ def cmd_fanout(args) -> None:
     d = _require_subject(args.subject)
     dossier_mod.require_authorized(d)
     bl = brokers_mod.by_priority(*(args.priority or [])) if args.priority else brokers_mod.load_all()
-    grouping = tiers.fanout(bl, batch_size=args.size)
+    runnable, unsearchable = tiers.runnable_for(d, bl)  # zero-vector brokers can't be scanned at all
+    grouping = tiers.fanout(runnable, batch_size=args.size)
     mode = "scan AND opt-out (operator authorized submissions)" if args.optout \
         else "READ-ONLY scan (submit nothing; reconnaissance only)"
     batches = []
@@ -481,6 +548,7 @@ def cmd_fanout(args) -> None:
     _out({
         "subject": args.subject,
         "broker_count": grouping["broker_count"],
+        "skipped_unsearchable": len(unsearchable),
         "batch_size": grouping["batch_size"],
         "should_fanout": grouping["should_fanout"],
         "batch_count": len(batches),
@@ -776,6 +844,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--dob", help="date of birth YYYY-MM-DD (only used if a broker requires it)")
     s.add_argument("--contact-email", dest="contact_email",
                    help="which email to use for opt-out correspondence (default: first)")
+    s.add_argument("--focus-phone", dest="focus_phone", metavar="PHONE",
+                   help="phone-led (spam-call) run: the number being scrubbed -- added to the "
+                        "search vectors and used as the `phone` field opt-out forms disclose")
     s.add_argument("--residency", help="e.g. US, US-CA")
     s.add_argument("--consent", action="store_true", help="subject authorizes removal on their behalf")
     s.add_argument("--consent-method", default="self", choices=["self", "written_authorization", "poa"])
@@ -803,6 +874,14 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("subject")
     s.add_argument("--filed", action="store_true", help="mark DROP as filed (stops `next` surfacing it)")
     s.set_defaults(func=cmd_drop)
+
+    s = sub.add_parser("dnc",
+                       help="spam-call one-shot: register the subject's US numbers on the FTC "
+                            "National Do Not Call Registry (lawful telemarketers stop within 31 days)")
+    s.add_argument("subject")
+    s.add_argument("--filed", action="store_true",
+                   help="mark the DNC registration as filed (stops `next` surfacing it)")
+    s.set_defaults(func=cmd_dnc)
 
     s = sub.add_parser("plan", help="compute per-broker tier + next action for a subject")
     s.add_argument("subject")

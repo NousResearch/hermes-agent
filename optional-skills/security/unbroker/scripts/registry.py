@@ -35,6 +35,8 @@ _CA_CSV = "https://cppa.ca.gov/data_broker_registry/registry{year}.csv"
 _CA_FLOOR_YEAR = 2025
 DEFAULT_URL = _CA_CSV.format(year=_CA_FLOOR_YEAR)
 DROP_URL = "https://privacy.ca.gov/drop"
+# National Do Not Call Registry (FTC): the US-wide personal-number list for spam-call runs.
+DNC_URL = "https://www.donotcall.gov/register.html"
 USER_AGENT = "Mozilla/5.0 (compatible; unbroker/1.0; data opt-out)"
 
 

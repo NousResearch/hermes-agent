@@ -264,6 +264,30 @@ T2 and become human tasks. **Never use a third-party CAPTCHA-defeating service.*
   -> **stop, do not loop** (e.g. PrivateRecords' distorted-text-THEN-arithmetic double gate). If no cited
   rights-email exists, that is a genuine `blocked`.
 
+## Spam-call lane (reverse-phone search + DNC registration)
+
+A phone-led run ("my number keeps getting spam calls") is the same loop entered from the number:
+`intake --phone ... --focus-phone ...` (the focus number is what phone-asking opt-out forms
+disclose), then `next` as usual. `search_vectors` already emits one `by: phone` vector per dossier
+phone on every broker that declares phone search (18 of the 22 curated records). Two
+phone-specific notes:
+
+- **Reverse-phone pages SEO-echo the number too.** The title/H1 templating trap applies: a real
+  result is a card naming the subscriber (name / age / city), not the query echo. Corroborate
+  against the dossier before recording `found`.
+- **The page answers "whose number is this".** Running it reveals the subscriber behind the
+  number - only run phone vectors on the consenting subject's own numbers.
+
+**DNC one-shot** (`pdd.py dnc <subject>`, surfaced by `next` for US subjects with phones until
+`--filed`): register on the FTC's National Do Not Call Registry. Free, personal numbers only
+(business/fax lines are not covered), up to three numbers per registration pass with one
+confirmation email PER number (open each link within 72 hours or that number is not registered),
+sales calls stop within 31 days, registration never expires. It stops lawful telemarketers - it
+does NOT stop scammers, who ignore the list: broker removal is the complementary half, because the
+people-search listings are where lead lists come from. If the FTC form defeats the configured
+browser, present it as a manual step in the end-of-run digest; `dnc --filed` records completion so
+the loop stops re-surfacing it.
+
 ## Browser backends: scan vs execute
 
 Two different jobs need two different browsers. Getting this wrong is the single biggest cause of a

@@ -248,6 +248,28 @@ def next_actions(dossier: dict, brokers_list: list[dict], cfg: dict,
             "after": f"python3 scripts/pdd.py drop {subject_id} --filed",
         })
 
+    # 0c) National Do Not Call Registry one-shot (US personal numbers): the spam-call lever
+    # lawful telemarketers must honor (within 31 days). Complementary to broker removal --
+    # the people-search listings are where lead lists come from. Surfaced once until `dnc --filed`.
+    dnc_filed = bool((dossier.get("preferences") or {}).get("dnc_filed_at"))
+    dnc_phones = list(((dossier.get("identity") or {}).get("phones")) or [])
+    if residency.startswith("US") and dnc_phones and not dnc_filed:
+        actions.append({
+            "type": "dnc_register",
+            "one_shot": True,
+            "url": registry.DNC_URL,
+            "confirm_first": confirm_first,
+            "command": f"python3 scripts/pdd.py dnc {subject_id}",
+            "why": "US personal number(s) not yet on the National Do Not Call Registry: lawful "
+                   "telemarketers must stop within 31 days; registration never expires.",
+            "how": "drive the FTC form with browser_exec (up to 3 numbers per pass + the subject's "
+                   "contact email; the FTC emails a confirmation PER NUMBER -- open each link "
+                   "within 72 hours or that number is not registered). If the form defeats the "
+                   "configured browser, present it as a manual step in the end-of-run digest "
+                   "instead of fighting it.",
+            "after": f"python3 scripts/pdd.py dnc {subject_id} --filed",
+        })
+
     # 1) Phase 1 crawl: everything unscanned (read-only, parallel-safe)
     unscanned = groups.get("unscanned") or []
     if unscanned:

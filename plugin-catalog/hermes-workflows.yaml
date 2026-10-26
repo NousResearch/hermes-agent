@@ -38,11 +38,11 @@ requires_hermes: ">=0.21.4"
 docs_url: https://github.com/jacobhausler/hermes-workflows#readme
 version: "1.4.3"
 image: 
-  https://raw.githubusercontent.com/jacobhausler/hermes-workflows/8464682336f77a67d8f8258acb839c9e2dcf28d5/assets/dag-review.png
+  https://raw.githubusercontent.com/jacobhausler/hermes-workflows/464b4aa304960c89522e709d6b109d0fd08fe06e/assets/dag-review.png
 screenshots:
-- https://raw.githubusercontent.com/jacobhausler/hermes-workflows/8464682336f77a67d8f8258acb839c9e2dcf28d5/assets/dag-review.png
-- https://raw.githubusercontent.com/jacobhausler/hermes-workflows/8464682336f77a67d8f8258acb839c9e2dcf28d5/assets/branch-gate.png
-- https://raw.githubusercontent.com/jacobhausler/hermes-workflows/8464682336f77a67d8f8258acb839c9e2dcf28d5/assets/fanout.png
+- https://raw.githubusercontent.com/jacobhausler/hermes-workflows/464b4aa304960c89522e709d6b109d0fd08fe06e/assets/dag-review.png
+- https://raw.githubusercontent.com/jacobhausler/hermes-workflows/464b4aa304960c89522e709d6b109d0fd08fe06e/assets/branch-gate.png
+- https://raw.githubusercontent.com/jacobhausler/hermes-workflows/464b4aa304960c89522e709d6b109d0fd08fe06e/assets/fanout.png
 platforms: []
 capabilities:
   provides_tools:

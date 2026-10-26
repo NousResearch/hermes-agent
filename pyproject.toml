@@ -648,6 +648,13 @@ override-dependencies = [
   # never builds a misaki G2P. The never-true marker removes it from the lock.
   # Remove this line when misaki drops it or a 3.14-capable release fits.
   "spacy-curated-transformers; sys_platform == 'never'",
+  # filelock is transitive (huggingface-hub, torch), both without an upper
+  # bound. 3.32.7 is flagged by GHSA-v4x8-3wr5-3wq8 (HIGH): ReadWriteLock
+  # reopens the SQLite lock database by name, so a planted symlink or journal
+  # file makes the locking process overwrite/unlink its own files. Fixed in
+  # 4.2.1. Bump to the patched floor; the <5 bound follows the
+  # >=floor,<next_major policy.
+  "filelock>=4.2.1,<5",
 ]
 # Release-age check: Hermes's dependencies must be at least 3 days old when Hermes
 # locks them. It runs where uv.lock is resolved (`hermes pm lock`, and CI's lock

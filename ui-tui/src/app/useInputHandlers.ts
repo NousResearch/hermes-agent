@@ -118,6 +118,18 @@ export function resolveDoubleEscAction(opts: {
   return 'none'
 }
 
+/** Idle double-Esc on an empty composer opens the rewind picker (`/rewind`); never over an overlay,
+ * mid-turn (that Esc Esc interrupts) or with a draft (that one discards it). */
+export function shouldOpenRewindOnDoubleEsc(opts: {
+  blocked: boolean
+  busy: boolean
+  canonical: boolean
+  hasDraft: boolean
+  hasSession: boolean
+}): boolean {
+  return opts.canonical && opts.hasSession && !opts.busy && !opts.hasDraft && !opts.blocked
+}
+
 /**
  * Approval / clarify / confirm overlays mount their own `useInput` handlers
  * for the in-prompt keys (arrows, numbers, Enter, sometimes Esc).  The global
@@ -271,6 +283,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const cancelOverlayFromCtrlC = () => {
     if (overlay.clarify) {
       return actions.cancelClarify()
+    }
+
+    if (overlay.rewind) {
+      return patchOverlayState({ rewind: null })
     }
 
     if (overlay.approval) {
@@ -462,6 +478,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   // it. Ctrl+C now clears a non-empty composer even mid-stream; Esc Esc is
   // still the dedicated discard (pushes the draft to history so Up recalls it).
   const lastEscRef = useRef(0)
+  const escBlockedRef = useRef(false)
 
   useInput((ch, key, event) => {
     const live = getUiState()
@@ -478,6 +495,9 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         const isDouble = now - lastEscRef.current <= DOUBLE_ESC_MS
 
         lastEscRef.current = isDouble ? 0 : now
+        // The Esc that closes an overlay must not be the first half of a rewind double-Esc.
+        const startedBlocked = escBlockedRef.current
+        escBlockedRef.current = isBlocked
 
         if (isDouble) {
           const escAction = resolveDoubleEscAction({
@@ -506,6 +526,18 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
             return cActions.clearIn()
           }
+
+          const rewind = shouldOpenRewindOnDoubleEsc({
+            blocked: isBlocked || startedBlocked,
+            busy: live.busy,
+            canonical: gateway.gw.isCanonical,
+            hasDraft: Boolean(cState.input || cState.inputBuf.length),
+            hasSession: Boolean(live.sid)
+          })
+
+          if (rewind) {
+            return actions.dispatchSubmission('/rewind')
+          }
         }
       }
     }
@@ -529,6 +561,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         overlay.clarify ||
         overlay.confirm ||
         overlay.connection ||
+        overlay.rewind ||
         overlay.subscription
 
       const fallThroughForScroll = promptOverlay && shouldFallThroughForScroll(key)

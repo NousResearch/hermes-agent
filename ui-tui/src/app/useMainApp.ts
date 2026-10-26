@@ -65,6 +65,7 @@ import { scrollWithSelectionBy } from './scroll.js'
 import { respondToServerRequest } from './serverRequestStore.js'
 import { mutateCanonicalSession } from './slash/canonicalSessionControls.js'
 import { setSlashCatalog, useSlashCatalog } from './slashCatalog.js'
+import { steerOrQueue } from './steerOrQueue.js'
 import { captureDestination, isCurrentDestination, type SubmissionDestination } from './submissionDestination.js'
 import { turnController } from './turnController.js'
 import { patchTurnState, useTurnSelector } from './turnStore.js'
@@ -1281,6 +1282,29 @@ export function useMainApp(gw: GatewayClient) {
     [overlay.approval, respondWith, rpc]
   )
 
+  // "No, and tell Hermes what to do instead": the instruction is steered into the held turn FIRST, so it
+  // rides on the blocked tool result; then the command is denied. A refused steer (the turn is
+  // ending) keeps the words as the next prompt, the same fallback /steer uses.
+  const answerApprovalTell = useCallback(
+    (text: string) => {
+      const sid = getUiState().sid
+
+      if (!sid || !capturePromptResponseGuard('approval', overlay.approval)()) {
+        return
+      }
+
+      void steerOrQueue({
+        enqueue: composerActions.enqueue,
+        generation: gw.isCanonical ? getUiState().info?.execution_generation : undefined,
+        rpc,
+        sid,
+        sys,
+        text
+      }).finally(() => answerApproval('deny'))
+    },
+    [answerApproval, composerActions, gw, overlay.approval, rpc, sys]
+  )
+
   const answerSudo = useCallback(
     (pw: string) => {
       if (!overlay.sudo) {
@@ -1515,6 +1539,7 @@ export function useMainApp(gw: GatewayClient) {
       activateLiveSession: session.activateLiveSession,
       closeLiveSession,
       answerApproval,
+      answerApprovalTell,
       answerClarifyQuestion,
       answerSecret,
       answerSudo,
@@ -1541,6 +1566,7 @@ export function useMainApp(gw: GatewayClient) {
     }),
     [
       answerApproval,
+      answerApprovalTell,
       answerClarifyQuestion,
       answerSecret,
       answerSudo,

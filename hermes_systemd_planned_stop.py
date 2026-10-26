@@ -30,8 +30,8 @@ def _get_process_hermes_home() -> Path:
 def _get_process_start_time(pid: int) -> int | None:
     """Return the Linux process start-time fingerprint, when available."""
     try:
-        # Match gateway.status: field 22 in /proc/<pid>/stat.
-        return int(Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()[21])
+        # Field 22 follows comm's last ")"; comm may contain spaces/non-UTF-8 bytes.
+        return int(Path(f"/proc/{pid}/stat").read_bytes().rsplit(b")", 1)[1].split()[19])
     except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
         return None
 

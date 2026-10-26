@@ -74,7 +74,8 @@ def spawn_unmanaged_gateway(profile_home: Path, *, deadline: float, idle_exit: b
     logs = home / "logs"
     logs.mkdir(parents=True, exist_ok=True)
     if sys.platform == "darwin":  # LAN access must outlive the app that asked for the gateway
-        if job := start_gateway_job(command, env=env, cwd=root, log_path=logs / "gateway-stdio.log"):
+        if job := start_gateway_job(command, env=env, cwd=root, log_path=logs / "gateway-stdio.log",
+                                    deadline=deadline):
             return job
     try:
         with (logs / "gateway-stdio.log").open("ab", buffering=0) as output:

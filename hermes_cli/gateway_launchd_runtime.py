@@ -27,7 +27,14 @@ LABEL_PREFIX = "com.nousresearch.hermes.runtime."
 _POLL_INTERVAL_S = 0.5
 
 
-def _launchctl(*args: str, timeout: float = 10) -> subprocess.CompletedProcess[str] | None:
+def _budget(deadline: float | None, cap: float) -> float:
+    """``cap`` seconds, never past the caller's startup deadline (0 once it has passed)."""
+    return cap if deadline is None else max(0.0, min(cap, deadline - time.monotonic()))
+
+
+def _launchctl(*args: str, timeout: float) -> subprocess.CompletedProcess[str] | None:
+    if timeout <= 0:
+        return None
     try:
         return subprocess.run(["launchctl", *args], capture_output=True, text=True, encoding="utf-8",
                               errors="replace", timeout=timeout, check=False, stdin=subprocess.DEVNULL)
@@ -38,8 +45,9 @@ def _launchctl(*args: str, timeout: float = 10) -> subprocess.CompletedProcess[s
 class GatewayJob:
     """The ``poll()``/``pid`` view of a launched job that ``ensure_gateway_runtime`` reads."""
 
-    def __init__(self, target: str):
+    def __init__(self, target: str, deadline: float | None):
         self.target = target
+        self._deadline = deadline
         self.pid: int | None = None
         self._status: int | None = None
         self._checked = 0.0
@@ -50,7 +58,7 @@ class GatewayJob:
         if time.monotonic() - self._checked < _POLL_INTERVAL_S:
             return None
         self._checked = time.monotonic()
-        done = _launchctl("print", self.target, timeout=5)
+        done = _launchctl("print", self.target, timeout=_budget(self._deadline, 5))
         if done is None:
             return None
         if done.returncode != 0:
@@ -66,31 +74,32 @@ class GatewayJob:
     def _record_gateway_pid(self, wrapper_pid: int) -> None:
         # The job's own process is osascript; the gateway is its only child (the shell execs it).
         # Its pid is what gateway_state.json names, so a startup-failure report can match it.
-        if self.pid not in (None, wrapper_pid):
+        if self.pid not in (None, wrapper_pid) or not (timeout := _budget(self._deadline, 5)):
             return
         try:
             out = subprocess.run(["pgrep", "-P", str(wrapper_pid)], capture_output=True, text=True, encoding="utf-8",
-                                 timeout=5, check=False, stdin=subprocess.DEVNULL).stdout.split()
+                                 timeout=timeout, check=False, stdin=subprocess.DEVNULL).stdout.split()
         except (OSError, subprocess.TimeoutExpired):
             out = []
         self.pid = int(out[0]) if out else wrapper_pid
 
 
-def _remove_finished_jobs() -> None:
+def _remove_finished_jobs(deadline: float | None) -> None:
     """Unload earlier jobs whose gateway has exited; a running one is never touched."""
-    listed = _launchctl("list")
+    listed = _launchctl("list", timeout=_budget(deadline, 10))
     for line in (listed.stdout.splitlines() if listed and listed.returncode == 0 else []):
         fields = line.split()
         if len(fields) == 3 and fields[0] == "-" and fields[2].startswith(LABEL_PREFIX):
-            _launchctl("remove", fields[2])
+            _launchctl("remove", fields[2], timeout=_budget(deadline, 10))
 
 
 def start_gateway_job(command: list[str], *, env: dict[str, str], cwd: str | Path,
-                      log_path: str | Path) -> GatewayJob | None:
+                      log_path: str | Path, deadline: float | None = None) -> GatewayJob | None:
     """Run ``command`` as a one-off job in this user's GUI launchd domain. ``None`` when launchd
-    cannot take it (no GUI session, e.g. over SSH): the caller starts it as a plain child instead."""
+    cannot take it (no GUI session, e.g. over SSH): the caller starts it as a plain child instead.
+    ``deadline`` (monotonic) bounds every launchctl call, here and in the job's ``poll()``."""
     from hermes_cli.gateway_launchd import launchd_program_arguments
-    _remove_finished_jobs()
+    _remove_finished_jobs(deadline)
     label = f"{LABEL_PREFIX}{uuid.uuid4().hex[:12]}"
     target = f"gui/{os.getuid()}/{label}"  # windows-footgun: ok — macOS-only module
     log_path = Path(log_path)
@@ -108,7 +117,8 @@ def start_gateway_job(command: list[str], *, env: dict[str, str], cwd: str | Pat
                 "WorkingDirectory": str(cwd),
                 "RunAtLoad": True,
             }, handle)
-        done = _launchctl("bootstrap", f"gui/{os.getuid()}", str(plist))  # windows-footgun: ok — macOS-only
+        done = _launchctl("bootstrap", f"gui/{os.getuid()}", str(plist),  # windows-footgun: ok — macOS-only
+                          timeout=_budget(deadline, 10))
     finally:
         plist.unlink(missing_ok=True)
-    return GatewayJob(target) if done is not None and done.returncode == 0 else None
+    return GatewayJob(target, deadline) if done is not None and done.returncode == 0 else None

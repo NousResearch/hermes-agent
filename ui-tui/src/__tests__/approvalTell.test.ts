@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { steerOrQueue } from '../app/steerOrQueue.js'
 import { captureDestination } from '../app/submissionDestination.js'
 import { patchUiState, resetUiState } from '../app/uiStore.js'
+import { approvalAnswers } from '../app/useApprovalAnswers.js'
 import { approvalAction, approvalRows } from '../components/prompts.js'
 
 const req = { command: 'rm -rf build', description: 'recursive delete', requestId: 'r1' }
@@ -11,6 +13,7 @@ const owner = () => ({ ...captureDestination(), sid: 'owner' })
 
 beforeEach(() => {
   resetUiState()
+  resetOverlayState()
   patchUiState({ sid: 'owner' })
 })
 
@@ -67,5 +70,36 @@ describe('"No, and tell Hermes what to do instead" (#25693)', () => {
 
     expect(enqueue).toHaveBeenCalledWith('do X instead', 'do X instead', expect.objectContaining({ sid: 'owner' }))
     expect(sys).not.toHaveBeenCalled()
+  })
+
+  it('a submitted instruction locks the prompt: repeat Enter or an allow during the steer sends nothing extra', async () => {
+    const approval = { ...req }
+    let reply!: (value: unknown) => void
+    const rpc = vi.fn(() => new Promise(resolve => (reply = resolve)))
+    const respondWith = vi.fn()
+
+    patchOverlayState({ approval })
+
+    const { answerApproval, answerApprovalTell } = approvalAnswers({
+      approval,
+      canonical: false,
+      enqueue: vi.fn(),
+      respondWith,
+      rpc: rpc as any,
+      sys: vi.fn()
+    })
+
+    answerApprovalTell('use INSERT OR REPLACE')
+    answerApprovalTell('use INSERT OR REPLACE')
+    answerApproval('once')
+
+    expect(rpc).toHaveBeenCalledTimes(1)
+    expect(respondWith).not.toHaveBeenCalled()
+
+    reply({ status: 'queued' })
+    await new Promise(resolve => setImmediate(resolve))
+    answerApproval('once')
+
+    expect(respondWith.mock.calls.map(([, result]) => result)).toEqual([{ choice: 'deny' }])
   })
 })

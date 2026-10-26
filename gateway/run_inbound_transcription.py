@@ -206,7 +206,8 @@ class GatewayInboundTranscriptionMixin:
         return user_text, successful_transcripts
 
     async def _enrich_inbound_voice(
-        self, event, source, message_text: str, audio_paths: list[str]
+        self, event, source, message_text: str, audio_paths: list[str],
+        session_key: Optional[str] = None,
     ) -> str:
         handed = await asyncio.to_thread(take_handed_off_clips, event, audio_paths)  # paid when it arrived busy
         shown = {path for path, (_transcript, was_shown) in handed.items() if was_shown}
@@ -215,6 +216,13 @@ class GatewayInboundTranscriptionMixin:
         # ``clips`` holds each clip once, in order (enrichment dedupes repeated paths and bytes).
         _successful_transcripts = [transcript for path, (transcript, _note) in clips.items()
                                    if transcript is not None and path not in shown]
+        # A plugin may consume a voice message by its SPOKEN text, which only exists after
+        # transcription (#145125). The hook runs here, while the turn is still being prepared
+        # and the agent has not run, so a ``handled`` result can still skip the turn.
+        await self._hm_post_transcription_admission(
+            event, source, _successful_transcripts,
+            session_key or self._session_key_for_source(source),
+        )
         # Echo each successful transcript back immediately when configured so users can verify STT
         # quality in real time. On transcription failure do NOT send a hardcoded notice: that
         # bypassed the LLM and produced two replies; enrichment leaves one neutral marker instead.

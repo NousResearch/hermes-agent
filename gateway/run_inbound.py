@@ -1595,6 +1595,41 @@ class GatewayInboundMixin(
                 logger.debug("%s echo refused: %s", log_context, getattr(result, "error", None))
         return accepted
 
+    async def _hm_post_transcription_admission(
+        self, event: MessageEvent, source: SessionSource, transcripts: list[str],
+        session_key: str,
+    ) -> Optional[str]:
+        """Offer a transcribed voice message to the ``post_transcription_admission`` hook.
+
+        Returns the plugin's reply when one consumed the message, else None. A consumed message
+        skips the agent turn: the transcript is recorded on the event and the prepared-text step
+        returns the plugin's reply instead of a prompt for the model.
+
+        ``session_key`` is the turn's authoritative key (the same one
+        ``post_gateway_admission`` received), not a re-derived one: a plugin must see the
+        session the turn actually runs in.
+        """
+        transcript = "\n".join(t for t in (transcripts or []) if (t or "").strip()).strip()
+        if not transcript:
+            return None
+        # No presence check here: which plugins are loaded depends on the ROUTED profile,
+        # which is only known inside the routed scope the hook itself enters. A check in the
+        # ambient scope would miss the plugin on a multiplexed gateway and silently skip
+        # the message it was written for.
+        from gateway.run_inbound_consumer import run_post_transcription_admission_hook
+        try:
+            handled, reply = await run_post_transcription_admission_hook(
+                self, event, source, session_key, transcript,
+            )
+        except Exception:  # health: allow BLE001 -- a plugin hook must never break the turn
+            logger.warning("post_transcription_admission failed; continuing with the agent turn", exc_info=True)
+            return None
+        if not handled:
+            return None
+        event._gateway_transcription_consumed = True
+        event._gateway_transcription_reply = reply
+        return reply
+
     @staticmethod
     def _inbound_attachment_display_name(path: str, original_name: str = "") -> tuple[str, str]:
         """``(display_name, agent_visible_path)``. The display name is the adapter-supplied
@@ -1800,7 +1835,13 @@ class GatewayInboundMixin(
         if image_paths:
             message_text = await self._enrich_inbound_images(source, session_key, message_text, image_paths)
         if audio_paths:
-            message_text = await self._enrich_inbound_voice(event, source, message_text, audio_paths)
+            message_text = await self._enrich_inbound_voice(event, source, message_text, audio_paths, session_key)
+            # A plugin consumed the voice message by its transcript (#145125): the turn is
+            # answered by the plugin, not by the model. Reuse the existing refusal channel so
+            # the prepare step returns that reply instead of a prompt.
+            if getattr(event, "_gateway_transcription_consumed", False):
+                event._gateway_turn_refusal = getattr(event, "_gateway_transcription_reply", None)
+                return None
         message_text = self._prepend_inbound_media_file_notes(
             message_text, audio_file_paths, video_paths, self._inbound_original_names(event))
         message_text = self._prepend_inbound_document_notes(event, message_text)

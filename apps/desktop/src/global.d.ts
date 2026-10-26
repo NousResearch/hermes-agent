@@ -832,6 +832,10 @@ export interface DesktopSyncReceipt {
 export interface DesktopVersionInfo {
   /** Packaged client version, or the runtime version for source installs. */
   appVersion: string
+  /** The active connection's backend runtime version ('' when unreachable). */
+  backendVersion?: string
+  /** This machine's install: the stamp for packages, `hermes --version` for source installs. */
+  clientVersion?: string
   /** Fixed release identity. Commit builds have no update channel. */
   channel?: string | null
   electronVersion: string

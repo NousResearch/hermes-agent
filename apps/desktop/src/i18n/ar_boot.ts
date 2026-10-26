@@ -141,6 +141,8 @@ export const arBoot = {
     versionDetailsTitle: 'تفاصيل الإصدار',
     versionDetailsBody: 'هذا التثبيت مُدار خارج التطبيق. حدّثه بالطريقة نفسها التي استخدمتها لتثبيته.',
     versionDetailsVersion: 'الإصدار',
+    versionDetailsClient: 'هذا الجهاز',
+    versionDetailsBackend: 'الخادم المتصل',
     versionDetailsCommit: 'الالتزام',
     versionDetailsBuildOrigin: 'مصدر البناء',
     versionDetailsDistribution: 'التوزيع',

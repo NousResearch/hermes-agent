@@ -1249,6 +1249,9 @@ class GatewayBusySessionMixin:
             return await _queue_fallback(t("gateway.steer.queued_starting"))
         if not running_agent or not hasattr(running_agent, "steer"):
             return await _queue_fallback(t("gateway.steer.queued_no_agent"))
+        # A pending clarify owns the turn: the agent is parked inside that tool, so no iteration
+        # prep runs and the steer accepted below cannot arrive until the prompt times out (#145161).
+        await self._release_clarify_owning_turn(quick_key, source)
         try:
             accepted = self._steer_running_agent(running_agent, self._steer_text_with_origin(steer_text, event))
         except Exception as exc:

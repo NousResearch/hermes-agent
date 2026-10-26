@@ -257,12 +257,66 @@ def _load_cron_skill_parts(job: dict, skill_names: list[str]) -> list[str]:
     return parts
 
 
+# Explicit deliverable boundary (#52934 / #62511). Not a Markdown ``---`` cut:
+# unmarked reports stay intact, and only delivery (not the saved output) uses it.
+CRON_DELIVERABLE_MARKER = "FINAL_CRON_OUTPUT:"
+
+# System line run_job prepends (#74349). Marker extraction must not drop it.
+_PROVIDER_FALLBACK_PREFIX = "⚠️ Provider fallback:"
+
+
+def _payload_after_deliverable_marker(text: str) -> Optional[str]:
+    """Text after the first explicit marker, or None if it is absent or empty.
+
+    An empty payload must not suppress delivery of the original response.
+    """
+    lines = (text or "").splitlines()
+    marker = CRON_DELIVERABLE_MARKER
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        rest = "\n".join(lines[index + 1 :])
+        if stripped == marker:
+            return rest.strip() or None
+        if stripped.startswith(marker):
+            tail = stripped[len(marker) :].lstrip()
+            payload = f"{tail}\n{rest}".strip() if rest else tail
+            return payload or None
+    return None
+
+
+def _extract_cron_deliverable_response(text: str) -> str:
+    """Delivery-only extract. Unmarked text, including Markdown ``---``, is unchanged.
+
+    A leading provider-fallback notice stays with the delivered report. The persisted
+    cron output document is not passed through this function.
+    """
+    raw = text or ""
+    preserved = raw.strip()
+    if not preserved:
+        return preserved
+    lines = raw.splitlines()
+    notice = ""
+    body = raw
+    if lines and lines[0].startswith(_PROVIDER_FALLBACK_PREFIX):
+        notice = lines[0].strip()
+        body = "\n".join(lines[1:])
+    payload = _payload_after_deliverable_marker(body)
+    if payload is None:
+        return preserved
+    if notice:
+        return f"{notice}\n\n{payload}"
+    return payload
+
+
 _CRON_HINT = (
     "[IMPORTANT: You are running as a scheduled cron job. "
     "DELIVERY: Your final response will be automatically delivered "
     "to the user — do NOT use send_message or try to deliver "
     "the output yourself. Just produce your report/output as your "
     "final response and the system handles the rest. "
+    "Before report content, include a line that says exactly "
+    f"{CRON_DELIVERABLE_MARKER}. Only content after that marker "
+    "will be delivered; do not put working notes after the marker. "
     "SILENT: If there is genuinely nothing new to report, respond "
     "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
     "[SILENT] is a literal ASCII control token — never translate or "

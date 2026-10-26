@@ -2972,7 +2972,9 @@ def _compose_run_delivery(
         from cron.scheduler_failure_copy import blocked_config_notice
         deliver_content = blocked_config_notice(job.get("name") or job["id"], _pf_text)
     elif success:
-        deliver_content = final_response
+        # Marker extract is delivery-only. Saved output keeps the full response,
+        # and the sanitizers in _final_response_from_result still run first.
+        deliver_content = _extract_cron_deliverable_response(final_response)
         _resolve_incidents_for_recovered_job(job)
     else:
         # Record the job+error signature once; withhold the per-run ping while the operator
@@ -4394,8 +4396,9 @@ from cron.scheduler_script import (
     _get_session_db_timeout, _run_job_script_with_claim_heartbeat, _start_heartbeat_thread,
 )
 from cron.scheduler_prompt import (
-    _PROMPT_FRAME, _PROMPT_HEADING, _PROMPT_SEPARATOR, _RESPONSE_FRAME, _RESPONSE_HEADING,
-    _RESPONSE_TERMINATOR, _block_and_pause_job, _build_job_prompt, _guard_job_credential_exfil,
+    CRON_DELIVERABLE_MARKER, _PROMPT_FRAME, _PROMPT_HEADING, _PROMPT_SEPARATOR,
+    _RESPONSE_FRAME, _RESPONSE_HEADING, _RESPONSE_TERMINATOR, _block_and_pause_job,
+    _build_job_prompt, _extract_cron_deliverable_response, _guard_job_credential_exfil,
     _parse_wake_gate,
 )
 from cron.scheduler_preflight import (

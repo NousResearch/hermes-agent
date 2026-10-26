@@ -106,8 +106,9 @@ async def test_wake_for_a_busy_session_is_refused_while_draining():
         asyncio.Event()
     )  # a turn is still running in this chat
     runner._draining = True
-    with pytest.raises(WakeNotAccepted):
+    with pytest.raises(WakeNotAccepted) as refused:
         await deliver_wake(adapter, text="[kanban] Task t_1 completed.", source=source)
+    assert refused.value.reason == "runtime_draining" and not refused.value.permanent
     assert key not in adapter._pending_messages  # would be discarded when the turn ends
 
 
@@ -129,8 +130,9 @@ async def test_wake_is_refused_when_drain_starts_during_admission():
     assert await asyncio.to_thread(entered.wait, 5)
     runner._draining = True  # /restart begins while admission is parked
     release.set()
-    with pytest.raises(WakeNotAccepted):
+    with pytest.raises(WakeNotAccepted) as refused:
         await admission
+    assert refused.value.reason == "runtime_draining"
     await drain(adapter)
     assert turns == []
 

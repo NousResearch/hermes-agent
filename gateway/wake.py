@@ -103,7 +103,7 @@ async def admit_internal_event(adapter: Any, event: Any) -> None:
     # A draining gateway answers new work with a drain notice and discards queued follow-ups,
     # so a wake admitted now would never run. Refuse it so the caller keeps it for a retry.
     if _runner_draining(adapter):
-        raise WakeNotAccepted("gateway is draining; retry after restart")
+        raise WakeNotAccepted("gateway is draining; retry after restart", reason="runtime_draining")
     await adapter.handle_message(event)
     if event._gateway_accepted is not True:
         raise WakeNotAccepted()
@@ -112,7 +112,8 @@ async def admit_internal_event(adapter: Any, event: Any) -> None:
     # dooms the stored event: the drain gate refuses the claimed turn and the queued follow-up
     # is discarded. Refuse it so the producer retries it after the restart.
     if _runner_draining(adapter):
-        raise WakeNotAccepted("gateway began draining during admission; retry after restart")
+        raise WakeNotAccepted("gateway began draining during admission; retry after restart",
+                              reason="runtime_draining")
 
 
 def _runner_draining(adapter: Any) -> bool:

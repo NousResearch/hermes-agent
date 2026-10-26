@@ -49,27 +49,44 @@ function readLegacySpent(): Record<string, string> {
   return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, string> : {}
 }
 
-const PREFIXES = [SPENT_PREFIX, LEGACY_RETIRED_PREFIX, ENTRY_PREFIX] as const
-type Prefixed = Record<(typeof PREFIXES)[number], Record<string, string>>
+const PREFIXES = [SPENT_PREFIX, ENTRY_PREFIX] as const
+type Listed = Record<(typeof PREFIXES)[number], string[]>
 
-// Every value stored under a key starting with one of the prefixes, by prefix and then by the
-// rest of that key, in one pass over localStorage.
-function readPrefixed(): Prefixed {
-  const values = Object.fromEntries(PREFIXES.map(prefix => [prefix, {}])) as Prefixed
+// The rest of every key starting with one of the prefixes, by prefix, in one pass over the key
+// list. No value is read here: each store is read afterwards, in the order readJournal needs.
+function listPrefixed(): Listed {
+  const listed = Object.fromEntries(PREFIXES.map(prefix => [prefix, []])) as unknown as Listed
 
   for (let index = 0; index < window.localStorage.length; index += 1) {
     const key = window.localStorage.key(index)
     const prefix = PREFIXES.find(candidate => key?.startsWith(candidate))
-    const value = key && prefix ? window.localStorage.getItem(key) : null
 
-    if (key && prefix && value) { values[prefix][key.slice(prefix.length)] = value }
+    if (key && prefix) { listed[prefix].push(key.slice(prefix.length)) }
+  }
+
+  return listed
+}
+
+// The value stored under `prefix` + each of `keys`, by key, where there is one.
+function readPrefixed(prefix: string, keys: Iterable<string>): Record<string, string> {
+  const values: Record<string, string> = {}
+
+  for (const key of keys) {
+    const value = window.localStorage.getItem(prefix + key)
+
+    if (value) { values[key] = value }
   }
 
   return values
 }
 
-function readSpent(prefixed: Prefixed): Record<string, string> {
-  return { ...readLegacySpent(), ...prefixed[SPENT_PREFIX], ...Object.fromEntries(retired) }
+// Besides the listed tombstones, the one under every key the journal read holds: the key list is
+// no snapshot, so a tombstone another tab wrote after it was taken, or that a removal shifted out
+// of it, still hides its entry.
+function readSpent(listed: string[], journal: Record<string, PreparedSubmission>): Record<string, string> {
+  const keys = new Set([...listed, ...Object.keys(journal)])
+
+  return { ...readLegacySpent(), ...readPrefixed(SPENT_PREFIX, keys), ...Object.fromEntries(retired) }
 }
 
 function writeSpent(key: string, id: string | undefined): void {
@@ -103,10 +120,12 @@ async function readJournal(): Promise<Record<string, PreparedSubmission>> {
   }
 
   const stored = parsed as Record<string, PreparedSubmission>
-  const prefixed = readPrefixed()
-  const journal = native ? stored : readBrowserJournal(stored, prefixed)
+  const listed = listPrefixed()
+  const journal = native ? stored : readBrowserJournal(stored, listed[ENTRY_PREFIX])
 
-  for (const [key, id] of Object.entries(readSpent(prefixed))) {
+  // Tombstones are read only after the entries: a retirement tombstones its entry before removing
+  // it, so a tombstone written before an entry was read here is seen and hides that entry.
+  for (const [key, id] of Object.entries(readSpent(listed[SPENT_PREFIX], journal))) {
     if (journal[key]?.id === id) {
       delete journal[key]
       // Storage may have recovered since: finish the retirement so the stale entry stops lingering.
@@ -122,12 +141,13 @@ async function readJournal(): Promise<Record<string, PreparedSubmission>> {
 }
 
 // The entries under their own keys, over the legacy blob's entries not yet retired.
-function readBrowserJournal(legacy: Record<string, PreparedSubmission>, prefixed: Prefixed): Record<string, PreparedSubmission> {
-  for (const [key, id] of Object.entries(prefixed[LEGACY_RETIRED_PREFIX])) {
+function readBrowserJournal(legacy: Record<string, PreparedSubmission>, listed: string[]): Record<string, PreparedSubmission> {
+  // Only a key the blob holds can carry a marker that matters, so each is read by name, not listed.
+  for (const [key, id] of Object.entries(readPrefixed(LEGACY_RETIRED_PREFIX, Object.keys(legacy)))) {
     if (legacy[key]?.id === id) { delete legacy[key] }
   }
 
-  const entries = Object.entries(prefixed[ENTRY_PREFIX]).map(([key, entry]) => [key, JSON.parse(entry)])
+  const entries = Object.entries(readPrefixed(ENTRY_PREFIX, listed)).map(([key, entry]) => [key, JSON.parse(entry)])
 
   return { ...legacy, ...Object.fromEntries(entries) }
 }

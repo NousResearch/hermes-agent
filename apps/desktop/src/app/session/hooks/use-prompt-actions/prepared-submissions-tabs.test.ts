@@ -123,3 +123,65 @@ test('retiring an entry never hides a different send the earlier build left unde
   await journal.removePreparedSubmission(key, 'new')
   expect(await journal.adoptPreparedSubmission(key, 'earlier')).toEqual({ key, entry: entry('earlier', 'same words') })
 })
+
+const ENTRY = 'hermes.desktop.preparedSubmissions.v2:'
+const SPENT = 'hermes.desktop.preparedSubmissions.spent.v2:'
+
+// Storage over `stored` that runs `onKey` on every key() call and `onGet` on every getItem(): another
+// tab's writes landing while a journal read is part way through.
+function interleavedStorage(stored: Map<string, string>, onKey: () => void, onGet: (key: string) => void) {
+  return {
+    get length() { return stored.size },
+    key: (index: number) => {
+      const key = [...stored.keys()][index] ?? null
+      onKey()
+
+      return key
+    },
+    getItem: (key: string) => {
+      const value = stored.get(key) ?? null
+      onGet(key)
+
+      return value
+    },
+    setItem: (key: string, value: string) => { stored.set(key, value) },
+    removeItem: (key: string) => { stored.delete(key) },
+    clear: () => stored.clear()
+  } as unknown as Storage
+}
+
+async function readWhile(stored: Map<string, string>, { onKey = () => undefined, onGet = () => undefined }: { onKey?: () => void; onGet?: (key: string) => void }) {
+  const journal: Journal = await import('./prepared-submissions')
+  installStorage(interleavedStorage(stored, onKey, onGet))
+
+  return journal.readPreparedSubmission('a')
+}
+
+test('an entry read while another tab retires it is hidden even when its key already held an older tombstone', async () => {
+  const stored = new Map([[SPENT + 'a', 'older'], [ENTRY + 'a', JSON.stringify(entry('a', 'a'))]])
+
+  // The other tab's retirement tombstones 'a' under the same key just as this read takes the entry.
+  const onGet = (key: string) => { if (key === ENTRY + 'a') { stored.set(SPENT + 'a', 'a') } }
+
+  expect(await readWhile(stored, { onGet })).toBeUndefined()
+  expect([...stored.keys()]).toEqual([])
+})
+
+test('an entry read while another tab retires it is hidden when its tombstone key appears after the key list', async () => {
+  // This time the key held no tombstone at all when the read listed the keys.
+  const stored = new Map([[ENTRY + 'a', JSON.stringify(entry('a', 'a'))]])
+  const onGet = (key: string) => { if (key === ENTRY + 'a') { stored.set(SPENT + 'a', 'a') } }
+
+  expect(await readWhile(stored, { onGet })).toBeUndefined()
+  expect([...stored.keys()]).toEqual([])
+})
+
+test('a tombstone a concurrent removal shifts out of the key list still hides its entry', async () => {
+  const stored = new Map([['unrelated', 'x'], [SPENT + 'a', 'a'], [ENTRY + 'a', JSON.stringify(entry('a', 'a'))]])
+
+  // Another tab removes the first key just after it is listed: every later key moves down one index.
+  const onKey = () => { stored.delete('unrelated') }
+
+  expect(await readWhile(stored, { onKey })).toBeUndefined()
+  expect([...stored.keys()]).toEqual([])
+})

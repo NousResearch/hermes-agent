@@ -100,11 +100,10 @@ class TestCheckpointReadopt:
                 proc.kill()
                 proc.wait()
 
-    def test_kill_terminates_readopted_pid_when_start_probe_fails(
+    def test_unscoped_kill_stays_unknown_when_start_probe_fails(
         self, registry, monkeypatch
     ):
-        """kill must reach a re-adopted live child with an unreadable start
-        time, not report already_exited and leave it running unsupervised."""
+        """A matching root PID alone cannot establish whole-job containment."""
         proc = _sleep_proc()
         try:
             start = ProcessRegistry._safe_host_start_time(proc.pid)
@@ -114,9 +113,9 @@ class TestCheckpointReadopt:
 
             result = registry.kill_process(session.id)
 
-            assert result["status"] == "killed", result
-            proc.wait(timeout=10)
-            assert session.exited is True
+            assert (result['status'], result['error']) == ('error', 'process_stop_unknown')
+            assert proc.poll() is None and not session.exited
+            assert session._scope_stop_pending and session.host_start_time == start
         finally:
             if proc.poll() is None:
                 proc.kill()
@@ -144,7 +143,7 @@ class TestCheckpointReadopt:
         assert polled["status"] == "not_found"
         assert _completions(registry) == []
 
-    def test_recover_reattaches_live_pid_when_start_probe_fails(
+    def test_recover_keeps_unscoped_checkpoint_when_start_probe_fails(
         self, registry, tmp_path, monkeypatch
     ):
         proc = _sleep_proc()
@@ -171,10 +170,11 @@ class TestCheckpointReadopt:
             recovered = registry.recover_from_checkpoint()
             polled = registry.poll("proc_recover_live")
 
-            assert recovered == 1
+            assert recovered == 0
             assert proc.poll() is None
-            assert polled["status"] == "running"
+            assert polled["status"] == "not_found"
             assert "exit_code" not in polled
+            assert json.loads(checkpoint.read_text())[0]['host_start_time'] == start
             assert _completions(registry) == []
         finally:
             proc.kill()

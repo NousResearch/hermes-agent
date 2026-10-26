@@ -12,6 +12,15 @@ from hermes_state_runtime import RuntimeStoreError
 from tests.gateway.test_session_authority_cancel_settlement import ACTOR, REF, _authority
 
 
+@pytest.fixture(autouse=True)
+def native_unit_transport(monkeypatch):
+    from tools import process_registry as module
+    def launch(registry, session, command, suffix, label):
+        session.systemd_unit = 'hermes-worker-' + suffix + '.scope'
+        return [module._find_shell(), '-lic', 'set +m; ' + command]
+    monkeypatch.setattr(module.ProcessRegistry, '_scope_argv', launch)
+
+
 def _spawn(registry, root, owner='s'):
     command = shlex.join([sys.executable, '-c', 'import threading; threading.Event().wait(60)'])
     return registry.spawn_local(command, cwd=str(root), task_id=owner, owner_task_id=owner,
@@ -119,6 +128,7 @@ async def test_completed_log_reader_cannot_hide_unattempted_owned_scope(tmp_path
         unit = 'hermes-worker-unattempted.scope'
         entry.update(systemd_unit=unit, _scope_stop_pending=False,
                      pid=neighbor.pid, host_start_time=neighbor.host_start_time - 1)
+        own.systemd_unit, own.pid, own.host_start_time = unit, entry['pid'], entry['host_start_time']
         original._write_checkpoint(extra_entries=[entry])
         record_process_stop(authority, REF, authority._handle(REF).execution_generation)
         epoch = begin_runtime_epoch(db, instance_id='reloaded')

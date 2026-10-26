@@ -54,6 +54,7 @@ def save_completed_result(session) -> bool:
         record = {key: getattr(session, key) for key in _RESULT_FIELDS}
         record["completion_consumed"] = session.completion_consumed
         record.update(pid=session.pid, host_start_time=session.host_start_time, pid_scope=session.pid_scope,
+                      native_job_scope=session.native_job_scope,
                       ownership_generation=session.ownership_generation, handoff_note=session.handoff_note)
         record["output"] = session.output_buffer[-MAX_OUTPUT_CHARS:]
     # Live-output opt-out must not persist raw credentials in durable receipts.
@@ -68,6 +69,7 @@ def save_completed_result(session) -> bool:
         from hermes_cli.active_sessions import _FileLock
         from tools.process_registry import _checkpoint_path
         from tools.process_registry_handoff import merge_ownership, OWNERSHIP_FIELDS
+        from tools.process_registry_job import inherit_job_scope
         checkpoint = _checkpoint_path()
         # Match the checkpoint writer's lock order. A retired/cached reader can
         # finish after handoff; merge its immutable process's committed identity
@@ -78,18 +80,23 @@ def save_completed_result(session) -> bool:
             except FileNotFoundError:
                 previous = []
             merge_ownership([record], previous)
+            inherit_job_scope([record], previous)
             with _FileLock(directory / '.lock'):
                 path = directory / f"{session.id}.json"
-                merge_ownership([record], completed_ownership([record]))
+                receipts = completed_ownership([record])
+                merge_ownership([record], receipts)
+                inherit_job_scope([record], receipts)
                 # A stale result writer cannot unconsume a completed Stop.
                 record['completion_consumed'] |= completed_result_consumed(session.id)
                 atomic_json_write(path, record, mode=0o600)
                 _result_paths()
         with session._lock:
+            session.native_job_scope |= record['native_job_scope']
             if session.ownership_generation <= record['ownership_generation']:
                 for field in OWNERSHIP_FIELDS:
                     setattr(session, field, record[field])
             session.completion_consumed |= record['completion_consumed']
+            session._result_persisted_generation = record['ownership_generation']
         return True
     except (OSError, ValueError, TypeError):
         # Preserve live delivery on disk failure, but never silently claim durability.
@@ -163,6 +170,7 @@ def load_completed_results(prefix: str = "", *, owns_entry=None, strict=False) -
         if not isinstance(checkpoint, list) or any(not isinstance(row, dict) for row in checkpoint):
             raise ValueError('invalid process checkpoint')
         scopes = {row.get('session_id'): row.get('pid_scope', 'host') for row in checkpoint}
+        native_jobs = {row.get('session_id'): row.get('native_job_scope', False) for row in checkpoint}
         paths = _result_paths()
     except (OSError, ValueError):
         if strict:
@@ -183,9 +191,11 @@ def load_completed_results(prefix: str = "", *, owns_entry=None, strict=False) -
                 exited=True, output_buffer=record["output"], completion_consumed=record.get('completion_consumed', False),
                 pid=record.get('pid'), host_start_time=record.get('host_start_time'),
                 pid_scope=scopes.get(record['id'], record.get('pid_scope', 'host')),
+                native_job_scope=native_jobs.get(record['id'], record.get('native_job_scope', False)),
                 ownership_generation=record.get('ownership_generation', 0), handoff_note=record.get('handoff_note', ''),
             )
             session._completion_event.set()
+            session._result_persisted_generation = session.ownership_generation
             results[session.id] = session
         except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
             if strict:

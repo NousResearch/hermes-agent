@@ -143,6 +143,8 @@ def test_a_snapshot_taken_before_the_reader_finishes_does_not_consume_it(read, m
     registry = ProcessRegistry()
     monkeypatch.setattr(registry, "_write_checkpoint", lambda *_a, **_k: None)
     session = _finalizing_session(registry)
+    session.systemd_unit = 'hermes-worker-proc_finalizing.scope'
+    monkeypatch.setattr(module, '_stop_systemd_unit', lambda unit: True)
 
     def reader_finishes():
         session.append_output("FINAL")

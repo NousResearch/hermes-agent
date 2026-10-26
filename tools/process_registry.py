@@ -564,6 +564,7 @@ class ProcessSession:
     detached: bool = False                      # Recovered from checkpoint (no pipe)
     pid_scope: str = "host"                     # "host" for local/PTY PIDs, "sandbox" for env-local PIDs
     systemd_unit: str = ""                      # transient scope unit name when spawned under systemd-run
+    native_job_scope: bool = False             # birth-bound native kernel job/exit receipt
     wsl_chain: bool = False                     # spawned via wsl[.exe]: the host PID is the short-lived
                                                 # launcher; Linux-side workers outlive it (#120546)
     handoff_note: str = ""                      # why a subagent handed this process to its parent (rides the notice)
@@ -602,6 +603,8 @@ class ProcessSession:
     # Set by the _move_to_finished call that moved the session out of _running; only that call
     # publishes the completion, so a duplicate finisher must not release waiters early.
     _finish_claimed: bool = field(default=False, repr=False)
+    # Output must reach the existing retained result before its resource checkpoint retires.
+    _result_persisted_generation: int = field(default=-1, repr=False)
     # The last stop of ``systemd_unit`` failed, so its descendants may still be alive; bulk
     # cleanup retries the stop even after the session finished.
     _scope_stop_pending: bool = field(default=False, repr=False)
@@ -654,7 +657,7 @@ _WATCHER_ROUTE_KEYS = ("platform", "chat_id", "user_id", "user_name", "thread_id
 # Session fields persisted verbatim in the crash-recovery checkpoint (plus
 # ``session_id``; ``command`` is redacted and ``owner_task_id`` defaulted on write).
 _CHECKPOINT_FIELDS = (
-    "command", "pid", "pid_scope", "host_start_time", "systemd_unit", "wsl_chain", "cwd",
+    "command", "pid", "pid_scope", "host_start_time", "systemd_unit", "native_job_scope", "wsl_chain", "cwd",
     "started_at", "task_id", "owner_task_id", "session_key",
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
     "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns",
@@ -1000,22 +1003,6 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             return "running"
         return "reused"
 
-    def _refresh_detached_session(self, session: Optional[ProcessSession]) -> Optional[ProcessSession]:
-        """Re-attach, close, or prune a recovered host-PID session.
-
-        A completion is not queued here: recovery has no waitable handle, so it
-        never collected an exit status.
-        """
-        if session is None or session.exited or not session.detached or session.pid_scope != "host" or session.output_log:
-            return session  # a log-backed adoption's reader collects the recorded exit itself
-        fate = self._detached_host_fate(session.pid, session.host_start_time)
-        if fate == "running":
-            return session
-        if fate == "gone":
-            return self._prune_uncollected_detached(session)
-        self._close_reused_detached(session)
-        return session
-
     def _close_reused_detached(self, session: ProcessSession) -> None:
         """Close an entry whose PID was recycled onto another process.
 
@@ -1110,10 +1097,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         return tempfile.gettempdir()
 
     def _scope_argv(self, session: ProcessSession, safe_command: str, unit_suffix: str, label: str) -> list[str]:
-        """Login-shell argv for *safe_command* (parity with LocalEnvironment: rc files
-        sourced, user tools on PATH), wrapped in a transient systemd scope when we are
-        the supervised gateway (own cgroup: an OOM kills only the worker, not the
-        gateway and its messaging control plane)."""
+        """Login-shell argv inside a native unit or the Linux job subreaper."""
         argv = [_find_shell(), "-lic", f"set +m; {safe_command}"]
         # This applies to both pipe mode and the PTY path above. See #70716.
         in_supervised_gateway = _IS_LINUX and _is_supervised_gateway_process()
@@ -1126,6 +1110,9 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             logger.debug(
                 "%s background executor not isolated in a systemd scope "
                 "(systemd-run --user unavailable); worker shares the gateway cgroup.", label)
+        if _IS_LINUX:
+            from tools.process_registry_job import job_argv
+            return job_argv(session, argv, self._daemon_term_grace_seconds())
         return argv
 
     @staticmethod
@@ -1154,8 +1141,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
 
     def _spawn_local_pty(self, session: ProcessSession, safe_command: str, env_vars: dict) -> ProcessSession:
         """PTY spawn for interactive CLI tools (Codex, Claude Code, REPLs).
-        Raises ImportError when no PTY backend is installed and re-raises any spawn
-        failure; ``spawn_local`` falls back to pipe mode in both cases."""
+        Raises ImportError when no PTY backend is installed. A partial launch
+        remains captured and cannot authorize replay through the pipe path."""
         if _IS_WINDOWS:
             from winpty import PtyProcess as _PtyProcessCls
         else:
@@ -1172,7 +1159,11 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         session.pid = pty_proc.pid
         session.host_start_time = self._safe_host_start_time(session.pid)
         session._pty = pty_proc
-        self._track_started(session, self._pty_reader_loop, f"proc-pty-reader-{session.id}")
+        try:
+            self._track_started(session, self._pty_reader_loop, f"proc-pty-reader-{session.id}")
+        except Exception:
+            self._reap_untracked(session, pty_proc)
+            raise
         return session
 
     def spawn_local(
@@ -1181,7 +1172,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         persist_on_release: bool = False) -> ProcessSession:
         """Spawn a background process locally (TERMINAL_ENV=local; other backends use
         spawn_via_env()). ``use_pty`` requests a pseudo-terminal via ptyprocess/pywinpty
-        for interactive CLIs, falling back to a plain pipe when unavailable or failing.
+        for interactive CLIs, falling back to a plain pipe when no PTY backend is installed.
         ``persist_on_release`` keeps the process out of agent-lifecycle kill sweeps (#41225)."""
         # Bash parses ``A && B &`` as ``(A && B) &`` — a subshell that holds our stdout
         # pipe open forever when B is a long-running server. The rewriter turns it into
@@ -1198,64 +1189,24 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         if use_pty and log is None:
             try:
                 return self._spawn_local_pty(session, safe_command, env_vars)
-            except ImportError:
+            except ImportError as e:
+                if session.pid is not None or session.native_job_scope or session.systemd_unit:
+                    from tools.process_registry_chat_execution import retain_failed_start
+                    retain_failed_start(self, session)
+                    raise RuntimeError('PTY startup uncertain; original command was not retried') from e
                 logger.warning("ptyprocess not installed, falling back to pipe mode")
             except Exception as e:
-                logger.warning("PTY spawn failed (%s), falling back to pipe mode", e)
-                if session.systemd_unit:
-                    pty_scope_attempted = True
-                    if not _stop_systemd_unit(session.systemd_unit):
-                        raise RuntimeError(
-                            "PTY scope could not be reaped; refusing pipe fallback "
-                            "to avoid duplicate command execution"
-                        ) from e
-                    session.systemd_unit = ""
-        # Pipe path (non-PTY or PTY fallback).
-        _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
-        unit_suffix = f"{session.id}-pipe-fallback" if pty_scope_attempted else session.id
-        spawn_argv = self._scope_argv(session, record_exit_command(log, safe_command) if log else safe_command,
-                                      unit_suffix, "Local")
-        spawn_env = self._spawn_env(env_vars)
-        if session.systemd_unit:
-            spawn_env = systemd_user_bus_env(spawn_env)
-        # start_new_session is REQUIRED with systemd-run --scope too: the scope does not
-        # give the worker a new session, so from an interactive TUI the worker would
-        # share the foreground process group and background spawns would stop the whole
-        # session (observed as dead TUIs in state T). Cgroup isolation is unaffected —
-        # the scope attaches to the invoked process, not the spawning session.
-        output = open_output_log(log) if log else subprocess.PIPE
-        try:
-            proc = subprocess.Popen(
-                spawn_argv, text=True, cwd=session.cwd, env=spawn_env, encoding="utf-8",
-                errors="replace", stdout=output, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                start_new_session=True, **_popen_kwargs)
-        finally:
-            if log:
-                os.close(output)
-        session.process, session.output_log = proc, str(log or "")
-        session.pid = proc.pid
-        session.host_start_time = self._safe_host_start_time(session.pid)
-        try:
-            self._track_started(session, self._log_reader_loop if log else self._reader_loop, f"proc-reader-{session.id}")
-        except Exception:
-            self._reap_untracked(session, proc)
-            raise
-        return session
+                from tools.process_registry_chat_execution import retain_failed_start
+                retain_failed_start(self, session)
+                raise RuntimeError('PTY startup uncertain; original command was not retried') from e
+        # Keep the native pipe/platform seams in the spawn companion.
+        from tools.process_registry_chat_execution import spawn_local_pipe
+        return spawn_local_pipe(self, session, safe_command, env_vars, pty_scope_attempted, log=log)
+
 
     def _reap_untracked(self, session: ProcessSession, proc: subprocess.Popen) -> None:
-        """Post-Popen setup failed: kill the orphaned subprocess (and any setsid
-        descendants) so nothing leaks untracked."""
-        with suppress(Exception):
-            if session.systemd_unit:
-                # Scope teardown is the authoritative cleanup for the worker cgroup;
-                # the systemd-run wrapper PID is terminated below as fallback.
-                _stop_systemd_unit(session.systemd_unit)
-            # _terminate_host_pid revalidates the kernel start time captured at
-            # spawn before signalling: pgid == pid would only prove the pid leads a
-            # group, and a reaped child can be recycled onto an unrelated leader.
-            self._terminate_host_pid(proc.pid, session.host_start_time)
-        with suppress(Exception):
-            proc.wait(timeout=5)
+        from tools.process_registry_chat_execution import reap_untracked
+        reap_untracked(self, session, proc)
 
     def adopt_local(
         self, proc: subprocess.Popen, *, command: str, cwd: Optional[str], task_id: str = "",
@@ -1506,9 +1457,13 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             self._ingest_output(session, text, unless_exited=True)
 
         try:
-            while pty.isalive():
+            # A native helper may already be reaped while its PTY still holds
+            # buffered output; EOF, rather than isalive(), ends that final drain.
+            while session.native_job_scope or pty.isalive():
                 try:
                     chunk = pty.read(4096)
+                    if not chunk and session.native_job_scope:
+                        break
                     if chunk:
                         # ptyprocess returns bytes; pywinpty returns str
                         if responder is not None and isinstance(chunk, bytes):
@@ -1552,6 +1507,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         Under the session lock, like kill_process's commit: otherwise the kill can land between
         mark_exited's ``killed`` check and its writes, and the reader overwrites the kill."""
         with session._lock:
+            from tools.process_registry_job import job_exit_result
+            exit_code, reason, source = job_exit_result(session, exit_code, reason, source)
             session.mark_exited(exit_code, reason, source)
         self._move_to_finished(session)
 
@@ -2145,7 +2102,9 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         from tools.process_registry_handoff import check_control_ownership
         if changed := check_control_ownership(self, session, expected_ownership, consume_output):
             return changed
-        if session.pid_scope != 'host':
+        from tools.process_registry_job import job_quiescent
+        if session.pid_scope != 'host' or session.wsl_chain or not (
+                session.native_job_scope or session.systemd_unit or job_quiescent(session)):
             return self._refuse_backend_stop(session, consume_output)
         if session.exited:
             # A double-forked descendant may still be alive in the systemd scope even
@@ -2216,7 +2175,11 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 if consume_output:
                     self._completion_consumed.add(session_id)
                 session.exited = True
-                session.exit_code = -15  # SIGTERM
+                if session.native_job_scope:
+                    from tools.process_registry_job import read_job_receipt
+                    session.exit_code = read_job_receipt(session)['exit_code']
+                else:
+                    session.exit_code = -15  # SIGTERM
                 session.completion_reason = "killed"
                 session.termination_source = source
             # The reader thread can finalise the session while the signal path
@@ -2236,6 +2199,9 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         """Deliver the kill via PTY, local Popen tree, sandbox exec or recovered host
         PID. Returns a final result dict when the kill cannot proceed (recycled/dead
         recovered PID, or no runtime handle), else None."""
+        from tools.process_registry_job import job_quiescent, signal_job_stop
+        if session.native_job_scope or job_quiescent(session):
+            return signal_job_stop(self, session, consume_output)
         if session._pty:
             try:
                 session._pty.terminate(force=True)

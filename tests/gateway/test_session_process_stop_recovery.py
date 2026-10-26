@@ -131,6 +131,8 @@ async def test_stop_consumes_ready_own_completion_but_delivers_neighbor(tmp_path
     from agent.managed_worker import WorkerControls
     from gateway.session_ancillary import process_stop_pending
     import threading
+    if not managed:
+        db, authority = _authority(tmp_path, monkeypatch)
     gate = tmp_path / 'release'
     code = ('import pathlib,threading; p=pathlib.Path(' + repr(str(gate)) + '); e=threading.Event()\n'
             'while not p.exists(): e.wait(.01)')
@@ -150,7 +152,6 @@ async def test_stop_consumes_ready_own_completion_but_delivers_neighbor(tmp_path
         controls.agent = SimpleNamespace(session_id='s', hard_interrupt=lambda *a, **kw: None)
         controls.stop(processes=True)
     else:
-        db, authority = _authority(tmp_path, monkeypatch)
         await authority.interrupt(ACTOR, REF, authority._handle(REF).execution_generation)
         assert process_stop_pending(db, 's') is None
         db.close()

@@ -25,6 +25,12 @@ async def test_completed_scope_survives_normal_finish_and_cold_stop(tmp_path, mo
 
     db, authority = _authority(tmp_path, monkeypatch)
     original = module.ProcessRegistry()
+    def unit_launch(session, command, suffix, label):
+        # Select this test's native-unit transport before launch, rather than
+        # layering a fake unit on the independently contained Linux helper.
+        session.systemd_unit = 'hermes-worker-' + suffix + '.scope'
+        return [module._find_shell(), '-lic', 'set +m; ' + command]
+    monkeypatch.setattr(original, '_scope_argv', unit_launch)
     monkeypatch.setattr(module, 'process_registry', original)
     release, effects, pidfile = tmp_path / 'release', tmp_path / 'old-effect', tmp_path / 'child-pid'
     finish = tmp_path / 'wrapper-finish'

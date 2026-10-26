@@ -7,7 +7,7 @@ import pytest
 
 
 @pytest.mark.parametrize('fate', ['gone', 'recycled', 'unreadable'])
-def test_foreign_writer_leaves_host_verdict_to_recovery(tmp_path, monkeypatch, fate):
+def test_unscoped_root_fate_is_not_whole_job_cleanup_proof(tmp_path, monkeypatch, fate):
     from tools import process_registry as module
     registry = module.ProcessRegistry()
     path = module._checkpoint_path()
@@ -33,10 +33,10 @@ def test_foreign_writer_leaves_host_verdict_to_recovery(tmp_path, monkeypatch, f
                             lambda *a, **kw: pytest.fail('recovery signaled a foreign or unproved PID'))
         assert registry._write_checkpoint()
         assert json.loads(path.read_text()) == [entry, foreign]
-        assert registry.recover_from_checkpoint() == (1 if fate == 'unreadable' else 0)
+        assert registry.recover_from_checkpoint() == 0
         rows = json.loads(path.read_text())
         assert foreign in rows and neighbor.poll() is None
-        assert ('proc_prior' in {row['session_id'] for row in rows}) == (fate == 'unreadable')
+        assert entry in rows
         assert other_checkpoint.read_bytes() == other_before
         if fate == 'unreadable':
             # Only the original waitable handle supplies positive cleanup here.

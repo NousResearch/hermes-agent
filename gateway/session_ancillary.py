@@ -79,6 +79,7 @@ def _recover_stopped_processes(authority, ref):
     """Use native birth-checked recovery for this session only; unreadable evidence stays unknown."""
     import json
     from tools.process_registry import process_registry, _checkpoint_path
+    from tools.process_registry_job import job_quiescent
     keys, owners, parents = _ownership(authority, ref, None, ())
     def owned(entry):
         return entry.get('session_key') in keys and (
@@ -90,7 +91,9 @@ def _recover_stopped_processes(authority, ref):
             return False
         if any(owned(entry) and (entry.get('pid_scope', 'host') != 'host' or entry.get('wsl_chain')
                or type(entry.get('host_start_time')) is not int or type(entry.get('pid')) is not int
-               or entry['host_start_time'] <= 0 or entry['pid'] <= 0) for entry in entries):
+               or entry['host_start_time'] <= 0 or entry['pid'] <= 0
+               or (not entry.get('native_job_scope') and not entry.get('systemd_unit')
+                   and not job_quiescent(entry))) for entry in entries):
             return False
         process_registry.recover_from_checkpoint(owns_entry=owned, stop_scopes=True)
         remaining = json.loads(_checkpoint_path().read_text(encoding='utf-8-sig'))
@@ -99,7 +102,9 @@ def _recover_stopped_processes(authority, ref):
         with process_registry._lock:
             tracked = {**process_registry._finished, **process_registry._running}
         if any(owned(entry) and (entry.get('session_id') not in tracked or
-               (entry.get('systemd_unit') and tracked[entry['session_id']].systemd_unit != entry['systemd_unit']))
+               (entry.get('systemd_unit') and tracked[entry['session_id']].systemd_unit != entry['systemd_unit']) or
+               (entry.get('native_job_scope') and not entry.get('systemd_unit') and not job_quiescent(entry)
+                and (tracked[entry['session_id']].exited or not tracked[entry['session_id']].native_job_scope)))
                for entry in remaining):
             return False
         # Result snapshots carry output, never evidence that a recorded native

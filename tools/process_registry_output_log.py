@@ -8,6 +8,7 @@ env-backend wrapper already uses), so whichever interpreter adopts the checkpoin
 (the session's next worker, the owner at startup) tails the same file and collects the exit.
 """
 import codecs
+import json
 from contextlib import suppress
 import logging
 import os
@@ -41,8 +42,21 @@ def worker_output_log(session_id: str) -> Optional[Path]:
     cutoff = time.time() - RESULT_RETENTION_SECONDS
     for exited in directory.glob("proc_*.exit"):
         with suppress(FileNotFoundError):
+            if exited.name.endswith('.scope.exit'):
+                try:
+                    if json.loads(exited.read_text(encoding='utf-8-sig')).get('quiescent') is not True:
+                        continue
+                except (OSError, ValueError, AttributeError):
+                    continue  # Unknown native scope evidence never expires on a timer.
             if exited.stat().st_mtime < cutoff:
-                exited.with_suffix(".log").unlink(missing_ok=True)
+                if exited.name.endswith('.scope.exit'):
+                    from tools.process_registry_job import checkpoint_retains_receipt
+                    if checkpoint_retains_receipt(exited):
+                        continue
+                    log = exited.with_name(exited.name.removesuffix('.scope.exit') + '.log')
+                else:
+                    log = exited.with_suffix('.log')
+                log.unlink(missing_ok=True)
                 exited.unlink()
     return directory / f"{session_id}.log"
 

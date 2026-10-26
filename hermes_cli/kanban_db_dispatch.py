@@ -74,6 +74,14 @@ _RESPAWN_BLOCKER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Outcomes that prove ``tasks.last_failure_error`` describes a SUPERSEDED run: the
+# latest run ended by handing the card to its next owner (or finishing it) instead of
+# failing it, and nothing on that path clears the column. Deliberately a denylist, not
+# a list of failure outcomes: an outcome this dispatcher does not know yet must keep
+# today's ``blocker_auth`` behaviour, so an unfamiliar run fails closed rather than
+# letting a genuine quota/auth wall spin against the provider every tick.
+_RESPAWN_SUPERSEDING_OUTCOMES = frozenset({"completed", "review_requested", "changes_requested"})
+
 # Within this window a completed run counts as "recent proof"; don't re-spawn.
 _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 
@@ -1573,8 +1581,10 @@ def check_respawn_guard(
     checked BEFORE ``blocker_auth`` because the requeue stamps a quota-flavored
     ``last_failure_error`` that would otherwise park the task forever — that
     path never increments ``consecutive_failures``), ``"blocker_auth"``
-    (quota/auth pattern; the breaker still trips eventually), then for the
-    ready lane only ``"recent_success"`` (completed run within the window, unless
+    (quota/auth pattern in a failure text still attributable to the latest run —
+    a text a later handoff run superseded is stale evidence, see
+    ``_RESPAWN_SUPERSEDING_OUTCOMES``; the breaker still trips eventually), then
+    for the ready lane only ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
     (PR URL in a recent comment; re-spawning risks a duplicate PR — unless a
     handoff event followed the comment: the named profile must work on that
@@ -1625,9 +1635,17 @@ def check_respawn_guard(
     # crash is different: its persisted error includes the worker's last
     # captured output, which is context rather than a diagnosis and may contain
     # benign commands such as ``claude auth status`` (#117097).
+    #
+    # The column is a CACHE of the last run that failed, not of the latest run: a
+    # rate-limited requeue stamps it (line ~1238) and a later handoff run never
+    # clears it. Reading the text alone therefore parks a card forever on evidence
+    # about a run that has since been superseded — the review lane first, because
+    # this check runs before its exemption. Attribute the text to the latest run
+    # before trusting it; a superseded one leaves nothing for ``blocker_auth``.
     err = _kb._lossy_text(row["last_failure_error"])
     latest_outcome = latest_run["outcome"] if latest_run is not None else None
-    if err and latest_outcome != "crashed" and _RESPAWN_BLOCKER_RE.search(err):
+    if (err and latest_outcome not in _RESPAWN_SUPERSEDING_OUTCOMES
+            and latest_outcome != "crashed" and _RESPAWN_BLOCKER_RE.search(err)):
         return "blocker_auth"
 
     # Review-lane spawns stop here: a recent completed run and a fresh PR URL

@@ -146,8 +146,14 @@ class GatewayGoalsMixin:
             session_id = current
             watch[quick_key] = (source, session_id)
         adapter = self._delivery_adapter_for(source)
-        if adapter is None or not adapter._message_handler:
+        from gateway.session_local import LocalSessionAdapter
+        from gateway.session_viewer_automation import viewer_driven
+        local = isinstance(adapter, LocalSessionAdapter)
+        # A local chat has no message handler: its owner admits the tick (``admit_heartbeat``).
+        if adapter is None or not (adapter._message_handler or local):
             return
+        if local and viewer_driven(adapter.authority, source.chat_id, "viewer_heartbeat"):
+            return  # the classic CLI's watchdog fires it: that CLI paints only the turns it submits
         if getattr(self, 'session_authority', None) is not None:
             from gateway.run_heartbeat_acceptance import admit_heartbeat
             await admit_heartbeat(self, adapter, source, session_id, quick_key)
@@ -365,13 +371,16 @@ class GatewayGoalsMixin:
             logger.debug("post-turn session resolution failed: %s", exc)
             return
         # Empty interrupted/errored responses must not drive /goal, but an in-flight /loop tick
-        # still needs to be released and rescheduled.
+        # still needs to be released and rescheduled. A failed turn with text (a refusal: its
+        # folder is gone) is no evidence either (the TUI's hook skips it the same way): the tick is
+        # released with no text, so a --until judge never grades it.
+        failed = self._turn_failed()
         hooks = [("loop completion", self._post_turn_loop_completion)]
-        if final_text.strip():
+        if final_text.strip() and not failed:
             hooks.insert(0, ("goal continuation", self._post_turn_goal_continuation))
         for label, hook in hooks:
             try:
-                await hook(session_entry=session_entry, source=source, final_response=final_text)
+                await hook(session_entry=session_entry, source=source, final_response="" if failed else final_text)
             except Exception as exc:
                 logger.debug("%s hook failed: %s", label, exc)
         self._publish_local_control(source, only_if_present=True)
@@ -384,6 +393,15 @@ class GatewayGoalsMixin:
         from gateway.session_authorities import active_authority
         from gateway.session_control_actions import publish
         publish(active_authority(self), source.chat_id, only_if_present=only_if_present)
+
+    @staticmethod
+    def _turn_failed() -> bool:
+        """Whether the owner recorded this turn's result as failed (``session_ingress`` captures it
+        around ``_handle_message``; turns outside an owner capture nothing)."""
+        from gateway.session_results import execution_result
+        captured = execution_result.get() or {}
+        result = captured.get('terminal_result', captured.get('result'))
+        return isinstance(result, dict) and bool(result.get('failed'))
 
     @staticmethod
     def _final_text_for_post_turn_hooks(agent_result, event=None) -> str:

@@ -203,6 +203,38 @@ def catalog_install_record(plugin_dir) -> Optional[dict]:
     return read_catalog_sidecar(plugin_dir)
 
 
+LOGIN_BACKEND_TIERS = frozenset({"official", "verified"})
+LOGIN_BACKEND_RULE = ("password-manager login backends are accepted only from plugins bundled with Hermes or "
+                      "installed from the Hermes plugin catalog at tier verified or official (published by the "
+                      "password-manager vendor itself or by Nous)")
+_NON_CATALOG_SOURCES = {"project": "a project .hermes/plugins directory", "entrypoint": "a pip entry point"}
+
+
+def login_backend_provenance_error(manifest) -> str:
+    """Why *manifest*'s plugin may not register a login backend, or "" when it may.
+
+    Read from the installer-owned ``.install-metadata.json`` record of the CURRENT home's plugins dir, never
+    from the tree (a repo can commit a ``.hermes-catalog.json``). No config key relaxes it. This decides
+    which plugins Hermes offers the seam to; code already running in-process is not sandboxed by it."""
+    if manifest.source == "bundled":
+        return ""
+    if manifest.source in _NON_CATALOG_SOURCES:
+        return f"{LOGIN_BACKEND_RULE}; this plugin was loaded from {_NON_CATALOG_SOURCES[manifest.source]}"
+    record = _install_record(Path(manifest.path)) if manifest.source == "user" and manifest.path else None
+    block = (record or {}).get("catalog")
+    if not isinstance(block, dict) or not block.get("name"):
+        return (f"{LOGIN_BACKEND_RULE}; this plugin was not installed from the Hermes plugin catalog "
+                "(a local directory or Git URL install)")
+    if record.get("allow_removed"):
+        return f"{LOGIN_BACKEND_RULE}; this plugin was installed with --allow-removed"
+    tier = str(block.get("tier") or "community")
+    if tier not in LOGIN_BACKEND_TIERS:
+        return f"{LOGIN_BACKEND_RULE}; catalog entry '{block['name']}' is tier {tier}"
+    if not block.get("pin"):
+        return f"{LOGIN_BACKEND_RULE}; this install is not at the catalog's reviewed pin (installed with --ref)"
+    return ""
+
+
 def catalog_annotation(dir_path) -> Optional[str]:
     """``catalog:<tier>@<sha8>`` for a catalog install (``list`` Source column), else ``None``."""
     sidecar = catalog_install_record(dir_path)
@@ -250,6 +282,29 @@ def _refuse_unsupported_catalog_platform(entry: PluginCatalogEntry) -> None:
         )
 
 
+def catalog_hermes_error(entry: PluginCatalogEntry) -> Optional[str]:
+    """``<name> needs Hermes <spec>; this is <version>.`` when the entry's ``requires_hermes`` rejects the
+    running Hermes, else ``None``. The verdict IS the plugin.yaml gate's
+    (:func:`~hermes_cli.plugins_manifest.requires_hermes_error`): same version source, same comparison, so
+    a dev checkout or canary build is judged the same by both, and an unknown version never blocks."""
+    from hermes_cli.plugins_manifest import requires_hermes_error, running_hermes_version
+    if not requires_hermes_error({"requires_hermes": entry.requires_hermes}):
+        return None
+    return f"{entry.name} needs Hermes {entry.requires_hermes}; this is {running_hermes_version()}."
+
+
+def refuse_incompatible_catalog_entry(entry: PluginCatalogEntry) -> None:
+    """``PluginOperationError`` when the catalog says *entry* cannot run here: a platform it does not list,
+    or a ``requires_hermes`` the running version fails. Every install by catalog name passes through here."""
+    from hermes_cli.config import recommended_update_command
+    from hermes_cli.plugins_cmd import PluginOperationError
+    _refuse_unsupported_catalog_platform(entry)
+    reason = catalog_hermes_error(entry)
+    if reason:
+        raise PluginOperationError(f"{reason} Update Hermes (`{recommended_update_command()}`) and install again.",
+                                   failure_class="incompatible")
+
+
 def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Optional[str] = None,
                           allow_removed: bool = False, scan_decision_cb=None, python_deps: bool = True,
                           assume_deps_consent: bool = False, before_swap=None) -> tuple:
@@ -259,11 +314,11 @@ def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Option
     from hermes_cli.plugins_cmd import _install_plugin_core
     if not allow_removed:
         raise_if_removed(entry.name, entry.repo)
-    _refuse_unsupported_catalog_platform(entry)
+    refuse_incompatible_catalog_entry(entry)
     target, manifest, installed_name = _install_plugin_core(
         entry.install_identifier, force=force, ref=ref or entry.sha, scan_decision_cb=scan_decision_cb,
         reviewed_pin=entry.sha, python_deps=python_deps, assume_deps_consent=assume_deps_consent,
-        allow_removed=allow_removed, before_swap=before_swap,
+        allow_removed=allow_removed, before_swap=before_swap, app_title=entry.title or None,
         catalog={"name": entry.name, "repo": entry.repo, "tier": entry.tier, "pin": entry.sha})
     return target, manifest, installed_name
 
@@ -497,11 +552,12 @@ class RepinResult(NamedTuple):
 # new manifest adds (``desktop`` = a Desktop half appeared). Compared as sets — removals are not consent events.
 _SURFACE_LABELS = {"capabilities": "host capabilities", "tools": "tools", "hooks": "hooks",
                    "python_dependencies": "Python dependencies", "desktop": "Desktop UI half",
-                   "requires_auth": "your sign-in for"}
+                   "requires_auth": "your sign-in for", "oauth": "your OAuth sign-in for"}
 
 
 def plugin_surface(manifest: dict, tree: Path) -> dict[str, set]:
     """What an installed tree exposes: declared host capabilities, tools, hooks, Python deps, Desktop half."""
+    from hermes_cli.plugin_oauth import oauth_surface
     from hermes_cli.plugins_cmd import _declared_capabilities_from_manifest
     manifest = manifest or {}
 
@@ -516,6 +572,7 @@ def plugin_surface(manifest: dict, tree: Path) -> dict[str, set]:
         "capabilities": set(_declared_capabilities_from_manifest(manifest, str(manifest.get("name") or "?"))),
         "tools": _list("provides_tools"), "hooks": _list("provides_hooks", "hooks"),
         "python_dependencies": _list("python_dependencies"), "requires_auth": _list("requires_auth"),
+        "oauth": oauth_surface(manifest),
         "desktop": {"desktop/plugin.js"} if (tree / "desktop" / "plugin.js").is_file() else set(),
     }
 
@@ -579,6 +636,14 @@ def repin_catalog_plugin(
     refuse_if_installed_removed(catalog_name, target)
     if at_catalog_pin(sidecar, entry.sha):
         return RepinResult(entry.sha, False, target.name, [])
+    held = catalog_hermes_error(entry)
+    if held:
+        # The pin moved past what this Hermes can run: keep the installed tree, name the way forward.
+        from hermes_cli.config import recommended_update_command
+        raise PluginOperationError(
+            f"Update of {catalog_name} to {entry.sha[:8]} not applied: {held} {catalog_name} stays at "
+            f"{str(sidecar.get('sha') or '')[:8] or 'its installed version'}; the update is available after "
+            f"you update Hermes (`{recommended_update_command()}`).", failure_class="incompatible")
 
     local, modified = _local_changes(target)
     old_sha8 = str(sidecar.get("sha") or "old")[:8]
@@ -650,10 +715,11 @@ def repin_catalog_plugin(
     return RepinResult(entry.sha, True, installed_name, warnings)
 
 
-def cmd_update_catalog(name: str, target: Path, sidecar: dict, console, *, interactive: bool = True) -> None:
+def cmd_update_catalog(name: str, target: Path, sidecar: dict, console, *, interactive: bool = True) -> bool:
+    """Re-pin a catalog install, printing progress; True when the pin moved. Refusals raise
+    :class:`RepinConsentRequired` / ``PluginOperationError`` with nothing changed (the caller reports them)."""
     from hermes_cli.plugins_cmd import (
-        PluginOperationError, _ask_yes, _declared_capabilities_from_manifest, _fail, _is_tty, _read_manifest,
-        _run_capability_consent)
+        _ask_yes, _declared_capabilities_from_manifest, _is_tty, _read_manifest, _run_capability_consent)
     console.print(f"[dim]Checking catalog pin for {name}...[/dim]")
 
     def _confirm_widening(delta: dict[str, list[str]]) -> bool:
@@ -666,19 +732,7 @@ def cmd_update_catalog(name: str, target: Path, sidecar: dict, console, *, inter
             return False
         return _ask_yes("  Apply this update? [y/N]: ")
 
-    try:
-        result = repin_catalog_plugin(
-            target,
-            sidecar,
-            interactive=interactive,
-            consent_cb=_confirm_widening,
-        )
-    except RepinConsentRequired as exc:
-        _fail(console, f"[yellow]Update of {name} not applied:[/yellow] {exc}")
-        raise SystemExit(1)
-    except PluginOperationError as exc:
-        _fail(console, f"[red]Error:[/red] {exc}")
-        raise SystemExit(1)
+    result = repin_catalog_plugin(target, sidecar, interactive=interactive, consent_cb=_confirm_widening)
     verb = "updated to" if result.changed else "is already at catalog pin"
     console.print(f"[green]✓[/green] Plugin [bold]{result.installed_name}[/bold] {verb} {result.sha[:8]}.")
     for warning in result.warnings:
@@ -697,6 +751,7 @@ def cmd_update_catalog(name: str, target: Path, sidecar: dict, console, *, inter
                     console.print(
                         f"[yellow]Plugin {result.installed_name} has new capabilities; review them with "
                         f"`hermes plugins capabilities {result.installed_name}`.[/yellow]")
+    return result.changed
 
 
 
@@ -726,7 +781,8 @@ def _render_entries(entries: list[PluginCatalogEntry], console) -> None:
     for e in sorted(entries, key=lambda e: (e.category, rank.get(e.tier, len(rank)), e.name)):
         tier = f"[{style.get(e.tier, 'magenta')}]{e.tier}[/{style.get(e.tier, 'magenta')}]"
         desc = e.description if len(e.description) <= 60 else e.description[:57] + "..."
-        table.add_row(e.name, e.category, tier, desc, pin_label(e), _capability_counts(e))
+        name = e.name + (f"\n[yellow]needs Hermes {e.requires_hermes}[/yellow]" if catalog_hermes_error(e) else "")
+        table.add_row(name, e.category, tier, desc, pin_label(e), _capability_counts(e))
     console.print()
     console.print(table)
     console.print()
@@ -738,7 +794,8 @@ def cmd_search(term: str = "", *, json_output: bool = False) -> None:
     from hermes_cli.plugins_cmd import _console
     matches = filter_entries(load_catalog_live(), term)
     if json_output:
-        print(json.dumps({"query": term, "results": [e.to_dict() for e in matches]}, indent=2))
+        print(json.dumps({"query": term, "results": [
+            {**e.to_dict(), "needs_newer_hermes": catalog_hermes_error(e)} for e in matches]}, indent=2))
         return
     console = _console()
     if not matches:
@@ -778,6 +835,11 @@ def cmd_info(name: str) -> None:
     if removed is not None:
         console.print(f"[red bold]✗ REMOVED from catalog: {removed.reason or 'no reason recorded'}"
                       f"{f' ({removed.date})' if removed.date else ''}[/red bold]")
+        console.print()
+    held = catalog_hermes_error(entry)
+    if held:
+        from hermes_cli.config import recommended_update_command
+        console.print(f"[yellow]⚠ {held} Update Hermes (`{recommended_update_command()}`) to install it.[/yellow]")
         console.print()
     console.print(f"[dim]Install:[/dim]     hermes plugins install {entry.name}")
     console.print()

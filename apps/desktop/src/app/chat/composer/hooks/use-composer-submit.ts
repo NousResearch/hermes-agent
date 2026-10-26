@@ -6,6 +6,7 @@ import { translateNow, useI18n } from '@/i18n'
 import { isSlashCommandText } from '@/lib/chat-runtime'
 import { isSideTaskSlashCommand } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
+import { isTouchInteraction } from '@/lib/touch-interaction'
 import type { BusyInputMode } from '@/store/busy-input-mode'
 import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
 import {
@@ -19,6 +20,7 @@ import { resetBrowseState } from '@/store/composer-input-history'
 import { enqueueQueuedPrompt, type QueuedPromptEntry, serverOwnsComposerQueue } from '@/store/composer-queue'
 import { hasConnectionRequest, skipConnectionRequest } from '@/store/connection-request'
 import { notify } from '@/store/notifications'
+import { isOnboardingChat } from '@/store/onboarding-session'
 import { answerParkedCard, skipParkedCards, yieldParkedCardsToMessage } from '@/store/parked-card-answers'
 import { hasBlockingPromptRequest } from '@/store/prompts'
 
@@ -246,6 +248,16 @@ export function useComposerSubmit({
     [activeQueueSessionKeyRef, inputDisabled, paneVisible, scope.target, sessionId, surfaceId]
   )
 
+  // A phone keyboard the user put away stays down after a send, so the reply
+  // is readable; desktop always returns the caret to the composer.
+  const editorHasFocus = () => Boolean(editorRef.current?.contains(document.activeElement))
+
+  const refocusAfterSend = (editorHadFocus: boolean) => {
+    if (editorHadFocus || !isTouchInteraction()) {
+      focusInput()
+    }
+  }
+
   // Returns false when the submit was refused and must not refocus the input.
   const submitWhileBusy = (text: string, payloadPresent: boolean, blockingPrompt: boolean) => {
     // Slash commands should execute immediately even while the agent is
@@ -340,7 +352,6 @@ export function useComposerSubmit({
       triggerHaptic('submit')
       resetBrowseState(sessionId)
       clearDraft()
-      focusInput()
 
       return 'answered'
     }
@@ -364,10 +375,25 @@ export function useComposerSubmit({
     return yielded ? 'yielded' : null
   }
 
+  // Slash commands come after setup. Every send action asks here first, so the words stay put and one
+  // note (re-shown, never stacked) says why.
+  const refusedDuringSetup = (text: string): boolean => {
+    if (!isSlashCommandText(text) || !isOnboardingChat(sessionId)) {
+      return false
+    }
+
+    notify({ id: 'onboarding-slash-off', kind: 'info', message: t.firstRun.slashOffBody, title: t.firstRun.slashOffTitle })
+    focusInput()
+
+    return true
+  }
+
   const submitDraft = () => {
     if (disabled) {
       return
     }
+
+    const editorHadFocus = editorHasFocus()
 
     // Source the text from the DOM editor, not React state. The AUI composer
     // state (`draft`) and the derived `hasComposerPayload` lag the DOM by a
@@ -394,9 +420,15 @@ export function useComposerSubmit({
     const text = pathifyRefs(draftRef.current)
     const payloadPresent = text.trim().length > 0 || attachments.length > 0
 
+    if (refusedDuringSetup(text)) {
+      return
+    }
+
     const parked = answerParkedCardWithDraft(text, payloadPresent)
 
     if (parked === 'answered') {
+      refocusAfterSend(editorHadFocus)
+
       return
     }
 
@@ -430,7 +462,7 @@ export function useComposerSubmit({
       dispatchSubmit(text, submittedAttachments, undefined, retry && { submission_id: retry.id })
     }
 
-    focusInput()
+    refocusAfterSend(editorHadFocus)
   }
 
   // Redirect the live turn with a correction. The gateway either restarts the
@@ -505,12 +537,13 @@ export function useComposerSubmit({
   }
 
   const queueDraft = () => {
-    if (disabled || !busy) {
+    if (disabled || !busy || refusedDuringSetup(draftRef.current)) {
       return
     }
 
+    const editorHadFocus = editorHasFocus()
     queueCurrentDraft()
-    focusInput()
+    refocusAfterSend(editorHadFocus)
   }
 
   return { dispatchSubmit, queueDraft, steerDraft, submitDraft }

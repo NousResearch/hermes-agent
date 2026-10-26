@@ -1,5 +1,5 @@
 import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
-import { JsonRpcGatewayError } from '@hermes/shared'
+import { isUndeliveredCorrectionRefusal, JsonRpcGatewayError } from '@hermes/shared'
 import { stripAnsi } from '@hermes/shared/ansi'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
@@ -41,7 +41,8 @@ import {
   setTurnStartedAt
 } from '@/store/session'
 import { $sessionStates, isLiveTurnAwaitingEvents, isSessionRemote } from '@/store/session-states'
-import { clearSessionSubagents } from '@/store/subagents'
+import { flushStreamDeltas } from '@/store/stream-delta-flush'
+import { pruneFinishedSessionSubagents } from '@/store/subagents'
 import { runGatewayRestart } from '@/store/system-actions'
 import { clearSessionTodos } from '@/store/todos'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
@@ -73,6 +74,7 @@ import {
   rebindSurvivorRowIds,
   retryKeepsDeepConfirm,
   runRewindSubmit,
+  sealAcceptedCorrection,
   type SurvivorUserRowIds
 } from './rewind'
 import { useSlashCommand } from './slash'
@@ -131,7 +133,19 @@ export async function uploadComposerAttachment(
 
   const path = attachment.path ?? ''
   const label = attachment.label || pathLabel(path)
-  const uploadBytes = remote || attachmentPathNeedsUpload(path, backendCwd, terminalBackend)
+
+  // Edit-message drops bypass the main composer store, so also resolve their
+  // source descriptor here. Absence means an older browser backend/native file
+  // and retains the existing byte-upload rules.
+  const stagedUpload = attachment.kind === 'file'
+    ? attachment.stagedUpload ?? window.hermesDesktop?.getStagedFileForAttach?.(path)
+    : undefined
+
+  if (stagedUpload && stagedUpload.path !== path) {
+    throw new Error(`Could not attach ${label}: staged source changed; select the file again`)
+  }
+
+  const uploadBytes = !stagedUpload && (remote || attachmentPathNeedsUpload(path, backendCwd, terminalBackend))
 
   if (attachment.kind === 'image' && serverOwnsComposerQueue(storedSessionId ?? opts.sessionId)) {
     // Pin HTTP to the same owner before the native byte read yields. Images
@@ -194,9 +208,12 @@ export async function uploadComposerAttachment(
 
     const result = await requestGateway<FileAttachResponse>('file.attach', {
       name: label,
-      path,
       session_id: liveSessionId,
-      ...(fileDataUrl ? { data_url: fileDataUrl } : {})
+      // Omit path as well as bytes for the provenance-aware branch: an older
+      // RPC implementation must reject it rather than ignore source ownership.
+      ...(stagedUpload
+        ? { staged_upload: stagedUpload }
+        : { path, ...(fileDataUrl ? { data_url: fileDataUrl } : {}) })
     })
 
     if (!result.attached || !result.ref_text) {
@@ -207,6 +224,7 @@ export async function uploadComposerAttachment(
       ...attachment,
       attachedSessionId: liveSessionId,
       refText: result.ref_text,
+      ...(stagedUpload ? { stagedUpload } : {}),
       uploadState: undefined
     }
   }
@@ -460,6 +478,7 @@ export function usePromptActions({
                 path: nextAttachment.path,
                 mime: nextAttachment.mime,
                 refText: nextAttachment.refText,
+                stagedUpload: nextAttachment.stagedUpload,
                 uploadState: nextAttachment.uploadState
               })
             } else {
@@ -781,8 +800,14 @@ export function usePromptActions({
     })
 
     clearSessionTodos(sessionId)
-    clearSessionSubagents(sessionId)
-    resetSessionBackground(sessionId)
+    // Stop ends this turn only: background subagents keep running and keep their rows; the
+    // stopped turn's own children drop out of the next roster snapshot.
+    pruneFinishedSessionSubagents(sessionId)
+    // No resetSessionBackground() here. A plain interrupt (Stop, or "send now"
+    // on a queued message while busy) keeps the timeline, and the gateway's
+    // session.interrupt deliberately leaves terminal(background=true) processes
+    // running. Killing them belongs only to the rewind paths (reload / restore /
+    // edit), where the spawning turns are discarded.
     setSessionDraftingTool(sessionId, '')
     // Auto-compaction sets a per-session flag that only clears on message.start
     // / message.complete / error. A hung compaction emits none of those, so the
@@ -888,23 +913,18 @@ export function usePromptActions({
             { session_id: id, text }
           )
 
+          // TUI-26: a bare stop phrase typed mid-turn into a LOCAL voice chat ended that chat on
+          // the owner and reached no turn. Settled (nothing to re-queue), and no bubble stays.
+          if (result?.voice_stopped === true) {
+            discardOptimisticMessage()
+
+            return true
+          }
+
           if (result?.status === 'redirected') {
             if (mode === 'interrupt') {
-              updateSessionState(id, state => {
-                const message = state.messages.find(candidate => candidate.id === messageId)
-
-                // A newer reply may precede this ACK; it already owns its boundary.
-                const hasNewReply = state.messages
-                  .slice(state.messages.findIndex(candidate => candidate.id === messageId) + 1)
-                  .some(candidate => candidate.role === 'assistant')
-
-                return message && state.streamId && !hasNewReply
-                  ? appendMidTurnUserMessage(
-                      { ...state, messages: state.messages.filter(candidate => candidate.id !== messageId) },
-                      message
-                    )
-                  : state
-              })
+              flushStreamDeltas(id)
+              updateSessionState(id, state => sealAcceptedCorrection(state, messageId))
             }
 
             triggerHaptic('submit')
@@ -913,9 +933,12 @@ export function usePromptActions({
           }
 
           if (result?.status === 'queued') {
-            // Build-window redirects become the next turn, not part of the
-            // active reply, so retain the optimistic row at the tail.
-            if (mode === 'interrupt') {
+            // A redirect queued in the build window is the next turn; an
+            // accepted steer joins this one after its running tool.
+            if (mode === 'steer') {
+              flushStreamDeltas(id)
+              updateSessionState(id, state => sealAcceptedCorrection(state, messageId, { keepRunningTools: true }))
+            } else {
               moveOptimisticMessageToEnd()
             }
 
@@ -925,6 +948,13 @@ export function usePromptActions({
           }
         } catch (err) {
           discardOptimisticMessage()
+
+          // Refused before any agent saw it (the turn this pane believed busy is gone):
+          // not a failed send. The composer re-queues the words as the next turn (#141644).
+          if (isUndeliveredCorrectionRefusal(err)) {
+            return false
+          }
+
           throw err
         }
 
@@ -1081,6 +1111,13 @@ export function usePromptActions({
       if (!plan || isStaleAfterConfirm(sessionId, messages)) {
         return
       }
+
+      // Regenerate truncates history (prompt.submit truncate_before_*) just like
+      // restore/edit, so the discarded turns' todos and background processes
+      // belong to an abandoned timeline — drop them before the re-run.
+      clearSessionTodos(sessionId)
+      resetSessionBackground(sessionId)
+      clearPreviewArtifacts(sessionId)
 
       clearNotifications()
       updateSessionState(sessionId, state => applyReloadOptimistic(state, plan))

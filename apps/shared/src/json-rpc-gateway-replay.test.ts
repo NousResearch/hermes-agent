@@ -347,12 +347,12 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
     expect(requests.map(req => req.params)).toEqual(expect.arrayContaining([
       { session_id: 's1', last_seen: 1, replay_epoch: 's1-B' },
       { session_id: 's2', last_seen: 9, replay_epoch: 's2-A' },
-      { session_id: 'legacy', last_seen: 20, replay_epoch: 'gateway-A' }
+      { session_id: 'legacy', last_seen: 20 }
     ]))
 
     for (const req of requests) {
       const sid = req.params.session_id
-      const epoch = req.params.replay_epoch
+      const epoch = req.params.replay_epoch ?? 'gateway-A'
       const seq = Number(req.params.last_seen) + 1
       sock.serverFrame({
         jsonrpc: '2.0', id: req.id,

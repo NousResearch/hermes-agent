@@ -86,6 +86,20 @@ export function gatewayOwnerProfile(endpoint: GatewayEndpoint): string {
   return path.basename(path.dirname(home)) === 'profiles' ? path.basename(home) : 'default'
 }
 
+/** `hermes --profile P gateway restart --detach`: without a service, the CLI would otherwise run the
+ *  replacement as this bounded client, a child its timeout kills. A runtime older than `--detach`
+ *  names the flag argparse rejects (exit 2); it gets its old restart, which still works wherever a
+ *  service owns the gateway, instead of no restart at all. */
+export async function runGatewayOwnerRestart(
+  run: (args: string[]) => Promise<{ code: number; stdout: string; stderr: string }>,
+  ownerProfile: string
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  const args = ['--profile', ownerProfile, 'gateway', 'restart']
+  const result = await run([...args, '--detach'])
+
+  return result.code === 2 && /unrecognized arguments:.*--detach/.test(result.stderr) ? run(args) : result
+}
+
 /** One restart per (owner process, stale gateway, client) per Desktop process. An owner a restart cannot move
  *  (a service unit pinned to another checkout) is then attached as-is instead of being restarted
  *  on every dial. */
@@ -308,6 +322,9 @@ function dialOf(url: string): { nonce: string; origin: string; pathname: string 
   }
 }
 
+// Voice sockets dial their own fresh `/api/ws` reservation on a sibling path (sibling-ws-url.ts).
+const VOICE_DIAL_PATHS = new Set(['/api/audio/speak-stream', '/api/audio/transcribe-stream'])
+
 // A one-use ticket crosses private IPC, then leaves the URL before dialing.
 // Public descriptors and persisted connection state never contain credentials.
 // A plugin socket's native-http grant never enters a URL at all: main attaches
@@ -341,7 +358,9 @@ export function createLocalGatewayDials() {
       const dial = dialOf(details.url)
       const grant = dial ? pending.get(dial.nonce) : undefined
 
-      if (!dial || !grant || grant.pathname !== dial.pathname || grant.webContentsId !== details.webContentsId
+      const voice = grant && !grant.header && grant.pathname === '/api/ws' && dial && VOICE_DIAL_PATHS.has(dial.pathname)
+
+      if (!dial || !grant || (grant.pathname !== dial.pathname && !voice) || grant.webContentsId !== details.webContentsId
           || details.resourceType !== 'webSocket' || (grant.header && grant.origin !== dial.origin)) {return null}
 
       pending.delete(dial.nonce)

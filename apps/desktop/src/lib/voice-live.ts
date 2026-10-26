@@ -280,6 +280,13 @@ export class VoiceLiveSession {
       throw new Error('GPT-Live session already started')
     }
 
+    // An insecure origin (a Webapp opened over plain HTTP from another machine) has no
+    // mediaDevices. Fail before opening a peer, with the error the recorder's copy maps to
+    // "microphone unsupported", instead of a TypeError on the missing API.
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new DOMException('Microphone capture is unavailable here', 'NotSupportedError')
+    }
+
     const connection = new RTCPeerConnection()
     this.peer = connection
 

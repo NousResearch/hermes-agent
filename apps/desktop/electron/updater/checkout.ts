@@ -138,6 +138,31 @@ export interface CheckoutStrategy extends UpdaterStrategy {
   check(opts?: { force?: boolean; setChannel?: 'main' | 'stable' }): Promise<UpdaterStatusWire>
 }
 
+/**
+ * The Windows script hand-off's environment. Its `hermes update` runs under the run the
+ * close-holder consent is bound to: an id this Desktop inherited from the hand-off that
+ * relaunched it names the previous run, under which that consent never matches (#101789).
+ */
+function windowsHandoffEnvironment(
+  updateRoot: string,
+  hermesHome: string,
+  updateStartedAt: number,
+  runId: string | null
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    ...sourceUpdateEnvironment(updateRoot, hermesHome),
+    HERMES_UPDATE_STARTED_AT: String(updateStartedAt)
+  }
+
+  delete env.HERMES_UPDATE_CORRELATION_ID
+
+  if (runId) {
+    env.HERMES_UPDATE_CORRELATION_ID = runId
+  }
+
+  return env
+}
+
 export function createCheckoutStrategy(deps: CheckoutStrategyDeps): CheckoutStrategy {
   function markerHelper(op: MarkerHelperOp, runId: string | null): Promise<MarkerHelperVerdict> {
     return (deps.markerHelper ?? runMarkerHelper)(op, {
@@ -589,10 +614,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): CheckoutStra
 
       child = spawnUpdaterProcess(wrapped.command, wrapped.args, {
         cwd: deps.hermesHome,
-        env: {
-          ...sourceUpdateEnvironment(updateRoot, deps.hermesHome),
-          HERMES_UPDATE_STARTED_AT: String(updateStartedAt)
-        },
+        env: windowsHandoffEnvironment(updateRoot, deps.hermesHome, updateStartedAt, plan.runId),
         // Never `true` here: DETACHED_PROCESS leaves the wrapper console-less, so
         // `start /b` hands PowerShell a new VISIBLE console whose QuickEdit
         // selection can freeze the hand-off before relaunch (#103222).

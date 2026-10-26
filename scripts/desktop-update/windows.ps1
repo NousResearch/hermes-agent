@@ -1642,8 +1642,11 @@ try {
         Write-HandoffLog "could not probe update --help; running without --keep-stash"
     }
     # The update's receipt carries this id (update_receipt._launcher_correlation_id):
-    # Get-CommittedReceiptOutcome finds THIS run's receipt by it.
-    $script:UpdateCorrelation = if ($env:HERMES_UPDATE_CORRELATION_ID) { $env:HERMES_UPDATE_CORRELATION_ID } else { $script:ResultRunId }
+    # Get-CommittedReceiptOutcome finds THIS run's receipt by it, and the Desktop's
+    # close-holder consent is bound to -HandoffRun. That run id beats an inherited
+    # one: a Desktop the Start-Process rung relaunched carried the previous run's
+    # id, under which its next retry's consent could never match (#101789).
+    $script:UpdateCorrelation = if ($HandoffRun) { $HandoffRun } elseif ($env:HERMES_UPDATE_CORRELATION_ID) { $env:HERMES_UPDATE_CORRELATION_ID } else { $script:ResultRunId }
     $env:HERMES_UPDATE_CORRELATION_ID = $script:UpdateCorrelation
     Write-HandoffLog ("running: python " + ($updateArgs -join " "))
     Publish-UiProgress "Updating code and dependencies"
@@ -1808,6 +1811,9 @@ try {
         $finalCode = 0
     }
 } finally {
+    # This run's id is ours, not the relaunched Desktop's: the Start-Process rung
+    # would hand it on to every update that Desktop starts.
+    Remove-Item -LiteralPath Env:HERMES_UPDATE_CORRELATION_ID -ErrorAction SilentlyContinue
     if (@('claimed', 'adopted') -contains $script:MarkerClaim -and $InstallRoot) {
         # #101789: a Desktop "close and retry" consent belongs to this run alone. One its swap
         # never reached (a failed build) must not let a later update close the program unasked.

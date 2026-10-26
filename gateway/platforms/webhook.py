@@ -172,9 +172,11 @@ _CRON_JOB_UNAVAILABLE = "Cron job is not available"
 _CRON_TRIGGER_RETRY_AFTER = "60"
 
 
-# Refusals a target gives before any part of a message lands. Any other failed send (a timeout, a split
-# message whose first chunks went out, an unclassified error) may already be visible at the target.
-_SEND_REFUSED_KINDS = frozenset({"too_long", "bad_format", "forbidden", "not_found", "rate_limited"})
+# Failures that land nothing: refusals a target gives before any part of a message lands, and the
+# connection failures ``BasePlatformAdapter._send_with_retry`` already re-sends as never-delivered. Any
+# other failed send (a read timeout, a split message whose first chunks went out, an unclassified error)
+# may already be visible at the target.
+_SEND_REFUSED_KINDS = frozenset({"too_long", "bad_format", "forbidden", "not_found", "rate_limited", "transient"})
 
 
 def _not_sent(error: str) -> SendResult:
@@ -190,6 +192,8 @@ def _send_may_have_landed(result: SendResult) -> bool:
     # partial_overflow: earlier chunks of a split send landed; ambiguous: the ack was lost.
     if raw.get("partial_overflow") or raw.get("ambiguous") or result.message_id or result.continuation_message_ids:
         return True
+    if result.retryable:  # the adapter's "never left" signal (e.g. a connect timeout)
+        return False
     from gateway.platforms.base import classify_send_error
     return (result.error_kind or classify_send_error(None, result.error or "")) not in _SEND_REFUSED_KINDS
 

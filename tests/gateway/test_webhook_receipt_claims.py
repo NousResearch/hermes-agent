@@ -38,6 +38,21 @@ async def test_an_uncertain_send_keeps_its_claim(uncertain):
     assert len(sent) == 1
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unsent", [
+    SendResult(success=False, error="httpx.ConnectError: [Errno 111] Connection refused", error_kind="transient"),
+    SendResult(success=False, error="Timed out", retryable=True),
+], ids=["connect-error", "connect-timeout"])
+async def test_a_send_that_never_connected_releases_its_claim(unsent):
+    adapter = _gateway([])
+    sent = _flaky_target(adapter, [unsent, SendResult(success=True)])
+
+    assert await _post(adapter, "d-unsent") == (502, "error")
+    # Nothing reached the chat: once the connection recovers the provider's retry is delivered.
+    assert await _post(adapter, "d-unsent") == (200, "delivered")
+    assert len(sent) == 2
+
+
 def _identity(delivery_id="d-1"):
     return _WebhookDeliveryIdentity.from_parts(None, "alerts", delivery_id)
 

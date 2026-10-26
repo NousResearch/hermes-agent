@@ -37,20 +37,35 @@ logger = logging.getLogger(__name__)
 
 def split_targets(target: str, sender: Any) -> list[str]:
     """``target`` as the recipients it names: one name, or a comma-separated list deduplicated by
-    the bot each name resolves to (``hermes`` and ``default`` are one recipient). A friendly name
-    that itself contains a comma ('QA, Release') still resolves whole."""
+    the destination each name reaches (``hermes`` and ``default`` are one bot; a registered peer
+    and a local bot whose friendly name matches it are two). A friendly name that itself contains
+    a comma ('QA, Release') still resolves whole."""
     from tools.bot_mode_dm import _resolve_local_name
 
     raw = str(target or "").strip().lstrip("@")
-    roster = list(sender.roster_homes)
-    if "," not in raw or _resolve_local_name(raw, roster, sender.root) is not None:
+    if "," not in raw or _resolve_local_name(raw, list(sender.roster_homes), sender.root) is not None:
         return [raw] if raw else []
-    named: dict[str, str] = {}
+    named: dict[tuple[str, str], str] = {}
     for part in raw.split(","):
         name = part.strip().lstrip("@")
         if name:
-            named.setdefault(_resolve_local_name(name, roster, sender.root) or name.lower(), name)
+            named.setdefault(_destination(name, sender), name)
     return list(named.values())
+
+
+def _destination(name: str, sender: Any) -> tuple[str, str]:
+    """``(transport, recipient)`` for ``name``, resolved in ``_dispatch``'s order: a peer target
+    first, then a connection-qualified relay name, then a local bot (folder id or friendly name)."""
+    from tools.bot_mode_dm import _PEER_TARGET_RE, _resolve_local_name
+
+    peer = _PEER_TARGET_RE.match(name)
+    if peer or name.lower() in sender.peers:
+        peer_name, peer_profile = peer.groups() if peer else (name.lower(), None)
+        return "peer", f"{peer_name}/{peer_profile or ''}".lower()
+    if "@" in name:
+        return "relay", name.lower()
+    local = _resolve_local_name(name, list(sender.roster_homes), sender.root)
+    return ("local", local) if local is not None else ("unresolved", name.lower())
 
 
 def fan_out(targets: list[str], content: str, sender: Any, *, expects_reply: bool) -> str:

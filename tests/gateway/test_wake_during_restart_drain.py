@@ -139,8 +139,9 @@ async def test_wake_is_refused_when_drain_starts_during_admission():
 
 @pytest.mark.asyncio
 async def test_wake_is_refused_when_drain_starts_after_the_busy_handler_queued_it():
-    """The busy handler can await after it stores the wake: a drain that begins there dooms the
-    queued follow-up, so the wake must be refused (and retried), not receipted and discarded."""
+    """Guard for a busy handler that awaits after it stores the wake (no in-tree handler does today):
+    a drain that begins there dooms the queued follow-up, so the wake must be refused and retried,
+    not receipted and discarded."""
     runner, adapter, source, _turns = wake_route()
     key = adapter._event_session_key(MessageEvent(text="", source=source))
     adapter._active_sessions[key] = asyncio.Event()  # a turn is still running in this chat
@@ -148,13 +149,13 @@ async def test_wake_is_refused_when_drain_starts_after_the_busy_handler_queued_i
 
     async def store_then_drain(event, session_key):
         handled = await store(event, session_key)  # the wake is now the pending follow-up
-        runner._draining = True  # /restart begins during the handler's later awaits
-        await asyncio.sleep(0)
+        runner._draining = True  # /restart begins after the store, before the handler returns
         return handled
 
     adapter._busy_session_handler = store_then_drain
-    with pytest.raises(WakeNotAccepted):
+    with pytest.raises(WakeNotAccepted) as refused:
         await deliver_wake(adapter, text="[kanban] Task t_1 completed.", source=source)
+    assert "during admission" in str(refused.value)  # the post-admission re-check fired
     event, text = await runner._run_agent_drain_pending(
         {"final_response": "done"}, adapter, source, key
     )

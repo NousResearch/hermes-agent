@@ -1,10 +1,10 @@
-import { tailBoundedRemend } from '@assistant-ui/react-streamdown'
 import remarkGfm from 'remark-gfm'
 import remarkParse from 'remark-parse'
 import { unified } from 'unified'
 import { describe, expect, it } from 'vitest'
 
 import { preprocessMarkdown } from './markdown-preprocess'
+import { preprocessWithTailRepair } from './markdown-streaming'
 
 /**
  * The bare-URL autolinker wraps prose URLs in `<…>`. It must leave URLs that
@@ -95,10 +95,9 @@ describe('preprocessMarkdown / raw-URL autolinking inside markdown links', () =>
 
   it('never leaks link syntax into an href while the link streams in', () => {
     const link = '[https://example.com/a](https://example.com/a)'
-    const streamed = (text: string) => tailBoundedRemend(preprocessMarkdown(text))
 
     for (let end = 1; end <= link.length; end += 1) {
-      for (const url of hrefs(`See ${link.slice(0, end)}`, streamed)) {
+      for (const url of hrefs(`See ${link.slice(0, end)}`, preprocessWithTailRepair)) {
         expect(url).not.toMatch(/[\]()]|%5D/)
       }
     }

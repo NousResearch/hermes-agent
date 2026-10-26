@@ -4,8 +4,7 @@ import { TextMessagePartProvider, useMessagePartText } from '@assistant-ui/react
 import {
   type StreamdownTextComponents,
   StreamdownTextPrimitive,
-  type SyntaxHighlighterProps,
-  tailBoundedRemend
+  type SyntaxHighlighterProps
 } from '@assistant-ui/react-streamdown'
 import { useStore } from '@nanostores/react'
 import type { code as streamdownCode } from '@streamdown/code'
@@ -36,7 +35,7 @@ import { renderMediaTags } from '@/lib/chat-messages/parts'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
-import { preprocessMarkdown } from '@/lib/markdown-preprocess'
+import { preprocessWithTailRepair } from '@/lib/markdown-streaming'
 import {
   downloadGatewayMediaFile,
   isFileMediaPath,
@@ -114,17 +113,6 @@ function useCodePlugin(): CodePlugin | null {
 
 const REMARK_PLUGINS = [...Object.values(defaultRemarkPlugins), remarkTranscriptDirectives, remarkSoftBreaks]
 
-// Replaces Streamdown's `parseIncompleteMarkdown` (full-text remend per
-// flush) with a tail-bounded repair. Must stay module-scope so the prop
-// identity is stable across renders.
-function preprocessWithTailRepair(text: string): string {
-  try {
-    return tailBoundedRemend(preprocessMarkdown(text))
-  } catch {
-    return text
-  }
-}
-
 function useOpenMediaFile(path: string) {
   const view = useSessionView()
   const storedId = useStore(view.$storedId)
@@ -135,9 +123,7 @@ function useOpenMediaFile(path: string) {
   const open = () => {
     if (window.hermesDesktop && isRemoteGateway()) {
       setOpenFailed(false)
-      void downloadGatewayMediaFile(path, sessionId ? { sessionId } : undefined).catch(() =>
-        setOpenFailed(true)
-      )
+      void downloadGatewayMediaFile(path, sessionId ? { sessionId } : undefined).catch(() => setOpenFailed(true))
     } else {
       openExternalLink(mediaExternalUrl(path))
     }

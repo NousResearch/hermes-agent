@@ -157,6 +157,30 @@ describe('profiles the serving gateway does not serve', () => {
   })
 })
 
+describe('the served set refresh before a pick', () => {
+  it('reads the inventory only for a profile the cached set does not serve', async () => {
+    const gateway: Gateway = { profiles: ['default', 'solo'], status: reports(['default']) }
+    const fetchMock = stubGateway(gateway)
+    const desktop = installServedBridge()
+    await desktop.getProfileRoutes?.(['solo'])
+    const reads = fetchMock.mock.calls.length
+
+    await desktop.refreshServedProfile?.('default')
+    expect(fetchMock).toHaveBeenCalledTimes(reads)
+
+    gateway.profiles = [...gateway.profiles, 'fresh']
+    gateway.status = reports(['default', 'fresh'])
+    await desktop.refreshServedProfile?.('fresh')
+    await expect(desktop.getConnection('fresh')).resolves.toMatchObject({ sharedPrimary: true })
+    await expect(desktop.getGatewayWsUrl('fresh')).resolves.toMatchObject({ ok: true })
+
+    // Served now, so a second pick reads nothing.
+    const after = fetchMock.mock.calls.length
+    await desktop.refreshServedProfile?.('fresh')
+    expect(fetchMock).toHaveBeenCalledTimes(after)
+  })
+})
+
 describe('the served set read', () => {
   it('is never fetched to install the bridge or to route a request', async () => {
     const fetchMock = stubGateway({ profiles: ['default', 'owner'], status: reports(['default']) })

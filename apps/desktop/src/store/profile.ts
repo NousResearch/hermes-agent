@@ -679,6 +679,12 @@ export async function ensureGatewayProfile(
 
   $gatewaySwapTarget.set(target)
   gatewaySwitch = (async () => {
+    // A Webapp tab routes on its cached served set, which predates a profile
+    // created a moment ago: bring it up to date before either lookup below, so
+    // the descriptor and the shared-primary route both see the new profile on
+    // the tab's socket. No-op elsewhere, and for a profile the set already has.
+    await window.hermesDesktop?.refreshServedProfile?.(target).catch(() => undefined)
+
     // ensureGatewayForProfile opens (or reuses) the target's socket and points
     // the active gateway at it — without closing the profile you came from.
     // The descriptor resolves concurrently so nothing awaits between the

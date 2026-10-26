@@ -14,6 +14,12 @@ import {
 } from '@/lib/browser-transport'
 import { browserLaunchProfileOrDefault } from '@/lib/platform'
 
+// A pick waits at most this long for the served set before routing on the set it has: one
+// `/api/profiles` read, then a `/api/status` read capped at the same 5 s. It sits well under the
+// store's 20 s budget for a dial's URL, so a stalled gateway costs a pick 5 s and a profile that
+// stays unserved is still refused and parked rather than timed out and redialed.
+const SERVED_PROFILE_REFRESH_TIMEOUT_MS = 5_000
+
 /** The serving origin is the only connection a browser-hosted Desktop has. */
 export function requireBrowserConnection(connectionId?: null | string): void {
   const requested = connectionId?.trim() || LOCAL_CONNECTION_ID
@@ -97,6 +103,7 @@ export function createBrowserConnectionBridge({ api, bootstrap }: BrowserConnect
   | 'getProfileRoutes'
   | 'oauthLoginConnectionConfig'
   | 'oauthLogoutConnectionConfig'
+  | 'refreshServedProfile'
   | 'revalidateConnection'
   | 'testConnectionConfig'
 > {
@@ -237,6 +244,27 @@ export function createBrowserConnectionBridge({ api, bootstrap }: BrowserConnect
       navigateToBrowserLogin(new BrowserReauthRequiredError('Signed out', login.href))
 
       return { connected: false, ok: true }
+    },
+    // A profile created since the last inventory read is missing from the cached set, though the
+    // multiplexer adopted it before its create returned. Selection reads the inventory once before
+    // it routes, so the profile rides the tab's socket; dials keep reading the cache alone.
+    refreshServedProfile: async (profile: string) => {
+      if (reachesSocket(profile)) {
+        return
+      }
+
+      let timer: ReturnType<typeof setTimeout> | undefined
+
+      await Promise.race([
+        installedProfiles().then(
+          () => undefined,
+          () => undefined
+        ),
+        new Promise<void>(resolve => {
+          timer = setTimeout(resolve, SERVED_PROFILE_REFRESH_TIMEOUT_MS)
+        })
+      ])
+      clearTimeout(timer)
     },
     // Runs before every redial of the tab's socket: a gateway that restarted may serve another set.
     revalidateConnection: async () => {

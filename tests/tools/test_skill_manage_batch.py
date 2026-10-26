@@ -397,5 +397,73 @@ class TestSkillManageBatch(unittest.TestCase):
         self.assertEqual(out["operations_applied"], 2)
 
 
+class TestRestoreLinkTargetGuards(unittest.TestCase):
+    """The two safety guards in ``tools.skill_manager_batch._restore_link_target``.
+
+    Both exist so a rollback cannot touch a directory it never snapshotted, and
+    neither branch is reached by ``test_failed_batch_preserves_symlinked_skill``
+    (which always snapshots a reachable target): delete either ``return`` and that
+    suite still passes. These cases drive the function directly so each guard has a
+    case that fails without it.
+    """
+
+    def setUp(self):
+        self.home = tempfile.mkdtemp(prefix="skmguard_t_")
+        self.addCleanup(shutil.rmtree, self.home, ignore_errors=True)
+        import tools.skill_manager_batch as smb
+
+        self.smb = smb
+
+    def _farm_entry(self, target):
+        """A per-skill symlink in the lane's farm, pointing at ``target``."""
+        farm = Path(self.home) / "skills" / "yoyodine"
+        farm.mkdir(parents=True, exist_ok=True)
+        entry = farm / "demo-alpha"
+        os.symlink(target, entry, target_is_directory=True)
+        return entry
+
+    def test_dangling_target_is_not_conjured(self):
+        """Guard 2 (``not target.is_dir()``): a link that was dangling when the batch
+        started has no reachable directory to mutate, so rollback creates nothing."""
+        missing = Path(self.home) / "shared" / "demo-alpha"  # never created
+        entry = self._farm_entry(missing)
+        self.smb._restore_link_target(entry, str(missing), None)
+        self.assertFalse(os.path.lexists(missing),
+                         "rollback conjured a target that never existed")
+        self.assertTrue(entry.is_symlink(), "the farm entry itself must be left alone")
+
+    def test_unmapped_existing_target_is_left_byte_identical(self):
+        """Guard 1 (``if snap is None: return``): the target exists now but was created
+        out of band through the link AFTER the snapshot, so it is not ours to remove or
+        overwrite — rollback must leave it exactly as found."""
+        target = Path(self.home) / "shared" / "demo-alpha"
+        target.mkdir(parents=True)
+        canary = target / "SKILL.md"
+        canary.write_text("OUT-OF-BAND CONTENT\n")
+        out_of_band = target / "references" / "kept.md"
+        out_of_band.parent.mkdir()
+        out_of_band.write_text("KEEP ME\n")
+        entry = self._farm_entry(target)
+        self.smb._restore_link_target(entry, str(target), None)
+        self.assertEqual(canary.read_text(), "OUT-OF-BAND CONTENT\n",
+                         "rollback overwrote a target it never snapshotted")
+        self.assertEqual(out_of_band.read_text(), "KEEP ME\n",
+                         "rollback removed content from a target it never snapshotted")
+        leftovers = [p.name for p in target.parent.iterdir() if "rollback-broken" in p.name]
+        self.assertEqual(leftovers, [], "stray .rollback-broken residue beside the target")
+
+    def test_removed_target_is_not_recreated(self):
+        """Guard 2 again, on the snapshot-present path: a target removed (or repointed)
+        out of band between the snapshot and the rollback is not reconstituted."""
+        gone = Path(self.home) / "shared" / "demo-alpha"  # absent at rollback time
+        entry = self._farm_entry(gone)
+        snap = Path(self.home) / "snap"
+        snap.mkdir()
+        (snap / "SKILL.md").write_text("SNAPSHOT CONTENT\n")
+        self.smb._restore_link_target(entry, str(gone), snap)
+        self.assertFalse(os.path.lexists(gone),
+                         "rollback recreated a target removed out of band")
+
+
 if __name__ == "__main__":
     unittest.main()

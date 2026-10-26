@@ -34,11 +34,13 @@ def prompt_dangerous_approval(command: str, description: str, timeout_seconds: i
     allow_permanent=True, allow_session=True, smart_denied=False) -> str``; legacy
     signatures keep working while both keywords hold their defaults.
 
-    Returns 'once', 'session', 'always', 'deny', 'timeout', or 'cancelled'. 'timeout'
+    Returns 'once', 'session', 'always', 'deny', 'timeout', or 'cancelled', or a
+    request-changes dict ``{"choice": "changes", "feedback": str}``. 'timeout'
     means no user response — still blocked (fail-closed), but callers report "no
     response" rather than an explicit denial. 'cancelled' is an :class:`Unanswered`
     sentinel: the prompt never reached a human (callback raised, no callback under
-    prompt_toolkit, interrupted read) and ``.cause`` says why (#22992).
+    prompt_toolkit, interrupted read) and ``.cause`` says why (#22992). A changes
+    dict is not approval — the caller must not run the command.
 
     See #81887.
     """
@@ -66,10 +68,15 @@ class Unanswered(str):
         return self
 
 
+# Accepted CLI tokens for the Request Changes path (issue #25693).
+# Exposed so tests can assert the alias set without reading source text.
+CLI_CHANGES_CHOICE_ALIASES = frozenset({"c", "changes", "change", "request", "feedback"})
+
 _CLI_CHOICE_ALIASES = {
     "o": "once", "once": "once",
     "s": "session", "session": "session",
     "a": "always", "always": "always",
+    **{alias: "changes" for alias in CLI_CHANGES_CHOICE_ALIASES},
 }
 
 _CLI_CHOICE_I18N = {
@@ -80,20 +87,40 @@ _CLI_CHOICE_I18N = {
 }
 
 
-def _read_choice(prompt: str, timeout_seconds: int) -> str | None:
-    """Read one answer on a daemon thread; None when the user never answered."""
-    result = {"choice": ""}
+def _read_line(prompt: str, timeout_seconds: int, *, lower: bool) -> str | None:
+    """Read one line on a daemon thread; None when the user never answered."""
+    result = {"line": ""}
 
     def get_input():
         try:
-            result["choice"] = input(prompt).strip().lower()
+            text = input(prompt).strip()
+            result["line"] = text.lower() if lower else text
         except (EOFError, OSError):
-            result["choice"] = ""
+            result["line"] = ""
 
     thread = threading.Thread(target=get_input, daemon=True)
     thread.start()
     thread.join(timeout=timeout_seconds)
-    return None if thread.is_alive() else result["choice"]
+    return None if thread.is_alive() else result["line"]
+
+
+def _read_choice(prompt: str, timeout_seconds: int) -> str | None:
+    """Read one answer on a daemon thread; None when the user never answered."""
+    return _read_line(prompt, timeout_seconds, lower=True)
+
+
+def _prompt_for_changes(timeout_seconds: int) -> str | dict:
+    """Ask what to change. Empty or no answer denies; never returns approval."""
+    from agent.i18n import t
+    feedback = _read_line(t("approval.changes_prompt"), timeout_seconds, lower=False)
+    if feedback is None:
+        print("\n" + t("approval.timeout", **_ctx.approval_timeout_notice_kwargs()))
+        return "deny"
+    if not feedback:
+        print(t("approval.changes_empty"))
+        return "deny"
+    print(t("approval.changes_received"))
+    return {"choice": "changes", "feedback": feedback}
 
 
 def callback_accepts(callback, keyword: str) -> bool:
@@ -171,6 +198,13 @@ def _ask_human(command: str, description: str, timeout_seconds: int, allow_perma
             decision = _CLI_CHOICE_ALIASES.get(choice, "deny")
             if decision == "always" and not allow_permanent:
                 decision = "session"
+            # Request-changes is a dangerous-command collaboration, not an
+            # elicitation answer and not a smart-deny override. Empty feedback denies.
+            if decision == "changes":
+                if title or once_only:
+                    decision = "deny"
+                else:
+                    return _prompt_for_changes(timeout_seconds)
         print(t(_CLI_CHOICE_I18N[decision]))
         return decision
     except (EOFError, KeyboardInterrupt):

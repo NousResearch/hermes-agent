@@ -35,7 +35,7 @@ from tools.approval_floors import (
     _command_matches_permanent_allowlist, _hardline_block_result, _match_user_deny_rule, _sudo_stdin_block_result,
     _user_deny_block_result,
 )
-from tools.approval_gateway_wait import _await_gateway_decision
+from tools.approval_gateway_wait import _await_gateway_decision, split_changes_choice
 from tools.approval_prompt import _present_with_selected_transport, _transport_choice, prompt_dangerous_approval
 from tools.approval_smart import _smart_verdict
 
@@ -142,12 +142,15 @@ def unregister_gateway_notify(session_key: str) -> None:
 def resolve_gateway_approval(session_key: str, choice: str,
                              resolve_all: bool = False,
                              reason: Optional[str] = None,
-                             request_id: Optional[str] = None) -> int:
+                             request_id: Optional[str] = None,
+                             feedback: str | None = None) -> int:
     """Unblock waiting agent thread(s) from the gateway's /approve or /deny handler.
 
     *resolve_all* resolves every pending approval (``/approve all``); otherwise the oldest
     (FIFO) or the one matching *request_id*. *reason* is the ``/deny <reason>`` free text,
-    relayed to the agent in the BLOCKED message. Returns the number resolved.
+    relayed to the agent in the BLOCKED message. *feedback* is free text for
+    ``choice="changes"`` only (issue #25693); it is ignored for every other choice,
+    and empty changes degrade to a plain deny. Returns the number resolved.
     """
     with _lock:
         queue = _gateway_queues.get(session_key)
@@ -169,7 +172,13 @@ def resolve_gateway_approval(session_key: str, choice: str,
         # ``_drop_entry`` reads ``entry.result`` under this same lock after its deadline check, so a
         # choice acked to the client here can never be popped-and-lost as a timeout (#112548).
         for entry in targets:
-            entry.result = choice
+            if choice == "changes":
+                # Keep the payload on the entry so the waiter can tell a revision
+                # request from consent. Empty feedback is a deny — never an approval.
+                text_fb = (feedback or "").strip()
+                entry.result = {"choice": "changes", "feedback": text_fb} if text_fb else "deny"
+            else:
+                entry.result = choice
             if reason:
                 entry.reason = reason
             entry.event.set()
@@ -525,7 +534,9 @@ def _approved() -> dict:
 # ``approval.summary.<outcome>`` (``approval.summary.default`` for unknown outcomes). ``message`` is
 # addressed to the model ("Do NOT retry ..."); surfaces render ``user_summary`` first and fold the
 # model text away, so a Reject click does not read like an error the user caused.
-_USER_SUMMARY_OUTCOMES = frozenset({"denied", "timeout", "notify_failed", "cancelled", "blocked"})
+_USER_SUMMARY_OUTCOMES = frozenset({
+    "denied", "timeout", "notify_failed", "cancelled", "blocked", "changes_requested",
+})
 # ``_GateSpec.noun`` values (identifiers) -> ``approval.noun.<noun>`` for the human sentence.
 _USER_SUMMARY_NOUNS = frozenset({"command", "code", "action"})
 
@@ -545,6 +556,37 @@ def _denied(message: str, *, pattern_key: str, description: str, outcome: str, n
     return {"approved": False, "message": message, "pattern_key": pattern_key,
             "description": description, "outcome": outcome, "user_consent": False,
             "user_summary": _user_summary(outcome, noun), **extra}
+
+
+def _changes_message(feedback: str) -> str:
+    """BLOCKED-with-feedback text for a request-changes answer (issue #25693).
+
+    The command did not run. Wording is stable — tests assert the prefix and
+    the ``[Approval feedback]:`` label. This is not consent and not a deny that
+    forbids a revised command; the revision is checked again.
+    """
+    feedback = (feedback or "").strip()
+    return (
+        "BLOCKED: User requested changes to this command. The command did "
+        "NOT run. Revise the command according to the feedback below and "
+        "try again.\n"
+        f"[Approval feedback]: {feedback}"
+    )
+
+
+def _changes_requested(feedback: str, *, pattern_key: str, description: str, noun: str = "command") -> dict:
+    """Non-consent result: the flagged action did not run, and the agent may revise it."""
+    return {
+        "approved": False,
+        "changes_requested": True,
+        "feedback": feedback,
+        "message": _changes_message(feedback),
+        "pattern_key": pattern_key,
+        "description": description,
+        "outcome": "changes_requested",
+        "user_consent": False,
+        "user_summary": _user_summary("changes_requested", noun),
+    }
 
 
 def _blocked(message: str, *, pattern_key: str, description: str) -> dict:
@@ -793,6 +835,144 @@ def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: st
     }, True
 
 
+def _format_deny(spec: _GateSpec, *, session_key: str, pattern_key: str, description: str,
+                 template: str, outcome: str, **fmt) -> dict:
+    """Fill one gate deny template. ``{breaker}`` is read only when the template uses it."""
+    breaker = _denial_breaker_addendum(session_key) if "{breaker}" in template else ""
+    deny_reason = fmt.pop("deny_reason", None)
+    extra = {"deny_reason": deny_reason} if "reason" in fmt else {}
+    return _denied(template.format(description=description, breaker=breaker, **fmt),
+                   pattern_key=pattern_key, description=description, outcome=outcome, noun=spec.noun, **extra)
+
+
+def _grant_human(spec: _GateSpec, choice: str, *, session_key: str, pattern_key: str,
+                 pattern_keys: list[str], description: str, smart_denied: bool) -> dict:
+    """Persist a real approval. Anything except once/session/always is a deny, never a grant."""
+    if choice not in ("once", "session", "always"):
+        return _format_deny(spec, session_key=session_key, pattern_key=pattern_key, description=description,
+                            template=spec.cli_denied, outcome="denied")
+    # A smart-DENY owner override is one operation, even if an older client returns session/always.
+    if not smart_denied:
+        _persist_choice(session_key, choice, pattern_keys)
+    if spec.user_approved:
+        return _user_approved(session_key, description)
+    return _approved()
+
+
+def _revise_human(choice, *, pattern_key: str, description: str, noun: str):
+    """Request-changes payload, or ``(None, choice)``. Empty feedback is already a deny."""
+    choice, feedback = split_changes_choice(choice)
+    if choice == "changes" and feedback:
+        return _changes_requested(
+            feedback, pattern_key=pattern_key, description=description, noun=noun), "changes"
+    return None, choice
+
+
+def _cli_human_answer(spec: _GateSpec, *, command: str, description: str, pattern_key: str,
+                      pattern_keys: list[str], session_key: str, approval_callback,
+                      allow_permanent: bool, smart_denied: bool) -> dict:
+    """CLI prompt. A changes dict is not consent and is not passed to the post hook as a dict."""
+    from agent.redact import redact_sensitive_text
+    prompt_command, prompt_description = command, description
+    if spec.redact_cli:
+        prompt_command = redact_sensitive_text(command)
+        prompt_description = redact_sensitive_text(description)
+    hook_kwargs = dict(command=prompt_command, description=prompt_description, pattern_key=pattern_key,
+                       pattern_keys=list(pattern_keys), session_key=session_key, surface="cli")
+    approval_context._fire_approval_hook("pre_approval_request", **hook_kwargs)
+    choice = prompt_dangerous_approval(prompt_command, prompt_description, allow_permanent=allow_permanent,
+                                       smart_denied=smart_denied, approval_callback=approval_callback)
+    revised, choice = _revise_human(choice, pattern_key=pattern_key, description=description, noun=spec.noun)
+    approval_context._fire_approval_hook("post_approval_response", **hook_kwargs, choice=choice)
+    if revised is not None:
+        return revised
+    if choice == "timeout":
+        return _format_deny(spec, session_key=session_key, pattern_key=pattern_key, description=description,
+                            template=spec.cli_timeout, outcome="timeout")
+    if choice == "cancelled":
+        # The prompt never reached a human (callback raised, no callback under prompt_toolkit, interrupted
+        # read): fail closed, but do not attribute a refusal to the user (#22992).
+        return _format_deny(
+            spec, session_key=session_key, pattern_key=pattern_key, description=description,
+            template=spec.gateway_refused, outcome="cancelled",
+            reason="was not approved: the approval prompt could not be delivered or was not answered "
+                   f"({getattr(choice, 'cause', 'no answer')})",
+            reason_addendum="", timeout_addendum=" Silence is not consent.", deny_reason=None)
+    if choice == "deny":
+        # No _record_denial(): the breaker counts consecutive guardian LLM denials, not human denials.
+        return _format_deny(spec, session_key=session_key, pattern_key=pattern_key, description=description,
+                            template=spec.cli_denied, outcome="denied")
+    return _grant_human(spec, choice, session_key=session_key, pattern_key=pattern_key, pattern_keys=pattern_keys,
+                        description=description, smart_denied=smart_denied)
+
+
+def _gateway_human_answer(spec: _GateSpec, *, command: str, description: str, pattern_key: str,
+                          pattern_keys: list[str], session_key: str, approval_callback, is_cli: bool,
+                          allow_permanent: bool, smart_denied: bool, pending_body) -> dict | None:
+    """Gateway round-trip. None means fall through did not apply and the caller must not continue;
+    a returned dict is the final result, including a CLI fall-through answer."""
+    from agent.redact import redact_sensitive_text
+    display_command = redact_sensitive_text(command)
+    display_description = redact_sensitive_text(description)
+    notify_cb = _gateway_notify_cb(session_key)
+    if notify_cb is not None:
+        return _gateway_notified_answer(
+            spec, description=description, pattern_key=pattern_key, pattern_keys=pattern_keys,
+            session_key=session_key, smart_denied=smart_denied, notify_cb=notify_cb,
+            display_command=display_command, display_description=display_description)
+    # No notifier (cron, batch, or ask leaked into an interactive CLI): use the local panel when
+    # someone can answer, otherwise a pending card. Never an unanswerable block that looks approved.
+    if _should_fall_through_to_cli_approval(is_cli=is_cli, approval_callback=approval_callback, notify_cb=notify_cb):
+        return _cli_human_answer(
+            spec, command=command, description=description, pattern_key=pattern_key, pattern_keys=pattern_keys,
+            session_key=session_key, approval_callback=approval_callback, allow_permanent=allow_permanent,
+            smart_denied=smart_denied)
+    if not spec.pending_keys:
+        display_command, display_description = command, description
+    return _pending_result(
+        spec, session_key, command=display_command, description=display_description, pattern_key=pattern_key,
+        pattern_keys=pattern_keys, body=pending_body, smart_denied=smart_denied)
+
+
+def _gateway_notified_answer(spec: _GateSpec, *, description: str, pattern_key: str,
+                             pattern_keys: list[str], session_key: str, smart_denied: bool, notify_cb,
+                             display_command: str, display_description: str) -> dict:
+    """Block until the gateway answers. Request-changes does not grant or persist."""
+    data = {
+        "command": display_command, "pattern_key": pattern_key, "pattern_keys": pattern_keys,
+        "description": display_description, "allow_permanent": not smart_denied, "allow_session": not smart_denied,
+    }
+    if smart_denied:
+        data["smart_denied"] = True
+    decision = _await_gateway_decision(session_key, notify_cb, data, surface="gateway")
+    if decision.get("notify_failed"):
+        return _denied(spec.notify_failed, pattern_key=pattern_key, description=description,
+                       outcome="notify_failed", noun=spec.noun)
+    choice, deny_reason = decision["choice"], decision.get("reason")
+    if decision.get("cancelled"):
+        return _format_deny(
+            spec, session_key=session_key, pattern_key=pattern_key, description=description,
+            template=spec.gateway_refused, outcome="cancelled",
+            reason=f"approval was withdrawn before the user answered ({decision['cancelled']})",
+            reason_addendum="", timeout_addendum="", deny_reason=None)
+    if not decision["resolved"]:
+        return _format_deny(
+            spec, session_key=session_key, pattern_key=pattern_key, description=description,
+            template=spec.gateway_refused, outcome="timeout", reason="timed out without user response",
+            reason_addendum="", timeout_addendum=" Silence is not consent.", deny_reason=deny_reason)
+    feedback = str(decision.get("feedback") or "").strip()
+    if choice == "changes" and feedback:
+        return _changes_requested(feedback, pattern_key=pattern_key, description=description, noun=spec.noun)
+    if choice is None or choice == "deny" or choice == "changes":
+        return _format_deny(
+            spec, session_key=session_key, pattern_key=pattern_key, description=description,
+            template=spec.gateway_refused, outcome="denied", reason="denied by user",
+            reason_addendum=(f' Reason given by the user: "{deny_reason}".' if deny_reason else ""),
+            timeout_addendum="", deny_reason=deny_reason)
+    return _grant_human(spec, choice, session_key=session_key, pattern_key=pattern_key, pattern_keys=pattern_keys,
+                        description=description, smart_denied=smart_denied)
+
+
 def _human_decision(spec: _GateSpec, *, command: str, description: str,
                     pattern_key: str, pattern_keys: list[str],
                     session_key: str, approval_callback, is_cli: bool, is_gateway: bool,
@@ -803,8 +983,6 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     owner override reduces every surface to once/deny and persists nothing. ``pending_body`` is a thunk, built only once a human is
     actually asked, so a smart APPROVE never pays for redacting a large script.
     """
-    from agent.redact import redact_sensitive_text
-
     smart_denied = False
     if smart:
         result, smart_denied = _smart_gate(spec, command, description, pattern_key, pattern_keys,
@@ -813,24 +991,6 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             return result
     pending_body = pending_body() if pending_body else None
     allow_permanent = not smart_denied
-
-    def deny(template: str, outcome: str, **fmt) -> dict:
-        breaker = ""
-        if "{breaker}" in template:
-            breaker = _denial_breaker_addendum(session_key)
-        deny_reason = fmt.pop("deny_reason", None)
-        extra = {"deny_reason": deny_reason} if "reason" in fmt else {}
-        return _denied(template.format(description=description, breaker=breaker, **fmt),
-                       pattern_key=pattern_key, description=description,
-                       outcome=outcome, noun=spec.noun, **extra)
-
-    def grant(choice: str) -> dict:
-        # A smart-DENY owner override is always one operation, even if an older client returns "session" or "always".
-        if not smart_denied:
-            _persist_choice(session_key, choice, pattern_keys)
-        if spec.user_approved:
-            return _user_approved(session_key, description)
-        return _approved()
 
     if spec.transport:
         attempt = _present_with_selected_transport(
@@ -842,92 +1002,26 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         if denied is not None:
             return denied
         if choice is not None:
+            revised, choice = _revise_human(choice, pattern_key=pattern_key, description=description, noun=spec.noun)
+            if revised is not None:
+                return revised
             if choice == "deny":
                 _record_denial(session_key)
-                return deny(spec.transport_denied, "denied")
-            return grant(choice)
+                return _format_deny(spec, session_key=session_key, pattern_key=pattern_key, description=description,
+                                    template=spec.transport_denied, outcome="denied")
+            return _grant_human(spec, choice, session_key=session_key, pattern_key=pattern_key,
+                                pattern_keys=pattern_keys, description=description, smart_denied=smart_denied)
 
-    # Gateway/async approval: block the agent thread until /approve or /deny, mirroring the CLI's synchronous input()
-    # flow. The agent never sees "approval_required" here — it gets output or a definitive BLOCKED.
+    # Gateway/async first. Fall through to the CLI panel only when no notifier is registered.
     if is_gateway or is_ask:
-        # Redacted copies for user-visible rendering only (the gateway paints them into Discord/Slack); the raw
-        # command still executes after approval and persistence keys off pattern_key.
-        display_command = redact_sensitive_text(command)
-        display_description = redact_sensitive_text(description)
-        notify_cb = _gateway_notify_cb(session_key)
-        if notify_cb is not None:
-            # Smart DENY overrides are one-operation decisions, so the UI must not offer a
-            # permanent or session scope.
-            data = {
-                "command": display_command, "pattern_key": pattern_key,
-                "pattern_keys": pattern_keys, "description": display_description,
-                "allow_permanent": not smart_denied,
-                "allow_session": not smart_denied,
-            }
-            if smart_denied:
-                data["smart_denied"] = True
-            decision = _await_gateway_decision(session_key, notify_cb, data, surface="gateway")
-            if decision.get("notify_failed"):
-                return _denied(spec.notify_failed, pattern_key=pattern_key,
-                               description=description, outcome="notify_failed", noun=spec.noun)
-            # Consent contract: silence is NOT consent, and an explicit deny is a hard
-            # halt — both produce a BLOCKED outcome. ``/deny <reason>`` free text is
-            # relayed verbatim so the agent can adapt rather than only hearing "denied".
-            choice, deny_reason = decision["choice"], decision.get("reason")
-            if decision.get("cancelled"):
-                # The prompt was withdrawn (turn interrupted or ended) before anyone answered:
-                # still fail closed, but do not attribute a refusal to the user.
-                return deny(spec.gateway_refused, "cancelled",
-                            reason=f"approval was withdrawn before the user answered ({decision['cancelled']})",
-                            reason_addendum="", timeout_addendum="", deny_reason=None)
-            if not decision["resolved"]:
-                return deny(spec.gateway_refused, "timeout", reason="timed out without user response",
-                            reason_addendum="", timeout_addendum=" Silence is not consent.",
-                            deny_reason=deny_reason)
-            if choice is None or choice == "deny":
-                return deny(spec.gateway_refused, "denied", reason="denied by user",
-                            reason_addendum=(f' Reason given by the user: "{deny_reason}".' if deny_reason else ""),
-                            timeout_addendum="", deny_reason=deny_reason)
-            return grant(choice)
-
-        # No gateway callback (cron, batch, or ask-mode leaked into an interactive CLI, historically via `import
-        # gateway.run`): paint the local panel when possible instead of a pending_approval that makes the agent look
-        # "auto-blocked".
-        if not _should_fall_through_to_cli_approval(
-            is_cli=is_cli, approval_callback=approval_callback, notify_cb=notify_cb,
-        ):
-            if not spec.pending_keys:
-                display_command, display_description = command, description
-            return _pending_result(
-                spec, session_key, command=display_command, description=display_description, pattern_key=pattern_key,
-                pattern_keys=pattern_keys, body=pending_body, smart_denied=smart_denied,
-            )
-
-    # CLI interactive: single combined prompt, wrapped in the pre/post plugin hooks.
-    prompt_command, prompt_description = command, description
-    if spec.redact_cli:
-        prompt_command = redact_sensitive_text(command)
-        prompt_description = redact_sensitive_text(description)
-    hook_kwargs = dict(command=prompt_command, description=prompt_description, pattern_key=pattern_key,
-                       pattern_keys=list(pattern_keys), session_key=session_key, surface="cli")
-    approval_context._fire_approval_hook("pre_approval_request", **hook_kwargs)
-    choice = prompt_dangerous_approval(prompt_command, prompt_description, allow_permanent=allow_permanent,
-                                       smart_denied=smart_denied, approval_callback=approval_callback)
-    approval_context._fire_approval_hook("post_approval_response", **hook_kwargs, choice=choice)
-    if choice == "timeout":
-        return deny(spec.cli_timeout, "timeout")
-    if choice == "cancelled":
-        # The prompt never reached a human (callback raised, no callback under prompt_toolkit, interrupted
-        # read): fail closed, but do not attribute a refusal to the user (#22992).
-        return deny(spec.gateway_refused, "cancelled",
-                    reason="was not approved: the approval prompt could not be delivered or was not answered "
-                           f"({getattr(choice, 'cause', 'no answer')})",
-                    reason_addendum="", timeout_addendum=" Silence is not consent.", deny_reason=None)
-    if choice == "deny":
-        # No _record_denial(): the breaker counts consecutive guardian LLM
-        # DENY verdicts, not deliberate human denials.
-        return deny(spec.cli_denied, "denied")
-    return grant(choice)
+        return _gateway_human_answer(
+            spec, command=command, description=description, pattern_key=pattern_key, pattern_keys=pattern_keys,
+            session_key=session_key, approval_callback=approval_callback, is_cli=is_cli,
+            allow_permanent=allow_permanent, smart_denied=smart_denied, pending_body=pending_body)
+    return _cli_human_answer(
+        spec, command=command, description=description, pattern_key=pattern_key, pattern_keys=pattern_keys,
+        session_key=session_key, approval_callback=approval_callback, allow_permanent=allow_permanent,
+        smart_denied=smart_denied)
 
 
 def _presence(approval_callback=None) -> tuple:

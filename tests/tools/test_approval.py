@@ -2112,3 +2112,168 @@ class TestCliApprovalTimeoutClassifiedSeparately:
         assert result.get("user_consent") is False
         assert "timed out without user response" in result["message"]
         assert "Silence is not consent" in result["message"]
+
+
+class TestRequestChangesFlow:
+    """Issue #25693 — request-changes is not approval. The command does not run."""
+
+    def test_changes_message_helper_carries_feedback(self):
+        msg = approval_module._changes_message("Use INSERT OR REPLACE instead of DELETE.")
+        assert "BLOCKED" in msg
+        assert "did NOT run" in msg
+        assert "[Approval feedback]:" in msg
+        assert "INSERT OR REPLACE" in msg
+        assert "NOT consented" not in msg
+
+    def test_prompt_callback_changes_returns_structured_dict(self):
+        def cb(command, description, *, allow_permanent=True):
+            return {"choice": "changes", "feedback": "switch DELETE to UPSERT"}
+
+        result = prompt_dangerous_approval("rm -rf /tmp/x", "rm test", approval_callback=cb)
+        assert isinstance(result, dict)
+        assert result["choice"] == "changes"
+        assert result["feedback"] == "switch DELETE to UPSERT"
+
+    def test_prompt_callback_plain_string_still_works(self):
+        def cb(command, description, *, allow_permanent=True):
+            return "deny"
+
+        assert prompt_dangerous_approval("rm -rf /tmp/x", "rm test", approval_callback=cb) == "deny"
+
+    def test_cli_changes_alias_captures_feedback(self):
+        with mock_patch("builtins.input", side_effect=["c", "use UPSERT instead"]):
+            result = prompt_dangerous_approval("rm -rf /tmp/x", "rm test")
+        assert result == {"choice": "changes", "feedback": "use UPSERT instead"}
+
+    def test_cli_changes_empty_feedback_denies(self):
+        with mock_patch("builtins.input", side_effect=["changes", "   "]):
+            result = prompt_dangerous_approval("rm -rf /tmp/x", "rm test")
+        assert result == "deny"
+
+    def test_smart_deny_does_not_accept_changes_alias(self):
+        with mock_patch("builtins.input", return_value="c"):
+            result = prompt_dangerous_approval(
+                "rm -rf /tmp/x", "rm test", smart_denied=True, allow_permanent=False)
+        assert result == "deny"
+
+    def test_changes_string_alias_constant(self):
+        from tools.approval_prompt import CLI_CHANGES_CHOICE_ALIASES
+        import yaml as _yaml
+        for required in ("c", "changes", "change", "request", "feedback"):
+            assert required in CLI_CHANGES_CHOICE_ALIASES
+        catalog = _yaml.safe_load(
+            (Path(approval_module.__file__).parents[1] / "locales" / "en.yaml").read_text(encoding="utf-8"))
+        approval_strings = catalog.get("approval", {})
+        for key in ("changes_prompt", "changes_empty", "changes_received"):
+            assert key in approval_strings
+
+    def _entry(self, session_key: str):
+        from tools.approval_gateway_wait import _ApprovalEntry
+        approval_module._gateway_queues.clear()
+        entry = _ApprovalEntry({"command": "DELETE FROM x"})
+        with approval_module._lock:
+            approval_module._gateway_queues.setdefault(session_key, []).append(entry)
+        return entry
+
+    def test_gateway_resolver_changes_with_feedback(self):
+        session_key = "test-session-changes"
+        entry = self._entry(session_key)
+        count = approval_module.resolve_gateway_approval(session_key, "changes", feedback="use UPSERT instead")
+        assert count == 1
+        assert entry.result == {"choice": "changes", "feedback": "use UPSERT instead"}
+        assert entry.event.is_set()
+        approval_module._gateway_queues.clear()
+
+    def test_gateway_resolver_changes_empty_feedback_degrades_to_deny(self):
+        session_key = "test-session-changes-empty"
+        entry = self._entry(session_key)
+        assert approval_module.resolve_gateway_approval(session_key, "changes", feedback="   ") == 1
+        assert entry.result == "deny"
+        approval_module._gateway_queues.clear()
+
+    def test_gateway_resolver_changes_none_feedback_degrades_to_deny(self):
+        session_key = "test-session-changes-none"
+        entry = self._entry(session_key)
+        assert approval_module.resolve_gateway_approval(session_key, "changes", feedback=None) == 1
+        assert entry.result == "deny"
+        approval_module._gateway_queues.clear()
+
+    def test_gateway_resolver_signature_is_backwards_compatible(self):
+        session_key = "test-session-bc"
+        entry = self._entry(session_key)
+        assert approval_module.resolve_gateway_approval(session_key, "once") == 1
+        assert entry.result == "once"
+        approval_module._gateway_queues.clear()
+
+    def test_gateway_resolver_changes_does_not_affect_non_changes_choices(self):
+        session_key = "test-session-ignore-feedback"
+        entry = self._entry(session_key)
+        approval_module.resolve_gateway_approval(session_key, "always", feedback="should be ignored")
+        assert entry.result == "always"
+        approval_module._gateway_queues.clear()
+
+    def test_guard_changes_callback_does_not_approve(self):
+        """A changes payload must not run the command or persist the pattern."""
+        from unittest.mock import patch as _patch
+        approval_module._session_approved.clear()
+        approval_module._permanent_approved.clear()
+        cfg = {"approvals": {"mode": "manual"}}
+
+        def cb(command, description, *, allow_permanent=True):
+            return {"choice": "changes", "feedback": "use a narrower path"}
+
+        env = {"HERMES_INTERACTIVE": "1", "HERMES_GATEWAY_SESSION": "", "HERMES_CRON_SESSION": "", "HERMES_EXEC_ASK": ""}
+        with mock_patch.dict("os.environ", env, clear=False):
+            with _patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+                with _patch("tools.approval_context._get_approval_mode", return_value="manual"):
+                    result = approval_module.check_all_command_guards(
+                        "rm -rf /var/data", "local", approval_callback=cb)
+        assert result["approved"] is False
+        assert result.get("user_consent") is False
+        assert result.get("changes_requested") is True
+        assert result.get("feedback") == "use a narrower path"
+        assert "did NOT run" in result["message"]
+        assert "use a narrower path" in result["message"]
+        session_key = approval_module.get_current_session_key()
+        assert approval_module.is_approved(session_key, result["pattern_key"]) is False
+
+    def test_guard_gateway_changes_does_not_approve(self):
+        from tools import approval as mod
+        session_key = "test-changes-gate"
+        mod._gateway_queues.clear()
+        mod._gateway_notify_cbs.clear()
+        mod._session_approved.clear()
+        saved = {k: os.environ.get(k) for k in ("HERMES_GATEWAY_SESSION", "HERMES_CRON_SESSION", "HERMES_SESSION_KEY", "HERMES_INTERACTIVE")}
+        os.environ.pop("HERMES_CRON_SESSION", None)
+        os.environ.pop("HERMES_INTERACTIVE", None)
+        os.environ["HERMES_GATEWAY_SESSION"] = "1"
+        os.environ["HERMES_SESSION_KEY"] = session_key
+        try:
+            mod.register_gateway_notify(session_key, lambda data: None)
+            holder = {}
+
+            def _check():
+                holder["r"] = mod.check_all_command_guards("rm -rf /var/data", "local")
+
+            thread = threading.Thread(target=_check)
+            thread.start()
+            for _ in range(200):
+                if mod._gateway_queues.get(session_key):
+                    break
+                time.sleep(0.005)
+            assert mod.resolve_gateway_approval(session_key, "changes", feedback="delete only the cache dir") == 1
+            thread.join(timeout=5)
+            result = holder["r"]
+            assert result["approved"] is False
+            assert result.get("changes_requested") is True
+            assert result.get("user_consent") is False
+            assert "delete only the cache dir" in result["message"]
+            assert mod.is_approved(session_key, result["pattern_key"]) is False
+        finally:
+            mod._gateway_queues.clear()
+            mod._gateway_notify_cbs.clear()
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value

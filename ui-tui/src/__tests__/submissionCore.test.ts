@@ -259,3 +259,125 @@ describe('submissionCore.submitPrompt — voice marker ownership', () => {
     await vi.waitFor(() => expect(request.mock.calls.at(-1)?.[1]).toMatchObject({ voice_turn: true }))
   })
 })
+
+describe('submissionCore.submitPrompt — clarify batch declaration', () => {
+  beforeEach(() => {
+    resetUiState()
+    patchUiState({ sid: 'sess-1' })
+  })
+
+  it('a prompt declares clarify_batch to an owner advertising it; a busy correction does not', async () => {
+    const request = vi.fn(async (_method: string, _params: Record<string, unknown>) => ({ status: 'accepted' }))
+    const gw = { clarifyBatch: true, isCanonical: true, request } as unknown as GatewayClient
+
+    submitPrompt('fix it', makeDeps(gw), true, undefined, {
+      behindTurn: true,
+      queueItem: { controlMethod: 'session.redirect', executionGeneration: 3, submissionId: 'c1', text: 'fix it' } as never
+    })
+    submitPrompt('ask me', makeDeps(gw))
+    await vi.waitFor(() => expect(request.mock.calls.map(([method]) => method)).toEqual(['session.redirect', 'prompt.submit']))
+
+    expect(request.mock.calls[0]?.[1]).not.toHaveProperty('clarify_batch')
+    expect(request.mock.calls[1]?.[1]).toMatchObject({ clarify_batch: true })
+  })
+
+  it('an owner without clarify-batch-v1 never sees the key (its closed submit params would refuse it)', async () => {
+    const request = vi.fn(async (_method: string, _params: Record<string, unknown>) => ({ status: 'accepted' }))
+    const gw = { clarifyBatch: false, isCanonical: true, request } as unknown as GatewayClient
+
+    submitPrompt('ask me', makeDeps(gw))
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(1))
+
+    expect(request.mock.calls[0]?.[0]).toBe('prompt.submit')
+    expect(request.mock.calls[0]?.[1]).not.toHaveProperty('clarify_batch')
+  })
+})
+
+describe('submissionCore.submitPrompt — typed voice stop on the shared gateway (TUI-26)', () => {
+  beforeEach(() => {
+    resetUiState()
+    patchUiState({ sid: 'sess-1' })
+  })
+
+  it('renders the voice_stopped reply as the stop-phrase event, settles the item, never as an unconfirmed admission', async () => {
+    const request = vi.fn(async () => ({ voice_stopped: true }))
+    const publishLocalEvent = vi.fn()
+    const gw = { isCanonical: true, publishLocalEvent, request } as unknown as GatewayClient
+    const sys = vi.fn()
+    const settle = vi.fn()
+
+    submitPrompt('stop', makeDeps(gw, { sys }), true, undefined, {
+      destination: captureDestination(),
+      queueItem: { settle, submissionId: 's1', text: 'stop' } as never,
+      skipDetectDrop: true
+    })
+
+    await vi.waitFor(() => expect(settle).toHaveBeenCalledWith(true))
+    expect(publishLocalEvent).toHaveBeenCalledWith({
+      payload: { stop_phrase: true, typed: true },
+      session_id: 'sess-1',
+      type: 'voice.transcript'
+    })
+    expect(getUiState().busy).toBe(false)
+    expect(sys).not.toHaveBeenCalled()
+  })
+
+  it('the sidecar already emitted the event: no second local one', async () => {
+    const request = vi.fn(async () => ({ voice_stopped: true }))
+    const publishLocalEvent = vi.fn()
+    const gw = { isCanonical: false, publishLocalEvent, request } as unknown as GatewayClient
+
+    submitPrompt('stop', makeDeps(gw), true, undefined, { skipDetectDrop: true })
+
+    await vi.waitFor(() => expect(getUiState().busy).toBe(false))
+    expect(publishLocalEvent).not.toHaveBeenCalled()
+  })
+
+  it.each(['session.redirect', 'session.steer'] as const)(
+    'a stop typed as a %s busy correction settles as the stop-phrase event, not a rejected correction',
+    async controlMethod => {
+      const request = vi.fn(async () => ({ voice_stopped: true }))
+      const publishLocalEvent = vi.fn()
+      const gw = { isCanonical: true, publishLocalEvent, request } as unknown as GatewayClient
+      const sys = vi.fn()
+      const settle = vi.fn()
+
+      patchUiState({ busy: true, status: 'running…' })
+      submitPrompt('stop', makeDeps(gw, { sys }), true, undefined, {
+        behindTurn: true,
+        destination: captureDestination(),
+        queueItem: { controlMethod, executionGeneration: 3, settle, submissionId: 'c1', text: 'stop' } as never,
+        skipDetectDrop: true
+      })
+
+      await vi.waitFor(() => expect(settle).toHaveBeenCalledWith(true))
+      expect(publishLocalEvent).toHaveBeenCalledWith({
+        payload: { stop_phrase: true, typed: true },
+        session_id: 'sess-1',
+        type: 'voice.transcript'
+      })
+      expect(sys).not.toHaveBeenCalled()
+      expect(getUiState().busy).toBe(true)
+    }
+  )
+
+  it('a stop typed behind a running turn (queue mode) ends voice but leaves that turn running', async () => {
+    const request = vi.fn(async () => ({ voice_stopped: true }))
+    const publishLocalEvent = vi.fn()
+    const gw = { isCanonical: true, publishLocalEvent, request } as unknown as GatewayClient
+    const settle = vi.fn()
+
+    patchUiState({ busy: true, status: 'running…' })
+    submitPrompt('stop', makeDeps(gw), true, undefined, {
+      behindTurn: true,
+      destination: captureDestination(),
+      queueItem: { settle, submissionId: 's2', text: 'stop' } as never,
+      skipDetectDrop: true
+    })
+
+    await vi.waitFor(() => expect(settle).toHaveBeenCalledWith(true))
+    expect(publishLocalEvent).toHaveBeenCalled()
+    expect(getUiState().busy).toBe(true)
+    expect(getUiState().status).toBe('running…')
+  })
+})

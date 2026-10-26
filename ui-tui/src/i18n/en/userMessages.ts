@@ -37,10 +37,23 @@ export const userMessagesEn = {
     },
 
     rpc: {
+      /** `{0}` = the session's terminal backend (docker, ssh, ...). shell.exec runs on the gateway host. */
+      shellBackendRefused: (backend: string) =>
+        `!commands run on the gateway host, but this session's terminal backend is ${backend}, so the command was not run. Ask the agent to run it instead; the agent's terminal runs inside ${backend}.`,
+      /** shellBackendRefused when the gateway did not name the backend (older gateways). */
+      shellBackendRefusedUnnamed:
+        "!commands run on the gateway host, but this session's terminal backend isn't local, so the command was not run. Ask the agent to run it instead.",
       versionSkew:
         'The terminal UI and the Hermes backend are out of sync (different versions). Run /update, or exit and run `hermes update`, then start the TUI again.',
       sessionNotFound:
         'This chat is no longer attached to the backend (it was idle or the backend restarted). Your history is saved: type /resume to reopen it.',
+      /** The owner refused a control on a chat whose launch API key changed or was removed. */
+      launchCredentialsChanged:
+        "This chat can't use the API key it was started with any more (it changed or was removed), so that was not done. A chat never switches to a different key on its own. Type /new to start a new chat on your current key.",
+      sessionReadOnly:
+        'This chat is stored history Hermes can show but not continue, so your message was not run. Use /new to start a new chat.',
+      sessionHasChildren:
+        'This chat has child sessions (such as subagent runs) that deleting it would remove too, so it was not deleted.',
       notConnected:
         'Hermes is not connected right now, so that was not sent. It reconnects automatically; wait a moment and try again, or type /logs if this persists.',
       /** `{0}` = timeout in seconds. */

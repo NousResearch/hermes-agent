@@ -107,9 +107,17 @@ class MessageEvent:
     # of ``internal``: these events still go through user authorization. Appended after
     # ``reply_expected`` for positional compat (see the field-order rule above).
     inherit_channel_pin: bool = False
+    # Identity of one edit of a message (Telegram: its ``update_id``). An edit re-sends its message's own
+    # ``message_id`` with new text, so native admission keys it apart from the original send.
+    # Appended for positional compat (see the field-order rule above).
+    edit_revision: Optional[str] = None
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
+    # Set when ``admit_internal_event`` hands its producer a receipt before any drain began. The
+    # producer will not retry, so a restart drain runs this event instead of refusing it at the
+    # drain gate or discarding it as a queued follow-up (#138123).
+    _admitted_before_drain: bool = field(default=False, init=False, repr=False, compare=False)
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
 

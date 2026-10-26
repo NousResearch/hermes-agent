@@ -41,6 +41,8 @@ from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.tcp_site import start_tcp_site
 from gateway.platforms.webhook_coalesce import WebhookCoalescer, validate_coalesce_config
 from gateway.platforms.webhook_filters import DEFAULT_SCRIPT_TIMEOUT_SECONDS, WebhookRouteProcessor
+from gateway.platforms.webhook_mcp_events import (
+    handle_mcp_event_control, mcp_event_delivery_id, render_mcp_event_prompt)
 from gateway.response_filters import is_autonomous_silence_response
 
 logger = logging.getLogger(__name__)
@@ -681,6 +683,10 @@ class WebhookAdapter(BasePlatformAdapter):
         payload = self._parse_body(raw_body)
         if payload is _UNPARSEABLE:
             return _json_error("Cannot parse body", 400)
+        mcp_control = await handle_mcp_event_control(self, route_name, route_config, payload, profile)
+        if mcp_control is not None:
+            return mcp_control
+        delivery_id = mcp_event_delivery_id(route_config, payload) or delivery_id
         event_type = (headers.get("X-GitHub-Event", "") or headers.get("X-GitLab-Event", "")
                       or payload.get("event_type", "") or payload.get("type", "") or "unknown")
         allowed_events = route_config.get("events", [])
@@ -705,7 +711,8 @@ class WebhookAdapter(BasePlatformAdapter):
                     logger.info("[webhook] script ignored event=%s route=%s", event_type, route_name)
                     return web.json_response({"status": "ignored", "reason": "script", "route": route_name})
                 payload = transformed_payload or payload
-            prompt = self._render_prompt(route_config.get("prompt", ""), payload, event_type, route_name)
+            prompt = (render_mcp_event_prompt(self, route_config, payload, event_type, route_name)
+                      or self._render_prompt(route_config.get("prompt", ""), payload, event_type, route_name))
             # cron_job routes: the job's own skills apply; the rendered prompt is only per-run context.
             if (skills := route_config.get("skills", [])) and not route_config.get("cron_job"):
                 prompt = self._apply_skills(prompt, skills)

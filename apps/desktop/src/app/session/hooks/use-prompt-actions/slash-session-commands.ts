@@ -7,9 +7,17 @@ import { setComposerDraft } from '@/store/composer'
 import { enqueueQueuedPrompt, getQueuedPrompts, serverOwnsComposerQueue } from '@/store/composer-queue'
 import { $sessions, resolveComposerSessionKey } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
+import { flushStreamDeltas } from '@/store/stream-delta-flush'
 
+import { sealLiveStream } from './rewind'
 import type { SubmissionDestination } from './submission-destination'
-import { type GatewayRequest, isTargetSessionBusy, type SubmitTextOptions } from './utils'
+import {
+  type GatewayRequest,
+  isCompressionBusyError,
+  isSessionBusyError,
+  isTargetSessionBusy,
+  type SubmitTextOptions
+} from './utils'
 
 // Typed /undo, /retry, /steer and /queue: one behaviour per command on every surface, mirroring the
 // Ink TUI on the same shared gateway (ui-tui/src/app/slash/commands/core.ts +
@@ -30,9 +38,11 @@ interface SnapshotRow {
 }
 
 interface RewindReceipt {
+  /** Client-side: the snapshot row a freshly derived rewind named (a replayed receipt has none). */
+  derivedRowId?: number
   rewound_count?: number
   status?: string
-  target_message?: { content?: unknown } | null
+  target_message?: { content?: unknown; id?: unknown } | null
 }
 
 interface SlashOutput {
@@ -59,10 +69,22 @@ export interface SessionCommandEnv<C extends { arg: string }> {
 
 const copy = () => runtimeTranslations().promptNotices.sessionCommands
 
+// The cut (`turnsBack`) of each session's derived rewind still awaiting its reply. A repeat after a
+// lost reply replays THAT request, so an unbound view cuts by its count, not the repeat's own.
+const pendingRewindCuts = new Map<string, number>()
+
 /** Clip a queued/steered prompt for the confirmation line (Ink's previewOf). */
 const previewOf = (text: string) => `${text.slice(0, PREVIEW_CHARS)}${text.length > PREVIEW_CHARS ? '…' : ''}`
 
 const errorText = (err: unknown) => `error: ${err instanceof Error ? err.message : String(err)}`
+
+/** A refused rewind: main's busy text (wait for a running /compress, else stop the reply), or the raw error. */
+const rewindErrorText = (err: unknown, command: 'retry' | 'undo') =>
+  isCompressionBusyError(err)
+    ? copy().busyCompressing(command)
+    : isSessionBusyError(err)
+      ? copy().busy(command)
+      : errorText(err)
 
 /** A human-authored user turn (`split_user_originated_turn`): no display-only kind other than a
  *  typed /steer, a durable row id, and not a compaction handoff carrier. */
@@ -110,14 +132,25 @@ export function userTurnFromEnd(rows: readonly SnapshotRow[], turnsBack: number)
 }
 
 /** Drop the rewound rows from the rendered transcript: everything from the first message bound to a
- *  durable row at or after the target. Unbound bubbles fall back to the Nth newest user bubble. */
+ *  durable row at or after the target. A view bound to durable rows that holds none of them already
+ *  shows the cut (a refresh after reconnect): only unbound live bubbles after it fall back to the Nth
+ *  newest user bubble, and a wholly unbound view falls back by position. */
 export function truncateRewoundMessages(messages: ChatMessage[], rowId: number, turnsBack: number): ChatMessage[] {
+  const bound = (message: ChatMessage) =>
+    message.rowId !== undefined || message.parts.some(part => part.sourceRowId !== undefined)
+
   let cut = messages.findIndex(
     message => (message.rowId ?? -1) >= rowId || message.parts.some(part => (part.sourceRowId ?? -1) >= rowId)
   )
 
   if (cut < 0) {
-    const users = messages.flatMap((message, index) => (message.role === 'user' && !message.hidden ? [index] : []))
+    const tail = messages.length - [...messages].reverse().findIndex(bound)
+    const after = tail > messages.length ? 0 : tail
+
+    const users = messages.flatMap((message, index) =>
+      index >= after && message.role === 'user' && !message.hidden ? [index] : []
+    )
+
     cut = users[users.length - turnsBack] ?? -1
   }
 
@@ -135,6 +168,56 @@ export function sessionCommandHandlers<C extends { arg: string }>(env: SessionCo
     intent: 'retry' | 'undo'
   ): Promise<undefined | { count: number; content: unknown }> {
     const { render, sessionId, storedSessionId } = out
+    const nothing = intent === 'retry' ? copy().retryNothing : copy().undoNothing
+
+    // An earlier /undo or /retry whose reply was lost is resolved FIRST: the owner already rewound, so
+    // the transcript a new target would come from may hold no turn this command accepts. The protocol
+    // re-sends that retained rewind (the owner answers with the original receipt), or answers
+    // 'nothing' locally, without a request, when none is retained.
+    const replayed = await requestGateway<RewindReceipt>('session.rewind', {
+      session_id: sessionId,
+      derived_target: true,
+      replay_only: true
+    })
+
+    const replay = Number(replayed?.rewound_count ?? 0) > 0
+    const receipt = replay ? replayed : await deriveAndRewind(out, turnsBack, intent)
+    const cut = replay ? (pendingRewindCuts.get(sessionId) ?? turnsBack) : turnsBack
+    pendingRewindCuts.delete(sessionId)
+
+    if (!receipt) {
+      return
+    }
+
+    const count = Number(receipt?.rewound_count ?? 0)
+
+    if (receipt?.status === 'nothing' || count <= 0) {
+      return void render(nothing)
+    }
+
+    // The receipt names the row the owner rewound; a replayed receipt's row is not this snapshot's.
+    const receiptRowId = receipt?.target_message?.id
+    const rowId = Number.isSafeInteger(receiptRowId) ? (receiptRowId as number) : receipt.derivedRowId
+
+    if (rowId !== undefined) {
+      updateSessionState(
+        sessionId,
+        state => ({ ...state, messages: truncateRewoundMessages(state.messages, rowId, cut) }),
+        storedSessionId
+      )
+    }
+
+    return { count, content: receipt?.target_message?.content }
+  }
+
+  // Derive the Nth newest user turn from the owner's snapshot and rewind it. Resolves undefined after
+  // it rendered why nothing was rewound.
+  async function deriveAndRewind(
+    out: SlashOutput,
+    turnsBack: number,
+    intent: 'retry' | 'undo'
+  ): Promise<RewindReceipt | undefined> {
+    const { render, sessionId } = out
     const nothing = intent === 'retry' ? copy().retryNothing : copy().undoNothing
     // The resume snapshot carries every row's durable id and primes the CAS revision/generation the
     // rewind mutation presents, as Ink's mutateCanonical does.
@@ -157,26 +240,16 @@ export function sessionCommandHandlers<C extends { arg: string }>(env: SessionCo
       }
     }
 
-    const rowId = target.row_id as number
+    // A derived target: retained by operation alone, so a repeat after a lost reply re-sends it.
+    pendingRewindCuts.set(sessionId, turnsBack)
 
     const receipt = await requestGateway<RewindReceipt>('session.rewind', {
       session_id: sessionId,
-      target_message_id: rowId
+      target_message_id: target.row_id,
+      derived_target: true
     })
 
-    const count = Number(receipt?.rewound_count ?? 0)
-
-    if (receipt?.status === 'nothing' || count <= 0) {
-      return void render(nothing)
-    }
-
-    updateSessionState(
-      sessionId,
-      state => ({ ...state, messages: truncateRewoundMessages(state.messages, rowId, turnsBack) }),
-      storedSessionId
-    )
-
-    return { count, content: receipt?.target_message?.content }
+    return { ...receipt, derivedRowId: target.row_id as number }
   }
 
   // The next-turn queue the composer uses while busy: the owner's durable FIFO for a canonical
@@ -227,7 +300,7 @@ export function sessionCommandHandlers<C extends { arg: string }>(env: SessionCo
 
         out.render(rewound.count === 1 ? copy().undidOne('1') : copy().undidOther(String(rewound.count)))
       } catch (err) {
-        out.render(errorText(err))
+        out.render(rewindErrorText(err, 'undo'))
       }
     },
     retry: async (ctx: C) => {
@@ -257,7 +330,7 @@ export function sessionCommandHandlers<C extends { arg: string }>(env: SessionCo
 
         await submitPromptText(text, { destination, sessionId: out.sessionId, storedSessionId: out.storedSessionId })
       } catch (err) {
-        out.render(errorText(err))
+        out.render(rewindErrorText(err, 'retry'))
       }
     },
     steer: async (ctx: C) => {
@@ -292,6 +365,11 @@ export function sessionCommandHandlers<C extends { arg: string }>(env: SessionCo
       }
 
       if (accepted) {
+        // The notice marks where the steer arrived: seal the live reply above it so the
+        // output the model writes after reading the steer streams below, not above it.
+        flushStreamDeltas(out.sessionId)
+        updateSessionState(out.sessionId, state => sealLiveStream(state, { keepRunningTools: true }))
+
         return out.render(copy().steerQueued(previewOf(text)))
       }
 

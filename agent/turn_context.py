@@ -651,7 +651,10 @@ def _reset_per_turn_agent_state(agent: Any) -> None:
     if agent._compression_warning:
         agent._replay_compression_warning()
         agent._compression_warning = None  # send once
-    if getattr(agent, "_pending_startup_notices", None):  # gateway: init ran before its callbacks
+    from agent.status_output import deliver_kept_startup_notices
+    deliver_kept_startup_notices(agent)
+    if getattr(agent, "_pending_startup_notices", None) or getattr(agent, "_pending_startup_prints", None):
+        # gateway: init ran before this turn's callbacks / viewer print sink
         agent._replay_startup_warnings()
 
     agent.iteration_budget = IterationBudget(agent.max_iterations)
@@ -1123,8 +1126,8 @@ def build_turn_context(
     agent._persist_user_message_idx = current_turn_user_idx
 
     agent._user_turn_count += 1
-    # Copilot x-initiator: the first API call of this user turn is user-initiated;
-    # tool-loop follow-ups revert to "agent".
+    # Turn-initiator state for per-request provider headers: the first API call of this
+    # user turn is user-initiated; tool-loop follow-ups are agent-initiated.
     agent._is_user_initiated_turn = True
 
     # Preserve the original user message (no nudge injection).
@@ -1142,6 +1145,9 @@ def build_turn_context(
     if agent._cached_system_prompt is None:
         restore_or_build_system_prompt(agent, system_message, conversation_history)
     active_system_prompt = agent._cached_system_prompt
+    # `/delegation <backend> --now`: after the pin restore, so a fresh agent rebuilds too.
+    from agent.delegation_backends import apply_requested_tool_rebuild
+    apply_requested_tool_rebuild(agent)
 
     # Bot Mode DM tool — injected ONLY into a bot's canonical "Bot Chat" session (same
     # gate as the protocol section); gate is session-stable, so cache-safe.

@@ -448,8 +448,8 @@ def _run_protected_sync_provider_call(callback: Callable[[dict[str, Any]], Any],
 
     Aux clients are process-shared and cannot be closed to wake one request, so the callback (incl.
     stream aggregation) runs in a daemon while the owner polls cancellation; on cancel the owner
-    unwinds at once and the daemon finishes under the provider timeout in ``kwargs`` (it owns no
-    transcript/commit state, never holds the session lock). Unprotected / no cancel source: direct.
+    unwinds at once; the daemon stops at its next streamed chunk, else under the provider timeout in ``kwargs``
+    (it owns no transcript/commit state, never holds the session lock). Unprotected / no cancel source: direct.
     """
     source_cancel_check = _capture_aux_cancel_check()
     if not _aux_interrupt_protected() or not callable(source_cancel_check):
@@ -7176,11 +7176,8 @@ class _ChatStreamAccumulator:
         # llama-server prompt reading doesn't count toward the ceiling (``local_prompt_progress``).
         self._prompt_reading = PromptReadingClock(self._started)
         self._total_ceiling = total_ceiling
-        # Absolute instant the waiting host gives up; checked alongside (not instead of) the
-        # ceiling, and unaffected by pre-construction dispatch/TTFT.
-        # Checked as well as (not instead of) the ceiling above: the ceiling still bounds callers with no
-        # host deadline, and the host deadline is absolute, so it is unaffected by however long dispatch and
-        # TTFT took before this accumulator was constructed. See #99692.
+        # Absolute instant the waiting host gives up, checked as well as (not instead of) the ceiling, which
+        # still bounds callers with no host deadline; unaffected by pre-construction dispatch/TTFT (#99692).
         self._host_deadline = host_deadline
         self.content_parts: list[str] = []
         self.reasoning_parts: list[str] = []
@@ -7191,7 +7188,10 @@ class _ChatStreamAccumulator:
         self.resp_model = model or ""
 
     def _check_deadlines(self) -> None:
-        """Raise TimeoutError past the total ceiling or the host deadline."""
+        """Raise TimeoutError past the total ceiling or the host deadline; a host hard cancel (/stop, session
+        boundary) stops the stream at its next chunk instead of letting the daemon bill on to the deadline."""
+        if _aux_interrupt_cancel_requested():
+            raise AuxiliaryExplicitCancellation()
         now = time.monotonic()
         if self._total_ceiling is not None and (now - self._started - self._prompt_reading.seconds) >= self._total_ceiling:
             raise TimeoutError(f"Auxiliary streamed call timed out after {self._total_ceiling:.0f}s "

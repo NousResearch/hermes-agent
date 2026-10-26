@@ -325,15 +325,21 @@ def _frame_cost(item) -> int:
 
 
 class _InputQueue(asyncio.Queue):
-    """The frames a tab sent while a batch is written, full at ``_INPUT_QUEUE_FRAMES`` frames that
-    together reach ``_INPUT_QUEUE_BYTES``.
+    """The frames a tab sent while a batch is written, full once it holds at least
+    ``_INPUT_QUEUE_FRAMES`` frames and at least ``_INPUT_QUEUE_BYTES`` charged by ``_frame_cost``.
 
     A full queue stops the reader, and with it the WebSocket library's own read of the socket once
     that buffers 32 unread frames: keepalive pongs then go unread, and a bind that pings (any
     non-loopback Webapp) closes a live tab with 1011 after the ping timeout, dropping the input
     queued behind it. A frame count alone fills on a few dozen keys typed while a paste waits on a
-    program that is not reading, and a byte count alone on one large paste; needing both leaves the
-    reader reading through any typing, and never stops it before the frame count alone would.
+    program that is not reading, and a byte count alone on one large paste; needing both gives
+    typing far more room (one-byte keys fill it at 4,081 frames) and never stops the reader before
+    the frame count alone would. Typing past that stalls the reader just as large frames do.
+
+    So the frame count is not a strict limit: small frames can queue thousands. The payload ceiling
+    stays about the frame count alone's: a frame is only taken while the queue holds fewer than
+    ``_INPUT_QUEUE_FRAMES`` frames or charges under ``_INPUT_QUEUE_BYTES``, and each frame is at
+    most the server's ``ws_max_size``.
     """
 
     def __init__(self):

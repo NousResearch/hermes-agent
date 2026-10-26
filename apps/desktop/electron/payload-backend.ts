@@ -46,6 +46,33 @@ export function payloadPythonPath(payload: Pick<PayloadInfo, 'repoDir' | 'sitePa
   return [payload.repoDir, payload.sitePackages].join(path.delimiter)
 }
 
+/**
+ * The bundled shim is the Hermes CLI, not an interpreter, so it rejects the
+ * ticket bridge's `-P -u -c`. Ticket minting runs the payload python against
+ * the same import closure the shim gives the CLI.
+ */
+export function payloadTicketRuntime(payload: Pick<PayloadInfo, 'storePython' | 'repoDir' | 'sitePackages'>): {
+  ticketCommand: string
+  ticketEnv: NodeJS.ProcessEnv
+} {
+  return { ticketCommand: payload.storePython, ticketEnv: { PYTHONPATH: payloadPythonPath(payload) } }
+}
+
+/**
+ * The bundled Python payload for a strategy whose update check runs inside
+ * it. A stamp that names such a mechanism without a payload is a broken
+ * install; say so instead of failing on `payload.storePython`.
+ */
+export function requireBundledPayload(mechanism: string, resourcesPath = process.resourcesPath): PayloadInfo {
+  const payload: PayloadInfo | null = bundledPayload(resourcesPath)
+
+  if (!payload) {
+    throw new Error(`${mechanism} updates require the bundled application payload, which this install has none of`)
+  }
+
+  return payload
+}
+
 // ─── update channel ─────────────────────────────────────────────────────────
 //
 // The CLI owns the channel records; Electron only reads the install id for

@@ -47,7 +47,22 @@ The choice is stored per install under `update.installs` in `config.yaml`. An
 install that never chose a channel only moves forward: a checkout already newer
 than the latest release (for example one that tracked `main` before this default)
 stays where it is until a newer release ships. Running `--set-channel stable`
-pins the checkout to the exact release commit, even when that is older.
+pins the checkout to the exact release commit, even when that is older; the
+Desktop names that move as a rollback to the release, and `hermes update --check`
+says the checkout is newer, instead of announcing a new update.
+
+The installers (`install.sh`, `install.ps1` and Hermes-Setup) put a new install
+on the latest stable release too. Re-running one over an install that never
+chose a channel moves it onto that release only when the release descends from
+its checkout. Any other checkout (one that followed `main`, or one already past
+the release) stays where it is, and `hermes update` decides that move: it refuses
+a release that predates the session stores the checkout already uses. Over an
+install that chose a channel other than `main`, a rerun keeps its checkout where
+it is: only `hermes update` moves it.
+To install the tip of `main` instead, pass `--channel main` (`-Channel main`
+for `install.ps1`, or set `HERMES_INSTALL_CHANNEL=main` before an
+`irm | iex` one-liner); the installer saves that choice the way
+`hermes update --set-channel main` does. An explicit `--commit` pin still applies.
 Windows Store, MSIX and bundled desktop installs are unaffected; their channel
 is baked into the package (see below).
 
@@ -113,7 +128,7 @@ For an admitted source checkout, `hermes update` runs these phases:
 1. **Pre-update snapshot** — Hermes saves selected state files for every profile in that profile's `state-snapshots/` directory. These include pairing data, cron jobs, `config.yaml`, `.env`, and `auth.json`. Automatic quick snapshots skip individual files larger than 1 GiB. `updates.pre_update_backup` selects `quick`, `full`, or `off`. Full archives use the [backup exclusions](../reference/faq.md#hermes-backup-vs-hermes-profile-export). Recovery uses [Snapshots and rollback](../user-guide/checkpoints-and-rollback.md). Quick snapshots recover state files, not application code. The snapshot is best-effort: if it fails, the update prints a `⚠ Pre-update snapshot FAILED` warning and continues, and the receipt records `pre_update_backup` as a failed step (a deliberate `off`/`--no-backup` lands in the receipt's skips with its reason instead).
 2. **Code update** — applies the configured source branch or stable release tag and updates submodules. On Linux and macOS every gateway running from this install is paused immediately before the first change to the checkout (see [Gateway downtime during an update](#gateway-downtime-during-an-update)); an update that has nothing to apply, or that fails before it changes the checkout, stops nothing.
 3. **Post-pull syntax validation + auto-rollback** — after the pull, Hermes compiles the nine critical files every `hermes` invocation imports at startup. If any fails to parse (e.g. an orphan merge-conflict marker, an accidentally truncated file), Hermes rolls the install back so your shell stays bootable: it resets the checkout to the commit it ran before the pull (`git reset --hard <pre-pull-sha>`), or, when the update switched away from a detached checkout or a parked feature branch, returns there with `git checkout --detach <sha>` / `git checkout <branch>` (a branch it cannot check out again is restored detached at the same commit). Re-run `hermes update` once the upstream fix lands.
-4. **Dependency preparation** — PM provisions required tools and prepares a complete Python environment from the new lock, existing extras, and enabled plugin requirements. It validates that environment before publishing its selection. A plugin never fails the update. A plugin that no longer fits the new core is added to `plugins.disabled` in every profile that enables it (a memory provider has `memory.provider` cleared). That covers a `requires-python` that excludes Hermes's Python, a `manifest_version` newer than this Hermes supports, and dependencies that the resolver proves can't resolve alongside core and earlier plugins in config order, or that fail their own build. A download or network failure gets one retry and is disabled if it fails again. The update prints `⚠ Disabled plugin '<name>' in <home>: <reason>`, records it in the receipt's warnings, and continues. Re-enable it with `hermes plugins enable <name>` once the plugin ships a compatible release, or once the network is back. A `requires_hermes` range the running version misses never disables a plugin, because a source checkout without release tags can read as an older release. That plugin sits out instead (`⚠ Left plugin '<name>' … out of this update`), stays enabled, and rejoins once Hermes reports a version it accepts. A secondary profile whose config cannot be read sits out the same way until the config is fixed. Only a core that cannot build on its own fails this step.
+4. **Dependency preparation** — PM provisions required tools and prepares a complete Python environment from the new lock, existing extras, and enabled plugin requirements. It validates that environment before publishing its selection. A plugin never fails the update. A plugin that no longer fits the new core is moved from `plugins.enabled` to `plugins.disabled` in every profile that enables it. A memory provider keeps its `memory.provider` selection; while the plugin is disabled, Hermes uses built-in memory and says so at startup, in `hermes memory status` and in `hermes doctor`. That covers a `requires-python` that excludes Hermes's Python, a `manifest_version` newer than this Hermes supports, and dependencies that the resolver proves can't resolve alongside core and earlier plugins in config order, or that fail their own build. A download or network failure gets one retry and is disabled if it fails again. The update prints `⚠ Disabled plugin '<name>' in <home>: <reason>`, records it in the receipt's warnings and under `plugins.disabled_by_update` in that profile's config, and continues. The next update retries a plugin disabled by a download failure; one the resolver or its own build rejected is retried by the first update where the plugin or Hermes's dependencies have changed. Retries run after the enabled plugins have built, and turns it back on (memory provider included) once it fits, for example after the plugin ships a compatible release or Hermes fixes what broke it. A retried plugin never displaces an enabled one. A provider-only record is retried only while `memory.provider` still names it. To turn it back on sooner, run `hermes plugins enable <name>`. To keep it off, run `hermes plugins disable <name>`, which stops the retries. Updates before this behaviour could leave a plugin listed in both `plugins.enabled` and `plugins.disabled`, where it loads nowhere; `hermes doctor` reports that state, and `hermes plugins enable <name>` or `hermes plugins disable <name>` settles it. A `requires_hermes` range the running version misses never disables a plugin, because a source checkout without release tags can read as an older release. That plugin sits out instead (`⚠ Left plugin '<name>' … out of this update`), stays enabled, and rejoins once Hermes reports a version it accepts. A secondary profile whose config cannot be read sits out the same way until the config is fixed. Only a core that cannot build on its own fails this step.
 5. **Config migration** — detects new config options added since your version and prompts you to set them
 6. **Desktop rebuild (stage-and-swap)** — if the Hermes Desktop app was built from this checkout, it is rebuilt so the GUI matches the new code. The rebuild packs into a temporary staging directory next to `apps/desktop/release/`, verifies the staged app, and only then renames it over the previous build (on Windows a real-time scanner briefly holding `release/win-unpacked` is ridden out with a few short retries). A rebuild that fails at any point — corrupt Electron download, missing dependency, disk full — leaves the previous app untouched and launchable; the update prints a `⚠` line, still finishes the remaining steps (config migration, gateway restart) and exits 0 with a `build` follow-up in its receipt, and the next launch, `hermes update` or `hermes desktop --build-only --force-build` retries the rebuild. On macOS the rebuilt bundle is then copied (with `ditto`, signature intact) over a stale `/Applications/Hermes.app` or `~/Applications/Hermes.app`, so the copy Finder and the Dock launch matches the backend; an installed copy that is currently running is left alone and the update tells you to quit it and run `hermes update` again. If a copy an earlier update installed has since been removed (including dragged to the Trash), the update rebuilds it if needed, puts it back and says so, so Finder, the Dock and Spotlight find Hermes again; `hermes uninstall` removes the app for good. On Windows, when the update finishes from inside the Desktop app it would rebuild (the app completing an interrupted update at launch), the rebuild is skipped with a notice instead: Windows locks a running app's files, and stopping the app would end the update with it. The rest of the update completes; quit Hermes Desktop and run `hermes desktop` from a terminal, or use **Update now** in **Settings → About**, to rebuild and reopen it.
 7. **Gateway auto-restart**: on Linux and macOS, gateways paused for the update are started again as soon as the dependencies are prepared and the launchers refreshed, before the product builds; on Windows they restart after the builds. Any other running gateway is refreshed after the update completes. Service-managed gateways (systemd on Linux, launchd on macOS) restart through the service manager. Manual gateways are relaunched when Hermes can map their PID to a profile. Manually launched `hermes serve` / `hermes dashboard` backends are different: the updater leaves them running and asks their owner to restart them. See [Manual backend restart reminders](#manual-backend-restart-reminders). Backends owned by a running Desktop app remain the app's responsibility.
@@ -132,6 +147,57 @@ On Linux and macOS, `hermes update` stops every gateway running from this instal
 - The pause never blocks an update. If it cannot list, record or stop the gateways, it restarts anything it stopped, says so, and the update continues the way it did before the pause existed: gateways run through the swap and are restarted afterwards.
 
 Windows already paused its gateways before the update (they lock files the dependency sync replaces) and restarts them once the update completes, after the builds.
+
+### Upgrading to the gateway-owned session runtime
+
+From this release one gateway per host owns every local session (CLI, TUI, Desktop,
+API, ACP, cron, Bot Chat). What an existing install sees on its first update:
+
+- **`cron.bot_chat_delivery_timeout_seconds` is retired.** Bot Chat deliveries are
+  admitted to the target profile's running gateway and tracked by receipt; there is no
+  cron-side turn left to time out. Config migration v51 removes the key with a one-time
+  note (also from an unversioned `config.yaml`). Without a running gateway the run is
+  recorded `delivery_failed`; it is not redelivered automatically.
+- **Legacy Bot Chat pending records** (`cron/bot_chat_pending/*.json`, left by the
+  retired `hermes chat` delivery lane) are handed to the target's live owner on later
+  scheduler ticks under their own IDs. A `claimed` record was an uncertain CLI turn and
+  is never resent. Records are kept with their final status as evidence.
+- **Work interrupted by the cutover restart is never replayed.** On the first gateway
+  start, an input that was mid-turn (`started`) and any managed worker that was running
+  become `unknown`; queued inputs behind it wait. Inspect the session, then acknowledge
+  with `/discard <admission_id>` in `hermes chat` (or the Desktop/TUI equivalent), or from a
+  script with `hermes sessions discard <session> --yes`, before later inputs run. A cron delivery a gateway had claimed but not finished is likewise
+  fenced `unknown` and recorded `delivery_failed`.
+- **Rolling back is unsupported once the new gateway has written `state.db`.** See
+  [Rolling back to an older release](#rolling-back-to-an-older-release).
+
+### Rolling back to an older release
+
+An older release cannot run on a `state.db` the gateway runtime has written. Each place
+that could do it refuses instead of corrupting history:
+
+- **`hermes update`** refuses a target (`--branch`, a channel switch, a pinned release)
+  that predates the gateway runtime while any profile's `state.db` holds gateway runtime
+  history. It stops before touching the checkout, lists the affected stores and the way
+  back.
+- **An older release run on the upgraded store** (a hand `git checkout` of an old tag)
+  cannot delete or prune sessions with gateway runtime history. `hermes sessions delete`
+  and `prune` stop with `Refused to delete a session that has gateway runtime history`.
+  Older releases still print this inside a traceback, and `prune` rolls back its whole
+  batch.
+- **A running gateway** whose checkout is moved back to such a release stops itself
+  within about 30 seconds, so the older release can start its own.
+
+To go back anyway, restore the state from before the update instead of running the
+older release on the upgraded database:
+
+1. `hermes gateway stop`
+2. Check out the older release.
+3. Restore the newest pre-update snapshot (`/snapshot restore <id>`), or a full backup
+   taken with `hermes update --backup` (`hermes import <backup.zip>`). Quick snapshots
+   skip a `state.db` larger than 1 GiB; large stores need the full backup.
+
+Sessions and messages created after the update are not in that snapshot.
 
 ### Why the gateway restart can take a while
 
@@ -156,6 +222,19 @@ Work that outlives the gateway does not hold the restart either: a cron run alre
 If the maintained updater script is missing (for example after antivirus quarantine), the legacy update forwarder fails instead of reporting a successful hand-off. Repair the installation and review the security software's quarantine report before retrying; do not disable antivirus protection. Before reporting success, the maintained updater checks the CLI import, Windows executable header, ASAR header and packaged main entry, readable renderer HTML with a local module entry, initial module files, and current build stamp. These are minimum artifact checks, not a full dependency audit or an application/backend launch test. Missing Python is reported before waiting for Desktop shutdown; dependency repair is still allowed to run as part of the update. Electron checks maintained handoff prerequisites before stopping backends when that layout is present; genuine legacy-flat updater layouts remain supported, so not every missing updater file is detected before backend shutdown.
 
 On Windows, a Desktop reopened during packaging is stopped again immediately before the staged build is promoted. This cleanup is restricted to executables inside that checkout's Desktop release tree; unrelated installations are not stopped. A remaining lock still makes staged promotion fail rather than bypassing the rename error.
+
+### Fetch fails with `not a git repository`
+
+`hermes update` stops with "This Hermes checkout's git data is damaged" when the install's `.git` folder is still there but git no longer accepts it: a lost or empty `HEAD`, or a `.git` file pointing at a folder that is gone. A killed update, a crash mid-write, or a sync or antivirus tool touching `.git` can leave it that way. No update can fetch on such a checkout. Gateways the update paused are started again on the unchanged code, since nothing was written.
+
+Run the installer again to repair it. It moves the damaged checkout aside as `hermes-agent.broken-<timestamp>` (nothing is deleted) and clones fresh; your config, sessions and other data live outside the checkout and are kept. The error prints the exact command for your checkout. For the default location it is:
+
+- Linux / macOS / WSL2: `curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash`
+- Windows (PowerShell): `iex (irm https://hermes-agent.nousresearch.com/install.ps1)`
+
+A checkout installed somewhere else needs its directory passed again (`bash -s -- --dir <path>` on Linux/macOS, `-InstallDir <path>` on Windows), as in the printed command; without it the installer repairs the default location instead.
+
+Once Hermes works again you can delete the `.broken-*` folder.
 
 ### Fetch fails with `should_include_obj should only be called on existing objects`
 
@@ -233,6 +312,21 @@ set `maintenance.commit-graph.enabled`, `gc.writeCommitGraph` and `fetch.writeCo
 `false` in that checkout, because a commit-graph write over commits the graph has not seen yet
 downloads every one of their trees. Leave those settings alone, and leave `gc.auto` at its
 default so git's own automatic gc can still fold packs.
+
+Hermes keeps the commit-graph current itself, because without one every version lookup walks the
+whole history: each `hermes update` (after the new code is in place) and each `hermes -w` launch
+update a missing or day-old graph in the background, at most once every 6 hours, with
+`git commit-graph write --reachable --split --no-changed-paths`, which reads commits only and never
+downloads a tree. The update does not wait for it, and a write still running after 10 minutes is
+stopped (asked to exit first, so git removes its own lock). A failed or stopped write is logged to
+`logs/agent.log`. A checkout that is a linked worktree or submodule refreshes the graph of the
+repository it shares objects with. A repo with `core.commitGraph=false` in its own, your global or
+the system git config is left without a graph. A
+`commit-graph.lock` or `multi-pack-index.lock` that a killed git left behind is removed by the same
+stale-lock sweep as `index.lock` once it is 10 minutes old and no git process of any form (`git`,
+`git-commit-graph`, `git.exe`, ...) is running; when Hermes cannot list running processes, no lock is
+removed. In a repo you
+launch `hermes -w` from, only those object-store locks are swept, never `index.lock` or `HEAD.lock`.
 
 Each `hermes update` also spends at most 60 seconds cleaning those packs up, picking up where the
 previous update stopped. It deletes packs whose every object is also stored in another pack, then

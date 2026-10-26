@@ -86,6 +86,31 @@ def terminal_env(name: str, default: str = "") -> str:
     return default if value is None else str(value)
 
 
+def _apply_terminal_mapping(scope: dict[str, str], mapping: dict[str, Any]) -> None:
+    from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP, _terminal_env_value
+
+    for cfg_key, value in mapping.items():
+        # cwd placeholders are resolved per-surface later; not a policy value.
+        if value is None or (cfg_key == "cwd" and str(value).strip() in {".", "auto", "cwd"}):
+            continue
+        env_var = TERMINAL_CONFIG_ENV_MAP.get(cfg_key)
+        if env_var:
+            # List/dict config values must be JSON (same contract as
+            # apply_terminal_config_to_env). str() yields Python repr, which
+            # json.loads in terminal_tool rejects.
+            scope[env_var] = _terminal_env_value(value)
+
+
+def default_terminal_scope() -> dict[str, str]:
+    """Code-default ``TERMINAL_*`` policy: what a profile-bypassing session freezes instead of
+    reading ``.env``/``config.yaml``. Total like the profile projection, minus the profile."""
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    scope: dict[str, str] = {}
+    _apply_terminal_mapping(scope, {**_TOOL_LEVEL_DEFAULTS, **(DEFAULT_CONFIG.get("terminal") or {})})
+    return scope
+
+
 def build_profile_terminal_scope(
     hermes_home: Any, *, env_overlay: Optional[dict[str, str]] = None) -> dict[str, str]:
     """Build the COMPLETE effective ``TERMINAL_*`` policy for a profile home.
@@ -102,25 +127,10 @@ def build_profile_terminal_scope(
     closes. It sits where the process env sits in the standalone bridge — explicit YAML keys
     still win (``apply_terminal_config_to_env``).
     """
-    from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP, _terminal_env_value
-    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    from hermes_cli.config_backend import config_exists
 
     home = Path(hermes_home)
-    scope: dict[str, str] = {}
-
-    def _apply(mapping: dict[str, Any]) -> None:
-        for cfg_key, value in mapping.items():
-            # cwd placeholders are resolved per-surface later; not a policy value.
-            if value is None or (cfg_key == "cwd" and str(value).strip() in {".", "auto", "cwd"}):
-                continue
-            env_var = TERMINAL_CONFIG_ENV_MAP.get(cfg_key)
-            if env_var:
-                # List/dict config values must be JSON (same contract as
-                # apply_terminal_config_to_env). str() yields Python repr, which
-                # json.loads in terminal_tool rejects.
-                scope[env_var] = _terminal_env_value(value)
-
-    _apply({**_TOOL_LEVEL_DEFAULTS, **(DEFAULT_CONFIG.get("terminal") or {})})
+    scope = default_terminal_scope()
     default_image = scope.get("TERMINAL_DOCKER_IMAGE")
     env_path = home / ".env"
     if env_path.exists():
@@ -151,20 +161,20 @@ def build_profile_terminal_scope(
     # "unparseable" into {}): present-but-unparseable must fail closed.
     config_path = home / "config.yaml"
     try:
-        config_exists = config_path.exists()
+        has_config = config_exists(config_path)
     except Exception as exc:
         raise TerminalPolicyUnavailable(f"cannot resolve terminal config in {home}: {exc}") from exc
-    if config_exists:
-        from utils import load_yaml_file_readonly
+    if has_config:
+        from hermes_cli.config_backend import read_config_doc_readonly
 
         try:
             # Signature-cached: a scope is rebuilt per routed turn/poll, the file rarely changes.
-            raw = load_yaml_file_readonly(config_path)
+            raw = read_config_doc_readonly(config_path)
         except Exception as exc:
             raise TerminalPolicyUnavailable(f"cannot parse {config_path}: {exc}") from exc
         raw_terminal = raw.get("terminal") if isinstance(raw, dict) else None
         if isinstance(raw_terminal, dict):
-            _apply(raw_terminal)
+            _apply_terminal_mapping(scope, raw_terminal)
             image_pinned = image_pinned or "docker_image" in raw_terminal
     scope["TERMINAL_DOCKER_IMAGE_PINNED"] = "1" if image_pinned else "0"
     _resolve_scope_cwd_placeholder(scope)

@@ -1,4 +1,4 @@
-# Hermes plugin-catalog entry for hermes-frihet v0.1.0.
+# Hermes plugin-catalog entry for hermes-frihet v0.2.1.
 #
 # Catalog: NousResearch/hermes-agent/plugin-catalog/frihet.yaml
 # Per the catalog rules (plugin-catalog/README.md):
@@ -13,15 +13,16 @@
 #   ship a meaningful change (rule 4 of the catalog admission policy).
 name: frihet
 repo: https://github.com/Frihet-io/hermes-frihet
-# Pinned SHA — Frihet-io/hermes-frihet @ v0.1.0
-# (fix(deps): declare PyYAML as runtime dep with <7 cap, merged via PR #1.)
+# Pinned SHA — Frihet-io/hermes-frihet @ v0.2.1 (tagged)
+# (fix(classifier): treat anomaly_list as read; make manifest tests real).
 #
 # This SHA supersedes ``f331208`` (the older doctor that read the OAuth
 # token cache), ``24a9612`` (first privacy fix), ``3c8325a`` (CI rename
 # + first default_enabled), ``b9a8067`` (slash-command + redact
 # per-line + first connector safety net), ``b77f5df4`` (canonical Frihet
-# externalSideEffects drives classification), AND ``e805bf2`` (source
-# head of the PyYAML branch before squash). It pins all of the above AND:
+# externalSideEffects drives classification), ``e805bf2`` (source head
+# of the PyYAML branch before squash) AND ``4f092d58`` (PyYAML runtime
+# dependency, PR #1). It pins all of the above AND:
 #   * Hook dispatcher that passes the FULL tool name to the gate (no
 #     more silent bypass of the approval gate).
 #   * Doctor that derives auth evidence from ``ctx.call_mcp`` — the
@@ -45,32 +46,41 @@ repo: https://github.com/Frihet-io/hermes-frihet
 #     — and treats the humanAuthority.externalSideEffects table as
 #     the source of truth. Local pattern lists stay as a fallback
 #     for tools the contract has not yet named.
-#   * CI renamed to manifest-validate (schema-only) plus a manual
-#     live-hermes-validate (workflow_dispatch) for maintainers.
 #   * Runtime PyYAML dependency declared in pyproject.toml at >=6.0,<7
 #     (catalog security recommendation). Closes the silent "unknown"
 #     report from `frihet.py` mcp_server_block_present() in clean venvs
 #     without PyYAML preinstalled (regression: 7 tests in tests/test_frihet.py).
 #   * New tests/test_pyyaml_dependency.py asserts that yaml is importable
 #     in the test environment, gating the runtime-dependency contract.
-#   * No code-path changes: frihet.py, hook dispatcher, doctor and
-#     /frihet slash command remain byte-identical to the b77f5df4 SHA;
-#     this bump only makes the existing tests pass on a clean venv.
-
+#   * New since 4f092d58 (v0.2.0 + v0.2.1):
+#     - anomaly_list (read-only upstream, pre-checked in default_enabled)
+#       now classifies as read; before, the hook asked for approval on
+#       every call of it.
+#     - The default_enabled tests now actually run: they load the
+#       manifest and assert no mutating names, every tool classifies as
+#       read, and the count is pinned at 39. The old versions looked for
+#       the manifest outside the repo and returned early.
+#     - Removed the live-hermes-validate CI job: it could never run.
+#       CI on every push/PR = Python 3.14 tests + manifest lint, 3.11-3.13
+#       compat smoke, and manifest-validate (schema + capability
+#       cross-check). The full `hermes plugins validate --install-deps`
+#       is run locally in a clean HERMES_HOME before each tag.
+#     - Hard-coded "158 operations" dropped from docs: the canonical
+#       count moves with every frihet-mcp release.
 #
-# Tests: 87 pass + 3 pre-existing skips. hermes plugins validate
-# --install-deps 15/15 with security scan "safe".
-sha: 4f092d58398ab252ea1fa6b07bfefacec717abd9
-description: "Official Hermes Agent integration for Frihet — discoverability, setup, diagnostics, and operating guidance for the Frihet MCP. Zero duplicated tools; the canonical 158-operation Frihet surface stays in @frihet/mcp-server and the remote endpoint https://mcp.frihet.io/mcp. Disclosure — /frihet setup and /frihet doctor send an unauthenticated MCP initialize to mcp.frihet.io (or FRIHET_MCP_URL); /frihet doctor also makes one read-only list_invoices call through Hermes's MCP client once you grant plugins.entries.frihet.mcp_allowlist; reads ~/.hermes/config.yaml only to check that an mcp_servers.frihet block exists; the pre_tool_call hook prompts before Frihet MCP calls it classifies as irreversible or unknown, but reads and draft-first creates pass without a prompt unless the server sets trust: untrusted."
+# Tests: 88 pass + 3 skips. hermes plugins validate --install-deps
+# (clean HERMES_HOME): 14/14 checks, security scan "safe".
+sha: 72493236b16c5e1e2b6a5ada3674781a6da180a1
+description: "Official Hermes Agent integration for Frihet — discoverability, setup, diagnostics, and operating guidance for the Frihet MCP. Zero duplicated tools; the canonical Frihet MCP surface stays in @frihet/mcp-server and the remote endpoint https://mcp.frihet.io/mcp. Disclosure — /frihet setup and /frihet doctor send an unauthenticated MCP initialize to mcp.frihet.io (or FRIHET_MCP_URL); /frihet doctor also makes one read-only list_invoices call through Hermes's MCP client once you grant plugins.entries.frihet.mcp_allowlist; reads ~/.hermes/config.yaml only to check that an mcp_servers.frihet block exists; the pre_tool_call hook prompts before Frihet MCP calls it classifies as irreversible or unknown, but reads and draft-first creates pass without a prompt unless the server sets trust: untrusted."
 maintainer: Frihet-io
 tier: community
 category: tools
 docs_url: https://github.com/Frihet-io/hermes-frihet#readme
 requires_hermes: ">=0.21.5"
-version: "0.1.0"
+version: "0.2.1"
 # Capabilities mirror plugin.yaml exactly.
 # Provides zero Python tools on purpose: the canonical Frihet surface
-# (158 operations) lives in @frihet/mcp-server and is reached via the
+# lives in @frihet/mcp-server and is reached via the
 # native Hermes MCP client. The plugin adds:
 #   - a skill (skills/frihet/SKILL.md) that encodes the operating contract
 #   - a pre_tool_call hook that escalates irreversible Frihet operations

@@ -177,9 +177,13 @@ def publish_mac_feed(
 # ---------------------------------------------------------------------------
 
 def finalize(tag: str, dir: str, variant: str | None = None, archive: str | None = None,
-             arches: tuple[str, ...] | None = None) -> None:
+             arches: tuple[str, ...] | None = None, verify_bytes: bool = True) -> None:
     """Validate both native legs, verify their streamed bytes, then replace
-    the feed pointer (conditional write, then readback)."""
+    the feed pointer (conditional write, then readback).
+
+    ``verify_bytes=False`` (stable promotion of an accepted candidate, whose
+    artifacts are already bound by receipt sha256) checks each artifact's
+    remote size instead of streaming multi-GB packages back down."""
     if variant and variant != "light":
         raise ValueError("Unknown macOS variant")
     creds, base, bucket = r2_module.credentials()
@@ -210,6 +214,12 @@ def finalize(tag: str, dir: str, variant: str | None = None, archive: str | None
         return {"text": response.text(), "etag": etag}
 
     def verify(key: str, file_entry: dict[str, Any]) -> None:
+        if not verify_bytes:
+            head = r2_module.signed_request(
+                "HEAD", f"{base}/{bucket}/{r2_module.encode_key_path(key)}", creds=creds, now=now)
+            if str(head.header("content-length")) != str(file_entry["size"]):
+                raise ValueError(f"Artifact size mismatch: {key}")
+            return
         r2_module.verify_remote_artifact(
             f"{base}/{bucket}/{r2_module.encode_key_path(key)}",
             creds, now, file_entry["size"], file_entry["sha512"],

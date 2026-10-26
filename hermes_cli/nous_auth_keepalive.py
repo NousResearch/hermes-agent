@@ -162,7 +162,14 @@ def refresh_nous_auth_keepalive_once(
         )
         if pool_result is not None:
             return pool_result
-        if not get_provider_auth_state("nous"):
+        state = get_provider_auth_state("nous")
+        if not state:
+            return False
+        # Mid-life twin of start_nous_auth_keepalive's guard (a guest minted after the thread
+        # started): its tokens are minted on demand, and an inference mint here would put a guest
+        # who only uses connectors through the free-inference challenge every tick.
+        from hermes_cli.anon_auth import is_guest_state
+        if is_guest_state(state):
             return False
         try:
             # Nobody is waiting on a keepalive tick: a free-tier browser challenge is announced to the
@@ -203,6 +210,10 @@ def start_nous_auth_keepalive(
     min_key_ttl_seconds: int = NOUS_INVOKE_JWT_MIN_TTL_SECONDS, timeout_seconds: Optional[float] = None,
 ) -> Optional[threading.Thread]:
     """Start the process-wide Nous auth keepalive thread (idempotent; None when disabled)."""
+    # Free-tier handoff retries run in every long-lived Nous process, guest or not and keepalive or
+    # not: a CLI sign-in in another process may have left a move this one has to finish.
+    from hermes_cli.guest_handoff import start_worker
+    start_worker()
     interval_seconds = _interval_seconds(interval_seconds)
     if interval_seconds <= 0:
         return None
@@ -236,6 +247,8 @@ def start_nous_auth_keepalive(
 
 def stop_nous_auth_keepalive(timeout: float = 5.0) -> None:
     """Stop the keepalive thread. Intended for graceful shutdown/tests."""
+    from hermes_cli.guest_handoff import stop_worker
+    stop_worker(timeout)
     global _keepalive_thread
     with _keepalive_lock:
         thread = _keepalive_thread

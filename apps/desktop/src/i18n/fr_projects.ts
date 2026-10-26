@@ -33,6 +33,7 @@ export const frProjects: NonNullable<TranslationOverrides['sidebar']>['projects'
   movedTo: name => `Déplacée vers ${name}`,
   moveFailed: 'Impossible de déplacer la session',
   moveNoFolder: "Ce projet n'a aucun dossier vers lequel effectuer le déplacement",
+  moveBusy: 'Arrêtez le tour en cours, puis déplacez la discussion',
   moveNoProjects: 'Aucun autre projet',
   reveal: 'Afficher dans le dossier',
   copyPath: 'Copier le chemin',

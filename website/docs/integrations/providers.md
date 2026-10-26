@@ -16,8 +16,6 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 |----------|-------|
 | **Nous Portal** | `hermes model` (OAuth, subscription-based) |
 | **OpenAI Codex** | `hermes model` → **ChatGPT or Codex Subscription** (ChatGPT OAuth, uses Codex models) |
-| **GitHub Copilot** | `hermes model` (OAuth device code flow, `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth token`) |
-| **GitHub Copilot ACP** | `hermes model` (spawns local `copilot --acp --stdio`) |
 | **Anthropic** | `hermes model` (Claude Max + extra usage credits via OAuth; also supports Anthropic API key or manual setup-token — see note below) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env`, or `hermes auth add openrouter --type oauth` (browser login via OpenRouter's PKCE flow; stores a key in the credential pool) |
 | **Ramp Router** | `RAMP_ROUTER_API_KEY` in `~/.hermes/.env` (provider: `router`; aliases: `ramp-router`, `ramp`, `router.com`; Responses-native gateway, live account-scoped catalog) |
@@ -207,70 +205,19 @@ model:
 `--provider claude` and `--provider claude-code` also work as shorthand for `--provider anthropic`.
 :::
 
-### GitHub Copilot
+### GitHub Copilot (labs plugin)
 
-Hermes supports GitHub Copilot as a first-class provider with two modes:
-
-**`copilot` — Direct Copilot API** (recommended). Uses your GitHub Copilot subscription to access GPT-5.x, Claude, Gemini, and other models through the Copilot API.
+The GitHub Copilot providers (`copilot` for the Copilot API, `copilot-acp` for the Copilot CLI over ACP) are no longer built into Hermes. They ship as the `github-copilot` **labs plugin** — built by Nous Research, but not supported:
 
 ```bash
-hermes chat --provider copilot --model gpt-5.4
+hermes plugins install github-copilot
 ```
 
-**Authentication options** (checked in this order):
+Profiles that already use `copilot` or `copilot-acp` (main model, fallback, auxiliary, delegation, MoA or cron) get the plugin installed automatically by `hermes update` or at their next agent or gateway start.
 
-1. `COPILOT_GITHUB_TOKEN` environment variable
-2. `GH_TOKEN` environment variable
-3. `GITHUB_TOKEN` environment variable
-4. `gh auth token` CLI fallback
+Sign in with `hermes auth add copilot` (device-code login), or set `COPILOT_GITHUB_TOKEN`, `GH_TOKEN` or `GITHUB_TOKEN`. Logins made with the `gh` CLI or the Copilot CLI are no longer read: if you relied on them, run `hermes auth add copilot`.
 
-If no token is found, `hermes model` offers an **OAuth device code login** — the same flow used by the Copilot CLI and opencode.
-
-:::warning Token types
-The Copilot API does **not** support classic Personal Access Tokens (`ghp_*`). Supported token types:
-
-| Type | Prefix | How to get |
-|------|--------|------------|
-| OAuth token | `gho_` | `hermes model` → GitHub Copilot → Login with GitHub |
-| Fine-grained PAT | `github_pat_` | GitHub Settings → Developer settings → Fine-grained tokens (needs **Copilot Requests** permission) |
-| GitHub App token | `ghu_` | Via GitHub App installation |
-
-If your `gh auth token` returns a `ghp_*` token, use `hermes model` to authenticate via OAuth instead.
-:::
-
-:::info Copilot auth behavior in Hermes
-Hermes sends a supported GitHub token (`gho_*`, `github_pat_*`, or `ghu_*`) directly to `api.githubcopilot.com` and includes Copilot-specific headers (`Editor-Version`, `Copilot-Integration-Id`, `Openai-Intent`, `x-initiator`).
-
-On HTTP 401, Hermes now performs a one-shot credential recovery before fallback:
-
-1. Re-resolve token via the normal priority chain (`COPILOT_GITHUB_TOKEN` → `GH_TOKEN` → `GITHUB_TOKEN` → `gh auth token`)
-2. Rebuild the shared OpenAI client with refreshed headers
-3. Retry the request once
-
-Some older community proxies use `api.github.com/copilot_internal/v2/token` exchange flows. That endpoint can be unavailable for some account types (returns 404). Hermes therefore keeps direct-token auth as the primary path and relies on runtime credential refresh + retry for robustness.
-:::
-
-**API routing**: GPT-5+ models (except `gpt-5-mini`) automatically use the Responses API. All other models (GPT-4o, Claude, Gemini, etc.) use Chat Completions. Models are auto-detected from the live Copilot catalog.
-
-**`copilot-acp` — Copilot ACP agent backend**. Spawns the local Copilot CLI as a subprocess:
-
-```bash
-hermes chat --provider copilot-acp --model copilot-acp
-# Requires the GitHub Copilot CLI in PATH and an existing `copilot login` session
-```
-
-**Permanent config:**
-```yaml
-model:
-  provider: "copilot"
-  default: "gpt-5.4"
-```
-
-| Environment variable | Description |
-|---------------------|-------------|
-| `COPILOT_GITHUB_TOKEN` | GitHub token for Copilot API (first priority) |
-| `HERMES_COPILOT_ACP_COMMAND` | Override the Copilot CLI binary path (default: `copilot`) |
-| `HERMES_COPILOT_ACP_ARGS` | Override ACP args (default: `--acp --stdio`) |
+Setup, models and environment variables: [github-copilot plugin docs](https://github.com/NousResearch/hermes-labs-plugins/tree/main/github-copilot).
 
 ### First-Class API-Key Providers
 
@@ -565,29 +512,54 @@ Supported models: `MiniMax-M2.7` (main) and `MiniMax-M2.7-highspeed` (wired as t
 
 ### NVIDIA NIM
 
-Nemotron and other open source models via [build.nvidia.com](https://build.nvidia.com) (free API key) or a local NIM endpoint.
+Use the NVIDIA NIM provider to access Nemotron and other open-source models through NVIDIA’s hosted service or a local NIM endpoint. Model identifiers for hosted endpoints and instructions for local deployment are available at [build.nvidia.com/models](https://build.nvidia.com/models).
+
+:::note The examples below use Nemotron 3.5 Super VL, which supports text and image inputs, reasoning, and tool calls.
+
+#### Cloud (build.nvidia.com)
+
+Create an account and a free API key at [build.nvidia.com/settings/api-keys](https://build.nvidia.com/settings/api-keys) and add it to `~/.hermes/.env`:
 
 ```bash
-# Cloud (build.nvidia.com)
-hermes chat --provider nvidia --model nvidia/nemotron-3-super-120b-a12b
-# Requires: NVIDIA_API_KEY in ~/.hermes/.env
-
-# Local NIM endpoint — override base URL
-NVIDIA_BASE_URL=http://localhost:8000/v1 hermes chat --provider nvidia --model nvidia/nemotron-3-super-120b-a12b
+NVIDIA_API_KEY=nvapi-...
 ```
 
-Or set it permanently in `config.yaml`:
+Then start a chat:
+
+```bash
+hermes chat --provider nvidia --model nvidia/nemotron-3.5-super-vl-120b-a12b
+```
+
+:::note Hermes automatically includes the NIM billing-origin header in requests to `build.nvidia.com`, ensuring consumption is attributed to the correct origin in NVIDIA’s billing dashboard. No additional configuration is required.
+
+#### Local NIM
+
+For local or on-premises deployments, such as DGX Spark, DGX Station, or a local GPU, set `NVIDIA_BASE_URL` to your NIM endpoint in `~/.hermes/.env`:
+
+```bash
+NVIDIA_API_KEY=local-no-auth
+NVIDIA_BASE_URL=http://localhost:8000/v1
+```
+
+:::note Use `local-no-auth` as a placeholder if your endpoint does not require authentication. Otherwise, provide its API key.
+
+Then start a chat using the model served by your endpoint:
+
+```bash
+hermes chat --provider nvidia --model nvidia/nemotron-3.5-super-vl-120b-a12b
+```
+
+Local NIM endpoints expose the same OpenAI-compatible chat completions API as NVIDIA’s hosted service. To switch endpoints, update `NVIDIA_BASE_URL` and adjust the API key and model name as needed.
+
+#### Set the default model
+
+For either deployment, save the provider and model identifier in `config.yaml` to avoid specifying them on every invocation:
+
 ```yaml
 model:
   provider: "nvidia"
-  default: "nvidia/nemotron-3-super-120b-a12b"
+  default: "nvidia/nemotron-3.5-super-vl-120b-a12b"
 ```
-
-:::tip Local NIM
-For on-prem deployments (DGX Spark, local GPU), set `NVIDIA_BASE_URL=http://localhost:8000/v1`. NIM exposes the same OpenAI-compatible chat completions API as build.nvidia.com, so switching between cloud and local is a one-line env-var change.
-:::
-
-Hermes automatically attaches the NIM billing-origin header on every request to `build.nvidia.com` — no configuration needed. This routes consumption against the correct origin in NVIDIA's billing dashboard.
 
 ### GMI Cloud
 
@@ -1298,7 +1270,7 @@ Hermes uses a multi-source resolution chain to detect the correct context window
 8. **[models.dev](https://models.dev)** — community-maintained registry with provider-specific context lengths for 3800+ models across 100+ providers
 9. **Fallback defaults** — broad model family patterns (128K default)
 
-For most setups this works out of the box. The system is provider-aware — the same model can have different context limits depending on who serves it (e.g., `claude-opus-4.6` is 1M on Anthropic direct but 128K on GitHub Copilot).
+For most setups this works out of the box. The system is provider-aware — the same model can have different context limits depending on who serves it (e.g., `claude-opus-4.6` is 1M on Anthropic direct but smaller through some resellers and aggregators).
 
 To set the context length explicitly, add `context_length` to your model config:
 
@@ -1700,7 +1672,7 @@ fallback_model:
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. The chain is tried entry-by-entry; activation is one-shot per session.
 
-Supported providers: `openrouter`, `nous`, `novita`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `ai-gateway`, `azure-foundry`, `opencode-zen`, `opencode-go`, `commandcode`, `commandcode-anthropic`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `actual`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `tencent-tokenplan`, `nebius-token-factory`, `router`, `custom`.
+Supported providers: `openrouter`, `nous`, `novita`, `openai-codex`, `anthropic`, `gemini`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `ai-gateway`, `azure-foundry`, `opencode-zen`, `opencode-go`, `commandcode`, `commandcode-anthropic`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `actual`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `tencent-tokenplan`, `nebius-token-factory`, `router`, `custom`.
 
 :::tip
 Fallback is configured exclusively through `config.yaml` — or interactively via `hermes fallback`. For full details on when it triggers, how the chain advances, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](../user-guide/features/fallback-providers.md).

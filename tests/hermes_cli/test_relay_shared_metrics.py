@@ -521,6 +521,7 @@ def test_client_resource_classification_is_bounded():
     assert client_install_method("Homebrew") == "homebrew"
     assert client_install_method("nix") == "nixos"
     assert client_install_method("apt") == "apt"
+    assert client_install_method("microsoft-store") == "microsoft-store"
 
     assert client_resource(
         "",
@@ -533,6 +534,19 @@ def test_client_resource_classification_is_bounded():
         architecture="unknown",
         install_method="unknown",
     )
+
+def test_microsoft_store_stamp_reports_its_own_install_method(tmp_path, monkeypatch):
+    """The Store build's stamp is the only place it is named; ``detect_install_method`` has no word for it."""
+    from hermes_cli.observability.shared_metrics_install import detect_client_install_method
+
+    monkeypatch.setattr("hermes_cli.config.get_project_root", lambda: tmp_path)
+    stamp = tmp_path / "install-stamp.json"
+    stamp.write_text(json.dumps({"updateMechanism": "microsoft-store"}), encoding="utf-8")
+    assert detect_client_install_method() == "microsoft-store"
+
+    stamp.write_text(json.dumps({"updateMechanism": "app-installer"}), encoding="utf-8")
+    assert detect_client_install_method() == "unknown"
+
 
 def test_package_schema_matches_the_client_resource_contract():
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
@@ -1258,6 +1272,29 @@ def test_package_builder_rejects_tampered_dimensions(tmp_path):
     assert list(outbox_directory.glob("*.json")) == []
 
 
+@pytest.mark.parametrize(("metric_name", "dimensions"), [
+    ("hermes.tool_enabled_unused.count", {"toolset": "start_chat", "used": "yes"}),
+    ("hermes.tool.usage.count", {"error_class": "none", "outcome": "success", "tool_name": "setup_choose"}),
+])
+def test_a_saved_row_naming_a_retired_setup_tool_or_toolset_still_packages(tmp_path, metric_name, dimensions):
+    # v0.21.6/7 recorded these names before the old setup flow was deleted; v4 only adds values.
+    database_path = tmp_path / "metrics.sqlite3"
+    store = SharedMetricsStore(database_path, tmp_path / "outbox")
+    store.record_model_call(_dimensions(), _resource())
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "UPDATE counter_aggregates SET metric_name = ?, dimensions_json = ?",
+            (metric_name, json.dumps(dimensions, sort_keys=True, separators=(",", ":"))),
+        )
+
+    [path] = store.create_and_export_package()
+
+    package = json.loads(path.read_text(encoding="utf-8"))
+    [metric] = package["metrics"]
+    assert (metric["name"], metric["dimensions"]) == (metric_name, dimensions)
+    _schema_validator().validate(package)
+
+
 def test_package_builder_rejects_tampered_client_resources(tmp_path):
     database_path = tmp_path / "metrics.sqlite3"
     outbox_directory = tmp_path / "outbox"
@@ -1276,6 +1313,77 @@ def test_package_builder_rejects_tampered_client_resources(tmp_path):
         store.create_and_export_package()
 
     assert list(outbox_directory.glob("*.json")) == []
+
+
+def test_package_builder_buckets_values_that_drifted_out_of_the_catalog(tmp_path, monkeypatch):
+    """A catalog-backed value that left the catalog between the recording and packaging
+    processes re-buckets to ``custom`` instead of aborting the whole period's package, and
+    every other metric in the period still exports (#133017)."""
+    from hermes_cli.observability import shared_metrics_catalog as catalog_module
+    from hermes_cli.observability.shared_metrics_contract import EXTENSION_INSTALL_METRIC
+
+    database_path = tmp_path / "metrics.sqlite3"
+    outbox_directory = tmp_path / "outbox"
+    store = SharedMetricsStore(database_path, outbox_directory)
+    # Recording process: the plugin was a catalog entry, so the row passes record-time
+    # validation and is persisted under its real name.
+    monkeypatch.setattr(catalog_module, "plugin_catalog_names", lambda: frozenset({"later-removed-plugin"}))
+    store.record_counter(
+        EXTENSION_INSTALL_METRIC,
+        {"kind": "plugin", "name": "later-removed-plugin", "outcome": "success", "source": "catalog"},
+        _resource(),
+    )
+    store.record_model_call(_dimensions(), _resource())
+    # Packaging process (a later run): the catalog moved on and no longer lists the plugin.
+    monkeypatch.setattr(catalog_module, "plugin_catalog_names", lambda: frozenset())
+
+    [package_path] = store.create_and_export_package()
+
+    payload = json.loads(package_path.read_text(encoding="utf-8"))
+    metrics = {metric["name"]: metric for metric in payload["metrics"]}
+    assert metrics[EXTENSION_INSTALL_METRIC]["dimensions"] == {
+        "kind": "plugin", "name": "custom", "outcome": "success", "source": "catalog",
+    }
+    assert metrics[MODEL_ROUTE_METRIC]["dimensions"] == _dimensions()
+    # The drifted row settles like any other instead of wedging the period forever.
+    assert store._create_package() is None
+
+
+def test_package_builder_settles_rows_an_earlier_build_stored_with_retired_values(tmp_path):
+    """A built-in toolset or tool an earlier build shipped (Spotify, Home Assistant) is no longer in
+    the contract: rows holding it re-bucket (merged with their siblings) or, when the field has no
+    bucket, stay out, and the rest of the period still exports instead of wedging every package."""
+    from hermes_cli.observability.shared_metrics_contract import (
+        TOOL_ENABLED_UNUSED_METRIC, TOOL_UNAVAILABLE_METRIC,
+    )
+
+    database_path = tmp_path / "metrics.sqlite3"
+    outbox_directory = tmp_path / "outbox"
+    store = SharedMetricsStore(database_path, outbox_directory)
+    store.record_model_call(_dimensions(), _resource())
+    for dims in ({"toolset": "file", "used": "yes"}, {"toolset": "terminal", "used": "yes"}):
+        store.record_counter(TOOL_ENABLED_UNUSED_METRIC, dims, _resource())
+    store.record_counter(TOOL_UNAVAILABLE_METRIC, {**_dimensions(), "tool_name": "read_file"}, _resource())
+    retired = {
+        '{"toolset":"file","used":"yes"}': {"toolset": "retired-toolset-a", "used": "yes"},
+        '{"toolset":"terminal","used":"yes"}': {"toolset": "retired-toolset-b", "used": "yes"},
+    }
+    with sqlite3.connect(database_path) as connection:
+        for old, dims in retired.items():
+            connection.execute("UPDATE counter_aggregates SET dimensions_json = ? WHERE dimensions_json = ?",
+                               (json.dumps(dims, separators=(",", ":")), old))
+        connection.execute("UPDATE counter_aggregates SET dimensions_json = ? WHERE metric_name = ?",
+                           (json.dumps({**_dimensions(), "tool_name": "retired_tool"}), TOOL_UNAVAILABLE_METRIC))
+
+    [package_path] = store.create_and_export_package()
+
+    text = package_path.read_text(encoding="utf-8")
+    assert "retired" not in text
+    metrics = [(m["name"], m["dimensions"], m["value"]) for m in json.loads(text)["metrics"]]
+    assert (TOOL_ENABLED_UNUSED_METRIC, {"toolset": "custom", "used": "yes"}, 2) in metrics
+    assert [m for m in metrics if m[0] == TOOL_UNAVAILABLE_METRIC] == []
+    assert (MODEL_ROUTE_METRIC, _dimensions(), 1) in metrics
+    assert store._create_package() is None
 
 
 def test_retention_prunes_only_expired_exported_history(tmp_path):

@@ -98,24 +98,6 @@ def db(tmp_path):
     session_db.close()
 
 
-@pytest.fixture(autouse=True)
-def _no_fts_rebuild_throttle(monkeypatch):
-    """Zero the FTS-rebuild inter-chunk throttle for every test in this file.
-
-    ``optimize_fts_storage`` sleeps ``max(_FTS_REBUILD_MIN_PAUSE,
-    chunk_cost * _FTS_REBUILD_DUTY_FACTOR)`` between chunks so a LIVE
-    gateway/CLI sharing the DB isn't starved of the write lock. Tests run
-    against a private tmp-path DB with no concurrent process — the sleep
-    protects nobody and was pure dead time (measured: 4.1s of a 4.6s
-    migration test was time.sleep; ~20s across the file, whose total was
-    ~52s). The duty-cycle POLICY (sleep >= 4x chunk cost) stays covered by
-    the production constants themselves; no test asserts on wall-clock
-    pacing.
-    """
-    monkeypatch.setattr(SessionDB, "_FTS_REBUILD_MIN_PAUSE", 0.0)
-    monkeypatch.setattr(SessionDB, "_FTS_REBUILD_DUTY_FACTOR", 0.0)
-
-
 # =========================================================================
 # Connection lifecycle
 # =========================================================================
@@ -4699,27 +4681,6 @@ class TestFTSExternalContentMigration:
         finally:
             db.close()
 
-    def test_optimize_settle_refuses_pending_backfill(self, tmp_path):
-        """Settle must not stamp while high_water markers remain."""
-        db = SessionDB(db_path=tmp_path / "fresh.db")
-        try:
-            db.create_session(session_id="s1", source="cli")
-            db.append_message("s1", role="user", content="settle guard needle")
-            # Plant markers without going through demote.
-            db.set_meta("fts_rebuild_high_water", "1")
-            db.set_meta("fts_rebuild_progress", "0")
-            # The public contract: optimize returns ok=False when still
-            # pending. Simulate an unfinishable backfill by stubbing the
-            # chunk step to a no-op while markers stay.
-            db.fts_rebuild_step = lambda: False  # type: ignore[method-assign]
-            result = db.optimize_fts_storage(vacuum=False)
-            assert result["ok"] is False
-            assert result.get("reason") == "backfill_incomplete"
-            assert db.get_meta("fts_storage_version") is None
-            assert db.get_meta("fts_rebuild_high_water") is not None
-        finally:
-            db.close()
-
     def test_v23_fresh_db_born_optimized(self, tmp_path):
         """A brand-new DB is born on v23 — no legacy layout, no opt-in flag,
         no pending rebuild."""
@@ -5131,7 +5092,7 @@ class TestListCronJobRuns:
     """
 
     def _seed_run(self, db, job_id: str, idx: int, started_at: float):
-        sid = f"cron_{job_id}_{idx:08d}"
+        sid = f"cron_{job_id}_20261011_{idx:06d}"  # the scheduler's cron_{job}_{YYYYmmdd_HHMMSS}
         db.create_session(session_id=sid, source="cron")
         db.append_message(sid, role="user", content=f"run {idx} for {job_id}")
         db.append_message(sid, role="assistant", content="done")

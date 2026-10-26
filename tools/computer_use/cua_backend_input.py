@@ -45,6 +45,14 @@ def _parse_raw_step(step: Any, accepted: Sequence[str], aliases: dict[str, str])
 def _translate_key_step(requested_tool: str, args: dict[str, Any]) -> tuple[Optional[str], bool]:
     """Translate Hermes key/keys/modifiers into driver press_key or hotkey."""
     combo = args.pop("keys", None) if requested_tool in {"key", "hotkey"} else None
+    if combo is not None and "modifiers" in args:
+        modifiers = args.pop("modifiers")
+        if not isinstance(modifiers, list) or any(not isinstance(m, str) for m in modifiers):
+            return None, False
+        if isinstance(combo, str):
+            combo = "+".join([*modifiers, combo])
+        elif isinstance(combo, list):
+            combo = [*modifiers, *combo]
     if isinstance(combo, str):
         key_name, modifiers = _parse_key_combo(combo)
         if not key_name:
@@ -280,6 +288,9 @@ class _InputMixin:
     # `key` and `type` are Hermes spellings; the driver splits press_key (one key) from hotkey (modifiers)
     # and calls typed text `type_text`. `middle_click` and `right_click` map to `click` with button selector.
     _RUN_STEP_ALIASES = {"key": "press_key", "type": "type_text", "middle_click": "click", "right_click": "click"}
+    # Named targets are resolved by the batch layer ("TARGET BY NAME" in run_steps), so
+    # they need not appear in the individual action's schema, e.g. click on cua-driver 0.37.0.
+    _RUN_STEP_TARGET_PROPS = ("role", "name", "nth", "app", "window")
 
     def _run_step_args(self, step: dict[str, Any]) -> tuple[Optional[str], dict[str, Any]]:
         """Translate one Hermes step into a driver step: ``(tool, args)``.
@@ -347,8 +358,9 @@ class _InputMixin:
         if not _validate_step_args(tool, args):
             return None, {}
 
-        # 9. Schema validation: all properties in args must be supported by the connected driver.
-        if any(not self._session.supports_input_property(tool, key) for key in args):
+        # Named targets belong to the batch contract, not the individual action schema.
+        if any(key not in self._RUN_STEP_TARGET_PROPS and not self._session.supports_input_property(tool, key)
+               for key in args):
             return None, {}
 
         return tool, args
@@ -383,7 +395,7 @@ class _InputMixin:
             if tool is None:
                 return _refuse("run_steps",
                                f"Step {i + 1} is not a valid step: use {{'tool': <tool>, 'args': {{...}}}} with tool in "
-                               f"{list(self._RUN_STEP_TOOLS)}.")
+                               f"{list(self._RUN_STEP_TOOLS)}.", code="run_steps_invalid_step")
             entry: dict[str, Any] = {"tool": tool, "args": args}
             # wait_for / expect / timeout_ms are driver-side step modifiers, not tool arguments.
             for k in ("wait_for", "expect", "timeout_ms"):

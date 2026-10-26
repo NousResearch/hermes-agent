@@ -8,7 +8,8 @@ the hard-block guards applied per step, and refusal when the target or driver ca
 """
 import json
 from types import SimpleNamespace
-import zoneinfo
+
+import pytest
 
 from tools.computer_use.backend import ActionResult
 from tools.computer_use.cua_backend_input import _InputMixin
@@ -22,13 +23,14 @@ class _FakeSession:
         self._has_run_steps = has_run_steps
         self.calls = []
         self._tool_schemas = tool_schemas or {
+            # Realistic per-tool properties, mirroring the live cua-driver 0.37.0 input schemas
+            # (minimal subset): click/double_click do NOT advertise role/name/nth — that target
+            # naming belongs to the run_steps step contract, not the per-tool schema.
             "click": {"properties": {
-                "element_token": {}, "button": {}, "x": {}, "y": {},
-                "modifier": {}, "role": {}, "name": {}, "nth": {},
+                "element_token": {}, "button": {}, "x": {}, "y": {}, "modifier": {},
             }},
             "double_click": {"properties": {
-                "element_token": {}, "button": {}, "x": {}, "y": {},
-                "modifier": {}, "role": {}, "name": {}, "nth": {},
+                "element_token": {}, "x": {}, "y": {},
             }},
             "run_steps": {"properties": {
                 "steps": {}, "pid": {}, "window_id": {}, "observe": {},
@@ -309,12 +311,20 @@ def test_legacy_driver_with_element_index_support_keeps_compatible_target():
     assert legacy.calls[0][1]["steps"][0]["args"]["element_index"] == 7
 
 
-def test_click_role_target_passes_with_driver_schema():
-    backend = _FakeBackend()
-    result = backend.run_steps([{"tool": "click", "args": {"role": "AXButton", "name": "加"}}])
+def test_role_name_targeting_passes_without_per_tool_advertisement():
+    # Real cua-driver 0.37.0 click schema does NOT advertise role/name/nth/app/window: that
+    # target naming belongs to the run_steps STEP contract ("TARGET BY NAME" — the driver
+    # resolves it against the batch window), so the per-tool property check must not reject it.
+    session = _FakeSession(tool_schemas={
+        "run_steps": {"properties": {}},
+        "click": {"properties": {"element_token": {}, "button": {}, "x": {}, "y": {}, "modifier": {}}},
+    })
+    backend = _FakeBackend(session)
+    target = {"role": "AXButton", "name": "加", "nth": 0, "app": "Calculator", "window": "test"}
+    result = backend.run_steps([{"tool": "click", "args": {**target, "pid": 1, "window_id": 2}}])
     assert result.ok is True, result.message
-    assert len(backend._session.calls) == 1
-    assert backend._session.calls[0][1]["steps"][0]["args"]["name"] == "加"
+    assert len(session.calls) == 1
+    assert session.calls[0][1]["steps"][0] == {"tool": "click", "args": target}
 
 
 def test_set_value_alias_value_text_is_forwarded():
@@ -337,10 +347,15 @@ def test_schema_description_documents_unsupported_flags():
     assert "not supported" in props["capture_after"]["description"].lower()
 
 
-def test_run_steps_refuses_unknown_tool_before_driver_call():
+def test_run_steps_refuses_unknown_property_after_valid_step_without_dispatch():
     backend = _FakeBackend()
-    result = backend.run_steps([{"tool": "unknown", "args": {}}])
+    result = backend.run_steps([
+        {"tool": "press_key", "args": {"key": "a"}},
+        {"tool": "click", "args": {"role": "AXButton", "name": "加", "unsupported": True}},
+    ])
     assert result.ok is False
+    assert result.code == "run_steps_invalid_step"
+    assert "Step 2" in result.message
     assert backend._session.calls == []
 
 
@@ -400,6 +415,41 @@ def test_blocked_key_combo_in_a_step_is_refused():
     out = json.loads(_reject_unsafe("run_steps", {
         "steps": [{"tool": "key", "args": {"keys": "cmd+shift+backspace"}}]}))
     assert "blocked key combo" in out["error"]
+
+
+@pytest.mark.parametrize("tool, raw", [
+    ("key", {"keys": "backspace", "modifiers": ["cmd", "shift"]}),
+    ("key", {"keys": ["shift", "backspace"], "modifiers": ["cmd"]}),
+    ("press_key", {"key": "shift-backspace", "modifiers": ["cmd"]}),
+    ("hotkey", {"keys": ["shift", "backspace"], "modifiers": ["cmd"]}),
+])
+def test_split_key_modifiers_are_blocked_before_approval_or_backend(monkeypatch, tool, raw):
+    from tools.computer_use import tool as cu_tool
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("blocked batch reached approval or backend")
+
+    monkeypatch.setattr("tools.bot_desktop.runtime.ensure_started_for_tool", lambda: None)
+    monkeypatch.setattr(cu_tool, "_request_approval", unexpected)
+    monkeypatch.setattr(cu_tool, "_backend_for_call", unexpected)
+    out = json.loads(cu_tool.handle_computer_use({
+        "action": "run_steps", "steps": [{"tool": tool, "args": raw}]}))
+    assert "blocked key combo" in out["error"]
+
+
+@pytest.mark.parametrize("tool, raw", [
+    ("key", {"keys": "s", "modifiers": ["cmd"]}),
+    ("key", {"keys": ["shift", "s"], "modifiers": ["cmd"]}),
+    ("hotkey", {"keys": ["shift", "s"], "modifiers": ["cmd"]}),
+])
+def test_safe_split_key_modifiers_remain_in_the_driver_chord(tool, raw):
+    backend = _FakeBackend()
+    result = backend.run_steps([{"tool": tool, "args": raw}])
+    assert result.ok is True, result.message
+    step = backend._session.calls[0][1]["steps"][0]
+    assert step["tool"] == "hotkey"
+    assert set(step["args"]["keys"]) == {"cmd", "s", *(["shift"] if isinstance(raw["keys"], list) else [])}
+    assert "modifiers" not in step["args"]
 
 
 def test_blocked_type_pattern_in_a_step_is_refused():

@@ -107,43 +107,17 @@ def _reject_unsafe_steps(steps: Any) -> Optional[str]:
         text = raw.get("text", raw.get("value") if tool in {"type", "type_text"} else None)
         if isinstance(text, str) and any(pattern.search(text) for pattern in _BLOCKED_TYPE_PATTERNS):
             return json.dumps({"error": f"blocked pattern in type text (step {i + 1})"})
-        combo = raw.get("keys")
-        if isinstance(raw.get("key"), str) and (
-                tool == "hotkey" or (tool in {"key", "press_key"} and isinstance(raw.get("modifiers"), list))):
-            modifiers = raw.get("modifiers")
-            combo = [*modifiers, raw["key"]] if isinstance(modifiers, list) and modifiers else raw["key"]
-        if isinstance(combo, str):
-            keys = _canon_key_combo(combo)
-        elif isinstance(combo, list):
-            keys = frozenset(part for item in combo for part in _canon_key_combo(str(item)))
-        else:
-            keys = frozenset()
-        # Match the translator: key+modifiers forms a hotkey chord only on key aliases.
-        if combo is None and tool in {"key", "press_key"} and isinstance(raw.get("key"), str):
-            modifiers = raw.get("modifiers")
-            if isinstance(modifiers, list) and modifiers:
-                keys = frozenset(part for item in [*modifiers, raw["key"]]
-                                 for part in _canon_key_combo(str(item)))
-            else:
-                keys = _canon_key_combo(raw["key"])
-        # Driver press_key's key field is a single key name. Treat chord syntax as a chord at the gate,
-        # even if a caller supplied it in that field instead of the Hermes `keys` spelling.
-        if tool in {"press_key", "key"} and isinstance(raw.get("key"), str) and any(sep in raw["key"] for sep in "+-"):
-            keys = _canon_key_combo(raw["key"])
-        if any(blocked.issubset(keys) for blocked in _BLOCKED_KEY_COMBOS):
-            return json.dumps({"error": f"blocked key combo in step {i + 1}"})
-        # A raw hotkey can use its native {keys:[modifier, key]} shape. Treat each item as
-        # potentially containing aliases or separators too, matching _canon_key_combo().
-        if tool == "hotkey" and isinstance(raw.get("keys"), str):
-            hotkey_keys = _canon_key_combo(raw["keys"])
-            if any(blocked.issubset(hotkey_keys) for blocked in _BLOCKED_KEY_COMBOS):
-                return json.dumps({"error": f"blocked key combo in step {i + 1}"})
-        if tool == "hotkey" and isinstance(raw.get("keys"), list):
-            hotkey_keys = frozenset(part for item in raw["keys"] for part in _canon_key_combo(str(item)))
-            if any(blocked.issubset(hotkey_keys) for blocked in _BLOCKED_KEY_COMBOS):
-                return json.dumps({"error": f"blocked key combo in step {i + 1}"})
-        if tool in {"press_key", "key"} and isinstance(raw.get("key"), str) and any(sep in raw["key"] for sep in "+-"):
-            if any(blocked.issubset(_canon_key_combo(raw["key"])) for blocked in _BLOCKED_KEY_COMBOS):
+        if tool in {"key", "press_key", "hotkey"}:
+            # Canonicalize every chord component together: split modifiers must not be lost
+            # when keys/key already contains separators or when the translator changes aliases.
+            parts = []
+            for value in (raw.get("keys"), raw.get("key"), raw.get("modifiers")):
+                if isinstance(value, str):
+                    parts.append(value)
+                elif isinstance(value, list):
+                    parts.extend(item for item in value if isinstance(item, str))
+            keys = frozenset(part for item in parts for part in _canon_key_combo(item))
+            if any(blocked.issubset(keys) for blocked in _BLOCKED_KEY_COMBOS):
                 return json.dumps({"error": f"blocked key combo in step {i + 1}"})
     return None
 

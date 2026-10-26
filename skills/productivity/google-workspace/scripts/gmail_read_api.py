@@ -162,10 +162,9 @@ def _validate_alias(value: str) -> str:
 
 
 def _validate_id(value: str, kind: str) -> str:
-    candidate = str(value or "")
-    if not ID_RE.fullmatch(candidate):
+    if not isinstance(value, str) or not ID_RE.fullmatch(value):
         raise AdapterError(f"INVALID_{kind.upper()}_ID", exit_code=2)
-    return candidate
+    return value
 
 
 def _validate_query(value: str) -> str:
@@ -176,12 +175,15 @@ def _validate_query(value: str) -> str:
 
 
 def _validate_page_token(value: str | None) -> str | None:
-    if value in (None, ""):
+    if value is None or value == "":
         return None
-    token = str(value)
-    if len(token) > MAX_PAGE_TOKEN_CHARS or any(ord(char) < 0x20 for char in token):
+    if (
+        not isinstance(value, str)
+        or len(value) > MAX_PAGE_TOKEN_CHARS
+        or any(ord(char) < 0x20 for char in value)
+    ):
         raise AdapterError("INVALID_PAGE_TOKEN", exit_code=2)
-    return token
+    return value
 
 
 def _is_private_file(path: Path) -> bool:
@@ -352,13 +354,23 @@ def _is_refresh_error(exc: BaseException) -> bool:
 
 
 def _decode_urlsafe(value: str, *, error_code: str) -> bytes:
-    if not isinstance(value, str):
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]*={0,2}", value):
         raise AdapterError(error_code)
     try:
         padded = value + "=" * (-len(value) % 4)
-        return base64.urlsafe_b64decode(padded.encode("ascii"))
-    except (ValueError, UnicodeEncodeError):
+        decoded = base64.b64decode(
+            padded.encode("ascii"), altchars=b"-_", validate=True
+        )
+    except (binascii.Error, ValueError, UnicodeEncodeError):
         raise AdapterError(error_code) from None
+    # Reject noncanonical padding bits as well as invalid alphabet characters.
+    if base64.urlsafe_b64encode(decoded).decode("ascii").rstrip("=") != value.rstrip(
+        "="
+    ):
+        raise AdapterError(error_code)
+    if "=" in value and len(value) % 4:
+        raise AdapterError(error_code)
+    return decoded
 
 
 def _decode_body_prefix(value: str, max_bytes: int) -> tuple[bytes, bool]:
@@ -412,14 +424,11 @@ def _body_and_attachments(
     for part in _walk_parts(payload):
         body = part.get("body") if isinstance(part.get("body"), dict) else {}
         attachment_id = body.get("attachmentId")
-        if (
-            isinstance(attachment_id, str)
-            and attachment_id
-            and attachment_id not in seen_attachments
-        ):
+        if attachment_id is not None:
+            _validate_id(attachment_id, "attachment")
+        if attachment_id is not None and attachment_id not in seen_attachments:
             if len(attachments) >= HARD_MAX_ATTACHMENTS:
                 raise AdapterError("MESSAGE_STRUCTURE_TOO_LARGE")
-            _validate_id(attachment_id, "attachment")
             seen_attachments.add(attachment_id)
             size = body.get("size", 0)
             if isinstance(size, bool) or not isinstance(size, int) or size < 0:
@@ -493,25 +502,72 @@ def _atomic_private_json(
             pass
 
 
-def _stored_attachment(path: Path, digest: str) -> tuple[Path, str, bool]:
-    info = path.lstat()
+def _private_regular_file(info: os.stat_result) -> bool:
     getuid = getattr(os, "getuid", None)
     owner_matches = getuid is None or info.st_uid == getuid()
-    if (
-        path.is_symlink()
-        or not stat.S_ISREG(info.st_mode)
-        or stat.S_IMODE(info.st_mode) != 0o600
-        or not owner_matches
-        or info.st_nlink != 1
-    ):
-        raise AdapterError("UNSAFE_PRIVATE_STORAGE")
-    file_hash = hashlib.sha256()
-    with path.open("rb") as handle:
+    return (
+        stat.S_ISREG(info.st_mode)
+        and stat.S_IMODE(info.st_mode) == 0o600
+        and owner_matches
+    )
+
+
+def _valid_publication_links(path: Path, descriptor: int) -> bool:
+    info = os.fstat(descriptor)
+    if info.st_nlink == 1:
+        return True
+    if info.st_nlink != 2:
+        return False
+    # A writer can be interrupted between link and unlink. Only its private,
+    # same-directory publication name is allowed; arbitrary hardlinks fail.
+    for temporary in path.parent.glob(f".{path.name}.*.tmp"):
+        nonce = temporary.name[len(path.name) + 2 : -4]
+        if re.fullmatch(r"[0-9a-f]{32}", nonce) is None:
+            continue
+        try:
+            linked = temporary.lstat()
+        except FileNotFoundError:
+            continue
+        if _private_regular_file(linked) and (linked.st_dev, linked.st_ino) == (
+            info.st_dev,
+            info.st_ino,
+        ):
+            return True
+    # The publishing writer may have removed its temporary during the scan.
+    return os.fstat(descriptor).st_nlink == 1
+
+
+def _stored_attachment(path: Path, digest: str) -> tuple[Path, str, bool]:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError:
+        raise AdapterError("UNSAFE_PRIVATE_STORAGE") from None
+    with os.fdopen(descriptor, "rb") as handle:
+        info = os.fstat(handle.fileno())
+        if not _private_regular_file(info):
+            raise AdapterError("UNSAFE_PRIVATE_STORAGE")
+        file_hash = hashlib.sha256()
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             file_hash.update(chunk)
-    if file_hash.hexdigest() != digest:
-        raise AdapterError("ATTACHMENT_STORAGE_MISMATCH")
+        if file_hash.hexdigest() != digest:
+            raise AdapterError("ATTACHMENT_STORAGE_MISMATCH")
+        named = path.lstat()
+        if (
+            not _private_regular_file(named)
+            or (named.st_dev, named.st_ino) != (info.st_dev, info.st_ino)
+            or not _valid_publication_links(path, handle.fileno())
+        ):
+            raise AdapterError("UNSAFE_PRIVATE_STORAGE")
     return path, digest, True
+
+
+def _sync_directory(directory: Path) -> None:
+    descriptor = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _store_attachment(
@@ -522,24 +578,30 @@ def _store_attachment(
     _secure_dir(directory, boundary=boundary)
     destination = directory / digest
     if destination.exists():
-        return _stored_attachment(destination, digest)
-    try:
-        descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        return _stored_attachment(destination, digest)
+        stored = _stored_attachment(destination, digest)
+        _sync_directory(directory)
+        return stored
+    temporary = directory / f".{digest}.{uuid.uuid4().hex}.tmp"
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    reused = False
     try:
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-    except Exception:
+        # link publishes complete bytes atomically and cannot replace a winner.
         try:
-            destination.unlink()
+            os.link(temporary, destination)
+        except FileExistsError:
+            reused = True
+        _stored_attachment(destination, digest)
+    finally:
+        try:
+            temporary.unlink()
         except FileNotFoundError:
             pass
-        raise
-    _stored_attachment(destination, digest)
-    return destination, digest, False
+    _sync_directory(directory)
+    return destination, digest, reused
 
 
 class GmailReadClient:
@@ -754,9 +816,12 @@ class GmailReadClient:
         data = _decode_urlsafe(encoded, error_code="INVALID_ATTACHMENT_DATA")
         if len(data) > max_bytes:
             raise AdapterError("ATTACHMENT_TOO_LARGE")
-        path, digest, reused = _store_attachment(
-            root, message_id, data, boundary=boundary
-        )
+        try:
+            path, digest, reused = _store_attachment(
+                root, message_id, data, boundary=boundary
+            )
+        except OSError:
+            raise AdapterError("ATTACHMENT_STORAGE_UNAVAILABLE") from None
         return {
             "source_ref": f"{self.context.source_id}:{message_id}:attachment:{attachment_id}",
             "bytes": len(data),

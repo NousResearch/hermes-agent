@@ -208,10 +208,23 @@ explicitly fetched attachments under the private account-scoped source cache.
 The request timeout is capped by the remaining total deadline; result, decoded
 body, message, MIME-part, API-call, retry, and attachment sizes are bounded.
 
-The path checks reject static symlinks, hardlinked attachments, broad modes,
-and wrong owners where the OS exposes ownership. They are a fail-closed storage
-guard, not isolation from a hostile process already running as the same OS
-user; use a separate service account when that is the threat boundary.
+The named-account CLI uses POSIX file permissions and directory synchronization;
+its privacy and attachment durability have been verified on macOS. Windows
+privacy and durability are not established for this CLI. This boundary does
+not change the platform support of the existing `google_api.py` compatibility CLI.
+
+Attachments are written to private same-directory temporary files and synced
+before atomic publication without replacing an existing digest path. Concurrent
+readers reuse only validated complete bytes. The directory is synced before
+success is reported. A process interruption may leave a private temporary file;
+a retry can reuse a complete published attachment even if its publication link
+remains. No automatic cleanup of other writers' temporary files is attempted.
+
+The path checks reject static symlinks, arbitrary hardlinks, broad modes, and
+wrong owners where the OS exposes ownership. The only permitted second link
+is the matching private publication temporary in the same directory. These
+checks do not isolate a hostile process already running as the same OS user;
+use a separate service account when that is the threat boundary.
 
 ```bash
 GMAIL_READ="python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/scripts/gmail_read_api.py"

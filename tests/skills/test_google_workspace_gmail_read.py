@@ -1,11 +1,15 @@
 """Behavior contracts for the account-scoped read-only Gmail adapter."""
 
 import importlib.util
+import hashlib
 import json
 import os
 import stat
+import subprocess
 import sys
+import threading
 import types
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 
 import pytest
@@ -672,6 +676,232 @@ def test_attachment_storage_rejects_symlink_component(module, tmp_path):
         )
 
 
+def test_attachment_publication_is_complete_before_visible(
+    module, tmp_path, monkeypatch
+):
+    home = tmp_path / ".hermes"
+    data = b"complete bytes" * 1024
+    digest = hashlib.sha256(data).hexdigest()
+    destination = home / "cache" / "attachments" / "m1" / digest
+    original_fsync = os.fsync
+    synced = []
+
+    def observe_fsync(descriptor):
+        info = os.fstat(descriptor)
+        synced.append("directory" if stat.S_ISDIR(info.st_mode) else "file")
+        if stat.S_ISREG(info.st_mode):
+            assert not destination.exists()
+        else:
+            assert destination.read_bytes() == data
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", observe_fsync)
+    path, _, reused = module._store_attachment(
+        home / "cache", "m1", data, boundary=home
+    )
+
+    assert path == destination
+    assert reused is False
+    assert synced == ["file", "directory"]
+    assert list(destination.parent.glob(".*.tmp")) == []
+
+
+def test_concurrent_attachment_publishers_reuse_the_complete_winner(
+    module, tmp_path, monkeypatch
+):
+    home = tmp_path / ".hermes"
+    data = b"same content" * 1024
+    rendezvous = threading.Barrier(2)
+    release_winner = threading.Event()
+    original_link = os.link
+
+    def publish_then_pause(source, destination):
+        rendezvous.wait(timeout=10)
+        original_link(source, destination)
+        assert release_winner.wait(timeout=10)
+
+    monkeypatch.setattr(os, "link", publish_then_pause)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [
+            pool.submit(
+                module._store_attachment, home / "cache", "m1", data, boundary=home
+            )
+            for _ in range(2)
+        ]
+        try:
+            done, _ = wait(futures, timeout=10, return_when=FIRST_COMPLETED)
+            assert len(done) == 1
+            path, _, reused = next(iter(done)).result()
+            assert reused is True
+            assert path.read_bytes() == data
+            # Winner still owns its publication link while the loser reads.
+            assert path.stat().st_nlink == 2
+        finally:
+            release_winner.set()
+        results = [future.result(timeout=10) for future in futures]
+
+    assert sorted(result[2] for result in results) == [False, True]
+    assert results[0][0] == results[1][0]
+    assert results[0][0].stat().st_nlink == 1
+
+
+@pytest.mark.parametrize("phase", ["before_publication", "after_publication"])
+def test_attachment_process_interruption_can_be_retried(module, tmp_path, phase):
+    home = tmp_path / ".hermes"
+    data = b"durable attachment bytes"
+    script = r"""
+import importlib.util, os, stat, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("gmail_crash_test", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+home = Path(sys.argv[2])
+if sys.argv[3] == "before_publication":
+    real_fsync = os.fsync
+    def interrupt_write(fd):
+        if stat.S_ISREG(os.fstat(fd).st_mode):
+            os.ftruncate(fd, 4)
+            os._exit(27)
+        real_fsync(fd)
+    os.fsync = interrupt_write
+else:
+    real_link = os.link
+    def interrupt_after_link(source, destination):
+        real_link(source, destination)
+        os._exit(27)
+    os.link = interrupt_after_link
+module._store_attachment(home / "cache", "m1", b"durable attachment bytes", boundary=home)
+"""
+    outcome = subprocess.run(
+        [sys.executable, "-c", script, str(SCRIPT_PATH), str(home), phase],
+        capture_output=True,
+        timeout=15,
+        check=False,
+    )
+    assert outcome.returncode == 27, outcome.stderr.decode()
+    destination = (
+        home / "cache" / "attachments" / "m1" / hashlib.sha256(data).hexdigest()
+    )
+    if phase == "before_publication":
+        assert not destination.exists()
+    else:
+        assert destination.read_bytes() == data
+        assert destination.stat().st_nlink == 2
+
+    path, _, reused = module._store_attachment(
+        home / "cache", "m1", data, boundary=home
+    )
+
+    assert path.read_bytes() == data
+    assert reused is (phase == "after_publication")
+
+
+def test_attachment_publication_preserves_a_conflicting_existing_file(module, tmp_path):
+    home = tmp_path / ".hermes"
+    data = b"expected content"
+    digest = hashlib.sha256(data).hexdigest()
+    destination = home / "cache" / "attachments" / "m1" / digest
+    destination.parent.mkdir(parents=True)
+    destination.write_bytes(b"incomplete old content")
+    destination.chmod(0o600)
+
+    with pytest.raises(module.AdapterError, match="ATTACHMENT_STORAGE_MISMATCH"):
+        module._store_attachment(home / "cache", "m1", data, boundary=home)
+
+    assert destination.read_bytes() == b"incomplete old content"
+
+
+@pytest.mark.parametrize("fail_directory", [False, True])
+def test_attachment_sync_failure_is_redacted_and_retryable(
+    module, tmp_path, monkeypatch, fail_directory
+):
+    home = tmp_path / ".hermes"
+    _write_account(home)
+    data = b"complete private bytes"
+    encoded = module.base64.urlsafe_b64encode(data).decode()
+    original_fsync = os.fsync
+
+    def fail_sync(descriptor):
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode) is fail_directory:
+            raise OSError("private filesystem detail")
+        original_fsync(descriptor)
+
+    args = _args(module, "attachment-get", "m1", "att-1")
+    monkeypatch.setattr(os, "fsync", fail_sync)
+    with pytest.raises(module.AdapterError, match="^ATTACHMENT_STORAGE_UNAVAILABLE$"):
+        module.execute(
+            args, service=FakeService(attachments=[{"data": encoded}]), hermes_home=home
+        )
+
+    monkeypatch.setattr(os, "fsync", original_fsync)
+    result = module.execute(
+        args, service=FakeService(attachments=[{"data": encoded}]), hermes_home=home
+    )
+
+    assert Path(result["data"]["path"]).read_bytes() == data
+    assert result["data"]["reused"] is fail_directory
+
+
+@pytest.mark.parametrize("field,value", [("id", 123), ("threadId", True)])
+def test_provider_message_ids_must_be_strings(module, tmp_path, field, value):
+    home = tmp_path / ".hermes"
+    _write_account(home)
+    message = _metadata()
+    message[field] = value
+    service = FakeService(
+        list_response={"messages": [{"id": "m1"}]}, messages={"m1": message}
+    )
+
+    with pytest.raises(module.AdapterError, match="INVALID_.*_ID"):
+        module.execute(
+            _args(module, "search", "contract"), service=service, hermes_home=home
+        )
+
+
+@pytest.mark.parametrize("value", [123, True, [], {}])
+def test_provider_page_token_must_be_a_string(module, tmp_path, value):
+    home = tmp_path / ".hermes"
+    _write_account(home)
+    service = FakeService(list_response={"nextPageToken": value})
+
+    with pytest.raises(module.AdapterError, match="INVALID_PAGE_TOKEN"):
+        module.execute(
+            _args(module, "search", "contract"), service=service, hermes_home=home
+        )
+
+
+def test_provider_attachment_id_must_be_a_string(module, tmp_path):
+    home = tmp_path / ".hermes"
+    _write_account(home)
+    message = _metadata()
+    message["payload"]["body"] = {"attachmentId": 123}
+
+    with pytest.raises(module.AdapterError, match="INVALID_ATTACHMENT_ID"):
+        module.execute(
+            _args(module, "get", "m1"),
+            service=FakeService(messages={"m1": message}),
+            hermes_home=home,
+        )
+
+
+@pytest.mark.parametrize("encoded", ["cGRm$", "cG Rm", "+///", "YQ===", "YR", "YQ="])
+def test_attachment_rejects_malformed_base64_without_storing(module, tmp_path, encoded):
+    home = tmp_path / ".hermes"
+    _write_account(home)
+
+    with pytest.raises(module.AdapterError, match="INVALID_ATTACHMENT_DATA"):
+        module.execute(
+            _args(module, "attachment-get", "m1", "att-1"),
+            service=FakeService(attachments=[{"data": encoded}]),
+            hermes_home=home,
+        )
+
+    assert not (
+        home / "source-cache" / "gmail-read" / "personal" / "attachments"
+    ).exists()
+
+
 def test_retry_and_api_call_budget_are_bounded(module, tmp_path):
     home = tmp_path / ".hermes"
     _write_account(home)
@@ -741,11 +971,14 @@ def test_request_timeout_is_capped_by_declared_and_remaining_deadline(
 
 
 def test_refresh_error_is_typed_reauth_without_detail(module, tmp_path):
-    RefreshError = type(
-        "RefreshError",
-        (Exception,),
-        {"__module__": "google.auth.exceptions"},
-    )
+    try:
+        from google.auth.exceptions import RefreshError
+    except ImportError:
+        RefreshError = type(
+            "RefreshError",
+            (Exception,),
+            {"__module__": "google.auth.exceptions"},
+        )
 
     home = tmp_path / ".hermes"
     _write_account(home)

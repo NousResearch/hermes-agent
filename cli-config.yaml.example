@@ -582,8 +582,16 @@ terminal:
 #   # an otherwise small maintenance script. Each value is a positive int clamped
 #   # to 16x the built-in default; invalid values fall back to the defaults.
 #   # Retuning never authorises lifecycle commands themselves. Defaults shown.
+#   # The five budgets fail independently — one oversized file can exhaust any single
+#   # one while the others have headroom — and a refusal names the limit that fired
+#   # with its effective value and the observed count. max_line_bytes counts
+#   # characters (a lower bound on UTF-8 bytes), so measure oversized lines in chars.
+#   # The clamps stay far below real package-manager bundles: pnpm 11's dist/pnpm.mjs
+#   # (13.28 MiB, ~330k physical lines) exceeds max_total_bytes and max_lines even at
+#   # 16x, so such bundles remain refused by design — the guard bounds scan work, it
+#   # does not sandbox the tool.
 #   lifecycle_scan:
-#     max_line_bytes: 65536       # Longest physical line (quadratic-shlex bound)
+#     max_line_bytes: 65536       # Longest physical line, chars (quadratic-shlex bound)
 #     max_total_bytes: 1048576    # Whole referenced-script walk, UTF-8 bytes
 #     max_lines: 16384
 #     max_paths: 1024             # Unique referenced paths

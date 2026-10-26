@@ -95,7 +95,7 @@ def test_cancel_is_the_senders_own_and_reaches_the_owner(tmp_path, monkeypatch):
         live._write(path, {**record, "author": {"id": "bot:default", "name": "hermes", "is_bot": True}})
     rpcs = []
     monkeypatch.setattr(live, "_authority_rpc", lambda h, method, params: rpcs.append((method, params)) or
-                        {"status": "terminal", "outcome": "cancelled"})
+                        {"delivery_id": params["id"], "status": "cancelled", "receipt_status": "cancelled"})
 
     stranger = _FakeAgent(home)
     stranger._session_db.db_path = str(target / "state.db")  # @researcher itself asks
@@ -104,7 +104,8 @@ def test_cancel_is_the_senders_own_and_reaches_the_owner(tmp_path, monkeypatch):
 
     assert "Only the agent that sent" in refused["error"]
     assert done["status"] == "cancelled"
-    assert rpcs == [("prompt.cancel", {"session_id": "local-bot", "admission_id": record["admission_id"]})]
+    # By delivery id: the owner picks the admission (or withdraws the pending retry) under its own lock.
+    assert rpcs == [("bot_relay.cancel", {"id": ack["delivery_id"], "author_id": "bot:default", "profile": "researcher"})]
 
 
 def test_ack_reports_a_teammate_parked_on_its_user(tmp_path, monkeypatch):
@@ -173,29 +174,3 @@ def test_one_targets_setup_failure_keeps_the_others_combined_reply(tmp_path, mon
     assert [entry["label"] for entry in _spec(calls)] == ["@researcher"]
     assert "disk full" in ack["fan_out"][1]["error"] and not ack["fan_out"][0].get("error")
 
-
-def test_cancel_follows_the_retry_the_owner_is_admitting(tmp_path, monkeypatch):
-    home = _managed_home(tmp_path)
-    target = home / "profiles" / "researcher"
-    _canonical_target(monkeypatch, target)
-    _capture_spawn(monkeypatch)
-    ack = json.loads(bot_mode_dm.message_agent_tool("researcher", "long job", agent=_FakeAgent(home)))
-    with live._locked(target) as root:
-        path = root / f"{ack['delivery_id']}.json"
-        record = {**json.loads(path.read_text(encoding="utf-8-sig")),
-                  "author": {"id": "bot:default", "name": "hermes", "is_bot": True}}
-        live._write(path, record)
-    rpcs = []
-
-    def owner(h, method, params):
-        rpcs.append(params["admission_id"])
-        if params["admission_id"] == record["admission_id"]:  # the first attempt failed; the owner admits its retry
-            with live._locked(target) as root:
-                live._write(root / f"{ack['delivery_id']}.json", {**record, "retry_admission_id": "retry-1"})
-            return {"status": "terminal", "outcome": "failed"}
-        return {"status": "terminal", "outcome": "cancelled"}
-
-    monkeypatch.setattr(live, "_authority_rpc", owner)
-    done = json.loads(bot_mode_dm.message_agent_tool("researcher", cancel=ack["delivery_id"], agent=_FakeAgent(home)))
-
-    assert done["status"] == "cancelled" and rpcs == [record["admission_id"], "retry-1"]

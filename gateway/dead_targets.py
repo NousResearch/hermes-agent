@@ -1,6 +1,6 @@
 """Persistent registry of delivery targets confirmed unreachable. Re-sending to a permanently gone chat
 (deleted group, bot kicked/blocked, deactivated user) every cron tick wastes flood-control budget; delivery
-short-circuits targets proven dead and any later successful send clears the flag. Only *whole-chat* deaths
+short-circuits targets proven dead and a later send confirmed delivered clears the flag. Only *whole-chat* deaths
 (``forbidden``, chat-level ``not_found``) are recorded: adapters self-heal thread/topic-level ``not_found``
 by retrying without ``reply_to``. Storage is a per-profile JSON file; reads/writes are best-effort (a
 corrupt or unwritable file degrades to in-memory-only rather than raising on the delivery path).
@@ -46,7 +46,8 @@ def classify_dead_error(error_text: Optional[str]) -> Optional[str]:
 
 class DeadTargetRegistry:
     """Thread-safe, persistent set of confirmed-dead targets keyed ``platform:chat_id``. Each entry stores
-    reason + timestamp for observability; :meth:`clear` (called on a successful send) removes the flag."""
+    reason + timestamp for observability; :meth:`clear` (called on a send confirmed delivered) removes
+    the flag."""
 
     def __init__(self, path: Optional[Path] = None) -> None:
         self._lock = threading.RLock()

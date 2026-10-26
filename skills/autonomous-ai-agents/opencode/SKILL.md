@@ -215,5 +215,5 @@ Success criteria:
 2. Use interactive background mode only when iteration is needed.
 3. Always scope OpenCode sessions to a single repo/workdir.
 4. For long tasks, provide progress updates from `process` logs.
-5. Report concrete outcomes (files changed, tests, remaining risks).
+5. Report concrete outcomes (files changed, tests, remaining risks): present a verifiable handle for the claimed outcome (commit/PR/branch, file path, test output), name what was not verified, and never claim success from OpenCode's own summary output alone.
 6. Exit interactive sessions with Ctrl+C or kill, never `/exit`.

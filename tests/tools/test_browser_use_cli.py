@@ -434,6 +434,53 @@ class TestBackendCdpResolution:
         env = {}
         assert bu_cli._resolve_backend_cdp(env, "t1", session_name="r7k2") is None
         assert "BU_CDP_WS" not in env and "BU_CDP_URL" not in env
+        # No endpoint is handed over, so the CLI must be told to bootstrap the cloud browser itself —
+        # otherwise the harness hunts for the user's installed Chrome and fails on DevToolsActivePort.
+        assert env["BU_AUTOSPAWN"] == "1"
+
+    def test_direct_cloud_route_resolves_per_served_profile(self, tmp_path, monkeypatch, _fake_managed_chromium):
+        """Real resolution chain (config -> registry provider -> route -> child env), two homes under
+        multiplex, A -> B -> A: profile A (``backend: browser-use`` + ``cloud_provider: browser-use`` +
+        its own BROWSER_USE_API_KEY in ``.env``) gets the direct-cloud contract (key + BU_AUTOSPAWN, no
+        CDP endpoint), profile B (local) gets the packaged Chromium and neither A's key nor the
+        autospawn flag. Regression: with an explicit ``browser.backend`` the autospawn flag was only
+        set for legacy (backend-unset) configs, so A silently fell back to the user's local Chrome."""
+        from agent.secret_scope import (
+            build_profile_secret_scope, reset_secret_scope, set_multiplex_active, set_secret_scope)
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        homes = {}
+        for name, cfg, env_text in (
+            ("a", "browser:\n  backend: browser-use\n  cloud_provider: browser-use\n", "BROWSER_USE_API_KEY=bu-key-a\n"),
+            ("b", "browser:\n  backend: browser-use\n  cloud_provider: local\n", ""),
+        ):
+            home = tmp_path / name
+            home.mkdir()
+            (home / "config.yaml").write_text(cfg, encoding="utf-8")
+            (home / ".env").write_text(env_text, encoding="utf-8")
+            homes[name] = home
+
+        monkeypatch.setattr(bs_cloud, "_cached_providers", {})
+        set_multiplex_active(True)
+        try:
+            for name in ("a", "b", "a"):
+                home_token = set_hermes_home_override(str(homes[name]))
+                scope_token = set_secret_scope(build_profile_secret_scope(homes[name]))
+                try:
+                    env = bu_cli._base_subprocess_env()
+                    assert bu_cli._route_backend(env, "", f"task-{name}", False) is None
+                    if name == "a":
+                        assert env["BROWSER_USE_API_KEY"] == "bu-key-a"
+                        assert env["BU_AUTOSPAWN"] == "1"
+                        assert "BU_CDP_WS" not in env and "BU_CDP_URL" not in env
+                    else:
+                        assert "BROWSER_USE_API_KEY" not in env and "BU_AUTOSPAWN" not in env
+                        assert env["BU_CDP_WS"].startswith("ws://127.0.0.1:47000/")
+                finally:
+                    reset_secret_scope(scope_token)
+                    reset_hermes_home_override(home_token)
+        finally:
+            set_multiplex_active(False)
 
     def test_direct_api_without_key_uses_session_path_not_chrome_hunt(self, monkeypatch, _fake_managed_chromium):
         """cloud_provider browser-use with no API key must not take the autospawn shortcut: the CLI

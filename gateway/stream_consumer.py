@@ -32,6 +32,7 @@ from gateway.response_filters import (
     is_partial_silence_marker as _is_partial_silence_marker)
 from gateway.stream_consumer_directives import has_pending_media_directive, strip_image_tags_for_display
 from gateway.stream_consumer_fences import ensure_closed_code_fences
+from gateway.native_stream_buffer import StreamBuffer
 from gateway.stream_consumer_transport import StreamTransportMixin
 from gateway.stream_consumer_fallback import StreamFallbackMixin
 from gateway.stream_consumer_think import StreamThinkFilterMixin
@@ -109,6 +110,29 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     # connector's sealed-stream tombstones, which outlive this process — a replayed id
     # is answered out of the OLD tombstone and dropped.  49 bits stays inside JS 2^53.
     _draft_id_counter: int = secrets.randbits(49)
+    _stream_buffer: StreamBuffer
+
+    def _stream_text_buffer(self) -> StreamBuffer:
+        buffer = getattr(self, "_stream_buffer", None)
+        if buffer is None:
+            buffer = self._stream_buffer = StreamBuffer()
+        return buffer
+
+    @property
+    def _accumulated(self) -> str:
+        return self._stream_text_buffer().active()
+
+    @_accumulated.setter
+    def _accumulated(self, text: str) -> None:
+        self._stream_text_buffer().set_active(text)
+
+    @property
+    def _stream_ledger(self) -> str:
+        return self._stream_text_buffer().ledger()
+
+    @_stream_ledger.setter
+    def _stream_ledger(self, text: str) -> None:
+        self._stream_text_buffer().set_ledger(text)
 
     def __init__(
         self,
@@ -291,8 +315,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         if self._tool_progress_lines:  # real text overwrites the overlay
             self._tool_progress_lines.clear()
             self._tool_progress_active = False
-        self._accumulated += text
-        self._stream_ledger += text
+        self._stream_text_buffer().append(text)
 
     def _mark_skip_redundant_finalize(self) -> None:
         """Mark the turn final as delivered by a prior mid-stream edit.  Records what was

@@ -118,10 +118,12 @@ def _runtime_main(key: str) -> Any:
         return ""
 
 
-def _model_supports_vision_override(models_cfg: Any, model: str) -> Optional[bool]:
-    """Per-model ``supports_vision`` (or ``vision`` alias) from a ``models`` mapping."""
+def _model_supports_vision_override(models_cfg: Any, model: str, key: str = "supports_vision") -> Optional[bool]:
+    """Per-model capability lookup from a ``models`` mapping."""
     per_model = _dict_or_empty(_dict_or_empty(models_cfg).get(model))
-    return _coerce_capability_bool(per_model.get("supports_vision", per_model.get("vision")))
+    if key == "supports_vision":
+        return _coerce_capability_bool(per_model.get("supports_vision", per_model.get("vision")))
+    return _coerce_capability_bool(per_model.get(key))
 
 
 def _custom_provider_entries(cfg: dict[str, Any], names: Iterable[str]) -> Iterable[dict[str, Any]]:
@@ -147,11 +149,9 @@ def _supports_vision_override(
 ) -> Optional[bool]:
     """Resolve user-declared vision capability from config.yaml; None when unset.
 
-    First hit wins: ``model.supports_vision`` → ``providers.<p>.models.<model>``
-    → legacy ``custom_providers[].models.<model>``. Named custom providers are
-    rewritten to ``provider="custom"`` at runtime while config keeps the user's
-    name under ``model.provider``, so the requested, runtime and config
-    identities are all tried, plus the bare ``<name>`` of any ``custom:<name>``.
+    First hit wins: ``model.supports_vision`` → ``providers.<p>.supports_vision``
+    → ``providers.<p>.models.<model>`` → ``custom_providers[].supports_vision``
+    → model name heuristics.
     """
     if not isinstance(cfg, dict):
         return None
@@ -168,9 +168,80 @@ def _supports_vision_override(
     candidates = list(dict.fromkeys(candidates))
 
     providers_cfg = _dict_or_empty(cfg.get("providers"))
+    for p in candidates:
+        p_entry = _dict_or_empty(providers_cfg.get(p))
+        p_val = _coerce_capability_bool(p_entry.get("supports_vision"))
+        if p_val is not None:
+            return p_val
+
+    for entry in _custom_provider_entries(cfg, candidates):
+        c_val = _coerce_capability_bool(entry.get("supports_vision"))
+        if c_val is not None:
+            return c_val
+
     model_maps = [_dict_or_empty(providers_cfg.get(p)).get("models") for p in candidates]
     model_maps += [entry.get("models") for entry in _custom_provider_entries(cfg, candidates)]
-    return next((v for v in (_model_supports_vision_override(m, model) for m in model_maps) if v is not None), None)
+    res = next((v for v in (_model_supports_vision_override(m, model) for m in model_maps) if v is not None), None)
+    if res is not None:
+        return res
+
+    model_lower = str(model or "").lower()
+    for kw in ("claude-3", "claude-sonnet", "claude-opus", "gemini", "gpt-4o", "gpt-4-turbo", "gpt-5", "qwen-vl", "qwen2.5-vl", "qwen3-vl", "pixtral", "llava", "vision"):
+        if kw in model_lower:
+            return True
+
+    return None
+
+
+def _supports_vision_tool_messages_override(
+    cfg: Optional[dict[str, Any]],
+    provider: str,
+    model: str,
+    *,
+    requested_provider: str = "",
+) -> Optional[bool]:
+    """Read supports_vision_tool_messages from config:
+    providers.<name>.supports_vision_tool_messages
+    providers.<name>.models.<model>.supports_vision_tool_messages
+    custom_providers[].supports_vision_tool_messages
+    custom_providers[].models.<model>.supports_vision_tool_messages
+    model.supports_vision_tool_messages
+    """
+    if not isinstance(cfg, dict):
+        return None
+    model_cfg = _dict_or_empty(cfg.get("model"))
+    top = _coerce_capability_bool(model_cfg.get("supports_vision_tool_messages"))
+    if top is not None:
+        return top
+
+    candidates: list[str] = []
+    for candidate in filter(None, (requested_provider, provider, _clean_str(model_cfg.get("provider")))):
+        candidates.append(candidate)
+        if candidate.startswith("custom:") and candidate[len("custom:"):]:
+            candidates.append(candidate[len("custom:"):])
+    candidates = list(dict.fromkeys(candidates))
+
+    providers_cfg = _dict_or_empty(cfg.get("providers"))
+    for p in candidates:
+        p_entry = _dict_or_empty(providers_cfg.get(p))
+        val = _coerce_capability_bool(p_entry.get("supports_vision_tool_messages"))
+        if val is not None:
+            return val
+        m_entry = p_entry.get("models")
+        val = _model_supports_vision_override(m_entry, model, key="supports_vision_tool_messages")
+        if val is not None:
+            return val
+
+    for entry in _custom_provider_entries(cfg, candidates):
+        val = _coerce_capability_bool(entry.get("supports_vision_tool_messages"))
+        if val is not None:
+            return val
+        m_entry = entry.get("models")
+        val = _model_supports_vision_override(m_entry, model, key="supports_vision_tool_messages")
+        if val is not None:
+            return val
+
+    return None
 
 
 def _resolve_inference_value(
@@ -384,11 +455,11 @@ def decide_image_input_mode(
     mode_cfg = _coerce_mode(_dict_or_empty(_dict_or_empty(cfg).get("agent")).get("image_input_mode"))
     if mode_cfg != "auto":
         return mode_cfg
-    if _explicit_aux_vision_override(cfg):  # auto: an explicit auxiliary.vision backend wins
-        return "text"
     # Keep the three-argument call contract for callers/tests that replace the lookup hook.
     extra = {"requested_provider": requested_provider} if requested_provider else {}
-    return "native" if _lookup_supports_vision(provider, model, cfg, **extra) is True else "text"
+    if _lookup_supports_vision(provider, model, cfg, **extra) is True:
+        return "native"
+    return "text"
 
 
 # Image size handling is REACTIVE: attach at full size and let

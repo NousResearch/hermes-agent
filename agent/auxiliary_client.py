@@ -6735,7 +6735,7 @@ def _build_call_kwargs(
     ``no_progress_timeout`` is a Codex-Responses-only extra (consumed by
     ``_CodexCompletionsAdapter.create``'s ``**kwargs`` catch-all); callers must only pass it
     when the resolved client is a ``CodexAuxiliaryClient`` — real SDK clients don't accept it."""
-    kwargs: dict[str, Any] = {"model": model, "messages": messages, "timeout": timeout}
+    kwargs: dict[str, Any] = {"model": model, "messages": messages, "timeout": timeout, "stream": False}
     if no_progress_timeout is not None:
         kwargs["no_progress_timeout"] = no_progress_timeout
     effective_base = base_url or (_current_custom_base_url() if provider == "custom" else "")
@@ -6964,7 +6964,30 @@ def _recover_aux_response_message(response: Any) -> Optional[Any]:
 
 
 def _extract_aux_response_text(response: Any) -> str:
-    """Text from Responses-style ``output_text`` or ``output[].content[].text``."""
+    """Text from Responses-style ``output_text`` or ``output[].content[].text``, or raw SSE string."""
+    if isinstance(response, str):
+        raw = response.strip()
+        if "data: {" in raw or raw.startswith("data:"):
+            sse_parts = []
+            for line in raw.splitlines():
+                line = line.strip()
+                if line.startswith("data: ") and not line.endswith("[DONE]"):
+                    payload_str = line[len("data: "):].strip()
+                    try:
+                        import json as _json
+                        chunk_obj = _json.loads(payload_str)
+                        choices = chunk_obj.get("choices") or []
+                        if choices:
+                            delta = choices[0].get("delta") or choices[0].get("message") or {}
+                            chunk_text = delta.get("content") or ""
+                            if chunk_text:
+                                sse_parts.append(chunk_text)
+                    except Exception:
+                        pass
+            if sse_parts:
+                return "".join(sse_parts).strip()
+        return raw
+
     output_text = _field(response, "output_text")
     if isinstance(output_text, str) and output_text.strip():
         return output_text.strip()

@@ -240,6 +240,14 @@ def routed_model_rejects_vision_tool_messages(provider: str, model: str) -> bool
     routing aggregators. Missing or unrecognized identities deliberately fail open.
     """
     provider_name = str(provider or "").strip().lower()
+    try:
+        from hermes_cli.config import load_config_readonly
+        from agent.image_routing import _supports_vision_tool_messages_override
+        override = _supports_vision_tool_messages_override(load_config_readonly(), provider_name, model)
+        if override is not None:
+            return not override
+    except Exception:
+        pass
     profile = get_provider_profile(provider_name)
     if profile is not None and profile.supports_vision_tool_messages is False:
         return True

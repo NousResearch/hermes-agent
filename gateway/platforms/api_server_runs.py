@@ -507,8 +507,9 @@ async def _resolve_chained_history(self, body: dict, raw_input: Any, *, _openai_
     that cannot answer is the retryable store verdict (``continued_session``). The last item is the
     stored session the chain moved past (``walked_from``), else None."""
     from gateway.platforms.api_server_authority_runs import continued_session
-    history, instructions, chain_root, error = _resolve_conversation_history(
-        self, body, raw_input, _openai_error=_openai_error)
+    # Off the loop: a previous_response_id chain reads (and json-decodes) the stored history.
+    history, instructions, chain_root, error = await asyncio.to_thread(
+        _resolve_conversation_history, self, body, raw_input, _openai_error=_openai_error)
     stored_session_id = chain_root
     if error is None:
         stored_session_id, error = await continued_session(self, chain_root)

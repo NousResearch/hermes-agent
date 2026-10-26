@@ -151,8 +151,9 @@ async def prepare_context(adapter, request, body, gateway_session_key, durable_k
         if admitted is not None:
             return admitted_context(admitted, replay=True), None
     previous = body.get('previous_response_id')
+    response_store = adapter._current_response_store()
     if body.get('conversation'):
-        previous = adapter._current_response_store().get_conversation(body['conversation'])
+        previous = await response_store.off_loop(response_store.get_conversation, body['conversation'])
     messages, error = _parse_responses_input(body['input'])
     if error is not None:
         return None, error
@@ -164,7 +165,7 @@ async def prepare_context(adapter, request, body, gateway_session_key, durable_k
     stored_session_id = chain_root = None
     instructions = body.get('instructions')
     if not history and previous:
-        stored = adapter._current_response_store().get(previous)
+        stored = await response_store.off_loop(response_store.get, previous)
         if stored is None:
             return None, _error_response(f'Previous response not found: {previous}', 404)
         history = list(stored.get('conversation_history', []))

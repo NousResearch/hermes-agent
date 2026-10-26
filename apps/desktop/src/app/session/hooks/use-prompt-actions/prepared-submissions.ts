@@ -103,7 +103,7 @@ async function readJournal(): Promise<Record<string, PreparedSubmission>> {
     if (journal[key]?.id === id) {
       delete journal[key]
       // Storage may have recovered since: finish the retirement so the stale entry stops lingering.
-      await retireJournalEntry(key).then(() => clearSpent(key), error => console.warn('[prepared-submission-retire]', error))
+      await retireJournalEntry(key, id).then(() => clearSpent(key), error => console.warn('[prepared-submission-retire]', error))
     } else {
       // Gone, or replaced by a newer send under the same key: the spent entry no longer exists.
       clearSpent(key)
@@ -129,7 +129,7 @@ function clearSpent(key: string): void {
   writeSpent(key, undefined)
 }
 
-async function retireJournalEntry(key: string): Promise<void> {
+async function retireJournalEntry(key: string, id: string): Promise<void> {
   const native = window.hermesDesktop?.preparedSubmissions
 
   if (native) {
@@ -142,7 +142,8 @@ async function retireJournalEntry(key: string): Promise<void> {
   window.localStorage.removeItem(ENTRY_PREFIX + key)
   const legacy: Record<string, PreparedSubmission> = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || '{}')
 
-  if (legacy[key]) { window.localStorage.setItem(LEGACY_RETIRED_PREFIX + key, legacy[key].id) }
+  // Only the entry carrying this id: the blob may hold a different send an earlier-build tab wrote.
+  if (legacy[key]?.id === id) { window.localStorage.setItem(LEGACY_RETIRED_PREFIX + key, id) }
 }
 
 export function preparedSubmissionKey(
@@ -279,7 +280,7 @@ export async function removePreparedSubmission(key: string, id: string): Promise
 
   // The tombstone store failing too (quota) leaves the in-memory mark; the removal still runs.
   try { writeSpent(key, id) } catch (error) { console.warn('[prepared-submission-tombstone]', error) }
-  await retireJournalEntry(key)
+  await retireJournalEntry(key, id)
   clearSpent(key)
   owned.get(key)?.()
   owned.delete(key)

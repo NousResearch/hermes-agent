@@ -112,3 +112,14 @@ test('a tab of the earlier build still open keeps a newer entry it writes under 
   localStorage.setItem(LEGACY_KEY, JSON.stringify({ [key]: entry('second', 'same words') }))
   expect(await journal.adoptPreparedSubmission(key, 'second')).toEqual({ key, entry: entry('second', 'same words') })
 })
+
+test('retiring an entry never hides a different send the earlier build left under the same key', async () => {
+  const key = intent('same words')
+  const journal: Journal = await import('./prepared-submissions')
+  await journal.writePreparedSubmission(key, entry('new', 'same words'))
+
+  // A tab of the earlier build, which cannot see the new entry, journals its own send of the same words.
+  localStorage.setItem(LEGACY_KEY, JSON.stringify({ [key]: entry('earlier', 'same words') }))
+  await journal.removePreparedSubmission(key, 'new')
+  expect(await journal.adoptPreparedSubmission(key, 'earlier')).toEqual({ key, entry: entry('earlier', 'same words') })
+})

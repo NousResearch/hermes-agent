@@ -5,8 +5,37 @@ import type { CronJob } from '@/types/hermes'
 // so a claimed/running row is the run the Stop button can reach.
 const IN_FLIGHT_STATUSES = new Set(['claimed', 'running'])
 
-export function jobRunInFlight(job: Pick<CronJob, 'latest_execution'>): boolean {
-  return IN_FLIGHT_STATUSES.has(job.latest_execution?.status ?? '')
+type RunFields = Pick<CronJob, 'latest_execution' | 'live_execution'>
+
+// `live_execution` covers a scheduler-fired run hidden behind a newer refused Run-now row.
+export function jobRunInFlight(job: RunFields): boolean {
+  return IN_FLIGHT_STATUSES.has(job.latest_execution?.status ?? '') || Boolean(job.live_execution)
+}
+
+export type StopOutcome = 'cancelled' | 'finished' | 'pending'
+
+/**
+ * How a Stop aimed at `executionId` ('' until the cancel endpoint names it) ended, from a job-list
+ * snapshot taken in the stop's own backend scope. A removed job's run is stopped by the removal.
+ * When a newer row (a refused Run-now) hides the targeted attempt, the accepted cancel is the best
+ * evidence left, so it reads as cancelled.
+ */
+export function stopOutcome(job: RunFields | undefined, executionId: string): StopOutcome {
+  if (!job) {
+    return 'cancelled'
+  }
+
+  if (jobRunInFlight(job)) {
+    return 'pending'
+  }
+
+  const latest = job.latest_execution
+
+  if (executionId && latest && latest.id !== executionId) {
+    return 'cancelled'
+  }
+
+  return latest?.status === 'cancelled' ? 'cancelled' : 'finished'
 }
 
 // A run created this long before a Run-now click (renderer/backend clock skew) still counts as its run.
@@ -18,7 +47,7 @@ const TRIGGER_CLOCK_SLACK_MS = 2000
  * since the click that already finished, so the button does not flicker back to Stop between
  * the run ending and the trigger request returning.
  */
-export function jobRunLive(job: Pick<CronJob, 'latest_execution'>, triggerStartedAt?: number): boolean {
+export function jobRunLive(job: RunFields, triggerStartedAt?: number): boolean {
   if (jobRunInFlight(job)) {
     return true
   }

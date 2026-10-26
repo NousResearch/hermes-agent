@@ -1058,6 +1058,8 @@ export interface CronJob {
   last_run_at?: null | string
   /** The job's newest ledger attempt (``cron.jobs.list_jobs``); claimed/running = a run in flight. */
   latest_execution?: CronJobExecution | null
+  /** The newest claimed/running attempt under a live owner, even when a newer refused row is latest. */
+  live_execution?: CronJobExecution | null
   model?: null | string
   name?: null | string
   next_run_at?: null | string

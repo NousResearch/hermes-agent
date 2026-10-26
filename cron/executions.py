@@ -708,13 +708,28 @@ def cancellable_execution(job_id: str) -> Optional[dict[str, Any]]:
     acquired"), so ``live_inflight_execution`` (latest row only) would call the live run idle and a
     cancel would never reach it.
     """
+    return live_executions([job_id]).get(str(job_id))
+
+
+def live_executions(job_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """Each job's newest claimed/running attempt under a live owner, in one query (see
+    ``cancellable_execution``). The job list carries it as ``live_execution`` so a Stop button
+    still finds a run that a refused Run-now's newer row hides from ``latest_execution``."""
+    clean = [str(job_id) for job_id in dict.fromkeys(job_ids) if job_id]
+    if not clean:
+        return {}
+    placeholders = ",".join("?" for _ in clean)
     with _transaction() as conn:
         rows = conn.execute(
-            """SELECT * FROM executions WHERE job_id=? AND status IN ('claimed', 'running')
+            f"""SELECT * FROM executions WHERE job_id IN ({placeholders}) AND status IN ('claimed', 'running')
                ORDER BY julianday(claimed_at) DESC, claimed_at DESC, id DESC""",
-            (job_id,),
+            clean,
         ).fetchall()
-    return next((dict(row) for row in rows if _row_owner_live(row)), None)
+    live: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if row["job_id"] not in live and _row_owner_live(row):
+            live[row["job_id"]] = dict(row)
+    return live
 
 
 def latest_executions(job_ids: list[str]) -> dict[str, dict[str, Any]]:

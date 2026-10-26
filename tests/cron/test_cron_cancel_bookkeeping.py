@@ -186,3 +186,21 @@ def test_a_capped_count_says_so_after_a_catch_up(store):
     missed = [r for r in executions.list_executions(job_id=job["id"]) if r["status"] == "missed"]
     assert len(missed) == 1
     assert "counting stopped at 1000" in missed[0]["error"]
+
+
+def test_the_job_list_still_shows_a_live_run_behind_a_refused_trigger(store):
+    """Desktop's Stop reads the job list: a refused Run-now's newer row must not hide the live run."""
+    job = jobs.create_job(prompt="long", schedule="every 1h", deliver="local")
+    live = executions.create_execution(job["id"], source="test")["id"]
+    executions.mark_execution_running(live)
+    refused = executions.create_execution(job["id"], source="test")["id"]
+    executions.finish_execution(refused, success=False, error="Fire claim was not acquired")
+    with executions._transaction() as conn:  # the refused row is the job's newest attempt
+        conn.execute("UPDATE executions SET claimed_at='2999-01-01T00:00:00+00:00' WHERE id=?", (refused,))
+
+    [listed] = jobs.list_jobs(include_disabled=True)
+    assert listed["latest_execution"]["id"] == refused
+    assert listed["live_execution"]["id"] == live
+
+    executions.finish_execution(live, success=True)
+    assert jobs.list_jobs(include_disabled=True)[0]["live_execution"] is None

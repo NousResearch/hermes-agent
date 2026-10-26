@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
 import { cronEditorUpdates } from './cron-job-model'
-import { catchUpChoice, catchUpValue, jobLastCancelReason, jobRunInFlight, jobRunLive } from './run-control'
+import {
+  catchUpChoice,
+  catchUpValue,
+  jobLastCancelReason,
+  jobRunInFlight,
+  jobRunLive,
+  stopOutcome
+} from './run-control'
 
 const SAVE = { deliver: 'local', model: '', name: 'Nightly', prompt: 'p', provider: '', schedule: '0 3 * * *' }
 
@@ -13,9 +20,31 @@ describe('cron Stop visibility', () => {
     expect(jobRunInFlight(at('running'))).toBe(true)
     expect(['completed', 'failed', 'cancelled', 'missed'].some(s => jobRunInFlight(at(s)))).toBe(false)
     expect(jobRunInFlight({ latest_execution: null })).toBe(false)
-    expect(jobLastCancelReason({ latest_execution: { error: 'job removed while running', id: 'e1', status: 'cancelled' } })).toBe(
-      'job removed while running'
+    expect(
+      jobLastCancelReason({ latest_execution: { error: 'job removed while running', id: 'e1', status: 'cancelled' } })
+    ).toBe('job removed while running')
+  })
+})
+
+describe('cron Stop behind a refused Run-now', () => {
+  it('keeps Stop for a live run whose newest row is a refused trigger, and settles it as stopped', () => {
+    const refused = {
+      claimed_at: '2026-10-25T21:00:05Z',
+      error: 'Fire claim was not acquired',
+      id: 'e2',
+      status: 'failed'
+    }
+
+    const live = { claimed_at: '2026-10-25T21:00:00Z', id: 'e1', status: 'running' }
+
+    expect(jobRunInFlight({ latest_execution: refused, live_execution: live })).toBe(true)
+    expect(stopOutcome({ latest_execution: refused, live_execution: live }, 'e1')).toBe('pending')
+    // The stopped run ended and is hidden behind the refused row: the accepted cancel is what stopped it.
+    expect(stopOutcome({ latest_execution: refused, live_execution: null }, 'e1')).toBe('cancelled')
+    expect(stopOutcome({ latest_execution: { ...live, status: 'completed' }, live_execution: null }, 'e1')).toBe(
+      'finished'
     )
+    expect(stopOutcome(undefined, 'e1')).toBe('cancelled')
   })
 })
 
@@ -39,6 +68,8 @@ describe('cron editor missed-run policy', () => {
     expect(cronEditorUpdates({ ...SAVE }, { scriptOnlyJob: false })).not.toHaveProperty('catch_up')
     expect(cronEditorUpdates({ ...SAVE, catchUp: catchUpValue('run') }, { scriptOnlyJob: false }).catch_up).toBe(true)
     expect(stored).toBe('skip')
-    expect(cronEditorUpdates({ ...SAVE, catchUp: catchUpValue('default') }, { scriptOnlyJob: true }).catch_up).toBeNull()
+    expect(
+      cronEditorUpdates({ ...SAVE, catchUp: catchUpValue('default') }, { scriptOnlyJob: true }).catch_up
+    ).toBeNull()
   })
 })

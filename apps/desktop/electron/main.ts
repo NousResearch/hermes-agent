@@ -6296,6 +6296,8 @@ function registerPowerResumeListeners() {
     powerMonitor.on('suspend', () => keepAwake.noteSuspend(powerMonitor.getSystemIdleTime()))
     powerMonitor.on('resume', () => keepAwake.noteResume())
     powerMonitor.on('unlock-screen', sendPowerResume)
+    powerMonitor.on('suspend', mainProcessLagWatchdog.suspend)
+    powerMonitor.on('resume', mainProcessLagWatchdog.resume)
     powerMonitor.on('on-battery', () => broadcastBatteryState(true))
     powerMonitor.on('on-ac', () => broadcastBatteryState(false))
     onBatteryPower = powerMonitor.isOnBatteryPower()

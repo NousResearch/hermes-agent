@@ -12,12 +12,12 @@ Resolution order:
 from __future__ import annotations
 
 import json
-import subprocess
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
+from hermes_cli._subprocess_compat import bounded_probe_run
 from hermes_cli.steward import UPDATE_MECHANISMS
 from hermes_cli.update_channel import STABLE_TAG_RE
 
@@ -59,12 +59,12 @@ def _derived_version(
 
 
 def _run_git(repo_dir: Path, *args: str) -> str | None:
-    try:
-        result = subprocess.run(
-            ["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3, cwd=str(repo_dir),
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
+    # bounded_probe_run, not subprocess.run(timeout=3): on Windows run()'s post-timeout cleanup
+    # calls an *unbounded* communicate(), and killing the direct child can leave a git descendant
+    # (the bundled two-level launcher, a lazily-fetching child) holding duplicates of the captured
+    # pipes, so the reader threads never join and the probe never returns (#144964).
+    result = bounded_probe_run(["git", *args], timeout=3, cwd=str(repo_dir))
+    if result is None:
         return None
     value = (result.stdout or "").strip()
     return value if result.returncode == 0 and value else None
@@ -214,28 +214,25 @@ def _git_version_info(repo_dir: Path, *, include_untracked: bool = False) -> Ver
     commit_date: int | None = None
     if commit_date_raw and commit_date_raw.isdigit():
         commit_date = int(commit_date_raw)
-    try:
-        # -uno: skip the untracked-file scan. This runs on the startup-banner
-        # path, and a full working-tree walk costs real time on large or cold
-        # checkouts. Same semantics as write_install_stamp.py.
-        # The 3 s timeout kills a slow status (a partial clone lazily fetching a tree, a cold or
-        # scanned disk), and a status killed while refreshing the index strands .git/index.lock:
-        # the update's own merge then dies on "File exists" (#132089). A read-only probe takes
-        # no optional lock.
-        status_command = ["git", "--no-optional-locks", "status", "--porcelain"]
-        if not include_untracked:
-            status_command.append("-uno")
-        dirty_result = subprocess.run(
-            status_command,
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
-            timeout=3,
-            cwd=str(repo_dir),
-            check=False,
-        )
-        dirty = dirty_result.returncode == 0 and bool((dirty_result.stdout or "").strip())
-    except (OSError, subprocess.SubprocessError):
-        dirty = False
+    # -uno: skip the untracked-file scan. This runs on the startup-banner
+    # path, and a full working-tree walk costs real time on large or cold
+    # checkouts. Same semantics as write_install_stamp.py.
+    # The 3 s timeout kills a slow status (a partial clone lazily fetching a tree, a cold or
+    # scanned disk), and a status killed while refreshing the index strands .git/index.lock:
+    # the update's own merge then dies on "File exists" (#132089). A read-only probe takes
+    # no optional lock.
+    # bounded_probe_run also takes the whole tree down on that timeout: `git status` is the probe
+    # most likely to have a live descendant (a lazy fetch), and a surviving one holds the captured
+    # pipes, so run()'s post-timeout communicate() never returns (#144964).
+    status_command = ["git", "--no-optional-locks", "status", "--porcelain"]
+    if not include_untracked:
+        status_command.append("-uno")
+    status_result = bounded_probe_run(status_command, timeout=3, cwd=str(repo_dir))
+    dirty = (
+        status_result is not None
+        and status_result.returncode == 0
+        and bool((status_result.stdout or "").strip())
+    )
 
     tags = _run_git(repo_dir, "tag", "--merged", "HEAD", "--list", "v[0-9]*")
     releases = [

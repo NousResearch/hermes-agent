@@ -338,14 +338,9 @@ def _restart_wait_read(runner, scope) -> bool:
 
 
 def _restart_wait_socket_ticket(runner, scope) -> bool:
-    """Allow authenticated gateway-ticket minting during restart wait."""
-    from urllib.parse import parse_qs
-    from gateway.drain_control import restart_wait_open
-    from hermes_cli.web_session_sockets import GATEWAY_SOCKET
-    return (scope['type'] == 'http' and scope.get('method') == 'POST'
-            and scope.get('path') == '/api/webapp/socket-ticket'
-            and parse_qs(scope.get('query_string', b'').decode('latin-1')).get('socket') == [GATEWAY_SOCKET]
-            and restart_wait_open(runner))
+    from gateway.drain_control import restart_wait_socket_ticket
+    return scope['type'] == 'http' and restart_wait_socket_ticket(
+        runner, scope.get('method'), scope.get('path'), scope.get('query_string', b'').decode('latin-1'))
 
 
 class GatewayRuntimeAPI:

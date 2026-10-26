@@ -204,6 +204,42 @@ test('startup reap stops at the deadline and preserves the unprocessed records',
   assert.deepEqual(parseBackendOwnership(store.value()), [second])
 })
 
+test('startup reap rotates unprocessed records ahead of survivors so trailing orphans are not starved', async ({
+  onTestFinished
+}) => {
+  const now = vi.spyOn(Date, 'now').mockReturnValue(0)
+  onTestFinished(() => now.mockRestore())
+  const dead = ownershipEntry({ pid: 64 })
+  const live = { ...ownershipEntry({ pid: 65 }), parentPid: 400, parentStartMarker: 'os-start-live' }
+  const tailOrphan = ownershipEntry({ pid: 66 })
+  const store = memoryStore(stored([dead, live, tailOrphan]))
+  const stop = vi.fn()
+
+  const ownership = createOwnership(store, {
+    matchesParent: async entry => {
+      if (entry.parentPid !== live.parentPid || entry.parentStartMarker !== live.parentStartMarker) {
+        return false
+      }
+
+      // The survivor's liveness probe eats the rest of the budget (slow
+      // Windows PowerShell probes, #87169), exhausting it for the tail.
+      now.mockReturnValue(1)
+
+      return true
+    },
+    matchesIdentity: async () => false,
+    stop,
+    reapDeadlineMs: 1
+  })
+
+  assert.deepEqual(await ownership.reapOrphans(), [])
+  assert.equal(stop.mock.calls.length, 0)
+  // The unprocessed tail orphan must lead the next launch's file; keeping the
+  // survivor ahead of it re-probes the survivor every launch and the tail
+  // orphan is never reached (#123545).
+  assert.deepEqual(parseBackendOwnership(store.value()), [tailOrphan, live])
+})
+
 test('startup reap preserves would-be-reaped records when the budget runs out', async ({ onTestFinished }) => {
   const now = vi.spyOn(Date, 'now').mockReturnValue(0)
   onTestFinished(() => now.mockRestore())

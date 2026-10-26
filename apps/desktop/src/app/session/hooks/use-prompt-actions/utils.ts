@@ -336,10 +336,15 @@ function gatewayReason(error: unknown): unknown {
 
 // The error card's surface for an ownership refusal: another surface owns the session (#106217,
 // deterministic: drop Retry, offer a new session), or the gateway owner is mid-turn and could not
-// queue the send (#140385, transient: Retry once the turn ends). Empty for any other error.
+// queue the send (#140385, transient: Retry once the turn ends), or the chat is stored history
+// nothing can continue (deterministic). Empty for any other error.
 export function ownershipErrorSurface(error: unknown): { errorSurface?: ErrorSurface } {
   if (isSessionNotOwnedError(error)) {
     return { errorSurface: { layer: 'gateway', code: 'SESSION_NOT_OWNED', retryable: false } }
+  }
+
+  if (gatewayReason(error) === 'session_read_only') {
+    return { errorSurface: { layer: 'gateway', code: 'session_read_only', retryable: false } }
   }
 
   if (gatewayReason(error) === 'SESSION_OWNER_UNCONFIRMED') {

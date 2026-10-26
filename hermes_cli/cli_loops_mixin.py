@@ -667,6 +667,7 @@ class CLILoopsMixin:
         if getattr(self, "_heartbeat_watchdog_started", False):
             return
         self._heartbeat_watchdog_started = True
+        from hermes_cli.gateway_automation import GatewayHeartbeatManager
         from hermes_cli.heartbeat import POLL_SECONDS
 
         def _loop():
@@ -675,6 +676,10 @@ class CLILoopsMixin:
                     time.sleep(POLL_SECONDS)
                     try:
                         mgr = self._get_heartbeat_manager()
+                        if isinstance(mgr, GatewayHeartbeatManager):
+                            # The gateway poller stands down while this watchdog runs, so a resume,
+                            # set or re-anchor from another viewer must reach this copy.
+                            mgr.refresh()
                         if mgr is None or not mgr.is_active():
                             continue
                         busy = (
@@ -815,7 +820,8 @@ class CLILoopsMixin:
                 pass
             _cprint(f"  {_DIM}{t('cli.loop.paused_interrupted')}{_RST}")
             return
-        decision = mgr.complete_tick(self._last_assistant_response_text())
+        decision = mgr.complete_tick("" if getattr(self, "_last_turn_failed", False)
+                                     else self._last_assistant_response_text())
         # With the live-work dock up its loop row carries the countdown; the one-shot line would go stale.
         if (not _print_decision_message(decision) and decision.get("status") == "active"
                 and mgr.state is not None and getattr(self, "_subagent_monitor", None) is None):
@@ -860,6 +866,10 @@ class CLILoopsMixin:
 
         # Empty/whitespace responses are almost always transient failures (API error,
         # empty stream): judging would say "continue" and trip the parse-failure backstop.
+        # A failed turn (a refused one: its folder is gone) never reached the model, so the judge
+        # would grade the previous reply and burn the whole budget; same rule as the TUI's hook.
+        if getattr(self, "_last_turn_failed", False):
+            return
         last_response = self._last_assistant_response_text()
         if not last_response.strip():
             return

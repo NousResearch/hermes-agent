@@ -293,8 +293,8 @@ class ManagedWorker:
             return
         try:
             proc = psutil.Process(self.worker[0])
-            from hermes_cli.process_identity import process_birth
-            if process_birth(proc) == self.worker[1]:
+            from hermes_cli.process_identity import worker_birth
+            if worker_birth(proc) == self.worker[1]:
                 (proc.kill if kill else proc.terminate)()
         except psutil.Error:
             pass
@@ -577,6 +577,18 @@ async def _spawn_registered_worker(authority, ref, row):
     spawning.pop(ref.session_id, None)
     worker.stop_cause = _latched_stop_cause(authority, ref.session_id, generation)
     return worker, process
+
+
+async def admit_managed(authority, ref, row, policy):
+    """The ingress route into a managed worker. A removed folder is refused before a worker exists,
+    like the in-process runner: a worker failing in its policy scope reads as a LOST execution
+    (``unknown``) and parks every follower behind it."""
+    from gateway.session_policy import workspace_ready, workspace_unavailable_result
+    if not workspace_ready(policy):
+        result = workspace_unavailable_result(policy)
+        authority.pending_results[row['admission_id']] = {'result': result, 'usage': {}}
+        return result['final_response']
+    return await execute_managed(authority, ref, row, policy)
 
 
 async def execute_managed(authority, ref, row, policy):

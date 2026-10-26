@@ -121,7 +121,7 @@ def _truncate_with_footer(content: str, url: str, char_limit: int) -> tuple[str,
     else:
         footer_lines.append(
             "Full text could not be stored; re-run web_extract on a more "
-            "specific URL or use browser_navigate for the complete page."
+            "specific URL or open it in the browser for the complete page."
         )
     footer_lines.append("─" * 29)
     model_text = head + "\n\n[... middle omitted — see footer ...]\n\n" + tail

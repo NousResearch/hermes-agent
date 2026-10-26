@@ -19,6 +19,103 @@ import pytest
 from hermes_constants import apply_scratch_tmp_env, get_scratch_dir, prune_scratch_dir
 
 
+def test_boot_hook_and_prompt_hand_the_prune_to_one_child(scratch_prune_spawns, tmp_path, monkeypatch):
+    """The boot hook returns with TMPDIR pointing at a scratch dir that already exists and
+    starts exactly one prune process, for that dir; the prompt build starts no other. A routed
+    caller's process prunes the routed home's dir, never the launch home's."""
+    import hermes_constants as constants
+    from agent.prompt_builder import _local_host_hints
+
+    monkeypatch.setattr(constants, "_scratch_pruned_once", False)
+    home = tmp_path / "launch"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    scratch = home / "cache" / "scratch"
+    env = {"HERMES_HOME": str(home)}
+    assert apply_scratch_tmp_env(env) is True
+    hints = _local_host_hints()
+    assert env["TMPDIR"] == str(scratch) and scratch.is_dir()
+    assert f"Scratch directory: {scratch} (TMPDIR points here" in hints[0]
+    assert scratch_prune_spawns == [scratch]
+
+    monkeypatch.setattr(constants, "_scratch_pruned_once", False)  # the routed caller's own process
+    routed = tmp_path / "routed"
+    token = constants.set_hermes_home_override(routed)
+    try:
+        assert get_scratch_dir() == routed / "cache" / "scratch"
+    finally:
+        constants.reset_hermes_home_override(token)
+    assert scratch_prune_spawns == [scratch, routed / "cache" / "scratch"]
+
+
+def _idle_entry(scratch: Path, name: str) -> Path:
+    entry = scratch / name
+    (entry / "sub").mkdir(parents=True)
+    (entry / "sub" / "out.log").write_text("old output", encoding="utf-8")
+    ancient = time.time() - 30 * 3600
+    for path in (entry / "sub" / "out.log", entry / "sub", entry):
+        os.utime(path, (ancient, ancient))
+    return entry
+
+
+def test_a_short_lived_process_still_completes_its_due_prune(tmp_path):
+    """A `hermes` command that exits right after boot still gets its pass: the detached child
+    removes the idle entry of the (routed) home the command resolved, after the command is gone,
+    and leaves the launch home alone. Red on a daemon-thread prune, which dies with the command.
+    The user's shell stays the pass's own even when everything between it and the pass exited
+    first: a shell working inside an idle entry is neither signalled nor has its entry removed."""
+    launch, routed = tmp_path / "launch", tmp_path / "routed"
+    kept = _idle_entry(get_scratch_dir(launch, prune=False), "launch-lane")
+    doomed = _idle_entry(get_scratch_dir(routed, prune=False), "routed-lane")
+    shell_entry = _idle_entry(get_scratch_dir(routed, prune=False), "shell-lane")
+    repo = Path(__file__).resolve().parents[1]
+    launcher = ("import sys; sys.path.insert(0, sys.argv[1]); from pathlib import Path; import hermes_constants as h; "
+                "h.set_hermes_home_override(Path(sys.argv[2])); h.get_scratch_dir()")
+    # shell (cwd in an idle entry, stays) -> wrapper (exits once the launcher does) -> launcher
+    run = "import subprocess, sys; subprocess.run(sys.argv[1:], cwd={!r}, stdin=subprocess.DEVNULL, check=True)"
+    wrapper = [sys.executable, "-c", run.format(str(tmp_path)), sys.executable, "-c", launcher, str(repo), str(routed)]
+    shell = [sys.executable, "-c", run.format(str(tmp_path)) + "; import time; time.sleep(120)", *wrapper]
+    env = {**os.environ, "HERMES_HOME": str(launch)}
+    user_shell = subprocess.Popen(shell, env=env, cwd=shell_entry / "sub", stdin=subprocess.DEVNULL)
+    log_file = routed / "logs" / "scratch-prune.log"
+
+    def removal_logged():  # the record follows the rmtree, so wait for it, not for the path
+        return log_file.exists() and f"removed {str(doomed)!r} (" in log_file.read_text(encoding="utf-8-sig")
+
+    try:
+        wait_until(removal_logged, timeout=60, what="the detached prune removing the idle entry")
+        assert not doomed.exists() and kept.exists() and shell_entry.exists()
+        assert user_shell.poll() is None, "the user's shell was signalled"
+        log = log_file.read_text(encoding="utf-8-sig")
+        assert f"kept {str(shell_entry)!r} — live Hermes process pid={user_shell.pid}" in log, log
+    finally:
+        user_shell.kill()
+        user_shell.wait(timeout=30)
+
+
+@pytest.mark.platforms("linux")  # /proc starttime and prctl(PR_SET_NAME)
+def test_launcher_ancestry_stamp_is_boot_relative_even_for_a_non_utf8_name(tmp_path):
+    """The ancestry stamp the detached pass compares is the kernel's start tick, never a
+    wall-clock birth that a clock step moves: a process whose name was cut mid-UTF-8 (comm is
+    15 bytes) still gets its tick, and is recognised as itself. A wall-clock fallback there
+    disowned the user's shell after a clock step and the pass killed it."""
+    import hermes_constants_scratch as rules
+
+    ready = tmp_path / "ready"
+    child = subprocess.Popen([sys.executable, "-c", (
+        "import ctypes, sys, time; ctypes.CDLL(None).prctl(15, ctypes.c_char_p(bytes.fromhex(sys.argv[1])), 0, 0, 0); "
+        "open(sys.argv[2], 'w').close(); time.sleep(60)"), "c3a9" * 7 + "c3", str(ready)], stdin=subprocess.DEVNULL)
+    try:
+        wait_until(ready.exists, timeout=30, what="the child renaming itself")
+        stat = Path(f"/proc/{child.pid}/stat").read_bytes()
+        assert b"\xc3)" in stat  # the name really is invalid UTF-8
+        stamp = rules._birth_stamp(psutil.Process(child.pid))
+        assert stamp == float(int(stat.rsplit(b")", 1)[1].split()[19]))
+        assert rules._same_birth(psutil.Process(child.pid), stamp)
+    finally:
+        child.kill()
+        child.wait(timeout=30)
+
+
 def test_scratch_env_follows_home_and_respects_user_tmpdir(tmp_path):
     """Unset temp vars → scratch of env HERMES_HOME; a Hermes-exported value re-derives for a routed
     home; a user/OS-set value (macOS ``/var/folders``, ``%TEMP%``) is never touched."""

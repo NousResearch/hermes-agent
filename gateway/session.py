@@ -805,6 +805,9 @@ class SessionStore(
         self._fast_persisted_entries: dict[str, tuple[int, str]] = {}
         self._inflight_lock = threading.Lock()
         self._inflight_sessions: dict[str, _SessionFlight] = {}
+        # Ids a route names before their state.db row is live: a route transition publishes under
+        # _lock and inserts/reopens the row after releasing it. Guarded by _lock.
+        self._rows_pending: set[str] = set()
         # An unscoped legacy Slack key is claimed once per process (two workspaces must not both
         # revive one session).
         self._legacy_slack_claim_lock = threading.Lock()
@@ -1058,6 +1061,7 @@ class SessionStore(
             current = self._entries.get(session_key)
             if current is None or (force_new and current is observed):
                 self._entries[session_key] = current = candidate
+                self._rows_pending.add(session_id)
         decision.entry = current
         decision.needs_save = True
         if current is not candidate:
@@ -1173,6 +1177,7 @@ class SessionStore(
             transport_profile=old_entry.transport_profile, **fields,
         )
         self._entries[session_key] = new_entry
+        self._rows_pending.add(session_id)
         self._save()
         return new_entry
 
@@ -1287,23 +1292,26 @@ class SessionStore(
                 ),
             )
 
-        if self._db_for_key(session_key) and old_entry.session_id:
-            self._promote_session_reset(
-                session_key, old_entry.session_id, "session_switch",
-                log=lambda e: logger.debug("Session DB end_session failed: %s", e),
-            )
-        if self._db_for_key(session_key):
-            # An explicit /resume/handoff/branch repoint is real user activity: the row is
-            # reopened (a repoint onto a finalized row must resume it, not write into a dead row).
-            # Mount-time reads (TUI session.resume) no longer reopen (#85303) — only this path does.
-            self._reopen_session_row(
-                session_key, target_session_id, log_prefix="Session DB reopen_session failed"
-            )
-            self._record_gateway_session_peer(
-                target_session_id, session_key, new_entry.origin,
-                display_name=new_entry.display_name, include_compression_ancestors=True,
-                transport_profile=new_entry.transport_profile,
-            )
+        try:
+            if self._db_for_key(session_key) and old_entry.session_id:
+                self._promote_session_reset(
+                    session_key, old_entry.session_id, "session_switch",
+                    log=lambda e: logger.debug("Session DB end_session failed: %s", e),
+                )
+            if self._db_for_key(session_key):
+                # An explicit /resume/handoff/branch repoint is real user activity: the row is
+                # reopened (a repoint onto a finalized row must resume it, not write into a dead row).
+                # Mount-time reads (TUI session.resume) no longer reopen (#85303) — only this path does.
+                self._reopen_session_row(
+                    session_key, target_session_id, log_prefix="Session DB reopen_session failed"
+                )
+                self._record_gateway_session_peer(
+                    target_session_id, session_key, new_entry.origin,
+                    display_name=new_entry.display_name, include_compression_ancestors=True,
+                    transport_profile=new_entry.transport_profile,
+                )
+        finally:
+            self._row_settled(target_session_id)
         return new_entry
 
     def list_sessions(self, active_minutes: Optional[int] = None) -> list[SessionEntry]:

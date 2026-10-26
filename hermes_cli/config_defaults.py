@@ -1781,8 +1781,8 @@ DEFAULT_CONFIG = {
         # suppress, or auto-approve commands outside a correlated human response.
         "approval": {"transport": "builtin", "transport_fallback": "deny"},
         # Writes to agent-instruction files (AGENTS.md/CLAUDE.md/SOUL.md/.cursorrules, project-local
-        # .hermes config) always need human approval, even under yolo. Extra patterns are fnmatch
-        # globs on the basename (e.g. "*.mdc").
+        # .hermes config) AND this home's reinjected substrates (memories/skills trees, cron/jobs.json,
+        # scripts/**, webhooks) always need human approval, even under yolo; extra fnmatch basenames.
         "protected_instruction_files": True,
         "protected_instruction_extra_patterns": [],
         "website_blocklist": {"enabled": False, "domains": [], "shared_files": []},

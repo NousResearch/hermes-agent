@@ -146,7 +146,7 @@ def cancel_reason(cancel_event: Any) -> str:
     return getattr(cancel_event, "reason", None) or "cron fire ownership was lost"
 
 
-def finish_cancelled_run(job: dict[str, Any], execution_id: str, fire_owner: Optional[str]) -> bool:
+def finish_cancelled_run(job: dict[str, Any], execution_id: str, fire_owner: Optional[str]) -> None:
     """Book an operator-cancelled run: ledger row ``cancelled`` with the recorded reason, and the
     job's ``last_status`` — without a failure alert or a failure-streak bump, since the operator
     asked for it. A job removed mid-run has no record left to mark; its ledger row still lands."""
@@ -157,7 +157,28 @@ def finish_cancelled_run(job: dict[str, Any], execution_id: str, fire_owner: Opt
         owner = {"expected_fire_owner": fire_owner} if fire_owner is not None else {}
         scheduler.mark_job_run(job["id"], False, f"Cancelled: {reason}", status="cancelled", **owner)
     scheduler.finish_execution(execution_id, success=False, error=reason, cancelled=True)
-    return True
+
+
+def run_job_unless_cancelled(run_job, job, run_kwargs, teardown, fence, execution_id, fire_owner):
+    """``run_job``'s result, or None once an operator cancel stopped the run and was booked.
+
+    Checked before the caller's claim-loss handling: removing a job mid-run cancels it AND drops
+    its claim, and the run must book the cancel, not "fire claim ownership lost" (#123045).
+    ``run_job`` hands the agent back even when raising, so ``teardown`` runs on every path
+    (BaseException, so KeyboardInterrupt/SystemExit mid-run still tear down)."""
+    try:
+        result = run_job(job, **run_kwargs)
+    except BaseException as exc:
+        teardown()
+        if not (isinstance(exc, Exception) and fence.operator_cancelled()):
+            raise
+        finish_cancelled_run(job, execution_id, fire_owner)
+        return None
+    if not fence.operator_cancelled():
+        return result
+    teardown()
+    finish_cancelled_run(job, execution_id, fire_owner)
+    return None
 
 
 def cancel_run(job_id: str, *, reason: Optional[str] = None) -> dict[str, Any]:

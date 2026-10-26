@@ -532,7 +532,7 @@ from cron.executions import (
 from cron.scheduler_liveness import ExecutionProgressStamper, _inactivity_watchdog_loop
 from cron.scheduler_bookkeeping import _classify_delivery_outcome
 from cron.cancellation import (CancelRequest, _CancelEventLike, _CombinedCancelEvent, cancel_reason,
-                               clear_cancel, finish_cancelled_run as _finish_cancelled_run)
+                               clear_cancel, run_job_unless_cancelled as _run_job_unless_cancelled)
 
 # Response marker that suppresses delivery (output is still saved locally for audit).
 SILENT_MARKER = "[SILENT]"
@@ -3350,20 +3350,11 @@ def _run_one_job_body(
             "execution_id": execution_id}
         if fence.cancel_event is not None:
             _run_kwargs["cancel_event"] = fence.cancel_event
-        try:
-            success, output, final_response, error = run_job(job, **_run_kwargs)
-        except BaseException as exc:
-            # run_job hands back the agent even when raising; tear down so a failed run never leaks.
-            # BaseException so KeyboardInterrupt/SystemExit mid-run still trigger teardown.
-            _teardown_deferred()
-            if not (isinstance(exc, Exception) and fence.operator_cancelled()):
-                raise
-            success = None
-        # Before claim loss: removing a job mid-run cancels it AND drops its claim (#123045).
-        if fence.operator_cancelled():
-            if success is not None:  # the except path above already tore down
-                _teardown_deferred()
-            return _finish_cancelled_run(job, execution_id, fire_owner)
+        outcome = _run_job_unless_cancelled(
+            run_job, job, _run_kwargs, _teardown_deferred, fence, execution_id, fire_owner)
+        if outcome is None:  # an operator cancel stopped it and is already booked
+            return True
+        success, output, final_response, error = outcome
 
         if _fire_claim_ownership_lost():
             _teardown_deferred()

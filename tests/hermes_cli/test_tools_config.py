@@ -872,6 +872,28 @@ def test_disabled_composite_debugging_prunes_constituent_platform_toolsets():
     assert "web" not in enabled
 
 
+def test_explicit_empty_platform_pin_is_not_refilled_by_native_recovery():
+    """#135022: ``platform_toolsets.feishu: []`` is the fail-closed zero-tool selection
+    (#82010): the recovery step that re-adds non-checklist platform-native toolsets
+    (``feishu_doc``/``feishu_drive``) must not defeat the pin — matching how ``discord``
+    pins stay empty."""
+    config = {"platform_toolsets": {"feishu": []}}
+    enabled = _get_platform_tools(config, "feishu", include_default_mcp_servers=False)
+
+    assert enabled == set()
+
+
+def test_native_recovery_keeps_non_checklist_toolsets_on_non_empty_saves():
+    """Recovery's reason to exist: ``feishu_doc``/``feishu_drive`` never appear on a
+    checklist, so a saved non-empty selection — and the implicit platform default —
+    keep them (#35527 parity for feishu)."""
+    saved = {"platform_toolsets": {"feishu": ["terminal", "file"]}}
+    assert {"feishu_doc", "feishu_drive"} <= _get_platform_tools(saved, "feishu", include_default_mcp_servers=False)
+
+    implicit = {}
+    assert {"feishu_doc", "feishu_drive"} <= _get_platform_tools(implicit, "feishu", include_default_mcp_servers=False)
+
+
 def test_disabled_composite_display_matches_runtime_tool_selection():
     """Display/runtime parity: a toolset is listed as enabled iff the agent keeps
     at least one of its tools after the runtime's tool-level subtraction."""

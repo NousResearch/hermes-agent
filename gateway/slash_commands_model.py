@@ -311,7 +311,7 @@ class GatewayModelCommandsMixin:
             t("gateway.model.switched", model=format_model_for_display(result.new_model)),
             t("gateway.model.provider_label", provider=result.provider_label or result.target_provider),
         ]
-        # Provider-aware chain: Codex OAuth, Copilot and Nous caps win over the raw models.dev entry.
+        # Provider-aware chain: Codex OAuth, Nous and profile live-catalog caps win over the raw models.dev entry.
         mi = result.model_info
         model_cfg: dict = {}
         config_ctx = None
@@ -343,6 +343,8 @@ class GatewayModelCommandsMixin:
             lines.append(t("gateway.model.prompt_caching_enabled"))
         if result.warning_message:
             lines.append(t("gateway.model.warning_prefix", warning=result.warning_message))
+        if getattr(result, "usage_notice", ""):
+            lines.append(f"⚠️ {result.usage_notice}")
         if ctx.persist_global and global_error is not None:
             # Never claim a clean global commit the disk did not take (#100314).
             lines.append(t("gateway.model.warning_prefix", warning=global_error))
@@ -598,7 +600,7 @@ class GatewayModelCommandsMixin:
             # that searches by the complete peer tuple when session_key doesn't match. origin_json and
             # display_name complete the identity (same shape as the reset path's db_create_kwargs in
             # gateway/session.py, #82633) so consumers that read routing/presentation data from state.db
-            # (mcp_serve, mirror, channel directory) see the branch row fully formed with zero backfill gap.
+            # (the mcp-serve plugin, mirror, channel directory) see the branch row fully formed with zero backfill gap.
             session_key=session_key,
             source=source,
             config_path=(profile_home or _hermes_home) / "config.yaml",
@@ -621,6 +623,119 @@ class GatewayModelCommandsMixin:
         if guard_fired:
             return guard_reply
         return await self._commit_model_switch_locked(result, ctx, source=source, picker=False)
+
+    # -------------------------------------------------- usage-window limit: one-tap switch
+
+    def _schedule_usage_limit_offer(self, event: MessageEvent, limit: dict, *, session_key: str = "",
+                                    generation: Optional[int] = None) -> None:
+        """After a usage-window refusal's reply: offer the plan's recommended model as a button where the
+        platform already has quick-choice buttons, else one line of text.
+
+        Runs as the adapter's post-delivery callback, so the offer always lands under the reply (the reply
+        is sent after this turn returns). The tap switches this session only (never the default) and
+        re-sends the refused message, like /retry. No credits button in a chat: anyone in the room could
+        spend the owner's credits, so the Portal is named instead. Hermes never switches on its own."""
+        try:
+            adapter = self._delivery_adapter_for(event.source) if event.source is not None else None
+            register = getattr(adapter, "register_post_delivery_callback", None)
+            if session_key and callable(register):
+                register(session_key, lambda: self._offer_usage_limit_switch(event, limit, generation),
+                         generation=generation)
+                return
+            self._track_background_task(self._offer_usage_limit_switch(event, limit, generation))
+        except Exception:
+            logger.debug("usage-limit offer scheduling failed", exc_info=True)
+
+    async def _offer_usage_limit_switch(self, event: MessageEvent, limit: dict,
+                                        generation: Optional[int] = None) -> None:
+        from agent.plan_limits import limit_next_steps_from_payload
+        try:
+            suggestions = [s for s in (limit.get("suggestions") or []) if isinstance(s, dict) and s.get("model")]
+            source = event.source
+            if source is None:
+                return
+            prefix = self._typed_command_prefix_for(source.platform)
+            adapter = self._delivery_adapter_for(source)
+            session_key = self._session_key_for_source(source)
+            if suggestions and adapter is not None and getattr(type(adapter), "send_choice_picker", None) is not None:
+                async def _on_choice(_chat_id: str, value: str) -> str:
+                    if generation is not None and self._usage_limit_offer_is_stale(session_key, generation):
+                        # A newer turn ran since the refusal: /retry would re-run that one, not the refused one.
+                        return t("platform.discord.picker.choice_expired")
+                    return await self._accept_usage_limit_switch(
+                        event, value, offer=None if generation is None else (session_key, generation))
+
+                choices = [{"value": str(s["model"]),
+                            "label": t("gateway.usage_limit.switch_choice", model=str(s.get("label") or s["model"]),
+                                       note=str(s.get("note") or "")),
+                            "is_current": False} for s in suggestions]
+                if await self._try_send_choice_picker(
+                        event, session_key, title=t("gateway.usage_limit.picker_title"), choices=choices,
+                        on_choice_selected=_on_choice):
+                    return
+            text = limit_next_steps_from_payload(limit, model_command=f"{prefix}model", topup_command=None, portal=True)
+            if adapter is not None and text:
+                await adapter.send(source.chat_id, text, metadata=self._reply_metadata(event))
+        except Exception:
+            logger.debug("usage-limit offer failed", exc_info=True)
+
+    def _usage_limit_offer_is_stale(self, session_key: str, generation: int) -> bool:
+        """True once the session has started a newer run than the refused one. Fails open (not stale)."""
+        try:
+            return int(self._session_state(session_key).persistent.run_generation) != int(generation)
+        except (AttributeError, KeyError, TypeError, ValueError):
+            return False
+
+    async def _accept_usage_limit_switch(self, event: MessageEvent, model_id: str, *,
+                                         offer: Optional[tuple[str, int]] = None) -> str:
+        """The tap: switch this session to *model_id* on Nous, then re-send the refused message.
+        ``offer`` is the refused turn's ``(session_key, run_generation)``."""
+        from gateway.run import _hermes_home
+        source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
+        session_key = self._session_key_for_source(source)
+        profile_home = None
+        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            profile_home = self._resolve_profile_home_for_source(event.source)
+        ctx = _ModelSwitchContext(session_key=session_key, source=source,
+                                  config_path=(profile_home or _hermes_home) / "config.yaml", persist_global=False)
+
+        async def _switch() -> str:
+            ctx.read_config()
+            ctx.apply_override(self._session_model_overrides.get(session_key, {}))
+            result, error = await self._perform_model_switch(ctx, model_id, "nous", event.source)
+            if error is not None:
+                return error
+            return await self._commit_model_switch(result, ctx, source=event.source, picker=True)
+
+        before = self._session_model_overrides.get(session_key)
+        if profile_home is None:
+            reply = await _switch()
+        else:
+            from gateway.run import _profile_runtime_scope
+            with _profile_runtime_scope(profile_home):
+                reply = await _switch()
+        after = self._session_model_overrides.get(session_key)
+        switched = after is not None and after is not before and after.get("provider") == "nous"
+        if switched:
+            # Only after the switch landed (an error reply leaves the override unchanged). Exactly a typed /retry from the same sender (rewinds the refused turn, runs the message
+            # again, and the adapter delivers the reply). Called directly, the re-run's reply would be
+            # returned to nobody.
+            self._track_background_task(self._dispatch_usage_limit_retry(event, offer))
+        return reply
+
+    async def _dispatch_usage_limit_retry(self, event: MessageEvent, offer: Optional[tuple[str, int]] = None) -> None:
+        from gateway.platforms.event import MessageType
+        adapter = self._delivery_adapter_for(event.source)
+        # Re-checked here, with no await before the /retry: the switch awaited model resolution, and a
+        # turn that ran meanwhile is what /retry would rewind. The switch itself stands.
+        if adapter is None or (offer is not None and self._usage_limit_offer_is_stale(*offer)):
+            return
+        try:
+            await adapter.handle_message(MessageEvent(
+                text="/retry", message_type=MessageType.TEXT, source=event.source,
+                raw_message=event.raw_message, channel_prompt=event.channel_prompt))
+        except Exception:
+            logger.debug("usage-limit retry dispatch failed", exc_info=True)
 
     # -------------------------------------------------- /codex-runtime, /personality
 

@@ -4,7 +4,7 @@
 # Emits a JSON array of tag names on stdout, suitable for a GitHub Actions
 # matrix (`fromJSON`). Choosing at runtime rather than hardcoding keeps the
 # matrix honest as releases land: a pinned list silently stops covering the
-# newest release the day after it ships, and pins the "oldest" forever even
+# newest release the day after it ships, and pins an "oldest" forever even
 # after it stops being a version anyone still runs.
 #
 # Selection: the newest tag, the oldest tag, and evenly spaced tags in between.
@@ -17,12 +17,15 @@
 #
 #   --count   how many tags to emit (default 5, minimum 1). Fewer tags than
 #             requested emits all of them.
-#   --repo    repository to read tags from (default: this checkout).
+#   --repo    repository whose origin to read tags from (default: this
+#             checkout).
 #
-# Reads tags from the local checkout, so it needs one fetched with tags
-# (actions/checkout with fetch-depth: 0, or `fetch-tags: true`). A shallow
-# checkout has no tags and this exits non-zero rather than silently emitting an
-# empty matrix.
+# Tags come from origin via ls-remote, so a checkout with no local tags works.
+# Only the picked tags are fetched into the checkout afterwards -- never the
+# canary and backup refs a full --tags fetch would pull -- because the caller
+# walks the picked tags' trees, which needs their refs present. Exits non-zero
+# when origin has no release tags rather than silently emitting an empty
+# matrix.
 #
 # Only vYYYY.M.D[.N] release tags are considered; the repo also carries
 # backup/* and one-off tags that are not releases.
@@ -42,14 +45,14 @@ while [ "$#" -gt 0 ]; do
     --repo)
       [ "$#" -ge 2 ] || { echo 'error: --repo needs a value' >&2; exit 1; }
       REPO="$2"; shift 2 ;;
-    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,31p' "$0"; exit 0 ;;
     *) echo "error: unknown argument: $1" >&2; exit 1 ;;
   esac
 done
 case "$COUNT" in
   ''|*[!0-9]*) echo "error: --count must be a positive integer: $COUNT" >&2; exit 1 ;;
 esac
-[ "$COUNT" -ge 1 ] || { echo 'error: --count must be at least 1' >&2; exit 1; }
+[ "$COUNT" -ge 1 ] || { echo "error: --count must be at least 1" >&2; exit 1; }
 
 # Resolve the script's own location through symlinks, then ask git which
 # worktree that path belongs to. Deriving the repo from the script rather than
@@ -64,19 +67,22 @@ if [ -z "$REPO" ]; then
   REPO="$(git -C "$script_dir" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$script_dir")"
 fi
 
-# sort -V orders v2026.4.8 before v2026.4.13 (numeric), which a plain
-# lexicographic sort gets wrong.
+# ls-remote lists origin's refs without fetching any objects. sort -V orders
+# v2026.4.8 before v2026.4.13 (numeric), which a plain lexicographic sort gets
+# wrong; on CalVer names it is also the release chronology, so the list can be
+# ordered from the tag names alone.
+remote_tags="$(git -C "$REPO" ls-remote --refs --tags origin 'v*')"
 mapfile -t tags < <(
-  git -C "$REPO" tag --list 'v*' \
+  printf '%s\n' "$remote_tags" \
+    | cut -f2 \
+    | sed 's|^refs/tags/||' \
     | grep -E '^v[0-9]{4}\.[0-9]+\.[0-9]+(\.[0-9]+)?$' \
     | sort -V
 )
 
 total="${#tags[@]}"
 if [ "$total" -eq 0 ]; then
-  echo "error: no release tags found in $REPO" >&2
-  echo '       A shallow clone has no tags: fetch with tags (actions/checkout' >&2
-  echo '       with fetch-depth: 0, or fetch-tags: true).' >&2
+  echo "error: no vYYYY.M.D[.N] release tags found on origin" >&2
   exit 1
 fi
 
@@ -101,6 +107,16 @@ else
     picked+=("$candidate")
   done
 fi
+
+# Materialize exactly the picked tags as local refs: the caller walks the
+# picked tags' trees (git ls-tree), which a checkout without tags cannot do.
+# The name-based ordering above needs no objects, so unselected releases are
+# never fetched.
+refs=()
+for tag in "${picked[@]}"; do
+  refs+=("+refs/tags/$tag:refs/tags/$tag")
+done
+git -C "$REPO" fetch --quiet --no-tags origin "${refs[@]}"
 
 printf '['
 for i in "${!picked[@]}"; do

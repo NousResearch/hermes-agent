@@ -108,6 +108,30 @@ def test_a_profile_still_starting_leaves_the_served_ledgers_readable(tmp_path, m
         db.close()
 
 
+def test_a_profile_still_starting_keeps_an_otherwise_idle_gateway_up(tmp_path, monkeypatch):
+    """With every built ledger empty, a profile hot-serve is still building holds the gateway: its
+    queued admissions are recovered only once it starts. The hold ends with the start, filled or failed."""
+    runner, _home, db, _stops = _runner(tmp_path, monkeypatch)
+    registry = runner.session_authorities
+    starting = tmp_path / "starting"
+    starting.mkdir()
+    try:
+        assert run_idle_exit.busy_reason(runner, window=0.2) is None
+        registry.add(starting, None, name="starting")  # as serve_profile_runtime does
+        assert "profile starting" in run_idle_exit.busy_reason(runner, window=0.2)
+        registry.remove(starting)  # the build failed
+        assert run_idle_exit.busy_reason(runner, window=0.2) is None
+        registry.add(starting, None, name="starting")
+        starting_db = SessionDB(db_path=starting / "state.db")
+        registry.replace(starting, SimpleNamespace(profile_id=str(starting), db=starting_db))
+        try:
+            assert run_idle_exit.busy_reason(runner, window=0.2) is None
+        finally:
+            starting_db.close()
+    finally:
+        db.close()
+
+
 def test_secondary_local_session_adapter_does_not_count_as_messaging(tmp_path, monkeypatch):
     """A secondary local session leaves an adapter map behind after the client disconnects."""
     runner, _home, db, _stops = _runner(tmp_path, monkeypatch)

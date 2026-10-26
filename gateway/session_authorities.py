@@ -75,6 +75,10 @@ class SessionAuthorities:
         return next(((key, started) for key, started in list(self._starting.items())
                      if profile_matches_home(profile, Path(key))), None)
 
+    def starting_homes(self) -> list[str]:
+        """Keys of every slot whose authority is still being built (a snapshot, as in ``serving``)."""
+        return list(self._starting)
+
     def profile_name(self, authority):
         """Served profile name for *authority*; None for the launch profile (its adapters are
         ``runner.adapters``, its session keys the historical ``agent:main`` namespace)."""

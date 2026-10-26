@@ -27,6 +27,7 @@ import sqlite3
 import threading
 import time
 from contextlib import closing, contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
@@ -39,14 +40,34 @@ _PRUNE_INTERVAL_SECONDS = 600.0
 
 ACCEPTED, DUPLICATE, IGNORED, FAILED = "accepted", "duplicate", "ignored", "failed"
 
-# The receipt of the POST being handled, so the route handlers can add the run they started (``ref``) or
-# a reason the HTTP answer must not carry. Outside a POST (coalesced flush, replay) it is a throwaway.
-CURRENT: ContextVar[Optional[dict]] = ContextVar("webhook_receipt", default=None)
+@dataclass
+class DeliveryReceipt:
+    """What one authenticated delivery did, filled in by the handlers as they decide and filed once
+    its HTTP answer is built. ``reason`` is local history only, never part of the answer."""
+
+    route: str
+    profile: Optional[str]
+    delivery_id: str
+    event_type: str = ""
+    claim_row: Optional[int] = None  # the durable claim this delivery holds, settled by its answer
+    reason: str = ""
+    ref: str = ""  # what it started: ``cron_job:<ref>``, ``deliver:<target>``, ``admission:<id>``
+    outcome_unknown: bool = False  # a send that may have landed: keep the claim even on a failure
+
+    @property
+    def identity(self):
+        from gateway.platforms.webhook import _WebhookDeliveryIdentity
+        return _WebhookDeliveryIdentity.from_parts(self.profile, self.route, self.delivery_id)
 
 
-def current() -> dict:
+# The receipt of the delivery being handled, so the route handlers deep in the call chain can add what
+# they started or why it failed. Unset outside a POST or an admission task: ``current()`` is a throwaway.
+CURRENT: ContextVar[Optional[DeliveryReceipt]] = ContextVar("webhook_receipt", default=None)
+
+
+def current() -> DeliveryReceipt:
     receipt = CURRENT.get()
-    return receipt if receipt is not None else {}
+    return receipt if receipt is not None else DeliveryReceipt("", None, "")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS receipts (
@@ -81,6 +102,16 @@ class WebhookReceipts:
         # One connection, opened on first use and shared by the worker threads that call in: closing
         # the last connection to a WAL database checkpoints and fsyncs, which per delivery cost ~30 ms.
         self._lock = threading.Lock()
+        # Claims a failed write could not give back. Kept until a later write lands them: a claim that
+        # stays held answers the provider's retry as a duplicate although nothing ran.
+        self._unreleased: dict[Any, str] = {}
+
+    def close(self) -> None:
+        """Release the cached connection (adapter teardown); a later call reopens it."""
+        with self._lock:
+            if self._conn is not None:
+                self._conn.close()
+                self._conn = None
 
     @contextmanager
     def _connect(self):
@@ -100,6 +131,7 @@ class WebhookReceipts:
         """Durably claim *identity*; the new row id, or None when a live claim already holds it."""
         with self._connect() as conn, conn:
             self._prune(conn, now)
+            self._drain_unreleased(conn)
             try:
                 cursor = conn.execute(
                     "INSERT INTO receipts (profile, route, delivery_id, event_type, outcome, received_at, claim)"
@@ -118,20 +150,53 @@ class WebhookReceipts:
             ).fetchone()
         return row is not None
 
-    def settle(self, row_id: int, outcome: str, reason: str, ref: str, *, keep_claim: bool) -> None:
+    def settle(self, row_id: int, identity, outcome: str, reason: str, ref: str, *, keep_claim: bool) -> None:
         """Final outcome for a claimed row. A confirmed failure passes ``keep_claim=False`` so the provider's
-        retry is processed; an unknown outcome (the send may have happened) keeps it."""
-        with self._connect() as conn, conn:
-            conn.execute("UPDATE receipts SET outcome = ?, reason = ?, ref = ?, claim = ? WHERE id = ?",
-                         (outcome, reason, ref, int(keep_claim), row_id))
+        retry is processed; an unknown outcome (the send may have happened) keeps it. Only a row still
+        holding its claim settles: a release that landed first (a coalesced batch refused before its
+        request was filed) is never undone. A release that cannot be written is retried on the next claim."""
+        try:
+            with self._connect() as conn, conn:
+                conn.execute(
+                    "UPDATE receipts SET outcome = ?, reason = ?, ref = ?, claim = ? WHERE id = ? AND claim = 1",
+                    (outcome, reason, ref, int(keep_claim), row_id))
+        except sqlite3.Error:
+            if not keep_claim:
+                self._remember_unreleased(identity, reason)
+            raise
 
     def release(self, identity, reason: str) -> None:
         """Give back a claim whose work was dropped after the ack (a coalesced batch that was not admitted)."""
+        try:
+            with self._connect() as conn, conn:
+                self._release(conn, identity, reason)
+        except sqlite3.Error:
+            self._remember_unreleased(identity, reason)
+            raise
+
+    def link(self, identity, ref: str) -> None:
+        """Record what a claimed delivery started once that is known (a coalesced batch's admission)."""
         with self._connect() as conn, conn:
             conn.execute(
-                "UPDATE receipts SET outcome = ?, reason = ?, claim = 0"
-                " WHERE profile = ? AND route = ? AND delivery_id = ? AND claim = 1",
-                (FAILED, reason, identity.profile, identity.route, identity.delivery_id))
+                "UPDATE receipts SET ref = ? WHERE profile = ? AND route = ? AND delivery_id = ? AND claim = 1",
+                (ref, identity.profile, identity.route, identity.delivery_id))
+
+    @staticmethod
+    def _release(conn: sqlite3.Connection, identity, reason: str) -> None:
+        conn.execute(
+            "UPDATE receipts SET outcome = ?, reason = ?, claim = 0"
+            " WHERE profile = ? AND route = ? AND delivery_id = ? AND claim = 1",
+            (FAILED, reason, identity.profile, identity.route, identity.delivery_id))
+
+    def _remember_unreleased(self, identity, reason: str) -> None:
+        with self._lock:
+            self._unreleased[identity] = reason
+
+    def _drain_unreleased(self, conn: sqlite3.Connection) -> None:
+        """Land releases an earlier failed write dropped (caller holds ``_lock`` via ``_connect``)."""
+        for identity, reason in list(self._unreleased.items()):
+            self._release(conn, identity, reason)
+        self._unreleased.clear()
 
     def record(self, identity, event_type: str, outcome: str, reason: str, ref: str, now: float) -> None:
         with self._connect() as conn, conn:
@@ -165,26 +230,26 @@ def read_history(path: Path, route: Optional[str] = None, limit: int = 20) -> li
         return [dict(row) for row in conn.execute(query, params)]
 
 
-async def file_receipt(store: WebhookReceipts, receipt: dict, response) -> bool:
+async def file_receipt(store: WebhookReceipts, receipt: DeliveryReceipt, response) -> bool:
     """File the answer given to one authenticated delivery: settle its claim row, else add a history row.
-    True when a claim was released (the caller drops its in-process copy too). History is best effort: a
-    failed write is logged and never changes the answer already decided."""
+    True when the claim is given back (the caller drops its in-process copy too) — also when the write
+    failed, since the store retries that release on its next claim. History is best effort: a failed
+    write is logged and never changes the answer already decided."""
     import asyncio
-    from gateway.platforms.webhook import _WebhookDeliveryIdentity
     outcome, reason = outcome_for_response(response.status, getattr(response, "text", None) or "")
-    reason, ref = receipt.get("reason") or reason, receipt.get("ref", "")
+    reason = receipt.reason or reason
+    keep_claim = outcome != FAILED or receipt.outcome_unknown
     try:
-        if (row_id := receipt.get("claim_row")) is not None:
-            keep_claim = outcome != FAILED or bool(receipt.get("outcome_unknown"))
-            await asyncio.to_thread(store.settle, row_id, outcome, reason, ref, keep_claim=keep_claim)
+        if receipt.claim_row is not None:
+            await asyncio.to_thread(store.settle, receipt.claim_row, receipt.identity, outcome, reason,
+                                    receipt.ref, keep_claim=keep_claim)
             return not keep_claim
-        identity = _WebhookDeliveryIdentity.from_parts(receipt["profile"], receipt["route"], receipt["delivery_id"])
-        await asyncio.to_thread(store.record, identity, receipt.get("event_type", ""), outcome, reason, ref,
-                                time.time())
+        await asyncio.to_thread(store.record, receipt.identity, receipt.event_type, outcome, reason,
+                                receipt.ref, time.time())
     except sqlite3.Error:
-        logger.warning("[webhook] Could not record receipt for delivery %s on route %s", receipt.get("delivery_id"),
-                       receipt.get("route"), exc_info=True)
-    return False
+        logger.warning("[webhook] Could not record receipt for delivery %s on route %s", receipt.delivery_id,
+                       receipt.route, exc_info=True)
+    return receipt.claim_row is not None and not keep_claim
 
 
 def outcome_for_response(status: int, body_text: str) -> tuple[str, str]:

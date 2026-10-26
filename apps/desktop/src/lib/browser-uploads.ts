@@ -25,9 +25,13 @@ export const IMAGE_EXTENSION_BY_MIME: Record<string, string> = Object.fromEntrie
 )
 
 function normalizedExtension(value: string): string {
-  const clean = String(value || '').trim().toLowerCase()
+  const clean = String(value || '')
+    .trim()
+    .toLowerCase()
 
-  if (!clean) {return ''}
+  if (!clean) {
+    return ''
+  }
 
   return clean.startsWith('.') ? clean : `.${clean}`
 }
@@ -110,7 +114,9 @@ function stageResponse(text: string): StageResponse {
 }
 
 function uploadFailure(status: number, detail: unknown): string {
-  if (typeof detail === 'string' && detail) {return detail}
+  if (typeof detail === 'string' && detail) {
+    return detail
+  }
 
   return status === 413
     ? 'File upload failed (413): the file is larger than the server or a proxy in front of it accepts'
@@ -161,7 +167,9 @@ function selectBrowserFiles(
   fallbackProfile: null | string,
   onStaged: OnStaged
 ): Promise<string[]> {
-  if (options?.directories) {return Promise.resolve([])}
+  if (options?.directories) {
+    return Promise.resolve([])
+  }
 
   return new Promise<string[]>((resolve, reject) => {
     const input = document.createElement('input')
@@ -220,7 +228,12 @@ export function createBrowserUploadsBridge({
   previewUrls
 }: BrowserUploadsOptions): Pick<
   Window['hermesDesktop'],
-  'getStagedFileDisplayName' | 'getStagedFileForAttach' | 'saveImageBuffer' | 'savePastedText' | 'selectPaths' | 'stageFileForAttach'
+  | 'getStagedFileDisplayName'
+  | 'getStagedFileForAttach'
+  | 'saveImageBuffer'
+  | 'savePastedText'
+  | 'selectPaths'
+  | 'stageFileForAttach'
 > {
   const displayNames = new Map<string, string>()
   const stagedUploads = new Map<string, HermesStagedUpload>()
@@ -271,14 +284,14 @@ export function createBrowserUploadsBridge({
 
     const isHtml = extension === '.htm' || extension === '.html'
 
-    const blob = isHtml
-      ? sandboxedHtmlBlob(bytes)
-      : new Blob([bytes.buffer], { type: 'application/octet-stream' })
+    const blob = isHtml ? sandboxedHtmlBlob(bytes) : new Blob([bytes.buffer], { type: 'application/octet-stream' })
 
     const url = URL.createObjectURL(blob)
     objectUrls.add(url)
 
-    if (isHtml) { previewUrls.add(url) }
+    if (isHtml) {
+      previewUrls.add(url)
+    }
 
     return url
   }
@@ -287,9 +300,13 @@ export function createBrowserUploadsBridge({
     getStagedFileDisplayName: (path: string) => displayNames.get(path),
     getStagedFileForAttach: (path: string) => stagedUploads.get(path),
     saveImageBuffer: saveBuffer,
-    savePastedText: (text: string) => stageBrowserFile(
-      bootstrap, new File([text], 'pasted.txt', { type: 'text/plain' }), currentProfile(), rememberStaged
-    ),
+    savePastedText: (text: string) =>
+      stageBrowserFile(
+        bootstrap,
+        new File([text], 'pasted.txt', { type: 'text/plain' }),
+        currentProfile(),
+        rememberStaged
+      ),
     selectPaths: options => selectBrowserFiles(bootstrap, options, currentProfile(), rememberStaged),
     stageFileForAttach: (file: File) => stageBrowserFile(bootstrap, file, currentProfile(), rememberStaged)
   }

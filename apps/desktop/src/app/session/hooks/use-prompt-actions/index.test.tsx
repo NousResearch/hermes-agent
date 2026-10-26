@@ -79,21 +79,38 @@ describe('durable submit acknowledgement', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-retire-'))
     const journal = preparedJournal(home, 'http://native-fixture')
     const previous = window.hermesDesktop
-    window.hermesDesktop = { ...previous, preparedSubmissions: {
-      read: async () => JSON.stringify(journal.read()),
-      update: async (key, entry) => { journal.update(key, entry === null ? null : JSON.parse(entry)) }
-    } }
+    window.hermesDesktop = {
+      ...previous,
+      preparedSubmissions: {
+        read: async () => JSON.stringify(journal.read()),
+        update: async (key, entry) => {
+          journal.update(key, entry === null ? null : JSON.parse(entry))
+        }
+      }
+    }
     let accepted = false
 
     const requestGateway = vi.fn(async (_method: string, params?: Record<string, unknown>) => {
       expect(Object.values(journal.read())).toHaveLength(1)
 
-      return { admission_id: 'server-admission', submission_id: accepted ? params?.submission_id : 'other-input', session_id: params?.session_id, status: 'queued' } as never
+      return {
+        admission_id: 'server-admission',
+        submission_id: accepted ? params?.submission_id : 'other-input',
+        session_id: params?.session_id,
+        status: 'queued'
+      } as never
     })
 
     try {
       let handle: HarnessHandle | null = null
-      await actRender(<Harness onReady={h => (handle = h)} rawAdmissionReceipts refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+      await actRender(
+        <Harness
+          onReady={h => (handle = h)}
+          rawAdmissionReceipts
+          refreshSessions={async () => undefined}
+          requestGateway={requestGateway}
+        />
+      )
       const options = { fromQueue: true, submission_id: 'private-file-input' }
       expect(await handle!.submitText('native journal receipt', options)).toBe(false)
       expect(Object.values(preparedJournal(home, 'http://native-fixture').read())).toHaveLength(1)
@@ -112,17 +129,25 @@ describe('durable submit acknowledgement', () => {
     const entries = new Map<string, string>()
     const previous = window.hermesDesktop
     // The private-file journal accepts the preparation write, then the disk fills before retirement.
-    window.hermesDesktop = { ...previous, preparedSubmissions: {
-      read: async () => JSON.stringify(Object.fromEntries([...entries].map(([key, entry]) => [key, JSON.parse(entry)]))),
-      update: async (key, entry) => {
-        if (entry === null) {throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' })}
-        entries.set(key, entry)
+    window.hermesDesktop = {
+      ...previous,
+      preparedSubmissions: {
+        read: async () =>
+          JSON.stringify(Object.fromEntries([...entries].map(([key, entry]) => [key, JSON.parse(entry)]))),
+        update: async (key, entry) => {
+          if (entry === null) {
+            throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' })
+          }
+          entries.set(key, entry)
+        }
       }
-    } }
+    }
     const ids: unknown[] = []
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      if (method !== 'prompt.submit') {return {} as never}
+      if (method !== 'prompt.submit') {
+        return {} as never
+      }
       ids.push(params?.submission_id)
 
       return { admission_id: params?.submission_id, status: 'started' } as never
@@ -130,13 +155,24 @@ describe('durable submit acknowledgement', () => {
 
     try {
       let handle: HarnessHandle | null = null
-      await actRender(<Harness onReady={h => (handle = h)} rawAdmissionReceipts refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+      await actRender(
+        <Harness
+          onReady={h => (handle = h)}
+          rawAdmissionReceipts
+          refreshSessions={async () => undefined}
+          requestGateway={requestGateway}
+        />
+      )
       const accepted = vi.fn()
       expect(await handle!.submitText('delivered once', { onAccepted: accepted })).toBe(true)
       expect(accepted).toHaveBeenCalledTimes(1)
       expect(handle!.state().messages.some(message => message.error)).toBe(false)
       // A later identical send is a new turn, never deduplicated into the spent admission.
-      handle!.handleEvent({ type: 'message.complete', session_id: RUNTIME_SESSION_ID, payload: { text: 'done' } } as never)
+      handle!.handleEvent({
+        type: 'message.complete',
+        session_id: RUNTIME_SESSION_ID,
+        payload: { text: 'done' }
+      } as never)
       expect(await handle!.submitText('delivered once')).toBe(true)
       expect(ids).toHaveLength(2)
       expect(ids[1]).not.toBe(ids[0])
@@ -151,15 +187,22 @@ describe('durable submit acknowledgement', () => {
     $composerAttachments.set([])
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      if (method === 'slash.exec') {return { type: 'skill', name: 'private-skill', message: 'expanded skill' } as never}
+      if (method === 'slash.exec') {
+        return { type: 'skill', name: 'private-skill', message: 'expanded skill' } as never
+      }
 
       return { admission_id: 'other-input', status: 'queued' } as never
     })
 
     let handle: HarnessHandle | null = null
-    await actRender(<Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
     expect(await handle!.submitText('/private-skill', { fromQueue: true, submission_id: 'queued-skill' })).toBe(false)
-    expect(requestGateway.mock.calls.find(call => call[0] === 'prompt.submit')?.[1]).toMatchObject({ queued: true, submission_id: 'queued-skill' })
+    expect(requestGateway.mock.calls.find(call => call[0] === 'prompt.submit')?.[1]).toMatchObject({
+      queued: true,
+      submission_id: 'queued-skill'
+    })
   })
 
   afterEach(() => {
@@ -173,15 +216,36 @@ describe('durable submit acknowledgement', () => {
     [{ admission_id: 'entry-id', status: 'queued' }, true],
     [{ admission_id: 'entry-id', status: 'started' }, true],
     [{ admission_id: 'entry-id', status: 'terminal' }, true],
-    [{ admission_id: 'canonical-admission', submission_id: 'entry-id', session_id: RUNTIME_SESSION_ID, status: 'queued' }, true],
-    [{ admission_id: 'canonical-admission', submission_id: 'entry-id', session_id: 'wrong-destination', status: 'queued' }, false],
+    [
+      {
+        admission_id: 'canonical-admission',
+        submission_id: 'entry-id',
+        session_id: RUNTIME_SESSION_ID,
+        status: 'queued'
+      },
+      true
+    ],
+    [
+      {
+        admission_id: 'canonical-admission',
+        submission_id: 'entry-id',
+        session_id: 'wrong-destination',
+        status: 'queued'
+      },
+      false
+    ],
     // An exact retry of an admission the owner lost mid-turn: admitted, never replayed (Discard resolves it).
     [{ admission_id: 'entry-id', status: 'unknown' }, true]
   ])('requires the matching authoritative receipt: %j', async (receipt, accepted) => {
     const requestGateway = vi.fn(async () => receipt as never)
     let handle: HarnessHandle | null = null
     await actRender(
-      <Harness onReady={h => (handle = h)} rawAdmissionReceipts refreshSessions={async () => undefined} requestGateway={requestGateway} />
+      <Harness
+        onReady={h => (handle = h)}
+        rawAdmissionReceipts
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
     )
     const options = { fromQueue: true, submission_id: 'entry-id' }
     expect(await handle!.submitText('keep this input', options)).toBe(accepted)
@@ -198,11 +262,18 @@ describe('durable submit acknowledgement', () => {
     const submits: Array<Record<string, unknown>> = []
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      if (method !== 'prompt.submit') {return {} as never}
+      if (method !== 'prompt.submit') {
+        return {} as never
+      }
       submits.push(params!)
 
       if ('submission_id' in params!) {
-        throw Object.assign(new Error('invalid params for prompt.submit: submission_id: Extra inputs are not permitted — the client and the Hermes backend are out of sync (different versions)'), { code: 4000 })
+        throw Object.assign(
+          new Error(
+            'invalid params for prompt.submit: submission_id: Extra inputs are not permitted — the client and the Hermes backend are out of sync (different versions)'
+          ),
+          { code: 4000 }
+        )
       }
 
       return { status: 'streaming' } as never
@@ -210,7 +281,12 @@ describe('durable submit acknowledgement', () => {
 
     let handle: HarnessHandle | null = null
     await actRender(
-      <Harness onReady={h => (handle = h)} rawAdmissionReceipts refreshSessions={async () => undefined} requestGateway={requestGateway} />
+      <Harness
+        onReady={h => (handle = h)}
+        rawAdmissionReceipts
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
     )
     expect(await handle!.submitText('hi remote')).toBe(true)
     expect(submits).toHaveLength(2)
@@ -226,20 +302,35 @@ describe('submit timeout admission fences', () => {
     const submits: Record<string, unknown>[] = []
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      if (method === 'session.resume') {return { session_id: RUNTIME_SESSION_ID } as never}
+      if (method === 'session.resume') {
+        return { session_id: RUNTIME_SESSION_ID } as never
+      }
 
-      if (method !== 'prompt.submit') {return {} as never}
+      if (method !== 'prompt.submit') {
+        return {} as never
+      }
       submits.push(params!)
 
-      if (submits.length === 1) {throw Object.assign(new Error('capability refused'), { code: 4094 })}
+      if (submits.length === 1) {
+        throw Object.assign(new Error('capability refused'), { code: 4094 })
+      }
 
-      if (submits.length === 2) {throw new Error('request timed out: prompt.submit')}
+      if (submits.length === 2) {
+        throw new Error('request timed out: prompt.submit')
+      }
 
       return { admission_id: params?.submission_id, status: 'started' } as never
     })
 
     let handle: HarnessHandle | null = null
-    await actRender(<Harness onReady={h => (handle = h)} rawAdmissionReceipts refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        rawAdmissionReceipts
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
     const accepted = await handle!.submitText('legacy accepted before ACK loss', { submission_id: 'legacy-timeout' })
     expect(submits.map(p => p.submission_id)).toEqual(['legacy-timeout', undefined])
     expect(accepted).toBe(false)
@@ -255,21 +346,36 @@ describe('submit timeout admission fences', () => {
     clearNotifications()
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      if (method === 'session.resume') {return { session_id: RUNTIME_SESSION_ID } as never}
+      if (method === 'session.resume') {
+        return { session_id: RUNTIME_SESSION_ID } as never
+      }
 
-      if (method !== 'prompt.submit') {return {} as never}
+      if (method !== 'prompt.submit') {
+        return {} as never
+      }
       submits.push(params!)
 
       // A legacy serve refuses every submission_id before admission.
-      if (params?.submission_id) {throw Object.assign(new Error('capability refused'), { code: 4094 })}
+      if (params?.submission_id) {
+        throw Object.assign(new Error('capability refused'), { code: 4094 })
+      }
 
-      if (submits.length === 2) {throw new Error('request timed out: prompt.submit')}
+      if (submits.length === 2) {
+        throw new Error('request timed out: prompt.submit')
+      }
 
       return { ok: true } as never
     })
 
     let handle: HarnessHandle | null = null
-    await actRender(<Harness onReady={h => (handle = h)} rawAdmissionReceipts refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        rawAdmissionReceipts
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
     expect(await handle!.submitText('hello there', { submission_id: 'legacy-lost' })).toBe(false)
     expect(await handle!.submitText('hello there', { submission_id: 'legacy-lost' })).toBe(false)
     expect(submits).toHaveLength(2)
@@ -284,21 +390,37 @@ describe('submit timeout admission fences', () => {
     const submits: Record<string, unknown>[] = []
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      if (method === 'session.resume') {return { session_id: RUNTIME_SESSION_ID } as never}
+      if (method === 'session.resume') {
+        return { session_id: RUNTIME_SESSION_ID } as never
+      }
 
-      if (method !== 'prompt.submit') {return {} as never}
+      if (method !== 'prompt.submit') {
+        return {} as never
+      }
       submits.push(params!)
 
-      if (submits.length === 1) {throw new Error('request timed out: prompt.submit')}
+      if (submits.length === 1) {
+        throw new Error('request timed out: prompt.submit')
+      }
 
       return { admission_id: params?.submission_id, status: 'started' } as never
     })
 
     let handle: HarnessHandle | null = null
-    await actRender(<Harness onReady={h => (handle = h)} rawAdmissionReceipts refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        rawAdmissionReceipts
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
     expect(await handle!.submitText('safe identified retry', { submission_id: 'identified-timeout' })).toBe(true)
     expect(submits.map(p => p.submission_id)).toEqual(['identified-timeout', 'identified-timeout'])
-    expect(requestGateway).toHaveBeenCalledWith('session.resume', expect.objectContaining({ session_id: RUNTIME_SESSION_ID }))
+    expect(requestGateway).toHaveBeenCalledWith(
+      'session.resume',
+      expect.objectContaining({ session_id: RUNTIME_SESSION_ID })
+    )
   })
 })
 
@@ -309,41 +431,85 @@ describe('terminal receipt settlement', () => {
     let handle: HarnessHandle | null = null
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      if (method !== 'prompt.submit') { return {} as never }
-      expect(handle!.state()).toMatchObject({ busy: true, awaitingResponse: true, streamId: 'owner-stream', turnLive: true })
+      if (method !== 'prompt.submit') {
+        return {} as never
+      }
+      expect(handle!.state()).toMatchObject({
+        busy: true,
+        awaitingResponse: true,
+        streamId: 'owner-stream',
+        turnLive: true
+      })
 
-      return { admission_id: 'server-queue', submission_id: params?.submission_id, session_id: RUNTIME_SESSION_ID, status: 'queued' } as never
+      return {
+        admission_id: 'server-queue',
+        submission_id: params?.submission_id,
+        session_id: RUNTIME_SESSION_ID,
+        status: 'queued'
+      } as never
     })
 
-    await actRender(<Harness onReady={h => (handle = h)} rawAdmissionReceipts refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        rawAdmissionReceipts
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
     Object.assign(handle!.state(), { busy: true, awaitingResponse: true, streamId: 'owner-stream', turnLive: true })
     $connection.set({ wsUrl: 'ws://localhost/api/ws?native_dial=unminted', mode: 'local' } as never)
 
     try {
       expect(await handle!.submitText('next input', { fromQueue: true })).toBe(true)
-      expect(handle!.state()).toMatchObject({ busy: true, awaitingResponse: true, streamId: 'owner-stream', turnLive: true })
+      expect(handle!.state()).toMatchObject({
+        busy: true,
+        awaitingResponse: true,
+        streamId: 'owner-stream',
+        turnLive: true
+      })
       expect(JSON.parse(window.localStorage.getItem('hermes.desktop.preparedSubmissions.v1')!)).toEqual({})
-    } finally { $connection.set(null) }
+    } finally {
+      $connection.set(null)
+    }
   })
 
   it('settles a retained terminal retry without waiting for another lifecycle event', async () => {
     let terminal = false
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      if (method === 'session.resume') {return { session_id: 'rt-terminal-recovered' } as never}
+      if (method === 'session.resume') {
+        return { session_id: 'rt-terminal-recovered' } as never
+      }
 
-      if (method !== 'prompt.submit') {return {} as never}
+      if (method !== 'prompt.submit') {
+        return {} as never
+      }
 
-      if (!terminal) {throw new Error('connection closed')}
+      if (!terminal) {
+        throw new Error('connection closed')
+      }
 
-      if (params?.session_id === RUNTIME_SESSION_ID) {throw new Error('session not found')}
+      if (params?.session_id === RUNTIME_SESSION_ID) {
+        throw new Error('session not found')
+      }
 
       return { admission_id: params?.submission_id, status: 'terminal' } as never
     })
 
     let handle: HarnessHandle | null = null
     let updatedRuntime: string | undefined
-    await actRender(<Harness onReady={h => (handle = h)} onUpdateState={id => { updatedRuntime = id }} rawAdmissionReceipts refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onUpdateState={id => {
+          updatedRuntime = id
+        }}
+        rawAdmissionReceipts
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
     expect(await handle!.submitText('already persisted', { submission_id: 'terminal-retry' })).toBe(false)
     terminal = true
     expect(await handle!.submitText('already persisted', { submission_id: 'terminal-retry' })).toBe(true)
@@ -356,20 +522,55 @@ describe('terminal receipt settlement', () => {
   it('does not settle a newer external generation when an older terminal receipt arrives', async () => {
     let finish!: (value: never) => void
 
-    const requestGateway = vi.fn(async (method: string) => method === 'prompt.submit'
-      ? new Promise<never>(resolve => { finish = resolve }) : {} as never)
+    const requestGateway = vi.fn(async (method: string) =>
+      method === 'prompt.submit'
+        ? new Promise<never>(resolve => {
+            finish = resolve
+          })
+        : ({} as never)
+    )
 
     let handle: HarnessHandle | null = null
-    await actRender(<Harness onReady={h => (handle = h)} rawAdmissionReceipts refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        rawAdmissionReceipts
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
     let pending!: Promise<boolean>
-    act(() => { pending = handle!.submitTextRaw('old retry', { submission_id: 'old-terminal' }) })
+    act(() => {
+      pending = handle!.submitTextRaw('old retry', { submission_id: 'old-terminal' })
+    })
     await waitFor(() => expect(finish).toBeTypeOf('function'))
-    handle!.handleEvent({ type: 'message.start', session_id: RUNTIME_SESSION_ID, authority_epoch: 1, execution_generation: 2, payload: {} })
-    await act(async () => { finish({ admission_id: 'old-terminal', status: 'terminal' } as never); expect(await pending).toBe(true) })
+    handle!.handleEvent({
+      type: 'message.start',
+      session_id: RUNTIME_SESSION_ID,
+      authority_epoch: 1,
+      execution_generation: 2,
+      payload: {}
+    })
+    await act(async () => {
+      finish({ admission_id: 'old-terminal', status: 'terminal' } as never)
+      expect(await pending).toBe(true)
+    })
     expect(handle!.state()).toMatchObject({ busy: true, awaitingResponse: true, turnLive: true })
     expect(handle!.state().messages.filter(m => m.id === 'user-old-terminal')).toEqual([])
-    handle!.handleEvent({ type: 'message.delta', session_id: RUNTIME_SESSION_ID, authority_epoch: 1, execution_generation: 2, payload: { text: 'new answer' } })
-    handle!.handleEvent({ type: 'message.complete', session_id: RUNTIME_SESSION_ID, authority_epoch: 1, execution_generation: 2, payload: { text: 'new answer' } })
+    handle!.handleEvent({
+      type: 'message.delta',
+      session_id: RUNTIME_SESSION_ID,
+      authority_epoch: 1,
+      execution_generation: 2,
+      payload: { text: 'new answer' }
+    })
+    handle!.handleEvent({
+      type: 'message.complete',
+      session_id: RUNTIME_SESSION_ID,
+      authority_epoch: 1,
+      execution_generation: 2,
+      payload: { text: 'new answer' }
+    })
     expect(handle!.state().busy).toBe(false)
     expect(handle!.state().messages.at(-1)?.parts).toContainEqual(expect.objectContaining({ text: 'new answer' }))
   })
@@ -378,16 +579,34 @@ describe('terminal receipt settlement', () => {
 describe('Stop and shared-owner execution', () => {
   afterEach(cleanup)
 
-  it.each([[1, 5], [2, 1]])('retires Stop only for a newer execution: %s/%s', async (epoch, generation) => {
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) =>
-      (method === 'prompt.submit' ? { admission_id: params?.submission_id, status: 'started' } : {}) as never)
+  it.each([
+    [1, 5],
+    [2, 1]
+  ])('retires Stop only for a newer execution: %s/%s', async (epoch, generation) => {
+    const requestGateway = vi.fn(
+      async (method: string, params?: Record<string, unknown>) =>
+        (method === 'prompt.submit' ? { admission_id: params?.submission_id, status: 'started' } : {}) as never
+    )
 
     let handle: HarnessHandle | null = null
-    await actRender(<Harness onReady={h => (handle = h)} rawAdmissionReceipts refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        rawAdmissionReceipts
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
     await handle!.submitText('first turn')
 
     const send = (type: GatewayEventName, authority_epoch = 1, execution_generation = 4, extra = {}) =>
-      handle!.handleEvent({ type, session_id: RUNTIME_SESSION_ID, authority_epoch, execution_generation, payload: extra })
+      handle!.handleEvent({
+        type,
+        session_id: RUNTIME_SESSION_ID,
+        authority_epoch,
+        execution_generation,
+        payload: extra
+      })
 
     send('message.start')
     expect(handle!.state().busy).toBe(true)
@@ -3933,7 +4152,6 @@ describe('usePromptActions eager-upload races', () => {
     expect(methods).toContain('prompt.submit')
   })
 })
-
 
 describe('usePromptActions submit session-context isolation (#54527)', () => {
   const STORED_SESSION_A = 'stored-project-a'

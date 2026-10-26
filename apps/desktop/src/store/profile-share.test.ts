@@ -118,7 +118,10 @@ describe('runExportProfileFlow', () => {
     const { runExportProfileFlow } = await import('./profile-share')
     const { $notifications } = await import('./notifications')
     seedWebappSession('served-token')
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}')))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{}'))
+    )
 
     try {
       expect(installBrowserDesktopBridge()).toBe(true)

@@ -383,9 +383,13 @@ describe('cancelling New Bot discards its draft profile', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
 
     await waitFor(() =>
-      expect(mocks.requestProfile).toHaveBeenCalledWith(expect.objectContaining({ connectionId: 'studio' }), 'cli.exec', {
-        argv: ['profile', 'delete', 'inbox-triage', '--yes']
-      })
+      expect(mocks.requestProfile).toHaveBeenCalledWith(
+        expect.objectContaining({ connectionId: 'studio' }),
+        'cli.exec',
+        {
+          argv: ['profile', 'delete', 'inbox-triage', '--yes']
+        }
+      )
     )
     expect(mocks.deleteBot).not.toHaveBeenCalled()
   })

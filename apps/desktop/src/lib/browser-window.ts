@@ -25,29 +25,48 @@ export function createBrowserWindowOpener({ api, basePath, privateSession }: Bro
       let settled = false
 
       const finish = (error?: Error) => {
-        if (settled) {return}
+        if (settled) {
+          return
+        }
         settled = true
         window.clearTimeout(timeout)
         channel.close()
 
-        if (error) {reject(error)} else {resolve({ ok: true })}
+        if (error) {
+          reject(error)
+        } else {
+          resolve({ ok: true })
+        }
       }
 
-      const timeout = window.setTimeout(() => finish(new Error('Webapp window did not open. Allow popups for this site and try again.')), 30_000)
+      const timeout = window.setTimeout(
+        () => finish(new Error('Webapp window did not open. Allow popups for this site and try again.')),
+        30_000
+      )
 
       channel.onmessage = event => {
-        if (settled) {return}
+        if (settled) {
+          return
+        }
 
         if (event.data?.type === 'ready' && !minting) {
           minting = true
-          void api<{ ticket: string }>({ method: 'POST', path: '/api/webapp/window-ticket' }).then(({ ticket }) => {
-            if (settled) {return}
-            channel.postMessage({ ticket })
-          }).catch(error => {
-            if (settled) {return}
-            channel.postMessage({ error: 'Could not authorize this window. Try opening it again from the original tab.' })
-            finish(error instanceof Error ? error : new Error(String(error)))
-          })
+          void api<{ ticket: string }>({ method: 'POST', path: '/api/webapp/window-ticket' })
+            .then(({ ticket }) => {
+              if (settled) {
+                return
+              }
+              channel.postMessage({ ticket })
+            })
+            .catch(error => {
+              if (settled) {
+                return
+              }
+              channel.postMessage({
+                error: 'Could not authorize this window. Try opening it again from the original tab.'
+              })
+              finish(error instanceof Error ? error : new Error(String(error)))
+            })
         } else if (event.data?.type === 'done') {
           finish()
         } else if (event.data?.type === 'error') {
@@ -72,7 +91,9 @@ export function sessionWindowTarget(
 ): URL | null {
   const id = sessionId.trim()
 
-  if (!id) {return null}
+  if (!id) {
+    return null
+  }
   const target = new URL(currentHref)
   target.searchParams.set('win', 'secondary')
 

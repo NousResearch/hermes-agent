@@ -296,8 +296,7 @@ const mutateSession = (sid: string, op: (queue: QueuedPromptEntry[]) => null | Q
 
 /** Replace one session's queue wholesale (canonical receipt reconciliation),
  *  through the same live-merge path as every other mutation. */
-export const writeSessionQueue = (sid: string, queue: QueuedPromptEntry[]): boolean =>
-  mutateSession(sid, () => queue)
+export const writeSessionQueue = (sid: string, queue: QueuedPromptEntry[]): boolean => mutateSession(sid, () => queue)
 
 if (typeof window !== 'undefined') {
   // Cross-window sync (#46732): every desktop window boots the queue atom from

@@ -19,14 +19,18 @@ export function createBrowserClipboardBridge({
         read?: () => Promise<ClipboardItems>
       }
 
-      if (!clipboard?.read) {return ''}
+      if (!clipboard?.read) {
+        return ''
+      }
 
       const items = await clipboard.read()
 
       for (const item of items) {
         const mimeType = item.types.find(type => type.startsWith('image/'))
 
-        if (!mimeType) {continue}
+        if (!mimeType) {
+          continue
+        }
 
         const blob = await item.getType(mimeType)
         const extension = IMAGE_EXTENSION_BY_MIME[mimeType] || '.png'
@@ -37,7 +41,9 @@ export function createBrowserClipboardBridge({
       return ''
     },
     writeClipboard: async (text: string) => {
-      if (!nativeWriteClipboard) {return false}
+      if (!nativeWriteClipboard) {
+        return false
+      }
 
       await nativeWriteClipboard(text)
 

@@ -62,8 +62,12 @@ it('saves a remote gateway image through the save dialog in native Desktop, neve
 })
 
 // Anything else opens as on main: a web image's own URL.
-it('opens a web image\'s URL with the system handler in native Desktop', async () => {
-  $connection.set({ baseUrl: 'https://gateway.example', mode: 'remote', token: 'secret-token' } as unknown as HermesConnection)
+it("opens a web image's URL with the system handler in native Desktop", async () => {
+  $connection.set({
+    baseUrl: 'https://gateway.example',
+    mode: 'remote',
+    token: 'secret-token'
+  } as unknown as HermesConnection)
 
   const link = openImageLink('https://images.example/cat.png')
   await act(async () => {

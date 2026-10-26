@@ -60,6 +60,8 @@ export function isBrowserHostedDesktop() {
   // The bridge writes the marker once it installs. During static module
   // evaluation, use the browser bootstrap globals too; otherwise an OS check
   // can classify a browser page as native before the marker is written.
-  return document.documentElement.dataset.hermesDesktopHost === 'browser' ||
+  return (
+    document.documentElement.dataset.hermesDesktopHost === 'browser' ||
     (!window.hermesDesktop && hasBrowserHostBootstrap())
+  )
 }

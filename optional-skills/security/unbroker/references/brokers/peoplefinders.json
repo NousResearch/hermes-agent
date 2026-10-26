@@ -3,7 +3,9 @@
   "name": "PeopleFinders",
   "category": "people_search",
   "priority": "high",
-  "jurisdictions": ["US"],
+  "jurisdictions": [
+    "US"
+  ],
   "parent": "peoplefinders",
   "owns": [],
   "search": {
@@ -12,7 +14,11 @@
     "fetch": "browser",
     "match_signal": "result",
     "antibot": "cloudflare",
-    "by": ["name", "phone", "address"],
+    "by": [
+      "name",
+      "phone",
+      "address"
+    ],
     "url_patterns": {
       "phone": "https://www.peoplefinders.com/phone/{areacode}-{prefix}-{line}"
     },
@@ -27,18 +33,23 @@
     "requires": {
       "profile_url": true,
       "email_verification": true,
-      "captcha": false,
+      "captcha": true,
       "gov_id": false,
       "account": false,
       "phone_callback": false,
       "payment": false
     },
-    "inputs": ["full_name", "contact_email", "profile_url"],
+    "inputs": [
+      "full_name",
+      "contact_email",
+      "profile_url"
+    ],
     "notes": "Standalone people-search (Confi-Chek family). Opt-out: find the listing, submit with a contact email, confirm via the emailed link.",
     "quirks": [
       "Opt-out URL is the documented public endpoint; datacenter IPs get 403 (anti-bot), so confirm the live flow via the operator's residential browser before the first submission, then set last_verified.",
       "Needs the confirmed profile_url from evidence.",
-      "Email verification: poll-verification picks up the link; open it in the agent browser."
+      "Email verification: poll-verification picks up the link; open it in the agent browser.",
+      "RECORD SUPPRESSION FORM (verified live 2026-10-26): at /opt-out it hard-requires street + city + state alongside first/last, email, phone, DOB (month is a numeric select: 10, not Oct), and a consent checkbox; a Cloudflare Turnstile is present and auto-clears on a residential automation browser. Their public people-search may hold NO record for the subject - check it first; a record-less subject cannot honestly complete this form (treat as indirect exposure and lean on the SearchPeopleFree sister flow)."
     ],
     "est_processing_days": 7,
     "reappearance_risk": "medium"

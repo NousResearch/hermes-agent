@@ -3,7 +3,9 @@
   "name": "CyberBackgroundChecks",
   "category": "people_search",
   "priority": "high",
-  "jurisdictions": ["US"],
+  "jurisdictions": [
+    "US"
+  ],
   "parent": "cyberbackgroundchecks",
   "owns": [],
   "search": {
@@ -12,7 +14,11 @@
     "fetch": "browser",
     "match_signal": "result",
     "antibot": "cloudflare",
-    "by": ["name", "phone", "address"],
+    "by": [
+      "name",
+      "phone",
+      "address"
+    ],
     "url_patterns": {
       "phone": "https://www.cyberbackgroundchecks.com/phone/{digits10}"
     },
@@ -33,12 +39,17 @@
       "phone_callback": false,
       "payment": false
     },
-    "inputs": ["full_name", "contact_email", "profile_url"],
+    "inputs": [
+      "full_name",
+      "contact_email",
+      "profile_url"
+    ],
     "notes": "Free people-search. Opt-out at /removal: find the record, submit email, confirm link.",
     "quirks": [
       "Opt-out URL is the documented public endpoint; datacenter IPs get 403 (anti-bot), so confirm the live flow via the operator's residential browser before the first submission, then set last_verified.",
       "Needs the confirmed profile_url.",
-      "Email verification required."
+      "Email verification required.",
+      "ACCESS (verified live 2026-10-26): /removal sits behind a Cloudflare interstitial ('Just a moment...') that did NOT auto-clear for the automation browser (stuck >1 min), while their static phone pages fetch fine via web_extract. Present the removal as a manual step for the operator's everyday browser; the owner card also carries the in-flow 'This is me...Remove My Record' control."
     ],
     "est_processing_days": 3,
     "reappearance_risk": "medium"

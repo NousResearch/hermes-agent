@@ -256,6 +256,12 @@ T2 and become human tasks. **Never use a third-party CAPTCHA-defeating service.*
 - **Do NOT defeat** behavioral / token challenges: a Cloudflare Turnstile that will not auto-clear,
   **DataDome**, and **"slide-to-verify" gesture-entropy sliders** (the InfoPay lane). These are hard
   stops -> take the email lane (rule above) or record `blocked`.
+- **A visible Google reCAPTCHA v2 / Enterprise checkbox is in this class** (verified live 2026-10-26 across two sites): synthetic CDP clicks on a debug-profile Chrome do NOT toggle it -
+  no token, no challenge appears, no error surfaces, `grecaptcha.getResponse()` stays empty -
+  so it is a silent hard stop for the automation browser. By contrast a managed Cloudflare
+  **Turnstile** auto-cleared on the same residential setup as normal operation. So: Turnstile ->
+  drive the form; reCAPTCHA checkbox -> do not fight it, take the email lane or queue the manual
+  step.
 - **Acceptable to solve** on the subject's own first-party opt-out: a **static distorted-text image
   CAPTCHA** (read it with the vision tool) or a **plain arithmetic CAPTCHA** ("8 + 13 = ?"). That is OCR
   / arithmetic on a consenting removal, not evasion of a bot-detection system.

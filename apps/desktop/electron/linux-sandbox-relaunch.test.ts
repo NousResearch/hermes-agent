@@ -108,6 +108,21 @@ describe('Linux runtime --no-sandbox relaunch', () => {
     expect(relaunch).toEqual({ args: ['--no-sandbox'], execPath: '/home/u/Apps/Hermes.AppImage' })
   })
 
+  // The type-2 runtime mounts under $TMPDIR/.mount_<name><random>; a launch that
+  // lost APPDIR still runs from that mount, so APPIMAGE is still ours.
+  it('relaunches the AppImage when only APPIMAGE survives but this runs from its mount', () => {
+    const relaunch = linuxNoSandboxRelaunch({
+      platform: 'linux',
+      runtimeNoSandbox: true,
+      argv: ['/run/user/1000/.mount_HermesQ7x2Lp/hermes'],
+      execPath: '/run/user/1000/.mount_HermesQ7x2Lp/hermes',
+      env: { APPIMAGE: '/home/u/Apps/Hermes.AppImage' },
+      launchedWithoutSandbox: false
+    })
+
+    expect(relaunch).toEqual({ args: ['--no-sandbox'], execPath: '/home/u/Apps/Hermes.AppImage' })
+  })
+
   // AppImage apps (terminals, IDEs) export APPIMAGE/APPDIR to everything they
   // start; Hermes launched from one must relaunch itself, not that app.
   it('relaunches this executable when APPIMAGE was inherited from another AppImage', () => {

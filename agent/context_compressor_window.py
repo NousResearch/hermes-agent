@@ -44,8 +44,7 @@ class CompactionWindowMixin:
         return working, pruned_count, compress_start, compress_end
 
     def _take_prepared_summary(
-        self, messages: list[dict[str, Any]], compress_start: int, compress_end: int, *, fresh: bool,
-        provider_context: bool,
+        self, messages: list[dict[str, Any]], compress_start: int, *, fresh: bool, provider_context: bool,
     ) -> Optional[PreparedSummary]:
         """The summary prepared in the background for this window, which an automatic compaction splices at
         ITS boundary; every newer message stays outside the summary, in the tail. ``fresh`` compactions
@@ -56,7 +55,7 @@ class CompactionWindowMixin:
         if provider_context:
             self.prepared_compaction.stop_for_provider_context()
         return self.prepared_compaction.take(
-            messages, self._session_id, compress_start, compress_end, eligible=not (fresh or provider_context),
+            messages, self._session_id, compress_start, eligible=not (fresh or provider_context),
         )
 
     def _adopt_prepared_summary(self, prepared: PreparedSummary) -> str:

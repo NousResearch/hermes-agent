@@ -5357,7 +5357,6 @@
                 "fresh_required",
                 "head_moved",
                 "host_cancelled",
-                "inside_tail",
                 "none",
                 "other_session",
                 "pass_failed_while_waiting",

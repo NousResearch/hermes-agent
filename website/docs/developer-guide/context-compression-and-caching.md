@@ -684,8 +684,7 @@ transcript, the system prompt and the prompt cache are untouched until compactio
 per compaction: while a summary is held, no further pass starts, however much the prompt grows.
 
 At the next automatic threshold compaction `compress()` splices the completed summary when it still
-covers the same messages: same session, unchanged head boundary, a candidate boundary no later than
-the fresh tail cut, and the same message structure up to that boundary (role, tool call ids and
+covers the same messages: same session, unchanged head boundary, and the same message structure up to that boundary (role, tool call ids and
 names, tool result ids), each message vouched for by its durable `message_uid`. The text of a
 persisted message, tool arguments and tool bodies are not compared: the no-LLM prune and plugins
 rewrite them in place, and the summary still describes the same messages. A message without a uid on
@@ -693,7 +692,10 @@ one side (caller-supplied `conversation_history` that is never persisted) is com
 nothing else can tell it from a different message. A dropped or inserted message, or a rewind or
 branch into the window (new `message_uid`s), is a miss. The summary then covers
 `[head, candidate boundary)` and every later message, however many arrived after the pass started, is
-kept as tail; tail rules such as lean-mode tool stubbing still apply to them. Summary placement and
+kept as tail; tail rules such as lean-mode tool stubbing still apply to them. Where the fresh plan
+would cut does not matter: a cut that moved earlier (the prune made tail rows cheaper, tool-group
+alignment) or later never discards the summary, because one prepared summary per compaction is never
+redone. The pass planned its own window with a full tail, so the tail is never empty. Summary placement and
 alternation handling are the normal Phase 4 assembly. The splice leaves the live compressor as the
 inline call would have: a pass that recovered on the main model after the summary model failed hands
 over that fallback (later compactions use the main model, and the user sees the broken-model

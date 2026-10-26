@@ -5488,7 +5488,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
             return canonical_messages
         prepared = self._take_prepared_summary(
-            messages, compress_start, compress_end, fresh=bool(force or focus_topic or bypass_cooldown),
+            messages, compress_start, fresh=bool(force or focus_topic or bypass_cooldown),
             provider_context=bool(memory_context.strip()),
         )
         if prepared:

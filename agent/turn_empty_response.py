@@ -73,7 +73,7 @@ def _retry_empty(
     )
     _budget_note = (
         " — high-cost request, reduced retry budget"
-        if budget < _empty_guard.DEFAULT_EMPTY_RETRY_BUDGET else ""
+        if budget < _empty_guard.base_empty_retry_budget(agent) else ""
     )
     agent._buffer_diagnostic_status(
         f"⚠️ Empty response from model — retrying ({n}/{budget}) in {wait_time:.0f}s{_budget_note}"

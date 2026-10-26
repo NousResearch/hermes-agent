@@ -307,6 +307,7 @@ _FILL_JS_TEMPLATE = """(() => {
   const fills = __FILLS__;
   const nonce = __NONCE__;
   let filled = 0;
+  const reverted = [];
   const norm = (t) => String(t || "").trim().toLowerCase();
   for (const f of fills) {
     const el = document.querySelector('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]');
@@ -324,9 +325,25 @@ _FILL_JS_TEMPLATE = """(() => {
       if (setter && setter.set) { setter.set.call(el, f.value); } else { el.value = f.value; }
       el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
       el.dispatchEvent(new Event("change", { bubbles: true }));
-      if (el.value.length > 0) filled += 1;
+      // A controlled component can reject the write and re-render the field empty *synchronously*, so
+      // counting here without reading back reports success for a field that ended up blank (seen on a
+      // United bag checkout card number and a Hilton login password: filled=1/2, DOM length 0).
+      // Verify, then repair through the browser's real editing pipeline (execCommand), which
+      // controlled inputs accept as genuine user input.
+      if (el.value.length === 0) {
+        try {
+          el.focus();
+          if (el.select) { el.select(); }
+          if (!document.execCommand || !document.execCommand("insertText", false, f.value)) {
+            if (setter && setter.set) { setter.set.call(el, f.value); } else { el.value = f.value; }
+            el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
+            el.dispatchEvent(new Event("change", { bubbles: true }));
+          }
+        } catch (e2) { /* fall through to the readback below */ }
+      }
+      if (el.value.length > 0) { filled += 1; } else { reverted.push(String(f.token)); }
     } catch (e) { /* skip */ }
   }
   document.querySelectorAll("[data-hermes-vault-slot]").forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
-  return JSON.stringify({ filled });
+  return JSON.stringify({ filled, reverted });
 })()"""

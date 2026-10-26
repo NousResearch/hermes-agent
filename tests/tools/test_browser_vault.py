@@ -431,6 +431,40 @@ class TestBrowserVaultTools:
         assert '"index": 0' not in secret_exprs[0]
         assert "user@example.com" not in secret_exprs[0]
 
+    def test_fill_reports_reverted_fields_instead_of_claiming_success(self, store):
+        """A controlled input can discard the value and re-render empty; the fill must say so.
+
+        Behaviour contract: `filled_fields` counts only writes verified in the DOM, and anything the
+        page reverted is surfaced by token so a caller cannot read success from a blank field.
+        """
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        controls = [
+            {"autocomplete": "email", "formIndex": 0, "index": 0, "label": "", "name": "email", "type": "email"},
+            {"autocomplete": "current-password", "formIndex": 0, "index": 1, "label": "", "name": "pw", "type": "password"},
+        ]
+
+        def fake_eval(task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://example.com/login"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        def fake_eval_secret(task_id, expression):
+            return {"success": True, "result": json.dumps({"filled": 0, "reverted": ["current-password"]})}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
+            raw = browser_vault_tool.browser_vault_fill(meta.id)
+        out = json.loads(raw)
+        out.pop("next", None)
+        assert out["success"] is False
+        assert out["filled_fields"] == 0
+        assert out["verified"] is False
+        assert out["reverted_fields"] == ["current-password"]
+        assert "s3cret-pw" not in raw
+
     def test_fill_toctou_navigation_writes_nothing(self, store):
         """P1-2 schedule regression: inspection passes on the allowed origin,
         the page navigates before the fill script runs, the in-script origin

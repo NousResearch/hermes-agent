@@ -16,6 +16,7 @@ import time
 from collections.abc import Callable, Iterator
 from contextvars import ContextVar
 
+from tools.shell_heredoc import heredoc_body_ranges
 from utils import env_var_enabled
 
 # Log-record parity with the origin module.
@@ -278,7 +279,14 @@ def _scan_shell(command: str, background: bool = False) -> Iterator[tuple[str, i
 
     Yields ``(kind, start, end, at_command_start)`` events that tile *command* exactly:
     ``ws`` (one whitespace char), ``comment`` (``#`` up to, not including, the newline),
-    ``op`` (``&& || ;; ; | & ( )``), ``word`` (one ``_read_shell_token`` token). Comments open at word boundaries.
+    ``op`` (``&& || ;; ; | & ( )``), ``word`` (one ``_read_shell_token`` token), and
+    ``heredoc`` (heredoc body data, ``shell_heredoc.heredoc_body_ranges``): a quoted body
+    through its terminator line, or an unquoted body's text around the ``$(...)``/backtick
+    substitutions it expands, which are scanned as shell. Nothing in the data is an operator or
+    a command word, and a quote inside it cannot swallow the shell text after it. When a body
+    cannot be delimited (unterminated, or a ``<<`` that is an arithmetic shift) the command is
+    scanned as plain text.
+    Comments open at word boundaries.
     Background mode (compound-background semantics) additionally emits ``escape`` for a bare ``\\x``, ops ``&>``, ``{ `` and a closing
     ``}``, and tracks ``(...)``/``{ ... }`` depth: inside a group nothing is an operator, so
     every non-structural char (whitespace included) surfaces as a single ``skip`` event.
@@ -287,7 +295,13 @@ def _scan_shell(command: str, background: bool = False) -> Iterator[tuple[str, i
     at_start = True
     parens = braces = 0
     two_char_ops = ("&&", "||", "&>") if background else ("&&", "||", ";;")
+    bodies = iter(heredoc_body_ranges(command) or ())
+    body = next(bodies, None)
     while i < n:
+        if body is not None and i == body[0]:
+            yield "heredoc", i, body[1], at_start
+            i, at_start, body = body[1], True, next(bodies, None)
+            continue
         ch = command[i]
         grouped = parens or braces
         was_start = at_start
@@ -316,6 +330,8 @@ def _scan_shell(command: str, background: bool = False) -> Iterator[tuple[str, i
         else:
             token, end = _read_shell_token(command, i)
             kind, at_start = "word", bool(at_start and _looks_like_env_assignment(token))
+        if body is not None and end > body[0]:
+            end = body[0]  # a token never runs into a body (e.g. a quote opened on the opener line)
         yield kind, i, end, was_start
         i = end
 
@@ -394,7 +410,8 @@ def _rewrite_compound_background(command: str) -> str:
     comments and ``(...)``/``{ ... }`` bodies never count as the backgrounding ``&`` (see
     ``_scan_shell``); tracking brace depth also makes the rewrite idempotent. `(...)` subshells
     have the same bug class but are not the common agent pattern; left for a follow-up.
-    Simple ``cmd &`` is left alone — it doesn't have the subshell-wait bug."""
+    Simple ``cmd &`` is left alone — it doesn't have the subshell-wait bug. Heredoc bodies are
+    data and never rewritten: a script written with ``cat <<'EOF'`` must land byte-exact."""
     chain_end = -1  # just after the last depth-0 `&&`/`||` of this statement; -1 = none active
     rewrites: list[tuple[int, int]] = []  # (chain_op_end, amp_pos)
     for kind, start, end, _ in _scan_shell(command, background=True):

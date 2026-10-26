@@ -233,12 +233,17 @@ async def test_a_frame_read_after_the_start_ends_still_queues_behind_the_held_fr
 
     real_dispatch = ws_mod._dispatch_request
     ran, first_held_running, first_held_may_finish = [], asyncio.Event(), asyncio.Event()
+    gate_expired = []  # held-0's gate ran out: its reply is then an internal error, not the hold
 
     async def recording_dispatch(connection, req, method, transport):
         ran.append(req.get('id'))
         if req.get('id') == 'held-0':
             first_held_running.set()
-            await asyncio.wait_for(first_held_may_finish.wait(), timeout=10)
+            try:
+                await asyncio.wait_for(first_held_may_finish.wait(), timeout=10)
+            except TimeoutError:
+                gate_expired.append(req.get('id'))
+                raise
         return await real_dispatch(connection, req, method, transport)
 
     monkeypatch.setattr(ws_mod, '_dispatch_request', recording_dispatch)
@@ -259,14 +264,20 @@ async def test_a_frame_read_after_the_start_ends_still_queues_behind_the_held_fr
     ping('late', profile='beta')
     ping('probe-late')  # answered only after the serial lane took 'late'
     await sock.reply('probe-late', timeout=10)
+    # 'late' was read while held-0 was still at its gate and held-1 behind it, so the order checked
+    # below is that interleaving, not frames that had all finished before 'late' arrived.
+    assert not gate_expired, "held-0's gate ran out before 'late' was read"
+    assert 'held-0' not in sock.replies and 'held-1' not in sock.replies, sock.order
     first_held_may_finish.set()
     await sock.reply('late', timeout=10)
 
     beta = ['held-0', 'held-1', 'late']
     assert [request_id for request_id in ran if request_id in beta] == beta, ran
     assert [request_id for request_id in sock.order if request_id in beta] == beta, sock.order
-    # Each ran on beta once it was served, not refused as a profile still starting or not served.
+    assert not gate_expired
+    # Each ran on beta once it was served, not refused as a profile still starting or not served,
+    # nor answered with the internal error a held frame's crash (or its gate running out) becomes.
     for request_id in beta:
         error = sock.replies[request_id].get('error') or {}
-        assert error.get('message') != 'profile_mismatch', sock.replies[request_id]
+        assert error.get('message') not in ('profile_mismatch', 'internal error'), sock.replies[request_id]
         assert (error.get('data') or {}).get('reason') != 'runtime_draining', sock.replies[request_id]

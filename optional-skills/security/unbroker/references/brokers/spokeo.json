@@ -11,7 +11,13 @@
     "url": "https://www.spokeo.com/search",
     "fetch": "browser",
     "match_signal": "profile",
-    "by": ["name", "phone", "email", "address"]
+    "by": ["name", "phone", "email", "address"],
+    "url_patterns": {
+      "phone": "https://www.spokeo.com/{areacode}-{prefix}-{line}"
+    },
+    "url_format_quirks": [
+      "Reverse-phone results page is static HTML readable by web_extract (verified live 2026-10-26); the phone vector resolves directly - no on-site search needed."
+    ]
   },
   "optout": {
     "tier": "T1",
@@ -51,6 +57,6 @@
     "est_processing_days": 2,
     "reappearance_risk": "medium"
   },
-  "last_verified": "2026-07-01",
+  "last_verified": "2026-10-26",
   "source": "BADBOOL"
 }

@@ -3,9 +3,7 @@
   "name": "Intelius",
   "category": "people_search",
   "priority": "crucial",
-  "jurisdictions": [
-    "US"
-  ],
+  "jurisdictions": ["US"],
   "parent": "peopleconnect",
   "owns": [
     "truthfinder",
@@ -24,21 +22,19 @@
     "url": "https://www.intelius.com/",
     "fetch": "web_extract",
     "match_signal": "result",
-    "by": [
-      "name",
-      "phone",
-      "address"
-    ],
+    "by": ["name", "phone", "address"],
     "url_patterns": {
       "name": "https://www.intelius.com/people-search/{First}-{Last}/",
       "name_state": "https://www.intelius.com/people-search/{first}-{last}/{state-name}/",
-      "full_report": "https://www.intelius.com/search/?firstName={First}&lastName={Last}&city={City}&state={ST}&traffic%5Bsource%5D=INTSEO"
+      "full_report": "https://www.intelius.com/search/?firstName={First}&lastName={Last}&city={City}&state={ST}&traffic%5Bsource%5D=INTSEO",
+      "phone": "https://www.intelius.com/reverse-phone-lookup/{areacode}-{prefix}-{line}/"
     },
     "url_format_quirks": [
       "Name summary page: /people-search/{First}-{Last}/ (hyphen join; case-insensitive, both Jane-Public and jane-public work). Readable via web_extract (no hard bot gate as of 2026-06-30).",
       "State refine: /people-search/{first}-{last}/{state-name}/ with the state SPELLED OUT lowercase, e.g. /jane-public/new-york/ (NOT the 2-letter code).",
       "The summary shows last-known address + a 'possible relatives' list + a FAQ ('Where does X live?'). Corroborate the subject by address before acting; the 'Top People with the Last Name {Last}' block is unrelated namesakes.",
-      "Part of PeopleConnect: same data surfaces on Truthfinder/InstantCheckmate/USSearch; one suppression at suppression.peopleconnect.us covers the cluster."
+      "Part of PeopleConnect: same data surfaces on Truthfinder/InstantCheckmate/USSearch; one suppression at suppression.peopleconnect.us covers the cluster.",
+      "Reverse-phone page at /reverse-phone-lookup/{number}/ is a static teaser that confirms 'Phone Report Is Found' (carrier + line type visible, owner name behind the paywall) - enough to record `found` with the page as listing_url."
     ]
   },
   "optout": {
@@ -56,11 +52,7 @@
       "payment": false,
       "dob": true
     },
-    "inputs": [
-      "contact_email",
-      "full_name",
-      "date_of_birth"
-    ],
+    "inputs": ["contact_email", "full_name", "date_of_birth"],
     "deletion": {
       "via": "in_flow",
       "prefer": false,
@@ -94,6 +86,6 @@
     "est_processing_days": 7,
     "reappearance_risk": "medium"
   },
-  "last_verified": "2026-07-01",
+  "last_verified": "2026-10-26",
   "source": "BADBOOL"
 }

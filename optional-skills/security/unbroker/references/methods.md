@@ -277,6 +277,9 @@ phone-specific notes:
   against the dossier before recording `found`.
 - **The page answers "whose number is this".** Running it reveals the subscriber behind the
   number - only run phone vectors on the consenting subject's own numbers.
+- **Two known domains refuse the static rung**: nuwber.com and clustrmaps.com resolve to
+  ranges the `web_extract` SSRF guard rejects ('private or internal network address') -
+  take their phone vectors straight to the browser rung instead of retry-looping.
 
 **DNC one-shot** (`pdd.py dnc <subject>`, surfaced by `next` for US subjects with phones until
 `--filed`): register on the FTC's National Do Not Call Registry. Free, personal numbers only

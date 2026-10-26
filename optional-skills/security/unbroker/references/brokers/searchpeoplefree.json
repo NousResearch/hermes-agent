@@ -3,9 +3,7 @@
   "name": "SearchPeopleFree",
   "category": "people_search",
   "priority": "high",
-  "jurisdictions": [
-    "US"
-  ],
+  "jurisdictions": ["US"],
   "parent": "searchpeoplefree",
   "owns": [],
   "search": {
@@ -14,10 +12,12 @@
     "fetch": "browser",
     "match_signal": "result",
     "antibot": "cloudflare",
-    "by": [
-      "name",
-      "phone",
-      "address"
+    "by": ["name", "phone", "address"],
+    "url_patterns": {
+      "phone": "https://www.searchpeoplefree.com/phone-lookup/{areacode}-{prefix}-{line}"
+    },
+    "url_format_quirks": [
+      "Reverse-phone results page is static HTML readable by web_extract (verified live 2026-10-26); the phone vector resolves directly - no on-site search needed."
     ]
   },
   "optout": {
@@ -33,11 +33,7 @@
       "phone_callback": false,
       "payment": false
     },
-    "inputs": [
-      "full_name",
-      "contact_email",
-      "profile_url"
-    ],
+    "inputs": ["full_name", "contact_email", "profile_url"],
     "notes": "Free people-search. Opt-out: find the listing, submit with an email, confirm the link.",
     "quirks": [
       "Opt-out URL is the documented public endpoint; datacenter IPs get 403 (anti-bot), so confirm the live flow via the operator's residential browser before the first submission, then set last_verified.",
@@ -47,7 +43,7 @@
     "est_processing_days": 3,
     "reappearance_risk": "medium"
   },
-  "last_verified": null,
+  "last_verified": "2026-10-26",
   "source": "curated",
   "confidence": "documented"
 }

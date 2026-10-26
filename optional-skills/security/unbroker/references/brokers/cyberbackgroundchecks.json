@@ -3,9 +3,7 @@
   "name": "CyberBackgroundChecks",
   "category": "people_search",
   "priority": "high",
-  "jurisdictions": [
-    "US"
-  ],
+  "jurisdictions": ["US"],
   "parent": "cyberbackgroundchecks",
   "owns": [],
   "search": {
@@ -14,10 +12,12 @@
     "fetch": "browser",
     "match_signal": "result",
     "antibot": "cloudflare",
-    "by": [
-      "name",
-      "phone",
-      "address"
+    "by": ["name", "phone", "address"],
+    "url_patterns": {
+      "phone": "https://www.cyberbackgroundchecks.com/phone/{digits10}"
+    },
+    "url_format_quirks": [
+      "Reverse-phone page is static HTML readable by web_extract (verified live 2026-10-26); person pages link the dashed variant, the digits form is the verified-live one. The owner card carries an in-flow 'This is me...Remove My Record' control."
     ]
   },
   "optout": {
@@ -33,11 +33,7 @@
       "phone_callback": false,
       "payment": false
     },
-    "inputs": [
-      "full_name",
-      "contact_email",
-      "profile_url"
-    ],
+    "inputs": ["full_name", "contact_email", "profile_url"],
     "notes": "Free people-search. Opt-out at /removal: find the record, submit email, confirm link.",
     "quirks": [
       "Opt-out URL is the documented public endpoint; datacenter IPs get 403 (anti-bot), so confirm the live flow via the operator's residential browser before the first submission, then set last_verified.",
@@ -47,7 +43,7 @@
     "est_processing_days": 3,
     "reappearance_risk": "medium"
   },
-  "last_verified": null,
+  "last_verified": "2026-10-26",
   "source": "curated",
   "confidence": "documented"
 }

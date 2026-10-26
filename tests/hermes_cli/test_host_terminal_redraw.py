@@ -1,5 +1,6 @@
 """The resize pair that redraws a host terminal's program reaches it as two observed sizes."""
 import asyncio
+import queue
 import shutil
 import sys
 from types import SimpleNamespace
@@ -68,14 +69,12 @@ class Tab:
 
 @pytest.mark.platforms("posix")
 @pytest.mark.asyncio
-@pytest.mark.parametrize("answered", [True, False], ids=["answered", "unanswered"])
 @pytest.mark.parametrize("watcher", ["python", "node"])
-async def test_a_resize_back_waits_until_the_program_answered_the_step(tmp_path, monkeypatch, watcher, answered):
+async def test_a_resize_back_waits_until_the_program_answered_the_step(tmp_path, watcher):
     """After a trimmed replay the browser steps the size one row away and back (browser-terminal.ts)
     so the foreground program redraws. Applied back to back, both SIGWINCHes can reach the program
     after the size is back where it was: it sees no change and does not redraw. The step back waits
-    until the program has answered the first step; without that wait (``unanswered``) the signals
-    arrive but neither step is seen."""
+    until the program has answered the first step, so a real program sees both sizes."""
     from hermes_cli.pty_bridge import PtyBridge
 
     if watcher == "node":
@@ -85,8 +84,6 @@ async def test_a_resize_back_waits_until_the_program_answered_the_step(tmp_path,
         argv = [node, "-e", _NODE_SIZE_WATCHER]
     else:
         argv = [sys.executable, "-u", "-c", _PYTHON_SIZE_WATCHER]
-    if not answered:
-        monkeypatch.setattr(web_host_terminal_sessions, "_RESIZE_ANSWER_SECONDS", 0, raising=False)
 
     async def remove(_token):
         pass
@@ -117,7 +114,59 @@ async def test_a_resize_back_waits_until_the_program_answered_the_step(tmp_path,
         await asyncio.to_thread(bridge.close)
     assert b"WINCH" in seen
     reported = [line for line in seen.split(b"\r\n") if line.startswith(b"RESIZE ")]
-    assert reported == ([b"RESIZE 23", b"RESIZE 24"] if answered else [])
+    assert reported == [b"RESIZE 23", b"RESIZE 24"]
+
+
+class ScriptedBridge:
+    """A PTY whose program prints only when the test says so; it records every size set on it."""
+
+    def __init__(self):
+        self.sizes = [(80, 24)]
+        self.printed = queue.SimpleQueue()
+
+    def read(self, timeout):
+        try:
+            return self.printed.get(timeout=timeout)
+        except queue.Empty:
+            return b""
+
+    def size(self):
+        return self.sizes[-1]
+
+    def resize(self, cols, rows):
+        self.sizes.append((cols, rows))
+
+    def close(self):
+        self.printed.put(None)
+
+    def is_alive(self):
+        return True
+
+
+@pytest.mark.asyncio
+async def test_the_step_back_is_applied_only_after_output_that_follows_the_step(monkeypatch):
+    """Whatever the scheduler does, the size goes back only once the program has printed
+    something after the step was applied; output read before the step does not count."""
+    monkeypatch.setattr(web_host_terminal_sessions, "_RESIZE_ANSWER_SECONDS", 60)
+    bridge = ScriptedBridge()
+    session = PtySession("terminal", bridge, buffer_cap=1 << 16, read_timeout=0.01)
+    tab = Tab()
+    await session.start()
+    try:
+        assert await session.attach(tab)
+        bridge.printed.put(b"before the step")
+        await async_wait_until(lambda: b"before the step" in tab.output, timeout=10)
+        undo = await _resize(session, tab, (80, 23), None)
+        back = asyncio.create_task(_resize(session, tab, (80, 24), undo))
+        # Nothing is printed, so the step back cannot be applied however long this waits.
+        done, _ = await asyncio.wait({back}, timeout=0.2)
+        assert not done
+        assert bridge.sizes == [(80, 24), (80, 23)]
+        bridge.printed.put(b"redrawn at 23 rows")
+        await asyncio.wait_for(back, 10)
+        assert bridge.sizes == [(80, 24), (80, 23), (80, 24)]
+    finally:
+        await session.close()
 
 
 @pytest.mark.asyncio

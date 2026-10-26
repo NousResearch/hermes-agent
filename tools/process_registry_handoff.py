@@ -148,8 +148,14 @@ def check_control_ownership(registry, session, expected, consume_output):
     if not refresh_ownership(registry):
         return {'status': 'error', 'error': 'process_stop_unknown', 'session_id': session.id}
     with registry._lock:
-        if ownership_identity(session) != expected:
-            return {'status': 'ownership_changed', 'session_id': session.id}
+        current = ownership_identity(session)
+        if current != expected:
+            generation = OWNERSHIP_FIELDS.index('ownership_generation')
+            # Only a committed ownership transfer makes this job foreign. A
+            # changed/unproved process birth still belongs behind the Stop fence.
+            if current[generation] > expected[generation] and current[:4] != expected[:4]:
+                return {'status': 'ownership_changed', 'session_id': session.id}
+            return {'status': 'error', 'error': 'process_stop_unknown', 'session_id': session.id}
         if consume_output:
             registry._completion_consumed.add(session.id)
     return None

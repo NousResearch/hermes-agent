@@ -71,15 +71,39 @@ def sandboxes(monkeypatch, tmp_path):
         "sess-work": ("work", str(project)),
     }
 
+    lookups = []
+
     async def detail(session_id, profile=None):
         # The real lookup reads only the requested profile's state.db.
+        lookups.append(session_id)
         row = rows.get(session_id)
         if row is None or row[0] != (profile or "default"):
             raise HTTPException(status_code=404, detail="Session not found")
         return {"cwd": row[1], "id": session_id}
 
     monkeypatch.setattr("hermes_cli.web_routers.sessions.get_session_detail", detail)
-    return {"own": own, "foreign": foreign, "shared": shared, "outside": outside}
+    return {"own": own, "foreign": foreign, "shared": shared, "outside": outside, "lookups": lookups}
+
+
+def test_each_file_route_looks_its_session_up_once(client, sandboxes, monkeypatch):
+    monkeypatch.setattr(web_server.app.state, "ui_surface", "webapp", raising=False)
+    clip = {"path": "file:///workspace/clip.mp4", "session_id": "sess-ws"}
+    note = {"path": "/workspace/note.txt", "session_id": "sess-ws"}
+    requests = [
+        lambda: client.get("/api/files/stream", params=clip),
+        lambda: client.post("/api/files/ticket", json={"route": "stream", **clip}),
+        lambda: client.post("/api/files/ticket", json={"route": "download", **note}),
+        lambda: client.get("/api/fs/read-text", params=note),
+        lambda: client.get("/api/fs/read-data-url", params=note),
+        lambda: client.get("/api/fs/download", params=note),
+        lambda: client.post("/api/fs/write-text", json={**note, "content": "edited"}),
+    ]
+
+    for send in requests:
+        sandboxes["lookups"].clear()
+        response = send()
+        assert response.status_code == 200, response.text
+        assert sandboxes["lookups"] == ["sess-ws"], response.request.url
 
 
 # Part 1: media streams

@@ -1,0 +1,27 @@
+# Community catalog entry, ai-subscriptions
+#
+# Owner-submitted: the PR author (`rahuloruganti`) owns and maintains the repo below.
+# Exact-SHA pin (40-hex). No self-updating code: the desktop half ships as static
+# files under `desktop/plugin.js` and never fetches, downloads, or replaces itself.
+# This is the `catalog/` edition: it reads no credentials and makes no network calls.
+name: ai-subscriptions
+repo: https://github.com/rahuloruganti/hermes-ai-subscriptions
+sha: "b59e286ea1d5eaae3ebdddc056f6b5307cbfd6bf"
+subdir: catalog
+version: "0.3.5"
+title: AI Subscriptions
+description: "Your AI subscriptions and token usage in Hermes Desktop. A page with Overview, Usage and Plans tabs, plus a status-bar chip where you pick which subscriptions to keep. Quota comes from Hermes's own model.options and usage.bars RPCs; the page polls Hermes' cached windows (Hermes refreshes them in its own background threads) and only its Refresh button asks for an explicit refresh; token usage covers Hermes, Claude Code and the Grok CLI, clicking a day shows that day's per-source, per-model and hourly breakdown, and measured tokens per second are shown per model, per day and overall. Disclosure: read-only reads outside the plugin's data - Hermes state.db and models_dev_cache.json, ~/.claude/projects/**/*.jsonl and ~/.grok/logs/unified.jsonl plus ~/.grok/sessions/*/*/summary.json (token counts only). No credential, .env or auth.json reads, no network calls, no shell commands, no background processes, no telemetry."
+maintainer: rahuloruganti
+tier: community
+category: desktop
+docs_url: https://github.com/rahuloruganti/hermes-ai-subscriptions#readme
+requires_hermes: ">=0.22.2"
+screenshots:
+  - https://raw.githubusercontent.com/rahuloruganti/hermes-ai-subscriptions/b59e286ea1d5eaae3ebdddc056f6b5307cbfd6bf/assets/plans-and-picker.png
+  - https://raw.githubusercontent.com/rahuloruganti/hermes-ai-subscriptions/b59e286ea1d5eaae3ebdddc056f6b5307cbfd6bf/assets/usage.png
+  - https://raw.githubusercontent.com/rahuloruganti/hermes-ai-subscriptions/b59e286ea1d5eaae3ebdddc056f6b5307cbfd6bf/assets/day-breakdown.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -13,7 +13,8 @@
  *    — the agent's/user's doors, watched + hot-reloaded by the runtime loader.
  */
 
-import { createPluginContext, type HermesPlugin } from './plugin'
+import { trackGatewayEventDisposers } from './events'
+import { createPluginContext, declaredCapabilities, type HermesPlugin } from './plugin'
 import { pluginActive, publishPlugin } from './plugins-store'
 import { watchRuntimePlugins } from './runtime-loader'
 
@@ -44,10 +45,13 @@ export function discoverBundledPlugins(): void {
     // Same inventory + live-toggle contract as runtime plugins: each bundled
     // plugin publishes a record with activate/deactivate handles, and a
     // persisted disable survives boots by skipping registration here.
+    const capabilities = declaredCapabilities(plugin)
+
     const record = {
       id: plugin.id,
       name: plugin.name ?? plugin.id,
       description: plugin.description,
+      capabilities,
       kind: 'bundled' as const
     }
 
@@ -58,7 +62,10 @@ export function discoverBundledPlugins(): void {
       disposers = []
 
       try {
-        plugin.register(createPluginContext(plugin.id, dispose => disposers.push(dispose)))
+        trackGatewayEventDisposers(
+          dispose => disposers.push(dispose),
+          () => plugin.register(createPluginContext(plugin.id, dispose => disposers.push(dispose), capabilities))
+        )
         publishPlugin({ ...record, status: 'loaded' })
       } catch (error) {
         console.error(`[plugins] ${plugin.id} failed to register`, error)

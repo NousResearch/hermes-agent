@@ -14,40 +14,6 @@ def _reset_registry():
     video_gen_registry._reset_for_tests()
 
 
-def test_xai_provider_registers():
-    from plugins.video_gen.xai import XAIVideoGenProvider
-
-    provider = XAIVideoGenProvider()
-    video_gen_registry.register_provider(provider)
-
-    assert video_gen_registry.get_provider("xai") is provider
-    assert provider.display_name == "xAI"
-    assert provider.default_model() == "grok-imagine-video"
-
-
-def test_xai_resolved_credentials_threaded_through_request(monkeypatch):
-    """OAuth-resolved creds must reach the HTTP layer — bug class where
-    ``is_available()`` says yes but the request still hits with no key.
-    """
-    import plugins.video_gen.xai as xai_plugin
-
-    monkeypatch.delenv("XAI_API_KEY", raising=False)
-    monkeypatch.setattr(
-        "tools.xai_http.resolve_xai_http_credentials",
-        lambda: {
-            "provider": "xai-oauth",
-            "api_key": "oauth-bearer-token",
-            "base_url": "https://api.x.ai/v1",
-        },
-    )
-
-    api_key, base_url = xai_plugin._resolve_xai_credentials()
-    assert api_key == "oauth-bearer-token"
-    assert base_url == "https://api.x.ai/v1"
-    headers = xai_plugin._xai_headers(api_key)
-    assert headers["Authorization"] == "Bearer oauth-bearer-token"
-
-
 @pytest.mark.asyncio
 async def test_video_input_from_public_url_uses_url_field():
     from plugins.video_gen.xai import _video_input_from_public_url

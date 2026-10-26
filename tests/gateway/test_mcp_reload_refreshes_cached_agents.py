@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -97,25 +97,17 @@ async def test_reload_mcp_refreshes_cached_agent_tools():
     fresh_tool_defs = [
         {
             "type": "function",
-            "function": {
-                "name": "HassTurnOn",
-                "description": "Turns on a device",
-                "parameters": {"type": "object", "properties": {}},
-            },
+            "function": {"name": "HassTurnOn", "description": "Turns on a device"},
         },
         {
             "type": "function",
-            "function": {
-                "name": "HassTurnOff",
-                "description": "Turns off a device",
-                "parameters": {"type": "object", "properties": {}},
-            },
+            "function": {"name": "HassTurnOff", "description": "Turns off a device"},
         },
     ]
 
     with (
-        patch("tools.mcp_tool.shutdown_mcp_servers"),
-        patch("tools.mcp_tool.discover_mcp_tools", return_value=["HassTurnOn", "HassTurnOff"]),
+        patch("tools.mcp_tool_lifecycle.shutdown_mcp_servers"),
+        patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=["HassTurnOn", "HassTurnOff"]),
         patch.dict("tools.mcp_tool._servers", {"homeassistant": object()}, clear=True),
         patch("model_tools.get_tool_definitions", return_value=fresh_tool_defs),
     ):
@@ -144,8 +136,8 @@ async def test_reload_mcp_handles_empty_agent_cache():
     assert len(runner._agent_cache) == 0
 
     with (
-        patch("tools.mcp_tool.shutdown_mcp_servers"),
-        patch("tools.mcp_tool.discover_mcp_tools", return_value=[]),
+        patch("tools.mcp_tool_lifecycle.shutdown_mcp_servers"),
+        patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]),
         patch.dict("tools.mcp_tool._servers", {}, clear=True),
         patch("model_tools.get_tool_definitions", return_value=[]),
     ):
@@ -172,8 +164,8 @@ async def test_reload_mcp_preserves_per_agent_toolset_overrides():
         return [{"type": "function", "function": {"name": "refreshed"}}]
 
     with (
-        patch("tools.mcp_tool.shutdown_mcp_servers"),
-        patch("tools.mcp_tool.discover_mcp_tools", return_value=["refreshed"]),
+        patch("tools.mcp_tool_lifecycle.shutdown_mcp_servers"),
+        patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=["refreshed"]),
         patch.dict("tools.mcp_tool._servers", {"homeassistant": object()}, clear=True),
         patch("model_tools.get_tool_definitions", side_effect=_capture_get_tool_definitions),
     ):

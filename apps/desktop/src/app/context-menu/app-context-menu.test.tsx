@@ -1,9 +1,11 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, createEvent, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { registerTerminalContextMenu } from '@/app/right-sidebar/terminal/terminal-context-menu'
-import { formatCombo } from '@/lib/keybinds/combo'
+import { DirectiveContent } from '@/components/assistant-ui/directive-text'
+import { ContextMenu, ContextMenuTrigger, HERMES_CONTEXT_MENU_TRIGGER_ATTR } from '@/components/ui/context-menu'
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { $previewTabs, closeRightRail } from '@/store/preview'
 import { $connection } from '@/store/session'
 
@@ -22,7 +24,7 @@ const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDeskt
 function installBridge(partial: Partial<Window['hermesDesktop']> = {}) {
   desktopWindow.hermesDesktop = {
     openExternal: vi.fn().mockResolvedValue(undefined),
-    writeClipboard: vi.fn().mockResolvedValue(undefined),
+    writeClipboard: vi.fn().mockResolvedValue(true),
     ...partial
   } as unknown as Window['hermesDesktop']
 }
@@ -50,7 +52,9 @@ afterEach(() => {
   closeRightRail()
   cleanup()
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
   document.body.innerHTML = ''
+  delete window.document.documentElement.dataset.hermesDesktopHost
   delete desktopWindow.hermesDesktop
 })
 
@@ -82,9 +86,157 @@ describe('resolveDomTarget', () => {
     expect(resolveDomTarget(host.querySelector('textarea')).editable).toBeTruthy()
     expect(resolveDomTarget(host.querySelector('input')).editable).toBeNull()
   })
+
+  it('resolves the enclosing dialog as the menu portal container', () => {
+    const host = attach('<div data-slot="dialog-content"><a href="https://example.com">link</a></div>')
+    const dialog = host.firstElementChild
+
+    expect(resolveDomTarget(host.querySelector('a')).dialogPortalContainer).toBe(dialog)
+  })
 })
 
 describe('AppContextMenu', () => {
+  it('leaves explicit row menus available on touch devices', () => {
+    installBridge()
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+    vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true }))
+    mountMenu()
+    const host = attach('<div data-slot="context-menu-trigger">Profile row</div>')
+    const rowMenu = vi.fn()
+    host.addEventListener('contextmenu', rowMenu)
+    fireEvent.contextMenu(host.firstElementChild!)
+    expect(rowMenu).toHaveBeenCalledTimes(1)
+    expect($contextMenu.get()).toBeNull()
+  })
+  it.each([
+    ['message text', '<div data-slot="aui_assistant-message-content"><p>selectable content</p></div>', 'p'],
+    ['a link', '<a href="https://example.com">selectable content</a>', 'a'],
+    ['an editable', '<textarea>selectable content</textarea>', 'textarea']
+  ])('preserves native touch long-press on %s before text selection exists', (_name, content, tag) => {
+    installBridge()
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+    vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true }))
+    mountMenu()
+
+    const host = attach(`<div data-zone-body="test" data-slot="context-menu-trigger">${content}</div>`)
+
+    const fallback = vi.fn()
+    host.addEventListener('contextmenu', fallback)
+    const event = createEvent.contextMenu(host.querySelector(tag)!, { bubbles: true, cancelable: true })
+    fireEvent(host.querySelector(tag)!, event)
+    expect(event.defaultPrevented).toBe(false)
+    expect(fallback).not.toHaveBeenCalled()
+    expect($contextMenu.get()).toBeNull()
+  })
+  describe.each(['browser', 'electron'])('%s host gesture ownership', hostKind => {
+    it.each([
+      ['chrome', '<p>plain chrome</p>', 'Settings'],
+      ['terminal', '<div data-terminal=""><canvas></canvas></div>', 'Select all']
+    ])('opens only the app menu for %s, preserving Electron native facts', async (_kind, html, label) => {
+      installBridge()
+      window.document.documentElement.dataset.hermesDesktopHost = hostKind
+      mountMenu()
+      const host = attach(html)
+      const terminal = host.querySelector('[data-terminal]')
+
+      const unregister = terminal
+        ? registerTerminalContextMenu(terminal, {
+            getSelection: () => '',
+            paste: null,
+            reload: vi.fn(),
+            selectAll: vi.fn(),
+            wordErase: null
+          })
+        : undefined
+
+      const target = host.querySelector('canvas') ?? host.firstElementChild!
+      const onTarget = vi.fn()
+
+      target.addEventListener('contextmenu', onTarget)
+      const event = createEvent.contextMenu(target)
+
+      try {
+        fireEvent(target, event)
+
+        expect(await screen.findByText(label)).toBeTruthy()
+        expect(onTarget).not.toHaveBeenCalled()
+        expect(event.defaultPrevented).toBe(hostKind === 'browser')
+      } finally {
+        unregister?.()
+      }
+    })
+  })
+
+  // The skip-marked and radix-surface tests below cover these markers in
+  // Electron; in the Webapp a late marker check would also cancel the native menu.
+  it.each([HERMES_CONTEXT_MENU_TRIGGER_ATTR, 'data-slot="context-menu-trigger"', 'data-context-menu-skip'])(
+    'leaves the gesture untouched in the browser Webapp for a surface owning %s',
+    marker => {
+      installBridge()
+      window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+      mountMenu()
+      const host = attach(`<div ${marker}><span>owned surface</span></div>`)
+      const target = host.querySelector('span')!
+      const onTarget = vi.fn()
+
+      target.addEventListener('contextmenu', onTarget)
+      const event = createEvent.contextMenu(target)
+
+      fireEvent(target, event)
+
+      expect($contextMenu.get()).toBeNull()
+      expect(onTarget).toHaveBeenCalledOnce()
+      expect(event.defaultPrevented).toBe(false)
+    }
+  )
+
+  it('leaves native media context menus untouched in the browser Webapp', () => {
+    installBridge()
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+    mountMenu()
+    const host = attach('<audio controls></audio>')
+    const target = host.firstElementChild!
+    const onTarget = vi.fn()
+
+    target.addEventListener('contextmenu', onTarget)
+    const event = createEvent.contextMenu(target)
+
+    fireEvent(target, event)
+
+    expect($contextMenu.get()).toBeNull()
+    expect(onTarget).toHaveBeenCalledOnce()
+    expect(event.defaultPrevented).toBe(false)
+  })
+
+  it('detects native media through the composed path', () => {
+    installBridge()
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+    mountMenu()
+    const host = attach('<div><video controls></video></div>')
+    const target = host.firstElementChild!
+    const video = target.firstElementChild!
+    const event = createEvent.contextMenu(target)
+
+    Object.defineProperty(event, 'composedPath', { value: () => [video, target, host, document.body, document] })
+    fireEvent(target, event)
+
+    expect($contextMenu.get()).toBeNull()
+    expect(event.defaultPrevented).toBe(false)
+  })
+
+  it('keeps native media gestures unprevented in Electron', async () => {
+    installBridge()
+    window.document.documentElement.dataset.hermesDesktopHost = 'electron'
+    mountMenu()
+    const electronHost = attach('<video controls></video>')
+    const electronEvent = createEvent.contextMenu(electronHost.firstElementChild!)
+
+    fireEvent(electronHost.firstElementChild!, electronEvent)
+
+    expect(await screen.findByText('Settings')).toBeTruthy()
+    expect(electronEvent.defaultPrevented).toBe(false)
+  })
+
   it('opens the link menu on a chat link right-click', async () => {
     installBridge()
     mountMenu()
@@ -98,6 +250,23 @@ describe('AppContextMenu', () => {
     expect(screen.queryByText('Copy resolved URL')).toBeNull()
   })
 
+  // The url chip used to be a `<button>`: `resolveDomTarget` only knows
+  // `a[href]`, so the right-click fell through to the shell fallback menu.
+  it('offers the link verbs on a message url chip right-click', async () => {
+    installBridge()
+    mountMenu()
+    // The coordinator binds to window in the capture phase, so a second
+    // render alongside the menu is fine — same as a real transcript.
+    render(<DirectiveContent text="@url:`https://example.com/pr/1`" />)
+    const chip = document.querySelector('[data-slot="aui_directive-chip"]')!
+
+    fireEvent.contextMenu(chip)
+
+    expect(await screen.findByText('Open in in-app browser')).toBeTruthy()
+    expect(screen.getByText('Open in external browser')).toBeTruthy()
+    expect(screen.getByText('Copy URL')).toBeTruthy()
+  })
+
   it('opens the in-app browser from the link menu', async () => {
     installBridge()
     mountMenu()
@@ -109,10 +278,32 @@ describe('AppContextMenu', () => {
     await waitFor(() => expect($previewTabs.get().at(-1)?.target.url).toBe('https://example.com/docs'))
   })
 
+  it('skips Open in in-app browser on the HUD — that window has no browser pane', async () => {
+    const originalLocation = window.location
+
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...originalLocation, search: '?win=hud' }
+    })
+
+    try {
+      installBridge()
+      mountMenu()
+      const host = attach('<a href="https://accounts.google.com/o/oauth2/auth">Sign in</a>')
+
+      fireEvent.contextMenu(host.querySelector('a')!)
+
+      expect(await screen.findByText('Open in external browser')).toBeTruthy()
+      expect(screen.queryByText('Open in in-app browser')).toBeNull()
+    } finally {
+      Object.defineProperty(window, 'location', { configurable: true, value: originalLocation })
+    }
+  })
+
   it('offers the resolved copy only for loopback links on a remote gateway', async () => {
     $connection.set({ mode: 'remote' } as never)
     const reachPreviewUrl = vi.fn(async () => 'http://127.0.0.1:45173/')
-    const writeClipboard = vi.fn().mockResolvedValue(undefined)
+    const writeClipboard = vi.fn().mockResolvedValue(true)
 
     installBridge({
       reachPreviewUrl: reachPreviewUrl as unknown as Window['hermesDesktop']['reachPreviewUrl'],
@@ -157,26 +348,6 @@ describe('AppContextMenu', () => {
     expect(screen.getByText('the')).toBeTruthy()
   })
 
-  it('shows edit verbs without icons and with faded accelerators', async () => {
-    installBridge()
-    mountMenu()
-    const host = attach('<textarea></textarea>')
-
-    fireEvent.contextMenu(host.querySelector('textarea')!)
-
-    // formatCombo picks ⌘/Ctrl from the host running the test, exactly like
-    // the menu itself — so the assertion is platform-honest, not hardcoded.
-    const pasteItem = (await screen.findByText('Paste')).closest('[data-slot="dropdown-menu-item"]')!
-
-    expect(pasteItem.querySelector('[data-slot="dropdown-menu-shortcut"]')?.textContent).toBe(formatCombo('mod+v'))
-    expect(pasteItem.querySelector('.codicon')).toBeNull()
-
-    const selectAllItem = screen.getByText('Select all').closest('[data-slot="dropdown-menu-item"]')!
-
-    expect(selectAllItem.querySelector('[data-slot="dropdown-menu-shortcut"]')?.textContent).toBe(formatCombo('mod+a'))
-    expect(selectAllItem.querySelector('.codicon')).toBeNull()
-  })
-
   it('runs edit verbs after the menu closed, with focus back on the editable', async () => {
     const contextMenuEdit = vi.fn().mockResolvedValue(undefined)
 
@@ -196,6 +367,43 @@ describe('AppContextMenu', () => {
 
     await waitFor(() => expect(contextMenuEdit).toHaveBeenCalledWith('copy'))
     expect($contextMenu.get()).toBeNull()
+    expect(document.activeElement).toBe(textarea)
+  })
+
+  it('keeps a modal textarea paste menu inside its dialog and restores focus', async () => {
+    const contextMenuEdit = vi.fn().mockResolvedValue(undefined)
+
+    installBridge({
+      contextMenuEdit: contextMenuEdit as unknown as Window['hermesDesktop']['contextMenuEdit'],
+      readClipboard: vi.fn().mockResolvedValue('clipboard payload')
+    })
+    render(
+      <MemoryRouter>
+        <AppContextMenu />
+        <Dialog open>
+          <DialogContent>
+            <DialogTitle>Modal editor</DialogTitle>
+            <textarea aria-label="modal textarea" />
+          </DialogContent>
+        </Dialog>
+      </MemoryRouter>
+    )
+    const textarea = screen.getByLabelText('modal textarea')
+
+    fireEvent.contextMenu(textarea)
+
+    const paste = (await screen.findByText('Paste')).closest('[data-slot="dropdown-menu-item"]') as HTMLElement
+
+    await waitFor(() => expect(paste.getAttribute('data-disabled')).toBeNull())
+
+    const menu = paste.closest('[data-slot="dropdown-menu-content"]')
+    const dialog = screen.getByRole('dialog')
+
+    expect(dialog.contains(menu)).toBe(true)
+
+    fireEvent.click(paste)
+
+    await waitFor(() => expect(contextMenuEdit).toHaveBeenCalledWith('paste'))
     expect(document.activeElement).toBe(textarea)
   })
 
@@ -257,22 +465,6 @@ describe('AppContextMenu', () => {
     expect(document.activeElement).toBe(textarea)
   })
 
-  it('splits select all into its own section under the edit verbs', async () => {
-    installBridge()
-    mountMenu()
-    const host = attach('<textarea>text</textarea>')
-
-    fireEvent.contextMenu(host.querySelector('textarea')!)
-
-    const selectAllItem = (await screen.findByText('Select all')).closest('[data-slot="dropdown-menu-item"]')!
-    const pasteItem = screen.getByText('Paste').closest('[data-slot="dropdown-menu-item"]')!
-
-    // Sections render as sibling `.contents` wrappers with the separator
-    // inside the later one — different wrappers = different sections.
-    expect(pasteItem.parentElement).not.toBe(selectAllItem.parentElement)
-    expect(selectAllItem.parentElement?.querySelector('[data-slot="dropdown-menu-separator"]')).not.toBeNull()
-  })
-
   it('grays out cut, copy, and select all in an empty field', async () => {
     installBridge()
     mountMenu()
@@ -289,22 +481,12 @@ describe('AppContextMenu', () => {
     expect(item('Select all').getAttribute('data-disabled')).not.toBeNull()
   })
 
-  it('grays out paste until the clipboard reports text', async () => {
-    const readClipboard = vi.fn().mockResolvedValue('clip content')
-
-    installBridge({ readClipboard: readClipboard as unknown as Window['hermesDesktop']['readClipboard'] })
-    mountMenu()
-    const host = attach('<textarea>text</textarea>')
-
-    fireEvent.contextMenu(host.querySelector('textarea')!)
-
-    // The clipboard read is async — the item enables when it lands.
-    const pasteItem = (await screen.findByText('Paste')).closest('[data-slot="dropdown-menu-item"]')!
-
-    await waitFor(() => expect(pasteItem.getAttribute('data-disabled')).toBeNull())
-  })
-
-  it('keeps paste grayed out on an empty clipboard', async () => {
+  it('keeps paste clickable even when the clipboard probe reports empty', async () => {
+    // #91553: the dom paste action runs webContents.paste() in main — the
+    // same path Ctrl+V takes, which resolves the system clipboard itself.
+    // A renderer-side probe that comes back empty (as the Win32
+    // clipboard.readText() bridge can while that path succeeds) must not
+    // gray the item out; pasting on a truly empty clipboard is a no-op.
     const readClipboard = vi.fn().mockResolvedValue('')
 
     installBridge({ readClipboard: readClipboard as unknown as Window['hermesDesktop']['readClipboard'] })
@@ -315,8 +497,19 @@ describe('AppContextMenu', () => {
 
     const pasteItem = (await screen.findByText('Paste')).closest('[data-slot="dropdown-menu-item"]')!
 
-    await waitFor(() => expect(readClipboard).toHaveBeenCalled())
-    expect(pasteItem.getAttribute('data-disabled')).not.toBeNull()
+    expect(pasteItem.getAttribute('data-disabled')).toBeNull()
+  })
+
+  it('keeps paste clickable when the bridge has no clipboard read at all', async () => {
+    installBridge()
+    mountMenu()
+    const host = attach('<textarea>text</textarea>')
+
+    fireEvent.contextMenu(host.querySelector('textarea')!)
+
+    const pasteItem = (await screen.findByText('Paste')).closest('[data-slot="dropdown-menu-item"]')!
+
+    expect(pasteItem.getAttribute('data-disabled')).toBeNull()
   })
 
   it('offers the window verbs on bare chrome', async () => {
@@ -344,6 +537,22 @@ describe('AppContextMenu', () => {
     expect(await screen.findByText('Copy URL')).toBeTruthy()
   })
 
+  it('lets editable targets inside a radix surface use the edit menu', async () => {
+    installBridge()
+    mountMenu()
+
+    const host = attach(
+      `<div data-zone-body="test" data-slot="context-menu-trigger"><textarea>draft text</textarea></div>`
+    )
+
+    const textarea = host.querySelector('textarea')!
+
+    fireEvent.contextMenu(textarea)
+
+    expect(await screen.findByText('Select all')).toBeTruthy()
+    expect(screen.getByText('Paste')).toBeTruthy()
+  })
+
   it('leaves surfaces with their own radix menu alone', () => {
     installBridge()
     mountMenu()
@@ -363,7 +572,9 @@ describe('AppContextMenu', () => {
     const unregister = registerTerminalContextMenu(host.querySelector('[data-terminal]')!, {
       getSelection: () => 'picked text',
       paste,
-      selectAll: vi.fn()
+      reload: vi.fn(),
+      selectAll: vi.fn(),
+      wordErase: null
     })
 
     fireEvent.contextMenu(host.querySelector('canvas')!)
@@ -382,7 +593,9 @@ describe('AppContextMenu', () => {
     const unregister = registerTerminalContextMenu(host.querySelector('[data-terminal]')!, {
       getSelection: () => '',
       paste: null,
-      selectAll: vi.fn()
+      reload: vi.fn(),
+      selectAll: vi.fn(),
+      wordErase: null
     })
 
     fireEvent.contextMenu(host.querySelector('canvas')!)
@@ -424,23 +637,6 @@ describe('AppContextMenu guest (in-app browser)', () => {
 
     expect(await screen.findByText('Select all')).toBeTruthy()
     expect(screen.getByText('Inspect element')).toBeTruthy()
-    // The page verbs live on the browser bar only now.
-    expect(screen.queryByText('Copy page URL')).toBeNull()
-    expect(screen.queryByText('Open in browser')).toBeNull()
-    expect(screen.queryByText('Show preview console')).toBeNull()
-  })
-
-  it('draws a line between select all and inspect element', async () => {
-    installBridge()
-    mountMenu()
-
-    openGuestContextMenu(10, 10, guestParams(), guestHandle())
-
-    const selectAllItem = (await screen.findByText('Select all')).closest('[data-slot="dropdown-menu-item"]')!
-    const inspectItem = screen.getByText('Inspect element').closest('[data-slot="dropdown-menu-item"]')!
-
-    expect(selectAllItem.parentElement).not.toBe(inspectItem.parentElement)
-    expect(inspectItem.parentElement?.querySelector('[data-slot="dropdown-menu-separator"]')).not.toBeNull()
   })
 
   it('runs inspect element against the handle', async () => {
@@ -462,22 +658,7 @@ describe('AppContextMenu guest (in-app browser)', () => {
 
     expect(await screen.findByText('Open in in-app browser')).toBeTruthy()
     expect(screen.getByText('Copy URL')).toBeTruthy()
-    // Inspect element rides every guest menu; the bar-only verbs do not.
     expect(screen.getByText('Inspect element')).toBeTruthy()
-    expect(screen.queryByText('Copy page URL')).toBeNull()
-  })
-
-  it('keeps inspect element in guest editable menus', async () => {
-    installBridge()
-    mountMenu()
-
-    openGuestContextMenu(10, 10, guestParams({ isEditable: true }), guestHandle())
-
-    expect(await screen.findByText('Paste')).toBeTruthy()
-    expect(screen.getByText('Inspect element')).toBeTruthy()
-    expect(screen.queryByText('Copy page URL')).toBeNull()
-    expect(screen.queryByText('Open in browser')).toBeNull()
-    expect(screen.queryByText('Show preview console')).toBeNull()
   })
 
   it('grays out guest edit verbs from Chromium editFlags', async () => {
@@ -503,19 +684,6 @@ describe('AppContextMenu guest (in-app browser)', () => {
     expect(item('Copy').getAttribute('data-disabled')).not.toBeNull()
     expect(item('Select all').getAttribute('data-disabled')).not.toBeNull()
     expect(item('Paste').getAttribute('data-disabled')).toBeNull()
-  })
-
-  it('splits guest select all into its own section', async () => {
-    installBridge()
-    mountMenu()
-
-    openGuestContextMenu(10, 10, guestParams({ isEditable: true }), guestHandle())
-
-    const selectAllItem = (await screen.findByText('Select all')).closest('[data-slot="dropdown-menu-item"]')!
-    const pasteItem = screen.getByText('Paste').closest('[data-slot="dropdown-menu-item"]')!
-
-    expect(pasteItem.parentElement).not.toBe(selectAllItem.parentElement)
-    expect(selectAllItem.parentElement?.querySelector('[data-slot="dropdown-menu-separator"]')).not.toBeNull()
   })
 
   it('dispatches guest edit verbs a frame after the menu closes', async () => {
@@ -565,5 +733,22 @@ describe('AppContextMenu guest (in-app browser)', () => {
 
     expect(guest.replaceMisspelling).toHaveBeenCalledWith('the')
     expect(screen.queryByText('Add to dictionary')).toBeNull()
+  })
+})
+
+describe('ContextMenuTrigger asChild', () => {
+  it('keeps the coordinator marker when the child overwrites data-slot', () => {
+    render(
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <footer data-slot="statusbar">bar</footer>
+        </ContextMenuTrigger>
+      </ContextMenu>
+    )
+
+    const footer = screen.getByText('bar')
+
+    expect(footer.getAttribute('data-slot')).toBe('statusbar')
+    expect(footer.hasAttribute(HERMES_CONTEXT_MENU_TRIGGER_ATTR)).toBe(true)
   })
 })

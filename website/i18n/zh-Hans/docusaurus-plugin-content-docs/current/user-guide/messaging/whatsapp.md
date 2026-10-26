@@ -103,9 +103,9 @@ WHATSAPP_ALLOWED_USERS=15551234567         # 逗号分隔的手机号（含国�
 
 :::tip 允许所有人的简写
 将 `WHATSAPP_ALLOWED_USERS=*` 设置为允许**所有**发送者（等同于 `WHATSAPP_ALLOW_ALL_USERS=true`）。
-这与 [Signal 群组白名单](/reference/environment-variables) 保持一致。
+这与 [Signal 群组白名单](../../reference/environment-variables.md) 保持一致。
 如需使用配对流程，请移除这两个变量，改用
-[私信配对系统](/user-guide/security#dm-pairing-system)。
+[私信配对系统](../security.md#dm-pairing-system)。
 :::
 
 在 `~/.hermes/config.yaml` 中可选的行为设置：
@@ -160,7 +160,7 @@ Hermes 支持 WhatsApp 上的语音功能：
 
 - **接收：** 语音消息（`.ogg` opus 格式）会使用已配置的 STT 提供商自动转录：本地 `faster-whisper`、Groq Whisper（`GROQ_API_KEY`）或 OpenAI Whisper（`VOICE_TOOLS_OPENAI_KEY`）
 - **发送：** TTS 响应以 MP3 音频文件附件形式发送
-- Agent 响应默认以"⚕ **Hermes Agent**"为前缀。可在 `config.yaml` 中自定义或禁用：
+- Agent 响应默认以"☤ **Hermes Agent**"为前缀。可在 `config.yaml` 中自定义或禁用：
 
 ```yaml
 # ~/.hermes/config.yaml

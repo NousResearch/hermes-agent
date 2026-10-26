@@ -21,7 +21,7 @@ const PILL = cn(
   composerFloatingPill,
   'max-w-56',
   'disabled:cursor-default disabled:opacity-50 disabled:hover:bg-(--composer-fill)',
-  'focus-visible:outline-none focus-visible:ring-[0.1875rem] focus-visible:ring-ring/50'
+  'focus-visible:bg-(--chrome-action-hover) focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-[0.1875rem] focus-visible:ring-ring/50'
 )
 
 /**

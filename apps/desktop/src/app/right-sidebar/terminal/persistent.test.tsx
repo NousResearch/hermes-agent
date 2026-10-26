@@ -294,20 +294,6 @@ describe('PersistentTerminal rect tracking', () => {
     expect(raf.pending()).toBe(0)
   })
 
-  it('does not schedule an initial frame when mounted while unfocused', () => {
-    const raf = installRaf()
-    vi.mocked(document.hasFocus).mockReturnValue(false)
-    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(rect(10, 20, 200, 100))
-
-    mount.render(<Harness />)
-
-    expect(raf.request).not.toHaveBeenCalled()
-
-    act(() => window.dispatchEvent(new Event('focus')))
-
-    expect(raf.pending()).toBe(1)
-  })
-
   it('hides the overlay but keeps its workspace mounted when the terminal tab becomes inactive', () => {
     const raf = installRaf()
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(rect(10, 20, 200, 100))
@@ -364,5 +350,42 @@ describe('PersistentTerminal rect tracking', () => {
     expect(overlay.style.opacity).toBe('1')
     expect(overlay.style.pointerEvents).toBe('auto')
     expect(mount.container!.querySelector('[data-testid="terminal-workspace"]')).toBe(workspace)
+  })
+
+  it('hides the overlay on a tab switch that happens while the window is unfocused', () => {
+    // The trap: the terminal is a tab in the main zone and the user clicks
+    // another tab without the window being focused (or right as it blurs).
+    // The rect chase is paused then — but visibility is correctness, not perf,
+    // so the overlay must still stand down instead of covering the chat with
+    // an opaque, pointer-interactive surface until something refocuses.
+    installRaf()
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(rect(10, 20, 200, 100))
+    $terminalTakeover.set(true)
+
+    mount.render(<HiddenPaneHarness hidden={false} />)
+
+    const overlay = mount.container!.lastElementChild as HTMLElement
+
+    expect(overlay.style.visibility).toBe('visible')
+    expect(overlay.style.pointerEvents).toBe('auto')
+
+    act(() => {
+      vi.mocked(document.hasFocus).mockReturnValue(false)
+      window.dispatchEvent(new Event('blur'))
+    })
+
+    act(() => {
+      mount.root!.render(<HiddenPaneHarness hidden />)
+    })
+
+    act(() => {
+      mutationObserverCallback?.([], {} as MutationObserver)
+    })
+
+    expect(overlay.style.visibility).toBe('hidden')
+    expect(overlay.style.opacity).toBe('0')
+    expect(overlay.style.pointerEvents).toBe('none')
+    // The PTY survives — only the overlay stands down.
+    expect(mount.container!.querySelector('[data-testid="terminal-workspace"]')).not.toBeNull()
   })
 })

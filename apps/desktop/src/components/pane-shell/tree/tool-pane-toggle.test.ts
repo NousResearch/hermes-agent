@@ -11,10 +11,11 @@ import {
   $layoutTree,
   activateTreePane,
   bindToolPaneCollapse,
+  closeTabPane,
   closeToolPane,
   isPaneVisible,
   revealTreePane,
-  setTreeGroupHeaderHidden,
+  setTreeGroupTabStrip,
   togglePaneVisible
 } from './store'
 
@@ -69,7 +70,7 @@ const toolZone = () => {
       ? tree.children.find(c => c.type === 'group' && (c.panes.includes('terminal') || c.panes.includes('logs')))
       : null
 
-  return found as { active?: string; headerHidden?: boolean; minimized?: boolean; panes: string[] } | null
+  return found as { active?: string; minimized?: boolean; panes: string[]; tabStrip?: string } | null
 }
 
 /** Terminal dragged to the bottom; logs adopted into the same zone.
@@ -77,13 +78,13 @@ const toolZone = () => {
  *  Set via `$layoutTree.set`, NOT `declareDefaultTree` — that only adopts into
  *  an existing tree, and `$layoutTree` is module state that survives between
  *  tests, so the second case would silently assert against the first's shape. */
-const stackTree = (options?: { active?: string; headerHidden?: boolean }) => {
+const stackTree = (options?: { active?: string; tabStrip?: 'always' | 'never' }) => {
   $layoutTree.set(
     split('column', [
       group(['workspace'], { active: 'workspace', id: 'grp-main' }),
       group(['terminal', 'logs'], {
         active: options?.active ?? 'terminal',
-        headerHidden: options?.headerHidden,
+        tabStrip: options?.tabStrip,
         id: 'g-tools'
       })
     ])
@@ -297,6 +298,56 @@ describe('collapsing the active terminal in a shared group with the workspace', 
   })
 })
 
+describe('closing an active tool tab (✕ / ⌘W) that shares the chat zone', () => {
+  // #79002: a terminal dragged into the chat's zone, closed from its tab ✕,
+  // left the user on whatever tab sat next to it (review) instead of the chat.
+  // removePane's neighbour rule ran first, and the store listener's collapse
+  // then no-oped on a pane that had already left the tree. Same destination
+  // as putting the pane away with its toggle: the uncloseable workspace.
+
+  const chatZoneActive = () => {
+    const tree = $layoutTree.get()
+
+    return tree?.type === 'group' ? tree.active : undefined
+  }
+
+  it.each([
+    ['terminal', ['workspace', 'files', 'review', 'terminal']],
+    ['logs', ['workspace', 'review', 'logs', 'files']]
+  ])('closing %s hands the active slot to the workspace, not a neighbour', (paneId, panes) => {
+    $layoutTree.set(group(panes, { active: paneId, id: 'g-chat' }))
+    const $open = atom(true)
+    bindPaneCollapse(paneId, $open)
+
+    closeTabPane(paneId)
+
+    expect(allPaneIds($layoutTree.get()!)).not.toContain(paneId)
+    expect(chatZoneActive()).toBe('workspace')
+    expect(isPaneVisible('workspace')).toBe(true)
+    expect($open.get()).toBe(false) // toggle store stays truthful
+  })
+
+  it('leaves the active tab alone when the closed tool tab was in the background', () => {
+    $layoutTree.set(group(['workspace', 'review', 'terminal'], { active: 'review', id: 'g-chat' }))
+    bindPaneCollapse('terminal', atom(true))
+
+    closeTabPane('terminal')
+
+    expect(chatZoneActive()).toBe('review')
+  })
+
+  it('still hands a pure tool zone to the neighbouring tool tab', () => {
+    stackTree({ active: 'terminal' })
+    bindPaneCollapse('terminal', atom(true))
+    bindPaneCollapse('logs', atom(true))
+
+    closeTabPane('terminal')
+
+    expect(toolZone()?.panes).toEqual(['logs'])
+    expect(toolZone()?.active).toBe('logs')
+  })
+})
+
 describe('a terminal that owns its own zone (Default / Terminal deck / Quad)', () => {
   // Only the Focus preset stacks the terminal with the workspace. Everywhere
   // else it sits in a group of its own, beside the chat rather than over it —
@@ -363,23 +414,23 @@ describe('a terminal that owns its own zone (Default / Terminal deck / Quad)', (
 
 describe('a zone whose header the user hid', () => {
   it('keeps it hidden after a stacked sibling is closed and toggled back', () => {
-    stackTree({ headerHidden: true })
+    stackTree({ tabStrip: 'never' })
     bindPaneCollapse('terminal', atom(true))
     const $logs = atom(true)
     bindPaneCollapse('logs', $logs)
 
-    setTreeGroupHeaderHidden('g-tools', true)
+    setTreeGroupTabStrip('g-tools', 'never')
 
     // Close logs: the zone drops to one pane. normalize used to DISCARD the
     // hidden flag here ("a lone zone is headerless anyway"), so the bar
     // reappeared the moment logs was toggled back in.
     closeToolPane('logs')
-    expect(toolZone()?.headerHidden).toBe(true)
+    expect(toolZone()?.tabStrip).toBe('never')
 
     $logs.set(true)
 
     expect(toolZone()?.panes).toContain('logs')
-    expect(toolZone()?.headerHidden).toBe(true)
+    expect(toolZone()?.tabStrip).toBe('never')
   })
 
   it('keeps it hidden when a closed pane is re-adopted into it', () => {
@@ -388,14 +439,14 @@ describe('a zone whose header the user hid', () => {
     bindPaneCollapse('terminal', $terminal)
     bindPaneCollapse('logs', atom(true))
 
-    setTreeGroupHeaderHidden('g-tools', true)
+    setTreeGroupTabStrip('g-tools', 'never')
 
-    // Re-adoption pins headerHidden:false so a surprise pane always has a
-    // handle — correct for a new pane, wrong for a zone the user hid.
+    // Re-adoption used to pin the strip visible so a surprise pane always had
+    // a handle — correct for a new pane, wrong for a zone the user hid.
     closeToolPane('terminal')
     $terminal.set(true)
 
     expect(toolZone()?.panes).toContain('terminal')
-    expect(toolZone()?.headerHidden).toBe(true)
+    expect(toolZone()?.tabStrip).toBe('never')
   })
 })

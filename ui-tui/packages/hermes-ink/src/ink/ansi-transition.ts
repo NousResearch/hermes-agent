@@ -48,6 +48,7 @@ function weightAtoms(code: AnsiCode): string[] {
       // Extended color: consume the argument sub-params so their literal
       // 2/5 aren't read as weight atoms.
       i += parts[i + 1] === '5' ? 2 : parts[i + 1] === '2' ? 4 : 0
+
       continue
     }
 
@@ -80,6 +81,7 @@ export function transitionAnsiCodes(from: AnsiCode[], to: AnsiCode[]): AnsiCode[
   for (const atom of fromAtoms) {
     if (!toAtoms.has(atom)) {
       removesWeight = true
+
       break
     }
   }
@@ -94,7 +96,10 @@ export function transitionAnsiCodes(from: AnsiCode[], to: AnsiCode[]): AnsiCode[
   // in full (a compound re-asserts its color too — redundant bytes, never
   // wrong). The rest of the style diffs normally with the weight carriers
   // stripped from both sides.
-  const rest = diffAnsiCodes(from.filter(code => !carriesWeight(code)), to.filter(code => !carriesWeight(code)))
+  const rest = diffAnsiCodes(
+    from.filter(code => !carriesWeight(code)),
+    to.filter(code => !carriesWeight(code))
+  )
 
   return [WEIGHT_RESET, ...rest, ...to.filter(carriesWeight)]
 }

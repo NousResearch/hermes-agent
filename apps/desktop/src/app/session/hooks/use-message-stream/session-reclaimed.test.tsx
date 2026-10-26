@@ -1,11 +1,14 @@
+import type { GatewayEvent } from '@hermes/shared'
 import { QueryClient } from '@tanstack/react-query'
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { clearAllPrompts, sessionApprovalRequest, setApprovalRequest } from '@/store/prompts'
+import { resetRuntimeGoneHealing } from '@/store/runtime-gone'
+import { $activeSessionId, $sessionResumeRequest } from '@/store/session'
 import { $sessionStates, $sessionTiles, publishSessionState } from '@/store/session-states'
-import type { RpcEvent } from '@/types/hermes'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 
@@ -31,33 +34,31 @@ const reclaim = (sessionId: string, reason = 'ws_orphan_reap') =>
       payload: { reason, session_id: sessionId, stored_session_id: 'stored-1' },
       session_id: '',
       type: 'session.reclaimed'
-    } as RpcEvent)
+    } as GatewayEvent)
   )
 
 beforeEach(() => {
   queryClient = new QueryClient()
+  resetRuntimeGoneHealing()
   $sessionStates.set({})
   $sessionTiles.set([])
+  $activeSessionId.set(null)
+  $sessionResumeRequest.set(null)
+  clearAllPrompts()
 })
 
 afterEach(() => {
   cleanup()
+  resetRuntimeGoneHealing()
   $sessionStates.set({})
   $sessionTiles.set([])
+  $activeSessionId.set(null)
+  $sessionResumeRequest.set(null)
+  clearAllPrompts()
   vi.restoreAllMocks()
 })
 
 describe('session.reclaimed', () => {
-  it('drops the cached state for the reclaimed runtime', () => {
-    mountStream()
-    publishSessionState('live-gone', createClientSessionState())
-    expect($sessionStates.get()['live-gone']).toBeDefined()
-
-    reclaim('live-gone')
-
-    expect($sessionStates.get()['live-gone']).toBeUndefined()
-  })
-
   it('leaves every other live session alone', () => {
     mountStream()
     publishSessionState('live-gone', createClientSessionState())
@@ -71,6 +72,21 @@ describe('session.reclaimed', () => {
     expect($sessionStates.get()['live-kept']).toBeDefined()
   })
 
+  // The runtime id rotates on every resume, so a prompt keyed to the reclaimed
+  // runtime can never be cleared by the NEW runtime's turn-end edges. Left
+  // behind, it re-mounts the floating "needs approval" bar on a finished
+  // conversation whenever it is reopened (#86577).
+  it('retires only the reclaimed runtime approval', () => {
+    mountStream()
+    setApprovalRequest({ command: 'rm stale', description: 'stale request', sessionId: 'live-gone' })
+    setApprovalRequest({ command: 'rm kept', description: 'kept request', sessionId: 'live-kept' })
+
+    reclaim('live-gone')
+
+    expect(sessionApprovalRequest('live-gone').get()).toBeNull()
+    expect(sessionApprovalRequest('live-kept').get()?.command).toBe('rm kept')
+  })
+
   it('ignores a payload with no runtime id instead of clearing everything', () => {
     mountStream()
     publishSessionState('live-a', createClientSessionState())
@@ -80,19 +96,6 @@ describe('session.reclaimed', () => {
 
     // A malformed/empty id must be a no-op, never a blanket wipe.
     expect(Object.keys($sessionStates.get()).sort()).toEqual(['live-a', 'live-b'])
-  })
-
-  it('drops the runtime regardless of which reclaim reason fired', () => {
-    for (const reason of ['idle_timeout', 'lru_evict', 'ws_orphan_reap']) {
-      $sessionStates.set({})
-      cleanup()
-      mountStream()
-      publishSessionState('live-gone', createClientSessionState())
-
-      reclaim('live-gone', reason)
-
-      expect($sessionStates.get()['live-gone'], reason).toBeUndefined()
-    }
   })
 
   // A TILE bound to the reclaimed runtime is the #82620 blank-pane case: the
@@ -128,5 +131,26 @@ describe('session.reclaimed', () => {
 
     expect(wiringCache.has('live-gone')).toBe(false)
     expect(wiringCache.has('live-kept')).toBe(true)
+  })
+
+  it('requests a durable resume when the reclaimed runtime is the active chat', () => {
+    mountStream()
+    $activeSessionId.set('live-gone')
+    publishSessionState('live-gone', createClientSessionState('stored-1'))
+
+    reclaim('live-gone')
+
+    expect($sessionResumeRequest.get()?.sessionId).toBe('stored-1')
+  })
+
+  it('does not navigate the primary chat when a background runtime is reclaimed', () => {
+    mountStream()
+    $activeSessionId.set('live-kept')
+    publishSessionState('live-gone', createClientSessionState('stored-1'))
+    publishSessionState('live-kept', createClientSessionState('stored-2'))
+
+    reclaim('live-gone')
+
+    expect($sessionResumeRequest.get()).toBeNull()
   })
 })

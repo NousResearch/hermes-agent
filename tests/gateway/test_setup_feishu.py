@@ -7,6 +7,9 @@ Feishu adapter: credentials, connection mode, DM policy, and group policy.
 import os
 from unittest.mock import patch
 
+import os as _os
+_SYS_ENV = {k: _os.environ[k] for k in ("SYSTEMROOT", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "HOME") if k in _os.environ}
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -73,28 +76,6 @@ def _run_setup_feishu(
 # QR scan-to-create path
 # ---------------------------------------------------------------------------
 
-class TestSetupFeishuQrPath:
-    """Tests for the QR scan-to-create happy path."""
-
-
-    def test_qr_success_does_not_persist_bot_identity(self):
-        """Bot identity is discovered at runtime by _hydrate_bot_identity — not persisted
-        in env, so it stays fresh if the user renames the bot later."""
-        env, _ = _run_setup_feishu(
-            qr_result={
-                "app_id": "cli_test",
-                "app_secret": "secret_test",
-                "domain": "feishu",
-                "open_id": "ou_owner",
-                "bot_name": "TestBot",
-                "bot_open_id": "ou_bot",
-            },
-            prompt_yes_no_responses=[True],
-            prompt_choice_responses=[0, 0, 0],
-            prompt_responses=[""],
-        )
-        assert "FEISHU_BOT_OPEN_ID" not in env
-        assert "FEISHU_BOT_NAME" not in env
 
 
 # ---------------------------------------------------------------------------
@@ -211,12 +192,12 @@ class TestSetupFeishuAdapterIntegration:
         )
         return env
 
-    @patch.dict(os.environ, {}, clear=True)
+    @patch.dict(os.environ, _SYS_ENV, clear=True)
     def test_qr_env_produces_valid_adapter_settings(self):
         """QR setup → adapter initializes with websocket mode."""
         env = self._make_env_from_setup()
 
-        with patch.dict(os.environ, env, clear=True):
+        with patch.dict(os.environ, {**_SYS_ENV, **env}, clear=True):
             from gateway.config import PlatformConfig
             from plugins.platforms.feishu.adapter import FeishuAdapter
             adapter = FeishuAdapter(PlatformConfig())

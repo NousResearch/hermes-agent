@@ -54,10 +54,7 @@ describe('transitionAnsiCodes weight family', () => {
   const compound = (params: string) => ({ type: 'ansi' as const, code: `${ESC}[${params}m`, endCode: `${ESC}[0m` })
 
   it('compound bold → compound dim resets the weight family', () => {
-    expect(codes(transitionAnsiCodes([compound('1;31')], [compound('2;37')]))).toEqual([
-      `${ESC}[22m`,
-      `${ESC}[2;37m`
-    ])
+    expect(codes(transitionAnsiCodes([compound('1;31')], [compound('2;37')]))).toEqual([`${ESC}[22m`, `${ESC}[2;37m`])
   })
 
   it('compound bold → compound bold (color change) stays minimal', () => {

@@ -36,7 +36,7 @@ from agent.context_compressor_prune import ProactivePruneMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.context_compressor_retry import retryable_user_text
 from agent.context_compressor_tail import (
-    demote_stale_tail_tools, lean_tail_budget, is_demoted_stub, skill_view_names_by_call_id,
+    demote_stale_tail_tools, lean_tail_budget, is_demoted_stub, skill_view_names_by_call_id, tail_cut_pricer,
     elide_keeping_skill_safety_rule, with_skill_safety_rule, without_skill_safety_rule,
 )
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
@@ -3119,14 +3119,14 @@ class ContextCompressor(
 
     def _walk_tail_budget(
         self, messages: list[dict[str, Any]], head_end: int, ceiling: int, min_tail: int, *, cut_at_break: bool,
+        price: Optional[Callable[[int], int]] = None,
     ) -> tuple[int, int]:
         """Accumulate message tokens newest-first until ``ceiling`` (once ``min_tail`` rows are kept).
         Returns ``(cut_idx, accumulated)``; ``cut_idx`` is the first protected index. On the budget
         break the cut stays at the last accepted row, or moves onto the breaking row when
         ``cut_at_break``. Only the newest assistant turn's thinking is charged (#73624) unless the route
-        echoes stale thinking every turn — must agree with the preflight estimate (#84371)."""
-        n = len(messages)
-        price = self._tail_row_pricer(messages)
+        echoes stale thinking every turn — must agree with the preflight estimate (#84371); ``price`` overrides it."""
+        n, price = len(messages), price or self._tail_row_pricer(messages)
         accumulated = 0
         cut = n  # start from beyond the end
         for i in range(n - 1, head_end - 1, -1):
@@ -4999,11 +4999,11 @@ Write only the summary body. Do not include any preamble or prefix."""
         # token-respecting floor exists then. Required user/assistant anchors and atomic tool groups
         # are applied below and may still necessarily exceed the ceiling.
         walk_floor = 0 if soft_ceiling >= min_tail * _estimate_msg_budget_tokens({}) else min_tail
-        cut_idx, accumulated = self._walk_tail_budget(messages, head_end, soft_ceiling, walk_floor, cut_at_break=False)
-        # Whole transcript fits soft_ceiling: re-cut with the raw budget so a worthwhile middle
-        # exists (else #40803 loop).
+        price = tail_cut_pricer(self, messages, head_end)
+        cut_idx, accumulated = self._walk_tail_budget(messages, head_end, soft_ceiling, walk_floor, cut_at_break=False, price=price)
+        # Whole transcript fits soft_ceiling: re-cut with the raw budget so a worthwhile middle exists (else #40803 loop).
         if cut_idx <= head_end and 0 < accumulated <= soft_ceiling:
-            cut_idx, _ = self._walk_tail_budget(messages, head_end, token_budget, min_tail, cut_at_break=True)
+            cut_idx, _ = self._walk_tail_budget(messages, head_end, token_budget, min_tail, cut_at_break=True, price=price)
 
         fallback_cut = n - min_tail
         # The newest row never leaves the tail, whatever its role. When it alone exceeds the ceiling the walk accepts

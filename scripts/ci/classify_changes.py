@@ -333,6 +333,7 @@ _UPDATE_DEPENDENCIES = (
     "pm/install.py",  # also sealed()/lazy_installs_allowed(): every update's default-tool install
     "hermes_cli/desktop_build_lock.py",
     "hermes_cli/desktop_build_reuse.py",  # source_build keeps the packaged app when no input changed
+    "hermes_cli/desktop_release_holders.py",  # main_desktop names/closes a holder of release/ on a failed swap
     "hermes_cli/memory_provider_migration.py",
     "hermes_cli/left_core_migration.py",  # source_build migrates plugins that left core
     "hermes_cli/config_version_stamp.py",  # post_update converts legacy AGENT_BROWSER_* before stamping

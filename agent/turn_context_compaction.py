@@ -586,7 +586,12 @@ def _drift_compaction(
         _last = 0
     # Dependence is measured against the region that would compress away: everything
     # before the protected tail (the tail survives verbatim and needs no summary).
+    _head_n = int(getattr(_compressor, "protect_first_n", 3) or 0)
     _tail_n = int(getattr(_compressor, "protect_last_n", 20) or 0)
+    # Nothing OUTSIDE the protected head/tail could compress away — summarizing a
+    # thread that fits entirely inside them would rewrite it for nothing.
+    if len(messages) <= _head_n + _tail_n:
+        return
     _prior = [str(m.get("content") or "") for m in (messages[:-_tail_n] if _tail_n else messages)
               if isinstance(m, dict)]
     _incoming = user_message if isinstance(user_message, str) else str(

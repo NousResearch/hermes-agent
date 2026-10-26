@@ -1252,7 +1252,8 @@ def build_turn_context(
         agent, messages=messages, system_message=system_message,
         active_system_prompt=active_system_prompt, conversation_history=conversation_history,
         current_turn_user_idx=current_turn_user_idx, user_message=user_message,
-        effective_task_id=effective_task_id, task_continuation=bool(task_id),
+        effective_task_id=effective_task_id,
+        task_continuation=bool(getattr(agent, "_turn_is_task_continuation", False)),
     )
     messages = compaction.messages
     active_system_prompt = compaction.active_system_prompt

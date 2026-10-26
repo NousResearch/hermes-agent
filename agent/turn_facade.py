@@ -57,6 +57,10 @@ class TurnFacadeMixin:
         from hermes_cli.observability.relay_shared_metrics import finish_task_run, start_task_run
 
         effective_task_id = task_id or str(uuid.uuid4())
+        # Raw caller intent, before the uuid fallback: a caller-supplied task id means this
+        # turn continues an external task (cron/delegation) whose follow-ups depend on
+        # in-flight context — drift compaction must not run for it.
+        self._turn_is_task_continuation = bool(task_id)
         session_id = str(getattr(self, "session_id", None) or "")
         task_context = {
             "session_id": session_id,

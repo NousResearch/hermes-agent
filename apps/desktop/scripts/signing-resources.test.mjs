@@ -155,7 +155,8 @@ const measuredOpen = fs.promises.open
 // A rejected walk's Promise.all leaves its other probes running, and their lstat
 // callbacks can land after a later walk has finished. Fault the first open of each
 // case, then wait until every file of the failed walk has opened and closed, so a
-// straggler can never consume the next case's one-shot fault.
+// straggler can neither consume the next case's one-shot fault nor still be open
+// when live is checked.
 function inject(fault) {
   let calls = 0, opening = 0
   fs.promises.open = async (...args) => {

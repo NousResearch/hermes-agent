@@ -3108,17 +3108,33 @@ Hermes uses two different context scopes:
 |------|---------|-------|
 | `SOUL.md` | **Primary agent identity** — defines who the agent is (slot #1 in the system prompt) | `~/.hermes/SOUL.md` or `$HERMES_HOME/SOUL.md` |
 | `.hermes.md` / `HERMES.md` | Project-specific instructions (highest priority) | Walks to git root |
-| `AGENTS.md` | Project-specific instructions, coding conventions | Recursive directory walk |
+| `AGENTS.override.md` / `AGENTS.md` / `agents.md` | Project-specific instructions, coding conventions | Directory chain from git root to working directory; working directory only outside git |
 | `CLAUDE.md` | Claude Code context files (also detected) | Working directory only |
 | `.cursorrules` | Cursor IDE rules (also detected) | Working directory only |
 | `.cursor/rules/*.mdc` | Cursor rule files (also detected) | Working directory only |
+| `context.external_files[]` | Extra configured context files loaded before automatic discovery | Absolute or `~`/env-expanded paths |
 
 - **SOUL.md** is the agent's primary identity. It occupies slot #1 in the system prompt, completely replacing the built-in default identity. Edit it to fully customize who the agent is.
 - If SOUL.md is missing, empty, or cannot be loaded, Hermes falls back to a built-in default identity.
-- **Project context files use a priority system** — only ONE type is loaded (first match wins): `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`. SOUL.md is always loaded independently.
-- **AGENTS.md** is hierarchical: if subdirectories also have AGENTS.md, all are combined.
+- **Project context files use a priority system** — only ONE automatic project context type is loaded (first match wins): `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`. SOUL.md is always loaded independently.
+- **AGENTS.md is hierarchical at startup** — within a git repository, Hermes combines the directory chain from git root to the working directory, in that order. Each directory uses its first non-empty `AGENTS.override.md`, `AGENTS.md`, or `agents.md`; identical content is deduplicated. Outside git, only the working directory is checked.
+- **Configured external files are additive** — `context.external_files` entries are loaded in declaration order before automatic discovery, and automatic discovery skips a file that was already loaded externally.
+- Set `context.ignore_hermes_md: true` to bypass `.hermes.md` / `HERMES.md` discovery when you want an explicit `external_files` chain (for example root → team → project `AGENTS.md`) to be the canonical project context.
 - Hermes automatically seeds a default `SOUL.md` if one does not already exist.
-- All loaded context files are capped at `context_file_max_chars` characters (default 20,000) with smart truncation.
+- Loaded context files use the existing security scan, safe reads, and head/tail truncation. Set `context_file_max_chars` for an explicit cap; otherwise it scales with the model context window (20,000–500,000 characters).
+- These options extend the `context` mapping alongside `engine` (default `compressor`) and `memory_trim`; they do not replace either setting.
+
+Example explicit chain:
+
+```yaml
+context:
+  ignore_hermes_md: true
+  external_files:
+    - path: /home/user/work/AGENTS.md
+      label: Workspace rules
+    - path: /home/user/work/backend/AGENTS.md
+      label: Backend rules
+```
 
 See also:
 - [Personality & SOUL.md](./features/personality.md)

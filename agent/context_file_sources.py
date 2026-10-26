@@ -1,8 +1,8 @@
 """Per-file manifest of the context/instruction files behind the ``/context`` "Rules" figure.
 
 Read-only: enumerates the same candidates ``build_context_files_prompt`` loads (through
-``agent.prompt_builder.discover_context_files`` — one discovery walk, so the listing cannot drift from the
-prompt) and reports, per file, its size and whether it was loaded, truncated over the context-file cap,
+``agent.prompt_builder.discover_context_files`` and the shared configured external candidates) and reports,
+per file, its size and whether it was loaded, truncated over the context-file cap,
 shadowed by a higher-priority context type, blocked by the injection scan (or, for the user's own SOUL.md,
 flagged but loaded), empty/unreadable, or suppressed by the install-tree guard. Nothing here builds a prompt or touches the truncation-warning ContextVar, so it
 is free of cache impact.
@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional
 
 from agent import prompt_builder as _pb
 from agent.model_metadata import estimate_tokens_rough
+from agent.prompt_context_external import configured_context, external_context_candidates
 
 # status -> (glyph, note shown after the token count; "" = none)
 _STATUS_DISPLAY = {
@@ -67,12 +68,24 @@ def list_context_file_sources(
     unless *allow_install_tree_fallback*). Keys: ``label``, ``path``, ``chars``, ``est_tokens``, ``loaded``
     and ``status`` ∈ loaded / truncated / flagged / shadowed / blocked / empty / unreadable / suppressed.
     """
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return []
+    context = configured_context(home_override)
+    external_candidates, external_paths = external_context_candidates(context)
     cwd_path = Path(cwd if cwd is not None else os.getcwd()).resolve()
     max_chars = _pb._get_context_file_max_chars(context_length)
     suppressed = _pb._project_context_suppressed(cwd, cwd_path, allow_install_tree_fallback)
     sources: list[dict[str, Any]] = []
+    for label, path, content in external_candidates:
+        status = (_loaded_status(content, len(f"## {label}\n\n{content}"), max_chars) if content
+                  else _empty_status(path))
+        sources.append(_entry(label, path, content, status))
     winner: Optional[str] = None
     for kind, label, path, content in _pb.discover_context_files(cwd_path):
+        if path.resolve() in external_paths or (kind == "hermes_md" and context.get("ignore_hermes_md") is True):
+            continue
         if not content:
             status = _empty_status(path)
         elif suppressed:

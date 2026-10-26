@@ -555,4 +555,59 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     await screen.findByRole('button', { name: 'Add gif-search' })
     expect(screen.getAllByRole('button', { name: 'docx' })).toHaveLength(1)
   })
+
+  it('shows a ClawHub card as installed when its lock row is owner-qualified', async () => {
+    // The lock records @owner/slug; the hub map also lists the row under the
+    // card's clawhub/<slug> id, so the card takes the installed skill's switch.
+    // my-pdf declares `name: pdf`, so its card cannot merge but still reads installed.
+    const { installHubSkill } = await import('@/store/hub-actions')
+    const record = (name: string) => ({ name, trust_level: 'community', scan_verdict: 'safe' })
+
+    const installed = Object.fromEntries(
+      [
+        ['@tmstudio667-commits/agent-git-oracle', 'agent-git-oracle'],
+        ['@liujiang817/my-pdf', 'my-pdf']
+      ].flatMap(([id, name]) => [id, `clawhub/${name}`, name].map(key => [key, record(name)]))
+    )
+
+    const api = vi.fn(async ({ path }: { path: string }) => {
+      if (path === '/api/skills/hub/sources') {
+        return { sources: [], index_available: false, featured: [], installed }
+      }
+
+      throw new Error(`unexpected ${path}`)
+    })
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = { api }
+    getSkills.mockResolvedValue(
+      ['agent-git-oracle', 'pdf'].map(name => ({ name, description: name, enabled: true, usage: 0, provenance: 'hub' }))
+    )
+    queryClient.setQueryData(
+      ['public-catalog', 'skills'],
+      parseCatalog('skills', [
+        { name: 'Agent Git Oracle', source: 'ClawHub', identifier: 'agent-git-oracle' },
+        { name: 'My Pdf', source: 'ClawHub', identifier: 'my-pdf' }
+      ])
+    )
+
+    try {
+      await act(async () => {
+        render(
+          <QueryClientProvider client={queryClient}>
+            <MemoryRouter initialEntries={['/capabilities?tab=skills']}>
+              <CapabilitiesView />
+            </MemoryRouter>
+          </QueryClientProvider>
+        )
+      })
+
+      expect((await screen.findByRole<HTMLButtonElement>('button', { name: 'Added My Pdf' })).disabled).toBe(true)
+      const toggle = screen.getByRole('switch', { name: 'agent-git-oracle' })
+      expect(within(toggle.closest('article')!).getByRole('button', { name: 'Agent Git Oracle' })).toBeTruthy()
+      expect(screen.queryByRole('button', { name: /^Add (Agent Git Oracle|My Pdf)$/ })).toBeNull()
+      expect(installHubSkill).not.toHaveBeenCalled()
+    } finally {
+      delete (window as { hermesDesktop?: unknown }).hermesDesktop
+    }
+  })
 })

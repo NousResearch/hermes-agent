@@ -1,0 +1,36 @@
+name: model-fallback-heuristic
+title: "Fallback — Model Switching Heuristics"
+repo: https://github.com/tomkubik/hermes-fallback
+sha: 10e91c4c199c3272e7a3b8086660133d2101e248
+version: "0.2.0"
+description: >-
+  Multi-provider heuristic model fallback and automatic failover routing across all configured
+  providers (parameter count, context window, release recency, flash tier, tool support, provider
+  preference, and reasoning effort) — works seamlessly with or without an LLM call. Disclosure —
+  reads and updates fallback_providers and plugin settings in ~/.hermes/config.yaml; queries public
+  model catalog endpoints (models.dev/api.json, openrouter.ai/api/v1/models, and
+  inference-api.nousresearch.com/v1/portal/models) to rank candidate models and check free-tier
+  availability; optional interactive CLI setup can save user-entered provider API keys to
+  ~/.hermes/.env when explicitly requested.
+maintainer: tomkubik
+tier: community
+category: models
+requires_hermes: ">=0.19"
+docs_url: https://github.com/tomkubik/hermes-fallback#readme
+image: https://raw.githubusercontent.com/tomkubik/hermes-fallback/10e91c4c199c3272e7a3b8086660133d2101e248/assets/cover.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - fallback_heuristic_resolve
+    - fallback_heuristic_switch
+    - fallback_heuristic_configure
+    - fallback_heuristic_providers
+  provides_hooks:
+    - on_session_start
+    - pre_llm_call
+    - api_request_error
+  provides_middleware:
+    - llm_request
+    - llm_execution
+  requires_env: []

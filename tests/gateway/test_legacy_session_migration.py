@@ -382,3 +382,112 @@ async def test_native_host_can_delete_a_served_login_row_after_adoption(tmp_path
             for overlay in list(_registry._scoped_providers.values()):
                 overlay.pop('basic', None)
         assert get_provider('basic', scope=str(tmp_path)) is None
+
+
+@pytest.mark.asyncio
+async def test_adopted_served_login_row_survives_a_full_authority_cold_start(tmp_path, monkeypatch):
+    """#139818 acceptance case 2: once adoption commits, the durable binding lives in the row and the
+    ``state_meta`` receipts, not in the in-memory authority. After the gateway restarts (a brand-new
+    authority + runtime epoch + instance id), the host native viewer resumes the SAME stored id from
+    the durable binding with no second ad-hoc adoption, and the full pre-adoption transcript
+    (multiple turns, assistant text and tool payloads) is byte-identical to the pre-migration snapshot.
+    """
+    import secrets
+
+    from gateway import run
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_controls import AuthorityConnection
+    from hermes_cli.dashboard_auth.registry import register_provider, get_provider
+    import plugins.dashboard_auth.basic as basic_plugin
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'gui': []}})
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    db = store._db
+    sid = 'cold-row'
+    db.create_session(sid, source='desktop', model='old-model', cwd=str(tmp_path), user_id='basic:hermes')
+    # A realistic multi-turn transcript including a tool-call payload, recorded before any migration.
+    transcript = [
+        ('user', 'QUESTION_ONE'),
+        ('assistant', 'ANSWER_ONE'),
+        ('user', 'QUESTION_TWO'),
+        ('assistant', 'ANSWER_TWO'),
+    ]
+    for role, content in transcript:
+        db.append_message(sid, role=role, content=content)
+    db.append_message(sid, role='tool', content='{"output": 42}', tool_name='calculator')
+    db.end_session(sid, 'session_switch')
+
+    def _snapshot_messages():
+        # Re-read from disk on each call so the comparison cannot accidentally share an object.
+        return [(m['role'], m['content'], m.get('tool_name')) for m in db.get_messages(sid)]
+
+    before = _snapshot_messages()
+
+    provider = basic_plugin.BasicAuthProvider(
+        username='hermes', password_hash=basic_plugin.hash_password('pw'),
+        secret=secrets.token_bytes(32))
+    register_provider(provider, scope=str(tmp_path))
+
+    def _runner():
+        runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
+                                 _cached_agent_for=lambda route: None)
+        runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
+        return runner
+
+    def _native(authority):
+        return AuthorityConnection(authority, object(), {'provider': 'local', 'user_id': 'native',
+            'profile_id': str(tmp_path), 'instance_id': authority.instance_id})
+
+    try:
+        # --- First process lifetime: the host native viewer adopts the served-login row. ---
+        authority_one = await initialize_session_authority(_runner(), profile_id=str(tmp_path),
+                                                           instance_id='boot-1')
+        adopted = await _native(authority_one).dispatch(
+            {'id': 1, 'method': 'session.resume', 'params': {'session_id': sid}})
+        assert adopted.get('result', {}).get('session_id') == sid, adopted
+        assert db.get_session(sid)['session_key'] == f'agent:main:local:dm:{sid}'
+        # No fork/replacement: the historical id is the one returned, and nothing was rewritten.
+        assert _snapshot_messages() == before
+
+        # The legacy receipt exists exactly once (adoption is a one-time, idempotent event).
+        from hermes_state_local_migration import LEGACY_PREFIX
+        with db._read_ctx() as conn:
+            receipt_keys = [r[0] for r in conn.execute(
+                'SELECT key FROM state_meta WHERE key=?', (LEGACY_PREFIX + sid,)).fetchall()]
+        assert receipt_keys == [LEGACY_PREFIX + sid]
+
+        # --- Simulate a full gateway restart: drop the in-memory authority and build a fresh one with
+        # a new runtime epoch / instance id, like a process relaunch reading the same state.db. ---
+        del authority_one
+        authority_two = await initialize_session_authority(_runner(), profile_id=str(tmp_path),
+                                                           instance_id='boot-2')
+        resumed = await _native(authority_two).dispatch(
+            {'id': 2, 'method': 'session.resume', 'params': {'session_id': sid}})
+        assert 'error' not in resumed, resumed
+        result = resumed.get('result', {})
+        assert result.get('session_id') == sid, resumed
+        # The cold-start resume hydrates the complete preserved transcript (roles, text, tool payload).
+        resumed_contents = [(m.get('role'), m.get('content'), m.get('tool_name'))
+                            for m in result.get('messages', [])]
+        assert ('user', 'QUESTION_ONE', None) in resumed_contents
+        assert ('assistant', 'ANSWER_TWO', None) in resumed_contents
+        assert ('tool', '{"output": 42}', 'calculator') in resumed_contents
+        # Durable row + on-disk transcript are unchanged by the cold-start resume (no second adoption,
+        # no re-stamp): the receipt count and the byte-identical snapshot both prove read-only recovery.
+        assert _snapshot_messages() == before
+        with db._read_ctx() as conn:
+            still_one = conn.execute(
+                'SELECT COUNT(*) FROM state_meta WHERE key=?', (LEGACY_PREFIX + sid,)).fetchone()[0]
+        assert still_one == 1
+        bound = db.get_session(sid)
+        assert bound['session_key'] == f'agent:main:local:dm:{sid}' and bound['chat_id'] == sid
+    finally:
+        from hermes_cli.dashboard_auth import registry as _registry
+        with _registry._lock:
+            _registry._providers.pop('basic', None)
+            for overlay in list(_registry._scoped_providers.values()):
+                overlay.pop('basic', None)
+        assert get_provider('basic', scope=str(tmp_path)) is None

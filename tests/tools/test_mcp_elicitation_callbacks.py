@@ -102,15 +102,22 @@ class TestElicitationCallbackBridge:
                 call_callbacks=lambda: installs,
             )
 
+            async def _elicit_then_probe_the_same_worker():
+                import concurrent.futures
+                # One worker: the probe runs on the thread the consent call used.
+                asyncio.get_running_loop().set_default_executor(
+                    concurrent.futures.ThreadPoolExecutor(max_workers=1))
+                await handler(context=None, params=_form_params())
+                return await asyncio.to_thread(terminal_tool._get_approval_callback)
+
             with patch(
                 "tools.approval_prompt.request_elicitation_consent",
                 return_value="accept",
             ):
-                asyncio.run(handler(context=None, params=_form_params()))
+                leftover = asyncio.run(_elicit_then_probe_the_same_worker())
 
-            # The main thread's own install is untouched; the captured copies were
-            # cleared on the executor thread. Observable proxy: the thunk's installs
-            # were consumed (setter reset to None on the invoking thread).
+            assert leftover is None, "the reused worker kept the elicitation's callback"
+            # The main thread's own install is untouched.
             assert terminal_tool._get_approval_callback() is turn_callback
         finally:
             terminal_tool.set_approval_callback(previous)

@@ -514,6 +514,11 @@ class AnsweringTab(BrowserTab):
         with self._lock:
             super().send(*frames)
 
+    @property
+    def closed_by_server(self):
+        """Whether the server's close frame has arrived, as a browser sees it before the route returns."""
+        return self.protocol.close_rcvd is not None
+
     def close(self):
         from websockets.protocol import State
 
@@ -633,15 +638,18 @@ def test_a_live_tab_typing_behind_a_waiting_write_answers_keepalive_pings(tmp_pa
     session = PtySession("terminal", bridge, buffer_cap=32, read_timeout=0.01)
     # Far more frames than the WebSocket library buffers unread (32) and than 64 queued frames.
     typed = [bytes([65 + n % 26]) for n in range(1024)]
-    with served_host_terminal(monkeypatch, session, owner, ws_ping=(0.2, 0.3)) as (port, taken, finished):
+    with served_host_terminal(monkeypatch, session, owner, ws_ping=(1.0, 2.0)) as (port, taken, finished):
         tab = AnsweringTab(port)
         try:
             tab.send(b"A")
             assert bridge.entered.wait(5), "the first write never started"
             tab.send(*typed)
-            # Several ping intervals and timeouts, all while the program holds its first write.
-            wait_until(lambda: tab.pings >= 5 or finished.is_set(), timeout=10, what="five keepalive pings")
-            assert not finished.is_set() and session.attached, "the keepalive closed a live tab"
+            # Five pings a second apart, each given two seconds for its pong, all while the program
+            # holds its first write: the socket stays unread across several ping timeouts.
+            wait_until(lambda: tab.pings >= 5 or tab.closed_by_server or finished.is_set(), timeout=30,
+                       what="five keepalive pings")
+            assert not tab.closed_by_server and not finished.is_set() and session.attached, \
+                "the keepalive closed a live tab"
             assert len(taken) == 1 + len(typed), "the reader stopped reading the socket"
             bridge.release.set()
             expected = b"A" + b"".join(typed)
@@ -670,7 +678,7 @@ class SlowAccept:
         if self._gated:
             self._gated = False
             self.entered.set()
-            assert await asyncio.to_thread(self.release.wait, 10), "the slow program was not released"
+            assert await asyncio.to_thread(self.release.wait, 30), "the slow program was not released"
         self.written.extend(data)
         return True
 

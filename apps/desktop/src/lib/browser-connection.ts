@@ -2,7 +2,7 @@ import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 
 import type { HermesApiRequest, HermesConnection } from '@/global'
 import { webappSignInRequired } from '@/lib/browser-launch-session'
-import { createServedProfiles, UnservedProfileError } from '@/lib/browser-served-profiles'
+import { createServedProfiles, SERVED_SET_READ_TIMEOUT_MS, UnservedProfileError } from '@/lib/browser-served-profiles'
 import {
   type AudioSocketPath,
   type BrowserBootstrap,
@@ -13,12 +13,7 @@ import {
   ticketedWebsocketUrl
 } from '@/lib/browser-transport'
 import { browserLaunchProfileOrDefault } from '@/lib/platform'
-
-// A pick waits at most this long for the served set before routing on the set it has: one
-// `/api/profiles` read, then a `/api/status` read capped at the same 5 s. It sits well under the
-// store's 20 s budget for a dial's URL, so a stalled gateway costs a pick 5 s and a profile that
-// stays unserved is still refused and parked rather than timed out and redialed.
-const SERVED_PROFILE_REFRESH_TIMEOUT_MS = 5_000
+import { withTimeout } from '@/lib/with-timeout'
 
 /** The serving origin is the only connection a browser-hosted Desktop has. */
 export function requireBrowserConnection(connectionId?: null | string): void {
@@ -128,6 +123,7 @@ export function createBrowserConnectionBridge({ api, bootstrap }: BrowserConnect
     }
 
     const read = getProfiles()
+
     const settle = () => {
       if (profilesRead === read) {
         profilesRead = null
@@ -277,18 +273,10 @@ export function createBrowserConnectionBridge({ api, bootstrap }: BrowserConnect
         return
       }
 
-      let timer: ReturnType<typeof setTimeout> | undefined
-
-      await Promise.race([
-        installedProfiles(false).then(
-          () => undefined,
-          () => undefined
-        ),
-        new Promise<void>(resolve => {
-          timer = setTimeout(resolve, SERVED_PROFILE_REFRESH_TIMEOUT_MS)
-        })
-      ])
-      clearTimeout(timer)
+      // On a stall or a failed read the cached set stands, so the pick routes on it.
+      await withTimeout(installedProfiles(false), SERVED_SET_READ_TIMEOUT_MS, 'served profile refresh timed out').catch(
+        () => undefined
+      )
     },
     // Runs before every redial of the tab's socket: a gateway that restarted may serve another set.
     revalidateConnection: async () => {

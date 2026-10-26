@@ -5,7 +5,9 @@ import { browserLaunchProfile } from '@/lib/platform'
 // of those changes the installed list, so a known served set is re-read on that cadence.
 const SERVED_SET_TTL_MS = 30_000
 // An inventory read waits at most this long for the set, then answers with the set it already has.
-const SERVED_SET_READ_TIMEOUT_MS = 5_000
+// A pick's refresh of the set is capped at the same 5 s, well under the store's 20 s budget for a
+// dial's URL, so a profile that stays unserved is still refused and parked rather than timed out.
+export const SERVED_SET_READ_TIMEOUT_MS = 5_000
 
 const profileKey = (profile?: null | string) => profile?.trim() || 'default'
 

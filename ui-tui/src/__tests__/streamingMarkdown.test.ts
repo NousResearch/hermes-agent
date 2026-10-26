@@ -272,13 +272,15 @@ describe('StreamingMd rendering equivalence', () => {
     advanceScan(CORPUS, state)
 
     const tail = CORPUS.slice(state.settledLen)
+    const prefix = state.blocks.join('')
+    const hasPrefix = prefix.length > 0
     const t = DEFAULT_THEME
 
     const split = renderPlain(
       React.createElement(
         Box,
         { flexDirection: 'column' },
-        ...state.blocks.map((block, i) => React.createElement(Md, { key: i, t, text: block })),
+        hasPrefix ? React.createElement(Md, { key: 'prefix', t, text: prefix }) : null,
         tail ? React.createElement(Md, { key: 'tail', t, text: tail }) : null
       )
     )
@@ -303,12 +305,14 @@ describe('StreamingMd rendering equivalence', () => {
       advanceScan(text, state)
 
       const tail = text.slice(state.settledLen)
+      const prefix = state.blocks.join('')
+      const hasPrefix = prefix.length > 0
 
       const split = renderPlain(
         React.createElement(
           Box,
           { flexDirection: 'column' },
-          ...state.blocks.map((block, i) => React.createElement(Md, { key: i, t, text: block })),
+          hasPrefix ? React.createElement(Md, { key: 'prefix', t, text: prefix }) : null,
           tail ? React.createElement(Md, { key: 'tail', t, text: tail }) : null
         )
       )

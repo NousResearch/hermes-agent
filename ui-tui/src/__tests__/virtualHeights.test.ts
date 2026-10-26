@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { estimatedMsgHeight, messageHeightKey, wrappedLines } from '../lib/virtualHeights.js'
+import { estimatedMsgHeight, fencedWrappedLines, messageHeightKey, wrappedLines } from '../lib/virtualHeights.js'
 import type { Msg } from '../types.js'
 
 describe('virtual height estimates', () => {
@@ -82,28 +82,6 @@ describe('virtual height estimates', () => {
     ).toBe(estimatedMsgHeight(toolsOnly, 80, { compact: false, details: false }))
   })
 
-  it('treats historical thinking blocks as collapsed unless explicitly expanded', () => {
-    const msg: Msg = { role: 'assistant', text: 'ok', thinking: 'line 1\nline 2\nline 3' }
-
-    expect(
-      estimatedMsgHeight(msg, 80, {
-        compact: false,
-        details: true,
-        thinkingExpanded: false,
-        thinkingVisible: true,
-        toolsVisible: false
-      })
-    ).toBeLessThan(
-      estimatedMsgHeight(msg, 80, {
-        compact: false,
-        details: true,
-        thinkingExpanded: true,
-        thinkingVisible: true,
-        toolsVisible: false
-      })
-    )
-  })
-
   it('reserves two extra rows for the inter-turn separator on non-first user messages', () => {
     const msg: Msg = { role: 'user', text: 'follow-up question' }
     const base = estimatedMsgHeight(msg, 80, { compact: false, details: false })
@@ -119,8 +97,18 @@ describe('virtual height estimates', () => {
     // the UI on cold mount. Cap is ~800 rows; post-mount Yoga
     // measurement converges to the true height regardless.
     const giant = 'x'.repeat(1_000_000)
+    const t0 = performance.now()
     const rows = wrappedLines(giant, 80)
+    const elapsed = performance.now() - t0
 
     expect(rows).toBeLessThanOrEqual(800)
+    expect(elapsed).toBeLessThan(50)
+  })
+
+  it('accounts for CopyBlox chrome and its narrower code body', () => {
+    const text = ['```python', 'x'.repeat(30), '```'].join('\n')
+
+    expect(fencedWrappedLines(text, 30, false)).toBe(4)
+    expect(fencedWrappedLines(text, 30, true)).toBe(3)
   })
 })

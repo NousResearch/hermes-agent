@@ -113,7 +113,8 @@ class ProcessCheckpointMixin:
                 # Completed output history cannot discharge an opaque backend
                 # resource, including when an older cache omitted its scope.
                 present = {entry['session_id'] for entry in entries}
-                entries.extend(entry for entry in previous if entry.get('pid_scope', 'host') != 'host'
+                entries.extend(entry for entry in previous if entry.get('session_id') in known
+                               and entry.get('pid_scope', 'host') != 'host'
                                and entry.get('session_id') not in present and entry.get('session_id') not in exclude_ids)
                 known.update(entry.get('session_id') for entry in entries)
                 entries.extend(self._foreign_handoffs(path, known))

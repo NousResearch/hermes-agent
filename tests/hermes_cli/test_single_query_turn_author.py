@@ -33,7 +33,7 @@ def _one_shot_cli(monkeypatch):
 
     the_cli = cli.HermesCLI.__new__(cli.HermesCLI)
     the_cli.session_id = "s-1"
-    the_cli.conversation_history = [{"role": "user", "content": "work kanban task t_author"}]
+    the_cli.conversation_history = [{"role": "user", "content": "summarize the report"}]
     the_cli.agent = SimpleNamespace(run_conversation=Mock(side_effect=run_conversation))
     the_cli._flush_credit_notices = lambda: None
     the_cli._single_query_mode = False
@@ -51,14 +51,14 @@ def _one_shot_cli(monkeypatch):
     return the_cli, calls
 
 
-def test_dispatcher_author_reaches_the_worker_turn_and_is_consumed(monkeypatch):
-    monkeypatch.setenv(TURN_AUTHOR_ENV, '{"id": "bot:kanban", "name": "Kanban dispatcher", "is_bot": true}')
+def test_dispatcher_author_reaches_the_turn_and_is_consumed(monkeypatch):
+    monkeypatch.setenv(TURN_AUTHOR_ENV, '{"id": "bot:relay", "name": "relayed teammate", "is_bot": true}')
     the_cli, calls = _one_shot_cli(monkeypatch)
     with pytest.raises(SystemExit):
-        cli._run_single_query_mode(the_cli, "work kanban task t_author", None, False, True)
+        cli._run_single_query_mode(the_cli, "summarize the report", None, False, True)
 
     assert len(calls) == 1
-    assert calls[0]["turn_author"] == {"id": "bot:kanban", "name": "Kanban dispatcher", "is_bot": True}
+    assert calls[0]["turn_author"] == {"id": "bot:relay", "name": "relayed teammate", "is_bot": True}
     # Tool subprocesses started during the turn must not inherit the dispatcher's author.
     assert calls[0]["env_author"] is None
 

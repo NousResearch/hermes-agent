@@ -941,6 +941,7 @@ This is the surface **you** (or scripts, cron, the dashboard) use to drive the b
 ```
 hermes kanban init                                     # create kanban.db + print daemon hint
 hermes kanban create "<title>" [--body ...] [--assignee <profile>]
+                                [--kind <kind>]
                                 [--parent <id>]... [--tenant <name>]
                                 [--workspace scratch|worktree|worktree:<path>|dir:<path>]
                                 [--branch <name>]
@@ -951,6 +952,7 @@ hermes kanban create "<title>" [--body ...] [--assignee <profile>]
                                 [--skill <name>]...
                                 [--json]
 hermes kanban list [--mine] [--assignee P] [--status S] [--tenant T] [--archived]
+        [--kind <kind>]
         [--workflow-template-id <id>] [--current-step-key <key>]
         [--sort completed-desc|created|created-desc|priority|priority-desc|status|assignee|title|updated]
         [--json]
@@ -1003,6 +1005,14 @@ hermes kanban gc [--event-retention-days N]            # workspaces + old events
 ```
 
 All commands are also available as a slash command in the interactive CLI and in the messaging gateway (see [`/kanban` slash command](#kanban-slash-command) below).
+
+`create --kind` stores a free-form classification, defaulting to `task` for new
+and existing cards. For example, `hermes kanban create "Repair CI" --kind ci-fix`
+can be found with `hermes kanban list --kind ci-fix --json`. Filtering is exact
+and case-sensitive, and combines with the other list filters. JSON creation,
+list entries, and the `task` object in `show --json` include `kind`. This is
+metadata only: it does not change dispatcher routing, workspace kinds, or block
+reasons, and there is no kind registry or kind-specific schema.
 
 `--max-retries` is a per-task circuit-breaker override for the dispatcher. `--max-retries 1` blocks the task on the first non-successful attempt, while `--max-retries 3` allows two retries and blocks on the third failure. Omit it to use `kanban.failure_limit` from `config.yaml`, then the built-in default.
 

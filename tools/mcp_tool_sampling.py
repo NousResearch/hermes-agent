@@ -333,7 +333,8 @@ class ElicitationHandler:
         recv-loop task does NOT inherit them; gateway-platform detection and the bound form asker need
         them) and installing the captured per-thread prompt callbacks for the duration (the executor
         thread has none of its own). ``Context.run`` runs a context once, so it is copied per call."""
-        captured, installs = self._call_context(), self._call_callbacks()
+        # Outside a tool call (resources/read, prompts/get) nothing was captured: an empty slot.
+        captured, installs = self._call_context(), self._call_callbacks() or ()
 
         def _invoke():
             for setter, cb in installs:

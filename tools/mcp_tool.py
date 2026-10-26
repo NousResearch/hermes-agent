@@ -516,7 +516,7 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         self._pending_call_context: Optional[contextvars.Context] = None
         # Same-call threading.local prompt callbacks (approval/sudo/vault) for the elicitation
         # consent hop — asyncio.to_thread carries neither contextvars nor thread locals.
-        self._pending_call_callbacks: Optional[tuple] = None
+        self._pending_call_callbacks: tuple = ()
         self._lifecycle_started_at = self._last_tool_call_at = time.monotonic()
         self._idle_timeout_seconds = self._max_lifetime_seconds = self._recycled_reason = None
         # Handshake InitializeResult: the server's REAL advertised capabilities.

@@ -850,7 +850,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
                         server, server_name, tool_name, args, _on_progress if report is not None else None)
                 finally:
                     server._pending_call_context = None
-                    server._pending_call_callbacks = None
+                    server._pending_call_callbacks = ()
             if getattr(server, "_mark_session_proven", None) is not None:  # round-trip done: transport healthy
                 server._mark_session_proven()
             image_paths.clear()

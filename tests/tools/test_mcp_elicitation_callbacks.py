@@ -115,10 +115,11 @@ class TestElicitationCallbackBridge:
         finally:
             terminal_tool.set_approval_callback(previous)
 
-    def test_no_captured_callbacks_still_prompts(self):
-        """Between tool calls (or on surfaces that install nothing) the thunk returns an
-        empty capture; the consent router must still be invoked."""
-        handler = ElicitationHandler("pay", {"timeout": 5}, call_callbacks=lambda: ())
+    @pytest.mark.parametrize("empty", [(), None], ids=["empty-tuple", "unset-slot"])
+    def test_no_captured_callbacks_still_prompts(self, empty):
+        """Between tool calls (resources/read, prompts/get, or surfaces that install
+        nothing) the slot holds no capture; the consent router must still be invoked."""
+        handler = ElicitationHandler("pay", {"timeout": 5}, call_callbacks=lambda: empty)
         params = _form_params()
 
         with patch(

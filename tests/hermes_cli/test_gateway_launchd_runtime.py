@@ -37,7 +37,15 @@ def test_gateway_job_is_a_launchd_osascript_child_that_reads_as_unsupervised(tmp
                             cwd=tmp_path, log_path=tmp_path / "gateway-stdio.log")
     assert job is not None, "launchd refused the job in this user's GUI domain"
     try:
-        assert wait_until(report.exists, timeout=30)
+        try:
+            wait_until(lambda: report.exists() or job.poll() is not None, timeout=30)
+        except AssertionError:
+            pass  # the assert below names what the job did instead
+        log = tmp_path / "gateway-stdio.log"
+        state = subprocess.run(["launchctl", "print", job.target], capture_output=True, text=True, encoding="utf-8",
+                               check=False, stdin=subprocess.DEVNULL).stdout
+        assert report.exists(), (f"tmp={tmp_path}\nlog={log.read_text(encoding='utf-8') if log.exists() else None!r}\n"
+                                 f"launchctl print:\n{state[:3000]}")
         seen = json.loads(report.read_text(encoding="utf-8-sig"))
         wrapper = seen["ppid"]
         # The caller is not an ancestor: launchd (pid 1) spawned osascript, osascript the command.

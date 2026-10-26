@@ -121,6 +121,49 @@ async def test_a_gateway_that_never_comes_back_fails_honestly(monkeypatch, _work
         await kanban_worker_client.run({"task_id": "t1"}, str(_worker_env / "kanban.db"))
 
 
+class _Clock:
+    def __init__(self, values):
+        self.values = iter(values)
+        self.last = values[-1]
+
+    def monotonic(self):
+        try:
+            self.last = next(self.values)
+        except StopIteration:
+            pass
+        return self.last
+
+
+@pytest.mark.asyncio
+async def test_reconnect_starting_uses_redial_deadline_not_initial_deadline(monkeypatch, _worker_env):
+    # Initial wait expires at t=180, but the admitted attempt's redial budget runs until t=361.
+    monkeypatch.setattr(kanban_worker_client, "time", _Clock([0, 181, 181, 200]))
+    owner = _Owner(
+        connects=[None, gateway_client.GatewayUnavailableError("owner starting", "starting"), None],
+        receipts=["pending", _disconnect(), "terminal"],
+    )
+    monkeypatch.setattr(gateway_client, "connect_gateway", owner.connect())
+
+    assert await kanban_worker_client.run({"task_id": "t1"}, str(_worker_env / "kanban.db")) == 0
+    assert owner.calls.count("kanban.run") == 1
+    assert owner.dials == 3
+
+
+@pytest.mark.asyncio
+async def test_a_later_disconnect_gets_a_fresh_redial_budget(monkeypatch, _worker_env):
+    # The second disconnect occurs at t=200, beyond the first episode's t=190 deadline.
+    monkeypatch.setattr(kanban_worker_client, "time", _Clock([0, 10, 10, 200, 200]))
+    owner = _Owner(
+        connects=[None, None, None],
+        receipts=["pending", _disconnect(), "pending", _disconnect(), "terminal"],
+    )
+    monkeypatch.setattr(gateway_client, "connect_gateway", owner.connect())
+
+    assert await kanban_worker_client.run({"task_id": "t1"}, str(_worker_env / "kanban.db")) == 0
+    assert owner.calls.count("kanban.run") == 1
+    assert owner.dials == 3
+
+
 @pytest.mark.asyncio
 async def test_the_redial_budget_bounds_a_flapping_gateway(monkeypatch, _worker_env):
     monkeypatch.setattr(kanban_worker_client, "OWNER_WAIT_S", 0.0)

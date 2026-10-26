@@ -1884,21 +1884,25 @@ class GatewayStartupMixin:
 
     async def _handoff_repoint(self, dest, session_key: str, cli_session_id: str) -> None:
         """Point the destination route at the handed-off conversation; ``switch_session`` ends the
-        route's prior session and reopens this one. A compressed chat continues on its tip: repoint
-        there, so its whole chain moves onto the lane together with the local receipt that guards it,
-        and a viewer still holding it open (the Desktop that ran /handoff) follows it (#143286)."""
-        db = self._session_db
-        target = (await db.get_compression_tip(cli_session_id) if db is not None else None) or cli_session_id
+        route's prior session and reopens this one. A handoff carries the conversation the user is
+        looking at: a local chat's latest ``/new`` segment, then that segment's compression tip
+        (``handoff_head``), so its whole chain moves onto the lane together with the local receipt
+        that guards it, and a viewer still holding it open (the Desktop that ran /handoff) follows
+        it (#143286)."""
+        from gateway.session_authorities import active_authority
+        from hermes_state_local import handoff_head
+        authority = active_authority(self)
+        db = authority.db if authority is not None else getattr(self._session_db, '_db', self._session_db)
+        local_owner, target = (None, cli_session_id) if db is None else await asyncio.to_thread(
+            handoff_head, db, cli_session_id)
         # Ensure a session_store entry exists for this key; switch_session then re-points it.
         await self.async_session_store.get_or_create_session(dest.source)
         switched = await self.async_session_store.switch_session(session_key, target, preserve_prompt_pin=False)
         if switched is None:
             raise RuntimeError(f"could not switch session key {session_key} → {target}")
-        from gateway.session_authorities import active_authority
-        authority = active_authority(self)
-        owner = authority.logical_owner(target) if authority is not None else None
-        if owner is not None and owner in authority.sessions:
-            authority._publish_route(dest.source, owner, session_key)
+        if authority is not None:
+            from gateway.session_route_recovery import follow_hand_off
+            follow_hand_off(authority, dest.source, session_key, authority.logical_owner(target), local_owner)
 
     async def _process_handoff(self, row: dict[str, Any], profile_name: Optional[str] = None) -> None:
         """Execute one handoff row; raises on failure (caller marks failed). ``profile_name`` (None =

@@ -25,14 +25,8 @@ def resolve_titled_session(authority, actor, name, *, missing_ok=False):
         if missing_ok:
             return None
         raise RuntimeStoreError('not_found')
-    from gateway.session_route_recovery import handed_off_ref, superseded_hand_off
+    from gateway.session_route_recovery import handed_off_ref
     moved = handed_off_ref(authority, tip['id'])
-    if moved is not None and name == 'Bot Chat' and superseded_hand_off(authority, moved):
-        # Bot Mode's canonical chat is the one its bot can still write to: a handed-off Bot Chat
-        # whose lane moved on is history, moved aside by the next create (``session_bot``).
-        if missing_ok:
-            return None
-        raise RuntimeStoreError('not_found')
     try:
         if moved is not None:
             authority.authorize(actor, moved, 'session:read')

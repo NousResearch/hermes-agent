@@ -480,10 +480,6 @@ class AuthorityConnection:
                 from hermes_state_local import local_receipt
                 policy = restore_policy(local_receipt(self.authority.db, ref.session_id)['policy'])
                 await asyncio.to_thread(accept_launch_hooks, policy)
-            if title == 'Bot Chat':
-                # Only once the replacement is committed: a refused create leaves the old chat as it was.
-                from gateway.session_bot import move_aside_superseded_bot_chat
-                await move_aside_superseded_bot_chat(self.authority)
             if title:
                 await tracked_write(self.authority, partial(title_new_session, self.authority, ref, title))
             if hidden:

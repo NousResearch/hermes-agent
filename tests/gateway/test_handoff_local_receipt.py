@@ -46,20 +46,30 @@ async def _handoff(runner, authority, sid, source):
     return route
 
 
+def _as_an_older_build(monkeypatch):
+    """An older build's repoint: the row's routing identity moves, its local receipt stays."""
+    import hermes_state_local
+    for name in ('hand_off_conversations', 'release_receipts'):
+        monkeypatch.setattr(hermes_state_local, name, lambda *_args: None, raising=False)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('history', ['plain', 'compressed', 'reset'])
 @pytest.mark.parametrize('handed_off_by', ['this build', 'an older build'])
-async def test_a_handed_off_bot_chat_opens_on_its_lane_after_a_restart(tmp_path, handed_off_by, history):
-    """``reset``: a ``/new`` left the chat's first segment behind and its receipt names the new one;
-    the conversation's own id (what a platform ``/resume <title>`` or a resumed CLI hands off) moves."""
+async def test_a_handed_off_bot_chat_opens_on_its_lane_after_a_restart(tmp_path, monkeypatch, handed_off_by, history):
+    """``reset``: a local ``/new`` moved the chat to a new segment and its receipt names that one. A
+    handoff carries the conversation the user is looking at: the lane continues the post-``/new``
+    segment (the title follows it), and the earlier segment is that lane's read-only history, never a
+    local row no receipt restores."""
     from gateway.config import Platform
     from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import Principal
+    from gateway.session_contract import Principal, SessionRef
     from gateway.session_local import create_local_session
     from gateway.session_local_recovery import transcript_target
     from gateway.session_local_title import resolve_titled_session
-    from hermes_state_local import POLICY_PREFIX
+    from hermes_state_local import POLICY_PREFIX, local_receipt
     from hermes_state_local_migration import LEGACY_PREFIX
+    from hermes_state_runtime import RuntimeStoreError
 
     runner = _Runner(tmp_path)
     warm = await initialize_session_authority(runner, profile_id='fixture', instance_id='warm')
@@ -69,6 +79,8 @@ async def test_a_handed_off_bot_chat_opens_on_its_lane_after_a_restart(tmp_path,
     warm.db.set_session_title(ref.session_id, 'Bot Chat')
     if history == 'reset':
         runner.session_store.reset_session(warm.sessions[ref.session_id].route)
+        # Its first turn there gets the segment a generated title of its own.
+        warm.db.set_auto_title(local_receipt(warm.db, ref.session_id)['entry']['session_id'], 'Generated', source='llm')
     if history == 'compressed':
         _compress(warm, ref.session_id)
         runner = _Runner(tmp_path)  # a restart records the steps on the receipt (#140060)
@@ -76,31 +88,71 @@ async def test_a_handed_off_bot_chat_opens_on_its_lane_after_a_restart(tmp_path,
         warm.authorize(owner, ref, 'session:read')  # the receipt now names the tip
     keys = (POLICY_PREFIX + ref.session_id, LEGACY_PREFIX + ref.session_id)
     with warm.db._read_ctx() as conn:
-        receipt = conn.execute('SELECT key, value FROM state_meta WHERE key IN (?,?)', keys).fetchall()
-    assert receipt
+        assert conn.execute('SELECT 1 FROM state_meta WHERE key IN (?,?)', keys).fetchone()
+    # The lane's conversation: the reset segment the receipt now names, else the chat itself.
+    head = SessionRef('fixture', local_receipt(warm.db, ref.session_id)['entry']['session_id']
+                      if history == 'reset' else ref.session_id)
 
     telegram = _source()
-    route = await _handoff(runner, warm, ref.session_id, telegram)
-    if handed_off_by == 'an older build':
-        warm.db._execute_write(lambda conn: conn.executemany(
-            'INSERT OR REPLACE INTO state_meta(key, value) VALUES(?,?)', [tuple(row) for row in receipt]))
-    else:
+    with monkeypatch.context() as patch:
+        if handed_off_by == 'an older build':
+            _as_an_older_build(patch)
+        route = await _handoff(runner, warm, ref.session_id, telegram)
+    assert warm.logical_owner(runner.session_store.lookup_by_session_key(route).session_id) == head.session_id
+    if handed_off_by == 'this build':
         # The Desktop that ran /handoff still holds the chat open.
-        warm.authorize(owner, ref, 'session:control')
-        assert transcript_target(warm, ref) == warm.physical_target(ref)
+        warm.authorize(owner, ref, 'session:read')
+        if history == 'reset':  # its pre-/new segment is the lane's history now
+            with pytest.raises(RuntimeStoreError, match='session_superseded'):
+                warm.authorize(owner, ref, 'session:control')
+        else:
+            warm.authorize(owner, ref, 'session:control')
+            assert transcript_target(warm, ref) == warm.physical_target(ref)
 
     cold = await initialize_session_authority(_Runner(tmp_path), profile_id='fixture', instance_id='cold')
     # A browser Webapp viewer: never a native legacy transport, so legacy adoption is not its way in.
     webapp = Principal('webapp', 'fixture', frozenset({'session:read', 'session:control'}), 'browser')
-    assert resolve_titled_session(cold, webapp, 'Bot Chat') == ref
-    cold.authorize(webapp, ref, 'session:control')  # pin, rename, archive
+    assert resolve_titled_session(cold, webapp, 'Bot Chat') == head
+    cold.authorize(webapp, head, 'session:control')  # pin, rename, archive
 
-    live = cold.sessions[ref.session_id]
+    live = cold.sessions[head.session_id]
     assert (live.source.platform, live.route) == (Platform.TELEGRAM, route)
     with cold.db._read_ctx() as conn:
         assert conn.execute('SELECT 1 FROM state_meta WHERE key IN (?,?)', keys).fetchone() is None
-    tip = cold.db.get_session(cold.physical_target(ref))
+    tip = cold.db.get_session(cold.physical_target(head))
     assert json.loads(tip['origin_json'])['platform'] == 'telegram'
+    if history == 'reset':  # the earlier segment opens read-only on that lane
+        cold.authorize(webapp, ref, 'session:read')
+        assert cold.sessions[ref.session_id].route == route
+        with pytest.raises(RuntimeStoreError, match='session_superseded'):
+            cold.authorize(webapp, ref, 'session:control')
+
+
+@pytest.mark.asyncio
+async def test_a_receipt_whose_current_segment_is_still_local_is_never_released(tmp_path, monkeypatch):
+    """An older build handed off a chat's FIRST segment after a local ``/new``: that row moved, but
+    the receipt names the post-``/new`` segment, still local. Releasing it would leave that
+    transcript reachable from nowhere, so the boot heal keeps it and the conversation still opens."""
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_contract import Principal
+    from gateway.session_local import create_local_session
+    from hermes_state_local import local_receipt
+    runner = _Runner(tmp_path)
+    warm = await initialize_session_authority(runner, profile_id='fixture', instance_id='warm')
+    owner = Principal('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control'}), 'socket')
+    ref = create_local_session(warm, owner, {'request_id': 'chat', 'source': 'gui', 'cwd': str(tmp_path),
+                                             'model': 'frozen', 'toolsets': []})
+    runner.session_store.reset_session(warm.sessions[ref.session_id].route)
+    head = local_receipt(warm.db, ref.session_id)['entry']['session_id']
+    store, telegram = runner.session_store, _source()
+    with monkeypatch.context() as patch:  # the older build's watcher: switch_session(route, <the id>)
+        _as_an_older_build(patch)
+        store.get_or_create_session(telegram)
+        store.switch_session(store._generate_session_key(telegram), ref.session_id, preserve_prompt_pin=False)
+
+    cold = await initialize_session_authority(_Runner(tmp_path), profile_id='fixture', instance_id='cold')
+    assert local_receipt(cold.db, ref.session_id)['entry']['session_id'] == head
+    assert cold.db.get_session(head)['source'] == 'gui'
 
 
 async def _handed_off_bot_chat(tmp_path):
@@ -137,19 +189,41 @@ async def test_a_handed_off_bot_chat_stays_the_bots_chat_while_its_lane_holds_it
     assert cold.db.get_session(ref.session_id)['title'] == 'Bot Chat'
 
 
+async def _bot_row(authority, actor):
+    """What the Desktop Bots row reads for the profile: the roster's ``canonical_session`` (the
+    ``profiles.list`` reader of that profile's store) and the registry lookup ``session.list
+    title="Bot Chat"`` its click runs. ``canonical-chat.ts`` refuses to mint when the lookup is
+    empty but the roster names a chat, so the two must agree."""
+    from pathlib import Path
+    from gateway.session_controls import AuthorityConnection
+    from tui_gateway.server import _profile_session_fields
+    from tui_gateway.profile_roster_cache import invalidate
+    invalidate()
+    roster = {}
+    _profile_session_fields(roster, Path(authority.db.db_path).parent)
+    canonical = roster['canonical_session']
+    listed = await AuthorityConnection(authority, object(), {'user_id': actor.subject}).list_sessions(
+        None, {'title': 'Bot Chat', 'include_hidden': True, 'limit': 50})
+    found = [row['id'] for row in listed['sessions']]
+    assert (canonical and canonical['id']) == (found[0] if found else None), (canonical, found)
+    return found[0] if found else None
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('door', ['Desktop create', 'Bot delivery'])
 async def test_a_handed_off_bot_chat_whose_lane_moved_on_is_moved_aside(tmp_path, door):
-    """After the platform's own ``/new`` the handed-off chat is that lane's history: the Desktop
-    still viewing it is read-only (its route names the new conversation), and after a restart the
-    bot row no longer adopts it: it is renamed aside and a fresh Bot Chat is minted."""
+    """After the platform's own ``/new`` the handed-off chat is that lane's history: the canonical
+    title moves aside at once, so the Bots row's roster and its registry lookup agree at every step
+    (warm, cold) and its click mints a fresh Bot Chat; the Desktop still viewing the old one is
+    read-only (its route names the new conversation)."""
     from gateway.session_authority import initialize_session_authority
     from gateway.session_bot import _target
     from gateway.session_controls import AuthorityConnection
-    from gateway.session_local_title import resolve_titled_session
     from hermes_state_runtime import RuntimeStoreError
     runner, warm, owner, ref, telegram, route = await _handed_off_bot_chat(tmp_path)
+    assert await _bot_row(warm, owner) == ref.session_id
     runner.session_store.reset_session(route)  # Telegram's /new
+    assert await _bot_row(warm, owner) is None
     newer = warm.register(telegram)
     assert newer != ref and warm.sessions[newer.session_id].route == route
     assert warm.sessions[ref.session_id].superseded and warm.agent(ref) is None
@@ -160,22 +234,47 @@ async def test_a_handed_off_bot_chat_whose_lane_moved_on_is_moved_aside(tmp_path
     cold = await initialize_session_authority(cold_runner, profile_id='fixture', instance_id='cold')
     cold_runner._adapter_for_source = lambda source: cold_runner.adapters.get(source.platform)
     cold_runner._cached_agent_for = lambda route: None
-    assert resolve_titled_session(cold, owner, 'Bot Chat', missing_ok=True) is None
-    if door == 'Desktop create':
-        connection = AuthorityConnection(cold, object(), {'user_id': owner.subject})
-        with pytest.raises(RuntimeStoreError):  # a refused create leaves the old chat as it was
-            await connection.create(None, {'title': 'Bot Chat', 'request_id': 'bot-chat-bad', 'source': 'gui',
-                                           'cwd': str(tmp_path / 'missing'), 'model': 'frozen', 'toolsets': []})
-        assert cold.db.get_session_by_title('Bot Chat')['id'] == ref.session_id
-        opened = await connection.create(None, {'title': 'Bot Chat', 'request_id': 'bot-chat-2', 'source': 'gui',
-                                                'cwd': str(tmp_path), 'model': 'frozen', 'toolsets': [], 'hidden': True})
+    assert await _bot_row(cold, owner) is None
+    if door == 'Desktop create':  # the click: nothing found, so it mints
+        opened = await AuthorityConnection(cold, object(), {'user_id': owner.subject}).create(
+            None, {'title': 'Bot Chat', 'request_id': 'bot-chat-2', 'source': 'gui', 'cwd': str(tmp_path),
+                   'model': 'frozen', 'toolsets': [], 'hidden': True})
         fresh = opened['session_id']
-    else:
-        fresh = (await _target(cold, owner))[0].session_id
+    else:  # the bot's own delivery, as the Desktop's principal (whose roster reads it)
+        from gateway.session_contract import Principal
+        desktop = AuthorityConnection(cold, object(), {'user_id': owner.subject}).actor
+        fresh = (await _target(cold, Principal(desktop.subject, 'fixture', owner.capabilities, 'socket')))[0].session_id
     assert fresh not in (ref.session_id, newer.session_id)
-    assert cold.db.get_session_by_title('Bot Chat')['id'] == fresh
+    assert await _bot_row(cold, owner) == fresh
     moved = cold.db.get_session(ref.session_id)
     assert moved['title'] == f'Bot Chat (telegram {ref.session_id})' and not moved['hidden']
+
+
+@pytest.mark.asyncio
+async def test_a_second_chat_handed_off_to_the_same_home_chat_supersedes_the_first(tmp_path):
+    """Desktop A handed off its Bot Chat H to the Telegram home chat; Desktop B then hands off its
+    own open chat Y there. The lane names Y now: H is history, read-only for the Desktop still
+    viewing it (a Stop or turn through it would act on Y), and its canonical title moves aside."""
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_local import create_local_session
+    from hermes_state_runtime import RuntimeStoreError
+    runner, warm, owner, ref, telegram, route = await _handed_off_bot_chat(tmp_path)
+    other = create_local_session(warm, owner, {'request_id': 'other-chat', 'source': 'gui', 'cwd': str(tmp_path),
+                                               'model': 'frozen', 'toolsets': []})
+    warm.authorize(owner, other, 'session:control')
+    assert await _handoff(runner, warm, other.session_id, telegram) == route
+    assert warm.logical_owner(runner.session_store.lookup_by_session_key(route).session_id) == other.session_id
+    warm.authorize(owner, other, 'session:submit')
+    with pytest.raises(RuntimeStoreError, match='session_superseded'):
+        warm.authorize(owner, ref, 'session:submit')
+    assert warm.agent(ref) is None
+    assert await _bot_row(warm, owner) is None
+
+    cold = await initialize_session_authority(_Runner(tmp_path), profile_id='fixture', instance_id='cold')
+    cold.authorize(owner, other, 'session:control')
+    cold.authorize(owner, ref, 'session:read')
+    with pytest.raises(RuntimeStoreError, match='session_superseded'):
+        cold.authorize(owner, ref, 'session:control')
 
 
 def _serve(tmp_path, monkeypatch):

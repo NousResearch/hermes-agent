@@ -300,6 +300,8 @@ class SessionRecoveryMixin:
                 promote(session_id, reason)
             else:
                 db.end_session(session_id, reason)
+            from gateway.session_bot import release_superseded_bot_chat
+            release_superseded_bot_chat(db, self, session_key, session_id)
             # Stop the departed conversation's schedule in its owning profile, even when
             # the in-memory watch still holds a pre-reset session id.
             heartbeat_key = f"heartbeat:{session_id}"

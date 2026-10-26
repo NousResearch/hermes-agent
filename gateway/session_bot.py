@@ -239,24 +239,32 @@ def displaceable_bot_chat(authority, row):
     return row['id']
 
 
-def superseded_bot_chat(authority):
-    """The id of a handed-off Bot Chat whose lane has moved on (``displaceable_bot_chat`` names it),
-    else None: Desktop's titled create moves it aside before minting the fresh canonical chat."""
-    from gateway.session_route_recovery import handed_off_ref
-    row = authority.db.get_session_by_title('Bot Chat')
-    if row is None or (displaced := displaceable_bot_chat(authority, row)) is None:
-        return None
-    tip = authority.db.get_compression_tip(row['id']) or row['id']
-    return displaced if handed_off_ref(authority, tip) is not None else None
+def release_superseded_bot_chat(db, store, route, session_id):
+    """The lane on *route* moved off *session_id* (its ``/new``, a reset, another ``/resume`` or
+    ``/handoff``). A Bot Chat handed off there (``/handoff``) is that lane's history now: free the
+    canonical title at once (``_displace_bot_chat``), so the Bots roster and its registry lookup both
+    stop naming it and the next click or delivery mints a fresh Bot Chat (#143286). Every route
+    transition calls this, and so does boot (an older build's transition)."""
+    from gateway.session_route_recovery import _messaging_platform
+    from hermes_state_local_migration import LEGACY_LOCAL_SOURCES
+    root = (db.get_compression_lineage(session_id) or [session_id])[0]
+    row = db.get_session(root)
+    if (row is None or row.get('title') != 'Bot Chat' or row.get('created_source') not in LEGACY_LOCAL_SOURCES
+            or _messaging_platform(row.get('source')) is None):
+        return
+    with store._lock:
+        entry = store._entry_locked(route)
+    if entry is None or (db.get_compression_lineage(entry.session_id) or [entry.session_id])[0] == root:
+        return  # the lane still holds it
+    if _displace_bot_chat(db, root):
+        logger.info("Bot Chat %s was handed off to %s and that lane moved on: moved it aside", root, route)
 
 
-async def move_aside_superseded_bot_chat(authority):
-    """Free the canonical title from a handed-off Bot Chat whose lane moved on; the caller holds the
-    titled-create lock. Its history stays, renamed and visible (``_displace_bot_chat``)."""
-    from gateway.session_runtime_workers import tracked_write
-    if (sid := superseded_bot_chat(authority)) is not None:
-        logger.info("Bot Chat %s was handed off and its lane moved on: moving it aside", sid)
-        await tracked_write(authority, partial(_displace_bot_chat, authority.db, sid))
+def release_superseded_bot_chat_at_boot(db, store):
+    row = db.get_session_by_title('Bot Chat')
+    if row is not None:
+        tip = db.get_session(db.get_compression_tip(row['id']) or row['id']) or row
+        release_superseded_bot_chat(db, store, tip.get('session_key'), row['id'])
 
 
 def _kept_local_history(db, row):

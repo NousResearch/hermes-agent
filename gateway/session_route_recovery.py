@@ -163,3 +163,17 @@ def superseded_hand_off(authority, ref):
     # The routing entry moves at the platform's /new; the lane publishes its new conversation (and so
     # supersedes a mounted one) only at its next inbound.
     return bool(live is not None and live.superseded) or _names_another_conversation(authority, ref.session_id, route)
+
+
+def follow_hand_off(authority, source, route, owner, local_owner):
+    """After ``/handoff`` repointed *route* at *owner* (the lane's logical id of the conversation's
+    head): the local mount a viewer still holds (*local_owner*, the Desktop that ran it) moves onto
+    the lane, as its receipt did. When the head is a later ``/new`` segment, that mount is the
+    conversation's earlier history there, superseded once the head publishes (#143286)."""
+    held = authority.sessions.get(local_owner) if local_owner else None
+    if held is None or held.source is None or held.source.platform != Platform.LOCAL:
+        held = None
+    elif local_owner != owner:
+        held.source, held.route, held.handed_off = source, route, True
+    if held is not None or owner in authority.sessions:
+        authority._publish_route(source, owner, route)

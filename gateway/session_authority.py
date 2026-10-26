@@ -275,18 +275,21 @@ class SessionAuthority:
         from gateway.config import Platform
         self._require_admission_open()
         live = self.sessions.get(sid)
+        took_over = live is None or live.route != route
         if live is None:
             live = self.sessions[sid] = LiveSession(source, route)
-            # The lane moved on to *sid*: a cold history mount still on its route is now another
-            # conversation's, so it goes read-only (gateway/session_route_recovery.py).
-            for other in self.sessions.values():
-                if (other.history_mount or other.handed_off) and other.route == route and other is not live:
-                    other.superseded = True
         elif (live.source is not None and live.source.platform == Platform.LOCAL
               and source.platform != Platform.LOCAL):
             # A local conversation a messaging lane took over (``/handoff``): its repoint retired the
             # local receipt, so its open viewers follow it onto the lane (#143286).
             live.source, live.route, live.handed_off = source, route, True
+        if took_over:
+            # The lane moved on to *sid*: a cold history mount or a chat handed off earlier that is
+            # still on its route is now another conversation's, so it goes read-only
+            # (gateway/session_route_recovery.py): a Stop or turn through it would act on *sid*.
+            for other in self.sessions.values():
+                if (other.history_mount or other.handed_off) and other.route == route and other is not live:
+                    other.superseded = True
         # The lane itself names *sid* (again): a historic mount becomes its live session.
         live.superseded = live.history_mount = False
         return SessionRef(self.profile_id, sid)
@@ -1466,6 +1469,8 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     await asyncio.to_thread(backfill_compression_created_sources, db)
     from gateway.session_local_recovery import release_handed_off_receipts
     await asyncio.to_thread(release_handed_off_receipts, db, epoch=epoch)
+    from gateway.session_bot import release_superseded_bot_chat_at_boot
+    await asyncio.to_thread(release_superseded_bot_chat_at_boot, db, runner.session_store)
     authority = SessionAuthority(runner, profile_id=profile_id, instance_id=instance_id, db=db, epoch=epoch)
     # A receipt's compression catch-up (#140060) writes: it commits off the loop too, before the
     # authority is published, so the recovery below only reads.

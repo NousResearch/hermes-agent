@@ -267,14 +267,14 @@ class SessionGatewayMixin:
                 query_params,
             )
             if ancestors:
-                # An explicit repoint moved these rows to this lane: a local receipt guarding one of them
-                # is retired in the same write, or the row would match neither lane (#143286).
+                # An explicit repoint moved these rows to this lane: the local conversation whose receipt
+                # names one of them goes with it in the same write, or it would match neither lane (#143286).
                 from gateway.session_route_recovery import _messaging_platform
-                from hermes_state_local import moved_receipts, release_receipts
+                from hermes_state_local import hand_off_conversations, moved_receipts
                 moved = {row[0] for row in conn.execute(
                     f"{_COMPRESSION_LINEAGE_CTE} SELECT id FROM compression_lineage", (session_id,))}
-                release_receipts(conn, [owner for owner, (_row, label) in moved_receipts(conn, moved).items()
-                                        if _messaging_platform(label) is not None])
+                hand_off_conversations(conn, {owner: found for owner, found in moved_receipts(conn, moved).items()
+                                              if _messaging_platform(found[1]) is not None})
                 return
             # The UPDATE silently no-ops on a missing row — insert it with full identity.
             if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone() is None:

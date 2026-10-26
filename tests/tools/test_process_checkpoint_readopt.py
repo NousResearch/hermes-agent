@@ -180,7 +180,7 @@ class TestCheckpointReadopt:
             proc.kill()
             proc.wait()
 
-    def test_recover_does_not_kill_a_reused_pid(self, registry, tmp_path, monkeypatch):
+    def test_recover_stops_recorded_scope_without_signaling_reused_pid(self, registry, tmp_path, monkeypatch):
         proc = _sleep_proc()
         try:
             real = ProcessRegistry._safe_host_start_time(proc.pid)
@@ -204,13 +204,16 @@ class TestCheckpointReadopt:
                 "tools.process_registry._stop_systemd_unit",
                 lambda unit: stopped.append(unit) or True,
             )
+            monkeypatch.setattr(registry, "_terminate_host_pid",
+                                lambda *a, **kw: pytest.fail("reused PID was signaled"))
 
             recovered = registry.recover_from_checkpoint()
 
             assert recovered == 0
             assert proc.poll() is None
             assert registry.get("proc_recover_reused") is None
-            assert stopped == []
+            assert stopped == ["hermes-worker-proc_recover_reused.scope"]
+            assert json.loads(checkpoint.read_text()) == []
             assert _completions(registry) == []
         finally:
             if proc.poll() is None:

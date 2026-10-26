@@ -1,0 +1,47 @@
+name: surplus-intelligence-seller
+repo: https://github.com/ProlowN/surplus-intelligence-seller
+sha: f29a0e2dbf4c77a0fe43524b134f6ebf2649cdb1
+subdir: ""
+description: >-
+  Sell the full daily Venice DIEM allowance on Surplus Intelligence before
+  00:00 UTC. Seller-only and Venice-only: lists DIEM-funded Venice inference
+  as Surplus offers, rebalances discount and caps through the epoch, and
+  deepens price late in the day so leftover DIEM (which does not roll over)
+  is avoided. Earnings settle in USDC on Base. Disclosure — Venice API key
+  is sent to Surplus Intelligence (encrypted at rest) so Surplus can proxy
+  buyer traffic; Surplus seller API and Venice billing/rate-limit endpoints
+  are called to manage offers and read remaining DIEM; SIWE mint uses a
+  throwaway wallet whose private key is discarded after signing.
+maintainer: ProlowN
+tier: community
+category: tools
+requires_hermes: ">=0.19.0"
+version: "0.1.0"
+docs_url: https://github.com/ProlowN/surplus-intelligence-seller
+readme: true
+title: Surplus Intelligence seller
+known_issues:
+  - "SURPLUS_SELLER_API_KEY is optional. surplus_seller_auth mints an si_seller_ key with a throwaway SIWE wallet and discards the private key. Paste the key into Hermes secrets so it survives restart."
+  - "The plugin sends the Venice API key to Surplus Intelligence, which stores it encrypted and uses it to serve buyers."
+  - "VENICE_ADMIN_API_KEY is optional. Without it, epoch allocation may be unknown and sell-through percent cannot be scored; remaining DIEM still drives the end-of-epoch discount."
+capabilities:
+  provides_tools:
+    - surplus_seller_auth
+    - surplus_list_offers
+    - surplus_create_offer
+    - surplus_update_offer
+    - surplus_pause_or_cancel_offer
+    - surplus_resume_offer
+    - surplus_seller_earnings
+    - surplus_discover_venice_models
+    - surplus_test_venice_connection
+    - surplus_diem_capacity
+    - surplus_diem_utilization
+    - surplus_cover_venice_models
+    - surplus_rebalance_diem
+    - surplus_fill_remaining_diem
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - VENICE_API_KEY
+    - SURPLUS_SELLER_PAYOUT_ADDRESS

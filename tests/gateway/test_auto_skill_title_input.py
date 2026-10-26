@@ -34,7 +34,7 @@ async def test_gateway_titles_original_request_without_changing_model_input(tmp_
     event = MessageEvent(text=question, source=source, auto_skill=skills,
                          channel_context="[Discord channel context: synthetic metadata]")
     entry = SessionEntry(session_id="title-test", session_key="discord:title-test",
-                         created_at=datetime(2026, 1, 1), updated_at=datetime(2026, 1, 1))
+                         created_at=datetime(2026, 1, 1), updated_at=datetime(2026, 1, 1), is_fresh_reset=True)
     runner = GatewayRunner.__new__(GatewayRunner)
     runner.config = GatewayConfig()
     runner.adapters = {}

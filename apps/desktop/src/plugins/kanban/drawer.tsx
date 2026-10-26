@@ -544,11 +544,7 @@ function AttachmentRow({
         size="icon-xs"
         variant="ghost"
       >
-        <Codicon
-          name={download.isPending ? 'sync' : 'cloud-download'}
-          size="0.7rem"
-          spinning={download.isPending}
-        />
+        <Codicon name={download.isPending ? 'sync' : 'cloud-download'} size="0.7rem" spinning={download.isPending} />
       </Button>
     </>
   )

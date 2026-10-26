@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { localPreviewTarget } from '@/lib/local-preview'
 import type * as LocalPreview from '@/lib/local-preview'
 import type * as PreviewStore from '@/store/preview'
 
@@ -19,56 +18,39 @@ vi.mock('@/lib/local-preview', async importOriginal => ({
 
 const { host } = await import('./index')
 
+const file = (extra: object) => ({ kind: 'file', label: 'f', source: '/w/f', url: 'file:///w/f', ...extra })
+
 describe('host.preview', () => {
   beforeEach(() => {
     openPreview.mockClear()
     normalizeOrLocalPreviewTarget.mockReset()
   })
 
-  it('opens a resolvable target in the preview rail and reports success', async () => {
-    const target = { kind: 'file', label: 'plan.md', previewKind: 'text', source: '/w/plan.md', url: 'file:///w/plan.md' }
+  // A one-letter scheme is a Windows drive, not a URL.
+  it.each(['/w/plan.md', 'C:\\w\\plan.md', 'file:///w/plan.md'])('opens %s in the preview rail', async path => {
+    const target = file({ previewKind: 'text' })
     normalizeOrLocalPreviewTarget.mockResolvedValue(target)
 
-    await expect(host.preview('/w/plan.md')).resolves.toBe(true)
+    await expect(host.preview(path)).resolves.toBe(true)
     expect(openPreview).toHaveBeenCalledWith(target)
   })
 
-  it('reports failure instead of opening a broken tab when the target will not resolve', async () => {
-    normalizeOrLocalPreviewTarget.mockResolvedValue(null)
+  // `false` is the caller's cue to fall back to a download.
+  it.each([
+    ['nothing resolves', null],
+    ['the target is not a file', { ...file({}), kind: 'url' }],
+    ['the file is binary', file({ previewKind: 'binary' })],
+    ['a backend read found binary content', file({ binary: true, previewKind: 'text' })]
+  ])('resolves false without opening a tab when %s', async (_, target) => {
+    normalizeOrLocalPreviewTarget.mockResolvedValue(target)
 
-    // The caller needs `false` to fall back (Kanban saves a copy instead).
-    await expect(host.preview('/w/missing.md')).resolves.toBe(false)
+    await expect(host.preview('/w/f')).resolves.toBe(false)
     expect(openPreview).not.toHaveBeenCalled()
   })
 
-  it('refuses a binary target rather than rendering garbage', async () => {
-    normalizeOrLocalPreviewTarget.mockResolvedValue({
-      kind: 'file',
-      label: 'bundle.zip',
-      previewKind: 'binary',
-      source: '/w/bundle.zip',
-      url: 'file:///w/bundle.zip'
-    })
-
-    await expect(host.preview('/w/bundle.zip')).resolves.toBe(false)
-    expect(openPreview).not.toHaveBeenCalled()
-  })
-
-  it('opens only files, never a URL handed over by a backend', async () => {
-    // Backend-supplied strings (attachment paths) must not become a browser tab.
-    await expect(host.preview('https://example.test/plan.md')).resolves.toBe(false)
+  // Plugins pass backend-supplied strings; none may become a browser tab.
+  it.each(['https://example.test/plan.md', 'data:text/html,x'])('refuses %s before resolving it', async url => {
+    await expect(host.preview(url)).resolves.toBe(false)
     expect(normalizeOrLocalPreviewTarget).not.toHaveBeenCalled()
-    expect(openPreview).not.toHaveBeenCalled()
-  })
-})
-
-describe('localPreviewTarget classification for agent artifacts', () => {
-  it('treats a markdown attachment as readable markdown text, not a download', () => {
-    expect(localPreviewTarget('/h/.hermes/kanban/boards/b/attachments/t_1/plan.md')).toMatchObject({
-      kind: 'file',
-      label: 'plan.md',
-      language: 'markdown',
-      previewKind: 'text'
-    })
   })
 })

@@ -660,8 +660,9 @@ export const host = {
    *  shared pipeline reads through Electron locally and `/api/fs` remotely.
    *  Web URLs are refused: plugins pass backend-supplied strings here, and
    *  those must never become a browser tab. Resolves false when there is
-   *  nothing readable to show (missing, directory, binary), so the caller can
-   *  fall back to a download instead of opening a broken tab. */
+   *  nothing readable to show (binary; on a local backend also missing or a
+   *  directory), so the caller can fall back to a download instead of opening
+   *  a broken tab. A remote path is only checked when the tab reads it. */
   preview: async (path: string): Promise<boolean> => {
     const raw = (path ?? '').trim()
 
@@ -672,11 +673,7 @@ export const host = {
 
     const target = await normalizeOrLocalPreviewTarget(raw)
 
-    const unreadable =
-      !target ||
-      target.kind !== 'file' ||
-      target.previewKind === 'binary' ||
-      (target.previewKind === 'text' && target.binary === true)
+    const unreadable = !target || target.kind !== 'file' || target.previewKind === 'binary' || target.binary === true
 
     if (unreadable) {
       return false

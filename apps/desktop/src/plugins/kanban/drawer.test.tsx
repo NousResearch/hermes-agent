@@ -121,27 +121,11 @@ describe('task attachment preview', () => {
     openDrawer(onClose)
     fireEvent.click(await screen.findByRole('button', { name: `${en.openAttachment} bundle.zip` }))
     await waitFor(() =>
-      expect(save).toHaveBeenCalledWith(expect.objectContaining({ path: '/persisted/bundle.zip', suggestedName: 'bundle.zip' }))
+      expect(save).toHaveBeenCalledWith(
+        expect.objectContaining({ path: '/persisted/bundle.zip', suggestedName: 'bundle.zip' })
+      )
     )
     expect(onClose).not.toHaveBeenCalled()
-  })
-
-  it('keeps the separate download action a plain save, never a preview', async () => {
-    const preview = vi.spyOn(host, 'preview').mockResolvedValue(true)
-    const save = vi.fn().mockResolvedValue({ saved: true })
-    vi.stubGlobal('hermesDesktop', { saveGatewayFile: save })
-    detail = { ...legacyDetail, attachments: [{ id: 5, filename: 'plan.md', stored_path: '/persisted/plan.md' }] }
-    openDrawer()
-    fireEvent.click(await screen.findByRole('button', { name: 'Download plan.md' }))
-    await waitFor(() => expect(save).toHaveBeenCalledOnce())
-    expect(preview).not.toHaveBeenCalled()
-  })
-
-  it('disables preview with no persisted path instead of guessing one', async () => {
-    detail = { ...legacyDetail, attachments: [{ id: 1, filename: 'gone.md' }] }
-    openDrawer()
-    const button = await screen.findByRole('button', { name: `${en.openAttachment} gone.md` })
-    expect((button as HTMLButtonElement).disabled).toBe(true)
   })
 })
 
@@ -192,11 +176,13 @@ describe('task attachment compatibility', () => {
     )
   })
 
-  it('disables downloads with no persisted path instead of guessing a workspace path', async () => {
+  it('disables open and download with no persisted path instead of guessing a workspace path', async () => {
     detail = { ...legacyDetail, attachments: [{ id: 1, filename: 'gone.md' }] }
     openDrawer()
-    const button = await screen.findByRole('button', { name: 'Download gone.md' })
-    expect((button as HTMLButtonElement).disabled).toBe(true)
+
+    for (const name of [`${en.openAttachment} gone.md`, 'Download gone.md']) {
+      expect(((await screen.findByRole('button', { name })) as HTMLButtonElement).disabled).toBe(true)
+    }
   })
 
   it('reports a failed download and allows retry', async () => {

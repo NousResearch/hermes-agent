@@ -33,6 +33,7 @@ from hermes_cli.staged_uploads import (
     ensure_profile_subdir, is_staged_upload, removed_on_failure, resolve_upload_home,
 )
 from hermes_cli.web_deps import late
+from hermes_cli.web_server_remote_media import remote_media_response
 from hermes_cli.web_upload_limit import CHAT_IMAGE_MAX_BYTES
 from hermes_cli.web_server_surface import route_on
 from hermes_cli.web_server_files import (
@@ -776,10 +777,13 @@ async def issue_file_ticket(payload: FileTicketRequest, request: Request):
                 request, payload.path, payload.profile, payload.session_id, owner,
             )
         else:
+            # An SSH profile's clip is captured on its SSH machine; a host-staged file on this host.
+            authority = await _remote_file_authority(payload.path, payload.profile, owner, _remote_stream_target)
             path = payload.path
-            if payload.session_id is not None or path.lower().startswith("file:"):
+            if authority is None and (payload.session_id is not None or path.lower().startswith("file:")):
                 path = str(await _fs_download_path(path, payload.profile, payload.session_id))
-            authority = await asyncio.to_thread(capture)
+            if authority is None:
+                authority = await asyncio.to_thread(capture)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="File ticket profile is unavailable") from exc
     query = {"path": payload.path, "profile": payload.profile, "session_id": payload.session_id}
@@ -821,10 +825,19 @@ async def stream_managed_file(
     path-bound ``?ticket=``; the session token is never accepted in this URL.
     Same size cap, sensitive guard and MIME detection as download. A
     ``session_id`` resolves ``/workspace`` in that session's own sandbox, as the
-    ticket route does."""
-    if getattr(request.state, "file_ticket_authority", None) is None and (
-            session_id is not None or path.lower().startswith("file:")):
-        path = str(await _fs_download_path(path, profile, session_id))
+    ticket route does. An SSH profile's clip streams from its SSH machine
+    (``_remote_fs_backend``, the rule download uses), one Range at a time."""
+    authority = getattr(request.state, "file_ticket_authority", None)
+    if authority is not None and authority.workspace is not None:
+        target, size = await _ticketed_remote_target(authority, _remote_stream_target)
+        return remote_media_response(request, authority.workspace, target, size, _fs_mime_type(Path(target)))
+    if authority is None:
+        backend = await asyncio.to_thread(_remote_fs_backend, path, profile)
+        if backend is not None:
+            target, size = await asyncio.to_thread(_remote_stream_target, backend, path)
+            return remote_media_response(request, backend, target, size, _fs_mime_type(Path(target)))
+        if session_id is not None or path.lower().startswith("file:"):
+            path = str(await _fs_download_path(path, profile, session_id))
     return await _managed_file_response(request, path, content_disposition_type="inline", media_only=True)
 
 
@@ -1176,6 +1189,45 @@ def _remote_download_target(backend, path: str) -> tuple[str, int]:
     return target, size
 
 
+def _remote_stream_target(backend, path: str) -> tuple[str, int]:
+    """*path* on the SSH workspace as media the stream route may serve, and its size: download's
+    checks, then the host stream's media-type and size caps."""
+    from hermes_cli.web_server import _MANAGED_FILE_MAX_BYTES
+
+    target, size = _remote_download_target(backend, path)
+    if PurePosixPath(target).suffix.lower() not in _STREAMABLE_MEDIA_EXTENSIONS:
+        raise HTTPException(status_code=415, detail="Unsupported media type")
+    if size > _MANAGED_FILE_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="File is too large")
+    return target, size
+
+
+async def _remote_file_authority(
+    path: str, profile: Optional[str], owner: Path, inspect,
+) -> Optional[file_tickets.FileAuthority]:
+    """A ticket's authority for *path* on the profile's SSH workspace, checked by *inspect*
+    (download's or the stream's rules), or None when this host owns the path."""
+    backend = await asyncio.to_thread(_remote_fs_backend, path, profile)
+    if backend is None:
+        return None
+    target, _size = await asyncio.to_thread(inspect, backend, path)
+    authority = file_tickets.FileAuthority(PurePosixPath(target), (owner,), workspace=backend)
+    await asyncio.to_thread(authority.check_live)
+    return authority
+
+
+async def _ticketed_remote_target(authority: file_tickets.FileAuthority, inspect) -> tuple[str, int]:
+    """The SSH file a ticket captured, re-checked by *inspect* while its profile is still live."""
+    try:
+        await asyncio.to_thread(authority.check_live)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="File ticket profile or resource is unavailable") from exc
+    target, size = await asyncio.to_thread(inspect, authority.workspace, str(authority.target))
+    if target != str(authority.target):
+        raise HTTPException(status_code=403, detail="File ticket target changed")
+    return target, size
+
+
 def _remote_download_response(request: Optional[Request], backend, target: str, size: int) -> Response:
     """*target* streamed from the SSH workspace as an attachment; a HEAD reads none of it."""
     target_path = Path(target)
@@ -1194,12 +1246,9 @@ async def _fs_download_authority(
     profile's SSH workspace when it has one, else on this host under the same read rules."""
     from hermes_constants import named_profile_home
 
-    backend = await asyncio.to_thread(_remote_fs_backend, path, profile)
-    if backend is not None:
-        target, _size = await asyncio.to_thread(_remote_download_target, backend, path)
-        authority = file_tickets.FileAuthority(PurePosixPath(target), (owner,), workspace=backend)
-        await asyncio.to_thread(authority.check_live)
-        return authority
+    remote = await _remote_file_authority(path, profile, owner, _remote_download_target)
+    if remote is not None:
+        return remote
     local = await _fs_download_path(path, profile, session_id)
 
     def capture():
@@ -1221,13 +1270,7 @@ async def _ticketed_fs_download(
 ) -> Response:
     """Serve the file a download ticket captured while its profile homes are still live."""
     if authority.workspace is not None:
-        try:
-            await asyncio.to_thread(authority.check_live)
-        except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail="File ticket profile or resource is unavailable") from exc
-        target, size = await asyncio.to_thread(_remote_download_target, authority.workspace, str(authority.target))
-        if target != str(authority.target):
-            raise HTTPException(status_code=403, detail="File ticket target changed")
+        target, size = await _ticketed_remote_target(authority, _remote_download_target)
         return _remote_download_response(request, authority.workspace, target, size)
 
     from hermes_cli.web_server_file_response import OpenedFileResponse

@@ -185,11 +185,21 @@ printf '__HERMES_FS_SIZE__:%s\\n' "$size"
             raise SshWorkspaceFsError("EIO", "SSH filesystem returned invalid file metadata") from exc
         return resolved, size
 
-    def stream_file(self, path: str, chunk_size: int = 64 * 1024) -> Iterator[bytes]:
-        """Stream an already-authorized remote file without buffering it in memory."""
+    def stream_file(
+        self, path: str, chunk_size: int = 64 * 1024, *, offset: int = 0, length: int | None = None,
+    ) -> Iterator[bytes]:
+        """Stream an already-authorized remote file without buffering it in memory. ``offset`` and
+        ``length`` read one byte range of it instead (a media element's ``Range`` request)."""
         target = self._normalize(path)
+        source = f"< {shlex.quote(target)}"
+        if offset or length is not None:
+            script = f"tail -c +{int(offset) + 1} {source}"
+            if length is not None:
+                script += f" | head -c {int(length)}"
+        else:
+            script = f"exec cat {source}"
         command = self._env._build_ssh_command()
-        command.extend(["bash", "-c", shlex.quote(f"exec cat < {shlex.quote(target)}")])
+        command.extend(["bash", "-c", shlex.quote(script)])
         process = subprocess.Popen(
             command,
             stdin=subprocess.DEVNULL,

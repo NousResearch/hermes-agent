@@ -75,6 +75,15 @@ async def test_native_profile_batch_filters_before_fifo_and_preserves_human(tmp_
     for adapter in adapters.values():
         adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id='fixture'))
     runner = rig.runner
+    from tests.waiting import async_wait_until
+    batch_ready = asyncio.Event()
+    flush = runner._flush_process_completion_batch
+    async def flush_after_all_producers(key):
+        # Profile I/O can outlast the production coalescing window. Exercise
+        # one real batch deterministically without requiring a quiet runner.
+        await batch_ready.wait()
+        await flush(key)
+    monkeypatch.setattr(runner, '_flush_process_completion_batch', flush_after_all_producers)
     runner.config._runtime_profile_homes = tuple([('default', tmp_path), *rig.homes.items()])
     runner.adapters = {Platform.DISCORD: adapters['default']}
     runner._profile_adapters = {name: {Platform.DISCORD: adapters[name]} for name in rig.homes}
@@ -140,10 +149,15 @@ async def test_native_profile_batch_filters_before_fifo_and_preserves_human(tmp_
                 assert save_completed_result(replace(live, completion_consumed=True))
             monkeypatch.setattr(module, 'process_registry', module.ProcessRegistry())
             assert not module.process_registry._completion_consumed
+            batch_ready.clear()
             with _profile_runtime_scope(rig.homes['a']):
-                results = await asyncio.gather(*(
+                pending = asyncio.gather(*(
                     runner._enqueue_process_completion_notification(event['output'], event)
                     for event in (cancelled_event, already_event, live_event)))
+                await async_wait_until(lambda: sum(map(len, runner._completion_notification_batches.values())) == 3,
+                                       timeout=20)
+                batch_ready.set()
+                results = await pending
             assert all(result is True for result in results), results
             with _profile_runtime_scope(home):
                 rows = list_session_admissions(authority.db, session_id=seed.ref.session_id, pending_only=False)

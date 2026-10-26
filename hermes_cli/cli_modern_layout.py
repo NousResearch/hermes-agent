@@ -15,6 +15,7 @@ import time
 from datetime import datetime
 
 from agent.i18n import t
+from wcwidth import wcswidth
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,153 @@ def layout_from_config(display: dict) -> bool:
 def busy_input_mode_from_config(display: dict) -> str:
     """``display.busy_input_mode``; unset interrupts in both layouts (Tab still queues in this one)."""
     return str((display or {}).get("busy_input_mode") or "interrupt").strip().lower()
+
+
+def answer_wrap_from_config(display: dict) -> bool:
+    """``display.answer_wrap: word`` word-wraps prose rows to the terminal width; ``terminal`` (the
+    default) prints each row whole and lets the terminal soft-wrap it.
+
+    A terminal wraps at the last cell, so it breaks mid-word; wrapping here puts the break on a
+    space instead. The cost is what the default avoids: an inserted break is a real newline, so
+    text copied out of the scrollback comes back hard-wrapped rather than as the original line."""
+    return str((display or {}).get("answer_wrap", "terminal") or "terminal").strip().lower() == "word"
+
+
+# Markdown that must never be re-broken: a fence line, an indented code line, a table row.
+_FENCE_ROW_RE = re.compile(r"^(?:\s*>\s?)*(\s*)(`{3,}|~{3,})")
+_CODE_ROW_RE = re.compile(r"^(?:\t| {4,})")
+_LIST_MARKER_RE = re.compile(r"^(?:[-*+]|\d{1,3}[.)])\s+")
+# The prefix a wrapped row keeps on every continuation: leading whitespace, plus any "> " quote markers.
+_ROW_PREFIX_RE = re.compile(r"^(?:\s*>\s?)*\s*")
+# CSI/OSC escapes: measured text drops them (wcswidth returns -1 on control bytes), output keeps them.
+# OSC covers both terminators (BEL and ST = ESC \), so an OSC-8 hyperlink measures its link text only.
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;:?]*[ -/]*[@-~]|\x1b\](?:[^\x07\x1b]|\x1b(?!\\))*(?:\x07|\x1b\\)")
+
+
+def _cells(text: str) -> int:
+    """Display width of ``text`` with escapes removed; falls back to len() when wcwidth cannot measure."""
+    visible = _ANSI_ESCAPE_RE.sub("", text)
+    width = wcswidth(visible)
+    return len(visible) if width < 0 else width
+
+
+def _is_table_row(row: str) -> bool:
+    """A markdown table row: the stream's own permissive test, plus the two-column form the stream
+    detector misses (``a | b`` has one pipe, no leading pipe). Wrapping one corrupts the table."""
+    from agent.markdown_tables import looks_like_table_row
+    return looks_like_table_row(row) or " | " in row
+
+
+def wrap_prose(row: str, width: int) -> list[str]:
+    """Word-wrap one printed prose row to ``width`` display cells.
+
+    A token wider than the row (a URL, a path, a hash) is never split, so that row overflows and
+    the terminal finishes the job — the same rule rich and pi's renderer use. Fence lines, code
+    (tab or 4-space indent), and table rows come back untouched: re-breaking them corrupts what
+    they encode, and they are the rows a user copies. A row that already fits is returned
+    unchanged, whitespace and all. A list item keeps its marker on the first row and hangs its
+    continuations under the text; a quoted row keeps its ``>`` markers; each row is measured
+    against its own prefix so a continuation can never overflow."""
+    if width <= 0 or not row or _FENCE_ROW_RE.match(row) or _CODE_ROW_RE.match(row):
+        return [row]
+    if _is_table_row(row):
+        return [row]
+    # Inline escapes (model-emitted colour) cannot be split across rows without re-opening the
+    # style on every continuation: leave such a row to the terminal, as the default mode does.
+    if _ANSI_ESCAPE_RE.search(row):
+        return [row]
+    prefix_match = _ROW_PREFIX_RE.match(row)
+    prefix = prefix_match.group(0) if prefix_match else ""
+    body = row[len(prefix):]
+    if not body:
+        return [row]
+    if _cells(row) <= width:
+        return [row]
+    marker = _LIST_MARKER_RE.match(body)
+    hang = prefix + " " * marker.end() if marker else prefix
+    first_budget, cont_budget = width - _cells(prefix), width - _cells(hang)
+    if first_budget <= 0 or cont_budget <= 0:
+        return [row]
+    # Keep the original separators (a run of spaces inside inline code is content, not noise).
+    words = re.findall(r"\S+", body)
+    if not words:
+        return [row]
+    seps = re.findall(r"\s+", body)
+    rows: list[str] = []
+    current, on_first_row = words[0], True
+    for index, word in enumerate(words[1:]):
+        candidate = current + (seps[index] if index < len(seps) else " ") + word
+        if _cells(candidate) <= (first_budget if on_first_row else cont_budget):
+            current = candidate
+        else:
+            rows.append(current)
+            current, on_first_row = word, False
+    rows.append(current)
+    return [prefix + rows[0]] + [hang + cont for cont in rows[1:]]
+
+
+def _fence_marker(row: str) -> tuple[str, int] | None:
+    """``(char, run length)`` for a ``` / ~~~ line, else None."""
+    match = _FENCE_ROW_RE.match(row or "")
+    if not match:
+        return None
+    run = match.group(2)
+    return (run[0], len(run))
+
+
+# A CLOSING fence carries nothing but whitespace after the run (after the same "> " prefixes the
+# opener allows); ```literal is an opener, not a close.
+_FENCE_CLOSE_RE = re.compile(r"^(?:\s*>\s?)*\s*(?:`{3,}|~{3,})\s*$")
+
+
+def wrap_stream_row(printed_row: str, width: int, *, source_row: str | None = None,
+                    fence: tuple[str, int] | None = None) -> tuple[list[str], tuple[str, int] | None]:
+    """Rows for one streamed answer line, plus the fenced-block state after it.
+
+    ``source_row`` is the row before markdown stripping (``final_response_markdown: strip`` removes
+    the fence markers, and code must still be recognised as code). A fence opens on a run of ``` or
+    ~~~, and closes only on a line that is that same character, at least as long, with nothing but
+    whitespace after it — so an inner ``` or a ``~~~literal`` inside a longer block stays content."""
+    source = printed_row if source_row is None else source_row
+    marker = _fence_marker(source)
+    if marker is not None:
+        char, size = marker
+        if fence is None:
+            return [printed_row], marker
+        if fence[0] == char and size >= fence[1] and _FENCE_CLOSE_RE.match(source):
+            return [printed_row], None
+        return [printed_row], fence
+    if fence is not None or _CODE_ROW_RE.match(source):
+        return [printed_row], fence
+    return wrap_prose(printed_row, width), fence
+
+
+def _strip_markdown(text: str) -> str:
+    """Late import of the markdown stripper (its own home pulls the ``cli`` facade in at call time).
+
+    A named seam so tests can substitute a stripper without importing the whole CLI."""
+    from hermes_cli.cli_render import _strip_markdown_syntax
+    return _strip_markdown_syntax(text)
+
+
+def wrap_answer_rows(text: str, width: int, *, strip: bool = False) -> list[str]:
+    """Rows for a whole non-streamed answer, wrapped with the same prose/code/fence rules.
+
+    ``strip`` mirrors ``final_response_markdown: strip``: the whole text is stripped once (so an
+    emphasis span that crosses a newline still loses both markers), and each shown row is paired
+    with its source row so a fence or indented block is still recognised as code."""
+    source_rows = (text or "").split("\n")
+    shown_rows = source_rows
+    if strip:
+        shown_rows = _strip_markdown(text or "").split("\n")
+        if len(shown_rows) != len(source_rows):  # stripping reflowed the answer: classify as shown
+            source_rows = shown_rows
+    rows: list[str] = []
+    fence: tuple[str, int] | None = None
+    for shown, source in zip(shown_rows, source_rows):
+        wrapped, fence = wrap_stream_row(shown, width, source_row=source, fence=fence)
+        rows.extend(wrapped)
+    return rows
 
 
 def _skin_hex(key: str, fallback: str) -> str:

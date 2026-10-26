@@ -259,3 +259,252 @@ def test_every_block_is_framed_by_bars_and_blank_lines(monkeypatch):
                    "", "📖", "💻",                  # tool rows, tight
                    "", "BAR", "☤", "It", "BAR",    # answer
                    "", "─"], got                   # footer
+
+
+# ── display.answer_wrap: "word" ─────────────────────────────────────────────────────────────
+
+_PARAGRAPH = ("The factory conveyor moves each job from the research bay to the design bay and finally "
+              "to the listing bay, where a verifier checks every artifact before the gate opens.")
+
+
+def test_wrap_prose_breaks_on_words_within_width():
+    from hermes_cli.cli_modern_layout import wrap_prose
+
+    rows = wrap_prose(_PARAGRAPH, 40)
+    assert len(rows) > 1
+    assert all(len(row) <= 40 for row in rows), rows
+    assert " ".join(rows) == _PARAGRAPH
+    # No row may start with the fragment of a word the previous row began.
+    assert all(row and not row.endswith(" ") for row in rows)
+
+
+def test_wrap_prose_measures_display_cells_and_never_splits_a_token():
+    from hermes_cli.cli_modern_layout import wrap_prose
+
+    cjk = "注入" * 12  # 24 chars, 48 cells
+    rows = wrap_prose(cjk, 20)
+    assert all(len(wrap_prose(row, 20)[0]) <= len(row) for row in rows)
+    assert "".join(rows) == cjk
+
+    url = "see https://example.com/" + "a" * 80
+    rows = wrap_prose(url, 40)
+    assert any(("a" * 80) in row for row in rows), rows  # a URL wider than the row is left whole
+
+
+def test_wrap_prose_leaves_code_and_tables_alone():
+    from hermes_cli.cli_modern_layout import wrap_prose
+
+    long_code = "    result = compute(" + ", ".join(f"argument_{i}" for i in range(12)) + ")"
+    assert wrap_prose(long_code, 40) == [long_code]
+    table = "| " + " | ".join(f"column_{i}" for i in range(12)) + " |"
+    assert wrap_prose(table, 40) == [table]
+
+
+def test_wrap_stream_row_holds_a_fenced_block(monkeypatch):
+    from hermes_cli.cli_modern_layout import wrap_stream_row
+
+    rows, fence = wrap_stream_row("```python", 30)
+    assert rows == ["```python"] and fence == ("`", 3)
+    long_code = "print(" + ", ".join(f"value_{i}" for i in range(10)) + ")"
+    rows, fence = wrap_stream_row(long_code, 30, fence=fence)
+    assert rows == [long_code] and fence == ("`", 3)
+    rows, fence = wrap_stream_row("```", 30, fence=fence)
+    assert rows == ["```"] and fence is None
+    rows, _ = wrap_stream_row(_PARAGRAPH, 40, fence=None)
+    assert len(rows) > 1
+
+
+def test_a_longer_fence_is_not_closed_by_a_shorter_inner_run():
+    from hermes_cli.cli_modern_layout import wrap_stream_row
+
+    rows, fence = wrap_stream_row("````markdown", 30)
+    assert fence == ("`", 4)
+    # An inner ``` inside a four-backtick block is content, not a close.
+    rows, fence = wrap_stream_row("```", 30, fence=fence)
+    assert rows == ["```"] and fence == ("`", 4)
+    # A different fence character does not close it either.
+    rows, fence = wrap_stream_row("~~~", 30, fence=fence)
+    assert fence == ("`", 4)
+    rows, fence = wrap_stream_row("````", 30, fence=fence)
+    assert fence is None
+
+
+def test_strip_mode_still_recognises_code(monkeypatch):
+    """final_response_markdown: strip removes the backticks; the source row must still say 'code'."""
+    from hermes_cli.cli_modern_layout import wrap_stream_row
+
+    long_code = "print(" + ", ".join(f"value_{i}" for i in range(10)) + ")"
+    rows, fence = wrap_stream_row("python", 30, source_row="```python")
+    assert rows == ["python"] and fence == ("`", 3)
+    rows, fence = wrap_stream_row(long_code, 30, source_row=long_code, fence=fence)
+    assert rows == [long_code], rows
+    rows, fence = wrap_stream_row("", 30, source_row="```", fence=fence)
+    assert fence is None
+
+
+def test_ansi_escapes_do_not_skew_the_width():
+    from hermes_cli.cli_modern_layout import _cells, wrap_prose
+
+    esc, reset = chr(27) + "[38;2;255;191;0m", chr(27) + "[0m"
+    colored = esc + "word " * 11 + "word" + reset
+    # A row carrying inline escapes is left whole for the terminal: splitting it would strand the
+    # escape and lose the style on the continuations.
+    assert wrap_prose(colored, 30) == [colored]
+    # Measurement itself ignores the escapes.
+    assert _cells(colored) == len("word " * 11 + "word")
+
+
+def test_a_nested_bullet_keeps_its_indent_and_wraps():
+    from hermes_cli.cli_modern_layout import wrap_prose
+
+    bullet = "  - " + " ".join(f"word{i}" for i in range(14))
+    rows = wrap_prose(bullet, 30)
+    assert len(rows) > 1
+    assert rows[0].startswith("  - word0")
+    assert all(row.startswith("    ") for row in rows[1:]), rows
+    assert all(len(row) <= 30 for row in rows), rows
+
+
+def test_a_leading_pipeless_table_row_is_not_wrapped():
+    from hermes_cli.cli_modern_layout import wrap_prose
+
+    row = "alpha | beta | " + " | ".join(f"column_{i}" for i in range(8))
+    assert wrap_prose(row, 30) == [row]
+    # A two-column row with a single pipe is still a table row (the stream's detector misses it).
+    two_col = "a very long first column | a very long second column"
+    assert wrap_prose(two_col, 30) == [two_col]
+
+
+def test_a_hanging_indent_row_never_overflows():
+    from hermes_cli.cli_modern_layout import _cells, wrap_prose
+
+    rows = wrap_prose("  - " + "abcdef " * 12, 30)
+    assert all(_cells(row) <= 30 for row in rows), rows
+
+
+def test_an_osc_link_measures_only_its_text():
+    from hermes_cli.cli_modern_layout import _cells
+
+    link = "\x1b]8;;https://example.com/very/long/target\x1b\\hello world\x1b]8;;\x1b\\"
+    assert _cells(link) == len("hello world")
+
+
+def test_a_fence_line_with_an_info_string_does_not_close_the_block():
+    from hermes_cli.cli_modern_layout import wrap_stream_row
+
+    _, fence = wrap_stream_row("~~~text", 30)
+    assert fence == ("~", 3)
+    # ~~~literal is an opening fence in markdown, not a close: the block stays open.
+    _, fence = wrap_stream_row("~~~literal", 30, fence=fence)
+    assert fence == ("~", 3)
+    _, fence = wrap_stream_row("~~~", 30, fence=fence)
+    assert fence is None
+
+
+def test_wrap_answer_rows_honours_source_rows_when_stripping(monkeypatch):
+    from hermes_cli.cli_modern_layout import wrap_answer_rows
+
+    code = "print(" + ", ".join(f"value_{i}" for i in range(10)) + ")"
+    text = "\n".join(["```python", code, "```", _PARAGRAPH])
+    rows = wrap_answer_rows(text, 40, strip=False)
+    assert rows[0] == "```python"
+    assert code in rows, rows                       # fenced code stays whole
+    assert rows.count("```") == 1                   # the closing fence survives
+    assert any(row.startswith("The factory conveyor") for row in rows), rows
+    assert len(wrap_answer_rows(_PARAGRAPH, 40)) > 1
+
+
+def _run_wrapped_turn(monkeypatch, width: int, *, wrap: bool) -> list[str]:
+    from cli import HermesCLI
+    import cli as climod
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._modern_layout, cli._answer_wrap_word = True, wrap
+    cli.show_reasoning, cli.reasoning_full = False, False
+    cli.final_response_markdown, cli.show_timestamps = "raw", False
+    cli._reset_stream_state()
+    emitted: list[str] = []
+    monkeypatch.setattr(climod, "_cprint", lambda s: emitted.append(_plain(s)))
+    monkeypatch.setattr(climod, "_terminal_width_for_streaming", lambda: width)
+    cli._stream_delta(_PARAGRAPH + "\n")
+    cli._flush_stream()
+    pad = climod._STREAM_PAD
+    # _STREAM_PAD is "" in this process, so every row matches it: drop the block framing (the
+    # accent bar and the "☤ Hermes" label) and keep only the answer prose.
+    rows = [line[len(pad):] for row in emitted for line in row.split("\n") if line.startswith(pad)]
+    return [row for row in rows
+            if row.strip() and set(row.strip()) != {"─"} and not row.strip().startswith("☤")]
+
+
+def test_answer_wrap_word_wraps_the_streamed_answer(monkeypatch):
+    from cli import _terminal_width_for_streaming
+    import cli as climod
+
+    wrapped = _run_wrapped_turn(monkeypatch, 40, wrap=True)
+    assert len(wrapped) > 1
+    assert all(len(row) <= 40 for row in wrapped), wrapped
+    assert " ".join(wrapped) == _PARAGRAPH
+
+    monkeypatch.undo()
+    unwrapped = _run_wrapped_turn(monkeypatch, 40, wrap=False)
+    assert unwrapped == [_PARAGRAPH], unwrapped
+
+
+def test_answer_wrap_defaults_to_the_terminal():
+    from hermes_cli.cli_modern_layout import answer_wrap_from_config
+
+    assert answer_wrap_from_config({}) is False
+    assert answer_wrap_from_config({"answer_wrap": "terminal"}) is False
+    assert answer_wrap_from_config({"answer_wrap": "word"}) is True
+    assert answer_wrap_from_config({"answer_wrap": "WORD "}) is True
+
+
+def test_a_row_that_fits_keeps_its_whitespace():
+    from hermes_cli.cli_modern_layout import wrap_prose
+
+    row = "Use `a  b` — two spaces there are content."
+    assert wrap_prose(row, 80) == [row]
+
+
+def test_a_quoted_row_keeps_its_markers_on_continuations():
+    from hermes_cli.cli_modern_layout import wrap_prose
+
+    rows = wrap_prose("> " + " ".join(f"word{i}" for i in range(16)), 40)
+    assert len(rows) > 1
+    assert all(row.startswith("> ") for row in rows), rows
+    assert all(len(row) <= 40 for row in rows), rows
+
+
+def test_wrap_answer_rows_strips_the_whole_answer(monkeypatch):
+    import hermes_cli.cli_modern_layout as layout
+
+    em = "**first line\nsecond line** tail"
+    # The real stripper removes both markers of a span that crosses the newline; per-row stripping
+    # would leave them. Substitute it so the test does not import the CLI facade.
+    monkeypatch.setattr(layout, "_strip_markdown", lambda text: text.replace("**", ""))
+    rows = layout.wrap_answer_rows(em, 80, strip=True)
+    assert not any("*" in row for row in rows), rows
+    assert any("first line" in row for row in rows), rows
+
+
+def test_cjk_tokens_are_measured_in_cells_not_characters():
+    from hermes_cli.cli_modern_layout import _cells, wrap_prose
+
+    row = "注入 " * 10  # each token is 2 chars / 4 cells
+    rows = wrap_prose(row, 20)
+    assert len(rows) > 1
+    assert all(_cells(c) <= 20 for c in rows), rows
+
+
+def test_a_quoted_fence_opens_and_closes():
+    from hermes_cli.cli_modern_layout import wrap_stream_row
+
+    rows, fence = wrap_stream_row("> ```python", 30)
+    assert rows == ["> ```python"] and fence == ("`", 3)
+    code = "> print(" + ", ".join(f"value_{i}" for i in range(8)) + ")"
+    rows, fence = wrap_stream_row(code, 30, fence=fence)
+    assert rows == [code], rows                      # quoted code is not wrapped
+    rows, fence = wrap_stream_row("> ```", 30, fence=fence)
+    assert rows == ["> ```"] and fence is None
+    # Ordinary prose wraps again once the quoted block is closed.
+    assert len(wrap_stream_row(_PARAGRAPH, 40, fence=fence)[0]) > 1

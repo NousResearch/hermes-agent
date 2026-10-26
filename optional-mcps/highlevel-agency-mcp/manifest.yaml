@@ -1,0 +1,34 @@
+name: highlevel-agency-mcp
+manifest_version: 1
+description: GoHighLevel (GHL) agency and builder operations over Streamable HTTP for sub-account snapshot diffs, funnel and website sync, custom domain DNS and SSL onboarding, workflows, IVRs, custom values, LC Phone wallet audits, and user roles.
+source: https://github.com/mooshee/highlevel-agency-mcp
+transport:
+  type: http
+  url: https://ghlagencymcp.com/mcp
+auth:
+  type: none
+tools:
+  default_enabled:
+    - ghl_agency_quickstart
+    - ghl_agency_catalog_overview
+    - ghl_agency_search_tools
+    - ghl_agency_list_packs
+    - ghl_agency_auth_status
+    - ghl_agency_connect_guide
+    - ghl_snapshot_diff_audit
+    - ghl_custom_values_audit
+    - ghl_phone_wallet_audit
+    - ghl_user_role_governance
+suggest:
+  keywords:
+    - highlevel
+    - gohighlevel
+    - ghl
+    - agency snapshot
+    - funnel builder
+  hosts:
+    - ghlagencymcp.com
+    - ghlmcp.dev
+    - ghlmcp.app
+post_install: |
+  No API key is required for onboarding and catalog exploration tools. For live GoHighLevel agency or sub-account operations, connect via OAuth 2.1 or pass a Private Integration Token as explained in ghl_agency_connect_guide.

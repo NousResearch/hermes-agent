@@ -45,7 +45,9 @@ def delivery_state(receipt_status: str, admission_status: str | None,
         return None
     if admission_status == "unknown":
         return "failed"
-    if waiting_on:
+    if waiting_on and admission_status == "started":
+        # The open prompt belongs to the turn running THIS delivery; one queued behind it in the
+        # same chat is still just queued.
         return "waiting_on_you"
     if admission_status in _ADMISSION_STATES:
         return _ADMISSION_STATES[admission_status]

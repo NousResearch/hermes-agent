@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import re
 import threading
+from collections.abc import Collection
 from pathlib import Path
 
 _PROTOCOL_HEADING = "## Messaging other agents"
@@ -67,6 +68,12 @@ def _profile_name(home: Path) -> str:
 def _handle(name: str) -> str:
     # The mention middleware aliases the default profile as @hermes.
     return "hermes" if name == "default" else name
+
+
+def _profile_for_handle(handle: str, names: Collection[str]) -> str:
+    """The folder id a bare @handle names on this install: @hermes is the default profile's alias
+    only while no real profile holds that name (a pre-reservation ``profiles/hermes`` keeps it)."""
+    return "default" if handle == "hermes" and "hermes" not in names else handle
 
 
 def _roster(root: Path) -> list[tuple[str, Path]]:

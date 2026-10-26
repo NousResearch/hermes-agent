@@ -168,15 +168,17 @@ def ensure_message_agent_tool(agent: Any) -> bool:
 
 
 def _resolve_local_name(target: str, roster: list[str], root: Path | None = None) -> Optional[str]:
-    """Map a target to a local profile FOLDER id: 'hermes' → 'default'; an exact folder id
+    """Map a target to a local profile FOLDER id: 'hermes' → 'default' unless a real 'hermes'
+    profile holds that handle (``_profile_for_handle``); an exact folder id
     (case-insensitive); else — when ``root`` is given — a friendly name or its Desktop @-slug
     (profile.yaml ``display_name`` / Bot Mode title: 'Scribe', '@scribe', 'Dr. Foo' → 'foo').
     Ambiguous friendly names resolve to None so a DM never lands on the wrong bot (#100671)."""
     want = target.strip().lower()
     if not want:
         return None
-    if want == "hermes":
-        return "default" if "default" in roster else None
+    from tools.bot_mode_probe import _profile_for_handle
+
+    want = _profile_for_handle(want, roster)
     exact = next((name for name in roster if name.lower() == want), None)
     if exact is not None or root is None:
         return exact

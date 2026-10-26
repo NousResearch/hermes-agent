@@ -753,6 +753,15 @@ function Wait-DesktopExit([int]$Seconds) {
     return -not (Test-DesktopAlive)
 }
 
+function Get-DesktopWorkingDirectory {
+    # The relaunched Desktop and everything it spawns (WSL/ssh helpers, IME
+    # cloud helpers that outlive it) inherit this directory. Never the exe's
+    # folder: Windows refuses to rename a directory that is a live process's
+    # cwd, so one such helper blocks every later swap of release\win-unpacked (#101789).
+    if ($env:USERPROFILE) { return $env:USERPROFILE }
+    return [Environment]::GetFolderPath('UserProfile')
+}
+
 function Start-DesktopRelaunch {
     # Returns $true only when a launch VERIFIABLY happened (WMI accepted and
     # the pid exists, or the fallback spawn returned a live process). The
@@ -782,7 +791,7 @@ function Start-DesktopRelaunch {
     # attach -- same detachment explorer.exe gives a normal launch.
     $spawned = $false
     try {
-        $workDir = Split-Path -Parent $RelaunchExe
+        $workDir = Get-DesktopWorkingDirectory
         $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
             CommandLine      = ('"{0}"' -f $RelaunchExe)
             CurrentDirectory = $workDir
@@ -889,7 +898,7 @@ function Start-DesktopRelaunch {
             # a tethered Desktop beats no Desktop. Unlike the WMI and explorer rungs it inherits
             # this script's environment: the stage relay is the update's, never the app's.
             Remove-Item Env:HERMES_UPDATE_STATUS_FILE -ErrorAction SilentlyContinue
-            $p = Start-Process -FilePath $RelaunchExe -WorkingDirectory (Split-Path -Parent $RelaunchExe) -PassThru
+            $p = Start-Process -FilePath $RelaunchExe -WorkingDirectory (Get-DesktopWorkingDirectory) -PassThru
             Start-Sleep -Milliseconds 1500
             if ($p -and -not $p.HasExited) { $spawned = $true }
             elseif ($p) { Write-HandoffLog "WARNING: fallback relaunch exited immediately" }

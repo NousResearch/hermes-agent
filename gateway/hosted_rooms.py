@@ -53,8 +53,8 @@ _EVENT_KINDS_BY_ACTOR = {
         "member.unavailable", "room.activity", "room.stop_requested", "turn.deferred", "turn.reassigned",
         "turn.cancelled", "turn.failed", "turn.settled", "turn.started"}),
     "system": frozenset({
-        "authority.claimed", "authority.lost", "room.created", "room.disbanded", "room.members_changed", "room.renamed"
-    })}
+        "authority.claimed", "authority.lost", "room.context_set", "room.created", "room.disbanded",
+        "room.members_changed", "room.renamed"})}
 _OPTIONAL_ACTOR_FIELDS = (
     ("display_name", MAX_ACTOR_LABEL_CHARS), ("profile", MAX_ACTOR_ID_CHARS), ("connection_id", MAX_ACTOR_ID_CHARS))
 _ACTOR_FIELDS = frozenset({"kind", "id", *(field for field, _ in _OPTIONAL_ACTOR_FIELDS)})

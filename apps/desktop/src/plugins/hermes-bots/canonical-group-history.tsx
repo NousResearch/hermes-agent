@@ -50,6 +50,9 @@ function eventAuthor(event: CanonicalGroupEvent, roster: Map<string, CanonicalRo
     (isMessage ? event.actor?.id : memberId)
 }
 
+// The gateway stamps scheduler posts with a `cron:` / `cron-notice:` actor; a client cannot mint one.
+const isScheduledPost = (event: CanonicalGroupEvent) => event.kind === 'message.user' && /^cron(-notice)?:/.test(event.actor?.id ?? '')
+
 function eventTimeMs(timestamp?: number) {
   if (typeof timestamp !== 'number') {return undefined}
   const at = timestamp * 1000
@@ -226,13 +229,18 @@ const MESSAGE_KINDS = new Set(['message', 'message.user', 'message.member'])
 function MessageRow({ author, avatarFor, binding, disabled, event, member, memberId, onReply }: Omit<HistoryRowProps, 'notices' | 'roster'> & {
   author?: string; member?: CanonicalRoomMember; memberId?: string
 }) {
+  const labels = useCanonicalGroupLabels()
   const isUser = event.actor?.kind !== 'member'
   const text = event.payload.text || event.payload.content || ''
   const canReply = !!onReply && !!text && (!!member || typeof event.payload.thread_id === 'string')
   const face = isUser ? undefined : avatarFor?.(member?.profile || member?.handle || memberId || author || 'bot', ROOM_AVATAR_SIZE)
 
+  const badge = isScheduledPost(event)
+    ? <span className="shrink-0 rounded bg-(--ui-surface-2) px-1 text-[0.625rem] text-(--ui-text-secondary)">{labels.scheduledPost}</span>
+    : undefined
+
   return <RoomMessage actions={canReply ? <ReplyAction author={author ?? ''} event={event} member={isUser ? undefined : member} onReply={onReply!} text={text} /> : undefined}
-    author={author} avatar={face} isUser={isUser} timestampMs={eventTimeMs(event.created_at)}>
+    author={author} avatar={face} badge={badge} isUser={isUser} timestampMs={eventTimeMs(event.created_at)}>
     <EventBody event={event} />
     <EventFiles binding={binding} disabled={disabled} event={event} />
   </RoomMessage>

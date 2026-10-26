@@ -20,6 +20,11 @@ export interface CanonicalRoomMember {
   target?: Record<string, unknown>
 }
 
+export interface CanonicalRoomContext {
+  purpose: string
+  notes: string
+}
+
 export interface CanonicalRoom {
   room_id: string
   name: string

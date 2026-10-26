@@ -723,6 +723,7 @@ def test_create_happy_path(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_create({
         "title": "child task",
+        "body": "Implement the child task and verify it.",
         "assignee": "peer",
         "parents": [worker_env],
     })
@@ -740,6 +741,44 @@ def test_create_happy_path(worker_env):
         assert child.assignee == "peer"
     finally:
         conn.close()
+
+
+def test_create_rejects_missing_body_without_writing_a_card(worker_env):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+
+    with kbc.connect_closing() as conn:
+        before = len(kb.list_tasks(conn))
+    result = json.loads(kt._handle_create({"title": "empty child", "assignee": "peer"}))
+    with kbc.connect_closing() as conn:
+        after = len(kb.list_tasks(conn))
+
+    assert result["ok"] is False
+    assert "body is required" in result["error"]
+    assert after == before
+
+
+def test_create_rejects_wiki_update_without_fixed_priority(worker_env):
+    from tools import kanban_tools as kt
+
+    result = json.loads(kt._handle_create({
+        "title": "Wiki update: runbook/example",
+        "body": "Publish the verified runbook.",
+        "assignee": "support",
+    }))
+
+    assert result["ok"] is False
+    assert "priority 82" in result["error"]
+
+    created = json.loads(kt._handle_create({
+        "title": "Wiki update: runbook/example",
+        "body": "Publish the verified runbook.",
+        "assignee": "support",
+        "priority": 82,
+    }))
+    assert created["ok"] is True
+    assert created["priority"] == 82
 
 
 @pytest.mark.parametrize("explicit", [{"workspace_kind": "scratch"}, {"project": ""}])
@@ -763,7 +802,7 @@ def test_create_explicit_scratch_ignores_ambient_board_project(
 
     def create(**extra):
         result = json.loads(kt._handle_create(
-            {"board": "target", "title": "card", "assignee": "peer", **extra}))
+            {"board": "target", "title": "card", "body": "test card", "assignee": "peer", **extra}))
         assert result["ok"] is True
         return result["workspace_kind"], result["project_id"]
 
@@ -877,6 +916,7 @@ def test_worker_lifecycle_through_tools(worker_env):
     # 4. spawn a child task for follow-up
     child_out = json.loads(kt._handle_create({
         "title": "write integration test",
+        "body": "Add coverage for the completed parent task.",
         "assignee": "qa",
         "parents": [worker_env],
     }))
@@ -1118,6 +1158,7 @@ def test_create_subscribes_gateway_session(monkeypatch, worker_env):
 
     out = kt._handle_create({
         "title": "auto-sub gateway",
+        "body": "Verify gateway subscription creation.",
         "assignee": "peer",
     })
     d = json.loads(out)
@@ -1152,6 +1193,7 @@ def test_create_subscribes_tui_session_via_session_key(monkeypatch, worker_env):
 
     out = kt._handle_create({
         "title": "auto-sub tui",
+        "body": "Verify TUI subscription creation.",
         "assignee": "peer",
     })
     d = json.loads(out)
@@ -1178,6 +1220,7 @@ def test_create_does_not_subscribe_in_cli_session(monkeypatch, worker_env):
 
     out = kt._handle_create({
         "title": "no sub cli",
+        "body": "Verify CLI creation has no subscription.",
         "assignee": "peer",
     })
     d = json.loads(out)
@@ -1212,6 +1255,7 @@ def test_create_tui_subscription_binds_to_live_session_after_compaction_fork(mon
 
     out = kt._handle_create({
         "title": "auto-sub tui post-fork",
+        "body": "Verify the continuation session receives the subscription.",
         "assignee": "peer",
     })
     d = json.loads(out)
@@ -1284,6 +1328,7 @@ def test_create_respects_auto_subscribe_on_create_false(monkeypatch, worker_env,
     from tools import kanban_tools as kt
     out = kt._handle_create({
         "title": "no sub gated",
+        "body": "Verify the auto-subscribe configuration gate.",
         "assignee": "peer",
     })
     d = json.loads(out)
@@ -1311,6 +1356,7 @@ def test_maybe_auto_subscribe_swallows_add_notify_sub_failure(monkeypatch, worke
 
     out = kt._handle_create({
         "title": "auto-sub tolerates add_notify_sub failure",
+        "body": "Verify creation succeeds when notification storage fails.",
         "assignee": "peer",
     })
     d = json.loads(out)

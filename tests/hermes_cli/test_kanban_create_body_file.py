@@ -64,3 +64,12 @@ def test_body_file_dash_reads_stdin(kanban_home, monkeypatch, capsys):
     assert _create(["PROBE", "--body-file", "-"], monkeypatch, stdin=BODY) == 0
     capsys.readouterr()
     assert _latest_body().body == BODY
+
+
+def test_create_rejects_missing_or_blank_body_before_writing(kanban_home, capsys):
+    assert _create(["PROBE"]) == 2
+    assert _create(["PROBE", "--body", "  \n\t"]) == 2
+    captured = capsys.readouterr()
+    assert "non-empty --body or --body-file is required" in captured.err
+    with kbc.connect_closing() as conn:
+        assert kb.list_tasks(conn) == []

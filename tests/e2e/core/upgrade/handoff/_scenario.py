@@ -167,7 +167,7 @@ def card_status(inst: X.Install, tid: str) -> str:
 
 
 def create_card(inst: X.Install, title: str) -> str:
-    cp = inst.cli("kanban", "create", title, "--assignee", "default", "--json", timeout=120)
+    cp = inst.cli("kanban", "create", title, "--body", "worker lifecycle probe", "--assignee", "default", "--json", timeout=120)
     assert cp.returncode == 0, "kanban create failed\n" + H.describe(cp)
     return json.loads(cp.stdout[cp.stdout.index("{"):])["id"]
 

@@ -175,7 +175,7 @@ def test_kanban_worker_spawned_after_update_boots(updated, provider):
     # One sandbox for dispatcher + worker (the worker outlives `kanban dispatch`, as on a real host);
     # the sandbox stays up until the worker's first model call is observed, then is torn down.
     script = (f'H="{sb.hermes}"\n"$H" kanban init >/dev/null\n'
-              '"$H" kanban create "pm hygiene kanban probe" --assignee default --json\n'
+              '"$H" kanban create "pm hygiene kanban probe" --body "verify the post-update worker interpreter" --assignee default --json\n'
               '"$H" kanban dispatch --json\nsleep 600\n')
     with log.open("w") as out:
         proc = subprocess.Popen(H.sandbox_argv(["/bin/sh", "-c", script], writable=[sb.root]), env=P.lazy_env(sb),

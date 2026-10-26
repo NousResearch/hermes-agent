@@ -411,9 +411,9 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "dispatched."
         )),
         "body": _prop("string", (
-                "Opening post: full spec, acceptance criteria, "
-                "links. The assigned worker reads this as part of "
-                "its context."
+                "Required opening post: full spec, acceptance criteria, "
+                "and links. The assigned worker reads this as part of "
+                "its context; empty cards are refused."
         )),
         "parents": {
             "type": "array",
@@ -527,7 +527,7 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "to a different one. Requires 'model'."
         )),
     },
-    ["title", "assignee"],
+    ["title", "assignee", "body"],
 )
 
 KANBAN_UNBLOCK_SCHEMA = _schema(

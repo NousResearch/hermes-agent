@@ -344,6 +344,10 @@ def _cmd_create(args: argparse.Namespace) -> int:
             body = sys.stdin.read() if body_file == "-" else Path(body_file).read_text(encoding="utf-8-sig")
         except OSError as exc:
             return _err(f"kanban: --body-file: {exc}", 2)
+    if not isinstance(body, str) or not body.strip():
+        return _err("kanban: a non-empty --body or --body-file is required", 2)
+    if args.title.strip().casefold().startswith("wiki update:") and args.priority != 82:
+        return _err("kanban: Wiki update cards require --priority 82", 2)
 
     try:
         ws_kind, ws_path = _parse_workspace_flag(args.workspace)

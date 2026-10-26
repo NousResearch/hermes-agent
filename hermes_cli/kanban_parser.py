@@ -159,7 +159,7 @@ _SPECS = [
          )),
     _cmd("create", [
         _arg("title", help="Task title"),
-        _arg("--body", help="Optional opening post"),
+        _arg("--body", help="Required opening post (or use --body-file)"),
         _arg("--body-file", metavar="PATH",
              help="Read the opening post from a file ('-' = stdin), so bodies with embedded "
                   "newlines or flag-like lines survive shell quoting. "

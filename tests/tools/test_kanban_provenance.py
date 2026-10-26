@@ -31,7 +31,7 @@ def test_worker_create_keeps_durable_origin(tmp_path, monkeypatch, linked, expli
     # Even a matching current channel must not upgrade an inherited passive policy.
     tokens = set_session_vars(platform="discord", chat_id="chat", profile="default")
     try:
-        result = json.loads(kt._handle_create(dict(title="child", assignee="default",
+        result = json.loads(kt._handle_create(dict(title="child", body="child work", assignee="default",
                             parents=[owner] if linked else [], session_id=explicit)))
     finally:
         clear_session_vars(tokens)
@@ -57,7 +57,7 @@ def test_tool_subscription_captures_conversation_anchors(tmp_path, monkeypatch):
     tokens = set_session_vars(platform="discord", chat_id="thread", chat_type="thread",
                              scope_id="guild", parent_chat_id="forum", profile="default")
     try:
-        result = json.loads(kt._handle_create(dict(title="direct", assignee="default")))
+        result = json.loads(kt._handle_create(dict(title="direct", body="direct work", assignee="default")))
     finally:
         clear_session_vars(tokens)
     assert result["ok"], result
@@ -90,7 +90,7 @@ def test_tool_create_only_stamps_persisted_ambient_session(tmp_path, monkeypatch
     # var is set too so the reporter's unverified-env path (the pre-fix stamping seam) is exercised.
     monkeypatch.setenv("HERMES_SESSION_ID", session_id)
     with scoped_current_session_id(session_id):
-        result = json.loads(kt._handle_create({"title": "child", "assignee": "default"}))
+        result = json.loads(kt._handle_create({"title": "child", "body": "child work", "assignee": "default"}))
     with kbc.connect_closing() as conn:
         task = kb.get_task(conn, result["task_id"])
     assert task.session_id == (session_id if persisted else None)
@@ -113,6 +113,6 @@ def test_tool_create_stamps_request_scoped_session_over_process_env(tmp_path, mo
     state.close()
 
     with scoped_current_session_id("ordering-session"):
-        result = json.loads(kt._handle_create({"title": "child", "assignee": "default"}))
+        result = json.loads(kt._handle_create({"title": "child", "body": "child work", "assignee": "default"}))
     with kbc.connect_closing() as conn:
         assert kb.get_task(conn, result["task_id"]).session_id == "ordering-session"

@@ -21,6 +21,104 @@ def _refuse(action: str, message: str, **fields: Any) -> ActionResult:
     return ActionResult(ok=False, action=action, message=message, **fields)
 
 
+# ── Batch (run_steps) helpers ───────────────────────────────────────────
+
+def _parse_raw_step(step: Any, accepted: Sequence[str], aliases: dict[str, str]) -> tuple[Optional[str], Optional[str], dict[str, Any]]:
+    if not isinstance(step, dict):
+        return None, None, {}
+    if "tool" in step:
+        tool = step.get("tool")
+        raw = step.get("args") or {}
+    else:
+        named = [k for k in step if k in accepted]
+        if len(named) != 1:
+            return None, None, {}
+        tool = named[0]
+        raw = step.get(tool) or {}
+    if not isinstance(tool, str) or not isinstance(raw, dict):
+        return None, None, {}
+    requested_tool = tool
+    resolved_tool = aliases.get(tool, tool)
+    return requested_tool, resolved_tool, dict(raw)
+
+
+def _translate_key_step(requested_tool: str, args: dict[str, Any]) -> tuple[Optional[str], bool]:
+    """Translate Hermes key/keys/modifiers into driver press_key or hotkey."""
+    combo = args.pop("keys", None) if requested_tool in {"key", "hotkey"} else None
+    if isinstance(combo, str):
+        key_name, modifiers = _parse_key_combo(combo)
+        if not key_name:
+            return None, False
+        if modifiers:
+            args["keys"] = modifiers + [key_name]
+            return "hotkey", True
+        args["key"] = key_name
+        return "press_key", True
+    if isinstance(combo, list):
+        args["keys"] = combo
+        return "hotkey", True
+    if requested_tool in {"key", "press_key", "hotkey"} and isinstance(args.get("modifiers"), list) and args["modifiers"]:
+        key_val = args.pop("key", None)
+        if not isinstance(key_val, str):
+            return None, False
+        args["keys"] = [*args.pop("modifiers"), key_val]
+        return "hotkey", True
+    if requested_tool == "key" and isinstance(args.get("key"), str):
+        return "press_key", True
+    return None, True
+
+
+def _translate_drag_step(args: dict[str, Any]) -> bool:
+    """Translate Hermes drag coordinates into driver from_x/y to_x/y endpoints."""
+    if any(k in args for k in ("from_element", "to_element")):
+        return False
+    source = args.pop("from_coordinate", None)
+    target = args.pop("to_coordinate", None)
+    if source is not None or target is not None:
+        if (not isinstance(source, (list, tuple)) or len(source) != 2
+                or not isinstance(target, (list, tuple)) or len(target) != 2
+                or any(not isinstance(v, (int, float)) for v in (*source, *target))):
+            return False
+        args.update(from_x=source[0], from_y=source[1], to_x=target[0], to_y=target[1])
+    return all(k in args for k in ("from_x", "from_y", "to_x", "to_y"))
+
+
+def _validate_step_args(tool: str, args: dict[str, Any]) -> bool:
+    """Validate tool-specific payload shapes before live schema checks."""
+    if tool == "press_key" and not isinstance(args.get("key"), str):
+        return False
+    if tool == "hotkey" and (not isinstance(args.get("keys"), list) or len(args["keys"]) < 2):
+        return False
+    if tool == "type_text" and not isinstance(args.get("text"), str):
+        return False
+    if tool == "set_value" and not isinstance(args.get("value"), str):
+        return False
+    if tool == "scroll" and not isinstance(args.get("direction"), str):
+        return False
+    if tool == "move_cursor" and not all(isinstance(args.get(k), (int, float)) for k in ("x", "y")):
+        return False
+    if tool in {"click", "double_click"}:
+        has_target = (
+            isinstance(args.get("element_token"), str)
+            or isinstance(args.get("element_index"), int)
+            or all(isinstance(args.get(k), (int, float)) for k in ("x", "y"))
+            or any(args.get(k) is not None for k in ("role", "name", "nth"))
+        )
+        if not has_target:
+            return False
+
+    required = {
+        "set_value": ("value",),
+        "type_text": ("text",),
+        "press_key": ("key",),
+        "hotkey": ("keys",),
+        "scroll": ("direction",),
+        "drag": ("from_x", "from_y", "to_x", "to_y"),
+        "move_cursor": ("x", "y"),
+    }.get(tool, ())
+    return all(k in args for k in required)
+
+
 class _InputMixin:
     """Pointer / keyboard / value-setter actions against the sticky target."""
 
@@ -180,8 +278,8 @@ class _InputMixin:
                        "hotkey", "scroll", "drag", "move_cursor")
     # Hermes-level action names the model naturally reaches for, mapped onto the driver's tool names.
     # `key` and `type` are Hermes spellings; the driver splits press_key (one key) from hotkey (modifiers)
-    # and calls typed text `type_text`. `middle_click` is a `click` with button=middle.
-    _RUN_STEP_ALIASES = {"key": "press_key", "type": "type_text", "middle_click": "click"}
+    # and calls typed text `type_text`. `middle_click` and `right_click` map to `click` with button selector.
+    _RUN_STEP_ALIASES = {"key": "press_key", "type": "type_text", "middle_click": "click", "right_click": "click"}
 
     def _run_step_args(self, step: dict[str, Any]) -> tuple[Optional[str], dict[str, Any]]:
         """Translate one Hermes step into a driver step: ``(tool, args)``.
@@ -191,28 +289,20 @@ class _InputMixin:
         ``element_token`` on a strict token-only driver, ``keys``/``key`` become ``press_key``/``hotkey``,
         and coordinates become ``x``/``y``.
         """
-        if not isinstance(step, dict):
-            return None, {}
         accepted = self._RUN_STEP_TOOLS + tuple(self._RUN_STEP_ALIASES)
-        if "tool" in step:
-            tool = step.get("tool")
-            raw = step.get("args") or {}
-        else:
-            named = [k for k in step if k in accepted]
-            if len(named) != 1:
-                return None, {}
-            tool = named[0]
-            raw = step.get(tool) or {}
-        if not isinstance(tool, str) or not isinstance(raw, dict):
+        requested_tool, tool, args = _parse_raw_step(step, accepted, self._RUN_STEP_ALIASES)
+        if tool is None or tool not in self._RUN_STEP_TOOLS:
             return None, {}
-        requested_tool = tool
-        tool = self._RUN_STEP_ALIASES.get(tool, tool)
-        if tool not in self._RUN_STEP_TOOLS:
-            return None, {}
-        args = dict(raw)
-        if requested_tool == "middle_click":
-            args.setdefault("button", "middle")
-        # Hermes `element` is a 1-based SOM index; the driver wants the token from the latest capture.
+
+        # 1. Step target isolation: steps inherit the batch window; per-step target tokens are stripped.
+        for k in ("session", "pid", "window_id"):
+            args.pop(k, None)
+
+        # 2. Button for click aliases.
+        if requested_tool in {"right_click", "middle_click"}:
+            args.setdefault("button", "right" if requested_tool == "right_click" else "middle")
+
+        # 3. Element addressing: SOM index -> element_token or fallback to element_index.
         idx = args.pop("element", None)
         if isinstance(idx, int):
             token = self._snapshot_tokens.get(idx)
@@ -222,39 +312,45 @@ class _InputMixin:
                 args["element_index"] = idx
             else:
                 return None, {}
-        # Hermes spells the combo `keys="cmd+s"`; the driver splits press_key (one key) from hotkey (modifiers).
-        combo = args.pop("keys", None)
-        if isinstance(combo, str):
-            key_name, modifiers = _parse_key_combo(combo)
-            if not key_name:
-                return None, {}
-            if modifiers:
-                tool = "hotkey"
-                args["keys"] = modifiers + [key_name]
-            else:
-                tool = "press_key"
-                args["key"] = key_name
-        elif isinstance(combo, list):
-            tool = "hotkey"
-            args["keys"] = combo
-        elif isinstance(args.get("key"), str) and isinstance(args.get("modifiers"), list) and args["modifiers"]:
-            tool = "hotkey"
-            args["keys"] = [*args.pop("modifiers"), args.pop("key")]
-        # Hermes `text` is the driver's `type_text` argument; `type` is not a driver tool name.
+
+        # 4. Text/value alias for type_text.
         if tool == "type_text" and "text" not in args and "value" in args:
             args["text"] = args.pop("value")
-        if tool == "type_text" and "text" not in args and isinstance(args.get("keys"), str):
-            args["text"] = args.pop("keys")
-        # Hermes `middle_click` is a `click` carrying button=middle.
-        if tool == "click" and "button" not in args and raw.get("button") == "middle":
-            args["button"] = "middle"
-        # Hermes coordinate pair -> driver x/y.
+
+        # 5. Key / hotkey translation.
+        new_key_tool, ok = _translate_key_step(requested_tool, args)
+        if not ok:
+            return None, {}
+        if new_key_tool:
+            tool = new_key_tool
+
+        # 6. Coordinate translations:
         coord = args.pop("coordinate", None)
-        if isinstance(coord, (list, tuple)) and len(coord) == 2 and "x" not in args:
-            args["x"], args["y"] = coord[0], coord[1]
-        # A step must not carry the batch's own session/pid/window; the driver inherits them.
-        for k in ("session", "pid", "window_id"):
-            args.pop(k, None)
+        if coord is not None:
+            if not isinstance(coord, (list, tuple)) or len(coord) != 2 or any(not isinstance(v, (int, float)) for v in coord):
+                return None, {}
+            if "x" not in args:
+                args["x"], args["y"] = coord[0], coord[1]
+
+        # Drag endpoints.
+        if tool == "drag" and not _translate_drag_step(args):
+            return None, {}
+
+        # 7. Modifier plural -> singular translation according to live driver schema.
+        if "modifiers" in args:
+            if self._session.supports_input_property(tool, "modifier"):
+                args["modifier"] = args.pop("modifiers")
+            elif not self._session.supports_input_property(tool, "modifiers"):
+                return None, {}
+
+        # 8. Check tool-specific argument contracts and targets.
+        if not _validate_step_args(tool, args):
+            return None, {}
+
+        # 9. Schema validation: all properties in args must be supported by the connected driver.
+        if any(not self._session.supports_input_property(tool, key) for key in args):
+            return None, {}
+
         return tool, args
 
     def run_steps(self, steps: list[Any], *, observe: Optional[dict[str, Any]] = None,
@@ -270,6 +366,8 @@ class _InputMixin:
         if refusal is not None:
             return _refuse("run_steps", "run_steps needs a current window target — call capture() or focus_app() first.",
                            code="run_steps_target_required")
+        if not isinstance(steps, list) or not 1 <= len(steps) <= 64:
+            return _refuse("run_steps", "run_steps requires between 1 and 64 steps.", code="run_steps_invalid_steps")
         if not self._session._has_tool("run_steps"):
             return _refuse("run_steps",
                            "This cua-driver does not provide the run_steps batch tool — send the steps one "

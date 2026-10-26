@@ -115,7 +115,7 @@ _PROPERTIES: dict[str, Any] = {
                 "meta",
             ],
         },
-        "description": "Modifier keys held during the action.",
+        "description": "Modifier keys held during click/drag/scroll actions; in run_steps click/drag steps this plural Hermes spelling is translated to the driver's singular `modifier` field.",
     },
     "from_element": {"type": "integer", "description": "Source element index (drag)."},
     "to_element": {"type": "integer", "description": "Target element index (drag)."},
@@ -163,7 +163,7 @@ _PROPERTIES: dict[str, Any] = {
         "type": "string",
         "enum": ["background", "foreground"],
         "description": (
-            "For input actions (click, type, key, drag, scroll). `background` (DEFAULT) delivers "
+            "For input actions (click, type, key, drag, scroll, run_steps). `background` (DEFAULT) delivers "
             "without raising the window or stealing focus. `foreground` briefly fronts the window "
             "then restores focus — a visible change needing its own approval; use it only when a "
             "result's verdict tells you to escalate there. Each result's `verdict` carries the "
@@ -173,16 +173,17 @@ _PROPERTIES: dict[str, Any] = {
     "bring_to_front": {
         "type": "boolean",
         "description": (
-            "Optional and only valid with delivery_mode='foreground'. Explicitly invokes "
-            "cua-driver's standalone bring_to_front tool before the input; it is never passed as "
-            "an input property. This persistent focus change has a separate approval scope. "
-            "Default false."
+            "Optional and only valid with delivery_mode='foreground' for single-action inputs. "
+            "Explicitly invokes cua-driver's standalone bring_to_front tool before the input; it is "
+            "never passed as an input property and has a separate approval scope. Not supported "
+            "for run_steps; use focus_app or an explicit foreground action instead. Default false."
         ),
     },
     "capture_after": {
         "type": "boolean",
         "description": (
-            "If true, take a follow-up capture after the action and include it in the response. "
+            "If true, take a follow-up capture after a single action and include it in the response. "
+            "Not supported for run_steps; use its observe argument for an end-of-batch read. "
             "Saves a round-trip when you need to verify an action's effect."
         ),
     },
@@ -191,23 +192,16 @@ _PROPERTIES: dict[str, Any] = {
         "items": {"type": "object"},
         "maxItems": 64,
         "description": (
-            "For action='run_steps': the ordered actions to run. Each step is "
-            "{'tool': <click|double_click|right_click|set_value|type_text|press_key|hotkey|scroll|drag|move_cursor>, "
-            "'args': {...}} — or the short form {'<tool>': {...}}. 'args' are exactly that tool's "
-            "arguments; a step may instead name its target with role/name/nth/app/window instead of "
-            "pid/window_id/element_token. A step may add 'wait_for' (must hold before the action) "
-            "and/or 'expect' (checks that must hold after it). Steps run IN ORDER and stop at the "
-            "first failure; all steps are validated before the first one runs, so a malformed step "
-            "changes nothing. The 'key' alias supports key combo spellings; 'type' accepts text= or "
-            "value=; 'middle_click' maps to a middle-button click. Capture a target window (or use "
-            "focus_app) before the batch; role/name steps need a window to address. Use this for "
-            "ordered multi-step sequences. "
-            "press_key takes a KEY NAME, and cua-driver's key vocabulary is narrow: letters, digits, "
-            "and named keys like 'return', 'enter', 'escape', 'space', 'tab', 'delete', '=', '-' work. "
-            "Arithmetic/operator names do NOT: 'plus'/'+'/'percent' are silently re-routed to "
-            "type_text (one CGEvent character, unverified), and 'add'/'equals'/'multiply'/'subtract'/"
-            "'divide' fail with 'Unknown key'. Click an app's operator button by role/name instead "
-            "(e.g. {'tool':'click','args':{'role':'AXButton','name':'加'}})."
+            "For action='run_steps': ordered driver actions, each as {'tool': <driver tool>, 'args': {...}} "
+            "or short form {'<tool>': {...}}. Hermes aliases: key uses keys='cmd+s' or key+modifiers; "
+            "type accepts text= or value=; right_click/middle_click select the click button. Click/drag "
+            "modifiers are translated to the driver's singular 'modifier' property; drag accepts "
+            "from_coordinate/to_coordinate pixel pairs (not element indices). A step may add wait_for "
+            "(must hold before) and/or expect (checks after); execution is ordered and stops at the first "
+            "failure, with all steps validated before the first runs. Capture a target window (or use "
+            "focus_app) first; role/name steps need a window. Maximum 64 steps. The driver press_key takes "
+            "a single key name; key combinations use the key alias or hotkey. Operator names like 'plus' "
+            "may not be valid key names; click an app's operator button by role/name instead."
         ),
     },
     "observe": {

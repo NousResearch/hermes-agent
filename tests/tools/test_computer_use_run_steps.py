@@ -8,6 +8,7 @@ the hard-block guards applied per step, and refusal when the target or driver ca
 """
 import json
 from types import SimpleNamespace
+import zoneinfo
 
 from tools.computer_use.backend import ActionResult
 from tools.computer_use.cua_backend_input import _InputMixin
@@ -21,16 +22,28 @@ class _FakeSession:
         self._has_run_steps = has_run_steps
         self.calls = []
         self._tool_schemas = tool_schemas or {
-            "click": {"properties": {"element_token": {}}},
-            "double_click": {"properties": {"element_token": {}}},
-            "right_click": {"properties": {"element_token": {}}},
+            "click": {"properties": {
+                "element_token": {}, "button": {}, "x": {}, "y": {},
+                "modifier": {}, "role": {}, "name": {}, "nth": {},
+            }},
+            "double_click": {"properties": {
+                "element_token": {}, "button": {}, "x": {}, "y": {},
+                "modifier": {}, "role": {}, "name": {}, "nth": {},
+            }},
+            "run_steps": {"properties": {
+                "steps": {}, "pid": {}, "window_id": {}, "observe": {},
+                "delay_ms": {}, "delivery_mode": {}, "foreground_fallback": {},
+            }},
+            "bring_to_front": {"properties": {"pid": {}, "window_id": {}}},
             "press_key": {"properties": {"key": {}}},
             "hotkey": {"properties": {"keys": {}}},
             "type_text": {"properties": {"text": {}}},
-            "scroll": {"properties": {"direction": {}}},
-            "set_value": {"properties": {"value": {}}},
-            "drag": {"properties": {"from_x": {}}},
-            "move_cursor": {"properties": {"x": {}}},
+            "scroll": {"properties": {"direction": {}, "amount": {}, "x": {}, "y": {}, "modifier": {}}},
+            "set_value": {"properties": {"value": {}, "element_token": {}}},
+            "drag": {"properties": {
+                "from_x": {}, "from_y": {}, "to_x": {}, "to_y": {}, "modifier": {},
+            }},
+            "move_cursor": {"properties": {"x": {}, "y": {}}},
         }
 
     def _has_tool(self, name):
@@ -79,9 +92,25 @@ def test_modifier_combo_becomes_hotkey():
     assert step["args"]["keys"] == ["cmd", "s"]
 
 
+def test_native_hotkey_args_are_preserved():
+    backend = _FakeBackend()
+    backend.run_steps([{"tool": "hotkey", "args": {"keys": ["cmd", "s"]}}])
+    step = backend._session.calls[0][1]["steps"][0]
+    assert step == {"tool": "hotkey", "args": {"keys": ["cmd", "s"]}}
+
+
 def test_key_name_and_modifiers_in_step_become_hotkey():
     backend = _FakeBackend()
     backend.run_steps([{"tool": "press_key", "args": {"key": "s", "modifiers": ["cmd"]}}])
+    step = backend._session.calls[0][1]["steps"][0]
+    assert step == {"tool": "hotkey", "args": {"keys": ["cmd", "s"]}}
+
+
+def test_key_alias_with_key_and_modifiers_becomes_hotkey():
+    backend = _FakeBackend()
+    result = backend.run_steps([{"tool": "key", "args": {"key": "s", "modifiers": ["cmd"]}}])
+    assert result.ok is True, result.message
+    assert len(backend._session.calls) == 1
     step = backend._session.calls[0][1]["steps"][0]
     assert step == {"tool": "hotkey", "args": {"keys": ["cmd", "s"]}}
 
@@ -104,9 +133,21 @@ def test_short_form_step_is_accepted():
 
 def test_step_never_carries_session_pid_or_window():
     backend = _FakeBackend()
-    backend.run_steps([{"tool": "click", "args": {"element": 7, "pid": 1, "window_id": 2, "session": "x"}}])
+    result = backend.run_steps([{"tool": "click", "args": {"element": 7, "pid": 1, "window_id": 2, "session": "x"}}])
+    assert result.ok is True, result.message
+    assert len(backend._session.calls) == 1
     step = backend._session.calls[0][1]["steps"][0]
     assert not {"pid", "window_id", "session"} & set(step["args"])
+
+
+def test_click_coordinate_with_target_tokens_translates_and_cleans():
+    backend = _FakeBackend()
+    result = backend.run_steps([{"tool": "click", "args": {
+        "coordinate": [15, 25], "button": "middle", "pid": 111, "window_id": 222, "session": "s3"}}])
+    assert result.ok is True, result.message
+    assert len(backend._session.calls) == 1
+    step = backend._session.calls[0][1]["steps"][0]
+    assert step == {"tool": "click", "args": {"button": "middle", "x": 15, "y": 25}}
 
 
 def test_wait_for_and_expect_are_step_modifiers():
@@ -187,9 +228,155 @@ def test_steps_never_carry_the_inherited_window():
 
 def test_middle_click_alias_translates_button():
     backend = _FakeBackend()
-    backend.run_steps([{"tool": "middle_click", "args": {"coordinate": [10, 20]}}])
+    result = backend.run_steps([{"tool": "middle_click", "args": {"coordinate": [10, 20]}}])
+    assert result.ok is True, result.message
+    assert len(backend._session.calls) == 1
     step = backend._session.calls[0][1]["steps"][0]
     assert step == {"tool": "click", "args": {"button": "middle", "x": 10, "y": 20}}
+
+
+def test_right_click_alias_translates_button():
+    backend = _FakeBackend()
+    result = backend.run_steps([{"tool": "right_click", "args": {"coordinate": [10, 20]}}])
+    assert result.ok is True, result.message
+    assert len(backend._session.calls) == 1
+    step = backend._session.calls[0][1]["steps"][0]
+    assert step == {"tool": "click", "args": {"button": "right", "x": 10, "y": 20}}
+
+
+def test_button_enum_on_click_alias_is_passed_through():
+    backend = _FakeBackend()
+    result = backend.run_steps([{"tool": "click", "args": {"coordinate": [10, 20], "button": "right"}}])
+    assert result.ok is True, result.message
+    assert len(backend._session.calls) == 1
+    step = backend._session.calls[0][1]["steps"][0]
+    assert step == {"tool": "click", "args": {"button": "right", "x": 10, "y": 20}}
+
+
+def test_element_index_drag_is_refused_by_backend_not_executed():
+    backend = _FakeBackend()
+    result = backend.run_steps([{"tool": "drag", "args": {"from_element": 1, "to_element": 2}}])
+    assert result.ok is False
+    assert backend._session.calls == []
+
+
+def test_empty_and_oversized_batch_are_refused_before_driver_call():
+    for steps in ([], [{"tool": "press_key", "args": {"key": "x"}}] * 65):
+        backend = _FakeBackend()
+        result = backend.run_steps(steps)
+        assert result.ok is False
+        assert backend._session.calls == []
+
+
+def test_click_with_missing_element_token_is_refused_on_strict_driver():
+    backend = _FakeBackend()
+    backend._snapshot_tokens = {}
+    result = backend.run_steps([{"tool": "click", "args": {"element": 999}}])
+    assert result.ok is False
+    assert backend._session.calls == []
+
+
+def test_run_steps_summary_does_not_expose_pid_or_window_tokens():
+    from tools.computer_use.tool import _summarize_action
+    summary = _summarize_action("run_steps", {"steps": [{"tool": "click", "args": {
+        "role": "AXButton", "name": "Delete", "pid": 1234, "window_id": 12345,
+        "element_token": "s00000001:123"}}]})
+    assert "Delete" in summary
+    assert "1234" not in summary and "12345" not in summary and "s00000001" not in summary
+
+
+def test_run_steps_summary_is_bounded_by_step_count():
+    from tools.computer_use.tool import _summarize_action
+    summary = _summarize_action("run_steps", {"steps": [{"tool": "press_key", "args": {"key": "x"}}] * 64})
+    assert len(summary) <= 200
+
+
+def test_disabled_modifier_on_strict_target_rejects_batch_before_input():
+    backend = _FakeBackend(_FakeSession(tool_schemas={"run_steps": {"properties": {}},
+        "click": {"properties": {"element_token": {}}}}))
+    result = backend.run_steps([{"tool": "click", "args": {"element": 7, "modifiers": ["cmd"]}}])
+    assert result.ok is False
+    assert backend._session.calls == []
+
+
+def test_legacy_driver_with_element_index_support_keeps_compatible_target():
+    legacy = _FakeSession(tool_schemas={"run_steps": {"properties": {}}, "click": {"properties": {"element_index": {}}}})
+    backend = _FakeBackend(legacy)
+    backend._snapshot_tokens = {}
+    result = backend.run_steps([{"tool": "click", "args": {"element": 7}}])
+    assert result.ok is True, result.message
+    assert len(legacy.calls) == 1
+    assert legacy.calls[0][1]["steps"][0]["args"]["element_index"] == 7
+
+
+def test_click_role_target_passes_with_driver_schema():
+    backend = _FakeBackend()
+    result = backend.run_steps([{"tool": "click", "args": {"role": "AXButton", "name": "加"}}])
+    assert result.ok is True, result.message
+    assert len(backend._session.calls) == 1
+    assert backend._session.calls[0][1]["steps"][0]["args"]["name"] == "加"
+
+
+def test_set_value_alias_value_text_is_forwarded():
+    backend = _FakeBackend()
+    backend.run_steps([{"tool": "set_value", "args": {"value": "hello"}}])
+    assert backend._session.calls[0][1]["steps"][0]["args"]["value"] == "hello"
+
+
+def test_drag_endpoint_partial_pair_is_refused():
+    backend = _FakeBackend()
+    result = backend.run_steps([{"tool": "drag", "args": {"from_coordinate": [1, 2]}}])
+    assert result.ok is False
+    assert backend._session.calls == []
+
+
+def test_schema_description_documents_unsupported_flags():
+    from tools.computer_use.schema import COMPUTER_USE_SCHEMA
+    props = COMPUTER_USE_SCHEMA["parameters"]["properties"]
+    assert "not supported" in props["bring_to_front"]["description"].lower()
+    assert "not supported" in props["capture_after"]["description"].lower()
+
+
+def test_run_steps_refuses_unknown_tool_before_driver_call():
+    backend = _FakeBackend()
+    result = backend.run_steps([{"tool": "unknown", "args": {}}])
+    assert result.ok is False
+    assert backend._session.calls == []
+
+
+def test_modifier_alias_never_passes_unsupported_property():
+    backend = _FakeBackend(_FakeSession(tool_schemas={"click": {"properties": {"element_token": {}}}}))
+    result = backend.run_steps([{"tool": "click", "args": {"element": 7, "modifiers": ["cmd"]}}])
+    assert result.ok is False
+    assert backend._session.calls == []
+
+
+def test_drag_hermes_coordinate_pairs_translate_to_driver_pixels():
+    backend = _FakeBackend()
+    result = backend.run_steps([{"tool": "drag", "args": {
+        "from_coordinate": [1, 2], "to_coordinate": [3, 4], "modifiers": ["cmd"]}}])
+    assert result.ok is True, result.message
+    assert len(backend._session.calls) == 1
+    step = backend._session.calls[0][1]["steps"][0]
+    assert step == {"tool": "drag", "args": {
+        "from_x": 1, "from_y": 2, "to_x": 3, "to_y": 4, "modifier": ["cmd"]}}
+
+
+def test_drag_refuses_element_indexes_without_driver_supported_translation():
+    backend = _FakeBackend()
+    result = backend.run_steps([{"tool": "drag", "args": {"from_element": 1, "to_element": 2}}])
+    assert result.ok is False
+    assert backend._session.calls == []
+
+
+def test_click_modifiers_use_singular_driver_property():
+    backend = _FakeBackend()
+    result = backend.run_steps([{"tool": "click", "args": {"element": 7, "modifiers": ["cmd"]}}])
+    assert result.ok is True, result.message
+    assert len(backend._session.calls) == 1
+    step = backend._session.calls[0][1]["steps"][0]
+    assert step["args"]["modifier"] == ["cmd"]
+    assert "modifiers" not in step["args"]
 
 
 def test_role_and_name_targeting_passes_through():
@@ -198,7 +385,9 @@ def test_role_and_name_targeting_passes_through():
     # (measured on cua-driver 0.37.0: 'plus' is re-routed to type_text, 'add'/'equals' are
     # "Unknown key" — so the 加/等於 buttons must be clicked by AX role/name).
     backend = _FakeBackend()
-    backend.run_steps([{"tool": "click", "args": {"role": "AXButton", "name": "加"}}])
+    result = backend.run_steps([{"tool": "click", "args": {"role": "AXButton", "name": "加"}}])
+    assert result.ok is True, result.message
+    assert len(backend._session.calls) == 1
     step = backend._session.calls[0][1]["steps"][0]
     assert step["tool"] == "click"
     assert step["args"]["role"] == "AXButton"
@@ -225,6 +414,24 @@ def test_blocked_combo_in_short_form_step_is_refused():
     assert "blocked key combo" in out["error"]
 
 
+def test_blocked_key_and_modifiers_under_hotkey_are_refused():
+    out = _reject_unsafe("run_steps", {
+        "steps": [{"tool": "hotkey", "args": {"key": "backspace", "modifiers": ["cmd", "shift"]}}]})
+    assert out is not None and "blocked key combo" in out
+
+
+def test_native_hotkey_combo_is_checked():
+    out = json.loads(_reject_unsafe("run_steps", {
+        "steps": [{"tool": "hotkey", "args": {"keys": ["cmd-shift", "backspace"]}}]}))
+    assert out and "blocked key combo" in out["error"]
+
+
+def test_press_key_chord_spelling_is_blocked():
+    out = json.loads(_reject_unsafe("run_steps", {
+        "steps": [{"tool": "press_key", "args": {"key": "cmd+shift+backspace"}}]}))
+    assert out and "blocked key combo" in out["error"]
+
+
 def test_safe_steps_pass_the_block_gate():
     assert _reject_unsafe("run_steps", {
         "steps": [{"tool": "press_key", "args": {"key": "2"}},
@@ -237,6 +444,35 @@ def test_dispatch_routes_run_steps_to_the_backend():
     backend = _FakeBackend()
     _dispatch(backend, "run_steps", {"steps": [{"tool": "press_key", "args": {"key": "2"}}]})
     assert backend._session.calls[0][0] == "run_steps"
+
+
+def test_run_steps_is_in_input_delivery_mode_scope():
+    from tools.computer_use.tool import _ACTIONS
+    assert _ACTIONS["run_steps"].input is True
+    assert _ACTIONS["run_steps"].destructive is True
+
+
+def test_run_steps_refuses_bring_to_front_before_approval_scope():
+    out = json.loads(_reject_unsafe("run_steps", {
+        "steps": [{"tool": "press_key", "args": {"key": "a"}}],
+        "bring_to_front": True, "delivery_mode": "foreground"}))
+    assert out["code"] == "run_steps_bring_to_front_unsupported"
+
+
+def test_run_steps_refuses_ignored_capture_after_flag():
+    out = json.loads(_reject_unsafe("run_steps", {
+        "steps": [{"tool": "press_key", "args": {"key": "a"}}], "capture_after": True}))
+    assert out["code"] == "run_steps_capture_after_unsupported"
+
+
+def test_run_steps_approval_summary_shows_batch_contents():
+    from tools.computer_use.tool import _summarize_action
+    summary = _summarize_action("run_steps", {
+        "steps": [{"tool": "press_key", "args": {"key": "a"}},
+                  {"tool": "click", "args": {"role": "AXButton", "name": "Delete"}}]})
+    assert "press_key" in summary and "click" in summary
+    assert "Delete" in summary
+    assert len(_summarize_action("run_steps", {"steps": [{"tool": "type_text", "args": {"text": "x"*100}}]})) <= 160
 
 
 def test_run_steps_is_registered_as_an_input_action():

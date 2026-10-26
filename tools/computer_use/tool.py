@@ -536,6 +536,26 @@ def _do_capture(backend, action, args, fence=lambda: None, session_id=None, **_)
 def _do_listing(backend, action, args, key, **_):
     return json.dumps({key: (items := getattr(backend, action)()), "count": len(items)})
 
+def _summarize_run_steps(action: str, args: dict[str, Any], fg: str) -> str:
+    parts = []
+    for step in args.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        tool = step.get("tool") or next(iter(step), "step")
+        raw = step.get("args") or (step.get(tool) if "args" not in step else {}) or {}
+        if not isinstance(raw, dict):
+            parts.append(str(tool))
+            continue
+        target = raw.get("name") or raw.get("role") or raw.get("element") or raw.get("coordinate") or ""
+        text = raw.get("text", raw.get("value", ""))
+        detail = f" {str(target)[:24]}" if target else ""
+        if text:
+            detail += f" {str(text)[:32]!r}"
+        parts.append(f"{str(tool)[:20]}{detail}")
+    summary = "; ".join(parts)
+    return f"run_steps [{summary[:140]}]{fg}"
+
+
 def _summarize_click(action: str, args: dict[str, Any], fg: str) -> str:
     where = (f" element #{args['element']}" if args.get("element") is not None
              else f" at {tuple(args['coordinate'])}" if args.get("coordinate") else "")
@@ -573,7 +593,7 @@ _ACTIONS: dict[str, _ActionSpec] = {
         delay_ms=args.get("delay_ms"),
         delivery_mode=args.get("delivery_mode"),
         foreground_fallback=bool(args.get("foreground_fallback")),
-    ), summarize=lambda a, args, fg: f"run_steps {len(args.get('steps') or [])} steps{fg}"),
+    ), summarize=_summarize_run_steps),
     "capture": _ActionSpec(_do_capture),
     "wait": _ActionSpec(lambda backend, action, args, **_: _text_response(backend.wait(float(args.get("seconds", 1.0))))),
     "list_apps": _ActionSpec(partial(_do_listing, key="apps")),

@@ -6,6 +6,7 @@ imports cannot load. Full and quick backups use the same SQLite copy operation.
 import json
 import logging
 import os
+import signal
 import sqlite3
 import sys
 import tempfile
@@ -82,12 +83,27 @@ def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> boo
         _close_quietly(conn)
 
 
+# Longer than the Desktop's 30-minute pre-flight cap: a staging file this old
+# has no live writer. A hard-killed pre-flight (Windows TerminateProcess)
+# cannot unlink its own staging copy, and each one is a full-size database.
+_ABANDONED_STAGING_SECONDS = 2 * 3600
+
+
+def _reclaim_abandoned_staging(home: Path, prefix: str) -> None:
+    horizon = time.time() - _ABANDONED_STAGING_SECONDS
+    for staged in home.glob(f"{prefix}*.partial*"):  # + the copy's -journal
+        with suppress(OSError):
+            if staged.stat().st_mtime < horizon:
+                staged.unlink()
+
+
 def preflight_state_db(home: Path) -> dict:
     """Publish an emergency snapshot; do not prune recovery files on failure."""
     source = home / "state.db"
     if not source.exists():
         return {"path": None, "message": "state.db not found (fresh install?)"}
     prefix = "state.db.pre-update-emergency-"
+    _reclaim_abandoned_staging(home, prefix)
     stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%S-%fZ")
     destination = home / f"{prefix}{stamp}-{os.getpid()}.bak"
     fd, name = tempfile.mkstemp(prefix=prefix, suffix=".partial", dir=home)
@@ -116,4 +132,7 @@ def preflight_state_db(home: Path) -> dict:
 
 
 if __name__ == "__main__":
+    # The Desktop stops a pre-flight past its deadline with SIGTERM; exit through
+    # the staging cleanup instead of dying with a full-size .partial left behind.
+    signal.signal(signal.SIGTERM, lambda signum, _frame: sys.exit(128 + signum))
     print(json.dumps(preflight_state_db(Path(sys.argv[1]))))

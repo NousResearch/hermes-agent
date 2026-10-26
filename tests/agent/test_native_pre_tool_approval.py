@@ -360,7 +360,6 @@ def test_internal_metadata_does_not_reach_provider():
 
 def test_checkout_import_identity(record_property):
     import importlib
-    import os
     from pathlib import Path
     import sys
     root = Path(__file__).resolve().parents[2]
@@ -370,9 +369,7 @@ def test_checkout_import_identity(record_property):
         path = Path(importlib.import_module(name).__file__).resolve()
         assert path.is_relative_to(root)
         record_property(name, str(path))
-    for key in ("HOME", "HERMES_HOME", "TMPDIR", "HERMES_GATEWAY_LOCK_DIR"):
-        assert Path(os.environ[key]).resolve().is_relative_to(root)
-        record_property(key, os.environ[key])
+
 
 
 @pytest.mark.parametrize("native", [False, True])

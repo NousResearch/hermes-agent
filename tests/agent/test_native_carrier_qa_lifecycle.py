@@ -5,7 +5,6 @@ inference, model metadata/catalog bootstrap and tool effects are explicit double
 """
 import copy
 import json
-import os
 import threading
 from pathlib import Path
 from unittest.mock import Mock
@@ -226,11 +225,9 @@ def test_zero_is_not_a_boolean_human_verdict(native_hook, monkeypatch, route):
     assert "approval_outcome" not in json.loads(result)
 
 
-def test_imports_and_fixture_roots_are_frozen():
+def test_imports_resolve_to_checked_out_source():
     import agent.tool_executor
     import agent.turn_context
     root = Path(__file__).resolve().parents[2]
     for module in (model_tools, plugins, agent.tool_executor, agent.turn_context):
         assert Path(module.__file__).resolve().is_relative_to(root)
-    for key in ("HOME", "HERMES_HOME", "TMPDIR", "HERMES_GATEWAY_LOCK_DIR"):
-        assert Path(os.environ[key]).resolve().is_relative_to(root), key

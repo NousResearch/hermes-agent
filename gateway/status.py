@@ -2040,22 +2040,10 @@ def get_running_pid_identity_strict(pid_path: Path) -> Optional[tuple[int, float
         return None
     lock_record = _read_gateway_lock_record(resolved_lock_path)
     # The PID file is advisory beside a HELD lock: a launch-service gateway keeps serving after its
-    # gateway.pid was unlinked (#110166) and --replace force-unlinks the old one (#123430). The
-    # holder wrote its own identity into the lock at acquisition, so that record validated against
-    # the live process below is the same proof — raising here blocked every following update.
-    # A PID file whose process is gone is the same kind of noise when --replace rewrote the lock
-    # but left the previous gateway's file behind (#143331): the dead record used to abort every
-    # following `hermes update` at the pause stage. It drops out here; a record naming a LIVE
-    # process still has to agree with the lock below, so two live identities stay ambiguous.
-    pid_record = None
-    if pid_exists:
-        pid_record = _read_pid_record(resolved_pid_path)
-        if pid_record is None:
-            raise RuntimeError("gateway PID or lock metadata is malformed")
-        recorded_pid = _pid_from_record(pid_record)
-        if isinstance(recorded_pid, int) and recorded_pid > 0 and not _pid_exists(recorded_pid):
-            pid_record = None
-    records = (pid_record, lock_record) if pid_record is not None else (lock_record,)
+    # gateway.pid was unlinked (#110166) and --replace force-unlinks the old one (#123430) or leaves
+    # it behind (#143331); the lock record validated against the live process below is the proof.
+    from gateway.status_pid_records import strict_identity_records
+    records = strict_identity_records(resolved_pid_path, lock_record, pid_exists)
     if not all(records):
         raise RuntimeError("gateway PID or lock metadata is malformed")
     pid = _pid_from_record(records[0])

@@ -1,8 +1,9 @@
 """Graceful ``os._exit`` paths run the shared-metrics exit flush their skipped atexit hook would have run.
 
-The gateway (SIGTERM, update restart, idle exit all funnel through ``_exit_after_graceful_shutdown``)
-and the compute host leave via ``os._exit``, so a session still open at the stop never wrote its
-summary rows to the opt-in local store. The flush is bounded and creates nothing when collection is off.
+The gateway (SIGTERM, update restart, idle exit all funnel through ``_exit_after_graceful_shutdown``),
+the compute host, a SIGTERMed kanban worker and an orphaned slash worker leave via ``os._exit``, so a
+session still open at the stop never wrote its summary rows to the opt-in local store. The flush is
+bounded and creates nothing when collection is off.
 """
 
 from __future__ import annotations
@@ -92,6 +93,63 @@ def test_graceful_gateway_exit_writes_the_open_sessions_summary(metrics_home, mo
     with pytest.raises(_Exited):
         gateway_run._exit_after_graceful_shutdown(1)
 
+    assert "hermes.session.count" in _metric_names(home)
+
+
+def test_compute_host_shutdown_frame_writes_the_open_sessions_summary(metrics_home):
+    import io
+
+    from tui_gateway.compute_host import ComputeHost
+
+    home, _ = metrics_home
+    _finished_task_in_open_session()
+    _wait_for(home, "hermes.task_run.finished")
+    host = ComputeHost(stdout=io.StringIO(), heartbeat_secs=0)
+
+    host.handle_frame({"type": "shutdown"})  # the reader thread os._exit(0)s right after this
+
+    assert "hermes.session.count" in _metric_names(home)
+
+
+def test_sigtermed_kanban_worker_writes_the_open_sessions_summary(metrics_home, monkeypatch):
+    import signal
+
+    import cli
+    from hermes_cli import cli_single_query
+
+    home, _ = metrics_home
+    _finished_task_in_open_session()
+    _wait_for(home, "hermes.task_run.finished")
+    handlers = {}
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t-1")
+    monkeypatch.setattr(signal, "signal", lambda signum, handler: handlers.__setitem__(signum, handler))
+    monkeypatch.setattr(signal, "alarm", lambda seconds: 0)
+    for name in ("_arm_exit_watchdog_on_shutdown_signal", "_flush_logging_and_stdio"):
+        monkeypatch.setattr(cli, name, lambda: None)
+    monkeypatch.setattr(cli, "_interrupt_agent_for_signal", lambda agent, signum: None)
+    monkeypatch.setattr(cli, "_flush_one_shot_session_store", lambda c: None)
+    monkeypatch.setattr(cli_single_query.os, "_exit", _fake_exit)
+    cli_single_query._install_single_query_signal_handlers(object())
+
+    with pytest.raises(_Exited):
+        handlers[signal.SIGTERM](signal.SIGTERM, None)
+
+    assert "hermes.session.count" in _metric_names(home)
+
+
+def test_orphaned_slash_worker_writes_the_open_sessions_summary(metrics_home, monkeypatch):
+    from tui_gateway import slash_worker
+
+    home, _ = metrics_home
+    _finished_task_in_open_session()
+    _wait_for(home, "hermes.task_run.finished")
+    exited = threading.Event()
+    monkeypatch.setattr(slash_worker, "_is_orphaned", lambda ppid: True)
+    monkeypatch.setattr(slash_worker.os, "_exit", lambda code: exited.set())
+
+    slash_worker._start_parent_death_watchdog(1)
+
+    assert exited.wait(10)
     assert "hermes.session.count" in _metric_names(home)
 
 

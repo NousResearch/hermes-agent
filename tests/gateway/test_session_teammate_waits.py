@@ -78,7 +78,9 @@ def test_owner_join_reports_working_and_waiting_on_you(tmp_path, monkeypatch):
     alice, scribe, critic = _profile(root, "default"), _profile(root, "scribe"), _profile(root, "critic")
     _receipt(scribe, "1" * 32, sender="default", status="queued")
     _receipt(critic, "2" * 32, sender="default", status="queued")
-    admissions = {"adm-" + "1" * 32: "started", "adm-" + "2" * 32: "started"}
+    # Queued behind the parked turn in the same chat: it waits on that turn, not on the user.
+    _receipt(scribe, "3" * 32, sender="default", status="queued")
+    admissions = {"adm-" + "1" * 32: "started", "adm-" + "2" * 32: "started", "adm-" + "3" * 32: "queued"}
     monkeypatch.setattr("hermes_state_runtime.get_session_admission",
                         lambda db, *, admission_id: {"status": admissions[admission_id]})
 
@@ -101,10 +103,11 @@ def test_owner_join_reports_working_and_waiting_on_you(tmp_path, monkeypatch):
 
     result = asyncio.run(bot_delivery_list(connection, None, {}))
 
-    states = {row["target"]: (row["state"], row.get("waiting_on")) for row in result["deliveries"]}
+    states = {row["delivery_id"][0]: (row["target"], row["state"], row.get("waiting_on")) for row in result["deliveries"]}
     assert result["sender"] == "default"
-    assert states == {"scribe": ("waiting_on_you", "clarify"), "critic": ("working", None)}
+    assert states == {"1": ("scribe", "waiting_on_you", "clarify"), "2": ("critic", "working", None),
+                      "3": ("scribe", "queued", None)}
     assert events.published == published_before  # the poll never settles or re-publishes a prompt
     clarify.event.set()  # the user answered: the same delivery is plain work again
     again = asyncio.run(bot_delivery_list(connection, None, {}))
-    assert {row["target"]: row["state"] for row in again["deliveries"]}["scribe"] == "working"
+    assert {row["delivery_id"][0]: row["state"] for row in again["deliveries"]}["1"] == "working"

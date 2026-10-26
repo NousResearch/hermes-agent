@@ -145,9 +145,9 @@ export function runCurator(): Promise<ActionResponse> {
   })
 }
 
-export function restartGateway(): Promise<ActionResponse> {
+export function restartGateway(profile?: null | string): Promise<ActionResponse> {
   return hermesApi<ActionResponse>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: '/api/gateway/restart',
     method: 'POST'
   })
@@ -264,16 +264,6 @@ export function getElevenLabsVoices(profile?: null | string): Promise<ElevenLabs
   return hermesApi<ElevenLabsVoicesResponse>({
     path: '/api/audio/elevenlabs/voices',
     ...profileScoped(profile)
-  })
-}
-
-/** `gh` CLI presence + auth state, for the composer's GitHub skill pill
- *  (GitHub is deliberately not an MCP — the github/* skills are the
- *  integration). Backend caches for 5 minutes; `refresh` bypasses. */
-export function getGhAuthStatus(refresh = false): Promise<{ available: boolean; authenticated: boolean }> {
-  return hermesApi<{ available: boolean; authenticated: boolean }>({
-    ...profileScoped(),
-    path: `/api/git/gh-auth${refresh ? '?refresh=true' : ''}`
   })
 }
 

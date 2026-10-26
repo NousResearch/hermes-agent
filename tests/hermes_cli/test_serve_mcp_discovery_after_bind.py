@@ -13,9 +13,9 @@ import sys
 import threading
 import types
 
-import hermes_cli.mcp_startup as mcp_startup
-import hermes_cli.web_server as web_server
-import hermes_cli.web_server_lifecycle as web_server_lifecycle
+from hermes_cli import mcp_startup
+from hermes_cli import web_server
+from hermes_cli import web_server_lifecycle
 from tests.hermes_cli.test_dashboard_auth_gate import _stub_uvicorn_run
 
 
@@ -112,7 +112,8 @@ def test_standalone_dashboard_boot_arms_discovery_without_starting_it(monkeypatc
 def test_first_gateway_ws_client_starts_the_armed_discovery_once(monkeypatch):
     import asyncio
 
-    import hermes_cli.web_routers.chat_ws as chat_ws
+    from hermes_cli.web_routers import chat_ws
+    from hermes_cli.web_session_sockets import GATEWAY_SOCKET
 
     _reset_discovery_state(monkeypatch)
     calls: list[str] = []
@@ -124,7 +125,9 @@ def test_first_gateway_ws_client_starts_the_armed_discovery_once(monkeypatch):
     )
     assert calls == []
 
-    async def _allowed(ws):
+    async def _allowed(ws, *, allow_internal=False, socket=None):
+        assert allow_internal is True
+        assert socket == GATEWAY_SOCKET  # /api/ws accepts only tickets minted for it
         return True
 
     async def _handle_ws(ws, **kwargs):
@@ -132,8 +135,10 @@ def test_first_gateway_ws_client_starts_the_armed_discovery_once(monkeypatch):
 
     monkeypatch.setattr(chat_ws, "_close_unless_sidecar_allowed", _allowed)
     monkeypatch.setattr("tui_gateway.ws.handle_ws", _handle_ws)
-    asyncio.run(chat_ws.gateway_ws(object()))
-    asyncio.run(chat_ws.gateway_ws(object()))
+    # The handler reads the app's session authority off the socket, as a real WebSocket carries it.
+    ws = types.SimpleNamespace(app=types.SimpleNamespace(state=types.SimpleNamespace()))
+    asyncio.run(chat_ws.gateway_ws(ws))
+    asyncio.run(chat_ws.gateway_ws(ws))
 
     assert calls == ["dashboard-mcp-discovery"]
     assert mcp_startup._mcp_discovery_deferred is None

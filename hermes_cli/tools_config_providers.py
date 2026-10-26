@@ -15,6 +15,7 @@ from hermes_cli.config import cfg_get, get_env_value, load_config, save_config, 
 from hermes_cli.nous_account import format_nous_portal_entitlement_message
 from hermes_cli.nous_subscription import MANAGED_FEATURE_COVERAGE_CATEGORY, NousSubscriptionFeatures
 from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, fal_key_is_configured
+from tools.transcription_common import STT_MODEL_CATALOG, STT_MODEL_CONFIG_KEY
 from utils import base_url_hostname, is_truthy_value
 
 logger = logging.getLogger("hermes_cli.tools_config")
@@ -249,11 +250,7 @@ def _toolset_needs_configuration_prompt(ts_key: str, config: dict, *, force_fres
         section = config.get(ts_key, {})
         if not isinstance(section, dict):
             return True
-        if selection_key in section:
-            return False
-        # Browser's "Browser Use" row writes browser.backend and leaves cloud_provider unset. Presence is no
-        # test of a choice here: browser.backend exists on every install after the defaults merge ("" = unset).
-        return not (ts_key == "browser" and _browser_backend(config))
+        return selection_key not in section
     if ts_key == "image_gen":  # in-tree FAL backend OR any available plugin image gen provider satisfies
         return not fal_key_is_configured() and not _any_plugin_provider_available("agent.image_gen_registry")
     if ts_key == "video_gen":  # no in-tree fallback — every video backend is a plugin
@@ -431,8 +428,6 @@ def _managed_provider_active(provider: dict, config: dict, managed_feature: str,
                 and not is_truthy_value(gen_cfg.get("use_gateway"), default=False)):
                 return False
         return feature.managed_by_nous
-    # Browser Use mode is a driver on top of the provider (attaches to its CDP endpoint), so the browser
-    # provider row stays active alongside the Browser Use row.
     if _has_marker(provider, "web_backend"):
         # Search and extract pick their route separately: the managed row serves whichever one
         # resolves to the gateway (a ``nous`` override, or the shared ``nous`` selection).
@@ -444,54 +439,15 @@ def _managed_provider_active(provider: dict, config: dict, managed_feature: str,
     return feature.managed_by_nous
 
 
-def _browser_use_default_active(config: dict) -> bool:
-    """``browser.backend`` unset: Browser Use mode is the default, so the row is active whenever the
-    effective mode resolves on (legacy direct-API cloud config, or CLI runnable and no Camofox)."""
-    browser_cfg = config.get("browser") if isinstance(config, dict) else None
-    try:
-        from tools.browser_use_cli import _find_cli, is_legacy_browser_use_cloud_config
-
-        if is_legacy_browser_use_cloud_config(browser_cfg or {}):
-            return True
-        try:
-            from tools.browser_camofox import is_camofox_mode
-
-            if is_camofox_mode():
-                return False
-        except Exception:
-            pass
-        return _find_cli() is not None
-    except Exception:
-        return False
-
-
 def _browser_provider_active(provider: dict, config: dict) -> bool:
-    # Browser Use mode composes with the provider (driver over its CDP endpoint) — don't deactivate the row.
     if provider["browser_provider"] != cfg_get(config, "browser", "cloud_provider"):
         return False
     # Two local rows differ only by engine ("Local Browser" vs "Lightpanda"): config.yaml is the picker's
-    # source of truth here, the AGENT_BROWSER_ENGINE env var is not consulted.
+    # source of truth here.
     if provider.get("browser_engine"):
         engine = str(cfg_get(config, "browser", "engine") or "auto").strip().lower()
         return engine == provider["browser_engine"]
     return True
-
-
-def _browser_backend(config: dict) -> str:
-    """``browser.backend`` as a string; ``""`` when unset or empty (YAML 1.1 parses an unquoted ``off`` as False)."""
-    backend = cfg_get(config, "browser", "backend")
-    return "off" if backend is False else (backend or "")
-
-
-def _browser_backend_active(provider: dict, config: dict) -> bool:
-    backend = _browser_backend(config)
-    if backend == provider["browser_backend"]:
-        return True
-    if backend:
-        return False  # explicit other choice ("off", …) wins
-    if provider["browser_backend"] != "browser-use":
-        return False
-    return _browser_use_default_active(config)
 
 
 def _imagegen_backend_active(provider: dict, config: dict) -> bool:
@@ -509,7 +465,6 @@ _ACTIVE_CHECKS: tuple[tuple[str, Callable[[dict, dict], bool]], ...] = (
     ("tts_provider", lambda p, c: cfg_get(c, "tts", "provider") == p["tts_provider"]),
     ("stt_provider", lambda p, c: (cfg_get(c, "stt", "provider") or "local") == p["stt_provider"]),
     ("browser_provider", _browser_provider_active),
-    ("browser_backend", _browser_backend_active),
     ("web_backend", _web_backend_active),
     ("computer_use_backend", lambda p, c: cfg_get(c, "computer_use", "backend") == p["computer_use_backend"]),
     ("imagegen_backend", _imagegen_backend_active))
@@ -707,28 +662,18 @@ def _select_plugin_gen_provider(section: str, plugin_name: str, config: dict, *,
 _select_plugin_image_gen_provider = partial(_select_plugin_gen_provider, "image_gen")
 _select_plugin_video_gen_provider = partial(_select_plugin_gen_provider, "video_gen")
 
-# Per-provider STT model catalogs for the picker; keys are ``stt.<provider>`` sections, first entry is the
-# default. Kept in sync with the dashboard selects (web_server _CONFIG_FIELD_META) and the desktop settings
-# enums (apps/desktop/src/app/settings/constants.ts).
-STT_MODEL_CATALOG = {
-    "local": ["base", "tiny", "small", "medium", "large-v3"],
-    "groq": ["whisper-large-v3-turbo", "whisper-large-v3", "distil-whisper-large-v3-en"],
-    "openai": ["whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe", "gpt-transcribe"],
-    "elevenlabs": ["scribe_v2", "scribe_v1"]}
-
-# ElevenLabs historically uses ``model_id`` instead of ``model``.
-_STT_MODEL_CONFIG_KEY = {"elevenlabs": "model_id"}
-
-
 def _configure_stt_model(stt_provider: str, config: dict) -> None:
-    """Prompt for the STT model after a provider pick (when a catalog exists)."""
+    """Prompt for the STT model after a provider pick (static catalog, or DeepInfra's live one)."""
     from hermes_cli.tools_config import _cfg_section, _prompt_choice
 
     catalog = STT_MODEL_CATALOG.get(stt_provider)
+    if catalog is None and stt_provider == "deepinfra":
+        from hermes_cli.models import deepinfra_model_ids
+        catalog = deepinfra_model_ids("stt")
     if not catalog:
         return
     prov_cfg = _cfg_section(_cfg_section(config, "stt"), stt_provider)
-    model_key = _STT_MODEL_CONFIG_KEY.get(stt_provider, "model")
+    model_key = STT_MODEL_CONFIG_KEY.get(stt_provider, "model")
     current = str(prov_cfg.get(model_key) or "").strip()
     ordered = list(catalog)
     chosen = ordered[_prompt_choice("  Select STT model:", ordered, ordered.index(current) if current in ordered else 0)]
@@ -758,13 +703,10 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
     if "browser_provider" in provider:
         bp = provider["browser_provider"]
         if bp or managed_feature:
-            # Browser Use mode (browser.backend) composes with the provider — keep the driver choice intact.
             _select_into(config, "browser", "cloud_provider", bp, managed_feature)
         else:
             config.setdefault("browser", {}).pop("use_gateway", None)
-    if provider.get("browser_backend"):
-        config.setdefault("browser", {})["backend"] = provider["browser_backend"]
-    # Local engine rows ("Local Browser" resets to auto, "Lightpanda" sets lightpanda); composes with browser.backend.
+    # Local engine rows ("Local Browser" resets to auto, "Lightpanda" sets lightpanda).
     if provider.get("browser_engine"):
         config.setdefault("browser", {})["engine"] = provider["browser_engine"]
 
@@ -896,8 +838,6 @@ def _print_provider_selection(provider: dict, managed_feature, *, reconfigure: b
             _print_success("  Browser set to local mode")
         elif bp:
             _print_success(f"  Browser cloud provider set to: {bp}")
-    if provider.get("browser_backend"):
-        _print_success("  Browser set to Browser Use (browser_exec via CLI 3.0)")
     if provider.get("browser_engine") and provider["browser_engine"] != "auto":
         _print_success(f"  Browser engine set to: {provider['browser_engine']}")
     if provider.get("web_backend"):

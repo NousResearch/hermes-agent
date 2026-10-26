@@ -96,14 +96,30 @@ test('parses v1, v2 and the delegate line; garbage is null', () => {
 
 // A2: one positional parse in every language (Python, Rust, PowerShell, bash, TS).
 test.each([
-  ['BOM + CRLF v2', '\uFEFF42\r\n100\r\nct:5.250\r\n', { pid: 42, startedAt: 100, ct: 5.25, delegate: null, run: null }],
+  [
+    'BOM + CRLF v2',
+    '\uFEFF42\r\n100\r\nct:5.250\r\n',
+    { pid: 42, startedAt: 100, ct: 5.25, delegate: null, run: null }
+  ],
   ['fractional started_at is MALFORMED', '42\n100.5\nct:5.000\n', null],
   ['missing started_at is MALFORMED', '42\n', null],
   ['garbled started_at is MALFORMED', '42\nsoon\n', null],
   ['garbage ct => v1', '42\n100\nct:abc\n', { pid: 42, startedAt: 100, ct: null, delegate: null, run: null }],
-  ['delegate on line 3 is ignored', '42\n100\ndelegate:77 ct:1.000\n', { pid: 42, startedAt: 100, ct: null, delegate: null, run: null }],
-  ['space after delegate: is ignored', '42\n100\nct:1.000\ndelegate: 77 ct:1.000\n', { pid: 42, startedAt: 100, ct: 1, delegate: null, run: null }],
-  ['delegate without ct is ignored', '42\n100\nct:1.000\ndelegate:77\n', { pid: 42, startedAt: 100, ct: 1, delegate: null, run: null }],
+  [
+    'delegate on line 3 is ignored',
+    '42\n100\ndelegate:77 ct:1.000\n',
+    { pid: 42, startedAt: 100, ct: null, delegate: null, run: null }
+  ],
+  [
+    'space after delegate: is ignored',
+    '42\n100\nct:1.000\ndelegate: 77 ct:1.000\n',
+    { pid: 42, startedAt: 100, ct: 1, delegate: null, run: null }
+  ],
+  [
+    'delegate without ct is ignored',
+    '42\n100\nct:1.000\ndelegate:77\n',
+    { pid: 42, startedAt: 100, ct: 1, delegate: null, run: null }
+  ],
   [
     'empty ct line (Python probe failure) + delegate on line 4',
     '42\n100\n\ndelegate:77 ct:2.500\n',
@@ -131,23 +147,29 @@ test.skipIf(!HAS_CT_PROBE)('a LIVE v2 owner past 20 minutes stays live and is NO
   assert.ok(fs.existsSync(markerPath(home)), 'a live owner is never aged out')
 })
 
-test.skipIf(!HAS_CT_PROBE)('a reused pid (creation time mismatch) is dead and left for the script (V22, A7 rule 3)', async () => {
-  const home = tmpHome('v2-reused')
-  const owner = await liveOwner()
-  const ct = await processCreateTime(owner.pid)
-  // The marker names the pid the live process now holds, but a creation time
-  // an hour earlier: the original owner died and the OS recycled its pid.
-  fs.writeFileSync(markerPath(home), `${owner.pid}\n${minutesAgo(2)}\nct:${formatCreateTime(ct! - 3600)}\n`)
+test.skipIf(!HAS_CT_PROBE)(
+  'a reused pid (creation time mismatch) is dead and left for the script (V22, A7 rule 3)',
+  async () => {
+    const home = tmpHome('v2-reused')
+    const owner = await liveOwner()
+    const ct = await processCreateTime(owner.pid)
+    // The marker names the pid the live process now holds, but a creation time
+    // an hour earlier: the original owner died and the OS recycled its pid.
+    fs.writeFileSync(markerPath(home), `${owner.pid}\n${minutesAgo(2)}\nct:${formatCreateTime(ct! - 3600)}\n`)
 
-  const body = fs.readFileSync(markerPath(home), 'utf8')
-  assert.equal(await readLiveUpdateMarker(home), null)
-  assert.equal(fs.readFileSync(markerPath(home), 'utf8'), body, 'Electron never deletes; the script helper reclaims')
-})
+    const body = fs.readFileSync(markerPath(home), 'utf8')
+    assert.equal(await readLiveUpdateMarker(home), null)
+    assert.equal(fs.readFileSync(markerPath(home), 'utf8'), body, 'Electron never deletes; the script helper reclaims')
+  }
+)
 
 test('a v1 marker (no creation time) keeps the legacy 20-minute ceiling', async () => {
   const home = tmpHome('v1-old')
   const owner = await liveOwner()
-  fs.writeFileSync(markerPath(home), `${owner.pid}\n${Math.floor((Date.now() - UPDATE_MARKER_MAX_AGE_MS) / 1000) - 60}\n`)
+  fs.writeFileSync(
+    markerPath(home),
+    `${owner.pid}\n${Math.floor((Date.now() - UPDATE_MARKER_MAX_AGE_MS) / 1000) - 60}\n`
+  )
 
   assert.equal(await readLiveUpdateMarker(home), null, 'v1 pid reuse reads as not running')
   assert.ok(fs.existsSync(markerPath(home)), 'and is left for the script helper (A7 rule 3)')
@@ -166,32 +188,43 @@ test('a v2 owner whose creation time is UNREADABLE is live only inside the 20-mi
 
   fs.writeFileSync(markerPath(home), `${owner.pid}\n${minutesAgo(25)}\nct:1700000000.000\n`)
   assert.equal(await readLiveUpdateMarker(home, { createTime: accessDenied }), null, 'past the ceiling it is dead')
-  assert.ok(fs.existsSync(markerPath(home)), 'not running, so boot is never parked forever — and left in place (A7 rule 3)')
+  assert.ok(
+    fs.existsSync(markerPath(home)),
+    'not running, so boot is never parked forever — and left in place (A7 rule 3)'
+  )
 })
 
 // A1 on a real Windows host: csrss.exe is a SYSTEM (protected) process whose
 // Get-Process .StartTime is access-denied. CIM still answers, so a marker
 // whose pid was reused by such a process is judged by creation time — DEAD —
 // instead of "unknown, live forever".
-test.runIf(process.platform === 'win32')('Windows reads a SYSTEM process creation time; a reused pid is dead (A1)', async () => {
-  const home = tmpHome('win-system')
+test.runIf(process.platform === 'win32')(
+  'Windows reads a SYSTEM process creation time; a reused pid is dead (A1)',
+  async () => {
+    const home = tmpHome('win-system')
 
-  const pid = Number(
-    execFileSync(
-      'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-Command', "(Get-CimInstance Win32_Process -Filter \"Name='csrss.exe'\" | Select-Object -First 1).ProcessId"],
-      { encoding: 'utf8' }
-    ).trim()
-  )
+    const pid = Number(
+      execFileSync(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          '(Get-CimInstance Win32_Process -Filter "Name=\'csrss.exe\'" | Select-Object -First 1).ProcessId'
+        ],
+        { encoding: 'utf8' }
+      ).trim()
+    )
 
-  assert.ok(pid > 0, 'csrss.exe runs on every Windows session')
-  const ct = await processCreateTime(pid)
-  assert.ok(ct !== null && ct > 1e9 && ct <= Date.now() / 1000, `creation time of SYSTEM pid ${pid}: ${ct}`)
+    assert.ok(pid > 0, 'csrss.exe runs on every Windows session')
+    const ct = await processCreateTime(pid)
+    assert.ok(ct !== null && ct > 1e9 && ct <= Date.now() / 1000, `creation time of SYSTEM pid ${pid}: ${ct}`)
 
-  fs.writeFileSync(markerPath(home), `${pid}\n${minutesAgo(1)}\nct:${formatCreateTime(ct! - 3600)}\n`)
-  assert.equal(await readLiveUpdateMarker(home), null)
-  assert.ok(fs.existsSync(markerPath(home)), 'left in place (A7 rule 3)')
-})
+    fs.writeFileSync(markerPath(home), `${pid}\n${minutesAgo(1)}\nct:${formatCreateTime(ct! - 3600)}\n`)
+    assert.equal(await readLiveUpdateMarker(home), null)
+    assert.ok(fs.existsSync(markerPath(home)), 'left in place (A7 rule 3)')
+  }
+)
 
 test('a gate wait probes each pid creation time ONCE (A1: no powershell spawn per poll)', async () => {
   const home = tmpHome('ct-cache')
@@ -311,7 +344,10 @@ test('the bridge marker names THIS process with its creation time (V4)', async (
 test('the bridge claim refuses a LIVE foreign owner and reports (never reclaims) a dead one', async () => {
   const home = tmpHome('bridge-conflict')
   const owner = await liveOwner()
-  fs.writeFileSync(markerPath(home), `${owner.pid}\n${minutesAgo(30)}\nct:${formatCreateTime((await processCreateTime(owner.pid)) ?? 0)}\n`)
+  fs.writeFileSync(
+    markerPath(home),
+    `${owner.pid}\n${minutesAgo(30)}\nct:${formatCreateTime((await processCreateTime(owner.pid)) ?? 0)}\n`
+  )
 
   const refused = await claimBridgeMarker(home, { startedAt: 1 })
   assert.equal(refused.ok, false)

@@ -29,7 +29,7 @@ import aiohttp
 
 def _git_head() -> str:
     return subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
-                          stdin=subprocess.DEVNULL).stdout.strip()
+                          stdin=subprocess.DEVNULL, check=False).stdout.strip()
 
 
 def _sign(secret: str, msg_id: str, ts: str, body: bytes) -> str:

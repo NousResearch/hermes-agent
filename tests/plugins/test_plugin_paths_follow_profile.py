@@ -21,13 +21,7 @@ def _photon_auth(home):
     return auth._auth_json_path()
 
 
-def _openviking_log(home):
-    import plugins.memory.openviking as ov
-    return ov.get_hermes_home() / ov._OPENVIKING_SERVER_LOG_RELATIVE_PATH
-
-
-_RESOLVERS = {"a2a": _a2a_conversation, "photon": _photon_auth,
-              "openviking": _openviking_log}
+_RESOLVERS = {"a2a": _a2a_conversation, "photon": _photon_auth}
 
 
 @pytest.mark.parametrize("name", sorted(_RESOLVERS))

@@ -113,7 +113,22 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
   back to plain text; core's own `::preview{file="…"}` is the reference.
   After registering one, TELL the model it exists (a bundled skill or the
   user's instructions) — it won't discover the name on its own.
+- TOOL media: a unified package's desktop half can draw the `MEDIA:` files
+  its OWN tools produced — `area: TOOL_MEDIA_RENDERER_AREA`,
+  `data: { tools: ['my_tool'] /* or 'mcp__myserver__*' */, render: ({ file, toolName, args, result, sessionId, fallback }) => … }`.
+  Ownership is checked against the backend's registry (claims on core or
+  other plugins' tools are refused); return `fallback` for anything you
+  don't draw; `file.resolveUrl()` works on remote backends. No skill
+  instruction needed — the tool keeps emitting plain `MEDIA:` lines.
 - `ctx.storage.get/set/remove` — persistence namespaced to your plugin.
+- `ctx.files` — the only file door: the plugin's own data folder (`'data'`) and
+  folders the user grants through `ctx.files.requestFolder()` (the app's
+  picker; listed and revocable under Capabilities ▸ Plugins). Calls take a
+  folder handle plus a RELATIVE path (`list`, `stat`, `readText`,
+  `readDataUrl`, `writeText(…, { exclusive })`, `rename`, `trash`) and resolve
+  `{ ok, … }` / `{ ok: false, error }`; `..`, absolute paths, escaping
+  symlinks and Hermes' own data are refused by the main process. Never call
+  `window.hermesDesktop` file methods from a plugin.
 - `ctx.os` — the curated OS door, attributed to your plugin:
   `ctx.os.notify({ title, body?, silent?, icon?, activate?, onActivate?, actions? })`
   posts a native OS notification. Fires only while the user is away from Hermes
@@ -127,6 +142,19 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
   `ctx.os.openExternal(url)`, `ctx.os.revealPath(path)`, and
   `ctx.os.writeClipboard(text)` resolve `false` (never throw) when the
   capability isn't available.
+- `ctx.pet.say(text, { id?, tone?: 'info'|'wait'|'error', ttlMs? })` — a short
+  plain-text line in the core pet's speech bubble (in-window and popped out),
+  labelled with your plugin name; returns a disposer. 120-char cap, TTL default
+  6 s (1–30 s), same `id` replaces, rate-limited, cleared on unload; core
+  error/waiting states win; nothing shows without a visible pet
+  (`ctx.pet.visible`). `ctx.pet.clear(id?)`. Never locate the pet canvas in
+  the DOM or overlay it yourself.
+- `ctx.runAction('view.showBrowser')` — run a built-in app action through the
+  same handler as its shortcut/palette entry, so a rebound shortcut can't break
+  it; returns `{ ok: true }` or `{ ok: false, reason: 'unknown'|'denied'|'unavailable', error }`
+  (never throws). View/navigation actions only; `ctx.listActions()` lists them
+  (`PluginAppActionId` / `PLUGIN_APP_ACTIONS`). Never dispatch a synthetic
+  `KeyboardEvent` to trigger an app shortcut.
 - `ctx.i18n.register({ en, ja, ... })` — ship your OWN locale bundles, scoped
   to your plugin (never edit core `en.ts`). Values are literal strings or
   interpolator functions; nested trees are addressed by dot-path. Read them

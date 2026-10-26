@@ -56,7 +56,7 @@ def _pool_entry(provider: str, **fields):
 def test_hermes_model_routes_registered_plugin_profiles_to_the_generic_flow(plugin, monkeypatch, tmp_path):
     """Selecting an admitted external-process or OAuth plugin in `hermes model` persists config.model;
     an api_key profile still takes the api-key flow and an unknown slug stays a no-op."""
-    import hermes_cli.main as main
+    from hermes_cli import main
     from hermes_cli import auth
     from hermes_cli.config import load_config
 
@@ -121,6 +121,7 @@ def test_any_external_process_plugin_counts_as_signed_in_when_its_binary_resolve
     """The Desktop ``explicit_only`` filter (``build_model_options_payload`` behind
     ``tui_gateway/methods_complete.py::model.options``) keeps an out-of-tree ACP row exactly like the
     bundled one: binary resolves → auth evidence; missing binary → hidden."""
+    import providers
     from hermes_cli import auth
     from hermes_cli.inventory import _external_process_signed_in, _filter_explicit_provider_rows
 
@@ -139,6 +140,12 @@ def test_any_external_process_plugin_counts_as_signed_in_when_its_binary_resolve
     status = auth.get_external_process_provider_status("example-acp")
     assert status["auth_verified"] is True and status["auth_source"].startswith("command: ")
     assert [r["slug"] for r in _filter_explicit_provider_rows(rows, _Ctx())] == ["example-acp"]
-    # Bundled Copilot keeps its token-store evidence: a resolving binary alone is not a sign-in there.
-    assert auth._external_process_auth_evidence("copilot-acp", str(tmp_path / "copilot")) == \
-        auth._copilot_acp_auth_evidence()
+    # A profile with its own token-store evidence keeps it: a resolving binary alone is not a sign-in there.
+    class _TokenStoreProfile(ProviderProfile):
+        def external_auth_evidence(self):
+            return (False, None)
+
+    plugin(_TokenStoreProfile(name="example-acp-tokens", auth_type="external_process", base_url="acp://tokens",
+                              process_command="example-acp-tokens-bin"))
+    assert auth._external_process_auth_evidence("example-acp-tokens", str(tmp_path / "example-acp-tokens-bin")) == \
+        providers.get_provider_profile("example-acp-tokens").external_auth_evidence()

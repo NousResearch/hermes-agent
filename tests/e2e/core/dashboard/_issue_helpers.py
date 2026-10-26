@@ -61,7 +61,7 @@ class PtyDashboard(Dashboard):
                  tty: bool = True) -> None:
         self.sb = sb
         self.log_path = log_path
-        self._log = open(log_path, "a", encoding="utf-8")  # noqa: SIM115 - closed in close()
+        self._log = open(log_path, "a", encoding="utf-8")
         if tty:
             self.pty_master, slave = os.openpty()
         else:
@@ -170,7 +170,7 @@ class GatewayApiServer:
             env_path.write_text(env_before + "".join(f"{k}={v}\n" for k, v in {
                 "API_SERVER_ENABLED": "true", "API_SERVER_KEY": self.key,
                 "API_SERVER_HOST": "127.0.0.1", "API_SERVER_PORT": str(port)}.items()), encoding="utf-8")
-            self._log = open(log_path, "a", encoding="utf-8")  # noqa: SIM115 - closed in stop()
+            self._log = open(log_path, "a", encoding="utf-8")
             self.proc = subprocess.Popen(
                 [sys.executable, "-m", "gateway.run"], cwd=str(sb.home), env=sb.env({"HERMES_HOME": str(hermes_home)}),
                 stdin=subprocess.DEVNULL, stdout=self._log, stderr=subprocess.STDOUT, start_new_session=True,

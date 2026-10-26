@@ -1,6 +1,7 @@
 name: stalkchain
 repo: https://github.com/StalkC/stalkchain-plugin
-sha: 1f364c4c99f690a1c8b0966b83fea162613e49a0
+sha: a4db6100f1d031e5f07cd134e93600bfc70c5f78
+image: https://raw.githubusercontent.com/StalkC/stalkchain-plugin/a4db6100f1d031e5f07cd134e93600bfc70c5f78/assets/hermes-banner.png
 title: StalkChain
 description: "Crypto research in plain English through the official StalkChain Data MCP server (Streamable HTTP at https://data.stalkchain.com/mcp/directory, OAuth sign-in, no keys in config): check a coin before you buy, vet a trader before you copy them, see what smart money is buying, review a wallet and set price alerts, across Solana, Ethereum, Base, BNB Chain, Monad, Hyperliquid and Robinhood Chain, plus the StonkFun launchpad. Portable Agent Plugins v1 package (mcp.json + 18 skills), no Python or executables; needs a StalkChain account with credits. Read-only: never trades, moves funds or signs anything; the only write is the user's own price alerts, after they confirm. Disclosure — the tool set is served by the remote MCP server at runtime and is not covered by the pinned sha; each tool call sends the tool name and its inputs to data.stalkchain.com and spends the account's credits; price alerts are stored by StalkChain with their destination (account email or a user-given Discord, Slack or Telegram webhook URL, which can embed a bot token) until deleted or fired."
 maintainer: StalkC

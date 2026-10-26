@@ -70,6 +70,7 @@
             "git",
             "home-manager",
             "homebrew",
+            "microsoft-store",
             "nixos",
             "pip",
             "unknown"
@@ -276,6 +277,18 @@
           },
           {
             "$ref": "#/$defs/install_run_counter"
+          },
+          {
+            "$ref": "#/$defs/tool_search_counter"
+          },
+          {
+            "$ref": "#/$defs/tool_batch_counter"
+          },
+          {
+            "$ref": "#/$defs/connector_chain_counter"
+          },
+          {
+            "$ref": "#/$defs/prepared_compaction_counter"
           }
         ]
       }
@@ -811,6 +824,7 @@
                 "code_execution",
                 "communication",
                 "computer_use",
+                "connector",
                 "delegation",
                 "file",
                 "home_automation",
@@ -1034,12 +1048,16 @@
           "properties": {
             "error_class": {
               "enum": [
+                "alias",
                 "blocked",
+                "connection_required",
+                "connector_backend",
                 "contract_violation",
                 "exception",
                 "interrupted",
                 "invalid_arguments",
                 "none",
+                "not_allowed",
                 "timeout",
                 "tool_error",
                 "unknown"
@@ -1204,9 +1222,15 @@
                 "gte_90d",
                 "unknown"
               ]
+            },
+            "compression_prepare_ahead": {
+              "enum": [
+                "off",
+                "on"
+              ]
             }
           },
-          "description": "The five decision-data fields are absent on snapshots counted before they existed. The six version-lag/channel/hardware fields are absent on snapshots counted before they existed."
+          "description": "The five decision-data fields are absent on snapshots counted before they existed. The six version-lag/channel/hardware fields are absent on snapshots counted before they existed. compression_prepare_ahead is absent on snapshots counted before it existed."
         },
         "value": {
           "const": 1
@@ -1512,6 +1536,7 @@
                     "aux_model_fallback",
                     "commit_fence_cancelled",
                     "empty_post_handoff_window",
+                    "empty_transcript",
                     "exception",
                     "explicit_interrupt",
                     "feasibility_skip",
@@ -2174,12 +2199,16 @@
             },
             "error_class": {
               "enum": [
+                "alias",
                 "blocked",
+                "connection_required",
+                "connector_backend",
                 "contract_violation",
                 "exception",
                 "interrupted",
                 "invalid_arguments",
                 "none",
+                "not_allowed",
                 "timeout",
                 "tool_error",
                 "unknown"
@@ -2715,21 +2744,50 @@
                 "failure_class": {
                   "enum": [
                     "aborted_before_apply",
+                    "branch_missing",
+                    "branch_unsupported",
                     "build_failed",
+                    "channel_unresolved",
+                    "checkout_move_failed",
+                    "commit_point_refused",
                     "deps_failed",
+                    "detached_head",
+                    "disk_full",
+                    "downgrade_refused",
+                    "download_failed",
                     "exception",
+                    "fetch_failed",
                     "fleet_stale",
                     "fleet_unverified",
+                    "gateway_pause_failed",
                     "git_failed",
+                    "git_in_progress",
+                    "git_index_locked",
+                    "git_timeout",
+                    "head_moved",
                     "interrupted",
+                    "local_changes_blocked",
+                    "local_changes_parked",
                     "lock_held",
                     "managed_install",
+                    "merge_conflict",
                     "none",
+                    "not_git_checkout",
+                    "old_version_handoff",
                     "os_error",
                     "other",
+                    "parked_branch_blocked",
+                    "permission_denied",
                     "restart_failed",
+                    "stash_restore_rejected",
                     "subprocess_failed",
-                    "unknown"
+                    "syntax_rollback",
+                    "target_syntax_error",
+                    "target_unresolved",
+                    "unexpected_branch",
+                    "unknown",
+                    "venv_foreign_owner",
+                    "zip_failed"
                   ]
                 },
                 "from_version_age_bucket": {
@@ -2751,6 +2809,7 @@
                   "enum": [
                     "failed",
                     "noop",
+                    "partial",
                     "refused",
                     "success"
                   ]
@@ -3560,6 +3619,7 @@
               "enum": [
                 "bot_room",
                 "browser",
+                "catalog",
                 "clarify",
                 "code_execution",
                 "coding",
@@ -3602,13 +3662,14 @@
                 "image_gen",
                 "kanban",
                 "memory",
+                "onboarding",
                 "project",
                 "safe",
                 "search",
                 "session_search",
                 "setup",
                 "skills",
-                "spotify",
+                "start_chat",
                 "terminal",
                 "todo",
                 "tts",
@@ -4087,10 +4148,6 @@
                 "first_message",
                 "free_tier_ready",
                 "guide",
-                "guide_connectors",
-                "guide_first_build",
-                "guide_layout",
-                "guide_look",
                 "guide_skip",
                 "model_pick",
                 "provider_api_key",
@@ -4618,13 +4675,6 @@
                 "skill_manage",
                 "skill_view",
                 "skills_list",
-                "spotify_albums",
-                "spotify_devices",
-                "spotify_library",
-                "spotify_playback",
-                "spotify_playlists",
-                "spotify_queue",
-                "spotify_search",
                 "terminal",
                 "text_to_speech",
                 "todo_list",
@@ -4884,6 +4934,7 @@
                 "code_execution",
                 "communication",
                 "computer_use",
+                "connector",
                 "delegation",
                 "file",
                 "home_automation",
@@ -5050,6 +5101,284 @@
               "enum": [
                 "failed",
                 "success"
+              ]
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "tool_search_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.tool_search.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "hits_bucket",
+            "outcome",
+            "scope"
+          ],
+          "properties": {
+            "hits_bucket": {
+              "$ref": "#/$defs/count_bucket"
+            },
+            "outcome": {
+              "enum": [
+                "connector_unavailable",
+                "error",
+                "hits",
+                "no_hits"
+              ]
+            },
+            "scope": {
+              "enum": [
+                "both",
+                "connector",
+                "local"
+              ]
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "tool_batch_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.tool_batch.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "connector_share",
+            "model",
+            "provider",
+            "size_bucket"
+          ],
+          "properties": {
+            "connector_share": {
+              "enum": [
+                "all",
+                "none",
+                "some"
+              ]
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[a-z0-9][a-z0-9._:/@+\\-]*$"
+            },
+            "provider": {
+              "$ref": "#/$defs/provider_identifier"
+            },
+            "size_bucket": {
+              "$ref": "#/$defs/count_bucket"
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "connector_chain_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.connector_chain.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "described_first",
+            "outcome",
+            "searches_before_bucket"
+          ],
+          "properties": {
+            "described_first": {
+              "enum": [
+                "no",
+                "yes"
+              ]
+            },
+            "outcome": {
+              "enum": [
+                "blocked",
+                "cancelled",
+                "failed",
+                "success",
+                "timed_out",
+                "unknown"
+              ]
+            },
+            "searches_before_bucket": {
+              "$ref": "#/$defs/count_bucket"
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "prepared_compaction_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.prepared_compaction.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "event",
+            "failure_class",
+            "origin",
+            "reason",
+            "wait_bucket"
+          ],
+          "properties": {
+            "event": {
+              "enum": [
+                "auto_disabled",
+                "compaction_failed",
+                "discarded",
+                "internal_error",
+                "pass_cancelled",
+                "pass_completed",
+                "pass_failed",
+                "pass_started",
+                "skipped_busy",
+                "used"
+              ]
+            },
+            "failure_class": {
+              "enum": [
+                "attempt_superseded",
+                "aux_model_fallback",
+                "commit_fence_cancelled",
+                "empty_post_handoff_window",
+                "empty_transcript",
+                "exception",
+                "explicit_interrupt",
+                "feasibility_skip",
+                "insufficient_messages",
+                "lock_contended",
+                "no_compressible_window",
+                "no_progress",
+                "none",
+                "other",
+                "pool_saturated",
+                "rollback",
+                "session_split_failed",
+                "snapshot_stale",
+                "stall_deterministic_fallback",
+                "stall_interrupted",
+                "summary_auth_failure",
+                "summary_empty_content_failure",
+                "summary_generation_aborted",
+                "summary_generation_failed",
+                "summary_network_failure",
+                "summary_overload_degraded",
+                "summary_overload_failure",
+                "summary_truncated_failure",
+                "unknown",
+                "would_grow"
+              ]
+            },
+            "origin": {
+              "enum": [
+                "none",
+                "tool_batch",
+                "turn_end"
+              ]
+            },
+            "reason": {
+              "enum": [
+                "agent_released",
+                "aux_fallback_main",
+                "compaction_aborted",
+                "fresh_required",
+                "head_moved",
+                "host_cancelled",
+                "none",
+                "other_session",
+                "pass_failed_while_waiting",
+                "provider_context",
+                "rewound",
+                "running_not_fit",
+                "session_boundary",
+                "shape_changed",
+                "superseded",
+                "text_changed",
+                "transcript_shorter",
+                "wait_timeout"
+              ]
+            },
+            "wait_bucket": {
+              "enum": [
+                "none",
+                "lt_1s",
+                "1s_to_5s",
+                "5s_to_30s",
+                "30s_to_120s",
+                "gte_120s"
               ]
             }
           }

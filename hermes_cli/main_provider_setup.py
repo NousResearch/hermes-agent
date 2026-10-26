@@ -59,6 +59,7 @@ _AUX_TASKS: list[tuple[str, str, str]] = [
     ("review", "Review", "/review reviewer subagent"),
     ("memory_query_rewrite", "Memory query rewrite", "memory retrieval queries"),
     ("tts_audio_tags", "TTS audio tags", "Gemini TTS tag insertion"),
+    ("voice_chat", "Voice chat", "spoken voice-mode replies"),
     ("skills_hub", "Skills hub", "skills search/install"),
     ("triage_specifier", "Triage specifier", "kanban spec fleshing"),
     ("kanban_decomposer", "Kanban decomposer", "task decomposition"),
@@ -198,7 +199,10 @@ def _prompt_aux_reasoning_effort(task: str, current: str) -> Optional[str]:
 def _reset_aux_to_auto() -> int:
     """Reset every known aux task (built-in + plugin) back to auto/empty. Returns number reset."""
     from hermes_cli.config import load_config, save_config
-    def _clear(entry: dict, auto: str) -> bool:
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    defaults = DEFAULT_CONFIG.get("auxiliary") or {}
+
+    def _clear(entry: dict, auto: str, task: str = "") -> bool:
         # Only the routing fields; timeout/download_timeout (aux) and max_concurrent_children
         # etc. (delegation) are user-tuned and preserved. *auto* is the reset provider value
         # ("auto" for aux tasks, "" for delegation); anything else counts as a change.
@@ -207,14 +211,16 @@ def _reset_aux_to_auto() -> int:
             entry["provider"] = auto
             changed = True
         for field in ("model", "base_url", "api_key", "reasoning_effort"):
-            if entry.get(field) or entry.get(field) is False:
-                entry[field] = ""
+            # Reset = the shipped default: "" everywhere except a slot that ships one (voice_chat: none).
+            default = str((defaults.get(task) or {}).get(field) or "") if isinstance(defaults.get(task), dict) else ""
+            if (entry.get(field) or entry.get(field) is False or default) and entry.get(field) != default:
+                entry[field] = default
                 changed = True
         return changed
 
     cfg = load_config()
     aux = _ensure_dict_section(cfg, "auxiliary")
-    count = sum(_clear(_ensure_dict_section(aux, task), "auto") for task, _name, _desc in _all_aux_tasks())
+    count = sum(_clear(_ensure_dict_section(aux, task), "auto", task) for task, _name, _desc in _all_aux_tasks())
     dele = cfg.get("delegation")
     if isinstance(dele, dict):
         count += _clear(dele, "")
@@ -633,24 +639,32 @@ def _prompt_reasoning_effort_selection(efforts, current_effort="", *, default_la
     return tail_values[idx - n]
 
 
-def _offer_reasoning_after_pick(model_before: str) -> None:
-    """Post-flow effort step for ``select_provider_and_model``: when a flow saved a different
-    ``model.default`` (every flow persists through ``_save_model_choice``), offer the effort for
-    the new model + provider. A flow that made no change (cancel, "No change.") never prompts."""
+def _model_choice_save_count() -> int:
+    """Snapshot taken by ``select_provider_and_model`` before a flow runs (see below)."""
+    from hermes_cli.auth_model_picker import model_choice_save_count
+    return model_choice_save_count()
+
+
+def _offer_reasoning_after_pick(model_before: str, saves_before: int) -> None:
+    """Post-flow effort step for ``select_provider_and_model``, like the chat ``/model`` picker:
+    every flow persists through ``_save_model_choice``, so whenever one saved a pick (or
+    ``model.default`` changed) offer the effort for the saved model + provider, including a
+    provider switch that keeps the same model ID or a re-pick of the current model. Cancel /
+    "No change." never prompts."""
     from hermes_cli.config import load_config
     model_cfg = load_config().get("model")
     if not isinstance(model_cfg, dict):
         return
     model = str(model_cfg.get("default") or "").strip()
-    if not model or model == model_before:
-        return  # same model re-picked or nothing saved: the "Reasoning effort" row covers that
+    if not model or (model == model_before and _model_choice_save_count() == saves_before):
+        return
     _prompt_main_reasoning_effort(model, str(model_cfg.get("provider") or ""))
 
 
 def _prompt_main_reasoning_effort(model: str, provider: str) -> None:
     """The effort step every ``hermes model`` flow shares: after a main-model pick, offer the
-    model's supported levels (Copilot publishes a per-model set; everything else gets the full
-    ladder) and persist ``agent.reasoning_effort``. Skipped when the catalog says the route has
+    model's supported levels (a profile may declare a per-model set via ``setup_reasoning_efforts``;
+    everything else gets the full ladder) and persist ``agent.reasoning_effort``. Skipped when the catalog says the route has
     no reasoning control; "Skip" leaves the current value alone."""
     from hermes_cli.config import load_config, save_config
     from hermes_cli.setup import _current_reasoning_effort, _set_reasoning_effort
@@ -670,9 +684,11 @@ def _main_model_reasoning_efforts(model: str, provider: str) -> Optional[list[st
     """Levels to offer for *model* on *provider*: None when the route has no reasoning control."""
     from hermes_constants import VALID_REASONING_EFFORTS
     slug = (provider or "").strip().lower()
-    if slug == "copilot":
-        from hermes_cli.models import github_model_reasoning_efforts
-        return github_model_reasoning_efforts(model) or None
+    from providers import get_provider_profile
+    profile = get_provider_profile(slug) if slug else None
+    declared = profile.setup_reasoning_efforts(model) if profile and profile.setup_reasoning_efforts else None
+    if declared is not None:
+        return list(declared) or None
     try:
         from agent.models_dev import get_model_capabilities
         meta = get_model_capabilities(slug, model)

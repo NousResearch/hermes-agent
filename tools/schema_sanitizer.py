@@ -11,6 +11,7 @@ import copy
 import logging
 import re
 from typing import Any, Callable
+from urllib.parse import unquote
 
 logger = logging.getLogger(__name__)
 
@@ -58,9 +59,60 @@ def _rename_property_keys(props: dict, path: str) -> dict[str, str]:
     return renames
 
 
-def unrename_tool_args(params_schema: Any, args: Any) -> Any:
+# RFC 6901: an array index is "0" or a number without leading zeros; "~" escapes only "~0" and "~1".
+_POINTER_INDEX = re.compile(r"0|[1-9][0-9]*")
+_BAD_POINTER_ESCAPE = re.compile(r"~(?![01])")
+
+
+def resolve_local_schema_ref(schema: Any, root_schema: Any, seen_refs: set[str] | None = None) -> Any:
+    """Follow a document-local ``$ref`` in *schema* against *root_schema*, for dispatch-time
+    decisions (argument coercion, key unrenaming). Remote, malformed or dangling refs come back
+    unchanged; sibling keywords are kept, and the referenced schema wins where they conflict."""
+    if not isinstance(schema, dict) or not isinstance(root_schema, dict):
+        return schema
+
+    ref = schema.get("$ref")
+    if not isinstance(ref, str) or not ref.startswith("#"):
+        return schema
+    # A $ref is a URI reference: percent-decode the fragment, then read it as a JSON Pointer.
+    pointer = unquote(ref[1:])
+    if pointer and not pointer.startswith("/"):
+        return schema  # a plain-name anchor such as "#Address", not a pointer
+    seen = seen_refs or set()
+    if ref in seen:
+        return schema
+
+    target: Any = root_schema
+    for raw_token in pointer.split("/")[1:]:
+        if _BAD_POINTER_ESCAPE.search(raw_token):
+            return schema
+        token = raw_token.replace("~1", "/").replace("~0", "~")
+        if isinstance(target, dict) and token in target:
+            target = target[token]
+        elif isinstance(target, list) and _POINTER_INDEX.fullmatch(token) and int(token) < len(target):
+            # Path refs can pass through arrays, e.g. zod-to-json-schema's "#/properties/a/anyOf/0".
+            target = target[int(token)]
+        else:
+            return schema
+    if not isinstance(target, dict):
+        return schema
+
+    resolved = resolve_local_schema_ref(target, root_schema, seen | {ref})
+    siblings = {key: value for key, value in schema.items() if key != "$ref"}
+    if not siblings or not isinstance(resolved, dict):
+        return resolved
+    combined = dict(resolved)
+    for key, value in siblings.items():
+        combined.setdefault(key, value)
+    return combined
+
+
+def unrename_tool_args(params_schema: Any, args: Any, root_schema: Any = None) -> Any:
     """Map sanitized keys in model-emitted args back to wire names. ``params_schema`` is the
-    ORIGINAL registry schema; recurses into objects/array items; unknown keys pass through."""
+    ORIGINAL registry schema; recurses into objects/array items, following local ``$ref``s
+    (the sanitizer renames keys inside ``$defs`` too); unknown keys pass through."""
+    root = params_schema if root_schema is None else root_schema
+    params_schema = resolve_local_schema_ref(params_schema, root)
     props = params_schema.get("properties") if isinstance(params_schema, dict) else None
     if not isinstance(props, dict) or not isinstance(args, dict):
         return args
@@ -68,11 +120,11 @@ def unrename_tool_args(params_schema: Any, args: Any) -> Any:
     out = {}
     for key, value in args.items():
         orig = reverse.get(key, key)
-        sub = props.get(orig) if isinstance(props.get(orig), dict) else {}
+        sub = resolve_local_schema_ref(props[orig], root) if isinstance(props.get(orig), dict) else {}
         if isinstance(value, dict) and sub:
-            value = unrename_tool_args(sub, value)
+            value = unrename_tool_args(sub, value, root)
         elif isinstance(value, list) and isinstance(sub.get("items"), dict):
-            value = [unrename_tool_args(sub["items"], item) if isinstance(item, dict) else item
+            value = [unrename_tool_args(sub["items"], item, root) if isinstance(item, dict) else item
                      for item in value]
         out[orig] = value
     return out
@@ -273,7 +325,7 @@ def _sanitize_node(node: Any, path: str) -> Any:
     for key, value in node.items():
         # JSON Schema ``type`` arrays (e.g. ``["number", "string"]``, common in MCP tool schemas) are
         # rejected by several tool-call backends: * llama.cpp's grammar generator only accepts a singular
-        # string type. * Gemini (including OpenAI-compatible transports such as GitHub Copilot proxying to
+        # string type. * Gemini (including OpenAI-compatible gateways proxying to
         # Gemini) rejects the array form outright — plain @ai-sdk/google rewrites it, but the
         # OpenAI-compatible path forwards it verbatim and the backend 400s. Normalize per the SDK's
         # behavior: * single non-null type → ``type: X`` (+ ``nullable: true`` if the array also contained

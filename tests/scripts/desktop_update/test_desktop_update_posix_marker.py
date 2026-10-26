@@ -110,7 +110,7 @@ def _run(tmp_path: Path, home: Path, install: Path, *args: str, **env: str) -> s
         full_env.pop(key, None)
     full_env.update(env)
     return subprocess.run(["bash", str(POSIX), "--daemonized", "--no-ui", "--install-root", str(install), *args],
-                          env=full_env, cwd=tmp_path, capture_output=True, text=True, timeout=120)
+                          env=full_env, cwd=tmp_path, capture_output=True, text=True, timeout=120, check=False)
 
 
 def _calls(tmp_path: Path) -> list[str]:

@@ -151,7 +151,10 @@ const OP_VERDICTS: Record<MarkerHelperOp, ReadonlySet<string>> = {
 
 /** Parse the helper's one verdict line; anything else is an operational error. */
 export function parseMarkerHelperVerdict(stdout: string): MarkerHelperVerdict {
-  const lines = stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+  const lines = stdout
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean)
 
   if (lines.length !== 1) {
     return { kind: 'error' }
@@ -180,7 +183,12 @@ export function parseMarkerHelperVerdict(stdout: string): MarkerHelperVerdict {
 export function markerHelperCommand(
   op: MarkerHelperOp,
   scriptPath: string,
-  { updateRoot, desktopPid, runId, isWindows }: Pick<MarkerHelperOptions, 'updateRoot' | 'desktopPid' | 'runId' | 'isWindows'>
+  {
+    updateRoot,
+    desktopPid,
+    runId,
+    isWindows
+  }: Pick<MarkerHelperOptions, 'updateRoot' | 'desktopPid' | 'runId' | 'isWindows'>
 ): { command: string; args: string[] } {
   const hasPid = typeof desktopPid === 'number' && Number.isInteger(desktopPid) && desktopPid > 0
 

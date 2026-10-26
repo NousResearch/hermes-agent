@@ -19,7 +19,7 @@ from hermes_cli import kanban_db_dispatch as kbd
 
 
 def _spawn_exit(code: int) -> subprocess.Popen:
-    proc = subprocess.Popen([sys.executable, "-c", f"raise SystemExit({code})"])  # noqa: S603
+    proc = subprocess.Popen([sys.executable, "-c", f"raise SystemExit({code})"])
     proc.wait()
     return proc
 

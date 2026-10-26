@@ -54,6 +54,74 @@ class TestPluginDispatch:
         assert seen["intensity"] == 80
         assert "creativity" not in seen
 
+    @pytest.mark.parametrize("eligible, image_url, enabled, fal_ok, falls_back", [
+        (True, None, True, True, True),
+        (False, None, True, True, False),
+        (True, "https://x/ref.png", True, True, False),
+        (True, None, False, True, False),
+        (True, None, True, False, True),
+    ])
+    def test_managed_krea_failure_falls_back_to_fal_only_when_safe(
+            self, monkeypatch, tmp_path, eligible, image_url, enabled, fal_ok, falls_back):
+        """Fallback runs for an eligible Krea failure with no source images and the switch on, and
+        names what ran; otherwise the Krea error is returned untouched."""
+        from tools import image_generation_tool as ig
+
+        krea_error = {"success": False, "image": None, "error": "Krea connection error", "error_type": "connection_error",
+                      "fallback_eligible": eligible}
+        fal_calls = []
+
+        def fake_fal(prompt, aspect_ratio, **kwargs):
+            fal_calls.append(kwargs)
+            if fal_ok:
+                return json.dumps({"success": True, "image": "/tmp/fal.png", "modality": "text", "upscaled": False})
+            return json.dumps({"success": False, "image": None, "error": "FAL down", "error_type": "api_error"})
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(ig, "_dispatch_to_plugin_provider", lambda *a, **k: None)
+        monkeypatch.setattr(ig, "_maybe_route_managed_model", lambda *a, **k: json.dumps(krea_error))
+        monkeypatch.setattr(ig, "image_generate_tool", fake_fal)
+        monkeypatch.setattr("plugins.image_gen.krea.fallback_to_fal_enabled", lambda: enabled)
+
+        args = {"prompt": "draw cat", "aspect_ratio": "square"}
+        if image_url:
+            args["image_url"] = image_url
+        result = json.loads(ig._handle_image_generate(args))
+
+        if not falls_back:
+            assert fal_calls == []
+            assert result["error"] == "Krea connection error"
+            assert "fallback_from" not in result
+            return
+        assert len(fal_calls) == 1 and fal_calls[0]["fal_model"] == ig.DEFAULT_MODEL
+        assert result["fallback_from"] == "krea"
+        assert result["fallback_reason"] == "Krea connection error"
+        assert result["success"] is fal_ok
+        assert ("generated on FAL" if fal_ok else "also failed") in result["note"]
+
+    def test_fallback_keeps_the_upscale_and_names_the_fal_upscaler(self, monkeypatch, tmp_path):
+        """An upscale asked of Krea still runs on the FAL rerun, and the note says which upscaler did it."""
+        from tools import image_generation_tool as ig
+
+        krea_error = {"success": False, "image": None, "error": "refused", "error_type": "connection_error",
+                      "fallback_eligible": True}
+        fal_calls = []
+
+        def fake_fal(prompt, aspect_ratio, **kwargs):
+            fal_calls.append(kwargs)
+            return json.dumps({"success": True, "image": "/tmp/fal.png", "modality": "text", "upscaled": True})
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(ig, "_dispatch_to_plugin_provider", lambda *a, **k: None)
+        monkeypatch.setattr(ig, "_maybe_route_managed_model", lambda *a, **k: json.dumps(krea_error))
+        monkeypatch.setattr(ig, "image_generate_tool", fake_fal)
+        monkeypatch.setattr("plugins.image_gen.krea.fallback_to_fal_enabled", lambda: True)
+
+        result = json.loads(ig._handle_image_generate({"prompt": "draw cat", "aspect_ratio": "square", "upscale": True}))
+
+        assert fal_calls[0]["upscale"] is True
+        assert ig.UPSCALER_MODEL in result["note"] and "Krea Enhance" in result["note"]
+
     def test_deepinfra_key_alone_does_not_select_image_backend(self, monkeypatch):
         """DeepInfra chat credentials do not imply consent to image billing."""
         from tools import image_generation_tool

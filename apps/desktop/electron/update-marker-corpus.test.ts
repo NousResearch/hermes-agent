@@ -132,7 +132,17 @@ describe('Electron never mutates a marker (A7 rule 3)', () => {
     for (const name of ['update-marker.ts', 'update-marker-judge.ts', 'update-marker-gate.ts']) {
       const source = fs.readFileSync(path.join(__dirname, name), 'utf8')
 
-      for (const mutator of ['unlinkSync', 'unlink(', 'renameSync', 'rename(', 'truncate', 'writeFileSync', "'w'", "'w+'", "'a'"]) {
+      for (const mutator of [
+        'unlinkSync',
+        'unlink(',
+        'renameSync',
+        'rename(',
+        'truncate',
+        'writeFileSync',
+        "'w'",
+        "'w+'",
+        "'a'"
+      ]) {
         assert.ok(!source.includes(mutator), `${name} must not call ${mutator}`)
       }
     }

@@ -27,7 +27,7 @@ def test_cli_runtime_executes_without_redispatch(monkeypatch):
 
 
 def test_ci_dependency_phase_uses_isolated_runtime(tmp_path, monkeypatch):
-    import pm.client as client
+    from pm import client
     from pm import paths
     from scripts.ci import setup_toolchain
 

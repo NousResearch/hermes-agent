@@ -32,7 +32,19 @@ def _cache_scope_from_session_id(session_id: Optional[str]) -> str:
     """Normalize a physical session_id into a stable logical cache scope."""
     sid = str(session_id or "")
     match = _CRON_SESSION_ID_RE.match(sid)
-    return match.group(1) if match else sid
+    if match:
+        return match.group(1)
+    # The unified scheduler admits cron fires into a ``local-*`` session. Its
+    # physical id is intentionally opaque and changes on every fire, so recover
+    # the stable job scope from the bound scheduler admission instead.
+    from gateway.session_cron import current_execution
+
+    execution = current_execution()
+    if execution is not None and str(execution[1]) == sid:
+        job_id = str(execution[2] or "").strip()
+        if job_id:
+            return f"cron_{job_id}"
+    return sid
 
 
 def _bounded_prompt_cache_key(value: Any) -> Optional[str]:
@@ -207,7 +219,7 @@ def _openai_prefers_native_web_search() -> bool:
         from tools.web_tools import _get_search_backend
 
         return (_get_search_backend() or "").strip().lower() == "openai-native"
-    except Exception:  # noqa: BLE001 — a probe failure must not change the request shape
+    except Exception:
         return False
 
 
@@ -569,16 +581,30 @@ def _coerce_timeout(timeout: Any) -> Optional[float]:
     return None
 
 
+def _sends_all_turns(model: Any, params: dict[str, Any]) -> bool:
+    """``reasoning.context: "all_turns"`` goes only to api.openai.com models in the live-verified family
+    table (gpt-5.4/5.5 default to ``current_turn`` and discard replayed earlier-turn blobs without it;
+    o-series and gpt-5.1-5.3 400 on it). Never the ChatGPT Codex backend: acceptance there is unverified."""
+    from agent.codex_responses_adapter import openai_reasoning_family
+
+    return (
+        params.get("is_codex_backend") is not True and _is_openai_api_origin(params.get("base_url"))
+        and openai_reasoning_family(model) is not None
+    )
+
+
 def _reasoning_fields(
     model: str, params: dict[str, Any], *, effort: Any, enabled: bool, replay_encrypted_reasoning: bool,
-    is_xai_responses: bool, is_github_responses: bool,
+    is_xai_responses: bool, profile_reasoning: bool, all_turns: bool = False,
 ) -> dict[str, Any]:
     """``reasoning`` / ``include`` request fields for the endpoint family.
 
-    xAI 400s on ``reasoning.effort`` outside its allowlist; GitHub Models takes a
-    verbatim ``github_reasoning_extra`` and never ``include``. A disabled ask resolved to
+    xAI 400s on ``reasoning.effort`` outside its allowlist; a ``profile_reasoning`` endpoint
+    (``ProviderProfile.responses_profile_reasoning``) takes the verbatim ``profile_reasoning``
+    payload plus ``summary: "auto"`` and never ``include``. A disabled ask resolved to
     ``effort="none"`` is sent as ``{"effort": "none"}`` — the wire has no other way to switch
-    a reasoning model's default effort off (#75227).
+    a reasoning model's default effort off (#75227). ``all_turns`` adds ``context: "all_turns"``
+    so the model renders replayed reasoning from earlier user turns (``_sends_all_turns``).
     """
     include = ["reasoning.encrypted_content"] if replay_encrypted_reasoning else []
     fields: dict[str, Any] = {}
@@ -589,13 +615,17 @@ def _reasoning_fields(
         if grok_supports_reasoning_effort(model):
             fields["reasoning"] = {"effort": effort}
     elif enabled:
-        if is_github_responses:
-            if params.get("github_reasoning_extra") is not None:
-                fields["reasoning"] = params["github_reasoning_extra"]
+        if profile_reasoning:
+            if params.get("profile_reasoning") is not None:
+                # Request a reasoning summary so the Responses API actually returns reasoning text:
+                # without ``summary: "auto"`` such endpoints return reasoning items with no summary and
+                # Hermes persists empty reasoning/thinking content — the same loss the generic branch
+                # below avoids (#46527).
+                fields["reasoning"] = {**params["profile_reasoning"], "summary": "auto"}
         else:
-            fields["reasoning"] = {"effort": effort, "summary": "auto"}
+            fields["reasoning"] = {"effort": effort, "summary": "auto", **({"context": "all_turns"} if all_turns else {})}
             fields["include"] = include
-    elif not is_github_responses and not is_xai_responses:
+    elif not profile_reasoning and not is_xai_responses:
         fields["include"] = []
         if effort == "none":
             fields["reasoning"] = {"effort": "none"}
@@ -613,33 +643,67 @@ class ResponsesApiTransport(ProviderTransport):
     _last_issuer_model: Optional[str] = None
     # ``{wire_alias: original}`` of the most recent build_kwargs. None = no request built (legacy map).
     _last_wire_aliases: Optional[dict[str, str]] = None
+    # Wire models that 400'd on ``reasoning.context`` this session (the transport is cached per agent).
+    _all_turns_rejected: frozenset = frozenset()
+    _last_sent_all_turns: bool = False
+
+    def reject_all_turns(self, error: Any) -> bool:
+        """400 naming ``reasoning.context``/``all_turns`` on a request that carried the opt-in: omit it for that
+        model for the rest of the session. False otherwise, so it buys at most one retry per model."""
+        text = str(error).lower()
+        if not self._last_sent_all_turns or getattr(error, "status_code", None) not in (400, None) or not (
+            "reasoning.context" in text or "all_turns" in text
+        ):
+            return False
+        self._all_turns_rejected = self._all_turns_rejected | {self._last_issuer_model}
+        self._last_sent_all_turns = False
+        logger.warning("reasoning.context rejected by %s; omitting it for this session", self._last_issuer_model)
+        return True
+
+    def drop_unverified_replay(self, *message_lists: Any) -> int:
+        """First ``invalid_encrypted_content`` rung: drop the replayed blobs the failing request could not vouch
+        for (not stamped by exactly its endpoint + model), keeping the session's own continuity. Returns the
+        count removed from the first list; 0 means only the route's own blobs were sent."""
+        from agent.codex_responses_adapter import strip_unverified_reasoning_items
+
+        if self._last_issuer_kind is None or self._last_issuer_model is None:
+            return 0
+        removed = [
+            strip_unverified_reasoning_items(msgs, issuer_kind=self._last_issuer_kind, issuer_model=self._last_issuer_model)
+            for msgs in message_lists
+        ]
+        return removed[0] if removed else 0
 
     @property
     def api_mode(self) -> str:
         return "codex_responses"
 
-    def _resolve_issuer_kind(self, params: dict[str, Any]) -> str:
+    def _resolve_issuer_kind(self, params: dict[str, Any], endpoint: Any = None) -> str:
         """Classify the current Responses endpoint from transport params (stashed for normalize_response)."""
-        from agent.codex_responses_adapter import _classify_responses_issuer
+        from agent.codex_responses_adapter import _classify_responses_issuer, responses_endpoint_quirks
 
+        base_url = params.get("base_url")
         self._last_issuer_kind = _classify_responses_issuer(
             is_xai_responses=params.get("is_xai_responses") is True,
-            is_github_responses=params.get("is_github_responses") is True,
             is_codex_backend=params.get("is_codex_backend") is True,
-            base_url=params.get("base_url"),
+            base_url=base_url,
+            endpoint=endpoint if endpoint is not None else responses_endpoint_quirks(base_url),
         )
         return self._last_issuer_kind
 
     def convert_messages(self, messages: list[dict[str, Any]], **kwargs) -> Any:
         """Convert OpenAI chat messages to Responses API input items."""
-        from agent.codex_responses_adapter import _chat_messages_to_responses_input, _wire_model_identity
+        from agent.codex_responses_adapter import (
+            _chat_messages_to_responses_input, _wire_model_identity, responses_endpoint_quirks,
+        )
 
         self._last_issuer_model = _wire_model_identity(kwargs.get("model"))
+        endpoint = kwargs.get("endpoint") or responses_endpoint_quirks(kwargs.get("base_url"))
         return _chat_messages_to_responses_input(
             messages, is_xai_responses=kwargs.get("is_xai_responses") is True,
-            is_github_responses=kwargs.get("is_github_responses") is True,
+            drop_replay_item_ids=not endpoint.replay_item_ids,
             replay_encrypted_reasoning=bool(kwargs.get("replay_encrypted_reasoning", True)),
-            current_issuer_kind=self._resolve_issuer_kind(kwargs),
+            current_issuer_kind=self._resolve_issuer_kind(kwargs, endpoint),
             current_issuer_model=self._last_issuer_model,
             native_compaction_eligible=_native_compaction_active(kwargs.get("context_management")),
         )
@@ -658,8 +722,9 @@ class ResponsesApiTransport(ProviderTransport):
         params: instructions, reasoning_config ({effort, enabled}), session_id (transcript id;
         Codex header; cache-scope fallback), cache_scope_id (rotation-stable scope for the
         cache key / xAI conv header), max_tokens, timeout, request_overrides, provider, base_url,
-        is_github_responses, is_codex_backend, is_xai_responses, github_reasoning_extra,
-        context_management, replay_encrypted_reasoning.
+        is_codex_backend, is_xai_responses, profile_reasoning, context_management,
+        replay_encrypted_reasoning. Endpoint quirks (item-id replay, cache key, issuer stamp, reasoning
+        shape) are resolved from ``base_url`` via ``responses_endpoint_quirks``.
 
         params: instructions: str — system prompt (extracted from messages[0] if not given)
         reasoning_config: dict | None — {effort, enabled} session_id: str | None — transcript/session id;
@@ -671,9 +736,9 @@ class ResponsesApiTransport(ProviderTransport):
         max_tokens: int | None — max_output_tokens timeout: float | None — per-request timeout forwarded to
         the SDK request_overrides: dict | None — extra kwargs merged in provider: str | None — provider name
         for backend-specific logic base_url: str | None — endpoint URL base_url_hostname: str | None —
-        hostname for backend detection is_github_responses: bool — Copilot/GitHub models backend
-        is_codex_backend: bool — chatgpt.com/backend-api/codex is_xai_responses: bool — xAI/Grok backend
-        github_reasoning_extra: dict | None — Copilot reasoning params
+        hostname for backend detection is_codex_backend: bool — chatgpt.com/backend-api/codex
+        is_xai_responses: bool — xAI/Grok backend profile_reasoning: dict | None — the claiming profile's
+        ``reasoning_payload`` (sent verbatim on ``responses_profile_reasoning`` endpoints)
         """
         from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
@@ -684,7 +749,9 @@ class ResponsesApiTransport(ProviderTransport):
             payload_messages = messages[1:]
         instructions = instructions or DEFAULT_AGENT_IDENTITY
 
-        is_github_responses = params.get("is_github_responses") is True
+        from agent.codex_responses_adapter import responses_endpoint_quirks
+
+        endpoint = responses_endpoint_quirks(params.get("base_url"))
         is_codex_backend = params.get("is_codex_backend") is True
         is_xai_responses = params.get("is_xai_responses") is True
         # Foundry 400s on encrypted-reasoning replay only in the post-tool follow-up turn.
@@ -714,7 +781,7 @@ class ResponsesApiTransport(ProviderTransport):
             "model": wire_model,
             "instructions": instructions,
             "input": self.convert_messages(
-                payload_messages, is_xai_responses=is_xai_responses, is_github_responses=is_github_responses,
+                payload_messages, is_xai_responses=is_xai_responses, endpoint=endpoint,
                 replay_encrypted_reasoning=replay_encrypted_reasoning, base_url=params.get("base_url"),
                 is_codex_backend=is_codex_backend, context_management=context_management, model=wire_model,
             ),
@@ -733,18 +800,23 @@ class ResponsesApiTransport(ProviderTransport):
         # compression rotation; session_id itself stays untouched for transcript isolation.
         _cache_scope = _cache_scope_from_session_id(params.get("cache_scope_id") or session_id)
         cache_key = _content_cache_key(instructions, response_tools, _cache_scope) or _cache_scope
-        # xAI takes prompt_cache_key in extra_body (below); GitHub Models opts out entirely.
-        if not is_github_responses and not is_xai_responses and cache_key:
+        # xAI takes prompt_cache_key in extra_body (below); endpoints declaring
+        # ``responses_prompt_cache_key=False`` opt out entirely.
+        if endpoint.prompt_cache_key and not is_xai_responses and cache_key:
             kwargs["prompt_cache_key"] = cache_key
 
         cache_retention = _default_prompt_cache_retention_for_request(model, params.get("base_url"))
         if cache_retention:
             kwargs.setdefault("prompt_cache_retention", cache_retention)
 
+        self._last_sent_all_turns = (
+            reasoning_enabled and _sends_all_turns(wire_model, params) and wire_model not in self._all_turns_rejected
+        )
         kwargs.update(_reasoning_fields(
             model, params, effort=reasoning_effort, enabled=reasoning_enabled,
             replay_encrypted_reasoning=replay_encrypted_reasoning,
-            is_xai_responses=is_xai_responses, is_github_responses=is_github_responses,
+            is_xai_responses=is_xai_responses, profile_reasoning=endpoint.profile_reasoning,
+            all_turns=self._last_sent_all_turns,
         ))
         # agent.text_verbosity -> top-level ``text.verbosity`` (#20203). Unset sends nothing;
         # xAI's /responses rejects unknown top-level fields, same as service_tier below.
@@ -880,17 +952,18 @@ class ResponsesApiTransport(ProviderTransport):
         return status == "incomplete" and str(raw_reason or "").strip().lower() == "content_filter"
 
     def preflight_kwargs(
-        self, api_kwargs: Any, *, allow_stream: bool = False, is_github_responses: bool = False,
+        self, api_kwargs: Any, *, allow_stream: bool = False, drop_replay_item_ids: bool = False,
         sanitize_harmony_tokens: bool = False,
     ) -> dict:
         """Validate and sanitize Codex API kwargs before the call.
 
+        ``drop_replay_item_ids`` mirrors the endpoint quirk (``not responses_endpoint_quirks(url).replay_item_ids``).
         ``sanitize_harmony_tokens`` is for the ChatGPT Codex backend only (rejects literal Harmony tokens).
         """
         from agent.codex_responses_adapter import _preflight_codex_api_kwargs
 
         normalized = _preflight_codex_api_kwargs(
-            api_kwargs, allow_stream=allow_stream, is_github_responses=is_github_responses,
+            api_kwargs, allow_stream=allow_stream, drop_replay_item_ids=drop_replay_item_ids,
             sanitize_harmony_tokens=sanitize_harmony_tokens,
         )
         _bound_prompt_cache_key_field(normalized)
@@ -899,6 +972,6 @@ class ResponsesApiTransport(ProviderTransport):
 
 
 # Auto-register on import
-from agent.transports import register_transport  # noqa: E402
+from agent.transports import register_transport
 
 register_transport("codex_responses", ResponsesApiTransport)

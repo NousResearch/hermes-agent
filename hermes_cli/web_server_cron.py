@@ -26,7 +26,7 @@ def _cron_optional_text(value: Any, *, strip_trailing_slash: bool = False) -> Op
     return text or None
 
 
-def _cron_string_list(value: Any) -> Optional[List[str]]:
+def _cron_string_list(value: Any) -> Optional[list[str]]:
     if isinstance(value, str):
         raw_items = re.split(r"[\n,]", value)
     elif isinstance(value, (list, tuple)):
@@ -56,7 +56,7 @@ def _normalize_dashboard_cron_script(value: Any, profile_home: Path) -> Optional
     return str(relative)
 
 
-def _validate_dashboard_cron_effective_job(job: Dict[str, Any]) -> None:
+def _validate_dashboard_cron_effective_job(job: dict[str, Any]) -> None:
     prompt = _cron_optional_text(job.get("prompt"))
     script = _cron_optional_text(job.get("script"))
     skills = _cron_string_list(job.get("skills")) or _cron_string_list(job.get("skill"))
@@ -68,7 +68,7 @@ def _validate_dashboard_cron_effective_job(job: Dict[str, Any]) -> None:
         raise HTTPException(status_code=400, detail="agent cron jobs require a prompt, skill, or script")
 
 
-def _validate_dashboard_cron_context_from(refs: Optional[List[str]], profile_name: str) -> None:
+def _validate_dashboard_cron_context_from(refs: Optional[list[str]], profile_name: str) -> None:
     for ref in refs or ():
         # "self" (the continuity toggle) resolves to the job's own id at run time — it can't be
         # validated against the store (create precedes the job's existence).
@@ -80,7 +80,7 @@ def _validate_dashboard_cron_context_from(refs: Optional[List[str]], profile_nam
                 detail=f"context_from job '{ref}' not found in profile '{profile_name}'")
 
 
-def _cron_profile_dicts() -> List[Dict[str, Any]]:
+def _cron_profile_dicts() -> list[dict[str, Any]]:
     """Minimal profile records (callers only consume ``name``); avoids ``list_profiles()``,
     whose config parsing, gateway probes and skill counts are GIL pressure on large pools."""
     from hermes_cli.web_server_profiles import _fallback_profile_dicts
@@ -110,7 +110,7 @@ def _cron_default_profile() -> str:
     return "default" if name in ("default", "custom") else name
 
 
-def _cron_profile_home(profile: Optional[str]) -> Tuple[str, Path]:
+def _cron_profile_home(profile: Optional[str]) -> tuple[str, Path]:
     """Resolve a profile query value to (profile_name, HERMES_HOME)."""
     from hermes_cli import profiles as profiles_mod
     raw = (profile or _cron_default_profile()).strip() or "default"
@@ -125,8 +125,8 @@ def _cron_profile_home(profile: Optional[str]) -> Tuple[str, Path]:
 
 
 def _annotate_cron_job(
-    job: Dict[str, Any], profile: str, home: Path, heartbeat_age: Optional[float] = None,
-) -> Dict[str, Any]:
+    job: dict[str, Any], profile: str, home: Path, heartbeat_age: Optional[float] = None,
+) -> dict[str, Any]:
     return {
         **job,
         "profile": profile,
@@ -386,7 +386,7 @@ def _gateway_fire_endpoint(profile: str, home: Path) -> str:
 
 
 async def _forward_cron_fire_to_gateway(
-    profile: str, job_id: str, authorization: str) -> Optional[Tuple[int, Dict[str, Any]]]:
+    profile: str, job_id: str, authorization: str) -> Optional[tuple[int, dict[str, Any]]]:
     """Forward a Chronos fire callback byte-preserved to the gateway api_server on loopback.
 
     The dashboard is the hosted deployment's only public HTTP door, but cron execution belongs to

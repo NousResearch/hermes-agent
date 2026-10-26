@@ -51,7 +51,7 @@ class BackendIdentity:
     def build(
         cls, provider: Optional[str] = None, model: Optional[str] = None,
         base_url: Optional[str] = None,
-    ) -> "BackendIdentity":
+    ) -> BackendIdentity:
         return cls(
             provider=_norm(provider), model=_norm(model),
             base_url=normalize_route_base_url(base_url),

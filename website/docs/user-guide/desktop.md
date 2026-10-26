@@ -825,6 +825,8 @@ bootstrap marker does not force installation when that launcher works.
 
 On Linux, Chromium's own errors go to `HERMES_HOME/logs/desktop-chromium.log`, and a crash of the shell itself leaves a minidump under the app's `Crashpad/` directory (inside Electron's user-data directory, next to `connection.json`). If the window vanishes with `SIGTRAP` in the journal, the `FATAL:` line in that log names the check that fired; attach it to the bug report. Nothing is uploaded.
 
+On Ubuntu 23.10 and later, `kernel.apparmor_restrict_unprivileged_userns=1` blocks Chromium's user-namespace sandbox for any program without an AppArmor profile. `hermes desktop` checks this through the Hermes binary itself and then uses the setuid `chrome-sandbox` helper (a `sudo` prompt after each rebuild). To skip that prompt for good, run `hermes desktop --install-apparmor-profile` once: it installs a profile for this app under `/etc/apparmor.d/` (sudo required) that grants it user namespaces, as Ubuntu does for Chrome and VS Code. If neither route is available, Desktop starts with `--no-sandbox` and the launcher prints both commands.
+
 If Python dependencies are damaged, run the installation's `hermes pm repair`.
 Then restart Desktop. Do not delete guessed `venv` paths or PM facts. For
 damaged application files, repair through the

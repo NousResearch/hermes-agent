@@ -22,6 +22,47 @@ def install_key(project_root: Path) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
+def worktree_owner_root(project_root: Path) -> Path | None:
+    """The main checkout a linked git worktree belongs to, else ``None``.
+
+    A linked worktree's ``.git`` is a FILE holding ``gitdir: <owner>/.git/worktrees/<name>``;
+    the main checkout's is a DIRECTORY. That difference is the whole signal, and it is
+    read straight off the filesystem -- no ``git`` subprocess at boot, where a spawn
+    would cost a process and can fail under the worker's mount namespace.
+
+    The owner is the checkout that owns the shared ``.git``: ``<owner>/.git/worktrees/<name>``
+    -> ``<owner>/.git`` -> ``<owner>``. Only a checkout that looks like Hermes is accepted,
+    so a random linked worktree in an unrelated repo never borrows its dependency state.
+    """
+    root = Path(project_root).resolve()
+    dot_git = root / ".git"
+    try:
+        if not dot_git.is_file():
+            return None
+        text = dot_git.read_text(encoding="utf-8-sig").strip()
+    except OSError:
+        return None
+    if not text.startswith("gitdir:"):
+        return None
+    gitdir = Path(text.split(":", 1)[1].strip())
+    if not gitdir.is_absolute():
+        gitdir = root / gitdir
+    try:
+        gitdir = gitdir.resolve(strict=False)
+    except OSError:
+        return None
+    # <owner>/.git/worktrees/<name>
+    if gitdir.parent.name != "worktrees":
+        return None
+    owner_git = gitdir.parent.parent
+    if owner_git.name != ".git":
+        return None
+    owner = owner_git.parent
+    if not (owner / "hermes_cli" / "main.py").is_file():
+        return None
+    return owner
+
+
 def dependency_home_root() -> Path:
     """Scope dependency state like a process launched in the active home."""
     from hermes_constants import get_default_hermes_root, get_hermes_home_override
@@ -252,8 +293,37 @@ def committed_venv(project_root: Path) -> Path | None:
     Unlike ``selected_venv`` this never answers with the in-tree ``venv``/``.venv``: that tree
     predates PM and is built for whichever interpreter created it, so loading it from PM's store
     Python mixes ABIs (compiled modules vanish) and PM deletes it once a generation is committed.
+
+    A linked git worktree has no install state of its own -- the install key hashes the
+    checkout path, so every worktree is a distinct key with no ``facts.json`` -- and the
+    install key of a worktree is not the key of the checkout that owns it. Such a worktree
+    borrows the owner's committed generation (the same tree, same interpreter, same
+    dependencies); without this the worker's boot refuses outright with "no dependency
+    environment is committed for this install" and the task dies before it does any work.
     """
-    return _recorded_venv(project_root) or payload_venv(project_root)
+    return (
+        _recorded_venv(project_root)
+        or _borrowed_recorded_venv(project_root)
+        or payload_venv(project_root)
+    )
+
+
+def _borrowed_recorded_venv(project_root: Path) -> Path | None:
+    """The owning checkout's committed environment, when this root is its worktree.
+
+    ``None`` when this root is not a linked worktree, when the owner has committed nothing,
+    or when the owner's record is unreadable -- the caller then keeps today's behaviour.
+    """
+    owner = worktree_owner_root(project_root)
+    if owner is None:
+        return None
+    try:
+        return _recorded_venv(owner)
+    except RuntimeError:
+        # The owner's own record is broken: surface nothing here and let the owner's
+        # launch report the real error. A worktree must not fail with a message that
+        # names a path the reader never asked about.
+        return None
 
 
 def _recorded_venv(project_root: Path) -> Path | None:
@@ -377,11 +447,15 @@ def _require_own_dependencies(project_root: Path) -> None:
         raise RuntimeError("no dependency environment is committed for this install")
 
 
-def activate_dependencies(project_root: Path) -> None:
+def activate_dependencies(project_root: Path) -> Path | None:
     """Select the committed tree at process boot, before third-party imports.
 
     A process with no extension selection keeps its original launch contract.
     Already-running processes are never switched after a dependency install.
+
+    Returns the checkout whose committed generation was selected -- the project root
+    itself, or the owner when this root is a linked worktree borrowing it. ``None``
+    when nothing was committed and the process keeps its own packages.
     """
     import sys
 
@@ -407,6 +481,13 @@ def activate_dependencies(project_root: Path) -> None:
             if not selected.is_dir() and not runtime_facts_path(project_root).is_file():
                 return
     else:
+        # A linked worktree has no install state of its own (its install key hashes its
+        # own path). It borrows the owner checkout's committed generation -- the same
+        # tree, the same interpreter, the same dependencies -- and selects it exactly
+        # as the owner would, under the owner's own state directory.
+        borrowed = _borrowed_state_root(project_root)
+        if borrowed is not None:
+            return _activate_borrowed(project_root, borrowed)
         # Sealed payloads still select once, before imports.
         # Never consult VIRTUAL_ENV: it can describe the invoking shell's Python.
         environment = payload_venv(project_root)
@@ -417,7 +498,59 @@ def activate_dependencies(project_root: Path) -> None:
             return  # External/Nix interpreter owns its original sys.path.
     if not selected.is_dir():
         raise RuntimeError(f"dependency environment has no site-packages: {selected}")
+    _select_environment(project_root, environment, selected)
+
+
+def _borrowed_state_root(project_root: Path) -> Path | None:
+    """The checkout whose committed generation this root borrows, else ``None``.
+
+    Only a linked git worktree of a Hermes checkout qualifies, and only when that
+    checkout has committed a generation of its own -- otherwise there is nothing to
+    borrow and the caller keeps today's behaviour.
+    """
+    owner = worktree_owner_root(project_root)
+    if owner is None:
+        return None
+    try:
+        if not runtime_facts_path(owner).is_file():
+            return None
+    except OSError:
+        return None
+    return owner
+
+
+def _activate_borrowed(project_root: Path, owner: Path) -> Path | None:
+    """Select the owner checkout's committed generation for a linked worktree.
+
+    The worktree's own code stays on ``sys.path`` first (that is the branch the worker
+    is here to test); only the DEPENDENCIES come from the owner's generation, because
+    the worktree has no install state of its own and PM's store Python boots with none.
+    The owner's state directory owns the lock and the lease, so the worker's selection
+    is recorded where the owner's own launcher will find it.
+    """
+    from hermes_cli.runtime_state import runtime_lock, recover_publication, lease_generation
+
+    with runtime_lock(owner) as held:
+        if held:
+            recover_publication(owner)
+        environment = _recorded_venv(owner)
+        if environment is None:
+            return _require_own_dependencies(project_root)
+        release = lease_generation(environment)
+        while not held and (current := _recorded_venv(owner)) not in (None, environment):
+            release()
+            environment, release = current, lease_generation(current)
+        selected = site_packages(environment)
+    if not selected.is_dir():
+        raise RuntimeError(f"dependency environment has no site-packages: {selected}")
+    _select_environment(project_root, environment, selected)
+    return owner
+
+
+def _select_environment(project_root: Path, environment: Path, selected: Path) -> None:
+    """Put *selected* (a generation's site-packages) on ``sys.path`` for *project_root*."""
     import site
+    import sys
 
     sys.path[:] = [entry for entry in sys.path
                    if Path(entry).name not in ("site-packages", "dist-packages")

@@ -21,6 +21,8 @@ import {
   host,
   LocalizedTabTitle,
   PALETTE_AREA,
+  ROUTES_AREA,
+  SIDEBAR_NAV_AREA,
   SIDEBAR_PROFILE_GROUP_HEADER_AREA,
   translateNow
 } from '@hermes/plugin-sdk'
@@ -39,6 +41,7 @@ import {
 } from './bot-state'
 import { isCanonicalChatOnScreen, openBotCanonicalChat } from './canonical-chat'
 import { BotChatEmpty } from './chat-empty'
+import { ComputerPage } from './computer-page'
 import { bindProfileSync, RoutinesPane } from './cron'
 import {
   $botMeta,
@@ -438,6 +441,20 @@ export default {
       id: 'screen-portal',
       area: SIDEBAR_PROFILE_GROUP_HEADER_AREA,
       data: { render: (route: ProfileGroupRoute) => <ProfileGroupScreenPortal route={route} /> }
+    })
+    // First-class Computer workspace: reuse the existing per-profile Screen pane,
+    // including its authenticated noVNC stream and human/agent control lease.
+    ctx.register({
+      id: 'computer-page',
+      area: ROUTES_AREA,
+      data: { path: '/computer' },
+      render: () => <ComputerPage />
+    })
+    ctx.register({
+      id: 'computer-nav',
+      area: SIDEBAR_NAV_AREA,
+      order: 55,
+      data: { codicon: 'device-desktop', label: 'Computer', path: '/computer' }
     })
     ctx.register({
       id: 'pane',

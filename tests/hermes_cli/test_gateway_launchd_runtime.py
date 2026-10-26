@@ -30,7 +30,7 @@ def test_gateway_job_is_a_launchd_osascript_child_that_reads_as_unsupervised(tmp
     child = (
         "import json, os, pathlib, time; "
         f"pathlib.Path({str(report)!r}).write_text(json.dumps({{'ppid': os.getppid(), "
-        "'xpc': os.environ.get('XPC_SERVICE_NAME'), 'marker': os.environ.get('PROBE_MARKER')}})); "
+        "'xpc': os.environ.get('XPC_SERVICE_NAME'), 'marker': os.environ.get('PROBE_MARKER')})); "
         f"[time.sleep(0.1) for _ in range(300) if not pathlib.Path({str(release)!r}).exists()]"
     )
     job = start_gateway_job([sys.executable, "-c", child], env={**os.environ, "PROBE_MARKER": "env-carried"},

@@ -21,7 +21,7 @@ from contextvars import copy_context
 from gateway.bot_peer_notices import automatic_notices_allowed
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
-from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
 from gateway.platforms.event import MessageEvent
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
@@ -802,8 +802,11 @@ class GatewayTurnPersistenceMixin:
             # would upload every file a second time.
             _footer_captioned = False  # the footer rode the last photo's caption (#74547)
             if response and adapter and not agent_result.get("media_already_delivered"):
+                # This media completes the user-visible reply: mark it notify-worthy like the
+                # non-streamed attachments (#144897) — in `important` mode it must still ring.
                 _footer_captioned = await self._deliver_media_from_response(
-                    response, event, adapter, footer_line="" if _intentional_silence else _footer_line)
+                    response, event, adapter, footer_line="" if _intentional_silence else _footer_line,
+                    thread_metadata=_mark_notify_metadata(self._event_thread_metadata(event, source)))
             ledgered = bool(response and adapter and agent_result.get("delivery_uncertain")) and (
                 await self._ledger_uncertain_streamed_final(event, session_key, response, adapter))
             # The stream showed only the answer: the reasoning block prepended to ``response`` for

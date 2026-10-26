@@ -29,6 +29,7 @@ _GUARD_SCRIPTS = (
     "scripts/ci/check_os_marker_fakes.py", "scripts/check-case-collisions.py",
     "scripts/ci/check_lazy_deps_imports.py", "scripts/ci/check_profile_archive_boundary.py",
     "scripts/ci/check_agents_md_size.py", "scripts/ci/check_blob_size.py",
+    "scripts/check_i18n_usage.py",
 )
 _SUPPORT = ("scripts/ci/profile_scope_patterns.json", "agent/subdirectory_hints.py", *_GUARD_SCRIPTS)
 _LEGACY = "def legacy(x):\n" + "".join(f"    if x == {i}:\n        return {i}\n" for i in range(21))

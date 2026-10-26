@@ -268,6 +268,15 @@ jobs:
       - name: Keep every AGENTS.md under its truncation cap
         run: python scripts/ci/check_agents_md_size.py
 
+      # A t() key that no catalog defines does not raise: t() returns the bare key
+      # and users read the dotted path. Same for a format kwarg the English value
+      # needs but the call site omits, which ships a literal {placeholder}. Neither
+      # is visible to the catalog parity tests, which only compare catalogs to each
+      # other. Reading locales/en.yaml needs ruamel (hermes_yaml); this job installs
+      # no project dependencies.
+      - name: Check t() usage against the English catalog
+        run: python -m scripts.ci.python_packages ruamel.yaml==0.18.17 -- scripts/check_i18n_usage.py
+
       # Advisory: profile-scope hazard shapes on the lines this PR adds (child env from os.environ,
       # raw os.getenv of a platform credential, HOME-only RPC binding, bare-PID liveness). One
       # process serves many profiles; every pattern leaked the launch profile at least once. Printed

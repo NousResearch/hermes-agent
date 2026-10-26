@@ -109,6 +109,7 @@ _GUARDS = {
     "config-readers": ["scripts/check_config_yaml_readers.py"],
     "os-marker-fakes": ["scripts/ci/check_os_marker_fakes.py"],
     "agents-md": ["scripts/ci/check_agents_md_size.py"],
+    "i18n-usage": ["scripts/check_i18n_usage.py"],
     "case-collisions": ["scripts/check-case-collisions.py"],
     "lazy-deps": ["scripts/ci/check_lazy_deps_imports.py"],
     "profile-archives": ["scripts/ci/check_profile_archive_boundary.py"],

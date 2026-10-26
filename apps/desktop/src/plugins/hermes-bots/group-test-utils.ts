@@ -456,9 +456,11 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
 export async function pluginSdkMock(host: Record<string, unknown>) {
   const nanostores = await import('nanostores')
   const { Textarea } = await import('@/components/ui/textarea')
+  const { cn } = await import('@/lib/utils')
 
   return {
     Textarea,
+    cn,
     // Real value: approval.respond forwards it as its client deadline (#60654).
     APPROVAL_RESPOND_TIMEOUT_MS: 300_000,
     atom: nanostores.atom,
@@ -470,6 +472,7 @@ export async function pluginSdkMock(host: Record<string, unknown>) {
     computed: nanostores.computed,
     createBudgetedLoop: undefined,
     gatewayActivationEpoch: () => 0,
+    GlyphSpinner: () => null,
     host,
     CapabilitiesView: undefined,
     MessageTextContent: undefined,

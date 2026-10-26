@@ -1,4 +1,6 @@
-"""A TUI session's /status, /context and /cron on the shared owner read as main's TUI sidecar did.
+"""A TUI session's /status, /context and /cron on the shared owner read as main's TUI sidecar did;
+every local session's /cron reads run main's handler on the owner, and its writes run there only when
+the classic CLI sends them on its own command socket (a viewer's connection keeps main's refusal).
 
 Main's TUI answered these itself (``session.status``: ``Hermes TUI Status``; ``/context``:
 ``_format_live_context_output`` with the category table; ``/cron``: the classic CLI's overview in
@@ -37,7 +39,7 @@ async def owner(tmp_path, monkeypatch):
         reply = await connection.dispatch({'id': 1, 'method': method, 'params': params})
         assert 'result' in reply, reply
         return reply['result']
-    yield SimpleNamespace(call=call, home=home, authority=authority, workdir=tmp_path)
+    yield SimpleNamespace(call=call, home=home, authority=authority, workdir=tmp_path, connection=connection)
 
 
 async def _exec(owner, sid, command):
@@ -55,6 +57,20 @@ async def test_tui_status_is_main_tui_status(owner):
     assert labels == ['Model', 'Created', 'Last Activity', 'Tokens', 'Agent Running'], out
     assert 'Model: fake-model (custom)' in out and 'Agent Running: No' in out
     assert '**' not in out and 'Gateway Status' not in out
+
+
+@pytest.mark.asyncio
+async def test_tui_status_names_the_custom_entry_a_bare_custom_agent_runs_on(owner):
+    relay = 'http://127.0.0.1:8080/v1'
+    (owner.home / 'config.yaml').write_text(
+        f'model: {{default: deepseek-v4.1-flash, provider: custom, base_url: "{relay}"}}\n'
+        f'providers:\n  glm: {{api: "{relay}", default_model: glm-5.3}}\n'
+        f'  deepseek: {{api: "{relay}", default_model: deepseek-v4.1-flash}}\n')
+    sid = (await owner.call('session.create', request_id='t', source='tui', cwd=str(owner.workdir)))['session_id']
+    agent = SimpleNamespace(model='deepseek-v4.1-flash', provider='custom', requested_provider='custom:deepseek',
+                            base_url=relay)
+    owner.authority.runner._cached_agent_for = lambda route: agent
+    assert 'Model: deepseek-v4.1-flash (custom:deepseek)' in await _exec(owner, sid, 'status')
 
 
 @pytest.mark.asyncio
@@ -100,15 +116,101 @@ async def test_tui_cron_is_the_classic_overview_with_the_profile_jobs(owner):
 
 
 @pytest.mark.asyncio
-async def test_tui_cron_writes_stay_refused(owner):
-    sid = (await owner.call('session.create', request_id='t', source='tui', cwd=str(owner.workdir)))['session_id']
-    from gateway.session_tui_reads import _cron_read
-    assert _cron_read('pause abc') is None and _cron_read('add "every 2h" x') is None
+async def test_cron_writes_run_on_the_classic_cli_command_socket_whatever_surface_made_the_session(owner):
+    """T1 (#134889): the classic CLI's /cron add|pause|remove wrote the profile's cron store from the
+    CLI process. The owner runs them now (one writer) when they arrive on a connection that is not attached
+    to the session, the CLI's own command socket (GatewayConnection.call_until), even for a session a TUI
+    created and the CLI resumed (main's CLI wrote the store there too)."""
+    import json
     from gateway.session_controls import AuthorityConnection
-    connection = AuthorityConnection(owner.authority, object(), {'user_id': 'human'})
-    reply = await connection.dispatch({'id': 9, 'method': 'slash.exec',
-                                       'params': {'session_id': sid, 'command': 'cron remove abc'}})
-    assert reply.get('error', {}).get('message') == 'unsupported_command', reply
+    jobs = owner.home / 'cron' / 'jobs.json'
+    sid = (await owner.call('session.create', request_id='t', source='tui', cwd=str(owner.workdir)))['session_id']
+    command_socket = AuthorityConnection(owner.authority, object(), {'user_id': 'human'})
+
+    async def run(command):
+        reply = await command_socket.dispatch({'id': 2, 'method': 'slash.exec',
+                                               'params': {'session_id': sid, 'command': command}})
+        assert 'result' in reply, (command, reply)
+        return reply['result']['output']
+    added = await run('cron add "every 2h" "ping CRONPROBE" --name probe')
+    assert 'Created job:' in added and 'every 120m' in added, added
+    paused = await run('cron pause probe')
+    assert 'Paused job: probe' in paused, paused
+    assert [j['enabled'] for j in json.loads(jobs.read_text())['jobs'] if j['name'] == 'probe'] == [False]
+    assert 'State: paused' in await run('cron list --all')
+    assert 'Removed job: probe' in await run('cron remove probe')
+    assert json.loads(jobs.read_text())['jobs'] == []
+    assert 'Unknown cron command: bogus' in await run('cron bogus')
+
+
+@pytest.mark.asyncio
+async def test_cron_writes_stay_refused_on_a_viewer_connection_and_reads_list_all(owner):
+    """A connection attached to the session (Ink, Desktop and ACP send /cron on their main connection, which
+    answers one request at a time with a deadline) keeps main's refusal for /cron writes, whichever surface
+    created the session, a classic CLI session included. Its reads still list, ``-a`` included (main's TUI
+    alias)."""
+    from cron.jobs import create_job, pause_job
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    token = set_hermes_home_override(str(owner.home))
+    try:
+        pause_job(create_job('ping', 'every 2h', name='parked')['id'])
+    finally:
+        reset_hermes_home_override(token)
+    for source in ('cli', 'tui', 'gui', 'acp'):
+        sid = (await owner.call('session.create', request_id=source, source=source,
+                                cwd=str(owner.workdir)))['session_id']
+        assert 'parked' in await _exec(owner, sid, 'cron list -a'), source
+        assert 'parked' not in await _exec(owner, sid, 'cron list'), source
+        reply = await owner.connection.dispatch({'id': 9, 'method': 'slash.exec',
+                                                 'params': {'session_id': sid, 'command': 'cron resume parked'}})
+        assert reply.get('error', {}).get('message') == 'unsupported_command', (source, reply)
+    assert 'State: paused' in await _exec(owner, sid, 'cron list --all')  # nothing resumed it
+
+
+@pytest.mark.asyncio
+async def test_concurrent_cron_runs_never_wait_on_the_pool_their_jobs_need(owner, monkeypatch):
+    """A /cron run waits for its job, and the job's admission (tracked_write) and execution
+    (session_cron.execute) take threads from the loop's default pool. Waiting on that same pool, two
+    runs on a one-thread pool never answered: the job could not start, and the cron layer paused it as
+    unverified. The wait holds a thread of the runner's own unbounded pool instead."""
+    import asyncio
+    import concurrent.futures
+    from pathlib import Path
+    from types import MethodType
+    import cron.scheduler
+    from cron.jobs import create_job, get_job
+    from gateway.run import GatewayRunner
+    from gateway.session_controls import AuthorityConnection
+    from gateway.session_cron import current_execution
+    runner = owner.authority.runner
+    runner._get_executor = MethodType(GatewayRunner._get_executor, runner)
+    runner._run_in_executor_with_context = MethodType(GatewayRunner._run_in_executor_with_context, runner)
+    submit = cron.scheduler.run_job  # outside the owner's execution: submit the fire and wait for it
+
+    def run_job(job, **kwargs):
+        return submit(job, **kwargs) if current_execution() is None else (True, '# out', 'ran', None)
+    monkeypatch.setattr(cron.scheduler, 'run_job', run_job)
+    # The fire is submitted to the owner bound to the home of the authority's store (bind_owner).
+    home = Path(owner.authority.db.db_path).resolve().parent
+    (home / 'config.yaml').write_text((owner.home / 'config.yaml').read_text())
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    ids = [create_job('ping', 'every 2h', name=name)['id'] for name in ('one', 'two')]
+    sid = (await owner.call('session.create', request_id='r', source='cli', cwd=str(owner.workdir)))['session_id']
+    asyncio.get_running_loop().set_default_executor(concurrent.futures.ThreadPoolExecutor(1))
+
+    async def run(n, job_id):
+        socket = AuthorityConnection(owner.authority, object(), {'user_id': 'human'})  # the CLI's own
+        reply = await socket.dispatch({'id': n, 'method': 'slash.exec',
+                                       'params': {'session_id': sid, 'command': f'cron run {job_id}'}})
+        assert 'result' in reply, reply
+        return reply['result']['output']
+    try:
+        outs = await asyncio.wait_for(asyncio.gather(*(run(n, i) for n, i in enumerate(ids))), 30)
+    finally:
+        if getattr(runner, '_executor', None) is not None:
+            runner._executor.shutdown(wait=False)
+    assert [out.splitlines()[-1].strip() for out in outs] == ['Ran now: succeeded.'] * 2, (
+        outs, [get_job(i)['last_error'] for i in ids])
 
 
 @pytest.mark.asyncio

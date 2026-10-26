@@ -298,6 +298,13 @@ export function isSessionBusyError(error: unknown): boolean {
   return /session[ _]busy/i.test(error instanceof Error ? error.message : String(error))
 }
 
+/** A busy refusal because another writer holds the compression lock (`field: 'compression'`). */
+export function isCompressionBusyError(error: unknown): boolean {
+  const data = error instanceof JsonRpcGatewayError ? (error.data as { field?: unknown; reason?: unknown } | undefined) : null
+
+  return data?.reason === 'session_busy' && data.field === 'compression'
+}
+
 // prompt.submit refused because another surface (TUI, messaging gateway)
 // holds this session's lease (4090 / SESSION_NOT_OWNED, #106217). The gateway
 // stamps the machine reason in `error.data.reason`; the prose fallback covers
@@ -329,10 +336,15 @@ function gatewayReason(error: unknown): unknown {
 
 // The error card's surface for an ownership refusal: another surface owns the session (#106217,
 // deterministic: drop Retry, offer a new session), or the gateway owner is mid-turn and could not
-// queue the send (#140385, transient: Retry once the turn ends). Empty for any other error.
+// queue the send (#140385, transient: Retry once the turn ends), or the chat is stored history
+// nothing can continue (deterministic). Empty for any other error.
 export function ownershipErrorSurface(error: unknown): { errorSurface?: ErrorSurface } {
   if (isSessionNotOwnedError(error)) {
     return { errorSurface: { layer: 'gateway', code: 'SESSION_NOT_OWNED', retryable: false } }
+  }
+
+  if (gatewayReason(error) === 'session_read_only') {
+    return { errorSurface: { layer: 'gateway', code: 'session_read_only', retryable: false } }
   }
 
   if (gatewayReason(error) === 'SESSION_OWNER_UNCONFIRMED') {
@@ -353,6 +365,13 @@ export function isForwardedReceipt(
   result: { forwarded?: boolean | null; status?: string } | undefined
 ): boolean {
   return legacyAccepted && result?.forwarded === true && result.status === 'queued'
+}
+
+/** TUI-26: the owner ended the session's voice chat on a typed stop phrase and admitted nothing. The
+ * identityless legacy retry gets the same reply (the sidecar forwards it to the ledger owner), and no
+ * turn will complete that send either. */
+export function isVoiceStoppedReceipt(result: { voice_stopped?: boolean } | undefined): boolean {
+  return result?.voice_stopped === true
 }
 
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))

@@ -24,7 +24,7 @@ def _populate(db: SessionDB, rows: list[tuple[str, str, str, float]]) -> None:
         db.create_session(sid, source=source)
     with db._lock:
         db._conn.executemany(
-            "UPDATE sessions SET created_source=?, started_at=? WHERE id=?",
+            "UPDATE sessions SET created_source=?, started_at=?, message_count=1 WHERE id=?",
             [(created, started, sid) for sid, _source, created, started in rows],
         )
         db._conn.commit()
@@ -129,6 +129,7 @@ def _pre_column_readonly(tmp_path) -> SessionDB:
     writer = SessionDB(db_path=path)
     writer.create_session("legacy-cli", source="cli")
     with writer._lock:
+        writer._conn.execute("UPDATE sessions SET message_count=1 WHERE id='legacy-cli'")
         writer._conn.execute("DROP INDEX IF EXISTS idx_sessions_local_created_started")
         writer._conn.execute("ALTER TABLE sessions DROP COLUMN created_source")
         writer._conn.commit()

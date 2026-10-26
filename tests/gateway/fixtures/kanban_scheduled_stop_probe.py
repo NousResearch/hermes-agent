@@ -1,4 +1,4 @@
-"""Scheduled native retirement preserves jobs; a later Stop ends them before any resume."""
+"""Upstream scheduled retirement preserves jobs; native session Stop needs no board resume."""
 import json
 import os
 from pathlib import Path
@@ -113,18 +113,30 @@ def child(stop_later):
                 assert receipt['background_alive_after_planned_worker_exit'], 'ordinary planned retirement killed persisted job'
                 assert not effect.exists(), 'gate not opened yet'
                 if stop_later:
-                    latest = conn.execute('SELECT MAX(id) FROM task_events WHERE task_id=?', (tid,)).fetchone()[0]
-                    receipt['stop_observed_event_id'] = latest
-                    assert kb.block_task(conn, tid, reason='explicit later operator Stop', kind='needs_input', expected_event_id=latest)
-                    assert kb.get_task(conn, tid).status == 'blocked'
+                    # Upstream deliberately refuses scheduled -> blocked. Keep that contract;
+                    # its existing session Stop still cleans physical work without resuming it.
+                    assert not kb.block_task(conn, tid, reason='scheduled block remains unsupported', kind='needs_input')
+                    owner = [event for event in kb.list_events(conn, tid) if event.kind == 'owner_admitted'][-1]
+                    async def stop_owner():
+                        from hermes_cli.gateway_client import connect_gateway
+                        from hermes_cli.gateway_runtime import discover_gateway_endpoint
+                        endpoint = discover_gateway_endpoint(home)
+                        assert endpoint.state == 'ready'
+                        async with connect_gateway(endpoint=endpoint.endpoint) as client:
+                            snapshot = await client.rpc('session.resume', session_id=owner.payload['session_id'])
+                            await client.rpc('session.interrupt', session_id=owner.payload['session_id'],
+                                             execution_generation=snapshot['execution_generation'])
+                    import asyncio
+                    asyncio.run(stop_owner())
+                    receipt['stop_surface'] = 'session.interrupt'
+                    assert kb.get_task(conn, tid).status == 'scheduled'
                     wait_for(lambda: not kb._pid_alive(bgpid), 'explicit idle Stop failed before any resume')
                     receipt['background_alive_after_explicit_stop'] = kb._pid_alive(bgpid)
                     gate.touch()
                     receipt['no_resume_stop_proof'] = not effect.exists() and len([e for e in kb.list_events(conn, tid) if e.kind == 'owner_admitted']) == 1
                     assert receipt['no_resume_stop_proof']
                     peer.successor = True
-                    resumed_from = conn.execute('SELECT MAX(id) FROM task_events WHERE task_id=?', (tid,)).fetchone()[0]
-                    assert kb.unblock_task(conn, tid, expected_event_id=resumed_from)
+                    assert kb.unblock_task(conn, tid)
                     successor = dispatch.dispatch_once(conn, board='audit', max_spawn=1)
                     assert [x[0] for x in successor.spawned] == [tid], successor
                     wait_for(lambda: len([e for e in kb.list_events(conn, tid) if e.kind == 'owner_admitted']) == 2,

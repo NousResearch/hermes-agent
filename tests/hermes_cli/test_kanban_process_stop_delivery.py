@@ -85,7 +85,7 @@ def test_foreign_native_policy_binding_cannot_select_a_session(owned_board, mism
     board.admit(board.run_id, context_changes=context, binding_changes=binding)
     token = kb.list_events(board.conn, board.task_id)[-1].id
     with pytest.raises(RuntimeError, match='another profile|identity is unverified'):
-        kb.block_task(board.conn, board.task_id, kind='needs_input', expected_event_id=token)
+        kb.block_task(board.conn, board.task_id, kind='needs_input', expected_run_id=board.run_id)
     assert board.calls == []
     assert kb.get_task(board.conn, board.task_id).status == 'blocked'
 
@@ -94,11 +94,11 @@ def test_stop_replay_excludes_successor_owner_recorded_after_accepted_event(owne
     board = owned_board
     previous = board.admit(board.run_id)
     token = kb.list_events(board.conn, board.task_id)[-1].id
-    assert kb.block_task(board.conn, board.task_id, kind='needs_input', expected_event_id=token)
+    assert kb.block_task(board.conn, board.task_id, kind='needs_input', expected_run_id=board.run_id)
     accepted = kb.list_events(board.conn, board.task_id)[-1].id
     assert board.calls == [('session.resume', {'session_id': previous}),
                            ('session.interrupt', {'session_id': previous, 'execution_generation': 17})]
-    assert kb.unblock_task(board.conn, board.task_id, expected_event_id=accepted)
+    assert kb.unblock_task(board.conn, board.task_id)
     successor_run = kb.claim_task(board.conn, board.task_id).current_run_id
     successor = board.admit(successor_run)
     board.calls.clear()
@@ -113,7 +113,7 @@ def test_no_delivery_until_guarded_block_commits(owned_board, monkeypatch, refus
     board.admit(board.run_id)
     token = kb.list_events(board.conn, board.task_id)[-1].id
     if refusal == 'stale':
-        assert not kb.block_task(board.conn, board.task_id, kind='needs_input', expected_event_id=token - 1)
+        assert not kb.block_task(board.conn, board.task_id, kind='needs_input', expected_run_id=board.run_id + 1)
     else:
         append = kb._append_event
 
@@ -124,7 +124,7 @@ def test_no_delivery_until_guarded_block_commits(owned_board, monkeypatch, refus
 
         monkeypatch.setattr(kb, '_append_event', failed_write)
         with pytest.raises(sqlite3.IntegrityError, match='fixture block event refusal'):
-            kb.block_task(board.conn, board.task_id, kind='needs_input', expected_event_id=token)
+            kb.block_task(board.conn, board.task_id, kind='needs_input', expected_run_id=board.run_id)
     assert board.calls == []
     task = kb.get_task(board.conn, board.task_id)
     assert task.status == 'running' and task.current_run_id == board.run_id
@@ -151,7 +151,7 @@ def test_native_delivery_failure_preserves_accepted_block(owned_board, monkeypat
         monkeypatch.setattr(board.client, 'rpc', uncertain_stop)
     reason = 'task blocked; process Stop not confirmed' if failure == 'unavailable' else 'process_stop_unknown'
     with pytest.raises(RuntimeError, match=reason):
-        kb.block_task(board.conn, board.task_id, kind='needs_input', expected_event_id=token)
+        kb.block_task(board.conn, board.task_id, kind='needs_input', expected_run_id=board.run_id)
     assert len(board.calls) == (0 if failure == 'unavailable' else 2)
     assert kb.get_task(board.conn, board.task_id).status == 'blocked'
     assert kb.list_events(board.conn, board.task_id)[-1].kind == 'blocked'
@@ -175,7 +175,7 @@ async def test_owner_loop_commits_and_schedules_self_rpc_without_blocking(owned_
         return result
 
     monkeypatch.setattr(board.client, 'rpc', held_rpc)
-    assert kb.block_task(board.conn, board.task_id, kind='needs_input', expected_event_id=token)
+    assert kb.block_task(board.conn, board.task_id, kind='needs_input', expected_run_id=board.run_id)
     assert board.calls == [] and kb.get_task(board.conn, board.task_id).status == 'blocked'
     await asyncio.wait_for(entered.wait(), 10)
     release.set()

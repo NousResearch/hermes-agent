@@ -101,9 +101,8 @@ def child(persist):
                 bound = [e for e in kb.list_events(conn, tid) if e.kind == 'worker_bound'][-1].payload['pid']
                 checkpoints = list(home.rglob('processes.json'))
                 receipt['checkpoint_before_stop'] = {str(p.relative_to(home)): json.loads(p.read_text()) for p in checkpoints}
-                latest = conn.execute('SELECT MAX(id) FROM task_events WHERE task_id=?', (tid,)).fetchone()[0]
                 stopped = time.monotonic()
-                assert kb.block_task(conn, tid, reason='operator Stop audit', kind='needs_input', expected_event_id=latest)
+                assert kb.block_task(conn, tid, reason='operator Stop audit', kind='needs_input', expected_run_id=runid)
                 if early:
                     peer.successor = True
                     assert kb.unblock_task(conn, tid)

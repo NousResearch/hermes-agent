@@ -1,4 +1,4 @@
-"""A Stop of idle scheduled work must not wait for the next attempt to cancel its jobs."""
+"""Native session Stop of scheduled work needs no board resume; upstream block guards remain."""
 import json
 from pathlib import Path
 import subprocess
@@ -25,6 +25,7 @@ def test_idle_stop_reaps_scheduled_job_before_any_resume(tmp_path, stop_later):
     assert receipt['background_alive_after_planned_worker_exit']
     assert receipt['effect_after_gate'] is (not stop_later)
     if stop_later:
+        assert receipt['stop_surface'] == 'session.interrupt'
         assert receipt['no_resume_stop_proof']
         assert not receipt['background_alive_after_explicit_stop']
         assert not receipt['background_alive_at_successor_admission']

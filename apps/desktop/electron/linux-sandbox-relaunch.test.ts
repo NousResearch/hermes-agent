@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { linuxNoSandboxRelaunch } from './linux-sandbox-relaunch'
 
@@ -21,6 +21,48 @@ describe('Linux runtime --no-sandbox relaunch', () => {
     expect(linuxNoSandboxRelaunch({ platform: 'linux', runtimeNoSandbox: true, argv, env: {}, launchedWithoutSandbox: true })).toBeNull()
     // Windows reads the switch per child launch, so its runtime fallback works in place.
     expect(linuxNoSandboxRelaunch({ platform: 'win32', runtimeNoSandbox: true, argv, env: {}, launchedWithoutSandbox: false })).toBeNull()
+  })
+
+  // The relaunch skips `hermes desktop`, so it must not inherit the long TMPDIR
+  // main.ts restored after the lock: that path hangs requestSingleInstanceLock().
+  it.skipIf(process.platform !== 'linux')('relaunches with the short socket TMPDIR the launcher chose', async () => {
+    const saved = { ...process.env }
+    const shortDir = '/run/user/1000/hermes-desktop'
+    const longDir = `/home/u/.hermes/profiles/${'p'.repeat(80)}/cache/scratch`
+
+    try {
+      process.env.TMPDIR = shortDir
+      process.env.HERMES_DESKTOP_TMPDIR = longDir
+      delete process.env.ELECTRON_DISABLE_SANDBOX
+      vi.resetModules()
+      const { relaunchIfNoSandboxCameTooLate } = await import('./linux-sandbox-relaunch')
+
+      // main.ts: the lock is held, the backend's directory comes back.
+      process.env.TMPDIR = longDir
+      delete process.env.HERMES_DESKTOP_TMPDIR
+
+      let relaunchEnv: NodeJS.ProcessEnv = {}
+
+      const relaunched = relaunchIfNoSandboxCameTooLate({
+        commandLine: { hasSwitch: name => name === 'no-sandbox' },
+        relaunch: () => {
+          relaunchEnv = { ...process.env }
+        },
+        exit: () => undefined
+      })
+
+      expect(relaunched).toBe(true)
+      expect(relaunchEnv.TMPDIR).toBe(shortDir)
+      expect(relaunchEnv.HERMES_DESKTOP_TMPDIR).toBe(longDir)
+    } finally {
+      for (const key of Object.keys(process.env)) {
+        if (!(key in saved)) {
+          delete process.env[key]
+        }
+      }
+
+      Object.assign(process.env, saved)
+    }
   })
 
   it('relaunches the AppImage itself rather than its vanishing mount', () => {

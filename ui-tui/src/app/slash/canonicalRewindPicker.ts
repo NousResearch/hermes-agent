@@ -9,6 +9,7 @@ import { asRpcResult, rpcErrorMessage } from '../../lib/rpc.js'
 import type { SessionInfo } from '../../types.js'
 import type { RewindTarget } from '../interfaces.js'
 import { patchOverlayState } from '../overlayStore.js'
+import { captureDestination, type SubmissionDestination } from '../submissionDestination.js'
 import { getUiState, patchUiState } from '../uiStore.js'
 
 import { isUserTurn, retryText, rewindBusyText } from './canonicalSessionCommands.js'
@@ -53,27 +54,53 @@ export function openRewindPicker(ctx: SlashRunCtx) {
         return ctx.transcript.sys(t('slashCmd.core.rewind.nothing'))
       }
 
-      patchOverlayState({ rewind: { targets, onSubmit: (target, text) => void rewindAndSend(ctx, sid, target, text) } })
+      const destination = captureDestination()
+
+      patchOverlayState({
+        rewind: { targets, onSubmit: (target, text) => void rewindAndSend(ctx, sid, target, text, destination) }
+      })
     })
     .catch(ctx.guardedErr)
 }
 
 /** Cut the session back to just before `target`, repaint the transcript from the owner's snapshot, then
- * send the edited text as an ordinary prompt. A refusal (busy, stale revision) cuts nothing. */
-export async function rewindAndSend(ctx: SlashRunCtx, sid: string, target: RewindTarget, text: string) {
+ * send the edited text as an ordinary prompt. A refusal (busy, stale revision) cuts nothing.
+ *
+ * The picker is closed by now, so the edit is never dropped: once the cut has committed it is owed to
+ * `sid` as its next prompt, and any later failure (repaint fetch, session switch) leaves it in that
+ * session's pending queue; if nothing was cut it goes back into the composer. */
+export async function rewindAndSend(
+  ctx: SlashRunCtx,
+  sid: string,
+  target: RewindTarget,
+  text: string,
+  destination: SubmissionDestination = captureDestination()
+) {
   const stale = () => getUiState().sid !== sid
   const gw = ctx.gateway.gw
+  let cut = false
+
+  const keepEdit = () => {
+    if (cut) {
+      ctx.composer.enqueue(text, text, destination)
+    } else if (!stale()) {
+      ctx.composer.setInput(text)
+    }
+  }
 
   try {
     const mutation = await mutateCanonical(gw, sid, 'rewind', { target_message_id: target.rowId }, stale)
+    const removed = Number(mutation?.result?.rewound_count ?? 0)
+
+    cut = removed > 0
 
     if (!mutation || stale()) {
-      return
+      return keepEdit()
     }
 
-    const removed = Number(mutation.result?.rewound_count ?? 0)
+    if (!cut) {
+      keepEdit()
 
-    if (removed <= 0) {
       return ctx.transcript.sys(t('slashCmd.core.rewind.nothing'))
     }
 
@@ -82,7 +109,7 @@ export async function rewindAndSend(ctx: SlashRunCtx, sid: string, target: Rewin
     )
 
     if (stale()) {
-      return
+      return keepEdit()
     }
 
     const info = { ...getUiState().info, ...snapshot?.info } as SessionInfo
@@ -92,6 +119,8 @@ export async function rewindAndSend(ctx: SlashRunCtx, sid: string, target: Rewin
     ctx.transcript.sys(t('slashCmd.core.rewind.done', String(target.turn), String(removed)))
     ctx.transcript.send(text)
   } catch (error) {
+    keepEdit()
+
     if (!stale()) {
       ctx.transcript.sys(rewindBusyText(error, 'rewind') ?? `error: ${rpcErrorMessage(error)}`)
     }

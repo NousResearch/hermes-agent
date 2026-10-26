@@ -579,7 +579,7 @@ export interface SlashHandlerContext {
   composer: {
     attachClipboardImage: () => void
     attachImagePath: (path: string) => void
-    enqueue: (text: string, display?: string) => void
+    enqueue: ComposerActions['enqueue']
     hasSelection: boolean
     openEditor: () => Promise<void>
     queueRef: MutableRefObject<QueueItem[]>

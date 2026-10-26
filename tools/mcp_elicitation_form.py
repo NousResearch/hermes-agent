@@ -309,8 +309,9 @@ def _collect(asker: FormAsker, fields: list[FormField], header: str, ended: Call
                 break
         if pending:  # still invalid after the re-asks
             return FormOutcome("decline")
-    # A form whose every field was skipped and has no default is the user saying no.
-    if not answered_any and not content and any(f.required for f in fields):
+    # A form whose every field was skipped and has no default is the user saying no (optional
+    # fields included: an accepted empty form would read as the user agreeing).
+    if not answered_any and not content:
         return FormOutcome("decline")
     return FormOutcome("accept", content)
 

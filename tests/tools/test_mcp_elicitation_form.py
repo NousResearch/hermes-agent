@@ -156,3 +156,10 @@ def test_enum_pick_is_never_swapped_for_another_option(answer, outcome):
     field = parse_form({"properties": {"region": {"type": "string", "enum": ["US", "us"]}}})[0]
     assert coerce_answer(field, answer) == outcome
 
+
+def test_skipping_every_optional_field_declines():
+    schema = {"type": "object", "properties": {"note": {"type": "string"}, "rating": {"type": "integer"}}}
+    ctx = _call_context(lambda _questions: {"outcome": "submitted", "answers": {}})
+    handler = ElicitationHandler("formprobe", {"timeout": 5}, call_context=lambda: ctx)
+    result = asyncio.run(handler(context=None, params=_params(schema)))
+    assert result.action == "decline"

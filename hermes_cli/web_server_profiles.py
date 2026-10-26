@@ -465,18 +465,29 @@ def _hub_action_name(verb: str, key: str) -> str:
 
 def _installed_hub_identifiers(profile: Optional[str] = None) -> dict:
     """identifier -> installed lock entry for hub-installed skills (UI marks installed search
-    results). Scoped to ``profile``'s skills/.hub/lock.json when given — HubLockFile takes an
-    explicit path, sidestepping the import-time LOCK_FILE binding. {} when unreadable."""
+    results and catalog cards). Scoped to ``profile``'s skills/.hub/lock.json when given —
+    HubLockFile takes an explicit path, sidestepping the import-time LOCK_FILE binding. {} when
+    unreadable.
+
+    A ClawHub row is also listed under ``ClawHubSource.catalog_identifiers``, so a card's
+    ``clawhub/<slug>`` and a search hit's bare slug match the lock's ``@owner/slug``. Exact
+    lock ids win."""
     try:
         from tools.skills_hub import HubLockFile
+        from tools.skills_hub_clawhub import ClawHubSource
         if _is_current_profile(profile):
             lock = HubLockFile()
         else:
             profile_dir = _resolve_profile_dir(profile.strip())
             lock = HubLockFile(profile_dir / "skills" / ".hub" / "lock.json")
         keys = ("name", "trust_level", "scan_verdict")
-        return {entry["identifier"]: {k: entry.get(k) for k in keys}
-                for entry in lock.list_installed() if entry.get("identifier")}
+        rows = [entry for entry in lock.list_installed() if entry.get("identifier")]
+        installed = {entry["identifier"]: {k: entry.get(k) for k in keys} for entry in rows}
+        for entry in rows:
+            if entry.get("source") == "clawhub":
+                for alias in ClawHubSource.catalog_identifiers(entry["identifier"]):
+                    installed.setdefault(alias, installed[entry["identifier"]])
+        return installed
     except HTTPException:
         raise  # an unknown profile is the scope's 404, not an unreadable lock file
     except Exception:

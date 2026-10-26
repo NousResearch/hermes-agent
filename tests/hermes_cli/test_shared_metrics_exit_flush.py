@@ -271,3 +271,45 @@ def test_a_wedged_exit_flush_is_bounded_and_runs_after_the_clean_exit_stamp(metr
     assert finished_in_time == [False]  # the barrier really was wedged
     assert phase_at_flush == ["exited"]
     assert time.monotonic() - started < 5
+
+
+def _engagement_state(home: Path) -> dict | None:
+    with sqlite3.connect(_store(home).as_uri() + "?mode=ro", uri=True) as conn:
+        row = conn.execute("SELECT value FROM telemetry_state WHERE key = 'engagement_day_state'").fetchone()
+    return json.loads(row[0]) if row else None
+
+
+def test_graceful_exit_drains_the_root_profiles_deferred_host_count(tmp_path, monkeypatch):
+    """The host-level active-profiles accumulator lives in the ROOT profile's store, a store no
+    per-profile runtime owns. When another process held it past the busy timeout, the profile's visit
+    was deferred in memory; the graceful exit still writes it there (and only there) once the store
+    frees, instead of losing it to ``os._exit``."""
+    import gateway.run as gateway_run
+    from hermes_cli.observability import shared_metrics_engagement as engagement
+    from hermes_cli.observability.shared_metrics import SharedMetricsStore
+
+    root = (tmp_path / "root").resolve()
+    profile = root / "profiles" / "work"
+    profile.mkdir(parents=True)
+    _write_policy(root, enabled=True, send=False)
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    resource = {"architecture": "x86_64", "hermes_version": "0.0.0", "install_method": "git", "os_family": "linux"}
+    profile_store = SharedMetricsStore(_store(profile), _store(profile).parent / "outbox")
+    engagement._root_store(root)  # the store exists; another process now holds its write lock
+    holder = sqlite3.connect(_store(root), isolation_level=None)
+    holder.execute("BEGIN IMMEDIATE")
+    try:
+        engagement.record(profile_store, resource, surface="cli", route=None)
+    finally:
+        holder.execute("ROLLBACK")
+        holder.close()
+    assert _engagement_state(root) is None  # deferred, not written
+    profile_state = _engagement_state(profile)
+
+    monkeypatch.setattr(gateway_run.os, "_exit", _fake_exit)
+    with pytest.raises(_Exited):
+        gateway_run._exit_after_graceful_shutdown(0)
+
+    root_state = wait_until(lambda: _engagement_state(root), what="the root's deferred host count")
+    assert root_state["owner"] is True and len(root_state["profiles"]) == 1
+    assert _engagement_state(profile) == profile_state  # the profile's own store never got the root's row

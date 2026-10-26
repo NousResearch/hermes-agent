@@ -68,21 +68,25 @@ def stamp_exit(exit_kind: str, crash: str = "none") -> None:
 
 def flush_before_hard_exit(timeout_s: float = EXIT_FLUSH_TIMEOUT_S) -> bool:
     """For a graceful stop about to ``os._exit``: run the shared-metrics exit flush its skipped atexit
-    hooks would have run (close each live runtime's sessions under its own profile, write queued and
-    deferred rows to the local store).
+    hooks would have run (close each live runtime's sessions under its own profile, write queued rows,
+    and write every store's deferred rows, the root profile's host-level store included, each into
+    the store that deferred it).
 
     Bounded by ``timeout_s`` on a daemon thread, because the Relay flush waits on every managed call
     still in flight and a wedged one must not hold the exit. Never imports the runtime module:
     collection off (or never started) means nothing to flush and nothing created. Never raises; True
     when the flush finished in time."""
     runtimes = sys.modules.get("hermes_cli.observability.relay_shared_metrics")
-    if runtimes is None:
+    stores = sys.modules.get("hermes_cli.observability.shared_metrics")
+    if runtimes is None and stores is None:
         return True
     deadline = time.monotonic() + max(0.0, timeout_s)
 
     def _flush() -> None:
-        runtimes.shutdown_runtimes()
-        runtimes.drain_deferred_writes(deadline - _DRAIN_MARGIN_S)  # done before the join gives up
+        if runtimes is not None:
+            runtimes.shutdown_runtimes()
+        if stores is not None:  # every store that deferred a write, root/Desktop ones included
+            stores.drain_deferring_stores(deadline - _DRAIN_MARGIN_S)  # done before the join gives up
 
     try:
         from agent.memory_provider import spawn_context_thread

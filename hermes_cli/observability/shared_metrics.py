@@ -7,6 +7,7 @@ import json
 import logging
 import sqlite3
 import threading
+import time
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -154,6 +155,25 @@ _SEND_COLUMNS = (
 )
 
 logger = logging.getLogger(__name__)
+
+# Every store in this process that ever deferred a write, the per-profile runtimes' stores and the
+# ones no runtime owns alike (the root profile's host-level active-profiles accumulator, the Desktop
+# store). ``os._exit`` skips each store's atexit drain, so a hard exit drains this set instead.
+_DEFERRING_STORES: list[SharedMetricsStore] = []
+_DEFERRING_STORES_LOCK = threading.Lock()
+
+
+def drain_deferring_stores(deadline: float) -> None:
+    """Write every store's deferred rows before an ``os._exit``, waiting on a busy store no later
+    than ``deadline`` (``time.monotonic``). Each deferred write runs against the store that deferred
+    it, so one profile's rows never land in another's database."""
+    with _DEFERRING_STORES_LOCK:
+        stores = list(_DEFERRING_STORES)
+    for store in stores:
+        remaining_ms = int((deadline - time.monotonic()) * 1000)
+        if remaining_ms <= 0:
+            return
+        store.drain_deferred(busy_timeout_ms=remaining_ms)
 
 
 def _utc_now() -> datetime:
@@ -429,6 +449,8 @@ class SharedMetricsStore:
                 register, self._drain_at_exit = not self._drain_at_exit, True
             if register:
                 atexit.register(self.drain_deferred)
+                with _DEFERRING_STORES_LOCK:
+                    _DEFERRING_STORES.append(self)
             if not busy:
                 raise
 

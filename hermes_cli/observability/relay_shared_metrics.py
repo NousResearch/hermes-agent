@@ -10,7 +10,7 @@ import threading
 import uuid
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
-from time import monotonic, monotonic_ns
+from time import monotonic_ns
 from typing import Any, Callable, Iterator
 
 from agent import relay_runtime
@@ -1516,18 +1516,6 @@ def shutdown_runtimes() -> None:
         runtimes = [runtime for runtime in _RUNTIMES.values() if isinstance(runtime, _Runtime)]
     for runtime in runtimes:
         runtime._safe(runtime.shutdown)
-
-
-def drain_deferred_writes(deadline: float) -> None:
-    """Write each live store's deferred rows (its atexit ``drain_deferred``, which ``os._exit`` also
-    skips), waiting on a busy store no later than ``deadline`` (``time.monotonic``)."""
-    with _RUNTIME_LOCK:
-        stores = [runtime.subscriber.store for runtime in _RUNTIMES.values() if isinstance(runtime, _Runtime)]
-    for store in stores:
-        remaining_ms = int((deadline - monotonic()) * 1000)
-        if remaining_ms <= 0:
-            return
-        _Runtime._safe(store.drain_deferred, busy_timeout_ms=remaining_ms)
 
 
 def close_session_run(session_id: str) -> None:

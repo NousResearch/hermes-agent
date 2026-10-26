@@ -25,16 +25,13 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 # Every sub-runner bounds its own wait (the live lane at 30 min, the relay waiter by its budget);
 # this only reaps one that outlives that, reported as pending rather than lost.
 FAN_OUT_WAIT_SECONDS = 32 * 60
 _HEX_ID_RE = re.compile(r"[0-9a-f]{32,64}")
-# How long a cancel waits for the owner to record a scheduled retry's admission (one receipt write).
-_RETRY_SETTLE_SECONDS = 2.0
 logger = logging.getLogger(__name__)
 
 
@@ -200,52 +197,20 @@ def cancel_own_delivery(delivery_id: str, raw_target: str, sender: Any) -> str:
     if record["status"] in _TERMINAL:
         return json.dumps({"status": record["status"], "delivery_id": delivery_id,
                            "detail": "That request already finished; nothing to cancel."})
-    admission = record.get("retry_admission_id") or record.get("admission_id")
-    if not admission:
+    if not record.get("admission_id"):
         return _err("That request has no admission to cancel (its outcome is unknown). Do not retry.")
-
-    def cancel(admission_id: str) -> dict:
-        return _authority_rpc(home, "prompt.cancel", {"session_id": record["session_id"], "admission_id": admission_id})
-
     try:
-        answer = cancel(admission)
-        if answer.get("status") == "terminal" and answer.get("outcome") != "cancelled" and admission == record.get(
-                "admission_id"):
-            # The first attempt is over but the receipt was still pending: the owner may be admitting
-            # the delivery's one retry. That retry is the request now.
-            retry = _await_retry_admission(home, delivery_id)
-            if retry == "":
-                return json.dumps({"status": "pending", "delivery_id": delivery_id,
-                                   "detail": "Its first attempt has ended but its receipt is not final yet (its one "
-                                             "automatic retry may be starting): cancel again in a few seconds."})
-            if retry:
-                answer = cancel(retry)
+        # The owner decides which admission is the request now, under the lock that admits its one
+        # automatic retry: a retry not admitted yet is withdrawn instead of racing this cancel.
+        answer = _authority_rpc(home, "bot_relay.cancel", {
+            "id": delivery_id, "author_id": f"bot:{sender.me}",
+            "profile": Path(home).name if Path(home).parent.name == "profiles" else "default"})
     except Exception as exc:
         # The owner may be down or refuse: the sender gets that as a tool error, never a crash.
         logger.debug("message_agent cancel of %s failed", delivery_id, exc_info=True)
         return _err(f"Cancel failed: {exc}")
-    if answer.get("status") == "terminal" and answer.get("outcome") == "cancelled":
-        return json.dumps({"status": "cancelled", "delivery_id": delivery_id,
-                           "detail": "Withdrawn before it ran. Its delivery process reports the cancellation."})
-    if answer.get("status") == "terminal":
-        return json.dumps({"status": answer.get("outcome") or "terminal", "delivery_id": delivery_id,
-                           "detail": "That request already finished; nothing to cancel."})
-    return json.dumps({"status": "stopping", "delivery_id": delivery_id,
-                       "detail": "Its turn was running and was told to stop; its delivery process reports how it ended."})
-
-
-def _await_retry_admission(home: Any, delivery_id: str) -> Optional[str]:
-    """The delivery's retry admission once the owner records it; None when the receipt settled with
-    no retry (nothing left to cancel); "" when it is still pending after a short wait."""
-    from tools.bot_live_delivery import _TERMINAL, read_delivery_result
-
-    deadline = time.monotonic() + _RETRY_SETTLE_SECONDS
-    while True:
-        record = read_delivery_result(home, delivery_id) or {}
-        if record.get("retry_admission_id"):
-            return record["retry_admission_id"]
-        if record.get("status") in _TERMINAL or (record.get("retry") or {}).get("refused"):
-            return None
-        if time.monotonic() >= deadline:
-            return ""
-        time.sleep(0.25)
+    detail = {"cancelled": "Withdrawn before it ran (or before its automatic retry); it will not run.",
+              "stopping": "Its turn was running and was told to stop; its delivery process reports how it ended.",
+              }.get(answer.get("status"), "That request already finished; nothing to cancel.")
+    status = answer.get("status") if answer.get("status") in {"cancelled", "stopping"} else answer.get("receipt_status")
+    return json.dumps({"status": status or "terminal", "delivery_id": delivery_id, "detail": detail})

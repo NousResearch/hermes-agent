@@ -486,6 +486,8 @@ def _result(authority, record):
         status, reply = _admission_outcome(authority, retry_id)
     else:
         status, reply = _admission_outcome(authority, record['admission_id'], record)
+        if status == 'failed' and (record.get('retry') or {}).get('refused') == 'cancelled':
+            status = 'cancelled'  # its sender withdrew it (``session_bot_cancel``); its retry never ran
     error = reason = None
     if status == 'failed':
         try:

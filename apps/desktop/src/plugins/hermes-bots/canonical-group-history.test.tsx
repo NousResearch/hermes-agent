@@ -8,8 +8,11 @@ const request = vi.hoisted(() => vi.fn())
 vi.mock('@hermes/plugin-sdk', async () => {
   const { en } = await import('@/i18n/en')
   const { Textarea } = await import('@/components/ui/textarea')
+  const { CopyButton } = await import('@/components/ui/copy-button')
+  const { ScrollArea } = await import('@/components/ui/scroll-area')
+  const { cn } = await import('@/lib/utils')
 
-  return { Textarea, atom: (await import('nanostores')).atom, host: { requestProfile: request }, useI18n: () => ({ locale: 'en', t: en }),
+  return { CopyButton, ScrollArea, cn, Textarea, atom: (await import('nanostores')).atom, host: { requestProfile: request }, useI18n: () => ({ locale: 'en', t: en }),
     Button: (props: ComponentProps<'button'>) => <button {...props} />,
     MessageTextContent: ({ text }: { text: string }) => <div data-testid="markdown">{text}</div>,
     Streamdown: ({ children }: { children: ReactNode }) => <div data-testid="markdown">{children}</div>,

@@ -77,6 +77,14 @@ Navigation must preserve context. A background session finishing, a tool result
 arriving, or a project refresh may update badges and cached data; it must not
 replace the foreground transcript or steal focus.
 
+Group transcripts distinguish human messages with an account icon and a trailing,
+tinted surface; Bot replies stay leading with their own identity. Message copy
+actions are available without hovering, and code fences retain the shared code
+card's independent copy action. Use `ScrollArea` with an always-visible scrollbar
+for group history. Its optional `viewportRef` binds scroll behavior to the real
+viewport. Follow new content while pinned to the tail, preserve scrollback while
+reading, and offer the localized, keyboard-accessible jump-to-bottom control.
+
 ## Surfaces & elevation
 
 Floating panels (base `Dialog`, route overlays, boot/install/update surfaces,

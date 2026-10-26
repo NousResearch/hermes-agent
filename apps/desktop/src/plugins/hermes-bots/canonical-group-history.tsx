@@ -1,12 +1,9 @@
-import * as sdk from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
 import { type CanonicalGroupAttachment, CanonicalGroupAttachments, fetchCanonicalGroupAttachment } from './canonical-group-attachments'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
+import { CanonicalGroupMessage } from './canonical-group-message'
 import type { CanonicalGroupBinding, CanonicalRoomMember } from './canonical-groups'
-
-const MessageTextContent = typeof sdk === 'undefined' ? undefined : sdk.MessageTextContent
-const Streamdown = typeof sdk === 'undefined' ? undefined : sdk.Streamdown
 
 export interface CanonicalGroupEvent {
   seq: number
@@ -35,35 +32,6 @@ function eventAuthor(event: CanonicalGroupEvent, roster: Map<string, CanonicalRo
   // The log's label preserves who spoke even if the roster has since changed.
   return (isMessage ? event.actor?.display_name : undefined) || member?.display_name || member?.handle ||
     (isMessage ? event.actor?.id : memberId)
-}
-
-function EventTime({ timestamp }: { timestamp?: number }) {
-  if (typeof timestamp !== 'number') {return null}
-  const at = new Date(timestamp * 1000)
-
-  if (!Number.isFinite(at.getTime())) {return null}
-
-  return <time className="text-[0.625rem] text-(--ui-text-quaternary)" dateTime={at.toISOString()}>{sdk.relativeTime(at.getTime())}</time>
-}
-
-function EventBody({ event, notice }: { event: CanonicalGroupEvent; notice?: string }) {
-  if (notice) {
-    const detail = event.payload.error || event.payload.reason || event.payload.reason_code
-
-    return <p className="text-xs text-(--ui-text-secondary)" data-selectable-text="true">
-      <strong>{notice}</strong>{detail && <>: {detail}</>}
-    </p>
-  }
-
-  const text = event.payload.text || event.payload.content || ''
-
-  return <div className="min-w-0 text-xs text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0 [&_ul]:mb-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:mb-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_pre]:whitespace-pre-wrap [&_pre]:wrap-anywhere" data-selectable-text="true">
-    {/* The shared renderer (layout and large-message safeguards). media={false}: room text
-        may come from another machine, so its MEDIA: paths never resolve against this gateway;
-        room files keep their own download path below. */}
-    {MessageTextContent ? <MessageTextContent media={false} text={text} />
-      : Streamdown ? <Streamdown>{text}</Streamdown> : text}
-  </div>
 }
 
 // Previews download the whole file over RPC; larger or unsized images keep only Download.
@@ -177,16 +145,11 @@ export function CanonicalGroupHistory({ binding, events, members = [], disabled 
     const author = eventAuthor(event, roster, isMessage)
     const previewEventId = event.room_id === binding.roomId ? event.event_id : undefined
 
-    return <div className="grid grid-cols-[minmax(0,1fr)] gap-1 px-2 py-1.5" key={event.seq}>
-    <div className="flex items-center gap-2">
-      {author && <strong className="text-[0.7rem] font-semibold text-(--ui-accent)">{author}</strong>}
-      <EventTime timestamp={event.created_at} />
-    </div>
-    <EventBody event={event} notice={notice} />
+    return <CanonicalGroupMessage author={author} event={event} key={event.seq} notice={notice}>
     {previewEventId && event.payload.attachments?.filter(a => a.kind === 'image').map(a =>
       <ImagePreview attachment={a} binding={binding} disabled={disabled} eventId={previewEventId} key={a.attachment_id ?? a.name} />)}
     {!!event.payload.attachments?.length && <CanonicalGroupAttachments
       attachments={event.payload.attachments.map(attachment => ({ ...attachment, event_id: event.event_id }))}
       binding={binding} disabled={disabled || !event.event_id || event.room_id !== binding.roomId} readOnly />}
-  </div>})}</>
+  </CanonicalGroupMessage>})}</>
 }

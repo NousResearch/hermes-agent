@@ -1,5 +1,6 @@
-import { Button, host } from '@hermes/plugin-sdk'
+import { Button, Codicon, host, ScrollArea, Tip } from '@hermes/plugin-sdk'
 import { type ClipboardEvent, type DragEvent, useEffect, useRef, useState } from 'react'
+import { useStickToBottom } from 'use-stick-to-bottom'
 
 import { type CanonicalDriverActivity, CanonicalGroupWorkingLine, canonicalMemberPhases } from './canonical-group-activity'
 import { CanonicalGroupAttachments, type CanonicalGroupUploader } from './canonical-group-attachments'
@@ -32,6 +33,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
 }) {
   const [binding] = useState(() => ({ ...initialBinding }))
   const labels = useCanonicalGroupLabels()
+  const { scrollRef, contentRef, isAtBottom, scrollToBottom } = useStickToBottom({ initial: 'instant', resize: 'instant' })
   const [state, setState] = useState<RoomState | null>(null)
   const [events, setEvents] = useState<RoomEvent[]>([])
   const [error, setError] = useState('')
@@ -156,6 +158,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
         setRestoredPending(false)
         setDraft(held?.text ?? '')
         setAttachments(held?.attachments ?? [])
+        void scrollToBottom({ animation: 'instant' })
       }
     })
   }
@@ -195,9 +198,20 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     {readError && <div role="alert">{readError}<Button onClick={() => void refresh().catch(e => setReadError(String(e)))}>{labels.refresh}</Button></div>}
     {error && <div role="alert">{error}</div>}
     {state && !state.driver_status && <p>{labels.driverUnavailable}</p>}
-    <div className="min-h-0 flex-1 overflow-auto" role="log">
-      <CanonicalGroupHistory binding={binding} disabled={!visible} events={events} members={state?.room.members} />
-      <CanonicalGroupWorkingLine driver={state?.driver_status} labels={labels} members={state?.room.members} phases={phases} />
+    <div className="relative min-h-0 flex-1">
+      <ScrollArea className="h-full" role="log" type="always" viewportRef={scrollRef}>
+        <div className="space-y-2 pb-2 pr-3" ref={contentRef}>
+          <CanonicalGroupHistory binding={binding} disabled={!visible} events={events} members={state?.room.members} />
+          <CanonicalGroupWorkingLine driver={state?.driver_status} labels={labels} members={state?.room.members} phases={phases} />
+        </div>
+      </ScrollArea>
+      {!isAtBottom && <div className="absolute bottom-2 left-1/2 -translate-x-1/2">
+        <Tip label={labels.scrollToBottom}>
+          <Button aria-label={labels.scrollToBottom} onClick={() => void scrollToBottom()} size="icon" variant="outline">
+            <Codicon name="arrow-down" />
+          </Button>
+        </Tip>
+      </div>}
     </div>
     {(state?.driver_status?.pending_actions || []).map(action => <div className="flex items-center gap-2" key={`${action.kind}:${action.task_id}:${action.execution_generation}`}>
       <span>{action.member_id}</span>

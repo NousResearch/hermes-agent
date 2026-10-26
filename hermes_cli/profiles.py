@@ -21,7 +21,7 @@ from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_arc
 from hermes_cli import config_backend as _config_backend
 from hermes_cli.profiles_config import _migrate_profile_config_if_outdated
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_STORES
-from hermes_cli.profiles_remove import _rmtree_make_writable, _rmtree_with_retry, wait_profile_unowned
+from hermes_cli.profiles_remove import _rmtree_make_writable, _rmtree_with_retry, gateway_stop_notice, wait_profile_unowned
 from hermes_constants import (
     LOCAL_RUNTIME_ROOT_DIRS, PROFILE_ID_RE, clear_named_profile_deleted, mark_named_profile_deleted,
     named_profile_has_identity, named_profile_is_deleted, named_profile_is_live,
@@ -756,7 +756,7 @@ def _check_gateway_running(profile_dir: Path) -> bool:
 
 def _served_by_running_multiplexer(profile_name: str) -> bool:
     """True when the live default gateway multiplexes ``profile_name`` (such a profile has no
-    gateway.pid of its own, so ``_check_gateway_running`` alone reports it stopped).
+    gateway.pid of its own, so ``_stop_gateway_process`` cannot stop it — only its routes are released).
 
     Single shared lookup with the named-profile start guard and cron liveness (#97120).
     """
@@ -1677,7 +1677,7 @@ def _print_delete_summary(canon: str, profile_dir: Path, gw_running: bool, wrapp
     if wrapper_path is not None:
         print(f"  • Command alias ({wrapper_path})")
     if gw_running:
-        print("  ⚠ Gateway is running — it will be stopped.")
+        print(gateway_stop_notice(profile_dir))
 
 
 class ProfileIdentitySettlementPending(RuntimeError):

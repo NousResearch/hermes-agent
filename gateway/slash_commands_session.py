@@ -145,7 +145,8 @@ def rehome_review_delivery_completion(nested_event: MessageEvent, carrier: Messa
     ``_handle_message`` moves it back there when the turn ran on a rewrite copy or a rescued
     orphan instead);
     under a session authority the drain executes the turn and ``admit_message`` adopts the
-    completion onto the event it waited with (``gateway.session_ingress_review``). No delivery
+    completion onto the event it waited with (``gateway.session_ingress_review``; a rewrite
+    copy, which ``_handle_message`` re-homes the same way on its return). No delivery
     path reads that event, so the token would stay live for the process lifetime. ``carrier``
     is the event the handler was dispatched with, which both the inline dispatch and a
     background task read once the handler returns (``_take_review_delivery_callback``) and

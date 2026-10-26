@@ -11,10 +11,11 @@ may run on another object than the one it was dispatched with (a ``pre_gateway_d
 rewrite copy, the orphan the FIFO rescue runs instead): its marker rides the turn
 (``carry_direct_call_ingress``) and the completion is re-homed onto the dispatched object once
 the handler returns (``rehome_turn_completion``), so the owner that reads that object completes
-it. Ownership is released before the spawn hop, and a dropped candidate logs a body-free,
-owner-tagged slug. A finished admission stays bound until the next turn's ``bind_agent``: a
-hand-off that lands after a cancel completed the owner is dropped as ``delivery_unconfirmed``,
-never spawned through the facade.
+it; the same re-home carries the completion ``admit_message`` adopted onto a rewrite copy under
+a session authority. Ownership is released before the spawn hop, and a dropped candidate logs
+a body-free, owner-tagged slug. A finished admission stays bound until the next turn's
+``bind_agent``: a hand-off that lands after a cancel completed the owner is dropped as
+``delivery_unconfirmed``, never spawned through the facade.
 """
 
 from __future__ import annotations
@@ -336,8 +337,13 @@ def carry_direct_call_ingress(dispatched: Any, event: Any) -> None:
 def rehome_turn_completion(dispatched: Any, event: Any) -> None:
     """Once the handler returns, the completion parked on the event the turn ran on belongs
     on the object the caller dispatched: that is what its owner reads (``/retry``'s re-home
-    onto the command event, the drain's handover, the handoff's ``finally``). A no-op when
-    the turn ran on the dispatched object or parked nothing on the other one."""
+    onto the command event, the drain's handover, the handoff's ``finally``, the adapter
+    lifecycle's ``_take_review_delivery_callback``). Under a session authority the turn is
+    the drain's and ``admit_message`` adopts its completion onto the admitted copy
+    (``session_ingress_review.adopt_review_completion``): the same move, from
+    ``_handle_message``'s one exit after admission. A no-op when the turn ran on the
+    dispatched object or nothing is parked on the other one (a raise out of
+    ``admit_message`` adopts nothing)."""
     if event is dispatched:
         return
     from gateway.slash_commands_session import rehome_review_delivery_completion

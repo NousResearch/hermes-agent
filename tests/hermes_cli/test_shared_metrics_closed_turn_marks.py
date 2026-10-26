@@ -67,13 +67,14 @@ def _recorded(home) -> dict[str, int]:
 
 def _run_after(context: contextvars.Context, before_emit) -> None:
     """Run the marks on a thread holding ``context``, after ``before_emit`` ran on this thread."""
-    go = threading.Event()
-    worker = threading.Thread(target=context.run, args=(lambda: (go.wait(5), _emit_process_marks()),))
+    go, released = threading.Event(), []
+    worker = threading.Thread(target=context.run, args=(lambda: (released.append(go.wait(30)), _emit_process_marks()),))
     worker.start()
     before_emit()
     go.set()
-    worker.join(10)
+    worker.join(40)
     assert not worker.is_alive()
+    assert released == [True], "the marks must be emitted only after before_emit ran"
 
 
 def test_marks_from_a_thread_that_outlives_its_turn_are_recorded(relay_home):

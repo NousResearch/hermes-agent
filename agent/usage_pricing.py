@@ -265,6 +265,15 @@ for _provider, _url, _version, _rows in _SNAPSHOTS:
             _OFFICIAL_DOCS_PRICING[(_provider, _model)] = _entry
 del _SNAPSHOTS, _provider, _url, _version, _rows, _models, _rates, _entry, _model
 
+# MiniMax M3.1 Flash (GA 2026-10-19): a flat rate with no long-prompt step-up and no
+# priority tier, unlike M3. Pinned as its own entry so the version reflects the October
+# price sheet instead of stamping the 2026-04 snapshot that still carries M2.7.
+_OFFICIAL_DOCS_PRICING[("minimax", "minimax-m3.1-flash")] = _snap(
+    "0.15", "0.60", "0.015",
+    url="https://platform.minimax.io/docs/pricing/overview",
+    version="minimax-pricing-2026-10",
+)
+
 # GPT-6 Astra uses whole-request pricing above the 272K prompt tier.  Keep this
 # account-gated model out of generic static catalogs, but retain published billing
 # metadata for an explicitly selected route.

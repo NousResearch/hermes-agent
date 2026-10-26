@@ -287,7 +287,8 @@ class ClosingTab:
 
     def type(self, *frames):
         for frame in frames:
-            self.inbound.put_nowait({"type": "websocket.receive", "bytes": frame})
+            kind = "text" if isinstance(frame, str) else "bytes"
+            self.inbound.put_nowait({"type": "websocket.receive", kind: frame})
 
     def close_tab(self):
         self.inbound.put_nowait({"type": "websocket.disconnect"})
@@ -371,14 +372,43 @@ def unread_posix_pty(_monkeypatch):
         os.close(slave)
 
 
-def keys_filling_the_input_queue(extra=0):
+def keys_filling_the_input_queue(extra=0, *, text=False):
     """``(frames, filled)``: keystroke frames whose first ``filled`` fill the host terminal's input
-    queue, then ``extra`` more. Each frame repeats one letter; the next frame has the next letter."""
+    queue, then ``extra`` more. Each frame repeats one letter; the next frame has the next letter.
+    With ``text``, the frames are text frames, as a browser sends them, of 4-byte emoji: each has a
+    quarter as many characters as UTF-8 bytes."""
     from hermes_cli import web_host_terminal_sessions as host_sessions
 
     size = host_sessions._INPUT_QUEUE_BYTES // 16
     filled = -(-host_sessions._INPUT_QUEUE_BYTES // (size + host_sessions._FRAME_OVERHEAD_BYTES))
+    if text:
+        return [chr(0x1F600 + n % 26) * (size // 4) for n in range(filled + extra)], filled
     return [bytes([65 + n % 26]) * size for n in range(filled + extra)], filled
+
+
+def as_written(frame) -> bytes:
+    """What the program reads for a frame: a text frame's UTF-8, a binary frame's bytes."""
+    return frame.encode() if isinstance(frame, str) else frame
+
+
+def test_text_frames_count_their_utf8_bytes_against_the_input_queue():
+    """A text frame is written as UTF-8, so it counts its UTF-8 bytes: a non-ASCII paste fills the
+    input queue at the same bound as the bytes it will write, not at a multiple of it."""
+    from hermes_cli import web_host_terminal_sessions as host_sessions
+
+    keys, _ = keys_filling_the_input_queue(text=True)
+    inbox = host_sessions._InputQueue()
+    for key in keys:
+        assert not inbox.full(), "the input queue filled before its byte bound"
+        inbox.put_nowait({"type": "websocket.receive", "text": key})
+    assert inbox.full(), "text frames filled the input queue by characters, not bytes"
+    assert inbox.queued == sum(len(as_written(key)) + host_sessions._FRAME_OVERHEAD_BYTES for key in keys)
+    while not inbox.empty():
+        inbox.get_nowait()
+    assert inbox.queued == 0
+    # A lone surrogate never comes off a WebSocket (text frames are valid UTF-8), but counting one
+    # must not fail the reader.
+    assert host_sessions._frame_cost({"text": "\ud800"}) == 3 + host_sessions._FRAME_OVERHEAD_BYTES
 
 
 @pytest.mark.asyncio
@@ -693,12 +723,13 @@ class SlowAccept:
 
 
 @pytest.mark.asyncio
-async def test_a_live_tab_typing_past_a_full_input_queue_is_held_back_and_loses_nothing(tmp_path, monkeypatch):
+@pytest.mark.parametrize("text", [False, True], ids=["binary", "non-ascii-text"])
+async def test_a_live_tab_typing_past_a_full_input_queue_is_held_back_and_loses_nothing(tmp_path, monkeypatch, text):
     """Keys typed while a write waits on a slow program queue up to the input bound. Past it the
     reader takes no more frames, however many the tab sends (they wait in the socket, which pushes
     back on the browser), and checks only that the tab is still there, which leaves a live tab
     attached and writes nothing to its terminal. Once the program reads, every key reaches it in
-    order."""
+    order. Text frames count the UTF-8 bytes they are written as."""
     from hermes_cli import web_host_terminal_sessions as host_sessions
 
     home = tmp_path / ".hermes"
@@ -718,7 +749,7 @@ async def test_a_live_tab_typing_past_a_full_input_queue_is_held_back_and_loses_
 
     monkeypatch.setattr(host_sessions, "get_host_terminals", lambda _app: registry)
     monkeypatch.setattr(host_sessions, "_admit", admit)
-    typed, fill = keys_filling_the_input_queue(3 * 16)
+    typed, fill = keys_filling_the_input_queue(3 * 16, text=text)
     # The first write holds b"A"; the reader queues ``fill`` frames and holds one more with no room.
     unread = len(typed) - fill - 1
     tab = ClosingTab(b"A")
@@ -737,7 +768,7 @@ async def test_a_live_tab_typing_past_a_full_input_queue_is_held_back_and_loses_
         assert session.attached and session._ws is tab, "a live tab was detached"
         assert b"".join(tab.sent[replayed:]) == b"", "the check wrote to the tab's terminal"
         bridge.release.set()
-        expected = b"A" + b"".join(typed)
+        expected = b"A" + b"".join(map(as_written, typed))
         await async_wait_until(lambda: bytes(bridge.written) == expected, timeout=5,
                                what="every keystroke to reach the slow program")
         tab.close_tab()

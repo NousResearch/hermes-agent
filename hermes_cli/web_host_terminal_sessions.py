@@ -311,7 +311,12 @@ def _frame_cost(item) -> int:
     """What a queued item counts against ``_INPUT_QUEUE_BYTES``: its payload and the per-frame overhead."""
     if not isinstance(item, dict):  # the reader's last item: None or the error that ended reading
         return _FRAME_OVERHEAD_BYTES
-    return len(item.get("bytes") or item.get("text") or b"") + _FRAME_OVERHEAD_BYTES
+    raw = item.get("bytes")
+    if raw is None:
+        # The UTF-8 ``_input_runs`` writes, not characters: a CJK or emoji paste is 3-4 bytes each.
+        # ``surrogatepass`` so counting a frame never fails the reader or the get that uncounts it.
+        raw = (item.get("text") or "").encode("utf-8", "surrogatepass")
+    return len(raw) + _FRAME_OVERHEAD_BYTES
 
 
 class _InputQueue(asyncio.Queue):

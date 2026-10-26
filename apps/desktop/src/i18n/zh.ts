@@ -244,6 +244,7 @@ export const zhOverrides = {
       microphoneConstraintsUnsupported: '此设备不支持当前麦克风约束。',
       microphoneFailed: '麦克风出错',
       microphoneInUse: '麦克风正被其他应用占用。',
+      microphoneNeedsHttps: '麦克风需要安全连接。请通过 HTTPS 或到 127.0.0.1 的 SSH 隧道打开 Webapp 后使用。',
       microphonePermissionDenied: '麦克风权限被拒绝。',
       microphoneStartFailed: '无法开始麦克风录音。',
       microphoneUnsupported: '当前运行环境不支持麦克风录音。',

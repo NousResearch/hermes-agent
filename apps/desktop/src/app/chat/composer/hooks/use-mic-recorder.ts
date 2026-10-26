@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
 import { closeMeterContext, meterContextsClosed } from '@/lib/mic-meter-context'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 
 type BrowserAudioContext = typeof AudioContext
 
@@ -33,6 +34,7 @@ export interface MicRecorderErrorCopy {
   microphoneAccessDenied: string
   microphoneConstraintsUnsupported: string
   microphoneInUse: string
+  microphoneNeedsHttps: string
   microphonePermissionDenied: string
   microphoneStartFailed: string
   microphoneUnsupported: string
@@ -43,6 +45,15 @@ interface MicRecorderHandle {
   start: (options?: MicRecorderOptions) => Promise<void>
   stop: () => Promise<MicRecording | null>
   cancel: () => void
+}
+
+/** "Microphone unsupported" copy. The Webapp opened over plain HTTP from another machine is an
+ *  insecure context with no mediaDevices: it says HTTPS or a tunnel fixes that. Native Desktop
+ *  keeps the plain copy. */
+function unsupportedMicrophone(copy: MicRecorderErrorCopy): string {
+  return isBrowserHostedDesktop() && window.isSecureContext === false
+    ? copy.microphoneNeedsHttps
+    : copy.microphoneUnsupported
 }
 
 /** Recorder + live-start mic failures → the same friendly copy: a DOMException
@@ -69,7 +80,7 @@ export function micError(error: unknown, copy: MicRecorderErrorCopy): Error {
   }
 
   if (name === 'NotSupportedError') {
-    return new Error(copy.microphoneUnsupported)
+    return new Error(unsupportedMicrophone(copy))
   }
 
   if (error instanceof DOMException) {
@@ -272,7 +283,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
     }
 
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
-      throw new Error(copy.microphoneUnsupported)
+      throw new Error(unsupportedMicrophone(copy))
     }
 
     const permitted = await window.hermesDesktop?.requestMicrophoneAccess?.()

@@ -464,6 +464,7 @@ export const frOverrides = {
       microphoneConstraintsUnsupported: 'Les contraintes du microphone ne sont pas prises en charge par cet appareil.',
       microphoneFailed: 'Échec du microphone',
       microphoneInUse: 'Le microphone est déjà utilisé par une autre application.',
+      microphoneNeedsHttps: "Le micro nécessite une connexion sécurisée. Ouvrez la Webapp en HTTPS, ou via un tunnel SSH vers 127.0.0.1, pour l'utiliser.",
       microphonePermissionDenied: "L'autorisation du microphone a été refusée.",
       microphoneStartFailed: "Impossible de démarrer l'enregistrement du microphone.",
       microphoneUnsupported: "Ce runtime ne prend pas en charge l'enregistrement micro.",

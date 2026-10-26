@@ -481,6 +481,7 @@ catalog: CatalogTranslations
       microphoneConstraintsUnsupported: string
       microphoneFailed: string
       microphoneInUse: string
+      microphoneNeedsHttps: string
       microphonePermissionDenied: string
       microphoneStartFailed: string
       microphoneUnsupported: string

@@ -2222,6 +2222,7 @@
     "notifications.voice.microphoneConstraintsUnsupported",
     "notifications.voice.microphoneFailed",
     "notifications.voice.microphoneInUse",
+    "notifications.voice.microphoneNeedsHttps",
     "notifications.voice.microphonePermissionDenied",
     "notifications.voice.microphoneStartFailed",
     "notifications.voice.microphoneUnsupported",

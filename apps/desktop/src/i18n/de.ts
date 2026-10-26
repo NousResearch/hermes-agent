@@ -464,6 +464,7 @@ export const deOverrides = {
       microphoneConstraintsUnsupported: 'Mikrofon-Einschränkungen werden von diesem Gerät nicht unterstützt.',
       microphoneFailed: 'Mikrofon fehlgeschlagen',
       microphoneInUse: 'Das Mikrofon wird bereits von einer anderen App verwendet.',
+      microphoneNeedsHttps: 'Das Mikrofon braucht eine sichere Verbindung. Öffne die Webapp über HTTPS oder über einen SSH-Tunnel zu 127.0.0.1, um es zu nutzen.',
       microphonePermissionDenied: 'Die Mikrofonberechtigung wurde verweigert.',
       microphoneStartFailed: 'Mikrofonaufnahme konnte nicht gestartet werden.',
       microphoneUnsupported: 'Diese Laufzeitumgebung unterstützt keine Mikrofonaufnahme.',

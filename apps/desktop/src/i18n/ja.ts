@@ -159,6 +159,7 @@ export const jaOverrides = {
       microphoneConstraintsUnsupported: 'このデバイスはマイクの制約をサポートしていません。',
       microphoneFailed: 'マイクが失敗しました',
       microphoneInUse: 'マイクは他のアプリで使用中です。',
+      microphoneNeedsHttps: 'マイクには安全な接続が必要です。使うには、Webapp を HTTPS か 127.0.0.1 への SSH トンネル経由で開いてください。',
       microphonePermissionDenied: 'マイクのアクセス許可が拒否されました。',
       microphoneStartFailed: 'マイクの録音を開始できませんでした。',
       microphoneUnsupported: 'このランタイムはマイク録音をサポートしていません。',

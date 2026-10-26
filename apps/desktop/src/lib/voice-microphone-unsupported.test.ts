@@ -1,4 +1,4 @@
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { micError } from '@/app/chat/composer/hooks/use-mic-recorder'
 import { en } from '@/i18n/en'
@@ -24,6 +24,26 @@ it('live voice fails with "microphone unsupported" without mediaDevices, before 
 
   expect(micError(failure, en.notifications.voice).message).toBe(en.notifications.voice.microphoneUnsupported)
   expect(peers).not.toHaveBeenCalled()
+})
+
+describe('on an insecure origin', () => {
+  beforeEach(() => Object.defineProperty(window, 'isSecureContext', { configurable: true, value: false }))
+  afterEach(() => {
+    Reflect.deleteProperty(window, 'isSecureContext')
+    delete document.documentElement.dataset.hermesDesktopHost
+  })
+
+  const unsupported = () => micError(new DOMException('no mic here', 'NotSupportedError'), en.notifications.voice)
+
+  it('the Webapp says HTTPS or a tunnel brings the microphone back', () => {
+    document.documentElement.dataset.hermesDesktopHost = 'browser'
+
+    expect(unsupported().message).toBe(en.notifications.voice.microphoneNeedsHttps)
+  })
+
+  it('native Desktop keeps the plain "microphone unsupported" copy', () => {
+    expect(unsupported().message).toBe(en.notifications.voice.microphoneUnsupported)
+  })
 })
 
 it('barge-in never reaches for a microphone it cannot have', () => {

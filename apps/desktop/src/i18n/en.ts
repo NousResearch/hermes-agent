@@ -454,6 +454,7 @@ export const en: Translations = {
       microphoneConstraintsUnsupported: 'Microphone constraints are not supported by this device.',
       microphoneFailed: 'Microphone failed',
       microphoneInUse: 'Microphone is already in use by another app.',
+      microphoneNeedsHttps: 'The microphone needs a secure connection. Open the Webapp over HTTPS, or through an SSH tunnel to 127.0.0.1, to use it.',
       microphonePermissionDenied: 'Microphone permission was denied.',
       microphoneStartFailed: 'Could not start microphone recording.',
       microphoneUnsupported: 'This runtime does not support microphone recording.',

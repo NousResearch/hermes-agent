@@ -61,7 +61,8 @@ _slots = threading.BoundedSemaphore(2)
 # How often a compaction waiting on a running pass re-checks cancellation and the deadline.
 _WAIT_POLL_SECONDS = 0.5
 # Compressor state a summary call leaves behind besides the summary: the main-model fallback after a
-# failed summary model (sticky for the session) and the warning it raises. A splice adopts the pass's.
+# failed summary model and the warning it raises (the next compaction tries the summary model again,
+# inline or prepared alike). A splice adopts the pass's.
 _SUMMARY_CALL_STATE = (
     "summary_model", "_last_aux_model_failure_error", "_last_aux_model_failure_model", "_last_aux_resolved_model",
 )

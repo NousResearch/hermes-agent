@@ -135,19 +135,16 @@ def _verified_boot_start(pid: Optional[int], create_time: Optional[float]) -> Op
 
         proc = psutil.Process(pid)
         return boot_start(proc) if _same_incarnation(proc, create_time) else None
-    except Exception:
+    except Exception:  # health: allow BLE001 -- best-effort probe like _process_create_time: any failure is "unproven"
         return None
 
 
 def _step_can_explain_mismatch(pid: int, boot: Optional[float]) -> bool:
     """A live ``pid`` failed an epoch-only match on Linux: a clock step explains that as well as a
     reused pid, so the mismatch proves nothing. ``False`` when ``boot`` was recorded (exact)."""
-    try:
-        import psutil
+    import psutil  # the caller's epoch match already needed it
 
-        return boot is None and getattr(psutil, "LINUX", False) and psutil.pid_exists(pid)
-    except Exception:
-        return False
+    return boot is None and bool(getattr(psutil, "LINUX", False)) and psutil.pid_exists(pid)
 
 
 # Layer 1 — spawn tags

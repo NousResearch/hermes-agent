@@ -12,6 +12,7 @@ function fixture(globalRemote: boolean, profileRemoteOverride = false) {
   const starts: string[] = []
   const claims: string[] = []
   const sent: string[] = []
+
   let beforeEnsure = () => {}
 
   const localRoute = (profile: string | undefined) =>
@@ -98,12 +99,28 @@ test('an evicted forced-local child cannot be restarted by a stale-hint GET', as
   assert.deepEqual(desktop.sent, [])
 })
 
+test('a passive hide PATCH uses a warm forced-local child but refuses cold or evicted children', async () => {
+  const desktop = fixture(true)
+  const key = 'conn:local::research'
+  await assert.rejects(desktop.dispatch('PATCH', 'local', 'research', true), /Passive read: no warm backend/)
+  desktop.pool.set(key, { mode: 'local', scope: key })
+  await desktop.dispatch('PATCH', 'local', 'research', true)
+  desktop.pool.delete(key)
+  await assert.rejects(desktop.dispatch('PATCH', 'local', 'research', true), /Passive read: no warm backend/)
+  assert.deepEqual(desktop.starts, [])
+  assert.deepEqual(desktop.claims, [])
+
+  assert.deepEqual(desktop.sent, [`${key}:/api/sessions/s-1?profile=research`])
+})
+
 test('a cold forced-local snapshot and its write use the same backend and CAS identity', async () => {
   const pool = new Map<string, { mode: string }>()
   const wire: Array<{ backend: { mode: string }; path: string; method: string; body?: unknown }> = []
+
   const route = (profile: string | undefined) => resolveRegistryLocalRoute(profile, {
     globalRemote: true, profileRemoteOverride: false
   })
+
   const dispatch = (path: string, method: string, body?: unknown, passive?: boolean) =>
     dispatchRegistryApiRequest({ path, method, body, passive }, 'local', 'research', 'research', {
       afterProfileRequest: () => {},
@@ -111,15 +128,18 @@ test('a cold forced-local snapshot and its write use the same backend and CAS id
       ensure: async (_id, profile, noSpawn) => {
         const key = route(profile).poolKey
         let backend = pool.get(key)
+
         if (!backend) {
           if (noSpawn) { throw new Error('Passive read: no warm backend') }
           backend = { mode: 'local' }
           pool.set(key, backend)
         }
+
         return backend
       },
       fetch: async (backend, requestPath, options) => {
         wire.push({ backend, path: requestPath, method: options.method || 'GET', body: options.body })
+
         return options.method === 'PATCH'
           ? { session_id: 'cold', ok: true, exists: true, runtime_revision: 19, runtime_generation: 4 }
           : { session_id: 'cold', ok: false, exists: true, runtime_revision: 19, runtime_generation: 4 }
@@ -132,9 +152,11 @@ test('a cold forced-local snapshot and its write use the same backend and CAS id
 
   const mutate = createSessionMutationClient()
   const path = '/api/sessions/cold'
+
   const result = await mutate('[["local","research"],"cold","PATCH"]',
     () => dispatch(`${path}/mutation-snapshot?profile=research`, 'GET', undefined, false),
     identity => dispatch(path, 'PATCH', { archived: true, profile: 'research', ...identity }))
+
   assert.equal(result.ok, true)
   assert.deepEqual(wire.map(({ method, path }) => [method, path]), [
     ['GET', '/api/sessions/cold/mutation-snapshot?profile=research'], ['PATCH', '/api/sessions/cold']

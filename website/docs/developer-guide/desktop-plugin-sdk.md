@@ -60,6 +60,10 @@ plugin, and fail to resolve in a disk plugin). Capability comes in tiers:
   host shows the same "Saved" / "Download failed" toasts as the Files panel and
   stays quiet on cancel; the promise settles when the save does and never
   rejects.
+- **`captureGatewayFileRead()`** — the read twin: capture it the same way, and
+  `(storedPath) => Promise<string>` resolves that file to a data URL through the
+  same connection/profile (an inline image of the plugin's own files, painted
+  through `MessageTextContent`'s `img` component).
 - **`ctx.rest` / `ctx.socket`** — your plugin's own backend namespace
   (`/api/plugins/<id>`) if you ship a `plugin_api.py`.
 - **`ui.*`** — the design language: the app's real components, theme variables,

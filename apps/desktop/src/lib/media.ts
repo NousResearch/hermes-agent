@@ -463,6 +463,14 @@ export function captureGatewayFileDownload() {
     downloadGatewayFileWithFeedback(path, { owner: { connectionId, profile }, suggestedName })
 }
 
+/** The read twin of `captureGatewayFileDownload`: resolves a gateway file to a
+ *  data URL through the backend that returned the path, captured at read time. */
+export function captureGatewayFileRead() {
+  const { connectionId, profile } = capabilityScoped()
+
+  return (path: string) => resolveMediaDisplaySrc(path, { connectionId, profile })
+}
+
 export function mediaDisplayLabel(path: string): string {
   const escaped = mediaName(path).replace(/[[\]\\]/g, '\\$&')
   const kind = mediaKind(path)

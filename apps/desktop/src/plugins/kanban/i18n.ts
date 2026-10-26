@@ -161,6 +161,12 @@ type KanbanMessages = {
   attachments: (n: number) => string
   noAttachments: string
   uploadAttachment: string
+  attachImage: string
+  uploadingImage: string
+  imageTooLarge: (name: string, mb: number) => string
+  notAnImage: (names: string) => string
+  imageUploadFailed: (name: string) => string
+  imageLoadFailed: (name: string) => string
   taskActions: string
   copyTaskId: string
   copyTitle: string
@@ -396,6 +402,12 @@ export const en: KanbanMessages = {
   attachments: n => `Attachments · ${n}`,
   noAttachments: 'No attachments yet.',
   uploadAttachment: 'Upload attachment',
+  attachImage: 'Attach image',
+  uploadingImage: 'Uploading image…',
+  imageTooLarge: (name, mb) => `${name} is over ${mb} MB — too large to show in a comment`,
+  notAnImage: names => `Only images can be dropped here — skipped ${names}`,
+  imageUploadFailed: name => `Couldn’t upload ${name}`,
+  imageLoadFailed: name => `Couldn’t load image ${name}`,
   taskActions: 'Task actions',
   copyTaskId: 'Copy task id',
   copyTitle: 'Copy title',
@@ -623,6 +635,12 @@ const ja: KanbanMessages = {
   attachments: n => `添付・${n}`,
   noAttachments: 'まだ添付はありません。',
   uploadAttachment: '添付をアップロード',
+  attachImage: '画像を添付',
+  uploadingImage: '画像をアップロード中…',
+  imageTooLarge: (name, mb) => `${name} は ${mb} MB を超えているため、コメントに表示できません`,
+  notAnImage: names => `ここにドロップできるのは画像のみです — ${names} をスキップしました`,
+  imageUploadFailed: name => `${name} をアップロードできませんでした`,
+  imageLoadFailed: name => `画像 ${name} を読み込めませんでした`,
   taskActions: 'タスクの操作',
   copyTaskId: 'タスク ID をコピー',
   copyTitle: 'タイトルをコピー',
@@ -848,6 +866,12 @@ const zh: KanbanMessages = {
   attachments: n => `附件・${n}`,
   noAttachments: '暂无附件。',
   uploadAttachment: '上传附件',
+  attachImage: '附加图片',
+  uploadingImage: '正在上传图片…',
+  imageTooLarge: (name, mb) => `${name} 超过 ${mb} MB，无法在评论中显示`,
+  notAnImage: names => `此处只能拖放图片 — 已跳过 ${names}`,
+  imageUploadFailed: name => `无法上传 ${name}`,
+  imageLoadFailed: name => `无法加载图片 ${name}`,
   taskActions: '任务操作',
   copyTaskId: '复制任务 ID',
   copyTitle: '复制标题',
@@ -1072,6 +1096,12 @@ const zhHant: KanbanMessages = {
   attachments: n => `附件・${n}`,
   noAttachments: '尚無附件。',
   uploadAttachment: '上傳附件',
+  attachImage: '附加圖片',
+  uploadingImage: '正在上傳圖片…',
+  imageTooLarge: (name, mb) => `${name} 超過 ${mb} MB，無法在留言中顯示`,
+  notAnImage: names => `此處只能拖放圖片 — 已略過 ${names}`,
+  imageUploadFailed: name => `無法上傳 ${name}`,
+  imageLoadFailed: name => `無法載入圖片 ${name}`,
   taskActions: '任務操作',
   copyTaskId: '複製任務 ID',
   copyTitle: '複製標題',

@@ -1864,8 +1864,8 @@ export { formatModifierToken } from '@/lib/keybinds/combo'
  *  a renderer that stays open for days. Only for values that can be
  *  regenerated — eviction costs a recompute or a refetch, never correctness. */
 export { LruCache } from '@/lib/lru-cache'
-/** Capture a gateway file download alongside a REST read (see the SDK guide). */
-export { captureGatewayFileDownload } from '@/lib/media'
+/** Capture a gateway file download or read alongside a REST read (see the SDK guide). */
+export { captureGatewayFileDownload, captureGatewayFileRead } from '@/lib/media'
 /** True when a saved provider id names this `model.options` row: its slug,
  *  display name, or a custom-provider alias (`custom:<key>` vs the bare key). */
 export { catalogProviderMatches } from '@/lib/model-options'

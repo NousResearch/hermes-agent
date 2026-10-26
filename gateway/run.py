@@ -43,7 +43,8 @@ from agent.interrupt_compat import request_hard_interrupt
 from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, copy_identity_fields, is_compaction_scaffolding, scaffolding_replay_fields
 from agent.turn_context import compression_made_progress
 from agent.session_activity import ActivityProvenance, AwakeIdleMeter
-from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
+from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get, config_exists
+from gateway.run_common import _csv_or_list_to_set
 from hermes_cli.fallback_config import pre_agent_fallback_notice
 from gateway.turn_executor import _UnboundedThreadExecutor
 
@@ -595,7 +596,7 @@ def _format_exec_approval_fallback(
     steps a surface without buttons needs."""
     from gateway.platforms.base_exec_approval import (
         approval_timeout_seconds, ea_header_text, ea_reason_label_text, format_approval_deadline_line)
-    cmd_preview = command[:200] + "..." if len(command) > 200 else command
+    cmd_preview = BasePlatformAdapter._truncate_preview(command, BasePlatformAdapter._EA_CMD_BUDGET)  # as on a card
     heading = (t("gateway.exec_approval.smart_deny_heading") if smart_denied
                else f"⚠️ **{ea_header_text()}**")
 
@@ -1182,15 +1183,6 @@ def _uses_telegram_observed_group_context(channel_prompt: Optional[str]) -> bool
     return bool(channel_prompt and _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER in channel_prompt)
 
 
-def _csv_or_list_to_set(raw: Any) -> set[str]:
-    """Normalize a config list or comma-separated scalar into a string set."""
-    if raw is None:
-        return set()
-    if isinstance(raw, list):
-        return {str(part).strip() for part in raw if str(part).strip()}
-    return {part.strip() for part in str(raw).split(",") if part.strip()}
-
-
 def _slack_ignored_channels_from_gateway_config(config: Any, adapter: Any = None) -> set[str]:
     """Return Slack channels that the generic gateway must never dispatch.
 
@@ -1559,11 +1551,11 @@ def _restart_notification_pending() -> bool:
 
 
 def _planned_restart_notification_path() -> Path:
-    return _hermes_home / ".restart_pending.json"
+    from gateway.restart_notice import planned_restart_marker_path
+    return planned_restart_marker_path(_hermes_home)
 
 
 def _planned_restart_notification_pending() -> bool:
-    """Return True when a non-chat planned restart should notify home channels."""
     return _planned_restart_notification_path().exists()
 
 
@@ -1605,7 +1597,7 @@ def _bridge_max_turns_from_config(home: Path) -> None:
     if profile_scoped():
         return
     config_path = home / 'config.yaml'
-    if not config_path.exists():
+    if not config_exists(config_path):
         return
     try:
         cfg = _load_bridge_config(config_path)
@@ -1627,7 +1619,7 @@ def _current_max_iterations() -> int:
     if override:
         config_path = Path(override) / 'config.yaml'
         try:
-            cfg = _load_bridge_config(config_path) if config_path.exists() else {}
+            cfg = _load_bridge_config(config_path) if config_exists(config_path) else {}
         except Exception:
             cfg = {}
         agent_cfg = cfg.get("agent")
@@ -2128,7 +2120,7 @@ def _load_bridge_config(config_path: Path) -> dict:
 
 _config_path = _hermes_home / 'config.yaml'
 _cfg: dict = {}
-if _config_path.exists():
+if config_exists(_config_path):
     try:
         _cfg = _load_bridge_config(_config_path)
         _bridge_config_to_env(_cfg)
@@ -2779,13 +2771,11 @@ def _is_control_interrupt_message(message: Optional[str]) -> bool:
 
 def _strip_response_attachments_for_direct_send(response: str, adapter) -> str:
     """Return the visible text portion of a response before direct send().
-    Only explicit ``MEDIA:`` attachments are stripped; bare paths/URLs stay visible. No broad regex after
-    ``extract_media()``: it deliberately preserves protected code spans and unvalidated tags.
-
-    Queued follow-up resends only replay explicit ``MEDIA:`` attachments in this path. Keep bare local paths
-    and ordinary image URLs visible because the post-stream uploader intentionally ignores them (#20834).
+    Explicit ``MEDIA:`` attachments and the image tags ``extract_images`` attaches are stripped, because
+    the post-stream uploader delivers both; bare local paths stay visible (it ignores them, #20834). No
+    broad regex after ``extract_media()``: it deliberately preserves protected code spans and unvalidated tags.
     """
-    _, cleaned = adapter.extract_media(response)
+    _, cleaned = BasePlatformAdapter.extract_images(adapter.extract_media(response)[1])
     return cleaned.replace("[[audio_as_voice]]", "").replace("[[as_document]]", "").strip()
 
 
@@ -4471,7 +4461,7 @@ def _housekeeping_checkpoint_prune() -> None:
 
 def _drain_restart_safe_cron_deliveries(adapters, loop, runner=None) -> None:
     """Drain each profile's worker queue through its matching live adapters. A credential-less satellite
-    profile (empty adapter map) drains through the primary's adapters routed by its own profile routes."""
+    profile (no bot of its own) drains through the primary's adapters routed by its own profile routes."""
     from cron import scheduler as cron_scheduler
     from cron import scheduler_preflight as sched_preflight
 
@@ -4480,14 +4470,14 @@ def _drain_restart_safe_cron_deliveries(adapters, loop, runner=None) -> None:
             cron_scheduler.drain_delivery_queue(adapters, loop)
         return
     for profile_name, profile_home in _handoff_watch_scopes(runner):
-        if profile_name is None:
-            profile_adapters = adapters
-        else:
-            profile_adapters = getattr(runner, "_profile_adapters", {}).get(profile_name)
+        profile_adapters = (adapters if profile_name is None
+                            else getattr(runner, "_profile_adapters", {}).get(profile_name))
         if profile_adapters is None:
             continue
         with _profile_runtime_scope(profile_home or get_hermes_home()):
-            if profile_name is not None and not profile_adapters and adapters:
+            owned = (getattr(runner, "_profile_bot_platforms", None) or {}).get(profile_name)
+            if (profile_name is not None and adapters
+                    and not sched_preflight.has_credential_platform(profile_adapters, owned)):
                 routes = sched_preflight._primary_profile_routes_for_current_home()
                 if routes:
                     profile_adapters = sched_preflight.SharedRouteAdapters(adapters, routes)

@@ -13,7 +13,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import anon_auth, auth_nous, guest_handoff
+from hermes_cli import anon_auth, auth_nous
+from tests.hermes_cli.test_guest_handoff import holds_auth_locks
 from tests.hermes_cli.test_anon_upgrade import (
     EMAIL, FREE_PICK, INFERENCE, PORTAL, REFRESH_TOKEN, WELCOME, _jwt, _model_config, _write_model_config,
     free_account, portal)
@@ -63,7 +64,7 @@ def test_the_sign_in_settles_the_config_once_after_its_locks_are_released(
     real_settle = anon_auth.settle_after_upgrade
 
     def _recording(state):
-        settles.append(guest_handoff._holds_auth_locks())
+        settles.append(holds_auth_locks())
         return real_settle(state)
     monkeypatch.setattr(anon_auth, "settle_after_upgrade", _recording)
 
@@ -88,5 +89,5 @@ def test_the_terminal_sign_in_prints_what_moved(portal, free_account, monkeypatc
     surface(monkeypatch)
 
     out = capsys.readouterr().out
-    assert f"Your apps moved to {EMAIL}: gmail." in out
-    assert f"Reconnect in {EMAIL}: slack." in out
+    assert f"Your apps moved to {EMAIL}: Gmail." in out
+    assert f"Reconnect in {EMAIL}: Slack." in out

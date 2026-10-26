@@ -4,6 +4,7 @@
 import logging
 import mimetypes
 import os
+import re
 import stat
 import urllib.request
 from contextlib import contextmanager
@@ -35,6 +36,44 @@ def _resolve_fs_candidate(raw: str, *, cwd: str | None = None) -> Path:
     return candidate.resolve(strict=False)
 
 
+def _decoded_candidate(raw: str, *, cwd: str | None = None) -> Path | None:
+    """``raw`` percent-decoded once and resolved, or None when decoding adds a dot-segment.
+
+    The decode rescues a name that arrived encoded twice (issue #103425). A ``.`` or ``..`` it
+    produces (``..%2f``, ``%2e%2e/``) would move the lookup out of the folder the caller named."""
+    decoded = urllib.parse.unquote(raw)
+    separators = r"[\\/]" if os.name == "nt" else "/"
+
+    def dot_segments(path: str) -> int:
+        return sum(segment in (".", "..") for segment in re.split(separators, path))
+
+    if dot_segments(decoded) > dot_segments(raw):
+        return None
+    return _resolve_fs_candidate(decoded, cwd=cwd)
+
+
+def _file_url_path(url: str) -> str:
+    """The native path a ``file:`` URL names, percent-decoded once.
+
+    A URL that encodes a separator is refused (ValueError) as ``apps/shared/src/file-url.ts``
+    refuses it in the renderer and Electron: ``%2f``, and ``%5c`` on a Windows gateway or in a
+    Windows URL (a UNC host or a drive letter). Decoding it would add a segment, so ``..%2f`` would
+    name a file outside the folder the URL spells.
+    """
+    parsed = urllib.parse.urlparse(url)
+    uri_path = parsed.path
+    host = "" if parsed.netloc.lower() == "localhost" else parsed.netloc
+    drive = re.match(r"/[a-z]:", urllib.parse.unquote(uri_path), re.IGNORECASE)
+    windows = os.name == "nt" or bool(host) or drive is not None
+    if re.search(r"%2f", uri_path, re.IGNORECASE) or (windows and re.search(r"%5c", uri_path, re.IGNORECASE)):
+        raise ValueError("file: URL encodes a path separator")
+    if host:
+        if os.name != "nt":
+            raise ValueError("file: URL names another host")
+        uri_path = f"//{host}{uri_path}"
+    return urllib.request.url2pathname(uri_path)
+
+
 def _fs_path(raw_path: str, *, cwd: str | None = None, decode_fallback: bool = True) -> Path:
     raw = str(raw_path or "").strip()
     if not raw:
@@ -42,14 +81,9 @@ def _fs_path(raw_path: str, *, cwd: str | None = None, decode_fallback: bool = T
     if "\0" in raw:
         raise HTTPException(status_code=400, detail="Invalid path")
     try:
-        if raw.lower().startswith("file:"):
-            parsed = urllib.parse.urlparse(raw)
-            uri_path = parsed.path
-            if parsed.netloc and parsed.netloc.lower() != "localhost":
-                if os.name != "nt":
-                    raise ValueError
-                uri_path = f"//{parsed.netloc}{uri_path}"
-            raw = urllib.request.url2pathname(uri_path)
+        from_url = raw.lower().startswith("file:")
+        if from_url:
+            raw = _file_url_path(raw)
         elif os.name == "nt":
             # MEDIA links can reuse Git Bash paths; native Path would read /c/ as C:\c\.
             from tools.environments.local import _msys_to_windows_path
@@ -60,17 +94,46 @@ def _fs_path(raw_path: str, *, cwd: str | None = None, decode_fallback: bool = T
         # decoding, so a non-ASCII name can arrive as a literal "%E5%8D%8A..."
         # string that stats as missing (issue #103425). The verbatim path wins
         # whenever it exists, so filenames that genuinely contain "%XX" keep
-        # resolving as-is; the unquoted form only rescues the lookup.
-        if decode_fallback and "%" in raw and not candidate.exists():
-            decoded = _resolve_fs_candidate(urllib.parse.unquote(raw), cwd=cwd)
-            if decoded.exists():
+        # resolving as-is; the unquoted form only rescues the lookup. A file: URL
+        # was decoded once above, and a second decode would read ..%252f as ../.
+        if decode_fallback and not from_url and "%" in raw and not candidate.exists():
+            decoded = _decoded_candidate(raw, cwd=cwd)
+            if decoded is not None and decoded.exists():
                 candidate = decoded
         return candidate
     except (OSError, RuntimeError, ValueError):
         raise HTTPException(status_code=400, detail="Invalid path")
 
 
-def _translate_agent_path(candidate: Path) -> Path | None:
+_WORKSPACE_KEY_RE = re.compile(r"^[0-9a-f]{16}$")
+
+
+def _session_workspace_key(session_id: str, cwd: str | None) -> str:
+    """16-hex digest of this session's per-workspace Docker sandbox, or ``""``.
+
+    The live override is the key the container was created under. After that
+    binding is gone, the session row's host cwd hashes to the same digest.
+    ``/workspace`` and ``/root`` are container paths, not host workspaces.
+    """
+    from tools.terminal_tool import resolve_task_overrides, workspace_key_for
+
+    key = resolve_task_overrides(session_id).get("workspace_key")
+    if isinstance(key, str) and _WORKSPACE_KEY_RE.fullmatch(key):
+        return key
+    host = (cwd or "").strip()
+    if not host or "\0" in host or _is_container_cwd(host):
+        return ""
+    expanded = os.path.expanduser(host)
+    if not os.path.isdir(expanded):
+        return ""
+    return workspace_key_for(expanded)
+
+
+def _is_container_cwd(host: str) -> bool:
+    return any(host == root or host.startswith(root + "/") for root in ("/workspace", "/root"))
+
+
+def _translate_agent_path(candidate: Path, workspace_key: str = "") -> Path | None:
     """One translation attempt under whatever scope is bound; None off the docker backend.
 
     The gate keeps a local-backend gateway with leftover ``docker_volumes`` from serving
@@ -82,7 +145,7 @@ def _translate_agent_path(candidate: Path) -> Path | None:
     _ensure_terminal_env_bridged()
     if not _docker_env_active():
         return None
-    return _translate_docker_container_media_path(candidate, quiet=True)
+    return _translate_docker_container_media_path(candidate, quiet=True, workspace_key=workspace_key)
 
 
 @contextmanager
@@ -120,7 +183,9 @@ def _agent_path_scope(profile_home: Path | None = None) -> Iterator[None]:
             reset_hermes_home_override(home_token)
 
 
-def _agent_container_path(raw: str, *, profile_home: Path | None = None) -> Path | None:
+def _agent_container_path(
+    raw: str, *, profile_home: Path | None = None, workspace_key: str = "",
+) -> Path | None:
     """Map an agent-visible container path to its host bind mount, or None.
 
     Docker agents emit container paths (``/workspace/...``, ``/root/...``) in
@@ -146,12 +211,12 @@ def _agent_container_path(raw: str, *, profile_home: Path | None = None) -> Path
 
         candidate = Path(raw)
         with _agent_path_scope(profile_home):
-            translated = _translate_agent_path(candidate)
+            translated = _translate_agent_path(candidate, workspace_key)
             if translated is not None or get_terminal_scope() is not None:
                 return translated
             token = set_terminal_scope(build_profile_terminal_scope(get_hermes_home()))
             try:
-                return _translate_agent_path(candidate)
+                return _translate_agent_path(candidate, workspace_key)
             finally:
                 reset_terminal_scope(token)
     except Exception:  # fail open: translation is additive, the host path still serves
@@ -164,6 +229,7 @@ SANDBOX_NOT_FOUND = "File not found on the gateway host: the path may live insid
 
 def _agent_fs_path(
     raw_path: str, *, cwd: str | None = None, profile_home: Path | None = None,
+    workspace_key: str = "",
 ) -> Path:
     """``_fs_path`` for agent-facing reads; container paths resolve to their host
     mount, so callers' boundary guards see the real host target.
@@ -178,9 +244,9 @@ def _agent_fs_path(
         host = _fs_path(raw_path, cwd=cwd)
         if os.access(host, os.R_OK):
             return host
-        translated = _agent_container_path(raw, profile_home=profile_home)
+        translated = _agent_container_path(raw, profile_home=profile_home, workspace_key=workspace_key)
         return translated if translated is not None else host
-    translated = _agent_container_path(raw, profile_home=profile_home)
+    translated = _agent_container_path(raw, profile_home=profile_home, workspace_key=workspace_key)
     if translated is not None:
         return translated
     if _is_unmapped_container_path(raw, profile_home=profile_home):
@@ -300,10 +366,10 @@ def _managed_files_policy(request: Optional[Request], *, create_root: bool = Tru
 
 
 def _resolve_managed_path(
-    raw_path: str | None, request: Request, *, for_write: bool = False,
+    raw_path: str | None, request: Request, *, for_write: bool = False, create_root: bool = True,
     for_agent_read: bool = False,
 ) -> tuple[ManagedFilesPolicy, Path, str]:
-    policy = _managed_files_policy(request)
+    policy = _managed_files_policy(request, create_root=create_root)
     text = _path_text(raw_path)
     root = policy.locked_root
 

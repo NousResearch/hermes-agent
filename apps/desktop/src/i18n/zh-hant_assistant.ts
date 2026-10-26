@@ -101,6 +101,10 @@ export const zhHantAssistant = {
           title: '此聊天屬於一個排程工作',
           body: '它只會執行該工作，因此你的訊息未被執行。請開始新的聊天後再傳送。'
         },
+        session_read_only: {
+          title: '此聊天為唯讀',
+          body: '它是 Hermes 只能顯示、無法繼續的已儲存歷史記錄，因此你的訊息未被執行。請開始新的聊天後再傳送。'
+        },
         usage_window: {
           title: '包含用量已用完',
           body: '你的方案包含的用量已用完，將在重設後恢復。在 /topup 中新增額度即可繼續。'
@@ -108,6 +112,10 @@ export const zhHantAssistant = {
         workspace_unavailable: {
           title: '此聊天的資料夾已不存在',
           body: '此聊天使用的資料夾已被移動或刪除，因此你的訊息未被執行。請重新建立該資料夾，或使用「Move to project」為聊天指定其他資料夾，然後重試。'
+        },
+        launch_credentials_unavailable: {
+          title: '此聊天的 API 金鑰已變更',
+          body: '此聊天開始時使用的 API 金鑰後來已被變更或刪除，因此你的訊息未送出。開啟中的聊天不會自行切換到其他金鑰。請使用「開始新工作階段」以使用目前的金鑰。'
         }
       },
       errorLayers: {

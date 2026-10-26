@@ -73,13 +73,17 @@ def run_source_script(project_root: Path, script: str, *args: str, env: dict, la
                    indent="  ", cwd=project_root, env=env)
 
 
-def prepare_source_dependencies(project_root: Path, workspaces: tuple[str, ...], *, env: dict,
-                                explicit: bool = False) -> None:
+def _install_args(explicit: bool) -> tuple[str, ...]:
     from pm import lazy_installs_allowed
 
+    return () if explicit or lazy_installs_allowed() else ("--no-install",)
+
+
+def prepare_source_dependencies(project_root: Path, workspaces: tuple[str, ...], *, env: dict,
+                                explicit: bool = False) -> None:
     run_source_script(
         project_root, "scripts/build/node-deps.mjs", "--source", str(project_root), "--reuse",
-        *(() if explicit or lazy_installs_allowed() else ("--no-install",)),
+        *_install_args(explicit),
         *(arg for workspace in workspaces for arg in ("--workspace", workspace)), env=env,
         label="Preparing Node dependencies",
     )
@@ -110,6 +114,12 @@ def build_source_web(project_root: Path, *, env: dict, icons: Path | None = None
     run_source_script(project_root, "scripts/build/web.mjs", "--source", str(project_root),
                       "--icons", str(icons), "--out", str(project_root / "hermes_cli/web_dist"), env=env,
                       label="Building the web UI")
+
+
+def build_source_webapp(project_root: Path, *, env: dict, explicit: bool = False) -> None:
+    """Browser renderer; its dependencies live in a private workspace, never the checkout's."""
+    run_source_script(project_root, "apps/desktop/scripts/build-webapp.mjs", *_install_args(explicit),
+                      env=env, label="Building the Webapp renderer")
 
 
 def source_frontends(project_root: Path) -> tuple[str, ...]:
@@ -214,6 +224,9 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
             # One whole line the Desktop hand-off scripts match: the follow-up text is truncated
             # and names whichever products failed first, so it cannot say if THIS app was rebuilt.
             print(f"  Desktop app build owed: {desktop_reason} failed")
+    if (project_root / "apps/desktop/scripts/build-webapp.mjs").is_file():
+        # Its dependencies live in a private workspace, so it never waits on the union above.
+        attempt("Webapp build", lambda: _rebuild_served_webapp(project_root, publish_stage))
     # A configured memory provider that no longer ships in core is installed from the
     # catalog for every profile home sharing this venv (config, data and tool names
     # unchanged). The update must finish even if the migration blows up.
@@ -233,6 +246,30 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
         print(f"  ⚠ Plugin migration skipped: {exc}")
     if failures:
         raise ProductBuildError(failures)
+
+
+def _rebuild_served_webapp(project_root: Path, publish_stage) -> None:
+    """The Webapp bundle (``apps/desktop/dist-webapp``), when a home sharing this install serves it
+    (``webapp.enabled``): its gateway serves the bundle as built, so one older than the updated
+    backend would talk to it with an outdated contract. Built with the function ``hermes webapp``
+    uses, which reuses a current bundle. A failed build leaves the previous bundle on disk, marked
+    out of date: its gateways report the Webapp unavailable until ``hermes webapp`` rebuilds it."""
+    from gateway.webapp_listener import webapp_settings
+    from hermes_cli.webapp import mark_webapp_stale, prepare_webapp_renderer
+    from pm.plugins_state import dependency_homes
+
+    if not any(webapp_settings(home).enabled for home in dependency_homes()):
+        return
+    publish_stage("Building the Webapp")
+    try:
+        prepare_webapp_renderer(project_root, explicit=True)
+    except BaseException:
+        try:
+            if mark_webapp_stale(project_root):
+                print("  ⓘ The Webapp stays unavailable until `hermes webapp` rebuilds it.")
+        except OSError as exc:
+            print(f"  ⚠ Could not mark the Webapp out of date: {exc}")
+        raise
 
 
 def _build_desktop_product(project_root: Path, env: dict, publish_stage) -> None:

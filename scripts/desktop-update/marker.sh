@@ -46,7 +46,11 @@ proc_ct() { # pid -> creation time (unix seconds, 3 decimals), or nothing
     btime="$(awk '/^btime /{print $2}' /proc/stat 2>/dev/null)"
     hz="$(getconf CLK_TCK 2>/dev/null)"
     [ -n "$start" ] && [ -n "$btime" ] && [ -n "$hz" ] || return 0
-    awk -v b="$btime" -v s="$start" -v h="$hz" 'BEGIN{printf "%.3f\n", b + s / h}'
+    # LC_ALL=C: awk formats floats with the active locale's decimal separator
+    # (a comma under es_ES, pt_BR, de_DE…). The Desktop's marker parser accepts
+    # only a dot, so a comma here made every Desktop update hand-off read as
+    # "never took the update lock" and abort.
+    LC_ALL=C awk -v b="$btime" -v s="$start" -v h="$hz" 'BEGIN{printf "%.3f\n", b + s / h}'
   elif [ "$(uname)" = "Darwin" ]; then
     # ps prints lstart in local time: render AND parse it in UTC so a DST
     # fall-back hour cannot shift the identity by 3600 s.

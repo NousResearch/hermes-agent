@@ -5,6 +5,7 @@ import asyncio
 import functools
 import json
 import logging
+import threading
 import time
 from contextvars import Context
 from typing import TYPE_CHECKING, Callable, List, Optional
@@ -347,7 +348,7 @@ class ElicitationHandler:
 
         return _invoke
 
-    def _ask(self, message: str, schema: dict):
+    def _ask(self, message: str, schema: dict, ended: Callable[[], bool] = lambda: False):
         """Collect the answer on the agent's own surface: the form through the turn's clarify callback
         when one is bound and a user can answer, else the yes/no approval prompt (headless sessions
         decline there) with the consent content that answer can honestly fill."""
@@ -357,7 +358,7 @@ class ElicitationHandler:
 
         asker = current_form_asker()
         if asker is not None and not _ctx._no_user_can_answer():
-            return ask_form(asker, self.server_name, message, schema)
+            return ask_form(asker, self.server_name, message, schema, ended)
         answer = request_elicitation_consent(message, _format_elicitation_schema_summary(schema, self.server_name),
                                              timeout_seconds=int(self.timeout),
                                              surface=f"mcp-elicitation/{self.server_name}")
@@ -383,7 +384,10 @@ class ElicitationHandler:
         # access) — read both or the user approves without seeing the fields.
         schema = getattr(params, "requestedSchema", None) or getattr(params, "requested_schema", None) or {}
         logger.info("MCP server '%s' elicitation request: %s", self.server_name, _sanitize_error(message)[:200])
-        ask = self._on_turn_thread(functools.partial(self._ask, message, schema))
+        # One deadline for the whole form: once this wait ends the worker (which cancellation cannot
+        # stop) opens no further batch or re-ask, so the user is not asked after the server has its answer.
+        ended = threading.Event()
+        ask = self._on_turn_thread(functools.partial(self._ask, message, schema, ended.is_set))
         try:  # off-thread: inline, the sync prompt would freeze the MCP loop and every RPC on it
             outcome = await asyncio.wait_for(
                 asyncio.to_thread(ask), timeout=self.timeout + self._OUTER_TIMEOUT_GRACE_SECONDS)
@@ -393,5 +397,7 @@ class ElicitationHandler:
         except Exception as exc:
             logger.error("MCP server '%s' elicitation failed: %s", self.server_name, exc, exc_info=True)
             return self._result("decline", "errors")
+        finally:
+            ended.set()
         action, metric = self._ANSWER_RESULTS.get(outcome.action, ("decline", "declined"))
         return self._result(action, metric, outcome.content)

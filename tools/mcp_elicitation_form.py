@@ -281,12 +281,14 @@ def _ask_batch(asker: FormAsker, batch: list[FormField], header: str, errors: di
     return None, {f.name: answers.get(f"q{i}") for i, f in enumerate(batch)}
 
 
-def _collect(asker: FormAsker, fields: list[FormField], header: str) -> FormOutcome:
+def _collect(asker: FormAsker, fields: list[FormField], header: str, ended: Callable[[], bool]) -> FormOutcome:
     content: dict[str, Any] = {}
     answered_any = False
     for start in range(0, len(fields), MAX_QUESTIONS):
         pending, errors = fields[start:start + MAX_QUESTIONS], {}
         for _attempt in range(MAX_REASKS + 1):
+            if ended():  # the server already got its answer: never open another prompt
+                return FormOutcome("cancel")
             stop, raw = _ask_batch(asker, pending, header if start == 0 and not errors else "", errors)
             if stop:
                 return FormOutcome(stop)
@@ -321,13 +323,16 @@ def ask_consent(asker: FormAsker, message: str) -> FormOutcome:
     return FormOutcome("accept", {}) if yes else FormOutcome("decline")
 
 
-def ask_form(asker: FormAsker, server_name: str, message: str, schema: Any) -> FormOutcome:
-    """Ask the user for *schema*'s fields; returns accept + validated content, decline or cancel."""
+def ask_form(asker: FormAsker, server_name: str, message: str, schema: Any,
+             ended: Callable[[], bool] = lambda: False) -> FormOutcome:
+    """Ask the user for *schema*'s fields; returns accept + validated content, decline or cancel.
+    *ended* turns true once the elicitation has been answered without this form (its deadline
+    passed): no further question opens after that."""
     from tools.human_input_hooks import human_input_request
 
     fields = parse_form(schema)
     header = f"{server_name} asks: {message}"
     with human_input_request("elicitation", prompt=header) as human:
-        result = _collect(asker, fields, header) if fields else ask_consent(asker, header)
+        result = _collect(asker, fields, header, ended) if fields else ask_consent(asker, header)
         human.outcome = result.action
     return result

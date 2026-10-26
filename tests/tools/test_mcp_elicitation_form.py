@@ -118,3 +118,29 @@ def test_invalid_answers_are_reasked(spec, answer):
     present, _value, error = coerce_answer(field, answer)
     assert not present and error
 
+
+def test_no_question_opens_after_the_elicitation_deadline(monkeypatch):
+    """The handler's wait ends (cancel sent to the server) while the user is still on the first batch:
+    the worker, which cancellation cannot stop, must not open the second batch afterwards."""
+    import threading
+    from tools.clarify_tool import MAX_QUESTIONS
+    schema = {"type": "object", "properties": {f"f{i}": {"type": "string"} for i in range(MAX_QUESTIONS + 1)}}
+    asked, answered_late = [], threading.Event()
+
+    def asker(questions):
+        asked.append(questions)
+        assert answered_late.wait(10)  # the user answers only after the server got its cancel
+        return {"outcome": "submitted", "answers": {q["qid"]: "x" for q in questions}}
+
+    monkeypatch.setattr(ElicitationHandler, "_OUTER_TIMEOUT_GRACE_SECONDS", 0)
+    ctx = _call_context(asker)
+    handler = ElicitationHandler("formprobe", {"timeout": 1}, call_context=lambda: ctx)  # 1s: the floor
+
+    async def _elicit():
+        result = await handler(context=None, params=_params(schema))
+        answered_late.set()
+        return result
+    # asyncio.run returns only after the worker thread has finished.
+    result = asyncio.run(_elicit())
+    assert result.action == "cancel"
+    assert len(asked) == 1

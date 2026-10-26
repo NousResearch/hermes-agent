@@ -1208,3 +1208,64 @@ class TestDiscoverySessionExclusion:
         excluded = json.loads(session_search(
             query="unique lineage token alpha", limit=5, exclude_session_ids=["s_child"], db=db))
         assert not {r["session_id"] for r in excluded["results"]} & {"s_root", "s_child"}
+
+
+# =========================================================================
+# include_inactive=true — the rewind-class archive (active=0, compacted=0).
+# In-place compaction and prompt-edit truncation soft-archive the turns they
+# drop with the SAME flags a user rewind uses, so those turns are invisible to
+# discovery by default even though FTS5 still indexes them. The flag widens the
+# search to them and hands their ids back as `archived_hits`, which the scroll
+# shape can then read (scroll already serves archived rows).
+# =========================================================================
+
+class TestIncludeInactiveArchivedRows:
+
+    def _seed_truncated_session(self, db):
+        """A session whose opening turn was soft-archived by a truncation."""
+        db.create_session("s_trunc", source="cli")
+        db.append_message("s_trunc", role="user", content="who is on the pier bill")
+        hidden = db.append_message("s_trunc", role="assistant",
+                                   content="the bill says LUMENFIELD plays 7-9")
+        # Truncate over the answer the way prompt.submit does: archive_dropped
+        # leaves the dropped turn on disk as active=0, compacted=0.
+        db.replace_messages("s_trunc",
+                            [{"role": "user", "content": "who is on the pier bill"}],
+                            archive_dropped=True)
+        db._conn.commit()
+        return hidden
+
+    def test_archived_turn_is_invisible_by_default(self, db):
+        hidden = self._seed_truncated_session(db)
+        found = json.loads(session_search(query="LUMENFIELD", db=db))
+        assert not found["results"], f"archived row {hidden} leaked into default discovery"
+
+    def test_archived_turn_on_the_current_session_is_invisible_by_default(self, db):
+        self._seed_truncated_session(db)
+        found = json.loads(session_search(query="LUMENFIELD", db=db, current_session_id="s_trunc"))
+        assert not found["results"]
+
+    def test_include_inactive_surfaces_the_archived_id(self, db):
+        hidden = self._seed_truncated_session(db)
+        found = json.loads(session_search(
+            query="LUMENFIELD", db=db, current_session_id="s_trunc", include_inactive=True))
+        entries = [r for r in found["results"] if r["session_id"] == "s_trunc"]
+        assert entries, found
+        assert hidden in entries[0]["archived_hits"], entries[0]
+        assert "superseded" in entries[0]["archived_hits_note"]
+
+    def test_include_inactive_without_a_current_session(self, db):
+        hidden = self._seed_truncated_session(db)
+        found = json.loads(session_search(query="LUMENFIELD", db=db, include_inactive=True))
+        assert any(hidden in (r.get("archived_hits") or []) for r in found["results"]), found
+
+    def test_scroll_reads_an_archived_turn(self, db):
+        hidden = self._seed_truncated_session(db)
+        window = json.loads(session_search(
+            session_id="s_trunc", around_message_id=hidden, window=1, db=db))
+        assert any("LUMENFIELD" in (m.get("content") or "") for m in window["messages"])
+
+    def test_default_payload_carries_no_archived_hits_key(self, db):
+        self._seed_truncated_session(db)
+        found = json.loads(session_search(query="pier bill", db=db))
+        assert all("archived_hits" not in r for r in found["results"])

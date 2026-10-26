@@ -192,6 +192,14 @@ def _ensure_telegram_mock() -> None:
 
     mod.SimpleUpdateProcessor = SimpleUpdateProcessor
 
+    # Adapter filters subclass the SDK base too. A MagicMock base becomes a mock
+    # rather than a class and exhausts its constructor on subsequent reconnects.
+    class MessageFilter:
+        def __and__(self, other):
+            return MagicMock()
+
+    mod.filters.MessageFilter = MessageFilter
+
     for name in (
         "telegram",
         "telegram.ext",

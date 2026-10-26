@@ -21,7 +21,7 @@ PREPARED_COMPACTION_EVENTS = frozenset({
 })
 PREPARED_COMPACTION_ORIGINS = frozenset({"none", "tool_batch", "turn_end"})
 PREPARED_COMPACTION_REASONS = frozenset({
-    "agent_released", "aux_fallback_main", "discarded_while_waiting", "fresh_required", "head_moved", "host_cancelled",
+    "agent_released", "aux_fallback_main", "fresh_required", "head_moved", "host_cancelled",
     "inside_tail", "none", "other_session", "pass_failed_while_waiting", "provider_context", "rewound",
     "running_not_fit", "session_boundary", "shape_changed", "superseded", "text_changed",
     "transcript_shorter", "wait_timeout",

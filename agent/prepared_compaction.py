@@ -45,7 +45,7 @@ import hashlib
 import logging
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
@@ -111,6 +111,7 @@ class PreparedSummary(_Window):
     body: str  # bare body the next compaction extends iteratively
     call_state: dict[str, Any] = field(default_factory=dict, compare=False)  # _SUMMARY_CALL_STATE after the pass
     telemetry: dict[str, Any] = field(default_factory=dict, compare=False)  # _SUMMARY_CALL_TELEMETRY of the pass
+    waited: Optional[float] = field(default=None, compare=False)  # seconds the taking compaction waited on the pass
 
 
 class _PendingPass:
@@ -232,14 +233,15 @@ class PreparedCompaction:
         self._retry_after = 0.0  # monotonic; set by a failed pass
         # Set by the first compaction that needed memory-provider context; such compactions summarise fresh.
         self._needs_provider_context = False
+        self._busy_window: Optional[tuple[str, int, int]] = None  # last window the slot cap refused (counted once)
 
     def discard(self, reason: str, code: str = "session_boundary") -> None:
         """Drop the candidate and cancel a running pass (it can no longer publish); ``code`` is the closed
         reason opt-in shared metrics count."""
         with self._lock:
             entry, pending, self._entry, self._pending = self._entry, self._pending, None, None
-        if pending is not None:
-            pending.cancel(code)
+            if pending is not None:
+                pending.cancel(code)  # under the lock: the pass reads its cancel reason after it
         if entry is not None or pending is not None:
             _record("discarded", reason=code)
         dropped = entry or (pending.window if pending is not None else None)
@@ -287,21 +289,21 @@ class PreparedCompaction:
                     self._pending = None
                 # A pass that published after the snapshot above planned on the pre-compaction transcript.
                 self._entry = None
-            if pending is not None:
-                # Done already, or superseded: stop paying for it.
-                code = getattr(reason, "code", None)
-                pending.cancel(code if code in _WAIT_CANCEL_REASONS else "superseded")
+                if pending is not None:
+                    # Done already, or superseded: stop paying for it.
+                    code = getattr(reason, "code", None)
+                    pending.cancel(code if code in _WAIT_CANCEL_REASONS else "superseded")
         if reason is not None or entry is None:
             if entry is not None or pending is not None:
                 logger.info("prepared compaction: splice miss session=%s reason=%s", session_id, reason)
-                _record("discarded", reason=reason.code, wait_seconds=waited)
+                if reason.code != "discarded_while_waiting":  # the discard() that woke the wait counted it
+                    _record("discarded", reason=reason.code, wait_seconds=waited)
             return None
         logger.info(
             "prepared compaction: splice hit session=%s window=%d-%d (fresh cut %d)", session_id, entry.compress_start,
             entry.compress_end, end,
         )
-        _record("used", reason="aux_fallback_main" if entry.telemetry.get("fallback_used") else None, wait_seconds=waited)
-        return entry
+        return replace(entry, waited=waited)  # counted as used once adopt() splices it
 
     def _await(self, pending: _PendingPass) -> tuple[Optional[PreparedSummary], Optional[_Miss]]:
         """Wait on the compacting thread for *pending*: what it published, or None and why (the host's
@@ -391,7 +393,9 @@ class PreparedCompaction:
             window = _Window(compressor._session_id, start, end, prefix_identities(working, end))
             # Never queue threads that retain transcripts while every slot is busy.
             if not _slots.acquire(blocking=False):
-                _record("skipped_busy", origin=origin)
+                if self._busy_window != (window.session_id, start, end):  # count refused passes, not tool batches
+                    self._busy_window = (window.session_id, start, end)
+                    _record("skipped_busy", origin=origin)
                 return None
             with self._lock:
                 if self._pending is not None or self._entry is not None:
@@ -510,6 +514,8 @@ def adopt(compressor: Any, prepared: PreparedSummary) -> None:
     if isinstance(telemetry, dict):
         telemetry.update({key: value for key, value in prepared.telemetry.items() if value is not None})
         telemetry["prepared_summary"] = True
+    _record("used", reason="aux_fallback_main" if prepared.telemetry.get("fallback_used") else None,
+            wait_seconds=prepared.waited)
 
 
 def maybe_prepare(agent: Any, messages: list[dict[str, Any]], *, origin: str) -> Optional[threading.Thread]:

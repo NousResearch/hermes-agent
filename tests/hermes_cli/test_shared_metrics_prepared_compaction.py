@@ -150,6 +150,20 @@ def test_waste_modes_say_why(monkeypatch, marks):
         attempt_seed={"attempt_id": attempt["attempt_id"], "session_id": "S1", "trigger_source": "auto"},
     )
 
+    # A session boundary that wakes a waiting compaction is one discard, counted by the boundary.
+    woken = _compressor()
+    woken.gate = threading.Event()
+    before = len(marks)
+    running = pc.maybe_prepare(_agent(woken), msgs, origin="tool-batch")
+    threading.Timer(0.2, woken.prepared_compaction.discard, args=("session reset",)).start()
+    woken.compress(msgs, current_tokens=woken.threshold_tokens + 1)
+    woken.gate.set()
+    running.join(5.0)
+    woken_rows = _events(marks[before:])
+    assert [row for row in woken_rows if row[0] == "discarded"] == [
+        ("discarded", "none", "session_boundary", "none", "none"),
+    ]
+
     # A pass whose summary call fails with a terminal access error.
     failed = _compressor()
     monkeypatch.setattr(type(failed), "_generate_summary", module.ContextCompressor._generate_summary)

@@ -1841,45 +1841,6 @@ def _fallback_api_mode_hint(fb: dict, fb_provider: str, fb_base_url_hint: Option
     return False, "chat_completions"
 
 
-def _fallback_api_mode_resolved(agent, fb_provider: str, fb_model: str, fb_base_url: str) -> str:
-    """Re-detect api_mode from provider / resolved base URL / model when the hint pass
-    landed on the chat_completions default (never called for an explicit api_mode)."""
-    if fb_provider == "openai-codex":
-        return "codex_responses"
-    from hermes_cli.models import opencode_model_api_mode
-    from hermes_cli.runtime_provider_custom import _opencode_family_for_custom
-    opencode_family = _opencode_family_for_custom(fb_provider, fb_base_url)
-    if opencode_family is not None:
-        # OpenCode Zen/Go/free serve Responses-only (muse-spark, gpt-*, grok-*), anthropic_messages
-        # (minimax, qwen) and chat_completions models behind one provider; the primary /model path
-        # already re-derives per model — the fallback wire must agree (#102148).
-        return opencode_model_api_mode(opencode_family, fb_model)
-    if fb_provider in {"nous", "nous-portal", "nousresearch"}:
-        # Portal is dual-wire: anthropic/* must land on /v1/messages (the swap rebuilds the native client).
-        from hermes_cli.providers import nous_api_mode
-        return nous_api_mode(fb_model)
-    if _is_anthropic_wire_url(fb_base_url):
-        # Named custom providers (cron-anthropic) resolve base_url from config; the hint pass never saw it.
-        return "anthropic_messages"
-    if fb_provider == "azure-foundry":
-        # Foundry's Responses-only families 400 on /chat/completions once tools and reasoning
-        # coexist (#120263: gpt-6-luna/sol). Keyed on the provider, like the primary ``model:``
-        # path (``_azure_inferred_api_mode``): the deployment URL — ``*.services.ai.azure.com``
-        # /api/projects/... — never matches ``_is_azure_openai_url``, and the generic predicate
-        # below only knows ``gpt-5``. Same table, so both paths agree on every Foundry deployment.
-        from hermes_cli.models import azure_foundry_model_api_mode
-        return azure_foundry_model_api_mode(fb_model) or "chat_completions"
-    if agent._is_azure_openai_url(fb_base_url):
-        return "chat_completions"  # Azure serves gpt-5.x on /chat/completions — no Responses API.
-    # Per-model provider exceptions stay inside the requires-responses predicate.
-    if agent._is_direct_openai_url(fb_base_url) or agent._provider_model_requires_responses_api(fb_model, provider=fb_provider):
-        return "codex_responses"
-    host = base_url_hostname(fb_base_url)
-    if fb_provider == "bedrock" or (host.startswith("bedrock-runtime.") and base_url_host_matches(fb_base_url, "amazonaws.com")):
-        return "bedrock_converse"
-    return "chat_completions"
-
-
 def _rebind_fallback_credential_pool(agent, fb_provider: str, fb_model: str) -> None:
     """Rebind the credential pool when the provider changes (else rate_limit/billing/auth recovery
     mutates the wrong credentials and overwrites the fallback's base_url). Same-provider pool: kept."""

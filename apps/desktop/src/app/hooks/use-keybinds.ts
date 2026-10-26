@@ -135,6 +135,27 @@ type HandlerMap = Record<string, () => unknown>
 // Mount once near the top of the app. Owns the single global keydown listener
 // for every rebindable hotkey: it runs the matched action, or — while capture
 // mode is active (edit overlay / panel rebind) — records the pressed combo.
+/**
+ * Element fullscreen gives the remote Screen sole keyboard ownership — its viewport
+ * hosts the local Escape/F6 handler, and shell/composer chords must not fire behind it.
+ */
+function remoteScreenOwnsKeyboard(): boolean {
+  return document.fullscreenElement?.hasAttribute('data-remote-screen') === true
+}
+
+/**
+ * True when this dispatcher must not react to the key at all: an active IME
+ * composition owns the keyboard (Windows Chinese IMEs use Ctrl+, as their
+ * punctuation-mode toggle — without this guard that keystroke ALSO matched
+ * `nav.settings` and navigated away mid-word, unmounting the composer and
+ * destroying the unsent draft, #41079), or a fullscreen remote Screen owns it
+ * (its viewport hosts the local Escape/F6 handler; shell/composer chords must
+ * not fire behind it).
+ */
+function keyboardOwnedElsewhere(event: KeyboardEvent): boolean {
+  return event.isComposing || remoteScreenOwnsKeyboard()
+}
+
 export function useKeybinds(deps: KeybindRuntimeDeps): void {
   const navigate = useNavigate()
   const location = useLocation()
@@ -475,13 +496,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      // An active IME composition owns the keyboard. Windows Chinese IMEs
-      // (Microsoft Pinyin, Sogou) use Ctrl+, as their punctuation-mode toggle,
-      // so without this guard that keystroke ALSO matched `nav.settings` and
-      // navigated away mid-word — unmounting the composer and destroying the
-      // unsent draft (#41079). The draft stash below makes navigation safe;
-      // this makes the IME keystroke not navigate at all.
-      if (event.isComposing) {
+      if (keyboardOwnedElsewhere(event)) {
         return
       }
 

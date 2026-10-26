@@ -207,6 +207,12 @@ actually sends depends on `email_mode`:
 3. **draft_only fallback:** `pdd.py render-email <subject> <broker> --listing <url>`; a digest entry
    tells the operator to send it, and the agent records `submitted --channel email` afterward.
 
+- **Confirm the contact email with the operator before anything is filed.** Every opt-out form,
+  the registry one-shots, and `send-email` disclose whatever `contact_email_for_optouts` carries, and
+  every confirmation link lands in that inbox. The env default mailbox may be a work address, and a
+  personal run filed to it is a disclosure nobody asked for — ask once at intake; re-filing is the
+  only remedy after the fact.
+
 Then follow the **Verification loop** if the broker emails a confirmation link.
 
 ## Verification loop (email_verification brokers)

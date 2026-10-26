@@ -33,6 +33,10 @@ interface SidebarWorkspaceGroupProps {
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
   onNewSession?: (path: null | string) => void
   onNewSessionSplit?: NewSessionSplitHandler
+  // The cwd the "+" seeds the new session with, when it differs from the lane's
+  // own path — the entered-project view passes the project's primary folder when
+  // it sits inside the lane's repo root (#138445). Unset keeps the lane path.
+  newSessionPath?: null | string
   // When set (linked worktree rows), shows a remove affordance that runs a real
   // `git worktree remove`.
   onRemove?: () => void
@@ -43,6 +47,7 @@ export function SidebarWorkspaceGroup({
   renderRows,
   onNewSession,
   onNewSessionSplit,
+  newSessionPath,
   onRemove
 }: SidebarWorkspaceGroupProps) {
   const { t } = useI18n()
@@ -137,7 +142,7 @@ export function SidebarWorkspaceGroup({
       return
     }
 
-    onNewSession(group.path)
+    onNewSession(newSessionPath ?? group.path)
   }
 
   const handleNewSessionSplit = async (placement: NewSessionPlacement) => {
@@ -148,7 +153,7 @@ export function SidebarWorkspaceGroup({
     onNewSessionSplit(placement.dir, {
       anchor: placement.anchor,
       before: placement.before,
-      cwd: group.path,
+      cwd: newSessionPath ?? group.path,
       profile: isProfileGroup ? group.id : placement.profile
     })
   }
@@ -168,7 +173,7 @@ export function SidebarWorkspaceGroup({
               // it's dropped. A sub-threshold release falls through to the
               // onClick above.
               startNewSessionDrag(placement => void handleNewSessionSplit(placement), event, {
-                cwd: group.path,
+                cwd: newSessionPath ?? group.path,
                 label: s.newSessionIn(group.label),
                 profile: isProfileGroup ? group.id : undefined
               })

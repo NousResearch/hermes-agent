@@ -18,6 +18,7 @@ import os
 import sys
 import threading
 import time
+import traceback
 from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
@@ -119,6 +120,12 @@ def start_loop_liveness_watchdog(
             if stop_event.is_set():  # re-checked before each irreversible step: a late stop() wins
                 return
             strikes += 1
+            if strikes == 1:  # stalls shorter than the kill budget used to leave no trace at all
+                stack = _format_thread_stack(getattr(loop, "_thread_id", None))
+                with contextlib.suppress(Exception):
+                    logger.warning(
+                        "Gateway event loop missed a liveness probe (no reply in %.0fs); loop stack:\n%s",
+                        probe_timeout, stack or "(loop thread stack unavailable)")
             if strikes < max_strikes:
                 continue
             if stop_event.is_set():
@@ -133,7 +140,8 @@ def start_loop_liveness_watchdog(
             _write_watchdog_dump(
                 get_shutdown_watchdog_dump_path(), delay_s=probe_timeout * strikes,
                 snapshot={"strikes": strikes, "probe_interval_s": probe_interval},
-                event="loop_liveness_watchdog_fired")
+                event="loop_liveness_watchdog_fired",
+                loop_thread_id=getattr(loop, "_thread_id", None))
             if stop_event.is_set():
                 return
             _mark_exited_quietly(exit_code, "loop_liveness_watchdog")
@@ -238,15 +246,37 @@ def resolve_shutdown_watchdog_delay(
     return _coerce_float(drain_timeout, 0.0) + grace
 
 
+def _format_thread_stack(thread_id: Optional[int]) -> Optional[str]:
+    """Stack of one thread via ``sys._current_frames()``, or None when it is not running. Written
+    ahead of the faulthandler dump because faulthandler stops after 100 threads and lists the oldest
+    thread (the event loop) last, so a busy gateway's dump never showed the frozen loop's frame."""
+    if thread_id is None:
+        return None
+    try:
+        frame = sys._current_frames().get(thread_id)
+    except Exception:
+        return None
+    if frame is None:
+        return None
+    return "".join(traceback.format_stack(frame))
+
+
 def _write_watchdog_dump(dump_path: Path, *, delay_s: float, snapshot: Optional[dict[str, Any]],
-                         event: str = "shutdown_watchdog_fired") -> None:
-    """Best-effort faulthandler + metadata dump before hard-exit (file, then stderr)."""
+                         event: str = "shutdown_watchdog_fired",
+                         loop_thread_id: Optional[int] = None) -> None:
+    """Best-effort faulthandler + metadata dump before hard-exit (file, then stderr). When
+    ``loop_thread_id`` is given, that thread's stack is written first so the 100-thread
+    faulthandler limit cannot drop it."""
     header = {"event": event, "pid": os.getpid(), "delay_s": delay_s,
               "fired_at": datetime.now(UTC).isoformat(), "snapshot": snapshot or {}}
+    loop_stack = _format_thread_stack(loop_thread_id)
+    loop_section = (f"--- event loop thread {loop_thread_id:#x} (most recent call last) ---\n"
+                    f"{loop_stack}" if loop_stack else "")
     with contextlib.suppress(OSError):  # unwritable dir: skip only the file copy, stderr still runs
         dump_path.parent.mkdir(parents=True, exist_ok=True)
     with contextlib.suppress(Exception), open(dump_path, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(header, default=str) + "\n--- faulthandler dump (all threads) ---\n")
+        fh.write(json.dumps(header, default=str) + "\n" + loop_section
+                 + "--- faulthandler dump (all threads) ---\n")
         fh.flush()
         try:
             faulthandler.dump_traceback(file=fh, all_threads=True)
@@ -256,7 +286,7 @@ def _write_watchdog_dump(dump_path: Path, *, delay_s: float, snapshot: Optional[
         fh.flush()
     with contextlib.suppress(Exception):  # stderr too: journald/launchd get it if disk is wedged
         sys.stderr.write(f"Gateway {event.replace('_', ' ')} after {delay_s:.0f}s "
-                         f"(pid={os.getpid()}); dumping all thread stacks.\n")
+                         f"(pid={os.getpid()}); dumping all thread stacks.\n" + loop_section)
         sys.stderr.flush()
         faulthandler.dump_traceback(all_threads=True)
 

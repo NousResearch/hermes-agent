@@ -6,6 +6,7 @@ The real ``handle_ws`` dispatcher; only ``_dispatch_request`` is a gated async s
 """
 import asyncio
 import json
+import logging
 
 import pytest
 
@@ -152,3 +153,56 @@ async def test_a_failed_read_reply_does_not_cancel_the_running_control(rig):
     await asyncio.wait_for(task, 10)
     assert "cancelled:submit" not in log and "done:submit" in log
     assert log[-1] == "teardown"
+
+
+@pytest.mark.asyncio
+async def test_control_read_does_not_queue_behind_a_blocked_mutation(rig):
+    """A control snapshot must not inherit a slow mutating request's latency.
+
+    The desktop's own request timeout reports whichever request was waiting when it fired, so a
+    ``session.control.read`` parked behind ``prompt.submit`` surfaces as "Session controls
+    unavailable: request timed out after 30s: session.control.read" — naming the victim while the
+    real blocker is never logged anywhere.
+    """
+    sock, gates, log = rig
+    gates["prompt.submit"] = release = asyncio.Event()
+    task = asyncio.create_task(ws_mod.handle_ws(sock))
+
+    sock.inbound.put_nowait(rpc("submit", "prompt.submit"))
+
+    assert await settle(lambda: "start:submit" in log)
+
+    sock.inbound.put_nowait(rpc("read", "session.control.read"))
+
+    try:
+        assert await settle(lambda: "done:read" in log, timeout=2.0), log
+        assert "done:submit" not in log
+        assert any(frame.get("id") == "read" for frame in sock.sent), sock.sent
+    finally:
+        release.set()
+
+    assert await settle(lambda: "done:submit" in log)
+    sock.inbound.put_nowait(None)
+    await asyncio.wait_for(task, 10)
+
+
+@pytest.mark.asyncio
+async def test_slow_dispatch_warning_names_the_blocking_method(rig, monkeypatch, caplog):
+    """The blocker is named in the log, so a client-side timeout is never untraceable."""
+    sock, gates, log = rig
+    monkeypatch.setattr(ws_mod, "_WS_SLOW_DISPATCH_LOG_MS", 1)
+    gates["prompt.submit"] = release = asyncio.Event()
+    task = asyncio.create_task(ws_mod.handle_ws(sock))
+
+    with caplog.at_level(logging.WARNING, logger="tui_gateway.ws"):
+        sock.inbound.put_nowait(rpc("submit", "prompt.submit"))
+        assert await settle(lambda: "start:submit" in log)
+        await asyncio.sleep(0.02)
+        release.set()
+        assert await settle(lambda: "done:submit" in log)
+        sock.inbound.put_nowait(None)
+        await asyncio.wait_for(task, 10)
+
+    warnings = [record.getMessage() for record in caplog.records if "ws dispatch slow" in record.getMessage()]
+    assert warnings, [record.getMessage() for record in caplog.records]
+    assert "prompt.submit" in warnings[0]

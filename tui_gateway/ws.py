@@ -16,6 +16,7 @@ import time
 from typing import Any, Callable
 
 from tui_gateway import server
+from tui_gateway._env import env_int
 from agent.message_sanitization import _sanitize_surrogates
 from tui_gateway.event_replay import replay_epoch
 from tui_gateway.transport import serialize_frame
@@ -100,10 +101,24 @@ _WS_DISPATCH_QUEUE_MAX = 256
 # transcript, so running them through the serial control lane turns an inexpensive interrupt or
 # control read behind them into a client timeout.  Keep the exception deliberately narrow: mutating
 # RPCs still retain arrival order, and no more than two expensive reads consume a connection.
-_WS_CONCURRENT_READ_METHODS = frozenset({"session.context_breakdown"})
+_WS_CONCURRENT_READ_METHODS = frozenset({"session.context_breakdown", "session.control.read"})
 _WS_CONCURRENT_READ_LIMIT = 2
 # Reads admitted beyond the running ones; one more parks the reader (as the serial lane did).
 _WS_WAITING_READ_LIMIT = 8
+# A serial-lane request that runs longer than this is logged with its method: the client's own
+# request timeout reports only the request that was WAITING behind it (``Session controls
+# unavailable: request timed out after 30s: session.control.read``), which names the victim and
+# leaves the real blocker undocumented on this side.
+_WS_SLOW_DISPATCH_LOG_MS = env_int("HERMES_TUI_SLOW_DISPATCH_LOG_MS", 5_000)
+
+
+def _log_slow_dispatch(peer: str, req_id: Any, req_method: Any, elapsed: float) -> None:
+    """Name the request that outlived a client's patience, so a stall is never attributed to its next victim."""
+    if elapsed * 1000.0 >= _WS_SLOW_DISPATCH_LOG_MS:
+        _log.warning(
+            "ws dispatch slow peer=%s id=%s method=%s ms=%d — a concurrent client request may time out behind it",
+            peer, req_id, req_method, int(elapsed * 1000.0),
+        )
 # A viewer's answer to an open server→client request (its response frame, a batch clarify's
 # ``clarify.lock``) settles in memory and never queues: the serial lane may be running the very handler
 # that waits for it (a plugin slash command's ``ctx.ask_choice`` under ``slash.exec``).
@@ -450,6 +465,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         # dispatch() may schedule long handlers on the pool; it returns None then and the worker
         # writes the response itself via transport.write (a separate thread, so that is the safe
         # path). Inline handlers return the response dict, written here from the loop.
+        started_at = time.perf_counter()
         try:
             resp = await _dispatch_request(authority_connection, req, req_method, transport)
         # health: allow BLE001 -- dispatch boundary: logs the traceback (_log.exception) and answers -32603
@@ -459,6 +475,8 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             await _reply(_error(-32603, "internal error", req_id), "send_failed_after_dispatch_crash",
                          "ws dispatch-crash reply send failed peer=%s id=%s method=%s", peer, req_id, req_method)
             return
+        finally:
+            _log_slow_dispatch(peer, req_id, req_method, time.perf_counter() - started_at)
         if resp is not None:
             await _reply(resp, "send_failed_after_response",
                          "ws response send failed peer=%s id=%s method=%s", peer, req_id, req_method)
@@ -493,14 +511,8 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         return stop
 
     async def _dispatch_loop() -> None:
-        """Dispatch controls in arrival order; bounded expensive read-only projections run alongside them."""
+        """Dispatch controls in arrival order; bounded read-only projections never enter this queue."""
         while (req := await _next_request()) is not stop:
-            req_method = req.get("method") if isinstance(req, dict) else None
-            if req_method in _WS_CONCURRENT_READ_METHODS:
-                task = asyncio.create_task(_dispatch_concurrent_read(req))
-                concurrent_reads.add(task)
-                task.add_done_callback(_finish_concurrent_read)
-                continue
             await _dispatch_one(req)
 
     async def _queue_request(req: Any) -> None:
@@ -509,8 +521,15 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             return
         if isinstance(req, dict) and req.get("method") in _WS_CONCURRENT_READ_METHODS:
             # A read past the waiting cap parks the reader, as the serial lane did; released
-            # when its task ends (a read cancelled before it ran releases it too).
+            # when its task ends (a read cancelled before it ran releases it too). Started here, not
+            # by the serial lane: a read that queues behind a slow mutating request inherits that
+            # request's latency, and the client blames the read (a "Session controls unavailable"
+            # banner naming session.control.read) while the real blocker leaves no trace on this side.
             await _unless_dispatch_failed(read_admission.acquire())
+            task = asyncio.create_task(_dispatch_concurrent_read(req))
+            concurrent_reads.add(task)
+            task.add_done_callback(_finish_concurrent_read)
+            return
         await _unless_dispatch_failed(pending.put(req))
 
     async def _end_reads() -> None:

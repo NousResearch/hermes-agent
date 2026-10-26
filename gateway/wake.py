@@ -107,10 +107,10 @@ async def admit_internal_event(adapter: Any, event: Any) -> None:
     await adapter.handle_message(event)
     if event._gateway_accepted is not True:
         raise WakeNotAccepted()
-    # handle_message can await (Telegram topic recovery, the busy handler's profile scope)
-    # before it claims or queues the event. The in-tree adapters do not await after the claim,
-    # so this read sees the drain state the claim was made under: a drain that began
-    # mid-admission dooms the claimed turn the same way.
+    # handle_message can await before it claims or queues the event (Telegram topic recovery)
+    # and after (the busy handler's later awaits). A drain seen here, whenever it began, still
+    # dooms the stored event: the drain gate refuses the claimed turn and the queued follow-up
+    # is discarded. Refuse it so the producer retries it after the restart.
     if _runner_draining(adapter):
         raise WakeNotAccepted("gateway began draining during admission; retry after restart")
 

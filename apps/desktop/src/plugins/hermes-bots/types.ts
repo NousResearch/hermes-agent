@@ -104,6 +104,10 @@ export interface RosterRow {
   /** An offline twin of a selected bot, kept visible so the row doesn't vanish. */
   ghost?: boolean
   handle?: string
+  /** A default row whose source also has a real (pre-reservation) `hermes`
+   *  profile: that profile keeps @hermes and this row answers to @default.
+   *  Set by `claimDefaultHandles`. */
+  hermesHandleTaken?: boolean
   has_avatar?: boolean
   /** The connection's backend identity (/api/status `install_id`) when the
    *  roster source has seen it — stable across Desktops, unlike `connectionId`

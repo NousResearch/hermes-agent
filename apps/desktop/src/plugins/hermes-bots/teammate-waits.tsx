@@ -11,7 +11,17 @@
  * unknown, with the rule spelled out, never retried.
  */
 
-import { atom, coarseElapsed, Codicon, host, Tip, useComposerSession, useQuery, useValue } from '@hermes/plugin-sdk'
+import {
+  atom,
+  Button,
+  coarseElapsed,
+  Codicon,
+  host,
+  Tip,
+  useComposerSession,
+  useQuery,
+  useValue
+} from '@hermes/plugin-sdk'
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { $botMeta, botRosterKey, useRoster } from './data'
@@ -159,7 +169,7 @@ function DeliveryRow({ now, row, sender, roster }: DeliveryRowProps) {
             row.state === 'waiting_on_you'
               ? 'min-w-0 truncate font-medium text-(--ui-accent)'
               : row.state === 'failed'
-                ? 'min-w-0 truncate text-(--ui-danger)'
+                ? 'min-w-0 truncate text-destructive'
                 : 'min-w-0 truncate text-(--ui-text-tertiary)'
           }
         >
@@ -167,24 +177,18 @@ function DeliveryRow({ now, row, sender, roster }: DeliveryRowProps) {
         </span>
       </Tip>
       <span className="ml-auto shrink-0 tabular-nums text-(--ui-text-quaternary)">{compactAge(row.since, now)}</span>
-      <button
-        className="shrink-0 rounded px-1.5 text-(--ui-text-secondary) hover:bg-(--ui-surface-hover)"
-        onClick={() => void openRosterBot(teammate)}
-        type="button"
-      >
+      <Button onClick={() => void openRosterBot(teammate)} size="micro" variant="ghost">
         {b.waiting.open}
-      </button>
+      </Button>
       {row.state === 'failed' ? (
-        <Tip label={b.waiting.dismiss}>
-          <button
-            aria-label={b.waiting.dismiss}
-            className="shrink-0 rounded px-1 text-(--ui-text-quaternary) hover:bg-(--ui-surface-hover)"
-            onClick={() => dismissDelivery(row.delivery_id)}
-            type="button"
-          >
-            <Codicon name="close" />
-          </button>
-        </Tip>
+        <Button
+          aria-label={b.waiting.dismiss}
+          onClick={() => dismissDelivery(row.delivery_id)}
+          size="icon-xs"
+          variant="ghost"
+        >
+          <Codicon name="close" />
+        </Button>
       ) : null}
     </li>
   )
@@ -216,7 +220,7 @@ export function TeammateWaits() {
   return (
     <section
       aria-label={b.waiting.title}
-      className="rounded-md border border-(--ui-border) bg-(--ui-surface-raised) px-2 py-1 text-xs"
+      className="rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-bg-secondary) px-2 py-1 text-xs"
       data-slot="teammate-waits"
     >
       <Tip label={b.waiting.neverResent}>

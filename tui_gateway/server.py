@@ -28,7 +28,7 @@ from hermes_constants import (
     get_hermes_home, get_hermes_home_override, get_process_hermes_home, profile_name_for_home,
     reset_hermes_home_override, set_hermes_home_override)
 from hermes_cli.env_loader import load_hermes_dotenv
-from utils import file_signature, is_truthy_value
+from utils import is_truthy_value
 from hermes_state_ids import new_session_id
 from tools.environments.local import hermes_subprocess_env
 from agent.fast_mode import STATIC_TIERS
@@ -263,7 +263,7 @@ class _SlashWorker:
         # ``--provider`` pins the child to the parent agent's virtual provider: without it the
         # worker re-resolves provider from config, so a MoA session (provider=moa, model=<preset>)
         # dispatched its preset NAME to the configured real provider and 402/503'd (#57283).
-        argv = [sys.executable, "-m", "tui_gateway.slash_worker", "--session-key", session_key,
+        argv = [sys.executable, "-P", "-m", "tui_gateway.slash_worker", "--session-key", session_key,
                 "--parent-pid", str(os.getpid())] \
             + (["--model", model] if model else []) \
             + (["--provider", provider] if provider else [])
@@ -285,7 +285,7 @@ class _SlashWorker:
         env = _prepend_tool_paths(served_profile_child_env(
             target_home=profile_home or (_hermes_home if is_multiplex_active() else None),
             inherit_credentials=True))
-        # Internal slash workers must import the same checkout as their parent.
+        # Internal slash workers must import the same checkout as their parent; -P keeps their cwd off sys.path.
         module_root = str(Path(__file__).resolve().parent.parent)
         env["PYTHONPATH"] = os.pathsep.join(
             part for part in (module_root, env.get("PYTHONPATH", "")) if part
@@ -671,12 +671,13 @@ def _profile_configured_cwd(profile_home: Path | None) -> str | None:
     env var (issue #40334). Returns an absolute, existing directory, or None for placeholders / missing /
     invalid paths.
     """
+    from hermes_cli.config_backend import config_exists
     if profile_home is None:
         return None
     with contextlib.suppress(Exception):
         from hermes_cli.config_effective import load_user_config_effective
         p = Path(profile_home) / "config.yaml"
-        return _configured_cwd_from_cfg(load_user_config_effective(p)) if p.exists() else None
+        return _configured_cwd_from_cfg(load_user_config_effective(p)) if config_exists(p) else None
     return None
 
 
@@ -997,15 +998,19 @@ def _load_cfg_raw() -> dict:
     expansion applied here would be persisted on the next save). Behavioral reads use :func:`_load_cfg`.
     Cache keyed on the resolved path so profiles don't clobber."""
     global _cfg_cache, _cfg_sig, _cfg_path
+    from hermes_cli.config_backend import config_exists, config_version
     from hermes_cli.config import read_user_config_raw
     from hermes_cli.config_read_errors import FailedConfigRead
     try:
         p = _active_config_path()
-        sig = file_signature(p.stat()) if p.exists() else None
+        try:
+            sig = config_version(p)
+        except FileNotFoundError:  # absent; any other stat error is a failed read, never "no config"
+            sig = None
         with _cfg_lock:
             if _cfg_cache is not None and _cfg_sig == sig and _cfg_path == p:
                 return copy.deepcopy(_cfg_cache)
-        data = read_user_config_raw(p) if p.exists() else {}
+        data = read_user_config_raw(p) if config_exists(p) else {}
     except Exception as exc:
         return FailedConfigRead(error=exc)  # readable as {}, refused by _save_cfg
     with _cfg_lock:  # cache the RAW config: _save_cfg writes _cfg_cache back to disk
@@ -1027,12 +1032,13 @@ def _load_cfg() -> dict:
 def _save_cfg(cfg: dict):
     global _cfg_cache, _cfg_sig, _cfg_path
     from hermes_cli.config import atomic_config_replace
+    from hermes_cli.config_backend import config_version
     path = _active_config_path()
     atomic_config_replace(path, cfg)
     with _cfg_lock:
         _cfg_cache, _cfg_path = copy.deepcopy(cfg), path
         try:
-            _cfg_sig = file_signature(path.stat())
+            _cfg_sig = config_version(path)
         except Exception:
             _cfg_sig = None
 
@@ -1518,8 +1524,10 @@ def _live_session_identity(session: dict) -> tuple[str, str]:
     override = session.get("model_override") or {}
     model = (str(pending.get("display_model") or "").strip() or mirror.get("model")
              or getattr(agent, "model", "") or override.get("model"))
+    agent_provider = getattr(agent, "provider", "")
+    agent_provider = _scoped_session_provider(agent, session) if agent_provider == "custom" else agent_provider
     provider = (str(pending.get("display_provider") or "").strip() or mirror.get("provider")
-                or getattr(agent, "provider", "") or override.get("provider"))
+                or agent_provider or override.get("provider"))
     default = ("", "") if model else _session_default_route(session)
     return str(model or default[0]), str(provider or default[1])
 
@@ -1572,10 +1580,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
     pending_provider = str(pending_switch.get("display_provider") or "").strip()
     provider = mirror.get("provider", getattr(agent, "provider", ""))
     if provider == "custom" and "provider" not in mirror and agent is not None:
-        # Clients reuse this identity for new chats without carrying the endpoint or key.
-        # Broadcast/resume callers need not be bound to this session's profile.
-        with _profile_build_scope(sess.get("profile_home") or _hermes_home):
-            provider = _runtime_model_config(agent).get("provider", provider)
+        provider = _scoped_session_provider(agent, sess)
     model = pending_model or mirror.get("model", getattr(agent, "model", ""))
     # The level the route's entry clamp actually sends (== reasoning_effort when verbatim), so the
     # Desktop can say "ultra sends max on this route" like `/reasoning` does instead of presenting a

@@ -697,6 +697,7 @@ gateway:
     no_credentials: "⚠️ No pude conectar con el servicio del modelo de IA, así que este mensaje no se procesó. Usa /login para iniciar sesión de nuevo, o /model para elegir otro modelo. Si sigue fallando, ejecuta `hermes doctor` en el host."
     cron_session_read_only: "⚠️ Este chat pertenece a una tarea programada y solo ejecuta esa tarea, así que tu mensaje no se ejecutó. Empieza un chat nuevo para enviarlo."
     workspace_unavailable: "⚠️ La carpeta de trabajo de este chat ya no existe ({path}), así que tu mensaje no se ejecutó. Vuelve a crear la carpeta o mueve el chat a otra (`/worktree new` en la CLI, «Mover a proyecto» en la app de escritorio) y vuelve a enviar tu mensaje."
+    launch_credentials_unavailable: "⚠️ Este chat ya no puede usar la clave de API con la que se inició{detail}, así que ya no se puede ejecutar nada en él. Un chat abierto nunca cambia por sí solo a otra clave, así que /retry falla de la misma forma. Usa /new para empezar un chat nuevo con tu clave actual."
   skills:
     disabled: "La skill **{name}** está instalada pero desactivada.\nActívala con: `hermes skills config`"
     not_installed: "La skill **{name}** está disponible pero no instalada.\nInstálala con: `hermes skills install {install_name}`"
@@ -2017,7 +2018,6 @@ cli:
     cleared_picker_cache: "Caché del selector de modelos borrada. Actualizando..."
     moa_one_shot_queued: "MoA de un solo uso en cola con el preajuste {preset}; el modelo anterior se restaurará tras este turno."
     normalized_model: "Modelo '{old}' normalizado a '{new}' para {provider}."
-    normalized_copilot_model: "Modelo de Copilot '{old}' normalizado a '{new}'."
     stripped_provider_prefix: "Se quitó el prefijo de proveedor de '{old}'; se usa '{new}' para {provider}."
     restored_from_session: "Modelo restaurado desde la sesión: {model}"
     could_not_load_config: "❌ no se pudo cargar la configuración: {error}"

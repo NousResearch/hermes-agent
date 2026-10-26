@@ -29,8 +29,14 @@ class RoomMember(OpenModel):
 
 
 class RoomActor(Result):
+    """``hosted_rooms._ACTOR_FIELDS``; member replies carry ``profile`` plus, when known,
+    ``display_name`` and the peer ``connection_id`` (``hosted_room_discussion._member_actor``)."""
+
     kind: str
     id: str
+    profile: str | None = None
+    display_name: str | None = None
+    connection_id: str | None = None
 
 
 class RoomEvent(Result):
@@ -216,7 +222,8 @@ class RoomMemberActivity(Result):
 
 
 class RoomDriverStatus(Result):
-    """``HostedRoomService.status(room_id)``; ``pending_actions`` rows are ``{kind: retry, task_id}``
+    """``HostedRoomService.status(room_id)``; ``pending_actions`` rows are the exact attempt
+    (``hosted_room_service.attempt_action``: ``kind`` + ``member_id``/``task_id``/``execution_generation``)
     or the driver's approval action (``kind: approval`` + run/session/approval context).
     ``member_activity`` lists live tasks in admission order (absent from older gateways)."""
 
@@ -346,6 +353,9 @@ method("groups.approve", params=GroupsApproveParams, result=GroupsApproveResult,
 
 class GroupsRetryParams(RoomParams):
     task_id: str
+    # The pending action's exact attempt; absent only from clients that predate it.
+    member_id: str | None = None
+    execution_generation: int | None = None
 
 
 class RoomTaskReceipt(Result):

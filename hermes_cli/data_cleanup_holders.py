@@ -71,7 +71,7 @@ def _drain_manual_gateway(home: Path) -> None:
 
 def _refuse_backend_writers(home: Path) -> None:
     from hermes_constants import get_default_hermes_root
-    from hermes_cli.process_identity import LEDGER_FILENAME, _pid_alive_matches, _read_ledger
+    from hermes_cli.process_identity import LEDGER_FILENAME, _read_ledger, entry_still_running
 
     root = get_default_hermes_root(home=home).resolve()
     rows = _read_ledger(root / LEDGER_FILENAME)
@@ -85,7 +85,7 @@ def _refuse_backend_writers(home: Path) -> None:
         pid = row.get("pid")
         if type(pid) is not int or pid <= 0:
             raise RuntimeError("backend ownership contains an invalid PID")
-        if _pid_alive_matches(pid, row.get("create_time")) is not False:
+        if entry_still_running(row):
             raise RuntimeError(f"backend PID {pid} still owns {home}; close its desktop/dashboard before retrying")
 
 

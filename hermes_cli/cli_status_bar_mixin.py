@@ -947,7 +947,7 @@ class CLIStatusBarMixin:
         re-reading config per render could advertise a chord that isn't bound — and this sits on
         the hot render path.
 
-        Two reasons (Copilot round-13 on 19835): See #19835.
+        Two reasons (review round-13 on 19835): See #19835.
         """
         return getattr(self, "_voice_record_key_display_cache", None) or "Ctrl+B"
 

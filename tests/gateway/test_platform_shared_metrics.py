@@ -9,6 +9,7 @@ import pytest
 from gateway.platforms.base import BasePlatformAdapter, Platform, PlatformConfig, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run_adapters import GatewayAdapterLifecycleMixin
+from gateway.run_startup import GatewayStartupMixin
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from hermes_cli.observability import relay_shared_metrics as rsm
 from hermes_cli.observability import shared_metrics_contract as contract
@@ -171,13 +172,19 @@ def test_a_delivery_sent_after_the_routed_scope_resets_lands_in_the_owning_profi
     ]
 
 
-class _FatalRunner(GatewayAdapterLifecycleMixin):
+class _FatalRunner(GatewayAdapterLifecycleMixin, GatewayStartupMixin):
+    # The last non-retryable fatal parks the platform through the startup mixin (as in GatewayRunner).
+    _draining = _external_drain_active = False
+
     def __init__(self):
         self.adapters, self._failed_platforms, self._running = {}, {}, True
         self.delivery_router, self.config = SimpleNamespace(adapters={}), SimpleNamespace(platforms={})
         self._profile_adapters, self._profile_failed_platforms = {}, {}
 
     def _update_platform_runtime_status(self, *args, **kwargs):
+        pass
+
+    def _update_runtime_status(self, *args, **kwargs):
         pass
 
     async def _safe_adapter_disconnect(self, *args, **kwargs):

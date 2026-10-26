@@ -6,7 +6,7 @@ maps. Split out of ``hermes_cli.models``.
 
 from __future__ import annotations
 
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 
 class CuratedFallbackModels(list[str]):
@@ -23,7 +23,7 @@ _OPENROUTER_DESCRIPTIONS = {
     "deepseek/deepseek-v4.1-flash-1017": "dated snapshot of v4.1-flash",
     "deepseek/deepseek-v4-flash-0731": "dated snapshot of v4-flash",
     "moonshotai/kimi-k3": "recommended",
-    "z-ai/glm-5.2": "default",
+    "z-ai/glm-5.3": "default",
     "z-ai/glm-5.3-flashx": "high-speed tier of glm-5.3-flash",
     "openrouter/pareto-code": "auto-routes to cheapest coder meeting openrouter.min_coding_score",
     "openai/gpt-6-astra-fast": "2x price, priority tier",
@@ -145,7 +145,7 @@ def _xai_curated_models() -> list[str]:
     return _xai_finalize_catalog(list(_XAI_STATIC_FALLBACK))
 
 
-# Native OpenAI Chat Completions (api.openai.com); also the head of the Copilot list.
+# Native OpenAI Chat Completions (api.openai.com).
 _OPENAI_CHAT_MODELS = [
     "gpt-5.4", "gpt-5.4-mini", "gpt-5-mini", "gpt-5.3-codex", "gpt-5.2-codex", "gpt-4.1", "gpt-4o", "gpt-4o-mini",
 ]
@@ -184,11 +184,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "openai-codex": _codex_curated_models(),
     "xai-oauth": list(_XAI_MODELS),
-    "copilot-acp": ["copilot-acp"],
-    "copilot": _OPENAI_CHAT_MODELS + [
-        "claude-sonnet-4.6", "claude-sonnet-5", "claude-sonnet-4", "claude-sonnet-4.5", "claude-haiku-4.5",
-        "gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-2.5-pro",
-    ],
     "gemini": [
         # Argon second: [0] is the silent default when no model is configured, and a flagship never is.
         "gemini-3.8-flash", "gemini-4-argon", "gemini-3.7-flash",
@@ -343,8 +338,6 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [ProviderEntry(*row) for row in (
     ("tencent-tokenhub", "Tencent TokenHub", "Tencent TokenHub (Hy4 preview via tokenhub.tencentmaas.com)"),
     ("tencent-tokenplan", "Tencent TokenPlan", "Tencent TokenPlan (Hy4 preview via api.lkeap.cloud.tencent.com, Anthropic Messages)"),
     ("nvidia", "NVIDIA NIM", "NVIDIA NIM (Nemotron models via build.nvidia.com or local NIM)"),
-    ("copilot", "GitHub Copilot", "GitHub Copilot (Uses GITHUB_TOKEN or gh auth token)"),
-    ("copilot-acp", "GitHub Copilot ACP", "GitHub Copilot ACP (Spawns copilot --acp --stdio)"),
     ("huggingface", "Hugging Face", "Hugging Face Inference Providers"),
     ("gemini", "Google AI Studio", "Google AI Studio (Native Gemini API)"),
     ("vertex", "Google Vertex AI", "Google Vertex AI (Gemini via GCP; OAuth2 service account or ADC, GCP billing/quotas)"),
@@ -378,6 +371,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [ProviderEntry(*row) for row in (
 # through ``auth.get_auth_status`` (external_process → the binary resolves; OAuth → auth.json /
 # credential-pool entry), so an admitted row reads authenticated=False until the user signs in.
 _canonical_slugs = {p.slug for p in CANONICAL_PROVIDERS}
+_BUILTIN_SLUGS = frozenset(_canonical_slugs)
 
 
 def _plugin_provider_enters_picker(pp) -> bool:
@@ -397,28 +391,49 @@ def sync_plugin_provider_catalog() -> int:
     plugin whose own imports pull ``hermes_cli.models`` in mid-``_discover_providers()``, or a
     profile registered later at runtime, would otherwise never reach the picker, ``hermes model``,
     ``/model`` or the Desktop ``model.options`` list until restart — the catalog twin of the auth
-    registry window (#102123). Idempotent by slug; built-in rows are never rewritten.
+    registry window (#102123). Idempotent by slug; built-in rows are never rewritten. A row lands
+    after its ``picker_after`` slug when that row exists, else at the end.
     """
     try:
         from providers import list_providers
         profiles = list_providers()
     except Exception:
         return 0
+    pending = [pp for pp in profiles if _plugin_provider_enters_picker(pp)]
     added = 0
-    for pp in profiles:
-        if not _plugin_provider_enters_picker(pp):
-            continue
-        label = pp.display_name or pp.name
-        CANONICAL_PROVIDERS.append(ProviderEntry(pp.name, label, pp.description or f"{label} (direct API)"))
-        _canonical_slugs.add(pp.name)
-        _PROVIDER_LABELS[pp.name] = label
-        added += 1
+    while pending:
+        # Rows anchored on a still-pending row wait for it, so a chain keeps its declared order.
+        names = {pp.name for pp in pending}
+        ready = [pp for pp in pending if pp.picker_after not in names] or pending
+        for pp in ready:
+            _admit_plugin_provider(pp)
+            added += 1
+        pending = [pp for pp in pending if pp not in ready]
     return added
+
+
+def _admit_plugin_provider(pp) -> None:
+    """Add one plugin profile to the picker tables: row (at ``picker_after``), label, group and the
+    aggregator set. Its catalog aliases are read per home (:class:`_CatalogAliases`)."""
+    label = pp.display_name or pp.name
+    entry = ProviderEntry(pp.name, label, pp.description or f"{label} (direct API)")
+    slugs = [p.slug for p in CANONICAL_PROVIDERS]
+    anchor = pp.picker_after
+    CANONICAL_PROVIDERS.insert(slugs.index(anchor) + 1 if anchor in slugs else len(slugs), entry)
+    _canonical_slugs.add(pp.name)
+    _PROVIDER_LABELS[pp.name] = label
+    if pp.picker_group:
+        gid, group_label, group_desc = pp.picker_group
+        members = PROVIDER_GROUPS.setdefault(gid, (group_label, group_desc, []))[2]
+        if pp.name not in members:
+            members.append(pp.name)
+        _SLUG_TO_GROUP[pp.name] = gid
+    if pp.aggregator:
+        _AGGREGATOR_PROVIDERS.add(pp.name)
 
 
 _PROVIDER_LABELS: dict[str, str] = {p.slug: p.label for p in CANONICAL_PROVIDERS}
 _PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named provider
-sync_plugin_provider_catalog()
 
 
 def listed_canonical_providers() -> list[ProviderEntry]:
@@ -447,7 +462,6 @@ PROVIDER_GROUPS: dict[str, tuple[str, str, list[str]]] = {
     "openai":   ("OpenAI",          "ChatGPT/Codex subscription or direct OpenAI API", ["openai-codex", "openai-api"]),
     "qwen":     ("Qwen",            "Qwen Cloud / DashScope, Coding Plan, Token Plan & Qwen CLI OAuth", ["alibaba", "alibaba-cn", "alibaba-coding-plan", "alibaba-coding-plan-cn", "alibaba-token-plan", "alibaba-token-plan-cn", "qwen-oauth"]),
     "opencode": ("OpenCode",        "Zen pay-as-you-go or Go subscription", ["opencode-zen", "opencode-go"]),
-    "copilot":  ("GitHub Copilot",  "GitHub token API or copilot --acp process",       ["copilot", "copilot-acp"]),
     "tencent":  ("Tencent Hy",      "Hy4 / Hy3 via TokenHub & TokenPlan", ["tencent-tokenhub", "tencent-tokenplan"]),
 }
 
@@ -499,10 +513,58 @@ def group_providers(slugs):
     return rows
 
 
-_PROVIDER_ALIASES = dict((
-    ("glm", "zai"), ("z-ai", "zai"), ("z.ai", "zai"), ("zhipu", "zai"), ("github", "copilot"),
-    ("github-copilot", "copilot"), ("github-models", "copilot"), ("github-model", "copilot"),
-    ("github-copilot-acp", "copilot-acp"), ("copilot-acp-agent", "copilot-acp"), ("google", "gemini"),
+class _CatalogAliases(dict):
+    """``_PROVIDER_ALIASES``: the built-in alias table plus the ``catalog_aliases`` of the bound home's
+    plugin profiles, resolved per read and never copied in: two served homes may give one alias to
+    different providers. A built-in alias always wins; among plugins the first registered does."""
+
+    _memo: tuple[tuple, dict[str, str]] = ((), {})
+
+    def _plugin_aliases(self) -> dict[str, str]:
+        from providers import bound_registry_key, list_providers
+        token = bound_registry_key()
+        if self._memo[0] == token:
+            return self._memo[1]
+        found: dict[str, str] = {}
+        for pp in list_providers():
+            if pp.catalog_aliases and pp.name not in _BUILTIN_SLUGS:
+                for alias in pp.aliases:
+                    if not dict.__contains__(self, alias):
+                        found.setdefault(alias, pp.name)
+        self._memo = (token, found)
+        return found
+
+    def __getitem__(self, key: str) -> str:
+        if dict.__contains__(self, key):
+            return dict.__getitem__(self, key)
+        return self._plugin_aliases()[key]
+
+    def get(self, key: str, default: Any = None) -> Any:
+        if dict.__contains__(self, key):
+            return dict.__getitem__(self, key)
+        return self._plugin_aliases().get(key, default)
+
+    def __contains__(self, key: object) -> bool:
+        return dict.__contains__(self, key) or key in self._plugin_aliases()
+
+    def items(self) -> list[tuple[str, str]]:
+        return [*dict.items(self), *self._plugin_aliases().items()]
+
+    def keys(self) -> list[str]:
+        return [key for key, _ in self.items()]
+
+    def values(self) -> list[str]:
+        return [value for _, value in self.items()]
+
+    def __iter__(self):
+        return iter(self.keys())
+
+    def __len__(self) -> int:
+        return len(self.items())
+
+
+_PROVIDER_ALIASES = _CatalogAliases((
+    ("glm", "zai"), ("z-ai", "zai"), ("z.ai", "zai"), ("zhipu", "zai"), ("google", "gemini"),
     ("google-gemini", "gemini"), ("google-ai-studio", "gemini"), ("google-vertex", "vertex"), ("vertex-ai", "vertex"),
     ("gcp-vertex", "vertex"), ("vertexai", "vertex"), ("kimi", "kimi-coding"), ("moonshot", "kimi-coding"),
     ("kimi-cn", "kimi-coding-cn"), ("moonshot-cn", "kimi-coding-cn"), ("step", "stepfun"),
@@ -544,7 +606,7 @@ _PROVIDER_ALIASES = dict((
 # MUST match the labeled entry in website/static/api/model-catalog.json. Deliberately a capable
 # low-cost model rather than the curated lists' entry [0]: aggregator lists are ordered
 # most-capable-first, so [0] is the priciest Anthropic flagship.
-PREFERRED_SILENT_DEFAULT_MODEL = "z-ai/glm-5.2"
+PREFERRED_SILENT_DEFAULT_MODEL = "z-ai/glm-5.3"
 
 
 # Providers whose *silent* auto-default goes through the cost-safe catalog-labeled default
@@ -564,7 +626,9 @@ _PROVIDER_RETIRED_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 
-_AGGREGATOR_PROVIDERS = frozenset({"nous", "openrouter", "ai-gateway", "copilot", "kilocode"})
+# Plugin profiles with ``aggregator=True`` join at sync time (``sync_plugin_provider_catalog``).
+_AGGREGATOR_PROVIDERS: set[str] = {"nous", "openrouter", "ai-gateway", "kilocode"}
+sync_plugin_provider_catalog()  # every table it extends is defined above
 
 
 # Subscription/OAuth providers whose catalogs RE-EXPOSE other vendors' models; tried only as a last
@@ -582,7 +646,7 @@ _LIVE_FIRST_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen", "openc
 
 # Models supporting OpenAI Priority Processing (service_tier="priority"; see
 # openai.com/api-priority-processing). Pattern-based: any OpenAI flagship (gpt-*, o1*, o3*, o4*).
-# Non-OpenAI endpoints (OpenRouter/Copilot/opencode-zen proxies) strip service_tier, so false
+# Non-OpenAI endpoints (OpenRouter/opencode-zen and other proxies) strip service_tier, so false
 # positives are harmless. Codex-series models are excluded — the Codex Responses API doesn't
 # expose service_tier.
 _OPENAI_FAST_MODE_PREFIXES: tuple[str, ...] = ("gpt-", "o1", "o3", "o4")
@@ -597,32 +661,11 @@ _OPENAI_ULTRAFAST_MODELS: frozenset[str] = frozenset({"gpt-6-astra", "gpt-6.1-so
 # and the gateway /model picker. DELIBERATELY EXCLUDED: "openrouter" (curated list is a hand-picked
 # agentic subset of 400+ models — merging would dump everything), "nous" (curated list + Portal
 # /models are the subscription-tier source of truth), and providers with dedicated live-endpoint
-# branches (copilot, anthropic, ai-gateway, ollama-cloud, custom, stepfun, openai-codex).
+# branches or a profile catalog hook (anthropic, ai-gateway, ollama-cloud, custom, stepfun, openai-codex).
 _MODELS_DEV_PREFERRED: frozenset[str] = frozenset({
     "opencode-go", "opencode-zen", "kilocode", "fireworks", "mistral", "togetherai", "cohere",
     "perplexity", "groq", "nvidia", "huggingface", "zai", "gemini", "google", "xai", "xai-oauth",
 })
-
-
-# OpenRouter-style ids -> Copilot ids. Dash-notation Claude ids are accepted too: Hermes' default
-# Claude IDs use hyphens (Anthropic native) but Copilot's API only accepts dot-notation, so a
-# copilot + hyphenated default would otherwise hit HTTP 400 "model_not_supported".
-_COPILOT_MODEL_ALIASES = dict((
-    ("openai/gpt-5", "gpt-5-mini"), ("openai/gpt-5-chat", "gpt-5-mini"), ("openai/gpt-5-mini", "gpt-5-mini"),
-    ("openai/gpt-5-nano", "gpt-5-mini"), ("openai/gpt-4.1", "gpt-4.1"), ("openai/gpt-4.1-mini", "gpt-4.1"),
-    ("openai/gpt-4.1-nano", "gpt-4.1"), ("openai/gpt-4o", "gpt-4o"), ("openai/gpt-4o-mini", "gpt-4o-mini"),
-    ("openai/o1", "gpt-5.2"), ("openai/o1-mini", "gpt-5-mini"), ("openai/o1-preview", "gpt-5.2"),
-    ("openai/o3", "gpt-5.3-codex"), ("openai/o3-mini", "gpt-5-mini"), ("openai/o4-mini", "gpt-5-mini"),
-    ("anthropic/claude-opus-4.6", "claude-opus-4.6"), ("anthropic/claude-sonnet-5", "claude-sonnet-5"),
-    ("anthropic/claude-sonnet-4.6", "claude-sonnet-4.6"), ("anthropic/claude-sonnet-4", "claude-sonnet-4"),
-    ("anthropic/claude-sonnet-4.5", "claude-sonnet-4.5"), ("anthropic/claude-haiku-4.5", "claude-haiku-4.5"),
-    ("claude-sonnet-5", "claude-sonnet-5"), ("claude-opus-4-6", "claude-opus-4.6"),
-    ("claude-sonnet-4-6", "claude-sonnet-4.6"), ("claude-sonnet-4-0", "claude-sonnet-4"),
-    ("claude-sonnet-4-5", "claude-sonnet-4.5"), ("claude-haiku-4-5", "claude-haiku-4.5"),
-    ("anthropic/claude-opus-4-6", "claude-opus-4.6"), ("anthropic/claude-sonnet-4-6", "claude-sonnet-4.6"),
-    ("anthropic/claude-sonnet-4-0", "claude-sonnet-4"), ("anthropic/claude-sonnet-4-5", "claude-sonnet-4.5"),
-    ("anthropic/claude-haiku-4-5", "claude-haiku-4.5"),
-))
 
 
 # Azure Foundry model families that require the Responses API: Azure rejects /chat/completions

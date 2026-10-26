@@ -707,6 +707,7 @@ gateway:
     no_credentials: "⚠️ Nem tudtam kapcsolódni az AI-modellszolgáltatáshoz, ezért ez az üzenet nem lett feldolgozva. Jelentkezz be újra a /login paranccsal, vagy válassz másik modellt a /model paranccsal. Ha továbbra is hibázik, futtasd a `hermes doctor` parancsot a gépen."
     cron_session_read_only: "⚠️ Ez a csevegés egy ütemezett feladathoz tartozik, és csak azt futtatja, ezért az üzeneted nem futott le. Indíts új csevegést az elküldéséhez."
     workspace_unavailable: "⚠️ Ennek a csevegésnek a munkamappája már nem létezik ({path}), ezért az üzeneted nem futott le. Hozd létre újra a mappát, vagy helyezd át a csevegést egy másikba (`/worktree new` a CLI-ben, „Move to project” az asztali alkalmazásban), majd küldd el újra az üzenetet."
+    launch_credentials_unavailable: "⚠️ Ez a csevegés már nem tudja használni azt az API-kulcsot, amellyel elindult{detail}, ezért semmi sem futhat benne. Egy nyitott csevegés soha nem vált magától másik kulcsra, így a /retry ugyanígy hibázik. A /new paranccsal indíts új csevegést a jelenlegi kulcsoddal."
   skills:
     disabled: "A(z) **{name}** skill telepítve van, de ki van kapcsolva.\nBekapcsolás: `hermes skills config`"
     not_installed: "A(z) **{name}** skill elérhető, de nincs telepítve.\nTelepítés: `hermes skills install {install_name}`"
@@ -2034,7 +2035,6 @@ cli:
     cleared_picker_cache: "A modellválasztó gyorsítótára törölve. Frissítés..."
     moa_one_shot_queued: "Egyszeri MoA-futás sorba állítva a {preset} előbeállítással; a kör után az előző modell visszaáll."
     normalized_model: "A(z) '{old}' modell normalizálva erre: '{new}' ({provider})."
-    normalized_copilot_model: "A(z) '{old}' Copilot-modell normalizálva erre: '{new}'."
     stripped_provider_prefix: "A szolgáltató-előtag eltávolítva a(z) '{old}' névről; a(z) '{new}' lesz használva ({provider})."
     restored_from_session: "Modell visszaállítva a munkamenetből: {model}"
     could_not_load_config: "❌ nem sikerült betölteni a konfigurációt: {error}"

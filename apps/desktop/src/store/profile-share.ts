@@ -160,7 +160,11 @@ export async function runExportProfileFlow(profile?: string): Promise<null | str
   const target = normalizeProfileKey(profile ?? activeProfileKey())
   const pick = window.hermesDesktop?.selectSavePath
 
+  // The browser Webapp has no save dialog for a host-side archive. Say how to
+  // export there instead of doing nothing.
   if (!pick) {
+    notifyError(new Error(translateNow('profiles.exportNeedsHost', target)), translateNow('profiles.failedExport'))
+
     return null
   }
 

@@ -697,6 +697,7 @@ gateway:
     no_credentials: "⚠️ AI 모델 서비스에 연결할 수 없어서 이 메시지는 처리되지 않았어요. /login으로 다시 로그인하거나, /model로 다른 모델을 선택하세요. 계속 실패하면 호스트에서 `hermes doctor`를 실행하세요."
     cron_session_read_only: "⚠️ 이 채팅은 예약된 작업 전용이며 그 작업만 실행하므로 메시지가 실행되지 않았습니다. 보내려면 새 채팅을 시작하세요."
     workspace_unavailable: "⚠️ 이 채팅의 작업 폴더가 더 이상 없습니다({path}). 그래서 메시지가 실행되지 않았습니다. 폴더를 다시 만들거나 채팅을 다른 폴더로 옮긴 뒤(CLI에서는 `/worktree new`, 데스크톱 앱에서는 'Move to project') 메시지를 다시 보내세요."
+    launch_credentials_unavailable: "⚠️ 이 채팅은 시작할 때 사용한 API 키를 더 이상 사용할 수 없어서{detail} 이 채팅에서는 아무것도 실행할 수 없습니다. 열려 있는 채팅은 스스로 다른 키로 바뀌지 않으므로 /retry도 같은 이유로 실패합니다. /new로 현재 키를 사용하는 새 채팅을 시작하세요."
   skills:
     disabled: "**{name}** 스킬은 설치되어 있지만 비활성화되어 있어요.\n활성화 방법: `hermes skills config`"
     not_installed: "**{name}** 스킬은 사용할 수 있지만 설치되어 있지 않아요.\n설치 방법: `hermes skills install {install_name}`"
@@ -2017,7 +2018,6 @@ cli:
     cleared_picker_cache: "모델 선택기 캐시를 지웠어요. 새로 고치는 중..."
     moa_one_shot_queued: "프리셋 {preset}(으)로 MoA 일회성 실행이 대기열에 추가됐어요. 이 턴이 끝나면 이전 모델로 복원돼요."
     normalized_model: "{provider}용 모델 '{old}'을(를) '{new}'(으)로 정규화했어요."
-    normalized_copilot_model: "Copilot 모델 '{old}'을(를) '{new}'(으)로 정규화했어요."
     stripped_provider_prefix: "'{old}'에서 제공자 접두사를 제거했어요. {provider}에는 '{new}'을(를) 사용해요."
     restored_from_session: "세션에서 모델 복원됨: {model}"
     could_not_load_config: "❌ 설정을 불러올 수 없어요: {error}"

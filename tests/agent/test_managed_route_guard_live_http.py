@@ -190,9 +190,9 @@ def _persist_receipt(hermes_home, *, provider: str, model: str, endpoint: str,
 def managed_agent_env():
     """A real ``AIAgent`` wired as a managed run: two fake servers (approved +
     unapproved), a real on-disk receipt store, and the agent's
-    ``_managed_routing_*`` attributes set exactly as cli.py's
-    ``_enforce_kanban_routing_receipt`` sets them after the turn's first
-    successful validation."""
+    ``_managed_routing_*`` attributes set exactly as the managed bootstrap
+    (``tools/delegate_tool_routing.py::stamp_managed_route``) sets them
+    after the turn's first successful validation."""
     approved_server, approved_handler = _start_server()
     unapproved_server, unapproved_handler = _start_server()
 
@@ -225,8 +225,8 @@ def managed_agent_env():
         request_overrides={"reasoning_effort": "high"},
     )
     agent.valid_tool_names = {"terminal", "read_file", "write_file", "execute_code", "session_search"}
-    # Exactly what cli.py's _enforce_kanban_routing_receipt sets on success,
-    # before the turn's first request -- this test starts from "already
+    # Exactly what the managed bootstrap (stamp_managed_route) sets on
+    # success, before the turn's first request -- this test starts from "already
     # validated once" and focuses on requests 2+ in the SAME turn.
     agent._managed_routing_receipt_id = receipt_id
     agent._managed_routing_home = hermes_home

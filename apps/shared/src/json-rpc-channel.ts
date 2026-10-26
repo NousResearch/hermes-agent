@@ -1,3 +1,4 @@
+import type { ClientCapabilitiesResult } from './gateway-contract.generated.js'
 import type { GatewayEvent } from './gateway-events.js'
 
 export type GatewayRequestId = number | string
@@ -40,6 +41,13 @@ export interface ServerRequest<M extends string = string, P extends ServerReques
   /** Answer with a JSON-RPC error (the backend treats it as unanswered). */
   fail: (code: number, message: string) => void
   /**
+   * "No window here shows this session" for a window-owned bridge. Sent only
+   * to a backend that counts it as one client declining rather than as the
+   * answer (`client.capabilities` → `declines_not_shown`); an older backend
+   * settles on the first error, so there this stays silent for the owner.
+   */
+  decline?: (message: string) => void
+  /**
    * Renderer-side tag set by the owner when a request arrives through a
    * replay (`open_requests`) rather than live; handlers that already show the
    * card can skip re-notifying.
@@ -66,8 +74,25 @@ export class JsonRpcGatewayError extends Error {
   }
 }
 
+/** Refusals `session.steer` / `session.redirect` answer before the text reaches any agent
+ *  (gateway/session_busy_controls.py::correct): the turn the client believed busy is gone or cannot
+ *  take a correction, so the words are safe to admit as the next prompt — never retried as a control. */
+const UNDELIVERED_CORRECTION_REASONS = new Set(['execution_not_ready', 'stale_generation', 'unsupported_control'])
+
+export function isUndeliveredCorrectionRefusal(error: unknown): boolean {
+  const reason = error instanceof JsonRpcGatewayError ? (error.data as { reason?: unknown } | undefined)?.reason : null
+
+  return typeof reason === 'string' && UNDELIVERED_CORRECTION_REASONS.has(reason)
+}
+
 /** JSON-RPC "method not found" (tui_gateway/server.py::dispatch `_err(rid, -32601, …)`). */
 export const JSON_RPC_METHOD_NOT_FOUND = -32601
+
+/** JSON-RPC "internal error" — used when a server→client request handler throws. */
+export const JSON_RPC_INTERNAL_ERROR = -32603
+
+/** A window-owned request's session is not shown by any window of this client (tui_gateway/server_requests.py::NOT_SHOWN_CODE). */
+export const JSON_RPC_SESSION_NOT_SHOWN = 4404
 
 /** Map a raw `error` member of a response frame to the typed error every surface inspects. */
 export function jsonRpcErrorFromFrame(raw: unknown, fallbackMessage = 'Hermes RPC failed'): JsonRpcGatewayError {
@@ -102,6 +127,12 @@ export interface JsonRpcRequestChannelOptions {
    * its deadline against a client with no handler.
    */
   onUnhandledRequest?: (request: { id: string; method: string; params: ServerRequestParams }) => void
+  /**
+   * A server→client request handler threw: the owner logs it. The channel has
+   * already answered `-32603` so the backend does not wait out its deadline
+   * against a crashed client (clarify blocks 3600s).
+   */
+  onRequestHandlerError?: (error: Error, request: { id: string; method: string; params: ServerRequestParams }) => void
   requestIdPrefix?: string
   requestTimeoutMs?: number
   /**
@@ -115,6 +146,11 @@ export interface JsonRpcRequestChannelOptions {
   heartbeatLiveness?: HeartbeatLiveness
   /** `setTimeout`/`setInterval` handles are `unref`'d when the runtime supports it (Node) so a pending call cannot pin the process. */
   unrefTimers?: boolean
+  /**
+   * Read at each attach: this client is the Desktop app connected to a backend on its own machine.
+   * The backend offers the welcome trial and first-run onboarding only to that client.
+   */
+  desktopLocal?: () => boolean
 }
 
 export type HeartbeatLiveness = 'any-inbound' | 'response'
@@ -173,20 +209,24 @@ export class JsonRpcRequestChannel {
   private heartbeatSequence = 0
   private readonly outstandingPings = new Set<string>()
   private lastLivenessAt = 0
+  /** The bound generation's backend counts `decline` as one client abstaining (see `ServerRequest.decline`). */
+  private backendCountsDeclines = false
   private readonly requestHandlers: ServerRequestHandler[] = []
   private readonly options: Required<
-    Omit<JsonRpcRequestChannelOptions, 'onEvent' | 'onHeartbeatFailure' | 'onUnhandledRequest'>
+    Omit<JsonRpcRequestChannelOptions, 'onEvent' | 'onHeartbeatFailure' | 'onRequestHandlerError' | 'onUnhandledRequest'>
   > &
-    Pick<JsonRpcRequestChannelOptions, 'onEvent' | 'onHeartbeatFailure' | 'onUnhandledRequest'>
+    Pick<JsonRpcRequestChannelOptions, 'onEvent' | 'onHeartbeatFailure' | 'onRequestHandlerError' | 'onUnhandledRequest'>
 
   constructor(options: JsonRpcRequestChannelOptions = {}) {
     this.options = {
       createRequestId: options.createRequestId ?? ((nextId: number) => `${options.requestIdPrefix ?? 'r'}${nextId}`),
+      desktopLocal: options.desktopLocal ?? (() => false),
       heartbeatDeadlineMs: options.heartbeatDeadlineMs ?? DEFAULT_HEARTBEAT_DEADLINE_MS,
       heartbeatIntervalMs: options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
       heartbeatLiveness: options.heartbeatLiveness ?? 'response',
       onEvent: options.onEvent,
       onHeartbeatFailure: options.onHeartbeatFailure,
+      onRequestHandlerError: options.onRequestHandlerError,
       onUnhandledRequest: options.onUnhandledRequest,
       requestIdPrefix: options.requestIdPrefix ?? 'r',
       requestTimeoutMs: options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
@@ -207,6 +247,14 @@ export class JsonRpcRequestChannel {
     this.stopHeartbeat()
     this.transport = transport
     this.lastLivenessAt = Date.now()
+    this.backendCountsDeclines = false
+
+    // First on the socket, before the owner's own requests: the backend reads frames in order, and its
+    // answer to the boot's first onboarding.state already depends on this. A call of its own, so a
+    // backend older than the field refuses just this one (4000) and keeps server_requests.
+    if (this.options.desktopLocal()) {
+      this.request('client.capabilities', { desktop_local: true }).catch(() => undefined)
+    }
   }
 
   /** Drop the transport and fail every in-flight call with `error`. */
@@ -348,11 +396,34 @@ export class JsonRpcRequestChannel {
       params,
       replayed,
       respond: result => send({ result }),
-      fail: (code, message) => send({ error: { code, message } })
+      fail: (code, message) => send({ error: { code, message } }),
+      decline: message => {
+        if (this.backendCountsDeclines) {
+          send({ error: { code: JSON_RPC_SESSION_NOT_SHOWN, message } })
+        }
+      }
     }
 
     for (const handler of this.requestHandlers) {
-      if (handler(request) !== false) {
+      let accepted: boolean | void
+
+      try {
+        accepted = handler(request)
+      } catch (error) {
+        // A crashing handler must not leave the backend waiting out its full
+        // deadline (clarify blocks 3600s): answer -32603 and stop. The `send`
+        // guard makes this a no-op if the handler already responded.
+        request.fail(JSON_RPC_INTERNAL_ERROR, `server request handler crashed: ${method}`)
+        this.options.onRequestHandlerError?.(error instanceof Error ? error : new Error(String(error)), {
+          id,
+          method,
+          params
+        })
+
+        return false
+      }
+
+      if (accepted !== false) {
         return true
       }
     }
@@ -440,10 +511,34 @@ export class JsonRpcRequestChannel {
     }
 
     if (frame.method === 'event' && frame.params && typeof (frame.params as GatewayEvent).type === 'string') {
+      if ((frame.params as GatewayEvent).type === 'gateway.ready') {
+        this.advertiseCapabilities()
+      }
+
       this.options.onEvent?.(frame.params as GatewayEvent)
     }
 
     return frame
+  }
+
+  /**
+   * Tell the backend, once per connection generation, that this client answers
+   * server→client requests (a handler result or `-32601`). Without it a
+   * backend treats a WebSocket client as a build that predates server requests
+   * and fails every clarify/approval/… for it immediately instead of stalling
+   * the agent for the full deadline. An older backend answers `-32601` here;
+   * that is ignored.
+   */
+  private advertiseCapabilities(): void {
+    const transport = this.transport
+
+    this.request<Partial<ClientCapabilitiesResult> | null>('client.capabilities', { server_requests: true })
+      .then(result => {
+        if (this.transport === transport) {
+          this.backendCountsDeclines = result?.declines_not_shown === true
+        }
+      })
+      .catch(() => undefined)
   }
 
   /**
@@ -462,12 +557,20 @@ export class JsonRpcRequestChannel {
       return
     }
 
+    // Silence is judged against the last ping we actually sent. A hidden
+    // Chromium window spaces these ticks 60 s apart (intensive wake-up
+    // throttling), so the previous ping's pong is ~60 s old at every tick;
+    // a deadline on its age alone dropped every idle hidden socket.
+    let lastPingAt = 0
+
     this.heartbeatTimer = setInterval(() => {
       if (this.transport !== transport) {
         return
       }
 
-      if (Date.now() - this.lastLivenessAt >= this.options.heartbeatDeadlineMs) {
+      const now = Date.now()
+
+      if (lastPingAt > this.lastLivenessAt && now - this.lastLivenessAt >= this.options.heartbeatDeadlineMs) {
         this.failHeartbeat(new Error('WebSocket heartbeat acknowledgement timed out'))
 
         return
@@ -482,6 +585,8 @@ export class JsonRpcRequestChannel {
       if (this.outstandingPings.size > MAX_OUTSTANDING_PINGS) {
         this.outstandingPings.delete(this.outstandingPings.values().next().value as string)
       }
+
+      lastPingAt = now
 
       try {
         transport.send(JSON.stringify({ jsonrpc: '2.0', id, method: 'gateway.ping', params: {} }))

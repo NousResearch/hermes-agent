@@ -692,17 +692,11 @@ def test_nested_managed_delegation_cannot_omit_role_to_demote(routed_home, monke
         requirements.update(execution_id=tid, attempt_id=str(claimed.current_run_id))
         receipt_id = persist_receipt(hermes_home, select(requirements, policy, {}, now=1000))
         assert kb.set_routing_receipt(conn, tid, receipt_id, expected_run_id=claimed.current_run_id)
-    monkeypatch.setenv("HERMES_KANBAN_ROUTING_RECEIPT", receipt_id)
-    monkeypatch.setenv("HERMES_KANBAN_ROUTING_ORIGIN_HOME", hermes_home)
-    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
-    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(claimed.current_run_id))
-    from hermes_cli import kanban_worker_routing as cli_module
-
-    cli = type("ManagedWorkerCLI", (), {"agent": parent, "reasoning_config": "medium"})()
-    monkeypatch.setattr(
-        cli_module, "requested_effort_for_kanban_guard", lambda _cli: "medium",
-    )
-    assert cli_module._enforce_kanban_routing_receipt(cli) is True
+    # Simulate what a managed-parent bootstrap wires onto the agent (the
+    # delegation-side managed attrs the per-request guard and delegation
+    # routing read): the receipted decision plus its origin home.
+    parent._managed_routing_receipt_id = receipt_id
+    parent._managed_routing_home = hermes_home
 
     result = json.loads(delegate_task(
         tasks=[{"goal": "Nested task deliberately omits routing_role."}],

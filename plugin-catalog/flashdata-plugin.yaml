@@ -1,0 +1,19 @@
+name: flashdata-plugin
+title: FlashData
+repo: https://github.com/rocosen/flashdata-mcp
+sha: 23e0d9849b2546767741fabfc454fb0089f1cb58
+subdir: plugins/hermes
+description: "Google web, news, image, shopping, video and places search, plus YouTube research and explicit delivery to customer storage. One hosted MCP connection and 15 task Skills; bring your own API key and paid FlashData Credits. Disclosure — Connects to FlashData's hosted MCP service (data.flashdata.dev) with your own FLASHDATA_API_KEY; every search, YouTube read or download spends your paid FlashData Credits, and Hermes asks before running only the tools the server does not mark read-only, so most paid searches run without a prompt. The YouTube download tool sends the storage bucket and storage access credentials you supply to FlashData, and those values stay visible in the chat history."
+maintainer: rocosen
+tier: community
+category: web
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/rocosen/flashdata-mcp/blob/23e0d9849b2546767741fabfc454fb0089f1cb58/plugins/hermes/README.md
+version: "0.1.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [FLASHDATA_API_KEY]

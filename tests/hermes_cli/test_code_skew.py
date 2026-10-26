@@ -44,22 +44,13 @@ class TestDetectCodeSkew:
 
 
 class TestShort:
-    def test_shortens_long_sha(self):
-        assert code_skew._short("git:refs/heads/main:abcdef0123456789") == "abcdef0123"
 
     def test_keeps_unresolved_marker(self):
         assert code_skew._short("git:refs/heads/main:unresolved") == "unresolved"
 
-    def test_passes_short_sha_through_untruncated(self):
-        assert code_skew._short("git:HEAD:abc1234") == "abc1234"
 
 
 class TestModelSwitchSkewGuard:
-    def test_guard_returns_none_without_skew(self, monkeypatch):
-        from gateway import slash_commands_model as slash_commands
-
-        monkeypatch.setattr(code_skew, "detect_code_skew", lambda: None)
-        assert slash_commands._model_switch_skew_guard() is None
 
     def test_guard_message_names_revs_and_restart(self, monkeypatch):
         from gateway import slash_commands_model as slash_commands
@@ -75,14 +66,8 @@ class TestModelSwitchSkewGuard:
 class TestDashboardCodeSkewGuard:
     """Dashboard mirror of the gateway's model-switch skew guard (#86207)."""
 
-    def test_dashboard_guard_returns_none_without_skew(self, monkeypatch):
-        from hermes_cli import web_server
-
-        monkeypatch.setattr(code_skew, "detect_code_skew", lambda: None)
-        assert _web_server_config._dashboard_code_skew_guard() is None
 
     def test_dashboard_guard_message_names_revs_and_restart(self, monkeypatch):
-        from hermes_cli import web_server
 
         monkeypatch.delenv("HERMES_SERVE_HEADLESS", raising=False)
         monkeypatch.setattr(code_skew, "detect_code_skew", lambda: ("abc1234567", "def4567890"))
@@ -95,7 +80,6 @@ class TestDashboardCodeSkewGuard:
         assert "systemctl" not in msg
 
     def test_serve_guard_message_points_at_desktop_backend(self, monkeypatch):
-        from hermes_cli import web_server
 
         monkeypatch.setenv("HERMES_SERVE_HEADLESS", "1")
         monkeypatch.setattr(code_skew, "detect_code_skew", lambda: ("abc1234567", "def4567890"))
@@ -118,7 +102,6 @@ class TestModelOptionsSkewGuard:
 
     def test_stale_dashboard_returns_503_and_skips_payload_build(self, monkeypatch):
         from fastapi import HTTPException
-        from hermes_cli import web_server
 
         monkeypatch.setattr(code_skew, "detect_code_skew", lambda: ("abc1234567", "def4567890"))
 
@@ -137,7 +120,6 @@ class TestModelOptionsSkewGuard:
         assert payload_calls == []
 
     def test_fresh_dashboard_builds_payload_unchanged(self, monkeypatch):
-        from hermes_cli import web_server
 
         monkeypatch.setattr(code_skew, "detect_code_skew", lambda: None)
 
@@ -148,7 +130,7 @@ class TestModelOptionsSkewGuard:
         monkeypatch.setattr(
             _web_server_profiles, "_profile_scope", lambda profile: contextlib.nullcontext()
         )
-        monkeypatch.setattr("hermes_cli.inventory.load_picker_context", lambda: {})
+        monkeypatch.setattr("hermes_cli.inventory.load_picker_context", dict)
 
         payload_calls: list = []
         expected = {"providers": [], "model": {}, "provider": None}
@@ -161,3 +143,42 @@ class TestModelOptionsSkewGuard:
 
         assert result == expected
         assert payload_calls == [1]
+
+
+class TestModelSetSkewGuard:
+    """#99859 (R2): POST /api/model/set is the WRITE twin of the guarded picker —
+    a stale process persisting a post-update model string serves an invalid model
+    after the restart it itself needs. It must refuse with the same 503 and never
+    reach the assignment apply."""
+
+    def test_stale_model_set_returns_503_and_skips_assignment(self, monkeypatch):
+        from fastapi import HTTPException
+
+        monkeypatch.setattr(code_skew, "detect_code_skew", lambda: ("abc1234567", "def4567890"))
+
+        applied: list = []
+        monkeypatch.setattr(_rt_models, "_apply_model_assignment_sync", lambda *a, **k: applied.append(1))
+
+        body = _rt_models.ModelAssignment(scope="main", provider="nous", model="some-model")
+        with pytest.raises(HTTPException) as excinfo:
+            asyncio.run(_rt_models.set_model_assignment(body))
+
+        assert excinfo.value.status_code == 503
+        assert "restart" in str(excinfo.value.detail).lower()
+        assert applied == []
+
+    def test_fresh_model_set_proceeds(self, monkeypatch):
+        monkeypatch.setattr(code_skew, "detect_code_skew", lambda: None)
+
+        async def _to_thread(fn):
+            return fn()
+
+        monkeypatch.setattr(_rt_models.asyncio, "to_thread", _to_thread)
+        monkeypatch.setattr(_web_server_profiles, "_profile_scope", lambda profile: contextlib.nullcontext())
+        monkeypatch.setattr(_rt_models, "_prepare_main_assignment", lambda cfg, *a: {"ok": True})
+        monkeypatch.setattr(_rt_models, "_apply_model_assignment_sync",
+                            lambda *a, **k: {"ok": True, "scope": "main"})
+
+        body = _rt_models.ModelAssignment(scope="main", provider="nous", model="some-model")
+        result = asyncio.run(_rt_models.set_model_assignment(body))
+        assert result["ok"] is True

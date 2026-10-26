@@ -30,8 +30,8 @@ def build_config_parser(subparsers, *, cmd_config: Callable) -> None:
     config_set.add_argument("value", nargs="?", help="Value to set")
     config_set.add_argument(
         "--force", action="store_true",
-        help="Skip the unknown-key notice printed after writing a key the "
-        "running version doesn't recognize (the value is saved either way).")
+        help="Write a key the running version doesn't recognize: an unknown path under a known "
+        "section is otherwise refused, and an unknown top-level key is written with a notice.")
 
     config_unset = config_subparsers.add_parser("unset", help="Remove a configuration value")
     config_unset.add_argument("key", nargs="?", help="Configuration key to remove")

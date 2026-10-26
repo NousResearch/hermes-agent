@@ -1,8 +1,8 @@
 """Unit coverage for the common per-request managed-route guard
 (``agent.managed_route_guard``) — the seam ``begin_iteration`` calls before
 EVERY iteration of a managed turn's tool loop, not just the turn's first
-request (that first-request check is cli.py's
-``_enforce_kanban_routing_receipt``, already covered by
+request (that first-request check is the managed bootstrap in
+``tools/delegate_tool_routing.py``, already covered by
 ``tests/hermes_cli/test_kanban_worker_route_enforcement.py``).
 
 Pure/unit here (real receipt store, in-memory `agent` stand-in, no network):

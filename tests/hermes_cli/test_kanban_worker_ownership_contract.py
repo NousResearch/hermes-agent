@@ -1,24 +1,17 @@
 """Kanban worker ownership contract (design §12 "Claim/start/crash sequence"):
 
-  1. A stale/reclaimed attempt must be rejected BEFORE first inference, not
-     merely have its receipt silently ignored.
-  2. ``set_routing_receipt`` has no unguarded fallback: a receipt can only
+  1. ``set_routing_receipt`` has no unguarded fallback: a receipt can only
      ever be attached under a real, live ``expected_run_id`` — never blind.
-  3. A prior attempt's failure/reclaim path must never release, end, or
+  2. A prior attempt's failure/reclaim path must never release, end, or
      block a NEWER (successor) run that already superseded it.
 
 Real sqlite DB (separate connections, simulating separate processes for the
-reclaim/replace race), real ``_enforce_kanban_routing_receipt`` worker-side
-gate, real ``_record_task_failure``/``_end_run`` — nothing here mocks away
-the enforcement path itself.
+reclaim/replace race), real ``_record_task_failure``/``_end_run`` — nothing
+here mocks away the ownership path itself.
 """
 from __future__ import annotations
 
 import os
-from pathlib import Path
-from types import SimpleNamespace
-
-import pytest
 
 
 def _kanban_conn():
@@ -65,105 +58,7 @@ def test_set_routing_receipt_links_under_genuine_live_claim():
 
 
 # ---------------------------------------------------------------------------
-# 2. Worker-side rejection of a stale/reclaimed attempt BEFORE inference.
-# ---------------------------------------------------------------------------
-
-def test_worker_rejects_stale_claim_before_receipt_check(monkeypatch, tmp_path):
-    """Separate connections simulate separate processes: process A claims and
-    is spawned with HERMES_KANBAN_RUN_ID=run_a; before A calls the
-    enforcement gate, a second connection (a fresh dispatcher tick /
-    process B) reclaims + replaces the run. A's enforcement call must fail
-    closed with ZERO calls into enforce_worker_route — the receipt/model
-    check never even runs for a superseded claim."""
-    from hermes_cli import kanban_worker_routing as cli_mod
-    from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
-
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-
-    conn_a = _kanban_conn()
-    try:
-        tid = kb.create_task(conn_a, title="t", assignee="alice", routing_role="builder")
-        claimed = kb.claim_task(conn_a, tid, claimer="worker-a")
-        run_a = claimed.current_run_id
-        conn_a.commit()
-    finally:
-        conn_a.close()
-
-    # Process B: separate connection reclaims (crash/timeout releases the
-    # claim) and re-claims — a genuinely different, newer run_id.
-    conn_b = kbc.connect()
-    try:
-        conn_b.execute(
-            "UPDATE tasks SET status='ready', claim_lock=NULL, claim_expires=NULL, "
-            "worker_pid=NULL WHERE id=?", (tid,),
-        )
-        conn_b.commit()
-        reclaimed = kb.claim_task(conn_b, tid, claimer="worker-b")
-        run_b = reclaimed.current_run_id
-        conn_b.commit()
-    finally:
-        conn_b.close()
-    assert run_b != run_a
-
-    # Process A (the stale worker) now reaches the first-inference gate,
-    # still carrying its ORIGINAL (now-superseded) run id.
-    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
-    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_a))
-    monkeypatch.setenv("HERMES_KANBAN_ROUTING_RECEIPT", "rr_never_should_be_loaded")
-
-    calls = []
-    monkeypatch.setattr(
-        "agent.managed_route_runtime.enforce_worker_route",
-        lambda *a, **kw: calls.append((a, kw)),
-    )
-
-    cli = SimpleNamespace(agent=SimpleNamespace(
-        provider="openai", requested_provider="openai", model="gpt-5", base_url=None,
-    ))
-    assert cli_mod._enforce_kanban_routing_receipt(cli) is False
-    assert calls == [], "stale claim must be rejected before any receipt/model check runs"
-
-
-def test_live_claim_without_linked_receipt_cannot_authorize_worker(monkeypatch, tmp_path):
-    """A live run alone is insufficient without its canonical linked receipt."""
-    from hermes_cli import kanban_worker_routing as cli_mod
-    from hermes_cli import kanban_db as kb
-
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-
-    conn = _kanban_conn()
-    try:
-        tid = kb.create_task(conn, title="t", assignee="alice", routing_role="builder")
-        claimed = kb.claim_task(conn, tid, claimer="worker-a")
-        conn.commit()
-    finally:
-        conn.close()
-
-    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
-    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(claimed.current_run_id))
-    monkeypatch.setenv("HERMES_KANBAN_ROUTING_RECEIPT", "rr_live")
-
-    calls = []
-    monkeypatch.setattr(
-        "agent.managed_route_runtime.enforce_worker_route",
-        lambda *a, **kw: calls.append((a, kw)),
-    )
-    cli = SimpleNamespace(agent=SimpleNamespace(
-        provider="openai", requested_provider="openai", model="gpt-5", base_url=None,
-    ))
-    assert cli_mod._enforce_kanban_routing_receipt(cli) is False
-    assert calls == [], "an unlinked receipt must not reach the route check"
-
-
-# ---------------------------------------------------------------------------
-# 3. Successor runs survive a stale attempt's failure path.
+# 2. Successor runs survive a stale attempt's failure path.
 # ---------------------------------------------------------------------------
 
 def test_stale_spawn_failure_never_touches_successor_run(tmp_path):

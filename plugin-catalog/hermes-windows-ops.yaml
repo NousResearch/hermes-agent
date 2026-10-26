@@ -1,0 +1,28 @@
+name: hermes-windows-ops
+repo: https://github.com/Yicheng-Mark/hermes-windows-plugins
+sha: 7e919c5aaf74cb424164b5603a95ce302e2f6bc5
+subdir: windows-ops
+description: >-
+  Windows and WSL triage skills for Hermes: processes that survive a quit
+  (orphaned stdio MCP trees, lingering python/uv/node children), WSL-to-Windows
+  interop where an argument reaches cmd.exe as shell syntax, config and encoding
+  traps (UTF-8 BOM, legacy console code pages), and long-path or reserved-name
+  errors. One skill plus a copy-paste command reference; the process, argv and
+  job-object failure modes are pinned to reports #131561, #132069 and #61059 and
+  re-verified against current main. Disclosure — instructions only: no tools,
+  hooks, middleware, network calls or credentials, and the destructive
+  diagnostics are marked and gated on asking the user first.
+maintainer: Yicheng-Mark
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/Yicheng-Mark/hermes-windows-plugins/tree/7e919c5aaf74cb424164b5603a95ce302e2f6bc5/windows-ops
+version: "0.1.0"
+platforms:
+- windows
+- linux
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

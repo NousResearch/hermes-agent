@@ -1,3 +1,7 @@
+import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
 import { cleanup, fireEvent, render } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -46,6 +50,31 @@ function expectTimestampSeparated(container: HTMLElement, precedingText: string)
 
 afterEach(cleanup)
 
+describe('background report inline code', () => {
+  // The report body is the same `aui-md prose` markdown renderer the
+  // assistant turn uses, rendered with no assistant/room slot ancestor. The
+  // real stylesheet's cascade must still reach its `<code>`, or Tailwind
+  // Typography's fixed near-black ink wins on every dark theme (#107486).
+  const stylesheet = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../../styles.css'), 'utf8')
+
+  it('themes inline code in an opened report with the chat inline-code tokens', () => {
+    const { container, getByRole } = render(
+      <>
+        <style>{stylesheet}</style>
+        <Harness asyncResult="run `discover_models` first" text="1 background agent finished" />
+      </>
+    )
+
+    fireEvent.click(getByRole('button', { name: '1 background agent finished' }))
+    const code = container.querySelector('[data-role="system"] :not(pre) > code')
+    expect(code).toBeTruthy()
+    const style = getComputedStyle(code as Element)
+
+    expect(style.color).toBe('var(--ui-inline-code-foreground)')
+    expect(style.background).toBe('var(--ui-inline-code-background)')
+  })
+})
+
 describe('background report disclosure', () => {
   it('keeps result bodies out of the transcript until opened and removes them when collapsed', () => {
     const report = '{"blockers":[{"title":"Local-model readiness uses the wrong endpoint"}]}'
@@ -83,5 +112,25 @@ describe('system message timestamp text separation', () => {
     const { container } = render(<Harness text="steer:rerun tests" />)
 
     expectTimestampSeparated(container, 'rerun tests')
+  })
+})
+
+describe('slash output face', () => {
+  const body = (container: HTMLElement) => container.querySelector('[data-role="system"] .whitespace-pre-wrap')
+
+  it('keeps column-padded output without a plan gauge in the default face', () => {
+    const { container } = render(
+      <Harness text={'slash:/usage\nSession Token Usage\nInput tokens:                 13,527'} />
+    )
+
+    expect(body(container)?.className).not.toContain('font-mono')
+  })
+
+  it('renders a usage-window /usage block (plan gauges) monospace', () => {
+    const output =
+      'Session Token Usage\nInput tokens:                 13,527\n\nNous Plan\nToday  [||        ]  20% used'
+    const { container } = render(<Harness text={`slash:/usage\n${output}`} />)
+
+    expect(body(container)?.className).toContain('font-mono')
   })
 })

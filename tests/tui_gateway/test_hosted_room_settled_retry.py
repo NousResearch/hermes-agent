@@ -15,6 +15,7 @@ def test_settled_discussion_retry_publishes_once(tmp_path, monkeypatch, later_me
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
     (tmp_path / ".hermes" / "profiles" / "reviewer").mkdir(parents=True)
+    (tmp_path / ".hermes" / "profiles" / "reviewer" / "config.yaml").write_text("{}\n")  # identity marker
     server = SimpleNamespace(_methods={}, _sessions={}, _sessions_lock=threading.Lock())
     service = HostedRoomService(server, db_path=tmp_path / ".hermes" / "state.db")
     service.create_room(room_id="room", name="Room", members=[

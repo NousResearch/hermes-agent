@@ -39,7 +39,9 @@ Each phase of an iteration is its own sibling, so a change to (say) overflow han
 ~600-line file: `turn_preflight*`, `turn_iteration_prep`, `turn_request_assembly`/`turn_api_request`,
 `turn_api_call`, `turn_api_error`, `turn_response_intake`/`turn_response_check`,
 `turn_empty_response`, `turn_tool_round`/`turn_tool_validation`, `turn_overflow`,
-`turn_truncation`, `turn_context_compaction`, `turn_recovery`, `turn_retry_state`,
+`turn_truncation`, `turn_scripted_prelude` (tool calls a prompt built-in plays before the first model
+call), `turn_context_compaction`, `turn_recovery`, `turn_recovery_autorecover`
+(post-exhaustion wait-and-retry ladder), `turn_retry_state`,
 `turn_stop_gates`, `turn_liveness`, `turn_usage`, `turn_final_response`, `turn_finalizer`,
 `turn_summary`. Find the phase with `grep -rn "def X" agent/turn_*.py`.
 
@@ -57,7 +59,8 @@ Adding one: register in that table (no `if name == ...` chain); `tools/todo_tool
   a conversation; the ONLY context mutation is compression. Anything that must inject content
   mid-conversation rides a **user message or tool result**, never the system prompt: skill slash
   commands (`agent/skill_commands.py`) inject as a user message; subdirectory `AGENTS.md` hints
-  (`agent/subdirectory_hints.py`) append to the tool result (head+tail truncated past `_MAX_HINT_CHARS = 32_000`, with a warning).
+  (`agent/subdirectory_hints.py`) append to the tool result (head+tail truncated past `_MAX_HINT_CHARS = 32_000`;
+  the truncation is logged, never queued as a chat status warning — `context_file_max_chars` does not raise that cap).
 - **Strict role alternation.** Never two same-role messages in a row; never a synthetic user
   message injected mid-loop. The one exception is `/steer`, delivered as a standalone user row
   after a tool result (`assistant(tool_calls) → tool → user` is legal on every provider path) —
@@ -81,7 +84,10 @@ Two layers: gateway session hygiene (85% threshold) and the agent `ContextCompre
 configurable; per-model overrides; failure cooldown after provider-proven overflow). The algorithm
 prunes old tool results first (no LLM call), then picks boundaries, then generates a structured
 summary with the `auxiliary` compression model. In-place compaction keeps a single stable session
-id; native Responses/Codex compaction paths are provider-specific. Compression is the sanctioned
+id; native Responses/Codex compaction paths are provider-specific. A stalled summary stream retries
+once on `auxiliary.compression.fallback_chain`, and a repeated stall (a stall-class failure already on
+the cooldown ladder) ends with the deterministic fallback summary through the same pipeline — never a
+prune committed outside the lease/fence. Compression is the sanctioned
 cache break — keep it the only one. Full detail:
 `website/docs/developer-guide/context-compression-and-caching.md`.
 
@@ -93,8 +99,25 @@ cache break — keep it the only one. Full detail:
 - **Auxiliary (side-LLM) work** — curator, vision, embedding, title generation, session_search,
   compression — resolves through `agent/auxiliary_client.py::_resolve_auto_route`; each task can pin
   its own `provider/model/base_url/reasoning_effort` under `auxiliary:` in config.yaml.
+  Every physical attempt funnels through `_relay_sync_completion` / `_relay_async_completion` /
+  `_relay_sync_stream`, where `agent/auxiliary_hooks.py` emits `pre_auxiliary_call` /
+  `post_auxiliary_call` (observer-only, fail-open, `aux_task` set); the main-loop
+  `pre/post_api_request` events must NOT fire for aux calls (#79733).
 - Fallback models and credential pools are resolution-chain code: E2E them with real imports
   against a temp `HERMES_HOME`, not mocks (root rubric).
+
+## i18n (`agent/i18n.py` + `i18n_layers.py` + `i18n_languages.py`)
+
+`t(key)` resolves plugin packs (last registered wins) → user overlay `<home>/locales/<lang>.yaml`
+(profile-scoped) → bundled `locales/<lang>.yaml` → the same for `en` → bare key; every layer is flat
+dotted keys and may be partial. One merged dict per `(home, lang)` is cached; `reset_language_cache()`
+(called by every pack registration and by `config set display.language`) drops everything.
+`supported_languages()` is the live set (bundled ∪ overlay ∪ packs) and is what `display.language`
+validation and `_normalize_lang` accept; `SUPPORTED_LANGUAGES` stays the bundled tuple. `.tui.yaml` /
+`.desktop.yaml` pack files are opaque here beyond parse/flatten/serve (`surface_catalog`, RPC
+`i18n.catalog`); for the `tui` surface the bundled `locales/<lang>.tui.yaml` is the bottom layer of what
+`surface_catalog` serves (the TUI ships English only in TS). Endonyms for bundled ids live in `i18n_languages.py` and must agree with
+`apps/shared/src/i18n.ts`.
 
 ## Memory, context engines, curator
 

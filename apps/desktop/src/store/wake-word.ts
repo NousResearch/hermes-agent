@@ -59,7 +59,24 @@ async function maybeStartClientCapture(result: WakeStartResponse | null | undefi
   try {
     clientCapture = await startClientWakeCapture({
       frameLength: result.frame_length,
-      request: gatewayRequester
+      request: gatewayRequester,
+      // The continuous PCM chain can die after arming (dead track, stalled
+      // graph, sustained silence, refused feeds — #119089). A "listening" ear
+      // that can never fire is worse than an honest off state, so mirror the
+      // start-failure path: drop the capture, show the reason, release the lease.
+      onError: error => {
+        stopClientCapture()
+        const failed = $wakeWord.get()
+        $wakeWord.set({
+          ...failed,
+          listening: false,
+          notice: error.message,
+          pending: false
+        })
+
+        // Best-effort: release server lease if client mic failed.
+        void gatewayRequester('wake.stop', {}).catch(() => undefined)
+      }
     })
   } catch (error) {
     const current = $wakeWord.get()

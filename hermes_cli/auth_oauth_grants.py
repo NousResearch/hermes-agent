@@ -6,8 +6,9 @@ inside each function so ``hermes_cli.auth.<name>`` patches still intercept (and 
 
 from __future__ import annotations
 
-import logging
+import copy
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -23,14 +24,32 @@ logger = logging.getLogger("hermes_cli.auth")
 # ``refresh_token_reused``.
 # Profiles must never receive a copy: ONE grant lives at the global root and named profiles read
 # it through the ``read_credential_pool`` root fallback.
-SINGLE_USE_REFRESH_POOL_PROVIDERS = frozenset({"anthropic", "openai-codex", "xai-oauth"})
+SINGLE_USE_REFRESH_POOL_PROVIDERS = frozenset({"anthropic", "openai-codex", "xai-oauth", "nous"})
 
 # Singleton credential files holding the same single-use grants outside ``auth.json``. Copying one
 # into a profile re-seeds a forked pool row on the profile's next ``load_pool()``.
 SINGLE_USE_OAUTH_SINGLETON_FILES = (".anthropic_oauth.json",)
 
 # Providers whose device-code grants live under ``providers.<id>`` (not only the pool).
-_DEVICE_CODE_BLOCK_PROVIDERS = ("openai-codex", "xai-oauth")
+# Only a block carrying a refresh token is a forkable grant: an agent_key-only ``nous`` block is
+# not single-use and must survive.
+_DEVICE_CODE_BLOCK_PROVIDERS = ("openai-codex", "xai-oauth", "nous")
+
+
+def _block_tokens(block: dict[str, Any]) -> dict[str, Any]:
+    # Codex/xAI nest the pair under ``tokens``; Nous stores it flat on the block.
+    tokens = block.get("tokens")
+    return tokens if isinstance(tokens, dict) else block
+
+
+def _is_forkable_pool_row(provider_id: str, entry: Any) -> bool:
+    # An agent_key-only nous row carries no single-use refresh token: it is not a fork, and
+    # stripping it while its providers block survives lets the profile's next load_pool('nous')
+    # write that block over root's shared row. Same refresh_token gate the block strip uses.
+    if not _is_oauth_pool_payload(entry):
+        return False
+    # Pool rows are flat (no ``tokens`` nesting), so read refresh_token directly.
+    return provider_id != "nous" or bool(str(entry.get("refresh_token") or "").strip())
 
 
 def _is_oauth_pool_payload(entry: Any) -> bool:
@@ -44,11 +63,152 @@ def _is_oauth_pool_payload(entry: Any) -> bool:
         or str(entry.get("access_token") or "").startswith("sk-ant-oat"))
 
 
-def _is_pkce_row(row: Dict[str, Any]) -> bool:
+def merge_snapshot_auth_preserving_live_single_use_grants(
+    snapshot_store: dict[str, Any], live_store: dict[str, Any],
+) -> dict[str, Any]:
+    """Restore historical auth state without reviving spent single-use OAuth generations.
+
+    Snapshot metadata may be restored onto a live grant only when its stable row id proves the
+    lineage. Historical single-use refresh material with no live counterpart is dropped because
+    there is no local evidence that it is still redeemable. Current live grants always survive.
+    """
+    from hermes_cli.auth import _credential_token_pair, _merge_pool_row_generation
+
+    restored = copy.deepcopy(snapshot_store)
+    snapshot_pool = restored.get("credential_pool")
+    live_pool = live_store.get("credential_pool")
+
+    for provider_id in SINGLE_USE_REFRESH_POOL_PROVIDERS:
+        live_rows = live_pool.get(provider_id) if isinstance(live_pool, dict) else None
+        if not isinstance(live_rows, list):
+            live_rows = []
+        snapshot_rows = (
+            snapshot_pool.get(provider_id) if isinstance(snapshot_pool, dict) else None
+        )
+        if not isinstance(snapshot_rows, list):
+            snapshot_rows = []
+
+        live_grants = [
+            row for row in live_rows if _is_forkable_pool_row(provider_id, row)
+        ]
+        snapshot_has_grants = any(
+            _is_forkable_pool_row(provider_id, row) for row in snapshot_rows
+        )
+        if not live_grants and not snapshot_has_grants:
+            continue
+
+        if not isinstance(snapshot_pool, dict):
+            snapshot_pool = restored["credential_pool"] = {}
+
+        live_rows_by_id = {
+            row.get("id"): row
+            for row in live_rows
+            if isinstance(row, dict)
+            and isinstance(row.get("id"), str)
+            and row.get("id")
+        }
+        live_grants_by_id = {
+            row_id: row
+            for row_id, row in live_rows_by_id.items()
+            if _is_forkable_pool_row(provider_id, row)
+        }
+        live_without_id = [
+            copy.deepcopy(row)
+            for row in live_grants
+            if not (isinstance(row.get("id"), str) and row.get("id"))
+        ]
+        merged_snapshot: list[dict[str, Any]] = []
+        consumed_ids: set[str] = set()
+
+        for snapshot_row in snapshot_rows:
+            row_id = snapshot_row.get("id") if isinstance(snapshot_row, dict) else None
+            live_row = (
+                live_rows_by_id.get(row_id)
+                if isinstance(row_id, str) and row_id
+                else None
+            )
+            live_is_grant = _is_forkable_pool_row(provider_id, live_row)
+            snapshot_is_grant = _is_forkable_pool_row(provider_id, snapshot_row)
+
+            if snapshot_is_grant:
+                # A snapshot-only generation may already have spent its refresh token upstream.
+                # Stable id + a current row is the only local proof of which credential identity
+                # replaced it. Current non-OAuth state wins as a unit; current OAuth state keeps
+                # the snapshot metadata while substituting its authoritative token generation.
+                if live_row is None or row_id in consumed_ids:
+                    continue
+                consumed_ids.add(row_id)
+                if live_is_grant:
+                    merged_snapshot.append(
+                        _merge_pool_row_generation(
+                            snapshot_row,
+                            live_row,
+                            provider_id,
+                            base_pair=_credential_token_pair(snapshot_row),
+                        )
+                    )
+                else:
+                    merged_snapshot.append(copy.deepcopy(live_row))
+                continue
+
+            if live_is_grant:
+                if row_id in consumed_ids:
+                    continue
+                consumed_ids.add(row_id)
+                # The historical row changed auth shape but still claims a live OAuth row's stable
+                # identity. Keep the live row as a unit rather than manufacturing two credentials.
+                merged_snapshot.append(copy.deepcopy(live_row))
+            else:
+                # Ordinary credentials are historical state: restore the snapshot's version.
+                merged_snapshot.append(snapshot_row)
+
+        live_only = [
+            copy.deepcopy(row)
+            for row_id, row in live_grants_by_id.items()
+            if row_id not in consumed_ids
+        ]
+        snapshot_pool[provider_id] = live_without_id + live_only + merged_snapshot
+
+    snapshot_providers = restored.get("providers")
+    live_providers = live_store.get("providers")
+    for provider_id in _DEVICE_CODE_BLOCK_PROVIDERS:
+        snapshot_block = (
+            snapshot_providers.get(provider_id)
+            if isinstance(snapshot_providers, dict)
+            else None
+        )
+        live_block = (
+            live_providers.get(provider_id)
+            if isinstance(live_providers, dict)
+            else None
+        )
+        snapshot_has_refresh = (
+            isinstance(snapshot_block, dict)
+            and bool(_block_tokens(snapshot_block).get("refresh_token"))
+        )
+        live_has_refresh = (
+            isinstance(live_block, dict)
+            and bool(_block_tokens(live_block).get("refresh_token"))
+        )
+        if not snapshot_has_refresh and not live_has_refresh:
+            continue
+
+        if not isinstance(snapshot_providers, dict):
+            snapshot_providers = restored["providers"] = {}
+        if isinstance(live_block, dict):
+            snapshot_providers[provider_id] = copy.deepcopy(live_block)
+        else:
+            # No current generation exists. Restoring the historical refresh token would
+            # resurrect a credential whose single-use token may already be spent.
+            snapshot_providers.pop(provider_id, None)
+
+    return restored
+
+def _is_pkce_row(row: dict[str, Any]) -> bool:
     return str(row.get("source") or "").endswith("hermes_pkce")
 
 
-def strip_cloned_single_use_oauth_grants(profile_dir: Path) -> Dict[str, Any]:
+def strip_cloned_single_use_oauth_grants(profile_dir: Path) -> dict[str, Any]:
     """Remove forked single-use OAuth grants from a freshly cloned profile.
 
     Called after any path that copies credential files between profiles (``hermes profile create
@@ -58,7 +218,7 @@ def strip_cloned_single_use_oauth_grants(profile_dir: Path) -> Dict[str, Any]:
     could not run — the caller logs the summary.
     """
     from hermes_cli.auth import _same_path, _save_auth_store
-    stripped: Dict[str, Any] = {"pool": [], "providers": [], "files": []}
+    stripped: dict[str, Any] = {"pool": [], "providers": [], "files": []}
     profile_dir = Path(profile_dir)
     for name in SINGLE_USE_OAUTH_SINGLETON_FILES:
         target = profile_dir / name
@@ -98,7 +258,7 @@ def strip_cloned_single_use_oauth_grants(profile_dir: Path) -> Dict[str, Any]:
             if (provider_id not in SINGLE_USE_REFRESH_POOL_PROVIDERS
                     or not isinstance(entries, list)):
                 continue
-            kept = [e for e in entries if not _is_oauth_pool_payload(e)]
+            kept = [e for e in entries if not _is_forkable_pool_row(provider_id, e)]
             if len(kept) != len(entries):
                 changed = True
                 stripped["pool"].append(provider_id)
@@ -113,7 +273,7 @@ def strip_cloned_single_use_oauth_grants(profile_dir: Path) -> Dict[str, Any]:
         # profile working while removing the fork.
         for provider_id in _DEVICE_CODE_BLOCK_PROVIDERS:
             block = providers.get(provider_id)
-            if isinstance(block, dict) and block:
+            if isinstance(block, dict) and _block_tokens(block).get("refresh_token"):
                 del providers[provider_id]
                 stripped["providers"].append(provider_id)
                 changed = True
@@ -130,11 +290,11 @@ def strip_cloned_single_use_oauth_grants(profile_dir: Path) -> Dict[str, Any]:
 _OAUTH_TOKEN_FIELDS = (
     "access_token", "refresh_token", "expires_at", "expires_at_ms", "last_refresh")
 
-_oauth_heal_notices: List[str] = []
+_oauth_heal_notices: list[str] = []
 
 # provider -> fingerprint (see ``_heal_forked_single_use_oauth_grants``) of the last store
 # verified fork-free; lets load_pool() skip the locked scan.
-_oauth_heal_clean_marks: Dict[str, Tuple[Any, ...]] = {}
+_oauth_heal_clean_marks: dict[str, tuple[Any, ...]] = {}
 
 # Filename for the ON-DISK twin of ``_oauth_heal_clean_marks``. The in-memory mark only silences
 # the heal for the life of ONE process, so every fresh `hermes` invocation and every new worker
@@ -172,7 +332,7 @@ def _persisted_oauth_heal_fingerprint(provider_id: str) -> Optional[list]:
     if path is None:
         return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except Exception:
         return None
     if not isinstance(data, dict):
@@ -194,7 +354,7 @@ def _persist_oauth_heal_clean_mark(provider_id: str, fingerprint: tuple) -> None
         from utils import atomic_json_write
 
         try:
-            existing = json.loads(path.read_text(encoding="utf-8"))
+            existing = json.loads(path.read_text(encoding="utf-8-sig"))
         except Exception:
             existing = {}
         if not isinstance(existing, dict):
@@ -207,7 +367,8 @@ def _persist_oauth_heal_clean_mark(provider_id: str, fingerprint: tuple) -> None
         if marks.get(provider_id) == new_mark:
             return  # already recorded; skip the rewrite
         marks[provider_id] = new_mark
-        path.parent.mkdir(parents=True, exist_ok=True)
+        from hermes_constants import mkdir_under_hermes_home
+        mkdir_under_hermes_home(path.parent)
         # 0o600 like the MCP schema cache: this names credential-store paths.
         atomic_json_write(path, marks, mode=0o600)
     except Exception:
@@ -221,7 +382,7 @@ def _mark_oauth_heal_clean(provider_id: str, fingerprint: tuple) -> None:
     _persist_oauth_heal_clean_mark(provider_id, fingerprint)
 
 
-def consume_oauth_heal_notices() -> List[str]:
+def consume_oauth_heal_notices() -> list[str]:
     """Return (and clear) human-readable notes about heals run in this process.
 
     ``hermes auth list`` / ``hermes auth status`` print them so the user sees the consolidation.
@@ -232,7 +393,7 @@ def consume_oauth_heal_notices() -> List[str]:
     return notes
 
 
-def _oauth_identity(entry: Dict[str, Any]) -> Optional[str]:
+def _oauth_identity(entry: dict[str, Any]) -> Optional[str]:
     """Stable account identity for an OAuth row when the token carries one.
 
     Codex / xAI access tokens are JWTs with ``sub`` / ``email`` / ``chatgpt_account_id`` claims;
@@ -253,7 +414,7 @@ def _oauth_identity(entry: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def _oauth_freshness(entry: Dict[str, Any]) -> float:
+def _oauth_freshness(entry: dict[str, Any]) -> float:
     """Best-effort 'how recently was this pair issued' score (epoch seconds).
 
     A rotation always issues a later-expiring access token, so ``expires_at`` ordering identifies
@@ -269,7 +430,7 @@ def _oauth_freshness(entry: Dict[str, Any]) -> float:
 
 
 def _find_root_counterpart(
-    profile_row: Dict[str, Any], root_rows: List[Dict[str, Any]]) -> Optional[int]:
+    profile_row: dict[str, Any], root_rows: list[dict[str, Any]]) -> Optional[int]:
     """Index of the root OAuth row that shares a grant lineage with *profile_row*.
 
     Only a copied row ID or shared token material establishes lineage. The same
@@ -293,7 +454,7 @@ def _find_root_counterpart(
     return None
 
 
-def _adopt_oauth_material(target: Dict[str, Any], winner: Dict[str, Any]) -> Dict[str, Any]:
+def _adopt_oauth_material(target: dict[str, Any], winner: dict[str, Any]) -> dict[str, Any]:
     """Return *target* carrying *winner*'s token pair, status markers cleared."""
     from hermes_cli.auth import _POOL_STATUS_FIELDS
     merged = dict(target)
@@ -306,10 +467,10 @@ def _adopt_oauth_material(target: Dict[str, Any], winner: Dict[str, Any]) -> Dic
     return merged
 
 
-def _singleton_as_row(path: Path) -> Optional[Dict[str, Any]]:
+def _singleton_as_row(path: Path) -> Optional[dict[str, Any]]:
     """Read a ``.anthropic_oauth.json`` as a pool-row-shaped dict, or None."""
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return None
     if not isinstance(data, dict) or not str(data.get("accessToken") or "").strip():
@@ -320,7 +481,7 @@ def _singleton_as_row(path: Path) -> Optional[Dict[str, Any]]:
         "expires_at_ms": data.get("expiresAt")}
 
 
-def heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[Dict[str, Any]]:
+def heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[dict[str, Any]]:
     """One-time heal for installs that ALREADY forked a single-use grant into a profile.
 
     Forked copies are one credential with several owners: whichever profile rotated last holds the
@@ -344,7 +505,7 @@ def heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[Dict[str, 
 
 
 def _heal_forked_provider_block(
-    profile_store: Dict[str, Any], root_store: Dict[str, Any], provider_id: str,
+    profile_store: dict[str, Any], root_store: dict[str, Any], provider_id: str,
     lineage_proven: bool = False) -> Optional[bool]:
     """Consolidate a forked ``providers.<id>`` device-code block into root.
 
@@ -360,12 +521,12 @@ def _heal_forked_provider_block(
     if not (isinstance(p_providers, dict) and isinstance(r_providers, dict)):
         return None
     p_block, r_block = p_providers.get(provider_id), r_providers.get(provider_id)
-    if not (isinstance(p_block, dict) and p_block and isinstance(r_block, dict) and r_block):
+    if not (isinstance(p_block, dict) and _block_tokens(p_block).get("refresh_token")
+            and isinstance(r_block, dict) and r_block):
         return None
 
-    def _flat(block: Dict[str, Any]) -> Dict[str, Any]:
-        tokens = block.get("tokens") if isinstance(block.get("tokens"), dict) else {}
-        return {**tokens, "last_refresh": block.get("last_refresh")}
+    def _flat(block: dict[str, Any]) -> dict[str, Any]:
+        return {**_block_tokens(block), "last_refresh": block.get("last_refresh")}
 
     p_flat, r_flat = _flat(p_block), _flat(r_block)
     # Provider blocks have no stable pool-row ID. Without a shared token pair
@@ -383,7 +544,7 @@ def _heal_forked_provider_block(
     return adopted
 
 
-def _stat_sig(p: Optional[Path]) -> Optional[Tuple[int, int, int, int]]:
+def _stat_sig(p: Optional[Path]) -> Optional[tuple[int, int, int, int]]:
     """File signature from ONE stat, or None when absent — a torn pair from two stats could
     leave a persisted clean mark matching a store rewritten between them."""
     try:
@@ -393,15 +554,28 @@ def _stat_sig(p: Optional[Path]) -> Optional[Tuple[int, int, int, int]]:
     return file_signature(st) if st is not None else None
 
 
-def _pool_rows(store: Dict[str, Any], provider_id: str) -> Tuple[Any, List[Any]]:
+def _pool_rows(store: dict[str, Any], provider_id: str) -> tuple[Any, list[Any]]:
     """``(store["credential_pool"], its provider_id rows-or-[])`` — pool may be None/non-dict."""
     pool = store.get("credential_pool")
     rows = pool.get(provider_id) if isinstance(pool, dict) else None
     return pool, rows if isinstance(rows, list) else []
 
 
+def owned_profile_reads_root_state(
+        auth_store: dict[str, Any], provider_id: str, source_path: Optional[Path]) -> bool:
+    """True when a profile that owns its own pool rows would seed ``providers.<id>`` from ROOT.
+
+    Seeding that state re-copies root's single-use refresh token into the profile's pool, which
+    is the fork #100339 forbids; the singleton seeders skip it."""
+    from hermes_cli.auth import _global_auth_file_path, _same_path
+    global_root = _global_auth_file_path()
+    return bool(
+        source_path is not None and global_root is not None and _same_path(source_path, global_root)
+        and _pool_rows(auth_store, provider_id)[1])
+
+
 def _adopt_if_fresher(
-    target: Dict[str, Any], candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    target: dict[str, Any], candidate: dict[str, Any]) -> Optional[dict[str, Any]]:
     """*target* carrying *candidate*'s pair when the candidate rotated later, else None."""
     fresher = _oauth_freshness(candidate) > _oauth_freshness(target)
     return _adopt_oauth_material(target, candidate) if fresher else None
@@ -413,7 +587,7 @@ class _HealPass:
     def __init__(self, profile_store, root_store, provider_id, root_singleton: Optional[Path]):
         self.profile_store, self.root_store = profile_store, root_store
         self.provider_id = provider_id
-        self.summary: Dict[str, Any] = {
+        self.summary: dict[str, Any] = {
             "adopted": False, "stripped_ids": [], "files": [], "providers_block": False}
         self.profile_changed = self.root_changed = False
         self.lineage_proven = False  # a profile pool row matched root by copied id / shared tokens
@@ -425,31 +599,33 @@ class _HealPass:
             _singleton_as_row(root_singleton)
             if root_singleton is not None and root_singleton.exists() else None)
 
-    def _adopt_root_row(self, idx: int, row: Dict[str, Any]) -> None:
+    def _adopt_root_row(self, idx: int, row: dict[str, Any]) -> None:
         merged = _adopt_if_fresher(self.r_rows[idx], row)
         if merged is not None:
             self.r_rows[idx] = merged
             self.root_changed = self.summary["adopted"] = True
 
-    def _adopt_root_singleton(self, row: Dict[str, Any]) -> None:
+    def _adopt_root_singleton(self, row: dict[str, Any]) -> None:
         merged = _adopt_if_fresher(self.root_singleton_row, row)
         if merged is not None:
             self.root_singleton_row = merged
             self.summary["adopted"] = True
 
     def heal_pool_rows(self) -> None:
-        kept_rows: List[Any] = []
+        kept_rows: list[Any] = []
         for row in self.p_rows:
-            if not _is_oauth_pool_payload(row):
-                kept_rows.append(row)  # API keys are safe to duplicate
+            if not _is_forkable_pool_row(self.provider_id, row):
+                # API keys (and agent_key-only nous rows) are safe to duplicate
+                kept_rows.append(row)
                 continue
             match_idx = _find_root_counterpart(row, self.r_rows)
             if match_idx is not None:
                 self.lineage_proven = True
                 self._adopt_root_row(match_idx, row)
             # No root pool counterpart. Root's grant may live only in its .anthropic_oauth.json
-            # (the ``hermes auth`` PKCE shape); a profile hermes_pkce-family row is its copy.
-            elif _is_pkce_row(row) and self.root_singleton_row is not None and not self.r_oauth:
+            # (the ``hermes auth`` PKCE shape); a profile ``hermes_pkce`` row is its copy. Not
+            # ``manual:hermes_pkce``: that is an ``auth add`` login the pool owns, never a copy.
+            elif row.get("source") == "hermes_pkce" and self.root_singleton_row is not None and not self.r_oauth:
                 self._adopt_root_singleton(row)
             else:
                 # Root holds no copy of this lineage (independent account, or root never had the
@@ -546,7 +722,7 @@ class _HealPass:
             f"this profile now borrows the root grant (#100339)")
 
 
-def _heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[Dict[str, Any]]:
+def _heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[dict[str, Any]]:
     from hermes_cli.auth import (
         _auth_file_path, _auth_store_lock, _global_auth_file_path, _load_auth_store,
         _is_same_auth_store, _oauth_heal_clean_marks, _oauth_heal_notices, _same_path,

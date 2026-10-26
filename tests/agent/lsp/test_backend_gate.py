@@ -2,8 +2,7 @@
 
 The host-side LSP server can't see files inside a Docker/Modal/SSH
 sandbox.  When the agent's terminal env isn't ``LocalEnvironment``,
-the file_operations layer must skip both ``snapshot_baseline`` and
-``get_diagnostics_sync`` calls — falling back to the in-process
+the file_operations layer must not query the service at all — falling back to the in-process
 syntax check exactly as if LSP were disabled.
 """
 from __future__ import annotations
@@ -51,19 +50,22 @@ def test_maybe_lsp_diagnostics_returns_empty_for_non_local(monkeypatch):
     assert called == [], "service must not be queried for non-local backends"
 
 
-def test_snapshot_baseline_called_for_local_env(tmp_path, monkeypatch):
+def test_edit_check_started_for_local_env(tmp_path, monkeypatch):
+    """The local backend hands the written file and its pre-/post-edit text to the service's edit check."""
     from tools.environments.local import LocalEnvironment
     from tools.file_operations import ShellFileOperations
 
     fops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)))
-
-    snapshot_called = []
+    started = []
 
     class FakeService:
-        def snapshot_baseline(self, path):
-            snapshot_called.append(path)
+        def enabled_for(self, path):
+            return True
+
+        def start_edit_check(self, path, *, pre_text, post_text=None, owner=None, carry=()):
+            started.append((path, pre_text, post_text))
 
     monkeypatch.setattr("agent.lsp.get_service", lambda: FakeService())
 
-    fops._snapshot_lsp_baseline(str(tmp_path / "x.py"))
-    assert snapshot_called == [str(tmp_path / "x.py")]
+    assert fops._maybe_lsp_diagnostics(str(tmp_path / "x.py"), pre_content="x = 1\n", post_content="x = 2\n") == ""
+    assert started == [(str(tmp_path / "x.py"), "x = 1\n", "x = 2\n")]

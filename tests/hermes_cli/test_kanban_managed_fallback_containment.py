@@ -1,19 +1,10 @@
-"""Fallback containment for managed Kanban attempts (design §5: "Disable
-inherited model fallback chains for these runs" / "no silent escape through
-parent inheritance, global fallback chains").
+"""Managed Kanban recovery / replay-hold contract (design §5 and §12):
+a failed managed attempt's replacement worker is bounded by the routing
+policy (one safe alternate), uncertain-outcome attempts are never blindly
+replayed, and operator reconciliation is the only path back to a replay.
 
-``cli.py``'s ``_init_agent`` always wires the process-level
-``fallback_model=self._fallback_model`` (``get_fallback_chain(CLI_CONFIG)``)
-into every ``AIAgent`` regardless of whether this turn is a receipted managed
-attempt. That inherited chain was never approved by the routing policy for
-THIS receipted route, so a real provider failure on a managed attempt must
-never silently transmit content to that unapproved fallback
-provider/model — the attempt must end instead (existing claim/retry/re-route
-picks a NEW receipted route). This exercises the exact seam
-``cli._enforce_kanban_routing_receipt`` calls
-(``_disable_inherited_fallback_for_managed_run``) against a real ``AIAgent``
-instance carrying a real, non-empty fallback chain — not a stand-in mock of
-the guard boundary.
+Real sqlite board, real ``dispatch_once`` ticks, real
+``_record_task_failure`` — nothing here mocks away the dispatcher path.
 """
 from __future__ import annotations
 
@@ -58,135 +49,6 @@ def routing_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     return home
-
-
-def _persist_receipt(routing_home):
-    from agent.model_selection import select
-    from agent.model_selection_store import activate_policy, persist_receipt, publish_policy
-
-    record = publish_policy(routing_home, _policy(), approval_ref="operator:test")
-    activate_policy(routing_home, "kanban-default", record["revision"])
-    decision = select(_requirements(), _policy(), {}, now=1000)
-    return persist_receipt(routing_home, decision)
-
-
-class _FakeAgent:
-    """Minimal real-shaped stand-in carrying exactly the attributes
-    ``enforce_worker_route``/``_disable_inherited_fallback_for_managed_run``
-    read/write — real ``AIAgent`` construction needs live credentials this
-    isolated test must not depend on, but the fallback-chain SHAPE mirrors
-    ``agent.agent_init._init_fallback_chain`` exactly (list of
-    provider/model dicts, index, legacy single-entry mirror)."""
-
-    def __init__(self, *, provider, model, base_url, fallback_chain):
-        self.provider = self.requested_provider = provider
-        self.model = model
-        self.base_url = base_url
-        self._fallback_chain = list(fallback_chain)
-        self._fallback_index = 0
-        self._fallback_model = self._fallback_chain[0] if self._fallback_chain else None
-
-
-def test_matched_route_with_inherited_fallback_chain_is_cleared(routing_home):
-    from hermes_cli.kanban_worker_routing import _disable_inherited_fallback_for_managed_run
-    from agent.managed_route_runtime import enforce_worker_route
-
-    receipt_id = _persist_receipt(routing_home)
-    inherited_chain = [{"provider": "anthropic", "model": "claude-unapproved-fallback"}]
-    agent = _FakeAgent(
-        provider="openai", model="gpt-5", base_url="https://api.openai.com/v1",
-        fallback_chain=inherited_chain,
-    )
-    # The receipt/route check itself passes (matched route) ...
-    enforce_worker_route(
-        routing_home, receipt_id,
-        actual_provider=agent.provider, actual_model=agent.model,
-        actual_endpoint=agent.base_url, actual_reasoning="high",
-    )
-    assert agent._fallback_chain == inherited_chain, "sanity: chain still present pre-containment"
-
-    # ... but the managed-run seam must strip the inherited chain before any
-    # inference, so a later provider failure cannot silently escape to it.
-    _disable_inherited_fallback_for_managed_run(agent, receipt_id)
-
-    assert agent._fallback_chain == []
-    assert agent._fallback_index == 0
-    assert agent._fallback_model is None
-
-
-def test_unmanaged_agent_fallback_chain_is_never_touched(routing_home):
-    """An agent this seam is never called for (no receipt / unmanaged task,
-    exercised via cli._enforce_kanban_routing_receipt's no-receipt no-op
-    branch) must keep its configured chain exactly as constructed — this is
-    NOT a global fallback-disabling change, only a managed-attempt one."""
-    inherited_chain = [{"provider": "anthropic", "model": "claude-configured-default"}]
-    agent = _FakeAgent(
-        provider="openai", model="gpt-5", base_url="https://api.openai.com/v1",
-        fallback_chain=inherited_chain,
-    )
-    # No call to _disable_inherited_fallback_for_managed_run at all (mirrors
-    # cli._enforce_kanban_routing_receipt's early `return True` when
-    # HERMES_KANBAN_ROUTING_RECEIPT is unset for a non-managed run).
-    assert agent._fallback_chain == inherited_chain
-    assert agent._fallback_model == inherited_chain[0]
-
-
-def test_empty_fallback_chain_is_a_harmless_noop(routing_home):
-    from hermes_cli.kanban_worker_routing import _disable_inherited_fallback_for_managed_run
-
-    agent = _FakeAgent(
-        provider="openai", model="gpt-5", base_url="https://api.openai.com/v1",
-        fallback_chain=[],
-    )
-    _disable_inherited_fallback_for_managed_run(agent, "rr_whatever")
-    assert agent._fallback_chain == []
-    assert agent._fallback_model is None
-
-
-def test_enforcement_success_path_calls_containment_before_returning_true(routing_home, monkeypatch):
-    """End-to-end through the actual guard entry point
-    ``cli._enforce_kanban_routing_receipt``: a matched route with a live
-    inherited fallback chain on ``cli.agent`` must come out cleared, and the
-    call must still report success (True) — containment is not a failure
-    mode, it is what makes success actually safe."""
-    import os
-
-    from hermes_cli import kanban_worker_routing as cli_module
-
-    from agent.model_selection import select
-    from agent.model_selection_store import activate_policy, persist_receipt, publish_policy
-    from hermes_cli import kanban_db as kb
-    from hermes_cli.kanban_db_connect import connect
-
-    publish_policy(routing_home, _policy(), approval_ref="operator:test")
-    activate_policy(routing_home, "kanban-default", 1)
-    kb.init_db()
-    with connect() as conn:
-        tid = kb.create_task(conn, title="contain fallback", assignee="alice", routing_role="builder")
-        task = kb.claim_task(conn, tid, claimer="dispatcher")
-        decision = select(_requirements(execution_id=tid, attempt_id=str(task.current_run_id)),
-                          _policy(), {}, now=1000)
-        receipt_id = persist_receipt(routing_home, decision)
-        assert kb.set_routing_receipt(conn, tid, receipt_id, expected_run_id=task.current_run_id)
-    inherited_chain = [{"provider": "anthropic", "model": "claude-unapproved-fallback"}]
-    fake_cli = type("FakeCLI", (), {})()
-    fake_cli.agent = _FakeAgent(
-        provider="openai", model="gpt-5", base_url="https://api.openai.com/v1",
-        fallback_chain=inherited_chain,
-    )
-    fake_cli.reasoning_config = "high"
-
-    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
-    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(task.current_run_id))
-    monkeypatch.delenv("HERMES_KANBAN_ROUTING_ORIGIN_HOME", raising=False)
-    monkeypatch.setenv("HERMES_KANBAN_ROUTING_RECEIPT", receipt_id)
-    monkeypatch.setattr(
-        cli_module, "requested_effort_for_kanban_guard", lambda cli: "high",
-    )
-
-    assert cli_module._enforce_kanban_routing_receipt(fake_cli) is True
-    assert fake_cli.agent._fallback_chain == []
-    assert fake_cli.agent._fallback_model is None
 
 
 def _recovery_policy():

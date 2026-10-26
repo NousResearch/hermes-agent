@@ -36,6 +36,7 @@ export interface MediaRemoteScope {
 export interface MediaRemoteConnection {
   authMode?: 'oauth' | 'token'
   baseUrl: string
+  headers?: Record<string, string>
   mode?: 'local' | 'remote'
   token?: null | string
   sharedRemote?: boolean
@@ -70,6 +71,29 @@ function parseMediaProtocolTarget(rawUrl: string): MediaProtocolTarget {
   const profile = url.searchParams.get('profile')?.trim() || undefined
 
   return { connectionId, filePath, mode, profile }
+}
+
+/**
+ * The file name a native save of a `hermes-media://` URL should offer. The
+ * media path rides percent-encoded in the URL, so Chromium's own guess flattens
+ * the whole path into the name (`C__Users_me_Videos_clip.mp4`). Returns null
+ * for any other URL so ordinary downloads keep Chromium's name.
+ */
+export function mediaProtocolDownloadName(rawUrl: string): null | string {
+  let target: MediaProtocolTarget
+
+  try {
+    if (new URL(rawUrl).protocol !== `${MEDIA_PROTOCOL}:`) {
+      return null
+    }
+
+    target = parseMediaProtocolTarget(rawUrl)
+  } catch {
+    return null
+  }
+
+  // Media paths come from the agent's OS: split on both separators.
+  return target.filePath.split(/[\\/]/).filter(Boolean).pop() || null
 }
 
 export function isStreamableMediaPath(filePath: string): boolean {
@@ -162,6 +186,14 @@ export function createMediaProtocolHandler(dependencies: MediaProtocolDependenci
         target.filePath,
         connection.sharedRemote ? target.profile : undefined
       )
+
+      // The gateway's configured extra headers (access-proxy gates) travel on
+      // every remote request; forwarded range/cache negotiation headers win.
+      for (const [name, value] of Object.entries(connection.headers ?? {})) {
+        if (!headers.has(name)) {
+          headers.set(name, value)
+        }
+      }
 
       if (connection.authMode === 'oauth') {
         return await requestWithOauthFallback(connection.baseUrl, {

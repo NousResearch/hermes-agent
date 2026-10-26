@@ -1,13 +1,10 @@
-"""Worker-side guided-routing enforcement (design §4 step 7, §12 "Claim/start/
-crash sequence" step 5): the actual Kanban worker process must validate its
-own constructed route against the SAME receipted decision the dispatcher
-persisted at claim time, immediately before its first real inference call.
+"""Worker-side guided-routing enforcement of the receipted decision against
+the actually-constructed route, immediately before the first real inference
+call (``agent.managed_route_runtime.enforce_worker_route`` — the same
+boundary delegation/MoA routing bootstraps managed children with).
 
 Isolated: real temp HERMES_HOME, real model_routing.db sqlite file (via
-agent.model_selection_store), no provider clients, no network. This exercises
-``agent.managed_route_runtime.enforce_worker_route`` — the exact function
-``cli.py``'s single-query worker bootstrap calls — not a stand-in mock of the
-enforcement boundary.
+agent.model_selection_store), no provider clients, no network.
 """
 from __future__ import annotations
 
@@ -70,50 +67,6 @@ def _persist_receipt(routing_home):
     decision = select(_requirements(), _policy(), {}, now=1000)
     receipt_id = persist_receipt(routing_home, decision)
     return receipt_id
-
-
-@pytest.mark.parametrize("mismatch", [None, "execution_id", "attempt_id", "role", "board_receipt", "missing_run"])
-def test_bootstrap_binds_receipt_and_registers_before_inference(routing_home, monkeypatch, mismatch):
-    import os
-    from types import SimpleNamespace
-    from hermes_cli import kanban_worker_routing as cli
-    from agent.model_selection import select
-    from agent.model_selection_store import activate_policy, persist_receipt, publish_policy
-    from hermes_cli import kanban_db as kb
-    from hermes_cli.kanban_db_connect import connect
-    from hermes_cli.kanban_db_dispatch import _set_worker_pid
-
-    policy = _policy()
-    if mismatch == "role":
-        policy["routes"][0]["allowed_roles"].append("other")
-        policy["rankings"]["other"] = {"deep": ["openai-gpt5"]}
-    publish_policy(routing_home, policy, approval_ref="operator:test")
-    activate_policy(routing_home, "kanban-default", 1)
-    kb.init_db()
-    with connect() as conn:
-        tid = kb.create_task(conn, title="bootstrap", assignee="alice", routing_role="builder")
-        claimed = kb.claim_task(conn, tid, claimer="dispatcher")
-        requirements = _requirements(execution_id=tid, attempt_id=str(claimed.current_run_id))
-        if mismatch in ("execution_id", "attempt_id", "role"):
-            requirements[mismatch] = "other"
-        receipt = persist_receipt(routing_home, select(requirements, policy, {}, now=1000))
-        assert kb.set_routing_receipt(conn, tid, "other" if mismatch == "board_receipt" else receipt,
-                                      expected_run_id=claimed.current_run_id)
-    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
-    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "" if mismatch == "missing_run" else str(claimed.current_run_id))
-    monkeypatch.setenv("HERMES_KANBAN_ROUTING_RECEIPT", receipt)
-    monkeypatch.setenv("HERMES_KANBAN_ROUTING_ORIGIN_HOME", str(routing_home))
-    worker = SimpleNamespace(agent=SimpleNamespace(provider="openai", model="gpt-5",
-        base_url="https://api.openai.com/v1"), reasoning_config={"effort": "high"})
-    accepted = cli._enforce_kanban_routing_receipt(worker)
-    assert accepted is (mismatch is None)
-    with connect() as conn:
-        task = kb.get_task(conn, tid)
-        if mismatch is None:
-            assert task.worker_pid == os.getpid(), "child must register even if parent dies after Popen"
-            assert _set_worker_pid(conn, tid, os.getpid(), expected_run_id=claimed.current_run_id)
-        else:
-            assert task.worker_pid is None
 
 
 def test_worker_matching_actual_route_enforces_cleanly(routing_home):

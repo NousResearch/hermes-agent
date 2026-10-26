@@ -2,11 +2,15 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import contextlib
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.i18n import t
 from gateway.platforms.base import SendResult
 
 logger = logging.getLogger("plugins.platforms.discord.adapter")
@@ -18,6 +22,35 @@ logger = logging.getLogger("plugins.platforms.discord.adapter")
 # effective limit is never taken below this floor. See issue #50846 and
 # https://docs.discord.com/developers/change-log (Sep 3, 2026).
 _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES = 20 * 1024 * 1024
+
+
+_OPUS_GRANULE_RATE = 48000  # Ogg/Opus granule positions always count 48 kHz samples (RFC 7845 §4)
+
+
+def _ogg_opus_duration(data: bytes) -> Optional[float]:
+    """Playback seconds of an Ogg/Opus stream (last page's granule position minus the OpusHead
+    pre-skip), or None when ``data`` is not Ogg/Opus. Dependency-free: Discord needs the real
+    length for the voice-message scrubber, and a byte-size guess is wrong for every bitrate."""
+    if data[:4] != b"OggS" or len(data) < 27:
+        return None
+    head = 27 + data[26]  # first packet follows the page header and its segment table
+    if data[head:head + 8] != b"OpusHead" or len(data) < head + 12:
+        return None
+    pre_skip = int.from_bytes(data[head + 10:head + 12], "little")
+    granule, pos = None, 0
+    # Walk page headers by their segment tables: an "OggS" byte run inside packet data is not a page.
+    while data[pos:pos + 4] == b"OggS" and pos + 27 <= len(data):
+        body_start = pos + 27 + data[pos + 26]
+        if body_start > len(data):
+            break
+        page_granule = int.from_bytes(data[pos + 6:pos + 14], "little", signed=True)
+        if page_granule != -1:  # -1: no packet ends on this page
+            granule = page_granule
+        pos = body_start + sum(data[pos + 27:body_start])
+    if granule is None:
+        return None
+    secs = (granule - pre_skip) / _OPUS_GRANULE_RATE
+    return secs if secs > 0 else None
 
 
 class DiscordMediaMixin:
@@ -39,7 +72,9 @@ class DiscordMediaMixin:
                 return max(limit, _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES)
         return _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES
 
-    async def _reject_oversized_upload(self, channel: Any, file_path: str, filename: str) -> Optional[SendResult]:
+    async def _reject_oversized_upload(
+        self, channel: Any, file_path: str, filename: str, *, caption: Optional[str] = None,
+    ) -> Optional[SendResult]:
         """Preflight ``file_path`` against the channel's upload cap (#50846): a doomed
         ``413`` round-trip is skipped and the user gets a notice naming the size and the
         limit. Returns the failed result, or ``None`` when the file may be uploaded."""
@@ -54,20 +89,28 @@ class DiscordMediaMixin:
         limit_mb = limit / (1024 * 1024)
         error = f"File too large for Discord upload: {filename} is {size_mb:.1f} MB (limit {limit_mb:.0f} MB)"
         logger.warning("[%s] %s", self.name, error)
-        notice = (
-            f"⚠️ Could not attach `{filename}` — {size_mb:.1f} MB exceeds Discord's "
-            f"{limit_mb:.0f} MB upload limit for this channel. Compress the file or share a link instead."
-        )
+        notice = t(
+            "platform.discord.media.upload_too_large",
+            filename=filename, size_mb=f"{size_mb:.1f}", limit_mb=f"{limit_mb:.0f}")
         try:
-            if not self._is_forum_parent(channel):
-                await channel.send(content=notice)
+            shown = self.warning_notifications_enabled()
+            if shown:
+                # Legacy: the notice is posted in-channel only (forum parents get no bare notice).
+                if not self._is_forum_parent(channel):
+                    await channel.send(content=notice)
+            elif caption:
+                # Hidden: the requested caption still travels, on the channel's native shape.
+                if self._is_forum_parent(channel):
+                    await self._send_to_forum(channel, caption)
+                else:
+                    await channel.send(content=caption)
         except Exception:
             logger.debug("[%s] Failed to send oversized-file notice for %s", self.name, filename, exc_info=True)
         return SendResult(success=False, error=error)
 
     async def _send_file_attachment(
         self, chat_id: str, file_path: str, caption: Optional[str] = None,
-        file_name: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+        file_name: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send a local file as a Discord attachment (forum channels get a new thread). Path-based
         ``discord.File`` only: the open-handle form can race the multipart encoder after an image
@@ -85,7 +128,7 @@ class DiscordMediaMixin:
         if not channel:
             return SendResult(success=False, error=f"Channel {chat_id} not found")
         filename = file_name or os.path.basename(file_path)
-        rejected = await self._reject_oversized_upload(channel, file_path, filename)
+        rejected = await self._reject_oversized_upload(channel, file_path, filename, caption=caption)
         if rejected is not None:
             return rejected
         logger.info(
@@ -118,8 +161,8 @@ class DiscordMediaMixin:
 
 
     async def send_multiple_images(
-        self, chat_id: str, images: List[Tuple[str, str]],
-        metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0,
+        self, chat_id: str, images: list[tuple[str, str]],
+        metadata: Optional[dict[str, Any]] = None, human_delay: float = 0.0,
     ) -> SendResult:
         """Send images as one Discord message (<=10 attachments): URLs are downloaded and uploaded
         inline (bare links don't render); on chunk failure the remainder uses the per-image loop."""
@@ -149,9 +192,9 @@ class DiscordMediaMixin:
         for chunk_idx, chunk in enumerate(chunks):
             if human_delay > 0 and chunk_idx > 0:
                 await asyncio.sleep(human_delay)
-            files: List[Any] = []
-            captions: List[str] = []
-            skip_notices: List[str] = []
+            files: list[Any] = []
+            captions: list[str] = []
+            skip_notices: list[str] = []
             aiohttp_session = None
             try:
                 for image_url, alt_text in chunk:
@@ -180,11 +223,11 @@ class DiscordMediaMixin:
                                 self.name, os.path.basename(local_path),
                                 _img_size / (1024 * 1024), _img_limit / (1024 * 1024),
                             )
-                            skip_notices.append(
-                                f"⚠️ Skipped `{os.path.basename(local_path)}` — "
-                                f"{_img_size / (1024 * 1024):.1f} MB exceeds Discord's "
-                                f"{_img_limit / (1024 * 1024):.0f} MB upload limit."
-                            )
+                            skip_notices.append(t(
+                                "platform.discord.media.image_skipped_too_large",
+                                filename=os.path.basename(local_path),
+                                size_mb=f"{_img_size / (1024 * 1024):.1f}",
+                                limit_mb=f"{_img_limit / (1024 * 1024):.0f}"))
                             continue
                         files.append(_discord_mod.File(local_path, filename=os.path.basename(local_path)))
                     else:
@@ -217,7 +260,13 @@ class DiscordMediaMixin:
                 if not files:
                     # Everything in this chunk was skipped. Still surface any
                     # oversized-file notices so the drop is not silent.
-                    if skip_notices and not self._is_forum_parent(channel):
+                    shown = self.warning_notifications_enabled()
+                    if not shown and captions:
+                        if self._is_forum_parent(channel):
+                            await self._send_to_forum(channel, captions[0])
+                        else:
+                            await channel.send(content=captions[0])
+                    if skip_notices and shown and not self._is_forum_parent(channel):
                         try:
                             await channel.send(content="\n".join(skip_notices))
                         except Exception:
@@ -229,7 +278,7 @@ class DiscordMediaMixin:
                 # Use the first caption if any (Discord only has one message body for the group)
                 content = captions[0] if captions else None
                 if skip_notices:
-                    content = "\n".join(([content] if content else []) + skip_notices)
+                    content = self.warning_text("\n".join(([content] if content else []) + skip_notices), content)
                 logger.info(
                     "[%s] Sending %d image(s) as single Discord message (chunk %d/%d)",
                     self.name, len(files), chunk_idx + 1, len(chunks),
@@ -259,9 +308,19 @@ class DiscordMediaMixin:
 
     async def send_voice(
         self, chat_id: str, audio_path: str, caption: Optional[str] = None,
-        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, **kwargs,
+        reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
+        is_voice: Optional[bool] = None, **kwargs,
     ) -> SendResult:
-        """Send audio as a Discord file attachment."""
+        """Deliver audio. ``is_voice=False`` is the media dispatch's plain audio attachment (sound
+        effect, music, an mp3 without ``[[audio_as_voice]]``): it goes out as a regular file under
+        its real name, which Discord renders with an inline player. Voice intent (``True`` from
+        ``[[audio_as_voice]]``, or no flag: auto-TTS and voice replies) becomes a native voice
+        message, which Discord only plays as Ogg/Opus."""
+        if is_voice is False:
+            return await self._send_local_file(
+                chat_id, audio_path, caption, not_found="Audio file not found", kind="audio",
+                metadata=metadata,
+            )
         from plugins.platforms.discord.adapter import _prompt_target_id, discord
 
         try:
@@ -272,61 +331,86 @@ class DiscordMediaMixin:
             if not os.path.exists(audio_path):
                 return SendResult(success=False, error=f"Audio file not found: {audio_path}")
             filename = os.path.basename(audio_path)
-            rejected = await self._reject_oversized_upload(channel, audio_path, filename)
+            rejected = await self._reject_oversized_upload(channel, audio_path, filename, caption=caption)
             if rejected is not None:
                 return rejected
             reference = self._reply_reference_for_send(reply_to, channel)
-            with open(audio_path, "rb") as f:
-                file_data = f.read()
             # Forum channels reject POST /messages (native voice path too); create a thread post instead.
             if self._is_forum_parent(channel):
+                file_data = await asyncio.to_thread(Path(audio_path).read_bytes)
                 forum_file = discord.File(io.BytesIO(file_data), filename=filename)
                 return await self._forum_post_file(
                     channel, content=(caption or "").strip(), file=forum_file,
                 )
-            # Try sending as a native voice message via raw API (flags=8192).
+            voice = await self._ogg_opus_voice_payload(audio_path)
+            if voice is not None:
+                try:
+                    return await self._post_voice_message(channel, *voice, reply_to=reply_to, reference=reference)
+                except Exception as voice_err:
+                    logger.debug("Voice message flag failed, falling back to file: %s", voice_err)
+            else:
+                logger.warning(
+                    "[%s] %s is not Ogg/Opus and could not be transcoded (install ffmpeg for voice "
+                    "messages); sending it as an audio attachment", self.name, filename)
+            file_data = await asyncio.to_thread(Path(audio_path).read_bytes)
+            file = discord.File(io.BytesIO(file_data), filename=filename)
             try:
-                import base64
-                try:
-                    from mutagen.oggopus import OggOpus
-                    duration_secs = OggOpus(audio_path).info.length
-                except Exception:
-                    duration_secs = max(1.0, len(file_data) / 2000.0)
-                payload_data = {
-                    "flags": 8192,
-                    "attachments": [{
-                        "id": "0", "filename": "voice-message.ogg", "duration_secs": round(duration_secs, 2),
-                        "waveform": base64.b64encode(bytes([128] * 256)).decode(),
-                    }],
-                }
-                if reference is not None:
-                    payload_data["message_reference"] = {"message_id": str(reply_to), "fail_if_not_exists": False}
-                form = [
-                    {"name": "payload_json", "value": json.dumps(payload_data)},
-                    {
-                        "name": "files[0]", "value": file_data, "filename": "voice-message.ogg",
-                        "content_type": "audio/ogg",
-                    },
-                ]
-                msg_data = await self._client.http.request(
-                    discord.http.Route("POST", "/channels/{channel_id}/messages", channel_id=channel.id),
-                    form=form,
-                )
-                return SendResult(success=True, message_id=str(msg_data["id"]))
-            except Exception as voice_err:
-                logger.debug("Voice message flag failed, falling back to file: %s", voice_err)
-                file = discord.File(io.BytesIO(file_data), filename=filename)
-                try:
-                    msg = await channel.send(file=file, reference=reference)
-                except Exception as send_err:
-                    if reference is not None and self._is_reply_reference_rejected(send_err):
-                        msg = await channel.send(file=file, reference=None)
-                    else:
-                        raise
-                return SendResult(success=True, message_id=str(msg.id))
+                msg = await channel.send(file=file, reference=reference)
+            except Exception as send_err:
+                if reference is not None and self._is_reply_reference_rejected(send_err):
+                    msg = await channel.send(file=file, reference=None)
+                else:
+                    raise
+            return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send audio: %s", self.name, e, exc_info=True)
             return SendResult(success=False, error=str(e))
+
+    @staticmethod
+    async def _ogg_opus_voice_payload(audio_path: str) -> Optional[tuple[bytes, float]]:
+        """``(ogg_opus_bytes, duration_secs)`` for a voice message: the file itself when it already
+        is Ogg/Opus, else an ffmpeg transcode; None when neither yields Ogg/Opus."""
+        from gateway.platforms.base import transcode_to_ogg_opus
+
+        data = await asyncio.to_thread(Path(audio_path).read_bytes)
+        duration = _ogg_opus_duration(data)
+        if duration is not None:
+            return data, duration
+        converted = await asyncio.to_thread(transcode_to_ogg_opus, audio_path, bitrate="48k", timeout=30)
+        if not converted:
+            return None
+        try:
+            data = await asyncio.to_thread(Path(converted).read_bytes)
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(converted)
+        duration = _ogg_opus_duration(data)
+        return (data, duration) if duration is not None else None
+
+    async def _post_voice_message(
+        self, channel: Any, data: bytes, duration_secs: float, *, reply_to: Optional[str], reference: Any,
+    ) -> SendResult:
+        """POST a native voice message (flags=8192) with Ogg/Opus ``data`` via the raw API."""
+        from plugins.platforms.discord.adapter import discord
+
+        payload_data: dict[str, Any] = {
+            "flags": 8192,
+            "attachments": [{
+                "id": "0", "filename": "voice-message.ogg", "duration_secs": round(duration_secs, 2),
+                "waveform": base64.b64encode(bytes([128] * 256)).decode(),
+            }],
+        }
+        if reference is not None:
+            payload_data["message_reference"] = {"message_id": str(reply_to), "fail_if_not_exists": False}
+        form = [
+            {"name": "payload_json", "value": json.dumps(payload_data)},
+            {"name": "files[0]", "value": data, "filename": "voice-message.ogg", "content_type": "audio/ogg"},
+        ]
+        msg_data = await self._client.http.request(
+            discord.http.Route("POST", "/channels/{channel_id}/messages", channel_id=channel.id),
+            form=form,
+        )
+        return SendResult(success=True, message_id=str(msg_data["id"]))
 
 
     async def _send_local_file(self, chat_id, path, caption, *, file_name=None, not_found: str, kind: str, metadata=None):
@@ -342,7 +426,7 @@ class DiscordMediaMixin:
 
     async def send_image_file(
         self, chat_id: str, image_path: str, caption: Optional[str] = None,
-        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+        reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send a local image file natively as a Discord file attachment."""
         return await self._send_local_file(
@@ -393,7 +477,7 @@ class DiscordMediaMixin:
 
     async def send_image(
         self, chat_id: str, image_url: str, caption: Optional[str] = None,
-        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+        reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send an image natively as a Discord file attachment."""
         from plugins.platforms.discord.adapter import _prompt_target_id, _image_ext_from_content_type
@@ -408,7 +492,7 @@ class DiscordMediaMixin:
 
     async def send_animation(
         self, chat_id: str, animation_url: str, caption: Optional[str] = None,
-        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+        reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send an animated GIF natively as a Discord file attachment."""
         return await self._send_url_media(
@@ -420,7 +504,7 @@ class DiscordMediaMixin:
 
     async def send_video(
         self, chat_id: str, video_path: str, caption: Optional[str] = None,
-        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+        reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send a local video file natively as a Discord attachment."""
         return await self._send_local_file(
@@ -432,7 +516,7 @@ class DiscordMediaMixin:
     async def send_document(
         self, chat_id: str, file_path: str, caption: Optional[str] = None,
         file_name: Optional[str] = None, reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send an arbitrary file natively as a Discord attachment."""
         return await self._send_local_file(

@@ -1,0 +1,20 @@
+name: codex-theme
+repo: https://github.com/ethanz-code/hermes-codex-theme
+sha: 13f74d8a4105365a540eefd13a202fcceee65078
+description: "Codex × ChatGPT inspired theme for the Hermes Desktop chat: dual light/dark palettes that follow the system appearance, graphite-on-paper typography (weight-carried hierarchy) with a 1.7 root line height, a 10px radius system, hairline borders instead of shadows, the 6/10/16/24 spacing rhythm, and an 880px reading column with 768/880/992px presets. Settings → Plugins → Codex Theme offers an appearance-mode picker (follow system / dark / light) and reading-column width as native segmented controls; the theme paints theme-level tokens only and never writes user-configurable settings such as --chat-text-scale. Disclosure — no network calls, no telemetry, no credentials; registers only through the Desktop plugin SDK (THEMES_AREA, PALETTE_AREA, ctx.registerSettingsPage, ctx.i18n), switches the active theme to Codex once on first install, and keeps its preferences in plugin-scoped ctx.storage."
+maintainer: ethanz-code
+tier: community
+category: desktop
+requires_hermes: ">=0.22.0"
+version: "1.0.1"
+title: "Codex Theme"
+image: https://raw.githubusercontent.com/ethanz-code/hermes-codex-theme/13f74d8a4105365a540eefd13a202fcceee65078/assets/cover.png
+screenshots:
+  - https://raw.githubusercontent.com/ethanz-code/hermes-codex-theme/13f74d8a4105365a540eefd13a202fcceee65078/assets/theme-light.png
+  - https://raw.githubusercontent.com/ethanz-code/hermes-codex-theme/13f74d8a4105365a540eefd13a202fcceee65078/assets/theme-dark.png
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

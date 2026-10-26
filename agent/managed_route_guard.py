@@ -1,6 +1,7 @@
 """Common per-request managed-route guard (design §5, §12).
 
-``_enforce_kanban_routing_receipt`` in ``hermes_cli/kanban_worker_routing.py`` proves the guard ONCE, before
+A managed run's startup boundary (delegation bootstrap in
+``tools/delegate_tool_routing.py``) proves the guard ONCE, before
 the turn's first inference call. That leaves every LATER request in the same
 managed turn (tool-loop iterations, same-turn continuations) unchecked: a
 policy revoked mid-turn, or a code path that swaps the agent's client/model
@@ -69,8 +70,8 @@ def enforce_managed_route_per_request(
     from agent.model_selection_types import RoutingBlocked
     from agent.managed_route_runtime import enforce_worker_route
 
-    # Same field derivation cli.py's startup check uses (see
-    # ``requested_provider`` comment in ``_enforce_kanban_routing_receipt``):
+    # Same field derivation the delegation bootstrap check uses (see
+    # ``requested_provider`` comment in ``tools/delegate_tool_routing.py``):
     # ``agent.provider`` is the canonicalized transport family, so a rebuilt/
     # rotated/fallback client that changed the WIRE identity but kept the same
     # canonical family (e.g. two different custom providers both "custom")

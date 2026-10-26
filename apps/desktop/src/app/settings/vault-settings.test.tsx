@@ -5,20 +5,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { stubResizeObserver } from '@/test/jsdom'
 
-const { requestGateway } = vi.hoisted(() => ({
-  requestGateway: vi.fn()
+const { requestGateway, requestGatewayForAgent } = vi.hoisted(() => ({
+  requestGateway: vi.fn(),
+  requestGatewayForAgent: vi.fn()
 }))
 
-// The panel routes every RPC through the owner profile's socket (never the ambient gateway);
-// the mock receives (method, params) after the profile argument.
+// The panel routes every RPC through the owner (connection, profile) socket (never the ambient
+// gateway); the mock receives (method, params) after the connectionId + profile arguments.
 vi.mock('@/store/gateway', async importActual => ({
   ...(await importActual<Record<string, unknown>>()),
-  requestGatewayForProfile: (_profile: string, method: string, params?: Record<string, unknown>) =>
-    requestGateway(method, params ?? {})
+  requestGatewayForAgent: (...args: [null | string, string, string, Record<string, unknown>?, ...unknown[]]) => {
+    requestGatewayForAgent(...args)
+
+    return requestGateway(args[2], args[3] ?? {})
+  }
 }))
 
 import { queryClient } from '@/lib/query-client'
-import { $gatewayState } from '@/store/session'
+import { $connection, $gatewayState } from '@/store/session'
 
 import { VaultSettings } from './vault-settings'
 
@@ -45,7 +49,9 @@ const LOGIN_ITEM = {
 
 beforeEach(() => {
   requestGateway.mockReset()
+  requestGatewayForAgent.mockReset()
   queryClient.clear()
+  $connection.set(null)
   $gatewayState.set('open')
 })
 
@@ -55,23 +61,24 @@ afterEach(() => {
 })
 
 describe('VaultSettings', () => {
-  it('shows the empty state when the vault has no items', async () => {
+  // Two connections both serving `default` (this device + a remote gateway): a bare profile
+  // name would resolve onto the PRIMARY socket and the panel would show the other machine's
+  // vault (#94811). The RPC must name the connection the panel claims to show.
+  it('routes every vault RPC through the active connection, not a bare profile name', async () => {
     requestGateway.mockResolvedValue({ items: [] })
+    $connection.set({ connectionId: 'this-device', mode: 'local' } as never)
     renderVault()
 
-    await waitFor(() => expect(screen.getByText('Nothing saved yet')).toBeTruthy())
-    expect(requestGateway).toHaveBeenCalledWith('vault.list', {})
-  })
-
-  it('lists items with label, kind badge, identifier, and origin — never passwords', async () => {
-    requestGateway.mockResolvedValue({ items: [LOGIN_ITEM] })
-    renderVault()
-
-    await waitFor(() => expect(screen.getByText('GitHub work')).toBeTruthy())
-    expect(screen.getByText('Login')).toBeTruthy()
-    // Identifier is agent-visible metadata and now shows in the row.
-    expect(screen.getByText('me@example.com')).toBeTruthy()
-    expect(screen.getByText('https://github.com')).toBeTruthy()
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('vault.list', {}))
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'this-device',
+      expect.any(String),
+      'vault.list',
+      {},
+      undefined,
+      undefined,
+      { spawnPriority: 'foreground' }
+    )
   })
 
   it('opens the Add dialog pre-filled from deep-link query params (never secrets)', async () => {

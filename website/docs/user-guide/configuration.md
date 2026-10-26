@@ -266,12 +266,20 @@ the last write. Hardlinked files do not count as writes (a `git clone --local` s
 with its source repo, whose activity would otherwise keep the clone forever). Before an idle entry is deleted, Hermes also stops any process still running
 with its working directory inside that entry (or inside a scratch path that no longer exists,
 such as a headless browser left behind by a test run) and drops any `git worktree`
-registration that pointed into it. A process Hermes itself started and still tracks (a
-background `terminal` process, the gateway, a CLI session, or anything they launched that is
-still their child) is never stopped, and neither is the shell that started the Hermes command
-(or its parents), even after that command exited: an idle entry one of them is working inside
-is kept instead. A pass that cannot inspect processes stops nothing and deletes no entry a
-process may be working in. Each entry is re-checked right before it is deleted, so
+registration that pointed into it. A process Hermes owns is never stopped: the gateway,
+`hermes serve`, a CLI or TUI session, a background `terminal` process Hermes still has on record,
+and anything they launched that is still their child. Ownership is an OS
+lock each of these holds under `~/.hermes/locks/scratch-owners/`, which the operating system
+releases the moment its holder exits, so clock changes, reboots and reused process ids never
+change the answer. A background process outlives the Hermes process that started it (a gateway
+restart); it stays owned while a profile's `processes.json` still records it as the same process,
+so the gateway that comes back can take it over. Anything else a Hermes process that has since
+exited left behind counts as an orphan. The shell that started the Hermes command (or its parents) is never stopped either, even
+after that command exited. An idle entry any of them is working inside is kept instead. On
+Windows an entry that some process still has a file open in is kept whole, never half-deleted.
+A pass that cannot inspect processes, or cannot read or take owner locks (an unwritable
+`locks/` dir, a filesystem without locking), stops nothing and deletes no entry a process may be
+working in. Each entry is re-checked right before it is deleted, so
 one written to while the prune was stopping processes is kept. Every removal, stopped
 process and kept entry is recorded in `~/.hermes/logs/scratch-prune.log`. An entry holding
 files your user may not read or delete (typically root-owned output of a Docker container that

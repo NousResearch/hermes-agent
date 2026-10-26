@@ -960,6 +960,9 @@ def main(
         if invalid:
             print(f"❌ Error: {message}")
             raise SystemExit(1)
+    from hermes_constants_scratch_lock import hold_owner_lock
+
+    hold_owner_lock()  # its workers' shells and MCP helpers are Hermes-owned for the scratch prune
 
     # --reasoning_disabled takes priority, then --reasoning_effort, then default (medium)
     reasoning_config = None

@@ -173,6 +173,9 @@ def main(argv: list[str] | None = None) -> None:
 
     _setup_logging()
     _load_env()
+    from hermes_constants_scratch_lock import hold_owner_lock
+
+    hold_owner_lock()  # its tools' shells and MCP helpers are Hermes-owned for the scratch prune
 
     logger = logging.getLogger(__name__)
     logger.info("Starting hermes-agent ACP adapter")

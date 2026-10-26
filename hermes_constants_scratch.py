@@ -5,9 +5,18 @@ headless browsers whose cwd was inside the tree (they survived for days with a `
 cwd), and a repo whose linked worktree lived in the tree keeps a dangling registration until
 someone runs ``git worktree prune``. Both are reaped here, right before ``rmtree``.
 
-A process Hermes itself started is never an orphan, though: an idle entry a registered live
-process still works inside is kept, not reaped (#132401). Ownership comes from the two
-registries Hermes writes, not from a marker file a lane must remember to drop.
+A process Hermes itself started is never an orphan, though: an idle entry a live Hermes
+process still works inside is kept, not reaped (#132401). Ownership is an OS-held lock that
+Hermes' own entry points take automatically (hermes_constants_scratch_lock), never a marker a
+lane must remember to drop, and never a guess from pids, start times or clocks: the kernel
+releases a dead holder's lock the instant it dies.
+
+One keep-only addition: a background process a profile's process registry recorded in its
+``processes.json`` is owned too while the registry's own same-process check (the rule
+``recover_from_checkpoint`` re-adopts by) says it is still that process. A recorded child
+outlives its spawner (a gateway restart, a managed worker between turns) until the next spawner
+re-adopts it and vouches for it with a lock; a prune due in that window must not kill it. This
+check can only add owners, never cause a kill: the locks stay the authority for everything else.
 """
 from __future__ import annotations
 
@@ -22,6 +31,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import hermes_constants_scratch_stuck as stuck
+from hermes_constants_scratch_lock import ancestry, live_owner_pids, owning_holder
 
 logger = logging.getLogger(__name__)
 
@@ -160,139 +170,89 @@ def _under(path: str, root: str) -> bool:
     return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
 
 
-# The ancestry of the Hermes command that launched a detached pass (hermes_constants_scratch_detach),
-# as ``(pid, create_time)`` pairs the launcher computed before it spawned the pass: the pass is
-# reparented once that command exits, so its own ancestry no longer reaches the user's shell.
-# ``None``: the launcher could not compute it, so the pass signals nothing and keeps every entry
-# a live process works in.
-_launcher_lineage: frozenset[tuple[int, float]] | None = frozenset()
-_HAS_PROC = os.path.isdir("/proc/self")
+# The ancestry of the Hermes command that launched a detached pass (hermes_constants_scratch_detach):
+# pids the launcher listed before it spawned the pass, which is reparented once that command exits.
+# A spare list only: a pid reused since can keep an entry one pass longer, never cause a kill.
+# ``None``: the launcher could not list it, so the pass signals nothing and keeps every entry a
+# live process works in.
+_launcher_lineage: frozenset[int] | None = frozenset()
 
 
-def _birth_stamp(proc) -> float:
-    """A start stamp for *proc* that a clock step cannot move. Linux: ``starttime`` from
-    ``/proc/<pid>/stat`` (clock ticks since boot; psutil's ``create_time()`` adds a wall-clock
-    boot time, so an NTP/VM/resume step shifts it by whole seconds). Elsewhere:
-    :func:`hermes_cli.process_identity.process_birth` (the unadjusted kernel start on macOS).
-    On a ``/proc`` host a failed read raises: falling back to a wall-clock value would compare
-    an epoch against recorded ticks and disown a live process."""
-    if _HAS_PROC:
-        # Bytes, not text: comm is cut at 15 bytes and can end mid-UTF-8 sequence. After the
-        # last ")" (comm may hold spaces or ")") fields start at #3, so #22 is index 19.
-        stat = Path(f"/proc/{proc.pid}/stat").read_bytes()
-        return float(int(stat.rsplit(b")", 1)[1].split()[19]))
-    from hermes_cli.process_identity import process_birth
-
-    return process_birth(proc)
-
-
-def _same_birth(proc, started: float) -> bool:
-    """Exact on Linux (integer ticks); a 2 s tolerance where the stamp is a float epoch."""
-    now = _birth_stamp(proc)
-    return now == started if _HAS_PROC else abs(now - started) < 2.0
-
-
-def lineage_with_start_times() -> list[tuple[int, float]] | None:
-    """This process and its ancestors with their create times, the set :func:`_own_lineage`
-    computes in-process, in a form that stays checkable after they exit. ``None`` when it
-    cannot be computed completely (no psutil, a process that refuses inspection)."""
+def lineage_pids() -> list[int] | None:
+    """This process and its ancestors (raw parent links, see :func:`owning_holder`). ``None``
+    without psutil."""
     try:
-        import psutil
+        return ancestry(os.getpid())
     except ImportError:
         return None
-    chain: dict[int, float] = {}
-    try:
-        proc = psutil.Process()
-        while proc is not None and proc.pid not in chain:
-            chain[proc.pid] = _birth_stamp(proc)
-            proc = proc.parent()
-    except (psutil.Error, OSError, IndexError, ValueError):
-        return None
-    return list(chain.items())
 
 
 def _own_lineage() -> set[int] | None:
-    """This process and its ancestors: never reap the shell that is running the prune. A
-    detached pass adds its launcher's ancestors that still run under the same create time (a
-    reused pid is not spared), and returns ``None`` (spare every process) without them."""
-    import psutil
-
+    """Never reap the shell running the prune: this process, its ancestors and, in a detached
+    pass, its launcher's. ``None`` (spare every process) when the launcher could not list them."""
     if _launcher_lineage is None:
         return None
-    pids: set[int] = set()
-    try:
-        proc = psutil.Process()
-        while proc is not None and proc.pid not in pids:
-            pids.add(proc.pid)
-            proc = proc.parent()
-    except (psutil.Error, OSError):
-        pass
-    for pid, started in _launcher_lineage:
-        try:
-            if _same_birth(psutil.Process(pid), started):
-                pids.add(pid)
-        except psutil.NoSuchProcess:
-            continue
-        except (psutil.Error, OSError, IndexError, ValueError):
-            pids.add(pid)  # unreadable is not proof of a reused pid: spare it
-    return pids
+    return set(lineage_pids() or ()) | _launcher_lineage
 
 
-def _registered_live_pids(home: Path) -> set[int]:
-    """Live pids Hermes registered for *home*: the machine spawn ledger (every long-lived entry
-    point and MCP helper, ``hermes_cli.process_identity``) and the background-process checkpoint
-    (``tools.process_registry``, ``processes.json``). A recorded start time that no longer
-    matches is a reused pid, not ownership."""
-    import psutil
-
-    from hermes_cli.process_identity import entry_still_running, spawner_is_dead
+def _recorded_background_pids(home: Path) -> dict[int, str]:
+    """Keep-only owners: pid -> why, for every background process recorded in the
+    ``processes.json`` of *home*, its root, and each profile under that root (one gateway serves
+    several homes, and this prune's owners dir covers the whole root) that passes the registry's
+    same-process check. A file that is missing or unreadable adds nothing; the registry itself
+    recovers nothing from it either."""
     from hermes_constants import get_default_hermes_root
+    from tools.process_registry import process_registry
 
     root = get_default_hermes_root(home=home)
-    sources = [(root / "spawn-ledger.json", "create_time")]
-    sources += [(base / "processes.json", "host_start_time") for base in {home, root}]
-    pids: set[int] = set()
-    for path, stamp_key in sources:
+    homes = {home, root, *(path.parent for path in (root / "profiles").glob("*/processes.json"))}
+    owners: dict[int, str] = {}
+    for path in sorted(base / "processes.json" for base in homes):
         try:
             entries = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
             continue
         for entry in entries if isinstance(entries, list) else []:
-            pid, stamp = (entry.get("pid"), entry.get(stamp_key)) if isinstance(entry, dict) else (None, None)
-            if not isinstance(pid, int) or pid <= 0 or entry.get("pid_scope", "host") != "host":
+            pid = entry.get("pid") if isinstance(entry, dict) else None
+            if type(pid) is not int or pid <= 1 or entry.get("pid_scope", "host") != "host":
                 continue
-            # An MCP helper whose recorded spawner is provably gone is an orphan, not owned: the
-            # rule reap_orphaned_mcp_helpers applies. Long-lived entry points (gateway, serve) that
-            # outlive their launcher stay owned; an unprovable spawner keeps ownership.
-            if entry.get("purpose") == "mcp-helper" and spawner_is_dead(entry) is True:
-                continue
-            try:
-                if stamp_key == "create_time":
-                    alive = entry_still_running(entry)  # boot ticks survive a clock step
-                elif stamp is None:
-                    alive = psutil.pid_exists(pid)
-                else:
-                    from gateway.status import get_process_start_time
-
-                    alive = get_process_start_time(pid) == stamp
-            except (psutil.Error, OSError, TypeError, ValueError):
-                continue
-            if alive:
-                pids.add(pid)
-    return pids
+            if process_registry._detached_host_fate(pid, entry.get("host_start_time")) == "running":
+                owners.setdefault(pid, f"background process pid={pid} recorded in {os.fspath(path)!r}")
+    return owners
 
 
-def _owned_by_hermes(proc, registered: set[int]) -> bool:
-    """Registered itself, or a descendant of a live registered process (a background shell's
-    child). An orphan whose spawning shell is gone was reparented away from that lineage, so
-    it is not owned and is still reaped."""
+def _owners(home: Path) -> dict[int, str]:
+    """Pid -> why it is Hermes-owned: a held owner lock, else a recorded background process."""
+    owners = {pid: f"owner lock {path!r} held for pid={pid}" for pid, path in live_owner_pids(home).items()}
+    for pid, why in _recorded_background_pids(home).items():
+        owners.setdefault(pid, why)
+    return owners
+
+
+def _keep_owned(doomed: list[Path], candidates: list, owners: dict[int, str], audit: logging.Logger) -> list:
+    """Drop from *doomed* every entry an owned candidate works inside (audited with what owns it)
+    and return the candidates that are not owned."""
+    rest = []
+    for proc, cwd_path in candidates:
+        holder = owning_holder(proc.pid, owners)
+        if holder is None:
+            rest.append((proc, cwd_path))
+            continue
+        _keep_entries_of(doomed, proc, cwd_path, audit, owners[holder])
+    return rest
+
+
+def _keep_entries_of(doomed: list[Path], proc, cwd_path: str, audit: logging.Logger, why: str) -> None:
     import psutil
 
-    try:
-        # pid 1 is excluded as an ancestor: a Hermes running as a container init adopts every orphan.
-        return proc.pid in registered or any(p.pid in registered and p.pid != 1 for p in proc.parents())
-    except (psutil.Error, OSError):
-        return False
+    for entry in [e for e in doomed if _under(cwd_path, os.path.realpath(str(e)))]:
+        doomed.remove(entry)
+        try:
+            name = proc.name()
+        except (psutil.Error, OSError):
+            name = "?"
+        audit.info("scratch prune: kept %r — live Hermes process pid=%d (%r) works inside; %s",
+                   os.fspath(entry), proc.pid, name, why)
 
 
 def reap_processes_rooted_in(scratch_root: Path, doomed: list[Path], audit: logging.Logger = logger) -> int:
@@ -303,8 +263,10 @@ def reap_processes_rooted_in(scratch_root: Path, doomed: list[Path], audit: logg
     editor, a log tail) is not ours to kill, but one *living* in a directory we are
     about to delete, or in one already gone, has nothing left to run for.
 
-    A process Hermes owns (:func:`_owned_by_hermes`) is never signalled; each doomed entry it
-    works inside is dropped from *doomed* in place and recorded as kept.
+    A process Hermes owns — it or a process on its parent chain holds a scratch owner lock
+    (hermes_constants_scratch_lock) or is a recorded background process (keep-only, see the
+    module docstring) — is never signalled; each doomed entry it works inside is dropped from
+    *doomed* in place and recorded as kept.
     """
     import psutil
 
@@ -331,23 +293,20 @@ def reap_processes_rooted_in(scratch_root: Path, doomed: list[Path], audit: logg
             continue
         if deleted or not os.path.exists(cwd_path) or any(_under(cwd_path, t) for t in targets):
             (lineage if skip is None or proc.pid in skip else victims).append((proc, cwd_path))
+    for proc, cwd_path in lineage:
+        _keep_entries_of(doomed, proc, cwd_path, audit, "the pruning command's own ancestry")
     # The owning home comes from the scratch path as configured, not its resolved target:
     # a cache/scratch symlinked onto another disk still belongs to <home>.
-    registered = _registered_live_pids(Path(scratch_root).absolute().parent.parent) if victims else set()
-    owned = lineage + [(proc, cwd_path) for proc, cwd_path in victims if _owned_by_hermes(proc, registered)]
-    for proc, cwd_path in owned:
-        for entry in [e for e in doomed if _under(cwd_path, os.path.realpath(str(e)))]:
-            doomed.remove(entry)
-            try:
-                name = proc.name()
-            except (psutil.Error, OSError):
-                name = "?"
-            audit.info("scratch prune: kept %r — live Hermes process pid=%d (%r) works inside",
-                       os.fspath(entry), proc.pid, name)
-    # Re-filter against the shrunk *doomed*: an orphan in a kept entry is spared with it (the
-    # reap only exists to clear the way for rmtree); one whose cwd is already gone still goes.
-    victims = [(proc, cwd_path) for proc, cwd_path in victims if (proc, cwd_path) not in owned
-               and (not os.path.exists(cwd_path) or any(_under(cwd_path, os.path.realpath(str(e))) for e in doomed))]
+    home = Path(scratch_root).absolute().parent.parent
+    # Two reads, the second right before signalling: a process that took its lock since the first
+    # (a Hermes command starting inside the entry) is kept, not killed. After each, re-filter
+    # against the shrunk *doomed*: an orphan in a kept entry is spared with it (the reap only
+    # exists to clear the way for rmtree); one whose cwd is already gone still goes.
+    for _read in range(2):
+        if victims:
+            victims = _keep_owned(doomed, victims, _owners(home), audit)
+        victims = [(proc, cwd_path) for proc, cwd_path in victims
+                   if not os.path.exists(cwd_path) or any(_under(cwd_path, os.path.realpath(str(e))) for e in doomed)]
     if not victims:
         return 0
     for proc, cwd_path in victims:
@@ -411,6 +370,31 @@ def release_git_worktrees(repos: set[str]) -> None:
             )
         except (OSError, subprocess.SubprocessError) as exc:
             logger.debug("git worktree prune in %s failed: %s", repo, exc)
+
+
+def _remove_entry(entry: Path, audit: logging.Logger) -> list[str] | None:
+    """Delete *entry*; the dirs that refused access (see ``stuck``), or None when it was kept.
+
+    Windows refuses to rename a directory while any process holds a handle inside it (an open
+    file, a cwd). The entry is moved aside and back first, so one in use is kept whole instead of
+    half-deleted around the files ``rmtree`` cannot remove."""
+    if not entry.is_dir() or entry.is_symlink():
+        entry.unlink()
+        return []
+    if os.name == "nt":
+        aside = entry.with_name(f".{entry.name}.pruning-{os.getpid()}")
+        try:
+            os.rename(entry, aside)
+        except OSError as exc:
+            audit.info("scratch prune: kept %r — in use: Windows refused to move it (%s)", os.fspath(entry), exc)
+            return None
+        try:
+            os.rename(aside, entry)
+        except OSError as exc:
+            audit.info("scratch prune: kept %r as %r — could not move it back (%s)",
+                       os.fspath(entry), os.fspath(aside), exc)
+            return None
+    return stuck.rmtree_collecting_permission_errors(entry)
 
 
 def prune_idle_entries(
@@ -507,14 +491,12 @@ def _prune_idle_entries(
                     os.fspath(entry),
                 )
             continue
-        denied: list[str] = []
         try:
-            if entry.is_dir() and not entry.is_symlink():
-                denied = stuck.rmtree_collecting_permission_errors(entry)
-            else:
-                entry.unlink()
+            denied = _remove_entry(entry, audit)
         except OSError as exc:
             audit.info("scratch prune: could not remove %r: %s", os.fspath(entry), exc)
+            continue
+        if denied is None:
             continue
         # rmtree ignores errors, so only a path that is really gone counts as removed.
         # Only an explicit lstat proves absence: lexists() swallows OSError from lstat,

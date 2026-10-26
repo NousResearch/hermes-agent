@@ -20,6 +20,23 @@ class ProcessTerminationMixin:
     """The subclass supplies ``_host_pid_is_ours``, ``_is_host_pid_alive``,
     ``_detached_host_fate`` and ``_daemon_term_grace_seconds``. See ProcessRegistry."""
 
+    def _reap_untracked(self, session: "ProcessSession", proc: subprocess.Popen) -> None:
+        """Post-Popen setup failed: kill the orphaned subprocess (and any setsid
+        descendants) so nothing leaks untracked."""
+        from tools.process_registry import _stop_systemd_unit
+
+        with suppress(Exception):
+            if session.systemd_unit:
+                # Scope teardown is the authoritative cleanup for the worker cgroup;
+                # the systemd-run wrapper PID is terminated below as fallback.
+                _stop_systemd_unit(session.systemd_unit)
+            # _terminate_host_pid revalidates the kernel start time captured at
+            # spawn before signalling: pgid == pid would only prove the pid leads a
+            # group, and a reaped child can be recycled onto an unrelated leader.
+            self._terminate_host_pid(proc.pid, session.host_start_time)
+        with suppress(Exception):
+            proc.wait(timeout=5)
+
     @staticmethod
     def _proc_alive(proc) -> bool:
         """True if a psutil.Process is running and not a zombie (already dead, just unreaped)."""

@@ -88,7 +88,7 @@ _CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] =  frozenset({
 _CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
     "state.db", "state.db-wal", "state.db-shm", "sessions", "backups", "state-snapshots", "checkpoints",
     "cron", "webapp",  # webapp/: the source gateway's sign-in state (credential, native grants, Portal callback)
-})
+}) | {"locks"}  # locks/: OS locks the SOURCE's live processes hold, meaningless in a clone
 
 # Marker written by `hermes profile create --no-skills`. When present at a profile root,
 # seed_profile_skills() callers (fresh-create, `hermes update` all-profile sync, the

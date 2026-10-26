@@ -318,7 +318,8 @@ def _pid_alive_matches(
 
 
 def register_self(purpose: str, *, project_root: Optional[Path] = None, detail: Optional[dict] = None) -> bool:
-    """Record this process in the machine spawn ledger. Best-effort.
+    """Record this process in the machine spawn ledger and take its scratch owner lock
+    (``hermes_constants_scratch_lock``). Best-effort.
 
     Called at the top of every long-lived entry point; dead ``(pid, create_time)`` entries are
     pruned on every write. ``detail`` may carry ``host``/``port``/``profile`` so the update
@@ -326,7 +327,9 @@ def register_self(purpose: str, *, project_root: Optional[Path] = None, detail: 
     so attach-first discovery skips a backend that opted out of the host singleton.
     """
     from hermes_constants import hermes_home_key
+    from hermes_constants_scratch_lock import hold_owner_lock
 
+    hold_owner_lock()  # the scratch prune's ownership signal, held for this process's whole life
     tag = parse_spawn_tag(os.environ.get(SPAWN_ENV_VAR))
     spawner_pid, spawner_create = (tag.spawner_pid, tag.spawner_create) if tag else _desktop_spawner_identity()
     entry = _new_entry(os.getpid(), _process_create_time(), purpose, project_root, spawner_pid, spawner_create)

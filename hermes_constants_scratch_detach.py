@@ -36,7 +36,7 @@ def spawn_prune(scratch: Path) -> None:
         argv.append("-B")
     if sys.pycache_prefix:  # a sealed payload must never get __pycache__ writes
         argv += ["-X", f"pycache_prefix={sys.pycache_prefix}"]
-    argv += ["-c", _CHILD, os.fspath(scratch), _encode_lineage(rules.lineage_with_start_times()), *sys.path]
+    argv += ["-c", _CHILD, os.fspath(scratch), _encode_lineage(rules.lineage_pids()), *sys.path]
     from hermes_cli._subprocess_compat import windows_detach_flags_without_breakaway, windows_detach_popen_kwargs
 
     stdio = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
@@ -52,9 +52,9 @@ def spawn_prune(scratch: Path) -> None:
         logger.debug("scratch prune: could not start the detached pass for %s: %s", scratch, exc)
 
 
-def _encode_lineage(chain: list[tuple[int, float]] | None) -> str:
-    # repr() round-trips a float exactly; "-" is "could not compute" (the child fails closed).
-    return "-" if chain is None else ",".join(f"{pid}:{started!r}" for pid, started in chain)
+def _encode_lineage(chain: list[int] | None) -> str:
+    # "-" is "could not compute" (the child fails closed and signals nothing).
+    return "-" if chain is None else ",".join(map(str, chain))
 
 
 def run(scratch: str, lineage: str) -> None:
@@ -63,8 +63,10 @@ def run(scratch: str, lineage: str) -> None:
     try:
         from hermes_constants import prune_scratch_dir
 
+        # ``pid`` items; an older launcher's ``pid:start`` items (an update between launch and
+        # import) parse too: the pids are only spared.
         rules._launcher_lineage = None if lineage == "-" else frozenset(
-            (int(pid), float(started)) for pid, started in (item.split(":") for item in lineage.split(",")))
+            int(item.split(":")[0]) for item in lineage.split(","))
         prune_scratch_dir(Path(scratch))
     # health: allow BLE001 -- the detached child's top level: its stderr is /dev/null, so the audit log is the record
     except Exception as exc:

@@ -7,6 +7,7 @@ status was collected.
 """
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -216,3 +217,79 @@ class TestCheckpointReadopt:
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
+
+
+def test_a_readopted_process_keeps_its_scratch_entry_until_its_session_ends(registry, tmp_path, monkeypatch):
+    """A gateway crash frees the vouch its registry held for a background worker. The next gateway
+    re-adopts the worker from the checkpoint (same pid, same start time) and must vouch for it again,
+    so the prune keeps the worker and its idle entry; once the worker exits and the registry notices,
+    the vouch is released."""
+    from hermes_constants import get_scratch_dir, prune_scratch_dir
+    from hermes_constants_scratch_lock import live_owner_pids, owners_dir
+    from tests.waiting import wait_until
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    entry = get_scratch_dir(tmp_path, prune=False) / "bg-worker"
+    entry.mkdir()
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                            cwd=str(entry), stdin=subprocess.DEVNULL)
+    try:
+        checkpoint = tmp_path / "procs.json"
+        checkpoint.write_text(json.dumps([{
+            "session_id": "proc_readopt_owner", "command": "bg-worker", "pid": proc.pid, "pid_scope": "host",
+            "host_start_time": ProcessRegistry._safe_host_start_time(proc.pid), "task_id": "t1"}]))
+        monkeypatch.setattr("tools.process_registry.CHECKPOINT_PATH", checkpoint)
+        assert registry.recover_from_checkpoint() == 1
+        ancient = time.time() - 30 * 3600
+        os.utime(entry, (ancient, ancient))
+
+        prune_scratch_dir(entry.parent)
+
+        assert proc.poll() is None, "the re-adopted worker was reaped"
+        assert entry.exists(), "the re-adopted worker's entry was deleted"
+        proc.kill()
+        proc.wait()
+        wait_until(lambda: registry.poll("proc_readopt_owner")["status"] == "not_found",
+                   timeout=10, what="the registry notices the worker is gone")
+        assert proc.pid not in live_owner_pids(tmp_path)
+        assert not list(owners_dir(tmp_path).glob(f"{proc.pid}.*")), "the vouch's lock file was left behind"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+
+
+def test_an_owner_lock_failure_costs_no_recovered_session_and_no_fresh_child(registry, tmp_path, monkeypatch):
+    """The scratch owner lock is best-effort. An exception while taking it (a home that cannot be
+    resolved raises RuntimeError) must neither abort checkpoint recovery nor make the registry kill
+    the child it just spawned."""
+    import shlex
+
+    import hermes_constants_scratch_lock as locks
+
+    def unresolvable(home=None):
+        raise RuntimeError("Could not determine home directory")
+
+    procs = [_sleep_proc(), _sleep_proc()]
+    fresh = None
+    try:
+        checkpoint = tmp_path / "procs.json"
+        checkpoint.write_text(json.dumps([{
+            "session_id": f"proc_lockfail_{i}", "command": "bg", "pid": proc.pid, "pid_scope": "host",
+            "host_start_time": ProcessRegistry._safe_host_start_time(proc.pid), "task_id": "t1"}
+            for i, proc in enumerate(procs)]))
+        monkeypatch.setattr("tools.process_registry.CHECKPOINT_PATH", checkpoint)
+        monkeypatch.setattr(locks, "owners_dir", unresolvable)
+
+        assert registry.recover_from_checkpoint() == 2
+        assert {e["session_id"] for e in json.loads(checkpoint.read_text())} == {"proc_lockfail_0", "proc_lockfail_1"}
+        fresh = registry.spawn_local(f"{shlex.quote(sys.executable)} -c 'import time; time.sleep(30)'")
+
+        assert fresh.process.poll() is None, "the registry killed the child it had just spawned"
+        assert registry.poll(fresh.id)["status"] == "running"
+    finally:
+        if fresh is not None:
+            registry.kill_process(fresh.id)
+        for proc in procs:
+            proc.kill()
+            proc.wait()

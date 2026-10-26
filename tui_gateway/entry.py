@@ -289,6 +289,9 @@ def _claim_launch_home():
 
 
 def main():
+    from hermes_constants_scratch_lock import hold_owner_lock
+
+    hold_owner_lock()  # its tools' shells and MCP helpers are Hermes-owned for the scratch prune
     home = _claim_launch_home()
     if home is None:
         _log_exit(f"refused: {server._launch_home()} is owned by a running gateway; attach to it instead")

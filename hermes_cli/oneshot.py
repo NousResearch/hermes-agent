@@ -278,6 +278,9 @@ def run_oneshot(
     # Same finite-chat marker as `hermes chat -q` (cli.py): the session-source resolver uses it to drop an
     # inherited tui/desktop transport label, and delegate dispatch to route detached results inline.
     os.environ["HERMES_SINGLE_QUERY_SESSION"] = "1"
+    from hermes_constants_scratch_lock import hold_owner_lock
+
+    hold_owner_lock()  # its tools' shells and MCP helpers are Hermes-owned for the scratch prune
 
     # Nothing here drains process_registry.completion_queue (only cli.py's process_loop and the
     # gateway watchers do), so left unbound delegate_task would be forced background and every

@@ -40,6 +40,7 @@ from tools.process_registry_termination import ProcessTerminationMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
 from tools.process_registry_env_log import log_delta_command
 from tools.process_registry_wsl import _is_wsl_launcher_command
+from hermes_constants_scratch_lock import vouch_for_child
 
 logger = logging.getLogger(__name__)
 
@@ -600,6 +601,7 @@ class ProcessSession:
     # Set by the _move_to_finished call that moved the session out of _running; only that call
     # publishes the completion, so a duplicate finisher must not release waiters early.
     _finish_claimed: bool = field(default=False, repr=False)
+    _owner_vouch: Optional[str] = field(default=None, repr=False)  # scratch owner lock held for it
     # The last stop of ``systemd_unit`` failed, so its descendants may still be alive; bulk
     # cleanup retries the stop even after the session finished.
     _scope_stop_pending: bool = field(default=False, repr=False)
@@ -1028,6 +1030,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 session.exited_at = time.time()
                 self._running.pop(session.id, None)
             self._finished[session.id] = session
+        self._release_vouch(session)
         self._write_checkpoint()
         session._completion_event.set()
 
@@ -1045,6 +1048,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 self._finished[session.id] = session
             else:
                 self._finished.pop(session.id, None)
+        self._release_vouch(session)
         self._write_checkpoint()
         session._completion_event.set()
         return session if session.systemd_unit else None
@@ -1141,12 +1145,18 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         reader = threading.Thread(target=copy_context().run, args=(reader_target, session, *extra_args),
                                   daemon=True, name=reader_name)
         session._reader_thread = reader
-        with self._lock:
-            self._prune_if_needed()
-            # Completion takes this lock too. Starting here also leaves no
-            # ghost entry if the interpreter cannot start another thread.
-            reader.start()
-            self._running[session.id] = session
+        if session.process is not None or session._pty is not None:
+            session._owner_vouch = vouch_for_child(session.pid)  # its own child: Hermes-owned for the scratch prune
+        try:
+            with self._lock:
+                self._prune_if_needed()
+                # Completion takes this lock too. Starting here also leaves no
+                # ghost entry if the interpreter cannot start another thread.
+                reader.start()
+                self._running[session.id] = session
+        except Exception:
+            self._release_vouch(session)  # never tracked: no completion will release it
+            raise
         self._write_checkpoint()
 
     def _spawn_local_pty(self, session: ProcessSession, safe_command: str, env_vars: dict) -> ProcessSession:
@@ -1238,21 +1248,6 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             self._reap_untracked(session, proc)
             raise
         return session
-
-    def _reap_untracked(self, session: ProcessSession, proc: subprocess.Popen) -> None:
-        """Post-Popen setup failed: kill the orphaned subprocess (and any setsid
-        descendants) so nothing leaks untracked."""
-        with suppress(Exception):
-            if session.systemd_unit:
-                # Scope teardown is the authoritative cleanup for the worker cgroup;
-                # the systemd-run wrapper PID is terminated below as fallback.
-                _stop_systemd_unit(session.systemd_unit)
-            # _terminate_host_pid revalidates the kernel start time captured at
-            # spawn before signalling: pgid == pid would only prove the pid leads a
-            # group, and a reaped child can be recycled onto an unrelated leader.
-            self._terminate_host_pid(proc.pid, session.host_start_time)
-        with suppress(Exception):
-            proc.wait(timeout=5)
 
     def adopt_local(
         self, proc: subprocess.Popen, *, command: str, cwd: Optional[str], task_id: str = "",
@@ -1587,6 +1582,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
 
     def _publish_finished(self, session: ProcessSession, was_running: bool) -> None:
         self._release_finished_handles(session)
+        self._release_vouch(session)
         self._write_checkpoint()
         if was_running and session.notify_on_complete:
             notification = {

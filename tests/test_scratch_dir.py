@@ -92,30 +92,6 @@ def test_a_short_lived_process_still_completes_its_due_prune(tmp_path):
         user_shell.wait(timeout=30)
 
 
-@pytest.mark.platforms("linux")  # /proc starttime and prctl(PR_SET_NAME)
-def test_launcher_ancestry_stamp_is_boot_relative_even_for_a_non_utf8_name(tmp_path):
-    """The ancestry stamp the detached pass compares is the kernel's start tick, never a
-    wall-clock birth that a clock step moves: a process whose name was cut mid-UTF-8 (comm is
-    15 bytes) still gets its tick, and is recognised as itself. A wall-clock fallback there
-    disowned the user's shell after a clock step and the pass killed it."""
-    import hermes_constants_scratch as rules
-
-    ready = tmp_path / "ready"
-    child = subprocess.Popen([sys.executable, "-c", (
-        "import ctypes, sys, time; ctypes.CDLL(None).prctl(15, ctypes.c_char_p(bytes.fromhex(sys.argv[1])), 0, 0, 0); "
-        "open(sys.argv[2], 'w').close(); time.sleep(60)"), "c3a9" * 7 + "c3", str(ready)], stdin=subprocess.DEVNULL)
-    try:
-        wait_until(ready.exists, timeout=30, what="the child renaming itself")
-        stat = Path(f"/proc/{child.pid}/stat").read_bytes()
-        assert b"\xc3)" in stat  # the name really is invalid UTF-8
-        stamp = rules._birth_stamp(psutil.Process(child.pid))
-        assert stamp == float(int(stat.rsplit(b")", 1)[1].split()[19]))
-        assert rules._same_birth(psutil.Process(child.pid), stamp)
-    finally:
-        child.kill()
-        child.wait(timeout=30)
-
-
 def test_scratch_env_follows_home_and_respects_user_tmpdir(tmp_path):
     """Unset temp vars → scratch of env HERMES_HOME; a Hermes-exported value re-derives for a routed
     home; a user/OS-set value (macOS ``/var/folders``, ``%TEMP%``) is never touched."""

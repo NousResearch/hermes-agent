@@ -25,7 +25,7 @@ class ShellBackend:
     def execute(self, command, cwd='', timeout=10, **kwargs):
         with tempfile.TemporaryFile(mode='w+') as output:
             result = subprocess.run(['bash', '-c', command], cwd=cwd or str(self.root),
-                                    stdout=output, stderr=subprocess.STDOUT, timeout=timeout)
+                                    stdout=output, stderr=subprocess.STDOUT, timeout=timeout, check=False)
             output.seek(0)
             return {'output': output.read(), 'returncode': result.returncode}
 

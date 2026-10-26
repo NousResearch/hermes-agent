@@ -80,6 +80,21 @@ def test_blocked_swap_result_names_the_holder_for_the_desktop(tmp_path: Path) ->
     assert 'not part of Hermes' in result['message'], result
 
 
+# The Desktop that clicked "Close X and retry": it quits once the hand-off has adopted its bridge.
+QUITTING_DESKTOP = """
+import sys, time
+from pathlib import Path
+marker, bridge = Path(sys.argv[1]), None
+end = time.monotonic() + 180
+while time.monotonic() < end:
+    owner = marker.read_bytes().split(b'\\n')[0] if marker.exists() else None
+    if bridge is None:
+        bridge = owner
+    elif owner != bridge:
+        break
+    time.sleep(0.05)
+"""
+
 # A relaunched Desktop: records the correlation id it inherited, but only when it was started by a
 # rung that hands on the hand-off's own environment (the tethered Start-Process fallback). The WMI
 # and explorer rungs start it without RELAUNCH_PROBE_OUT, so it exits at once and they fall through.
@@ -111,7 +126,9 @@ def test_close_and_retry_runs_under_its_own_run_even_from_a_relaunched_desktop(t
     home.mkdir()
     source = tmp_path / 'desktop.cs'
     source.write_text(RELAUNCHED_DESKTOP, encoding='utf-8')
-    relaunch = tmp_path / 'release' / 'win-unpacked' / 'Hermes.exe'
+    # Named apart from other tests' stand-in Hermes.exe: the explorer rung takes any fresh process of
+    # this name as its launch.
+    relaunch = tmp_path / 'release' / 'win-unpacked' / 'HermesRetryDesktop.exe'
     relaunch.parent.mkdir(parents=True)
     subprocess.run([POWERSHELL, '-NoProfile', '-Command',
                     f"Add-Type -Path '{source}' -OutputAssembly '{relaunch}' -OutputType ConsoleApplication"],
@@ -119,7 +136,8 @@ def test_close_and_retry_runs_under_its_own_run_even_from_a_relaunched_desktop(t
     # The quitting Desktop's protocol-2 bridge for this run (checkout.ts claimBridgeMarker), and the
     # program the user agreed to close in that run.
     run = 'desk-2-retry-ab12'
-    desktop = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(15)'])
+    (tmp_path / 'desktop.py').write_text(QUITTING_DESKTOP, encoding='utf-8')
+    desktop = subprocess.Popen([sys.executable, str(tmp_path / 'desktop.py'), str(home / MARKER)])
     holder = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)'])
     corr_out, relaunch_out = tmp_path / 'corr.txt', tmp_path / 'relaunched.txt'
     relaunched = None
@@ -136,7 +154,7 @@ def test_close_and_retry_runs_under_its_own_run_even_from_a_relaunched_desktop(t
                  'CORRELATION_OUT': str(corr_out), 'RELAUNCH_PROBE_OUT': str(relaunch_out)},
         )
         log = home / 'logs' / 'desktop-update-handoff.log'
-        detail = (proc.returncode, proc.stdout[-2000:], log.read_text(encoding='utf-8', errors='replace')[-4000:]
+        detail = (proc.returncode, desktop.poll(), proc.stdout[-2000:], log.read_text(encoding='utf-8', errors='replace')[-4000:]
                   if log.is_file() else '')
         assert corr_out.is_file() and relaunch_out.is_file(), detail
         relaunched_pid, relaunched_corr = relaunch_out.read_text(encoding='utf-8').split(' ', 1)

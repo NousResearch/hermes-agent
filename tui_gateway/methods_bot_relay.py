@@ -163,7 +163,8 @@ def _(rid, params: dict, _root=_relay_root) -> dict:
 
     try:
         rows = list_sender_deliveries(root, resolved, live_state=scoped_state, profiles=roster)
-    except Exception as exc:
+    except Exception as exc:  # the RPC boundary: answer the error, keep the traceback
+        logging.getLogger(__name__).debug("bot_delivery.list for %s failed", resolved, exc_info=True)
         return _err(rid, 5096, str(exc))
     return _ok(rid, {"sender": resolved, "deliveries": rows})
 

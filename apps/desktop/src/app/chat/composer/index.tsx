@@ -46,6 +46,7 @@ import { useTheme } from '@/themes'
 import { AttachmentList } from './attachments'
 import { deriveBusySubmitState } from './busy-submit-state'
 import { ComposerDockGlow, QueuedEditBanner } from './chat-bar-parts'
+import { ComposerTopSlot } from './composer-top-slot'
 import {
   acceptsTriggerCompletion,
   COMPOSER_FADE_BACKGROUND,
@@ -98,7 +99,7 @@ import {
   insertComposerContentsAtCaret,
   RICH_INPUT_SLOT
 } from './rich-editor'
-import { ComposerSessionProvider, useComposerScope, useComposerSurfaceId } from './scope'
+import { useComposerScope, useComposerSurfaceId } from './scope'
 import { ComposerStatusStack } from './status-stack'
 import { CodingStatusRow } from './status-stack/coding-row'
 import { StatusDrawerContent, StatusDrawerToggle } from './status-stack/drawer'
@@ -1075,16 +1076,6 @@ export function ChatBar({
     isBotChatSession(sessionId)
   )
 
-  // What a `composer.top` contribution reads through `useComposerSession` (the SDK door).
-  const storedSessionId = useStoresSelector([$sessionStates], () =>
-    sessionId ? ($sessionStates.get()[sessionId]?.storedSessionId ?? sessionId) : null
-  )
-
-  const composerSession = useMemo(
-    () => ({ sessionId: sessionId ?? null, storedSessionId }),
-    [sessionId, storedSessionId]
-  )
-
   // Branch / worktree hand-offs (CodingStatusRow). Owns the worktree open +
   // branch-off/convert/list/switch actions; draft travels into the new session.
   const { handleBranchOff, handleConvertBranch, handleListBranches, handleSwitchBranch, openInWorktree } =
@@ -1504,9 +1495,7 @@ export function ChatBar({
                   {/* Contribution seams: banners above, a row below, inline
                     additions beside the "+" menu and before the controls.
                     All four render nothing until something contributes. */}
-                  <ComposerSessionProvider value={composerSession}>
-                    <ContribSlot area={COMPOSER_AREAS.top} />
-                  </ComposerSessionProvider>
+                  <ComposerTopSlot sessionId={sessionId} />
                   <RestoredDraftNotice
                     freshDraft={activeQueueSessionKey === null}
                     onUndone={clearDraft}

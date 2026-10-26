@@ -91,8 +91,10 @@ def config_options(models: SessionConfigOptionSelect | None, info: dict, mode_id
     options = [select(EDIT_APPROVAL_POLICY_CONFIG_ID, "Edits", "mode", MODES[mode_id][0],
                       [(policy, name) for policy, name, _ in MODES.values()])]
     if models is not None:
-        options.append(select("model", "Model", "model", models.current_value,
-                              [(m.value, m.name) for m in models.options]))
+        options.append(SessionConfigOptionSelect(
+            id=MODEL_CONFIG_ID, name="Model", category="model", type="select",
+            current_value=models.current_value, options=models.options,
+        ))
     # ``session.info`` reports the level in force, never ``default`` (a reset session reads the profile's), so
     # ``default`` is offered only while no level is set: a pick never shows as another value than the one chosen.
     levels = reasoning_choices()[1:]

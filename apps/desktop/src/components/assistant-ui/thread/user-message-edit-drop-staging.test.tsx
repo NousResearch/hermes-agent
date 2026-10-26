@@ -84,7 +84,7 @@ describe('edit composer drop staging failures', () => {
     await waitFor(() => expect(stageFileForAttach).toHaveBeenCalledOnce())
     await waitFor(() =>
       expect($notifications.get()).toEqual([
-        expect.objectContaining({ kind: 'error', message: `Could not attach notes.txt: ${UPLOAD_413}` })
+        expect.objectContaining({ kind: 'warning', message: `Could not attach notes.txt: ${UPLOAD_413}` })
       ])
     )
     expect(request).not.toHaveBeenCalledWith('file.attach', expect.anything())
@@ -126,7 +126,7 @@ describe('edit composer drop staging failures', () => {
       return found!
     })
 
-    expect(warning.kind).toBe('error')
+    expect(warning.kind).toBe('warning')
     // A reason another item follows loses its period; the detail keeps it whole.
     expect(warning.message).toContain(`Could not attach ${'a'.repeat(24)}…${'a'.repeat(19)}.zip: ${limit.slice(0, -1)}; `)
     expect(warning.message).toContain(`Could not attach big.zip: ${limit}`)

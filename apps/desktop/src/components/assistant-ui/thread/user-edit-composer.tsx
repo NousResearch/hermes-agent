@@ -517,8 +517,9 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
         }
       }
 
+      // A warning, as in the main composer, so the same drop looks the same wherever it lands.
       if (failures.length) {
-        notify({ kind: 'error', title: t.desktop.dropFiles, ...dropWarning(failures, t.desktop.dropFilesMore) })
+        notify({ kind: 'warning', title: t.desktop.dropFiles, ...dropWarning(failures, t.desktop.dropFilesMore) })
       }
 
       return refs

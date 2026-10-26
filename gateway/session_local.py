@@ -24,6 +24,9 @@ class LocalSessionAdapter(BasePlatformAdapter):
     def __init__(self, authority):
         super().__init__(PlatformConfig(enabled=True), Platform.LOCAL)
         self.authority = authority
+        # Built outside ``_create_adapter``: without its runner a push wake skips the authority FIFO
+        # and falls to a message handler this adapter never has (``deliver_wake``).
+        self.gateway_runner = getattr(authority, 'runner', None)
         self.sources = {}
         self.policies = {}
 
@@ -115,8 +118,8 @@ class LocalSessionAdapter(BasePlatformAdapter):
 
 
 def authorize_local_source(runner, source):
-    """None for legacy/nonlocal routes; registered local adapters fail closed."""
-    if source.platform != Platform.LOCAL:
+    """None for legacy/nonlocal routes and history mounts; registered local adapters fail closed."""
+    if source is None or source.platform != Platform.LOCAL:
         return None
     # A forged profile must not miss this adapter and fall into a messaging
     # allow-all policy. Local source identity is owned by this authority alone.
@@ -419,7 +422,11 @@ def local_session_info(authority, ref):
     from gateway.session_authorities import served_profile_name
     from gateway.session_policy import policy_for_source
     policy = policy_for_source(authority.runner, live.source)
-    info = {'source': policy.source if policy else live.source.platform.value,
+    if live.source is None:  # a history mount: what its stored row says
+        source = authority.db.get_session(ref.session_id)['source']
+    else:
+        source = policy.source if policy else live.source.platform.value
+    info = {'source': source,
             'model': (getattr(agent, 'model', policy.current_model(authority) if policy else None) if agent is not None
                       else _lazy_model(authority, policy)),
             'lazy': agent is None,
@@ -432,7 +439,7 @@ def local_session_info(authority, ref):
     peek = getattr(authority.runner, '_peek_session_state', None)
     state = peek(live.route) if peek is not None else None
     override = state.conversation.reasoning_override if state is not None else None  # a typed /reasoning
-    if agent is None and policy is None and live.source.platform != Platform.LOCAL:
+    if agent is None and policy is None and live.source is not None and live.source.platform != Platform.LOCAL:
         # A messaging chat not built yet: what its next turn resolves (its /model and /reasoning picks
         # included), so a viewer's model and reasoning pill never wait on a field that never comes.
         from gateway.session_messaging_picks import messaging_route_info

@@ -119,7 +119,7 @@ def _ensure_plugin(hermes_home: Path) -> bool:
 
 
 def _snapshot(hermes_home: Path) -> tuple[Optional[bytes], ...]:
-    return tuple(p.read_bytes() if p.is_file() else None
+    return tuple(p.read_bytes() if p.is_file() else None  # config-reader: ok — child-run change snapshot
                  for p in (hermes_home / "config.yaml", hermes_home / ".env"))
 
 

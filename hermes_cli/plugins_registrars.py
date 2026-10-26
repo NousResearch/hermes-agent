@@ -4,15 +4,33 @@ Every ``register_<category>_provider`` shares one body (:meth:`PluginContext._re
 type-check, register in the scope-keyed process-global registry, lease the slot so unload restores
 the displaced entry. ``hermes_cli.plugins`` generates one ctx method per row. Rows: (method, kind,
 registry module, base-class module:attr, label, docstring, options). ``normalize``: ``strip``
-(default), ``lower`` (strip+lowercase) or ``None`` (raw name). Object-taking rows also need a
+(default), ``lower`` (strip+lowercase) or ``None`` (raw name). ``admit``: ``module:function`` taking
+the plugin's manifest and returning why it may not register this kind ("" = it may), judged under the
+manager's home before the registry is touched. ``identity``: a registry function judging the provider's
+name without running its code, before the shared body reads ``provider.name`` (``ValueError`` = refused,
+logged with ``reject_message``). Object-taking rows also need a
 ``plugin_isolation.HOST_OBJECT_BASES`` entry so the provider works under ``plugins.isolation: host``.
 """
 
 from __future__ import annotations
 
+import importlib
+import logging
 from typing import Any, Callable, Optional
 
+from hermes_cli.plugins_loader import _plugin_home_scope, _serialized_replacement
+
+logger = logging.getLogger(__name__)
+
 _SCOPED_PROVIDER_REGISTRARS: tuple[tuple[str, str, str, str, str, str, dict[str, Any]], ...] = (
+    ("register_login_backend", "login_backend", "agent.vault_backend_registry",
+     "agent.vault_backends.base:LoginBackend", "login backend",
+     "Register a trusted in-process browser-vault LoginBackend; explicit vault.<name>.enabled "
+     "is required. Registration is profile-scoped and removed on plugin unload. "
+     "Backend instances must read active-profile configuration lazily. Accepted only from bundled "
+     "plugins and catalog installs at tier verified or official.",
+     {"normalize": None, "reject_message": "Plugin '%s' login backend rejected: %s",
+      "admit": "hermes_cli.plugins_cmd_catalog:login_backend_provenance_error", "identity": "static_name"}),
     ("register_image_gen_provider", "image_gen_provider", "agent.image_gen_registry",
      "agent.image_gen_provider:ImageGenProvider", "image_gen provider",
      "Register an :class:`agent.image_gen_provider.ImageGenProvider`; "
@@ -68,3 +86,43 @@ _SCOPED_PROVIDER_REGISTRARS: tuple[tuple[str, str, str, str, str, str, dict[str,
 _NAME_NORMALIZERS: dict[Optional[str], Optional[Callable[[str], str]]] = {
     "strip": lambda n: n.strip(), "lower": lambda n: n.strip().lower(), None: None,
 }
+
+
+def _resolve(ref: str) -> Any:
+    module, attr = ref.split(":")
+    return getattr(importlib.import_module(module), attr)
+
+
+def make_scoped_provider_registrar(method_name, kind, registry_mod, base_ref, label, doc, options):
+    """Build one ``register_<category>_provider`` method from a ``_SCOPED_PROVIDER_REGISTRARS`` row."""
+    normalize_fn = _NAME_NORMALIZERS[options.get("normalize", "strip")]
+    register_name = options.get("register")
+    admit, identity = options.get("admit"), options.get("identity")
+
+    def register(self, provider):
+        if admit:
+            with _plugin_home_scope(self._manager.home_path):
+                refusal = _resolve(admit)(self.manifest)
+            if refusal:
+                logger.warning(options["reject_message"], self.manifest.name, refusal)
+                return None
+        registry = importlib.import_module(registry_mod)
+        if identity:
+            try:
+                getattr(registry, identity)(provider)
+            except ValueError as exc:
+                logger.warning(options["reject_message"], self.manifest.name, exc)
+                return None
+        return self._register_scoped_provider(
+            provider, kind=kind, base_class=_resolve(base_ref),
+            registry=registry, label=label, article=options.get("article", "a"), normalize=normalize_fn,
+            register=getattr(registry, register_name) if register_name else None,
+            reject_message=options.get("reject_message"),
+        )
+
+    def register_source(self, source):  # secret sources: ``source``
+        return register(self, source)
+
+    method = register_source if options.get("param") == "source" else register
+    method.__name__, method.__qualname__, method.__doc__ = method_name, f"PluginContext.{method_name}", doc
+    return _serialized_replacement(method)

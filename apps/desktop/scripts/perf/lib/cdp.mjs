@@ -1,4 +1,4 @@
-// The one Chrome DevTools Protocol client for the desktop perf harness.
+// The one Chrome DevTools Protocol client for desktop scripts.
 //
 // Before this, every measure-*/profile-* script shipped its own copy-pasted
 // `CDP` class (four subtly different implementations), its own `/json` vs
@@ -20,6 +20,17 @@ export const SELECTORS = {
 }
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+
+async function websocketMessageText(data) {
+  if (typeof data === 'string') return data
+  if (typeof Blob !== 'undefined' && data instanceof Blob) return data.text()
+  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data)
+  if (ArrayBuffer.isView(data)) {
+    return new TextDecoder().decode(new Uint8Array(data.buffer, data.byteOffset, data.byteLength))
+  }
+
+  return data.toString('utf8')
+}
 
 /**
  * Poll the CDP HTTP endpoint until a page target is available.
@@ -62,18 +73,38 @@ export class CDP {
     this.listeners = new Map()
   }
 
-  static async open(url) {
+  static async open(url, { timeoutMs = 10_000 } = {}) {
     const ws = new WebSocket(url)
 
     await new Promise((resolve, reject) => {
-      ws.addEventListener('open', resolve, { once: true })
-      ws.addEventListener('error', reject, { once: true })
+      const cleanup = () => {
+        clearTimeout(timeout)
+        ws.removeEventListener('open', opened)
+        ws.removeEventListener('error', failed)
+      }
+      const opened = () => {
+        cleanup()
+        resolve()
+      }
+      const failed = () => {
+        cleanup()
+        reject(new Error('CDP websocket failed to open'))
+      }
+      const timeout = setTimeout(() => {
+        cleanup()
+        ws.close()
+        reject(new Error('CDP websocket open timeout'))
+      }, timeoutMs)
+
+      timeout.unref?.()
+      ws.addEventListener('open', opened, { once: true })
+      ws.addEventListener('error', failed, { once: true })
     })
 
     const cdp = new CDP(ws)
 
-    ws.addEventListener('message', ev => {
-      const m = JSON.parse(typeof ev.data === 'string' ? ev.data : ev.data.toString('utf8'))
+    ws.addEventListener('message', async ev => {
+      const m = JSON.parse(await websocketMessageText(ev.data))
 
       if (m.id != null && cdp.pending.has(m.id)) {
         const { resolve, reject } = cdp.pending.get(m.id)
@@ -110,6 +141,10 @@ export class CDP {
   }
 
   send(method, params = {}) {
+    if (this.ws.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new Error(`CDP websocket is not open for ${method}`))
+    }
+
     const id = ++this.id
 
     return new Promise((resolve, reject) => {
@@ -124,11 +159,42 @@ export class CDP {
     }
 
     this.listeners.get(method).push(handler)
+
+    return () => {
+      const handlers = this.listeners.get(method)
+
+      if (!handlers) return
+      const index = handlers.indexOf(handler)
+
+      if (index >= 0) handlers.splice(index, 1)
+      if (handlers.length === 0) this.listeners.delete(method)
+    }
+  }
+
+  waitFor(method, timeoutMs = 30_000) {
+    return new Promise((resolve, reject) => {
+      const unsubscribe = this.on(method, params => {
+        clearTimeout(timeout)
+        unsubscribe()
+        resolve(params)
+      })
+      const timeout = setTimeout(() => {
+        unsubscribe()
+        reject(new Error(`timed out waiting for CDP event ${method}`))
+      }, timeoutMs)
+
+      timeout.unref?.()
+    })
   }
 
   /** Evaluate an expression in the page and return its value (awaits promises). */
-  async eval(expression) {
-    const r = await this.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true })
+  async eval(expression, options = {}) {
+    const r = await this.send('Runtime.evaluate', {
+      expression,
+      returnByValue: true,
+      awaitPromise: true,
+      ...options
+    })
 
     if (r.exceptionDetails) {
       throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text || 'eval failed')

@@ -13,6 +13,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -77,6 +78,7 @@ class TestPtyBridgeIO:
         bridge = PtyBridge.__new__(PtyBridge)
         bridge._fd = 123
         bridge._closed = False
+        bridge._fd_lock = threading.Lock()
         wait_started = asyncio.Event()
         release_write = asyncio.Event()
         write_calls = 0
@@ -120,6 +122,7 @@ class TestPtyBridgeIO:
         bridge = PtyBridge.__new__(PtyBridge)
         bridge._fd = 123
         bridge._closed = False
+        bridge._fd_lock = threading.Lock()
 
         def fake_write(_fd, _data):
             raise BlockingIOError(errno.EAGAIN, "buffer full")
@@ -278,6 +281,7 @@ class TestPtyBridgeClose:
         # recorded at spawn; the child leads its own group (pgid == pid)
         bridge._pgid = 12345
         bridge._closed = False
+        bridge._fd_lock = threading.Lock()
 
         bridge.close()
 
@@ -316,6 +320,7 @@ class TestPtyBridgeClose:
         # recorded at spawn: the child was found in OUR group (pgid != pid)
         bridge._pgid = 67890
         bridge._closed = False
+        bridge._fd_lock = threading.Lock()
 
         bridge.close()
 
@@ -396,6 +401,7 @@ class TestPtyBridgeClose:
             # recorded at spawn: the child was found in OUR group (pgid != pid)
             bridge._pgid = os.getpgid(popen.pid)
             bridge._closed = False
+            bridge._fd_lock = threading.Lock()
 
             bridge.close()
         finally:

@@ -105,7 +105,29 @@ export function createBrowserConnectionBridge({ api, bootstrap }: BrowserConnect
   // The gateway's own profile, or another one it serves: the only profiles this tab's socket reaches.
   const reachesSocket = (profile?: null | string) => !ridesWithProfile(profile) || served.serves(profile)
 
+  const getProfiles = async () => {
+    const result = await api<{ profiles?: { name?: string }[] }>({ path: '/api/profiles' })
+
+    return [...new Set((result.profiles || []).map(profile => String(profile.name || '').trim()).filter(Boolean))]
+  }
+
+  // Every installed profile, with the served set brought up to date for that list.
+  const installedProfiles = async () => {
+    const profiles = await getProfiles()
+    await served.refresh(profiles)
+
+    return profiles
+  }
+
   const getGatewayWsUrl = async (profile?: null | string) => {
+    // A profile created since the last inventory read is missing from the cached set, though the
+    // multiplexer adopted it before its create returned: read the inventory once before refusing.
+    // An unchanged list within the set's TTL re-reads only `/api/profiles`; a failed read refuses on
+    // the set already cached, as before.
+    if (!reachesSocket(profile)) {
+      await installedProfiles().catch(() => undefined)
+    }
+
     // Its ticket would mint, then the gateway would close the dial (4403) without a reason to show.
     if (!reachesSocket(profile)) {
       throw new UnservedProfileError((profile ?? '').trim())
@@ -127,20 +149,6 @@ export function createBrowserConnectionBridge({ api, bootstrap }: BrowserConnect
 
       throw error
     }
-  }
-
-  const getProfiles = async () => {
-    const result = await api<{ profiles?: { name?: string }[] }>({ path: '/api/profiles' })
-
-    return [...new Set((result.profiles || []).map(profile => String(profile.name || '').trim()).filter(Boolean))]
-  }
-
-  // Every installed profile, with the served set brought up to date for that list.
-  const installedProfiles = async () => {
-    const profiles = await getProfiles()
-    await served.refresh(profiles)
-
-    return profiles
   }
 
   return {

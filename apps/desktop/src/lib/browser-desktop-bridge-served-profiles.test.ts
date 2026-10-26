@@ -140,6 +140,28 @@ describe('profiles the serving gateway does not serve', () => {
     await expect(desktop.getGatewayWsUrl('research')).resolves.toMatchObject({ ok: true })
     expect(callsTo(fetchMock, '/api/webapp/socket-ticket')).toBe(2)
   })
+
+  it('opens a profile created since the last inventory read, and still refuses one that stays unserved', async () => {
+    const gateway: Gateway = { profiles: ['default', 'solo'], status: reports(['default']) }
+    const fetchMock = stubGateway(gateway)
+    const desktop = installServedBridge()
+    const statusReads = () => callsTo(fetchMock, '/api/status')
+    await desktop.getProfileRoutes?.(['solo'])
+    expect(statusReads()).toBe(1)
+
+    // A picker creates the profile and selects it before any inventory read: the multiplexer
+    // already serves it, but the cached set predates it.
+    gateway.profiles = [...gateway.profiles, 'fresh']
+    gateway.status = reports(['default', 'fresh'])
+    await expect(desktop.getGatewayWsUrl('fresh')).resolves.toMatchObject({ ok: true })
+    expect(statusReads()).toBe(2)
+
+    // The installed list is unchanged since that read, so a refusal costs no further status read.
+    await expect(desktop.getGatewayWsUrl('solo')).rejects.toThrow('does not serve profile "solo"')
+    await expect(desktop.getGatewayWsUrl('solo')).rejects.toThrow('does not serve profile "solo"')
+    expect(statusReads()).toBe(2)
+    expect(callsTo(fetchMock, '/api/webapp/socket-ticket')).toBe(1)
+  })
 })
 
 describe('the served set read', () => {

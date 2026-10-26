@@ -5,7 +5,8 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 
 // A rebuild copies the previous generation's chunks for tabs that still load them; a copy can
 // fail for reasons that are no fault of the entry (a full disk). Fault only the copies a test
-// names; every other copy reaches the real filesystem.
+// names, by the complete native path the build copies from; every other copy reaches the real
+// filesystem.
 const faults = vi.hoisted(() => [])
 
 vi.mock('node:fs', async importOriginal => {
@@ -13,7 +14,7 @@ vi.mock('node:fs', async importOriginal => {
   return {
     ...actual,
     copyFileSync(from, to, mode) {
-      const fault = faults.find(entry => from.endsWith(entry.name))
+      const fault = faults.find(entry => from === entry.from)
       if (fault) {
         if (fault.written !== undefined) actual.writeFileSync(to, fault.written)
         throw Object.assign(new Error(`${fault.code}: copyfile '${from}' -> '${to}'`), { code: fault.code })
@@ -60,7 +61,7 @@ test('a chunk that cannot be copied is reported with its path, and the rest are 
     { 'index.html': 'new' },
     { a: { file: 'assets/full.js', assets: ['assets/ok.js'] } },
   )
-  faults.push({ name: 'assets/full.js', code: 'ENOSPC', written: 'partial' })
+  faults.push({ from: join(previous, 'assets/full.js'), code: 'ENOSPC', written: 'partial' })
   expect(keepPreviousGeneration(previous, next)).toEqual(['assets/ok.js'])
   expect(warn).toHaveBeenCalledTimes(1)
   expect(warn.mock.calls[0][0]).toContain(join(previous, 'assets/full.js'))
@@ -78,7 +79,7 @@ test('a missing previous build, rejected entries and a new file standing in the 
     { a: { file: 'assets/raced.js', css: ['../escape.css', '/abs.css'], assets: ['assets/gone.js', 'bad\0name.js', 'x/kept.js', 'index.html'] } },
   )
   // The new build wrote this name between the existence check and the copy.
-  faults.push({ name: 'assets/raced.js', code: 'EEXIST', written: 'new raced' })
+  faults.push({ from: join(previous, 'assets/raced.js'), code: 'EEXIST', written: 'new raced' })
   expect(keepPreviousGeneration(previous, next)).toEqual([])
   expect(warn).not.toHaveBeenCalled()
   expect(readFileSync(join(next, 'assets/raced.js'), 'utf8')).toBe('new raced')

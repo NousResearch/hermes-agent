@@ -121,8 +121,20 @@ def restore_routed_session(authority, sid):
     # Re-pin the persisted receiving bot so delivery after a restart goes through it or nowhere,
     # never the default bot by heuristic (gateway/AGENTS.md § Identity survives the process).
     source = authority.runner._restored_source(entry)
-    authority.sessions.setdefault(sid, LiveSession(source, route, superseded=superseded, history_mount=True))
+    authority.sessions.setdefault(sid, LiveSession(source, route, superseded=superseded, history_mount=True,
+                                                   handed_off=moved_local(authority, sid, source)))
     return SessionRef(authority.profile_id, sid)
+
+
+def moved_local(authority, sid, source):
+    """*sid* is a local conversation (created by a local surface) published on a messaging lane:
+    ``/handoff`` or a platform ``/resume`` moved it there. That provenance is the row's, not the
+    path that mounts it (the Desktop that followed it, the lane's inbound, a cold open), so every
+    mount of it goes read-only once the lane takes up another conversation (#143286)."""
+    from hermes_state_local_migration import LEGACY_LOCAL_SOURCES
+    if source is None or source.platform == Platform.LOCAL:
+        return False
+    return (authority.db.get_session(sid) or {}).get('created_source') in LEGACY_LOCAL_SOURCES
 
 
 def mountable(authority, sid):

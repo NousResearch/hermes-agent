@@ -386,6 +386,69 @@ async def test_a_platform_resume_of_a_local_conversation_continues_its_current_h
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('opened', ['followed by the Desktop', 'a viewer after a restart', 'the lane after a restart'])
+@pytest.mark.parametrize('takeover', ['another chat handed off', "the platform's /new"])
+@pytest.mark.parametrize('door', ['/handoff', 'platform /resume'])
+@pytest.mark.parametrize('history', ['plain', 'reset'])
+async def test_a_moved_conversation_is_read_only_once_its_lane_is_taken_over(tmp_path, history, door, takeover,
+                                                                             opened):
+    """Bot Chat X (``reset``: a local ``/new`` moved it to X2) moves onto a Telegram lane, which
+    continues its head, writable there. Once that lane is taken over (another chat handed off to
+    it, or the platform's ``/new`` and its next inbound) the head is the lane's history, however it
+    was mounted: the Desktop that followed it, a viewer or the lane's inbound after a restart. Its
+    only route is the lane's, so a turn or a Stop through it would act on the new conversation:
+    read stays open, submit and control are refused, warm and after a restart."""
+    from gateway.platforms.event import MessageEvent
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_contract import Principal, SessionRef
+    from gateway.session_local import create_local_session
+    from hermes_state_local import local_receipt
+    from hermes_state_runtime import RuntimeStoreError
+    runner = _Runner(tmp_path)
+    warm = await initialize_session_authority(runner, profile_id='fixture', instance_id='warm')
+    owner = Principal('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control',
+                                                     'session:submit'}), 'socket')
+    ref = create_local_session(warm, owner, {'request_id': 'bot-chat', 'source': 'gui', 'cwd': str(tmp_path),
+                                             'model': 'frozen', 'toolsets': []})
+    warm.db.set_session_title(ref.session_id, 'Bot Chat')
+    if history == 'reset':
+        runner.session_store.reset_session(warm.sessions[ref.session_id].route)
+    head = SessionRef('fixture', local_receipt(warm.db, ref.session_id)['entry']['session_id'])
+    telegram = _source()
+    if door == '/handoff':
+        route = await _handoff(runner, warm, ref.session_id, telegram)
+    else:
+        await _resume_gateway(runner, warm)._handle_resume_command(
+            MessageEvent(text='/resume --all Bot Chat', source=telegram))
+        route = runner.session_store._generate_session_key(telegram)
+    assert runner.session_store.lookup_by_session_key(route).session_id == head.session_id
+    if opened != 'followed by the Desktop':
+        runner = _Runner(tmp_path)
+        warm = await initialize_session_authority(runner, profile_id='fixture', instance_id='restarted')
+    if opened == 'a viewer after a restart':
+        warm.authorize(owner, head, 'session:read')
+    warm.register(telegram)  # the lane's next inbound
+    warm.authorize(owner, head, 'session:submit')  # the lane's conversation: writable there
+
+    if takeover == 'another chat handed off':
+        other = create_local_session(warm, owner, {'request_id': 'other-chat', 'source': 'gui',
+                                                   'cwd': str(tmp_path), 'model': 'frozen', 'toolsets': []})
+        await _handoff(runner, warm, other.session_id, telegram)
+    else:
+        runner.session_store.reset_session(route)
+        warm.register(telegram)
+    assert warm.logical_owner(runner.session_store.lookup_by_session_key(route).session_id) != head.session_id
+
+    cold = await initialize_session_authority(_Runner(tmp_path), profile_id='fixture', instance_id='cold')
+    for authority in (warm, cold):
+        authority.authorize(owner, head, 'session:read')
+        for capability in ('session:submit', 'session:control'):
+            with pytest.raises(RuntimeStoreError, match='session_superseded'):
+                authority.authorize(owner, head, capability)
+        assert authority.agent(head) is None  # never the lane's running agent
+
+
+@pytest.mark.asyncio
 async def test_a_moved_receipt_with_a_malformed_lineage_never_stops_the_boot(tmp_path, monkeypatch):
     from gateway.session_authority import initialize_session_authority
     from gateway.session_contract import Principal

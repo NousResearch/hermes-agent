@@ -80,9 +80,10 @@ class LiveSession:
     # Mounted by that cold path (not published by its lane): the lane publishing ANOTHER conversation
     # on the same route later supersedes it too.
     history_mount: bool = False
-    # A local conversation a messaging lane took over (``/handoff``): its viewers follow it onto the
-    # lane, and once that lane publishes another conversation (``/new``) it is superseded like a
-    # history mount, whatever the lane published since (#143286).
+    # A local conversation a messaging lane took over (``/handoff``, a platform ``/resume``): its
+    # viewers follow it onto the lane, and once that lane publishes another conversation (``/new``,
+    # another handoff) it is superseded like a history mount, whatever the lane published since.
+    # Set from the row (``moved_local``) on every mount of it, however constructed (#143286).
     handed_off: bool = False
     # The background-review guard of a cold ``/refine`` (gateway/session_refine.py): its side agent is
     # per call, so the run token lives here; a second /refine joins it and the next turn cancels it.
@@ -278,7 +279,8 @@ class SessionAuthority:
         # *sid* takes the route over: new here, moved onto it, or back after another conversation had it.
         took_over = live is None or live.route != route or live.superseded
         if live is None:
-            live = self.sessions[sid] = LiveSession(source, route)
+            from gateway.session_route_recovery import moved_local
+            live = self.sessions[sid] = LiveSession(source, route, handed_off=moved_local(self, sid, source))
         elif (live.source is not None and live.source.platform == Platform.LOCAL
               and source.platform != Platform.LOCAL):
             # A local conversation a messaging lane took over (``/handoff``): its repoint retired the

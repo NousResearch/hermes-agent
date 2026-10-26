@@ -224,7 +224,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         await adapter.send(source.chat_id, content, metadata=metadata)
 
     async def _deliver_media_from_response(
-        self, response: str, event: MessageEvent, adapter, thread_metadata: Optional[dict[str, Any]] = None
+        self, response: str, event: MessageEvent, adapter, thread_metadata: Optional[dict[str, Any]] = None,
+        session_key: Optional[str] = None,
     ) -> None:
         """Deliver explicit attachments from an already-streamed response (text already delivered).
         EXPLICIT-ONLY, unlike the non-streaming path in ``gateway/platforms/base.py``: a bare local
@@ -239,7 +240,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         with _log_suppressed(logging.WARNING, "Post-stream media extraction failed: %s"):
             # Capture [[as_document]] before extract_media strips it: images then go via send_document.
             force_document_attachments = "[[as_document]]" in response
-            from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
+            from gateway.platforms.base import (
+                BasePlatformAdapter, _IMAGE_MARKUP_RE, should_send_media_as_audio)
             media_files, cleaned = adapter.extract_media(response)
             media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
             # Strip image URLs (parity with the non-streaming chain); no extract_local_files here.
@@ -253,8 +255,19 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             # A markdown/HTML image tag IS an attachment request, though — the non-streaming chain turns it
             # into a native attachment, so post-stream it has to be delivered here too. Discarding the
             # extraction left a streamed reply that showed the tag as text and never sent the image
-            # (#141806).
-            url_images, _ = adapter.extract_images(cleaned)
+            # (#141806). URL images fetched here meet the same tool-provenance gate as the non-streaming
+            # path (#129975): None (no session key, no transcript, or a legacy extract_images override)
+            # keeps the extract-everything behavior.
+            provenance_lookup = getattr(adapter, "_bounded_current_turn_tool_urls", None)
+            allowed_image_urls = (
+                await provenance_lookup(session_key)
+                if session_key and callable(provenance_lookup) and _IMAGE_MARKUP_RE.search(cleaned)
+                else None)
+            if allowed_image_urls is None or not adapter._accepts_kwarg(
+                    adapter.extract_images, "allowed_urls", var_kw=False, unknown=False):
+                url_images, _ = adapter.extract_images(cleaned)
+            else:
+                url_images, _ = adapter.extract_images(cleaned, allowed_urls=allowed_image_urls)
             _thread_meta = (
                 dict(thread_metadata)
                 if thread_metadata is not None
@@ -364,7 +377,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             return True
         await self._deliver_media_from_response(
             response, MessageEvent(text="", source=source, message_id=event_message_id), adapter,
-            thread_metadata=metadata,
+            thread_metadata=metadata, session_key=session_key,
         )
         return True
 

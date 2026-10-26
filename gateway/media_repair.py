@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any, Dict, Iterator, List, Optional, Set
+from typing import Any, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -163,7 +163,7 @@ def _tool_result_content_text(content: Any) -> str:
     return "" if content is None else str(content)
 
 
-def reply_image_provenance_urls(messages: Optional[List[Dict[str, Any]]]) -> Optional[Set[str]]:
+def reply_image_provenance_urls(messages: Optional[list[dict[str, Any]]]) -> Optional[set[str]]:
     """URLs that appeared verbatim in the current turn's tool results (#129975).
 
     ``None`` means "no message list to judge by" — the caller keeps its legacy
@@ -181,7 +181,7 @@ def reply_image_provenance_urls(messages: Optional[List[Dict[str, Any]]]) -> Opt
     last_user_idx = next(
         (i for i in range(len(history) - 1, -1, -1) if history[i].get("role") == "user"), None)
     turn = history if last_user_idx is None else history[last_user_idx:]
-    urls: Set[str] = set()
+    urls: set[str] = set()
     for msg in turn:
         if msg.get("role") not in {"tool", "function"}:
             continue

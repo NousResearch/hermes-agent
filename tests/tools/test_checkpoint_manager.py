@@ -239,17 +239,29 @@ class TestRealPruning:
     def test_max_file_size_mb_skips_large_files(
         self, tmp_path, checkpoint_base, monkeypatch,
     ):
+        """An over-cap file is excluded before Git invokes its clean filter."""
         monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
         wd = tmp_path / "proj"
         wd.mkdir()
         (wd / "small.py").write_text("tiny\n")
         big = wd / "weights.bin"
         big.write_bytes(b"\0" * (2 * 1024 * 1024))  # 2 MB
+        (wd / ".gitattributes").write_text("weights.bin filter=must-not-run\n")
+
+        store = _store_path(checkpoint_base)
+        assert _init_store(store, str(wd)) is None
+        assert _run_git(
+            ["config", "filter.must-not-run.clean", "hermes-filter-must-not-run"],
+            store, str(wd),
+        )[0]
+        assert _run_git(
+            ["config", "filter.must-not-run.required", "true"],
+            store, str(wd),
+        )[0]
 
         m = CheckpointManager(enabled=True, max_snapshots=5, max_file_size_mb=1)
         assert m.ensure_checkpoint(str(wd), "initial") is True
 
-        store = _store_path(checkpoint_base)
         ok, files, _ = _run_git(
             ["ls-tree", "-r", "--name-only", _ref_name(_project_hash(str(wd)))],
             store, str(wd),

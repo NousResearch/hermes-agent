@@ -1,7 +1,8 @@
 """Fail-closed pre-compress checkpoint gate for ``agent.conversation_compression``.
 
 The refusal type, its remediation text and the startup warning for
-``compression.checkpoint_required``; ``conversation_compression`` re-exports every name.
+``compression.checkpoint_required`` (``conversation_compression`` re-exports the refusal
+helpers), plus the record for lossy authorities outside compression the armed gate withholds.
 """
 
 from __future__ import annotations
@@ -91,3 +92,48 @@ def _warn_checkpoint_required_without_capable_provider(agent: Any) -> None:
         PRE_COMPRESS_CHECKPOINT_API_VERSION,
         _CHECKPOINT_REQUIRED_REMEDIATION,
     )
+
+
+_checkpoint_gate_warned: set[str] = set()
+
+
+def _record_checkpoint_gate_suppression(agent: Any, authority: str) -> None:
+    """Count a lossy authority the armed gate withheld; warn once per process per authority.
+
+    The suppression itself is re-evaluated on every call, only the log is deduplicated (per
+    authority, so an operator sees which path was lost). The line names the availability
+    trade: with every other reclamation path withheld, a checkpoint outage halts the session.
+    """
+    agent._checkpoint_gate_suppression_count = getattr(agent, "_checkpoint_gate_suppression_count", 0) + 1
+    if authority in _checkpoint_gate_warned:
+        return
+    _checkpoint_gate_warned.add(authority)
+    logger.warning(
+        "compression.checkpoint_required is enabled: %s is withheld so the checkpoint-gated "
+        "compressor stays the only lossy authority. If the checkpoint provider is unavailable, "
+        "compaction fails closed and the session halts instead of compacting unarchived context.",
+        authority,
+    )
+
+
+def _prune_would_have_run(compressor: Any, current_tokens: int) -> bool:
+    """Only a prune that would have run is a withheld authority.
+
+    The built-in answers via ``would_proactively_prune()``. An engine that overrides
+    ``prune_tool_results_only`` owns its trigger policy, so occupying the hook is the
+    precondition; the inherited ABC no-op is not an authority. A raising predicate reads as
+    "would have run": the call was withheld either way.
+    """
+    from agent.context_engine import ContextEngine
+
+    prune = getattr(compressor, "prune_tool_results_only", None)
+    if not callable(prune) or getattr(prune, "__func__", None) is ContextEngine.prune_tool_results_only:
+        return False
+    predicate = getattr(compressor, "would_proactively_prune", None)
+    if not callable(predicate):
+        return True
+    try:
+        return bool(predicate(current_tokens))
+    except Exception:
+        logger.debug("would_proactively_prune() failed; counting the withheld prune", exc_info=True)
+        return True

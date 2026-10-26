@@ -101,6 +101,14 @@ def publish_worker_tool_event(authority, session_id, generation, frame) -> bool:
     return True
 
 
+def _edits_messages(adapter) -> bool:
+    """False for platforms that can't edit messages (e.g. iMessage/BlueBubbles), where every progress
+    update would be a separate bubble. getattr, not attribute access: duck-typed adapters (test fakes,
+    minimal plugins) may lack edit_message — treated as "can't edit"."""
+    adapter_edit = getattr(type(adapter), "edit_message", None)
+    return adapter_edit is not None and adapter_edit is not BasePlatformAdapter.edit_message
+
+
 class GatewayTurnProgressMixin:
     # ── shared thread→loop plumbing ─────────────────────────────────────────────────────────
 
@@ -180,7 +188,7 @@ class GatewayTurnProgressMixin:
             return
         # Native task cards consume the ID-bearing tool_start/tool_complete callbacks instead;
         # name-correlated text events would duplicate cards and mispair concurrent same-tool calls.
-        if ctx._native_slack_task_cards and event_type in {"tool.started", "tool.completed"}:
+        if ctx._native_task_cards and event_type in {"tool.started", "tool.completed"}:
             return
         # tool_progress off → only _thinking passes (above). Only tool.started renders. clarify:
         # send_clarify IS the user-facing rendering (a bubble would duplicate it, and verbose mode
@@ -347,7 +355,7 @@ class GatewayTurnProgressMixin:
         else:
             ctx.progress_queue.put(msg)
 
-    # ── Slack-native task cards (progress-queue drain) ──────────────────────────────────────
+    # ── Native task cards (progress-queue drain) ────────────────────────────────────────────
 
     @dataclasses.dataclass
     class _TaskCardState:
@@ -393,10 +401,13 @@ class GatewayTurnProgressMixin:
                      for task in self.visible_tasks()]
             return t("gateway.progress.task_card_title") + "\n" + "\n".join(lines)
 
-        def _upsert(self, call_id: str, title: str) -> dict[str, str]:
+        def _upsert(self, call_id: str, tool_name: str, preview: str = "") -> dict[str, str]:
             if call_id not in self.tasks:
                 self.task_order.append(call_id)
-            self.tasks[call_id] = {"id": call_id, "title": self._compact(title), "status": "in_progress"}
+            title = self._compact(f"{tool_name} - {preview}" if preview else tool_name)
+            self.tasks[call_id] = {
+                "id": call_id, "title": title, "status": "in_progress", "tool_name": tool_name, "preview": preview,
+            }
             return self.tasks[call_id]
 
         def apply_event(self, raw: Any) -> bool:
@@ -410,8 +421,7 @@ class GatewayTurnProgressMixin:
             tool_name = str(raw.get("tool_name") or "tool")
             self.unpublished_ids.add(call_id)
             if event_type == "tool.started":
-                preview = self._compact(raw.get("preview"), 64)
-                self._upsert(call_id, f"{tool_name} - {preview}" if preview else tool_name)
+                self._upsert(call_id, tool_name, self._compact(raw.get("preview"), 64))
                 return True
             # Completion-only events are rare but valid on some runtimes; keep their real ID instead
             # of guessing a same-name pending call.
@@ -424,11 +434,12 @@ class GatewayTurnProgressMixin:
         text = st.fallback_text()
         from gateway.relay.egress import declined_send
 
-        if st.publication_suppressed:
+        if st.publication_suppressed or not _edits_messages(st.adapter):
             return
         if st.fallback_msg_id:
+            edit_kwargs = {"metadata": ctx._progress_metadata} if _accepts_keyword(st.adapter.edit_message, "metadata") else {}
             result = await st.adapter.edit_message(
-                chat_id=ctx.source.chat_id, message_id=st.fallback_msg_id, content=text, metadata=ctx._progress_metadata,
+                chat_id=ctx.source.chat_id, message_id=st.fallback_msg_id, content=text, **edit_kwargs,
             )
             if getattr(result, "success", False):
                 return
@@ -490,7 +501,7 @@ class GatewayTurnProgressMixin:
                 st.publication_suppressed = True
                 st.native_failed = True
                 logger.warning(
-                    "Slack native task-card progress DECLINED by the connector's "
+                    "Native task-card progress DECLINED by the connector's "
                     "egress guard — suppressing the text fallback for the rest "
                     "of this turn (the destination is not approved)"
                 )
@@ -503,7 +514,7 @@ class GatewayTurnProgressMixin:
                     return
             else:
                 logger.warning(
-                    "Slack native task-card progress failed; falling back "
+                    "Native task-card progress failed; falling back "
                     "to an editable text update: %s", getattr(result, "error", "unknown error"),
                 )
         # Once the native rail fails, every later lifecycle event edits the same fallback message.
@@ -518,13 +529,13 @@ class GatewayTurnProgressMixin:
         if self._ctx.tool_progress_enabled:
             st.native_failed = True
             logger.info(
-                "Slack native task cards are unsupported for this destination (%s); "
+                "Native task cards are unsupported for this destination (%s); "
                 "tool progress continues as an editable text update", reason,
             )
             return
         st.publication_suppressed = True
         logger.info(
-            "Slack native task cards are unsupported for this destination (%s); "
+            "Native task cards are unsupported for this destination (%s); "
             "tool progress stays off for this turn", reason,
         )
 
@@ -536,7 +547,7 @@ class GatewayTurnProgressMixin:
         except queue.Empty:
             pass
         except Exception:
-            logger.debug("Slack native progress queue drain failed", exc_info=True)
+            logger.debug("Native task-card progress queue drain failed", exc_info=True)
         return changed
 
     async def _send_native_task_card_progress(self, adapter) -> None:
@@ -753,14 +764,10 @@ class GatewayTurnProgressMixin:
         adapter = self._runner._delivery_adapter_for(ctx.source) if ctx.progress_queue else None
         if not adapter:
             return
-        if ctx._native_slack_task_cards and hasattr(adapter, "send_native_task_card_progress"):
+        if ctx._native_task_cards and hasattr(adapter, "send_native_task_card_progress"):
             await self._send_native_task_card_progress(adapter)
             return
-        # Skip tool progress for platforms that can't edit messages (e.g. iMessage/BlueBubbles):
-        # each update would be a separate bubble. getattr, not attribute access: duck-typed
-        # adapters (test fakes, minimal plugins) may lack edit_message — treated as "can't edit".
-        adapter_edit = getattr(type(adapter), "edit_message", None)
-        if adapter_edit is None or adapter_edit is BasePlatformAdapter.edit_message:
+        if not _edits_messages(adapter):
             self._drain_progress_queue()
             return
         st = self._progress_edit_state(adapter)
@@ -823,7 +830,7 @@ class GatewayTurnProgressMixin:
         except Exception as err:
             logger.debug("voice ack schedule failed: %s", err)
 
-    # Slack-native task cards ride agent.tool_start_callback / tool_complete_callback so start and
+    # Native task cards ride agent.tool_start_callback / tool_complete_callback so start and
     # completion correlate by the REAL tool-call id; name-correlated progress_callback text events
     # would duplicate cards and mispair concurrent calls.
 
@@ -831,7 +838,7 @@ class GatewayTurnProgressMixin:
         ctx = self._ctx
         return bool(ctx.progress_queue) and ctx._run_still_current() and not self._agent_interrupted()
 
-    # ── Slack-native task cards: ID-bearing lifecycle callbacks (#29483) ── These ride
+    # ── Native task cards: ID-bearing lifecycle callbacks (#29483) ── These ride
     # agent.tool_start_callback / agent.tool_complete_callback so start/completion events correlate by the
     # REAL tool-call id — the name-correlated text events in progress_callback would duplicate cards and
     # mispair concurrent calls to the same tool.
@@ -866,7 +873,7 @@ class GatewayTurnProgressMixin:
         self._publish_api_tool("tool.start", call_id, tool_name, args)
         if self._ctx._voice_ack_guild[0] is not None:
             self.voice_ack_callback(call_id, tool_name, args)
-        if self._ctx._native_slack_task_cards:
+        if self._ctx._native_task_cards:
             self.native_tool_start_callback(call_id, tool_name, args)
 
     def combined_tool_complete_callback(self, call_id, tool_name, args, result):
@@ -888,7 +895,7 @@ class GatewayTurnProgressMixin:
         if local_viewer_turn(self):
             from gateway import local_viewer_events
             local_viewer_events.publish_control_if_changed(self)
-        if self._ctx._native_slack_task_cards:
+        if self._ctx._native_task_cards:
             self.native_tool_complete_callback(call_id, tool_name, args, result)
 
     # ── hook / status bridges (agent thread → gateway loop) ────────────────────────────────

@@ -24,7 +24,7 @@ def _wire(user_config):
         voice_ack_callback=None,
         _voice_ack_guild=[None],
         voice_turn=False,
-        _native_slack_task_cards=False,
+        _native_task_cards=False,
         native_tool_complete_callback=None,
         _step_callback_sync=None,
         _hooks_ref=types.SimpleNamespace(loaded_hooks=[]),

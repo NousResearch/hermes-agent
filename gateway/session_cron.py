@@ -261,6 +261,27 @@ def _run_identified(run_job, job, execution_id, **kwargs):
         exit_cron_execution(token)
 
 
+# The end reason of a fire whose run_job returned before the agent ran (a gate or a pre-agent refusal).
+CRON_SKIPPED_END_REASON = 'cron_skipped'
+
+
+async def _close_unopened_session(authority, session_id):
+    """``submit`` commits the fire's session before ``run_job`` runs its gates, so a fire that never
+    reached the agent left it open, empty and untitled: one "new chat" per gated tick in every default
+    listing. ``run_job`` ends every session it opens, so an open row without messages is one it never
+    used: end and hide it. Run history still lists it; a run's own booking is never touched."""
+    from functools import partial
+    from gateway.session_runtime_workers import tracked_write
+
+    def close(db):
+        session = db.get_session(session_id)
+        if session is None or session.get('ended_at') is not None or session.get('message_count'):
+            return
+        db.end_session(session_id, CRON_SKIPPED_END_REASON)
+        db.set_session_hidden(session_id, True)
+    await tracked_write(authority, partial(close, authority.db))
+
+
 async def execute(authority, ref, row, policy):
     from cron.scheduler import run_job
     from gateway.run import _profile_runtime_scope
@@ -288,6 +309,7 @@ async def execute(authority, ref, row, policy):
         with _profile_runtime_scope(db_path.parent):
             result = await asyncio.to_thread(_run_identified, run_job, job, execution_id,
                                              extra_prompt=data['extra_prompt'], cancel_event=cancel)
+        await _close_unopened_session(authority, ref.session_id)
         # run_job stamps run-side verdicts on ITS job copy (quota hold, unreachable model); the
         # firing scheduler's bookkeeping reads them off its own dict, so they ride the result.
         flags = {key: job[key] for key in RUN_JOB_FLAGS if key in job}

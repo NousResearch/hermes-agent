@@ -339,6 +339,25 @@ class DuplicateNativeToolsAgent:
         return {"final_response": "done", "messages": [], "api_calls": 1}
 
 
+class NineNativeToolsAgent:
+    """Leave the first task outside the normal eight-card display window."""
+
+    def __init__(self, **kwargs):
+        self.tool_start_callback = kwargs.get("tool_start_callback")
+        self.tool_complete_callback = kwargs.get("tool_complete_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
+        start = self.tool_start_callback or (lambda *a, **k: None)
+        complete = self.tool_complete_callback or (lambda *a, **k: None)
+        for index in range(9):
+            start(f"call-{index}", "web_search", {"query": str(index)})
+            time.sleep(0.12)
+        complete("call-0", "web_search", {"query": "0"}, '{"success": true}')
+        time.sleep(0.12)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
 class LongPreviewAgent:
     """Agent that emits a tool call with a very long preview string."""
     LONG_CMD = "cd /home/teknium/.hermes/hermes-agent/.worktrees/hermes-d8860339 && source .venv/bin/activate && python -m pytest tests/gateway/test_run_progress_topics.py -n0 -q"
@@ -1180,6 +1199,30 @@ async def test_slack_native_progress_correlates_concurrent_duplicate_tools_by_id
     ]
     assert adapter.sent == []
     assert adapter.native_stops == 1
+
+
+@pytest.mark.asyncio
+async def test_slack_native_cards_publish_completed_task_outside_eight_task_window(
+    monkeypatch, tmp_path
+):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        NineNativeToolsAgent,
+        session_id="sess-native-overflow-complete",
+        platform=Platform.SLACK,
+        chat_id="C1",
+        thread_id="thread-1",
+        adapter_cls=NativeTaskCardAdapter,
+        user_id="U1",
+        scope_id="T1",
+    )
+
+    assert result["final_response"] == "done"
+    assert any(
+        {task["id"]: task["status"] for task in update["tasks"]}.get("call-0") == "complete"
+        for update in adapter.native_updates
+    )
 
 
 @pytest.mark.asyncio

@@ -1301,7 +1301,7 @@ class TestHunkTargetPrecedence:
         result, fo, final = _apply_body(tmp_path, source, body)
 
         assert result.success is False
-        assert "Found 2 matches" in (result.error or "")
+        assert "hunk 2" in (result.error or "")
         assert fo.writes == [] and final == source
 
     def test_neighbouring_hunks_may_share_a_context_line(self, tmp_path):
@@ -1504,3 +1504,142 @@ class TestV4ABomRoundTrip:
             self.BOM.encode("utf-8")
         ), "BOM was injected on a plain file"
         assert b"print('world')" in raw
+
+
+class TestHunkSelectionReviewRegressions:
+    """Wrong-site writes found by review of the planner: a consumed source must never be
+    re-applied to a similar line, a whole-line site must not shadow a normalization-only
+    target in the same scope, and text an earlier hunk wrote may anchor a later hunk."""
+
+    @pytest.mark.parametrize("source, body", [
+        ('host = "a"\nhost = "b"\n',
+         '@@\n-host = "a"\n+host = "c"\n@@\n-host = "a"\n+host = "d"'),
+        ("a = 0\nb = 0\n", "@@\n-a = 0\n+a = 9\n@@\n-a = 0\n+a = 9"),
+    ], ids=["different-replacement", "re-sent-short-hunk"])
+    def test_a_consumed_source_is_not_reapplied_to_a_similar_line(self, tmp_path, source, body):
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is False
+        assert fo.writes == [] and final == source
+
+    def test_a_re_sent_identical_hunk_is_a_no_op(self, tmp_path):
+        source = "total_count = 0\nother_value = 0\n"
+        hunk = "@@\n-total_count = 0\n+total_count = 19\n"
+
+        result, _fo, final = _apply_body(tmp_path, source, hunk + hunk.rstrip("\n"))
+
+        assert result.success is True, result.error
+        assert final == "total_count = 19\nother_value = 0\n"
+
+    def test_two_identical_hunks_still_edit_two_real_sites(self, tmp_path):
+        source = "host = 'a'\nhost = 'a'\n"
+        hunk = "@@\n-host = 'a'\n+host = 'c'\n"
+
+        result, _fo, final = _apply_body(tmp_path, source, hunk + hunk.rstrip("\n"))
+
+        assert result.success is True, result.error
+        assert final == "host = 'c'\nhost = 'c'\n"
+
+    def test_one_similarity_only_target_still_applies_with_its_note(self, tmp_path):
+        source = "def f():\n    x = compute(1, 2)\n    return x\n"
+        body = "@@\n-    x = compute(1, 3)\n+    x = compute(1, 4)"
+
+        result, _fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is True, result.error
+        assert final == "def f():\n    x = compute(1, 4)\n    return x\n"
+
+    def test_a_consumed_source_is_not_reapplied_when_the_written_copy_no_longer_resembles_it(self, tmp_path):
+        source = "total_count = 0\ntotal_count2 = 0\n"
+        body = ("@@\n-total_count = 0\n+grand_sum = 42\n"
+                "@@\n-total_count = 0\n+total_count = 5")
+
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is False
+        assert fo.writes == [] and final == source
+
+    def test_a_consumed_source_is_not_reapplied_to_a_similar_block_in_a_hint_window(self, tmp_path):
+        source = ("def foo():\n    a = 1\n    b = 2\n    return a\n# " + "x" * 600
+                  + "\ndef bar():\n    a = 1\n    qqq = 999\n    return a\n")
+        removed = "-    a = 1\n-    b = 2\n-    return a\n"
+        body = (f"@@\n{removed}+    a = 1\n+    unrelated_name = 'zzzzzz'\n+    return a\n"
+                f"@@ def bar(): @@\n{removed}+    a = 4\n+    b = 5\n+    return a")
+
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is False
+        assert fo.writes == [] and final == source
+
+    def test_context_only_anchor_inside_written_text_is_free(self, tmp_path):
+        source = "a = 1\nz = 0\n"
+        body = "@@\n-a = 1\n+a = 1\n+b = 2\n+c = 3\n@@\n b = 2\n+mid = 5\n@@\n-z = 0\n+z = 9"
+
+        result, _fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is True, result.error
+        assert final == "a = 1\nb = 2\nmid = 5\nc = 3\nz = 9\n"
+
+    @pytest.mark.parametrize("scope", ["anchor", "hint"])
+    def test_an_exact_site_in_scope_does_not_shadow_a_normalized_one(self, tmp_path, scope):
+        source = "def second():\n    active  = False\n# " + "x" * 80 + "\ndef third():\n    active = False\n"
+        head = "@@\n def second():\n@@\n" if scope == "anchor" else "@@ def second(): @@\n"
+        body = head + "-    active = False\n+    active = True"
+
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is False
+        assert "ambiguous" in result.error
+        assert fo.writes == [] and final == source
+
+    def test_an_ordered_hunk_takes_the_nearest_of_exact_and_normalized_sites(self, tmp_path):
+        source = "# top\ndef second():\n    active  = False\ndef third():\n    active = False\n"
+        body = ("@@\n def second():\n@@\n-    active = False\n+    active = True\n"
+                "@@\n-    active = False\n+    active = True")
+
+        result, _fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is True, result.error
+        assert final == "# top\ndef second():\n    active = True\ndef third():\n    active = True\n"
+
+    def test_a_context_line_an_earlier_hunk_wrote_anchors_the_next_hunk(self, tmp_path):
+        source = "a = 1\nc = 3\n"
+        body = "@@\n-a = 1\n+a = 1\n+b = 2\n@@\n b = 2\n-c = 3\n+c = 4"
+
+        result, _fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is True, result.error
+        assert final == "a = 1\nb = 2\nc = 4\n"
+
+    def test_a_decoy_block_does_not_win_when_the_adjacent_site_is_written_context(self, tmp_path):
+        source = "a = 1\nc = 3\n# " + "x" * 40 + "\nb = 2\nc = 3\n"
+        body = "@@\n-a = 1\n+a = 1\n+b = 2\n@@\n b = 2\n-c = 3\n+c = 4"
+
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is False
+        assert fo.writes == [] and final == source
+
+    def test_a_hunk_whose_removed_line_was_just_written_still_refuses(self, tmp_path):
+        source = "a = 1\n"
+        body = "@@\n-a = 1\n+b = 2\n@@\n-b = 2\n+b = 3"
+
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is False
+        assert fo.writes == [] and final == source
+
+    @pytest.mark.parametrize("anchor_first", [True, False], ids=["anchor-first", "anchor-last"])
+    def test_an_anchor_only_disambiguates_sites_before_it(self, tmp_path, anchor_first):
+        sessions = "class TestSessions:\n    self.assertEqual(resp.status_code, 200)\n"
+        other = "class TestOther:\n    self.assertEqual(resp.status_code, 200)\n"
+        body = ("@@ class TestSessions @@\n class TestSessions:\n@@\n"
+                "-    self.assertEqual(resp.status_code, 200)\n+    self.assertEqual(resp.status_code, 202)")
+
+        result, fo, final = _apply_body(tmp_path, sessions + other if anchor_first else other + sessions, body)
+
+        if anchor_first:  # the competing site follows the anchor: nothing orders the two
+            assert result.success is False and fo.writes == []
+        else:
+            assert result.success is True, result.error
+            assert final == other + sessions.replace("200", "202")

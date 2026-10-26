@@ -13,7 +13,7 @@ import posixpath
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, NamedTuple, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, NamedTuple, Optional, Tuple
 
 if TYPE_CHECKING:  # annotations only; the real import is per-call in apply_v4a_operations
     from tools.file_operations_common import PatchResult
@@ -236,6 +236,38 @@ def _distinct(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
 Span = tuple[int, int]
 
 
+def _edit_ranges(content: str, span: Span, hunk: Hunk) -> list[Span]:
+    """The char ranges of ``span`` a hunk would replace (its '-' lines). Its context lines are
+    current content: text an earlier hunk wrote may anchor a later hunk, only replacing it is
+    refused. A span that is not line-aligned with the hunk counts whole; a hunk that removes
+    nothing (a context-only anchor) replaces nothing, so it has an empty range at the span."""
+    removed = [line.prefix == '-' for line in hunk.lines if line.prefix != '+']
+    parts = content[span[0]:span[1]].split('\n')
+    if len(parts) != len(removed):
+        return [span]
+    ranges, pos = [], span[0]
+    for part, gone in zip(parts, removed):
+        if gone:
+            ranges.append((pos, max(pos + len(part), pos + 1)))
+        pos += len(part) + 1
+    return ranges or [(span[0], span[0])]
+
+
+def _unwritten(content: str, span: Span, hunk: Hunk, written: Iterable[Span]) -> bool:
+    """True when what ``hunk`` would replace at ``span`` is not text an earlier hunk wrote."""
+    return not any(_overlaps(r, w) for r in _edit_ranges(content, span, hunk) if r[0] < r[1] for w in written)
+
+
+def _normalized_sites(content: str, pattern: str, free: Callable[[Span], bool]) -> list[Span]:
+    """Every site ``content`` holds under ANY non-similarity strategy of the fuzzy chain
+    (the chain itself stops at its first matching strategy, so an exact site would hide a
+    whitespace-normalized one), one per physical site."""
+    from tools.fuzzy_match import SIMILARITY_STRATEGIES, STRATEGIES
+    found = [span for name, find in STRATEGIES if name not in SIMILARITY_STRATEGIES
+             for span in find(content, pattern)]
+    return [s for s in _distinct(sorted(found)) if free(s)]
+
+
 def _fuzzy_sites(content: str, pattern: str, lo: int,
                  free: Callable[[Span], bool]) -> tuple[list[Span], bool]:
     """``(spans, similar)``: what the fuzzy chain's first matching strategy finds in
@@ -274,19 +306,26 @@ def _select_span(content: str, pattern: str, hunk: Hunk, cursor: int, *, ordered
     chain before any earlier site; then order the patch states (an ``ordered`` hunk, the first
     of several or one of a run of identical hunks, takes the first site at or after
     ``cursor``, inside its hint's windows if the hint occurs); else exactly one site."""
-    free = lambda span: not any(_overlaps(span, w) for w in written)
+    free = lambda span: _unwritten(content, span, hunk, written)
     tiers = [[s for s in tier if free(s)] for tier in _line_spans(content, pattern.split('\n'))]
     raw = [s for pos in _positions(content, pattern) if free(s := (pos, pos + len(pattern)))]
 
-    def sites(lo: int, hi: int) -> list[Span]:
-        inside = lambda span: lo <= span[0] and span[1] <= hi
-        lines = next((found for tier in tiers if (found := [s for s in tier if inside(s)])), [])
-        extra = [r for r in raw if inside(r) and not any(_overlaps(r, line) for line in lines)]
-        return sorted(lines + _distinct(extra))
+    norm: list[Span] = []
 
+    def sites(lo: int, hi: int) -> list[Span]:
+        # A site is in scope when what it replaces is: its leading context may lie before ``lo``.
+        inside = lambda span: lo <= _edit_ranges(content, span, hunk)[0][0] and span[1] <= hi
+        lines = next((found for tier in tiers if (found := [s for s in tier if inside(s)])), [])
+        extra = [r for r in raw + norm if inside(r) and not any(_overlaps(r, line) for line in lines)]
+        return sorted(lines + _distinct(sorted(extra)))
+
+    if not any(tiers):  # no whole-line site anywhere: the fuzzy chain decides
+        return None, len(_distinct(sorted(raw))), None
+    # Inside a bounded scope (after the previous hunk, around an @@ hint @@) a whole-line site
+    # must not shadow a site only a normalizing strategy finds, so those count there too.
+    if cursor or _hint_windows(content, hunk.context_hint):
+        norm = _normalized_sites(content, pattern, free)
     whole = sites(0, len(content))
-    if not any(tiers):
-        return None, len(whole), None  # no whole-line site anywhere: the fuzzy chain decides
     after = sites(cursor, len(content)) if cursor else whole
     if cursor and not after:  # the rest of the file may still hold a normalized-only site
         fuzzy, similar = _fuzzy_sites(content, pattern, cursor, free)
@@ -311,10 +350,15 @@ def _v4a_advice(hunk: Hunk) -> str:
             "add a unique @@ hint @@ to this hunk or include unique context lines in its search text")
 
 
+def _fuzzy_chain(text: str, pattern: str) -> tuple[str, list[tuple[int, int]]]:
+    """``(strategy, spans)``: what the fuzzy chain's first matching strategy finds in ``text``."""
+    from tools.fuzzy_match import STRATEGIES
+    return next(((name, spans) for name, find in STRATEGIES if (spans := find(text, pattern))), ("", []))
+
+
 def _fuzzy_spans(text: str, pattern: str) -> list[tuple[int, int]]:
     """The spans the fuzzy strategy chain matches (its first matching strategy), in ``text``."""
-    from tools.fuzzy_match import STRATEGIES
-    return next((spans for _name, find in STRATEGIES if (spans := find(text, pattern))), [])
+    return _fuzzy_chain(text, pattern)[1]
 
 
 # content, (start, old_end, new_end), error, the fuzzy strategy that located the edit
@@ -329,16 +373,30 @@ def _window_edit(content: str, lo: int, hi: int, pattern: str, replacement: str)
         content, None, error, None)
 
 
+def _consumed(pattern: str, removed: Iterable[str]) -> bool:
+    """True when an earlier hunk of this patch replaced text that ``pattern`` names (matched by
+    a non-similarity strategy): its source is gone, so a similarity match is some other line."""
+    from tools.fuzzy_match import SIMILARITY_STRATEGIES, STRATEGIES
+    return any(find(text, pattern) for text in removed for name, find in STRATEGIES
+               if name not in SIMILARITY_STRATEGIES)
+
+
 def _fuzzy_replace_hunk(content: str, hunk: Hunk, pattern: str, replacement: str,
-                        free: Callable[[Span], bool]) -> Edit:
+                        free: Callable[[Span], bool], removed: Iterable[str] = ()) -> Edit:
     """No whole-line site: the fuzzy strategy chain over the whole file (it refuses its own
     ambiguity), then inside the windows around the @@ hint @@, which must all agree on one
     site. Text this patch already wrote (``free`` is False) is never a target: matching the old
     text inside a replacement an earlier hunk wrote edits that hunk's output a second time.
     -> Edit; the edit's end is the next cursor, never a search for the replacement (that text
     may already exist earlier)."""
-    from tools.fuzzy_match import fuzzy_find_and_replace
-    spans = _fuzzy_spans(content, pattern)
+    from tools.fuzzy_match import SIMILARITY_STRATEGIES, fuzzy_find_and_replace
+    strategy_found, spans = _fuzzy_chain(content, pattern)
+    # A similarity match is not the source: with the source consumed by an earlier hunk the match
+    # is some other line. Refuse (the caller treats a re-sent hunk as already applied).
+    consumed = (f"its search text matches text an earlier hunk of this patch replaced, and only an "
+                f"approximate match remains — {_v4a_advice(hunk)}")
+    if strategy_found in SIMILARITY_STRATEGIES and _consumed(pattern, removed):
+        return content, None, consumed, None
     own = [s for s in spans if free(s)]
     if spans and not own:
         return content, None, ("its search text is only found inside text an earlier hunk of this "
@@ -353,8 +411,11 @@ def _fuzzy_replace_hunk(content: str, hunk: Hunk, pattern: str, replacement: str
     if count:
         start, end = spans[0]
         return new, (start, end, len(new) - (len(content) - end)), None, strategy
-    windows = [(lo, hi, [s for s in _fuzzy_spans(content[lo:hi], pattern) if free((lo + s[0], lo + s[1]))])
-               for lo, hi in _hint_windows(content, hunk.context_hint)] if error else []
+    chains = [(lo, hi, *_fuzzy_chain(content[lo:hi], pattern))
+              for lo, hi in _hint_windows(content, hunk.context_hint)] if error else []
+    if any(name in SIMILARITY_STRATEGIES for *_w, name, _found in chains) and _consumed(pattern, removed):
+        return content, None, consumed, None  # a window relaxes the similarity threshold
+    windows = [(lo, hi, [s for s in found if free((lo + s[0], lo + s[1]))]) for lo, hi, _name, found in chains]
     targets = _distinct([(lo + s, lo + e) for lo, _hi, found in windows for s, e in found])
     if len(targets) > 1 or any(len(found) > 1 for *_w, found in windows):
         return content, None, (f"context hint '{hunk.context_hint}' selects {len(targets)} "
@@ -413,11 +474,12 @@ def _plan_hunks(content: str, hunks: list[Hunk]) -> _Plan:
     notes: list[str] = []
     strategies: list[str] = []
     written: list[Span] = []
+    removed: list[str] = []  # source text earlier hunks replaced
     changes = cursor = 0
-    free = lambda span: not any(_overlaps(span, w) for w in written)
     changed_patterns = ['\n'.join(s) for s, r in map(_split_hunk, hunks) if s and s != r]
     for index, hunk in enumerate(hunks, start=1):
         search_lines, replace_lines = _split_hunk(hunk)
+        free = lambda span: _unwritten(content, span, hunk, written)
         label = f"hunk {index} " + (f"'{hunk.context_hint}'" if hunk.context_hint else "(no hint)")
         if search_lines == replace_lines:
             # Context-only anchor hunks (models emit these between changes) are inert; identical
@@ -466,7 +528,7 @@ def _plan_hunks(content: str, hunks: list[Hunk]) -> _Plan:
                           + (" after the previous hunk" if cursor else "") + f") — {_v4a_advice(hunk)}")
             continue
         else:
-            new_content, edit, error, strategy = _fuzzy_replace_hunk(content, hunk, pattern, replacement, free)
+            new_content, edit, error, strategy = _fuzzy_replace_hunk(content, hunk, pattern, replacement, free, removed)
             # Already-applied hunks are a no-op; only reached when no site of the search text remains.
             error = (None if not error or is_already_applied(content, pattern, replacement) else
                      f"{label} not found — {error}" + _no_match_hint(error, pattern, content))
@@ -474,6 +536,7 @@ def _plan_hunks(content: str, hunks: list[Hunk]) -> _Plan:
             errors.append(error)
         if edit:
             start, old_end, cursor = edit
+            removed.append(content[start:old_end])
             content = new_content
             strategies.append(strategy)
             notes.extend([correction] if correction else [])

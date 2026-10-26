@@ -2144,17 +2144,21 @@ tool_loop_guardrails:
   warn_after:
     exact_failure: 2           # identical failing call repeated N times
     same_tool_failure: 3       # same tool failing N times (different args)
-    idempotent_no_progress: 2  # same result, no progress, N times
+    idempotent_no_progress: 2  # same result, no progress, N times (read-only tools)
+    tool_repetition: 5         # same mutating call + same successful result, N times
   hard_stop_after:
     exact_failure: 5
     same_tool_failure: 8
     idempotent_no_progress: 5
+    tool_repetition: 8
   loop_caps:
     max_web_searches: 50       # max web_search calls per turn (0 = unlimited)
     max_subagents: 50          # max subagents spawned per turn (0 = unlimited)
 ```
 
 `hard_stop_enabled` explicitly enables hard stops on every platform. When it remains `false`, `non_interactive_hard_stop_enabled` still enables them for unattended gateway/cron-style platforms while preserving warning-only behavior for CLI, TUI, Desktop, ACP, subagents, and `api_server` runs (supervised task loops with a live parent or client). Set `non_interactive_hard_stop_enabled: false` to opt an unattended deployment out. See also [Docker / unattended deployments](docker.md).
+
+`tool_repetition` is a separate axis for **mutating** tools whose calls succeed but never progress (the same arguments and the same non-error result, such as `browser_navigate` to a page that stays 404). Read-only tools stay on `idempotent_no_progress`. A changed result or a failure restarts the mutating streak. Warnings never block the call; with hard stops on, the next identical call is blocked once `hard_stop_after.tool_repetition` is reached. Pollers (`process_manage`, `*_poll`, `*_get_result`) stay exempt. This does not replace the consecutive identical-call streak or cycle hard stops below, which still halt sooner when those detectors apply.
 
 Hard stops are designed to catch **replays** — the same call, unchanged, with nothing happening in between — not legitimate iteration:
 

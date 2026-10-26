@@ -22,6 +22,16 @@ export function clearResumeLatches(storedSessionId: string): void {
   setResumeReattachSessionId(retire)
 }
 
+// One backoff for both resume self-heals (use-route-resume's stranded retry and
+// use-resume-reattach's quiet re-attach): capped so a dead backend never hot-loops.
+export const MAX_RESUME_RETRIES = 4
+const RESUME_RETRY_BASE_MS = 1_000
+const RESUME_RETRY_MAX_MS = 8_000
+
+export function resumeRetryDelayMs(attempt: number): number {
+  return Math.min(RESUME_RETRY_MAX_MS, RESUME_RETRY_BASE_MS * 2 ** attempt)
+}
+
 export const resumeFailedToastId = (storedSessionId: string) => `resume-failed:${storedSessionId}`
 
 /**

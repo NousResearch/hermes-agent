@@ -29,6 +29,7 @@ class _Socket:
         self.order = []
         self.arrived = asyncio.Event()
         self.task: asyncio.Task | None = None  # the handle_ws task serving this socket
+        self.on_disconnect = []  # run, in order and without yielding, as the disconnect is raised
 
     async def accept(self, **_kw):
         pass
@@ -45,6 +46,8 @@ class _Socket:
         frame = await self.inbound.get()
         if frame is None:
             from tui_gateway.ws import _WebSocketDisconnect
+            for step in self.on_disconnect:
+                step()
             raise _WebSocketDisconnect()
         return json.dumps(frame)
 
@@ -319,6 +322,54 @@ async def test_a_disconnect_drops_the_frames_held_for_a_start_that_has_not_ended
     rig.release.set()
     await asyncio.wait_for(rig.serving, 30)
     assert ran == ['probe'], ran
+
+
+def _on_disconnect_path(monkeypatch, sock, step):
+    """Run *step* once, synchronously, at the first step of ``handle_ws``'s disconnect path (its first
+    ``asyncio.current_task()`` after the socket raised the disconnect): nothing else on the loop,
+    no held lane included, runs between the handler reaching that path and *step*."""
+    from tui_gateway import ws as ws_mod
+
+    real_current_task, armed = asyncio.current_task, []
+
+    def current_task(loop=None):
+        task = real_current_task(loop)
+        if armed and task is sock.task:
+            armed.clear()
+            step()
+        return task
+
+    monkeypatch.setattr(ws_mod.asyncio, 'current_task', current_task)
+    sock.on_disconnect.append(lambda: armed.append(True))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('start_ends', ['just_after_the_disconnect', 'just_before_the_disconnect'])
+async def test_held_frames_run_only_when_their_start_ended_before_the_disconnect(rig, monkeypatch, start_ends):
+    """Whether held frames run is decided when the client leaves, not when their lane next resumes:
+    a start that ends right after the disconnect (no yield between the two, so the lane wakes to
+    both) still drops them, and one that ends right before it still runs them."""
+    from tui_gateway import ws as ws_mod
+
+    monkeypatch.setattr(ws_mod, '_WS_PROFILE_START_WAIT_S', 30.0)
+    ran = _record_dispatch(monkeypatch)
+    sock = await rig.connect()
+    for n in range(2):
+        sock.inbound.put_nowait({'jsonrpc': '2.0', 'id': f'held-{n}', 'method': 'ping', 'params': {'profile': 'beta'}})
+    sock.inbound.put_nowait({'jsonrpc': '2.0', 'id': 'probe', 'method': 'ping', 'params': {}})
+    await sock.reply('probe', timeout=10)  # both beta frames were set aside before it
+    _, started = rig.runner.session_authorities.starting('beta')
+    if start_ends == 'just_after_the_disconnect':
+        _on_disconnect_path(monkeypatch, sock, started.set)
+    else:
+        sock.on_disconnect.append(started.set)  # set as the socket raises the disconnect
+    sock.inbound.put_nowait(None)  # the client disconnects
+
+    done, _ = await asyncio.wait({sock.task}, timeout=5)
+    assert sock.task in done, 'the handler did not return promptly after the disconnect'
+    assert started.is_set()
+    expected = ['probe'] if start_ends == 'just_after_the_disconnect' else ['probe', 'held-0', 'held-1']
+    assert ran == expected, ran
 
 
 @pytest.mark.asyncio

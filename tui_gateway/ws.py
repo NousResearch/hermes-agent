@@ -456,6 +456,16 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
     held_room = asyncio.Semaphore(_WS_DISPATCH_QUEUE_MAX)
     # Set once the client is gone: frames still waiting for a start are dropped, not run for nobody.
     client_gone = asyncio.Event()
+    # The start each lane still waits for, and the lanes the disconnect dropped: decided when the client
+    # leaves, so a start that ends a moment later (before the lane resumes) cannot run them.
+    held_waiting: dict[str, asyncio.Event] = {}
+    held_dropped: set[str] = set()
+
+    def _client_left() -> None:
+        """At the disconnect, with no yield: drop every lane whose start has not ended yet. A lane that
+        already dispatches keeps going (a viewer leaving never stops a turn)."""
+        client_gone.set()
+        held_dropped.update(key for key, started in held_waiting.items() if not started.is_set())
 
     async def _dispatch_one(req: Any) -> None:
         """Dispatch one request and write its inline reply."""
@@ -510,8 +520,9 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             finally:
                 for wait in waits:
                     wait.cancel()
+            del held_waiting[key]  # dispatching from here on: a later disconnect lets these frames finish
             frames = held[key]
-            if client_gone.is_set() and not started.is_set():
+            if key in held_dropped:
                 for _ in frames:
                     held_room.release()
                 frames.clear()
@@ -523,6 +534,8 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             if not send_failed.done():
                 send_failed.set_result(None)
         finally:
+            held_waiting.pop(key, None)  # cancelled while waiting (server shutdown)
+            held_dropped.discard(key)
             del held[key]
 
     async def _hold_for_profile_start(req: Any) -> bool:
@@ -540,6 +553,10 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             held[key].append(req)
         else:
             held[key] = collections.deque([req])
+            assert started is not None  # a start not held yet comes from the registry, with its event
+            held_waiting[key] = started
+            if client_gone.is_set() and not started.is_set():
+                held_dropped.add(key)  # read before the disconnect, for a start that had not ended by it
             lane = asyncio.create_task(_dispatch_after_start(key, started))
             held_lanes.add(lane)
             lane.add_done_callback(held_lanes.discard)
@@ -684,7 +701,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
     except _SendFailed:
         pass
     finally:
-        client_gone.set()
+        _client_left()
         if dispatcher is not None:
             # Finish the in-flight handler and the frames read before the disconnect (as the serial read loop
             # did) before the teardown below parks this transport's sessions. A cancelled connection (server

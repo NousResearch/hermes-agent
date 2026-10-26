@@ -91,7 +91,7 @@ def _pre_dispatch_housekeeping(_sched, headless: bool) -> None:
     # markers now instead of waiting for the job's next run (#134092).
     try:
         _sched._reconcile_queued_deliveries()
-    except Exception as _recon_exc:
+    except Exception as _recon_exc:  # health: allow BLE001 -- housekeeping must never stop dispatch; the sweep retries next tick
         _sched.logger.debug("Delivery receipt reconcile failed: %s", _recon_exc)
 
 

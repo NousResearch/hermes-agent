@@ -26,7 +26,7 @@ logger = logging.getLogger("tools.terminal_tool")
 
 def _create_configured_env(
     config: dict[str, Any], env_type: str, *, image: str, cwd: str, timeout: int,
-    task_id: str, host_cwd: Optional[str],
+    task_id: str, host_cwd: Optional[str], probe_only: bool = False,
 ):
     """``_create_environment`` with the ssh/local/container kwargs shaped from *config*
     (shared by the terminal tool, the file tools and the lazy :func:`ensure_task_env` bring-up)."""
@@ -39,7 +39,7 @@ def _create_configured_env(
             _container_config_from_config(config) if _is_container_backend(env_type) else None
         ),
         local_config=_local_config_from_config(config) if env_type == "local" else None,
-        task_id=task_id, host_cwd=host_cwd,
+        task_id=task_id, host_cwd=host_cwd, probe_only=probe_only,
     )
 
 
@@ -318,7 +318,8 @@ def _evict_environment_for_task(task_id: Optional[str]) -> None:
     from tools.terminal_tool import (
         _active_environments, _env_lock, _last_activity, _resolve_container_task_id,
     )
-    keys = {_resolve_container_task_id(task_id)}
+    resolved = _resolve_container_task_id(task_id)
+    keys = {resolved, f"remote-ssh-{resolved}"}
     if task_id:
         keys.add(task_id)
     evicted = []

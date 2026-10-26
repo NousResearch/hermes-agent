@@ -46,12 +46,35 @@ _API_WORKER_LIVE = 0
 # shared with every ``asyncio.to_thread`` SessionDB read in the session handlers, so once live
 # turns filled it each /api/sessions read queued behind a whole turn (#144362). Turn concurrency is
 # bounded where it is refused: ``gateway.api_server.max_concurrent_runs`` (429 past the cap).
-_API_TURN_EXECUTOR = _UnboundedThreadExecutor(thread_name_prefix="hermes-api-turn")
+# Created on first use and retired at adapter disconnect (``_close_run_state``), so its parked
+# threads do not outlive the adapter that used them; the loop's default executor this replaced
+# went away with its loop the same way.
+_API_TURN_EXECUTOR: _UnboundedThreadExecutor | None = None
+_API_TURN_EXECUTOR_LOCK = threading.Lock()
 
 
 def api_turn_executor() -> _UnboundedThreadExecutor:
     """The executor that runs API-server agent turns and cron fires (never the loop's default)."""
-    return _API_TURN_EXECUTOR
+    global _API_TURN_EXECUTOR
+    with _API_TURN_EXECUTOR_LOCK:
+        if _API_TURN_EXECUTOR is None:
+            _API_TURN_EXECUTOR = _UnboundedThreadExecutor(thread_name_prefix="hermes-api-turn")
+        return _API_TURN_EXECUTOR
+
+
+def retire_api_turn_executor() -> _UnboundedThreadExecutor | None:
+    """Shut the API turn executor down without waiting and return it (None if never used).
+
+    Parked workers exit now; a worker still inside a turn finishes it, releases its
+    ``api_worker_live_count`` share as before, and exits instead of parking. A later submit gets
+    a fresh executor, so another adapter still serving keeps working.
+    """
+    global _API_TURN_EXECUTOR
+    with _API_TURN_EXECUTOR_LOCK:
+        executor, _API_TURN_EXECUTOR = _API_TURN_EXECUTOR, None
+    if executor is not None:
+        executor.shutdown(wait=False)
+    return executor
 
 
 def api_worker_live_count() -> int:
@@ -63,7 +86,7 @@ def api_worker_live_count() -> int:
 async def on_turn_executor(fn, /, *args, **kwargs):
     """``asyncio.to_thread`` (context copied the same way) on the API turn executor."""
     call = functools.partial(contextvars.copy_context().run, fn, *args, **kwargs)
-    return await asyncio.get_running_loop().run_in_executor(_API_TURN_EXECUTOR, call)
+    return await asyncio.get_running_loop().run_in_executor(api_turn_executor(), call)
 
 
 def _submit_api_worker(loop, fn):
@@ -88,7 +111,7 @@ def _submit_api_worker(loop, fn):
                 _API_WORKER_LIVE -= 1
 
     try:
-        return loop.run_in_executor(_API_TURN_EXECUTOR, _counted)
+        return loop.run_in_executor(api_turn_executor(), _counted)
     except BaseException:
         with _API_WORKER_LOCK:
             _API_WORKER_LIVE -= 1
@@ -277,6 +300,7 @@ def _idempotency_capabilities(self, *, store_type) -> dict[str, Any]:
 
 
 def _close_run_state(self) -> None:
+    retire_api_turn_executor()
     try:
         if getattr(self, "_run_idempotency_store", None) is not None:
             self._run_idempotency_store.close()

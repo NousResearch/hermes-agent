@@ -54,3 +54,18 @@ async def test_cron_fire_body_keeps_contextvars_off_the_default_pool():
     out = await api_runs.on_turn_executor(_fire, "job-1", adapters={"a": 1}, loop=asyncio.get_running_loop())
     assert out == "fired"
     assert seen["scope"] == "profile-a" and seen["job"] == "job-1" and seen["adapters"] == {"a": 1}
+
+
+@pytest.mark.asyncio
+async def test_adapter_disconnect_leaves_no_api_turn_thread_behind():
+    from gateway.config import PlatformConfig
+    from gateway.platforms.api_server import APIServerAdapter
+
+    loop = asyncio.get_running_loop()
+    ran_on = []
+    await api_runs._submit_api_worker(loop, lambda: ran_on.append(threading.current_thread()))
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    await adapter.disconnect()
+    ran_on[0].join(5)
+    assert not ran_on[0].is_alive(), "an idle API turn thread outlived the adapter's disconnect"
+    assert await api_runs._submit_api_worker(loop, lambda: "ran") == "ran", "no API turn ran after it"

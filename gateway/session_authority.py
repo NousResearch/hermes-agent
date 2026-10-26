@@ -896,14 +896,11 @@ class SessionAuthority:
                         self.pending_stops[ref.session_id] = generation
                 if agent is not None:
                     self.delivered_stops[ref.session_id] = generation
-        # Main's Stop: hard-cancel (aborts compression too) and end the session's own background
-        # delegations (spawned by this session only: a viewer must not kill other gateway work).
+        # Stop hard-cancels this turn (aborts compression too). Background delegations are not the
+        # turn: they keep running and report back; `/stop` and session close/reset end them.
         from agent.interrupt_compat import request_hard_interrupt
-        from tools.async_delegation import interrupt_for_session
         if agent is not None:
             request_hard_interrupt(agent)
-        for parent in dict.fromkeys((ref.session_id, self.physical_target(ref))):
-            interrupt_for_session(session_key=live.route, parent_session_id=parent, reason='user_stop')
         return self._handle(ref)
 
     def _classic_turn_holds(self, route):

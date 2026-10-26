@@ -273,26 +273,21 @@ def _per_model_profile(provider: str) -> Any:
 
 def _profile_runtime_api_mode(provider: str, model_cfg: dict[str, Any], api_key: str, *,
                               target_model: Optional[str] = None) -> str:
-    """api_mode for a provider that routes per model: its hard per-model wire wins over a stale persisted
-    ``codex_responses`` (pure check, no network); otherwise the profile decides with the live key."""
+    """api_mode for a provider that routes per model: the profile's per-model wire (decided with the live
+    key) wins, then a persisted ``model.api_mode``, then the profile's declared ``api_mode``."""
     from agent.provider_route_hooks import model_api_mode
     profile = _per_model_profile(provider)
     configured_mode = _configured_api_mode(provider, model_cfg)
+    if profile is None:
+        return configured_mode or "chat_completions"
     # Use the model being resolved, not the persisted default: a Claude MoA slot inheriting
     # codex_responses from a GPT-5 default fails with "model ... does not support Responses API".
     model_name = str(_effective_model(model_cfg, target_model)).strip()
-    if configured_mode:
-        # A stale explicit ``codex_responses`` (written by setup for the model first picked, kept after a
-        # switch to a chat-only model) must not override the provider's per-model requirement: the
-        # Responses request silently succeeds but returns no reasoning content (#46527).
-        if (configured_mode == "codex_responses" and model_name and profile is not None
-                and model_api_mode(profile, model_name) == "chat_completions"):
-            return "chat_completions"
-        return configured_mode
-    if profile is None:
-        return "chat_completions"
-    declared = profile.api_mode or "chat_completions"  # the hook's None means "keep the static api_mode"
-    return (model_api_mode(profile, model_name, api_key=api_key) or declared) if model_name else declared
+    # A persisted api_mode was written for whichever model was picked first, so it never overrides the
+    # per-model wire: a stale codex_responses silently drops reasoning content (#46527), a stale
+    # chat_completions 400s Responses-only models (#94881). The hook's None keeps it.
+    per_model = model_api_mode(profile, model_name, api_key=api_key) if model_name else None
+    return per_model or configured_mode or profile.api_mode or "chat_completions"
 
 
 def _azure_inferred_api_mode(effective_model: str, api_mode: str) -> str:

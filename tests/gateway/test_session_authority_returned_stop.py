@@ -1,5 +1,7 @@
 """A Stop for a turn whose execution already returned never reaches the next turn's agent (#143290)."""
 import asyncio
+import shlex
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -13,7 +15,7 @@ async def test_stop_while_the_finished_turn_settles_spares_the_next_turns_agent(
 
     db, authority = _authority(tmp_path, monkeypatch)
     stops = []
-    next_agent = SimpleNamespace(interrupt=lambda *a, **k: stops.append('next'))
+    next_agent = SimpleNamespace(session_id='s', interrupt=lambda *a, **k: stops.append('next'))
     # Own-agent runs (/v1/runs) install the next turn's agent on the route before it is claimed.
     authority.runner._running_agents = {'route': next_agent}
     authority.runner._resident_agent_for = lambda route: next_agent
@@ -33,7 +35,14 @@ async def test_stop_while_the_finished_turn_settles_spares_the_next_turns_agent(
         await asyncio.wait_for(returned.wait(), 5)
         handle = authority._handle(REF)
         assert handle.execution_state == 'running'  # the lagging settlement still reads as its claim
-        await authority.interrupt(ACTOR, REF, handle.execution_generation)
+        from tools.process_registry import process_registry
+        command = shlex.join([sys.executable, '-c', 'import threading; threading.Event().wait(40)'])
+        process = process_registry.spawn_local(command, cwd=str(tmp_path), task_id='s', owner_task_id='s', session_key='route')
+        try:
+            await authority.interrupt(ACTOR, REF, handle.execution_generation)
+            assert not process.exited, 'the returned generation Stop reached the next turn process'
+        finally:
+            process_registry.kill_process(process.id)
         settle.set()
         await asyncio.wait_for(authority.sessions['s'].task, 5)
     assert stops == [], 'the Stop for the returned turn must not cancel the next one'

@@ -158,3 +158,24 @@ async def test_failed_boundary_stop_fences_followers_as_unknown(tmp_path, monkey
     finally:
         monkeypatch.setattr(registry, 'kill_process', killed)
         db.close()
+
+
+@pytest.mark.asyncio
+async def test_turn_stop_preserves_detached_delegations_and_their_processes(tmp_path, monkeypatch, registry):
+    from gateway import session_ancillary
+    from tools import async_delegation
+    db, authority = _authority(tmp_path, monkeypatch)
+    parent = Agent()
+    parent.session_id = 's'
+    parent._process_owner_task_ids = {'s'}
+    authority.runner._cached_agent_for = lambda route: parent
+    own = spawn(registry, tmp_path)
+    child = registry.spawn_local(own.command, cwd=str(tmp_path), task_id='detached-child',
+        owner_task_id='detached-child', session_key='route')
+    monkeypatch.setattr(session_ancillary, 'subagent_records', lambda *a, **kw: [{'subagent_id': 'detached-child'}])
+    stopped = []
+    monkeypatch.setattr(async_delegation, 'interrupt_for_session', lambda **kw: stopped.append(kw))
+    await authority.interrupt(ACTOR, REF, authority._handle(REF).execution_generation)
+    assert own.exited and not child.exited
+    assert stopped == [], 'a turn Stop must preserve upstream detached-delegation policy'
+    db.close()

@@ -10,12 +10,12 @@ import { forgetCanonicalGroup } from './canonical-group-registry'
 import { prepareCanonicalGroupSend, readCanonicalGroupSend, retireCanonicalGroupSend } from './canonical-group-send'
 import type { PreparedCanonicalGroupSend } from './canonical-group-send'
 import { actCanonicalGroup, canonicalGroupRequest } from './canonical-groups'
-import type { CanonicalGroupBinding, CanonicalPendingAction, CanonicalRoom } from './canonical-groups'
+import type { CanonicalGroupBinding, CanonicalPendingAction, CanonicalRoom, CanonicalRoomContext } from './canonical-groups'
 import { GroupMentionInput } from './group-chat-parts'
 
 type RoomEvent = CanonicalGroupEvent
 interface Attachment { attachment_id?: string; event_id?: string; kind: string; name: string; mime: string; size?: number }
-interface RoomState { room: CanonicalRoom; driver_status?: CanonicalDriverActivity & { pending_actions?: CanonicalPendingAction[] } }
+interface RoomState { room: CanonicalRoom; context?: CanonicalRoomContext | null; driver_status?: CanonicalDriverActivity & { pending_actions?: CanonicalPendingAction[] } }
 
 const sameGroupPayload = (payload: Record<string, unknown>, text: string, attachments: Attachment[]) =>
   payload.text === text && JSON.stringify(payload.attachments ?? []) === JSON.stringify(attachments)
@@ -166,6 +166,17 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   const rename = (name: string) =>
     void mutate(() => canonicalGroupRequest(binding, 'groups.rename', { room_id: binding.roomId, event_id: crypto.randomUUID(), name }))
 
+  // True only once the backend accepted it, so the settings form keeps a rejected draft.
+  const saveContext = async (context: CanonicalRoomContext) => {
+    let saved = false
+    await mutate(async () => {
+      await canonicalGroupRequest(binding, 'groups.context', { room_id: binding.roomId, event_id: crypto.randomUUID(), ...context })
+      saved = true
+    })
+
+    return saved
+  }
+
   // Rejects so ConfirmDialog stays open with the error; a disbanded room no longer reads back, so leave it.
   const end = async () => {
     await canonicalGroupRequest(binding, 'groups.disband', { room_id: binding.roomId, cancel_id: crypto.randomUUID() })
@@ -190,7 +201,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   }
 
   return <section className="flex h-full min-h-0 flex-col gap-3 p-3">
-    <CanonicalGroupHeader busy={busy} canStop={!!state?.driver_status} onBack={onBack} onDisband={end} onRename={rename}
+    <CanonicalGroupHeader busy={busy} canStop={!!state?.driver_status} context={state?.context ?? undefined}
+      deliveryTarget={`room:${binding.roomId}${binding.profile ? `@${binding.profile}` : ''}`} onBack={onBack} onDisband={end} onRename={rename} onSaveContext={saveContext}
       onStop={() => void mutate(() => canonicalGroupRequest(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: crypto.randomUUID() }))} phases={phases} room={state?.room} />
     {readError && <div role="alert">{readError}<Button onClick={() => void refresh().catch(e => setReadError(String(e)))}>{labels.refresh}</Button></div>}
     {error && <div role="alert">{error}</div>}

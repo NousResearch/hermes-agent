@@ -1105,6 +1105,24 @@
       }
     },
     {
+      "name": "groups.context",
+      "summary": "Set one hosted room's purpose and shared notes; members see them from the next message.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsContextParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsContextResult"
+        }
+      }
+    },
+    {
       "name": "groups.create",
       "summary": "Create a hosted room idempotently; authority is this gateway's stable install identity.",
       "params": [
@@ -19014,6 +19032,64 @@
         "title": "GroupsCapabilitiesResult",
         "type": "object"
       },
+      "GroupsContextParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "event_id": {
+            "title": "Event Id",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "notes": {
+            "title": "Notes",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "event_id",
+          "purpose",
+          "notes"
+        ],
+        "title": "GroupsContextParams",
+        "type": "object"
+      },
+      "GroupsContextResult": {
+        "additionalProperties": false,
+        "properties": {
+          "context": {
+            "$ref": "#/components/schemas/RoomContext"
+          },
+          "event": {
+            "$ref": "#/components/schemas/RoomEvent"
+          }
+        },
+        "required": [
+          "context",
+          "event"
+        ],
+        "title": "GroupsContextResult",
+        "type": "object"
+      },
       "GroupsCreateParams": {
         "additionalProperties": false,
         "properties": {
@@ -20217,6 +20293,17 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/RoomDriverStatus"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "context": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RoomContext"
               },
               {
                 "type": "null"
@@ -33823,6 +33910,26 @@
           "epoch"
         ],
         "title": "RoomAuthority",
+        "type": "object"
+      },
+      "RoomContext": {
+        "additionalProperties": false,
+        "description": "``gateway/hosted_room_context.py::room_context``: the purpose and shared notes every member's turn\nprompt carries (inside the user-role message).",
+        "properties": {
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "notes": {
+            "title": "Notes",
+            "type": "string"
+          }
+        },
+        "required": [
+          "purpose",
+          "notes"
+        ],
+        "title": "RoomContext",
         "type": "object"
       },
       "RoomDriverStatus": {

@@ -37,6 +37,9 @@ function eventAuthor(event: CanonicalGroupEvent, roster: Map<string, CanonicalRo
     (isMessage ? event.actor?.id : memberId)
 }
 
+// The gateway stamps scheduler posts with a `cron:` / `cron-notice:` actor; a client cannot mint one.
+const isScheduledPost = (event: CanonicalGroupEvent) => event.kind === 'message.user' && /^cron(-notice)?:/.test(event.actor?.id ?? '')
+
 function EventTime({ timestamp }: { timestamp?: number }) {
   if (typeof timestamp !== 'number') {return null}
   const at = new Date(timestamp * 1000)
@@ -180,6 +183,7 @@ export function CanonicalGroupHistory({ binding, events, members = [], disabled 
     return <div className="grid grid-cols-[minmax(0,1fr)] gap-1 px-2 py-1.5" key={event.seq}>
     <div className="flex items-center gap-2">
       {author && <strong className="text-[0.7rem] font-semibold text-(--ui-accent)">{author}</strong>}
+      {isScheduledPost(event) && <span className="rounded bg-(--ui-surface-2) px-1 text-[0.625rem] text-(--ui-text-secondary)">{labels.scheduledPost}</span>}
       <EventTime timestamp={event.created_at} />
     </div>
     <EventBody event={event} notice={notice} />

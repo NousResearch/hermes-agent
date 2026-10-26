@@ -17,6 +17,7 @@ from gateway import hosted_room_discussion as discussion
 from gateway import hosted_room_driver as driver
 from gateway import hosted_room_links
 from gateway import hosted_rooms
+from gateway.hosted_room_context import room_context
 from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint, PolicySnapshot
 from gateway.hosted_room_peer import (
     GatewayRoomCatalog, HostedMemberDispatch, PROTOCOL_VERSION, room_grant_needs_dispatch_refresh)
@@ -450,9 +451,14 @@ class HostedRoomService:
                 self.db_path, room_id=binding.room_id, clock=self.runtime.clock)
             if next(iter(self._list_tasks(binding.room_id, _LIVE_STATUSES)), None) is not None:
                 return
+            # The snapshot holds one active discussion; its latest user message opened it.
+            source_seq = max(
+                (int(event["seq"]) for event in snapshot.events if event.get("kind") == "message.user"), default=None)
             decision = discussion.plan_next_task(
                 room, list(snapshot.events), local_profiles=self.room_profiles(room),
-                initial_watermarks=snapshot.watermarks, freeze_input_context=True)
+                initial_watermarks=snapshot.watermarks, freeze_input_context=True,
+                room_context=None if source_seq is None else room_context(
+                    self.db_path, room_id=binding.room_id, before_seq=source_seq))
             if decision.status == "task" and decision.task is not None:
                 existing = driver.get_task_for_turn(self.db_path, decision.task.identity)
                 legacy_payload = dict(decision.task.payload)

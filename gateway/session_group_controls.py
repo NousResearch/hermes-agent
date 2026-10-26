@@ -17,6 +17,7 @@ GROUP_METHODS = {
     'groups.log': 'session:read',
     'groups.create': 'session:control',
     'groups.rename': 'session:control',
+    'groups.context': 'session:control',
     'groups.disband': 'session:control',
     'groups.send': 'session:submit',
     'groups.attachment.upload': 'session:submit',
@@ -33,6 +34,7 @@ _FIELDS = {
     'groups.log': {'room_id', 'since_seq', 'limit', 'include_disbanded'},
     'groups.create': {'room_id', 'name', 'members'},
     'groups.rename': {'room_id', 'event_id', 'name'},
+    'groups.context': {'room_id', 'event_id', 'purpose', 'notes'},
     'groups.disband': {'room_id', 'cancel_id'},
     'groups.send': {'room_id', 'event_id', 'payload'},
     'groups.attachment.upload': {'room_id', 'upload_id', 'kind', 'name', 'mime', 'data_base64'},
@@ -87,6 +89,7 @@ async def dispatch_group_control(connection, method, params):
 
 def _group(authority, actor, method, params, *, host_scope=False):
     from gateway import hosted_rooms as rooms
+    from gateway.hosted_room_context import room_context, set_room_context
     db_path = authority.db.db_path
     gateway_id = rooms.local_authority_gateway_id()
     service = getattr(authority, 'hosted_room_service', None)
@@ -212,8 +215,10 @@ def _group(authority, actor, method, params, *, host_scope=False):
     def state():
         room = rooms.room_state(db_path, **params)
         result = {'room': room}
-        if service is not None and room.get('disbanded_at') is None:
-            result['driver_status'] = service.status(room['room_id'])
+        if room.get('disbanded_at') is None:
+            result['context'] = room_context(db_path, room_id=room['room_id'])
+            if service is not None:
+                result['driver_status'] = service.status(room['room_id'])
         return result
 
     handlers = {
@@ -223,6 +228,7 @@ def _group(authority, actor, method, params, *, host_scope=False):
         'groups.state': state,
         'groups.log': lambda: rooms.read_events(db_path, **params),
         'groups.rename': lambda: {'room': rooms.rename_room(db_path, **params)},
+        'groups.context': lambda: set_room_context(db_path, **params),
         'groups.disband': disband,
     }
     return handlers[method]()

@@ -1629,6 +1629,7 @@ export interface GroupsStateParams {
 export interface GroupsStateResult {
   room: Room
   driver_status?: RoomDriverStatus | null
+  context?: RoomContext | null
 }
 /** ``HostedRoomService.status(room_id)``; ``pending_actions`` rows are the exact attempt (``hosted_room_service.attempt_action``: ``kind`` + ``member_id``/``task_id``/``execution_generation``) or the driver's approval action (``kind: approval`` + run/session/approval context). ``member_activity`` lists live tasks in admission order (absent from older gateways). */
 export interface RoomDriverStatus {
@@ -1650,6 +1651,11 @@ export interface PeerRouteStatus {
   member_id: string
   status: string
 }
+/** ``gateway/hosted_room_context.py::room_context``: the purpose and shared notes every member's turn prompt carries (inside the user-role message). */
+export interface RoomContext {
+  purpose: string
+  notes: string
+}
 export interface GroupsSendParams {
   profile?: string | null
   room_id: string
@@ -1670,6 +1676,17 @@ export interface GroupsRenameParams {
 }
 export interface GroupsRenameResult {
   room: Room
+}
+export interface GroupsContextParams {
+  profile?: string | null
+  room_id: string
+  event_id: string
+  purpose: string
+  notes: string
+}
+export interface GroupsContextResult {
+  context: RoomContext
+  event: RoomEvent
 }
 export interface GroupsLogParams {
   profile?: string | null
@@ -6141,6 +6158,8 @@ export interface RpcMethods {
   'groups.approve': { params: GroupsApproveParams; result: GroupsApproveResult }
   /** Describe the hosted-room protocol implemented by this gateway. */
   'groups.capabilities': { params: GroupsCapabilitiesParams; result: GroupsCapabilitiesResult }
+  /** Set one hosted room's purpose and shared notes; members see them from the next message. */
+  'groups.context': { params: GroupsContextParams; result: GroupsContextResult }
   /** Create a hosted room idempotently; authority is this gateway's stable install identity. */
   'groups.create': { params: GroupsCreateParams; result: GroupsCreateResult }
   /** Fence this gateway's stale room authority against a proven newer epoch. */
@@ -6591,6 +6610,7 @@ export const RPC_METHODS = [
   'gateway.capabilities',
   'groups.approve',
   'groups.capabilities',
+  'groups.context',
   'groups.create',
   'groups.demote',
   'groups.disband',

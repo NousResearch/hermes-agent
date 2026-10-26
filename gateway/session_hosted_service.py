@@ -13,6 +13,14 @@ from tui_gateway.hosted_room_service import HostedRoomService
 _OWNER = 'gateway.hosted.owner.v1:'
 
 
+def probe_native_room_owner(db_path, *, room_id) -> bool:
+    """Non-blocking, read-only: does the gateway owning this session store serve ``room_id``? Only rooms
+    with an owner entry are in ``CanonicalHostedRoomService.bindings``."""
+    from gateway.hosted_rooms import _probe
+    return _probe(Path(db_path), 'state_meta', 'SELECT 1 FROM state_meta WHERE key=? LIMIT 1',
+                  (_OWNER + str(room_id),), 'native room ownership is temporarily unavailable')
+
+
 class CanonicalHostedRoomService(HostedControls, HostedRoomService):
     def __init__(self, authority, loop):
         self.authority, self.loop = authority, loop

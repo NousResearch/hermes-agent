@@ -236,9 +236,18 @@ class RoomDriverStatus(Result):
     peer_routes: list[PeerRouteStatus]
 
 
+class RoomContext(Result):
+    """``gateway/hosted_room_context.py::room_context``: the purpose and shared notes every member's turn
+    prompt carries (inside the user-role message)."""
+
+    purpose: str
+    notes: str
+
+
 class GroupsStateResult(Result):
     room: Room
     driver_status: RoomDriverStatus | None = None
+    context: RoomContext | None = None
 
 
 method("groups.state", params=GroupsStateParams, result=GroupsStateResult,
@@ -275,6 +284,21 @@ class GroupsRenameResult(Result):
 
 method("groups.rename", params=GroupsRenameParams, result=GroupsRenameResult,
        doc="Rename one hosted room atomically with its replay event.")
+
+
+class GroupsContextParams(RoomParams):
+    event_id: str
+    purpose: str
+    notes: str
+
+
+class GroupsContextResult(Result):
+    context: RoomContext
+    event: RoomEvent
+
+
+method("groups.context", params=GroupsContextParams, result=GroupsContextResult,
+       doc="Set one hosted room's purpose and shared notes; members see them from the next message.")
 
 
 class GroupsLogParams(RoomParams):

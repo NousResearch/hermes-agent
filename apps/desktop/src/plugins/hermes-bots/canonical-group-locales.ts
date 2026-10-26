@@ -28,6 +28,13 @@ export interface CanonicalGroupMessages {
   memberWorking: string
   memberQueued: string
   groupWorking: string
+  roomSettings: string
+  purposeLabel: string
+  purposePlaceholder: string
+  notesLabel: string
+  notesPlaceholder: string
+  deliveryTarget: string
+  scheduledPost: string
 }
 
 export const CANONICAL_GROUP_LOCALES = {
@@ -60,7 +67,14 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'Upload failed',
     memberWorking: 'Working',
     memberQueued: 'Queued',
-    groupWorking: 'The group is working…'
+    groupWorking: 'The group is working…',
+    roomSettings: 'Room settings',
+    purposeLabel: 'Purpose',
+    purposePlaceholder: 'What this room is for, in one line',
+    notesLabel: 'Shared notes',
+    notesPlaceholder: 'Facts every member should keep in mind',
+    deliveryTarget: 'Scheduled jobs can post here with deliver:',
+    scheduledPost: 'Scheduled'
   },
   ja: {
     roomStopped: 'グループが停止しました',
@@ -91,7 +105,14 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'アップロードに失敗しました',
     memberWorking: '作業中',
     memberQueued: '待機中',
-    groupWorking: 'グループが作業中です…'
+    groupWorking: 'グループが作業中です…',
+    roomSettings: 'ルーム設定',
+    purposeLabel: '目的',
+    purposePlaceholder: 'このルームの目的を一行で',
+    notesLabel: '共有メモ',
+    notesPlaceholder: '全メンバーが覚えておくべき事項',
+    deliveryTarget: 'スケジュール済みジョブの投稿先 deliver:',
+    scheduledPost: 'スケジュール'
   },
   zh: {
     roomStopped: '群组已停止',
@@ -122,7 +143,14 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: '上传失败',
     memberWorking: '工作中',
     memberQueued: '排队中',
-    groupWorking: '群组正在处理…'
+    groupWorking: '群组正在处理…',
+    roomSettings: '群组设置',
+    purposeLabel: '用途',
+    purposePlaceholder: '用一句话说明这个群组的用途',
+    notesLabel: '共享笔记',
+    notesPlaceholder: '每位成员都应记住的事项',
+    deliveryTarget: '定时任务可通过 deliver: 发到这里',
+    scheduledPost: '定时'
   },
   'zh-hant': {
     roomStopped: '群組已停止',
@@ -153,7 +181,14 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: '上傳失敗',
     memberWorking: '工作中',
     memberQueued: '排隊中',
-    groupWorking: '群組正在處理…'
+    groupWorking: '群組正在處理…',
+    roomSettings: '群組設定',
+    purposeLabel: '用途',
+    purposePlaceholder: '用一句話說明這個群組的用途',
+    notesLabel: '共用筆記',
+    notesPlaceholder: '每位成員都應記住的事項',
+    deliveryTarget: '排程工作可透過 deliver: 張貼到這裡',
+    scheduledPost: '排程'
   },
   ar: {
     roomStopped: 'أُوقفت المجموعة',
@@ -184,7 +219,14 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'فشل الرفع',
     memberWorking: 'يعمل',
     memberQueued: 'في الانتظار',
-    groupWorking: 'المجموعة تعمل…'
+    groupWorking: 'المجموعة تعمل…',
+    roomSettings: 'إعدادات الغرفة',
+    purposeLabel: 'الغرض',
+    purposePlaceholder: 'الغرض من هذه الغرفة في سطر واحد',
+    notesLabel: 'ملاحظات مشتركة',
+    notesPlaceholder: 'حقائق يجب أن يتذكرها كل عضو',
+    deliveryTarget: 'يمكن للمهام المجدولة النشر هنا باستخدام deliver:',
+    scheduledPost: 'مجدول'
   },
   ru: {
     roomStopped: 'Группа остановлена',
@@ -218,7 +260,14 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'Не удалось загрузить файл',
     memberWorking: 'Работает',
     memberQueued: 'В очереди',
-    groupWorking: 'Группа работает…'
+    groupWorking: 'Группа работает…',
+    roomSettings: 'Настройки комнаты',
+    purposeLabel: 'Назначение',
+    purposePlaceholder: 'Для чего эта комната, одной строкой',
+    notesLabel: 'Общие заметки',
+    notesPlaceholder: 'Что должен помнить каждый участник',
+    deliveryTarget: 'Задания по расписанию могут писать сюда через deliver:',
+    scheduledPost: 'По расписанию'
   },
   fr: {
     roomStopped: 'Groupe arrêté',
@@ -251,7 +300,14 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'Échec du téléversement',
     memberWorking: 'En cours',
     memberQueued: 'En attente',
-    groupWorking: 'Le groupe travaille…'
+    groupWorking: 'Le groupe travaille…',
+    roomSettings: 'Paramètres du salon',
+    purposeLabel: 'Objectif',
+    purposePlaceholder: 'À quoi sert ce salon, en une ligne',
+    notesLabel: 'Notes partagées',
+    notesPlaceholder: 'Ce que chaque membre doit garder en tête',
+    deliveryTarget: 'Les tâches planifiées peuvent publier ici avec deliver:',
+    scheduledPost: 'Planifié'
   },
   de: {
     roomStopped: 'Gruppe angehalten',
@@ -285,7 +341,14 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'Hochladen fehlgeschlagen',
     memberWorking: 'Arbeitet',
     memberQueued: 'In der Warteschlange',
-    groupWorking: 'Die Gruppe arbeitet…'
+    groupWorking: 'Die Gruppe arbeitet…',
+    roomSettings: 'Raumeinstellungen',
+    purposeLabel: 'Zweck',
+    purposePlaceholder: 'Wofür dieser Raum da ist, in einer Zeile',
+    notesLabel: 'Gemeinsame Notizen',
+    notesPlaceholder: 'Was jedes Mitglied im Blick behalten soll',
+    deliveryTarget: 'Geplante Aufgaben können hier mit deliver: posten',
+    scheduledPost: 'Geplant'
   },
   es: {
     roomStopped: 'Grupo detenido',
@@ -318,6 +381,13 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'Error al subir',
     memberWorking: 'Trabajando',
     memberQueued: 'En cola',
-    groupWorking: 'El grupo está trabajando…'
+    groupWorking: 'El grupo está trabajando…',
+    roomSettings: 'Ajustes de la sala',
+    purposeLabel: 'Propósito',
+    purposePlaceholder: 'Para qué sirve esta sala, en una línea',
+    notesLabel: 'Notas compartidas',
+    notesPlaceholder: 'Lo que cada miembro debe tener presente',
+    deliveryTarget: 'Las tareas programadas pueden publicar aquí con deliver:',
+    scheduledPost: 'Programado'
   }
 } satisfies Record<string, CanonicalGroupMessages>

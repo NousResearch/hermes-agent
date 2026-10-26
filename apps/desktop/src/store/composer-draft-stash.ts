@@ -15,7 +15,8 @@
  *
  * The authoritative copy is one key (`DRAFT_STASH_STORAGE_KEY`) so a read never
  * sees half of another window's write. The older `{ key: text }` list is still
- * written after it, for builds and readers that only know that list.
+ * written after it, for builds and readers that only know that list; two
+ * windows writing in the same instant can leave that mirror one write behind.
  */
 
 export const DRAFT_STASH_STORAGE_KEY = 'hermes:composer-drafts:v4'
@@ -49,6 +50,14 @@ export function newerEntry(a: StashEntry | undefined, b: StashEntry | undefined)
   }
 
   return (a.text ?? '') > (b.text ?? '')
+}
+
+export function hasDraftStash(): boolean {
+  try {
+    return window.localStorage.getItem(DRAFT_STASH_STORAGE_KEY) !== null
+  } catch {
+    return false
+  }
 }
 
 export function readDraftStash(): StashEntries {

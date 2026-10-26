@@ -8,6 +8,7 @@ import { persistString, storedString } from '@/lib/storage'
 import {
   compactDraftStash,
   DRAFT_STASH_STORAGE_KEY,
+  hasDraftStash,
   newerEntry,
   readDraftStash,
   readLegacyDrafts,
@@ -315,14 +316,10 @@ const cloneDraft = (draft: SessionDraft): SessionDraft => ({
 // What this window last read from or wrote to the shared stash, cleared
 // markers included. A reload applies only entries newer than this, and a write
 // puts back any entry here that storage has since lost to a stale writer.
-let persistedDrafts: StashEntries = readDraftStash()
-
-// A pre-v4 list is read once, never over a newer entry or a cleared marker.
-for (const [key, entry] of readLegacyDrafts(SESSION_DRAFTS_STORAGE_KEY)) {
-  if (!persistedDrafts.has(key)) {
-    persistedDrafts.set(key, entry)
-  }
-}
+// The pre-v4 list seeds it only before any window has written v4: after
+// that the list is a mirror that can lag a moment behind, and reading it
+// could bring back a draft whose cleared marker has expired.
+let persistedDrafts: StashEntries = hasDraftStash() ? readDraftStash() : readLegacyDrafts(SESSION_DRAFTS_STORAGE_KEY)
 
 const draftsBySession = new Map<string, SessionDraft>(
   [...persistedDrafts]

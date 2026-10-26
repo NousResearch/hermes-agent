@@ -1,9 +1,9 @@
 name: hermes-finance
 title: Hermes Finance
 repo: https://github.com/arspesk/hermes-finance
-sha: "0e17d4e01a0ba48ce9795d89f8783a2c0cff827b"
+sha: "3e32906f23c7d59803e2bc10c8f5fe8af8f0454e"
 subdir: hermes_plugin
-version: "0.2.2"
+version: "0.2.3"
 description: >-
   Personal-finance tools over your own local hermes-finance database: spending, budgets,
   transactions, net worth, bills, loans, investments, cash flow, goals and categorization
@@ -21,11 +21,11 @@ description: >-
 maintainer: "arspesk"
 tier: community
 category: tools
-docs_url: https://github.com/arspesk/hermes-finance/blob/0e17d4e01a0ba48ce9795d89f8783a2c0cff827b/README.md#install-as-a-hermes-plugin
-image: https://raw.githubusercontent.com/arspesk/hermes-finance/0e17d4e01a0ba48ce9795d89f8783a2c0cff827b/docs/assets/catalog-banner.jpg
+docs_url: https://github.com/arspesk/hermes-finance/blob/3e32906f23c7d59803e2bc10c8f5fe8af8f0454e/README.md#install-as-a-hermes-plugin
+image: https://raw.githubusercontent.com/arspesk/hermes-finance/3e32906f23c7d59803e2bc10c8f5fe8af8f0454e/docs/assets/catalog-banner.jpg
 screenshots:
-  - https://raw.githubusercontent.com/arspesk/hermes-finance/0e17d4e01a0ba48ce9795d89f8783a2c0cff827b/docs/assets/screenshots/overview-light.png
-  - https://raw.githubusercontent.com/arspesk/hermes-finance/0e17d4e01a0ba48ce9795d89f8783a2c0cff827b/docs/assets/screenshots/overview-dark.png
+  - https://raw.githubusercontent.com/arspesk/hermes-finance/3e32906f23c7d59803e2bc10c8f5fe8af8f0454e/docs/assets/screenshots/overview-light.png
+  - https://raw.githubusercontent.com/arspesk/hermes-finance/3e32906f23c7d59803e2bc10c8f5fe8af8f0454e/docs/assets/screenshots/overview-dark.png
 readme: false
 platforms: []
 known_issues:

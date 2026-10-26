@@ -271,6 +271,41 @@ class TestRealPruning:
         assert "small.py" in names
         assert "weights.bin" not in names  # filtered by size cap
 
+    def test_max_file_size_mb_drops_a_tracked_file_that_grows(
+        self, tmp_path, checkpoint_base, monkeypatch,
+    ):
+        """A prior small blob must not survive after its worktree file grows."""
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        wd = tmp_path / "proj"
+        wd.mkdir()
+        weights = wd / "weights.bin"
+        weights.write_bytes(b"small\n")
+
+        m = CheckpointManager(enabled=True, max_snapshots=5, max_file_size_mb=1)
+        assert m.ensure_checkpoint(str(wd), "small baseline") is True
+
+        weights.write_bytes(b"\0" * (2 * 1024 * 1024))
+        (wd / ".gitattributes").write_text("weights.bin filter=must-not-run\n")
+        store = _store_path(checkpoint_base)
+        assert _run_git(
+            ["config", "filter.must-not-run.clean", "hermes-filter-must-not-run"],
+            store, str(wd),
+        )[0]
+        assert _run_git(
+            ["config", "filter.must-not-run.required", "true"],
+            store, str(wd),
+        )[0]
+
+        m.new_turn()
+        assert m.ensure_checkpoint(str(wd), "file grew past cap") is True
+
+        ok, files, _ = _run_git(
+            ["ls-tree", "-r", "--name-only", _ref_name(_project_hash(str(wd)))],
+            store, str(wd),
+        )
+        assert ok
+        assert "weights.bin" not in set(files.splitlines())
+
 
 # =========================================================================
 # CheckpointManager — restoring

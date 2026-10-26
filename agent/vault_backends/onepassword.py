@@ -165,11 +165,16 @@ def _all_origins(urls: list[str]) -> list[str]:
 
     A 1Password Login item can carry several websites; each of them is a place the
     user told 1Password the credential belongs, so all of them are valid fill targets.
+    Websites saved without a scheme (e.g. 'example.com') default to https:// — a bare
+    domain otherwise normalizes to no origin and the item is skipped entirely.
     """
     out: list[str] = []
     for u in urls:
+        u_str = (u or "").strip()
+        if not u_str:
+            continue
         try:
-            origin = normalize_origin(u)
+            origin = normalize_origin(u_str if "://" in u_str else f"https://{u_str}")
         except Exception:
             continue
         if origin not in out:

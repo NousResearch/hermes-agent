@@ -223,6 +223,37 @@ def test_onepassword_multi_url_item_binds_every_saved_web_origin():
     assert _web_origins(["androidapp://com.x"]) == ("androidapp://com.x",)
 
 
+def test_onepassword_schemeless_website_defaults_to_https_origin():
+    """A 1Password login saved with a bare-domain website (e.g. 'example.com') binds an
+    https:// origin instead of being skipped as originless; a bare entry dedupes against
+    its explicit https twin, and an entry nothing can parse still lists nothing."""
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend, _all_origins
+
+    backend = OnePasswordLoginBackend({"enabled": True})
+    items_json = json.dumps([{
+        "id": "bare", "title": "Bare", "created_at": "2026-01-01T00:00:00Z",
+        "urls": [{"href": "example.com"}],
+    }, {
+        "id": "twin", "title": "Twin", "created_at": "2026-01-01T00:00:00Z",
+        "urls": [{"href": "example.com"}, {"href": "https://example.com"}],
+    }, {
+        "id": "originless", "title": "No site", "created_at": "2026-01-01T00:00:00Z",
+        "additional_information": "jane@example.com",
+        "urls": [{"href": "  "}],
+    }])
+    with patch.object(OnePasswordLoginBackend, "is_unlocked", return_value=True), \
+         patch.object(backend, "_run", return_value=items_json):
+        metas = {m.id: m for m in backend.list_items()}
+    assert metas["op:bare"].origin == "https://example.com"  # schemeless-only item lists (skipped on main)
+    assert list(metas["op:bare"].allowed_origins) == ["https://example.com"]
+    assert metas["op:twin"].origin == "https://example.com"
+    assert list(metas["op:twin"].allowed_origins) == ["https://example.com"]  # bare + explicit dedupe to one
+    assert "op:originless" not in metas
+    # helpers: a bare-domain entry normalizes to its https origin
+    assert _all_origins(["example.com"]) == ["https://example.com"]
+    assert _all_origins(["example.com", "https://example.com"]) == ["https://example.com"]
+
+
 def test_onepassword_backend_env_forwards_config_directory(monkeypatch):
     """Vault reads use the same explicit 1Password CLI config location."""
     from agent.vault_backends.onepassword import OnePasswordLoginBackend

@@ -342,9 +342,16 @@ changes is the current run.
 - **Agent jobs** have the in-flight turn interrupted at its next checkpoint.
 
 The cancel is a *request*, not a kill: it is recorded against that run's execution id and picked
-up at the run's next cancel check (well under a second for a script). The run then records why
-it stopped, so `hermes cron runs <job_id>` shows the cancel reason instead of an unexplained
-timeout or a bare failure.
+up at the run's next cancel check (well under a second for a script). The run then books a
+`cancelled` row with its reason, so `hermes cron runs <job_id>` shows why it stopped instead of an
+unexplained timeout or a bare failure. A cancelled run sends no failure notice and does not count
+toward the job's failure streak. The same stop is available as `POST /api/cron/jobs/{id}/cancel`
+and as the agent's `cronjob_manage` action `cancel`.
+
+**Removing a job stops its live run.** `hermes cron remove` (and the dashboard/Desktop delete or
+the agent's `remove` action) cancels a run that is in flight, booked `cancelled` with the reason
+"job removed while running", instead of letting it keep spending tokens on a result nothing
+will keep.
 
 Cancelling a job with nothing running is a safe no-op that says so, and a cancel that arrives
 after the run has already finished changes nothing. A cancel cannot undo side effects the run
@@ -1156,8 +1163,24 @@ job later than its existing grace window (half its period, clamped to 120 second
 hours) is re-anchored to its next future occurrence without firing now. The skip is
 logged. Jobs inside grace and explicit manual triggers still run normally; if the
 next occurrence cannot be computed, the existing run-once fallback is preserved.
-This does not change one-shot expiry, resume behavior, or the hosted-provider sweep
-below. There is no per-job override.
+This does not change resume behavior or the hosted-provider sweep below.
+
+**Per job.** A job can override the default with `catch_up`:
+
+```bash
+hermes cron create "0 7 * * 1-5" "Morning brief" --catch-up off   # a stale brief is useless: skip
+hermes cron edit <job> --catch-up on                                # always run once on return
+```
+
+(`cronjob_manage` takes `catch_up: true|false`.) Without it, recurring jobs follow
+`cron.catch_up_missed` and one-shots keep their 120-second grace: a reminder missed by more than
+that is dropped. A one-shot with `--catch-up on` instead fires once, late, when the scheduler is
+back.
+
+**Missed runs are visible.** Every slot the scheduler passes over is booked as one `missed ×N`
+row in the execution ledger: `missed ×3 (skipped, catch-up off; next run …)` for a skip, and
+`missed ×2 (collapsed into one catch-up run)` beside the one run that caught up for three slots.
+The rows show in `hermes cron runs <job>` and in the dashboard/Desktop run history.
 
 ### Misfire catch-up
 

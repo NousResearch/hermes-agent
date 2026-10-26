@@ -565,6 +565,27 @@ streaming:
   enabled: true       # transport auto/draft lights up Slack native streaming
 ```
 
+#### Initial notification preview
+
+For Slack replies, Hermes buffers the first streamed text until completed
+sentences contain at least 80 characters of content, then streams subsequent
+updates normally. A short opening sentence is held together with the next
+sentence(s). Headings alone do not release the preview; completed paragraphs,
+list items and fenced code blocks provide boundaries for non-prose replies.
+Sentence detection is conservative: code, URLs, decimals and common
+abbreviations are not treated as sentence endings.
+
+There is no fixed delay. A finished reply (including `OK` or text without
+punctuation), or an explicit message boundary before a tool/clarification,
+flushes the remaining text regardless of length. Long text without a recognized
+boundary can therefore remain buffered until it finishes. This applies to both
+native streaming and edit-based delivery, not other messaging platforms.
+
+Working status and tool-progress messages remain independent and immediate;
+progress messages may generate their own notifications. Buffering improves the
+initial answer content available to Slack, but notification truncation and
+rendering are controlled by Slack and the operating system.
+
 ### Native Task Cards (live tool progress)
 
 With `platforms.slack.extra.native_task_cards: true`, live tool calls render

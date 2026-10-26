@@ -32,6 +32,7 @@ from gateway.response_filters import (
     is_partial_silence_marker as _is_partial_silence_marker)
 from gateway.stream_consumer_directives import has_pending_media_directive, strip_image_tags_for_display
 from gateway.stream_consumer_fences import ensure_closed_code_fences
+from gateway.stream_consumer_initial_text import initial_text_ready
 from gateway.stream_consumer_transport import StreamTransportMixin
 from gateway.stream_consumer_fallback import StreamFallbackMixin
 from gateway.stream_consumer_think import StreamThinkFilterMixin
@@ -75,6 +76,8 @@ class StreamConsumerConfig:
     # (progressive editMessageText).  "off" is handled by the gateway.
     transport: str = "edit"
     chat_type: str = ""  # originating chat type; gates platform-specific drafts
+    # Internal first-notification policy; completed messages always bypass it.
+    initial_text_min_chars: int = 0
 
 
 @dataclass
@@ -123,6 +126,11 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self.adapter = adapter
         self.chat_id = chat_id
         self.cfg = config or StreamConsumerConfig()
+        self._initial_text_visible = self.cfg.initial_text_min_chars <= 0
+        if self.cfg.initial_text_min_chars > 0:
+            # The sentence gate replaces the tiny-preview heuristic. Completed short
+            # preambles must still flush at tool/commentary boundaries, not be dropped.
+            self._MIN_NEW_MSG_CHARS = 0
         self.metadata = metadata
         # Hooks (exceptions swallowed): on_new_message per fresh content bubble (next
         # tool-progress bubble goes BELOW it); on_before_finalize once (pause typing).
@@ -755,7 +763,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # a media-only reply cleans to "" at finish, which never edits the bubble away.
         cleaned = self._clean_for_display(self._accumulated)
         return (should_edit and not _is_partial_silence_marker(cleaned)
-                and not has_pending_media_directive(cleaned))
+                and not has_pending_media_directive(cleaned)
+                and (self._initial_text_visible
+                     or initial_text_ready(cleaned, self.cfg.initial_text_min_chars)))
 
     async def _split_first_send(self, tick: _Tick) -> bool:
         """No message to edit yet and the buffer overflows: seal only the head chunks; the
@@ -772,6 +782,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             if new_id is None or new_id == reply_to:
                 heads_delivered = False  # keep the full text intact for the gateway fallback
                 break
+            self._initial_text_visible = True
             reply_to = new_id
 
         if heads_delivered:
@@ -850,6 +861,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         tick.update_visible = await self._send_or_edit(
             display_text, finalize=tick.got_done or tick.got_segment_break,
             is_turn_final=tick.got_done)
+        # Transport no-ops may return True without showing anything. Only an
+        # acknowledged text frame releases the turn-wide gate (never reset per bubble).
+        if self._clean_for_display(self._last_sent_text).strip():
+            self._initial_text_visible = True
         self._last_edit_time = time.monotonic()
         # Lines stay in _tool_progress_lines for the next compose.
         self._tool_progress_active = False
@@ -922,7 +937,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         cumulative = self._cumulative_transport()
         if not cumulative:
             self._reset_segment_state()
-        await self._send_commentary(commentary_text)
+        if await self._send_commentary(commentary_text):
+            self._initial_text_visible = True
         self._last_edit_time = time.monotonic()
         if not cumulative:
             self._reset_segment_state()

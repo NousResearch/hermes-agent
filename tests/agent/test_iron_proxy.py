@@ -107,11 +107,11 @@ def test_normalize_allowed_hosts_drops_unmatchable_entries_with_fix():
     literals and case variants survive normalized."""
     warnings: list[str] = []
     hosts = ip.normalize_allowed_hosts(
-        ["API.Example.com", "api.example.com", "*.ollama.test", "10.0.0.5", "[::1]",
+        ["API.Example.com", "api.example.com", "*.ollama.test", "my_ollama", "10.0.0.5", "[::1]",
          "host.docker.internal:11434", "https://api.example.com/v1", "api.example.com/v1", "", 42],
         warn=warnings.append,
     )
-    assert hosts == ["api.example.com", "*.ollama.test", "10.0.0.5", "::1"]
+    assert hosts == ["api.example.com", "*.ollama.test", "my_ollama", "10.0.0.5", "::1"]
     assert len(warnings) == 5
     port_warning = next(w for w in warnings if "host.docker.internal:11434" in w)
     assert "proxy.extra_allowed_hosts" in port_warning

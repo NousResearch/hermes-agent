@@ -436,7 +436,7 @@ def _detect_docker_bridge_ip() -> Optional[str]:
 # ``MatchGlob``, v0.39.0), so a URL, ``host:port`` or ``host/path`` entry can never match: every
 # request from the sandbox 403s and nothing names the misconfigured entry. Labels may carry
 # ``*``/``?`` (``path.Match`` semantics: ``api-*.example.com``); a bare ``*`` allows every host.
-_ALLOWED_HOST_GLOB_RE = re.compile(r"^\*$|^(?:[a-z0-9*?-]+\.)*[a-z0-9*?-]+\.?$")
+_ALLOWED_HOST_GLOB_RE = re.compile(r"^\*$|^(?:[a-z0-9*?_-]+\.)*[a-z0-9*?_-]+\.?$")
 _HOST_PORT_RE = re.compile(r"^(.*[^:]):\d+$")
 
 

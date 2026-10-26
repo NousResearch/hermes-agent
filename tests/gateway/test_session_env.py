@@ -3,9 +3,10 @@ import os
 
 import pytest
 
-from gateway.config import Platform
+from gateway.config import GatewayConfig, Platform
+from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
-from gateway.session import SessionContext, SessionSource
+from gateway.session import SessionContext, SessionSource, build_session_context
 from gateway.session_context import (
     get_session_env,
     set_session_vars,
@@ -74,6 +75,27 @@ def test_set_session_env_sets_contextvars(monkeypatch):
 
     # Clean up
     runner._clear_session_env(tokens)
+
+
+def test_shared_source_uses_current_event_author_for_live_actor_context():
+    """Regression for #140059: shared routing does not erase this turn's actor."""
+    shared_source = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="-1001", chat_type="group",
+    )
+    event = MessageEvent(
+        text="@bot save this", source=shared_source,
+        user_id="current-author", user_name="Current Author",
+    )
+
+    context = build_session_context(shared_source, GatewayConfig(), event=event)
+    runner = object.__new__(GatewayRunner)
+    tokens = runner._set_session_env(context)
+    try:
+        assert shared_source.user_id is None
+        assert get_session_env("HERMES_SESSION_USER_ID") == "current-author"
+        assert get_session_env("HERMES_SESSION_USER_NAME") == "Current Author"
+    finally:
+        runner._clear_session_env(tokens)
 
 
 def test_clear_session_env_restores_previous_state(monkeypatch):

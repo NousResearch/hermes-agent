@@ -37,9 +37,9 @@ class ProcessCheckpointMixin:
         try:
             with nullcontext() if _lock_held else self._lock:
                 entries = []
+                retired = []
+                retiring = set()
                 for s in {**self._finished, **self._running}.values():
-                    if s.exited and not s._scope_stop_pending and not s.systemd_unit and s.id not in retain_ids:
-                        continue
                     # Backfill the start time so recovery can detect PID recycling
                     # even for sessions spawned before this field existed.
                     if s.host_start_time is None and s.pid_scope == "host" and s.pid:
@@ -52,7 +52,10 @@ class ProcessCheckpointMixin:
                     entry["command"] = redact_sensitive_text(s.command, code_file=True)
                     entry['handoff_note'] = redact_sensitive_text(s.handoff_note, code_file=True)
                     entry["owner_task_id"] = s.owner_task_id or s.task_id
-                    entries.append(entry)
+                    if s.exited and not s._scope_stop_pending and not s.systemd_unit and s.id not in retain_ids:
+                        retired.append(entry)
+                    else:
+                        entries.append(entry)
                 if extra_entries:
                     tracked_ids = {item.get("session_id") for item in entries}
                     entries.extend(item for item in extra_entries if item.get("session_id") not in tracked_ids)
@@ -64,14 +67,32 @@ class ProcessCheckpointMixin:
             # Every interpreter of the profile rewrites this file from its own table. Keep
             # untracked live processes and worker output-log handoffs under the same file lock.
             with _FileLock(path.with_name(path.name + ".lock")):
-                from tools.process_registry_handoff import merge_ownership
+                from tools.process_registry_handoff import merge_ownership, OWNERSHIP_FIELDS
                 from tools.process_registry_results import completed_ownership
                 try:
                     previous = json.loads(path.read_text(encoding='utf-8-sig'))
                 except FileNotFoundError:
                     previous = []
+                # An exited cache entry is not proof its retained result inherited
+                # a concurrent handoff. Merge before retirement, and keep the
+                # checkpoint until that exact native result carries its authority.
+                present = {entry['session_id'] for entry in entries}
+                receipts = completed_ownership([*entries, *retired])
+                handed = {entry.get('session_id', entry.get('id')) for entry in [*previous, *receipts, *retired]
+                          if entry.get('ownership_generation', 0) > 0}
+                for entry in retired:
+                    if entry['session_id'] not in present and entry['session_id'] in handed:
+                        entries.append(entry)
+                        retiring.add(entry['session_id'])
+                        present.add(entry['session_id'])
                 updates = merge_ownership(entries, previous)
-                updates.update(merge_ownership(entries, completed_ownership(entries)))
+                updates.update(merge_ownership(entries, receipts))
+                retained = {entry['id']: entry for entry in receipts}
+                entries = [entry for entry in entries if entry['session_id'] not in retiring
+                           or (entry.get('ownership_generation', 0) > 0 and not (
+                               (receipt := retained.get(entry['session_id']))
+                               and all(entry.get(field) == receipt.get(field)
+                                       for field in (*OWNERSHIP_FIELDS, 'pid', 'host_start_time'))))]
                 entries.extend(self._foreign_handoffs(path, known))
                 atomic_json_write(path, entries)
             # Never acquire the registry lock inside the file lock: an atomic

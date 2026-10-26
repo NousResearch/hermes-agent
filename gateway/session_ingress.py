@@ -12,6 +12,8 @@ from hermes_state_runtime import RuntimeStoreError
 logger = logging.getLogger(__name__)
 
 admission_author = ContextVar('admission_author', default=None)
+# The executing row's ``turn_origin`` (``gateway.session_turn_origin.row_turn_origin``); None outside one.
+admission_origin = ContextVar('admission_origin', default=None)
 executing_admission = ContextVar('executing_admission', default=False)
 # The live session while the executing turn is one its viewer submitted (``is_viewer_input``), else None.
 viewer_turn: ContextVar = ContextVar('viewer_turn', default=None)
@@ -276,6 +278,8 @@ async def execute_admission(authority, ref, row):
     author = event.metadata.get('turn_author')
     author_token = admission_author.set(author if author is not None else row_turn_author(local_policy, row))
     from gateway.session_operator import is_viewer_input
+    from gateway.session_turn_origin import row_turn_origin
+    origin_token = admission_origin.set(row_turn_origin(row, live, local_policy, event))
     viewer_token = viewer_turn.set(live if is_viewer_input(row) else None)
     api_token = api_execution.set(None)
     captured = {}
@@ -337,6 +341,7 @@ async def execute_admission(authority, ref, row):
         execution_result.reset(result_token)
         api_execution.reset(api_token)
         admission_author.reset(author_token)
+        admission_origin.reset(origin_token)
         viewer_turn.reset(viewer_token)
 
 

@@ -698,9 +698,11 @@ def _run_after_agent_ready(
                 if session.get("_turn_cancel_requested")
                 else "Session no longer running before the agent was ready")})
             return
+    from tui_gateway.prompt_turn import client_turn_origin
     _run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata,
-        terminal_callback=hosted_terminal_callback, turn_author=turn_author)
+        terminal_callback=hosted_terminal_callback, turn_author=turn_author,
+        turn_origin=client_turn_origin(display_kind, turn_author))
 
 
 _TRUNCATION_PARAMS = (

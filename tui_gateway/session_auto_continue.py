@@ -126,7 +126,7 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
                     _emit("status.update", sid, {"kind": "process", "text": "Resuming interrupted turn…"})
                     _emit("message.start", sid)
                 render_notification(announce, platform="tui", diagnostic=diagnostic)
-                _run_prompt_submit(rid, sid, session, text, display_kind="auto_continue",
+                _run_prompt_submit(rid, sid, session, text, display_kind="auto_continue", turn_origin="automation",
                     **({"display_metadata": {"notification_category": "diagnostic"}} if diagnostic else {}))
         except Exception as exc:
             _notif_log_failure("auto-continue dispatch failed", exc)
@@ -506,7 +506,9 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     dispatch_failed = False
     try:
         if not use_compute_host:
-            _run_prompt_submit(rid, sid, session, queued["text"], **kwargs, **author_kwargs)
+            from tui_gateway.prompt_turn import client_turn_origin
+            _run_prompt_submit(rid, sid, session, queued["text"], **kwargs, **author_kwargs,
+                               turn_origin=client_turn_origin(queued.get("display_kind"), queued.get("turn_author")))
         elif (resp := _submit_prompt_to_compute_host(rid, sid, session, queued["text"], **kwargs)).get("error"):
             with session["history_lock"]:
                 session["running"] = False

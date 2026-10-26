@@ -425,7 +425,7 @@ def _dispatch_followup_turn(rid, sid: str, session: dict, prompt: Any, what: str
     release ``running``."""
     try:
         _emit("message.start", sid)
-        _run_prompt_submit(rid, sid, session, prompt)
+        _run_prompt_submit(rid, sid, session, prompt, turn_origin="automation")
         if on_done is not None:
             on_done()
     except Exception as exc:
@@ -740,7 +740,7 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
 def _invoke_agent(
     sid: str, session: dict, st: _TurnRun, prompt: Any, run_message: Any, streamer,
     images: list[str], display_kind: str | None, display_metadata: dict | None,
-    turn_author: dict | None = None, text: Any = None) -> None:
+    turn_author: dict | None = None, text: Any = None, turn_origin: str | None = None) -> None:
     """Wire the streaming callbacks and run the conversation into ``st.result``.
     ``text`` is the turn's raw submit, matched against the row staged by prompt.submit."""
     agent = st.agent
@@ -796,6 +796,8 @@ def _invoke_agent(
         run_kwargs["persist_user_display_metadata"] = display_metadata
     if turn_author and "turn_author" in run_params:
         run_kwargs["turn_author"] = turn_author
+    if turn_origin and "turn_origin" in run_params:
+        run_kwargs["turn_origin"] = turn_origin
     if "prelude" in run_params:
         from agent.onboarding_session import onboarding_prelude
         prelude = onboarding_prelude(agent, st.history)
@@ -1090,12 +1092,21 @@ def _reopen_routed_session_row(db, sid: str, session: dict) -> None:
         logger.debug("routing-provenance reopen failed for %s", session_id, exc_info=True)
 
 
+def client_turn_origin(display_kind: str | None, turn_author: dict | None) -> str:
+    """``turn_origin`` of a client's submit (``pre_llm_call``/``post_llm_call``): a relayed bot is
+    ``peer``, a hidden row is client-authored scaffolding (``automation``), else a person typed it."""
+    if turn_author and turn_author.get("is_bot"):
+        return "peer"
+    return "automation" if display_kind == "hidden" else "viewer"
+
+
 def _run_prompt_submit(
     rid, sid: str, session: dict, text: Any, *, display_kind: str | None = None,
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
-    turn_author: dict | None = None, report_ownership_refusal: bool = True) -> bool:
+    turn_author: dict | None = None, report_ownership_refusal: bool = True,
+    turn_origin: str | None = None) -> bool:
     # Every dispatch binds the session's own row (session_key, real source) before the turn writes:
     # the synthesized turns that enter here directly (crash auto-continue, queued-prompt drain,
     # wake-ups) bypass prompt.submit's persist, and a row-less turn is otherwise materialized by
@@ -1157,7 +1168,7 @@ def _run_prompt_submit(
             prompt, run_message, cols, streamer = prepared
             _invoke_agent(
                 sid, session, st, prompt, run_message, streamer, images, display_kind,
-                display_metadata, turn_author, text)
+                display_metadata, turn_author, text, turn_origin)
             status_note = _absorb_turn_result(
                 sid, session, st, text, display_kind, display_metadata)
             payload, raw, status = _complete_turn_payload(session, st, status_note, cols)

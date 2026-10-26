@@ -975,6 +975,11 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 kwargs["turn_author"] = (api.get('turn_author') if api is not None else
                     admission_author.get() or {"id": ctx.source.user_id or None, "name": ctx.source.user_name or None,
                                                "is_bot": bool(getattr(ctx.source, "is_bot", False))})
+            if _accepts_keyword(agent.run_conversation, "turn_origin"):
+                # The admitted row's origin, else the direct turn's; an in-band follow-up is not the row.
+                from gateway.session_ingress import admission_origin, executing_admission
+                kwargs["turn_origin"] = (admission_origin.get() if executing_admission.get() and not ctx._interrupt_depth
+                                         else ctx.turn_origin)
             if ctx.title_user_message is not None:
                 kwargs["title_user_message"] = ctx.title_user_message
             if persist_user_message_override is not None:

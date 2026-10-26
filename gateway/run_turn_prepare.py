@@ -641,6 +641,7 @@ class GatewayTurnPrepareMixin:
         persistence_session_id: Optional[str] = None
         persistence_owner: Optional[str] = None
         title_user_message: Optional[str] = None
+        turn_origin: Optional[str] = None
 
     async def _hmwa_prepare_turn(self, event, source, session_entry, session_key, _quick_key, run_generation):
         """Everything between session resolution and the agent run: session open, task-local env,
@@ -657,6 +658,7 @@ class GatewayTurnPrepareMixin:
         _session_env_tokens = self._set_session_env(context)
         # Self-injected turns (internal=True) persist with a DB-only display_kind: timeline notices, not user bubbles.
         from gateway.response_filters import display_kind_for_event
+        from gateway.session_turn_origin import direct_turn_origin
         persist_user_display_kind = display_kind_for_event(event)
         _redact_pii = False  # privacy.redact_pii, re-read per message
         with suppress(Exception):
@@ -748,5 +750,5 @@ class GatewayTurnPrepareMixin:
         return self._PreparedTurn(
             history, context_prompt, message_text, persist_user_message, persist_user_timestamp,
             persist_user_display_kind, session_entry.session_id, owner,
-            title_user_message=title_user_message,
+            title_user_message=title_user_message, turn_origin=direct_turn_origin(event),
         ), _session_env_tokens

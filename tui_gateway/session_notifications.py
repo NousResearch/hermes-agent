@@ -188,7 +188,7 @@ def _notif_refusal_backoff(session: dict) -> None:
 def _notif_submit(rid: str, sid: str, session: dict, text: str, what: str, **kwargs) -> bool:
     """Only the execution gate can acknowledge a claimed notification turn."""
     try:
-        accepted = _run_prompt_submit(rid, sid, session, text, **kwargs)
+        accepted = _run_prompt_submit(rid, sid, session, text, turn_origin="automation", **kwargs)
         if accepted:
             session.pop("_notif_refusal_delay", None)
         else:
@@ -282,7 +282,8 @@ def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
     started = False
     try:
         _emit("status.update", sid, {"kind": "heartbeat", "text": f"♥ heartbeat #{mgr.state.fire_count} firing…"})
-        started = bool(_run_prompt_submit(f"__heartbeat__{int(time.time() * 1000)}", sid, session, prompt))
+        started = bool(_run_prompt_submit(f"__heartbeat__{int(time.time() * 1000)}", sid, session, prompt,
+                                                turn_origin="automation"))
     except Exception as exc:
         _notif_log_failure("heartbeat dispatch failed", exc)
     if not started:
@@ -369,7 +370,7 @@ def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
             _notif_slash_loop_tick(rid, sid, session, mgr, wakeup)
         else:
             _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, wakeup)
+            _run_prompt_submit(rid, sid, session, wakeup, turn_origin="automation")
     except Exception as exc:
         _notif_log_failure("loop wakeup dispatch failed", exc)
         _notif_release_turn(session)

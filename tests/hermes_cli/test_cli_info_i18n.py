@@ -3,6 +3,9 @@ module-level label tables became call-time lookups, and error copy follows the a
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import hermes_yaml as yaml
 import pytest
 
 from agent import i18n
@@ -34,6 +37,25 @@ def test_describe_uses_catalog_entry_when_present(tmp_path, monkeypatch):
         assert help_cmd.describe() == "Localized help"
     finally:
         i18n.reset_language_cache()
+
+
+def test_registry_fallback_descriptions_match_bundled_english_catalog():
+    """Every canonical registry fallback must match a real bundled English entry."""
+    locales_dir = Path(__file__).resolve().parents[2] / "locales"
+    with (locales_dir / "en.yaml").open("r", encoding="utf-8") as catalog_file:
+        slash_catalog = (yaml.safe_load(catalog_file) or {}).get("slash", {})
+
+    mismatches = {}
+    for cmd in COMMAND_REGISTRY:
+        entry = slash_catalog.get(cmd.name)
+        catalog_description = entry.get("description") if isinstance(entry, dict) else None
+        if catalog_description != cmd.description:
+            mismatches[cmd.name] = {
+                "registry": cmd.description,
+                "catalog": catalog_description,
+            }
+
+    assert mismatches == {}
 
 
 def test_tool_progress_label_is_localized_per_mode_and_empty_for_unknown():

@@ -8,6 +8,7 @@ import { resolveNewSessionCwd } from '@/store/projects'
 import { applyConfiguredDefaultProjectDir } from '@/store/session'
 import { dropTilesForProfile, migrateTilesForProfile } from '@/store/session-states'
 
+import { createBrowserProfileBridge } from './browser-profile'
 import { browserDefaultProjectDirKey } from './browser-settings'
 import { browserStartupProfileKey } from './browser-startup-profile'
 
@@ -201,6 +202,26 @@ describe('browser profile prefs follow rename and delete', () => {
     expect(JSON.parse(localStorage.getItem(browserStartupProfileKey('/other'))!).profile).toBe('alpha')
     expect($defaultProfileRoute.get()).toBeNull()
     expect(resolveNewSessionCwd('alpha')).toBe('')
+  })
+
+  it('leaves a stored startup route the profile bridge does not read as one', async () => {
+    host()
+    const bridge = createBrowserProfileBridge({ basePath: '/hermes', currentProfile: () => null, openWindow: async () => ({ ok: true }) })
+
+    for (const stored of [
+      { connectionId: 'remote-1', profile: 'work' },
+      { connectionId: null, profile: ' work ' }
+    ]) {
+      const raw = JSON.stringify(stored)
+      localStorage.setItem(browserStartupProfileKey('/hermes'), raw)
+      await expect(bridge.profile.getDefault()).resolves.toBeNull()
+
+      migrateTilesForProfile('work', 'renamed')
+      expect(localStorage.getItem(browserStartupProfileKey('/hermes'))).toBe(raw)
+
+      dropTilesForProfile('work')
+      expect(localStorage.getItem(browserStartupProfileKey('/hermes'))).toBe(raw)
+    }
   })
 
   it('leaves a startup profile that names someone else', () => {

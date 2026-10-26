@@ -1,23 +1,41 @@
 import type { DesktopProfileRoute } from '@/global'
 
+import { requireBrowserConnection } from './browser-connection'
 import { readJson, writeJson } from './storage'
 
 export function browserStartupProfileKey(basePath: string): string {
   return `hermes:webapp:default-profile:${basePath || '/'}`
 }
 
+/** A profile route this tab can apply: a valid profile name on its one connection. The profile
+ * bridge and the rename/delete migrations read the stored startup route through this alone, so
+ * they agree on which stored value is a startup profile. */
+export function requireProfileRoute(value: unknown): DesktopProfileRoute {
+  if (!value || typeof value !== 'object') {
+    throw new Error('A profile route is required.')
+  }
+
+  const { connectionId, profile } = value as Record<string, unknown>
+
+  if (typeof profile !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(profile)) {
+    throw new Error('Invalid profile name.')
+  }
+
+  if (connectionId !== null && typeof connectionId !== 'string') {
+    throw new Error('Invalid connection id.')
+  }
+
+  requireBrowserConnection(connectionId)
+
+  return { connectionId, profile }
+}
+
 function startupRoute(basePath: string): DesktopProfileRoute | null {
-  const value = readJson<Record<string, unknown>>(browserStartupProfileKey(basePath))
-
-  if (!value || typeof value.profile !== 'string' || !value.profile.trim()) {
+  try {
+    return requireProfileRoute(readJson(browserStartupProfileKey(basePath)))
+  } catch {
     return null
   }
-
-  if (value.connectionId !== null && typeof value.connectionId !== 'string') {
-    return null
-  }
-
-  return { connectionId: value.connectionId ?? null, profile: value.profile.trim() }
 }
 
 export function readBrowserStartupProfile(basePath: string): DesktopProfileRoute | null {

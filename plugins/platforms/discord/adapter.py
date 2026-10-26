@@ -1225,6 +1225,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
     MAX_MESSAGE_LENGTH = 2000
     _SPLIT_THRESHOLD = 1900  # near the 2000-char split point
     supports_code_blocks = True  # Discord markdown renders fenced code blocks natively
+    allow_from_covers_groups = True  # no group_allow_from: allow_from is the one user allowlist
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
     # Safety ceiling on split deliveries: chunks beyond the cap become a notice (degenerate turns).
     # Safety ceiling on split deliveries (#86581): a degenerate turn can produce tens of thousands of
@@ -5046,11 +5047,10 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
     def _component_live_auth(self, interaction) -> Optional[bool]:
         """The gateway's live allowlist verdict for a component click (None when no check is wired):
         an out-of-process revoke never reaches the connect-time ``_allowed_user_ids`` snapshot."""
+        from plugins.platforms.discord.adapter_component_auth import component_chat_context
         user_id = str(getattr(getattr(interaction, "user", None), "id", "") or "")
-        channel_id = getattr(interaction, "channel_id", None)
-        chat_type = "dm" if getattr(interaction, "guild", None) is None else "group"
-        return self._is_sender_authorized(
-            user_id, chat_type, str(channel_id) if channel_id is not None else None)
+        chat_type, chat_id, thread_id = component_chat_context(interaction, discord.Thread)
+        return self._is_sender_authorized(user_id, chat_type, chat_id, thread_id=thread_id)
 
     def resolved_allowlist_user_ids(self) -> set:
         """Numeric IDs from connect-time username resolution.
@@ -6670,11 +6670,15 @@ def _define_discord_view_classes() -> None:
                 for i in range(0, len(models), _DISCORD_SELECT_MAX_OPTIONS)
             ][: _DISCORD_SELECT_MAX_ROWS - 2]
             placeholder_base = t("platform.discord.picker.model_placeholder", provider=provider.get("name", provider_slug))
+            from hermes_cli.model_picker_usage import picker_row_suffix
             for idx, chunk in enumerate(chunks):
                 options = [
                     discord.SelectOption(
                         label=_truncate_discord_component_text(model_id.split("/")[-1], _DISCORD_SELECT_FIELD_LIMIT),
                         value=_truncate_discord_component_text(model_id, _DISCORD_SELECT_FIELD_LIMIT),
+                        # Usage-window plans: "Large" / "Free" (empty for every other account).
+                        description=(_truncate_discord_component_text(suffix, _DISCORD_SELECT_FIELD_LIMIT)
+                                     if (suffix := picker_row_suffix(provider, model_id)) else None),
                     )
                     for model_id in chunk
                 ]
@@ -6718,7 +6722,9 @@ def _define_discord_view_classes() -> None:
             total = provider.get("total_models", 0) if provider else 0
             shown = min(len(provider.get("models", [])), _DISCORD_MODEL_SELECT_CAPACITY) if provider else 0
             extra = f"\n*{t('platform.discord.picker.more_available', count=str(total - shown))}*" if total > shown else ""
-            await self._edit(interaction, t("platform.discord.picker.select_model", provider=pname, extra=extra))
+            # Window plans: the limit line leads the message (absent for every other account).
+            plan_line = f"⚠️ {provider['plan_line']}\n" if provider and provider.get("plan_line") else ""
+            await self._edit(interaction, plan_line + t("platform.discord.picker.select_model", provider=pname, extra=extra))
 
         async def _switch_selected_model(self, interaction: discord.Interaction, model_id: str):
             if not await self._gate(interaction, resolved_msg=t("platform.discord.picker.already_resolved"), unauth_msg=_unauthorized()):

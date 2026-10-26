@@ -1,23 +1,32 @@
+// health: allow FILE_LINES -- locale data: translated copy for the usage-window plan UI (allowance gauges, Large/Free tags, the limit card), one key per string
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introJa } from './intro-ja'
 import { jaBoot } from './ja_boot'
+import { jaCatalog, jaSkillDeepLink } from './ja_catalog'
 import { jaClarify } from './ja_clarify'
 import { jaConnectors } from './ja_connectors'
+import { jaErrorCodes } from './ja_error_codes'
+import { jaErrorLayers } from './ja_error_layers'
 import { jaFirstRun } from './ja_first_run'
+import { jaGatewayHost } from './ja_gateway_host'
 import { jaLocalModels } from './ja_local_models'
 import { jaModelMenu } from './ja_model_menu'
 import { jaModelSettings } from './ja_model_settings'
 import { jaNotices } from './ja_notices'
+import { jaNotifications } from './ja_notifications'
 import { jaOnboarding } from './ja_onboarding'
-import { jaPluginSettings } from './ja_plugins'
+import { jaPluginPreviewAccess } from './ja_plugin_preview_access'
+import { jaPluginSettings, jaPluginsTab } from './ja_plugins'
+import { jaPreviewWeb } from './ja_preview_web'
 import { jaProjects } from './ja_projects'
 import { jaSharedMetrics } from './ja_shared_metrics'
 import { jaThemePicker } from './ja_theme_picker'
 import { jaUpdateChannel } from './ja_update_channel'
 
 export const jaOverrides = {
+  catalog: jaCatalog,
   connectors: jaConnectors.connectors,
   externalOpenFailed: {
     title: 'このリンクを開けませんでした',
@@ -150,6 +159,7 @@ export const jaOverrides = {
       microphoneConstraintsUnsupported: 'このデバイスはマイクの制約をサポートしていません。',
       microphoneFailed: 'マイクが失敗しました',
       microphoneInUse: 'マイクは他のアプリで使用中です。',
+      microphoneNeedsHttps: 'マイクには安全な接続が必要です。使うには、Webapp を HTTPS か 127.0.0.1 への SSH トンネル経由で開いてください。',
       microphonePermissionDenied: 'マイクのアクセス許可が拒否されました。',
       microphoneStartFailed: 'マイクの録音を開始できませんでした。',
       microphoneUnsupported: 'このランタイムはマイク録音をサポートしていません。',
@@ -181,15 +191,6 @@ export const jaOverrides = {
   },
 
   ...jaNotices,
-
-  billingBlock: {
-    titleNous: 'Nous クレジットが不足しています',
-    titleProvider: provider => `クレジット不足 — ${provider}`,
-    fallbackMessage: 'アカウントのクレジットが不足しています。続行するにはクレジットを追加してください。',
-    openBilling: '請求を開く',
-    addCredits: 'クレジットを追加',
-    dismiss: '閉じる'
-  },
 
   sendDiagnostics: {
     title: 'Nous に診断情報を送信',
@@ -242,6 +243,36 @@ export const jaOverrides = {
   },
 
   settings: {
+    // Window plans (Nous subscription with included usage). Other billing strings: overlay-gaps.json.
+    billing: {
+      keepGoingOnCredits: {
+        title: 'クレジットで続行',
+        description: '含まれる利用量を使い切ったらクレジットを使います。オフ: Hermes はリセットを待ちます。',
+        approveInBrowser: '変更するにはブラウザでリモート支出を承認してください。承認するとすぐに適用されます。',
+        openAgain: 'もう一度開く',
+        cancel: 'キャンセル',
+        approvedRetry: 'リモート支出は承認されましたが、変更を保存できませんでした。',
+        tryAgain: '再試行'
+      },
+      state: {
+        usage: {
+          window: {
+            today: '今日',
+            week: '今週',
+            month: '今月',
+            topTier: '大型モデル（月間）',
+            barLabel: title => `${title}の含まれる利用量の使用率`,
+            captionPaused: '一時停止中: サブスクリプションの支払いに失敗しました',
+            captionPausedOther: '一時停止中: ポータルの請求をご確認ください',
+            captionTopTierUsedUp: '月間の枠を使い切りました。残りはクレジットで支払われます',
+            captionTopTierUsedUpKeepGoingOff: '月間の枠を使い切りました。他の含まれるモデルは引き続き使えます',
+            captionResetsIn: duration => `${duration}後にリセット`,
+            captionIncluded: '含まれる利用量',
+            valueUsed: percent => `${percent} 使用`
+          }
+        }
+      }
+    },
     uninstallSection: {
       dangerZone: '危険ゾーン',
       checkingInstalled: 'インストール内容を確認中…',
@@ -430,52 +461,7 @@ export const jaOverrides = {
         masterPasswordPlaceholder: 'マスターパスワード'
       }
     },
-    notifications: {
-      title: '通知',
-      intro: 'アプリ内トーストとは別の、ネイティブのデスクトップ通知です。設定は端末ごとに保存されます。',
-      enableAll: '通知を有効にする',
-      enableAllDesc: 'オフで以下の通知をすべて無効にします。',
-      focusedHint: '完了通知は Hermes がバックグラウンドにあるときのみ表示されます。',
-      kinds: {
-        approval: {
-          label: '承認が必要',
-          description: 'コマンドが承認または拒否を待っています。'
-        },
-        input: {
-          label: '入力が必要',
-          description: 'Hermes が質問したか、パスワードやシークレットを必要としています。'
-        },
-        turnDone: {
-          label: '応答完了',
-          description: 'Hermes がバックグラウンドのときにターンが完了しました。'
-        },
-        turnError: {
-          label: 'ターン失敗',
-          description: 'バックグラウンドのターンエラー。'
-        },
-        backgroundDone: {
-          label: 'バックグラウンドタスク完了',
-          description: 'バックグラウンドのターミナルコマンドが完了しました。'
-        },
-        credits: {
-          label: 'クレジット通知',
-          description: 'クレジットの利用が停止または復旧しました。'
-        },
-        plugin: {
-          label: 'プラグイン通知',
-          description: 'Hermes がバックグラウンドの間に、デスクトッププラグインが通知を送信しました。'
-        }
-      },
-      test: 'テスト通知を送信',
-      testTitle: 'Hermes',
-      testBody: '通知は正常に動作しています。',
-      testSent:
-        'テストを送信しました。表示されない場合は、OS の通知許可と集中モード／おやすみモードを確認してください。',
-      testUnsupported: 'このシステムはネイティブ通知に対応していません。',
-      completionSoundTitle: '完了サウンド',
-      completionSoundDesc: 'エージェントのターン終了時に再生されます。プリセットを選んでここで試聴できます。',
-      completionSoundPreview: '試聴'
-    },
+    notifications: jaNotifications,
     sections: {
       model: 'モデル',
       chat: 'チャット',
@@ -1001,8 +987,7 @@ export const jaOverrides = {
     },
     gateway: {
       loading: 'ゲートウェイ設定を読み込み中...',
-      unavailableTitle: 'ゲートウェイ設定は利用できません',
-      unavailableDesc: 'デスクトップ IPC ブリッジはゲートウェイ設定を公開していません。',
+      ...jaGatewayHost,
       title: 'ゲートウェイ接続',
       envOverride: 'env オーバーライド',
       intro:
@@ -1329,24 +1314,9 @@ export const jaOverrides = {
     }
   },
 
-  skillDeepLink: {
-    installTitle: (name: string) => `「${name}」をインストールしますか？`,
-    installDescription:
-      'このスキルは新しいセッションで利用できます。信頼できる提供元からのみインストールしてください。',
-    installTo: 'インストール先',
-    thisComputer: 'このコンピューター',
-    installing: 'インストール中…',
-    installComplete: (name: string) => `「${name}」をインストールしました`,
-    destinationChanged:
-      'インストール先が変更されました。このダイアログを閉じ、インストールリンクを開き直してください。',
-    installed: 'インストール済み',
-    source: '提供元'
-  },
+  skillDeepLink: jaSkillDeepLink,
   skills: {
-    plugins: {
-      pageBlurb:
-        'プラグインはこのアプリ、エージェント、または両方を拡張できます。それぞれに独立したスイッチがあります。'
-    },
+    plugins: { ...jaPluginPreviewAccess, ...jaPluginsTab },
     hub: {
       search: '検索',
       searching: '検索中…',
@@ -1809,6 +1779,7 @@ export const jaOverrides = {
     exported: 'プロファイルをエクスポートしました',
     failedImport: 'プロファイルのインポートに失敗しました',
     failedExport: 'プロファイルのエクスポートに失敗しました',
+    exportNeedsHost: name => `ブラウザーではプロファイルのアーカイブを保存できません。Hermes ホストで次を実行してください: hermes profile export ${name}`,
     allProfiles: 'すべてのプロファイル',
     showAllProfiles: 'すべてのプロファイルを表示',
     switchToProfile: name => `${name} に切り替え`,
@@ -2398,7 +2369,7 @@ export const jaOverrides = {
       '/init': 'リポジトリを調べて AGENTS.md の指示を作成または更新',
       '/suggestions': '提案された自動化を確認し、採用または却下',
       '/blueprint': 'ブループリントから自動化を設定',
-      '/browser': 'エージェントのブラウザーを管理 [connect|disconnect|status|use]',
+      '/browser': 'エージェントのブラウザーを管理 [connect|disconnect|status]',
       '/palette': 'コマンドパレットを開く',
       '/usage': 'このセッションのトークン使用量を表示',
       '/subscription': 'Nous のプランを確認し、ブラウザーで変更',
@@ -2884,7 +2855,27 @@ export const jaOverrides = {
     wasPrice: '旧価格',
     customModel: 'カスタムモデル',
     addCustomModelAction: 'カスタムモデルを追加…',
-    customModelPlaceholder: 'モデル ID を入力（例: openai/gpt-5）'
+    customModelPlaceholder: 'モデル ID を入力（例: openai/gpt-5）',
+    today: '今日',
+    week: '今週',
+    month: '今月',
+    topTier: '大型モデル（月間）',
+    included: '以下のモデルはすべて含まれます',
+    pausedRenewal: '一時停止: 未払い',
+    pausedOther: '一時停止',
+    includedUsedUp: '含まれる利用量を使い切りました',
+    limitReached: name => `${name}の上限に達しました`,
+    limitNames: { day: '1日', month: '月間', top_tier: '大型モデルの月間', week: '週間' },
+    limitThenCredits: '有料モデルはクレジットを使用中（従量課金）',
+    limitThenCreditsLarge: '大型モデルはクレジットを使用中（従量課金）',
+    limitThenWait: 'それまでは無料モデルのみ',
+    limitThenWaitLarge: 'それまで大型モデルは一時停止',
+    percentUsed: percent => `${percent} 使用済み`,
+    resetsIn: duration => `${duration}後にリセット`,
+    usageLevels: { free: '無料', top_tier: '大' },
+    sectionRecommended: 'おすすめ',
+    sectionOther: 'その他のモデル',
+    largeFootnote: '大型モデルは大型モデルの月間上限も消費します。'
   },
 
   modelVisibility: {
@@ -3039,6 +3030,7 @@ export const jaOverrides = {
   },
 
   rightSidebar: {
+    terminalDropUnquotable: (shell, paths) => `これらの名前は ${shell} に安全に入力できません: ${paths}`,
     terminalReadOnly: '読み取り専用の出力',
     terminalReadOnlyHelp:
       'プロンプトに応答するには、バックグラウンドのコマンドを停止し、新しいターミナルで実行してください。新しいターミナルは別のシェルを開き、このプロセスには接続しません。',
@@ -3147,51 +3139,7 @@ export const jaOverrides = {
       sentTitle: 'チャットに送信しました',
       sentMessage: count => `${count} 件のログエントリーがコンポーザーに追加されました`
     },
-    web: {
-      appFailedToBoot: 'プレビューアプリの起動に失敗しました',
-      serverNotFound: 'サーバーが見つかりません',
-      remoteLoopback:
-        'このアドレスはエージェントを実行しているマシンを指しており、このマシンではありません。ブラウザペインはページをローカルで読み込むため、リモートの開発サーバーにはポート転送か到達可能なホスト名が必要です。',
-      failedToLoad: 'プレビューの読み込みに失敗しました',
-      tryAgain: '再試行',
-      restarting: 'Hermes を再起動中...',
-      askRestart: 'Hermes にサーバーの再起動を依頼',
-      lookingRestart: taskId => `Hermes は再起動するプレビューサーバーを検索中です (${taskId})`,
-      restartingTitle: 'プレビューサーバーを再起動中',
-      restartingMessage: 'Hermes はバックグラウンドで作業中です。進捗はプレビューコンソールで確認してください。',
-      startRestartFailed: message => `サーバー再起動を開始できませんでした: ${message}`,
-      restartFailed: 'サーバーの再起動に失敗しました',
-      hideConsole: 'プレビューコンソールを非表示',
-      showConsole: 'プレビューコンソールを表示',
-      hideDevTools: 'プレビュー DevTools を非表示',
-      openDevTools: 'プレビュー DevTools を開く',
-      goBack: '戻る',
-      goForward: '進む',
-      reload: 'ページを再読み込み',
-      address: 'アドレス',
-      addressPlaceholder: 'アドレスを入力',
-      blankPageBody: '上のアドレス欄に入力するか、Hermes にページを開くよう頼んでください。',
-      finishedRestarting: message =>
-        `Hermes がプレビューサーバーの再起動を完了しました${message ? `: ${message}` : ''}`,
-      failedRestarting: message => `サーバーの再起動に失敗しました: ${message}`,
-      unknownError: '不明なエラー',
-      restartedTitle: 'プレビューサーバーが再起動しました',
-      reloadingNow: 'プレビューを再読み込み中です。',
-      restartFailedTitle: 'プレビューの再起動に失敗しました',
-      restartFailedMessage: 'Hermes がサーバーを再起動できませんでした。',
-      stillWorking:
-        'Hermes はまだ作業中ですが、再起動の結果がまだ届いていません。サーバーコマンドがフォアグラウンドで実行されている可能性があります。',
-      workspaceReloading: 'ワークスペースが変更され、プレビューを再読み込み中',
-      fileChanged: url => `ファイルが変更され、プレビューを再読み込み中: ${url}`,
-      filesChanged: (count, url) => `${count} 件のファイルが変更され、プレビューを再読み込み中: ${url}`,
-      watchFailed: message => `プレビューファイルを監視できませんでした: ${message}`,
-      moduleMimeDescription:
-        'モジュールスクリプトが間違った MIME タイプで提供されています。通常、静的ファイルサーバーがプロジェクトの開発サーバーの代わりに Vite/React アプリを提供していることを意味します。',
-      loadFailedConsole: (code, message) => `読み込みに失敗しました${code ? ` (${code})` : ''}: ${message}`,
-      unreachableDescription: 'プレビューページに到達できませんでした。',
-      openTarget: url => `${url} を開く`,
-      fallbackTitle: 'プレビュー'
-    }
+    web: jaPreviewWeb
   },
 
   interfaceMode: {
@@ -3326,16 +3274,9 @@ export const jaOverrides = {
       react: 'リアクション',
       dismissError: 'エラーを閉じる',
       errorGenericProvider: 'AI サービス',
-      errorLayerBodies: {
-        generic:
-          'Hermes の返信中に問題が発生しました。再試行してください。問題が続く場合はエラー詳細をコピーしてください。',
-        provider:
-          'AI サービスがリクエストを完了できませんでした。少し待って再試行するか、プロバイダーを切り替えてください。',
-        endpoint:
-          'カスタムモデルサーバーに接続できません。サーバーが起動しているか確認し、メッセージを再送してください。',
-        streaming: '返信が完了する前に接続が切れました。再試行してもう一度送信してください。'
-      },
+      ...jaErrorLayers,
       errorCodes: {
+        ...jaErrorCodes,
         provider_policy_blocked: {
           title: 'アカウント設定によりこのモデルはブロックされています',
           body: provider =>
@@ -3385,20 +3326,19 @@ export const jaOverrides = {
           title: '安全な接続に失敗しました',
           body: provider =>
             `Hermes は ${provider} との安全な接続を検証できませんでした。ネットワークやプロキシの設定を確認するか、プロバイダーを切り替えて再送してください。`
+        },
+        usage_window: {
+          title: '含まれる利用量を使い切りました',
+          body: 'プランに含まれる利用量はリセットまで使い切りました。続けるには /topup でクレジットを追加してください。'
         }
       },
-      errorLayers: {
-        auth: '認証エラー',
-        billing: 'クレジット不足',
-        disk: 'ディスク容量不足',
-        endpoint: 'カスタムエンドポイントのエラー',
-        gateway: 'ゲートウェイのエラー',
-        generic: 'ターンが失敗しました',
-        provider: 'プロバイダーのエラー',
-        runtime: 'ローカルランタイムのエラー',
-        streaming: 'ストリーミング接続のエラー'
-      },
       errorRetry: '再試行',
+      errorSwitchToModel: (model, note) => (note ? `${model} に切り替え（${note}）` : `${model} に切り替え`),
+      errorSwitchModelFailed: 'モデルを切り替えられませんでした',
+      errorUseCredits: 'クレジットで続行を有効にする',
+      errorUseCreditsFailed: 'クレジットで続行を有効にできませんでした',
+      errorAddCredits: 'クレジットを追加',
+      errorOpenBillingSettings: '請求設定を開く',
       errorLimitResets: time => `制限は ${time} にリセットされます`,
       errorRetryAtReset: time => `制限のリセット時に再試行（${time}）`,
       errorRetryScheduled: (time, wait) => `${time} に再試行 — 残り ${wait}`,
@@ -3699,6 +3639,7 @@ export const jaOverrides = {
     imageAttach: '画像を添付',
     imageWriteFailed: '画像のディスクへの書き込みに失敗しました。',
     imageAttachFailed: '画像の添付に失敗しました',
+    attachFailed: '添付に失敗しました',
     pastedContent: '貼り付けた内容',
     pasteAttachFailed: '貼り付けたテキストを添付できませんでした',
     attachImages: '画像を添付',
@@ -3706,6 +3647,7 @@ export const jaOverrides = {
     noClipboardImage: 'クリップボードに画像が見つかりません',
     clipboardPasteFailed: 'クリップボードからの貼り付けに失敗しました',
     dropFiles: 'ファイルをドロップ',
+    dropFilesMore: (count: number) => `ほか ${count} 件`,
     handoff: {
       pickPlatform: '送信先を選択',
       success: platform => `${platform} に引き継ぎました。いつでもここで再開できます。`,

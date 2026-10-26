@@ -196,18 +196,18 @@ def assemble(root: Path, tag: str, commit: str, public_base: str, out: Path,
             if prior is not None and prior != row:
                 raise ValueError("Candidate handoffs disagree on file receipts")
             by_name[row["path"]] = row
+    # Package bytes stay bound by their receipt digests; publish() downloads and
+    # checks them, and the universal bundle's identity, before anything goes live.
     rows = []
     for name, receipt in sorted(by_name.items()):
-        if name.startswith("metadata-") or name.endswith(".msixbundle"):
+        if name.startswith("metadata-"):
             file = root / name
             if not file.is_file() or sha256_file(file) != receipt["sha256"]:
                 raise ValueError(f"Candidate local digest mismatch: {name}")
-            if name.startswith("metadata-"):
-                rows.append(json.loads(file.read_text(encoding="utf-8-sig")))
+            rows.append(json.loads(file.read_text(encoding="utf-8-sig")))
     universal_name = None
     if "windows" in lanes:
         universal_name = single(name for name in by_name if name.endswith(".msixbundle") and not name.startswith("Store-"))
-        validate_windows_bundle(root / universal_name, [r for r in rows if r["platform"] == "windows"])
     elif any(name.endswith(".msixbundle") and not name.startswith("Store-") for name in by_name):
         raise ValueError("Candidate carries a signed Windows bundle the claim did not build")
     stores = [name for name in by_name if name.endswith(".msixbundle") and name.startswith("Store-")]
@@ -285,6 +285,11 @@ def publish(manifest: dict, root: Path, public_base: str) -> None:
     from scripts.releases.r2 import put
 
     materialize(manifest, root, public_base=public_base)
+    windows = [row for row in manifest["packages"] if row["platform"] == "windows"]
+    if windows:
+        paths = {item["url"]: item["path"] for item in manifest["files"]}
+        (universal,) = {paths[row["artifact"]["url"]] for row in windows}
+        validate_windows_bundle(root / universal, windows)
     for file in (root / "apt").rglob("*"):
         rel = file.relative_to(root / "apt").as_posix()
         if file.is_file() and (rel.startswith("pool/") or "/by-hash/" in rel):

@@ -12,7 +12,7 @@ from tests.waiting import async_wait_until
 
 
 @pytest.mark.asyncio
-async def test_refused_relay_frame_is_acked_and_the_reader_keeps_serving(tmp_path, monkeypatch):
+async def test_refused_relay_frame_is_acked_and_the_reader_keeps_serving(tmp_path, monkeypatch, caplog):
     websockets = pytest.importorskip('websockets')
     from gateway.relay.adapter import RelayAdapter
     from gateway.relay.descriptor import CapabilityDescriptor
@@ -55,15 +55,17 @@ async def test_refused_relay_frame_is_acked_and_the_reader_keeps_serving(tmp_pat
             assert await adapter.connect()
             ws = await asyncio.wait_for(ready.get(), 5)
             source = {'platform': 'telegram', 'chat_id': 'relay-chat', 'chat_type': 'dm', 'user_id': 'relay-user'}
-            # A route this single-profile gateway does not serve: refused (profile_mismatch) on every replay.
-            refused = {'text': 'for another profile', 'message_id': 'r1', 'source': {**source, 'profile': 'foreign'}}
+            # A platform this socket never advertised: refused (permission_denied) on every replay.
+            refused = {'text': 'for another platform', 'message_id': 'r1', 'source': {**source, 'platform': 'discord'}}
             ok = {'text': 'hello', 'message_id': 'r2', 'source': source}
             for event, buffer_id in ((refused, 'buf-refused'), (ok, 'buf-ok')):
                 await ws.send(json.dumps({'type': 'inbound', 'event': event, 'bufferId': buffer_id}) + '\n')
             acked = lambda: {f.get('bufferId') for f in outgoing if f.get('type') == 'inbound_ack'}
             await async_wait_until(lambda: {'buf-refused', 'buf-ok'} <= acked() and turns,
                                    timeout=20, what='both frames acknowledged and the valid one run')
+            await async_wait_until(lambda: 'hello' in turns, timeout=10, what='the valid frame run')
             assert turns == ['hello']
+            assert 'relay inbound refused (permission_denied)' in caplog.text
             assert len(sockets) == 1, 'the refusal tore the relay socket down and re-dialed'
         finally:
             await adapter.disconnect()

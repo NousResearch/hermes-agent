@@ -30,9 +30,10 @@ Safety invariants (SECURITY-BASELINE.md):
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from agent.feature_registry import FeatureRegistry
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +41,11 @@ logger = logging.getLogger(__name__)
 class FeatureRouter:
     """Turn-scoped suggestion engine."""
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None,
+    def __init__(self, config: Optional[dict[str, Any]] = None,
                  registry: Optional[FeatureRegistry] = None):
         cfg = config or {}
-        self.enabled = bool(cfg.get("enabled", False))
-        self.auto_apply = bool(cfg.get("auto_apply", False))
+        self.enabled = is_truthy_value(cfg.get("enabled"), default=False)
+        self.auto_apply = is_truthy_value(cfg.get("auto_apply"), default=False)
         self.min_confidence = float(cfg.get("min_confidence", 0.7))
         self.rate_limit_turns = max(0, int(cfg.get("rate_limit_turns", 5)))
         self.registry = registry or FeatureRegistry()
@@ -52,7 +53,7 @@ class FeatureRouter:
         # Per-feature kill switches: {"feature_id": True/False}.
         feature_flags = cfg.get("features", {}) or {}
         self._feature_flags = {
-            f.id: bool(feature_flags.get(f.id, True))
+            f.id: is_truthy_value(feature_flags.get(f.id), default=True)
             for f in self.registry.features
         }
 
@@ -89,8 +90,8 @@ class FeatureRouter:
             self._turns_since_suggestion = 0
             self._last_suggestion = f.id
             return self.registry.suggest_text(text, min_confidence=self.min_confidence)
-        except Exception as e:  # never break a turn
-            logger.debug("feature router suggestion failed (non-fatal): %s", e)
+        except Exception:  # health: allow BLE001 -- a broken router must never break a turn; log the traceback and skip the suggestion
+            logger.debug("feature router suggestion failed (non-fatal)", exc_info=True)
             return ""
 
     def auto_apply_allowed(self) -> bool:

@@ -1148,8 +1148,8 @@ def build_turn_context(
                     ext_prefetch_cache + "\n\n" + _fs
                     if ext_prefetch_cache else _fs
                 )
-        except Exception:
-            pass
+        except Exception:  # health: allow BLE001 -- a broken router must never break a turn; log the traceback and skip the suggestion
+            logger.debug("proactive feature suggestion failed (non-fatal)", exc_info=True)
 
     # Sidecar skipped for codex_app_server/MoA; list content carries its context as a part in every mode.
     if 0 <= current_turn_user_idx < len(messages) and messages[current_turn_user_idx].get("role") == "user":

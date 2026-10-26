@@ -43,13 +43,86 @@ def test_slash_capabilities_resolved_at_runtime():
     product did not have (it only existed in the unmerged companion PR).
     Resolution is now dynamic: a command that exists on disk is suggested,
     one that does not (simulated here with a fake registry) is dropped.
+
+    The assertion deliberately does NOT hard-code a specific command name as
+    "absent": a companion PR ships its own command independently, so a test
+    keyed on a command's absence goes red the moment that PR merges — a
+    fact about the repo's PR queue, not about this router. What is asserted
+    instead is the invariant: the resolved slash set IS the live registry's
+    slash set.
     """
+    from hermes_cli import commands as commands_module
+
     known = resolve_known_capabilities()
     # /model and /retry are real commands in the product's command registry.
     assert "/model" in known
     assert "/retry" in known
-    # A command that only exists in an unmerged companion PR is NOT known.
-    assert "/whats-new" not in known
+
+    live = set()
+    for cmd in commands_module.COMMAND_REGISTRY:
+        live.add(f"/{cmd.name}")
+        live.update(f"/{alias}" for alias in cmd.aliases)
+    # The resolved slash capabilities ARE the live registry's — derived from
+    # the installed product, never from a hand-maintained list.
+    assert {k for k in known if k.startswith("/")} == live
+    # A command the product does not ship is never suggested.
+    assert "/definitely-not-a-shipped-hermes-command" not in known
+
+
+def test_resolved_set_tracks_live_registry_when_a_command_lands(monkeypatch):
+    """When a companion PR lands a new slash command, the resolved set must
+    pick it up immediately — that is how the release_brief feature turns
+    itself on (see the review this PR answers).
+
+    The previous version of the runtime test above asserted the OPPOSITE for
+    one specific command (that /whats-new was NOT known), which encoded the
+    unmerged state of the companion PR: the suite went red the moment that
+    PR merged. This test pins the liveness invariant for a freshly landed
+    command instead, so it holds in both worlds.
+    """
+    from hermes_cli import commands as commands_module
+
+    landed = commands_module.CommandDef("whats-new", "fake whats-new cmd", "Session")
+    monkeypatch.setattr(
+        commands_module,
+        "COMMAND_REGISTRY",
+        [*commands_module.COMMAND_REGISTRY, landed],
+    )
+
+    known = resolve_known_capabilities()
+    assert "/whats-new" in known
+
+    live = {f"/{c.name}" for c in commands_module.COMMAND_REGISTRY}
+    live |= {f"/{a}" for c in commands_module.COMMAND_REGISTRY for a in c.aliases}
+    assert {k for k in known if k.startswith("/")} == live
+
+
+def test_config_string_false_is_not_enabled():
+    """Regression: `enabled: "false"` (a quoted YAML string) must NOT turn the
+    router on.
+
+    `bool("false")` is True, so the old `bool(cfg.get("enabled", False))`
+    turned the router ON for a user who wrote the flag as a quoted string —
+    the exact failure mode the repo's code-health HX010 rule documents
+    ("bool() of a config/env string ... is_truthy_value(...)").
+    """
+    r = FeatureRouter({"enabled": "false", "auto_apply": "false"})
+    assert not r.enabled
+    assert not r.auto_apply
+    assert r.on_turn_start("帮我并行处理这3个文件") == ""
+
+
+def test_per_feature_kill_switch_honors_string_false():
+    """Same footgun for the per-feature kill switch: `features: {"x": "false"}`
+    must disable the feature rather than silently leave it on. The kill
+    switch is the documented way to turn a single suggestion off, so it must
+    fail closed.
+    """
+    r = FeatureRouter(
+        {"enabled": True, "min_confidence": 0.6,
+         "features": {"parallel_subtasks": "false"}}
+    )
+    assert r.on_turn_start("帮我并行处理这3个文件") == ""
 
 
 def test_registry_drops_unavailable_slash_command(monkeypatch):
@@ -243,7 +316,6 @@ def _make_fake_agent():
         _api_mode = None
         _session_db = None
         _last_compaction_in_place = False
-        pass
 
     return FakeAgent()
 

@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -76,9 +76,9 @@ class Feature:
         return float(hits)
 
 
-def compile_features(features: List[Feature]) -> List[Feature]:
+def compile_features(features: list[Feature]) -> list[Feature]:
     """Compile regex patterns into a list of frozen Feature instances."""
-    out: List[Feature] = []
+    out: list[Feature] = []
     for f in features:
         compiled = tuple(
             re.compile(p, re.IGNORECASE) for p in f.patterns
@@ -144,15 +144,16 @@ def resolve_known_capabilities() -> frozenset[str]:
             names.add(f"/{cmd.name}")
             for alias in cmd.aliases:
                 names.add(f"/{alias}")
-    except Exception as e:  # noqa: BLE001 — defensive fallback
+    except Exception:  # health: allow BLE001 -- a broken command registry must never break the router; fall back to tools only
         logger.debug(
             "feature registry: could not resolve slash commands "
-            "(falling back to tools only): %s", e,
+            "(falling back to tools only)",
+            exc_info=True,
         )
     return frozenset(names)
 
 
-def _seed_features() -> List[Feature]:
+def _seed_features() -> list[Feature]:
     return [
         Feature(
             id="parallel_subtasks",
@@ -247,7 +248,7 @@ def _seed_features() -> List[Feature]:
 class FeatureRegistry:
     """Loads, compiles, and serves the feature registry."""
 
-    def __init__(self, features: Optional[List[Feature]] = None):
+    def __init__(self, features: Optional[list[Feature]] = None):
         raw = features if features is not None else _seed_features()
         # Capability guard: drop any entry naming a capability that does not
         # exist in the INSTALLED product.  Tools are a static set; slash
@@ -255,7 +256,7 @@ class FeatureRegistry:
         # so a seed naming a command from an unmerged companion PR is
         # dropped until that PR lands (and re-enabled automatically after).
         known = resolve_known_capabilities()
-        kept: List[Feature] = []
+        kept: list[Feature] = []
         for f in raw:
             if f.suggested_capability and f.suggested_capability not in known:
                 logger.warning(

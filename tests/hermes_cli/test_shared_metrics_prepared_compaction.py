@@ -144,6 +144,8 @@ def test_waste_modes_say_why(monkeypatch, marks):
     spliced.compress(msgs, current_tokens=spliced.threshold_tokens + 1)
     attempt = spliced._last_compression_telemetry
     assert attempt["prepared_summary"] is True
+    # A pre-commit cancel restores the previous attempt's telemetry (no prepared_summary) before the record.
+    spliced._last_compression_telemetry = spliced._active_compression_telemetry = {"attempt_id": "previous"}
     _emit_compression_attempt_telemetry(
         type("Agent", (), {"context_compressor": spliced, "session_id": "S1"})(), started_at=time.monotonic(),
         commit_status="aborted", split_status="aborted", failure_class="session_split_failed",
@@ -161,6 +163,26 @@ def test_waste_modes_say_why(monkeypatch, marks):
     running.join(5.0)
     woken_rows = _events(marks[before:])
     assert [row for row in woken_rows if row[0] == "discarded"] == [
+        ("discarded", "none", "session_boundary", "none", "none"),
+    ]
+
+    # A boundary between the pass publishing and the woken wait reading it: one discard, by the boundary.
+    raced = _compressor()
+    raced.gate = threading.Event()
+    running = pc.maybe_prepare(_agent(raced), msgs, origin="tool-batch")
+    state, real_await = raced.prepared_compaction, raced.prepared_compaction._await
+
+    def publish_then_discard(pending):
+        raced.gate.set()
+        assert pending.done.wait(5)  # the pass published its summary
+        state.discard("session reset")  # dropped before the wait reads it
+        return real_await(pending)
+
+    state._await = publish_then_discard
+    before = len(marks)
+    raced.compress(msgs, current_tokens=raced.threshold_tokens + 1)
+    running.join(5.0)
+    assert [row for row in _events(marks[before:]) if row[0] == "discarded"] == [
         ("discarded", "none", "session_boundary", "none", "none"),
     ]
 

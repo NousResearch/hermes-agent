@@ -236,6 +236,11 @@ class PreparedCompaction:
         self._needs_provider_context = False
         self._busy_window: Optional[tuple[str, int, int]] = None  # last window the slot cap refused (counted once)
         self._taken: Optional[PreparedSummary] = None  # handed to compress(), not yet spliced by adopt()
+        # The attempt that spliced the last summary. Lives here, not on the compressor, because a pre-commit
+        # cancel restores the compressor's attempt telemetry (and its prepared_summary flag) before the
+        # attempt record is emitted.
+        self.spliced_attempt_id: Optional[str] = None
+        self._boundaries = 0  # discard() calls that dropped something; a wait that spans one was discarded
 
     def _count_unspliced(self) -> None:
         """A summary take() handed out that adopt() never spliced (the compaction aborted or no-opped after
@@ -253,6 +258,8 @@ class PreparedCompaction:
             entry, pending, self._entry, self._pending = self._entry, self._pending, None, None
             if pending is not None:
                 pending.cancel(code)  # under the lock: the pass reads its cancel reason after it
+            if entry is not None or pending is not None:
+                self._boundaries += 1
         if entry is not None or pending is not None:
             _record("discarded", reason=code)
         dropped = entry or (pending.window if pending is not None else None)
@@ -279,6 +286,7 @@ class PreparedCompaction:
         with self._lock:
             entry, pending = self._entry, self._pending
             self._entry = None
+            boundaries = self._boundaries
         reason = None if eligible else _Miss(
             "provider_context" if self._needs_provider_context else "fresh_required", "fresh summary required",
         )
@@ -291,6 +299,10 @@ class PreparedCompaction:
                     wait_started = time.monotonic()
                     entry, reason = self._await(pending)
                     waited = time.monotonic() - wait_started
+                    if entry is None and self._boundaries != boundaries:
+                        # The pass published, then a boundary dropped it before this wait read it: a discard,
+                        # already counted by the boundary, not a failed pass.
+                        reason = _Miss("discarded_while_waiting", "running pass discarded")
                 elif entry is None:
                     reason = _Miss(
                         "running_not_fit", "running pass does not fit",
@@ -525,14 +537,15 @@ def adopt(compressor: Any, prepared: PreparedSummary) -> None:
     """Leave the live compressor as the inline summary call would have: the summary is the iterative base,
     failure state cleared, the pass's main-model fallback (if any) carried over, its call in the telemetry."""
     state = getattr(compressor, "prepared_compaction", None)
+    telemetry = getattr(compressor, "_active_compression_telemetry", None)
     if state is not None:
         with state._lock:
             if state._taken is prepared:
                 state._taken = None
+            state.spliced_attempt_id = telemetry.get("attempt_id") if isinstance(telemetry, dict) else None
     compressor._record_summary_success(prepared.body)
     for name, value in prepared.call_state.items():
         setattr(compressor, name, value)
-    telemetry = getattr(compressor, "_active_compression_telemetry", None)
     if isinstance(telemetry, dict):
         telemetry.update({key: value for key, value in prepared.telemetry.items() if value is not None})
         telemetry["prepared_summary"] = True

@@ -429,13 +429,16 @@ def test_prompt_reading_in_the_pass_extends_the_deadline_the_wait_honours():
     from agent.local_prompt_progress import prompt_reading_hook
 
     cc = _compressor()
-    deadline = [time.monotonic() + 1.0]
-    initial = deadline[0]
+    initial = []
     # The pass finishes only after the deadline the wait started with has passed.
-    cc.read_seconds, cc.after_read = 5.0, lambda: wait_until(lambda: time.monotonic() > initial + 0.3)
+    cc.read_seconds = 5.0
+    cc.after_read = lambda: wait_until(lambda: initial and time.monotonic() > initial[0] + 0.3, timeout=10)
     msgs = _messages(30)
     running = pc.maybe_prepare(_agent(cc), msgs, origin="test")
     assert running is not None
+    # The deadline starts once the pass is running, with room for a busy runner to reach the wait.
+    deadline = [time.monotonic() + 2.0]
+    initial.append(deadline[0])
     with aux_stream_deadline(lambda: deadline[0]), prompt_reading_hook(lambda s: deadline.__setitem__(0, deadline[0] + s)):
         compressed = cc.compress(msgs, current_tokens=cc.threshold_tokens + 1)
     running.join(5.0)

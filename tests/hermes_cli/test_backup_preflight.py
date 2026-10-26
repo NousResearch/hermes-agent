@@ -30,7 +30,7 @@ def test_preflight_finishes_while_another_connection_keeps_writing(tmp_path):
     thread.start()
     try:
         result = subprocess.run([sys.executable, "-I", "-S", str(script), str(home)],
-                                capture_output=True, text=True, timeout=20)
+                                capture_output=True, text=True, timeout=20, check=False)
     finally:
         stop.set()
         thread.join()

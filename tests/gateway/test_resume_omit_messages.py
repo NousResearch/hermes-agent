@@ -63,6 +63,12 @@ async def test_omit_messages_resume_reads_no_transcript(tmp_path, monkeypatch):
     _seed_compacted(authority.db, physical)
     full = await _resume(authority, actor, ref)
     assert any(row.get('archived') for row in full['messages'])  # the default resume still shows archived turns
+    from gateway import session_local_recovery
+
+    def lineage_read(*_args):
+        raise AssertionError('an omit_messages resume read the transcript lineage')
+    # The reply alone cannot tell a skipped read from one whose rows were discarded afterwards.
+    monkeypatch.setattr(session_local_recovery, 'display_rows', lineage_read)
     omitted = await _resume(authority, actor, ref, omit_messages=True)
     assert omitted['messages'] == [] and omitted['messages_omitted'] is True
     assert omitted['message_count'] == authority.db.get_session(physical)['message_count']

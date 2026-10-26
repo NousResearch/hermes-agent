@@ -454,6 +454,8 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
     # Held frames count against the serial lane's bound: once that many wait, the dispatcher waits for
     # room, the queue fills and the reader parks, as it does behind a busy handler.
     held_room = asyncio.Semaphore(_WS_DISPATCH_QUEUE_MAX)
+    # Set once the client is gone: frames still waiting for a start are dropped, not run for nobody.
+    client_gone = asyncio.Event()
 
     async def _dispatch_one(req: Any) -> None:
         """Dispatch one request and write its inline reply."""
@@ -499,11 +501,20 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
     async def _dispatch_after_start(key: str, started: asyncio.Event) -> None:
         """Dispatch the frames held for one start, in arrival order, once it ends or the wait runs out
         (the authority then refuses a profile still starting retryably). A frame for that profile read
-        meanwhile joins the queue instead of overtaking it on the serial lane."""
+        meanwhile joins the queue instead of overtaking it on the serial lane. A client that leaves
+        before the start ends drops them: nobody reads those replies."""
         try:
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(started.wait(), _WS_PROFILE_START_WAIT_S)
+            waits = {asyncio.ensure_future(started.wait()), asyncio.ensure_future(client_gone.wait())}
+            try:
+                await asyncio.wait(waits, timeout=_WS_PROFILE_START_WAIT_S, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                for wait in waits:
+                    wait.cancel()
             frames = held[key]
+            if client_gone.is_set() and not started.is_set():
+                for _ in frames:
+                    held_room.release()
+                frames.clear()
             while frames:
                 await _dispatch_one(frames[0])
                 frames.popleft()
@@ -535,8 +546,8 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         return True
 
     async def _end_held() -> None:
-        """Held frames were read before the disconnect: their lanes finish, as the serial lane finishes
-        its queue, unless the connection itself was cancelled (server shutdown)."""
+        """Frames held for a start that ended before the disconnect finish, as the serial lane finishes
+        its queue (the others were dropped), unless the connection itself was cancelled (server shutdown)."""
         task = asyncio.current_task()
         if task is not None and task.cancelling():
             for lane in held_lanes:
@@ -673,6 +684,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
     except _SendFailed:
         pass
     finally:
+        client_gone.set()
         if dispatcher is not None:
             # Finish the in-flight handler and the frames read before the disconnect (as the serial read loop
             # did) before the teardown below parks this transport's sessions. A cancelled connection (server

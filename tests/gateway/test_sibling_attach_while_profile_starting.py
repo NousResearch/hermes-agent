@@ -28,6 +28,7 @@ class _Socket:
         self.replies = {}
         self.order = []
         self.arrived = asyncio.Event()
+        self.task: asyncio.Task | None = None  # the handle_ws task serving this socket
 
     async def accept(self, **_kw):
         pass
@@ -110,7 +111,8 @@ async def rig(tmp_path, monkeypatch):
                         'native_bootstrap': True, 'profile_scope': grant.get('scope', 'profile')}
             sock = _Socket(authority_for_profile_id(runner, grant['profile_id']))
             sockets.append(sock)
-            tasks.append(asyncio.create_task(ws_mod.handle_ws(sock, auth_identity=identity, operator=True)))
+            sock.task = asyncio.create_task(ws_mod.handle_ws(sock, auth_identity=identity, operator=True))
+            tasks.append(sock.task)
             return sock
 
         def create(sock, profile, request_id):
@@ -281,3 +283,70 @@ async def test_a_frame_read_after_the_start_ends_still_queues_behind_the_held_fr
         error = sock.replies[request_id].get('error') or {}
         assert error.get('message') not in ('profile_mismatch', 'internal error'), sock.replies[request_id]
         assert (error.get('data') or {}).get('reason') != 'runtime_draining', sock.replies[request_id]
+
+
+def _record_dispatch(monkeypatch):
+    from tui_gateway import ws as ws_mod
+
+    real_dispatch = ws_mod._dispatch_request
+    ran = []
+
+    async def recording_dispatch(connection, req, method, transport):
+        ran.append(req.get('id'))
+        return await real_dispatch(connection, req, method, transport)
+
+    monkeypatch.setattr(ws_mod, '_dispatch_request', recording_dispatch)
+    return ran
+
+
+@pytest.mark.asyncio
+async def test_a_disconnect_drops_the_frames_held_for_a_start_that_has_not_ended(rig, monkeypatch):
+    """Nobody reads the replies once the client is gone: the socket's handler ends without waiting
+    out the start, and the held frames are never run, not even once the start ends."""
+    from tui_gateway import ws as ws_mod
+
+    monkeypatch.setattr(ws_mod, '_WS_PROFILE_START_WAIT_S', 30.0)
+    ran = _record_dispatch(monkeypatch)
+    sock = await rig.connect()
+    for n in range(2):
+        sock.inbound.put_nowait({'jsonrpc': '2.0', 'id': f'held-{n}', 'method': 'ping', 'params': {'profile': 'beta'}})
+    sock.inbound.put_nowait({'jsonrpc': '2.0', 'id': 'probe', 'method': 'ping', 'params': {}})
+    await sock.reply('probe', timeout=10)  # both beta frames were set aside before it
+    sock.inbound.put_nowait(None)  # the client disconnects
+
+    done, _ = await asyncio.wait({sock.task}, timeout=5)
+    assert sock.task in done, 'the handler waited out the start of a profile for a client that is gone'
+    rig.release.set()
+    await asyncio.wait_for(rig.serving, 30)
+    assert ran == ['probe'], ran
+
+
+@pytest.mark.asyncio
+async def test_frames_held_for_a_start_that_ended_before_the_disconnect_still_run(rig, monkeypatch):
+    """Frames whose start ended while the client was connected finish as the serial lane's queue does."""
+    from tui_gateway import ws as ws_mod
+
+    real_dispatch = ws_mod._dispatch_request
+    ran, first_held_running, first_held_may_finish = [], asyncio.Event(), asyncio.Event()
+
+    async def gated_dispatch(connection, req, method, transport):
+        ran.append(req.get('id'))
+        if req.get('id') == 'held-0':
+            first_held_running.set()
+            await asyncio.wait_for(first_held_may_finish.wait(), timeout=10)
+        return await real_dispatch(connection, req, method, transport)
+
+    monkeypatch.setattr(ws_mod, '_dispatch_request', gated_dispatch)
+    sock = await rig.connect()
+    for n in range(2):
+        sock.inbound.put_nowait({'jsonrpc': '2.0', 'id': f'held-{n}', 'method': 'ping', 'params': {'profile': 'beta'}})
+    sock.inbound.put_nowait({'jsonrpc': '2.0', 'id': 'probe', 'method': 'ping', 'params': {}})
+    await sock.reply('probe', timeout=10)
+    rig.release.set()
+    await asyncio.wait_for(rig.serving, 30)
+    await asyncio.wait_for(first_held_running.wait(), 10)
+    sock.inbound.put_nowait(None)  # the client disconnects while the lane runs held-0
+    first_held_may_finish.set()
+
+    await asyncio.wait_for(sock.task, 10)
+    assert ran == ['probe', 'held-0', 'held-1'], ran

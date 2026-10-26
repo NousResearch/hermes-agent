@@ -494,7 +494,9 @@ def build_anthropic_client(api_key, base_url: str | None = None, timeout: float 
     (connect stays 10s). ``drop_context_1m_beta`` strips ``context-1m-2025-08-07`` from the
     client-level beta header — the reactive OAuth retry in run_agent uses it after a subscription
     rejects it; fresh clients keep the default so 1M-capable subscriptions keep the capability."""
-    sdk = _require_sdk("the Anthropic provider")
+    # Every anthropic_messages route lands here, including base_urls that point at GLM/Kimi/proxies;
+    # naming "the Anthropic provider" sent those operators looking at the wrong dependency (#144749).
+    sdk = _require_sdk(f"the Anthropic Messages wire ({base_url or 'api.anthropic.com'})")
     if callable(api_key) and not isinstance(api_key, str):
         return _build_anthropic_client_with_bearer_hook(
             api_key, base_url, timeout, drop_context_1m_beta=drop_context_1m_beta

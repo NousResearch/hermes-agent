@@ -225,13 +225,15 @@ export function useMessagesBelow({
       }
     })
 
-    mutations.observe(content, {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ['data-slot'],
-      attributeOldValue: true
-    })
+    // Shallow on purpose. Only the transcript's direct children — the turn
+    // rows and the slots around them — can change counted membership through
+    // this observer; every deeper move (a message root mounting inside an
+    // existing turn) is a structural commit, so `rows` changes identity and
+    // this effect re-runs with a fresh reader. Watching the whole subtree
+    // woke the observer on every streamed markdown flush, and each batch then
+    // paid a per-node subtree scan plus, on any counted hit, a full
+    // O(mounted-DOM) snapshot re-walk on the next scroll frame.
+    mutations.observe(content, { childList: true })
 
     return () => {
       cancelAnimationFrame(frame)

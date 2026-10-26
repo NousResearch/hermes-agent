@@ -91,6 +91,102 @@ import { $voicePlayback } from '@/store/voice-playback'
 // would re-derive the changed-files card on every message re-render.
 const EMPTY_PARTS: readonly unknown[] = []
 
+// PERF: content-derived values memoized on the content ARRAY's identity. Every
+// `useAuiState` selector here re-runs on each store notify (one per streamed
+// chunk), for EVERY mounted row — the selectors below used to re-walk the whole
+// message content each time (part scans, or full text joins feeding regexes),
+// which made the per-token cost scale with the mounted row count even though
+// nothing visible had changed. The runtime publishes a fresh messages array per
+// notify but keeps settled message objects — and their content arrays —
+// referentially identical; only the streaming tail gets a new object per delta
+// (verified through MessageRepository.addOrUpdateMessage and the WeakMap
+// normalization cache in runtime-repository.ts). Keying the derived value on
+// the content object therefore re-derives it once per content VERSION — i.e.
+// per delta for the streaming tail alone, and once ever for settled rows.
+// Primitives (a bare string content) are their own identity: computed direct.
+
+const visibleTextCache = new WeakMap<object, boolean>()
+
+const memoContentHasVisibleText = (content: unknown): boolean => {
+  if (!content || typeof content !== 'object') {
+    return contentHasVisibleText(content)
+  }
+
+  let value = visibleTextCache.get(content)
+
+  if (value === undefined) {
+    value = contentHasVisibleText(content)
+
+    visibleTextCache.set(content, value)
+  }
+
+  return value
+}
+
+// The content half of `activityOnly` (conjoined with isCurrentTurnMessage at
+// the use site): the message carries an approval-activity tool call, and every
+// part is either such a call or a blank text continuation.
+const approvalActivityCache = new WeakMap<object, boolean>()
+
+const memoContentIsApprovalActivity = (content: unknown): boolean => {
+  if (!Array.isArray(content)) {
+    return false
+  }
+
+  let value = approvalActivityCache.get(content)
+
+  if (value === undefined) {
+    value =
+      content.some(part => part.type === 'tool-call' && isApprovalActivity(part)) &&
+      content.every(
+        part => (part.type === 'tool-call' && isApprovalActivity(part)) || (part.type === 'text' && !part.text.trim())
+      )
+
+    approvalActivityCache.set(content, value)
+  }
+
+  return value
+}
+
+const contentTextCache = new WeakMap<object, string>()
+
+const memoMessageContentText = (content: unknown): string => {
+  if (!content || typeof content !== 'object') {
+    return messageContentText(content)
+  }
+
+  let value = contentTextCache.get(content)
+
+  if (value === undefined) {
+    value = messageContentText(content)
+
+    contentTextCache.set(content, value)
+  }
+
+  return value
+}
+
+// The inter-agent delivery marker the sender walk matches against (see
+// AssistantMessage below): the regex runs over the user row's FULL joined text,
+// so a paste-heavy delivery must not be re-joined per notify per neighbour row.
+const agentMatchCache = new WeakMap<object, RegExpExecArray | null>()
+
+const memoAgentMessageMatch = (content: unknown): RegExpExecArray | null => {
+  if (!content || typeof content !== 'object') {
+    return AGENT_MESSAGE_RE.exec(messageContentText(content).trim())
+  }
+
+  let match = agentMatchCache.get(content)
+
+  if (match === undefined) {
+    match = AGENT_MESSAGE_RE.exec(messageContentText(content).trim())
+
+    agentMatchCache.set(content, match)
+  }
+
+  return match
+}
+
 // PERF: hoisted to module scope so the element OBJECT is identical on every
 // render of every assistant message. React bails out of re-rendering a child
 // whose element identity is unchanged, so a status flip on the message root
@@ -146,7 +242,7 @@ export const AssistantMessage: FC<AssistantMessageProps> = props => {
       }
 
       if (prev.role === 'user') {
-        const match = AGENT_MESSAGE_RE.exec(messageContentText(prev.content as never).trim())
+        const match = memoAgentMessageMatch(prev.content)
 
         if (!match) {
           return null
@@ -235,18 +331,16 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
   // (booleans, '' while running), so the 30 Hz delta stream only re-renders
   // the markdown part and the tiny status leaves — not the footer, the
   // preview block, or this root.
-  const hasVisibleText = useAuiState(s => contentHasVisibleText(s.message.content))
+  const hasVisibleText = useAuiState(s => memoContentHasVisibleText(s.message.content))
   const sessionId = useStore(useSessionView().$runtimeId)
   const approval = useStore(useMemo(() => sessionApprovalRequest(sessionId), [sessionId]))
 
-  const activityOnly = useAuiState(
-    state =>
-      isCurrentTurnMessage(state.thread.messages, state.message.id) &&
-      state.message.content.some(part => part.type === 'tool-call' && isApprovalActivity(part)) &&
-      state.message.content.every(
-        part => (part.type === 'tool-call' && isApprovalActivity(part)) || (part.type === 'text' && !part.text.trim())
-      )
-  )
+  // Split into a cheap thread scan (bounded by the last turn) and a
+  // content-identity-memoized test: see the memo helpers above — the content
+  // walk used to run whole on every notify for every mounted row.
+  const currentTurn = useAuiState(s => isCurrentTurnMessage(s.thread.messages, s.message.id))
+  const approvalActivityContent = useAuiState(s => memoContentIsApprovalActivity(s.message.content))
+  const activityOnly = currentTurn && approvalActivityContent
 
   // Sealed mid-turn commentary keeps its text but not the footer, so a
   // tool-heavy turn doesn't grow a copy/refresh bar per paragraph (see
@@ -475,8 +569,10 @@ const AssistantStatusSlot: FC = () => {
  * of its own, so unlike StreamingMarker this needs no placement care.
  */
 const AssistantPreviewEmbeds: FC = () => {
+  // Memoized on the content array's identity (see the memo helpers above): the
+  // full-text join used to run whole on every notify for every settled row.
   const completedText = useAuiState(s =>
-    s.message.status?.type === 'running' ? '' : messageContentText(s.message.content)
+    s.message.status?.type === 'running' ? '' : memoMessageContentText(s.message.content)
   )
 
   const previewTargets = useMemo(() => {
@@ -692,7 +788,9 @@ const EditPreviousMessageAction: FC<{ label: string }> = ({ label }) => {
 
   const previousUserMessageId = useAuiState(s => {
     const messages = s.thread.messages
-    const index = messages.findIndex(message => message.id === s.message.id)
+    // Shared id->index map (WeakMap keyed on the notify's array): the inline
+    // findIndex was a transcript-length scan per notify on the error card.
+    const index = threadMessageIndex(messages, s.message.id)
 
     for (let i = index - 1; i >= 0; i--) {
       if (messages[i].role === 'user') {

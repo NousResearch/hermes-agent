@@ -21,6 +21,33 @@ export function responseMessageRole(message: GroupMessage): string {
   return background ? 'background' : message.role
 }
 
+// PERF: the grouping selector below runs on EVERY store notify (one per
+// streamed chunk) for every mounted ResponseMessages, and it used to re-derive
+// each row's role and hasText from scratch there — walking every part, and for
+// user rows concatenating the ENTIRE message text to run the process-notice
+// regex. At mounted-row breadth N that made the per-token cost scale with N
+// (and with transcript text size) even though nothing visible had changed.
+// The runtime publishes a fresh messages ARRAY per notify but keeps settled
+// message objects referentially identical — only the streaming tail gets a new
+// object per delta (verified through MessageRepository/addOrUpdateMessage and
+// the WeakMap normalization cache in runtime-repository.ts) — so keying the
+// derived metadata on the message object re-derives it once per object
+// VERSION, not once per notify. The selector itself is left with array
+// lookups, WeakMap hits, and the stringify of tiny primitive rows.
+const rowMetaCache = new WeakMap<object, { hasText: boolean; role: string }>()
+
+const rowMeta = (message: GroupMessage): { hasText: boolean; role: string } => {
+  let meta = rowMetaCache.get(message)
+
+  if (!meta) {
+    meta = { hasText: contentHasVisibleText(message.content), role: responseMessageRole(message) }
+
+    rowMetaCache.set(message, meta)
+  }
+
+  return meta
+}
+
 export const ResponseMessageIds = createContext<readonly string[]>([])
 
 interface ResponseMessagesProps {
@@ -50,16 +77,20 @@ export function ResponseMessages({ components, indices }: ResponseMessagesProps)
         const message = s.thread.messages[index]
 
         // A history replacement can notify this row before its parent updates indices.
-        return message
-          ? [
-              {
-                index,
-                id: message.id,
-                role: responseMessageRole(message),
-                hasText: contentHasVisibleText(message.content)
-              }
-            ]
-          : []
+        if (!message) {
+          return []
+        }
+
+        const meta = rowMeta(message)
+
+        return [
+          {
+            index,
+            id: message.id,
+            role: meta.role,
+            hasText: meta.hasText
+          }
+        ]
       })
     )
   )

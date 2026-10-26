@@ -248,7 +248,10 @@ const ActiveThreadTimeline: FC = () => {
 
     let frame = 0
     const indexes = new Map(railEntries.map((entry, index) => [entry.id, index]))
-    const position = createTimelinePositionReader(viewport, indexes)
+    // The transcript root is handed over so invalidate can tell a row mount
+    // (its direct children) from a deep streamed flush without walking either.
+    const content = viewport.querySelector<HTMLElement>('[data-slot="aui_thread-content"]')
+    const position = createTimelinePositionReader(viewport, indexes, content ?? viewport)
 
     const compute = () => {
       frame = 0
@@ -273,7 +276,11 @@ const ActiveThreadTimeline: FC = () => {
       schedule()
     })
 
-    const content = viewport.querySelector('[data-slot="aui_thread-content"]')
+    // Subtree childList stays on: a deep geometry-only commit (streamed
+    // markdown growing a turn) must still coalesce a re-measure. What
+    // changed is that invalidate no longer sweeps membership per batch —
+    // it resolves records with O(1) checks and only rebuilds the cached
+    // prompt sweep when a rail-visible message mounted or unmounted.
     const resize = new ResizeObserver(schedule)
 
     if (content) {
@@ -281,7 +288,8 @@ const ActiveThreadTimeline: FC = () => {
         childList: true,
         subtree: true,
         attributes: true,
-        attributeFilter: ['data-message-id']
+        attributeFilter: ['data-message-id'],
+        attributeOldValue: true
       })
       resize.observe(content)
     }

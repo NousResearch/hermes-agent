@@ -374,14 +374,30 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
   const messageId = useAuiState(s => s.message.id)
   const messageRunning = useAuiState(s => s.message.status?.type === 'running')
 
-  const pending = useAuiState(
-    s =>
-      s.thread.isRunning &&
-      s.message.status?.type === 'running' &&
-      s.message.parts
-        .slice(Math.max(0, startIndex), endIndex + 1)
-        .some(p => p?.type === 'reasoning' && p.status?.type !== 'complete')
-  )
+  // PERF: each of these used to `.slice(Math.max(0, startIndex), endIndex + 1)`
+  // before scanning — an array copy per selector per store notify, four copies
+  // per reasoning group per streamed chunk, purely to iterate a subrange.
+  // Index loops over `parts` derive the same values with zero allocation, and
+  // every return value stays a stable primitive across token flushes, so the
+  // group still bails out of re-rendering unless something it renders changed.
+  // A reasoning group spans only a handful of parts, so the scans are O(group).
+  const pending = useAuiState(s => {
+    if (!s.thread.isRunning || s.message.status?.type !== 'running') {
+      return false
+    }
+
+    const parts = s.message.parts
+
+    for (let i = Math.max(0, startIndex); i <= endIndex && i < parts.length; i++) {
+      const part = parts[i]
+
+      if (part?.type === 'reasoning' && part.status?.type !== 'complete') {
+        return true
+      }
+    }
+
+    return false
+  })
 
   // A reasoning group with no actual text is pure noise — drop the whole
   // "Thinking" disclosure rather than leave an empty header eating a row. This
@@ -389,27 +405,51 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
   // never carries visible text, and the bottom-of-thread loader already signals
   // "thinking", so an empty header is never wanted. Real reasoning surfaces the
   // instant its first token lands.
-  const hasContent = useAuiState(s =>
-    s.message.parts
-      .slice(Math.max(0, startIndex), endIndex + 1)
-      .some(p => p?.type === 'reasoning' && typeof p.text === 'string' && p.text.trim().length > 0)
-  )
+  const hasContent = useAuiState(s => {
+    const parts = s.message.parts
 
-  const timestamp = useAuiState(s =>
-    s.message.parts.slice(Math.max(0, startIndex), endIndex + 1).reduce<number | undefined>((earliest, part) => {
-      const value = part.type === 'reasoning' ? (part as { timestamp?: number }).timestamp : undefined
+    for (let i = Math.max(0, startIndex); i <= endIndex && i < parts.length; i++) {
+      const part = parts[i]
 
-      return value === undefined ? earliest : earliest === undefined ? value : Math.min(earliest, value)
-    }, undefined)
-  )
+      if (part?.type === 'reasoning' && typeof part.text === 'string' && part.text.trim().length > 0) {
+        return true
+      }
+    }
 
-  const completedAt = useAuiState(s =>
-    s.message.parts.slice(Math.max(0, startIndex), endIndex + 1).reduce<number | undefined>((latest, part) => {
-      const value = part.type === 'reasoning' ? (part as { completedAt?: number }).completedAt : undefined
+    return false
+  })
 
-      return value === undefined ? latest : latest === undefined ? value : Math.max(latest, value)
-    }, undefined)
-  )
+  const timestamp = useAuiState(s => {
+    const parts = s.message.parts
+    let earliest: number | undefined
+
+    for (let i = Math.max(0, startIndex); i <= endIndex && i < parts.length; i++) {
+      const part = parts[i]
+      const value = part?.type === 'reasoning' ? (part as { timestamp?: number }).timestamp : undefined
+
+      if (value !== undefined && (earliest === undefined || value < earliest)) {
+        earliest = value
+      }
+    }
+
+    return earliest
+  })
+
+  const completedAt = useAuiState(s => {
+    const parts = s.message.parts
+    let latest: number | undefined
+
+    for (let i = Math.max(0, startIndex); i <= endIndex && i < parts.length; i++) {
+      const part = parts[i]
+      const value = part?.type === 'reasoning' ? (part as { completedAt?: number }).completedAt : undefined
+
+      if (value !== undefined && (latest === undefined || value > latest)) {
+        latest = value
+      }
+    }
+
+    return latest
+  })
 
   if (!hasContent || !showReasoning) {
     return null

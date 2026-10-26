@@ -238,7 +238,6 @@ def _normalize_run_budget_seconds(value) -> Optional[float]:
     return seconds if seconds > 0 else None  # NaN compares False → None
 
 
-
 def _refuse_checkpoint_required_on_codex_app_server(
     checkpoint_required: bool, api_mode: Optional[str]
 ) -> None:

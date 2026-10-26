@@ -48,6 +48,14 @@ def tool_choice_required(agent: Any) -> bool:
     return value == "required" and getattr(agent, "api_mode", None) in _SUPPORTED_API_MODES
 
 
+def apply_tool_choice(agent: Any, tools_for_api: Optional[list], request_overrides: dict) -> tuple:
+    """``(tools, request_overrides)`` for one request: the respond tool plus
+    ``tool_choice="required"`` when enabled. Explicit overrides win; tool-less requests pass."""
+    if not tools_for_api or "tool_choice" in request_overrides or not tool_choice_required(agent):
+        return tools_for_api, request_overrides
+    return with_respond_tool(tools_for_api), {**request_overrides, "tool_choice": "required"}
+
+
 def with_respond_tool(tools: Optional[list]) -> Optional[list]:
     """``tools`` plus the respond schema (appended once, so the tool block stays cache-stable)."""
     if not tools:

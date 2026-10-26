@@ -61,15 +61,17 @@ export function createServedProfiles(api: <T>(request: HermesApiRequest) => Prom
       readFor = null
     },
     /** Re-read the set when the installed list changed since the last read, or the read is stale. */
-    refresh: (installed: string[]): Promise<void> => {
+    refresh: async (installed: string[]): Promise<void> => {
       const key = installed.map(profileKey).sort().join('\n')
 
-      if (pending) {
-        return pending
+      // A read in flight may have gone out for an older list or before a reconnect, so wait for it,
+      // then check again: its answer settles this list only if it was read for this list.
+      while (pending) {
+        await pending
       }
 
       if (key === readFor && Date.now() - readAt < SERVED_SET_TTL_MS) {
-        return Promise.resolve()
+        return
       }
 
       readFor = key
@@ -78,7 +80,7 @@ export function createServedProfiles(api: <T>(request: HermesApiRequest) => Prom
         pending = null
       })
 
-      return pending
+      await pending
     },
     serves: (profile?: null | string) => served === null || served.has(profileKey(profile))
   }

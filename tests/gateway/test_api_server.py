@@ -226,7 +226,7 @@ class TestAdapterInit:
                 "api_mode": "codex_responses",
             },
         )
-        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "gpt-5.5")
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda *a, **k: "gpt-5.5")
         monkeypatch.setattr(
             "gateway.run._load_gateway_config",
             lambda: {
@@ -257,6 +257,46 @@ class TestAdapterInit:
         assert captured["checkpoint_max_snapshots"] == 7
         assert captured["checkpoint_max_total_size_mb"] == 321
         assert captured["checkpoint_max_file_size_mb"] == 4
+
+    def test_create_agent_uses_api_server_platform_model(self, monkeypatch):
+        """platform_models.api_server wins over model.default; a fallback runtime model still wins."""
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {"provider": "openrouter", "base_url": "https://example.test/v1",
+                     "api_mode": "chat_completions"},
+        )
+        monkeypatch.setattr(
+            "gateway.run._load_gateway_config",
+            lambda: {
+                "model": {"default": "global/model"},
+                "platform_models": {"api_server": "api/model"},
+            },
+        )
+        monkeypatch.setattr(
+            "gateway.run.GatewayRunner._load_reasoning_config", staticmethod(lambda model="": {})
+        )
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
+        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        adapter._create_agent(session_id="api-session")
+        assert captured["model"] == "api/model"
+
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {"provider": "openrouter", "model": "fallback/model",
+                     "base_url": "https://example.test/v1", "api_mode": "chat_completions"},
+        )
+        adapter._create_agent(session_id="api-session")
+        assert captured["model"] == "fallback/model"
 
 
 # ---------------------------------------------------------------------------
@@ -2578,7 +2618,7 @@ def _patch_create_agent_runtime(monkeypatch, captured: dict, fake_agent_cls):
             "api_mode": "chat_completions",
         },
     )
-    monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "global/model")
+    monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda *a, **k: "global/model")
     monkeypatch.setattr("gateway.run._load_gateway_config", dict)
     monkeypatch.setattr(
         "gateway.run.GatewayRunner._load_reasoning_config", staticmethod(lambda model="": {})
@@ -3025,7 +3065,7 @@ class TestCreateAgentModelRecovery:
             lambda: {"provider": "openai-codex", "base_url": "https://example.test/v1",
                      "api_mode": "codex_responses"},
         )
-        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "")
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda *a, **k: "")
         monkeypatch.setattr(
             "hermes_cli.models.get_default_model_for_provider",
             lambda provider: "gpt-5.5-codex" if provider == "openai-codex" else None,
@@ -3058,14 +3098,14 @@ class TestCreateAgentModelRecovery:
 
         # Turn 1: model resolves fine — populates the last-known-good cache
         # (keyed on gateway_session_key).
-        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "minimax/minimax-m3")
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda *a, **k: "minimax/minimax-m3")
         adapter._create_agent(session_id="api-session", gateway_session_key="stable-chan-1")
         assert captured[0]["model"] == "minimax/minimax-m3"
         assert adapter._last_resolved_model["stable-chan-1"] == "minimax/minimax-m3"
 
         # Turn 2: transient empty resolution, no provider catalog default —
         # must recover the model from turn 1, not build model="".
-        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "")
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda *a, **k: "")
         monkeypatch.setattr(
             "gateway.run._resolve_runtime_agent_kwargs",
             lambda: {"provider": None, "base_url": None, "api_mode": None},
@@ -3094,7 +3134,7 @@ class TestCreateAgentModelRecovery:
         # Make _resolve_gateway_model return the virtual alias — the
         # condition the session-row bug can produce after a prior turn.
         monkeypatch.setattr(
-            "gateway.run._resolve_gateway_model", lambda: virtual,
+            "gateway.run._resolve_gateway_model", lambda *a, **k: virtual,
         )
 
         adapter._create_agent(session_id="s1", gateway_session_key="ch")
@@ -3123,7 +3163,7 @@ class TestCreateAgentModelRecovery:
         adapter._last_resolved_model["*"] = adapter._model_name
 
         # Trigger an empty resolution.
-        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "")
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda *a, **k: "")
         monkeypatch.setattr(
             "gateway.run._resolve_runtime_agent_kwargs",
             lambda: {"provider": None, "base_url": None, "api_mode": None},
@@ -3153,14 +3193,14 @@ class TestCreateAgentModelRecovery:
         # Turn 1: legitimate model — must enter the cache.
         monkeypatch.setattr(
             "gateway.run._resolve_gateway_model",
-            lambda: "anthropic/claude-opus-4.6",
+            lambda *a, **k: "anthropic/claude-opus-4.6",
         )
         adapter._create_agent(session_id="s1", gateway_session_key="ch")
         assert captured[0]["model"] == "anthropic/claude-opus-4.6"
         assert adapter._last_resolved_model["ch"] == "anthropic/claude-opus-4.6"
 
         # Turn 2: empty resolution — must recover the legitimate model.
-        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "")
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda *a, **k: "")
         monkeypatch.setattr(
             "gateway.run._resolve_runtime_agent_kwargs",
             lambda: {"provider": None, "base_url": None, "api_mode": None},

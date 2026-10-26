@@ -950,6 +950,7 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "video_gen",         # agent/video_gen_registry.py
     "plugins",           # plugin enable/disable lists (hermes_cli/plugins_cmd.py)
     "smart_model_routing",   # written by the setup wizard
+    "platform_models",       # opt-in per-platform model (gateway.run._resolve_gateway_model)
     "platform_toolsets",     # written by the setup wizard
     "known_plugin_toolsets", # hermes_cli/tools_config.py toolset-save flow
     "known_builtin_toolsets",  # ditto — builtin toolsets a platform's checklist has offered

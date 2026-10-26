@@ -20,7 +20,6 @@ import queue
 import subprocess
 import sys
 import threading
-import time
 from contextlib import suppress
 from pathlib import Path
 
@@ -28,6 +27,7 @@ import psutil
 import pytest
 
 from gateway import status
+from tests.waiting import wait_until
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -104,11 +104,7 @@ def _exited_pid() -> int:
     child = subprocess.run([sys.executable, "-c", "import os; print(os.getpid())"],
                            capture_output=True, text=True, timeout=60, check=False)
     pid = int(child.stdout.strip())
-    for _ in range(100):
-        if not psutil.pid_exists(pid):
-            return pid
-        time.sleep(0.05)
-    pytest.fail(f"child {pid} is still alive after exit")
+    wait_until(lambda: not psutil.pid_exists(pid), what=f"exited child {pid} to leave the process table")
     return pid
 
 

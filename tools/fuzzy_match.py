@@ -301,6 +301,14 @@ STRATEGIES: list[tuple[str, Callable[[str, str], list[Span]]]] = [
 # unique replacement, never safe under replace_all.
 SIMILARITY_STRATEGIES = frozenset({"block_anchor", "context_aware"})
 
+# These strategies preserve the caller's backslashes.  A match through one of
+# them is evidence that the original anchor can still name a file region, so a
+# later escape-drift correction must not redirect the edit to a different one.
+ESCAPE_PRESERVING_STRATEGIES = frozenset({
+    "exact", "line_trimmed", "whitespace_normalized", "indentation_flexible",
+    "trimmed_boundary", "unicode_normalized",
+})
+
 
 def boundary_note(strategies: Iterable[Optional[str]], target: str = "old_string's",
                   where: str = "") -> Optional[str]:
@@ -356,6 +364,15 @@ def _format_match_locations(content: str, matches: list[Span], cap: int = 5) -> 
     return "\n".join(rows)
 
 
+def _has_escape_preserving_match(content: str, old_string: str) -> bool:
+    """Whether the original anchor already matches without changing escapes."""
+    return any(
+        strategy_fn(content, old_string)
+        for strategy_name, strategy_fn in STRATEGIES
+        if strategy_name in ESCAPE_PRESERVING_STRATEGIES
+    )
+
+
 def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
                            replace_all: bool = False, *,
                            correction_notes: Optional[list[str]] = None) -> tuple[str, int, Optional[str], Optional[str]]:
@@ -384,10 +401,13 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
     # All consumers, including validation and approval previews, must use the
     # same correction policy before a fuzzy strategy can match ambiguous text.
     from tools.escape_drift_autocorrect import AmbiguousEscapeDriftError, maybe_correct_escape_drift
-    try:
-        old_string, new_string, correction_note = maybe_correct_escape_drift(old_string, new_string, content)
-    except AmbiguousEscapeDriftError as exc:
-        return content, 0, None, str(exc)
+    correction_note = None
+    if not _has_escape_preserving_match(content, old_string):
+        try:
+            old_string, new_string, correction_note = maybe_correct_escape_drift(
+                old_string, new_string, content)
+        except AmbiguousEscapeDriftError as exc:
+            return content, 0, None, str(exc)
     if old_string == new_string:
         return content, 0, None, IDENTICAL_STRINGS_ERROR
 

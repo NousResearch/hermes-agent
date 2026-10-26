@@ -500,6 +500,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/mlops/mlops-inference-outlines',
                     'user-guide/skills/optional/mlops/mlops-peft',
                     'user-guide/skills/optional/mlops/mlops-pinecone',
+                    'user-guide/skills/optional/mlops/mlops-pixeltable',
                     'user-guide/skills/optional/mlops/mlops-pytorch-fsdp',
                     'user-guide/skills/optional/mlops/mlops-pytorch-lightning',
                     'user-guide/skills/optional/mlops/mlops-qdrant',

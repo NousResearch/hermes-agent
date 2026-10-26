@@ -1,7 +1,7 @@
 ---
 name: pixeltable
 description: Multimodal data tables with auto-computed AI columns.
-version: 1.1.0
+version: 1.2.0
 author: Pierre Brunelle (@pierrebrunelle), Pixeltable (pixeltable.com)
 license: Apache-2.0
 platforms: [linux, macos]
@@ -278,6 +278,8 @@ Cloud sign-in, secrets, and the hosted wait: `references/apps-and-cloud.md`. Ask
 - **Recompute.** `t.recompute_columns('summary', errors_only=True)`. The column is a positional argument, not `columns=[...]`.
 - **Nullable UDF parameters.** A non-nullable parameter that receives `None` skips the call. The cell is `None` and `errormsg` is empty. Annotate `x: str | None` and handle `None`.
 - **Provider retries.** OpenAI, Anthropic, and Gemini retry rate-limit failures up to 10 times. Other providers retry up to 3 times, paced by `rate_limit` (600 requests a minute when unset). HTTP 429, 503, 408, and 504, plus connection errors and timeouts, are retried, and `Retry-After` is honored. Do not wrap the call in `tenacity` or another client. A cell that still fails is listed by `pxt errors PATH`.
+- **`next:` lines.** Since Pixeltable 0.7.20, a command refused for want of `-f` or `--allow-destructive` exits 3 and ends with `next: <command>  # <what it does>`. Run that command when it does what the user asked. Ask first when it drops data, stops or restarts what others call, or recomputes rows the user did not mention. `pxt errors PATH` prints a `next:` line for each recomputable failed column. A snapshot column never changes, so it names no recompute.
+- **Gaps.** When Pixeltable cannot do what the task needs, or you work around it, show the user `pxt feedback --kind gap '<what was needed, what you tried, what happened>'`. That prints a preview and sends nothing. Add `--send` only after they agree. Single quotes keep the shell from running a command or expanding a variable in the text. Use placeholder data. Never put customer names, hosts, paths, or secrets in the text.
 - **First import is slow.** The first `import pixeltable` prepares PostgreSQL. Later imports are faster.
 - **Wrong interpreter.** `python3 -c "import pixeltable"` must succeed in the interpreter you will keep using.
 

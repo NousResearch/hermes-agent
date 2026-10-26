@@ -298,3 +298,21 @@ class TestApiCorrectness:
         assert 'Retry-After' in apps or 'retry' in skill_text.lower()
         assert 'pxt secret set' in apps
         assert 'CLIENT_OUTDATED' in apps and 'is not raised' in apps
+
+    def test_pixeltable_0720_cli(self, skill_text: str) -> None:
+        apps = APPS_REF.read_text()
+        assert 'pxt feedback --kind gap' in skill_text
+        assert '--send' in skill_text
+        assert 'next: <command>' in skill_text
+        assert 'snapshot column never changes' in skill_text
+        assert '--add-config-entry' in apps
+        assert 'CONFIRMATION_REQUIRED' in apps
+        assert 'DO_NOT_TRACK' in apps
+        assert 'file_cache_gb' in apps
+        assert "target `config`" in apps
+        assert '[openai] api_key' in apps
+        assert 'pxt usage' in apps and 'pxt feedback' in apps
+        assert 'PXT-1429' not in skill_text
+        assert 'PXT-1429' not in apps
+        for path in (SKILL_MD, APPS_REF):
+            assert '\u2014' not in path.read_text(), f'{path.name} must not use an em dash'

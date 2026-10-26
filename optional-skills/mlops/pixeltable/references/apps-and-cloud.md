@@ -2,7 +2,7 @@
 
 Hermes runs these commands with `terminal`. Install with `python3 -m pip`, not a bare `pip`, so the interpreter matches the one that imports Pixeltable. Python 3.11 or newer. Official CLI reference: https://docs.pixeltable.com/platform/cli
 
-There is no `pxt serve`, `pxt deploy`, `pxt app`, or `pxt db create`. `pxt db update` creates a hosted database. Do not write a `[tool.pixeltable.service]` table.
+There is no `pxt serve`, `pxt deploy`, `pxt app`, or `pxt db create`. `pxt db update` creates a hosted database. Do not write a `[tool.pixeltable.service]` table. Hosted service size is `[pixeltable.database.services.'<path>']` in `pixeltable.toml`, or `[tool.pixeltable.database.services.'<path>']` in `pyproject.toml`.
 
 ## Application contract
 
@@ -32,6 +32,14 @@ pxt service list
 
 Notebook equivalent of a logic fix: `t.alter_computed_column(summary=new_expr)`. That recomputes the column and its dependents. `if_exists='ignore'` does not.
 
+## Exit codes
+
+Since Pixeltable 0.7.20: `0` is done. `1` is an error, including a usage error from `schema`, `service`, `db`, and `init`. `2` is a usage error from any other command (for example `pxt feedback` without `--kind`), pending changes on a `schema`, `service`, or `db` plan (`diff` or `-n`), or a hosted change still under way after the three-hour wait. `3` is refused, for want of `-f` or `--allow-destructive`, or because the prompt was declined. A catalog dry run such as `pxt drop PATH -n` exits `0`.
+
+A failed request ends with its code, as in `[TABLE_NOT_FOUND]`. With `--json` it prints `error_code`, `message`, and `retryable`, and `retry_after` when Cloud gives a wait. In text output, `PLAN_LIMIT`, `PAYMENT_REQUIRED`, and `STORE_FULL` print Cloud's reason with no error code after it. Tell the user. Do not retry those. `next:` on stderr names the command that finishes the job.
+
+Without a TTY, a prompt exits 3 and prints `next: <the same command with -f>  # <what it does>`. With `--json` that refusal is `{"error_code": "CONFIRMATION_REQUIRED", "next": [{"command", "effect"}]}`. `schema update`, `service update`, and `db update` print the refused plan instead of that document. `--json` is also accepted by `pxt usage` and `pxt feedback`.
+
 ## Daemon and config
 
 The first catalog command starts a daemon at `127.0.0.1:22089` unless `PXT_PORT` is set. `pxt daemon status`, `stop`, `start`, `restart`.
@@ -53,12 +61,14 @@ A new account has no organization. `pxt org create NAME` creates one and its fir
 Hosted order:
 
 ```bash
-pxt db update pxt://org:db -f
+pxt db update pxt://org:db --add-config-entry -f
 pxt schema update app.py pxt://org:db -f
 pxt service update app.py pxt://org:db -f
 ```
 
-`pxt db update` uploads the project and sets the image and workers. It does not load secrets, rows, or HTTP. The URI must match a `[[pixeltable.database]]` entry `name = 'pxt://org:db'`. If `pxt db diff` says the hosted project is behind the working copy, run `pxt db update` before schema or service. Taking capacity away needs `--allow-destructive`. `pxt db delete` removes the database and its storage. Without a TTY it exits 3 unless given `-f`.
+`pxt db update` uploads the project and sets the image and workers. It does not load secrets, rows, or HTTP. Prefer `--add-config-entry` on `pxt db diff` or `pxt db update` over writing the hosted `[[pixeltable.database]]` entry by hand. The flag appends `name = 'pxt://org:db'` unless an entry already matches. `pxt db diff pxt://org:db --add-config-entry` appends it, then previews the deployment. `pxt db update ... --add-config-entry` creates the database in one command. A URI with no matching entry is an error, and the error names `pxt db diff <uri> --add-config-entry`. A hand edit can collide with the local entry or put `name` on it. If `pxt db diff` says the hosted project is behind the working copy, run `pxt db update` before schema or service. Taking capacity away needs `--allow-destructive`. `pxt db delete` removes the database and its storage. Without a TTY it exits 3 unless given `-f`.
+
+Non-secret settings (`vars`, `db_*`, and section values such as `[openai] base_url`) reach a hosted database without an upload. `pxt db diff --json` reports those changes under target `config`. Applying them restarts the database so the pods read the new settings. Size a hosted service on the hosted database entry, after that entry: `[pixeltable.database.services.'<path>']` in `pixeltable.toml`, or `[tool.pixeltable.database.services.'<path>']` in `pyproject.toml`. Fields are `cpu`, `memory_mb`, `workers`, and `file_cache_gb`. The path is `'<directory>/<service name>'`, or the name alone at the database root. `services` on the local entry is an error. `pxt service update` applies the size. A change to a service's `workers` does not restart that service. Any other size field does. A setting left out keeps the current value.
 
 These `pxt db` verbs wait until Cloud finishes the change: `update`, `start`, `stop`, `restart`, `retry`, `build-image`, `delete`. `--no-wait` exists only on those verbs. It returns once Cloud accepts the change. Ctrl-C also stops only the waiting. The change keeps running. After three hours the command exits 2 and the change is still in progress. Follow a timed-out or `--no-wait` call with `pxt db status pxt://org:db`.
 
@@ -70,7 +80,9 @@ Secrets:
 pxt secret set pxt://org OPENAI_API_KEY=<value>
 ```
 
-Also `pxt://org:db` for one database. An org secret applies to every database in the org. A database secret wins on the same name. The `PIXELTABLE_` prefix is reserved and refused. A `secrets` mapping inside `pixeltable.toml` fails to load. Give the user the `pxt secret set` command to run themselves. Do not put the value in the command you run.
+Also `pxt://org:db` for one database. An org secret applies to every database in the org. A database secret wins on the same name. The `PIXELTABLE_` prefix is reserved and refused. A `secrets` mapping inside `pixeltable.toml` fails to load. `pxt db update` also refuses a secret key in the project config, such as `[openai] api_key`. Remove it and use `pxt secret set`. Give the user the `pxt secret set` command to run themselves. Do not put the value in the command you run.
+
+When Pixeltable cannot do the task, or you work around it, show the user `pxt feedback --kind gap '<what was needed, what you tried, what happened>'`. The command prints a preview and sends nothing. Add `--send` only after they agree. With `DO_NOT_TRACK` set to `1`, `true`, or `yes` (trimmed, any case), `--send` exits 3, sends nothing, and prints no `next:` line. Any other value, including empty, still sends. Single quotes keep the shell from running a command or expanding a variable in the text. Use placeholder data. Never put customer names, hosts, paths, or secrets in the text.
 
 A process reads secrets once, at startup. After `pxt secret set` or `pxt secret delete`, run `pxt db restart pxt://org:db` and `pxt service restart pxt://org:db/NAME`. On Cloud, a proxy is `pxt secret set pxt://org OPENAI_BASE_URL=https://<proxy>/v1`, then those restarts.
 

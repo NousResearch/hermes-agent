@@ -263,14 +263,12 @@ def _read_ledger_or_quarantine(path: Path) -> Optional[list[dict]]:
     return entries
 
 
-def _same_incarnation(proc, create_time: Optional[float], boot: Optional[float] = None, *, exact: bool = False) -> bool:
+def _same_incarnation(proc, create_time: Optional[float], boot: Optional[float] = None) -> bool:
     """Does the live ``proc`` match a recorded birth? A recorded ``boot`` (:func:`boot_start`)
-    compares exactly where the live one is readable; otherwise ``create_time`` (2 s tolerance, or
-    equality when ``exact``; ``None`` matches unless ``exact``)."""
+    compares exactly where the live one is readable; otherwise ``create_time`` (2 s tolerance;
+    ``None`` matches)."""
     if boot is not None and (live_boot := boot_start(proc)) is not None:
         return live_boot == float(boot)
-    if exact:
-        return create_time is not None and process_birth(proc) == create_time
     return create_time is None or abs(process_birth(proc) - float(create_time)) < 2.0
 
 
@@ -284,8 +282,9 @@ def _pid_alive_matches(
         return None
     try:
         proc = psutil.Process(int(pid))
+        # ``strict`` is positive proof (an exact epoch birth); a clock step only withholds it.
         if strict:
-            return (_same_incarnation(proc, create_time, boot, exact=True)
+            return (create_time is not None and process_birth(proc) == create_time
                     and proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE)
         # A zombie keeps its create_time until its parent reaps it, but it is already dead: the
         # dashboard stop check (``gateway.status._pid_exists``) books it stopped, so the ledger must
@@ -488,7 +487,7 @@ def ledger_entries(
         e for e in entries
         if (all_installs or e.get("install") == want_install)
         and isinstance(e.get("pid"), int)
-        and (_pid_alive_matches(e["pid"], e.get("create_time"), strict=True, boot=e.get("boot_start")) is True
+        and (_pid_alive_matches(e["pid"], e.get("create_time"), strict=True) is True
              if verified_only else _pid_alive_matches(e["pid"], e.get("create_time"), boot=e.get("boot_start")) is not False)
     ]
 

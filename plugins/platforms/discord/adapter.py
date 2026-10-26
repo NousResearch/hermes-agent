@@ -6269,10 +6269,13 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                     _channel_context = _backfill_text
         # Keep empty user messages out of the session; with channel_context a bare mention = "catch me up".
         if (not event_text or not event_text.strip()) and not _channel_context:
-            # Bare mention-only ping with no media/text/backfill: drop rather than spawn an empty turn.
-            if (mention_prefix and not media_urls and not pending_text_injection):
+            # No user payload (bare mention, sticker/embed-only shell, content-intent-blind message):
+            # drop before authorization/pairing/hooks rather than spawn an empty-text turn. Any
+            # attachment counts as payload, even one that was skipped (oversize/failed download).
+            if not media_urls and not pending_text_injection and not all_attachments:
                 logger.info(
-                    "[%s] Ignoring mention-only message from %s in %s", self.name,
+                    "[%s] Ignoring %s message from %s in %s", self.name,
+                    "mention-only" if mention_prefix else "empty",
                     getattr(message.author, "display_name", getattr(message.author, "name", "unknown")),
                     getattr(message.channel, "id", "unknown"),
                 )

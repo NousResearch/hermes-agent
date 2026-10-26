@@ -4829,6 +4829,7 @@ export const deOverrides = {
       yesterday: time => `Gestern, ${time}`,
       copy: 'Kopieren',
       refresh: 'Aktualisieren',
+      reply: 'Antworten',
       moreActions: 'Weitere Aktionen',
       branchNewChat: 'In neuem Chat abzweigen',
       react: 'Reagieren',

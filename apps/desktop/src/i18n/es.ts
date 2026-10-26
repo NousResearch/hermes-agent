@@ -4815,6 +4815,7 @@ export const esOverrides = {
       yesterday: time => `Ayer, ${time}`,
       copy: 'Copiar',
       refresh: 'Actualizar',
+      reply: 'Responder',
       moreActions: 'Más acciones',
       branchNewChat: 'Ramificar en chat nuevo',
       react: 'Reaccionar',

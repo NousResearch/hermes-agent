@@ -3870,6 +3870,7 @@ catalog: CatalogTranslations
       yesterday: (time: string) => string
       copy: string
       refresh: string
+      reply: string
       moreActions: string
       branchNewChat: string
       react: string

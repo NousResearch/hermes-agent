@@ -29,10 +29,12 @@ import { $setupBeatRequests, parkSetupBeat } from '@/store/setup-beat'
 
 import { type ComposerTarget, requestComposerSubmit } from '../focus'
 import { ComposerScopeProvider, ComposerSurfaceProvider, MAIN_COMPOSER_SCOPE } from '../scope'
+import type { ChatBarProps } from '../types'
 
 import { useComposerSubmit } from './use-composer-submit'
 
 interface SubmitHarnessOptions {
+  activeQueueSessionKey?: string | null
   attachments?: ComposerAttachment[]
   busy?: boolean
   busyInputMode?: 'interrupt' | 'queue' | 'steer' | null
@@ -41,6 +43,8 @@ interface SubmitHarnessOptions {
   sessionKey?: string | null
   submitOnHide?: boolean
   surfaceId?: string | null
+  steer?: () => Promise<boolean>
+  submit?: ChatBarProps['onSubmit']
   text?: string
   visible?: boolean
 }
@@ -54,8 +58,11 @@ function renderSubmitHook({
   inputDisabled = false,
   scopeTarget = 'main',
   sessionKey = 'stored-session',
+  activeQueueSessionKey = sessionKey,
   submitOnHide = false,
   surfaceId,
+  steer = async () => true,
+  submit,
   text = '',
   visible = true
 }: SubmitHarnessOptions = {}) {
@@ -111,8 +118,8 @@ function renderSubmitHook({
   const hook = renderHook(
     () =>
       useComposerSubmit({
-        activeQueueSessionKey: sessionKey,
-        activeQueueSessionKeyRef: { current: sessionKey },
+        activeQueueSessionKey,
+        activeQueueSessionKeyRef: { current: activeQueueSessionKey },
         attachments,
         busy,
         busyInputMode,
@@ -413,6 +420,7 @@ describe('useComposerSubmit busy-turn routing', () => {
 
   afterEach(() => {
     cleanup()
+    clearQueuedPrompts('stored-session')
     vi.restoreAllMocks()
     clearComposerTerminalSelections()
   })

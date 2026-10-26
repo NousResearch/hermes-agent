@@ -3502,6 +3502,7 @@ export const ruOverrides = {
       yesterday: time => `Вчера, ${time}`,
       copy: 'Копировать',
       refresh: 'Обновить',
+      reply: 'Ответить',
       moreActions: 'Ещё действия',
       branchNewChat: 'Ветка в новый чат',
       react: 'Реакция',

@@ -2,6 +2,8 @@ import { ActionBarPrimitive, BranchPickerPrimitive, MessagePrimitive, useAuiStat
 import { useStore } from '@nanostores/react'
 import { type FC, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 
+import { insertMessageReply } from '@/app/chat/composer/message-reply'
+import { useComposerScope } from '@/app/chat/composer/scope'
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
 import { isAttachmentRef } from '@/components/assistant-ui/reference-kinds'
 import {
@@ -17,13 +19,14 @@ import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timel
 import { type RestoreMessageTarget } from '@/components/assistant-ui/thread/types'
 import { useMessageReactions } from '@/components/assistant-ui/thread/use-message-reactions'
 import { UserMessageText } from '@/components/assistant-ui/thread/user-message-text'
+import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { StopFilled } from '@/lib/icons'
+import { MessageReplyIcon, StopFilled } from '@/lib/icons'
 import { LruCache } from '@/lib/lru-cache'
 import { $touchPointer, isTouchInteraction } from '@/lib/touch-interaction'
 import { cn } from '@/lib/utils'
@@ -253,6 +256,7 @@ interface UserBubbleActionsProps {
   fullText: string
   messageId: string
   onCancel?: () => Promise<void> | void
+  onReply?: () => void
   onRequestRestoreConfirm?: (messageId: string, target: RestoreMessageTarget) => void
   runtimeUserOrdinal: RestoreMessageTarget['userOrdinal']
   showRestore: boolean
@@ -267,6 +271,7 @@ const UserBubbleActions: FC<UserBubbleActionsProps> = ({
   fullText,
   messageId,
   onCancel,
+  onReply,
   onRequestRestoreConfirm,
   runtimeUserOrdinal,
   showRestore,
@@ -289,6 +294,23 @@ const UserBubbleActions: FC<UserBubbleActionsProps> = ({
       )}
     >
       {!touch && <MessageHoverTime className={cn(!showStop && !showRestore && 'pr-0.5')} />}
+      {onReply ? (
+        <TooltipIconButton
+          className={cn('pointer-events-auto', touch ? 'size-11' : 'size-5')}
+          onClick={event => {
+            event.preventDefault()
+            event.stopPropagation()
+            onReply()
+          }}
+          onPointerDown={event => {
+            event.preventDefault()
+            event.stopPropagation()
+          }}
+          tooltip={copy.reply}
+        >
+          <MessageReplyIcon className="size-3" />
+        </TooltipIconButton>
+      ) : null}
       {showStop ? (
         <button
           aria-label={copy.stop}
@@ -426,6 +448,7 @@ export const UserMessage: FC<{
 }> = ({ onCancel, onRequestRestoreConfirm }) => {
   const { t } = useI18n()
   const copy = t.assistant.thread
+  const { target } = useComposerScope()
   const touch = useStore($touchPointer)
   const messageId = useAuiState(s => s.message.id)
   const content = useAuiState(s => s.message.content)
@@ -505,9 +528,16 @@ export const UserMessage: FC<{
   // the live turn before rewinding.
   const showRestore = !readOnly && !showStop && Boolean(onRequestRestoreConfirm) && hasBody
 
+  const reply = () => {
+    if (insertMessageReply(messageText, { target })) {
+      triggerHaptic('selection')
+    }
+  }
+
   const bubbleClassName = cn(
     USER_BUBBLE_BASE_CLASS,
-    'cursor-pointer pr-9 text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground/95 transition-colors',
+    'cursor-pointer text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground/95 transition-colors',
+    showStop || showRestore ? 'pr-16' : 'pr-9',
     'border-(--ui-stroke-tertiary) hover:border-(--ui-stroke-secondary)'
   )
 
@@ -651,6 +681,7 @@ export const UserMessage: FC<{
                   fullText={messageText}
                   messageId={messageId}
                   onCancel={onCancel}
+                  onReply={!readOnly && hasBody ? reply : undefined}
                   onRequestRestoreConfirm={onRequestRestoreConfirm}
                   runtimeUserOrdinal={runtimeUserOrdinal}
                   showRestore={showRestore}

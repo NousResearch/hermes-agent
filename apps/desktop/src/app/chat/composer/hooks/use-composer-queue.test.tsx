@@ -47,6 +47,7 @@ function deferred() {
 
 function renderQueueHook(
   overrides: {
+    activeQueueSessionKey?: string | null
     busy?: boolean
     draft?: string
     onCancel?: () => void
@@ -54,6 +55,9 @@ function renderQueueHook(
     replaceServerQueued?: (admissionId: string, text: string, submissionId: string) => Promise<unknown>
   } = {}
 ) {
+  const activeQueueSessionKey =
+    overrides.activeQueueSessionKey === undefined ? SESSION_KEY : overrides.activeQueueSessionKey
+  const clearDraft = vi.fn()
   const onSubmit = vi.fn<ChatBarProps['onSubmit']>(async () => true)
   const onCancel = overrides.onCancel ?? vi.fn()
   const onSteer = overrides.onSteer
@@ -63,7 +67,7 @@ function renderQueueHook(
   const hook = renderHook(
     ({ busy }: { busy: boolean }) =>
       useComposerQueue({
-        activeQueueSessionKey: SESSION_KEY,
+        activeQueueSessionKey,
         attachments: [],
         busy,
         clearDraft: () => {

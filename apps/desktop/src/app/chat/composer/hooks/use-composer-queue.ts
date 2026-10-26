@@ -3,6 +3,7 @@ import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
 import { isSlashCommandText } from '@/lib/chat-runtime'
+import { expandComposerQuotes } from '@/lib/composer-quote'
 import { triggerHaptic } from '@/lib/haptics'
 import { useSessionSlice } from '@/lib/use-session-slice'
 import { type ComposerAttachment, freezeComposerTransportPayload } from '@/store/composer'
@@ -64,11 +65,17 @@ function freezeQueuedDraftText(
   }
 
   const hasTerminalTransport = frozen.displayText !== frozen.transportText
+  // A queued prompt keeps its quote chip in storage (the chip is the label the
+  // user recognises) but carries the expanded body on the wire.
+  const quoteTransport = expandComposerQuotes(frozen.transportText)
+  const hasQuoteTransport = quoteTransport !== frozen.transportText
 
   return {
     // Persist chips (or ordinary text). Never persist fenced selection contents.
     text: frozen.displayText,
-    ...(hasTerminalTransport ? { displayText: frozen.displayText, frozenTransport: frozen.transportText } : {})
+    ...(hasTerminalTransport || hasQuoteTransport
+      ? { displayText: frozen.displayText, frozenTransport: quoteTransport }
+      : {})
   }
 }
 

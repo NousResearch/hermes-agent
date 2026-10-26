@@ -7,13 +7,20 @@
  * image section still appears because the target carries both.
  */
 
+import { type ComposerTarget, getActiveComposer } from '@/app/chat/composer/focus'
+import { queryVisible } from '@/components/pane-shell/pane-visibility'
+import { isWatchWindow } from '@/store/windows'
+
 import { captureComposerMenuTarget, type ComposerMenuTarget } from './composer-menu'
 
 export interface ContextMenuDomTarget {
   /** Set only when the click landed in a composer: what the composer
    *  context-menu area may see and act on (see `composer-menu.ts`). */
   composer: ComposerMenuTarget | null
-  /** The enclosing dialog content node, when the click landed inside one. */
+  /** The composer scope the clicked message belongs to, captured before the
+   *  menu takes focus or obscures the clicked surface. Selection replies are
+   *  routed here, so a tile's reply lands in the tile's own composer. */
+  composerTarget?: ComposerTarget  /** The enclosing dialog content node, when the click landed inside one. */
   dialogPortalContainer: HTMLElement | null
   /** The clicked editable, when the click landed in one. */
   editable: HTMLElement | null
@@ -53,7 +60,10 @@ export function resolveDomTarget(element: Element | null): ContextMenuDomTarget 
 
   return {
     composer: captureComposerMenuTarget(editable),
-    dialogPortalContainer: dialogContent instanceof HTMLElement ? dialogContent : null,
+    composerTarget:
+      !isWatchWindow() && queryVisible('[data-composer-target]')
+        ? (element?.closest<HTMLElement>('[data-composer-target]')?.dataset.composerTarget ?? getActiveComposer())
+        : undefined,    dialogPortalContainer: dialogContent instanceof HTMLElement ? dialogContent : null,
     editable,
     // A placeholder anchor is not a link the menu can act on.
     linkUrl: linkUrl === '#' ? '' : linkUrl,

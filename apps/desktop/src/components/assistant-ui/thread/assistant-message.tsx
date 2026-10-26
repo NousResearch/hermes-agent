@@ -14,6 +14,7 @@ import { type FC, type ReactNode, useCallback, useContext, useEffect, useMemo, u
 import { useInRouterContext, useNavigate } from 'react-router'
 
 import { requestModelMenuToggle } from '@/app/chat/composer/focus'
+import { insertMessageReply } from '@/app/chat/composer/message-reply'
 import { useComposerScope } from '@/app/chat/composer/scope'
 import { useSessionView } from '@/app/chat/session-view'
 import { SETTINGS_ROUTE } from '@/app/routes'
@@ -61,6 +62,7 @@ import {
   GitForkIcon,
   KeyRound,
   Loader2Icon,
+  MessageReplyIcon,
   MoreHorizontal,
   RefreshCwIcon,
   SmilePlusIcon,
@@ -86,6 +88,7 @@ import { $connection, $currentModel, setModelPickerOpen } from '@/store/session'
 import { sessionTileDelegate } from '@/store/session-states'
 import { notifyThreadEditOpen } from '@/store/thread-scroll'
 import { $voicePlayback } from '@/store/voice-playback'
+import { isWatchWindow } from '@/store/windows'
 
 // Stable empty identity for the settled-parts selector — a fresh [] per render
 // would re-derive the changed-files card on every message re-render.
@@ -1236,6 +1239,7 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
   const { t } = useI18n()
   const copy = t.assistant.thread
   const { reload: reloadMessage, disabled: reloadDisabled } = useActionBarReload()
+  const { target } = useComposerScope()
   const touch = useStore($touchPointer)
 
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -1283,6 +1287,12 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
     />
   )
 
+  const reply = useCallback(() => {
+    if (insertMessageReply(getMessageText(), { target })) {
+      triggerHaptic('selection')
+    }
+  }, [getMessageText, target])
+
   return (
     <div className="relative flex w-full shrink-0 items-center justify-end gap-1.5">
       {durationS !== undefined && (
@@ -1317,6 +1327,11 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
           {copyButton}
           {fullResponseAvailable && (
             <CopyButton appearance="icon" buttonSize="icon" label={copy.copyFullResponse} text={getFullResponseText} />
+          )}
+          {!isWatchWindow() && (
+            <TooltipIconButton onClick={reply} tooltip={copy.reply}>
+              <MessageReplyIcon className="size-3" />
+            </TooltipIconButton>
           )}
           <ReadAloudButton action={readAloud} />
           <TooltipIconButton disabled={reloadDisabled} onClick={reload} tooltip={copy.refresh}>

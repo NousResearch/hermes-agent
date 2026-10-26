@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { useEffect, useMemo } from 'react'
 
 import { COMPOSER_AREAS } from '@/app/chat/composer/contrib'
+import { insertMessageReply } from '@/app/chat/composer/message-reply'
 import { terminalMenuHandleFor } from '@/app/right-sidebar/terminal/terminal-context-menu'
 import { openStarMapNodeMenuFor } from '@/app/starmap/context-menu-handle'
 import { DROPDOWN_KIT } from '@/components/ui/actions-menu'
@@ -386,6 +387,17 @@ function domSections(
     ])
   } else if (target.selectionText) {
     sections.push([
+      target.composerTarget ? (
+        <Item
+          icon="reply"
+          key="selection-reply"
+          label={t.assistant.thread.reply}
+          onSelect={() => {
+            closeContextMenu()
+            insertMessageReply(target.selectionText, { target: target.composerTarget })
+          }}
+        />
+      ) : null,
       <Item
         icon="copy"
         key="selection-copy"

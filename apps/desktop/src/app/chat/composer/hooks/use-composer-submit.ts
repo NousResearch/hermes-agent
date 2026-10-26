@@ -4,6 +4,7 @@ import { type RefObject, useLayoutEffect, useRef } from 'react'
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { translateNow, useI18n } from '@/i18n'
 import { isSlashCommandText } from '@/lib/chat-runtime'
+import { expandComposerQuotes } from '@/lib/composer-quote'
 import { isSideTaskSlashCommand } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
 import { isTouchInteraction } from '@/lib/touch-interaction'
@@ -126,6 +127,10 @@ export function useComposerSubmit({
 
     let restoreScope = submittedScope
     const submittedAttachments = attachments ?? []
+    // Expand the composer's quote chips into real Markdown blockquotes on the
+    // wire. The editor keeps the compact `@quote:` token; the model reads the
+    // quoted text. No RPC contract change — it is still plain text.
+    const submittedText = expandComposerQuotes(text)
 
     // Only this operation's explicit session.create handoff may re-home a
     // pre-session submit. A null → stored render can also be user navigation.
@@ -158,7 +163,7 @@ export function useComposerSubmit({
     const rejected = displayKind ? () => {} : restore
 
     void Promise.resolve(
-      onSubmit(text, {
+      onSubmit(submittedText, {
         ...target,
         submission_id: submissionId,
         ...(attachments ? { attachments } : {}),
@@ -526,8 +531,12 @@ export function useComposerSubmit({
       }
     }
 
+    // The steer transport carries the quote body too: freezeComposerTransportPayload
+    // only knows `@terminal:` chips, so expand the quote chips here.
+    const steerTransport = expandComposerQuotes(frozen.transportText)
+
     void Promise.resolve()
-      .then(() => onSteer(frozen.transportText, mode))
+      .then(() => onSteer(steerTransport, mode))
       .then(accepted => {
         if (!accepted) {
           keep()

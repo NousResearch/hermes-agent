@@ -1269,7 +1269,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         activation), reset the cache and re-apply. Fail-open: never raises into discover_and_load."""
         try:
             from agent.secret_sources.registry import list_plugin_sources
-            from hermes_cli.env_loader import _secrets_section, load_hermes_dotenv, reset_secret_source_cache
+            from hermes_cli.env_loader import secrets_section, load_hermes_dotenv, reset_secret_source_cache
             plugin_sources = list_plugin_sources()
         except Exception:
             return
@@ -1277,7 +1277,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         if plugin_sources:
             try:
                 from hermes_cli.config import load_config
-                secrets = _secrets_section(load_config())
+                secrets = secrets_section(load_config())
             except Exception:
                 secrets = {}
 

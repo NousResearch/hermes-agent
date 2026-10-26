@@ -33,7 +33,11 @@ from agent.error_classifier import (
     is_reasoning_field_rejection,
     is_reasoning_required_rejection,
 )
-from agent.auxiliary_compression_override import _fast_lane_config_fields, scope_compression_override
+from agent.auxiliary_compression_override import (
+    _fast_lane_config_fields,
+    route_config_for_live_runtime,
+    scope_compression_override,
+)
 from agent.auxiliary_managed_local import _is_managed_local_endpoint
 from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
 from agent.auxiliary_structured_output import _route_key, _without_structured_output_format, remember_structured_output_rejection
@@ -4051,7 +4055,7 @@ def _plan_fallback_candidate(
         )
         effective_timeout = fb_timeout
     destination = _fallback_destination(task, fb_client, fb_model, fb_label)
-    task_config = _get_auxiliary_task_config(task) if task == "compression" else {}
+    task_config = route_config_for_live_runtime(task) if task == "compression" else {}
     fallback_entry = _fallback_chain_entry(task, fb_label) or {}
     common = dict(
         task=task, effective_timeout=effective_timeout, fallback_entry=fallback_entry,
@@ -6256,7 +6260,7 @@ def resolve_compression_fast_lane(
     requested_model: Optional[str] = None, route_config: Optional[dict[str, Any]] = None,
 ) -> CompressionFastLane:
     """Certify explicit non-reasoning settings only on the matching destination."""
-    config = route_config if route_config is not None else _get_auxiliary_task_config("compression")
+    config = route_config if route_config is not None else route_config_for_live_runtime("compression")
     cfg_provider, cfg_model, non_reasoning = _fast_lane_config_fields(config)
     provider = str(requested_provider or "").strip().lower() or cfg_provider
     model = str(requested_model or "").strip() or cfg_model
@@ -6367,11 +6371,14 @@ def _with_custom_endpoint_extra_body(
     return {**inherited, **(extra_body or {})}
 
 
-def _get_task_extra_body(task: str) -> dict[str, Any]:
+def _get_task_extra_body(
+    task: str, main_runtime: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
     """Shallow copy of ``auxiliary.<task>.extra_body`` with ``reasoning_effort`` folded into
     ``reasoning`` unless one is configured (more specific wins). MoA tasks are excluded: their
-    reasoning depth is per-slot in the preset."""
-    task_config = _get_auxiliary_task_config(task)
+    reasoning depth is per-slot in the preset. Read through the live route so a substituted
+    compression route ships its own reasoning policy, not the base block's."""
+    task_config = route_config_for_live_runtime(task, main_runtime)
     raw = task_config.get("extra_body")
     result = dict(raw) if isinstance(raw, dict) else {}
     if "reasoning" in result:
@@ -7451,7 +7458,7 @@ def _prepare_aux_request(
         task, provider, model, base_url, api_key, main_runtime=main_runtime)
     if api_mode:
         resolved_api_mode = api_mode
-    effective_extra_body = _get_task_extra_body(task)
+    effective_extra_body = _get_task_extra_body(task, main_runtime)
     effective_extra_body.update(extra_body or {})
     client, final_model, resolved_provider, effective_provider = _resolve_call_client(
         task, provider=provider, model=model, base_url=base_url, api_key=api_key,
@@ -7468,7 +7475,7 @@ def _prepare_aux_request(
     )
     request_provider = effective_provider or resolved_provider
     if not async_mode:
-        compression_config = _get_auxiliary_task_config(task) if task == "compression" else {}  # authoritative: no aux route
+        compression_config = route_config_for_live_runtime(task, main_runtime) if task == "compression" else {}  # authoritative: no aux route
         _, effective_extra_body = _compression_fast_lane_controls(
             task, actual_provider=request_provider, actual_model=final_model,
             requested_provider=provider, requested_model=model, route_config=compression_config,

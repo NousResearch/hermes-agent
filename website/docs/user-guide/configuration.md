@@ -1128,7 +1128,7 @@ auxiliary:
         - "http://myhost:8000/v1"
         - "http://myhost:8000"
 ```
-The gate needs BOTH conditions: the main provider is a local family (`custom`, `ollama`, `lmstudio`, `vllm`, or `custom:<name>`) **and** the main runtime's `base_url` exactly matches one of `base_urls` (trailing `/` ignored — list each spelling your runtime may report, e.g. both `.../v1` and the bare `host:port`). The override block carries its own `provider`/`model`/`base_url`/`api_key` (or `key_env`)/`api_mode`, so it can name any route. The check is evaluated per call against the live runtime, so a mid-session `/model` switch — or a gateway session on a different model — routes correctly without reloading the config. When the main model is not on the list, compaction follows the base `provider`/`model` as usual.
+The gate needs BOTH conditions: the main provider is a local family (`custom`, `ollama`, `lmstudio`, `vllm`, or `custom:<name>`) **and** the main runtime's `base_url` exactly matches one of `base_urls` (trailing `/` ignored — list each spelling your runtime may report, e.g. both `.../v1` and the bare `host:port`). The override block carries its own `provider`/`model`/`base_url`/`api_key` (or `key_env`)/`api_mode`, plus the policy that travels with a route (`reasoning_effort`, `extra_body`) — a different model answers with a different reasoning contract, so the override's values replace the base ones rather than merging with them. The check is evaluated per call against the live runtime, so a mid-session `/model` switch — or a gateway session on a different model — routes correctly without reloading the config. When the main model is not on the list, compaction follows the base `provider`/`model` as usual.
 
 ### How the three knobs interact
 

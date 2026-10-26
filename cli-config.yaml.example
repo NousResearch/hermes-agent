@@ -995,6 +995,8 @@ prompt_caching:
 #     #     - "http://myhost:8000"            # (".../v1" and the bare host:port).
 #     # The gate needs BOTH: main provider is custom/ollama/lmstudio/vllm/custom:* AND its
 #     # live base_url is in base_urls. Checked per call, so /model switches route correctly.
+#     # The override may also carry reasoning_effort/extra_body; when it does, they replace the
+#     # base block's for calls on the override route (a route's policy travels with the route).
 #     # no_progress_timeout: 60   # Codex/Responses-only: seconds a stream may go without a
 #                                 # substantive event before it fails fast (default: 60).
 #                                 # Independent of "timeout" above (the overall request

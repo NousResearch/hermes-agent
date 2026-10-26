@@ -8,9 +8,24 @@ slash ignored; list each spelling you use, e.g. ``.../v1`` and bare
 ``host:port``). Every other main model keeps the base compression route.
 Resolution reads the live runtime per call, so ``/model`` switches and
 concurrent sessions route correctly. Empty ``local_override`` = disabled.
+
+The overlay carries the policy that belongs to a route (``reasoning_effort``,
+``extra_body``) alongside the endpoint fields: a different model answers with a
+different reasoning contract, so reading either from the base block would send
+the base route's reasoning controls to the override's model (and could not
+certify a fast lane the override declares).
 """
 
 from typing import Any, Optional
+
+# A substituted route carries its own policy: ``reasoning_effort``/``extra_body`` describe how a
+# specific model answers, exactly like ``base_url`` describes where the request goes. Both are
+# replaced whole (never merged) — the same rule ``auxiliary_task_config._layer_over_inherited``
+# applies once an operator pins a route.
+_ROUTE_FIELDS = (
+    "provider", "model", "base_url", "api_key", "api_mode", "key_env", "api_key_env",
+    "reasoning_effort", "extra_body",
+)
 
 
 def scope_compression_override(
@@ -18,6 +33,11 @@ def scope_compression_override(
 ) -> dict[str, Any]:
     """Apply auxiliary.compression.local_override only on a listed local endpoint."""
     if task != "compression":
+        return task_config
+    # An authoritative task has already pinned its complete route (caller-supplied endpoint, key
+    # and wire mode); re-adding the configured block's endpoint would be the leak that wrapper
+    # exists to prevent (#130895).
+    if getattr(task, "route_authoritative", False):
         return task_config
     local_override = task_config.get("local_override")
     if not isinstance(local_override, dict):
@@ -32,12 +52,30 @@ def scope_compression_override(
         str(url).rstrip("/") for url in local_urls if isinstance(url, str)
     }:
         scoped = dict(task_config)
-        for field in ("provider", "model", "base_url", "api_key", "api_mode",
-                      "key_env", "api_key_env"):
+        for field in _ROUTE_FIELDS:
             if field in local_override:
                 scoped[field] = local_override[field]
         return scoped
     return task_config
+
+
+def route_config_for_live_runtime(
+    task: str | None, main_runtime: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """``auxiliary.<task>`` as it applies to the route this call actually resolves to.
+
+    ``local_override`` substitutes the compression route, so the policy that travels with a route
+    (``reasoning_effort``/``extra_body``) must be read from the same scoped block the endpoint came
+    from: reading the base block ships the base route's reasoning controls to the override's model
+    and can never certify a fast lane the override declares. Callers that hold the runtime pass it;
+    the rest read the context ``call_llm``/``async_call_llm`` bind for the whole request, so it is
+    the same runtime the route resolution used.
+    """
+    from agent.auxiliary_client import _get_auxiliary_task_config, _normalize_main_runtime
+
+    scoped_task = task or ""
+    return scope_compression_override(
+        scoped_task, _get_auxiliary_task_config(scoped_task), _normalize_main_runtime(main_runtime))
 
 
 def _fast_lane_config_fields(config: dict[str, Any]) -> tuple[str, str, bool]:

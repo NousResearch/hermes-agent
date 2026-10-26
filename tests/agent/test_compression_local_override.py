@@ -133,3 +133,96 @@ def test_route_follows_each_calls_runtime():
     remote = _resolve(config, _runtime(provider="deepseek", base_url=""))
     assert local[1] == OVERRIDE_MODEL
     assert remote[:2] == ("auto", None)
+
+
+# --- the route's own policy travels with it ---------------------------------
+#
+# ``reasoning_effort``/``extra_body`` describe how a specific model answers, exactly like
+# ``base_url`` describes where the request goes. A substituted route that kept reading the base
+# block's policy would ship the base route's reasoning controls to the override's model — and
+# could not certify a fast lane the override itself declares. Same rule upstream applies once an
+# operator pins a route (``auxiliary_task_config._layer_over_inherited`` drops the inherited
+# route keys rather than merging them).
+
+POLICY_LOCAL = {"provider": "custom", "base_url": LOCAL_V1}
+POLICY_REMOTE = {"provider": "deepseek", "base_url": ""}
+
+
+def _policy_config(base_effort, override_effort):
+    cfg = {"provider": OVERRIDE_PROVIDER, "model": "@preset/base-summarizer"}
+    if base_effort is not None:
+        cfg["reasoning_effort"] = base_effort
+    cfg["local_override"] = {
+        "provider": OVERRIDE_PROVIDER, "model": OVERRIDE_MODEL, "base_urls": [LOCAL_V1],
+    }
+    if override_effort is not None:
+        cfg["local_override"]["reasoning_effort"] = override_effort
+    return cfg
+
+
+def _extra_body(config, main_runtime):
+    from agent.auxiliary_client import _get_task_extra_body
+    with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=config):
+        return _get_task_extra_body("compression", main_runtime)
+
+
+def test_override_reasoning_effort_reaches_the_override_route():
+    """The override's own ``reasoning_effort`` is not silently dead config."""
+    assert _extra_body(_policy_config(None, "none"), POLICY_LOCAL)["reasoning"]["enabled"] is False
+
+
+def test_base_reasoning_effort_does_not_leak_onto_the_override_route():
+    """The gate replaces the route's policy, not just its endpoint."""
+    reasoning = _extra_body(_policy_config("high", "none"), POLICY_LOCAL)["reasoning"]
+    assert reasoning["enabled"] is False
+    assert reasoning.get("effort") != "high"
+
+
+def test_unlisted_main_keeps_the_base_policy():
+    """The same config, non-matching main: the base route keeps its own reasoning depth."""
+    body = _extra_body(_policy_config("high", "none"), POLICY_REMOTE)
+    assert body["reasoning"] == {"enabled": True, "effort": "high"}
+
+
+def test_override_extra_body_replaces_the_base_extra_body():
+    cfg = _policy_config(None, None)
+    cfg["extra_body"] = {"thinking": {"type": "enabled"}}
+    cfg["local_override"]["extra_body"] = {"thinking": {"type": "disabled"}}
+    body = _extra_body(cfg, POLICY_LOCAL)
+    assert body["thinking"] == {"type": "disabled"}
+    assert _extra_body(cfg, POLICY_REMOTE)["thinking"] == {"type": "enabled"}
+
+
+def test_fast_lane_certifies_a_non_reasoning_override_route():
+    """The whole point of a cheap long-context route: its reasoning-off is honoured, so the
+    compression call rides the fast lane instead of paying for reasoning it declared off."""
+    from agent.auxiliary_client import resolve_compression_fast_lane, scoped_runtime_main
+    cfg = _policy_config(None, "none")
+    with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=cfg), \
+            scoped_runtime_main(POLICY_LOCAL):
+        lane = resolve_compression_fast_lane(OVERRIDE_PROVIDER, OVERRIDE_MODEL)
+    assert lane.certified_non_reasoning is True
+    assert lane.reasoning_config == {"enabled": False, "effort": "none"}
+
+
+def test_fast_lane_still_certifies_only_the_route_that_declares_it():
+    """A base route that never disabled reasoning gets no fast lane from the override's key."""
+    from agent.auxiliary_client import resolve_compression_fast_lane, scoped_runtime_main
+    cfg = _policy_config(None, "none")
+    with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=cfg), \
+            scoped_runtime_main(POLICY_LOCAL):
+        lane = resolve_compression_fast_lane("openrouter", "@preset/base-summarizer")
+    assert lane.certified_non_reasoning is False
+
+
+def test_authoritative_task_keeps_its_pinned_route_unscoped():
+    """A route-authoritative task arrives with a complete caller-supplied route (a fallback
+    retry after every aux attempt failed). Re-adding the configured block's endpoint there is
+    the leak the wrapper exists to prevent (#130895), so the override stays out of it."""
+    from agent.auxiliary_task_config import authoritative_auxiliary_task
+    task = authoritative_auxiliary_task("compression")
+    cfg = {"provider": OVERRIDE_PROVIDER, "model": "@preset/base-summarizer"}
+    cfg["local_override"] = {"provider": "openrouter", "model": OVERRIDE_MODEL, "base_urls": [LOCAL_V1]}
+    with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=cfg):
+        _, model, _, _, _ = _resolve_task_provider_model(task, main_runtime=POLICY_LOCAL)
+    assert model == "@preset/base-summarizer"

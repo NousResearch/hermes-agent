@@ -779,7 +779,7 @@ _JOB_ARG_FIELDS = (("name", "name"), ("deliver", "deliver"), ("failure_deliver",
                    ("monitor_script", "monitor_script"), ("monitor_url", "monitor_url"),
                    ("continuity", "continuity"), ("reasoning_effort", "reasoning_effort"),
                    ("interpreter", "interpreter"), ("timezone", "timezone"),
-                   ("grace_minutes", "grace_minutes"))
+                   ("grace_minutes", "grace_minutes"), ("catch_up", "catch_up"))
 
 
 def _job_api_kwargs(args) -> dict[str, Any]:

@@ -18,7 +18,7 @@ import contextlib
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Protocol
 
 from hermes_constants import get_hermes_home
 
@@ -81,6 +81,38 @@ def clear_cancel(execution_id: str) -> None:
         _marker_path(execution_id).unlink(missing_ok=True)
 
 
+class _CancelEventLike(Protocol):
+    """Structural type for cancellation sources (``threading.Event``, ``_CombinedCancelEvent``)."""
+
+    def is_set(self) -> bool: ...
+    def set(self) -> None: ...
+
+
+class _CombinedCancelEvent:
+    """Duck-typed ``threading.Event`` ORing several cancellation sources (fire-claim heartbeat
+    ``lost_ownership`` + per-transport events). Workers only call is_set()/set(), so no pump thread.
+    """
+
+    def __init__(self, *events: Optional[_CancelEventLike]) -> None:
+        self._events = [event for event in events if event is not None]
+
+    def is_set(self) -> bool:
+        return any(event.is_set() for event in self._events)
+
+    def set(self) -> None:
+        for event in self._events:
+            event.set()
+
+    @property
+    def reason(self) -> Optional[str]:
+        """Why the run is being torn down, from whichever source fired — so a script or agent
+        stop never reports "fire claim lost" for an operator cancel (or the reverse)."""
+        for event in self._events:
+            if event.is_set():
+                return getattr(event, "reason", None)
+        return None
+
+
 class CancelRequest:
     """``_CancelEventLike`` view of one execution's cancel marker.
 
@@ -109,7 +141,26 @@ class CancelRequest:
         return self._reason
 
 
-def cancel_run(job_id: str, *, reason: Optional[str] = None) -> Dict[str, Any]:
+def cancel_reason(cancel_event: Any) -> str:
+    """Human-facing cause for a cancelled run; the legacy wording when no source carries one."""
+    return getattr(cancel_event, "reason", None) or "cron fire ownership was lost"
+
+
+def finish_cancelled_run(job: dict[str, Any], execution_id: str, fire_owner: Optional[str]) -> bool:
+    """Book an operator-cancelled run: ledger row ``cancelled`` with the recorded reason, and the
+    job's ``last_status`` — without a failure alert or a failure-streak bump, since the operator
+    asked for it. A job removed mid-run has no record left to mark; its ledger row still lands."""
+    from cron import scheduler
+
+    reason = CancelRequest(execution_id).reason
+    if not scheduler.self_removal_delivery_allowed(job["id"]):
+        owner = {"expected_fire_owner": fire_owner} if fire_owner is not None else {}
+        scheduler.mark_job_run(job["id"], False, f"Cancelled: {reason}", status="cancelled", **owner)
+    scheduler.finish_execution(execution_id, success=False, error=reason, cancelled=True)
+    return True
+
+
+def cancel_run(job_id: str, *, reason: Optional[str] = None) -> dict[str, Any]:
     """Request cancellation of the job's live run. A job with nothing in flight is a no-op."""
     record = live_inflight_execution(job_id)
     if record is None:

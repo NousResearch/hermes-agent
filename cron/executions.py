@@ -34,7 +34,10 @@ MAX_TERMINAL_EXECUTIONS = 1000
 HANDOFF_ADOPTION_GRACE_SECONDS = 30.0
 # Floor for the live-owner stale-claim bound (#115692); see _live_owner_stale_after_seconds.
 LIVE_OWNER_STALE_CLAIM_FLOOR_SECONDS = 7200.0
-_TERMINAL_STATES = ("completed", "failed", "unknown")
+# ``cancelled``: an operator stopped the run (``hermes cron cancel``, removing the job mid-run).
+# ``missed``: never started — one row books every occurrence the scheduler skipped past.
+_TERMINAL_STATES = ("completed", "failed", "unknown", "cancelled", "missed")
+_STATUS_CHECK = "('claimed','running','completed','failed','unknown','cancelled','missed')"
 _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
 
@@ -57,7 +60,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     from hermes_cli.sqlite_util import add_column_if_missing
 
     conn.execute(
-        """CREATE TABLE IF NOT EXISTS executions (
+        f"""CREATE TABLE IF NOT EXISTS executions (
              id TEXT PRIMARY KEY,
              job_id TEXT NOT NULL,
              source TEXT NOT NULL,
@@ -65,7 +68,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
              pid INTEGER NOT NULL,
              process_started_at INTEGER,
              status TEXT NOT NULL CHECK(status IN
-               ('claimed','running','completed','failed','unknown')),
+               {_STATUS_CHECK}),
              handoff_pending INTEGER NOT NULL DEFAULT 0,
              handoff_started_at REAL,
              claimed_at TEXT NOT NULL,
@@ -74,6 +77,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
              error TEXT
            )"""
     )
+    _widen_status_check(conn)
     add_column_if_missing(
         conn, "executions", "handoff_pending",
         "handoff_pending INTEGER NOT NULL DEFAULT 0",
@@ -96,6 +100,34 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_executions_occurrence "
         "ON executions(job_id, scheduled_instant) WHERE status='completed'"
     )
+
+
+def _widen_status_check(conn: sqlite3.Connection) -> None:
+    """Rebuild a ledger created before ``cancelled``/``missed`` existed: SQLite cannot alter a
+    CHECK constraint in place. Copies every column the old table has; runs once per file, and
+    re-reads the schema under the write lock so two processes opening it together rebuild once."""
+    def current_sql() -> Optional[str]:
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='executions'").fetchone()
+        return row[0] if row is not None else None
+
+    if "'missed'" in (current_sql() or "'missed'"):
+        return
+    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        old_sql = current_sql() or "'missed'"
+        if "'missed'" not in old_sql:
+            columns = ", ".join(r[1] for r in conn.execute("PRAGMA table_info(executions)"))
+            conn.execute("ALTER TABLE executions RENAME TO executions_pre_widen")
+            conn.execute(old_sql.replace("'unknown')", "'unknown','cancelled','missed')", 1))
+            conn.execute(
+                f"INSERT INTO executions ({columns}) SELECT {columns} FROM executions_pre_widen")
+            conn.execute("DROP TABLE executions_pre_widen")
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
 
 
 @contextmanager
@@ -202,7 +234,7 @@ def _prune_unlocked(conn: sqlite3.Connection) -> None:
     conn.execute(
         """DELETE FROM executions WHERE id IN (
              SELECT id FROM executions
-             WHERE status IN ('completed','failed','unknown')
+             WHERE status IN ('completed','failed','unknown','cancelled','missed')
              ORDER BY julianday(finished_at) DESC, finished_at DESC,
                       julianday(claimed_at) DESC, claimed_at DESC, id DESC LIMIT -1 OFFSET ?
            )""",
@@ -311,7 +343,7 @@ def mark_execution_running(execution_id: str) -> Optional[dict[str, Any]]:
 
 def finish_execution(
     execution_id: str, *, success: bool, error: Optional[str] = None,
-    delivery_outcome: Optional[str] = None,
+    delivery_outcome: Optional[str] = None, cancelled: bool = False,
 ) -> Optional[dict[str, Any]]:
     """Write a terminal result once; terminal attempts cannot be rewritten.
 
@@ -319,7 +351,7 @@ def finish_execution(
     settles through ``recover_receipted_execution``.
     """
     now = _hermes_now().isoformat()
-    status = "completed" if success else "failed"
+    status = "cancelled" if cancelled else ("completed" if success else "failed")
     detail = None if success else (str(error) if error else "unknown failure")
     with _transaction() as conn:
         owner = (_PROCESS_ID, os.getpid())
@@ -337,6 +369,34 @@ def finish_execution(
         record = _fetch(conn, execution_id)
     _emit_execution_state(record, delivery_outcome=delivery_outcome)
     record_cron_finish(record, delivery_outcome)
+    return record
+
+
+def record_missed_occurrences(
+    job_id: str, *, count: int, first_instant: Optional[str], detail: str,
+) -> Optional[dict[str, Any]]:
+    """Book occurrences the scheduler passed over without running as ONE terminal ``missed`` row
+    (``missed ×N``), so run history shows the gap instead of nothing. Never started, so no
+    owner fencing applies; ``first_instant`` is the earliest skipped slot."""
+    from cron.occurrences import scheduled_instant as canonical_instant
+
+    if count < 1:
+        return None
+    now = _hermes_now().isoformat()
+    execution_id = uuid.uuid4().hex
+    pid = os.getpid()
+    with _transaction() as conn:
+        conn.execute(
+            """INSERT INTO executions
+               (id, job_id, source, process_id, pid, process_started_at,
+                status, claimed_at, finished_at, error, scheduled_instant)
+               VALUES (?, ?, 'scheduler', ?, ?, ?, 'missed', ?, ?, ?, ?)""",
+            (execution_id, str(job_id), _PROCESS_ID, pid, _process_start_time(pid), now, now,
+             f"missed \u00d7{count} ({detail})", canonical_instant(first_instant)),
+        )
+        _prune_unlocked(conn)
+        record = _fetch(conn, execution_id)
+    _emit_execution_state(record)
     return record
 
 

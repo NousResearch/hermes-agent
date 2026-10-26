@@ -734,6 +734,7 @@ def _action_create(a: dict[str, Any]) -> str:
             grace_minutes=a["grace_minutes"],
             pinned=bool(a["pinned"]),
             failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
+            catch_up=a["catch_up"],
             **({"paused": a["paused"], "paused_reason": a["paused_reason"]}
                if a["paused"] is not False or a["paused_reason"] is not None else {}))
     except CronSchedulerRegistrationError as exc:
@@ -876,6 +877,8 @@ def _update_core_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[st
                 return bot_chat_error
             _norm_fd = _resolve_cron_context_deliver(_norm_fd)
         updates["failure_deliver"] = _norm_fd
+    if a["catch_up"] is not None:
+        updates["catch_up"] = a["catch_up"]
     if skills is not None or skill is not None:
         canonical_skills = _canonical_skills(skill, skills)
         updates["skills"] = canonical_skills
@@ -1005,7 +1008,7 @@ def _action_update(job: dict[str, Any], a: dict[str, Any]) -> str:
 _JOBLESS_ACTIONS = {"create": _action_create, "list": _action_list}
 
 
-def _action_cancel(job: Dict[str, Any], a: Dict[str, Any]) -> str:
+def _action_cancel(job: dict[str, Any], a: dict[str, Any]) -> str:
     """Stop the job's LIVE run. Per-run, not per-schedule: the job keeps its next fire."""
     from cron.cancellation import cancel_run
 
@@ -1068,6 +1071,7 @@ def cronjob(
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
     failure_deliver: Optional[str | list[str]] = None,
+    catch_up: Optional[bool] = None,
     task_id: str | None = None,
     session_id: Optional[str] = None,
     paused: bool = False,
@@ -1166,6 +1170,10 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
                 "items": {"type": "string"},
                 "description": "Optional ordered skill names loaded before the cron prompt. On update, [] clears."
             },
+            "catch_up": {
+                "type": "boolean",
+                "description": "Runs missed while the machine was off: true = run once on return, false = skip. Omit for the default (recurring run once, one-shots skip)."
+            },
             "script": {
                 "type": "string",
                 "description": _script_description("the profile HERMES_HOME")
@@ -1233,7 +1241,7 @@ def check_cronjob_requirements() -> bool:
 _HANDLER_FORWARDED_ARGS = (
     "job_id", "prompt", "schedule", "name", "repeat", "deliver", "failure_deliver", "skill", "skills", "reason",
     "script", "context_from", "continuity", "enabled_toolsets", "workdir", "no_agent", "attach_to_session",
-    "paused_reason", "pinned", "timezone", "grace_minutes")
+    "paused_reason", "pinned", "timezone", "grace_minutes", "catch_up")
 
 
 def _cronjob_handler(args, **kw):

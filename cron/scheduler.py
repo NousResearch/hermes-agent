@@ -30,7 +30,7 @@ except ImportError:
     except ImportError:
         msvcrt = None
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Protocol, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 # Must precede repo-level imports: standalone invocations (e.g. module reload after
 # `hermes update`) otherwise fail with ModuleNotFoundError for hermes_time et al.
@@ -531,7 +531,8 @@ from cron.executions import (
     recover_interrupted_executions, settle_unstarted_execution, terminalize_dead_owner)
 from cron.scheduler_liveness import ExecutionProgressStamper, _inactivity_watchdog_loop
 from cron.scheduler_bookkeeping import _classify_delivery_outcome
-from cron.cancellation import CancelRequest, clear_cancel
+from cron.cancellation import (CancelRequest, _CancelEventLike, _CombinedCancelEvent, cancel_reason,
+                               clear_cancel, finish_cancelled_run as _finish_cancelled_run)
 
 # Response marker that suppresses delivery (output is still saved locally for audit).
 SILENT_MARKER = "[SILENT]"
@@ -656,43 +657,6 @@ _INFLIGHT_MIN_ALLOWANCE_MINUTES = 30.0
 # false "ok" (#60432). Token keying keeps an interruption scoped to that exact execution: a later run of the
 # same job ID (recurring jobs reuse the ID every fire) must not inherit the stale flag.
 _interrupted_job_ids: set = set()
-
-
-class _CancelEventLike(Protocol):
-    """Structural type for cancellation sources (``threading.Event``, ``_CombinedCancelEvent``)."""
-
-    def is_set(self) -> bool: ...
-    def set(self) -> None: ...
-
-
-class _CombinedCancelEvent:
-    """Duck-typed ``threading.Event`` ORing several cancellation sources (fire-claim heartbeat
-    ``lost_ownership`` + per-transport events). Workers only call is_set()/set(), so no pump thread.
-    """
-
-    def __init__(self, *events: Optional[_CancelEventLike]) -> None:
-        self._events = [event for event in events if event is not None]
-
-    def is_set(self) -> bool:
-        return any(event.is_set() for event in self._events)
-
-    def set(self) -> None:
-        for event in self._events:
-            event.set()
-
-    @property
-    def reason(self) -> Optional[str]:
-        """Why the run is being torn down, from whichever source fired — so a script or agent
-        stop never reports "fire claim lost" for an operator cancel (or the reverse)."""
-        for event in self._events:
-            if event.is_set():
-                return getattr(event, "reason", None)
-        return None
-
-
-def cancel_reason(cancel_event: Optional[_CancelEventLike]) -> str:
-    """Human-facing cause for a cancelled run; the legacy wording when no source carries one."""
-    return getattr(cancel_event, "reason", None) or "cron fire ownership was lost"
 
 
 def get_running_job_ids() -> frozenset[str]:
@@ -3026,6 +2990,7 @@ class _FireOwnership:
         # ``set()`` would propagate into the transport event this run does not own (#105861).
         self.claim_lost = claim_lost
         self.transport_cancel = transport_cancel
+        self.operator_cancel = operator_cancel
         # ``operator_cancel`` (``hermes cron cancel``) is a THIRD source, deliberately not folded
         # into ``transport_cancel``: only a transport cancel counts as claim loss for bookkeeping,
         # while an operator cancel is a real outcome this run records itself.
@@ -3039,6 +3004,9 @@ class _FireOwnership:
 
     def transport_cancelled(self) -> bool:
         return self.transport_cancel is not None and self.transport_cancel.is_set()
+
+    def operator_cancelled(self) -> bool:
+        return self.operator_cancel is not None and self.operator_cancel.is_set()
 
     def side_effect_fence(self):
         if self.owner is None:
@@ -3384,11 +3352,18 @@ def _run_one_job_body(
             _run_kwargs["cancel_event"] = fence.cancel_event
         try:
             success, output, final_response, error = run_job(job, **_run_kwargs)
-        except BaseException:
+        except BaseException as exc:
             # run_job hands back the agent even when raising; tear down so a failed run never leaks.
             # BaseException so KeyboardInterrupt/SystemExit mid-run still trigger teardown.
             _teardown_deferred()
-            raise
+            if not (isinstance(exc, Exception) and fence.operator_cancelled()):
+                raise
+            success = None
+        # Before claim loss: removing a job mid-run cancels it AND drops its claim (#123045).
+        if fence.operator_cancelled():
+            if success is not None:  # the except path above already tore down
+                _teardown_deferred()
+            return _finish_cancelled_run(job, execution_id, fire_owner)
 
         if _fire_claim_ownership_lost():
             _teardown_deferred()

@@ -17,7 +17,7 @@ from tests.tools.test_bot_mode_dm import (
 
 def _spec(calls):
     parts = shlex.split(calls[0]["command"])
-    with open(parts[parts.index("--fan-out") + 1], encoding="utf-8") as stream:
+    with open(parts[parts.index("--fan-out") + 1], encoding="utf-8-sig") as stream:
         return json.load(stream)
 
 
@@ -91,7 +91,7 @@ def test_cancel_is_the_senders_own_and_reaches_the_owner(tmp_path, monkeypatch):
     ack = json.loads(bot_mode_dm.message_agent_tool("researcher", "long job", agent=_FakeAgent(home)))
     with live._locked(target) as root:  # the owner's receipt records who sent it
         path = root / f"{ack['delivery_id']}.json"
-        record = json.loads(path.read_text(encoding="utf-8"))
+        record = json.loads(path.read_text(encoding="utf-8-sig"))
         live._write(path, {**record, "author": {"id": "bot:default", "name": "hermes", "is_bot": True}})
     rpcs = []
     monkeypatch.setattr(live, "_authority_rpc", lambda h, method, params: rpcs.append((method, params)) or

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import re
 import shlex
@@ -31,6 +32,7 @@ from typing import Any
 # this only reaps one that outlives that, reported as pending rather than lost.
 FAN_OUT_WAIT_SECONDS = 32 * 60
 _HEX_ID_RE = re.compile(r"[0-9a-f]{32,64}")
+logger = logging.getLogger(__name__)
 
 
 def fan_out(targets: list[str], content: str, sender: Any, *, expects_reply: bool) -> str:
@@ -85,7 +87,7 @@ def _start_combined(collected: list[dict], sender: Any) -> dict:
 
 def run_fan_out(spec_path: str) -> int:
     """Runner entry: run each target's runner concurrently, print one JSON outcome list."""
-    with open(spec_path, encoding="utf-8") as stream:
+    with open(spec_path, encoding="utf-8-sig") as stream:
         entries = json.load(stream)
     with contextlib.suppress(OSError):
         os.unlink(spec_path)
@@ -155,6 +157,8 @@ def cancel_own_delivery(delivery_id: str, raw_target: str, sender: Any) -> str:
     try:
         answer = _authority_rpc(home, "prompt.cancel", {"session_id": record["session_id"], "admission_id": admission})
     except Exception as exc:
+        # The owner may be down or refuse: the sender gets that as a tool error, never a crash.
+        logger.debug("message_agent cancel of %s failed", delivery_id, exc_info=True)
         return _err(f"Cancel failed: {exc}")
     if answer.get("status") == "terminal" and answer.get("outcome") == "cancelled":
         return json.dumps({"status": "cancelled", "delivery_id": delivery_id,

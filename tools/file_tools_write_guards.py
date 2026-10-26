@@ -14,7 +14,7 @@ import fnmatch
 import os
 from pathlib import Path
 
-from agent.file_safety import get_nt_namespace_error
+from agent.file_safety import fold_path, get_nt_namespace_error
 from tools import file_state
 from tools.binary_extensions import (
     has_binary_extension,
@@ -159,14 +159,17 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         return (
             f"Refusing to write to {filepath}: it climbs above the SSH home and the remote "
             "home could not be detected, so its target cannot be checked. Pass an absolute path.")
-    if any(c.startswith(_SENSITIVE_PATH_PREFIXES) or c in _SENSITIVE_EXACT_PATHS for c in candidates):
+    # Folded (agent.file_safety.fold_path): a case-insensitive filesystem opens Config.yaml as config.yaml.
+    folded = {fold_path(c) for c in candidates}
+    prefixes = tuple(fold_path(p) for p in _SENSITIVE_PATH_PREFIXES)
+    if any(f.startswith(prefixes) or f in {fold_path(p) for p in _SENSITIVE_EXACT_PATHS} for f in folded):
         return (
             f"Refusing to write to sensitive system path: {filepath}\n"
             "Use the terminal tool with sudo if you need to modify system files.")
     # approvals.mode and other security settings live in config.yaml; a
     # prompt-injected agent could silently disable exec approval by editing it.
     hermes_config = _get_hermes_config_resolved()
-    if hermes_config and hermes_config in candidates:
+    if hermes_config and fold_path(hermes_config) in folded:
         return (
             f"Refusing to write to Hermes config file: {filepath}\n"
             "Agent cannot modify security-sensitive configuration. "
@@ -248,7 +251,7 @@ def _protected_instruction_reason(filepath: str, task_id: str = "default",
         # behavior too. Only the IMMEDIATE parent counts — matching any ancestor
         # would gate every write inside a checkout living under ~/.hermes.
         parts = candidate.replace("\\", "/").rstrip("/").split("/")
-        if len(parts) >= 2 and parts[-2] == ".hermes":
+        if len(parts) >= 2 and parts[-2].casefold() == ".hermes":
             return candidate
     return None
 

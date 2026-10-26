@@ -391,13 +391,18 @@ def _admission_outcome(authority, admission_id, fallback=None):
     row = get_session_admission(authority.db, admission_id=admission_id)
     if row is None:
         return _expired_outcome(authority, fallback)
+    from gateway.session_results import admission_result
+    saved = admission_result(authority.db, admission_id)
+    if saved is not None and row['status'] != 'terminal':
+        # The settlement committed (from its worker thread) between these two reads. Its result and
+        # terminal outcome commit together, so re-read the row: the stale ``started`` row has no
+        # outcome, and a completed turn would project as a terminal ``failed`` receipt.
+        row = get_session_admission(authority.db, admission_id=admission_id)
     # A terminal row without a result blob is still definitive when the outcome says the
     # input never ran (cancelled) or was refused/failed; ambiguous is reserved for the
     # durable unknown state and for missing evidence (completed/interrupted without result).
     status = {'queued': 'queued', 'started': 'claimed', 'unknown': 'ambiguous',
               'terminal': {'cancelled': 'cancelled', 'rejected': 'failed', 'failed': 'failed'}.get(row['outcome'], 'ambiguous')}[row['status']]
-    from gateway.session_results import admission_result
-    saved = admission_result(authority.db, admission_id)
     reply = (fallback or {}).get('reply', '')
     if saved is not None:
         reply = saved['result'].get('final_response', '')

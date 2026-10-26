@@ -19,6 +19,7 @@ from typing import Any, Callable, Iterator, Optional
 from hermes_cli.timefmt import EPOCH_MAX, EPOCH_MIN
 from hermes_state import SessionDB
 from hermes_state_common import FTS_STORAGE_VERSION, SCHEMA_VERSION
+from hermes_state_fts import fts_projection_counts
 from hermes_state_repair import _db_opens_cleanly
 
 
@@ -917,6 +918,9 @@ def _verify_recovered_database(
             orphan_cleanup=orphan_cleanup,
         )
         _verify_fts_indexes(conn, verification)
+        projection = _fts_projection_parity(conn)
+        verification["fts_projection"] = projection
+        verification["errors"].extend(projection["errors"])
     except sqlite3.DatabaseError as exc:
         verification["errors"].append(f"verification query failed: {exc}")
     finally:
@@ -986,6 +990,23 @@ def _repair_out_of_window_timestamps(destination: sqlite3.Connection) -> int:
     return repaired
 
 
+def _fts_projection_parity(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Each FTS index's docsize row count against its source rows.
+
+    FTS integrity-check, ``MATCH`` and ``COUNT(*)`` on an external-content table all read the content view, so
+    a truncated index (historical CJK/substring coverage missing) passes them.
+    """
+    try:
+        counts = fts_projection_counts(conn)
+    except sqlite3.DatabaseError as exc:
+        return {"counts": {}, "errors": [f"FTS projection probe failed: {exc}"]}
+    return {
+        "counts": {table: {"indexed": indexed, "source": source} for table, (indexed, source) in counts.items()},
+        "errors": [f"{table} indexes {indexed} rows, expected {source}"
+                   for table, (indexed, source) in counts.items() if indexed != source],
+    }
+
+
 def _finalize_derived_metadata(destination: sqlite3.Connection) -> dict[str, Any]:
     """Sanitize copied JSON columns and timestamps, and stamp metadata the new destination actually owns."""
     model_config_reset = _sanitize_session_model_config(destination)
@@ -1001,6 +1022,11 @@ def _finalize_derived_metadata(destination: sqlite3.Connection) -> dict[str, Any
         "timestamps_repaired": timestamps_repaired}
     if fts_tables != {"messages_fts", "messages_fts_trigram"}:
         result["error"] = "fresh destination is missing required FTS tables"
+        return result
+    projection = _fts_projection_parity(destination)
+    result["fts_projection"] = projection
+    if projection["errors"]:
+        result["error"] = "; ".join(projection["errors"])
         return result
     fts_keys = tuple(key for key in _GENERATED_META_KEYS if key.startswith("fts_"))
     placeholders = ", ".join("?" for _ in fts_keys)
@@ -1265,6 +1291,11 @@ def _recover_session_database_output(
                     progress_cb=progress_cb, source_rows=inspection["tables"][table].get("rows"),
                 )
             orphan_cleanup = _cleanup_partial_orphans(destination_conn) if allow_partial else None
+            if orphan_cleanup and orphan_cleanup["sessions_reconstructed"]:
+                # Trigram eligibility joins sessions. Messages copied before
+                # their missing owners were reconstructed were not indexed.
+                from hermes_cli.session_lost_and_found import rebuild_fts_indexes
+                orphan_cleanup["fts_rebuild"] = rebuild_fts_indexes(destination_conn)
             derived_metadata = _finalize_derived_metadata(destination_conn)
         finally:
             source_conn.close()

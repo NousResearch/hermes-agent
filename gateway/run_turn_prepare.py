@@ -18,7 +18,7 @@ from contextvars import copy_context
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
-from gateway.platforms.event import MessageEvent
+from gateway.platforms.event import MessageEvent, event_preserves_prompt_pins
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
     build_session_context,
@@ -669,13 +669,14 @@ class GatewayTurnPrepareMixin:
         # part of the classic in-process prompt, and the TUI gateway still builds that prompt in-process.
         # Rendering it here would make every surface hop of one durable session a system-prompt
         # (and prompt-cache) break.
-        # Synthetic goal/heartbeat/resume turns carry no prompt inputs of their own, so they reuse the
-        # pins exactly like internal events do (and still pass authorization, unlike internal ones).
-        _reuse_pins = event.internal or getattr(event, "inherit_channel_pin", False)
-        if source.platform != Platform.LOCAL and _reuse_pins and session_key:
+        _preserve_pins = event_preserves_prompt_pins(event)
+        if source.platform != Platform.LOCAL and _preserve_pins and session_key:
             await self._rehydrate_prompt_pins(session_key, session_entry.session_id)
         context_prompt = "" if source.platform == Platform.LOCAL else \
-            self._pinned_session_context_prompt(context, _redact_pii, session_key, internal=_reuse_pins)
+            self._pinned_session_context_prompt(
+                context, _redact_pii, session_key, preserve_pin=_preserve_pins,
+                authoritative_source=getattr(session_entry, "origin", None),
+            )
 
         # Per-turn notes ride the user message via the api_content sidecar, NOT context_prompt
         # (appending to the ephemeral system prompt forced a full agent rebuild).

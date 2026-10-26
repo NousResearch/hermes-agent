@@ -91,7 +91,9 @@ def _plain_adapter():
 def _runner():
     from gateway.run import GatewayRunner
 
-    return object.__new__(GatewayRunner)
+    runner = object.__new__(GatewayRunner)
+    runner._begin_session_run_generation(TOPIC_SESSION_KEY)
+    return runner
 
 
 async def _deliver(adapter, *, session_key=SESSION_KEY, stream_consumer=None, metadata=None,

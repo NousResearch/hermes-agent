@@ -692,8 +692,13 @@ class GatewayAgentCacheMixin:
             return
         conversation = self._session_state(session_key).conversation
         conversation.ephemeral_pin = (pin["context_key"], pin["context_prompt"], pin["redact_pii"])
-        if conversation.channel_pin is None:
-            conversation.channel_pin = (pin["channel_prompt"], pin["parent_chat_id"])
+        conversation.channel_pin = (pin["channel_prompt"], pin["parent_chat_id"])
+        # The authoritative-source snapshot rides the durable pin (4th element); a legacy pin
+        # without it leaves the caller's origin as the fallback authority.
+        source_snapshot = pin.get("source")
+        if isinstance(source_snapshot, dict):
+            conversation.ephemeral_pin = (
+                pin["context_key"], pin["context_prompt"], pin["redact_pii"], source_snapshot)
 
     async def _persist_prompt_pins(self, session_key: Optional[str], expected_session_id: Optional[str]) -> None:
         """Persist this conversation's pins before the agent runs; the store no-ops an unchanged
@@ -708,6 +713,7 @@ class GatewayAgentCacheMixin:
             "version": PROMPT_PIN_VERSION, "context_key": ephemeral_pin[0],
             "context_prompt": ephemeral_pin[1], "redact_pii": ephemeral_pin[2],
             "channel_prompt": channel_pin[0], "parent_chat_id": channel_pin[1],
+            "source": ephemeral_pin[3] if len(ephemeral_pin) > 3 and isinstance(ephemeral_pin[3], dict) else None,
         }
         try:
             await self.async_session_store.set_prompt_pin(
@@ -717,50 +723,73 @@ class GatewayAgentCacheMixin:
             logger.debug("Failed to persist prompt pin for %s", session_key, exc_info=True)
 
     def _pinned_session_context_prompt(
-        self, context, redact_pii: bool, session_key: Optional[str], *, internal: bool = False,
+        self, context, redact_pii: bool, session_key: Optional[str], *, preserve_pin: bool = False,
+        authoritative_source: Optional[SessionSource] = None,
     ) -> str:
         """Session-context prompt pinned per session: key hit → pinned bytes reused VERBATIM (immune
         to renderer nondeterminism); key miss → re-render and re-pin (rename, topic edit, /sethome).
 
-        ``internal`` events (kanban wakes, delegation completions, watch notifications) carry a
-        source rebuilt from the persisted origin, without chat_name/user_name/message_id. Rendering
-        from it re-keyed the pin, and the next human turn re-keyed it back (A→B→A), rewriting
-        already-sent system bytes each time. An internal event is never a real metadata change, so
-        it reuses an existing pin verbatim (restored by ``_rehydrate_prompt_pins`` after a restart or an eviction); with
-        no pin yet it renders and pins as usual. The pin records the ``privacy.redact_pii`` it was
-        rendered under: bytes from another privacy policy are never reused, even by an internal
-        event. Callers pass ``event.internal or event.inherit_channel_pin`` (synthetic
-        goal/heartbeat/resume turns strip ``message_id``) so this pin and ``_pinned_channel_inputs``
-        reuse on the same decision."""
+        ``preserve_pin`` events (internal wakes, or non-internal synthetic goal/heartbeat/steer
+        turns) carry a source rebuilt from the persisted origin, without chat_name/user_name/
+        message_id. Rendering from it re-keyed the pin, and the next human turn re-keyed it back
+        (A→B→A), rewriting already-sent system bytes each time. Such a turn is never a real metadata
+        change, so its render reuses the LAST AUTHORITATIVE source (``_pinned_authority_source``:
+        the human turn that pinned these bytes, falling back to ``authoritative_source``/the
+        durable origin for pins that predate the snapshot). Re-keying against the authoritative
+        source keeps byte stability when nothing changed (key hit → the pinned bytes are returned
+        verbatim) while a real configuration change (``/sethome``) key-misses and re-renders once
+        with the authoritative source instead of freezing the old configuration (#126167 review).
+        With no pin yet the prompt renders and pins as usual. The pin records the
+        ``privacy.redact_pii`` it was rendered under: bytes from another privacy policy are never
+        reused, even by a preserving event."""
         _pin_state = self._peek_session_state(session_key) if session_key else None
         _eph_pin = _pin_state.conversation.ephemeral_pin if _pin_state else None
         if _eph_pin is not None and _eph_pin[2] != redact_pii:
             _eph_pin = None
-        if internal and _eph_pin is not None:
-            return _eph_pin[1]
+        if preserve_pin:
+            _authority = self._pinned_authority_source(_eph_pin, authoritative_source)
+            if _authority is not None:
+                from dataclasses import replace as _dc_replace
+                with suppress(Exception):
+                    context = _dc_replace(context, source=_authority)
+                _eph_pin = None  # key comparison below decides verbatim reuse vs re-render
         _eph_key = self._ephemeral_change_key(context, redact_pii)
         if _eph_pin is not None and _eph_pin[0] == _eph_key:
             return _eph_pin[1]
         text = build_session_context_prompt(context, redact_pii=redact_pii)
         if session_key:
-            self._session_state(session_key).conversation.ephemeral_pin = (_eph_key, text, redact_pii)
+            # 4th element: the source these bytes were rendered from — the authority a later
+            # preserving turn re-keys against (legacy 3-element pins fall back to the origin).
+            self._session_state(session_key).conversation.ephemeral_pin = (
+                _eph_key, text, redact_pii, context.source.to_dict())
         return text
 
+    @staticmethod
+    def _pinned_authority_source(
+        _eph_pin: Optional[tuple], authoritative_source: Optional[SessionSource],
+    ) -> Optional[SessionSource]:
+        """The authoritative source a preserving turn re-keys against: the snapshot the pinned bytes
+        were rendered from (4th pin element), else the durable origin the caller supplies. A legacy
+        3-element pin has no snapshot; the caller's origin is the same-session human provenance."""
+        if _eph_pin is not None and len(_eph_pin) > 3 and isinstance(_eph_pin[3], dict):
+            with suppress(Exception):
+                return SessionSource.from_dict(_eph_pin[3])
+        return authoritative_source
+
     def _pinned_channel_inputs(
-        self, session_key: Optional[str], channel_prompt: Optional[str], source: SessionSource, *, internal: bool,
+        self, session_key: Optional[str], channel_prompt: Optional[str], source: SessionSource, *, preserve_pin: bool,
     ):
         """``(channel_prompt, source)`` for this turn's agent run.
 
         The ephemeral system prompt also appends ``channel_prompt`` and the ``channel_overrides``
-        prompt (looked up by chat/thread/``parent_chat_id``). Events with no channel inputs of
-        their own (internal events, and synthetic goal/heartbeat/resume turns — see
-        ``MessageEvent.inherit_channel_pin``) carry ``channel_prompt=None`` and a source without
-        ``parent_chat_id``, so they dropped both and toggled the system prompt like the context pin
-        did. Human turns record their inputs; turns that ask to reuse the pin get them back
+        prompt (looked up by chat/thread/``parent_chat_id``). Preserving events (internal wakes, or
+        non-internal synthetic goal/heartbeat/steer turns) carry ``channel_prompt=None`` and a source
+        without ``parent_chat_id``, so they dropped both and toggled the system prompt like the
+        context pin did. Human turns record their inputs; preserving turns reuse them
         (``_rehydrate_prompt_pins`` restores both after a restart)."""
         if not session_key:
             return channel_prompt, source
-        if not internal:
+        if not preserve_pin:
             self._session_state(session_key).conversation.channel_pin = (channel_prompt, source.parent_chat_id)
             return channel_prompt, source
         state = self._peek_session_state(session_key)

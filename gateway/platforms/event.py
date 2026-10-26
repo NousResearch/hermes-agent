@@ -101,11 +101,16 @@ class MessageEvent:
     # knows the message was meant for someone else); None means unknown and keeps the visible
     # fallback, like True.
     reply_expected: Optional[bool] = None
-    # Set for synthetic turns that carry no channel inputs of their own (goal continuation,
-    # heartbeat due-prompts, /goal resume) so the turn reuses the session's pinned channel
-    # prompt/parent instead of overwriting it with this event's own None (#126109). Independent
-    # of ``internal``: these events still go through user authorization. Appended after
-    # ``reply_expected`` for positional compat (see the field-order rule above).
+    # Non-internal synthetic turns (goal/heartbeat/loop/steer continuations) are not human turns
+    # but carry no fresh prompt identity of their own. This marks them to reuse the session's
+    # pinned prompt bytes instead of overwriting the channel/context pins. This is prompt identity
+    # only: the ``internal`` field above still alone gates authorization and the emergency stop.
+    preserve_prompt_pins: bool = False
+    # Main's marker for the same synthetic-turn class, landed via #139865: goal/heartbeat/loop
+    # resume events that carry no channel inputs of their own reuse the session's pinned channel
+    # prompt/parent instead of overwriting it with None (#126109). Kept alongside the predicate
+    # above (event_preserves_prompt_pins accepts either); appended after ``preserve_prompt_pins``
+    # for positional compat (see the field-order rule above).
     inherit_channel_pin: bool = False
     # Identity of one edit of a message (Telegram: its ``update_id``). An edit re-sends its message's own
     # ``message_id`` with new text, so native admission keys it apart from the original send.
@@ -114,6 +119,10 @@ class MessageEvent:
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
+    # First queue admission, retained across debounce/FIFO transfer and front-restaging.
+    _pending_admission_order: Optional[tuple[int, int]] = field(default=None, init=False, repr=False, compare=False)
+    # An accepted late steer runs before the queued head, including after restart.
+    _pending_execution_order: Optional[tuple[int, int, int]] = field(default=None, init=False, repr=False, compare=False)
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
 
@@ -152,3 +161,23 @@ class MessageEvent:
         args = parts[1] if len(parts) > 1 else ""
         # iOS auto-corrects -- to — (em dash) and - to – (en dash)
         return args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")
+
+
+def event_preserves_prompt_pins(event: Any) -> bool:
+    """True when *event* must REUSE the session's pinned prompt identity instead of recording its
+    own channel/context pins.
+
+    One predicate for both prompt-identity owners (the session-context and channel pin helpers) and
+    every lifecycle gate, so no boundary can flip one site against another. ``internal`` events are
+    self-injected turns that never carry a fresh identity; a non-internal synthetic turn
+    (goal/heartbeat/loop/steer continuation) opts in with ``preserve_prompt_pins`` (this branch) or
+    ``inherit_channel_pin`` (the same marker that main landed via #139865). ``getattr`` keeps
+    ``None``, legacy events, and test doubles non-preserving.
+    """
+    if event is None:
+        return False
+    return bool(
+        getattr(event, "internal", False)
+        or getattr(event, "preserve_prompt_pins", False)
+        or getattr(event, "inherit_channel_pin", False)
+    )

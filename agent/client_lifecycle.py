@@ -40,11 +40,11 @@ def _qwen_portal_headers() -> dict:
 # Builders resolve their module lazily so run_agent keeps its import-time cost and avoids cycles.
 _ROUTE_DEFAULT_HEADERS = (
     ("openrouter.ai", lambda self, url: _lazy_attr("agent.auxiliary_client", "build_or_headers")()),
-    ("ai-gateway.vercel.sh", lambda self, url: dict(_lazy_attr("agent.auxiliary_client", "_AI_GATEWAY_HEADERS"))),
+    ("ai-gateway.vercel.sh", lambda self, url: _lazy_attr("agent.auxiliary_client", "_ai_gateway_headers")()),
     ("integrate.api.nvidia.com", lambda self, url: _lazy_attr("agent.auxiliary_client", "build_nvidia_nim_headers")(url)),
     ("api.routermint.com", lambda self, url: _routermint_headers()),
     ("githubcopilot.com", lambda self, url: _lazy_attr("hermes_cli.models", "copilot_default_headers")()),
-    ("api.kimi.com", lambda self, url: dict(_lazy_attr("agent.auxiliary_client", "_AI_GATEWAY_HEADERS"))),
+    ("api.kimi.com", lambda self, url: _lazy_attr("agent.auxiliary_client", "_ai_gateway_headers")()),
     ("portal.qwen.ai", lambda self, url: _qwen_portal_headers()),
     ("chatgpt.com", lambda self, url: _lazy_attr("agent.codex_headers", "codex_cloudflare_headers")(
         self._client_kwargs.get("api_key", ""), base_url=url)),

@@ -107,6 +107,9 @@ class ComputeHost:
         with contextlib.suppress(Exception):
             from tools.environments.base import kill_live_foreground_processes
             kill_live_foreground_processes()
+        # ...and the opt-in shared-metrics rows that atexit hook would have written (bounded).
+        from hermes_cli.observability.shared_metrics_process import flush_before_hard_exit
+        flush_before_hard_exit()
 
     def shutdown(self, *, reason: str = "shutdown", wait: float = 10.0) -> None:
         """Drain in-flight turns, then finalize every session.

@@ -92,9 +92,29 @@ class GatewayStartupMixin:
     # A configured platform failed non-retryably this boot and is parked: every "we are serving"
     # status stamp (startup, drain release, scale-to-zero wake) must say ``degraded``, not ``running``.
     _startup_parked_platforms: bool = False
+    # A startup platform failure was a live foreign token/profile holder (exit 78 when nothing else runs).
+    _startup_ownership_conflict: bool = False
 
     def _serving_state(self) -> str:
         return "degraded" if self._startup_parked_platforms else "running"
+
+    def _park_last_fatal_platform(self, adapter) -> bool:
+        """Mid-run twin of the all-fatal startup case: the last platform failed non-retryably, so park it
+        and stay up degraded for local clients and cron. Return False when the gateway must stop instead
+        (retryable, or another gateway owns the token/profile)."""
+        if adapter.fatal_error_retryable or is_global_startup_conflict(adapter.fatal_error_code):
+            return False
+        self._startup_parked_platforms = True
+        # An active drain or shutdown owns the state; the drain release stamps _serving_state() itself.
+        if not (self._external_drain_active or self._draining or not self._running):
+            self._update_runtime_status(self._serving_state())
+        logger.error(
+            "%s is parked after a non-retryable error (fix it, then `hermes gateway restart`). The gateway "
+            "is DEGRADED — it serves local clients and cron with no messaging platform. %s: %s",
+            adapter.platform.value, adapter.fatal_error_code or "unknown",
+            adapter.fatal_error_message or "unknown error",
+        )
+        return True
 
     async def _run_startup_resume_event(
         self, adapter: BasePlatformAdapter, event: MessageEvent, session_key: str,
@@ -1363,7 +1383,10 @@ class GatewayStartupMixin:
                 continue
             # A live foreign token holder is an ownership conflict, not a blip: retryable only for
             # MID-RUN reconnects; at startup route it non-retryable so the gateway exits 78, not deaf.
-            _retryable = adapter.fatal_error_retryable and not is_global_startup_conflict(adapter.fatal_error_code)
+            _conflict = is_global_startup_conflict(adapter.fatal_error_code)
+            if _conflict:
+                self._startup_ownership_conflict = True
+            _retryable = adapter.fatal_error_retryable and not _conflict
             self._update_platform_runtime_status(
                 platform.value, platform_state="retrying" if _retryable else "fatal",
                 error_code=adapter.fatal_error_code, error_message=adapter.fatal_error_message,
@@ -1448,10 +1471,22 @@ class GatewayStartupMixin:
                 )
             return False
         if startup_nonretryable_errors and not startup_retryable_errors:
-            reason = "; ".join(startup_nonretryable_errors)
-            logger.error("Gateway hit a non-retryable startup conflict: %s", reason)
-            self._startup_fail_fatal_config(reason)
-            return True
+            if self._startup_ownership_conflict:
+                # Another gateway owns a token/profile: staying up would be a second, deaf owner.
+                reason = "; ".join(startup_nonretryable_errors)
+                logger.error("Gateway hit a non-retryable startup conflict: %s", reason)
+                self._startup_fail_fatal_config(reason)
+                return True
+            # Every platform is parked, but local clients and cron still need this gateway: exiting 78
+            # would take them all down over one unusable bot. Stay up degraded, like the mixed case.
+            self._startup_parked_platforms = True
+            logger.error(
+                "%d configured platform(s) failed to start and are parked (fix the reported error, then "
+                "`hermes gateway restart`): %s. The gateway is DEGRADED — it serves local clients and "
+                "cron with no messaging platform.",
+                len(startup_nonretryable_errors), "; ".join(startup_nonretryable_errors),
+            )
+            return False
         if startup_nonretryable_errors:
             # Mixed (some fatal, some transient): exiting 78 would take the gateway PERMANENTLY down
             # over a blip. Log the fatal side loudly and fall through to the degraded/retry path.
@@ -1661,6 +1696,7 @@ class GatewayStartupMixin:
         startup_nonretryable_errors: list[str] = []
         startup_retryable_errors: list[str] = []
         self._startup_parked_platforms = False  # fresh boot: no platform has failed yet
+        self._startup_ownership_conflict = False
         (
             _aborted, enabled_platform_count, _multiplex_skipped_platforms, _pending_connects
         ) = await self._start_prefilter_platforms()

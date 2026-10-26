@@ -34,9 +34,11 @@ from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH, fetch_model_metadata, is_local_endpoint
 )
 from agent.agent_init_ollama import _clamp_compressor_to_ollama_num_ctx, _configure_ollama_num_ctx
+from agent.agent_init_compression_notice import _emit_compression_summary
 from agent.primary_runtime_snapshot import _snapshot_primary_runtime
 from agent.process_bootstrap import _install_safe_stdio
 from agent.subdirectory_hints import SubdirectoryHintTracker
+from agent.agent_init_memory_provider import resolve_memory_provider
 from agent.think_scrubber import StreamingThinkScrubber
 from agent.tool_guardrails import (
     ToolCallGuardrailConfig, ToolCallGuardrailController
@@ -50,41 +52,6 @@ from utils import base_url_host_matches, is_truthy_value
 
 # Same logger name as run_agent so caplog/patches on "run_agent" see our records.
 logger = logging.getLogger("run_agent")
-
-
-# Deduped: the gateway builds a fresh AIAgent per message, so it would warn every turn.
-_warned_unavailable_providers: set[tuple[str, str]] = set()
-
-
-def _unavailable_warning_key(name: str) -> tuple[str, str]:
-    """Once per profile home and provider: one multiplexed gateway/Desktop backend serves several
-    profiles, and each one running without its memory must be told."""
-    from hermes_constants import get_hermes_home, hermes_home_key
-    return hermes_home_key(get_hermes_home()), name
-
-
-def _warn_memory_provider_unavailable(name: str, reason: str = "", say=None) -> None:
-    """Warn once per home and provider that a configured memory provider is unavailable.
-
-    ``is_available()`` is a side-effect-free hot-path check and can't log itself; without this
-    the provider is silently dropped. ``reason`` (the provider's ``unavailable_reason()`` hint)
-    can only reach the user here, so it is appended when present. *say* is the agent's
-    user-facing sink: a log line alone leaves the user running without memory unaware.
-    """
-    key = _unavailable_warning_key(name)
-    if key in _warned_unavailable_providers:
-        return
-    _warned_unavailable_providers.add(key)
-    message = (
-        f"⚠ Memory provider {name!r} is selected but reports unavailable — external memory "
-        "is disabled for this session (built-in memory still works). Check the "
-        "provider's credentials/config with 'hermes memory status'. Note: "
-        "systemd/gateway services do not inherit ~/.hermes/.env automatically; set "
-        f"any required variables in the service environment.{f' {reason}' if reason else ''}"
-    )
-    logger.warning(message)
-    if say is not None:
-        say(message)
 
 
 def _provider_default_routes(provider: str) -> set[str]:
@@ -172,31 +139,6 @@ def _custom_provider_runtime_ids(value: Any) -> set[str]:
     return {normalized, f"custom:{normalized}"}
 
 
-def _build_codex_gpt5_autoraise_notice(
-    autoraise: dict[str, Any], context_length: Optional[int] = None
-) -> str:
-    """One-time notice when Codex gpt-5.x raises compaction (``autoraise``: model/from/to).
-
-    ``context_length`` is the live-resolved window (Codex's catalog shifts server-side) so the
-    banner reports what this session got. Printed for CLI and replayed via status_callback for
-    gateway users, so it must be self-contained and include the exact opt-back-out command.
-    """
-    model = str(autoraise.get("model") or "gpt-5.4/5.5").strip().lower().rsplit("/", 1)[-1]
-    if isinstance(context_length, int) and context_length > 0:
-        cap = f"{round(context_length / 1000)}K"
-    else:
-        # Static fallback: codex-spark is natively 128K; gpt-5.4/5.5/5.6 are capped at 272K.
-        cap = "128K" if model.startswith("gpt-5.3-codex-spark") else "272K"
-    from_pct = round(autoraise["from"] * 100)
-    to_pct = round(autoraise["to"] * 100)
-    return (
-        f"ℹ Codex {model} caps context at {cap}, so auto-compaction was raised "
-        f"to {to_pct}% (from {from_pct}%) to use more of the window before "
-        f"summarizing.\n"
-        f"  Opt back out: hermes config set compression.codex_gpt55_autoraise false"
-    )
-
-
 def _resolve_compression_threshold(
     global_threshold: float, model_cthresh: Optional[float], *, model: Optional[str] = None,
     is_codex_autoraise: bool,
@@ -214,42 +156,6 @@ def _resolve_compression_threshold(
             return global_threshold, None
         return model_cthresh, {"model": model, "from": global_threshold, "to": model_cthresh}
     return model_cthresh, None
-
-
-def _codex_gpt55_autoraise_notice_marker():
-    """Per-profile marker path (``$HERMES_HOME`` is profile-scoped; not a config key)."""
-    return get_hermes_home() / ".codex_gpt55_autoraise_notice"
-
-
-def _codex_gpt55_autoraise_notice_state(autoraise: dict[str, Any]) -> str:
-    """Notice identity keyed on what it displays (model + from→to percentages).
-
-    An unchanged threshold stays silent across restarts; a changed global threshold or a
-    different autoraised Codex model re-notifies once.
-    """
-    model = str(autoraise.get("model") or "").strip().lower().rsplit("/", 1)[-1]
-    from_pct = round(float(autoraise["from"]) * 100)
-    to_pct = round(float(autoraise["to"]) * 100)
-    return f"{model}:{from_pct}:{to_pct}"
-
-
-def _codex_gpt55_autoraise_notice_seen(autoraise: dict[str, Any]) -> bool:
-    """True if this exact notice was already shown for this profile (unreadable = unseen)."""
-    try:
-        current = _codex_gpt55_autoraise_notice_state(autoraise)
-        return _codex_gpt55_autoraise_notice_marker().read_text(
-            encoding="utf-8"
-        ).strip() == current
-    except (OSError, KeyError, TypeError, ValueError):
-        return False
-
-
-def _record_codex_gpt55_autoraise_notice(autoraise: dict[str, Any]) -> None:
-    """Persist that the notice was shown. Best-effort: a failure only re-shows it later."""
-    with suppress(OSError, KeyError, TypeError, ValueError):
-        marker = _codex_gpt55_autoraise_notice_marker()
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text(_codex_gpt55_autoraise_notice_state(autoraise), encoding="utf-8")
 
 
 def _normalized_custom_base_url(value: Any) -> str:
@@ -683,7 +589,7 @@ def _init_prompt_cache_config(agent):
     # subscription users where cache writes bill against "extra usage" or for third-party proxies that
     # inject their own cache_control markers (#13477).
     agent._cache_ttl = "5m"
-    with suppress(Exception):
+    try:
         from hermes_cli.config import load_config_readonly as _load_pc_cfg
         from agent.agent_runtime_helpers import cache_ttl_means_disabled
         from agent.prompt_caching import AUTO_CACHE_TTL, auto_cache_ttl_for_source
@@ -701,6 +607,15 @@ def _init_prompt_cache_config(agent):
             agent._use_native_cache_layout = False
             agent._cache_ttl = None
             agent._cache_disabled = True
+    except Exception as exc:  # health: allow BLE001 -- init must survive any config failure; the class is logged
+        # Config values and traceback frames may contain credentials.
+        logger.warning(
+            "Agent configuration for prompt_caching.cache_ttl could not be loaded (%s); "
+            "using default prompt caching settings. Check the active Hermes Python "
+            "environment and dependencies; run 'hermes config check' after "
+            "configuration imports work again.",
+            type(exc).__name__,
+        )
 
 
 def _init_turn_state(agent, run_budget_seconds):
@@ -1348,23 +1263,10 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
             _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
             if not is_core_memory_provider(_mem_provider_name):
                 from agent.memory_manager import MemoryManager as _MemoryManager
-                from plugins.memory import load_memory_provider as _load_mem
                 agent._memory_manager = _MemoryManager()
-                _mp = _load_mem(_mem_provider_name)
-                if _mp is None:
-                    # The provider left core for the catalog (or was never installed): fetch it once.
-                    from hermes_cli.memory_provider_migration import recover_at_startup
-                    if recover_at_startup(_mem_provider_name, say=agent._emit_startup_warning):
-                        _mp = _load_mem(_mem_provider_name)
-                if _mp and _mp.is_available():
+                _mp = resolve_memory_provider(_mem_provider_name, say=agent._emit_startup_warning)
+                if _mp is not None:
                     agent._memory_manager.add_provider(_mp)
-                elif _mp is not None and _unavailable_warning_key(_mem_provider_name) not in _warned_unavailable_providers:
-                    # unavailable_reason() reads config/probes importlib — skip it once warned.
-                    _unavailable_reason = ""
-                    with suppress(Exception):
-                        _unavailable_reason = _mp.unavailable_reason()
-                    _warn_memory_provider_unavailable(
-                        _mem_provider_name, _unavailable_reason, say=agent._emit_startup_warning)
                 if agent._memory_manager.providers and agent._memory_manager.initialize_for_agent(
                         say=agent._emit_startup_warning, **_memory_provider_init_kwargs(agent, platform)):
                     _ra().logger.info("Memory provider '%s' activated", _mem_provider_name)
@@ -1592,6 +1494,7 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
         codex_responses_native=responses_native,
         codex_responses_compact_threshold=compact_threshold,
         idle_compact_after_seconds=idle_compact_after_seconds,
+        prepare_ahead=is_truthy_value(cfg.get("prepare_ahead"), default=False),
     )
 
 
@@ -2032,6 +1935,9 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
     ):
         if hasattr(_cc, _attr):
             setattr(_cc, _attr, _value)
+    if cs.prepare_ahead and isinstance(_cc, ContextCompressor):
+        from agent.prepared_compaction import PreparedCompaction
+        _cc.prepared_compaction = PreparedCompaction()
     agent.compression_checkpoint_required = cs.checkpoint_required
     from agent.conversation_compression_checkpoint import _warn_checkpoint_required_without_capable_provider
     _warn_checkpoint_required_without_capable_provider(agent)
@@ -2157,50 +2063,6 @@ def _inject_context_engine_tools(agent):
             )
         except Exception as _ce_err:
             _ra().logger.debug("Context engine on_session_start: %s", _ce_err)
-
-
-def _emit_compression_summary(agent, cs):
-    # Codex autoraise notice: once per profile/config state (persisted marker; the gateway
-    # rebuilds the agent per message). The display gate hides the banner, not the autoraise.
-    _autoraise = agent._compression_threshold_autoraised or {}
-    _autoraise_notice = None
-    if (
-        # A change in the raised threshold (or the autoraised model) updates the marker state and
-        # re-notifies once. The config display gate (compression.codex_gpt55_autoraise_notice) still
-        # suppresses the banner entirely without disabling the threshold autoraise. See #54432.
-        bool(_autoraise)
-        and cs.enabled
-        and cs.autoraise_notice_enabled
-        and not _codex_gpt55_autoraise_notice_seen(_autoraise)
-    ):
-        _autoraise_notice = _build_codex_gpt5_autoraise_notice(
-            _autoraise, context_length=getattr(agent.context_compressor, "context_length", None)
-        )
-
-    if not agent.quiet_mode:
-        _cc = agent.context_compressor
-        if cs.enabled:
-            # The active engine's own threshold — a plugin's differs from cs.threshold.
-            _pct = getattr(_cc, "threshold_percent", cs.threshold)
-            _cap = getattr(_cc, "threshold_tokens_cap", None)
-            # Name the cap only when it is what set the trigger; on small windows the ratio already sits below it.
-            _eff_cap = getattr(_cc, "_effective_threshold_cap", lambda _ctx: None)(_cc.context_length)
-            _cap_binds = _eff_cap is not None and _cc.threshold_tokens == _eff_cap
-            _cap_note = f" (capped at {_cap:,} tokens)" if _cap_binds else ""
-            print(f"📊 Context limit: {_cc.context_length:,} tokens (compress at {int(_pct*100)}% = {_cc.threshold_tokens:,}{_cap_note})")
-        else:
-            print(f"📊 Context limit: {_cc.context_length:,} tokens (auto-compression disabled)")
-        # Gateway users get the same text via _compression_warning on turn 1.
-        if _autoraise_notice:
-            agent._safe_print(_autoraise_notice, diagnostic=True)
-
-    # status_callback isn't wired yet: stash for replay on the first turn; mark shown so
-    # repeated inits stay silent.
-    agent._compression_warning = _autoraise_notice
-    if _autoraise_notice:
-        _record_codex_gpt55_autoraise_notice(_autoraise)
-    # Feasibility check deferred to the first turn near threshold (eager costs ~400ms cold).
-    agent._compression_feasibility_checked = False
 
 
 def _init_usage_state(agent):
@@ -2337,6 +2199,9 @@ def init_agent(
 
     _set_defaults(agent, _CONTROL_STATE)
 
+    # Early config readers must reach the file handlers on first initialization.
+    _setup_logging(agent)
+
     # reasoning_content echo opt-in; switch_model / fallback / restore keep it in sync.
     agent._reasoning_echo_flag = agent._read_reasoning_echo_from_config()
     agent.request_overrides = dict(request_overrides or {})
@@ -2351,7 +2216,6 @@ def init_agent(
 
     _init_prompt_cache_config(agent)
     _init_turn_state(agent, run_budget_seconds)
-    _setup_logging(agent)
     _set_defaults(agent, _STREAM_STATE)
     _build_client(agent, api_key, base_url, fallback_model)
     _init_fallback_chain(agent, fallback_model)
@@ -2365,7 +2229,16 @@ def init_agent(
     try:
         from hermes_cli.config import load_config_readonly as _load_agent_config
         _agent_cfg = _load_agent_config()
-    except Exception:
+    except Exception as exc:  # health: allow BLE001 -- init must survive any config failure; the class is logged
+        # Config exceptions may contain secrets; omit their message and traceback
+        # even when a caller installs a non-redacting log handler.
+        logger.warning(
+            "Agent configuration could not be loaded (%s); using defaults for "
+            "memory, skills, compression and related settings. Check the active "
+            "Hermes Python environment and dependencies; run 'hermes config check' "
+            "after configuration imports work again.",
+            type(exc).__name__,
+        )
         _agent_cfg = {}
 
     _apply_display_config(agent, _agent_cfg, platform)

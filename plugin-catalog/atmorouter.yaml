@@ -1,0 +1,16 @@
+name: atmorouter
+title: AtmoRouter
+repo: https://github.com/bayuh85/hermes-atmorouter
+sha: fd1002c51cc7069696a5db5b391faed77279f910
+description: "AtmoRouter — OpenAI-compatible gateway; one key for Claude, GPT, Gemini, GLM, Kimi, Qwen, DeepSeek, MiniMax and Grok models, with the /model picker fed by the live GET /v1/models catalog. Disclosure — sends your prompts, conversation history, tool definitions, tool results and ATMOROUTER_API_KEY to atmorouter.dev, which forwards each request to the upstream infrastructure serving the chosen model; that infrastructure's location and retention vary per model and zero retention is not promised (AtmoRouter states it keeps metadata, not prompt or response content, in its usage records and does not train on API content; https://atmorouter.dev/privacy). Usage is billed per token from a prepaid AtmoRouter balance (USDC on Solana or QRIS); prices vary by capacity tier and a request can route to any listed tier, including tiers above official pricing, unless you set maximum prices under Budgets; failed upstream requests are not billed and the plugin itself makes no payments."
+maintainer: bayuh85
+tier: community
+category: models
+docs_url: https://github.com/bayuh85/hermes-atmorouter#readme
+version: "0.1.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - ATMOROUTER_API_KEY

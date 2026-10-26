@@ -81,16 +81,20 @@ def _extract(plugin_dir: Path, module_name: str) -> dict[str, Any]:
     from hermes_cli.plugin_isolation import HOST_PROCESS_ENV, host_launcher
     from hermes_constants import get_hermes_home
     repo_root = str(Path(__file__).resolve().parents[1])
+    # Absolute: the child starts in the home, so a relative HERMES_HOME or plugin dir would resolve twice.
+    home = str(get_hermes_home().resolve())
     env = {key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL", "TZ", "SYSTEMROOT") if key in os.environ}
     # Windows resolves Path.home() from USERPROFILE, never HOME: without it the child cannot start.
-    env.update(HOME=str(Path.home()), USERPROFILE=str(Path.home()), HERMES_HOME=str(get_hermes_home()),
+    env.update(HOME=str(Path.home()), USERPROFILE=str(Path.home()), HERMES_HOME=home,
                PYTHONPATH=repo_root,
                **{HOST_PROCESS_ENV: "1"})
-    argv = [*host_launcher(), sys.executable, "-m", "hermes_cli.plugin_host_child", "--extract-profiles",
-            str(plugin_dir), module_name]
+    # -P and a trusted cwd: ``-m`` otherwise puts the launch directory ahead of PYTHONPATH, so a
+    # ``hermes_cli/`` package in the directory Hermes was started from would run instead of ours.
+    argv = [*host_launcher(), sys.executable, "-P", "-m", "hermes_cli.plugin_host_child", "--extract-profiles",
+            str(plugin_dir.resolve()), module_name]
     try:
         done = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, env=env,
-                              timeout=_EXTRACT_TIMEOUT_SECS, check=False)
+                              cwd=home, timeout=_EXTRACT_TIMEOUT_SECS, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {"error": f"profile extraction failed: {exc}"}
     try:

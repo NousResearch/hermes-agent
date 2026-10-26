@@ -224,9 +224,11 @@ class GatewayAuthorizationMixin:
         profile_adapters = self._profile_adapters_map()
         if profile_name in profile_adapters:
             adapters = profile_adapters[profile_name]
-            if adapters or not self._is_shared_bot_satellite(profile_name):
+            from cron.scheduler_preflight import has_credential_platform
+            if has_credential_platform(adapters) or not self._is_shared_bot_satellite(profile_name):
                 return adapters
-            return self._primary_adapters()
+            # Its own LOCAL adapter stays layered over the borrowed primary bots.
+            return {**self._primary_adapters(), **adapters}
         # Identity captured at construction, not the per-turn HERMES_HOME-derived name.
         primary_profile = getattr(self, "_primary_profile_name", None)
         if not primary_profile:
@@ -244,8 +246,8 @@ class GatewayAuthorizationMixin:
         config = getattr(self, "config", None)
         if not getattr(config, "multiplex_profiles", False):
             return False
-        # A bot that failed to connect is queued for reconnect: that profile owns a credential.
-        if (getattr(self, "_profile_failed_platforms", None) or {}).get(profile_name):
+        # A bot of its own that is down (failed to connect, or dropped) still makes it a credential boundary.
+        if (getattr(self, "_profile_bot_platforms", None) or {}).get(profile_name):
             return False
         routes = getattr(config, "profile_routes", None) or []
         if not any(r.enabled and r.profile == profile_name and r.bot_profile is None for r in routes):

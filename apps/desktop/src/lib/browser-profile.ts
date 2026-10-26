@@ -60,7 +60,8 @@ export function createBrowserProfileBridge({
     const selected = profile?.trim() || null
     const url = new URL(window.location.href)
     setUrlProfile(url, selected)
-    window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`)
+    // Keep react-router's entry state (idx/key/usr): only the URL changes.
+    window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
 
     return { profile: selected }
   }

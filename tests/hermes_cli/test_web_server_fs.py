@@ -685,11 +685,74 @@ def test_a_browser_paste_reads_back_while_the_ssh_machine_is_unreachable(client,
         assert (response.status_code, response.json()) == (503, {"detail": "SSH workspace is unavailable"})
 
 
+def test_a_down_ssh_host_is_unavailable_on_workspace_file_routes(client, monkeypatch, caplog):
+    """The profile's first file request opens its SSH adapter, which dials the host. While the host
+    refuses, list, read-text, write-text, git-root and the default folder answer 503, the error the
+    image route and download already give, and the log names the refusal. Once the host answers,
+    the next request dials again, and a folder that is not there or a file the SSH user cannot read
+    keeps its own answer instead of that 503."""
+    from tools.environments.base import EnvironmentConnectionError
+
+    class SshHost:
+        """The SSH machine: refuses the dial while ``down``; once up, it has no /srv/missing and
+        its SSH user cannot read /srv/secret."""
+
+        down = True
+        cwd, timeout, _remote_home = "/srv/repos", 30, "/home/dev"
+
+        def __init__(self, **_options):
+            if SshHost.down:
+                raise EnvironmentConnectionError(
+                    "SSH connection failed: ssh: connect to host 127.0.0.1 port 1: Connection refused")
+
+        def execute(self, command, **_options):
+            code, rc = ("EACCES", 46) if "/srv/secret" in command else ("ENOENT", 44)
+            return {"returncode": rc, "output": f"__HERMES_FS_ERROR__:{code}\n"}
+
+        def cleanup(self):
+            pass
+
+    monkeypatch.setattr(ssh_workspace_fs, "SSHEnvironment", SshHost)
+    monkeypatch.setattr(ssh_workspace_fs, "_BACKENDS", {})
+    monkeypatch.setattr(
+        file_routes, "load_config",
+        lambda: {"terminal": {"backend": "ssh", "ssh_host": "127.0.0.1", "ssh_user": "dev", "ssh_port": 1}},
+    )
+    monkeypatch.setattr(file_routes, "load_env", dict)
+
+    unavailable = (503, {"detail": "SSH workspace is unavailable"})
+    with caplog.at_level("WARNING", logger=file_routes.__name__):
+        for response in (
+            client.get("/api/fs/list", params={"path": "/srv/repos"}),
+            client.get("/api/fs/read-text", params={"path": "/srv/repos/README.md"}),
+            client.post("/api/fs/write-text", json={"path": "/srv/repos/README.md", "content": "x"}),
+            client.get("/api/fs/git-root", params={"path": "/srv/repos"}),
+            client.get("/api/fs/default-cwd"),
+        ):
+            assert (response.status_code, response.json()) == unavailable, response.request.url
+    assert "Connection refused" in caplog.text
+
+    SshHost.down = False
+    missing = client.get("/api/fs/list", params={"path": "/srv/missing"})
+    denied = client.get("/api/fs/list", params={"path": "/srv/secret"})
+    missing_text = client.get("/api/fs/read-text", params={"path": "/srv/missing/a.txt"})
+    denied_text = client.get("/api/fs/read-text", params={"path": "/srv/secret"})
+    assert (missing.status_code, missing.json()) == (200, {"entries": [], "error": "ENOENT"})
+    assert (denied.status_code, denied.json()) == (200, {"entries": [], "error": "EACCES"})
+    assert (missing_text.status_code, missing_text.json()) == (404, {"detail": "File not found"})
+    assert (denied_text.status_code, denied_text.json()) == (403, {"detail": "File is not readable"})
+
+
 class _NotOnTheSshMachine:
     """An SSH workspace that has none of the files a test asks it for; it records each ask."""
 
     def __init__(self):
         self.asked = []
+        self.written = []
+
+    def write_text(self, path, content, *, max_bytes):
+        self.written.append((path, content))
+        return path, len(content.encode("utf-8"))
 
     def read_bytes(self, path, *, max_bytes, read_limit=None):
         self.asked.append(path)
@@ -758,6 +821,104 @@ def test_a_picked_image_reads_back_from_the_host_for_an_ssh_profile(client, monk
     assert workspace.asked == [path for path in not_host_owned for _route in range(2)]
 
 
+def test_a_staged_text_preview_reads_back_from_the_host_for_an_ssh_profile(client, monkeypatch, tmp_path):
+    """A long paste or a picked text file is staged in the profile's uploads folder on this host,
+    even when its workspace is an SSH machine. Its chip previews it through /api/fs/read-text, so
+    that one host-owned file is read here, as /api/fs/read-data-url reads a staged image. A file in
+    the uploads folder the upload route did not name is still the SSH machine's to answer."""
+    _profile, workspace = _ssh_profiles(tmp_path, monkeypatch)
+    monkeypatch.setattr(web_server.app.state, "ui_surface", "webapp", raising=False)
+    remote_dev = {"profile": "remote-dev"}
+
+    staged = client.post("/api/chat/file-upload", params=remote_dev,
+                         files={"file": ("pasted.txt", b"pasted words", "text/plain")})
+    assert staged.status_code == 200, staged.text
+    staged_path = Path(staged.json()["path"])
+    unnamed = staged_path.parent / "pasted.txt"
+    unnamed.write_bytes(b"not staged")
+
+    preview = client.get("/api/fs/read-text", params={"path": str(staged_path), **remote_dev})
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["text"] == "pasted words"
+    assert workspace.asked == []
+
+    not_host_owned = client.get("/api/fs/read-text", params={"path": str(unnamed), **remote_dev})
+    assert not_host_owned.status_code == 404, not_host_owned.text
+    assert workspace.asked == [str(unnamed)]
+
+
+def test_a_staged_text_file_saves_where_its_preview_reads_it_for_an_ssh_profile(client, monkeypatch, tmp_path):
+    """A staged text preview on this host can be edited, and the editor saves through
+    /api/fs/write-text before it reads the file again. The save goes to the same host file the
+    preview read, so the reread shows the edit; any other path is still saved on the SSH machine."""
+    _profile, workspace = _ssh_profiles(tmp_path, monkeypatch)
+    monkeypatch.setattr(web_server.app.state, "ui_surface", "webapp", raising=False)
+    remote_dev = {"profile": "remote-dev"}
+
+    staged = client.post("/api/chat/file-upload", params=remote_dev,
+                         files={"file": ("pasted.txt", b"pasted words", "text/plain")})
+    assert staged.status_code == 200, staged.text
+    staged_path = Path(staged.json()["path"])
+
+    def preview():
+        response = client.get("/api/fs/read-text", params={"path": str(staged_path), **remote_dev})
+        assert response.status_code == 200, response.text
+        return response.json()["text"]
+
+    assert preview() == "pasted words"
+    saved = client.post("/api/fs/write-text", params=remote_dev,
+                        json={"path": str(staged_path), "content": "edited words"})
+    assert saved.status_code == 200, saved.text
+    assert preview() == "edited words"
+    assert staged_path.read_text(encoding="utf-8") == "edited words"
+    assert (workspace.asked, workspace.written) == ([], [])
+
+    remote = client.post("/api/fs/write-text", params=remote_dev,
+                         json={"path": "/srv/repos/notes.txt", "content": "remote words"})
+    assert remote.status_code == 200, remote.text
+    assert workspace.written == [("/srv/repos/notes.txt", "remote words")]
+
+
+def test_a_staged_text_preview_reads_back_under_a_locked_files_root(client, monkeypatch, tmp_path):
+    """A locked files root outside the profile home still lets a staged paste or pick preview, as
+    /api/fs/read-data-url already does, for an SSH profile and a host-local one. Every other host
+    file outside the root stays refused: one in the profile home, and one in the uploads folder the
+    upload route did not name."""
+    profile, workspace = _ssh_profiles(tmp_path, monkeypatch)
+    monkeypatch.setattr(web_server.app.state, "ui_surface", "webapp", raising=False)
+    remote_dev = {"profile": "remote-dev"}
+
+    def stage(query):
+        staged = client.post("/api/chat/file-upload", params=query,
+                             files={"file": ("pasted.txt", b"pasted words", "text/plain")})
+        assert staged.status_code == 200, staged.text
+        return Path(staged.json()["path"])
+
+    staged, default_staged = stage(remote_dev), stage({})
+    unrelated = profile / "notes.txt"
+    unnamed = staged.parent / "pasted.txt"
+    for path in (unrelated, unnamed):
+        path.write_bytes(b"not staged")
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    monkeypatch.setenv("HERMES_DASHBOARD_FILES_ROOT", str(managed))
+
+    def read_text(path, query):
+        return client.get("/api/fs/read-text", params={"path": str(path), **query})
+
+    over_ssh = read_text(staged, remote_dev)
+    assert (over_ssh.status_code, over_ssh.json().get("text")) == (200, "pasted words"), over_ssh.text
+
+    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: None)
+    for query, path in ((remote_dev, staged), ({}, default_staged)):
+        response = read_text(path, query)
+        assert (response.status_code, response.json().get("text")) == (200, "pasted words"), response.text
+    for path in (unrelated, unnamed):
+        response = read_text(path, remote_dev)
+        assert response.status_code == 403, (path, response.text)
+    assert workspace.asked == []
+
+
 @pytest.mark.platforms("posix")
 def test_a_link_staged_in_the_uploads_folder_is_not_read_from_the_host(client, monkeypatch, tmp_path):
     """A staged name that links to another host file resolves outside the uploads folder, so an
@@ -807,7 +968,7 @@ def test_fs_reads_translate_after_binding_profile_terminal_scope(client, tmp_pat
 
     from tools.terminal_scope import get_terminal_scope
 
-    def translate(path, session_key="", *, quiet=False):
+    def translate(path, session_key="", workspace_key="", *, quiet=False, workspace_cwd=""):
         if path == Path("/workspace/isolated report.txt") and get_terminal_scope() is not None:
             return target
         return None
@@ -871,6 +1032,134 @@ def test_fs_download_maps_root_home_to_persistent_sandbox(client, monkeypatch, t
     assert response.content == b"PK\x03\x04zip"
 
 
+def _workspace_sandbox(sandbox: Path, cwd: Path) -> Path:
+    from tools.environments.path_utils import sanitize_task_id_for_path
+    from tools.terminal_tool import workspace_key_for
+
+    name = sanitize_task_id_for_path(f"default:ws:{workspace_key_for(str(cwd))}")
+    workspace = sandbox / "docker" / name / "workspace"
+    workspace.mkdir(parents=True)
+    return workspace
+
+
+def _session_detail(cwds: dict):
+    async def fake_detail(session_id, profile=None):
+        return {"cwd": cwds[session_id], "id": session_id}
+
+    return fake_detail
+
+
+def test_fs_download_maps_workspace_container_to_its_sandbox(client, monkeypatch, tmp_path):
+    """A persistent per-workspace container stores ``/workspace/note.txt`` under
+    ``sandboxes/docker/default_ws_<digest>-<hash>/workspace``, not the shared
+    ``default`` sandbox. The download must serve that session's file, and must
+    not scan every other workspace for the same relative path."""
+    from tools.terminal_tool import register_task_env_overrides, workspace_key_for
+
+    project = tmp_path / "project"
+    project.mkdir()
+    other = tmp_path / "other"
+    other.mkdir()
+    sandbox = tmp_path / "sandboxes"
+    own = _workspace_sandbox(sandbox, project)
+    foreign = _workspace_sandbox(sandbox, other)
+    shared = sandbox / "docker" / "default" / "workspace"
+    shared.mkdir(parents=True)
+    (own / "note.txt").write_bytes(b"session-file")
+    (own / "only.txt").write_bytes(b"only-session")
+    (foreign / "note.txt").write_bytes(b"other-file")
+    (shared / "note.txt").write_bytes(b"shared-file")
+    monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(sandbox))
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
+    monkeypatch.delenv("TERMINAL_DOCKER_VOLUMES", raising=False)
+    monkeypatch.delenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.web_routers.sessions.get_session_detail",
+        _session_detail({
+            "sess-ws": str(project),
+            "sess-other": str(other),
+            "sess-live": str(tmp_path / "missing-cwd"),
+        }),
+    )
+
+    # No session id must not scan workspace sandboxes. The shared default copy
+    # is the only match; a file that exists only under default_ws_* stays missing.
+    bare = client.get("/api/fs/download", params={"path": "/workspace/note.txt"})
+    assert bare.status_code == 200
+    assert bare.content == b"shared-file"
+    only = client.get("/api/fs/download", params={"path": "/workspace/only.txt"})
+    assert only.status_code == 404
+
+    response = client.get(
+        "/api/fs/download", params={"path": "/workspace/note.txt", "session_id": "sess-ws"},
+    )
+    assert response.status_code == 200
+    assert response.content == b"session-file"
+    other_hit = client.get(
+        "/api/fs/download", params={"path": "/workspace/note.txt", "session_id": "sess-other"},
+    )
+    assert other_hit.status_code == 200
+    assert other_hit.content == b"other-file"
+
+    digest = workspace_key_for(str(project))
+    register_task_env_overrides("sess-live", {
+        "cwd": str(tmp_path / "missing-cwd"),
+        "cwd_source": "session",
+        "workspace_key": digest,
+    })
+    try:
+        live = client.get(
+            "/api/fs/download", params={"path": "/workspace/note.txt", "session_id": "sess-live"},
+        )
+    finally:
+        from gateway.session_policy import unbind_turn_workspace
+        unbind_turn_workspace("sess-live")
+    assert live.status_code == 200
+    assert live.content == b"session-file"
+
+
+def test_fs_download_cwd_mount_wins_then_falls_back_to_workspace_sandbox(
+    client, monkeypatch, tmp_path,
+):
+    """With the host cwd mounted on ``/workspace``, the session's own cwd is that
+    mount and wins when the file is there; the profile's ``terminal.cwd`` is another
+    container's mount. When the container was still created as ``default:ws:`` and
+    the file only exists in its sandbox workspace, the download serves that copy."""
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "note.txt").write_bytes(b"mounted-file")
+    mounted = tmp_path / "mounted-cwd"
+    mounted.mkdir()
+    (mounted / "note.txt").write_bytes(b"profile-cwd-file")
+    sandbox = tmp_path / "sandboxes"
+    own = _workspace_sandbox(sandbox, project)
+    (own / "note.txt").write_bytes(b"sandbox-file")
+    monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(sandbox))
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
+    monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "true")
+    monkeypatch.setenv("TERMINAL_CWD", str(mounted))
+    monkeypatch.delenv("TERMINAL_DOCKER_VOLUMES", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.web_routers.sessions.get_session_detail",
+        _session_detail({"sess-ws": str(project)}),
+    )
+
+    mounted_hit = client.get(
+        "/api/fs/download", params={"path": "/workspace/note.txt", "session_id": "sess-ws"},
+    )
+    assert mounted_hit.status_code == 200
+    assert mounted_hit.content == b"mounted-file"
+
+    (project / "note.txt").unlink()
+    sandbox_hit = client.get(
+        "/api/fs/download", params={"path": "/workspace/note.txt", "session_id": "sess-ws"},
+    )
+    assert sandbox_hit.status_code == 200
+    assert sandbox_hit.content == b"sandbox-file"
+
+
 @pytest.mark.platforms("windows")
 def test_agent_fs_path_translates_before_host_normalization(monkeypatch, tmp_path):
     """On a Windows gateway ``_fs_path("/workspace/x")`` anchors to the current
@@ -881,7 +1170,7 @@ def test_agent_fs_path_translates_before_host_normalization(monkeypatch, tmp_pat
     mapped = tmp_path / "x.txt"
     seen = []
 
-    def translate(candidate, session_key="", *, quiet=False):
+    def translate(candidate, session_key="", workspace_key="", *, quiet=False, workspace_cwd=""):
         seen.append(candidate.as_posix())
         return mapped
 

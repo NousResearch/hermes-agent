@@ -350,6 +350,8 @@ declare global {
         connectionId?: null | string
         path: string
         profile?: null | string
+        /** The chat the clip belongs to: its `/workspace` is that session's sandbox. */
+        sessionId?: string
       }) => Promise<string>
       saveImageFromUrl: (url: string) => Promise<boolean>
       /** Edit verb against the window's focused element (the custom context

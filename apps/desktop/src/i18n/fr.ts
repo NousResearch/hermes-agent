@@ -464,6 +464,7 @@ export const frOverrides = {
       microphoneConstraintsUnsupported: 'Les contraintes du microphone ne sont pas prises en charge par cet appareil.',
       microphoneFailed: 'Échec du microphone',
       microphoneInUse: 'Le microphone est déjà utilisé par une autre application.',
+      microphoneNeedsHttps: "Le micro nécessite une connexion sécurisée. Ouvrez la Webapp en HTTPS, ou via un tunnel SSH vers 127.0.0.1, pour l'utiliser.",
       microphonePermissionDenied: "L'autorisation du microphone a été refusée.",
       microphoneStartFailed: "Impossible de démarrer l'enregistrement du microphone.",
       microphoneUnsupported: "Ce runtime ne prend pas en charge l'enregistrement micro.",
@@ -3209,6 +3210,7 @@ export const frOverrides = {
     exported: 'Profil exporté',
     failedImport: "Échec de l'importation du profil",
     failedExport: "Échec de l'exportation du profil",
+    exportNeedsHost: name => `Le navigateur ne peut pas enregistrer une archive de profil. Sur l'hôte Hermes, exécutez : hermes profile export ${name}`,
     allProfiles: 'Tous les profils',
     showAllProfiles: 'Afficher tous les profils',
     switchToProfile: name => `Basculer vers ${name}`,
@@ -4624,6 +4626,7 @@ export const frOverrides = {
     }
   },
   rightSidebar: {
+    terminalDropUnquotable: (shell, paths) => `Impossible de saisir ces noms en toute sécurité dans ${shell} : ${paths}`,
     aria: 'Barre latérale droite',
     panelsAria: 'Panneaux de la barre latérale droite',
     files: 'Système de fichiers',
@@ -5420,6 +5423,7 @@ export const frOverrides = {
     imageAttach: 'Image jointe',
     imageWriteFailed: "Échec de l'écriture de l'image sur le disque.",
     imageAttachFailed: "Échec de l'ajout de l'image",
+    attachFailed: "Échec de l'ajout",
     pastedContent: 'Contenu collé',
     pasteAttachFailed: 'Impossible de joindre le texte collé',
     attachImages: 'Joindre des images',
@@ -5427,6 +5431,7 @@ export const frOverrides = {
     noClipboardImage: 'Aucune image trouvée dans le presse-papiers',
     clipboardPasteFailed: 'Échec du collage depuis le presse-papiers',
     dropFiles: 'Déposer des fichiers',
+    dropFilesMore: (count: number) => `et ${count} de plus`,
     handoff: {
       pickPlatform: 'Choisissez une destination',
       success: platform => `Transféré vers ${platform}. Reprenez ici à tout moment.`,

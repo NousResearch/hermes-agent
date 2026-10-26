@@ -110,6 +110,32 @@ describe('applyDesktopOverlay', () => {
   })
 })
 
+describe('runExportProfileFlow', () => {
+  // The browser Webapp bridge has no save dialog: Export must say so, not do nothing.
+  it('explains itself in the browser Webapp instead of silently returning', async () => {
+    const { installBrowserDesktopBridge } = await import('@/lib/browser-desktop-bridge')
+    const { clearWebappSession, seedWebappSession } = await import('@/test/webapp-session')
+    const { runExportProfileFlow } = await import('./profile-share')
+    const { $notifications } = await import('./notifications')
+    seedWebappSession('served-token')
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}')))
+
+    try {
+      expect(installBrowserDesktopBridge()).toBe(true)
+      expect(window.hermesDesktop.selectSavePath).toBeUndefined()
+      await expect(runExportProfileFlow('glam')).resolves.toBeNull()
+      expect(exportProfileArchive).not.toHaveBeenCalled()
+      expect($notifications.get().at(-1)).toMatchObject({ kind: 'error', title: 'Failed to export profile' })
+      expect($notifications.get().at(-1)?.message).toContain('hermes profile export glam')
+    } finally {
+      clearWebappSession()
+      Reflect.deleteProperty(window, 'hermesDesktop')
+      document.documentElement.removeAttribute('data-hermes-desktop-host')
+      vi.unstubAllGlobals()
+    }
+  })
+})
+
 describe('exportProfileBundle', () => {
   it('stages desktop.json into the archive through extra_files', async () => {
     skinPref.assign('glam', 'mono')

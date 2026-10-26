@@ -1,15 +1,18 @@
 """Viewer takeover linearizes at the PTY sink, including off-loop writes."""
 import asyncio
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 import os
 from pathlib import Path
+import select
+import socket
 import threading
+import time
 
 import pytest
 
 from hermes_cli.pty_session import PtySession, WS_CLOSE_SUPERSEDED
 from hermes_cli.web_host_terminal_sessions import HostOwner, HostTerminalRegistry
-from tests.waiting import async_wait_until
+from tests.waiting import async_wait_until, wait_until
 
 
 class Socket:
@@ -20,12 +23,26 @@ class Socket:
         self.closed.append(code)
 
 
+def read_pty_through(fd, marker, timeout=3.0):
+    """What a pseudo-terminal's slave reads up to and including ``marker``, written to the master
+    after everything else. A write to the master returns before the slave can read it: the kernel
+    hands the bytes over later (Linux from a worker thread), so earlier writes can still be on
+    their way when the first read returns. They arrive in order, so the marker comes last."""
+    got = bytearray()
+    deadline = time.monotonic() + timeout
+    while not got.endswith(marker):
+        readable, _, _ = select.select([fd], [], [], max(0.0, deadline - time.monotonic()))
+        if not readable:
+            break
+        got += os.read(fd, 1024)
+    return bytes(got)
+
+
 @pytest.mark.platforms("posix")
 @pytest.mark.asyncio
 @pytest.mark.parametrize("pause_at_sink", [False, True])
 async def test_takeover_revokes_waiting_workers_and_waits_for_an_admitted_write(tmp_path, monkeypatch, pause_at_sink):
     import pty
-    import select
     import tty
     from hermes_cli import pty_bridge
 
@@ -81,9 +98,9 @@ async def test_takeover_revokes_waiting_workers_and_waits_for_an_admitted_write(
         assert await session.write(new, b"NEW\n", fence=owner.admit)
         release.set()
         assert await asyncio.to_thread(finished.wait, 3)
-        readable, _, _ = await asyncio.to_thread(select.select, [slave], [], [], 3)
-        assert readable
-        assert os.read(slave, 1024) == (b"OLD\nNEW\n" if pause_at_sink else b"NEW\n")
+        real_write(master, b"END\n")
+        expected = b"OLD\nNEW\n" if pause_at_sink else b"NEW\n"
+        assert await asyncio.to_thread(read_pty_through, slave, b"END\n") == expected + b"END\n"
         assert session.alive
     finally:
         release.set()
@@ -257,13 +274,15 @@ async def test_host_reaper_releases_dead_shell_before_drain_observes_eof(tmp_pat
 class ClosingTab:
     """A browser tab on the host terminal: it sends ``frames``, then whatever ``type`` adds, and its
     socket ends when ``close`` is called. Closing never cancels the route: like uvicorn, it only
-    queues the disconnect for the next ``receive``."""
+    queues the disconnect for the next ``receive``. ``inbound`` holds what the server has not read
+    yet; ``sent`` is every binary frame the tab received."""
 
     app = None
     query_params: dict = {}
 
     def __init__(self, *frames):
         self.inbound = asyncio.Queue()
+        self.sent = []
         self.type(*frames)
 
     def type(self, *frames):
@@ -279,8 +298,8 @@ class ClosingTab:
     async def send_text(self, _text):
         pass
 
-    async def send_bytes(self, _data):
-        pass
+    async def send_bytes(self, data):
+        self.sent.append(data)
 
     async def close(self, code=1000, reason=None):
         pass
@@ -410,3 +429,229 @@ async def test_closing_the_tab_during_a_waiting_paste_detaches_and_keeps_the_she
             registry._sessions.clear()
             registry.owners.clear()
             await registry.close_all()
+
+
+class BrowserTab:
+    """A browser's end of the host terminal socket: a real WebSocket client on a plain TCP socket."""
+
+    def __init__(self, port):
+        from websockets.client import ClientProtocol
+        from websockets.protocol import State
+        from websockets.uri import parse_uri
+
+        self.protocol = ClientProtocol(parse_uri(f"ws://127.0.0.1:{port}/terminal"))
+        self.sock = socket.create_connection(("127.0.0.1", port), timeout=10)
+        self.protocol.send_request(self.protocol.connect())
+        self._flush()
+        while self.protocol.state is State.CONNECTING:
+            self.protocol.receive_data(self.sock.recv(65536))
+        assert self.protocol.state is State.OPEN, self.protocol.handshake_exc
+
+    def _flush(self):
+        self.sock.sendall(b"".join(self.protocol.data_to_send()))
+
+    def send(self, *frames):
+        for frame in frames:
+            self.protocol.send_binary(frame)
+        self._flush()
+
+    def close(self):
+        """Go away as a closing tab does: a close frame, then the TCP connection. A browser has read
+        everything the server sent, so the connection ends with a FIN, not a reset."""
+        self.protocol.send_close(1001)
+        self._flush()
+        self.sock.setblocking(False)
+        with suppress(BlockingIOError):
+            while self.sock.recv(65536):
+                pass
+        self.sock.close()
+
+
+@contextmanager
+def served_host_terminal(monkeypatch, session, owner):
+    """``host_terminal`` for ``session`` behind real uvicorn and Starlette on a loopback port, with
+    uvicorn's default WebSocket protocol and the loopback Webapp's settings (no WebSocket pings).
+    Yields the port, the frames the route has taken from the socket, and an Event set once the
+    route returns."""
+    import uvicorn
+    from starlette.applications import Starlette
+    from starlette.routing import WebSocketRoute
+    from hermes_cli import web_host_terminal_sessions as host_sessions
+
+    registry = HostTerminalRegistry()
+    taken, finished = [], threading.Event()
+
+    async def admit(_ws, _registry):
+        return session, owner
+
+    monkeypatch.setattr(host_sessions, "get_host_terminals", lambda _app: registry)
+    monkeypatch.setattr(host_sessions, "_admit", admit)
+
+    async def route(ws):
+        await ws.accept()
+        try:
+            await host_sessions.host_terminal(ws)
+        finally:
+            finished.set()
+
+    app = Starlette(routes=[WebSocketRoute("/terminal", route)])
+
+    async def counting(scope, receive, send):
+        async def counted():
+            message = await receive()
+            if message["type"] == "websocket.receive":
+                taken.append(message)
+            return message
+
+        await app(scope, counted, send)
+
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    server = uvicorn.Server(uvicorn.Config(
+        counting, lifespan="off", log_level="error", ws_ping_interval=None, ws_ping_timeout=None,
+        # A route that never returns (the bug) is cancelled instead of holding shutdown forever.
+        timeout_graceful_shutdown=1,
+    ))
+    thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
+    thread.start()
+    try:
+        wait_until(lambda: server.started or not thread.is_alive(), what="uvicorn to start")
+        assert server.started
+        yield sock.getsockname()[1], taken, finished
+    finally:
+        server.should_exit = True
+        thread.join(10)
+        sock.close()
+        asyncio.run(registry.close_all())
+        assert not thread.is_alive()
+
+
+@pytest.mark.parametrize("terminal", [
+    pytest.param(unread_posix_pty, id="posix-pty", marks=pytest.mark.platforms("posix")),
+    pytest.param(unread_input, id="unread-input", marks=pytest.mark.platforms("any")),
+])
+def test_a_tab_closed_behind_more_keys_than_the_input_queue_holds_is_detached(tmp_path, monkeypatch, terminal):
+    """Keys typed while a paste waits on a program that is not reading fill the input queue and
+    then some, so the tab's close is unread behind them when it comes, and the browser drops the
+    connection. Over a real socket the shell is still detached within a few seconds: it keeps
+    running, retained for a reattach."""
+    from hermes_cli import web_host_terminal_sessions as host_sessions
+
+    home = tmp_path / ".hermes"
+    profile = home / "profiles" / "worker"
+    profile.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    owner = HostOwner(("loopback", "test"), profile, "sh", str(tmp_path))
+    # 1 MiB: more than a pseudo-terminal buffers anywhere between its master and the program.
+    paste = b"".join(b"%05d %s\n" % (n, b"x" * 57) for n in range(16 * 1024))
+    fill = host_sessions._INPUT_BATCH_FRAMES
+    with terminal(monkeypatch) as (bridge, waiting, cancelled):
+        session = PtySession("terminal", bridge, buffer_cap=32, read_timeout=0.01)
+        with served_host_terminal(monkeypatch, session, owner) as (port, taken, finished):
+            tab = BrowserTab(port)
+            tab.send(paste)
+            assert waiting.wait(5), "the paste never waited for the program"
+            tab.send(*[b"k"] * (fill + 17))
+            # The paste, a full queue, and one more frame the reader holds with no room for it.
+            wait_until(lambda: len(taken) >= fill + 2, timeout=5, what="the reader to fill the input queue")
+            tab.close()
+            assert finished.wait(10), "the shell stayed attached after its tab closed"
+        assert cancelled.is_set()
+        assert session.alive and not bridge._closed
+        assert not session.attached and session._ws is None
+
+
+class SlowAccept:
+    """A program that reads every byte, but not until ``release``: slow, not stopped. The first write
+    takes its bytes and then waits; later writes land at once."""
+
+    def __init__(self):
+        self._closed = False
+        self.written = bytearray()
+        self.entered, self.release = threading.Event(), threading.Event()
+        self._gated = True
+
+    async def write(self, data, *, timeout=10.0, fence=None):
+        assert timeout is None, "host terminal input has no deadline"
+        assert await asyncio.to_thread(fence, lambda: len(data)) == len(data)
+        if self._gated:
+            self._gated = False
+            self.entered.set()
+            assert await asyncio.to_thread(self.release.wait, 10), "the slow program was not released"
+        self.written.extend(data)
+        return True
+
+    def resize(self, cols, rows):
+        pass
+
+    def close(self):
+        self._closed = True
+
+    def is_alive(self):
+        return not self._closed
+
+
+@pytest.mark.asyncio
+async def test_a_live_tab_typing_past_a_full_input_queue_is_held_back_and_loses_nothing(tmp_path, monkeypatch):
+    """Keys typed while a write waits on a slow program queue up to the input bound. Past it the
+    reader takes no more frames, however many the tab sends (they wait in the socket, which pushes
+    back on the browser), and checks only that the tab is still there, which leaves a live tab
+    attached and writes nothing to its terminal. Once the program reads, every key reaches it in
+    order."""
+    from hermes_cli import web_host_terminal_sessions as host_sessions
+
+    home = tmp_path / ".hermes"
+    profile = home / "profiles" / "worker"
+    profile.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    owner = HostOwner(("loopback", "test"), profile, "sh", str(tmp_path))
+    registry = HostTerminalRegistry()
+    bridge = SlowAccept()
+    session = PtySession("terminal", bridge, buffer_cap=32, read_timeout=0.01)
+    registry._sessions[session.key] = session
+    registry.owners[session.key] = owner
+
+    async def admit(_ws, _registry):
+        return session, owner
+
+    monkeypatch.setattr(host_sessions, "get_host_terminals", lambda _app: registry)
+    monkeypatch.setattr(host_sessions, "_admit", admit)
+    fill = host_sessions._INPUT_BATCH_FRAMES
+    typed = [bytes([65 + n % 26]) for n in range(16 * fill)]
+    # The first write holds b"A"; the reader queues ``fill`` frames and holds one more with no room.
+    unread = len(typed) - fill - 1
+    tab = ClosingTab(b"A")
+    handler = None
+    try:
+        handler = asyncio.create_task(host_sessions.host_terminal(tab))
+        assert await asyncio.to_thread(bridge.entered.wait, 5), "the first write never started"
+        tab.type(*typed)
+        await async_wait_until(lambda: tab.inbound.qsize() <= unread, timeout=5,
+                               what="the reader to fill the input queue")
+        assert tab.inbound.qsize() == unread, "the reader took frames past the input queue"
+        replayed = len(tab.sent)
+        await async_wait_until(lambda: len(tab.sent) > replayed, timeout=5,
+                               what="a check on the tab behind the full input queue")
+        assert tab.inbound.qsize() == unread, "the reader took frames while it waited for room"
+        assert session.attached and session._ws is tab, "a live tab was detached"
+        assert b"".join(tab.sent[replayed:]) == b"", "the check wrote to the tab's terminal"
+        bridge.release.set()
+        expected = b"A" + b"".join(typed)
+        await async_wait_until(lambda: bytes(bridge.written) == expected, timeout=5,
+                               what="every keystroke to reach the slow program")
+        tab.close_tab()
+        async with asyncio.timeout(5):
+            await handler
+        assert session.alive and not bridge._closed
+        assert registry._sessions.get(session.key) is session
+        assert not session.attached and session._ws is None
+    finally:
+        bridge.release.set()
+        if handler is not None:
+            handler.cancel()
+            await asyncio.gather(handler, return_exceptions=True)
+        registry._sessions.clear()
+        registry.owners.clear()
+        await registry.close_all()

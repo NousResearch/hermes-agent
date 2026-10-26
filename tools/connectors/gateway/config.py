@@ -81,6 +81,33 @@ def managed_tools_rolled_out() -> bool:
     return bool(account_info.logged_in) and account_info.managed_tools_rolled_out
 
 
+
+_OFFICIAL_CONNECTOR_GATEWAY_NETLOC = "connector-gateway.nousresearch.com"
+
+
+def _selfhost_connectors_mode() -> bool:
+    """True when Hermes is dual-configured for a non-official Connector Gateway (§14).
+
+    Requires both CONNECTOR_GATEWAY_URL and TOOL_GATEWAY_USER_TOKEN, and a URL netloc that is
+    not the official Nous connector-gateway host. Used to open the connectors surface without a
+    portal ``managed_tools`` claim.
+    """
+    import os
+    from urllib.parse import urlsplit
+
+    url = (os.environ.get("CONNECTOR_GATEWAY_URL") or "").strip()
+    token = (os.environ.get("TOOL_GATEWAY_USER_TOKEN") or "").strip()
+    if not url or not token:
+        return False
+    try:
+        netloc = (urlsplit(url).netloc or "").lower()
+    except ValueError:
+        return False
+    if not netloc or netloc == _OFFICIAL_CONNECTOR_GATEWAY_NETLOC:
+        return False
+    return True
+
+
 def connectors_available(
     config_loader: Optional[Callable[[], ConnectorConfig]] = None,
     entitlement_check: Optional[Callable[[], bool]] = None,
@@ -95,6 +122,10 @@ def connectors_available(
         resolved_loader = config_loader or load_config
         if not resolved_loader().enabled:
             return False
+        # Self-hosted Connector Gateway: dual-set URL+TOKEN and non-official netloc
+        # skip managed_tools / guest entitlement (plan §4.4 / §14).
+        if entitlement_check is None and _selfhost_connectors_mode():
+            return True
         if entitlement_check is None:
             from hermes_cli.anon_auth import is_guest_state
             from tools.managed_tool_gateway import _read_nous_provider_state

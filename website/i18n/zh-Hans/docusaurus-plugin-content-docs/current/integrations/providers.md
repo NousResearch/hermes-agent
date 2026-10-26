@@ -34,6 +34,7 @@ sidebar_position: 1
 | **Kilo Code** | `~/.hermes/.env` 中的 `KILOCODE_API_KEY`（provider: `kilocode`） |
 | **小米 MiMo** | `~/.hermes/.env` 中的 `XIAOMI_API_KEY`（provider: `xiaomi`，别名：`mimo`、`xiaomi-mimo`） |
 | **腾讯 TokenHub** | `~/.hermes/.env` 中的 `TOKENHUB_API_KEY`（provider: `tencent-tokenhub`，别名：`tencent`、`tokenhub`、`tencentmaas`） |
+| **腾讯 TokenPlan** | `~/.hermes/.env` 中的 `TOKENPLAN_API_KEY`（provider: `tencent-tokenplan`，别名：`tokenplan`、`tencent-lkeap`；Anthropic Messages 端点） |
 | **OpenCode Zen** | `~/.hermes/.env` 中的 `OPENCODE_ZEN_API_KEY`（provider: `opencode-zen`） |
 | **OpenCode Go** | `~/.hermes/.env` 中的 `OPENCODE_GO_API_KEY`（provider: `opencode-go`） |
 | **DeepSeek** | `~/.hermes/.env` 中的 `DEEPSEEK_API_KEY`（provider: `deepseek`） |
@@ -196,9 +197,15 @@ hermes chat --provider alibaba --model qwen3.5-plus
 hermes chat --provider xiaomi --model mimo-v2-pro
 # 需要：~/.hermes/.env 中的 XIAOMI_API_KEY
 
-# 腾讯 TokenHub（Hy3 Preview）
-hermes chat --provider tencent-tokenhub --model hy3-preview
+# 腾讯 TokenHub（Hy4 preview 或正式版 Hy4）
+hermes chat --provider tencent-tokenhub --model hy4-preview
+hermes chat --provider tencent-tokenhub --model hy4
 # 需要：~/.hermes/.env 中的 TOKENHUB_API_KEY
+
+# 腾讯 TokenPlan（Hy4 preview 或正式版 Hy4，经 Anthropic Messages 端点）
+hermes chat --provider tencent-tokenplan --model hy4-preview
+hermes chat --provider tencent-tokenplan --model hy4
+# 需要：~/.hermes/.env 中的 TOKENPLAN_API_KEY
 
 # Arcee AI（Trinity 模型）
 hermes chat --provider arcee --model trinity-large-thinking
@@ -1261,7 +1268,7 @@ model:
 | **成本优化** | ClawRouter 或带 `sort: "price"` 的 OpenRouter |
 | **最大隐私保护** | Ollama、vLLM 或 llama.cpp（完全本地） |
 | **企业 / Azure** | Azure OpenAI 加自定义端点 |
-| **中国 AI 模型** | z.ai（GLM）、Kimi/Moonshot（`kimi-coding` 或 `kimi-coding-cn`）、MiniMax、小米 MiMo 或腾讯 TokenHub（一等提供商） |
+| **中国 AI 模型** | z.ai（GLM）、Kimi/Moonshot（`kimi-coding` 或 `kimi-coding-cn`）、MiniMax、小米 MiMo、腾讯 TokenHub 或腾讯 TokenPlan（一等提供商） |
 
 :::tip
 可以随时使用 `hermes model` 切换提供商——无需重启。无论使用哪个提供商，你的对话历史、记忆和技能都会保留。
@@ -1366,7 +1373,7 @@ fallback_model:
 
 激活时，故障转移在不丢失对话的情况下中途切换模型和提供商。链按条目逐一尝试；每个会话激活一次。
 
-支持的提供商：`openrouter`、`nous`、`openai-codex`、`anthropic`、`gemini`、`qwen-oauth`、`huggingface`、`zai`、`kimi-coding`、`kimi-coding-cn`、`minimax`、`minimax-cn`、`minimax-oauth`、`deepseek`、`nvidia`、`xai`、`xai-oauth`、`ollama-cloud`、`bedrock`、`azure-foundry`、`opencode-zen`、`opencode-go`、`kilocode`、`xiaomi`、`arcee`、`gmi`、`stepfun`、`lmstudio`、`alibaba`、`alibaba-coding-plan`、`tencent-tokenhub`、`custom`。
+支持的提供商：`openrouter`、`nous`、`openai-codex`、`anthropic`、`gemini`、`qwen-oauth`、`huggingface`、`zai`、`kimi-coding`、`kimi-coding-cn`、`minimax`、`minimax-cn`、`minimax-oauth`、`deepseek`、`nvidia`、`xai`、`xai-oauth`、`ollama-cloud`、`bedrock`、`azure-foundry`、`opencode-zen`、`opencode-go`、`kilocode`、`xiaomi`、`arcee`、`gmi`、`stepfun`、`lmstudio`、`alibaba`、`alibaba-coding-plan`、`tencent-tokenhub`、`tencent-tokenplan`、`custom`。
 
 :::tip
 故障转移仅通过 `config.yaml` 配置——或通过 `hermes fallback` 交互式配置。有关触发时机、链推进方式以及与辅助任务和委托的交互，参见[故障转移提供商](../user-guide/features/fallback-providers.md)。

@@ -66,11 +66,10 @@ async def test_wake_queued_before_drain_survives_the_pending_discard():
 
 @pytest.mark.asyncio
 async def test_wake_queued_before_a_drain_that_starts_in_the_busy_handlers_later_awaits_runs():
-    """The busy handler can await after it stores the wake; a drain that begins there must not
-    turn an admitted wake, whose producer already holds the receipt, into a discarded one.
-    Exactly one of two outcomes is correct: the receipt is withheld (WakeNotAccepted, as the
-    drain re-check from #137553 does), so the producer retries, or the wake runs. Never both,
-    never neither, whichever of the two PRs merges first."""
+    """Guard for a busy handler that awaits after it stores the wake (no in-tree handler does
+    today): a drain that begins there must not turn an admitted wake, whose producer already holds
+    the receipt, into a discarded one. Exactly one outcome is correct: the receipt is withheld
+    (WakeNotAccepted, so the producer retries) or the wake runs. Never both, never neither."""
     runner, adapter, source, _turns = wake_route()
     key = adapter._event_session_key(MessageEvent(text="", source=source))
     adapter._active_sessions[key] = asyncio.Event()  # a turn is running in this chat
@@ -78,8 +77,7 @@ async def test_wake_queued_before_a_drain_that_starts_in_the_busy_handlers_later
 
     async def store_then_drain(event, session_key):
         handled = await store(event, session_key)  # the wake is now the pending follow-up
-        runner._draining = True  # /restart begins during the handler's later awaits
-        await asyncio.sleep(0)
+        runner._draining = True  # /restart begins after the store, before the handler returns
         return handled
 
     adapter._busy_session_handler = store_then_drain

@@ -48,6 +48,7 @@ from agent.message_sanitization import (
     _sanitize_messages_surrogates, _sanitize_surrogates, _repair_tool_call_arguments,
     normalize_finish_reason as _normalize_finish_reason, sanitize_outbound_kwargs, strip_images_for_rejecting_model,
 )
+from agent.prefill_messages import fold_system_prefill_messages
 from agent.reasoning_summaries import (
     append_streamed_reasoning_detail, separate_glued_reasoning_blocks, streamed_reasoning_detail_text)
 from agent.local_prompt_progress import prompt_progress, with_prompt_progress
@@ -2162,8 +2163,7 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
         effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
     if effective_system:
         api_messages = [{"role": "system", "content": effective_system}] + api_messages
-    for idx, pfm in enumerate(agent.prefill_messages or ()):
-        api_messages.insert((1 if effective_system else 0) + idx, pfm.copy())
+    api_messages = fold_system_prefill_messages(api_messages, agent.prefill_messages)
 
     # Compression/resume can orphan a tool result whose parent tool_call was summarized away.
     api_messages = agent._sanitize_api_messages(api_messages)

@@ -91,6 +91,10 @@ class LiveSession:
     # Revision of the last ``session.control.update`` (gateway/session_control_actions.publish): a tool
     # completion republishes only when a tool actually moved the goal/loop/heartbeat state.
     control_revision: str = ""
+    # Tickets ordering control publishes whose snapshot is read off the loop: the last one scheduled
+    # wins, so a slow read cannot land over a newer state (gateway/session_control_actions.publish).
+    control_seq: int = 0
+    control_published_seq: int = 0
 
     def __post_init__(self):
         self.controls = PendingControls(self.event_stream)

@@ -2132,7 +2132,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             **ProcessRegistry._exit_fields(session), **_completion_output(session)}
 
     def kill_process(
-        self, session_id: str, *, source: str = "process.kill", consume_output: bool = True,
+        self, session_id: str, *, source: str = "process.kill", consume_output: bool = True, expected_ownership=None,
     ) -> dict:
         """Kill a background process and return its output snapshot.
         ``consume_output`` is true for explicit tool/RPC kills (the caller sees the
@@ -2142,6 +2142,9 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         session = self.get(session_id)
         if session is None:
             return _not_found(session_id)
+        from tools.process_registry_handoff import check_control_ownership
+        if changed := check_control_ownership(self, session, expected_ownership, consume_output):
+            return changed
         if session.exited:
             # A double-forked descendant may still be alive in the systemd scope even
             # though the main process exited — stop the scope to reap survivors.
@@ -2441,25 +2444,34 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
 
     def running_owned_by(self, owner_task_id: str) -> list[ProcessSession]:
         """Running processes whose RAW spawning owner is ``owner_task_id``."""
+        if not self.refresh_ownership():
+            raise RuntimeError('process_stop_unknown')
         with self._lock:
             return [s for s in self._running.values() if s.owner_task_id == owner_task_id and not s.exited]
 
     def unread_completions_owned_by(self, owner_task_id: str) -> list[ProcessSession]:
         """Exited ``notify_on_complete`` processes of ``owner_task_id`` whose result nobody read (no wait/log/poll).
         A child's completion notice is suppressed in the parent, so an unread exit is otherwise lost silently."""
+        if not self.refresh_ownership():
+            raise RuntimeError('process_stop_unknown')
         with self._lock:
             return [s for s in self._finished.values()
                     if s.owner_task_id == owner_task_id and s.notify_on_complete
                     and s.exit_code is not None
                     and s.id not in self._completion_consumed and s.id not in self._poll_observed]
 
+    def refresh_ownership(self):
+        from tools.process_registry_handoff import refresh_ownership
+        return refresh_ownership(self)
+
     def transfer_ownership(self, session_id: str, *, from_owner: str, to_owner: str, to_task_id: str,
-                           to_session_key: str, to_parent_session_id: str, note: str = "") -> Optional[ProcessSession]:
+                           to_session_key: str, to_parent_session_id: str, note: str = "",
+                           child_stop_event: Optional[threading.Event] = None) -> Optional[ProcessSession]:
         """Commit raw owner, trusted native parent and route before acknowledging handoff."""
         from tools.process_registry_handoff import transfer_ownership
         return transfer_ownership(self, session_id, from_owner=from_owner, to_owner=to_owner,
             to_task_id=to_task_id, to_session_key=to_session_key, to_parent_session_id=to_parent_session_id,
-            note=note)
+            note=note, child_stop_event=child_stop_event)
 
     def has_active_for_session(self, session_key: str, max_active_age: Optional[float] = None) -> bool:
         """Active processes for a gateway session key. Processes older than
@@ -2509,15 +2521,19 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         session end / compression / error recovery (#41225). An explicit operator stop
         (``process.kill`` via process_manage, CLI /stop) passes its own source and still
         reaches them, so the user can always stop a persisted process on purpose."""
+        from tools.process_registry_handoff import ownership_identity
+        if not self.refresh_ownership():
+            raise RuntimeError('process_stop_unknown')
         lifecycle = source in self._LIFECYCLE_KILL_SOURCES
         with self._lock:
             targets = [
-                s for s in (*self._running.values(), *self._finished.values())
+                (s.id, ownership_identity(s)) for s in (*self._running.values(), *self._finished.values())
                 if (task_id is None or s.owner_task_id == task_id)
                 and s.id not in exclude_ids and (not s.exited or s._scope_stop_pending or s.systemd_unit)
                 and not (lifecycle and s.persist_on_release)
             ]
-        results = [self.kill_process(s.id, source=source, consume_output=consume_output) for s in targets]
+        results = [self.kill_process(sid, source=source, consume_output=consume_output, expected_ownership=identity)
+                   for sid, identity in targets]
         return sum(
             r.get("status") in {"killed", "already_exited"} and "scope_stop_failed" not in r
             for r in results)

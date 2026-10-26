@@ -345,7 +345,7 @@ async def read(connection, ref, params, *, kind):
 
 
 def _owned_targets(connection, ref, params, *, select):
-    """``(registry, ids)``: the session's own processes (what ``process.list`` shows) that
+    """``(registry, captured scopes)``: the session's own processes (what ``process.list`` shows) that
     ``select(process)`` keeps; ``(None, [])`` when no process was ever registered here."""
     authority = connection.authority
     if ref.session_id not in authority.sessions:
@@ -361,11 +361,14 @@ def _owned_targets(connection, ref, params, *, select):
 def _process_targets(authority, ref, agent, records, *, select):
     module = sys.modules.get('tools.process_registry')
     if module is None:
-        return None, []
+        return None, {}
     registry = module.process_registry
+    from tools.process_registry_handoff import ownership_identity
+    if not registry.refresh_ownership():
+        raise RuntimeStoreError('process_stop_unknown')
     keys, owners, parents = _ownership(authority, ref, agent, records)
     with registry._lock:
-        return registry, [p.id for p in _owned_locked(registry, keys, owners, parents) if select(p)]
+        return registry, {p.id: ownership_identity(p) for p in _owned_locked(registry, keys, owners, parents) if select(p)}
 
 
 async def interrupt_processes(authority, ref, agent):
@@ -388,13 +391,14 @@ async def interrupt_processes(authority, ref, agent):
     if targets:
         # Stop cancels these autonomous notices even if termination is refused or a reader
         # is still publishing its exit. Output remains in the native process result.
-        with registry._lock:
-            registry._completion_consumed.update(targets)
         def kill():
             from tools.process_registry_results import save_completed_result
-            results = [registry.kill_process(pid, source='session.interrupt', consume_output=True) for pid in targets]
+            results = [registry.kill_process(pid, source='session.interrupt', consume_output=True, expected_ownership=targets[pid])
+                       for pid in targets]
             durable = True
             for pid, result in zip(targets, results):
+                if result.get('status') == 'ownership_changed':
+                    continue
                 if result.get('status') not in {'killed', 'already_exited'} or 'scope_stop_failed' in result:
                     durable = False
                     continue
@@ -429,7 +433,11 @@ async def kill_process(connection, ref, params):
     if not ids:
         # Never ``not_found``: Desktop reads that reason as "this chat is gone" (dokterdok N64).
         raise RuntimeStoreError('process_not_found')
-    return await asyncio.to_thread(registry.kill_process, ids[0])
+    pid = next(iter(ids))
+    result = await asyncio.to_thread(registry.kill_process, pid, expected_ownership=ids[pid])
+    if result.get('status') == 'ownership_changed':
+        raise RuntimeStoreError('process_not_found')
+    return result
 
 
 async def reload_mcp(connection, ref, params):
@@ -545,7 +553,8 @@ async def stop_processes(connection, ref, params):
                                        select=lambda p: not p.exited or p._scope_stop_pending)
 
     def kill():
-        results = [registry.kill_process(pid, source='process.stop', consume_output=False) for pid in targets]
+        results = [registry.kill_process(pid, source='process.stop', consume_output=False, expected_ownership=targets[pid])
+                   for pid in targets]
         return sum(r.get('status') in {'killed', 'already_exited'} and 'scope_stop_failed' not in r
                    for r in results)
     killed = await asyncio.to_thread(kill) if targets else 0
@@ -749,6 +758,8 @@ def process_snapshot(authority, ref, agent, records):
         return []
     registry = module.process_registry
     keys, owners, parents = _ownership(authority, ref, agent, records)
+    if not registry.refresh_ownership():
+        raise RuntimeStoreError('process_stop_unknown')
     # Keep ownership and output together.
     with registry._lock:
         return [{'session_id': p.id, 'command': p.command[:200],

@@ -206,20 +206,23 @@ class WorkerControls:
         persisted jobs too; ordinary turn retirement keeps its existing persistence policy.
         """
         from tools.process_registry import process_registry
+        from tools.process_registry_handoff import ownership_identity
+        if not process_registry.refresh_ownership():
+            raise RuntimeError('process_stop_unknown')
         owners = set(getattr(self.agent, '_process_owner_task_ids', ()))
         owners.add(getattr(self.agent, 'session_id', None))
         owners.discard(None)
         owners.discard('')
         parents = {getattr(self, 'session_id', None), getattr(self.agent, 'session_id', None)} - {None, ''}
         with process_registry._lock:
-            targets = [p.id for p in (*process_registry._running.values(), *process_registry._finished.values())
+            targets = {p.id: ownership_identity(p) for p in (*process_registry._running.values(), *process_registry._finished.values())
                        if p.session_key == self.route and (p.parent_session_id in parents if p.parent_session_id
                                                           else p.owner_task_id in owners)
                        and (not p.exited or p._scope_stop_pending or p.systemd_unit
-                            or (p.notify_on_complete and not process_registry.is_completion_consumed(p.id)))]
-            process_registry._completion_consumed.update(targets)
-        results = [process_registry.kill_process(pid, source='session.interrupt', consume_output=True) for pid in targets]
-        if any(r.get('status') not in {'killed', 'already_exited'} or 'scope_stop_failed' in r for r in results):
+                            or (p.notify_on_complete and not process_registry.is_completion_consumed(p.id)))}
+        results = [process_registry.kill_process(pid, source='session.interrupt', consume_output=True, expected_ownership=targets[pid])
+                   for pid in targets]
+        if any(r.get('status') not in {'killed', 'already_exited', 'ownership_changed'} or 'scope_stop_failed' in r for r in results):
             raise RuntimeError('process_stop_unknown')
 
     def read(self):

@@ -536,3 +536,29 @@ class TestConfigAndSchema:
         describe_params = schemas["tool_describe"]["parameters"]
         assert describe_params["required"] == ["names"]
         assert describe_params["properties"]["names"]["type"] == "array"
+
+
+class TestSnowballstemmerFallback:
+    def test_stem_and_tokenize_fall_back_on_importerror(self, monkeypatch):
+        import builtins
+        from tools import tool_search_catalog
+        from tools.tool_search_catalog import _stem, _tokenize, _thread_local
+
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "snowballstemmer":
+                raise ImportError("No module named 'snowballstemmer'")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+        monkeypatch.setattr(_thread_local, "stemmer", None, raising=False)
+        _stem.cache_clear()
+
+        try:
+            assert _stem("running") == "running"
+            assert _stem("issues") == "issues"
+            assert _tokenize("Creating New Issues") == ["creating", "new", "issues"]
+        finally:
+            monkeypatch.setattr(_thread_local, "stemmer", None, raising=False)
+            _stem.cache_clear()

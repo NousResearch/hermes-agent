@@ -52,7 +52,10 @@ def test_blocked_swap_result_names_the_holder_for_the_desktop(tmp_path: Path) ->
         env={**os.environ, 'HERMES_HOME': str(home), 'HERMES_RUNTIME_DIR': str(tmp_path / 'empty-store'),
              'PYTHONIOENCODING': 'utf-8'},
     )
-    result = json.loads((home / '.hermes-update-result.json').read_text(encoding='utf-8-sig'))
+    result_path = home / '.hermes-update-result.json'
+    log = home / 'logs' / 'desktop-update-handoff.log'
+    assert result_path.is_file(), (proc.stdout, log.read_text(encoding='utf-8', errors='replace') if log.is_file() else '')
+    result = json.loads(result_path.read_text(encoding='utf-8-sig'))
 
     assert (result['ok'], result['manual']) == (True, True), (proc.stdout, result)
     assert result['release_holders'] == [{'name': 'SogouCloud.exe', 'pid': 4242, 'exe': EXE}], result

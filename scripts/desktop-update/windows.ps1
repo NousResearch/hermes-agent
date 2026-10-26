@@ -708,7 +708,7 @@ function Write-Result([bool]$Ok, [int]$Code, [string]$Message, [bool]$ManualActi
             warnings   = @($script:Warnings)
             release_holders = @($script:ReleaseHolders)
             finished_at = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-        } | ConvertTo-Json -Compress
+        } | ConvertTo-Json -Compress -Depth 4
         [System.IO.File]::WriteAllText($tmp, $obj, (New-Object System.Text.UTF8Encoding $false))
         if ([System.IO.File]::Exists($ResultPath)) {
             [System.IO.File]::Replace($tmp, $ResultPath, [NullString]::Value)
@@ -725,7 +725,9 @@ function Write-Result([bool]$Ok, [int]$Code, [string]$Message, [bool]$ManualActi
 # Post-commit follow-ups (contract C3): each failed step after `hermes update`
 # exited 0 becomes a warning, never a failed update.
 $script:Warnings = New-Object System.Collections.Generic.List[string]
-$script:ReleaseHolders = New-Object System.Collections.Generic.List[object]
+# A plain array: Windows PowerShell 5.1's @() over a non-empty List[object] throws
+# "Argument types do not match".
+$script:ReleaseHolders = @()
 $script:FollowupText = New-Object System.Collections.Generic.List[string]
 $script:ManualFollowup = $false
 $script:Committed = $false
@@ -1713,7 +1715,7 @@ try {
         # hermes_cli/desktop_release_holders.py names each one on its own line; the
         # relaunched Desktop offers to close exactly those and retry, never silently.
         foreach ($m in [regex]::Matches(($res.Output -join "`n"), '(?m)^\s*Desktop app folder held by: (.+?) \(pid (\d+), (.+)\)\s*$')) {
-            $script:ReleaseHolders.Add(@{ name = $m.Groups[1].Value; pid = [int]$m.Groups[2].Value; exe = $m.Groups[3].Value })
+            $script:ReleaseHolders += [pscustomobject]@{ name = $m.Groups[1].Value; pid = [int]$m.Groups[2].Value; exe = $m.Groups[3].Value }
         }
         if ($script:ReleaseHolders.Count -gt 0) {
             $holderNames = (@($script:ReleaseHolders) | ForEach-Object { "$($_.name) (pid $($_.pid))" }) -join ', '

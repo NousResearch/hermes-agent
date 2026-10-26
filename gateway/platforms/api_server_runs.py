@@ -215,6 +215,8 @@ def _uses_room_run_auth(self, request: web.Request) -> bool:
 
 def _initialize_run_state(self, *, store_factory) -> None:
     """Initialize adapter-owned durable and live ``/v1/runs`` state."""
+    from gateway.platforms.api_server_run_admissions import ApprovalAdmissions
+    self._run_admissions = ApprovalAdmissions()
     self._run_idempotency_store = store_factory()
     self._run_owner_pid = os.getpid()
     try:
@@ -239,7 +241,10 @@ def _initialize_run_state(self, *, store_factory) -> None:
 
 
 def _http_routes(self) -> list[tuple[str, str, Any]]:
+    from functools import partial
+    from gateway.platforms.api_server_run_admissions import runs_meta
     return [
+        ("GET", "/v1/runs/meta", partial(runs_meta, self)),
         ("POST", "/v1/runs", self._handle_runs), ("GET", "/v1/runs/{run_id}", self._handle_get_run),
         ("GET", "/v1/runs/{run_id}/events", self._handle_run_events),
         ("POST", "/v1/runs/{run_id}/approval", self._handle_run_approval),
@@ -718,8 +723,8 @@ async def _admit_run_to_authority(
 async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Response:
     """POST /v1/runs — start an agent run, return run_id immediately."""
     _openai_error = _api_server._openai_error
-    # Long-term memory scope header (see chat_completions for details).
-    gateway_session_key, key_err = self._parse_session_key_header(request)
+    from gateway.platforms.api_server_run_admissions import run_creation_headers
+    gateway_session_key, key_err = run_creation_headers(self, request, _openai_error=_openai_error)
     if key_err is not None:
         return key_err
     try:
@@ -733,11 +738,11 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
         v if isinstance(v, dict) else None for v in (
             (body.get("hosted_room_dispatch"), body.get("_room_execution_policy"))
             if isinstance(body, dict) else (None, None)))
-    idempotency_key = request.headers.get("Idempotency-Key", "").strip()
-    if len(idempotency_key) > 255 or any(ord(ch) < 33 or ord(ch) > 126 for ch in idempotency_key):
-        return _json_error(
-            _openai_error, "Idempotency-Key must be 1-255 visible ASCII characters",
-            code="invalid_idempotency_key", status=400)
+    from gateway.platforms.api_server_run_admissions import parse_idempotency_key
+    idempotency_key, key_error = parse_idempotency_key(
+        request, _openai_error=_openai_error, allow_empty=True)
+    if key_error is not None:
+        return key_error
     idempotency_scope, idempotency_fingerprint = _run_idempotency_identity(
         self, request, body, gateway_session_key, idempotency_key)
     raw_input = body.get("input")
@@ -1175,7 +1180,9 @@ def _request_owns_run(self, request: web.Request, run_id: str) -> bool:
     return owns_api_run(self, run_id, scope)
 
 
-def _load_owned_run(self, request, *, _api_server, permission: Optional[str], active_fallback: bool):
+def _load_owned_run(
+    self, request, *, _api_server, permission: Optional[str], active_fallback: bool, validate_generation=False,
+):
     """Authenticate (*permission* -> room-grant aware; ``None`` -> API key only) and resolve
     ``(run_id, status, agent, task, error)``; *active_fallback* reports a live in-process run
     without pollable status as ``running`` instead of 404."""
@@ -1183,6 +1190,11 @@ def _load_owned_run(self, request, *, _api_server, permission: Optional[str], ac
     if auth_err:
         return None, None, None, None, auth_err
     _openai_error = _api_server._openai_error
+    if validate_generation:
+        from gateway.platforms.api_server_run_admissions import check_generation
+        generation_error = check_generation(self, request, _openai_error=_openai_error)
+        if generation_error is not None:
+            return None, None, None, None, generation_error
     run_id = request.match_info["run_id"]
     if not self._request_owns_run(request, run_id):
         return run_id, None, None, None, _run_not_found(_openai_error, run_id)
@@ -1305,69 +1317,29 @@ def _mark_run_event(self, run_id: str, name: str, **fields: Any) -> None:
             q.put_nowait(_run_event(run_id, name, **fields))
 
 
-_APPROVAL_CHOICE_ALIASES = {"approve": "once", "approved": "once", "allow": "once"}
-
-
 async def _handle_run_approval(self, request: web.Request, *, _api_server) -> web.Response:
     """POST /v1/runs/{run_id}/approval — resolve a pending run approval."""
     _openai_error = _api_server._openai_error
     run_id, _, _, _, err = _load_owned_run(
-        self, request, _api_server=_api_server, permission="approve", active_fallback=False)
+        self, request, _api_server=_api_server, permission="approve", active_fallback=False,
+        validate_generation=True)
     if err is not None:
         return err
+    from gateway.platforms.api_server_run_admissions import approval_response
     try:
         body = await request.json()
     except Exception:
         return _json_error(_openai_error, "Invalid JSON", status=400)
-    if getattr(self.gateway_runner, 'session_authority', None) is not None:
-        if self._room_grant_token(request) and body.get('choice') not in {'once', 'deny'}:
-            return _json_error(_openai_error, 'Room approvals require once or deny', status=400)
-        return await _respond_authority_run(self, run_id, body, kind='approval', _api_server=_api_server)
-    raw_choice = str(body.get("choice", "")).strip().lower()
-    choice = _APPROVAL_CHOICE_ALIASES.get(raw_choice, raw_choice)
-    room_scoped = bool(self._room_grant_token(request))
-    raw_request_id = body.get("request_id")
-    request_id = raw_request_id.strip() if isinstance(raw_request_id, str) else ""
-    # Room grants may resolve exactly one request and never widen to session/always.
-    allowed = {"once", "deny"} if room_scoped else {"once", "session", "always", "deny"}
-    resolve_all = any(_api_server._coerce_request_bool(body.get(k), default=False) for k in ("all", "resolve_all"))
-    approval_session_key = self._run_approval_sessions.get(run_id)
-    for failed, message, code, status in (
-        (raw_request_id is not None and (not request_id or len(request_id) > 256),
-         "Approval request_id is invalid.", "invalid_approval_request", 400),
-        (choice not in allowed,
-         "Invalid approval choice; expected one of: " + ", ".join(sorted(allowed)),
-         "invalid_approval_choice", 400),
-        (room_scoped and resolve_all,
-         "Room approvals can resolve only one exact request", "invalid_approval_scope", 400),
-        (room_scoped and not request_id,
-         "Room approvals require the exact request_id.", "approval_request_required", 400),
-        (not approval_session_key,
-         f"Run has no active approval session: {run_id}", "approval_not_active", 409)):
-        if failed:
-            return _json_error(_openai_error, message, code=code, status=status)
-    try:
-        from tools.approval import resolve_gateway_approval
-        resolved = resolve_gateway_approval(
-            approval_session_key, choice, resolve_all=resolve_all, request_id=request_id or None)
-    except Exception as exc:
-        logger.exception("[api_server] approval resolution failed for run %s", run_id)
-        return _json_error(_openai_error, str(exc), status=500)
-    if resolved <= 0:
-        return _json_error(
-            _openai_error, f"Run has no pending approval: {run_id}", code="approval_not_pending", status=409)
-    request_id_field = {"request_id": request_id} if request_id else {}
-    _mark_run_event(self, run_id, "approval.responded", choice=choice, **request_id_field, resolved=resolved)
-    return web.json_response({
-        "object": "hermes.run.approval_response", "run_id": run_id, "choice": choice, **request_id_field,
-        "resolved": resolved})
+    if not isinstance(body, dict):
+        return _json_error(_openai_error, "Approval body must be an object", status=400)
+    return await approval_response(self, request, run_id, body, _api_server=_api_server)
 
 
-async def _respond_authority_run(self, run_id, body, *, kind, _api_server):
+async def _respond_authority_run(self, run_id, body, *, kind, _api_server, on_dispatch=None):
     from gateway.platforms.api_server_authority_runs import respond_run, store_error_response
     from hermes_state_runtime import RuntimeStoreError
     try:
-        result = await respond_run(self, run_id, body, kind=kind)
+        result = await respond_run(self, run_id, body, kind=kind, on_dispatch=on_dispatch)
         return web.json_response({'run_id': run_id, **result})
     except RuntimeStoreError as exc:
         return store_error_response(_api_server._openai_error, exc)

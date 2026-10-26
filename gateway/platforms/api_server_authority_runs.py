@@ -110,7 +110,7 @@ async def send_clarify(adapter, *, chat_id, **kwargs):
     return SendResult(success=True, message_id=kwargs['clarify_id'])
 
 
-async def respond_run(adapter, run_id, body, *, kind):
+async def respond_run(adapter, run_id, body, *, kind, on_dispatch=None):
     import uuid
     owned = run_admission(adapter, run_id)
     if owned is None:
@@ -130,6 +130,8 @@ async def respond_run(adapter, run_id, body, *, kind):
     try:
         if not any(p['prompt_id'] == prompt_id and p['kind'] == kind for p in snapshot.prompts):
             raise RuntimeStoreError('approval_not_pending')
+        if on_dispatch is not None:
+            on_dispatch()
         return await authority.respond(actor, ref, generation, prompt_id, {field: body[field]}, kind=kind)
     finally:
         await authority.detach(actor, snapshot.subscription_id)

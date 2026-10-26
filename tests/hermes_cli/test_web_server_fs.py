@@ -968,7 +968,7 @@ def test_fs_reads_translate_after_binding_profile_terminal_scope(client, tmp_pat
 
     from tools.terminal_scope import get_terminal_scope
 
-    def translate(path, session_key="", workspace_key="", *, quiet=False):
+    def translate(path, session_key="", workspace_key="", *, quiet=False, workspace_cwd=""):
         if path == Path("/workspace/isolated report.txt") and get_terminal_scope() is not None:
             return target
         return None
@@ -1122,14 +1122,16 @@ def test_fs_download_maps_workspace_container_to_its_sandbox(client, monkeypatch
 def test_fs_download_cwd_mount_wins_then_falls_back_to_workspace_sandbox(
     client, monkeypatch, tmp_path,
 ):
-    """With the host cwd mounted on ``/workspace``, that directory wins when the
-    file is there. When the container was still created as ``default:ws:`` and
+    """With the host cwd mounted on ``/workspace``, the session's own cwd is that
+    mount and wins when the file is there; the profile's ``terminal.cwd`` is another
+    container's mount. When the container was still created as ``default:ws:`` and
     the file only exists in its sandbox workspace, the download serves that copy."""
     project = tmp_path / "project"
     project.mkdir()
+    (project / "note.txt").write_bytes(b"mounted-file")
     mounted = tmp_path / "mounted-cwd"
     mounted.mkdir()
-    (mounted / "note.txt").write_bytes(b"mounted-file")
+    (mounted / "note.txt").write_bytes(b"profile-cwd-file")
     sandbox = tmp_path / "sandboxes"
     own = _workspace_sandbox(sandbox, project)
     (own / "note.txt").write_bytes(b"sandbox-file")
@@ -1150,7 +1152,7 @@ def test_fs_download_cwd_mount_wins_then_falls_back_to_workspace_sandbox(
     assert mounted_hit.status_code == 200
     assert mounted_hit.content == b"mounted-file"
 
-    (mounted / "note.txt").unlink()
+    (project / "note.txt").unlink()
     sandbox_hit = client.get(
         "/api/fs/download", params={"path": "/workspace/note.txt", "session_id": "sess-ws"},
     )
@@ -1168,7 +1170,7 @@ def test_agent_fs_path_translates_before_host_normalization(monkeypatch, tmp_pat
     mapped = tmp_path / "x.txt"
     seen = []
 
-    def translate(candidate, session_key="", workspace_key="", *, quiet=False):
+    def translate(candidate, session_key="", workspace_key="", *, quiet=False, workspace_cwd=""):
         seen.append(candidate.as_posix())
         return mapped
 

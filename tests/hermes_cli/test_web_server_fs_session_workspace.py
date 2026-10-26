@@ -70,6 +70,7 @@ def sandboxes(monkeypatch, tmp_path):
         "sess-ws": ("default", str(project)),
         "sess-other": ("default", str(other)),
         "sess-work": ("work", str(project)),
+        "sess-container": ("default", "/workspace"),  # no host workspace binding
     }
 
     lookups = []
@@ -272,6 +273,74 @@ def test_save_refuses_a_session_this_profile_does_not_own(client, sandboxes, ses
         )
         assert response.status_code == 404, (path, response.text)
     assert _notes(sandboxes) == {"own": "session note", "foreign": "foreign note", "shared": "shared note"}
+
+
+# Part 4: docker_mount_cwd_to_workspace
+
+
+@pytest.fixture
+def cwd_mount(sandboxes, monkeypatch, tmp_path):
+    """The cwd mount on: the profile's ``terminal.cwd`` is P (``projmount``), while ``sess-ws`` is
+    bound to its own workspace W (``project``), which its container mounts at ``/workspace``."""
+    profile_cwd, workspace = tmp_path / "projmount", tmp_path / "project"
+    profile_cwd.mkdir()
+    (profile_cwd / "note.txt").write_text("profile note", encoding="utf-8")
+    (workspace / "note.txt").write_text("workspace note", encoding="utf-8")
+    monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "true")
+    monkeypatch.setenv("TERMINAL_CWD", str(profile_cwd))
+    return {**sandboxes, "profile_cwd": profile_cwd, "workspace": workspace}
+
+
+@pytest.fixture(params=["session row", "live binding"])
+def bound(request, cwd_mount):
+    """``sess-ws``'s workspace from its stored cwd, or from the binding its running turn registered."""
+    if request.param == "session row":
+        yield cwd_mount
+        return
+    from gateway.session_policy import unbind_turn_workspace
+    from tools.terminal_tool import register_task_env_overrides, workspace_key_for
+
+    workspace = str(cwd_mount["workspace"])
+    register_task_env_overrides("sess-ws", {
+        "cwd": workspace, "cwd_source": "session", "workspace_key": workspace_key_for(workspace),
+    })
+    try:
+        yield cwd_mount
+    finally:
+        unbind_turn_workspace("sess-ws")
+
+
+def _mount_notes(roots):
+    return {name: (roots[name] / "note.txt").read_text(encoding="utf-8") for name in ("workspace", "profile_cwd")}
+
+
+@pytest.mark.parametrize("path", ["/workspace/note.txt", "file:///workspace/note.txt"])
+def test_a_cwd_mounted_session_reads_and_saves_its_own_workspace(client, bound, path):
+    read = client.get("/api/fs/read-text", params={"path": path, "session_id": "sess-ws"})
+    saved = client.post("/api/fs/write-text", json={"path": path, "content": "edited", "session_id": "sess-ws"})
+
+    assert (read.status_code, read.json()["text"]) == (200, "workspace note"), read.text
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["path"] == read.json()["path"] == str(bound["workspace"] / "note.txt")
+    assert _mount_notes(bound) == {"workspace": "edited", "profile_cwd": "profile note"}
+
+
+def test_a_cwd_mounted_session_without_a_workspace_binding_keeps_the_profile_cwd(client, cwd_mount):
+    for params in ({"session_id": "sess-container"}, {}):
+        read = client.get("/api/fs/read-text", params={"path": "/workspace/note.txt", **params})
+        assert (read.status_code, read.json()["text"]) == (200, "profile note"), (params, read.text)
+        assert read.json()["path"] == str(cwd_mount["profile_cwd"] / "note.txt")
+
+
+@pytest.mark.parametrize("session_id", ["sess-work", "missing-session", " "])
+def test_a_cwd_mounted_session_this_profile_does_not_own_is_refused(client, cwd_mount, session_id):
+    note = {"path": "/workspace/note.txt", "session_id": session_id}
+
+    read = client.get("/api/fs/read-text", params=note)
+    saved = client.post("/api/fs/write-text", json={**note, "content": "edited"})
+
+    assert (read.status_code, saved.status_code) == (404, 404)
+    assert _mount_notes(cwd_mount) == {"workspace": "workspace note", "profile_cwd": "profile note"}
 
 
 @pytest.mark.parametrize("path", [

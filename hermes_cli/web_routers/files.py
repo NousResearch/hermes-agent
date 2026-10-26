@@ -37,8 +37,9 @@ from hermes_cli.web_server_remote_media import remote_media_response
 from hermes_cli.web_upload_limit import CHAT_IMAGE_MAX_BYTES
 from hermes_cli.web_server_surface import route_on
 from hermes_cli.web_server_files import (
-    SANDBOX_NOT_FOUND, _agent_fs_path, _file_url_path, _fs_path, _hosted_fs_read_guard, _is_unmapped_container_path,
-    _managed_file_entry, _managed_response_meta, _resolve_managed_path, _session_workspace_key,
+    SANDBOX_NOT_FOUND, _agent_fs_path, _agent_path_scope, _file_url_path, _fs_path, _hosted_fs_read_guard,
+    _is_unmapped_container_path, _managed_file_entry, _managed_response_meta, _resolve_managed_path,
+    _session_workspace,
 )
 from hermes_cli.web_models import (
     ChatImageUpload, FileTicketRequest, FsWriteText, ManagedDirectoryCreate, ManagedFileDelete,
@@ -1144,10 +1145,12 @@ async def _fs_download_path(
             session = await _fs_owned_session(session_id, profile)
         # Validate ownership even for absolute paths; never trust a client cwd.
         cwd = (session or {}).get("cwd") or ""
+        # The profile's scope qualifies the key its turns registered the session's workspace under.
+        with _agent_path_scope(profile_home):
+            workspace_key, workspace_cwd = _session_workspace(session_id, cwd)
         return _agent_fs_path(
-            path, cwd=cwd, profile_home=profile_home,
-            workspace_key=_session_workspace_key(session_id, cwd), decode_fallback=decode_fallback,
-            own_sandbox_only=own_sandbox_only,
+            path, cwd=cwd, profile_home=profile_home, workspace_key=workspace_key,
+            workspace_cwd=workspace_cwd, decode_fallback=decode_fallback, own_sandbox_only=own_sandbox_only,
         )
     return _agent_fs_path(path, profile_home=profile_home, decode_fallback=decode_fallback)
 

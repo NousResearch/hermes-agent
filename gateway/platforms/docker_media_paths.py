@@ -75,9 +75,9 @@ def _docker_persistent_sandbox_roots(
         return []
 
 
-def _mounted_workspace_cwd() -> list[Path]:
+def _mounted_workspace_cwd(workspace_cwd: str = "") -> list[Path]:
     tenv, _truthy, _persistent = _scope()
-    cwd = tenv("TERMINAL_CWD") or os.getcwd()
+    cwd = workspace_cwd or tenv("TERMINAL_CWD") or os.getcwd()
     try:
         host = Path(os.path.expanduser(cwd)).resolve(strict=False)
     except (OSError, RuntimeError, ValueError):
@@ -85,15 +85,35 @@ def _mounted_workspace_cwd() -> list[Path]:
     return [host] if host.is_dir() else []
 
 
+def _session_mounted_workspace(workspace_key: str, workspace_cwd: str) -> list[Path]:
+    """The host dir a session bound to a workspace mounts at ``/workspace``, or nothing.
+
+    A gateway turn runs with the session's own cwd as ``TERMINAL_CWD``
+    (``gateway.session_policy.build_policy``), and that cwd is also what
+    ``bind_turn_workspace`` registers and hashes into ``workspace_key``. So the
+    mount is that cwd, never the profile's ``terminal.cwd``. A cwd whose digest
+    is not ``workspace_key`` names some other container's mount: no root.
+    """
+    from tools.terminal_tool import workspace_key_for
+
+    cwd = (workspace_cwd or "").strip()
+    if not cwd or "\0" in cwd or not os.path.isabs(os.path.expanduser(cwd)):
+        return []
+    if workspace_key_for(cwd) != workspace_key:
+        return []
+    return _mounted_workspace_cwd(cwd)
+
+
 def _default_docker_workspace_host_roots(
-    session_key: str = "", workspace_key: str = "",
+    session_key: str = "", workspace_key: str = "", workspace_cwd: str = "",
 ) -> list[Path]:
     """Host dirs that stand in for ``/workspace``.
 
     A cwd mount is tried first. With no workspace digest that mount is the
-    only candidate, so MEDIA delivery (which has no session) stays cwd-only.
-    A download that names a digest also tries that session's sandbox after
-    the mount: the container key can be ``default:ws:<digest>`` while
+    profile's cwd and the only candidate, so MEDIA delivery (which has no
+    session) stays cwd-only. A download that names a digest mounts that
+    session's own cwd (``workspace_cwd``) instead, then tries that session's
+    sandbox: the container key can be ``default:ws:<digest>`` while
     ``/workspace`` is still the sandbox directory, because the host cwd was
     not bind-mounted when the container was created.
     """
@@ -103,9 +123,9 @@ def _default_docker_workspace_host_roots(
     roots: list[Path] = []
     mounted = tenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").strip().lower() in truthy
     if mounted:
-        roots.extend(_mounted_workspace_cwd())
         if not _WORKSPACE_KEY_RE.fullmatch(workspace_key or ""):
-            return roots
+            return _mounted_workspace_cwd()
+        roots.extend(_session_mounted_workspace(workspace_key, workspace_cwd))
     for root in _docker_persistent_sandbox_roots(session_key, "workspace", workspace_key):
         if root not in roots:
             roots.append(root)

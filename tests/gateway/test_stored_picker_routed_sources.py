@@ -38,6 +38,9 @@ async def _finished_cron_run(authority, db, tmp_path):
         receipt = await session_cron.operation(authority, 'submit', {'job_id': job['id'], 'request_id': 'fire',
                                                                      'extra_prompt': None})
     cancel_session_input(db, epoch=authority.epoch, admission_id=receipt['admission_id'])
+    # A run an agent answered (a gated fire's empty row is not offered: test_session_cron).
+    db.append_message(receipt['session_id'], 'user', 'report')
+    db.append_message(receipt['session_id'], 'assistant', 'nothing new')
     db.end_session(receipt['session_id'], 'cron_complete')
     return receipt['session_id']
 

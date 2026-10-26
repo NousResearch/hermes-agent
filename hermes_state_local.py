@@ -264,19 +264,34 @@ def local_receipt(db, session_id):
         raise RuntimeStoreError('storage_unavailable') from exc
 
 
-def end_idle_local_session(db, *, epoch, session_id, target_id, reason):
+def end_idle_local_session(db, *, epoch, session_id, target_id, reason, only_empty=False):
     """Stamp ``ended_at`` on *target_id* only while the logical *session_id*'s FIFO is idle.
 
     The idle check and the stamp share one owner write txn, so an admission committed first keeps
-    the row open; one committed after is reopened by the drain (``reopen_local_session``)."""
+    the row open; one committed after is reopened by the drain (``reopen_local_session``).
+    *only_empty* also keeps open a row that holds any message: its writer books its own end."""
     def write(conn):
         _epoch(conn, epoch)
-        if conn.execute("SELECT 1 FROM session_admissions WHERE target_session_id=? AND status IN ('queued','started','unknown')",
-                        (session_id,)).fetchone():
-            return 0
-        if conn.execute("SELECT 1 FROM worker_executions WHERE session_id IN (?,?) AND status IN ('registered','running','unknown')",
-                        (session_id, target_id)).fetchone():
-            return 0
-        return db._end_and_bump(conn, 'UPDATE sessions SET ended_at=?, end_reason=? WHERE id=? AND ended_at IS NULL',
-                                (time.time(), reason, target_id), target_id, reason)
+        return _end_idle_on(db, conn, session_id, target_id, reason, only_empty)
     return db._execute_write(write)
+
+
+def end_idle_local_sessions(db, *, epoch, pairs, reason, only_empty=False):
+    """``end_idle_local_session`` for every ``(session_id, target_id)`` of *pairs*, in one write txn."""
+    def write(conn):
+        _epoch(conn, epoch)
+        return sum(_end_idle_on(db, conn, sid, target, reason, only_empty) for sid, target in pairs)
+    return db._execute_write(write)
+
+
+def _end_idle_on(db, conn, session_id, target_id, reason, only_empty):
+    if conn.execute("SELECT 1 FROM session_admissions WHERE target_session_id=? AND status IN ('queued','started','unknown')",
+                    (session_id,)).fetchone():
+        return 0
+    if conn.execute("SELECT 1 FROM worker_executions WHERE session_id IN (?,?) AND status IN ('registered','running','unknown')",
+                    (session_id, target_id)).fetchone():
+        return 0
+    if only_empty and conn.execute('SELECT 1 FROM messages WHERE session_id=? LIMIT 1', (target_id,)).fetchone():
+        return 0
+    return db._end_and_bump(conn, 'UPDATE sessions SET ended_at=?, end_reason=? WHERE id=? AND ended_at IS NULL',
+                            (time.time(), reason, target_id), target_id, reason)

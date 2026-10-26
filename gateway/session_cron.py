@@ -7,16 +7,30 @@ import asyncio
 from contextvars import ContextVar
 from dataclasses import asdict, replace
 import json
+import logging
 import os
 from pathlib import Path
 import threading
 
+from gateway.session_acp_lifecycle import end_idle_acp_session
 from gateway.session_contract import Principal, SessionRef
 from hermes_state_keys import CRON_PRINCIPAL_ID, cron_request_id
+from hermes_state_local import POLICY_PREFIX, end_idle_local_session, end_idle_local_sessions, local_receipt
 from hermes_state_runtime import RuntimeStoreError, admit_session_input, get_session_admission
 
 _execution: ContextVar[tuple | None] = ContextVar('cron_owner_execution', default=None)
 _owners = {}
+logger = logging.getLogger(__name__)
+
+CRON_SOURCE = 'cron'
+# The end the owner books for a fire no agent wrote to (``end_settled_cron_fire``).
+CRON_SETTLED_END_REASON = 'cron_settled'
+
+
+def is_cron_fire(policy_source):
+    """The one test of a cron fire: its local policy's ``source`` (``_create`` sets it), read from the
+    stored receipt or the live policy."""
+    return policy_source == CRON_SOURCE
 
 
 def bind_owner(authority):
@@ -261,13 +275,28 @@ def _run_identified(run_job, job, execution_id, **kwargs):
         exit_cron_execution(token)
 
 
+def _foreign_input(authority, ref, row, policy):
+    """Whether *row* is anything but the session's own frozen fire (``execute`` refuses it)."""
+    data = json.loads(policy.request_json)
+    return (row['payload'] != {'text': data['extra_prompt'] or ''}
+            or row['request_id'] != data['request_id']
+            or row['principal_id'] != authority.sessions[ref.session_id].source.user_id)
+
+
+def refuses_input(authority, ref, row):
+    """Whether *ref* is a cron fire that will refuse *row* read-only. That turn must not reopen the
+    finished run's row (the drain's ``reopen_local_session``): its refusal card lands in the closed
+    row as a completion note does, and the run keeps the end its scheduler booked."""
+    from gateway.session_policy import policy_for_source
+    policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
+    return policy is not None and is_cron_fire(policy.source) and _foreign_input(authority, ref, row, policy)
+
+
 async def execute(authority, ref, row, policy):
     from cron.scheduler import run_job
     from gateway.run import _profile_runtime_scope
     data = json.loads(policy.request_json)
-    if (row['payload'] != {'text': data['extra_prompt'] or ''}
-            or row['request_id'] != data['request_id']
-            or row['principal_id'] != authority.sessions[ref.session_id].source.user_id):
+    if _foreign_input(authority, ref, row, policy):
         # A cron session only runs its own frozen fire; anything else typed into it fails with a
         # descriptor the viewer can render (and offer a new chat for), never a generic failure.
         from agent.i18n import t
@@ -302,3 +331,68 @@ async def execute(authority, ref, row, policy):
         owner_progress.pop(execution_id, None)
         _execution.reset(token)
         cancellations.pop(row['admission_id'], None)
+
+
+# The end of a fire no agent wrote to. ``run_job`` books a fire's end itself
+# (``cron.scheduler._finalize_cron_session``), but only once an agent ran: a fire gated before that
+# (monitor unchanged, ``wakeAgent=false``, empty script output) left its row open for good, listed as a
+# live session by every picker and kept from prune and "Delete empty". The owner books those: at the
+# drain's idle point, when the last viewer leaves, and once at startup for rows stored before. Only an
+# empty row is stamped; a row an agent wrote to is its scheduler's to end, and a late finalization
+# (deferred worker teardown) replaces the provisional stamp (``SessionDB.supersede_end_reason``).
+def end_settled_cron_fire(authority, session_id):
+    """End *session_id* iff it is an unviewed cron fire with an idle FIFO and an empty row."""
+    live = authority.sessions.get(session_id)
+    if live is not None and live.subscribers:
+        return False
+    try:
+        receipt = local_receipt(authority.db, session_id)
+    except RuntimeStoreError:
+        return False  # not a local session
+    if not is_cron_fire(receipt.get('policy', {}).get('source')):
+        return False
+    try:
+        return bool(end_idle_local_session(authority.db, epoch=authority.epoch, session_id=session_id,
+                                           target_id=receipt['entry']['session_id'],
+                                           reason=CRON_SETTLED_END_REASON, only_empty=True))
+    except (RuntimeStoreError, KeyError, TypeError):
+        logger.warning('cron fire %s not ended', session_id, exc_info=True)
+        return False
+
+
+async def end_settled_fire_at_idle(authority, live, session_id):
+    """The drain's idle point, after the viewer close: end a local session's fire if no agent wrote
+    to it (``end_settled_cron_fire``, off the loop). Returns whether input scheduled meanwhile set
+    ``rescan``, which the drain must claim rather than exit."""
+    from functools import partial
+    from gateway.config import Platform
+    from gateway.session_runtime_workers import tracked_write
+    if live.source is not None and live.source.platform == Platform.LOCAL:
+        await tracked_write(authority, partial(end_settled_cron_fire, authority, session_id))
+    return live.rescan
+
+
+def end_unviewed_session(authority, session_id):
+    """The last viewer left an idle session: end it if nobody else will (ACP, or a settled cron fire)."""
+    return end_idle_acp_session(authority, session_id) or end_settled_cron_fire(authority, session_id)
+
+
+def end_settled_cron_fires(db, epoch):
+    """Startup repair, before any receipt is mounted: end every stored cron fire left open with an
+    empty row and nothing pending (one write txn; already-ended rows are skipped, so it is idempotent).
+    Returns the number of rows ended; a failure is logged and leaves the rows as they were."""
+    try:
+        with db._read_ctx() as conn:
+            # A malformed receipt reads as no target (``session_live_listing._store_facts``).
+            pairs = [(row[0][len(POLICY_PREFIX):], row[1]) for row in conn.execute(
+                "SELECT m.key, s.id FROM state_meta m JOIN sessions s ON s.id = CASE WHEN json_valid(m.value) "
+                "AND json_extract(m.value, '$.policy.source') = ? THEN json_extract(m.value, '$.entry.session_id') END "
+                "WHERE m.key LIKE ? AND s.ended_at IS NULL", (CRON_SOURCE, POLICY_PREFIX + '%'))]
+        ended = end_idle_local_sessions(db, epoch=epoch, pairs=pairs, reason=CRON_SETTLED_END_REASON,
+                                        only_empty=True) if pairs else 0
+    except Exception:
+        logger.warning('Settled cron fire repair failed for %s', db.db_path, exc_info=True)
+        return 0
+    if ended:
+        logger.info('Ended %d settled cron fire session(s)', ended)
+    return ended

@@ -388,10 +388,11 @@ class SessionAuthority:
                         from gateway.session_viewer_close import close_viewer_session
                         await close_viewer_session(self, session_id, end_reason)
                         return
-                    from gateway.session_acp_lifecycle import end_idle_acp_session, reopen_if_reattached
+                    from gateway.session_acp_lifecycle import reopen_if_reattached
+                    from gateway.session_cron import end_unviewed_session
                     from gateway.session_runtime_workers import tracked_write
                     # A viewer that attached while the close was off the loop reopens it.
-                    await tracked_write(self, partial(end_idle_acp_session, self, session_id),
+                    await tracked_write(self, partial(end_unviewed_session, self, session_id),
                                         then=partial(reopen_if_reattached, self, session_id))
                     if orphaned:  # a plain session.detach is a live client handing the session back
                         from gateway.session_viewer_close import arm_detached_orphan_close
@@ -1064,7 +1065,10 @@ class SessionAuthority:
                 from gateway.session_local_recovery import reopen_local_session
                 from gateway.session_runtime_workers import tracked_write
                 from gateway.session_completion_notes import noted_completion
-                if not noted_completion(first):  # a note leaves a closed row closed (session_completion_notes)
+                from gateway.session_cron import refuses_input
+                # A note leaves a closed row closed (session_completion_notes), and so does input a cron
+                # fire refuses read-only: that turn only appends its refusal card, the run stays ended.
+                if not noted_completion(first) and not refuses_input(self, ref, first):
                     await tracked_write(self, partial(reopen_local_session, self, ref))
             if first is not None and 'native_text_v1' in first['payload']:
                 from gateway.session_envelope import check_native_route
@@ -1272,7 +1276,10 @@ class SessionAuthority:
                     continue
                 from gateway.session_viewer_close import settle_viewer_close
                 await settle_viewer_close(self, ref.session_id)  # a close that arrived mid-turn
-                if live.rescan:
+                from gateway.session_cron import end_settled_fire_at_idle
+                # After the viewer close, whose own reason and lifecycle win: a cron fire no agent
+                # wrote to has no other writer to end its row (session_cron.end_settled_cron_fire).
+                if live.rescan or await end_settled_fire_at_idle(self, live, ref.session_id):
                     continue
                 return
             admission_id = row['admission_id']
@@ -1457,6 +1464,10 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     await asyncio.to_thread(settle_recovered_unattended, db, epoch)
     await asyncio.to_thread(backfill_legacy_session_owners, db)
     await asyncio.to_thread(backfill_compression_created_sources, db)
+    # Cron fires gated before an agent ran, stored before the owner booked their end: every receipt
+    # is remounted below, so an open row would read as a live, idle, untitled session for good.
+    from gateway.session_cron import end_settled_cron_fires
+    await asyncio.to_thread(end_settled_cron_fires, db, epoch)
     authority = SessionAuthority(runner, profile_id=profile_id, instance_id=instance_id, db=db, epoch=epoch)
     # A receipt's compression catch-up (#140060) writes: it commits off the loop too, before the
     # authority is published, so the recovery below only reads.

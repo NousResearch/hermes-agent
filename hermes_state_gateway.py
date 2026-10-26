@@ -638,6 +638,15 @@ class SessionGatewayMixin:
             return True
         return self._execute_write(_do)
 
+    def supersede_end_reason(self, session_id: str, stale_reason: str, end_reason: str) -> int:
+        """Re-book an end stamped *stale_reason* as *end_reason*, now: the one exception to
+        ``end_session``'s first-reason-wins, for a provisional stamp its writer outlived
+        (the owner's ``cron_settled``, ``gateway.session_cron``). Returns rowcount."""
+        return self._execute_write(lambda conn: self._end_and_bump(
+            conn, "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ? AND end_reason = ?",
+            (time.time(), end_reason, session_id, stale_reason), session_id, end_reason,
+        ))
+
     def increment_hygiene_failure_streak(self, session_key: str) -> int:
         """Atomically increment the session-hygiene failure streak for one chat."""
         if not session_key:

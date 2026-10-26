@@ -1,8 +1,10 @@
 """Read-only native picker history; enumeration never adopts a transcript."""
+from hermes_state_local import local_receipt
 from hermes_state_local_migration import validate_legacy_row
 from hermes_state_mutation_binding import authorize_history
 from hermes_state_runtime import RuntimeStoreError
 
+from gateway.session_cron import is_cron_fire
 from gateway.session_route_recovery import _messaging_platform, mountable
 
 # Local labels (a cron run is a canonical local session whose last viewer is its own fire).
@@ -59,6 +61,8 @@ def stored_picker_sessions(authority, actor, *, limit, include_hidden=False):
                 if len(sessions) == limit:
                     break
                 continue
+            if _empty_cron_fire(authority, tip):
+                continue  # a fire no agent wrote to is a run record with nothing to resume
             closed = _closed_local_session(authority, actor, row, tip)
             if closed is not None:
                 if closed['id'] not in seen:
@@ -83,6 +87,19 @@ def stored_picker_sessions(authority, actor, *, limit, include_hidden=False):
             break
         offset += len(rows)
     return {'sessions': sessions, 'scope': 'stored'}
+
+
+def _empty_cron_fire(authority, tip):
+    """A cron fire whose row holds no message: gated before an agent ran (monitor unchanged,
+    ``wakeAgent=false``), it is ended (``session_cron.end_settled_cron_fire``) yet offers nothing to
+    resume, and hundreds of them would bury every conversation under untitled rows."""
+    if tip.get('message_count') or not tip.get('chat_id'):
+        return False
+    try:
+        receipt = local_receipt(authority.db, tip['chat_id'])
+    except RuntimeStoreError:
+        return False  # no local receipt: legacy history, judged below
+    return is_cron_fire(receipt.get('policy', {}).get('source'))
 
 
 def _closed_local_session(authority, actor, row, tip):

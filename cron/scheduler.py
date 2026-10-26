@@ -2232,6 +2232,15 @@ def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_s
     except (Exception, KeyboardInterrupt) as e:
         logger.debug("Job '%s': failed to end session: %s", job_id, e)
     try:
+        # A worker that outlived run_job (deferred teardown, scheduler_detached_worker) finalizes after
+        # the owner's drain went idle, and the drain may have booked the fire ``cron_settled`` before the
+        # agent wrote its first row (gateway/session_cron.end_settled_cron_fire). This run's own outcome
+        # replaces that provisional stamp; any other reason already booked stays first.
+        from gateway.session_cron import CRON_SETTLED_END_REASON
+        _session_db.supersede_end_reason(_final_cron_session_id, CRON_SETTLED_END_REASON, _end_reason)
+    except (Exception, KeyboardInterrupt) as e:
+        logger.debug("Job '%s': failed to supersede a settled stamp: %s", job_id, e, exc_info=True)
+    try:
         from hermes_state_registry import release_or_close
         release_or_close(_session_db)
     except (Exception, KeyboardInterrupt) as e:

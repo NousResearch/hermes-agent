@@ -1,6 +1,8 @@
 """Durable ``/v1/runs`` admission, status, events, and control handlers."""
 
 import asyncio
+import contextvars
+import functools
 import hashlib
 import json
 import logging
@@ -25,6 +27,7 @@ except ImportError:
     RequestKey = None  # type: ignore[assignment,misc]
 
 from gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response
+from gateway.turn_executor import _UnboundedThreadExecutor
 from gateway.platforms.api_server_run_idempotency import TERMINAL_STATUSES
 
 
@@ -38,6 +41,17 @@ logger = logging.getLogger("gateway.platforms.api_server")
 # in the worker thread's own ``finally``, which also keeps it visible past ``adapters.clear()``.
 _API_WORKER_LOCK = threading.Lock()
 _API_WORKER_LIVE = 0
+# API-server agent turns and cron fires run on their own executor, as Desktop and messaging turns
+# do (``GatewayRunner._get_executor``). asyncio's default pool is ``min(32, cpu_count + 4)`` threads
+# shared with every ``asyncio.to_thread`` SessionDB read in the session handlers, so once live
+# turns filled it each /api/sessions read queued behind a whole turn (#144362). Turn concurrency is
+# bounded where it is refused: ``gateway.api_server.max_concurrent_runs`` (429 past the cap).
+_API_TURN_EXECUTOR = _UnboundedThreadExecutor(thread_name_prefix="hermes-api-turn")
+
+
+def api_turn_executor() -> _UnboundedThreadExecutor:
+    """The executor that runs API-server agent turns and cron fires (never the loop's default)."""
+    return _API_TURN_EXECUTOR
 
 
 def api_worker_live_count() -> int:
@@ -46,12 +60,18 @@ def api_worker_live_count() -> int:
         return _API_WORKER_LIVE
 
 
+async def on_turn_executor(fn, /, *args, **kwargs):
+    """``asyncio.to_thread`` (context copied the same way) on the API turn executor."""
+    call = functools.partial(contextvars.copy_context().run, fn, *args, **kwargs)
+    return await asyncio.get_running_loop().run_in_executor(_API_TURN_EXECUTOR, call)
+
+
 def _submit_api_worker(loop, fn):
-    """``loop.run_in_executor(None, fn)`` with the worker-lifetime count held for the submission.
+    """``loop.run_in_executor(api_turn_executor(), fn)`` with the worker-lifetime count held for the submission.
 
     Increment on the submitting (handler) thread so the count is live before the worker can
     exit; decrement in the worker thread's own ``finally`` so handler cancellation cannot drop
-    it early. When submission itself fails (default executor already shut down during quiesce
+    it early. When submission itself fails (executor shut down, or no thread can be started
     -> RuntimeError) the worker never runs, so the count is released here instead — a leaked
     count would make the shutdown close gate skip the SessionDB close for the process lifetime.
     """
@@ -68,7 +88,7 @@ def _submit_api_worker(loop, fn):
                 _API_WORKER_LIVE -= 1
 
     try:
-        return loop.run_in_executor(None, _counted)
+        return loop.run_in_executor(_API_TURN_EXECUTOR, _counted)
     except BaseException:
         with _API_WORKER_LOCK:
             _API_WORKER_LIVE -= 1

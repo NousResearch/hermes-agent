@@ -363,8 +363,7 @@ def node_latest_versions() -> list[str]:
     out = []
     for entry in _get_json("https://nodejs.org/dist/index.json"):
         v = entry.get("version", "")
-        if v.startswith("v"):
-            v = v[1:]
+        v = v.removeprefix("v")
         if re.fullmatch(r"\d+\.\d+\.\d+", v):
             out.append(v)
     return out

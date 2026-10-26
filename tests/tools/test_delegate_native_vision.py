@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, patch
 
 from agent.auxiliary_client import reset_runtime_main, set_runtime_main
 from hermes_constants import get_hermes_home
-from tools import vision_tools  # noqa: F401 - registers vision_analyze
+from tools import vision_tools
 from tools.delegate_tool_config import _resolve_child_runtime
 from tools.registry import registry
 

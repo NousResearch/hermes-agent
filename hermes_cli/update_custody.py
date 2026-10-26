@@ -45,6 +45,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Sequence
+import itertools
 
 logger = logging.getLogger(__name__)
 
@@ -258,7 +259,7 @@ def run(argv: Sequence[str], *, inherit_lock: bool = False, **kwargs) -> subproc
     parent-death signal for the rest); on Windows inside an update it is the same contract over
     :func:`popen`, so the child is job-bound before it runs."""
     if not (sys.platform == "win32" and _held() is not None):
-        return subprocess.run(list(argv), **_custody_kwargs(inherit_lock, kwargs))
+        return subprocess.run(list(argv), **_custody_kwargs(inherit_lock, kwargs))  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
     input, timeout = kwargs.pop("input", None), kwargs.pop("timeout", None)
     check = kwargs.pop("check", False)
     if input is not None:
@@ -417,7 +418,7 @@ def _partial_clone(git_cmd: Sequence[str], kwargs: dict) -> bool:
     from hermes_cli.update_lock import _git_common_dir
 
     cwd = kwargs.get("cwd")
-    for flag, value in zip(git_cmd, git_cmd[1:]):
+    for flag, value in itertools.pairwise(git_cmd):
         if flag == "-C":
             cwd = Path(cwd or ".") / value
     common = _git_common_dir(Path(cwd or "."))

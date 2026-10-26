@@ -14,7 +14,7 @@ answer is identical on every connection topology.
 
 import pytest
 
-import tui_gateway.server as server
+from tui_gateway import server
 from toolsets import TOOLSETS
 
 GUI_TOOLS = {

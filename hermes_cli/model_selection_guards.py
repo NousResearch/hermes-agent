@@ -140,12 +140,12 @@ def selection_warnings(
     model_name: str, *, provider: Optional[str] = None, base_url: Optional[str] = None,
     api_key: Optional[str] = None, model_info: Optional[ModelInfo] = None,
     include_kinds: Optional[Iterable[str]] = None,
-    selection_context: Optional[SelectionContext] = None) -> List[SelectionWarning]:
+    selection_context: Optional[SelectionContext] = None) -> list[SelectionWarning]:
     """Warnings from every registered guard (empty in the common case). ``include_kinds`` restricts
     which kinds are returned; ``selection_context`` carries live-session facts for switch-aware guards.
     Guard exceptions are swallowed — never break model selection."""
     wanted = set(include_kinds) if include_kinds is not None else None
-    results: List[SelectionWarning] = []
+    results: list[SelectionWarning] = []
     for guard in _GUARDS:
         try:
             warning = guard(model_name, provider, base_url, api_key, model_info, selection_context)
@@ -156,7 +156,7 @@ def selection_warnings(
     return results
 
 
-def combined_message(warnings: List[SelectionWarning]) -> str:
+def combined_message(warnings: list[SelectionWarning]) -> str:
     """One confirm-prompt body for several warnings (one prompt beats two sequential ones)."""
     return "\n\n".join(w.message for w in warnings)
 

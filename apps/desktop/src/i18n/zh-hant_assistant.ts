@@ -1,4 +1,5 @@
 import type { TranslationOverrides } from './define-locale'
+import { zhHantThemePicker } from './zh-hant_theme_picker'
 
 export const zhHantAssistant = {
   assistant: {
@@ -15,7 +16,7 @@ export const zhHantAssistant = {
       hideNames: '隱藏名稱',
       skill: name => `技能 ${name}`,
       kind: { plugin: '外掛', skill: '技能' },
-      tier: { official: '官方', community: '社群' },
+      tier: { official: '官方', verified: '已驗證', community: '社群' },
       targetProfile: profile => `安裝到你的 ${profile} 設定檔`,
       sendFailed: '無法傳送你的回覆，請再試一次。',
       commitLabel: '提交',
@@ -95,6 +96,26 @@ export const zhHantAssistant = {
         ssl_cert_verification: {
           title: '安全連線失敗',
           body: provider => `Hermes 無法驗證與 ${provider} 的安全連線。請檢查網路或代理設定，或切換服務商後重新傳送。`
+        },
+        cron_session_read_only: {
+          title: '此聊天屬於一個排程工作',
+          body: '它只會執行該工作，因此你的訊息未被執行。請開始新的聊天後再傳送。'
+        },
+        session_read_only: {
+          title: '此聊天為唯讀',
+          body: '它是 Hermes 只能顯示、無法繼續的已儲存歷史記錄，因此你的訊息未被執行。請開始新的聊天後再傳送。'
+        },
+        usage_window: {
+          title: '包含用量已用完',
+          body: '你的方案包含的用量已用完，將在重設後恢復。在 /topup 中新增額度即可繼續。'
+        },
+        workspace_unavailable: {
+          title: '此聊天的資料夾已不存在',
+          body: '此聊天使用的資料夾已被移動或刪除，因此你的訊息未被執行。請重新建立該資料夾，或使用「Move to project」為聊天指定其他資料夾，然後重試。'
+        },
+        launch_credentials_unavailable: {
+          title: '此聊天的 API 金鑰已變更',
+          body: '此聊天開始時使用的 API 金鑰後來已被變更或刪除，因此你的訊息未送出。開啟中的聊天不會自行切換到其他金鑰。請使用「開始新工作階段」以使用目前的金鑰。'
         }
       },
       errorLayers: {
@@ -109,6 +130,12 @@ export const zhHantAssistant = {
         streaming: '串流連線錯誤'
       },
       errorRetry: '重試',
+      errorSwitchToModel: (model, note) => (note ? `切換到 ${model}（${note}）` : `切換到 ${model}`),
+      errorSwitchModelFailed: '無法切換模型',
+      errorUseCredits: '開啟用額度繼續',
+      errorUseCreditsFailed: '無法開啟用額度繼續',
+      errorAddCredits: '新增額度',
+      errorOpenBillingSettings: '開啟帳單設定',
       errorLimitResets: time => `限額將於 ${time} 重設`,
       errorRetryAtReset: time => `限額重設後重試（${time}）`,
       errorRetryScheduled: (time, wait) => `將於 ${time} 重試 — 還剩 ${wait}`,
@@ -175,31 +202,7 @@ export const zhHantAssistant = {
       questionProgress: (answered, total) => `已回答 ${answered}/${total}`,
       notDelivered: '此問題未送達應用程式，無法在此回答。請按停止結束本輪，然後在聊天中回覆。'
     },
-    setupChoose: {
-      kinds: {
-        accent: '強調色',
-        connectors: '應用程式',
-        layout: '版面配置',
-        plugins: '外掛',
-        theme: '外觀'
-      },
-      loading: '正在載入選項…',
-      unavailable: '此清單暫時無法使用，請直接在聊天中回覆。',
-      findApp: '尋找應用程式',
-      customColor: '自訂顏色',
-      plugin: '外掛',
-      startsLater: '開始時我們會幫你設定好這些。'
-    },
-    startChat: {
-      starting: title => `正在啟動「${title}」…`,
-      startingUntitled: '正在啟動聊天…',
-      untitled: '新聊天',
-      notStarted: '無法啟動該聊天。',
-      retry: '重試',
-      inProfile: profile => `位於 ${profile}`,
-      open: '開啟',
-      openFailed: '無法開啟聊天'
-    },
+    themePicker: zhHantThemePicker,
     tool: {
       copyCode: '複製程式碼',
       renderingImage: '正在渲染圖片',
@@ -271,8 +274,6 @@ export const zhHantAssistant = {
         browser_take_screenshot: { done: '已擷取截圖', pending: '正在擷取截圖', pendingAction: '正在擷取' },
         browser_type: { done: '已在頁面輸入', pending: '正在頁面輸入', pendingAction: '正在輸入' },
         clarify: { done: '已提問', pending: '正在提問', pendingAction: '正在提問' },
-        setup_choose: { done: '已提出設定問題', pending: '正在提出設定問題', pendingAction: '正在提問' },
-        start_chat: { done: '已啟動聊天', pending: '正在啟動聊天', pendingAction: '正在啟動' },
         cronjob: { done: 'Cron 工作', pending: '正在安排 Cron 工作', pendingAction: '正在安排' },
         edit_file: { done: '已編輯檔案', pending: '正在編輯檔案', pendingAction: '正在編輯' },
         execute_code: { done: '已執行程式碼', pending: '正在撰寫腳本', pendingAction: '正在撰寫腳本' },

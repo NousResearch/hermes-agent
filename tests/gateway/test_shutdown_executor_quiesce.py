@@ -402,7 +402,6 @@ async def test_default_executor_worker_is_seen_by_the_close_guard():
     async def _wait_for_summary(attempt, *_a):
         turn_waiting.set()
         await asyncio.shield(attempt.future)  # the live turn is still waiting at stop()
-        return None
 
     async def _apply_result(*_a, **_kw):
         pass

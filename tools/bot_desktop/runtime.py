@@ -141,14 +141,14 @@ class DesktopStatus:
     socket: Optional[str]
     geometry: str
     install_command: Optional[str]
-    browser: Optional[str]  # headed Chromium the dock's Browser icon and agent-browser share; None = no headed browser
+    browser: Optional[str]  # headed Chromium the dock's Browser icon and the agent's browser share; None = no headed browser
     blocker: Optional[str] = None  # why start() would refuse right now (memory); None = may start
     memory_available_mb: Optional[int] = None
     memory_limit_mb: Optional[int] = None
     placement: str = "gateway"  # "gateway" | "terminal:<backend>" — where Xvnc runs
-    image_switch: Optional[Dict[str, object]] = None  # pending default-image switch the pane can approve
+    image_switch: Optional[dict[str, object]] = None  # pending default-image switch the pane can approve
 
-    def as_dict(self) -> Dict[str, object]:
+    def as_dict(self) -> dict[str, object]:
         return dict(self.__dict__)
 
 
@@ -341,7 +341,7 @@ def _allocate_display() -> int:
         return _pick_display()
 
 
-def desktop_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+def desktop_env(base_env: Optional[dict[str, str]] = None) -> dict[str, str]:
     """``base_env`` (default ``os.environ``) with this profile's DISPLAY/XAUTHORITY/DBUS_SESSION_BUS_ADDRESS
     merged in when its desktop is running. Unchanged otherwise, so hosts with a real seat keep it.
     Pure: never starts anything (it is called from env builders, status probes and tests)."""
@@ -351,8 +351,6 @@ def desktop_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
         touch_activity()  # a browser / cua-driver spawn is the agent using its screen
         env.update(published)
         env.pop("WAYLAND_DISPLAY", None)  # X11 desktop; a leaked Wayland socket flips GTK/Chromium backends
-        from tools.bot_desktop.browser import env_for_agent
-        env_for_agent(env)  # same binary + user-data-dir as the dock's Browser icon
     return env
 
 
@@ -401,7 +399,7 @@ def tool_placement() -> str:
     return placement.TERMINAL
 
 
-def _should_auto_start(env: Dict[str, str]) -> bool:
+def _should_auto_start(env: dict[str, str]) -> bool:
     if not is_supported_host() or env.get("DISPLAY") or env.get("WAYLAND_DISPLAY"):
         return False
     if missing_binaries():
@@ -465,7 +463,7 @@ def stop_if_idle() -> bool:
     return stop()
 
 
-def published_env() -> Dict[str, str]:
+def published_env() -> dict[str, str]:
     """Variables the launcher wrote once Xfce's private bus existed; empty when the desktop is down.
 
     Pure file reads on the common path: this is called from every browser / cua-driver env builder, so it
@@ -479,7 +477,7 @@ def published_env() -> Dict[str, str]:
     raw = _read(state_dir() / "env")
     if not raw:
         return {}
-    out: Dict[str, str] = {}
+    out: dict[str, str] = {}
     for line in raw.splitlines():
         key, sep, value = line.partition("=")
         if sep:
@@ -541,7 +539,7 @@ def is_running() -> bool:
     return bool(published_env().get("DISPLAY"))
 
 
-def open_rfb_stream() -> "subprocess.Popen":
+def open_rfb_stream() -> subprocess.Popen:
     """Popen whose stdin/stdout carry RFB bytes for a sandbox-hosted screen (``in_sandbox()`` only)."""
     from tools.bot_desktop import sandbox_host
     env = _sandbox_env(create=False)
@@ -602,9 +600,11 @@ def _sandbox_status(profile: Optional[str], where) -> DesktopStatus:
     blocker = None
     image_switch = None
     if missing:
-        blocker = (f"The terminal backend's sandbox image lacks {', '.join(missing)}. Use "
-                   f"{sandbox_host.SANDBOX_IMAGE_HINT} as terminal.{where.backend}_image (the default sandbox base "
-                   f"plus the desktop stack), or set bot_desktop.placement: gateway.")
+        advice = sandbox_host.plugin_image_advice(where.backend) or (
+            f"use {sandbox_host.SANDBOX_IMAGE_HINT} as terminal.{where.backend}_image (the default sandbox base "
+            f"plus the desktop stack)")
+        blocker = (f"The terminal backend's sandbox image lacks {', '.join(missing)}. {advice[0].upper()}{advice[1:]}, "
+                   f"or set bot_desktop.placement: gateway.")
         if where.backend == "docker":
             # The usual reason on an upgraded install: the persisted container predates the default
             # flip and was kept on purpose. The pane offers the switch instead of a config hint.
@@ -654,7 +654,7 @@ def start(*, wait_seconds: float = 15.0) -> DesktopStatus:
     """Start this profile's desktop (idempotent). Blocks until the launcher publishes its env file or
     ``wait_seconds`` pass; raises ``RuntimeError`` naming the blocker.
 
-    ``bot_desktop.placement`` decides WHERE: inside the configured terminal backend (docker/ssh/singularity;
+    ``bot_desktop.placement`` decides WHERE: inside the configured terminal backend (docker/ssh/a streaming plugin backend;
     ``sandbox_host``), or on the gateway host (the rest of this function). A sandbox backend that cannot host
     a screen refuses rather than silently falling back to the host beside it.
 
@@ -742,7 +742,7 @@ def _spawn_and_wait(sd: Path, wait_seconds: float) -> DesktopStatus:
             child_env["HERMES_BD_BROWSER_EXEC"] = browser[0]
             child_env["HERMES_BD_BROWSER_EXEC_LINE"] = dock_exec_line(*browser)
         # Truncated per start: the log is a diagnostic for THIS launch, and nothing rotates it otherwise.
-        log = open(sd / "launcher.log", "wb")  # noqa: SIM115 — handed to the child, closed by it
+        log = open(sd / "launcher.log", "wb")
         proc = subprocess.Popen(  # windows-footgun: ok — Linux-only runtime (is_supported_host)
             ["bash", str(_LAUNCHER)], env=child_env, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
             start_new_session=True, close_fds=True)
@@ -787,7 +787,7 @@ def _start_in_sandbox(wait_seconds: float) -> DesktopStatus:
     sd.mkdir(parents=True, exist_ok=True)
     os.chmod(sd, 0o700)
     with _flocked(sd / "start.lock"):
-        # The dock's Browser icon runs the sandbox's own Playwright Chromium on the profile agent-browser
+        # The dock's Browser icon runs the sandbox's own Playwright Chromium on the profile the agent's browser
         # uses there: the human's browser is the bot's browser, as on the host.
         from tools.bot_desktop.browser import dock_exec_line
         exe = sandbox_host.chromium_executable(env)
@@ -799,7 +799,7 @@ def _start_in_sandbox(wait_seconds: float) -> DesktopStatus:
     return status()
 
 
-def _sandbox_published_env() -> Dict[str, str]:
+def _sandbox_published_env() -> dict[str, str]:
     """Published env of a sandbox-hosted screen (the caller saw the host-side marker written at start)."""
     from tools.bot_desktop import sandbox_host
     env = _sandbox_env(create=False)

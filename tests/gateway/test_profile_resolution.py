@@ -18,7 +18,7 @@ from gateway.platforms.event import MessageEvent
 def mock_runner():
     """Create a minimal mock GatewayRunner with the methods we need."""
     runner = MagicMock(spec=GatewayRunner)
-    runner.config = MagicMock(profile_routes=[])
+    runner.config = MagicMock(profile_routes=[], _runtime_profile_homes=None)
     # Bind the actual methods to the mock
     runner._profile_name_for_source = GatewayRunner._profile_name_for_source.__get__(runner)
     runner._resolve_profile_home_for_source = GatewayRunner._resolve_profile_home_for_source.__get__(runner)
@@ -243,10 +243,13 @@ class TestGatewayRunnerInjection:
 
     @pytest.mark.asyncio
     async def test_real_signal_factory_routes_inbound_group_event(self, monkeypatch):
-        """A factory-built (built-in) Signal adapter resolves profile_routes
-        for a real inbound envelope — fails on main where the Signal branch
-        returned a bare ``SignalAdapter(config)`` with no runner."""
+        """A factory-built Signal adapter (bundled plugin, via the registry) resolves
+        profile_routes for a real inbound envelope — the original bug was a bare
+        ``SignalAdapter(config)`` with no runner."""
         from gateway.config import PlatformConfig
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()  # the gateway does this at startup; Signal is a plugin platform now
 
         group_id = "test-signal-route"
         monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", group_id)
@@ -301,7 +304,7 @@ class _StubAdapter(BasePlatformAdapter):
 _StubAdapter.__abstractmethods__ = frozenset()  # type: ignore[attr-defined]
 
 
-def _stub_adapter(platform: Platform, runner) -> "_StubAdapter":
+def _stub_adapter(platform: Platform, runner) -> _StubAdapter:
     a = _StubAdapter.__new__(_StubAdapter)
     a.platform = platform
     a.gateway_runner = runner

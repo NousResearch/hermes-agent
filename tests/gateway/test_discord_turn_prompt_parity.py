@@ -12,7 +12,7 @@ builds the source a typed message in that channel carries, or it keys another se
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -66,7 +66,7 @@ def _adapter(monkeypatch: pytest.MonkeyPatch, bound_id: int) -> DiscordAdapter:
 async def _typed(adapter: DiscordAdapter, channel: Any) -> Any:
     await adapter._handle_message(SimpleNamespace(
         id=123, content="what broke?", mentions=[], attachments=[], reference=None,
-        created_at=datetime.now(timezone.utc), channel=channel, author=_USER,
+        created_at=datetime.now(UTC), channel=channel, author=_USER,
         guild=getattr(channel, "guild", None)))
     return adapter.handle_message.await_args.args[0]
 

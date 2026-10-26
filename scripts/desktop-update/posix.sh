@@ -1159,7 +1159,14 @@ export PYTHONUNBUFFERED=1
 # absent and the helper no-ops.
 export HERMES_UPDATE_STATUS_FILE="$STATUS"
 # `hermes update` runs under OUR marker claim (contract C1 rule 4/6).
-export HERMES_UPDATE_HANDOFF_PID="$$"
+# The claim's owner is not this script. marker_refresher_start hands line 1 to a custodian
+# subshell that outlives us, so the owner is a *sibling* of this script: never our own pid,
+# and never an ancestor of the `hermes update` we spawn. update_lock._is_partner can only
+# match it through this variable, so exporting `$$` left the custodian unrecognisable and
+# every desktop-initiated update refused its own claim with exit code 2
+# ("Another Hermes update is already running (started Ns ago, process <custodian>)").
+# $MY_PID is the custodian once the handover succeeded, and our own pid when it did not.
+export HERMES_UPDATE_HANDOFF_PID="$MY_PID"
 # The update's receipt carries this id (update_receipt._launcher_correlation_id),
 # which is how update_committed_after_exit finds THIS run's receipt.
 export HERMES_UPDATE_CORRELATION_ID="$UPDATE_CORRELATION"
@@ -1271,7 +1278,16 @@ if [ "$CODE" -eq 0 ]; then FINAL_CODE=0 FINAL_MSG="Update complete." UPDATE_COMM
   # end as a plain "Update complete." (review regression 1).
   OWED_STEPS="$(owed_followup_steps)"
   if [ -n "$OWED_STEPS" ]; then
+    # A gateway_restart owed only for serve/dashboard units (the reason then starts with
+    # "serve/dashboard ", hermes_cli/update_cmd_fleet_verify.SERVE_ONLY_REASON_PREFIX) names their own
+    # command in the log. The hint drops only when EVERY gateway_restart line is serve-only; any other
+    # reason, including a raw restart-phase error, keeps it (#141071).
     case " $OWED_STEPS " in *" gateway_restart "*) OWED_HINT=" Run hermes gateway restart to move the messaging gateway onto the new code now." ;; *) OWED_HINT="" ;; esac
+    GW_REASONS="$(printf '%s\n' "$OUT" | grep "Update follow-up 'gateway_restart' did not finish: ")"
+    if [ -n "$GW_REASONS" ] && ! printf '%s\n' "$GW_REASONS" | grep -vq "did not finish: serve/dashboard " \
+      && ! printf '%s\n' "$GW_REASONS" | grep -q "hermes gateway restart"; then
+      OWED_HINT=""
+    fi
     if [ -n "$DONE_NOTE" ]; then DONE_NOTE="$DONE_NOTE Follow-up steps still owed: $OWED_STEPS.$OWED_HINT"
     else DONE_NOTE="Hermes was updated, but some follow-up steps did not finish ($OWED_STEPS). The next launch or hermes update retries them; the update log has the details.$OWED_HINT"; fi
     add_warning "followup" "owed by the committed update: $OWED_STEPS"

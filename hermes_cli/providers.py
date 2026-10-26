@@ -20,12 +20,12 @@ class HermesOverlay:
     transport: str = "openai_chat"        # openai_chat | anthropic_messages | codex_responses
     is_aggregator: bool = False
     auth_type: str = "api_key"            # api_key | oauth_device_code | oauth_external | external_process
-    extra_env_vars: Tuple[str, ...] = ()  # env vars models.dev doesn't list
+    extra_env_vars: tuple[str, ...] = ()  # env vars models.dev doesn't list
     base_url_override: str = ""           # override if models.dev URL is wrong/missing
     base_url_env_var: str = ""            # env var for user-custom base URL
 
 
-HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
+HERMES_OVERLAYS: dict[str, HermesOverlay] = {
     "moa": HermesOverlay(auth_type="virtual", base_url_override="moa://local"),
     "openrouter": HermesOverlay(is_aggregator=True, base_url_env_var="OPENROUTER_BASE_URL"),
     "nous": HermesOverlay(auth_type="oauth_device_code", base_url_override="https://inference-api.nousresearch.com/v1"),
@@ -39,9 +39,6 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
                                 base_url_env_var="HERMES_QWEN_BASE_URL"),
     "lmstudio": HermesOverlay(extra_env_vars=("LM_API_KEY",), base_url_override="http://127.0.0.1:1234/v1",
                               base_url_env_var="LM_BASE_URL"),
-    "copilot-acp": HermesOverlay(transport="codex_responses", auth_type="external_process",
-                                 base_url_override="acp://copilot", base_url_env_var="COPILOT_ACP_BASE_URL"),
-    "github-copilot": HermesOverlay(extra_env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN")),
     "anthropic": HermesOverlay(transport="anthropic_messages", extra_env_vars=("ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")),
     "zai": HermesOverlay(extra_env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), base_url_env_var="GLM_BASE_URL"),
     "kimi-for-coding": HermesOverlay(base_url_env_var="KIMI_BASE_URL"),
@@ -69,6 +66,10 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
                                        base_url_override="https://api.lkeap.cloud.tencent.com/plan/anthropic",
                                        base_url_env_var="TOKENPLAN_BASE_URL"),
     "arcee": HermesOverlay(base_url_override="https://api.arcee.ai/api/v1", base_url_env_var="ARCEE_BASE_URL"),
+    # models.dev lists CommandCode under CMD_API_KEY; the plugin profile and docs use COMMANDCODE_API_KEY.
+    "commandcode": HermesOverlay(extra_env_vars=("COMMANDCODE_API_KEY",),
+                                 base_url_override="https://api.commandcode.ai/provider/v1",
+                                 base_url_env_var="COMMANDCODE_BASE_URL"),
     "gmi": HermesOverlay(extra_env_vars=("GMI_API_KEY",), base_url_override="https://api.gmi-serving.com/v1",
                          base_url_env_var="GMI_BASE_URL"),
     "fireworks": HermesOverlay(extra_env_vars=("FIREWORKS_API_KEY",),
@@ -101,7 +102,7 @@ class ProviderDef:
     id: str
     name: str
     transport: str                        # openai_chat | anthropic_messages | codex_responses
-    api_key_env_vars: Tuple[str, ...]     # all env vars to check for API key
+    api_key_env_vars: tuple[str, ...]     # all env vars to check for API key
     base_url: str = ""
     base_url_env_var: str = ""
     is_aggregator: bool = False
@@ -112,14 +113,13 @@ class ProviderDef:
 
 # -- Aliases: human-friendly / legacy names grouped by canonical (models.dev where possible) id;
 # ``ALIASES`` is the inverted lookup table. ---------------------------------------------------
-_ALIAS_GROUPS: Dict[str, Tuple[str, ...]] = {
+_ALIAS_GROUPS: dict[str, tuple[str, ...]] = {
     "openrouter": ("openai",), "zai": ("glm", "z-ai", "z.ai", "zhipu"), "xai": ("x-ai", "x.ai", "grok"),
     "xai-oauth": ("grok-oauth", "xai-oauth", "x-ai-oauth", "xai-grok-oauth"),
     "nvidia": ("nim", "nvidia-nim", "build-nvidia", "nemotron"),
     "kimi-for-coding": ("kimi", "kimi-coding", "kimi-coding-cn", "moonshot"),
     "stepfun": ("step", "stepfun-coding-plan"), "minimax-cn": ("minimax-china", "minimax_cn"),
-    "anthropic": ("claude", "claude-code"), "github-copilot": ("copilot", "github"),
-    "copilot-acp": ("github-copilot-acp",), "openai-codex": ("chatgpt", "chatgpt-codex"),
+    "anthropic": ("claude", "claude-code"), "openai-codex": ("chatgpt", "chatgpt-codex"),
     "vercel": ("ai-gateway", "aigateway", "vercel-ai-gateway"),
     "opencode": ("opencode-zen", "zen"), "opencode-go": ("go", "opencode-go-sub"), "kilo": ("kilocode", "kilo-code", "kilo-gateway"),
     "deepseek": ("deep-seek",), "alibaba": ("dashscope", "aliyun", "qwen", "alibaba-cloud"),
@@ -136,14 +136,14 @@ _ALIAS_GROUPS: Dict[str, Tuple[str, ...]] = {
     # matching hermes_cli.auth and hermes_cli.models so every layer agrees. Issue #62213.
     "custom": ("ollama", "local", "vllm", "llamacpp", "llama.cpp", "llama-cpp"),
 }
-ALIASES: Dict[str, str] = {alias: canon for canon, aliases in _ALIAS_GROUPS.items() for alias in aliases}
+ALIASES: dict[str, str] = {alias: canon for canon, aliases in _ALIAS_GROUPS.items() for alias in aliases}
 
 
 # -- Display labels for providers not in the models.dev catalog ---------------
 
-_LABEL_OVERRIDES: Dict[str, str] = {
+_LABEL_OVERRIDES: dict[str, str] = {
     "moa": "Mixture of Agents", "nous": "Nous Portal", "openai-codex": "ChatGPT or Codex Subscription",
-    "copilot-acp": "GitHub Copilot ACP", "stepfun": "StepFun Step Plan", "xiaomi": "Xiaomi MiMo", "gmi": "GMI Cloud",
+    "stepfun": "StepFun Step Plan", "xiaomi": "Xiaomi MiMo", "gmi": "GMI Cloud",
     "upstage": "Upstage Solar", "actual": "Actual Computer", "tencent-tokenhub": "Tencent TokenHub",
     "nebius-token-factory": "Nebius Token Factory", "tencent-tokenplan": "Tencent TokenPlan", "lmstudio": "LM Studio",
     "custom": "Custom endpoint", "bedrock": "AWS Bedrock", "vertex": "Google Vertex AI", "ollama-cloud": "Ollama Cloud",
@@ -153,7 +153,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
 
 # -- Transport → API mode mapping ---------------------------------------------
 
-TRANSPORT_TO_API_MODE: Dict[str, str] = {
+TRANSPORT_TO_API_MODE: dict[str, str] = {
     "openai_chat": "chat_completions", "anthropic_messages": "anthropic_messages",
     "codex_responses": "codex_responses", "bedrock_converse": "bedrock_converse",
 }
@@ -161,10 +161,75 @@ TRANSPORT_TO_API_MODE: Dict[str, str] = {
 
 # -- Helper functions ---------------------------------------------------------
 
-def normalize_provider(name: str) -> str:
-    """Resolve aliases and normalise casing to a canonical provider id."""
+def _overlay_profiles() -> list:
+    """Registered profiles that declare a ``provider_overlay`` (no plugin-dir rescan on a miss)."""
+    from providers import list_providers
+    return [prof for prof in list_providers() if prof.provider_overlay]
+
+
+def _overlay_profile(name: str, profiles: Optional[list] = None):
+    """The overlay-declaring profile *name* (its id, models.dev id or an overlay alias) belongs to, or
+    None. *profiles*: an ``_overlay_profiles()`` result a loop already fetched."""
+    if not name:
+        return None
+    return next((prof for prof in (_overlay_profiles() if profiles is None else profiles)
+                 if name in (prof.name, prof.models_dev_id, *prof.overlay_aliases)), None)
+
+
+def _profile_overlay_key(prof) -> str:
+    return prof.models_dev_id or prof.name
+
+
+def hermes_overlays() -> dict[str, HermesOverlay]:
+    """``HERMES_OVERLAYS`` plus the overlays registered profiles declare (``provider_overlay``)."""
+    merged = dict(HERMES_OVERLAYS)
+    for prof in _overlay_profiles():
+        merged.setdefault(_profile_overlay_key(prof), HermesOverlay(**prof.provider_overlay))
+    return merged
+
+
+_STATIC_CANONICAL_IDS: frozenset[str] = frozenset()
+
+
+def _is_static_canonical(key: str) -> bool:
+    """Whether *key* is a built-in canonical id (static tables + the auth registry's built-in rows).
+
+    Those never take a profile overlay's name, so ``normalize_provider`` answers them without
+    the per-home profile scan. Asked mid-``hermes_cli.auth`` import (plugin discovery), before its
+    built-in set exists, only the local tables answer and nothing is cached.
+    """
+    global _STATIC_CANONICAL_IDS
+    if not _STATIC_CANONICAL_IDS:
+        try:
+            from hermes_cli.auth import BUILTIN_PROVIDER_IDS
+        except ImportError:
+            return key in HERMES_OVERLAYS or key in _ALIAS_GROUPS
+        _STATIC_CANONICAL_IDS = BUILTIN_PROVIDER_IDS | frozenset(_ALIAS_GROUPS) | frozenset(HERMES_OVERLAYS)
+    return key in _STATIC_CANONICAL_IDS
+
+
+def normalize_provider(name: str, overlay_profiles: Optional[list] = None) -> str:
+    """Resolve aliases and normalise casing to a canonical provider id.
+
+    *overlay_profiles*: an ``_overlay_profiles()`` result, so a loop over many names reads the
+    profile list once instead of per name."""
     key = name.strip().lower()
-    return ALIASES.get(key, key)
+    if key in ALIASES:
+        return ALIASES[key]
+    prof = None if _is_static_canonical(key) else _overlay_profile(key, overlay_profiles)
+    return _profile_overlay_key(prof) if prof is not None else key
+
+
+def _get_overlay(canonical: str) -> tuple[Optional[HermesOverlay], str]:
+    """``(overlay, label)`` for a canonical id: the static table, else a profile's ``provider_overlay``,
+    labelled with the profile's ``display_name`` also when keyed by its models.dev id: without a
+    models.dev catalog (offline, blocked) that label is the one picker rows and headings show."""
+    if canonical in HERMES_OVERLAYS:
+        return HERMES_OVERLAYS[canonical], _LABEL_OVERRIDES.get(canonical, canonical)
+    prof = _overlay_profile(canonical)
+    if prof is None or _profile_overlay_key(prof) != canonical:
+        return None, canonical
+    return HermesOverlay(**prof.provider_overlay), _LABEL_OVERRIDES.get(canonical, prof.display_name or canonical)
 
 
 def is_actual_route(provider: str = "", base_url: str = "") -> bool:
@@ -195,8 +260,11 @@ def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderD
     """Look up a built-in provider by id or alias: models.dev catalog merged with the Hermes overlay;
     Hermes-only overlay (nous, openai-codex, …); plugin provider profiles with a concrete endpoint."""
     canonical = normalize_provider(name)
+    from hermes_cli.left_core_migration import provider_left_core
+    if provider_left_core(canonical):  # its plugin is not loaded: models.dev must not stand in for it
+        return None
     mdev_info = _models_dev_info(canonical, allow_network)
-    overlay = HERMES_OVERLAYS.get(canonical)
+    overlay, overlay_label = _get_overlay(canonical)
     if mdev_info is not None:
         ov = overlay or HermesOverlay()
         env_vars = list(mdev_info.env)
@@ -206,7 +274,7 @@ def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderD
         return _overlay_pdef(canonical, ov, mdev_info.name, tuple(env_vars), ov.base_url_override or mdev_info.api,
                              mdev_info.doc, "models.dev")
     if overlay is not None:
-        return _overlay_pdef(canonical, overlay, _LABEL_OVERRIDES.get(canonical, canonical), overlay.extra_env_vars,
+        return _overlay_pdef(canonical, overlay, overlay_label, overlay.extra_env_vars,
                              overlay.base_url_override, "", "hermes")
     # Plugin-registered profiles (plugins/model-providers/<name>/) absent from models.dev and
     # HERMES_OVERLAYS would otherwise be "Unknown provider" in /model, --provider and model-switch
@@ -399,7 +467,7 @@ def _user_pdef(pid: str, name: str, base_url: str, key_env: str, transport: str 
                        base_url=base_url, is_aggregator=False, auth_type="api_key", source="user-config")
 
 
-def resolve_user_provider(name: str, user_config: Dict[str, Any]) -> Optional[ProviderDef]:
+def resolve_user_provider(name: str, user_config: dict[str, Any]) -> Optional[ProviderDef]:
     """Resolve a provider from the user's config.yaml ``providers:`` section.
 
     A ``providers.<name>`` block that carries no endpoint (``api``/``url``/``base_url``) is not a
@@ -445,7 +513,7 @@ def custom_provider_aliases(display_name: str, provider_key: str = "") -> frozen
     return frozenset(aliases)
 
 
-def resolve_custom_provider(name: str, custom_providers: Optional[List[Dict[str, Any]]]) -> Optional[ProviderDef]:
+def resolve_custom_provider(name: str, custom_providers: Optional[list[dict[str, Any]]]) -> Optional[ProviderDef]:
     """Resolve a provider from the user's config.yaml ``custom_providers`` list. A stored bare
     ``"custom"`` (corrupt state from a prior model-switch bug) falls back to the first valid entry
     so existing configs self-heal."""
@@ -478,14 +546,19 @@ def _lossy_alias_registry_pdef(raw: str, canonical: str) -> Optional[ProviderDef
     """Exact Hermes registry ids win over LOSSY alias collapsing (kimi-coding-cn must stay distinct
     from kimi-coding instead of collapsing through the shared models.dev alias "kimi-for-coding").
     A collapse is lossy only when MULTIPLE registry providers normalize to the same canonical name;
-    single-entry rewrites ("copilot" -> "github-copilot") are correct routing and keep resolving
+    single-entry rewrites (a Hermes id -> its models.dev id) are correct routing and keep resolving
     through the built-in chain so overlay transports apply."""
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY as _AUTH_PROVIDER_REGISTRY
         _pcfg = _AUTH_PROVIDER_REGISTRY.get(raw)
         if _pcfg is None:
             return None
-        if sum(1 for _rid in _AUTH_PROVIDER_REGISTRY if normalize_provider(_rid) == canonical) > 1:
+        overlays = _overlay_profiles()
+        _rows = [_row for _rid, _row in _AUTH_PROVIDER_REGISTRY.items() if normalize_provider(_rid, overlays) == canonical]
+        # A profile-declared overlay routes its own mirrored alias keys through the built-in chain.
+        if all(_row is _pcfg for _row in _rows) and _overlay_profile(canonical, overlays) is not None:
+            return None
+        if len(_rows) > 1:
             return ProviderDef(id=_pcfg.id, name=_pcfg.name, transport="openai_chat",
                                api_key_env_vars=tuple(_pcfg.api_key_env_vars or ()), base_url=_pcfg.inference_base_url or "",
                                source="hermes-auth-registry")
@@ -498,7 +571,7 @@ def _lossy_alias_registry_pdef(raw: str, canonical: str) -> Optional[ProviderDef
 # below and the picker's Local row (``hermes_cli/inventory.py``) — the two drifting apart is what
 # made the row's own id unresolvable.
 LLAMACPP_PROVIDER_ID = "llamacpp"
-LLAMACPP_ALIASES: Tuple[str, ...] = (LLAMACPP_PROVIDER_ID, "llama.cpp", "llama-cpp")
+LLAMACPP_ALIASES: tuple[str, ...] = (LLAMACPP_PROVIDER_ID, "llama.cpp", "llama-cpp")
 
 
 def _has_staged_local_models() -> bool:
@@ -530,8 +603,8 @@ def _llamacpp_pdef() -> Optional[ProviderDef]:
                        base_url=(endpoint or {}).get("base_url", ""), source="local-runtime")
 
 
-def resolve_provider_full(name: str, user_providers: Optional[Dict[str, Any]] = None,
-                          custom_providers: Optional[List[Dict[str, Any]]] = None) -> Optional[ProviderDef]:
+def resolve_provider_full(name: str, user_providers: Optional[dict[str, Any]] = None,
+                          custom_providers: Optional[list[dict[str, Any]]] = None) -> Optional[ProviderDef]:
     """Full resolution chain: user ``providers.<raw name>`` -> lossy-alias registry id -> built-in
     (models.dev + overlays) -> user providers (canonical, then raw) -> ``custom_providers`` ->
     managed llamacpp -> models.dev directly. User-defined ``providers.<name>`` is tried FIRST on

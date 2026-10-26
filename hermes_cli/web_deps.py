@@ -44,7 +44,7 @@ class LateState:
     defined *after* the router's ``include_router`` point, so a late import would miss it.
     """
 
-    __slots__ = ("_name", "_module")
+    __slots__ = ("_module", "_name")
 
     def __init__(self, name: str, module: str = WEB_SERVER) -> None:
         object.__setattr__(self, "_name", name)
@@ -84,10 +84,10 @@ class LateState:
     def __exit__(self, *exc):
         return self._target().__exit__(*exc)
 
-    def __eq__(self, other: Any) -> bool:
+    def __eq__(self, other: object) -> bool:
         return self._target() == other
 
-    def __ne__(self, other: Any) -> bool:
+    def __ne__(self, other: object) -> bool:
         return self._target() != other
 
     def __lt__(self, other: Any) -> bool:

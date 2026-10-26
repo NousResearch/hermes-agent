@@ -45,11 +45,11 @@ class TestChatVerboseArg:
         def fake_main(**kwargs):
             captured.update(kwargs)
 
-        setattr(fake_cli, "main", fake_main)
+        fake_cli.main = fake_main
         fake_banner = types.ModuleType("hermes_cli.banner")
-        setattr(fake_banner, "prefetch_update_check", lambda: None)
+        fake_banner.prefetch_update_check = lambda: None
         fake_skills_sync = types.ModuleType("tools.skills_sync")
-        setattr(fake_skills_sync, "sync_skills", lambda quiet=True: None)
+        fake_skills_sync.sync_skills = lambda quiet=True: None
 
         monkeypatch.setitem(sys.modules, "cli", fake_cli)
         monkeypatch.setitem(sys.modules, "hermes_cli.banner", fake_banner)
@@ -62,11 +62,45 @@ class TestChatVerboseArg:
         assert captured["quiet"] is False
         assert "verbose" not in captured
 
+    @pytest.mark.parametrize("argv, expected", [
+        (["chat", "--provider", "custom", "--base-url", "http://127.0.0.1:9/v1", "--api-key", "launch-key"],
+         {"api_key": "launch-key", "base_url": "http://127.0.0.1:9/v1"}),
+        (["chat"], {}),
+    ])
+    def test_cmd_chat_forwards_the_launch_key_and_endpoint_to_the_classic_cli(self, monkeypatch, argv, expected):
+        """`hermes chat --cli --api-key K --base-url U` must launch the classic CLI on K and U, not on the
+        profile's credential; the TUI refuses both flags and points here."""
+        import types
+
+        import hermes_cli.main as main_mod
+        from hermes_cli._parser import build_top_level_parser
+
+        parser, _subparsers, chat_parser = build_top_level_parser()
+        chat_parser.set_defaults(func=main_mod.cmd_chat)
+        args = parser.parse_args(argv)
+        captured = {}
+        fake_cli = types.ModuleType("cli")
+        fake_cli.main = lambda **kwargs: captured.update(kwargs)
+        fake_banner = types.ModuleType("hermes_cli.banner")
+        fake_banner.prefetch_update_check = lambda: None
+        fake_skills_sync = types.ModuleType("tools.skills_sync")
+        fake_skills_sync.sync_skills = lambda quiet=True: None
+
+        monkeypatch.setitem(sys.modules, "cli", fake_cli)
+        monkeypatch.setitem(sys.modules, "hermes_cli.banner", fake_banner)
+        monkeypatch.setitem(sys.modules, "tools.skills_sync", fake_skills_sync)
+        monkeypatch.setattr(main_mod, "_has_any_provider_configured", lambda: True)
+        monkeypatch.setattr(main_mod, "_pin_kanban_board_env", lambda: None)
+
+        main_mod.cmd_chat(args)
+
+        assert {k: captured[k] for k in ("api_key", "base_url") if k in captured} == expected
+
 
 class TestAcceptHooksOnAgentSubparsers:
     """Verify --accept-hooks is accepted at every agent-subcommand
     position (before the subcommand, between group/subcommand, and
-    after the leaf subcommand) for gateway/cron/mcp/acp.  Regression
+    after the leaf subcommand) for gateway/cron/acp.  Regression
     against prior behaviour where the flag only worked on the root
     parser and `chat`, so `hermes gateway run --accept-hooks` failed
     with `unrecognized arguments`."""
@@ -79,17 +113,14 @@ class TestAcceptHooksOnAgentSubparsers:
         ["cron", "--accept-hooks", "tick", "--help"],
         ["cron", "tick", "--accept-hooks", "--help"],
         ["cron", "run", "--accept-hooks", "dummy-id", "--help"],
-        ["--accept-hooks", "mcp", "serve", "--help"],
-        ["mcp", "--accept-hooks", "serve", "--help"],
-        ["mcp", "serve", "--accept-hooks", "--help"],
         ["acp", "--accept-hooks", "--help"],
     ]
 
     # One driver subprocess parses ALL argvs: hermes_cli.main is a very heavy
     # import (previously 11 separate `python -m hermes_cli.main` spawns with a
     # 15s timeout each — a cold import on a loaded CI worker regularly blew
-    # that deadline, making this test flaky). Importing once and parsing 11
-    # times removes the repeated-import cost entirely; the generous timeout
+    # that deadline, making this test flaky). Importing once and parsing each
+    # argv removes the repeated-import cost entirely; the generous timeout
     # only trips on a genuine hang. `--help` exits via SystemExit(0), which
     # the driver catches per argv.
     _DRIVER = r"""
@@ -126,6 +157,7 @@ print(json.dumps(results))
             capture_output=True,
             text=True,
             timeout=180,
+            check=False,
         )
         assert result.returncode == 0, (
             f"driver failed rc={result.returncode}\n"
@@ -206,3 +238,12 @@ class TestChatSubparserInheritedValueFlags:
             + "\n  ".join(f"{opts} dest={dest} default={d!r}"
                           for opts, dest, d in offenders)
         )
+
+
+@pytest.mark.parametrize("argv", [
+    ["--tui", "--checkpoints"], ["--checkpoints", "chat"], ["chat", "--tui", "--checkpoints"]])
+def test_checkpoints_parses_at_the_top_level_and_survives_chat(argv):
+    """`hermes --tui --checkpoints` is the TUI launch the docs and gateway refusals name; it was
+    declared only on `chat`, so the top-level form failed with "unrecognized arguments"."""
+    from hermes_cli._parser import build_top_level_parser
+    assert build_top_level_parser()[0].parse_args(argv).checkpoints is True

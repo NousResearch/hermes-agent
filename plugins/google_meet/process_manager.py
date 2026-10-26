@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from hermes_constants import get_hermes_home
+from plugins.google_meet._jsonfile import say_queue_lock
 
 from utils import atomic_json_write
 
@@ -32,7 +33,7 @@ def _active_file() -> Path:
     return _root() / ".active.json"
 
 
-def _read_active() -> Optional[Dict[str, Any]]:
+def _read_active() -> Optional[dict[str, Any]]:
     p = _active_file()
     if not p.is_file():
         return None
@@ -42,7 +43,7 @@ def _read_active() -> Optional[Dict[str, Any]]:
         return None
 
 
-def _write_active(data: Dict[str, Any]) -> None:
+def _write_active(data: dict[str, Any]) -> None:
     atomic_json_write(_active_file(), data)
 
 
@@ -64,7 +65,7 @@ def start(url: str, *, out_dir: Optional[Path] = None, headed: bool = False,
           auth_state: Optional[str] = None, guest_name: str = "Hermes Agent", duration: Optional[str] = None,
           session_id: Optional[str] = None, mode: str = "transcribe", realtime_model: Optional[str] = None,
           realtime_voice: Optional[str] = None, realtime_instructions: Optional[str] = None,
-          realtime_api_key: Optional[str] = None) -> Dict[str, Any]:
+          realtime_api_key: Optional[str] = None) -> dict[str, Any]:
     """Spawn the meet_bot subprocess for *url*, stopping any running bot first (one active meeting)."""
     from plugins.google_meet.meet_bot import _is_safe_meet_url, _meeting_id_from_url
     if not _is_safe_meet_url(url):
@@ -100,7 +101,7 @@ def start(url: str, *, out_dir: Optional[Path] = None, headed: bool = False,
     log_path = out / "bot.log"
     # Detach: stdout/stderr → log file, new session so parent signals don't propagate.
     with open(log_path, "ab", buffering=0) as log_fh:
-        proc = subprocess.Popen([sys.executable, "-m", "plugins.google_meet.meet_bot"], stdin=subprocess.DEVNULL,
+        proc = subprocess.Popen([sys.executable, "-P", "-m", "plugins.google_meet.meet_bot"], stdin=subprocess.DEVNULL,
                                 stdout=log_fh, stderr=subprocess.STDOUT, env=env, start_new_session=True,
                                 close_fds=True)
     record = {"pid": proc.pid, "meeting_id": meeting_id, "out_dir": str(out), "url": url,
@@ -109,7 +110,7 @@ def start(url: str, *, out_dir: Optional[Path] = None, headed: bool = False,
     return {"ok": True, **record}
 
 
-def status() -> Dict[str, Any]:
+def status() -> dict[str, Any]:
     """Return the current meeting state, or ``{"ok": False, "reason": ...}``."""
     active = _read_active()
     if not active:
@@ -118,7 +119,7 @@ def status() -> Dict[str, Any]:
     alive = _pid_alive(pid) if pid else False
 
     status_path = Path(active.get("out_dir", "")) / "status.json"
-    bot_status: Dict[str, Any] = {}
+    bot_status: dict[str, Any] = {}
     if status_path.is_file():
         try:
             bot_status = json.loads(status_path.read_text(encoding="utf-8-sig"))
@@ -137,7 +138,7 @@ def status() -> Dict[str, Any]:
     }
 
 
-def transcript(last: Optional[int] = None) -> Dict[str, Any]:
+def transcript(last: Optional[int] = None) -> dict[str, Any]:
     """Read the current transcript file (empty result if the bot hasn't written one yet)."""
     active = _read_active()
     if not active:
@@ -157,7 +158,7 @@ def transcript(last: Optional[int] = None) -> Dict[str, Any]:
             "lines": all_lines[-last:] if last else all_lines, "total": len(all_lines), "path": str(tp)}
 
 
-def enqueue_say(text: str) -> Dict[str, Any]:
+def enqueue_say(text: str) -> dict[str, Any]:
     """Append a ``say`` request to ``<out_dir>/say_queue.jsonl``.
     Refused when no meeting is active or the active bot is transcribe-only."""
     text = (text or "").strip()
@@ -174,13 +175,13 @@ def enqueue_say(text: str) -> Dict[str, Any]:
         return {"ok": False, "reason": f"out_dir missing: {out_dir}"}
     queue_path = out_dir / "say_queue.jsonl"
     entry = {"id": uuid.uuid4().hex[:12], "text": text}
-    with queue_path.open("a", encoding="utf-8") as f:
+    with say_queue_lock(queue_path), queue_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
     return {"ok": True, "meetingId": active.get("meeting_id"), "enqueued_id": entry["id"],
             "queue_path": str(queue_path)}
 
 
-def stop(*, reason: str = "requested") -> Dict[str, Any]:
+def stop(*, reason: str = "requested") -> dict[str, Any]:
     """SIGTERM the active bot (SIGKILL after 10s), then clear the active pointer."""
     active = _read_active()
     if not active:

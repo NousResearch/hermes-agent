@@ -252,7 +252,7 @@ class TestConfigGetPhantomKeyNotice:
         self, _isolated_hermes_home, capsys
     ):
         # The check is a DEFAULT_CONFIG walk; ``browser.cloud_provider`` is deliberately unseeded
-        # yet read by tools/browser_tool_cloud.py, so the notice must not claim it is never read.
+        # yet read by tools/browser_session_cloud.py, so the notice must not claim it is never read.
         (_isolated_hermes_home / "config.yaml").write_text("browser:\n  cloud_provider: local\n")
 
         config_command(argparse.Namespace(config_command="get", key="browser.cloud_provider", json=False))
@@ -592,7 +592,7 @@ class TestValidateConfigKey:
         """The underscore escape only applies to the FIRST segment. A real
         typo in a sub-key (e.g. agent._max_turns) is still caught."""
         from hermes_cli.config import _validate_config_key
-        is_known, suggestion = _validate_config_key("agent._max_turns")
+        is_known, _suggestion = _validate_config_key("agent._max_turns")
         assert not is_known, "Sub-key typo under a known top-level key must still be flagged"
 
 

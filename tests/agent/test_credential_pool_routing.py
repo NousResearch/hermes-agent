@@ -153,7 +153,7 @@ class TestPoolRotationCycle:
 
     def test_pool_exhaustion_returns_false(self):
         """When all credentials exhausted, recovery should return False."""
-        agent, pool, _ = self._make_agent_with_pool(1)
+        agent, _pool, _ = self._make_agent_with_pool(1)
         # First 429 sets flag
         _, has_retried = agent._recover_with_credential_pool(
             status_code=429, has_retried_429=False
@@ -168,7 +168,7 @@ class TestPoolRotationCycle:
 
     def test_402_immediate_rotation(self):
         """402 (billing) should immediately rotate, no retry-first."""
-        agent, pool, entries = self._make_agent_with_pool(3)
+        agent, pool, _entries = self._make_agent_with_pool(3)
         recovered, has_retried = agent._recover_with_credential_pool(
             status_code=402, has_retried_429=False
         )
@@ -206,7 +206,7 @@ class TestPoolRotationCycle:
         agent.log_prefix = ""
         # No agent.api_key set — should fall back to pool.current().runtime_api_key
 
-        recovered, has_retried = agent._recover_with_credential_pool(
+        recovered, _has_retried = agent._recover_with_credential_pool(
             status_code=402, has_retried_429=False
         )
         assert recovered is True

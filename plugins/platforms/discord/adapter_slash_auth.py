@@ -21,8 +21,8 @@ class DiscordSlashAuthMixin:
     # fail closed unless allow-all; DISCORD_ALLOWED_CHANNELS alone authorizes per validated channel.
 
     def _evaluate_slash_authorization(
-        self, interaction: "discord.Interaction",
-    ) -> Tuple[bool, Optional[str]]:
+        self, interaction: discord.Interaction,
+    ) -> tuple[bool, Optional[str]]:
         """Evaluate slash authorization without responding; returns ``(allowed, reason)``.
         Shared with side-effect-free callers (``/skill`` autocomplete returns [] per keystroke).
         Fail closed on malformed payloads: with an allowlist, a missing channel id/user REJECTS.
@@ -83,7 +83,7 @@ class DiscordSlashAuthMixin:
             return (False, "user not in DISCORD_ALLOWED_USERS / DISCORD_ALLOWED_ROLES")
         return (True, None)
 
-    def _slash_role_grant(self, interaction: "discord.Interaction") -> bool:
+    def _slash_role_grant(self, interaction: discord.Interaction) -> bool:
         """``role_authorized`` for an event built from ``interaction``, with the message path's
         meaning (_discord_message_admission): a role allowlist exists and THIS actor passes the gate.
         Re-evaluated for the interaction instead of trusted from call order, so a builder can never

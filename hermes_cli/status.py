@@ -112,12 +112,6 @@ _TERMINAL_ENV_ROWS = {
     "daytona": (("Daytona Image:", "TERMINAL_DAYTONA_IMAGE", DEFAULT_SANDBOX_IMAGE, False),),
 }
 
-# Labels for built-in adapters without a platform-registry entry; registry entries bring their own.
-_PLATFORM_LABELS = {"telegram": "Telegram", "discord": "Discord", "whatsapp": "WhatsApp", "signal": "Signal",
-                    "slack": "Slack", "email": "Email", "sms": "SMS", "dingtalk": "DingTalk", "feishu": "Feishu",
-                    "wecom": "WeCom", "wecom_callback": "WeCom Callback", "weixin": "Weixin",
-                    "bluebubbles": "BlueBubbles", "qqbot": "QQBot", "yuanbao": "Yuanbao"}
-
 # Gateway manager label when the runtime snapshot is unavailable, keyed by platform.
 _GATEWAY_FALLBACK = {"termux": ("unknown", "Termux / manual process"), "linux": ("unknown", "systemd/manual"),
                      "darwin": ("unknown", "launchd")}
@@ -202,12 +196,14 @@ def _render_platforms(ctx):
     try:
         from gateway.config import load_gateway_config
         from gateway.platform_registry import platform_registry
+        from hermes_cli.plugins import discover_plugins
+        discover_plugins()  # labels come from the plugin entries
         cfg = load_gateway_config()
     except Exception:
         return
     connected = {p.value for p in cfg.get_connected_platforms()}
     homes = {p.value: pc.home_channel for p, pc in cfg.platforms.items() if pc.home_channel}
-    labels = {**_PLATFORM_LABELS, **{e.name: e.label for e in platform_registry.plugin_entries()}}
+    labels = {e.name: e.label for e in platform_registry.plugin_entries()}
     for value, label in sorted(labels.items(), key=lambda kv: kv[1].lower()):
         home = homes.get(value)
         _row(label, value in connected,
@@ -277,7 +273,7 @@ def _render_sessions(ctx):
     # pre-migration installs.
     try:
         from hermes_state import SessionDB
-        db = SessionDB(read_only=True)  # status only reads; never a writer beside a running gateway
+        db = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)
         try:
             gateway_rows = db.list_gateway_sessions(active_only=True) or []
         finally:

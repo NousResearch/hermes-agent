@@ -5,6 +5,7 @@ may import a dependency or another PM module.
 """
 from __future__ import annotations
 
+from contextlib import suppress
 import errno
 import hashlib
 import ntpath
@@ -20,8 +21,18 @@ _LOCK_POLL_SECONDS = 0.05
 
 
 def is_junction(path: Path) -> bool:
-    """Keep junctions opaque even before Python 3.12's Path.is_junction exists."""
-    return os.name == "nt" and path.lstat().st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT
+    """Keep junctions opaque even before Python 3.12's Path.is_junction exists.
+
+    A path that cannot be stat'ed is not a junction, matching ``os.path.isjunction``: callers
+    probe slots that do not exist yet (a first plugin install) and must get False, not a crash.
+    POSIX stat results carry no reparse tag, which lands in the same False.
+    """
+    if os.name != "nt":
+        return False
+    try:
+        return path.lstat().st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT
+    except (OSError, AttributeError):
+        return False
 
 
 _VERBATIM = "\\\\?\\"
@@ -52,7 +63,7 @@ def native(path: str | os.PathLike[str]) -> str:
     text = os.fspath(path)
     if text.startswith(_VERBATIM_UNC):
         return "\\\\" + text[len(_VERBATIM_UNC):]
-    return text[len(_VERBATIM):] if text.startswith(_VERBATIM) else text
+    return text.removeprefix(_VERBATIM)
 
 
 def lock_fd(fd: int, *, wait: bool, timeout: float | None = None) -> bool:
@@ -82,6 +93,18 @@ def lock_fd(fd: int, *, wait: bool, timeout: float | None = None) -> bool:
             if not wait or (deadline is not None and time.monotonic() >= deadline):
                 return False
             time.sleep(_LOCK_POLL_SECONDS)
+
+
+def unlock_fd(fd: int) -> None:
+    """Release :func:`lock_fd`'s byte lock; best effort, since closing the descriptor releases it too."""
+    with suppress(OSError):
+        if os.name == "nt":
+            import msvcrt
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_UN)
 
 
 def read_bytes_or_none(path: Path) -> bytes | None:

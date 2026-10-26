@@ -102,7 +102,7 @@ class TestDeliverNoticeLine:
         await runner._deliver_platform_notice(source, line)
 
         adapter.send.assert_awaited_once()
-        args, kwargs = adapter.send.call_args
+        args, _kwargs = adapter.send.call_args
         assert args[0] == "555"
         # Delivered verbatim — the policy's single glyph, not a doubled one.
         assert args[1] == "⚠ Credits 90% used · $20.00 cap"

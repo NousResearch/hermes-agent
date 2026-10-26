@@ -217,7 +217,12 @@ def _publish_gateway_success(request: dict) -> None:
     if not request.get("gateway_mode"):
         return
     try:
-        (Path(request["home"]) / ".update_exit_code").write_text("0", encoding="utf-8")
+        # Temp + rename (stdlib, like _write_json): the gateway watcher polls this file and reads
+        # an empty one as exit 1.
+        marker = Path(request["home"]) / ".update_exit_code"
+        temporary = marker.with_name(marker.name + ".tmp")
+        temporary.write_text("0", encoding="utf-8")
+        temporary.replace(marker)
     except OSError as exc:
         print(f"  ⚠ Could not publish the gateway's update status: {exc}")
 
@@ -508,7 +513,7 @@ def _finish(request: dict, result_path: Path) -> int:
         if exc.code not in (0, None):
             _report_unbuilt_desktop(request)
             update_receipt.record_followup("completion", f"completion exited {exc.code}")
-    except BaseException as exc:  # noqa: BLE001 — after the commit point nothing fails the update
+    except BaseException as exc:
         _report_unbuilt_desktop(request)
         update_receipt.record_followup("completion", f"{type(exc).__name__}: {exc}")
     finally:

@@ -160,12 +160,23 @@ def served_profile_name(home) -> str:
     return profile_name_for_home(home) or 'default'
 
 
+def authority_home(authority) -> Path:
+    """The profile home owning this authority's store: the store path's own parent, UNRESOLVED.
+
+    Never ``Path(authority.db.db_path).resolve().parent``: a ``state.db`` symlinked outside its
+    profile home resolves to the link target's directory (no ``.env``, no ``skills/``), which
+    scoped multiplex cron runs to the wrong home (#145075). The path as opened is exactly the
+    home the opener was handed, so dropping the ``resolve()`` is the whole fix.
+    """
+    return Path(authority.db.db_path).parent
+
+
 def authority_for_home(runner, home):
     """Explicit per-home lookup for callers that already know the routed home."""
     registry = getattr(runner, 'session_authorities', None)
     if registry is None:
         authority = getattr(runner, 'session_authority', None)
-        if authority is not None and Path(authority.db.db_path).resolve().parent == Path(home).resolve():
+        if authority is not None and authority_home(authority).resolve() == Path(home).resolve():
             return authority
         return None
     return registry.for_home(home)

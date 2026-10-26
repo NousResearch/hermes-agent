@@ -20,6 +20,7 @@ import logging
 import time
 import uuid
 from functools import partial
+from gateway.session_authorities import authority_home
 from pathlib import Path
 
 from hermes_state_local import local_receipt
@@ -185,7 +186,7 @@ def orphan_close_grace(authority, *, startup=False):
     from gateway.session_local import profile_env_scope
     from utils import is_truthy_value
     default = DEFAULT_CONFIG['sessions']['orphan_end_grace_s']
-    home = Path(authority.db.db_path).resolve().parent
+    home = authority_home(authority)
     # A dropped socket detaches outside the RPC's owner scope: expand ``${VAR}`` against this profile.
     with profile_env_scope(home):
         config = load_user_config_effective(home / 'config.yaml')

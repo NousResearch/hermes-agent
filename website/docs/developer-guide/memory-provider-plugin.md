@@ -281,8 +281,9 @@ Hermes runs a second agent without a provider in four places (delegated
 subagents, the curator pass, the batch runner, the Feishu comment responder). With the gate off they stay provider-less. With
 `checkpoint_required` armed such a fork arms the same gate and would fail its
 first compaction with `BLOCKED_MISSING_PREREQUISITE`, so it loads the
-configured provider, initialized with `agent_context="subagent"` (`platform`
-tells the shapes apart). The detached review and `/btw` forks are different:
+configured provider, initialized with `agent_context="subagent"` (`platform`,
+plus `parent_session_id` where the fork has a parent session, tells the shapes
+apart). The detached review and `/btw` forks are different:
 they persist nothing, so the gate does not apply to them. Two consequences:
 
 - **One `initialize()` per fork** — a round trip per spawn for a

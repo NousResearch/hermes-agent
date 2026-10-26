@@ -1164,6 +1164,9 @@ def _memory_provider_init_kwargs(agent, platform) -> dict[str, Any]:
         "agent_context": getattr(agent, "memory_agent_context", None)
         or (platform if platform in ("cron", "subagent") else "primary"),
     }
+    # Documented in MemoryProvider.initialize: forks tell their shape apart by platform + parent.
+    if getattr(agent, "_parent_session_id", None):
+        kwargs["parent_session_id"] = agent._parent_session_id
     if kwargs["platform"] == "cli":
         kwargs["warning_callback"] = agent._emit_warning
         kwargs["status_callback"] = agent._emit_status

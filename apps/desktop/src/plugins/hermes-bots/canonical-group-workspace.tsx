@@ -184,8 +184,16 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   const rename = (name: string) =>
     void mutate(() => canonicalGroupRequest(binding, 'groups.rename', { room_id: binding.roomId, event_id: randomUuid(), name }))
 
-  const saveContext = (context: CanonicalRoomContext) =>
-    void mutate(() => canonicalGroupRequest(binding, 'groups.context', { room_id: binding.roomId, event_id: randomUuid(), ...context }))
+  // True only once the backend accepted it, so the settings form keeps a rejected draft.
+  const saveContext = async (context: CanonicalRoomContext) => {
+    let saved = false
+    await mutate(async () => {
+      await canonicalGroupRequest(binding, 'groups.context', { room_id: binding.roomId, event_id: randomUuid(), ...context })
+      saved = true
+    })
+
+    return saved
+  }
 
   // Rejects so ConfirmDialog stays open with the error; a disbanded room no longer reads back, so leave it.
   const end = async () => {

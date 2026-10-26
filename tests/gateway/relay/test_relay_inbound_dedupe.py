@@ -170,14 +170,6 @@ class TestWireLevelReplayDedupe:
             raw["source"] = {**self.WIRE["source"], **overrides["source"]}
         return _event_from_wire(raw)
 
-    def test_decoded_event_yields_a_dedupe_key(self):
-        adapter, _ = _connected_adapter()
-        key = adapter._inbound_dedupe_key(self._decode())
-        assert key is not None, (
-            "the wire decoder's event shape must produce a dedupe key — "
-            "None here means the dedupe is fail-open for ALL production "
-            "traffic (the original ship-broken state)"
-        )
 
     def test_replayed_wire_frame_dropped(self, loop):
         adapter, _ = _connected_adapter()

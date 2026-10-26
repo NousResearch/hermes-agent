@@ -7,13 +7,7 @@ nothing after the colon, making debugging impossible.
 Fix: ``_exc_str()`` falls back to ``repr(exc)`` when ``str(exc)`` is empty.
 """
 
-
-from tools.mcp_tool_common import _exc_str, _sanitize_error
-
-
-# ---------------------------------------------------------------------------
-# _exc_str unit tests
-# ---------------------------------------------------------------------------
+from tools.mcp_tool_common import _exc_str
 
 
 class _EmptyMessageError(Exception):
@@ -23,25 +17,17 @@ class _EmptyMessageError(Exception):
         return ""
 
 
-class _NormalError(Exception):
-    pass
+def test_exc_str_falls_back_to_repr_when_message_is_empty():
+    """The #19417 shape: an empty-message exception must still yield diagnostics."""
+    text = _exc_str(_EmptyMessageError())
+    assert text.strip(), "empty exception message must not produce an empty diagnostic"
+    assert "_EmptyMessageError" in text
 
 
-def test_exc_str_returns_str_when_nonempty():
-    exc = _NormalError("something broke")
-    assert _exc_str(exc) == "something broke"
+def test_exc_str_falls_back_for_whitespace_only_message():
+    text = _exc_str(RuntimeError("   "))
+    assert "RuntimeError" in text
 
 
-# ---------------------------------------------------------------------------
-# Integration: error message format in _sanitize_error
-# ---------------------------------------------------------------------------
-
-
-def test_error_message_preserves_normal_exception_text():
-    """Normal exceptions should still show their message text."""
-    exc = _NormalError("connection refused")
-    error_msg = _sanitize_error(
-        f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"
-    )
-    assert "connection refused" in error_msg
-    assert "_NormalError" in error_msg
+def test_exc_str_keeps_real_message():
+    assert _exc_str(ValueError("connection refused")) == "connection refused"

@@ -13,6 +13,7 @@ pre-existing regression unrelated to dashboard-auth.
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -28,7 +29,7 @@ from hermes_cli.dashboard_auth.ws_tickets import (
     internal_ws_credential,
     mint_ticket,
 )
-from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider, _sign
 
 
 # ---------------------------------------------------------------------------
@@ -114,13 +115,38 @@ def _logged_in(client: TestClient) -> None:
 class TestWsTicketEndpoint:
     def test_authenticated_session_can_mint(self, gated_app):
         _logged_in(gated_app)
-        r = gated_app.post("/api/auth/ws-ticket")
+        r = gated_app.post("/api/auth/ws-ticket", headers={"Origin": "https://fly-app.fly.dev"})
         assert r.status_code == 200
         body = r.json()
         assert "ticket" in body
         assert isinstance(body["ticket"], str)
         assert len(body["ticket"]) >= 32
         assert body["ttl_seconds"] == 30
+
+    def test_authenticated_spa_bootstrap_uses_cookie_mode_without_injected_token(
+        self, monkeypatch, tmp_path
+    ):
+        from fastapi import FastAPI
+
+        dist = tmp_path / "desktop-webapp"
+        dist.mkdir()
+        (dist / "assets").mkdir()
+        (dist / "index.html").write_text(
+            "<!doctype html><html><head></head><body><div id='root'></div></body></html>",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(web_server, "WEB_DIST", dist)
+        monkeypatch.delenv("HERMES_SERVE_HEADLESS", raising=False)
+        monkeypatch.setattr(web_server.app.state, "auth_required", True, raising=False)
+        application = FastAPI()
+        application.state.auth_required = True
+        web_server.mount_spa(application)
+
+        response = TestClient(application).get("/")
+
+        assert response.status_code == 200
+        assert "window.__HERMES_AUTH_REQUIRED__=true" in response.text
+        assert "__HERMES_SESSION_TOKEN__" not in response.text
 
     def test_unauthenticated_returns_401_or_redirect(self, gated_app):
         r = gated_app.post("/api/auth/ws-ticket", follow_redirects=False)
@@ -208,6 +234,47 @@ class TestWsAuthOkLoopback:
         ws = _fake_ws(query={"token": web_server._SESSION_TOKEN})
         assert _web_server_chat._ws_auth_ok(ws) is True
 
+    def test_webapp_socket_ticket_is_accepted_once(self, loopback_app, monkeypatch):
+        """The Webapp on a loopback bind mints the browser's one-use socket ticket
+        (``POST /api/webapp/socket-ticket?socket=gateway``) for the session-token owner: the gate
+        takes it once and selects only the public protocol. A Bot Desktop screen ticket is never a
+        login here either."""
+        monkeypatch.setattr(web_server.app.state, "ui_surface", "webapp", raising=False)
+        ticket = mint_ticket(user_id="legacy-token-owner", provider="session-token")
+        protocols = (
+            _web_server_chat._GATEWAY_WS_PROTOCOL,
+            f"{_web_server_chat._GATEWAY_WS_TICKET_PROTOCOL_PREFIX}{ticket}",
+        )
+        ws_one = _fake_ws(query={}, path="/api/ws", protocols=protocols)
+        assert _web_server_chat._ws_auth_ok(ws_one) is True
+        assert ws_one._hermes_auth_identity == {"user_id": "legacy-token-owner", "provider": "session-token"}
+        assert ws_one._hermes_ws_subprotocol == _web_server_chat._GATEWAY_WS_PROTOCOL
+        assert _web_server_chat._ws_auth_ok(_fake_ws(query={}, path="/api/ws", protocols=protocols)) is False
+        screen = mint_ticket(user_id="display:v", provider="bot-desktop", extra={"hermes_home": "/srv/hermes"})
+        assert _web_server_chat._ws_auth_ok(_fake_ws(query={"ticket": screen}, path="/api/ws")) is False
+
+
+    @pytest.mark.parametrize("surface", ["dashboard", "serve"])
+    def test_off_the_webapp_the_loopback_gate_takes_only_the_token_as_on_main(
+            self, loopback_app, monkeypatch, surface):
+        """The standalone dashboard and ``hermes serve`` mint no socket tickets, so their loopback
+        gate judges ``?token=`` alone, as on main: a ticket opens nothing there and is not spent, and
+        one riding beside the session token does not refuse it."""
+        from hermes_cli.dashboard_auth.ws_tickets import consume_ticket
+
+        monkeypatch.setattr(web_server.app.state, "ui_surface", surface, raising=False)
+        ticket = mint_ticket(user_id="legacy-token-owner", provider="session-token")
+        protocols = (
+            _web_server_chat._GATEWAY_WS_PROTOCOL,
+            f"{_web_server_chat._GATEWAY_WS_TICKET_PROTOCOL_PREFIX}{ticket}",
+        )
+        assert _web_server_chat._ws_auth_reason(_fake_ws(query={"ticket": ticket}, path="/api/ws")) == (
+            "no_credential", "none")
+        assert _web_server_chat._ws_auth_ok(_fake_ws(query={}, path="/api/ws", protocols=protocols)) is False
+        assert _web_server_chat._ws_auth_ok(
+            _fake_ws(query={"ticket": "never-minted", "token": web_server._SESSION_TOKEN}, path="/api/ws")) is True
+        assert consume_ticket(ticket)["user_id"] == "legacy-token-owner"
+
 
 class TestWsAuthOkGated:
     """Gate ON — ticket path only."""
@@ -267,6 +334,115 @@ class TestWsAuthOkGated:
         _SESSION_TOKEN (e.g. a leaked log line)."""
         ws = _fake_ws(query={"token": web_server._SESSION_TOKEN})
         assert _web_server_chat._ws_auth_ok(ws) is False
+
+    def test_internal_credential_is_scoped_to_server_child_endpoints(self, gated_app, monkeypatch):
+        """On the gateway's Webapp the server's own credential opens only the sockets its spawned
+        clients dial (``/api/ws``, ``/api/pub``)."""
+        monkeypatch.setattr(web_server.app.state, "ui_surface", "webapp", raising=False)
+        credential = internal_ws_credential()
+
+        for path in (
+            "/api/pty",
+            "/api/console",
+            "/api/events",
+            "/api/audio/speak-stream",
+        ):
+            ws = _fake_ws(query={"internal": credential}, path=path)
+            assert _web_server_chat._ws_auth_reason(ws) == (
+                "internal_not_allowed",
+                "internal",
+            )
+
+        gateway = _fake_ws(query={"internal": credential}, path="/api/ws")
+        publisher = _fake_ws(query={"internal": credential}, path="/api/pub")
+        assert _web_server_chat._ws_auth_ok(gateway, allow_internal=True) is True
+        assert _web_server_chat._ws_auth_ok(publisher, allow_internal=True) is True
+
+    @pytest.mark.parametrize("surface", ["dashboard", "serve"])
+    def test_off_the_webapp_internal_credential_opens_every_socket_as_on_main(
+            self, gated_app, monkeypatch, surface):
+        """The standalone dashboard and ``hermes serve`` accept the server's own credential on every
+        socket their gate judges, plugin sockets included, as on main."""
+        monkeypatch.setattr(web_server.app.state, "ui_surface", surface, raising=False)
+        credential = internal_ws_credential()
+        paths = ("/api/pty", "/api/console", "/api/events", "/api/audio/speak-stream", "/api/plugins/kanban/events")
+        for path in paths:
+            assert _web_server_chat._ws_auth_reason(_fake_ws(query={"internal": credential}, path=path)) == (
+                None, "internal"), path
+
+    def test_session_token_accepted_in_gated_mode(self, gated_app):
+        """A provider-verified session access token (?token=) is accepted in
+        gated mode — the credential a token-mode Remote desktop connection
+        bakes into its WS URL. Reuses the same verify_session provider seam
+        as the native bearer REST leg (#106685)."""
+        access_token = _sign({
+            "sub": "remote-desktop-user",
+            "email": "user@example.test",
+            "name": "Remote User",
+            "org_id": "org-1",
+            "exp": int(time.time()) + 3600,
+        })
+        ws = _fake_ws(query={"token": access_token}, path="/api/ws")
+        assert _web_server_chat._ws_auth_ok(ws) is True
+        assert ws._hermes_auth_identity == {
+            "user_id": "remote-desktop-user",
+            "provider": "stub",
+        }
+
+    def test_invalid_session_token_rejected_in_gated_mode(self, gated_app):
+        """A bogus ?token= fails with token_invalid (and audits), not a crash."""
+        ws = _fake_ws(query={"token": "bogus-token"}, path="/api/ws")
+        reason, cred = _web_server_chat._ws_auth_reason(ws)
+        assert reason == "token_invalid"
+        assert cred == "token"
+        assert _web_server_chat._ws_auth_ok(ws) is False
+
+    def test_expired_session_token_rejected_in_gated_mode(self, gated_app):
+        """A well-formed but expired session token is rejected: the provider
+        verify seam honours exp, so a leaked stale token grants nothing."""
+        access_token = _sign({
+            "sub": "remote-desktop-user",
+            "email": "user@example.test",
+            "name": "Remote User",
+            "org_id": "org-1",
+            "exp": int(time.time()) - 3600,
+        })
+        ws = _fake_ws(query={"token": access_token}, path="/api/ws")
+        assert _web_server_chat._ws_auth_ok(ws) is False
+
+    def test_display_ticket_still_rejected_as_gateway_login(self, gated_app):
+        """The token leg must not disturb the bot-desktop display-ticket
+        guard: a display ticket presented as a gateway login stays invalid."""
+        ticket = mint_ticket(user_id="bot-user", provider="bot-desktop")
+        ws = _fake_ws(query={"ticket": ticket}, path="/api/ws")
+        assert _web_server_chat._ws_auth_ok(ws) is False
+
+    def test_session_token_audit_logs(self, gated_app, tmp_path, monkeypatch):
+        """Accept and reject of a session token both audit."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from hermes_cli.dashboard_auth import audit as audit_mod
+
+        if hasattr(audit_mod, "_LOGGER"):
+            monkeypatch.setattr(audit_mod, "_LOGGER", None, raising=False)
+
+        access_token = _sign({
+            "sub": "remote-desktop-user",
+            "email": "user@example.test",
+            "name": "Remote User",
+            "org_id": "org-1",
+            "exp": int(time.time()) + 3600,
+        })
+        ws_ok = _fake_ws(query={"token": access_token}, path="/api/ws")
+        assert _web_server_chat._ws_auth_ok(ws_ok) is True
+
+        ws_bad = _fake_ws(query={"token": "bogus-token"}, path="/api/ws")
+        assert _web_server_chat._ws_auth_ok(ws_bad) is False
+
+        log_file = tmp_path / "logs" / "dashboard-auth.log"
+        if log_file.exists():
+            content = log_file.read_text()
+            assert "token_auth_success" in content
+            assert "token_auth_failure" in content
 
     def test_rejection_audit_logs(self, gated_app, tmp_path, monkeypatch):
         # Point the audit log at a tmp dir so we can read what got written.
@@ -415,11 +591,17 @@ class TestWsHostOriginGuardOrigins:
 
 
 
-    def test_gated_cross_site_http_origin_still_host_checked(self, gated_app):
+    @pytest.mark.parametrize("origin", [
+        "https://evil.test",
+        # Malformed authorities make urlparse raise; they must fail closed.
+        "http://[::1",
+        "https://[not-an-ip]:52133",
+    ])
+    def test_gated_cross_site_http_origin_still_host_checked(self, gated_app, origin):
         # An http(s) origin is still subjected to the same-host check even on a
         # gated bind: a cross-site http origin whose netloc doesn't match the
         # bound host is rejected. Real browser DNS-rebinding defence unchanged.
-        ws = self._ws(origin="https://evil.test", host="fly-app.fly.dev")
+        ws = self._ws(origin=origin, host="fly-app.fly.dev")
         assert _web_server_chat._ws_host_origin_is_allowed(ws) is False
 
 

@@ -23,7 +23,7 @@ def fill_tokens(prs, values):
     from pptx_edit import replace_text  # same scripts/ directory
     total = 0
     for token, value in values.items():
-        total += replace_text(prs, "{{%s}}" % token, str(value))
+        total += replace_text(prs, f"{{{{{token}}}}}", str(value))
     return total
 
 

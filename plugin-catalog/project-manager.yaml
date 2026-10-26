@@ -1,0 +1,25 @@
+name: project-manager
+repo: https://github.com/AiSolve-me/hermes-project-manager
+sha: 2de4269baafc7399b7d4f92ad71b1d39205caf7b
+version: "1.0.0"
+title: Project Manager
+description: "Git workbench for the Hermes Dashboard and Desktop: discovers the git repositories under the folders you watch, and inspects or changes them per file — stage, unstage, diff and discard — plus commit, push, pull, branches, commits and worktrees. Disclosure — reads the watch paths from its own SQLite table (under HERMES_HOME/plugin-data/project-manager) and git metadata (branch, remote, ahead/behind, commit subjects, status and diff text) from the repositories under them, and lists folder names under any path you type when adding a watch folder; file contents are read only as diff text returned to the requesting UI; the five agent tools are read-only. Writes on request only from the Dashboard/Desktop UI: git add, commit, push, stash (including stash -u before a branch switch), fetch, merge --ff-only (also as \"pull all\" across every watched repository), restore, clean -f, git switch, and git worktree remove (including --force and remove-all). Discard on a tracked file restores it from HEAD and drops the uncommitted edits; on a file in no commit (untracked or staged-new) it leaves the bytes on disk but nothing here can restore a version of it, and both sit behind a confirmation naming which one you are doing. The Desktop Chat button starts a new Hermes session whose working directory is that project's folder, and the project name and branch chip open the repository's remote URL in your system browser. The optional standalone server (project_manager_server.py, 127.0.0.1:9120) requires a per-run token printed to its log. No outbound network, no model call, no API keys; git fetch/push contact the remote named in the request (the UI sends the repository's own remote)."
+maintainer: AiSolve-me
+tier: community
+category: desktop
+docs_url: https://github.com/AiSolve-me/hermes-project-manager#readme
+image: https://raw.githubusercontent.com/AiSolve-me/hermes-project-manager/2de4269baafc7399b7d4f92ad71b1d39205caf7b/docs/assets/catalog-card.png
+screenshots:
+  - https://raw.githubusercontent.com/AiSolve-me/hermes-project-manager/2de4269baafc7399b7d4f92ad71b1d39205caf7b/docs/assets/projects-dashboard.png
+platforms: []
+capabilities:
+  provides_tools:
+    - list_projects
+    - get_project
+    - list_branches
+    - get_recent_commits
+    - list_watch_paths
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.21.4"

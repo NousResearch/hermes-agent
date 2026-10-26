@@ -5,7 +5,7 @@ end-to-end evolution with whatever model the user already has paid access to.
 
 Run with:
     uv --project darwinian_evolver run python parrot_openrouter.py \
-        --num_iterations 3 --output_dir /tmp/parrot_out
+        --num_iterations 3 --output_dir ~/.hermes/cache/scratch/parrot_out
 
 Reads `OPENROUTER_API_KEY` from the environment.
 """

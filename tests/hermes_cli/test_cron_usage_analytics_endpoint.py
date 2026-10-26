@@ -52,6 +52,7 @@ def test_dashboard_analytics_is_profile_scoped_and_validates_period(monkeypatch)
             "manual_runs": 0,
             "scheduled_runs": 1,
             "retry_attempts": 0,
+            "history_limited": False,
         },
     )
 
@@ -65,3 +66,61 @@ def test_dashboard_analytics_is_profile_scoped_and_validates_period(monkeypatch)
     with pytest.raises(HTTPException) as exc_info:
         cron_router._list_cron_analytics_sync("all", 14)
     assert exc_info.value.status_code == 400
+
+
+
+def test_analytics_http_reads_real_profile_stores_and_reports_limited_history(tmp_path, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from cron import executions
+    from hermes_cli import web_server_cron
+    from hermes_constants import (
+        get_hermes_home_override, reset_hermes_home_override, set_hermes_home_override,
+    )
+    from hermes_state import SessionDB
+
+    homes = {profile: tmp_path / profile for profile in ("default", "worker")}
+    monkeypatch.setattr(web_server_cron, "_cron_profile_home", lambda profile: (profile, homes[profile]))
+    monkeypatch.setattr(executions, "EXECUTIONS_FILE", None)
+    monkeypatch.setattr(executions, "MAX_TERMINAL_EXECUTIONS", 2)
+    for profile, tokens in (("default", 10), ("worker", 20)):
+        home = homes[profile]
+        home.mkdir()
+        with SessionDB(home / "state.db") as db:
+            sid = "cron_shared_20261026_100000"
+            db.create_session(sid, source="cron")
+            db.update_token_counts(sid, input_tokens=tokens, estimated_cost_usd=0.1)
+            db.end_session(sid, "cron_complete")
+        token = set_hermes_home_override(str(home))
+        try:
+            row = executions.create_execution("shared", source="direct")
+            executions.mark_execution_running(row["id"])
+            executions.finish_execution(row["id"], success=profile == "worker")
+            if profile == "default":
+                for _ in range(2):
+                    noisy = executions.create_execution("noisy", source="direct")
+                    executions.mark_execution_running(noisy["id"])
+                    executions.finish_execution(noisy["id"], success=True)
+        finally:
+            reset_hermes_home_override(token)
+
+    monkeypatch.setattr(cron_router, "_list_cron_jobs_sync", lambda profile: [
+        {"id": "shared", "profile": name} for name in homes
+    ])
+    app = FastAPI()
+    app.include_router(cron_router.router)
+    previous_home = get_hermes_home_override()
+    with TestClient(app) as client:
+        response = client.get("/api/cron/analytics?profile=all&days=30")
+        assert response.status_code == 200
+        entries = {row["profile"]: row for row in response.json()["jobs"]}
+        assert entries["default"]["history_limited"] is True
+        assert entries["default"]["attempts"] == 0
+        assert entries["default"]["usage_runs"] == 1
+        assert entries["default"]["total_tokens"] == 10
+        assert entries["worker"]["history_limited"] is False
+        assert entries["worker"]["completed"] == 1
+        assert entries["worker"]["total_tokens"] == 20
+        assert client.get("/api/cron/analytics?days=14").status_code == 400
+    assert get_hermes_home_override() == previous_home

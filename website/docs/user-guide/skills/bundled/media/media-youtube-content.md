@@ -15,7 +15,7 @@ YouTube transcripts to summaries, threads, blogs.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/media\youtube-content` |
+| Path | `skills/media/youtube-content` |
 | Version | `1.0.0` |
 | Author | Teknium (teknium1), Hermes Agent |
 | License | MIT |
@@ -38,12 +38,25 @@ Extract transcripts from YouTube videos and convert them into useful formats.
 
 ## Setup
 
-Use `uv` so the dependency is installed into the same Hermes-managed environment
-that runs the helper script:
+Use `terminal` with the Python from a PM-prepared Hermes source checkout. The
+`youtube` extra declares the helper's dependency; do not install packages into
+Hermes with raw pip or project-discovering `uv run`.
+
+From that checkout, first follow the isolated development-home setup in
+[Package Management](https://hermes-agent.nousresearch.com/docs/reference/package-management#developer-workflow),
+then prepare the extra and reactivate before running the helper:
 
 ```bash
-uv pip install youtube-transcript-api
+source ./activate
+python -c "import pm; pm.sync_venv(['youtube'], explicit=True)"
+source ./activate
+python -c "import youtube_transcript_api; print(youtube_transcript_api.__file__)"
 ```
+
+On Windows, use `. .\activate.ps1` instead of `source ./activate`. If the terminal
+runs on a different host or in a sandbox, use an explicitly isolated helper
+environment there, not the agent's production environment. Run every command
+below with the interpreter whose import check succeeded.
 
 ## Helper Script
 
@@ -51,16 +64,16 @@ uv pip install youtube-transcript-api
 
 ```bash
 # JSON output with metadata
-uv run python SKILL_DIR/scripts/fetch_transcript.py "https://youtube.com/watch?v=VIDEO_ID"
+python SKILL_DIR/scripts/fetch_transcript.py "https://youtube.com/watch?v=VIDEO_ID"
 
 # Plain text (good for piping into further processing)
-uv run python SKILL_DIR/scripts/fetch_transcript.py "URL" --text-only
+python SKILL_DIR/scripts/fetch_transcript.py "URL" --text-only
 
 # With timestamps
-uv run python SKILL_DIR/scripts/fetch_transcript.py "URL" --timestamps
+python SKILL_DIR/scripts/fetch_transcript.py "URL" --timestamps
 
 # Specific language with fallback chain
-uv run python SKILL_DIR/scripts/fetch_transcript.py "URL" --language tr,en
+python SKILL_DIR/scripts/fetch_transcript.py "URL" --language tr,en
 ```
 
 ## Output Formats
@@ -86,7 +99,7 @@ After fetching the transcript, format it based on what the user asks for:
 
 ## Workflow
 
-1. **Fetch** the transcript using the helper script with `--text-only --timestamps` via `uv run python`.
+1. **Fetch** the transcript using `terminal` and the prepared Python with `--text-only --timestamps`.
 2. **Validate**: confirm the output is non-empty and in the expected language. If empty, retry without `--language` to get any available transcript. If still empty, tell the user the video likely has transcripts disabled.
 3. **Chunk if needed**: if the transcript exceeds ~50K characters, split into overlapping chunks (~40K with 2K overlap) and summarize each chunk before merging.
 4. **Transform** into the requested output format. If the user did not specify a format, default to a summary.
@@ -97,4 +110,4 @@ After fetching the transcript, format it based on what the user asks for:
 - **Transcript disabled**: tell the user; suggest they check if subtitles are available on the video page.
 - **Private/unavailable video**: relay the error and ask the user to verify the URL.
 - **No matching language**: retry without `--language` to fetch any available transcript, then note the actual language to the user.
-- **Dependency missing**: run `uv pip install youtube-transcript-api` and retry.
+- **Dependency missing**: repeat PM preparation and reactivation above, then verify the helper uses that Python. Do not repair the selected generation with pip.

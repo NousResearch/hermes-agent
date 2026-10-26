@@ -6,6 +6,7 @@ import { $connection } from '@/store/session'
 import { notifyWorkspaceChanged } from '@/store/workspace-events'
 
 import { clearProjectDirCache, readProjectDir } from './ipc'
+import { $showIgnoredRoots } from './prefs'
 import { resetProjectTreeState, useProjectTree } from './use-project-tree'
 
 const readDir = vi.fn<(path: string) => Promise<HermesReadDirResult>>()
@@ -13,6 +14,7 @@ const readDir = vi.fn<(path: string) => Promise<HermesReadDirResult>>()
 beforeEach(() => {
   $connection.set(null)
   resetProjectTreeState()
+  $showIgnoredRoots.set([])
   readDir.mockReset()
   ;(window as unknown as { hermesDesktop: { readDir: typeof readDir } }).hermesDesktop = { readDir }
 })
@@ -21,6 +23,7 @@ afterEach(() => {
   cleanup()
   $connection.set(null)
   resetProjectTreeState()
+  $showIgnoredRoots.set([])
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
 })
 
@@ -266,6 +269,111 @@ describe('useProjectTree', () => {
 
     // Mount load + a single folder fetch — duplicates were dropped.
     expect(readDir).toHaveBeenCalledTimes(2)
+  })
+
+  it.each((['child', 'targeted', 'full'] as const).flatMap(read => [false, true].map(refresh => ({ read, refresh }))))(
+    'keeps $read results within the root generation (refresh=$refresh)',
+    async ({ read, refresh }) => {
+      const src = { name: 'src', path: '/p/src', isDirectory: true }
+      const fresh = { name: 'fresh.txt', path: '/p/fresh.txt', isDirectory: false }
+      let resolveOld!: (value: HermesReadDirResult) => void
+
+      const oldRead = new Promise<HermesReadDirResult>(resolve => {
+        resolveOld = resolve
+      })
+
+      readDir.mockResolvedValueOnce(ok([src]))
+      readDir.mockImplementationOnce(() => oldRead)
+      readDir.mockImplementation(async path =>
+        ok(path === '/p/src' ? [{ ...fresh, path: '/p/src/fresh.txt' }] : [src, fresh])
+      )
+      const { result } = renderHook(() => useProjectTree('/p'))
+      await waitFor(() => expect(result.current.data.map(node => node.name)).toEqual(['src']))
+
+      act(() => {
+        if (read === 'child') {
+          void result.current.loadChildren('/p/src')
+        } else {
+          notifyWorkspaceChanged(read === 'targeted' ? '/p/changed.txt' : undefined)
+        }
+      })
+      await waitFor(() => expect(readDir).toHaveBeenCalledTimes(2))
+
+      if (refresh) {
+        await act(async () => {
+          await result.current.refreshRoot()
+        })
+        expect(result.current.data.map(node => node.name)).toEqual(['src', 'fresh.txt'])
+
+        if (read === 'child') {
+          await act(async () => {
+            await result.current.loadChildren('/p/src')
+          })
+        }
+      }
+
+      await act(async () => {
+        resolveOld(
+          ok([{ name: 'stale.txt', path: read === 'child' ? '/p/src/stale.txt' : '/p/stale.txt', isDirectory: false }])
+        )
+      })
+
+      if (refresh) {
+        expect(result.current.data.map(node => node.name)).toEqual(['src', 'fresh.txt'])
+
+        if (read === 'child') {
+          expect(result.current.data[0]?.children?.map(node => node.name)).toEqual(['fresh.txt'])
+        }
+      } else if (read === 'child') {
+        expect(result.current.data[0]?.children?.map(node => node.name)).toEqual(['stale.txt'])
+      } else {
+        expect(result.current.data.map(node => node.name)).toEqual(['stale.txt'])
+      }
+    }
+  )
+
+  it('keeps a refreshed folder read in flight when its predecessor finishes', async () => {
+    const src = { name: 'src', path: '/p/src', isDirectory: true }
+    let finishOld!: (value: HermesReadDirResult) => void
+    let finishNew!: (value: HermesReadDirResult) => void
+
+    const oldRead = new Promise<HermesReadDirResult>(resolve => {
+      finishOld = resolve
+    })
+
+    const newRead = new Promise<HermesReadDirResult>(resolve => {
+      finishNew = resolve
+    })
+
+    readDir.mockResolvedValueOnce(ok([src]))
+    readDir.mockImplementationOnce(() => oldRead)
+    readDir.mockResolvedValueOnce(ok([src]))
+    readDir.mockImplementationOnce(() => newRead)
+    readDir.mockResolvedValue(ok([]))
+    const { result } = renderHook(() => useProjectTree('/p'))
+    await waitFor(() => expect(result.current.data[0]?.name).toBe('src'))
+    act(() => {
+      void result.current.loadChildren(src.path)
+    })
+    await waitFor(() => expect(readDir).toHaveBeenCalledTimes(2))
+    await act(async () => {
+      await result.current.refreshRoot()
+    })
+    act(() => {
+      void result.current.loadChildren(src.path)
+    })
+    await waitFor(() => expect(readDir).toHaveBeenCalledTimes(4))
+    await act(async () => {
+      finishOld(ok([]))
+    })
+    act(() => {
+      void result.current.loadChildren(src.path)
+    })
+    await act(async () => {
+      finishNew(ok([{ name: 'new.txt', path: '/p/src/new.txt', isDirectory: false }]))
+    })
+    expect(readDir).toHaveBeenCalledTimes(4)
+    expect(result.current.data[0]?.children?.map(node => node.name)).toEqual(['new.txt'])
   })
 
   it('refreshRoot reloads the root and clears prior error', async () => {
@@ -554,5 +662,124 @@ describe('useProjectTree', () => {
     })
 
     await waitFor(() => expect(result.current.data.map(node => node.name)).toEqual(['from-b']))
+  })
+
+  // The whole point of the toggle is "show me more files", so the folder the
+  // user is looking at must gain rows, not lose them. loadRoot(force) rebuilds
+  // `data` from the root listing alone, which drops every loaded subtree's
+  // children while arborist keeps the row open — an expanded folder rendering
+  // empty, with nothing left to re-fetch it.
+  it('keeps expanded folders populated when the show-ignored preference flips', async () => {
+    const gitRoot = vi.fn(async () => '/p')
+    const readFileDataUrl = vi.fn(async () => `data:text/plain;base64,${btoa('*.log\n')}`)
+
+    readDir.mockImplementation(async path => {
+      if (path === '/p') {
+        return ok([
+          { name: '.gitignore', path: '/p/.gitignore', isDirectory: false },
+          { name: 'src', path: '/p/src', isDirectory: true }
+        ])
+      }
+
+      if (path === '/p/src') {
+        return ok([
+          { name: 'app.ts', path: '/p/src/app.ts', isDirectory: false },
+          { name: 'debug.log', path: '/p/src/debug.log', isDirectory: false }
+        ])
+      }
+
+      return ok([])
+    })
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { gitRoot, readDir, readFileDataUrl }
+
+    const { result } = renderHook(() => useProjectTree('/p'))
+
+    await waitFor(() => expect(result.current.rootLoading).toBe(false))
+
+    // Mirror the real expand flow: arborist records the open state, then the
+    // hook lazy-loads that folder's children.
+    act(() => {
+      result.current.setNodeOpen('/p/src', true)
+    })
+
+    await act(async () => {
+      await result.current.loadChildren('/p/src')
+    })
+
+    expect(result.current.showIgnored).toBe(false)
+    expect(result.current.data.find(n => n.name === 'src')?.children?.map(c => c.name)).toEqual(['app.ts'])
+
+    await act(async () => {
+      result.current.setShowIgnored(true)
+    })
+
+    await waitFor(() =>
+      expect(result.current.data.find(n => n.name === 'src')?.children?.map(c => c.name)).toEqual([
+        'app.ts',
+        'debug.log'
+      ])
+    )
+    expect(result.current.showIgnored).toBe(true)
+    expect(result.current.openState['/p/src']).toBe(true)
+
+    await act(async () => {
+      result.current.setShowIgnored(false)
+    })
+
+    await waitFor(() =>
+      expect(result.current.data.find(n => n.name === 'src')?.children?.map(c => c.name)).toEqual(['app.ts'])
+    )
+    expect(result.current.showIgnored).toBe(false)
+  })
+
+  // A listing read under the old preference must never be committed after a
+  // toggle flipped it, or it re-hides the rows the toggle just revealed.
+  it('drops a child listing that was read before the preference flipped', async () => {
+    const gitRoot = vi.fn(async () => '/p')
+    const readFileDataUrl = vi.fn(async () => `data:text/plain;base64,${btoa('*.log\n')}`)
+    let releaseChild: ((value: HermesReadDirResult) => void) | undefined
+
+    readDir.mockImplementation(async path => {
+      if (path === '/p') {
+        return ok([
+          { name: '.gitignore', path: '/p/.gitignore', isDirectory: false },
+          { name: 'src', path: '/p/src', isDirectory: true }
+        ])
+      }
+
+      if (path === '/p/src') {
+        return new Promise<HermesReadDirResult>(resolve => {
+          releaseChild = resolve
+        })
+      }
+
+      return ok([])
+    })
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { gitRoot, readDir, readFileDataUrl }
+
+    const { result } = renderHook(() => useProjectTree('/p'))
+
+    await waitFor(() => expect(result.current.rootLoading).toBe(false))
+
+    let pendingChild: Promise<void> | undefined
+
+    act(() => {
+      pendingChild = result.current.loadChildren('/p/src')
+    })
+
+    await waitFor(() => expect(releaseChild).toBeTypeOf('function'))
+
+    act(() => {
+      result.current.setShowIgnored(true)
+    })
+
+    await act(async () => {
+      releaseChild?.(ok([{ name: 'app.ts', path: '/p/src/app.ts', isDirectory: false }]))
+      await pendingChild
+    })
+
+    // The stale read carried only the filtered row; committing it would have
+    // replaced the placeholder with a listing the new preference disagrees with.
+    expect(result.current.data.find(n => n.name === 'src')?.children?.map(c => c.name)).not.toEqual(['app.ts'])
   })
 })

@@ -5,7 +5,7 @@ is ssh / daytona / vercel (any backend that reports its ``_remote_home``), the a
 on another filesystem, so the tag was silently dropped. This module pulls the file through the
 active environment's ``fetch_file`` into the document cache (already an allowlisted delivery root)
 and hands back the host copy. Backends without a known remote home (docker outside its mounts,
-modal, singularity) still get the conservative any-component denylist, so a ``/root/...`` artifact
+modal, plugin sandboxes) still get the conservative any-component denylist, so a ``/root/...`` artifact
 there is not fetched — set ``_remote_home`` on the environment to opt in.
 
 The remote path is screened against the same denylist as local deliveries BEFORE any bytes move,
@@ -26,8 +26,7 @@ from pathlib import Path, PurePosixPath
 from typing import Optional
 
 from gateway.platforms.base import (
-    _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS, _MEDIA_DELIVERY_DENIED_PREFIXES, _ROOT_CREDENTIAL_PATHS,
-    _TRUTHY, MEDIA_DELIVERY_STRICT_ENV)
+    _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS, _MEDIA_DELIVERY_DENIED_PREFIXES, _ROOT_CREDENTIAL_PATHS)
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +78,8 @@ def _active_remote_env():
 def fetch_remote_media(path: str) -> Optional[str]:
     """Host path of a validated copy of sandbox file ``path``, or None (never raises). Only fires
     when a remote backend is active; the caller has already failed local validation."""
-    if os.environ.get(MEDIA_DELIVERY_STRICT_ENV, "0").strip().lower() in _TRUTHY:
+    from gateway.media_policy import media_delivery_strict
+    if media_delivery_strict():
         return None
     env = _active_remote_env()
     if env is None:

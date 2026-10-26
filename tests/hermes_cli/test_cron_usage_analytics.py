@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from cron import executions
 from hermes_state import SessionDB
@@ -43,7 +43,7 @@ def _seed_cron_session(
 def test_cron_job_usage_analytics_scopes_period_and_prefers_actual_cost(tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")
     try:
-        now = datetime.now(timezone.utc).timestamp()
+        now = datetime.now(UTC).timestamp()
         _seed_cron_session(
             db,
             "cron_job-alpha_20260909_100000",
@@ -101,7 +101,7 @@ def test_cron_job_usage_analytics_scopes_period_and_prefers_actual_cost(tmp_path
 
 def test_execution_analytics_identifies_manual_failures_and_retries(tmp_path, monkeypatch):
     monkeypatch.setattr(executions, "EXECUTIONS_FILE", tmp_path / "executions.db")
-    scheduled = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    scheduled = datetime.now(UTC).replace(microsecond=0).isoformat()
 
     first = executions.create_execution("job-alpha", source="builtin", scheduled_instant=scheduled)
     executions.mark_execution_running(first["id"])
@@ -117,7 +117,7 @@ def test_execution_analytics_identifies_manual_failures_and_retries(tmp_path, mo
 
     result = executions.execution_analytics(
         "job-alpha",
-        since=(datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),
+        since=(datetime.now(UTC) - timedelta(days=1)).isoformat(),
     )
 
     assert result == {
@@ -129,4 +129,5 @@ def test_execution_analytics_identifies_manual_failures_and_retries(tmp_path, mo
         "manual_runs": 1,
         "scheduled_runs": 1,
         "retry_attempts": 1,
+        "history_limited": False,
     }

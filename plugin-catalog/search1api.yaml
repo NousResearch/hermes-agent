@@ -1,0 +1,20 @@
+name: search1api
+repo: https://github.com/superagents-lab/hermes-search1api
+sha: ab898ae9a46b382d53aeb7c26cfb1a32ce5c89b8
+description: Live web search, news, Ask, page crawl, sitemap, and trending via Search1API
+maintainer: superagents-lab
+tier: community
+category: web
+docs_url: https://github.com/superagents-lab/hermes-search1api#readme
+version: "0.2.1"
+capabilities:
+  provides_tools:
+  - search1api_search
+  - search1api_news
+  - search1api_ask
+  - search1api_crawl
+  - search1api_sitemap
+  - search1api_trending
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

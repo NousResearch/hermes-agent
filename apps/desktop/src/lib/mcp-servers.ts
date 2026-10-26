@@ -6,6 +6,8 @@
 
 export type McpServers = Record<string, Record<string, unknown>>
 
+export type McpServerEntry = McpServers[string]
+
 export const isServerShape = (value: Record<string, unknown>) =>
   typeof value.command === 'string' || typeof value.url === 'string'
 
@@ -20,6 +22,17 @@ export function normalizeEntry(entry: Record<string, unknown>): Record<string, u
 
   return entry
 }
+
+// `String()` folds the value first: false → 'false', 0 / 0.0 / -0 → '0'; everything
+// else (true, other numbers, null, absent, junk) lands outside this set and reads on.
+const OFF_WORDS = new Set(['false', '0', 'no', 'off'])
+
+/** Whether a server entry is on. Mirrors the backend's one reader
+ *  (`tools/mcp_tool_common.py::mcp_server_enabled`): false/0 and the off words
+ *  (any case, trimmed) are off; absent, `null`, `""` and junk are on.
+ *  `mcp-enabled-cases.json` pins both sides to the same table, so the MCP page
+ *  never shows a server on that the runtime skips. */
+export const serverEnabled = (entry: McpServerEntry) => !OFF_WORDS.has(String(entry.enabled).trim().toLowerCase())
 
 /** A value a reader can reach into: an object, not `null`, an array or a scalar. */
 const isEntry = (value: unknown): value is Record<string, unknown> =>

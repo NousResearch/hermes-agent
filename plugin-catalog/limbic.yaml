@@ -1,0 +1,18 @@
+name: limbic
+repo: https://github.com/dyiapanis/limbic
+sha: e7a3cd30424ea853746c863bb1691beca4cd9b39
+description: "Local long-term memory for Hermes agents. Everything stays on your machine: an SQLite store plus bundled embedding and NLI models, no telemetry, no LLMs.\nLimbic is designed on the physiological brain, opaque and organic. Memories strengthen or atrophy with use, corrections replace what they superseded — all deterministic background mechanisms, zero LLM calls.\nAlgorithmic forgetting keeps atrophied memories out of the database. Recall is calibrated: when nothing in memory is confident enough, it abstains instead of guessing, so the agent answers honestly rather than surfacing near-misses. First start downloads ~1 GB of pinned models once, then runs fully offline. PolyForm Noncommercial 1.0.0 (commercial use requires a separate license). Disclosure — the agent-facing tools are remember, recall and forget (forget lists candidate facts for a query, then deletes the one fact id the user picks, scoped to the current user, and appends a hash-only receipt of the content's sha256, length, user id and fact id to limbic.db.deletions.jsonl beside the database); on first primary session start downloads ~1.0GB of ONNX models (Arctic Embed 2.0 L int8 embedding, ~570MB; MiniLMv2 NLI, ~430MB, on first contradiction check) from huggingface.co at pinned commits with hash checks into ~/.cache/limbic/ (outside HERMES_HOME; %USERPROFILE%\\.cache\\limbic on Windows); at every model load, every file in those cache folders that is not in the pinned manifest is deleted — including unrelated files if you point embedding/nli cache_dir at a shared folder; spaCy NER models are optional: `hermes limbic languages --set <lang>` and `hermes limbic setup` run `python -m spacy download <model>`, which pip-installs each model package (~14.5MB, version picked by spaCy, not hash-pinned) from spaCy's GitHub releases into Hermes's own Python environment, and `hermes limbic setup` also pre-downloads both ONNX models; memory stays local in limbic.db under HERMES_HOME, facts whose trust decays to zero are deleted automatically, and hermes backup adds VACUUM snapshots under HERMES_HOME/backups; no telemetry."
+maintainer: dyiapanis
+tier: community
+category: memory
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/dyiapanis/limbic#readme
+version: "0.9.1"
+image: https://raw.githubusercontent.com/dyiapanis/limbic/e7a3cd30424ea853746c863bb1691beca4cd9b39/assets/banner.png
+readme: true
+platforms: [linux, windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

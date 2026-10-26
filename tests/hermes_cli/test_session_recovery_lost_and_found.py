@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -19,6 +21,7 @@ from hermes_cli import session_recovery
 from hermes_cli import session_schema_history
 from hermes_cli.session_lost_and_found import (
     STUB_TITLE_PREFIX,
+    _cli_recover_attempts,
     classify_lost_and_found_row,
     map_lost_and_found_rows,
     rebuild_fts_indexes,
@@ -157,9 +160,10 @@ def test_exact_lookup_recovers_tail_row_next_to_damaged_high_edge(
 
     copied = report["copy"]["messages"]
     bounds = copied["rowid_bounds"]
-    # Premise check: the high edge probe really failed and fell back.
+    # Premise check: the high edge probe really failed; the bound came from the aggregate
+    # (#98050) or, when that fails too, the synthetic-domain fallback.
     assert any("high rowid" in error for error in bounds["errors"]), bounds
-    assert "high" in bounds["fallback_edges"]
+    assert "high" in bounds["fallback_edges"] or "high" in bounds.get("aggregate_edges", ())
 
     conn = sqlite3.connect(str(output))
     try:
@@ -304,6 +308,54 @@ def test_lost_and_found_lane_recovers_schema_unreadable_source(
         recovered_db.close()
 
 
+
+@pytest.mark.skipif(
+    not HAVE_SQLITE3_CLI,
+    reason="sqlite3 CLI not on PATH; .recover is a shell-only feature",
+)
+def test_lost_and_found_lane_recovers_page1_header_damaged_source(tmp_path: Path) -> None:
+    """#106667: a garbage page-1 header makes SQLite (and the shell's .recover) refuse the file
+    with 'file is not a database' although every data page survives. The lane must still
+    salvage the rows, and must do it on its snapshot — the user's file stays byte-identical."""
+    source = tmp_path / "header-damaged.db"
+    output = tmp_path / "header-recovered.db"
+    db = SessionDB(db_path=source)
+    try:
+        for session_number in range(3):
+            session_id = f"hdr-session-{session_number}"
+            db.create_session(session_id, "cli", cwd="/tmp/hdr")
+            for message_number in range(9):
+                db.append_message(session_id, "user", f"payload {session_number} {message_number}")
+    finally:
+        db.close()
+    conn = sqlite3.connect(str(source), isolation_level=None)
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.execute("PRAGMA journal_mode=DELETE")
+    finally:
+        conn.close()
+    data = bytearray(source.read_bytes())
+    data[0:100] = bytes(range(1, 101))  # not the magic, not zeroes: the incident shape
+    source.write_bytes(data)
+    damaged_bytes = source.read_bytes()
+
+    with pytest.raises(sqlite3.DatabaseError, match="not a database"):
+        sqlite3.connect(str(source)).execute("SELECT count(*) FROM sqlite_master").fetchone()
+
+    report = recover_session_database(source, output, work_dir=tmp_path, allow_partial=True)
+
+    assert report["mode"] == "lost_and_found_salvage"
+    assert report["sqlite3_cli"]["header_zeroed"] is True
+    assert any("header salvage" in warning for warning in report["verification"]["warnings"])
+    assert source.read_bytes() == damaged_bytes
+    conn = sqlite3.connect(str(output))
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 3
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 27
+    finally:
+        conn.close()
+
+
 # ── mapper unit tests (no sqlite3 CLI required) ─────────────────────────────
 
 
@@ -351,6 +403,11 @@ def _make_synthetic_lost_and_found(
             )
 
         def session_row(session_id: str, ncols: int) -> list:
+            # Historical records predate the two authority columns; they are
+            # not prefixes of a freshly created runtime schema.
+            columns = sessions_columns if ncols == current_width else [
+                c for c in sessions_columns if c not in {"runtime_revision", "runtime_generation"}
+            ]
             base = {
                 "id": session_id,
                 "source": "telegram",
@@ -358,7 +415,7 @@ def _make_synthetic_lost_and_found(
                 "message_count": 2,
                 "title": f"synthetic {session_id}",
             }
-            return [base.get(column) for column in sessions_columns[:ncols]]
+            return [base.get(column) for column in columns[:ncols]]
 
         # Current layout (dynamic width) and historical 52-column layout.
         insert(max_fields, 1, session_row("20260101_010101_aaa001", max_fields))
@@ -466,6 +523,41 @@ def test_classify_lost_and_found_row_sentinels() -> None:
         classify_lost_and_found_row(23, (None, "sess", "not-a-role", "x")) is None
     )
     assert classify_lost_and_found_row(0, ()) is None
+
+
+def test_store_created_at_runtime_schema_maps_source_by_name(tmp_path: Path) -> None:
+    """A store CREATED at the runtime-authority schema carries runtime_revision /
+    runtime_generation right after ``id`` (declared order), so its source cell sits
+    at index 3, not 1. The classifier must still see a sessions record and the
+    mapper must land ``source`` by name rather than reject the population."""
+    output = tmp_path / "mapped.db"
+    SessionDB(db_path=output).close()
+    dest = sqlite3.connect(str(output), isolation_level=None)
+    lf = sqlite3.connect(":memory:", isolation_level=None)
+    try:
+        columns = [str(r[1]) for r in dest.execute("PRAGMA table_info(sessions)")]
+        assert columns[:4] == ["id", "runtime_revision", "runtime_generation", "source"]
+        row = {"id": "20260909_090909_fff006", "runtime_revision": 0, "runtime_generation": 0,
+               "source": "telegram", "started_at": 1_754_000_000.0, "title": "fresh runtime store"}
+        cells = tuple(row.get(c) for c in columns)
+        assert classify_lost_and_found_row(len(cells), cells) == "sessions"
+        lf.execute(
+            "CREATE TABLE lost_and_found (rootpgno INTEGER, pgno INTEGER, nfield INTEGER, id INTEGER, "
+            + ", ".join(f"c{i}" for i in range(len(cells))) + ")"
+        )
+        lf.execute(
+            f"INSERT INTO lost_and_found VALUES ({', '.join('?' for _ in range(4 + len(cells)))})",
+            [2, 5, len(cells), 1, *cells],
+        )
+        dest.execute("PRAGMA foreign_keys=OFF")
+        report = map_lost_and_found_rows(lf, dest)
+        assert report["mapped"]["sessions"] == 1
+        assert report["unrecognized_layout_rows"] == 0
+        assert dest.execute("SELECT source, title FROM sessions WHERE id = ?", (row["id"],)).fetchone() == (
+            "telegram", "fresh runtime store")
+    finally:
+        lf.close()
+        dest.close()
 
 
 def test_mapper_rebuilds_sessiondb_from_synthetic_lost_and_found(
@@ -1126,3 +1218,43 @@ def test_recovery_lane_refuses_to_verify_when_rows_matched_no_layout(
     assert report["lost_and_found"]["unrecognized_layout_rows"] == 2
     assert report["verified"] is False
     assert any("matched no known physical column layout" in e for e in report["verification"]["errors"])
+
+
+# ── .recover stderr pipe must be drained while the child runs ──────────────
+
+
+@pytest.mark.platforms("posix")  # stub sqlite3 is a /bin/sh script
+def test_recover_attempts_survive_dump_stderr_beyond_pipe_buffer(tmp_path: Path) -> None:
+    """A heavily damaged source makes ``.recover`` emit per-page diagnostics on
+    stderr. Past the OS pipe buffer (~64KB) an undrained stderr blocks the dump
+    child, its stdout never reaches EOF, and ``load.communicate()`` burns the
+    whole salvage timeout instead of finishing in milliseconds."""
+    stub = tmp_path / "sqlite3"
+    stub.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "-readonly" ]; then\n'
+        "  i=0\n"
+        "  while [ $i -lt 3000 ]; do\n"
+        '    echo "lost and found page $i: orphan btree cell, unable to reconstruct row" >&2\n'
+        "    i=$((i+1))\n"
+        "  done\n"
+        '  echo "Error: near line 4000: file is not a database" >&2\n'
+        '  echo "CREATE TABLE t(x); INSERT INTO t VALUES(1);"\n'
+        "else\n"
+        "  cat >/dev/null\n"
+        "fi\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    source = tmp_path / "source.db"
+    source.write_bytes(b"corrupt")
+    lf_path = tmp_path / "lost_and_found.db"
+
+    started = time.monotonic()
+    attempts = _cli_recover_attempts(source, lf_path, str(stub), timeout=30.0)
+    assert time.monotonic() - started < 30.0
+
+    assert attempts[-1]["dump_returncode"] == 0
+    # The stderr tail is load-bearing: the caller keys the header-zeroing retry
+    # on "not a database" appearing in it, so the drain must preserve it.
+    assert "file is not a database" in attempts[-1]["dump_stderr_tail"]

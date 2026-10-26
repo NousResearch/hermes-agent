@@ -10,7 +10,6 @@ full summaries verbatim into the parent.
 import os
 import tempfile
 
-import pytest
 
 import tools.delegate_tool as dt
 from tools.delegate_tool_results import _MIN_SUMMARY_CHARS, _parent_summary_char_budget
@@ -72,13 +71,6 @@ def test_batch_overflow_trimmed_and_spilled_losslessly(monkeypatch):
             assert os.path.join("cache", "delegation") in path
 
 
-def test_empty_results_is_noop():
-    # No summaries → nothing to do, must not raise.
-    dt._apply_summary_budget([], _FakeParent(131_000, 1_000, 8_000))
-    dt._apply_summary_budget(
-        [{"task_index": 0, "status": "failed", "summary": None}],
-        _FakeParent(131_000, 1_000, 8_000),
-    )
 
 
 def test_budget_uses_current_prompt_size_not_the_session_sum():

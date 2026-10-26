@@ -12,6 +12,13 @@ import tempfile
 import time
 
 
+def _exited(psutil, pid):
+    try:
+        return psutil.Process(pid).status() in (psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD)
+    except psutil.NoSuchProcess:
+        return True
+
+
 def main():
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     import psutil
@@ -31,14 +38,14 @@ def main():
         script.write_text(
             "import subprocess,sys,time,os,json\nfrom pathlib import Path\n"
             "def spawn():\n"
-            " return subprocess.Popen([sys.executable,'-c','import time;time.sleep(15)'],"
+            " return subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)'],"
             "start_new_session=True,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
             "first=spawn()\n"
             f"Path({str(marker)!r}).write_text(json.dumps([os.getpid(),first.pid]))\n"
             f"while not Path({str(release)!r}).exists():time.sleep(0.001)\n"
             "late=spawn()\n"
             f"Path({str(marker)!r}).write_text(json.dumps([os.getpid(),first.pid,late.pid]))\n"
-            "time.sleep(15)\n",
+            "time.sleep(60)\n",
             encoding="utf-8",
         )
         original = psutil._ppid_map
@@ -66,10 +73,16 @@ def main():
             elapsed = time.monotonic() - start
         finally:
             psutil._ppid_map = original
-        states = {}
         owned = psutil.Process().children(recursive=True)
         try:
             ids = json.loads(marker.read_text(encoding="utf-8"))
+            # SIGKILL lands asynchronously: a killed descendant reads "running" until the kernel
+            # finishes its exit (freeing its memory waits for a CPU on a loaded runner). Wait for
+            # those exits, well inside the 60 s the children sleep, so a missed one still fails.
+            exit_deadline = time.monotonic() + 10
+            while not all(_exited(psutil, pid) for pid in ids) and time.monotonic() < exit_deadline:
+                time.sleep(0.01)
+            states = {}
             for pid in ids:
                 try:
                     states[pid] = psutil.Process(pid).status()
@@ -79,7 +92,8 @@ def main():
                               "real_snapshot_sizes": schedules}), flush=True)
             assert result[1].startswith("Script timed out after 2s:"), result
             assert len(ids) >= 2, "pre-existing detached child did not start"
-            assert all(state in ("gone", psutil.STATUS_ZOMBIE) for state in states.values()), states
+            exited = ("gone", psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD)
+            assert all(state in exited for state in states.values()), states
         finally:
             for process in owned:
                 try:

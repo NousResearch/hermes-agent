@@ -13,8 +13,10 @@ from __future__ import annotations
 import hashlib
 import mmap
 import os
+import shlex
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -24,6 +26,10 @@ SANDBOX_PROBE_SWITCH = "--hermes-sandbox-probe"
 _PROBE_TIMEOUT_S = 15
 _SUDO_TIMEOUT_S = 300  # room for a typed password, never an unbounded hang
 _PROFILE_DIR = Path("/etc/apparmor.d")
+# apparmor.d(5) "Globbing (AARE)": ``?*[]{}^`` stay glob syntax inside a quoted attachment path, so
+# they would widen the grant to other binaries or fail the parse; ``{`` also opens ``@{var}``
+# expansion, and ``"``/``\`` end or escape the quoted string. Such paths are refused, not escaped.
+_AARE_UNSAFE = frozenset('?*[]{}^"\\')
 
 
 def apparmor_restricts_userns() -> bool:
@@ -85,7 +91,7 @@ def profile_name(packaged_executable: Path) -> str:
 def profile_text(packaged_executable: Path) -> str:
     """The profile Chrome and VS Code ship for this case: unconfined, plus the ``userns`` grant."""
     name = profile_name(packaged_executable)
-    exe = str(packaged_executable.resolve()).replace("\\", "\\\\").replace('"', '\\"')
+    exe = str(packaged_executable.resolve())
     return (
         "# Hermes Desktop: let Chromium's user-namespace sandbox start under\n"
         "# kernel.apparmor_restrict_unprivileged_userns=1 (written by `hermes desktop --install-apparmor-profile`).\n"
@@ -102,36 +108,82 @@ def profile_path(packaged_executable: Path) -> Path:
     return _PROFILE_DIR / profile_name(packaged_executable)
 
 
+def unsafe_path_characters(packaged_executable: Path) -> str:
+    """The characters of the install path an AppArmor attachment cannot carry literally."""
+    path = str(packaged_executable.resolve())
+    return "".join(sorted({ch for ch in path if ch in _AARE_UNSAFE or not ch.isprintable()}))
+
+
+def _user_can_replace(packaged_executable: Path) -> bool:
+    exe = packaged_executable.resolve()
+    return os.access(exe, os.W_OK) or any(os.access(parent, os.W_OK) for parent in exe.parents)
+
+
+def _run(command: list[str], stdin_text: Optional[str] = None) -> Optional[subprocess.CompletedProcess]:
+    """Run one install step; ``None`` (after printing why) when it could not start or timed out."""
+    try:
+        return subprocess.run(
+            command, input=stdin_text, text=True, encoding="utf-8", errors="replace",
+            check=False, timeout=_SUDO_TIMEOUT_S,
+            stdout=subprocess.DEVNULL if stdin_text is not None else None)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"✗ {' '.join(command)} failed: {exc}")
+        return None
+
+
+def _profile_parses(parser: str, text: str) -> bool:
+    """Compile *text* as this user without loading it, so a bad profile never reaches /etc."""
+    from hermes_constants import get_scratch_dir
+
+    with tempfile.TemporaryDirectory(dir=get_scratch_dir(), prefix="apparmor-") as scratch:
+        candidate = Path(scratch) / "hermes-desktop.profile"
+        candidate.write_text(text, encoding="utf-8")
+        completed = _run([parser, "--skip-kernel-load", "--skip-cache", str(candidate)])
+    if completed is None or completed.returncode != 0:
+        print("✗ apparmor_parser rejected the generated profile; nothing was written to /etc/apparmor.d.")
+        return False
+    return True
+
+
 def install_profile(packaged_executable: Path) -> bool:
     """Write and load the profile through sudo (prompting on a terminal). Prints the outcome."""
     target = profile_path(packaged_executable)
+    unsafe = unsafe_path_characters(packaged_executable)
+    if unsafe:
+        print(f"✗ The install path {packaged_executable.resolve()} contains {unsafe!r}, which AppArmor reads as")
+        print("  pattern syntax (apparmor.d(5), Globbing), so a profile could not name this binary alone.")
+        print("  Move the checkout to a path without these characters, or use the setuid chrome-sandbox helper.")
+        return False
     from hermes_platform.resolver import locate_command
 
     sudo = next(iter(locate_command("sudo").command), None)
     parser = next(iter(locate_command("apparmor_parser", known_dirs=("/usr/sbin", "/sbin")).command),
                   "apparmor_parser")
+    text = profile_text(packaged_executable)
+    if _user_can_replace(packaged_executable):
+        print("⚠ This profile lets whatever program sits at this path, which your account can replace, use user"
+              " namespaces, so any code running as you gains what the restriction withholds; the setuid"
+              " chrome-sandbox helper avoids that.")
     if not sudo:
         print("✗ Installing the AppArmor profile needs sudo, which was not found.")
-        print(f"  As root, write {target} with:\n\n{profile_text(packaged_executable)}")
+        print(f"  As root, write {target} with:\n\n{text}")
         print(f"  then load it: apparmor_parser -r {target}")
         return False
+    if not _profile_parses(parser, text):
+        return False
     print(f"→ Installing AppArmor profile {target} (sudo required)...")
-    steps = (
-        ([sudo, "tee", str(target)], profile_text(packaged_executable)),
-        ([sudo, parser, "-r", str(target)], None),
-    )
-    for command, stdin_text in steps:
-        try:
-            completed = subprocess.run(
-                command, input=stdin_text, text=True, encoding="utf-8", errors="replace",
-                check=False, timeout=_SUDO_TIMEOUT_S,
-                stdout=subprocess.DEVNULL if stdin_text is not None else None)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            print(f"✗ {' '.join(command)} failed: {exc}")
-            return False
-        if completed.returncode != 0:
-            print(f"✗ {' '.join(command)} exited {completed.returncode}")
-            return False
+    written = _run([sudo, "tee", str(target)], text)
+    if written is None or written.returncode != 0:
+        print(f"✗ Could not write {target}.")
+        return False
+    loaded = _run([sudo, parser, "-r", str(target)])
+    if loaded is None or loaded.returncode != 0:
+        removed = _run([sudo, "rm", "-f", str(target)])
+        if removed is not None and removed.returncode == 0:
+            print(f"✗ apparmor_parser could not load {target}; removed it again.")
+        else:
+            print(f"✗ apparmor_parser could not load {target}, and removing it failed: run sudo rm {target}")
+        return False
     verdict = chromium_userns_sandbox_verdict(packaged_executable)
     if verdict is False:
         print("✗ The profile is loaded, but Chromium's sandbox still cannot start for this binary.")
@@ -142,8 +194,10 @@ def install_profile(packaged_executable: Path) -> bool:
 
 def print_blocked_remedies(packaged_executable: Path) -> None:
     """The actionable lines for a restricted host where the setuid helper could not be set up."""
-    helper = packaged_executable.parent / "chrome-sandbox"
+    helper = shlex.quote(str(packaged_executable.parent / "chrome-sandbox"))
     print("  Ubuntu's AppArmor policy (kernel.apparmor_restrict_unprivileged_userns=1) blocks Chromium's")
-    print("  user-namespace sandbox for Hermes Desktop. To keep the sandbox on, run ONE of these once:")
-    print("    hermes desktop --install-apparmor-profile    (AppArmor profile for this app; survives rebuilds)")
-    print(f"    sudo chown root:root {helper} && sudo chmod 4755 {helper}    (redo after each rebuild)")
+    print("  user-namespace sandbox for Hermes Desktop. To keep the sandbox on, run ONE of these:")
+    print(f"    sudo chown root:root {helper} && sudo chmod 4755 {helper}")
+    print("        Chromium's setuid sandbox helper (recommended; redo after each rebuild)")
+    print("    hermes desktop --install-apparmor-profile")
+    print("        AppArmor profile for this path (survives rebuilds; any program running as you can use it)")

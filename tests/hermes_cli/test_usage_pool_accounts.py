@@ -139,6 +139,19 @@ def test_the_table_lists_every_account_of_every_provider_usable_first(pool_home,
     assert "anthropic: 1 of 3 accounts usable, 1 unknown" in text
 
 
+def test_a_capped_account_with_an_expired_token_says_why_its_row_is_blank(pool_home, capsys):
+    capped = _seat(2, "idle-access-token", expires_in_s=-3600, last_status="exhausted",
+                   last_status_at=time.time() - 3600, last_error_code=429,
+                   last_error_reset_at=time.time() + 2 * 24 * 3600)
+    pool_home({"anthropic": [_TWO_SEATS[0], capped]})
+
+    code, text, _ = _usage_cmd(capsys)
+    note = _table(text)["seat-2"][-1]
+
+    assert code == 0
+    assert note.startswith("back ") and note.endswith(", token expired: hermes usage --refresh")
+
+
 def test_provider_narrows_the_table_to_one_provider(pool_home, capsys):
     pool_home({"anthropic": _TWO_SEATS, "openrouter": [_api_key_row("openrouter", 1)]})
 

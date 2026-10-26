@@ -1599,6 +1599,7 @@ class TestHunkSelectionReviewRegressions:
         result, fo, final = _apply_body(tmp_path, source, body)
 
         assert result.success is False
+        assert "only found inside text an earlier hunk of this patch wrote" in result.error
         assert fo.writes == [] and final == source
 
     def test_an_exact_site_outside_the_hint_window_does_not_shadow_a_normalized_one_in_it(self, tmp_path):
@@ -1611,7 +1612,7 @@ class TestHunkSelectionReviewRegressions:
         assert result.success is True, result.error
         assert final == source.replace("active  = False", "active = True")
 
-    def test_a_written_context_line_matching_only_after_strip_is_rewritten_with_the_models_whitespace(self, tmp_path):
+    def test_a_written_context_line_matching_only_after_strip_anchors_the_next_hunk_and_keeps_the_written_whitespace(self, tmp_path):
         source = "a = 1\nc = 3\n"
         body = "@@\n-a = 1\n+a = 1\n+    b = 2\n@@\n b = 2\n-c = 3\n+c = 4"
 

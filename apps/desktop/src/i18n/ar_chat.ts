@@ -465,6 +465,7 @@ export const arChat = {
     imageAttach: 'إرفاق الصورة',
     imageWriteFailed: 'فشل كتابة الصورة',
     imageAttachFailed: 'فشل إرفاق الصورة',
+    attachFailed: 'فشل الإرفاق',
     pastedContent: 'محتوى ملصق',
     pasteAttachFailed: 'تعذر إرفاق النص الملصق',
     attachImages: 'إرفاق الصور',

@@ -108,6 +108,26 @@ describe('browser file stage size', () => {
     expect($notifications.get()).toContainEqual(expect.objectContaining({ kind: 'error', message: limitMessage }))
   })
 
+  // Attach → Files… used to leave the refused stage as an unhandled rejection, with nothing shown.
+  it('refuses a picked file over the limit with one notice naming the limit, and uploads nothing', async () => {
+    const { uploads } = await installBrowser()
+    const { result } = renderComposer()
+
+    vi.spyOn(HTMLInputElement.prototype, 'click').mockImplementation(function (this: HTMLInputElement) {
+      Object.defineProperty(this, 'files', { configurable: true, value: [tooLarge('huge.zip', 'application/zip')] })
+      this.dispatchEvent(new Event('change'))
+    })
+
+    await act(async () => {
+      await result.current.pickContextPaths('file')
+    })
+
+    expect(uploads()).toHaveLength(0)
+    expect($notifications.get()).toEqual([
+      expect.objectContaining({ kind: 'error', message: limitMessage, title: 'Attach failed' })
+    ])
+  })
+
   it('names the limit when a dropped file over it cannot be attached', async () => {
     const { uploads } = await installBrowser()
     const { result } = renderComposer()

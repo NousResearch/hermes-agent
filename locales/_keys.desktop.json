@@ -1501,6 +1501,7 @@
     "cron.weekdaysAt",
     "desktop.archiveFailed",
     "desktop.archived",
+    "desktop.attachFailed",
     "desktop.attachImages",
     "desktop.audioReadFailed",
     "desktop.branchFailed",

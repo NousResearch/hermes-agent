@@ -513,11 +513,21 @@ export function useComposerActions({
 
   const pickContextPaths = useCallback(
     async (kind: 'file' | 'folder') => {
-      const paths = await selectDesktopPaths({
-        title: kind === 'file' ? 'Add files as context' : 'Add folders as context',
-        defaultPath: currentCwd || undefined,
-        directories: kind === 'folder'
-      })
+      let paths: string[]
+
+      try {
+        paths = await selectDesktopPaths({
+          title: kind === 'file' ? 'Add files as context' : 'Add folders as context',
+          defaultPath: currentCwd || undefined,
+          directories: kind === 'folder'
+        })
+      } catch (err) {
+        // As in pickImages: the browser stages a pick before returning its path, and a refused
+        // stage (a file over the upload limit) is reported here, not left as an unhandled rejection.
+        notifyError(err, copy.attachFailed)
+
+        return
+      }
 
       if (!paths?.length) {
         return
@@ -536,7 +546,7 @@ export function useComposerActions({
         })
       }
     },
-    [attachToMain, currentCwd]
+    [attachToMain, copy.attachFailed, currentCwd]
   )
 
   const insertContextPathInlineRef = useCallback(

@@ -5420,6 +5420,7 @@ export const frOverrides = {
     imageAttach: 'Image jointe',
     imageWriteFailed: "Échec de l'écriture de l'image sur le disque.",
     imageAttachFailed: "Échec de l'ajout de l'image",
+    attachFailed: "Échec de l'ajout",
     pastedContent: 'Contenu collé',
     pasteAttachFailed: 'Impossible de joindre le texte collé',
     attachImages: 'Joindre des images',

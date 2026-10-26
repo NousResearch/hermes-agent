@@ -43,11 +43,13 @@ COMMANDS: dict[str, tuple[str, str | None]] = {
 }
 
 
-def available_commands_update() -> AvailableCommandsUpdate:
+def available_commands_update(plugin_commands=None) -> AvailableCommandsUpdate:
+    """The built-in commands plus the gateway's plugin commands (``commands.catalog`` name -> description)."""
+    rows = [*COMMANDS.items(), *((name, (description, None)) for name, description in (plugin_commands or {}).items())]
     return AvailableCommandsUpdate(session_update="available_commands_update", available_commands=[
         AvailableCommand(name=name, description=description,
                          input=UnstructuredCommandInput(hint=hint) if hint else None)
-        for name, (description, hint) in COMMANDS.items()])
+        for name, (description, hint) in rows])
 
 
 def help_text() -> str:

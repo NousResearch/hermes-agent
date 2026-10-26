@@ -43,8 +43,14 @@ RESPOND_TOOL_SCHEMA: dict[str, Any] = {
 
 
 def tool_choice_required(agent: Any) -> bool:
-    """True when ``agent.tool_choice`` is ``required`` and this api_mode can enforce it."""
-    value = str(getattr(agent, "_tool_choice", "auto") or "auto").strip().lower()
+    """True when ``agent.tool_choice`` is ``required`` for this agent's platform and its api_mode
+    can enforce it. The value is a string, or a ``{platform: value, "default": value}`` mapping:
+    local servers cap the forced-call grammar size (Rapid-MLX: 64 KiB), so a lean chat platform
+    can force calls while the CLI's larger tool surface stays on ``auto``."""
+    value = getattr(agent, "_tool_choice", "auto") or "auto"
+    if isinstance(value, dict):
+        value = value.get(getattr(agent, "platform", None) or "cli", value.get("default", "auto"))
+    value = str(value or "auto").strip().lower()
     return value == "required" and getattr(agent, "api_mode", None) in _SUPPORTED_API_MODES
 
 

@@ -2119,6 +2119,14 @@ Requirements and limits:
 - Applies to the `chat_completions` API mode only. That is where local servers (llama.cpp, vLLM, MLX, Ollama) and most OpenAI-compatible providers run. Anthropic rejects forced tool use while extended thinking is on, so the Anthropic route is left unchanged.
 - The server has to enforce `tool_choice: "required"`. Most OpenAI-compatible servers do. A server that ignores it just behaves like `auto`.
 - An explicit `tool_choice` in request overrides takes precedence.
+- Local servers cap the size of the tool schema they can force. Rapid-MLX allows 64 KiB and returns HTTP 400 above that. A large tool surface (many MCP servers) can exceed the cap. Set the option per platform to force calls only where the toolset is lean:
+
+```yaml
+agent:
+  tool_choice:
+    telegram: required
+    default: auto      # cli, cron and any platform not listed
+```
 
 ## Execution-Discipline Guidance
 

@@ -1198,7 +1198,8 @@ agent:
   # "required" sends tool_choice="required" and adds a `respond` tool that is the
   # model's only way to reply, so it can't end a turn by describing what it would
   # do. Useful for small local models that ignore tool_use_enforcement guidance.
-  # Default "auto" = unchanged.
+  # Default "auto" = unchanged. Also accepts a per-platform mapping, e.g.
+  # {telegram: required, default: auto}, when the CLI's toolset is too large to force.
   # tool_choice: "auto"
 
   # Inactivity timeout for gateway agent runs (seconds, 0 = unlimited).

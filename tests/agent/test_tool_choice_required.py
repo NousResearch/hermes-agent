@@ -105,6 +105,25 @@ def test_explicit_request_override_wins():
     assert RESPOND_TOOL_NAME not in _tool_names(kwargs)
 
 
+@pytest.mark.parametrize("platform, expected", [
+    ("telegram", True), ("cli", False), (None, False), ("cron", False), ("discord", True),
+])
+def test_per_platform_mapping(platform, expected):
+    from agent.tool_choice import tool_choice_required
+    agent = _agent({"telegram": "required", "discord": "Required", "default": "auto"})
+    agent.platform = platform
+    assert tool_choice_required(agent) is expected
+
+
+def test_per_platform_mapping_default_applies_to_unlisted_platforms():
+    from agent.tool_choice import tool_choice_required
+    agent = _agent({"cli": "auto", "default": "required"})
+    agent.platform = "slack"
+    assert tool_choice_required(agent) is True
+    agent.platform = None  # no platform = cli
+    assert tool_choice_required(agent) is False
+
+
 def test_non_chat_completions_modes_are_untouched():
     agent = _agent()
     agent.api_mode = "anthropic_messages"

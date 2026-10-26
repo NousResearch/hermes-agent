@@ -203,15 +203,17 @@ async def test_frames_held_for_a_starting_profile_still_park_the_reader(rig, mon
     for n in range(flood):
         sock.inbound.put_nowait({'jsonrpc': '2.0', 'id': f'held-{n}', 'method': 'ping', 'params': {'profile': 'beta'}})
 
-    # The reader settles once it parks: what it took is the held bound, the queue bound and one frame
-    # each in the dispatcher's and the reader's hands.
-    unread = flood
-    for _ in range(100):
-        await asyncio.sleep(0.02)
-        if sock.inbound.qsize() == unread:
-            break
-        unread = sock.inbound.qsize()
-    assert flood - sock.inbound.qsize() <= 2 * bound + 2, 'held frames escaped the dispatch bound'
+    # The reader parks once it took the held bound, the queue bound and one frame each in the
+    # dispatcher's and the reader's hands. Wait until it has taken that many, so the reader and the
+    # dispatcher really ran, then give it room to read on before checking it did not.
+    parked = 2 * bound + 2
+
+    async def taken(count):
+        while flood - sock.inbound.qsize() < count:
+            await asyncio.sleep(0.01)
+    await asyncio.wait_for(taken(parked), timeout=10)
+    await asyncio.sleep(0.2)
+    assert flood - sock.inbound.qsize() == parked, 'held frames escaped the dispatch bound'
     assert not sock.replies  # all still waiting for beta
 
     rig.release.set()

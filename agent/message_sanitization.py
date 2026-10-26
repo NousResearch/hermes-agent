@@ -638,6 +638,8 @@ def _set_provider_tool_id(tc: Any, key: str, value: str) -> None:
 #     hosts come first: their schemas reject unknown message keys with 400/422 ("Extra inputs
 #     are not permitted" / "property X is unsupported" / "no such field", #45655, #70233).
 #     Every other route defaults to ``reasoning_content``, which is the de-facto standard.
+#   * ``_MODEL_STRICT_REASONING_SUBSTRINGS`` — bare (non-namespaced) model names whose vendor
+#     schema aliases the carriers together; they take exactly ``reasoning_content`` on every route.
 # A route that still rejects a field is learned at runtime (``record_reasoning_field_rejection``)
 # and the field is dropped for that (provider, host, model) only. Stored history keeps every
 # carrier; only wire copies are shaped here.
@@ -670,6 +672,31 @@ _REASONING_CARRIER_ROUTES: tuple = (
     (frozenset({RC, RD}), frozenset({"novita", "tencent-tokenhub", "minimax", "minimax-cn"}),
      ("novita.ai", "tokenhub.tencentmaas.com", "tokenhub-intl.tencentcloudmaas.com", "minimax.io", "minimaxi.com")),
     (_LOCAL_CARRIERS, frozenset({"ollama-cloud", "custom", "lmstudio", "upstage"}), ("ollama.com", "upstage.ai")),
+)
+
+# Models whose upstream chat schema aliases ``reasoning`` onto ``reasoning_content`` in the
+# REQUEST body: replaying both carriers on one assistant turn is a duplicate field there.
+# NVIDIA (integrate.api.nvidia.com) 400s with "Failed to deserialize the JSON body into the
+# target type: duplicate field `reasoning_content`" on its GLM / DeepSeek / Nemotron endpoints
+# (verified 2026-10-26; byte-faithful passthrough reproduces it, so no gateway can strip the
+# collision for us); SenseNova behind a new-api relay 400s with an unnamed "inference request
+# is invalid" (verified against token.sensenova.cn 2026-10-17). The reactive strip cannot learn
+# either: the SenseNova error names no field, and the NVIDIA one names only ``reasoning_content``,
+# which no route may drop. Model-keyed because the strict schema belongs to the vendor behind
+# the gateway, not to the host the client talks to — these models ride ``custom`` rows and
+# private relays under any host. The list matches the bare alias form only: a namespaced
+# ``org/model`` id is the official upstream model id, served on lanes whose full replay is
+# proven (the Portal replays all three carriers for ``z-ai/glm-5.3``); their schemas are not
+# ours to guess, and no collision has been observed there. Single carrier is a safe subset
+# everywhere else: the AMD mirrors of these models tolerate both keys, and a bare alias
+# behind a multi-carrier gateway row only loses replay richness, never a demanded field.
+_MODEL_STRICT_REASONING_SUBSTRINGS: tuple = (
+    "sensenova",
+    "glm-5.3-flash",
+    "glm-5.3",
+    "deepseek-v4.1-flash",
+    "nemotron-3.5-super-vl",
+    "nemotron-3-ultra",
 )
 
 
@@ -707,10 +734,18 @@ def needs_reasoning_echo(provider: Any, model: Any, base_url: Any) -> bool:
     return reasoning_echo_family(provider, model, base_url) is not None
 
 
-def route_reasoning_carriers(provider: Any, base_url: Any) -> frozenset:
-    """Reasoning carriers the chat-completions route reads (before any runtime rejection)."""
+def route_reasoning_carriers(provider: Any, base_url: Any, model: Any = None) -> frozenset:
+    """Reasoning carriers the chat-completions route reads (before any runtime rejection).
+
+    A bare model name on ``_MODEL_STRICT_REASONING_SUBSTRINGS`` always gets exactly
+    ``reasoning_content``: its vendor schema 400s on the duplicate alias however hosted.
+    """
     from utils import base_url_host_matches
 
+    if model:
+        model_lower = str(model).lower()
+        if "/" not in model_lower and any(s in model_lower for s in _MODEL_STRICT_REASONING_SUBSTRINGS):
+            return frozenset({RC})
     provider_lower = (provider or "").strip().lower()
     carriers = next(
         (c for c, providers, hosts in _REASONING_CARRIER_ROUTES
@@ -744,7 +779,7 @@ def reasoning_replay_route(
     pad = bool(echo_opt_in) or needs_reasoning_echo(provider, model, base_url)
     if (api_mode or "chat_completions") != "chat_completions":
         return ReasoningReplayRoute(pad, None)
-    carriers = route_reasoning_carriers(provider, base_url) - frozenset(rejected)
+    carriers = route_reasoning_carriers(provider, base_url, model) - frozenset(rejected)
     # A strict route never gets a reasoning key, not even the must-echo pad.
     return ReasoningReplayRoute(pad and RC in carriers, carriers)
 

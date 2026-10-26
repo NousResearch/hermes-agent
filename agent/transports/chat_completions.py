@@ -284,7 +284,7 @@ def _model_consumes_thought_signature(model: Any, base_url: Any = None, provider
     )
 
 
-def _wire_reasoning_carriers(provider: Any, base_url: Any) -> frozenset:
+def _wire_reasoning_carriers(provider: Any, base_url: Any, model: Any = None) -> frozenset:
     """Reasoning keys an assistant message may carry on this route; the rest are stripped.
 
     ``message_sanitization.route_reasoning_carriers`` owns the table; keys the route rejected
@@ -298,10 +298,12 @@ def _wire_reasoning_carriers(provider: Any, base_url: Any) -> frozenset:
     returned no 400; the observed failures were an upstream content filter surfaced as
     "Provider returned error". Portal lanes that reject a carrier are handled by the
     per-(provider, host, model) reactive strip. Stored history always keeps every carrier.
+    ``model`` lets a vendor-strict model (``_MODEL_STRICT_REASONING_SUBSTRINGS``) collapse the
+    set to ``reasoning_content`` wherever the route itself would replay more.
     """
     from agent.message_sanitization import route_reasoning_carriers
 
-    return route_reasoning_carriers(provider, base_url)
+    return route_reasoning_carriers(provider, base_url, model)
 
 
 def _has_replayable_thought_signature(extra_content: Any) -> bool:
@@ -533,7 +535,7 @@ class ChatCompletionsTransport(ProviderTransport):
         provider = getattr(profile, "name", None) or kwargs.get("provider")
         strip_extra_content = not _model_consumes_thought_signature(kwargs.get("model"), kwargs.get("base_url"), provider)
         native_type = getattr(profile, "native_reasoning_details_type", None) or None
-        carriers = _wire_reasoning_carriers(provider, kwargs.get("base_url"))
+        carriers = _wire_reasoning_carriers(provider, kwargs.get("base_url"), kwargs.get("model"))
         if native_type and carriers:
             # A profile declaring a native carrier type consumes replayed details by contract.
             carriers = carriers | {"reasoning_details"}

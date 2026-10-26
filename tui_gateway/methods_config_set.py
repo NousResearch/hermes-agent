@@ -74,7 +74,10 @@ def _stash_pending_model_switch(rid, key, value, session, confirmed, parsed):
     """No live swap while a turn streams (agent.switch_model() mutates fields the worker thread
     reads every iteration): stash the pick for the NEXT turn start. Selection guards run HERE (the
     only moment a confirm round-trip is possible; an unconfirmed stashed pick is dropped at turn
-    start) — on a warning nothing is stashed."""
+    start) — on a warning nothing is stashed. Refuse stale code now too, while the client can
+    still act on the restart hint, rather than waiting for the next turn's deferred apply."""
+    if skew := _model_switch_skew_guard():
+        raise ValueError(skew)
     try:
         pending_model = parsed.model_input
     except Exception:
@@ -112,6 +115,9 @@ def _set_model(rid, params, key, value, session):
     """Live/deferred model switch; see _apply_model_switch and _apply_pending_model_switch."""
     if not value:
         return _err(rid, 4002, "model value required")
+    # Parsing also lazy-imports updated code, before the apply/stash guards can run.
+    if skew := _model_switch_skew_guard():
+        raise ValueError(skew)
     confirmed = bool(params.get("confirm_expensive_model", False))
     if session:
         from hermes_cli.model_switch import parse_model_switch_args

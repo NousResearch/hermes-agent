@@ -9,6 +9,7 @@ root — no launcher→worker chains left holding ``.pyd`` locks.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import logging
@@ -126,9 +127,37 @@ def _process_create_time(pid: Optional[int] = None) -> Optional[float]:
         return None
 
 
+@functools.lru_cache(maxsize=1)
+def _live_boot_id() -> Optional[str]:
+    """The kernel's id for the running boot (Linux); ``None`` elsewhere or when unreadable."""
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
+
+
+# No live process has a negative boot_start, so an entry from an earlier boot never matches.
+_EARLIER_BOOT = -1.0
+
+
+def _entry_boot(entry: dict, key: str) -> Optional[float]:
+    """The entry's boot-relative birth ``key`` (``boot_start``/``spawner_boot``) as exact proof.
+
+    Boot ticks restart at every boot while the ledger survives reboots (and early-boot services
+    get the same pid at the same tick), so they identify a process only within the boot that
+    recorded them: an entry from another boot is :data:`_EARLIER_BOOT`, matching nothing alive.
+    ``None`` (epoch match) when either boot id is unknown.
+    """
+    recorded, live = entry.get("boot_id"), _live_boot_id()
+    if not isinstance(recorded, str) or live is None:
+        return None
+    return entry.get(key) if recorded == live else _EARLIER_BOOT
+
+
 def _verified_boot_start(pid: Optional[int], create_time: Optional[float]) -> Optional[float]:
-    """:func:`boot_start` of ``pid`` while it still matches ``create_time``; ``None`` when unproven."""
-    if not isinstance(pid, int) or pid <= 0 or create_time is None:
+    """:func:`boot_start` of ``pid`` while it still matches ``create_time``; ``None`` when unproven
+    or when the boot is unidentifiable (ticks alone repeat across reboots)."""
+    if not isinstance(pid, int) or pid <= 0 or create_time is None or _live_boot_id() is None:
         return None
     try:
         import psutil
@@ -140,11 +169,17 @@ def _verified_boot_start(pid: Optional[int], create_time: Optional[float]) -> Op
 
 
 def _step_can_explain_mismatch(pid: int, boot: Optional[float]) -> bool:
-    """A live ``pid`` failed an epoch-only match on Linux: a clock step explains that as well as a
-    reused pid, so the mismatch proves nothing. ``False`` when ``boot`` was recorded (exact)."""
+    """A running ``pid`` failed an epoch-only match on Linux: a clock step explains that as well as
+    a reused pid, so the mismatch proves nothing. ``False`` when ``boot`` gave an exact verdict and
+    when ``pid`` is gone or a zombie (exited, only awaiting its parent's reap)."""
     import psutil  # the caller's epoch match already needed it
 
-    return boot is None and bool(getattr(psutil, "LINUX", False)) and psutil.pid_exists(pid)
+    if boot is not None or not getattr(psutil, "LINUX", False):
+        return False
+    try:
+        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except psutil.Error:
+        return False
 
 
 # Layer 1 — spawn tags
@@ -209,9 +244,11 @@ class LedgerEntry:
     # machine). Attach-first readers must never adopt it; argv is truncated, so this is canonical.
     isolated: bool = False
     # Linux boot-relative births (:func:`boot_start`) of the process and its spawner: exact
-    # identity across clock steps. ``None`` elsewhere and in older entries (epoch match only).
+    # identity across clock steps, within the boot named by ``boot_id`` (:func:`_entry_boot`).
+    # ``None`` elsewhere and in older entries (epoch match only).
     boot_start: Optional[float] = None
     spawner_boot: Optional[float] = None
+    boot_id: Optional[str] = None
 
 
 def _ledger_path() -> Path:
@@ -401,7 +438,7 @@ def _new_entry(
 ) -> LedgerEntry:
     return LedgerEntry(
         pid, create_time, purpose, install_id(project_root), spawner_pid, spawner_create, time.time(), argv="",
-        boot_start=_verified_boot_start(pid, create_time),
+        boot_start=_verified_boot_start(pid, create_time), boot_id=_live_boot_id(),
     )
 
 
@@ -485,7 +522,7 @@ def ledger_entries(
         if (all_installs or e.get("install") == want_install)
         and isinstance(e.get("pid"), int)
         and (_pid_alive_matches(e["pid"], e.get("create_time"), strict=True) is True
-             if verified_only else _pid_alive_matches(e["pid"], e.get("create_time"), boot=e.get("boot_start")) is not False)
+             if verified_only else _pid_alive_matches(e["pid"], e.get("create_time"), boot=_entry_boot(e, "boot_start")) is not False)
     ]
 
 
@@ -495,7 +532,7 @@ def entry_still_running(entry: dict, *, keep_unprovable: bool = False) -> bool:
     pid disagrees on Linux also counts, because a clock step explains that as well as pid reuse.
     Readers that protect a process (ledger pruning, the scratch prune's owner check) pass it;
     killers never do."""
-    pid, boot = entry.get("pid"), entry.get("boot_start")
+    pid, boot = entry.get("pid"), _entry_boot(entry, "boot_start")
     if not isinstance(pid, int) or pid <= 0:
         return False
     if _pid_alive_matches(pid, entry.get("create_time"), boot=boot) is not False:
@@ -508,11 +545,12 @@ def spawner_is_dead(entry: dict) -> Optional[bool]:
     spawner_pid = entry.get("spawner_pid")
     if not isinstance(spawner_pid, int) or spawner_pid <= 0:
         return None
-    boot = entry.get("spawner_boot")
+    # A spawner recorded in an earlier boot is dead (:func:`_entry_boot`), as the epoch match says.
+    boot = _entry_boot(entry, "spawner_boot")
     alive = _pid_alive_matches(spawner_pid, entry.get("spawner_create"), boot=boot)
     # An entry that survives a clock step (``boot_start``) with an epoch-only spawner: a step
     # would read its live spawner as dead and let a reaper kill the child.
-    if alive is False and entry.get("boot_start") is not None and _step_can_explain_mismatch(spawner_pid, boot):
+    if alive is False and _entry_boot(entry, "boot_start") is not None and _step_can_explain_mismatch(spawner_pid, boot):
         return None
     return None if alive is None else not alive
 
@@ -598,7 +636,7 @@ def reap_orphaned_backend_owner(
     try:
         if kill_fn is not None:
             kill_fn(pid)
-        elif not _terminate_then_kill(pid, entry.get("create_time"), entry.get("boot_start")):
+        elif not _terminate_then_kill(pid, entry.get("create_time"), _entry_boot(entry, "boot_start")):
             return None
     except Exception:
         logger.debug("backend owner reap failed for %s", entry, exc_info=True)
@@ -633,7 +671,7 @@ def reap_orphaned_mcp_helpers(*, project_root: Optional[Path] = None, kill_fn=No
                 import psutil
 
                 proc = psutil.Process(pid)
-                if not _same_incarnation(proc, entry.get("create_time"), entry.get("boot_start")):
+                if not _same_incarnation(proc, entry.get("create_time"), _entry_boot(entry, "boot_start")):
                     continue  # PID reused since registration
                 # Windows: descendants (npx.cmd → node.exe) have no pgid to group-kill and
                 # reparent with ParentId=null when the direct child exits first (#61059), so

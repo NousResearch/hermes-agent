@@ -1,5 +1,7 @@
-"""The scratch prune's owner check survives a wall-clock step (NTP, VM resume)."""
+"""The spawn ledger's boot-relative identity: a registered gateway's scratch survives a wall-clock
+step (NTP, VM resume), and boot ticks never vouch for a process across a reboot."""
 
+import json
 import os
 import subprocess
 import sys
@@ -9,6 +11,10 @@ from pathlib import Path
 import psutil
 import pytest
 
+from hermes_cli.data_cleanup_holders import _refuse_backend_writers
+from hermes_cli.process_identity import (
+    _ledger_path, boot_start, install_id, ledger_entries, reap_orphaned_mcp_helpers, register_self,
+)
 from hermes_constants import get_scratch_dir, prune_scratch_dir
 from tests.waiting import wait_until
 
@@ -50,3 +56,44 @@ def test_prune_keeps_a_registered_gateways_shell_after_a_clock_step(tmp_path, mo
             child.kill()
         gateway.kill()
         gateway.wait(timeout=10)
+
+
+@pytest.mark.platforms("linux")  # boot ids and boot-relative ticks are recorded only here
+def test_ledger_never_vouches_for_an_earlier_boot_or_an_exited_backend(tmp_path, monkeypatch):
+    """The ledger survives reboots but boot ticks restart: an MCP-helper entry written in an
+    earlier boot whose pid and start tick equal an unrelated process running now (early-boot
+    services are deterministic) names a stranger, and its spawner is gone, so the orphan reaper
+    must leave the stranger alone. An older epoch-only serve entry whose backend has exited (a
+    zombie its parent has not reaped yet) no longer owns HERMES_HOME. Neither row survives the
+    next ledger write."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    stranger = subprocess.Popen(["sleep", "60"], stdin=subprocess.DEVNULL)
+    backend = subprocess.Popen(["true"], stdin=subprocess.DEVNULL)
+    spawner = subprocess.Popen(["true"], stdin=subprocess.DEVNULL)
+    spawner.wait(timeout=10)
+    try:
+        wait_until(lambda: psutil.Process(backend.pid).status() == psutil.STATUS_ZOMBIE,
+                   timeout=10, what="the backend exited")
+        live = psutil.Process(stranger.pid)
+        earlier_boot = time.time() - 3 * 86400
+        _ledger_path().write_text(json.dumps([
+            {"pid": stranger.pid, "create_time": live.create_time() - 3 * 86400, "purpose": "mcp-helper",
+             "install": install_id(), "spawner_pid": spawner.pid, "spawner_create": earlier_boot,
+             "registered_at": earlier_boot, "argv": "", "boot_start": boot_start(live), "spawner_boot": 1.0,
+             "boot_id": "00000000-0000-4000-8000-000000000000"},
+            {"pid": backend.pid, "create_time": psutil.Process(backend.pid).create_time(), "purpose": "serve",
+             "install": install_id(), "spawner_pid": None, "spawner_create": None,
+             "registered_at": time.time(), "argv": ""},
+        ]), encoding="utf-8")
+
+        assert stranger.pid not in [e["pid"] for e in ledger_entries()]
+        assert reap_orphaned_mcp_helpers() == []
+        assert stranger.poll() is None, "the orphan reaper killed a process from a later boot"
+        _refuse_backend_writers(tmp_path)  # raises while a backend still owns the home
+        assert register_self("gateway")
+        rows = json.loads(_ledger_path().read_text(encoding="utf-8"))
+        assert [row["pid"] for row in rows] == [os.getpid()]
+    finally:
+        stranger.kill()
+        stranger.wait(timeout=10)
+        backend.wait(timeout=10)

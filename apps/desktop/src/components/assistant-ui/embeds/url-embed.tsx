@@ -51,9 +51,10 @@ export function UrlEmbed({ descriptor }: { descriptor: EmbedDescriptor }) {
 
   // Privacy gate: don't reach out to the provider until consented. `off` keeps
   // it a plain link; otherwise the placeholder shows until "Load" (this embed)
-  // or "Always allow" / global `always` permits the fetch.
+  // or "Always allow" / global `always` permits the fetch. The URL is the plain
+  // link's label: without one PrettyLink would fetch the provider page for a title.
   if (mode === 'off') {
-    return <PrettyLink className="wrap-anywhere" href={descriptor.sourceUrl} />
+    return <PrettyLink className="wrap-anywhere" fallbackLabel={descriptor.sourceUrl} href={descriptor.sourceUrl} />
   }
 
   const consented = mode === 'always' || loaded || allowed.includes(descriptor.provider)

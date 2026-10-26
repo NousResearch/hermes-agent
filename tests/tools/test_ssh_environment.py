@@ -206,6 +206,34 @@ class TestTerminalToolConfig:
         from tools.terminal_tool import _get_env_config
         assert _get_env_config()["ssh_persistent"] is False
 
+    def test_ssh_sync_files_respects_config(self, monkeypatch):
+        """TERMINAL_SSH_SYNC_FILES=false opts the SSH backend out of file sync."""
+        monkeypatch.delenv("TERMINAL_PERSISTENT_SHELL", raising=False)
+        monkeypatch.setenv("TERMINAL_SSH_SYNC_FILES", "false")
+        from tools.terminal_tool import _get_env_config
+        assert _get_env_config()["ssh_sync_files"] is False
+
+    def test_ssh_sync_files_shapes_ssh_config_with_true_default(self):
+        """ssh_sync_files maps to the SSHEnvironment sync_files kwarg and defaults to on."""
+        from tools.terminal_tool_backends import _ssh_config_from_config
+        assert _ssh_config_from_config({})["sync_files"] is True
+        assert _ssh_config_from_config({"ssh_sync_files": False})["sync_files"] is False
+
+    @requires_ssh
+    def test_ssh_sync_files_false_builds_env_without_sync_manager(self, monkeypatch):
+        """A sync-disabled SSH environment never constructs a FileSyncManager (no push, no sync_back)."""
+        from tools.terminal_tool import _get_env_config
+        from tools.terminal_tool_lifecycle import _create_configured_env
+        _setup_ssh_env(monkeypatch, persistent=True)
+        monkeypatch.setenv("TERMINAL_SSH_SYNC_FILES", "false")
+        config = _get_env_config()
+        env = _create_configured_env(config, "ssh", image="", cwd="~", timeout=30,
+                                     task_id="ssh-sync-files-config", host_cwd=None)
+        try:
+            assert env._sync_manager is None
+        finally:
+            env.cleanup()
+
     @requires_ssh
     @pytest.mark.parametrize("setting, expected", [(None, True), ("false", False)])
     def test_ssh_persistent_reaches_the_environment(self, monkeypatch, setting, expected):

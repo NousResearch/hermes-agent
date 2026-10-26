@@ -833,6 +833,9 @@ def _get_env_config() -> dict[str, Any]:
         "ssh_persistent": _tenv_bool(
             "TERMINAL_SSH_PERSISTENT", _tenv("TERMINAL_PERSISTENT_SHELL", "true"),
         ),
+        # A loopback SSH backend (gateway and sshd on one host) syncs .hermes onto itself:
+        # the push is a no-op and sync_back tars the whole home for nothing.
+        "ssh_sync_files": _tenv_bool("TERMINAL_SSH_SYNC_FILES", "true"),
         "local_persistent": _tenv_bool("TERMINAL_LOCAL_PERSISTENT", "true"),
         # Container resources (MB); ignored for local/ssh.
         "container_cpu": container_cpu,

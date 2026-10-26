@@ -193,6 +193,12 @@ VALID_HOOKS: set[str] = {
     # hooks.md). Other event types and hook names land here only together with real fire-sites and payload
     # contracts; no inert VALID_HOOKS surface is registered ahead of implementation.
     "gateway_platform_event",
+    # gateway_progress_status: phrase the gateway's long-running heartbeat bubble. Called each heartbeat
+    # (state="running", then every 20s once a plugin answers) and once when the turn ends (state="ended",
+    # outcome completed|interrupted|failed|restarted) to settle the bubble. Kwargs: session_id, session_key,
+    # platform, chat_id, message_id (None until the bubble exists), elapsed_s, state, outcome. Return a
+    # string or {"text", "change_key"} (an edit happens only when change_key moves); None keeps Hermes' text.
+    "gateway_progress_status",
     # pre_command: BEFORE a recognized slash command's handler on CLI and gateway canonical dispatch;
     # returns IGNORED in v1. Deliberately NOT fired for the gateway's running-agent intercept path
     # (/stop, /approve, busy_policy) — a slow/hostile plugin must not touch the operator's escape

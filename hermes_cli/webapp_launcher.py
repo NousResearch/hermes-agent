@@ -145,6 +145,17 @@ def _profile_choice(home: Path, target: Path) -> dict:
     return {"profile": name} if name and name != "default" else {}
 
 
+def _rerun_command(*flags: str) -> str:
+    """``hermes webapp *flags*`` for the profile this run used: ``-p`` re-homed only this process, so a
+    bare rerun gets the sticky profile, and the command keeps ``-p <name>`` when that names another one."""
+    import shlex
+    from hermes_cli.main import explicit_cli_profile
+    from hermes_cli.profiles import get_active_profile
+    name = explicit_cli_profile()
+    profile = ["-p", shlex.quote(name)] if name and name != get_active_profile() else []
+    return " ".join(["hermes", *profile, "webapp", *flags])
+
+
 def older_gateway(response: dict) -> bool:
     """Whether *response* is a gateway's answer to a verb it does not know: it predates the Webapp."""
     return not response.get("ok") and str(response.get("error") or "").startswith("unknown verb:")
@@ -347,7 +358,7 @@ def cmd_webapp(args) -> int:
         # carries it to the browser; failing that, the user opens it by hand.
         if not args.no_open and _open_privately(target, link["url"]):
             print("Opened the Webapp in your browser.")
-            print("If no browser opened, run `hermes webapp --no-open` for a link.")
+            print(f"If no browser opened, run `{_rerun_command('--no-open')}` for a link.")
             return 0
         print(f"Open this link in your browser within {link['expires_in_seconds']} seconds. It works "
               "once and signs the browser in as you, so keep it private:")

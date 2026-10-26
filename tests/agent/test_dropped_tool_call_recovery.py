@@ -79,6 +79,9 @@ _QWEN_MARKUP = (
     "<function=terminal>\n<parameter=command>\nmkdir -p ~/Downloads/pdf_receipts\n"
     "</parameter>\n</function>\n</tool_call>"
 )
+# The bare shape qwen3-coder:30b on Ollama 0.40 returns for short "run X" requests: no
+# ``<tool_call>`` wrapper and no ``</function>``, so Ollama's parser passes it through as text.
+_QWEN_BARE_MARKUP = "<function=terminal>\n<parameter=command>\nhostname\n</parameter>"
 
 
 class TestStrandedToolCallName:
@@ -86,6 +89,7 @@ class TestStrandedToolCallName:
 
     @pytest.mark.parametrize("text,expected", [
         (_QWEN_MARKUP, "terminal"),
+        (_QWEN_BARE_MARKUP, "terminal"),
         ("<tool_call>\n<function=terminal>\n<parameter=command>ls</parameter>\n</function>\n"
          "</tool_call>", "terminal"),
         ('<tool_call>\n{"name": "terminal", "arguments": {"command": "ls"}}\n</tool_call>',
@@ -216,6 +220,11 @@ class TestDroppedToolCallRecovery:
         assert loop_agent.client.chat.completions.create.call_count == 2
         assert result["final_response"] == "Ingest finished: 3 new receipts."
         assert "<function=" not in result["final_response"]
+        # The retry must not replay the markup: a model shown its own block copies it (observed:
+        # qwen3-coder repeated it on 3/3 retries until the replay was replaced).
+        retry_msgs = loop_agent.client.chat.completions.create.call_args_list[1].kwargs["messages"]
+        assert not any("<function=" in str(m.get("content") or "") for m in retry_msgs)
+        assert "terminal" in retry_msgs[-1]["content"]
 
     def test_persistent_qwen_markup_is_bounded(self, loop_agent):
         """Markup on every turn shares the dropped-tool-call budget: at most 3 re-prompts."""
@@ -235,6 +244,39 @@ class TestDroppedToolCallRecovery:
 
         assert loop_agent.client.chat.completions.create.call_count <= 4
         assert result is not None
+
+    def test_markup_surviving_every_reprompt_fails_the_turn_instead_of_delivering_it(
+        self, loop_agent,
+    ):
+        """A model that answers every re-prompt with the same markup (observed: qwen3-coder on
+        Ollama, the "hostname" request) must not have the raw ``<function=...>`` text delivered
+        as its answer once the budget is spent: the turn ends as a typed failure with plain copy,
+        and none of the re-prompt scaffolding survives."""
+        from tests.agent.test_run_agent import _mock_response
+
+        loop_agent.valid_tool_names = {"terminal"}
+        loop_agent.client.chat.completions.create.side_effect = [
+            _mock_response(content=_QWEN_BARE_MARKUP, finish_reason="stop") for _ in range(9)
+        ]
+
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation("Run the shell command hostname.")
+
+        assert loop_agent.client.chat.completions.create.call_count == 4
+        assert result["failure_reason"] == "invalid_response"
+        assert result["completed"] is False
+        assert "<function=" not in result["final_response"]
+        assert "<parameter" not in result["final_response"]
+        assert not any(
+            isinstance(m, dict) and (
+                m.get("_dropped_toolcall_nudge") or "<function=" in str(m.get("content") or "")
+            )
+            for m in result["messages"]
+        )
 
     @pytest.mark.parametrize("content", [
         # Quoted tool syntax (e.g. echoing a file, #47967) is an answer, not a call.

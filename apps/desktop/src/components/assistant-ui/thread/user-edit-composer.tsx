@@ -51,6 +51,7 @@ import { detectTrigger, openDirectiveScope, textBeforeCaret, type TriggerState }
 import { ComposerTriggerPopover } from '@/app/chat/composer/trigger-popover'
 import { isRedoShortcut, isUndoShortcut } from '@/app/chat/composer/undo-history'
 import { chipTypedUrlOnSpace, linkifyUrls } from '@/app/chat/composer/url-refs'
+import { type DropFailure, dropWarning } from '@/app/chat/hooks/drop-warning'
 import {
   extractDroppedFiles,
   HERMES_PATHS_MIME,
@@ -78,7 +79,7 @@ import { Loader2Icon } from '@/lib/icons'
 import { isMacPlatform } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 import type { ComposerAttachment } from '@/store/composer'
-import { notifyError } from '@/store/notifications'
+import { notify, notifyError, readableError } from '@/store/notifications'
 import { $terminalBackend } from '@/store/session'
 import { ambientRequestFor } from '@/store/session-gone-latch'
 import { isSessionRemote, requestForOwnedSession } from '@/store/session-states'
@@ -474,16 +475,30 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
         requestForOwnedSession<T>(sessionId, ambient, method, params)
 
       const refs: InlineRefInput[] = []
+      // The staging reason leaves out the name (the main composer's drop warning adds it): name
+      // each rejected file here too, in the same bounded warning, so several aren't told apart.
+      const failures: DropFailure[] = []
 
       for (const candidate of osDrops) {
+        let path: string
+
         try {
           // A rejected stage carries the server's or a proxy's reason (an nginx 413).
-          const path = await stageDroppedFilePath(candidate)
+          path = await stageDroppedFilePath(candidate)
+        } catch (err) {
+          const name = candidate.file?.name || candidate.path || 'file'
+          const reason = readableError(err, '').message
 
-          if (!path) {
-            continue
-          }
+          failures.push(reason ? { name, reason } : { name })
 
+          continue
+        }
+
+        if (!path) {
+          continue
+        }
+
+        try {
           const kind: ComposerAttachment['kind'] =
             candidate.file?.type.startsWith('image/') || isImagePath(candidate.file?.name || path) ? 'image' : 'file'
 
@@ -502,9 +517,13 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
         }
       }
 
+      if (failures.length) {
+        notify({ kind: 'error', title: t.desktop.dropFiles, ...dropWarning(failures, t.desktop.dropFilesMore) })
+      }
+
       return refs
     },
-    [cwd, gateway, sessionId, t.desktop.dropFiles]
+    [cwd, gateway, sessionId, t.desktop.dropFiles, t.desktop.dropFilesMore]
   )
 
   const resetDragState = useCallback(() => {

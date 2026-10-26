@@ -50,14 +50,21 @@ function Harness({ gateway }: { gateway: HermesGateway }) {
   )
 }
 
-// A browser drop: a File with no native path (the Webapp shell has no getPathForFile).
-function fileDrop(file: File) {
+// A browser drop: Files with no native path (the Webapp shell has no getPathForFile).
+function fileDrop(...files: File[]) {
   return {
-    files: { item: (index: number) => (index === 0 ? file : null), length: 1 },
+    files: { item: (index: number) => files[index] ?? null, length: files.length },
     getData: () => '',
-    items: [{ getAsFile: () => file, kind: 'file', webkitGetAsEntry: () => null }],
+    items: files.map(file => ({ getAsFile: () => file, kind: 'file', webkitGetAsEntry: () => null })),
     types: ['Files']
   }
+}
+
+async function openEditor(gateway: HermesGateway) {
+  render(<Harness gateway={gateway} />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Edit message' }))
+
+  return screen.findByRole('textbox', { name: 'Edit message' })
 }
 
 describe('edit composer drop staging failures', () => {
@@ -68,10 +75,7 @@ describe('edit composer drop staging failures', () => {
 
     Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { stageFileForAttach } })
     const request = vi.fn(async () => ({}))
-    render(<Harness gateway={{ request } as unknown as HermesGateway} />)
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit message' }))
-    const editor = await screen.findByRole('textbox', { name: 'Edit message' })
+    const editor = await openEditor({ request } as unknown as HermesGateway)
 
     await act(async () => {
       fireEvent.drop(editor, { dataTransfer: fileDrop(new File(['payload'], 'notes.txt', { type: 'text/plain' })) })
@@ -79,8 +83,54 @@ describe('edit composer drop staging failures', () => {
 
     await waitFor(() => expect(stageFileForAttach).toHaveBeenCalledOnce())
     await waitFor(() =>
-      expect($notifications.get()).toEqual([expect.objectContaining({ kind: 'error', message: UPLOAD_413 })])
+      expect($notifications.get()).toEqual([
+        expect.objectContaining({ kind: 'error', message: `Could not attach notes.txt: ${UPLOAD_413}` })
+      ])
     )
     expect(request).not.toHaveBeenCalledWith('file.attach', expect.anything())
+  })
+
+  // The oversize reason leaves out the name, so the edit composer must add it, or several
+  // oversized files in one drop give the same error. A long name is shortened; the limit stays.
+  it('names each oversized file of a mixed drop, bounded, and keeps the limit', async () => {
+    const limit = 'The file is larger than 16 MiB, the largest file the browser can attach.'
+    const longName = `${'a'.repeat(150)}.zip`
+
+    const stageFileForAttach = vi.fn(async (file: File) => {
+      if (file.name === 'notes.txt') {
+        return '/srv/uploads/web-notes.txt'
+      }
+
+      throw new Error(limit)
+    })
+
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { stageFileForAttach } })
+    const editor = await openEditor({ request: vi.fn(async () => ({})) } as unknown as HermesGateway)
+
+    await act(async () => {
+      fireEvent.drop(editor, {
+        dataTransfer: fileDrop(
+          new File(['payload'], 'notes.txt', { type: 'text/plain' }),
+          new File(['x'], longName, { type: 'application/zip' }),
+          new File(['x'], 'big.zip', { type: 'application/zip' })
+        )
+      })
+    })
+
+    await waitFor(() => expect(stageFileForAttach).toHaveBeenCalledTimes(3))
+
+    const warning = await waitFor(() => {
+      const found = $notifications.get().find(notice => notice.message.includes('big.zip'))
+      expect(found).toBeDefined()
+
+      return found!
+    })
+
+    expect(warning.kind).toBe('error')
+    expect(warning.message).toContain(`Could not attach ${'a'.repeat(24)}…${'a'.repeat(19)}.zip: ${limit}`)
+    expect(warning.message).toContain(`Could not attach big.zip: ${limit}`)
+    expect(warning.message).not.toContain(longName)
+    expect(warning.message).not.toContain('notes.txt')
+    expect(warning.detail).toContain(`Could not attach ${longName}: ${limit}`)
   })
 })

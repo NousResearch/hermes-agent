@@ -1980,17 +1980,7 @@ def _launch_bundled_desktop(
         print("  The install is damaged — reinstall Hermes from the website.")
         sys.exit(1)
 
-    from hermes_cli.main_desktop_apparmor import print_blocked_remedies
-
-    launch_command = [str(layout.launcher)]
-    if not _desktop_linux_sandbox_fixup(layout.launcher):
-        if _desktop_linux_needs_no_sandbox() and _desktop_linux_sandbox_helper_is_regular_file(layout.launcher):
-            print("⚠ Falling back to --no-sandbox because this Linux host restricts unprivileged user namespaces and the Electron sandbox helper could not be configured.")
-            print_blocked_remedies(layout.launcher)
-            launch_command.append("--no-sandbox")
-        else:
-            sys.exit(1)
-
+    launch_command = _packaged_desktop_launch_command(layout.launcher)
     launch_command.extend(electron_flags)
     launch_command.extend(_explicit_profile_args())
     pid = launch_detached(launch_command, env=env, cwd=layout.app_root)

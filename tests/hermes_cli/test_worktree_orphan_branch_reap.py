@@ -7,8 +7,12 @@ pass — so reaping on sight destroys in-flight work and takes the only durable 
 it.
 
 The rule under test: a branch carrying a recorded owner is reaped when that session is
-gone from the session store, whatever its age; a branch with no recorded owner falls
-back to the age gate. Reaping is destructive, so every unknown fails toward "keep".
+gone from the session store, whatever its age; one whose owner this store cannot
+resolve (no row, or an unreadable store) is kept outright, never falling through to the
+age gate; a branch with no recorded owner at all falls back to the age gate. Either path
+that decides to delete is additionally gated on every commit on the branch being
+reachable from some remote or ``main`` — a branch holding commits nothing else holds is
+kept regardless of verdict. Reaping is destructive, so every unknown fails toward "keep".
 """
 
 import os
@@ -40,8 +44,10 @@ def _branches(repo):
 def repo(tmp_path):
     """A branch cut now from a days-old commit, and one untouched for days.
 
-    The fresh branch's tip commit is old: only its ref update is new, as for a lane
-    branched off a quiet repo's main or a ``pr-*`` head fetched from an old commit.
+    Both branches point at the same commit as ``main`` -- only their ref/reflog age
+    differs -- so the age-gate tests below exercise age alone, with no commit
+    unreachable from ``main`` to trip the F1 reachability gate. Tests that need an
+    unreachable commit add one explicitly.
     """
     old = {"GIT_AUTHOR_DATE": STALE_DATE, "GIT_COMMITTER_DATE": STALE_DATE}
     root = tmp_path / "repo"
@@ -51,9 +57,7 @@ def repo(tmp_path):
     _git(root, "config", "user.name", "Test")
     _git(root, "commit", "-q", "--allow-empty", "-m", "base", env=old)
     _git(root, "branch", "hermes/hermes-fresh")
-    _git(root, "checkout", "-q", "-b", "hermes/hermes-stale", "main")
-    _git(root, "commit", "-q", "--allow-empty", "-m", "stale", env=old)
-    _git(root, "checkout", "-q", "main")
+    _git(root, "branch", "hermes/hermes-stale")
     stale_log = root / ".git" / "logs" / "refs" / "heads" / "hermes" / "hermes-stale"
     days_ago = time.time() - 5 * 86400
     os.utime(stale_log, (days_ago, days_ago))
@@ -128,16 +132,17 @@ def test_a_branch_whose_session_is_live_is_kept_however_old(repo, live, monkeypa
     assert "hermes/hermes-stale" in _branches(repo)
 
 
-def test_an_owner_the_store_has_no_row_for_falls_back_to_the_age_gate(repo, live, monkeypatch):
-    """No row is not "gone": the row is written on the first turn and the store is per
-    profile, so a fresh lane (or another profile's) must not be reaped on sight."""
+def test_an_owner_the_store_cannot_resolve_is_kept_not_the_age_gate(repo, live, monkeypatch):
+    """F3: an owner with no row in this store is unresolvable, not "gone" -- it must be
+    kept outright and never fall through to the age gate, for either branch regardless
+    of age."""
     _own(repo, "hermes/hermes-fresh", "sess-before-first-turn", monkeypatch)
     _own(repo, "hermes/hermes-stale", "sess-other-profile", monkeypatch)
 
     worktree_ops._prune_orphaned_branches(str(repo))
 
     assert "hermes/hermes-fresh" in _branches(repo)
-    assert "hermes/hermes-stale" not in _branches(repo)
+    assert "hermes/hermes-stale" in _branches(repo)
 
 
 # ── the age gate, as the fallback for branches nothing owns ───────────
@@ -176,3 +181,79 @@ def test_an_undatable_unowned_branch_is_kept(repo, live, monkeypatch):
     worktree_ops._prune_orphaned_branches(str(repo), max_age_hours=0)
 
     assert {"hermes/hermes-fresh", "hermes/hermes-stale"} <= _branches(repo)
+
+
+# ── F1: a branch holding commits unreachable from any remote or main is kept ──
+
+
+def _add_unreachable_commit(repo, branch):
+    """Give *branch* one commit that exists nowhere else (no remote, not on main)."""
+    _git(repo, "checkout", "-q", "-b", branch + "-work", branch)
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "unreachable work")
+    _git(repo, "checkout", "-q", "main")
+    # Move the branch ref to the new tip and drop the scratch ref used to create it.
+    sha = subprocess.run(
+        ["git", "rev-parse", branch + "-work"], cwd=repo, capture_output=True,
+        text=True, check=True,
+    ).stdout.strip()
+    _git(repo, "update-ref", "refs/heads/" + branch, sha)
+    _git(repo, "branch", "-D", branch + "-work")
+
+
+def test_a_branch_with_an_unreachable_commit_is_kept_despite_a_gone_session(
+    repo, live, monkeypatch
+):
+    """F1 via the session path: the branch would be reaped (owner's session is gone)
+    but holds a commit reachable from no remote and not from main -- it must be kept."""
+    _add_unreachable_commit(repo, "hermes/hermes-fresh")
+    _own(repo, "hermes/hermes-fresh", "sess-done", monkeypatch)
+    live.archive("sess-done")
+
+    worktree_ops._prune_orphaned_branches(str(repo))
+
+    assert "hermes/hermes-fresh" in _branches(repo)
+
+
+def test_a_branch_with_an_unreachable_commit_is_kept_despite_the_age_gate(repo, live):
+    """F1 via the age-gate path: no owner, well past the cutoff -- still kept because
+    the extra commit is reachable from nowhere else."""
+    _add_unreachable_commit(repo, "hermes/hermes-stale")
+
+    worktree_ops._prune_orphaned_branches(str(repo), max_age_hours=0)
+
+    assert "hermes/hermes-stale" in _branches(repo)
+
+
+def test_a_branch_fully_merged_to_main_is_still_reaped(repo, live):
+    """Sanity: the F1 gate only protects genuinely unreachable work -- a branch whose
+    tip IS on main (the common case for these fixtures) is still reaped by the age gate."""
+    worktree_ops._prune_orphaned_branches(str(repo), max_age_hours=0)
+
+    assert "hermes/hermes-stale" not in _branches(repo)
+
+
+# ── F2: an undatable branch (OSError reading its reflog) is kept, not substituted ──
+
+
+def test_a_branch_whose_reflog_is_unreadable_is_left_undatable(repo):
+    """F2: _branch_tip_dates must not fall back to the tip committer date on an OSError
+    reading the reflog -- the branch must be absent from the result entirely."""
+    reflog = repo / ".git" / "logs" / "refs" / "heads" / "hermes" / "hermes-stale"
+    reflog.unlink()
+
+    dates = worktree_ops._branch_tip_dates(str(repo))
+
+    assert "hermes/hermes-stale" not in dates
+    # The sibling branch's reflog is untouched, so it stays datable.
+    assert "hermes/hermes-fresh" in dates
+
+
+def test_a_branch_whose_reflog_is_unreadable_is_kept_by_the_age_gate(repo, live):
+    """F2 end-to-end: with its reflog gone, the old-tip branch that would otherwise be
+    reaped on sight at max_age_hours=0 is instead kept as undatable."""
+    reflog = repo / ".git" / "logs" / "refs" / "heads" / "hermes" / "hermes-stale"
+    reflog.unlink()
+
+    worktree_ops._prune_orphaned_branches(str(repo), max_age_hours=0)
+
+    assert "hermes/hermes-stale" in _branches(repo)

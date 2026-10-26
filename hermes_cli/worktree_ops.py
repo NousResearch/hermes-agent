@@ -1283,8 +1283,30 @@ def _branch_tip_dates(repo_root: str) -> dict:
         try:
             dates[name] = max(int(stamp), reflog.stat().st_mtime)
         except OSError:
-            dates[name] = int(stamp)
+            # Reflog unreadable: do not substitute the tip committer date alone (it dates
+            # the BASE, not this branch's activity) — leave it undatable so it is kept.
+            continue
     return dates
+
+
+def _branch_has_only_reachable_commits(repo_root: str, branch: str) -> bool:
+    """True when every commit on *branch* is also reachable from a remote or ``main``.
+
+    ``branch -D`` only drops the ref; a commit unreachable from anywhere else is gone
+    with it. Deletion is destructive, so a git failure here is NOT "no unreachable
+    commits" -- it fails toward keep, same as every other check in this sink.
+    """
+    try:
+        # One ``--not``: it toggles sign and stays negative for everything after it, so
+        # both ``--remotes`` and ``main`` are excluded. A second ``--not`` would flip back
+        # to positive for ``main``, turning it into an extra *include* root instead of an
+        # exclusion -- on a repo with no remotes that showed every commit on `branch`
+        # (even ones on `main`) as "unreachable".
+        out = _git_out(["rev-list", branch, "--not", "--remotes", "main"], repo_root,
+                       timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return out == ""
 
 
 def _prune_orphaned_branches(repo_root: str, protect: Optional[set] = None,
@@ -1293,10 +1315,15 @@ def _prune_orphaned_branches(repo_root: str, protect: Optional[set] = None,
 
     Session-associated first: a branch is reaped when the session recorded on it (see
     :func:`_branch_owner_sessions`) is archived in the session store, whatever its age, and
-    kept while that session is live. Branches with no recorded owner, or an owner the
-    store has no row for, fall back to the age gate (*max_age_hours*), which also protects work that is
-    only briefly worktree-less: the ref is created before its tree, and a tree can be
-    reaped on an earlier pass. Undatable branches are kept.
+    kept while that session is live. A recorded owner this store cannot resolve (no row,
+    or an unreadable store -- see :func:`_session_is_gone`) is NOT "gone": it is kept
+    outright and never falls through to the age gate below. Only a branch with no
+    recorded owner at all falls back to the age gate (*max_age_hours*), which also
+    protects work that is only briefly worktree-less: the ref is created before its tree,
+    and a tree can be reaped on an earlier pass. Undatable branches are kept. Either path
+    that decides to delete is additionally gated on
+    :func:`_branch_has_only_reachable_commits`: a branch holding commits unreachable from
+    any remote or ``main`` is kept regardless of session/age verdict.
     """
     try:
         listing = _git_out(["branch", "--format=%(refname:short)"], repo_root)
@@ -1336,18 +1363,34 @@ def _prune_orphaned_branches(repo_root: str, protect: Optional[set] = None,
     stale = []
     for b in orphaned:
         owner = owners.get(b)
-        gone = _session_is_gone(owner) if owner is not None else None
-        if gone is not None:
-            # Session-associated: the ref lives exactly as long as its session does.
+        if owner is not None:
+            gone = _session_is_gone(owner)
+            if gone is None:
+                # Owner recorded but unresolvable (no row / unreadable store): keep
+                # outright. This must NOT fall through to the age gate below -- an
+                # unresolvable owner is a session we simply can't ask, not "no owner".
+                continue
             if gone:
+                # Session-associated: the ref lives exactly as long as its session does.
                 stale.append(b)
         elif ages.get(b, float("inf")) <= cutoff:
-            # No owner, or one this store has no row for: the age gate is the only signal left.
+            # No recorded owner at all: the age gate is the only signal left.
             stale.append(b)
     if not stale:
         return
-    for i in range(0, len(stale), 50):
-        _git_quiet(["branch", "-D"] + stale[i:i + 50], repo_root, timeout=30,
+
+    # Deletion is destructive: never drop a branch that is the only thing holding
+    # commits unreachable from any remote or `main`, whichever path (session-gone or
+    # age-gate) put it in `stale`.
+    reapable = [b for b in stale if _branch_has_only_reachable_commits(repo_root, b)]
+    kept_unreachable = len(stale) - len(reapable)
+    if kept_unreachable:
+        logger.debug("Keeping %d orphaned branch(es) with commits unreachable from any "
+                     "remote or main", kept_unreachable)
+    if not reapable:
+        return
+    for i in range(0, len(reapable), 50):
+        _git_quiet(["branch", "-D"] + reapable[i:i + 50], repo_root, timeout=30,
                    log="Failed to prune orphaned branches",
                    stdin=subprocess.DEVNULL, env=noninteractive_git_env())
-    logger.debug("Pruned %d orphaned branch(es) older than %dh", len(stale), max_age_hours)
+    logger.debug("Pruned %d orphaned branch(es) older than %dh", len(reapable), max_age_hours)

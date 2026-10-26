@@ -57,6 +57,24 @@ it('keeps notes the backend rejected so they can be shortened and saved again', 
   expect((screen.getByPlaceholderText(labels.notesPlaceholder) as HTMLTextAreaElement).value).toBe('My long draft')
 })
 
+it('an in-flight save cannot be overtaken by edits it would then discard', async () => {
+  let finish: (saved: boolean) => void = () => {}
+  const save = vi.fn(() => new Promise<boolean>(resolve => { finish = resolve }))
+  const notes = openSettings(save)
+
+  fireEvent.change(notes, { target: { value: 'First draft' } })
+  fireEvent.click(screen.getByText(labels.save))
+  await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+
+  // While the save is in flight the draft is frozen: nothing typed now can be lost when it lands.
+  expect(notes.disabled).toBe(true)
+  expect((screen.getByText(labels.save) as HTMLButtonElement).disabled).toBe(true)
+
+  finish(false)
+  await waitFor(() => expect(notes.disabled).toBe(false))
+  expect(notes.value).toBe('First draft')
+})
+
 it('blocks saving notes over the 4 KB limit while typing', () => {
   const save = vi.fn(async () => true)
   const notes = openSettings(save)

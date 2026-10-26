@@ -30,12 +30,18 @@ export function CanonicalGroupHeader({ busy, canStop, context, deliveryTarget, d
   const labels = useCanonicalGroupLabels()
   const [renaming, setRenaming] = useState<null | string>(null)
   const [settings, setSettings] = useState<CanonicalRoomContext | null>(null)
+  // The draft is frozen while a save is in flight, so closing on success can never drop newer typing.
+  const [saving, setSaving] = useState(false)
   const [ending, setEnding] = useState(false)
   const notesBytes = settings ? roomNotesBytes(settings.notes) : 0
   const notesOver = notesBytes > MAX_ROOM_NOTES_BYTES
 
   const saveSettings = async (draft: CanonicalRoomContext) => {
-    if (await onSaveContext(draft)) {
+    setSaving(true)
+    const saved = await onSaveContext(draft)
+    setSaving(false)
+
+    if (saved) {
       setSettings(null)
     }
   }
@@ -71,16 +77,16 @@ export function CanonicalGroupHeader({ busy, canStop, context, deliveryTarget, d
     </form>}
     {settings !== null && <form aria-label={labels.roomSettings} className="grid gap-2 px-3 py-2" onSubmit={event => { event.preventDefault(); void saveSettings(settings) }}>
       <label className="grid gap-1 text-xs">{labels.purposeLabel}
-        <Input maxLength={500} onChange={event => setSettings({ ...settings, purpose: event.target.value })} placeholder={labels.purposePlaceholder} value={settings.purpose} />
+        <Input disabled={saving} maxLength={500} onChange={event => setSettings({ ...settings, purpose: event.target.value })} placeholder={labels.purposePlaceholder} value={settings.purpose} />
       </label>
       <label className="grid gap-1 text-xs">{labels.notesLabel}
-        <textarea className="min-h-24 rounded border border-(--ui-border) bg-transparent p-2 text-xs" onChange={event => setSettings({ ...settings, notes: event.target.value })}
+        <textarea className="min-h-24 rounded border border-(--ui-border) bg-transparent p-2 text-xs" disabled={saving} onChange={event => setSettings({ ...settings, notes: event.target.value })}
           placeholder={labels.notesPlaceholder} value={settings.notes} />
         <span className={notesOver ? 'text-(--ui-accent)' : 'text-(--ui-text-tertiary)'} data-testid="room-notes-bytes">{notesBytes} / {MAX_ROOM_NOTES_BYTES}</span>
       </label>
       <p className="text-xs text-(--ui-text-secondary)">{labels.deliveryTarget} <code data-selectable-text="true">{deliveryTarget}</code></p>
       <div className="flex gap-2">
-        <Button disabled={busy || notesOver} type="submit">{labels.save}</Button>
+        <Button disabled={busy || notesOver || saving} type="submit">{labels.save}</Button>
         <Button onClick={() => setSettings(null)} type="button">{labels.cancel}</Button>
       </div>
     </form>}

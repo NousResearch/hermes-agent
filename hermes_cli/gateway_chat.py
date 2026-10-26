@@ -291,7 +291,8 @@ def _requested_policy(args):
         if not policy["skills"]:
             policy.pop("skills")
     if getattr(args, "source", None):
-        policy["source"] = args.source
+        from agent.session_source import create_surface
+        policy["source"] = create_surface(args.source)
     return policy
 
 

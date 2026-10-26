@@ -297,6 +297,7 @@ compression:
   codex_responses_native: false  # Opt-in server compaction: gpt-5.6 on OpenAI/Codex; Astra on Codex OAuth
   codex_responses_compact_threshold: null  # Server compaction trigger; only used when codex_responses_native: true
   in_place: true             # Compact on the same session id, no rotation (default: true)
+  prepare_ahead: false       # Opt-in: prepare the next summary in the background (default: false)
 
 # Summarization model/provider configured under auxiliary:
 auxiliary:
@@ -325,6 +326,7 @@ auxiliary:
 | `codex_responses_native` | `false` | bool | Opt in to OpenAI's server-side compaction on the Responses API. Engages for gpt-5.6-family models on the direct OpenAI API or a ChatGPT Codex subscription, and `gpt-6-astra` (including its `-900k` picker alias) on official Codex OAuth (see below) |
 | `codex_responses_compact_threshold` | `null` | `null` or positive integer | Server-side compaction trigger, read **only when `codex_responses_native: true`** — it never changes when local compression fires; the local trigger is `threshold` (ratio) capped by `threshold_tokens`. `null` follows the resolved local compression trigger with an 8,192 token safety margin. A positive integer remains absolute and only clamps downward when required. Invalid values use automatic behavior. Automatic mode falls back to `200000` when no usable local trigger exists |
 | `in_place` | `true` | bool | Compact on the same session id instead of rotating to a new one (see below) |
+| `prepare_ahead` | `false` | bool | Opt-in: near the trigger, write the next summary in the background and splice it at the next automatic compaction when it still covers the same messages (see below) |
 
 ### In-place compaction (single stable session id)
 
@@ -668,6 +670,57 @@ new progress is added, and obsolete information is removed.
 The `_previous_summary` field on the compressor instance stores the last summary
 text for this purpose. A deterministic fallback summary is stored there too, since
 it is the handoff the transcript now carries.
+
+### Prepared compaction (opt-in)
+
+With `compression.prepare_ahead: true` (read at agent construction, so it takes effect on the next
+session or gateway agent rebuild), `agent/prepared_compaction.py` writes the next summary before
+the trigger fires. When the last provider-reported prompt count is within 12% of the trigger
+(`threshold_tokens`) below it, the turn loop starts one background pass, before a tool batch runs or
+at turn end. Turn-end passes are skipped for cron runs, delegated children and one-shot sessions
+(`hermes chat -q`, `-z`), whose agents end with the turn. The pass plans the same window `compress()` plans (`_plan_compaction_window`) and calls
+the same `_generate_summary` on a copy of the compressor and of the window's messages, so the live
+transcript, the system prompt and the prompt cache are untouched until compaction. There is one pass
+per compaction: while a summary is held, no further pass starts, however much the prompt grows.
+
+At the next automatic threshold compaction `compress()` splices the completed summary when it still
+covers the same messages: same session, unchanged head boundary, and the same message structure up to that boundary (role, tool call ids and
+names, tool result ids), each message vouched for by its durable `message_uid`. The text of a
+persisted message, tool arguments and tool bodies are not compared: the no-LLM prune and plugins
+rewrite them in place, and the summary still describes the same messages. A message without a uid on
+one side (caller-supplied `conversation_history` that is never persisted) is compared by text, since
+nothing else can tell it from a different message. A dropped or inserted message, or a rewind or
+branch into the window (new `message_uid`s), is a miss. The summary then covers
+`[head, candidate boundary)` and every later message, however many arrived after the pass started, is
+kept as tail; tail rules such as lean-mode tool stubbing still apply to them. Where the fresh plan
+would cut does not matter: a cut that moved earlier (the prune made tail rows cheaper, tool-group
+alignment) or later never discards the summary, because one prepared summary per compaction is never
+redone. The pass planned its own window with a full tail, so the tail is never empty. Summary placement and
+alternation handling are the normal Phase 4 assembly. The splice leaves the live compressor as the
+inline call would have: a pass that recovered on the main model after the summary model failed hands
+over that fallback (later compactions use the main model, and the user sees the broken-model
+warning), and the attempt telemetry carries the pass's aux call with `prepared_summary: true`.
+
+When no completed candidate fits but the pass still running would, compaction waits for that pass
+instead of writing the same summary again. Each streamed chunk of the pass touches the waiting
+compaction's progress hook, so the host's idle watchdog treats the wait like an inline summary
+stream, and time a llama.cpp server spends reading the pass's prompt pushes the host's deadline back
+as it would inline. The wait ends at the host's deadline (the compression aux timeout when there is none), on
+cancellation, or when a session boundary discards the pass, and compaction then summarizes inline.
+
+Everything else runs inline exactly as without the flag: no candidate, a candidate or running pass
+that no longer fits, manual `/compress`, focus compaction, provider-overflow recovery, and
+compactions where a memory provider contributes summary context (the first such compaction also stops
+further passes for that agent, since each would be thrown away). A running pass overtaken by compaction or a session
+boundary (including a rebind to another session id on `/resume` or `/branch`) is cancelled: it
+cannot publish, and its summary stream is closed rather than billed to completion. A failed pass pauses further passes but never arms the live compressor's failure cooldown. State is per compressor and in memory only, so a gateway agent
+eviction or process restart simply means the next compaction runs inline; releasing the agent (cache
+eviction, a rewind, `close()`) also cancels a running pass. A held summary therefore helps only an
+agent that lives across turns (interactive CLI, TUI/Desktop and messaging sessions); a `-q --resume`
+chain builds a new agent per run and gets no head start. Pass log lines carry `session=<id>`, and
+opt-in shared metrics count adoption and every pass and splice outcome
+(`hermes.prepared_compaction.count`, see the shared-metrics guide). Plugin context engines,
+Codex app-server sessions, native Responses compaction and micro-compaction are not prepared.
 
 
 ## Before/After Example

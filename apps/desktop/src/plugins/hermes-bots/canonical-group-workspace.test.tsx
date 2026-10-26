@@ -349,6 +349,101 @@ it('re-gates previews on the observer after the room is hidden and shown, instea
   await waitFor(() => expect(downloads()).toBe(2))
 })
 
+it('keeps automatic preview downloads bounded and never requests one file twice at once', async () => {
+  Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:preview') })
+  Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() })
+  const image = (n: number) => ({ attachment_id: `img-${n}`, kind: 'image', name: `shot-${n}.png`, mime: 'image/png', size: 4 * 1024 * 1024 })
+  const events = Array.from({ length: 20 }, (_, n) => ({ seq: n + 1, room_id: 'bound', event_id: `e${n}`, kind: 'message.member', payload: { attachments: [image(n)] } }))
+  const held: Array<() => void> = []
+  request.mockImplementation(async (_route, method) => roomReads([], events)(method)
+    ?? (method === 'groups.attachment.download' ? new Promise(resolve => { held.push(() => resolve({ ...image(0), data_base64: 'QQ==' })) }) : {}))
+  const observers: IntersectionObserverCallback[] = []
+  vi.stubGlobal('IntersectionObserver', class { constructor(callback: IntersectionObserverCallback) { observers.push(callback) } observe() {} disconnect() {} })
+
+  const seen = (callback: IntersectionObserverCallback, isIntersecting: boolean) =>
+    act(() => callback([{ isIntersecting }] as IntersectionObserverEntry[], {} as IntersectionObserver))
+
+  const downloads = () => request.mock.calls.filter(c => c[1] === 'groups.attachment.download').map(c => c[2].attachment_id)
+  const binding = { connectionId: 'remote', profile: 'team', roomId: 'bound' }
+  const view = render(<CanonicalGroupWorkspace binding={binding} />)
+  await waitFor(() => expect(observers).toHaveLength(20))
+
+  // A fast scroll: every preview enters and leaves the viewport before any download finishes.
+  for (const callback of [...observers]) { seen(callback, true); seen(callback, false) }
+  expect(downloads()).toEqual(['img-0', 'img-1'])
+  // Hidden and shown again while img-0 is pending, with a slot free: the same file is not requested twice.
+  await act(async () => { held[1]() })
+  view.rerender(<CanonicalGroupWorkspace binding={binding} visible={false} />)
+  view.rerender(<CanonicalGroupWorkspace binding={binding} />)
+  await waitFor(() => expect(observers).toHaveLength(40))
+  seen(observers[20], true)
+  await act(async () => { await Promise.resolve() })
+  expect(downloads()).toEqual(['img-0', 'img-1'])
+  // The shared request still paints the re-shown preview, and the previews that scrolled away are never requested.
+  await act(async () => { held.splice(0).forEach(release => release()) })
+  await screen.findByRole('img', { name: 'shot-0.png' })
+  expect(downloads()).toEqual(['img-0', 'img-1'])
+})
+
+it('starts waiting previews in order as downloads succeed or fail, never more than two at once', async () => {
+  Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:preview') })
+  Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() })
+  const image = (n: number) => ({ attachment_id: `img-${n}`, kind: 'image', name: `shot-${n}.png`, mime: 'image/png', size: 1 })
+  const events = Array.from({ length: 6 }, (_, n) => ({ seq: n + 1, room_id: 'drain', event_id: `e${n}`, kind: 'message.member', payload: { attachments: [image(n)] } }))
+  const held = new Map<string, (ok: boolean) => void>()
+  let running = 0
+  let peak = 0
+  request.mockImplementation(async (_route, method, params) => roomReads([], events)(method)
+    ?? (method === 'groups.attachment.download' ? new Promise((resolve, reject) => {
+      peak = Math.max(peak, ++running)
+      held.set(params.attachment_id, ok => {
+        running--
+
+        if (ok) {resolve({ ...image(Number(params.attachment_id.slice(4))), data_base64: 'QQ==' })} else {reject(new Error('gone'))}
+      })
+    }) : {}))
+  const observers: IntersectionObserverCallback[] = []
+  vi.stubGlobal('IntersectionObserver', class { constructor(callback: IntersectionObserverCallback) { observers.push(callback) } observe() {} disconnect() {} })
+  const downloads = () => request.mock.calls.filter(c => c[1] === 'groups.attachment.download').map(c => c[2].attachment_id)
+  const settle = (outcomes: Record<string, boolean>) => act(async () => { Object.entries(outcomes).forEach(([id, ok]) => held.get(id)?.(ok)) })
+  render(<CanonicalGroupWorkspace binding={{ connectionId: 'remote', profile: 'team', roomId: 'drain' }} />)
+  await waitFor(() => expect(observers).toHaveLength(6))
+
+  // Every preview stays in view, so four wait behind the first two.
+  for (const callback of observers) {act(() => callback([{ isIntersecting: true }] as IntersectionObserverEntry[], {} as IntersectionObserver))}
+  await waitFor(() => expect(downloads()).toEqual(['img-0', 'img-1']))
+  // A finished and a failed download each hand their slot to the next waiting preview.
+  await settle({ 'img-0': true, 'img-1': false })
+  await waitFor(() => expect(downloads()).toEqual(['img-0', 'img-1', 'img-2', 'img-3']))
+  await settle({ 'img-3': false, 'img-2': true })
+  await waitFor(() => expect(downloads()).toEqual(['img-0', 'img-1', 'img-2', 'img-3', 'img-4', 'img-5']))
+  await settle({ 'img-4': true, 'img-5': true })
+  await screen.findByRole('img', { name: 'shot-5.png' })
+  expect(peak).toBe(2)
+})
+
+it('lets a connection whose downloads never settle stall only its own previews', async () => {
+  Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:preview') })
+  Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() })
+  const image = (id: string) => ({ attachment_id: id, kind: 'image', name: `${id}.png`, mime: 'image/png', size: 1 })
+  const message = (id: string, seq: number) => ({ seq, room_id: id[0], event_id: `e-${id}`, kind: 'message.member', payload: { attachments: [image(id)] } })
+  request.mockImplementation(async (route, method, params) => route.connectionId === 'hung'
+    ? roomReads([], [message('a0', 1), message('a1', 2)])(method) ?? (method === 'groups.attachment.download' ? new Promise(() => {}) : {})
+    : roomReads([], [message('b0', 1)])(method) ?? (method === 'groups.attachment.download' ? { ...image(params.attachment_id), data_base64: 'QQ==' } : {}))
+  const observers: IntersectionObserverCallback[] = []
+  vi.stubGlobal('IntersectionObserver', class { constructor(callback: IntersectionObserverCallback) { observers.push(callback) } observe() {} disconnect() {} })
+  const seen = (callback: IntersectionObserverCallback) => act(() => callback([{ isIntersecting: true }] as IntersectionObserverEntry[], {} as IntersectionObserver))
+  const stuck = render(<CanonicalGroupWorkspace binding={{ connectionId: 'hung', profile: 'team', roomId: 'a' }} />)
+  await waitFor(() => expect(observers).toHaveLength(2))
+  observers.forEach(seen)
+  stuck.unmount()
+  render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'b' }} />)
+  await waitFor(() => expect(observers).toHaveLength(3))
+  seen(observers[2])
+  await screen.findByRole('img', { name: 'b0.png' })
+  expect(request.mock.calls.filter(c => c[1] === 'groups.attachment.download').map(c => c[2].attachment_id)).toEqual(['a0', 'a1', 'b0'])
+})
+
 it('uploads a file pasted while another upload runs once that one finishes, instead of dropping it', async () => {
   let release!: () => void
   const receipt = (params: Record<string, string>) => ({ attachment_id: `att-${params.name}`, kind: params.kind, name: params.name, mime: params.mime, size: 1 })

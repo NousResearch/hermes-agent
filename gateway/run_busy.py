@@ -195,6 +195,20 @@ class GatewayBusySessionMixin:
 
         self._apply_followup_queue_mutation(adapter, session_key, _restore)
 
+    def _take_wake_admitted_before_drain(self, session_key: str, adapter: Any) -> Optional[MessageEvent]:
+        """Pop the first wake admitted before the drain began from the pending slot, else from the
+        overflow FIFO, keeping the slot filled while overflow remains; every other event stays
+        queued. Its producer holds a receipt and will not retry it, so a follow-up ahead of it that
+        the drain rejects must not strand it."""
+        slot = getattr(adapter, "_pending_messages", None)
+        if slot and getattr(slot.get(session_key), "_admitted_before_drain", False) is True:
+            return self._promote_queued_event(session_key, adapter, slot.pop(session_key))
+        overflow = self._overflow_queue(session_key) or []
+        for index, event in enumerate(overflow):
+            if event._admitted_before_drain is True:
+                return overflow.pop(index)
+        return None
+
     def _defer_past_exhaustion_reset(
         self, result: Any, adapter: Any, source: SessionSource, session_key: str, pending_event: MessageEvent,
     ) -> None:
@@ -316,13 +330,12 @@ class GatewayBusySessionMixin:
                         pending_event = None
                         pending = None
 
-        if self._draining and (pending_event or pending):
-            logger.info(
-                "Discarding pending follow-up for session %s during gateway %s",
-                session_key or "?", self._status_action_label(),
-            )
-            pending_event = None
-            pending = None
+        if self._draining and getattr(pending_event, "_admitted_before_drain", False) is not True:
+            if pending_event or pending:
+                logger.info("Discarding pending follow-up for session %s during gateway %s", session_key or "?", self._status_action_label())
+            # Without a result the caller runs nothing next: leave the queue to the adapter.
+            pending_event = self._take_wake_admitted_before_drain(session_key, adapter) if result and adapter and session_key else None
+            pending = (pending_event.text or _build_media_placeholder(pending_event)) if pending_event is not None else None
         return pending_event, pending
 
     def _queue_depth(self, session_key: str, *, adapter: Any = None) -> int:

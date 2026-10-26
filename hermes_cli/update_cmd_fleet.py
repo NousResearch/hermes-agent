@@ -141,9 +141,8 @@ def _current_checkout_sha() -> str | None:
     """Current on-disk checkout HEAD, or None if it cannot be resolved."""
     from hermes_cli.update_cmd import _capture_head_sha, _m
     try:
-        from hermes_cli.version_info import get_code_identity
-        sha = (get_code_identity(refresh=True) or {}).get("sha")
-        return str(sha) if sha else None
+        from hermes_cli.version_info import read_checkout_sha
+        return read_checkout_sha()
     except Exception:
         return _capture_head_sha(["git"], _m().PROJECT_ROOT)
 

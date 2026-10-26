@@ -1405,6 +1405,7 @@ async def test_direct_handoff_completes_ownership_from_its_own_event_beside_a_li
         PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM
     )
     runner = object.__new__(GatewayRunner)
+    runner._session_db = None  # upstream's handoff repoint reads the pinned session DB (conversation_head)
     session_id = "handoff-beside-live-task"
     session_key = "handoff-beside-live-task-key"
     profile_key = review_admission.current_profile_key()

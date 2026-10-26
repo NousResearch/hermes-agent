@@ -15,6 +15,16 @@ class ProcessCheckpointMixin:
         """Subclass supplies the live PID decision. See ProcessRegistry."""
         raise NotImplementedError
 
+    def _stop_scope(self, session) -> bool:
+        """Stop the recorded native scope and persist its verdict, even after its wrapper exits."""
+        if not session.systemd_unit:
+            return True
+        from tools.process_registry import _stop_systemd_unit
+        stopped = _stop_systemd_unit(session.systemd_unit)
+        session._scope_stop_pending = not stopped
+        self._write_checkpoint()
+        return stopped
+
     # ----- Checkpoint (crash recovery) -----
 
     def _write_checkpoint(self, extra_entries: Optional[list[dict[str, Any]]] = None, *, exclude_ids=()):
@@ -24,8 +34,8 @@ class ProcessCheckpointMixin:
         try:
             with self._lock:
                 entries = []
-                for s in self._running.values():
-                    if s.exited:
+                for s in {**self._finished, **self._running}.values():
+                    if s.exited and not s._scope_stop_pending:
                         continue
                     # Backfill the start time so recovery can detect PID recycling
                     # even for sessions spawned before this field existed.
@@ -118,7 +128,7 @@ class ProcessCheckpointMixin:
             log = adoptable_log(entry.get("output_log"))
             if log:
                 fate = "running"
-            if fate == "reused":
+            if fate == "reused" and not entry.get("systemd_unit"):
                 logger.info(
                     "Not recovering session %s: pid %d is alive but its "
                     "start time no longer matches — PID was recycled onto "

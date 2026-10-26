@@ -368,7 +368,7 @@ async def interrupt_processes(authority, ref, agent):
     registry = getattr(sys.modules.get('tools.process_registry'), 'process_registry', None)
     # Turn Stop leaves detached delegations running; their raw owners are not this agent's.
     registry, targets = _process_targets(authority, ref, agent, (),
-        select=lambda p: not p.exited or p._scope_stop_pending
+        select=lambda p: not p.exited or p._scope_stop_pending or p.systemd_unit
         or (p.notify_on_complete and not registry.is_completion_consumed(p.id)))
     if targets:
         # Stop cancels these autonomous notices even if termination is refused or a reader

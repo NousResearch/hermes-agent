@@ -213,7 +213,7 @@ class WorkerControls:
         with process_registry._lock:
             targets = [p.id for p in (*process_registry._running.values(), *process_registry._finished.values())
                        if p.session_key == self.route and p.owner_task_id in owners
-                       and (not p.exited or p._scope_stop_pending
+                       and (not p.exited or p._scope_stop_pending or p.systemd_unit
                             or (p.notify_on_complete and not process_registry.is_completion_consumed(p.id)))]
             process_registry._completion_consumed.update(targets)
         results = [process_registry.kill_process(pid, source='session.interrupt', consume_output=True) for pid in targets]

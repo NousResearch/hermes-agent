@@ -656,7 +656,7 @@ _CHECKPOINT_FIELDS = (
     "started_at", "task_id", "owner_task_id", "session_key",
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
     "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns",
-    "heartbeat_seconds", "persist_on_release", "output_log")
+    "heartbeat_seconds", "persist_on_release", "output_log", "_scope_stop_pending")
 _CHECKPOINT_DEFAULTS = {
     f.name: ([] if f.name == "watch_patterns" else f.default)
     for f in ProcessSession.__dataclass_fields__.values()
@@ -2221,16 +2221,6 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 "termination_source": session.termination_source, **output}
         except Exception as e:
             return {"status": "error", "error": str(e)}
-
-    @staticmethod
-    def _stop_scope(session: ProcessSession) -> bool:
-        """Stop the session's systemd scope: True when it has none or the stop worked. Every kill
-        path stops the scope through here, so a failed stop always leaves it marked for retry."""
-        if not session.systemd_unit:
-            return True
-        stopped = _stop_systemd_unit(session.systemd_unit)
-        session._scope_stop_pending = not stopped
-        return stopped
 
     def _signal_kill(self, session: ProcessSession, session_id: str, consume_output: bool) -> Optional[dict]:
         """Deliver the kill via PTY, local Popen tree, sandbox exec or recovered host

@@ -132,8 +132,10 @@ async def probe():
             birth = identity.create_time()
             for name, owner, route in [('other-owner', 'foreign-owner', proc.session_key),
                                        ('other-route', sid, 'foreign-route')]:
-                neighbors.append(process_registry.spawn_local(command(name), cwd=str(HOME),
-                    task_id=owner, owner_task_id=owner, session_key=route, persist_on_release=True))
+                from gateway.session_context import scoped_current_session_id
+                with scoped_current_session_id(owner):
+                    neighbors.append(process_registry.spawn_local(command(name), cwd=str(HOME),
+                        task_id=owner, owner_task_id=owner, session_key=route, persist_on_release=True))
             receipt['stop_attempt'] = time.time()
             receipt['stop_ack'] = await rpc('session.interrupt', session_id=sid,
                                           execution_generation=snapshot['execution_generation'])

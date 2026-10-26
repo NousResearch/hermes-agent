@@ -135,6 +135,9 @@ const RPC_ERROR_ROWS: RpcErrorRow[] = [
     (code, text) => (code === RPC_SESSION_NOT_FOUND || code === undefined) && SESSION_NOT_FOUND_RE.test(text),
     () => t('userMessages.rpc.sessionNotFound')
   ],
+  // A stored chat the gateway opens read-only (gateway/session_history_mount.py) names its refusal by reason.
+  [(_code, text) => text === 'session_read_only', () => t('userMessages.rpc.sessionReadOnly')],
+  [(_code, text) => text === 'session_has_children', () => t('userMessages.rpc.sessionHasChildren')],
   [(_code, text) => NOT_CONNECTED_RE.test(text), () => t('userMessages.rpc.notConnected')],
   [(_code, text) => text.trim() === 'launch_credentials_unavailable', () => t('userMessages.rpc.launchCredentialsChanged')],
   [(_code, text) => TIMED_OUT_RE.exec(text), m => t('userMessages.rpc.timedOut', m?.[1] ?? '?')]

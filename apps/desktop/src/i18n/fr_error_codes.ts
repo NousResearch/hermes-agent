@@ -8,6 +8,10 @@ export const frErrorCodes: Partial<ThreadCopy['errorCodes']> = {
     title: 'Cette conversation appartient à une tâche planifiée',
     body: 'Elle n’exécute que cette tâche ; votre message n’a donc pas été exécuté. Démarrez une nouvelle conversation pour l’envoyer.'
   },
+  session_read_only: {
+    title: 'Cette conversation est en lecture seule',
+    body: 'C’est un historique enregistré que Hermes peut afficher mais pas poursuivre ; votre message n’a donc pas été exécuté. Démarrez une nouvelle conversation pour l’envoyer.'
+  },
   workspace_unavailable: {
     title: 'Le dossier de cette conversation a disparu',
     body: "Le dossier dans lequel travaille cette conversation a été déplacé ou supprimé ; votre message n'a donc pas été exécuté. Recréez le dossier ou utilisez « Déplacer vers un projet » pour lui en attribuer un autre, puis réessayez."

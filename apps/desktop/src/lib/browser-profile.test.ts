@@ -64,6 +64,18 @@ it('persists the default separately from the active chat and synchronizes only t
   expect(changed).not.toHaveBeenCalled()
 })
 
+it('records a live profile pick in the URL without dropping the router entry state', async () => {
+  const entry = { idx: 3, key: 'entry', usr: { from: 'sidebar' } }
+  window.history.replaceState(entry, '', '/hermes?profile=active#/session-1')
+  expect(installBrowserDesktopBridge()).toBe(true)
+
+  await window.hermesDesktop.profile.remember('work')
+
+  expect(new URLSearchParams(window.location.search).get('profile')).toBe('work')
+  expect(window.location.hash).toBe('#/session-1')
+  expect(window.history.state).toEqual(entry)
+})
+
 it('opens the requested profile on this host without carrying another session or spectator flags', async () => {
   // A gated host opens the window directly; a launch-link tab hands it a session first.
   bootstrap.__HERMES_AUTH_REQUIRED__ = true

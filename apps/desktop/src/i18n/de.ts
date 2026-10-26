@@ -464,6 +464,7 @@ export const deOverrides = {
       microphoneConstraintsUnsupported: 'Mikrofon-Einschränkungen werden von diesem Gerät nicht unterstützt.',
       microphoneFailed: 'Mikrofon fehlgeschlagen',
       microphoneInUse: 'Das Mikrofon wird bereits von einer anderen App verwendet.',
+      microphoneNeedsHttps: 'Das Mikrofon braucht eine sichere Verbindung. Öffne die Webapp über HTTPS oder über einen SSH-Tunnel zu 127.0.0.1, um es zu nutzen.',
       microphonePermissionDenied: 'Die Mikrofonberechtigung wurde verweigert.',
       microphoneStartFailed: 'Mikrofonaufnahme konnte nicht gestartet werden.',
       microphoneUnsupported: 'Diese Laufzeitumgebung unterstützt keine Mikrofonaufnahme.',
@@ -3204,6 +3205,7 @@ export const deOverrides = {
     exported: 'Profil exportiert',
     failedImport: 'Profil konnte nicht importiert werden',
     failedExport: 'Profil konnte nicht exportiert werden',
+    exportNeedsHost: name => `Der Browser kann kein Profilarchiv speichern. Führe auf dem Hermes-Host aus: hermes profile export ${name}`,
     allProfiles: 'Alle Profile',
     showAllProfiles: 'Alle Profile anzeigen',
     switchToProfile: name => `Zu ${name} wechseln`,
@@ -4616,6 +4618,7 @@ export const deOverrides = {
     }
   },
   rightSidebar: {
+    terminalDropUnquotable: (shell, paths) => `Diese Namen lassen sich in ${shell} nicht sicher eintippen: ${paths}`,
     aria: 'Rechte Sidebar',
     panelsAria: 'Panels der rechten Sidebar',
     files: 'Dateisystem',
@@ -5413,6 +5416,7 @@ export const deOverrides = {
     imageAttach: 'Bild anhängen',
     imageWriteFailed: 'Bild konnte nicht auf die Festplatte geschrieben werden.',
     imageAttachFailed: 'Bild-Anhängen fehlgeschlagen',
+    attachFailed: 'Anhängen fehlgeschlagen',
     pastedContent: 'Eingefügter Inhalt',
     pasteAttachFailed: 'Eingefügter Text konnte nicht angehängt werden',
     attachImages: 'Bilder anhängen',
@@ -5420,6 +5424,7 @@ export const deOverrides = {
     noClipboardImage: 'Kein Bild in der Zwischenablage',
     clipboardPasteFailed: 'Zwischenablage-Einfügen fehlgeschlagen',
     dropFiles: 'Dateien ablegen',
+    dropFilesMore: (count: number) => `und ${count} weitere`,
     handoff: {
       pickPlatform: 'Ziel wählen',
       success: platform => `Übergeben an ${platform}. Jederzeit hier fortsetzen.`,

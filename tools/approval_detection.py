@@ -459,15 +459,10 @@ DANGEROUS_PATTERNS = [
     (r'\bgit\s+branch\b[^;|&\n]*?(?:-f\b|--force\b)[^;|&\n]*?(?:-d\b|--delete\b)', "git branch force delete (long flags, force-first)"),
     # chmod +x then immediate run: the script content may hold dangerous commands individual patterns miss.
     (r'\bchmod\s+\+x\b.*[;&|]+\s*\./', "chmod +x followed by immediate execution"),
-    # Sudo stdin/askpass/shell/list-privs flags. The agent has no TTY, so sudo invocations that succeed
-    # non-interactively read the password from stdin (-S) or askpass (-A); -s (shell) and -a (list) are gated as
-    # privilege chains (read SUDO_PASSWORD from .env -> sudo -S -s). Plain `sudo cmd` is TTY-bound and excluded. Input
-    # is lowercased, so S/s and A/a collapse. Lazy `[^;|&\n]*?` allows flag args without spanning separators. sudo
-    # resolves unambiguous long-flag prefixes: `--stdin` is the only long option starting with "st", `--askpass` the
-    # only one starting with "a".
-    (r'\bsudo\b[^;|&\n]*?\s+(?:-s\b|--st[a-z]*\b|-a\b|--a[a-z]*\b)', "sudo with privilege flag (stdin/askpass/shell/list)"),
-    # Combined short-flag form (-nS, -sa, -las).
-    (r'\bsudo\b[^;|&\n]*?\s+-[a-z]*[sa][a-z]*\b', "sudo with combined-flag privilege escalation"),
+    # Sudo stdin/askpass/shell/list-privs flags are NOT a regex rule: they are parsed positionally
+    # in `_sudo_flag_findings()`. A text rule could not tell sudo's own flag from the wrapped
+    # command's (`sudo -n hubctl ps -a` is ps's `-a`), and bounding the scan with a regex
+    # backtracked badly on long option runs.
     # Package-manager uninstall commands can remove installed software outside
     # the current project (notably `npm uninstall -g`). Treat their destructive
     # subcommands like other state-removing operations while leaving installs
@@ -1020,6 +1015,64 @@ def _execution_flag_findings(command: str):
                         yield (f"arbitrary program execution via {executable_name} {finding[0]}", finding[1])
 
 
+def _sudo_own_flag(args: list) -> str | None:
+    """Description of the first privilege-relevant flag in sudo's OWN option run, else ``None``.
+
+    The walk stops at the command word: everything after it is the wrapped command's argv, so
+    `ps -a` / `ls -la` are not sudo's ``-a``/``--askpass``/``--stdin``. Options that take an
+    operand consume it (``-u root``, ``--close-from 3``, or the glued ``-uroot``) so the operand
+    is never read as a flag. Long options resolve by prefix, matching sudo: ``--stdin`` is the only
+    one starting with ``st``, ``--askpass`` the only one starting with ``a`` (``--set-home`` and
+    ``--shell`` must stay out). Input is already lowercased, so ``-S``/``-s`` and ``-A``/``-a``
+    collapse — an agent with no TTY can only use the non-interactive ones.
+    """
+    index = 0
+    while index < len(args):
+        raw = args[index]
+        if raw == "--":
+            return None
+        if not raw.startswith("-"):
+            return None
+        token = raw.lower()
+        name, equals, _ = token.partition("=")
+        raw_name = raw.partition("=")[0]
+        if name in ("-s", "-a") or name.startswith("--st") or name.startswith("--a"):
+            return "sudo with privilege flag (stdin/askpass/shell/list)"
+        # Combined short flags (-nS, -sa, -las): one -X token packing a privileged letter. A glued
+        # operand (`-ujsmith`) is checked first, so a username containing "s" is not a flag.
+        glued = len(raw_name) > 2 and raw_name[:2] in _SUDO_OPTIONS_WITH_ARG
+        if not glued and not name.startswith("--") and any(ch in name[1:] for ch in "sa"):
+            return "sudo with combined-flag privilege escalation"
+        # The operand table is case-sensitive on purpose: -H (set-HOME) is not -h (--host), and
+        # reading -H as a value-taking option swallowed the real flag that followed it.
+        if not equals and raw_name in _SUDO_OPTIONS_WITH_ARG:
+            index += 2
+            continue
+        index += 1
+    return None
+
+
+def _sudo_flag_findings(command: str):
+    """Yield the sudo privilege-flag finding for every ``sudo`` in a top-level segment.
+
+    Token scanning (not command-position scanning) is deliberate: a wrapper in front
+    (`timeout 5 sudo -s`, `env X=1 sudo -S`) puts sudo in argument position, and the gate must
+    still see its flag. The walk stops at sudo's first non-flag token, so `grep sudo file` and
+    `which sudo` stay silent.
+    """
+    for segment in _iter_top_level_shell_segments(command):
+        tokens = _shell_segment_tokens(segment, 0)
+        if not tokens:
+            continue
+        for position, token in enumerate(tokens[:-1]):
+            if os.path.basename(_deobfuscate_shell_word_for_detection(token)).lower() != "sudo":
+                continue
+            finding = _sudo_own_flag(tokens[position + 1:])
+            if finding:
+                yield finding
+            break
+
+
 def _skip_shell_whitespace(command: str, pos: int) -> int:
     while pos < len(command) and command[pos].isspace():
         pos += 1
@@ -1552,7 +1605,11 @@ def detect_dangerous_command(command: str) -> tuple:
     if _is_verification_artifact_cleanup(command):
         return (False, None, None)
     for command_variant in _command_detection_variants(command):
+        if not command_variant:
+            continue
         command_lower = _lower_preserving_flags(command_variant)
+        for description in _sudo_flag_findings(command_variant):
+            return (True, description, description)
         masked_lower: str | None = None
         for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
             if description in _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS:

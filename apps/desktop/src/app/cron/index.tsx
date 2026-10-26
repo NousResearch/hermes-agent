@@ -906,7 +906,9 @@ function CronJobDetail({
   stopping
 }: CronJobDetailProps) {
   const state = runLive ? 'running' : jobState(job)
-  const isPaused = state === 'paused'
+  // The pill shows the live run; Pause/Resume acts on the saved schedule state, which a running
+  // paused job still has (handlePauseResume reads jobState too).
+  const isPaused = jobState(job) === 'paused'
   const deliver = jobDeliver(job)
   const prompt = jobPrompt(job)
   const scriptOnly = jobIsScriptOnly(job)

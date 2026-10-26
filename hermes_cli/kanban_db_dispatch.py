@@ -59,6 +59,18 @@ KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS = 30
 # (two default dispatch ticks).
 TERMINAL_WORKER_REAP_GRACE_SECONDS = 120
 
+# Cooldown after a rate-limited (quota-wall) requeue before re-spawning. Without
+# it the task would re-spawn on the very next tick and bounce off the same quota
+# wall, burning a worker slot every tick for hours. Overridable via
+# ``HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS``.
+#
+# Stays in the facade rather than travelling with the respawn guard in
+# ``kanban_db_dispatch_respawn``: ``kanban_db`` imports it back from here while
+# this module's bottom-of-file sibling imports are still pending, so the name has
+# to exist before them or the cycle bites whichever import runs first.
+DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
+
+
 @dataclass
 class DispatchResult:
     """Outcome of a single ``dispatch`` pass.
@@ -2606,10 +2618,8 @@ from hermes_cli.kanban_db_dispatch_spawn import (
 # The respawn guard lives in the topical sibling (evidence attribution, cooldowns
 # and the lane exemptions are one concern); re-exported here so
 # ``kanban_db_dispatch.check_respawn_guard`` — called by ``dispatch_once`` and
-# patched by tests — and ``DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS``, imported by
-# ``kanban_db``, keep resolving through the facade.
+# patched by tests — keeps resolving through the facade.
 from hermes_cli.kanban_db_dispatch_respawn import (
-    DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS,
     _GUARD_TIME_COLS,
     _RESPAWN_BLOCKER_RE,
     _RESPAWN_GUARD_PR_URL_RE,

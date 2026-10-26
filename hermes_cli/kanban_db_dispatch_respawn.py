@@ -55,12 +55,6 @@ _RESPAWN_SUPERSEDING_OUTCOMES = frozenset({"completed", "review_requested", "cha
 # Within this window a completed run counts as "recent proof"; don't re-spawn.
 _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 
-# Cooldown after a rate-limited (quota-wall) requeue before re-spawning. Without
-# it the task would re-spawn on the very next tick and bounce off the same quota
-# wall, burning a worker slot every tick for hours. Overridable via
-# ``HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS``.
-DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
-
 # Within this window a GitHub PR URL in a comment blocks re-spawn.
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
 

@@ -445,9 +445,6 @@ class AuthorityConnection:
         if type(hidden) is not bool:
             raise RuntimeStoreError('invalid_params', field='hidden', detail='must be a boolean')
         ref = title and resolve_titled_session(self.authority, self.actor, title, missing_ok=True)
-        if not ref and title == 'Bot Chat':
-            from gateway.session_bot import move_aside_superseded_bot_chat
-            await move_aside_superseded_bot_chat(self.authority)
         if (not ref and title == 'Bot Chat'
                 and not any(params.get(name) is True for name in BYPASS_FIELDS)
                 and staged_creation_follows(self.authority, self.actor, params.get('request_id'))):
@@ -483,6 +480,10 @@ class AuthorityConnection:
                 from hermes_state_local import local_receipt
                 policy = restore_policy(local_receipt(self.authority.db, ref.session_id)['policy'])
                 await asyncio.to_thread(accept_launch_hooks, policy)
+            if title == 'Bot Chat':
+                # Only once the replacement is committed: a refused create leaves the old chat as it was.
+                from gateway.session_bot import move_aside_superseded_bot_chat
+                await move_aside_superseded_bot_chat(self.authority)
             if title:
                 await tracked_write(self.authority, partial(title_new_session, self.authority, ref, title))
             if hidden:

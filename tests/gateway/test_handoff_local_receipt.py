@@ -163,6 +163,10 @@ async def test_a_handed_off_bot_chat_whose_lane_moved_on_is_moved_aside(tmp_path
     assert resolve_titled_session(cold, owner, 'Bot Chat', missing_ok=True) is None
     if door == 'Desktop create':
         connection = AuthorityConnection(cold, object(), {'user_id': owner.subject})
+        with pytest.raises(RuntimeStoreError):  # a refused create leaves the old chat as it was
+            await connection.create(None, {'title': 'Bot Chat', 'request_id': 'bot-chat-bad', 'source': 'gui',
+                                           'cwd': str(tmp_path / 'missing'), 'model': 'frozen', 'toolsets': []})
+        assert cold.db.get_session_by_title('Bot Chat')['id'] == ref.session_id
         opened = await connection.create(None, {'title': 'Bot Chat', 'request_id': 'bot-chat-2', 'source': 'gui',
                                                 'cwd': str(tmp_path), 'model': 'frozen', 'toolsets': [], 'hidden': True})
         fresh = opened['session_id']

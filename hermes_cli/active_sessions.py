@@ -290,7 +290,7 @@ def _registry_key(path: Path) -> str:
 
 def mark_release_queued(lease: ActiveSessionLease) -> None:
     """Retire ``lease`` from this process's view of the registry now; its file write comes later."""
-    if not lease.enabled or lease.released:
+    if not isinstance(lease, ActiveSessionLease) or not lease.enabled or lease.released:
         return
     state_path, _ = _lease_paths(lease)
     with _queued_releases_lock:

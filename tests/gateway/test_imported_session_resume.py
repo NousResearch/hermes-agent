@@ -154,3 +154,92 @@ def test_validate_legacy_row_still_refuses_routed_and_foreign_import_labels(tmp_
         validate_legacy_row(db, _imported_row())
     finally:
         db.close()
+
+
+def _sidebar_db_row(db, sid="imported-1", **over):
+    """A real row in the shape the importer writes, plus any columns *over* names."""
+    db.create_session(sid, source="claude-code")
+    values = {"origin_json": json.dumps({"imported_from": {
+        "tool": "claude-code", "path": "/tmp/abc-123.jsonl", "foreign_session_id": "abc-123"}}), **over}
+    columns = ", ".join(f"{name}=?" for name in values)
+    db._execute_write(lambda conn: conn.execute(
+        f"UPDATE sessions SET {columns} WHERE id=?", (*values.values(), sid)))
+
+
+def _sidebar_connection(db, subject="owner"):
+    from gateway.session_authority import SessionAuthority
+    from gateway.session_controls import AuthorityConnection
+    from hermes_state_runtime import begin_runtime_epoch
+
+    epoch = begin_runtime_epoch(db, instance_id="current")
+    authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id="owned",
+                                instance_id="current", db=db, epoch=epoch)
+    return AuthorityConnection(authority, object(), {
+        "user_id": subject,
+        "capabilities": ["session:create", "session:read", "session:submit", "session:control"]})
+
+
+async def _mutate(connection, db, sid, operation, payload, request_id):
+    revision = (db.get_session(sid) or {})["runtime_revision"]
+    return await connection.dispatch({"id": 1, "method": "session.mutate", "params": {
+        "session_id": sid, "request_id": request_id,
+        "expected_revision": revision,
+        "operation": operation, "payload": payload}})
+
+
+@pytest.mark.asyncio
+async def test_a_sidebar_edit_reaches_an_imported_row_without_routing_it(tmp_path):
+    """Pin/rename/archive name an imported row directly, instead of mounting a route it has none of.
+
+    The Desktop sidebar lists an imported transcript, but every edit answered ``not_found``: the
+    history gate vetoes any row carrying ``origin_json``, so the mutation fell through to the
+    mount path, where a routeless imported row is neither a route nor an API binding (#142105).
+    """
+    from hermes_state import SessionDB
+    from hermes_state_local_migration import validate_legacy_row
+
+    with SessionDB(db_path=tmp_path / "state.db") as db:
+        _sidebar_db_row(db)
+        connection = _sidebar_connection(db)
+        try:
+            renamed = await _mutate(connection, db, "imported-1", "rename",
+                                    {"title": "Renamed imported chat"}, "rename-1")
+            assert renamed["result"]["title"] == "Renamed imported chat", renamed
+            archived = await _mutate(connection, db, "imported-1", "archive",
+                                     {"archived": True}, "archive-1")
+            assert archived["result"]["archived"] is True, archived
+            # The sidebar's pin travels as the shared ``sidebar`` operation.
+            pinned = await _mutate(connection, db, "imported-1", "sidebar", {"pinned": True}, "sidebar-1")
+            assert pinned["result"]["pinned"] is True, pinned
+        finally:
+            await connection.close()
+        row = db.get_session("imported-1") or {}
+        assert (row["title"], row["archived"], row["pinned"]) == ("Renamed imported chat", 1, 1)
+        # A sidebar edit is not a route: nothing the importer wrote was rewritten, so the row
+        # still adopts through resume exactly as it did before the edit.
+        assert (row["session_key"], row["chat_id"], row["source"]) == (None, None, "claude-code")
+        validate_legacy_row(db, row)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape,reason", [
+    # A canonical writer already routed the row: the import veto keeps winning.
+    ({"session_key": "agent:main:cli:dm:imported-1"}, "not_found"),
+    # A login owns the row: provenance is not ownership.
+    ({"user_id": "basic:someone-else"}, "permission_denied"),
+    # A local surface label carrying the same stamp is not an imported row (stale metadata).
+    ({"source": "cli"}, "not_found"),
+])
+async def test_sidebar_edits_stay_refused_outside_the_importer_shape(tmp_path, shape, reason):
+    """Only the row the importer itself writes gains the sidebar lane."""
+    from hermes_state import SessionDB
+
+    with SessionDB(db_path=tmp_path / "state.db") as db:
+        _sidebar_db_row(db, **shape)
+        connection = _sidebar_connection(db)
+        try:
+            reply = await _mutate(connection, db, "imported-1", "rename", {"title": "Nope"}, "rename-1")
+        finally:
+            await connection.close()
+        assert reply["error"]["message"] == reason, reply
+        assert (db.get_session("imported-1") or {}).get("title") is None

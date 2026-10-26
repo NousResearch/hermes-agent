@@ -136,11 +136,13 @@ def test_named_tools_leave_the_request_and_join_the_catalog(deferred):
 
 def test_deferred_tools_are_grouped_under_their_plugin(deferred):
     agent, _, _ = deferred
+    # One-tool groups render as headless lines, so the owning plugin shows in search results.
     listing = _listing(agent)
-    assert "stub tools (1):" in listing and "stub-memory tools (1):" in listing
-    assert "\nother" not in listing
-    (search,) = _run(agent, _call("tool_search", {"queries": ["stub memory search"]}))
-    assert json.loads(search)["tools"]["stub_memory_search"]["source_name"] == "stub-memory"
+    assert "- stub_recall: Recall" in listing and "- stub_memory_search: Search memory" in listing
+    (search,) = _run(agent, _call("tool_search", {"queries": ["stub memory search", "stub recall"]}))
+    found = json.loads(search)["tools"]
+    assert found["stub_memory_search"]["source_name"] == "stub-memory"
+    assert found["stub_recall"]["source_name"] == "stub"
 
 
 def test_unnamed_tools_stay_loaded(build_agent, monkeypatch):

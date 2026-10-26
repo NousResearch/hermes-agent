@@ -294,14 +294,14 @@ def _accepted_consent_content(schema: dict) -> Optional[dict]:
 
 
 class ElicitationHandler:
-    """``elicitation_callback`` for one MCP server. Form-mode routes through Hermes' approval system
-    (CLI, TUI, Telegram, ...); URL-mode is declined. Fail-closed: any timeout, exception or unexpected
-    state returns decline/cancel, never a silent accept."""
+    """``elicitation_callback`` for one MCP server. Form-mode asks the user for the requested fields on
+    the agent's own surface (CLI, TUI, Desktop, messaging); URL-mode is declined. Fail-closed: any
+    timeout, exception or unexpected state returns decline/cancel, never a silent accept."""
 
     # asyncio-side safety net over the approval's own input() timeout so the MCP loop never blocks
     # indefinitely if the inner timeout is bypassed.
     _OUTER_TIMEOUT_GRACE_SECONDS = 5
-    # consent answer -> (ElicitResult action, metric); anything else declines.
+    # answer -> (ElicitResult action, metric); anything else declines.
     _ANSWER_RESULTS = {"accept": ("accept", "accepted"), "cancel": ("cancel", "errors")}
 
     def __init__(self, server_name: str, config: dict,
@@ -328,27 +328,46 @@ class ElicitationHandler:
         self.metrics[metric] += 1
         return _core.ElicitResult(action=action, **({"content": content or {}} if action == "accept" else {}))
 
-    def _consent_thunk(self, message: str, description: str) -> Callable[[], str]:
-        """Sync consent call replaying the agent's contextvars snapshot when the owning task captured one
-        (the recv-loop task does NOT inherit them; gateway-platform detection needs them) and installing
-        the captured per-thread prompt callbacks for the duration (the executor thread has none of its
-        own). ``Context.run`` runs a context once, so it is copied per elicitation."""
-        from tools.approval_prompt import request_elicitation_consent
-
-        consent = functools.partial(request_elicitation_consent, message, description,
-                                    timeout_seconds=int(self.timeout), surface=f"mcp-elicitation/{self.server_name}")
+    def _on_turn_thread(self, fn: Callable[[], object]) -> Callable[[], object]:
+        """*fn* replaying the agent's contextvars snapshot when the owning task captured one (the
+        recv-loop task does NOT inherit them; gateway-platform detection and the bound form asker need
+        them) and installing the captured per-thread prompt callbacks for the duration (the executor
+        thread has none of its own). ``Context.run`` runs a context once, so it is copied per call."""
         captured, installs = self._call_context(), self._call_callbacks()
 
-        def _invoke() -> str:
+        def _invoke():
             for setter, cb in installs:
                 setter(cb)
             try:  # executor threads are reused: never leak an install past this call
-                return consent() if captured is None else captured.copy().run(consent)
+                return fn() if captured is None else captured.copy().run(fn)
             finally:
                 for setter, _cb in installs:
                     setter(None)
 
-        return _invoke if (captured is not None or installs) else consent
+        return _invoke
+
+    def _ask(self, message: str, schema: dict):
+        """Collect the answer on the agent's own surface: the form through the turn's clarify callback
+        when one is bound and a user can answer, else the yes/no approval prompt (headless sessions
+        decline there) with the consent content that answer can honestly fill."""
+        from tools import approval_context as _ctx
+        from tools.approval_prompt import request_elicitation_consent
+        from tools.mcp_elicitation_form import FormOutcome, ask_form, current_form_asker
+
+        asker = current_form_asker()
+        if asker is not None and not _ctx._no_user_can_answer():
+            return ask_form(asker, self.server_name, message, schema)
+        answer = request_elicitation_consent(message, _format_elicitation_schema_summary(schema, self.server_name),
+                                             timeout_seconds=int(self.timeout),
+                                             surface=f"mcp-elicitation/{self.server_name}")
+        if answer != "accept":
+            return FormOutcome("cancel" if answer == "cancel" else "decline")
+        content = _accepted_consent_content(schema)
+        if content is None:
+            logger.warning("MCP server '%s' elicitation requires form input this surface cannot collect; "
+                           "declining", self.server_name)
+            return FormOutcome("decline")
+        return FormOutcome("accept", content)
 
     async def __call__(self, context, params):
         """SDK elicitation callback (``ElicitationFnT``). Returns ElicitResult or ErrorData."""
@@ -363,26 +382,15 @@ class ElicitationHandler:
         # access) — read both or the user approves without seeing the fields.
         schema = getattr(params, "requestedSchema", None) or getattr(params, "requested_schema", None) or {}
         logger.info("MCP server '%s' elicitation request: %s", self.server_name, _sanitize_error(message)[:200])
-        try:  # lazy import inside avoids import-order coupling with early-bootstrap tools.approval
-            invoke_consent = self._consent_thunk(message, _format_elicitation_schema_summary(schema, self.server_name))
-        except Exception as exc:  # pragma: no cover -- defensive
-            logger.error("MCP server '%s' elicitation: approval system unavailable: %s", self.server_name, exc)
-            return self._result("decline", "errors")
-        try:  # off-thread: inline, the sync consent flow would freeze the MCP loop and every RPC on it
-            answer = await asyncio.wait_for(
-                asyncio.to_thread(invoke_consent), timeout=self.timeout + self._OUTER_TIMEOUT_GRACE_SECONDS)
+        ask = self._on_turn_thread(functools.partial(self._ask, message, schema))
+        try:  # off-thread: inline, the sync prompt would freeze the MCP loop and every RPC on it
+            outcome = await asyncio.wait_for(
+                asyncio.to_thread(ask), timeout=self.timeout + self._OUTER_TIMEOUT_GRACE_SECONDS)
         except TimeoutError:
             logger.warning("MCP server '%s' elicitation timed out after %ds", self.server_name, int(self.timeout))
             return self._result("cancel", "errors")
         except Exception as exc:
             logger.error("MCP server '%s' elicitation failed: %s", self.server_name, exc, exc_info=True)
             return self._result("decline", "errors")
-        action, metric = self._ANSWER_RESULTS.get(answer, ("decline", "declined"))
-        if action != "accept":
-            return self._result(action, metric)
-        content = _accepted_consent_content(schema)
-        if content is None:
-            logger.warning("MCP server '%s' elicitation requires form input that Hermes' binary "
-                           "approval surface cannot collect; declining", self.server_name)
-            return self._result("decline", "declined")
-        return self._result("accept", metric, content)
+        action, metric = self._ANSWER_RESULTS.get(outcome.action, ("decline", "declined"))
+        return self._result(action, metric, outcome.content)

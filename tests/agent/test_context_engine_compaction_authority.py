@@ -126,3 +126,94 @@ def test_explicit_declaration_overrides_inference():
         compacts_outside_compress = 1
 
     assert engine_compacts_outside_compress(_AutoAttributeEngine())[0] is True
+
+
+# --- Init refuse at the engine slot (agent_init._build_context_engine) ---------------
+
+
+def _init_agent_with_engine(engine, *, checkpoint_required: bool):
+    """A real AIAgent init with ``engine`` in the slot (harness of test_plugin_context_engine_init)."""
+    from unittest.mock import patch
+
+    cfg = {"context": {"engine": "stub"}, "compression": {"checkpoint_required": checkpoint_required}, "agent": {}}
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("hermes_cli.config.load_config_readonly", return_value=cfg),
+        patch("plugins.context_engine.load_context_engine", return_value=engine),
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        return AIAgent(
+            api_key="test-key-1234567890", base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True, skip_context_files=True, skip_memory=True,
+        )
+
+
+def test_refuse_covers_uninterceptable_engines_and_permits_the_rest():
+    """A waiver, a gate that is off and an empty slot stay permitted."""
+    import pytest
+
+    from agent.conversation_compression_checkpoint import _refuse_checkpoint_required_on_plugin_context_engine as refuse
+
+    compress_only, turn_complete = _engine_stubs()
+    # The resolver's reason survives into the operator-facing text.
+    with pytest.raises(RuntimeError, match="BLOCKED_MISSING_PREREQUISITE.*on_turn_complete"):
+        refuse(True, turn_complete())
+
+    class _DeclaredObserver(turn_complete):
+        compacts_outside_compress = False
+
+    refuse(True, _DeclaredObserver())
+    refuse(True, compress_only())
+    refuse(True, None)
+    refuse(False, turn_complete())
+
+
+def test_init_refuses_an_uninterceptable_engine_before_the_slot_is_assigned():
+    """Only a real init observes the ordering: the refuse reads the local config value, the
+    agent attribute is assigned after the engine slot. Negative probe (by hand, reverted):
+    reading ``agent.compression_checkpoint_required`` there fails only this test."""
+    import pytest
+
+    _compress_only, turn_complete = _engine_stubs()
+    with pytest.raises(RuntimeError, match="BLOCKED_MISSING_PREREQUISITE"):
+        _init_agent_with_engine(turn_complete(), checkpoint_required=True)
+    # Gate off: the same engine initializes (control).
+    engine = turn_complete()
+    assert _init_agent_with_engine(engine, checkpoint_required=False).context_compressor is engine
+
+
+def test_compress_only_engine_still_initializes_with_gate_armed():
+    """The compress()-only third-party shape (lcm) keeps initializing under the gate."""
+    compress_only, _turn_complete = _engine_stubs()
+    engine = compress_only()
+    agent = _init_agent_with_engine(engine, checkpoint_required=True)
+
+    assert agent.context_compressor is engine
+    assert agent.compression_checkpoint_required is True
+    # Fully configured, not merely unrefused (#9071 ordering).
+    assert engine.context_length == 204_800
+
+
+def test_refuse_message_survives_a_hostile_name_property():
+    """The diagnosis names the class: ``engine.name`` is an abstract property whose raising
+    getter would replace it."""
+    import pytest
+
+    from agent.conversation_compression_checkpoint import _refuse_checkpoint_required_on_plugin_context_engine as refuse
+
+    _compress_only, turn_complete = _engine_stubs()
+
+    class _HostileNameEngine(turn_complete):
+        @property
+        def name(self) -> str:
+            raise RuntimeError("name getter exploded")
+
+    with pytest.raises(RuntimeError, match="BLOCKED_MISSING_PREREQUISITE") as excinfo:
+        refuse(True, _HostileNameEngine())
+    assert "_HostileNameEngine" in str(excinfo.value)
+    assert "name getter exploded" not in str(excinfo.value)

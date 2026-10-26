@@ -2,7 +2,8 @@
 
 The refusal type, its remediation text and the startup warning for
 ``compression.checkpoint_required`` (``conversation_compression`` re-exports the refusal
-helpers), plus the record for lossy authorities outside compression the armed gate withholds.
+helpers), the init refusals for compaction authorities no checkpoint can precede, and the
+record for lossy authorities outside compression the armed gate withholds.
 """
 
 from __future__ import annotations
@@ -91,6 +92,45 @@ def _warn_checkpoint_required_without_capable_provider(agent: Any) -> None:
         _active_memory_provider_label(agent),
         PRE_COMPRESS_CHECKPOINT_API_VERSION,
         _CHECKPOINT_REQUIRED_REMEDIATION,
+    )
+
+
+def _refuse_checkpoint_required_on_codex_app_server(checkpoint_required: bool, api_mode: str | None) -> None:
+    """Fail closed at init: the codex app-server compacts its own thread without a truthful
+    pre-compaction boundary (default "native" mode), so a required checkpoint can't be
+    guaranteed — the compress_context() guard alone cannot cover native turns."""
+    if checkpoint_required and api_mode == "codex_app_server":
+        raise RuntimeError(
+            "BLOCKED_MISSING_PREREQUISITE: compression.checkpoint_required "
+            "is incompatible with the codex_app_server API mode: the codex "
+            "agent compacts its own thread without a truthful pre-compaction "
+            "transcript boundary, so a required pre-compress checkpoint "
+            "cannot be guaranteed. Disable compression.checkpoint_required "
+            "or use a non-app-server API mode."
+        )
+
+
+def _refuse_checkpoint_required_on_plugin_context_engine(checkpoint_required: bool, engine: Any) -> None:
+    """Fail closed at init when a plugin context engine may compact where no checkpoint runs.
+
+    ``compress()`` is dispatched right after ``on_pre_compress()``; an engine compacting from
+    ``on_turn_complete()`` or its own scheduler never crosses that seam. Refused before the
+    engine slot is assigned, so the operator sees the incompatibility before a turn exists.
+    """
+    if checkpoint_required is not True:
+        return
+    from agent.context_engine import engine_compacts_outside_compress
+
+    unsafe, reason = engine_compacts_outside_compress(engine)
+    if not unsafe:
+        return
+    # Class name, not ``engine.name``: an abstract property on an object the resolver just
+    # declined to trust; a raising getter would replace the diagnosis.
+    raise RuntimeError(
+        "BLOCKED_MISSING_PREREQUISITE: compression.checkpoint_required is incompatible with "
+        f"context engine '{type(engine).__name__}': {reason}. An engine whose only lossy "
+        "authority is compress() may declare compacts_outside_compress = False; otherwise "
+        "disable compression.checkpoint_required or use the built-in compressor."
     )
 
 

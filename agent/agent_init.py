@@ -239,23 +239,6 @@ def _normalize_run_budget_seconds(value) -> Optional[float]:
 
 
 
-def _refuse_checkpoint_required_on_codex_app_server(
-    checkpoint_required: bool, api_mode: Optional[str]
-) -> None:
-    """Fail closed at init: the codex app-server compacts its own thread without a truthful
-    pre-compaction boundary (default "native" mode), so a required checkpoint can't be
-    guaranteed — the compress_context() guard alone cannot cover native turns."""
-    if checkpoint_required and api_mode == "codex_app_server":
-        raise RuntimeError(
-            "BLOCKED_MISSING_PREREQUISITE: compression.checkpoint_required "
-            "is incompatible with the codex_app_server API mode: the codex "
-            "agent compacts its own thread without a truthful pre-compaction "
-            "transcript boundary, so a required pre-compress checkpoint "
-            "cannot be guaranteed. Disable compression.checkpoint_required "
-            "or use a non-app-server API mode."
-        )
-
-
 def _parse_config_int(raw: Any, default: int) -> int:
     """Strict int coercion: rejects bool (YAML ``true`` → 1) and fractional floats."""
     if isinstance(raw, bool):
@@ -1440,9 +1423,8 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
     # legitimate "system prompt + summary + tail".
     protect_first = max(0, int(cfg.get("protect_first_n", 3)))
     checkpoint_required = is_truthy_value(cfg.get("checkpoint_required"), default=False)
-    _refuse_checkpoint_required_on_codex_app_server(
-        checkpoint_required, getattr(agent, "api_mode", None)
-    )
+    from agent.conversation_compression_checkpoint import _refuse_checkpoint_required_on_codex_app_server
+    _refuse_checkpoint_required_on_codex_app_server(checkpoint_required, getattr(agent, "api_mode", None))
     app_server_auto, responses_native, compact_threshold = _compression_codex_settings(cfg)
     # Opt-in idle compaction: compact up front when a session resumes after this many
     # seconds idle (0 = disabled). Consumed by build_turn_context().
@@ -1873,6 +1855,8 @@ def _compressor_max_tokens(agent):
 def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_context_length, session_db):
     _selected_engine = _select_context_engine(_agent_cfg)
     if _selected_engine is not None:
+        from agent.conversation_compression_checkpoint import _refuse_checkpoint_required_on_plugin_context_engine
+        _refuse_checkpoint_required_on_plugin_context_engine(cs.checkpoint_required, _selected_engine)
         agent.context_compressor = _selected_engine
         # External engines own compaction policy — the host threshold (and its Codex
         # autoraise) never reaches the plugin, so drop the notice.

@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 
+import psutil
 import pytest
 
 from hermes_cli import runtime_provider as rp
@@ -66,6 +67,35 @@ def test_config_key_spelling_still_resolves(keyed_provider_config):
     assert rp.canonical_custom_identity(config_provider=PROVIDER_KEY) == CANONICAL
 
 
+def test_requested_identity_keeps_the_live_endpoint_contract(keyed_provider_config):
+    """A requested route still beats a model or configured provider from another endpoint."""
+    keyed_provider_config["providers"]["other"] = {
+        "api": "https://other.invalid/v1", "models": ["other-model"],
+    }
+    assert rp.canonical_custom_identity(
+        base_url=BASE_URL, requested=CANONICAL, config_provider="custom:other", model="other-model",
+    ) == CANONICAL
+    # A stale request whose entry moved cannot send its new credential to the old endpoint.
+    assert rp.canonical_custom_identity(
+        base_url=BASE_URL, requested="custom:other", config_provider="custom:other", model="other-model",
+    ) == CANONICAL
+
+
+def test_delegation_keeps_an_existing_named_runtime():
+    """An explicit current identity inherits its live bundle without catalog re-resolution."""
+    from types import SimpleNamespace
+    from tools.delegate_tool_config import _resolve_delegation_credentials
+
+    parent = SimpleNamespace(
+        provider="custom", requested_provider=CANONICAL, model=MODEL,
+        base_url=BASE_URL, request_overrides={"extra_body": {"route": "live"}},
+    )
+    assert _resolve_delegation_credentials({}, parent) == {
+        "model": None, "provider": None, "base_url": None, "api_key": None, "api_mode": None,
+        "request_overrides": {"extra_body": {"route": "live"}},
+    }
+
+
 def test_all_recovery_sources_agree_on_one_identity(keyed_provider_config):
     """Endpoint, model and configured-provider recovery must not disagree.
 
@@ -109,9 +139,16 @@ def test_managed_endpoint_identity_respects_ownership(
 ):
     """Only a live owned endpoint outranks an unrelated configured model."""
     managed_url = "http://127.0.0.1:18434/v1"
+    process = psutil.Process(os.getpid())
+    owner = process.parent()
+    assert owner is not None
     state_file = tmp_path / "server.json"
     state_file.write_text(
-        json.dumps({"base_url": managed_url, "pid": os.getpid() if owned else 0}),
+        json.dumps({
+            "base_url": managed_url, "pid": process.pid if owned else 0,
+            "create_time": process.create_time(), "executable": process.exe(),
+            "owner_pid": owner.pid, "owner_create_time": owner.create_time(),
+        }),
         encoding="utf-8",
     )
     monkeypatch.setattr(

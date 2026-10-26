@@ -525,7 +525,9 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         parent_model = str(getattr(parent_agent, "model", "") or "").strip()
         parent_provider = str(getattr(parent_agent, "provider", "") or "").strip()
         parent_base_url = str(getattr(parent_agent, "base_url", "") or "").strip()
-        if parent_provider.lower().startswith("custom"):
+        requested = getattr(parent_agent, "requested_provider", None)
+        has_named_identity = isinstance(requested, str) and requested.strip().lower() not in {"", "custom", "auto"}
+        if parent_provider.lower().startswith("custom") and not has_named_identity:
             try:
                 from hermes_cli.runtime_provider import (
                     canonical_custom_identity,
@@ -555,7 +557,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
                         args=list(runtime.get("args") or []),
                     )
             except Exception as exc:
-                logger.debug("Could not canonicalize inherited custom provider: %s", exc)
+                logger.debug("Could not canonicalize inherited custom provider: %s", exc, exc_info=True)
 
         # Built-ins and genuine ad-hoc endpoints keep the ordinary inheritance path; None
         # overrides are resolved from the parent in _build_child_agent.

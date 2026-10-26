@@ -479,13 +479,21 @@ def _validate_child_output_schema(
     child: Any, result: Dict[str, Any], task_index: int, child_task_id: str, relay_child_text: Any
 ) -> _SchemaOutcome:
     """Validate the final answer against the attached output_schema with ONE bounded retry. Schema-less children (no
-    dict on ``child._delegate_output_schema``) take no branch here so their result entry stays byte-identical."""
+    dict on ``child._delegate_output_schema``) take no branch here so their result entry stays byte-identical.
+    Trusted approval failures are terminal, not schema-repair candidates."""
     _output_schema = getattr(child, "_delegate_output_schema", None)
     if not isinstance(_output_schema, dict):
         return _SchemaOutcome(_output_schema, None, [], 0)
     from tools.delegation_output_schema import build_retry_message, validate_output
     _first_text = result.get("final_response") or ""
     _schema_valid, _schema_errors = validate_output(_first_text, _output_schema)
+    # A gate's fixed stop notice is not an answer to repair. Keep its trusted
+    # failure intact instead of starting another model turn to format it.
+    from agent.approval_outcomes import APPROVAL_OUTCOMES, APPROVAL_OUTCOME_NOTICES
+    outcome = result.get("approval_outcome")
+    if ((result.get("failed") or result.get("error"))
+            and isinstance(outcome, str) and outcome in APPROVAL_OUTCOMES):
+        return _SchemaOutcome(_output_schema, _schema_valid, _schema_errors, 0)
     if _schema_valid or not _first_text.strip() or result.get("interrupted", False):
         return _SchemaOutcome(_output_schema, _schema_valid, _schema_errors, 0)
 
@@ -505,6 +513,14 @@ def _validate_child_output_schema(
         logger.warning("Subagent %d schema-retry turn failed: %s", task_index, _retry_exc)
     if isinstance(_retry_result, dict):
         _retry_text = _retry_result.get("final_response") or ""
+        retry_outcome = _retry_result.get("approval_outcome")
+        if ((_retry_result.get("failed") or _retry_result.get("error"))
+                and isinstance(retry_outcome, str) and retry_outcome in APPROVAL_OUTCOMES):
+            # A repair turn can itself hit a gate. Its stop must reach the parent,
+            # not inherit the first turn's successful completion classification.
+            _retry_text = APPROVAL_OUTCOME_NOTICES[retry_outcome]
+            result.update(failed=True, completed=False, error=_retry_text,
+                          approval_outcome=retry_outcome, turn_exit_reason="approval_" + retry_outcome)
         if _retry_text.strip():
             result["final_response"] = _retry_text
         try:

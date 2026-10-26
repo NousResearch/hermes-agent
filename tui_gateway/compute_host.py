@@ -367,6 +367,11 @@ class ComputeHost:
                 # it. A RAISING _make_agent is the one path where nothing takes it (``owns_db``).
                 session_db = acquire(Path(profile_home) / "state.db")
                 owns_db = True
+            # This child bypasses backend startup; discover before the agent snapshots its tools.
+            from hermes_cli.mcp_startup import ensure_mcp_discovery_before_agent_build
+            ensure_mcp_discovery_before_agent_build(
+                logger=logging.getLogger(__name__), single_query=True,
+                thread_name="compute-host-mcp-discovery")
             agent = server._make_agent(
                 sid, key, session_id=key, model_override=frame.get("model_override"),
                 reasoning_config_override=frame.get("reasoning_config_override"),

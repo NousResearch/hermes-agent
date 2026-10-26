@@ -44,27 +44,36 @@ def _sync_error(reason: str, subject: str, what: str = "the SSH connection") -> 
         reason, retry_hint=f"{subject} failed — verify {what} is healthy, then retry.")
 
 
-def _open_control_dir() -> Path:
-    """Per-user ControlMaster socket dir, short enough for ``sun_path`` (#133436) and proven ours (#80284).
+# A control dir must leave room for ``/<16 hex>.sock`` plus the 17-byte suffix OpenSSH appends to
+# its temporary ControlMaster listener, inside macOS's 103 usable ``sun_path`` bytes (Linux: 107).
+_CONTROL_DIR_MAX_BYTES = 103 - len("/0123456789abcdef.sock") - 17
+_SHORT_TMP_ROOT = "/tmp"  # no-tmp: ok — AF_UNIX sun_path budget; every dir under it is ownership-checked
 
-    OpenSSH appends a 17-byte listener suffix to the ControlPath, so a deep profile scratch TMPDIR
-    overflows the 104/108-byte cap; :func:`socket_safe_tmpdir` falls back to the shared ``/tmp``
-    for those. Roots, best first: ``$XDG_RUNTIME_DIR`` (per-user 0700 tmpfs), then the socket-safe
-    root under a per-uid name. A name that is not a real directory we own (pre-created by another
-    user, or a planted symlink) is refused rather than adopted, so it can neither host nor hijack
-    our master; if every predictable name is squatted, a fresh ``mkdtemp`` dir keeps the backend up."""
-    uid_suffix = f"-{os.getuid()}" if hasattr(os, "getuid") else ""
-    shared_root = Path(socket_safe_tmpdir())
-    candidates = [shared_root / f"hermes-ssh{uid_suffix}"]
+
+def _open_control_dir() -> Path:
+    """Per-user ControlMaster socket dir that fits ``sun_path`` (#133436) and is proven ours (#80284).
+
+    Candidates, best first: ``$XDG_RUNTIME_DIR`` (per-user 0700), then a per-uid name under the
+    socket-safe temp root and under ``/tmp`` (a deep profile scratch TMPDIR does not fit). Those
+    names are predictable and the roots may be shared, so a candidate that is not a real directory
+    we own (pre-created by another user, or a planted symlink) is refused rather than adopted;
+    when every one is squatted, a fresh ``mkdtemp`` dir keeps the backend up."""
+    if not _SSH_MULTIPLEX:  # no Unix-socket ControlMaster; %TEMP% is per-user
+        return Path(ensure_owned_private_dir(Path(tempfile.gettempdir()) / "hermes-ssh"))
+    per_user = f"hermes-ssh-{os.getuid()}"  # windows-footgun: ok — POSIX only (_SSH_MULTIPLEX)
+    roots = list(dict.fromkeys(r for r in (socket_safe_tmpdir(), _SHORT_TMP_ROOT) if os.path.isdir(r)))
+    candidates = [Path(root) / per_user for root in roots]
     xdg = os.environ.get("XDG_RUNTIME_DIR", "")
     if os.path.isabs(xdg) and os.path.isdir(xdg):
         candidates.insert(0, Path(xdg) / "hermes-ssh")
     for candidate in candidates:
+        if len(os.fsencode(candidate)) > _CONTROL_DIR_MAX_BYTES:
+            continue
         try:
             return Path(ensure_owned_private_dir(candidate))
         except OSError as exc:
             logger.warning("SSH: not using control-socket dir %s: %s", candidate, exc)
-    return Path(tempfile.mkdtemp(prefix=f"hermes-ssh{uid_suffix}-", dir=shared_root))
+    return Path(tempfile.mkdtemp(prefix="hssh-", dir=min(roots, key=len)))
 
 
 class SSHEnvironment(BaseEnvironment):

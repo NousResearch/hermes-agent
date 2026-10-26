@@ -80,6 +80,20 @@ def test_squatted_name_is_refused_and_backend_still_gets_a_private_dir(
 
 
 @pytest.mark.platforms("posix")
+def test_cleanup_removes_only_a_fallback_dir_it_created(shared_root):
+    for name in ("hermes-ssh", f"hermes-ssh-{os.getuid()}"):  # windows-footgun: ok — posix-only test
+        (shared_root / name).write_text("x", encoding="utf-8")  # squat both names: forces mkdtemp
+    fallback = ssh_mod.SSHEnvironment(host="h", user="u", probe_only=True)
+    fallback.cleanup()
+    (shared_root / f"hermes-ssh-{os.getuid()}").unlink()  # windows-footgun: ok
+    shared = ssh_mod.SSHEnvironment(host="h", user="u", probe_only=True)
+    shared.cleanup()
+
+    assert not fallback.control_dir.exists()
+    assert shared.control_dir.is_dir()  # a per-user dir other instances share is kept
+
+
+@pytest.mark.platforms("posix")
 def test_own_dir_left_open_by_an_older_version_is_tightened(shared_root):
     ours = shared_root / f"hermes-ssh-{os.getuid()}"  # windows-footgun: ok — posix-only test
     ours.mkdir()

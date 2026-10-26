@@ -50,16 +50,17 @@ _CONTROL_DIR_MAX_BYTES = 103 - len("/0123456789abcdef.sock") - 17
 _SHORT_TMP_ROOT = "/tmp"  # no-tmp: ok — AF_UNIX sun_path budget; every dir under it is ownership-checked
 
 
-def _open_control_dir() -> Path:
+def _open_control_dir() -> tuple[Path, bool]:
     """Per-user ControlMaster socket dir that fits ``sun_path`` (#133436) and is proven ours (#80284).
 
     Candidates, best first: ``$XDG_RUNTIME_DIR`` (per-user 0700), then a per-uid name under the
     socket-safe temp root and under ``/tmp`` (a deep profile scratch TMPDIR does not fit). Those
     names are predictable and the roots may be shared, so a candidate that is not a real directory
     we own (pre-created by another user, or a planted symlink) is refused rather than adopted;
-    when every one is squatted, a fresh ``mkdtemp`` dir keeps the backend up."""
+    when every one is squatted, a fresh ``mkdtemp`` dir keeps the backend up. The flag is True
+    only for that fallback: it belongs to this instance alone, so its ``cleanup()`` removes it."""
     if not _SSH_MULTIPLEX:  # no Unix-socket ControlMaster; %TEMP% is per-user
-        return Path(ensure_owned_private_dir(Path(tempfile.gettempdir()) / "hermes-ssh"))
+        return Path(ensure_owned_private_dir(Path(tempfile.gettempdir()) / "hermes-ssh")), False
     per_user = f"hermes-ssh-{os.getuid()}"  # windows-footgun: ok — POSIX only (_SSH_MULTIPLEX)
     roots = list(dict.fromkeys(r for r in (socket_safe_tmpdir(), _SHORT_TMP_ROOT) if os.path.isdir(r)))
     candidates = [Path(root) / per_user for root in roots]
@@ -70,10 +71,10 @@ def _open_control_dir() -> Path:
         if len(os.fsencode(candidate)) > _CONTROL_DIR_MAX_BYTES:
             continue
         try:
-            return Path(ensure_owned_private_dir(candidate))
+            return Path(ensure_owned_private_dir(candidate)), False
         except OSError as exc:
             logger.warning("SSH: not using control-socket dir %s: %s", candidate, exc)
-    return Path(tempfile.mkdtemp(prefix="hssh-", dir=min(roots, key=len)))
+    return Path(tempfile.mkdtemp(prefix="hssh-", dir=min(roots, key=len))), True
 
 
 class SSHEnvironment(BaseEnvironment):
@@ -102,7 +103,7 @@ class SSHEnvironment(BaseEnvironment):
         # idempotent, so callers that already coerced are unaffected.
         super().__init__(cwd=coerce_ssh_remote_cwd(cwd, "ssh"), timeout=timeout, persist_env=persistent)
         self.host, self.user, self.port, self.key_path = host, user, port, key_path
-        self.control_dir = _open_control_dir()
+        self.control_dir, self._owns_control_dir = _open_control_dir()
         # Short, deterministic socket name: the path must stay under macOS's 104-byte sun_path
         # limit (raw user@host:port + SSH's 16-byte suffix under a deep $TMPDIR exceeds it), and
         # stability across reconnects keeps ControlMaster reuse working. A probe gets its own
@@ -341,3 +342,5 @@ class SSHEnvironment(BaseEnvironment):
                 subprocess.run(cmd, capture_output=True, timeout=5, stdin=subprocess.DEVNULL, check=False)
             with contextlib.suppress(OSError):
                 socket.unlink()
+        if self._owns_control_dir:
+            shutil.rmtree(self.control_dir, ignore_errors=True)

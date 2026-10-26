@@ -1761,7 +1761,8 @@ body.guest-pointer-lock :is(webview, iframe) {
    The editor owns its scope too, including inline edits and floating composers. */
 [data-slot='aui_thread-content'],
 [data-slot='composer-rich-input'],
-[data-slot='group-chat-message-content'] {
+[data-slot='group-chat-message-content'],
+.group-chat-editor {
   --conversation-text-scale: var(--chat-text-scale, 1);
   --conversation-text-font-size: calc(var(--conversation-text-base-size) * var(--chat-text-scale, 1));
   --conversation-tool-font-size: calc(var(--conversation-tool-base-size) * var(--chat-text-scale, 1));
@@ -1773,6 +1774,11 @@ body.guest-pointer-lock :is(webview, iframe) {
 [data-slot='group-chat-message-content'] {
   font-size: var(--conversation-text-font-size);
   line-height: 1.5;
+}
+
+.group-chat-editor {
+  font-size: var(--conversation-text-font-size);
+  line-height: var(--conversation-line-height);
 }
 
 [data-slot='aui_assistant-message-content'] {

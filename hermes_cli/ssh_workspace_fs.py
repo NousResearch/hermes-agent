@@ -288,8 +288,13 @@ def get_ssh_workspace_fs(profile_key: str, terminal_config: dict[str, Any]) -> S
     with dial_lock:
         with _CACHE_LOCK:
             cached = _BACKENDS.get(profile_key)
-        if cached and cached[0] == config:
-            return cached[1]
+            if cached and cached[0] == config:
+                return cached[1]
+            _BACKENDS.pop(profile_key, None)
+        # Close the replaced connection before dialing: the control socket is keyed on
+        # user@host:port only, so a dial with new credentials would otherwise ride the old master.
+        if cached:
+            cached[1]._env.cleanup()
         try:
             env = SSHEnvironment(
                 host=config.host,
@@ -301,14 +306,8 @@ def get_ssh_workspace_fs(profile_key: str, terminal_config: dict[str, Any]) -> S
                 sync_files=False,
             )
         except Exception as exc:
-            with _CACHE_LOCK:
-                _BACKENDS.pop(profile_key, None)
-            if cached:
-                cached[1]._env.cleanup()
             raise SshWorkspaceFsError("ECONN", "Could not connect to the SSH workspace") from exc
         backend = SshWorkspaceFs(env)
         with _CACHE_LOCK:
             _BACKENDS[profile_key] = (config, backend)
-        if cached:
-            cached[1]._env.cleanup()
         return backend

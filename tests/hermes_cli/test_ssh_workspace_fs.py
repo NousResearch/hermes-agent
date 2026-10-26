@@ -250,3 +250,66 @@ def test_ssh_workspace_factory_replaces_changed_config_and_drops_failed_redial(g
     assert raised.value.code == "ECONN"
     assert gated_ssh.cleaned == ["old.example", "new.example"]
     assert "remote-dev" not in ssh_workspace_fs._BACKENDS
+
+
+def test_ssh_workspace_factory_closes_replaced_connection_before_dialing_new_key(monkeypatch):
+    """A key change on the same endpoint must not validate through the old key's control master."""
+    events: list = []
+    open_masters: set = set()
+
+    class SharedSocketSsh:
+        # Like SSHEnvironment, the control socket is keyed on user@host:port only, so a dial with
+        # a new key reuses an open master and cleanup() closes it for every env on that endpoint.
+        def __init__(self, **kwargs):
+            self.key_path = kwargs["key_path"]
+            self.socket = f"{kwargs['user']}@{kwargs['host']}:{kwargs['port']}"
+            events.append(("dial", self.key_path))
+            if self.socket not in open_masters:
+                if self.key_path == "/keys/revoked":
+                    raise OSError("Permission denied (publickey)")
+                open_masters.add(self.socket)
+            self.cwd = kwargs["cwd"]
+            self.timeout = kwargs["timeout"]
+            self._remote_home = "/home/dev"
+
+        def cleanup(self):
+            events.append(("cleanup", self.key_path))
+            open_masters.discard(self.socket)
+
+    monkeypatch.setattr(ssh_workspace_fs, "SSHEnvironment", SharedSocketSsh)
+    monkeypatch.setattr(ssh_workspace_fs, "_BACKENDS", {})
+    monkeypatch.setattr(ssh_workspace_fs, "_DIAL_LOCKS", {})
+
+    def open_with(key: str):
+        return ssh_workspace_fs.get_ssh_workspace_fs("remote-dev", {**_ssh_terminal("ssh.example"), "ssh_key": key})
+
+    open_with("/keys/old")
+    replacement = open_with("/keys/new")
+    assert events == [("dial", "/keys/old"), ("cleanup", "/keys/old"), ("dial", "/keys/new")]
+    assert open_masters == {"dev@ssh.example:22"}
+    assert ssh_workspace_fs._BACKENDS["remote-dev"][1] is replacement
+
+    with pytest.raises(SshWorkspaceFsError, match="Could not connect") as raised:
+        open_with("/keys/revoked")
+
+    assert raised.value.code == "ECONN"
+    assert events[3:] == [("cleanup", "/keys/new"), ("dial", "/keys/revoked")]
+    assert "remote-dev" not in ssh_workspace_fs._BACKENDS
+
+
+def test_ssh_workspace_factory_failed_cleanup_does_not_wedge_the_profile(gated_ssh, monkeypatch):
+    first = ssh_workspace_fs.get_ssh_workspace_fs("remote-dev", _ssh_terminal("old.example"))
+    assert first is not None
+
+    def broken_cleanup():
+        raise RuntimeError("cleanup failed")
+
+    monkeypatch.setattr(first._env, "cleanup", broken_cleanup)
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        ssh_workspace_fs.get_ssh_workspace_fs("remote-dev", _ssh_terminal("new.example"))
+
+    assert not ssh_workspace_fs._DIAL_LOCKS["remote-dev"].locked()
+    assert "remote-dev" not in ssh_workspace_fs._BACKENDS
+    second = ssh_workspace_fs.get_ssh_workspace_fs("remote-dev", _ssh_terminal("new.example"))
+    assert second is not first
+    assert gated_ssh.created == ["old.example", "new.example"]

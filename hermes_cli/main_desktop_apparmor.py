@@ -139,7 +139,10 @@ def _profile_parses(parser: str, text: str) -> bool:
         candidate = Path(scratch) / "hermes-desktop.profile"
         candidate.write_text(text, encoding="utf-8")
         completed = _run([parser, "--skip-kernel-load", "--skip-cache", str(candidate)])
-    if completed is None or completed.returncode != 0:
+    if completed is None:
+        print("✗ Could not check the generated profile; nothing was written to /etc/apparmor.d.")
+        return False
+    if completed.returncode != 0:
         print("✗ apparmor_parser rejected the generated profile; nothing was written to /etc/apparmor.d.")
         return False
     return True

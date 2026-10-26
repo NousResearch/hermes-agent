@@ -1,7 +1,7 @@
 name: gameforge
 repo: https://github.com/DECRUX9812/hermes-plugin-gameforge
-sha: d88bdd1dd0fbc4c684dbe5361f330cf478b0a7e3
-version: "1.1.0"
+sha: ef2632af494f1bd806f8c597af7c918353c55a67
+version: "1.1.1"
 title: GameForge
 description: >-
   Game development toolkit: sound effects, music loops with MIDI, NPC voices, pixel-art sprite

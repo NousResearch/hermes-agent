@@ -105,7 +105,7 @@ class TestVenvDiscovery:
     def _versions(self, monkeypatch, base_version):
         from hermes_cli import version_info
 
-        dists = [SimpleNamespace(metadata={"Name": n}, version="0.0.0") for n in ("hermes_agent", "requests")]
+        dists = [SimpleNamespace(metadata={"Name": n}, version="0.0.0", locate_file=lambda path: Path("packages") / path) for n in ("hermes_agent", "requests")]
         monkeypatch.setattr("importlib.metadata.distributions", lambda: dists)
         info = version_info.VersionInfo(
             base_version=base_version, derived_version=base_version, distance=None, commit="abc", branch=None, source="build"

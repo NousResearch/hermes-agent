@@ -11,11 +11,13 @@ import concurrent.futures
 import json
 import re
 import sys
+import textwrap
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Optional
+from urllib.parse import quote
 
 from hermes_constants import get_hermes_home
 
@@ -37,6 +39,7 @@ class Component:
     version: str
     ecosystem: str  # "PyPI" | "npm" — exactly as OSV expects
     source: str    # human-readable origin, e.g. "venv", "plugin:foo", "mcp:bar"
+    source_path: str = ""  # installed distribution root or the declaration file
 
 
 @dataclass
@@ -73,7 +76,9 @@ def _discover_venv() -> list[Component]:
             if version == "unknown":
                 continue
         if name and version:
-            out.setdefault((name.lower(), version), Component(name=name, version=version, ecosystem="PyPI", source="venv"))
+            out.setdefault((name.lower(), version), Component(
+                name=name, version=version, ecosystem="PyPI", source="venv", source_path=str(dist.locate_file(""))
+            ))
     return list(out.values())
 
 
@@ -127,7 +132,9 @@ def _discover_plugins(hermes_home: Path) -> list[Component]:
                 pins = parse(path.read_text(encoding="utf-8-sig", errors="replace")) if path.is_file() else []
             except OSError:
                 continue
-            out.extend(Component(name=n, version=v, ecosystem="PyPI", source=f"plugin:{plugin_dir.name}") for n, v in pins)
+            out.extend(Component(
+                name=n, version=v, ecosystem="PyPI", source=f"plugin:{plugin_dir.name}", source_path=str(path)
+            ) for n, v in pins)
     return out
 
 
@@ -258,11 +265,24 @@ def run_audit(*, components: Optional[list[Component]] = None, **discover_kwargs
     return findings
 
 
-def _render_human(findings: list[Finding], total_components: int) -> str:
-    if not findings:
-        return f"No known vulnerabilities found across {total_components} component(s)."
+def _advisory_url(vuln: Vulnerability) -> str:
+    return f"https://osv.dev/vulnerability/{quote(vuln.osv_id, safe='')}"
 
-    lines = [f"Found {len(findings)} known vulnerability finding(s) across {total_components} component(s):", ""]
+
+def _render_human(
+    findings: list[Finding], total_components: int, python_environment: Optional[dict[str, str]] = None
+) -> str:
+    lines = []
+    if python_environment:
+        lines.extend([
+            f"Python environment: {python_environment['prefix']}",
+            f"Interpreter: {python_environment['executable']}", "",
+        ])
+    if not findings:
+        lines.append(f"No known vulnerabilities found across {total_components} component(s).")
+        return "\n".join(lines)
+
+    lines.extend([f"Found {len(findings)} known vulnerability finding(s) across {total_components} component(s):", ""])
     last_source = None
     for f in findings:
         c, v = f.component, f.vuln
@@ -270,20 +290,27 @@ def _render_human(findings: list[Finding], total_components: int) -> str:
             lines.append(f"[{c.source}]")
             last_source = c.source
         lines.append(f"  {v.severity.ljust(8)}  {c.name}=={c.version}  {v.osv_id}")
-        if summary := v.summary:
-            lines.append(f"           {summary if len(summary) <= 100 else summary[:97] + '...'}")
+        if c.source_path:
+            lines.append(f"           source: {c.source_path}")
+        if v.summary:
+            lines.append(textwrap.fill(v.summary, width=100, initial_indent="           ", subsequent_indent="           "))
+        lines.append(f"           advisory: {_advisory_url(v)}")
         if v.fixed_versions:
-            lines.append(f"           fixed in: {', '.join(v.fixed_versions[:3])}")
+            lines.append(f"           fixed in: {', '.join(v.fixed_versions)}")
     return "\n".join(lines)
 
 
-def _render_json(findings: list[Finding], total_components: int) -> str:
+def _render_json(
+    findings: list[Finding], total_components: int, python_environment: Optional[dict[str, str]] = None
+) -> str:
     payload = {
         "total_components_scanned": total_components,
         "finding_count": len(findings),
+        "python_environment": python_environment,
         "findings": [{
             "package": f.component.name, "version": f.component.version,
             "ecosystem": f.component.ecosystem, "source": f.component.source,
+            "source_path": f.component.source_path, "advisory_url": _advisory_url(f.vuln),
             "vuln_id": f.vuln.osv_id, "severity": f.vuln.severity,
             "summary": f.vuln.summary, "fixed_versions": f.vuln.fixed_versions,
         } for f in findings],
@@ -303,8 +330,9 @@ def cmd_security_audit(args: argparse.Namespace) -> int:
     skips = {k: bool(getattr(args, k, False)) for k in ("skip_venv", "skip_plugins", "skip_mcp")}
     components = _discover_components(hermes_home=home, **skips)
     total = len(components)
+    python_environment = None if skips["skip_venv"] else {"executable": sys.executable, "prefix": sys.prefix}
     if total == 0:
-        print(json.dumps({"total_components_scanned": 0, "finding_count": 0, "findings": []}) if output_json
+        print(_render_json([], 0, python_environment) if output_json
               else "No components discovered (everything skipped, or empty environment).")
         return 0
 
@@ -314,7 +342,7 @@ def cmd_security_audit(args: argparse.Namespace) -> int:
         print(f"audit failed: {exc}", file=sys.stderr)
         return 2
 
-    print((_render_json if output_json else _render_human)(findings, total))
+    print((_render_json if output_json else _render_human)(findings, total, python_environment))
     # Exit code: 1 iff any finding meets or exceeds the --fail-on threshold.
     threshold = SEVERITY_ORDER[fail_on]
     return int(any(SEVERITY_ORDER.get(f.vuln.severity, 0) >= threshold for f in findings))

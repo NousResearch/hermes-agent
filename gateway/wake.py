@@ -100,14 +100,17 @@ async def admit_internal_event(adapter: Any, event: Any) -> None:
     not model execution, authorization of a later turn, or successful outbound delivery.
     """
     event._gateway_accepted = False
+    # Read before handle_message: it can await after it claims or queues the event (the busy
+    # handler's later awaits), so a read afterwards could see a drain that began after the wake
+    # was stored and leave an admitted wake to be dropped.
+    runner = getattr(adapter, "gateway_runner", None)
+    draining_before = getattr(runner, "_draining", False) is True
     await adapter.handle_message(event)
     if event._gateway_accepted is not True:
         raise WakeNotAccepted()
-    # The in-tree adapters do not await after claiming or queueing the event, so this reads the
-    # drain state the receipt was issued under. A wake receipted before any drain began is not
-    # retried by its producer, so the drain must run it rather than drop it (#138123).
-    runner = getattr(adapter, "gateway_runner", None)
-    event._admitted_before_drain = getattr(runner, "_draining", False) is not True
+    # A wake admitted while no drain was in progress is not retried by its producer once it has
+    # this receipt, so the drain must run it rather than drop it (#138123).
+    event._admitted_before_drain = not draining_before
 
 
 async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source: Any = None,

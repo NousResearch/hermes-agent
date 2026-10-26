@@ -815,9 +815,11 @@ class TestPollLoop(unittest.TestCase):
             asyncio.run(adapter._check_inbox())
 
         self.assertEqual([message["message_id"] for message in dispatched], ["<trusted@example.com>"])
-        self.assertNotIn((b"9", "(RFC822)"), fetch_specs)
-        self.assertNotIn((b"11", "(RFC822)"), fetch_specs)
-        self.assertIn((b"10", "(RFC822)"), fetch_specs)
+        # Body fetch selector follows the imap_peek default: (BODY.PEEK[]) now, (RFC822) in legacy mode.
+        body_uids = {uid for uid, spec in fetch_specs if spec in ("(RFC822)", "(BODY.PEEK[])")}
+        self.assertNotIn(b"9", body_uids)
+        self.assertNotIn(b"11", body_uids)
+        self.assertIn((b"10", "(BODY.PEEK[])"), fetch_specs)
         header_specs = [spec for _, spec in fetch_specs if "BODY.PEEK[HEADER.FIELDS" in spec]
         self.assertEqual(len(header_specs), 3)
         self.assertTrue(all(f"<0.{_MAX_PREAUTH_HEADER_BYTES + 1}>" in spec for spec in header_specs))

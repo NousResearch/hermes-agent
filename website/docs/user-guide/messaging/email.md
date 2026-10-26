@@ -122,7 +122,7 @@ sudo hermes gateway install --system   # Linux only: boot-time system service
 
 On startup, the adapter:
 1. Tests IMAP and SMTP connections
-2. Marks all existing inbox messages as "seen" (only processes new emails)
+2. Records existing inbox UIDs as a baseline so only later arrivals are processed, without changing their read/unread flags
 3. Starts polling for new messages
 
 ---
@@ -141,6 +141,30 @@ The adapter polls the IMAP inbox for UNSEEN messages at a configurable interval 
 - **HTML-only emails** have tags stripped for plain text extraction
 - **Self-messages** are filtered out to prevent reply loops
 - **Automated/noreply senders** are silently ignored — `noreply@`, `mailer-daemon@`, `bounce@`, `no-reply@`, and emails with `Auto-Submitted`, `Precedence: bulk`, or `List-Unsubscribe` headers
+
+### Read/Unread State
+
+By default, `platforms.email.imap_peek` is `true`: the adapter uses `BODY.PEEK[]`
+for authorized message bodies and does not mark messages as read. Rejected mail
+also keeps its existing read/unread flags. The bounded header preflight always
+uses PEEK, and only authorized messages reach the body fetch.
+
+To restore the legacy behavior in `config.yaml`:
+
+```yaml
+platforms:
+  email:
+    imap_peek: false
+```
+
+With `false`, authorized body fetches use `RFC822` (which marks messages read),
+and rejected messages are explicitly marked read without downloading their bodies.
+
+Duplicate suppression is kept in memory using consumed UIDs and a watermark,
+with failed fetches retained for retry. That state survives adapter reconnections
+within the same gateway process, not a full process restart. A fresh startup
+skips all messages already in the inbox, including unread mail that arrived while
+the gateway was stopped; it does not change their flags.
 
 ### Sending Replies
 

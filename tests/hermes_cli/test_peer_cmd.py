@@ -118,6 +118,24 @@ def test_hermes_handle_reaches_the_profile_the_peer_serves(
     assert {hit.split("/")[2] for hit in _ProfilePeer.hits if not hit.endswith("/health")} == {expected}
 
 
+@pytest.mark.parametrize("target", ["box/Hermes", "box/HERMES"])
+def test_mixed_case_hermes_target_reaches_the_peers_real_hermes_profile(monkeypatch, capsys, target):
+    """Profile ids are lowercase, so ``box/Hermes`` is ``box/hermes``. A peer comparing prefixes
+    exactly (every peer before the case fix) answers ``/p/Hermes`` with its unknown-profile 404,
+    which the @hermes fallback read as "no hermes here" and rerouted the DM to the default."""
+    _ProfilePeer.served, _ProfilePeer.probe_status, _ProfilePeer.hits = {"default", "hermes"}, 200, []
+    _ProfilePeer.refusal = {"error": "Unknown or unconfigured profile"}
+    server = HTTPServer(("127.0.0.1", 0), _ProfilePeer)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"box": {"url": f"http://127.0.0.1:{server.server_port}"}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+    try:
+        rc = peer_cmd.cmd_peer(SimpleNamespace(peer_action="dm", target=target, message="hi", json=True))
+    finally:
+        server.shutdown()
+    assert (rc, json.loads(capsys.readouterr().out)["reply"]) == (0, "from hermes")
+
+
 # ── registry round-trip (isolated config) ────────────────────────────────────
 
 

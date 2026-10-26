@@ -8,6 +8,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { botHandle, botMentionTag, claimDefaultHandles, mergeMultiSourceRoster, resolveRosterMentions } from './data'
+import { previewKind } from './row-helpers'
 import type { RosterRow } from './types'
 
 vi.mock('@hermes/plugin-sdk', async () => {
@@ -66,5 +67,31 @@ describe('the @hermes handle', () => {
     ])
 
     expect(rows.map(row => botHandle(String(row.name), row))).toEqual(['hermes', 'default', 'hermes'])
+  })
+
+  it("never lets a source's stale 'hermes' handle on its default answer @hermes", () => {
+    // An older backend labels its default @hermes even beside a real hermes profile.
+    const rows = claimDefaultHandles<RosterRow>([
+      { connectionId: 'mini', handle: 'hermes', name: 'default', remoteSource: true },
+      { connectionId: 'mini', handle: 'hermes', name: 'hermes', remoteSource: true },
+      { connectionId: 'local', name: 'researcher' }
+    ])
+
+    expect(resolveRosterMentions('@hermes ping', rows, { name: 'researcher' }).map(row => row.name)).toEqual(['hermes'])
+  })
+
+  it('names a DM sender in a row preview by its roster handle', () => {
+    const rows = claimDefaultHandles<RosterRow>(
+      ['default', 'hermes', 'researcher'].map(name => ({ connectionId: 'local', name }))
+    )
+
+    const sender = (name: string, list: RosterRow[]) =>
+      previewKind(`Message from 🤖 ${name} (@x): hi`, list, 'local').fromBot
+
+    expect([sender('default', rows), sender('hermes', rows)]).toEqual(['default', 'hermes'])
+    // No real hermes profile: the default is still @hermes (#89484).
+    expect(sender('default', claimDefaultHandles<RosterRow>([{ connectionId: 'local', name: 'default' }]))).toBe(
+      'hermes'
+    )
   })
 })

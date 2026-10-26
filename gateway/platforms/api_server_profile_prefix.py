@@ -23,11 +23,22 @@ def _handle_is_free() -> bool:
         return False
 
 
+def _prefix_profile(request: Any) -> str:
+    """The prefix as a canonical profile id. Profile ids are lowercase on disk and every other
+    reader (``get_profile_dir``, ``profile_exists``, the peer client) normalizes case, so
+    ``/p/Hermes/`` must name the same profile ``/p/hermes/`` does, never fall to the alias."""
+    raw = (request.match_info.get("profile") or "").strip()
+    if not raw:
+        return ""
+    from hermes_cli.profiles import normalize_profile_name
+    return normalize_profile_name(raw)
+
+
 def rejection_response(request: Any):
     """The 404 for a rejected prefix. A 'hermes' profile this gateway does not serve gets its own
     body, so a peer reads it as "exists elsewhere", never as "no such profile, use default"."""
     from aiohttp import web
-    if (request.match_info.get("profile") or "").strip() == DEFAULT_PROFILE_HANDLE and not _handle_is_free():
+    if _prefix_profile(request) == DEFAULT_PROFILE_HANDLE and not _handle_is_free():
         return web.json_response({"error": {
             "message": f"Profile '{DEFAULT_PROFILE_HANDLE}' exists on this host but this gateway does not serve it",
             "code": "profile_not_served"}}, status=404)
@@ -41,7 +52,7 @@ def resolve_request_profile(adapter: Any, request: Any):
     ``hermes`` reaches the default profile, because peers address the mirror by the handle their
     roster shows (#118076), unless the host has a profile literally named ``hermes``."""
     from gateway.platforms.api_server import _PROFILE_REJECTED, _prefix_names_served_profile
-    profile = (request.match_info.get("profile") or "").strip()
+    profile = _prefix_profile(request)
     if not profile:
         return None
     alias = profile == DEFAULT_PROFILE_HANDLE

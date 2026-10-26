@@ -121,7 +121,7 @@ def _resolve_base(peer: dict, profile: str | None, key: str) -> str:
     must keep winning — so ``/p/hermes`` is tried first and ``/p/default`` is used only when the
     peer itself answers that it has no such profile (an older peer has no alias on its side)."""
     base = _base_url(peer, profile)
-    if not profile or profile.lower() != DEFAULT_PROFILE_HANDLE:
+    if profile != DEFAULT_PROFILE_HANDLE:
         return base
     try:
         _request(f"{base}/health", key)
@@ -188,6 +188,11 @@ def _parse_target(target: str) -> tuple[str, str | None]:
         raise ValueError("Peer name required (hermes peer dm <peer>[/<agent>] ...)")
     if profile and not _PROFILE_RE.match(profile):
         raise ValueError(f"Invalid agent/profile name: {profile!r}")
+    if profile:
+        # Profile ids are lowercase (normalize_profile_name); 'box/Hermes' must address the
+        # peer's real 'hermes' profile, never reach the /p/default fallback by case alone.
+        from hermes_cli.profiles import normalize_profile_name
+        profile = normalize_profile_name(profile)
     return peer, profile
 
 

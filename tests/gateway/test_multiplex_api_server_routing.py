@@ -145,6 +145,40 @@ async def test_hermes_handle_reaches_the_default_profile_only_when_no_hermes_pro
                 assert (prefix, resp.status, body) == (prefix, 200, {"profile": expected})
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("multiplex,legacy_hermes,answers", [
+    (True, True, {"Hermes": "hermes", "HERMES": "hermes", "Worker": "worker", "Default": "default"}),
+    (True, False, {"Hermes": "default", "Worker": "worker"}),
+    (False, True, {"Hermes": _NOT_SERVED}),
+    (False, False, {"Hermes": None}),
+])
+async def test_profile_prefix_names_the_same_profile_in_any_case(tmp_path, monkeypatch, multiplex, legacy_hermes, answers):
+    """Profile ids are lowercase (``normalize_profile_name``), so ``/p/Hermes/`` is ``/p/hermes/``:
+    a real 'hermes' profile keeps it, and only without one does it alias the default. An
+    exact-case comparison answered it with the unknown-profile 404 that peers reroute to the
+    default profile, misdelivering box/Hermes."""
+    root = tmp_path / "root"
+    for home in [root, root / "profiles" / "worker"] + ([root / "profiles" / "hermes"] if legacy_hermes else []):
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    adapter = _make_adapter(multiplex=multiplex)
+
+    async def handler(request):
+        return web.json_response({"profile": _api_request_profile.get()})
+
+    app = web.Application(middlewares=[adapter._make_profile_prefix_middleware()])
+    app.router.add_get("/p/{profile}/v1/test", handler)
+    async with TestClient(TestServer(app)) as cli:
+        for prefix, expected in answers.items():
+            resp = await cli.get(f"/p/{prefix}/v1/test")
+            body = await resp.json()
+            if expected == _NOT_SERVED:
+                assert (prefix, resp.status, body["error"]["code"]) == (prefix, 404, _NOT_SERVED)
+            else:
+                assert (prefix, resp.status, body) == (prefix, 200, {"profile": expected})
+
+
 
 
 

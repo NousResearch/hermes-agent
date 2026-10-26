@@ -1188,6 +1188,13 @@ export function botHandle(name: string, bot?: Partial<RosterRow> | null): string
   return (name || '').trim().toLowerCase() === 'default' && !bot?.hermesHandleTaken ? 'hermes' : name
 }
 
+/** The row's own `handle` as a mention form, lowercased. A stale 'hermes'
+ *  handle on a default row whose source has a real 'hermes' profile is that
+ *  profile's tag, not this row's (same rule as `botHandle`). */
+function claimableRowHandle(bot: Partial<RosterRow>): string {
+  return bot.handle && !(bot.hermesHandleTaken && bot.handle === 'hermes') ? String(bot.handle).toLowerCase() : ''
+}
+
 /** Mark each default row whose source also lists a real `hermes` profile, so
  *  that profile keeps @hermes and the roster never shows two (the backend's
  *  `tools/bot_mode_probe._handle` applies the same rule). Rows group by
@@ -1380,8 +1387,10 @@ export function resolveRosterMentions(
     const name = String(bot.name || '').toLowerCase()
     const forms = new Set([handle, name])
 
-    if (bot.handle) {
-      forms.add(String(bot.handle).toLowerCase())
+    const rowHandle = claimableRowHandle(bot)
+
+    if (rowHandle) {
+      forms.add(rowHandle)
     }
 
     // Renamed bots are taggable by their friendly names too — the core

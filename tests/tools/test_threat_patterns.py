@@ -235,6 +235,69 @@ class TestInvisibleUnicode:
         assert any(f.startswith("invisible_unicode_U+200B") for f in findings)
 
 
+    # ── U+200D (ZWJ) inside emoji sequences ──────────────────────────────────
+    # Flagging a required emoji joiner dropped whole context files: a SOUL.md with one
+    # 🏄‍♂️ was rejected on every session start for 30 days and never reached the system
+    # prompt. The neighbour test is Unicode-property derived (Extended_Pictographic ∪
+    # Emoji_Modifier), so it accepts every RGI ZWJ sequence — including the four a
+    # hand-rolled codepoint block list missed.
+
+    SURFER = "\U0001F3C4\u200D\u2642\uFE0F"                   # 🏄‍♂️
+    FAMILY = "\U0001F468\u200D\U0001F469\u200D\U0001F467"      # 👨‍👩‍👧
+    TEACHER = "\U0001F468\u200D\U0001F3EB"                      # 👨‍🏫
+    BLACK_CAT = "\U0001F408\u200D\u2B1B"                        # 🐈‍⬛ partner in Misc Symbols & Arrows
+    SHAKING = "\U0001F642\u200D\u2194\uFE0F"                    # 🙁‍↔️ partner in Arrows
+    TONED_WORKER = "\U0001F469\U0001F3FD\u200D\U0001F4BB"       # 👩🏽‍💻 skin-tone modifier
+
+    def test_emoji_zwj_sequences_are_not_invisible_unicode(self):
+        for text in (self.SURFER, self.FAMILY, self.TEACHER, self.BLACK_CAT,
+                     self.SHAKING, self.TONED_WORKER):
+            assert scan_for_threats(text, scope="all") == [], text
+            assert scan_for_threats(f"### {text} section", scope="context") == [], text
+
+    def test_context_file_with_emoji_zwj_reaches_the_prompt(self):
+        # The reported regression: the context-file path must not report U+200D, and the
+        # strict memory/skill-write path must not block the write either.
+        soul = f"# Persona\n\nWrites with {self.SURFER} energy and {self.BLACK_CAT} humour.\n"
+        assert "invisible_unicode_U+200D" not in scan_for_threats(soul, scope="context")
+        assert first_threat_message(soul, scope="strict") is None
+
+    def test_bare_zwj_still_detected(self):
+        for text in ("pay\u200dload", "he\u200dllo", "1\u200d2", "a\u200db"):
+            assert any(f.startswith("invisible_unicode_U+200D")
+                       for f in scan_for_threats(text, scope="all")), text
+
+    def test_one_sided_emoji_zwj_still_detected(self):
+        # An emoji on only ONE side is not a sequence — it is a joiner glued to real text.
+        for text in (f"A\u200d{self.SURFER}", f"{self.SURFER}\u200dA",
+                     f"A\uFE0F\u200d{self.SURFER}", f"{self.SURFER}\uFE0E\u200dA"):
+            assert any(f.startswith("invisible_unicode_U+200D")
+                       for f in scan_for_threats(text, scope="all")), text
+
+    def test_one_bare_zwj_keeps_the_finding_on_a_mixed_line(self):
+        text = f"Persona uses {self.SURFER} and pay\u200dload"
+        assert any(f.startswith("invisible_unicode_U+200D")
+                   for f in scan_for_threats(text, scope="all"))
+
+    def test_other_invisible_chars_unaffected_by_the_zwj_exemption(self):
+        for text in (f"{self.SURFER}\u200b", f"\u200b{self.SURFER}", f"{self.SURFER}\u2060"):
+            findings = scan_for_threats(text, scope="all")
+            assert any(f.startswith("invisible_unicode_U+") and "200D" not in f
+                       for f in findings), text
+
+    def test_variation_selectors_are_skipped_on_either_side(self):
+        assert scan_for_threats("\u2764\uFE0F\u200D\U0001F525", scope="all") == []            # ❤️‍🔥
+        assert scan_for_threats("\U0001F3C4\uFE0F\u200d\u2642\uFE0F", scope="all") == []
+
+    def test_pictographic_pairs_allowed_even_when_not_rgi(self):
+        # The one widening over a codepoint block list: two pictographic emoji joined by a
+        # ZWJ are accepted (⭐‍⭐) — both glyphs render, so nothing is hidden. Arrow
+        # neighbours stay flagged because arrows are not Extended_Pictographic.
+        assert scan_for_threats("\u2B50\u200d\u2B50", scope="all") == []
+        assert any(f.startswith("invisible_unicode_U+200D")
+                   for f in scan_for_threats("\u2192\u200d\u2192", scope="all"))
+
+
 
 
 # =========================================================================

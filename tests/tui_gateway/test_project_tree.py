@@ -225,6 +225,23 @@ def test_unrecorded_and_recorded_main_share_one_lane():
     assert len(main_lanes[0]["sessions"]) == 2
 
 
+def test_unrecorded_and_recorded_master_share_one_lane():
+    # Empty git_branch must join the recorded trunk (master), not invent a
+    # second DEFAULT_BRANCH_LABEL ("main") lane after restart.
+    resolve = _resolver({"/repo": ("/repo", "/repo")})
+    sessions = [_session("/repo", branch=""), _session("/repo", branch="master")]
+
+    tree = pt.build_tree([], sessions, [], resolve, hydrate=True)
+    project = tree["projects"][0]
+    lanes = [g for repo in project["repos"] for g in repo["groups"]]
+
+    assert len(lanes) == 1
+    assert lanes[0]["label"] == "master"
+    assert lanes[0]["id"] == "/repo::branch::master"
+    assert len(lanes[0]["sessions"]) == 2
+    assert not any(g["label"] == "main" for g in lanes)
+
+
 def test_main_checkout_detected_when_roots_differ_only_in_path_spelling():
     # The two roots come from DIFFERENT git probes: `rev-parse --show-toplevel`
     # emits forward slashes, while the `--git-common-dir` path goes through

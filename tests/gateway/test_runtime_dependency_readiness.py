@@ -113,7 +113,7 @@ def test_probe_is_side_effect_free(tmp_path, monkeypatch):
     def _no_socket(*_args, **_kwargs):
         raise AssertionError("the dependency probe must not touch the network")
 
-    monkeypatch.setattr(readiness, "load_yaml_file_readonly", _no_config)
+    monkeypatch.setattr("hermes_cli.config_backend.read_config_doc_readonly", _no_config)
     monkeypatch.setattr(socket, "socket", _no_socket)
     monkeypatch.setattr(socket, "create_connection", _no_socket)
 

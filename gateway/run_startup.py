@@ -1334,14 +1334,16 @@ class GatewayStartupMixin:
                         "(platform is enabled in config.yaml but no plugin registered it)", platform.value,
                     )
                 # Only a platform that can heal on its own is queued for the reconnect watcher; either way
-                # flag it so the unserved enabled platform is visible.
+                # flag it so the unserved enabled platform is visible. A builtin whose dependency is missing
+                # was already reported above with the specific ``dependencies_unavailable`` status.
                 heals = self._adapter_may_heal(platform, platform_config)
-                self._update_platform_runtime_status(
-                    platform.value, platform_state="retrying" if heals else "fatal",
-                    error_code="adapter_unavailable",
-                    error_message=_adapter_unavailable_message(platform, retrying=heals),
-                    needs_attention=True,
-                )
+                if spec is None:
+                    self._update_platform_runtime_status(
+                        platform.value, platform_state="retrying" if heals else "fatal",
+                        error_code="adapter_unavailable",
+                        error_message=_adapter_unavailable_message(platform, retrying=heals),
+                        needs_attention=True,
+                    )
                 if heals:
                     self._failed_platforms[platform] = self._startup_retry_entry(platform, None, platform_config)
                 continue

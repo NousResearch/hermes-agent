@@ -3,9 +3,12 @@ events, REST (``api.sgroup.qq.com``) for outbound messages and media uploads.
 
 config.yaml ``platforms.qq.extra``: app_id / client_secret (or QQ_APP_ID /
 QQ_CLIENT_SECRET), markdown_support, dm_policy + allow_from, group_policy +
-group_allow_from (open | allowlist | disabled | pairing), and optional ``stt``
-{provider, baseUrl, apiKey, model} (or QQ_STT_* env vars). Voice transcription
-tries QQ's free ``asr_refer_text`` first, then the configured STT provider.
+group_allow_from (open | allowlist | disabled | pairing),
+group_require_mention (default true; per-group ``groups.{openid}.require_mention``),
+and optional ``stt`` {provider, baseUrl, apiKey, model} (or QQ_STT_* env vars).
+Voice transcription tries QQ's free ``asr_refer_text`` first, then the configured
+STT provider. Group replies in mention mode wait for an @; other group lines are
+kept as context for that next reply.
 """
 
 from __future__ import annotations
@@ -70,6 +73,10 @@ from .constants import (
 from .utils import coerce_list as _coerce_list, build_user_agent
 from .chunked_upload import (
     ChunkedUploader, UploadDailyLimitExceededError, UploadFileTooLargeError)
+from .group_activation import (
+    GROUP_AT_MESSAGE_CREATE, GROUP_MESSAGE_CREATE, config_flag, detect_mentioned,
+    history_limit, per_group_require_mention, resolve_require_mention)
+from .group_context import GroupContextBuffer, summarize_attachments
 from .keyboards import (
     ApprovalRequest, InlineKeyboard, InteractionEvent, build_approval_keyboard,
     build_update_prompt_keyboard, parse_approval_button_data, parse_interaction_event,
@@ -153,6 +160,12 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._allow_from = _coerce_list(extra.get("allow_from") or extra.get("allowFrom"))
         self._group_policy = str(extra.get("group_policy", "pairing")).strip().lower()
         self._group_allow_from = _coerce_list(extra.get("group_allow_from") or extra.get("groupAllowFrom"))
+        # Mention mode replies only when @-ed. Always mode needs the QQ console
+        # permission that actually delivers GROUP_MESSAGE_CREATE.
+        self._group_require_mention = config_flag(extra.get("group_require_mention"), True)
+        self._group_mode_overrides = per_group_require_mention(extra.get("groups"))
+        self._group_mode_runtime_overrides: dict[str, bool] = {}
+        self._group_context = GroupContextBuffer(limit=history_limit(extra.get("group_history_limit", 20)))
 
         self._session: Optional[aiohttp.ClientSession] = None
         self._ws: Optional[aiohttp.ClientWebSocketResponse] = None
@@ -580,10 +593,16 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             logger.debug("[%s] Duplicate or missing message id: %s", self._log_tag, msg_id)
             return
         handler = self._INBOUND_HANDLERS.get(event_type)
-        if handler:
-            author = d.get("author") if isinstance(d.get("author"), dict) else {}
-            await getattr(self, handler)(
-                d, msg_id, str(d.get("content", "")).strip(), author, str(d.get("timestamp", "")))
+        if not handler:
+            return
+        author = d.get("author") if isinstance(d.get("author"), dict) else {}
+        content = str(d.get("content", "")).strip()
+        timestamp = str(d.get("timestamp", ""))
+        if event_type in {GROUP_AT_MESSAGE_CREATE, GROUP_MESSAGE_CREATE}:
+            await self._handle_group_message(
+                d, msg_id, content, author, timestamp, event_type=event_type)
+            return
+        await getattr(self, handler)(d, msg_id, content, author, timestamp)
 
     # ── Inline-keyboard interactions (INTERACTION_CREATE) ──
 
@@ -759,14 +778,45 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             d, msg_id, content, attachments_raw, timestamp, verbose=True,
             chat_id=user_openid, qq_chat_type="c2c", user_id=user_openid, chat_type="dm")
 
-    async def _handle_group_message(self, d, msg_id, content, author, timestamp) -> None:
+    async def _handle_group_message(
+        self, d, msg_id, content, author, timestamp,
+        event_type: str = GROUP_AT_MESSAGE_CREATE,
+    ) -> None:
+        """Reply to an @, or to every group message when mention mode is off.
+
+        A non-@ in mention mode is not a turn. It is buffered and attached to
+        the next @ as ``channel_context``, leaving the trigger text itself
+        intact for slash commands.
+        """
         group_openid = str(d.get("group_openid", ""))
         member = str(author.get("member_openid", ""))
         if not group_openid or not self._is_group_allowed(group_openid, member):
             return
+        mentioned = detect_mentioned(event_type, d, content, self._app_id)
+        require_mention = resolve_require_mention(
+            group_openid, global_default=self._group_require_mention,
+            per_group=self._group_mode_overrides,
+            runtime_overrides=self._group_mode_runtime_overrides)
+        if require_mention and not mentioned:
+            self._group_context.record(
+                group_openid, sender=member, text=content, msg_id=msg_id,
+                attachment_tag=summarize_attachments(d.get("attachments")))
+            logger.debug(
+                "[%s] Group %s: buffered non-mention message (event=%s)",
+                self._log_tag, group_openid, event_type)
+            return
+        text = self._strip_at_mention(content) if mentioned else content
+        pending = self._group_context.drain(group_openid)
+        channel_context = GroupContextBuffer.format_context_block(pending) if pending else None
         await self._ingest(
-            d, msg_id, self._strip_at_mention(content), d.get("attachments"), timestamp,
-            chat_id=group_openid, qq_chat_type="group", user_id=member, chat_type="group")
+            d, msg_id, text, d.get("attachments"), timestamp,
+            chat_id=group_openid, qq_chat_type="group", user_id=member, chat_type="group",
+            channel_context=channel_context)
+
+    def _set_group_mode_override(self, group_openid: str, require_mention: bool) -> None:
+        """In-memory mention gate for one group. Highest priority, not persisted."""
+        if group_openid:
+            self._group_mode_runtime_overrides[str(group_openid)] = bool(require_mention)
 
     async def _handle_guild_message(self, d, msg_id, content, author, timestamp) -> None:
         channel_id = str(d.get("channel_id", ""))
@@ -802,6 +852,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     _INBOUND_HANDLERS = {
         "C2C_MESSAGE_CREATE": "_handle_c2c_message",
         "GROUP_AT_MESSAGE_CREATE": "_handle_group_message",
+        "GROUP_MESSAGE_CREATE": "_handle_group_message",
         "GUILD_MESSAGE_CREATE": "_handle_guild_message",
         "GUILD_AT_MESSAGE_CREATE": "_handle_guild_message",
         "DIRECT_MESSAGE_CREATE": "_handle_dm_message"}
@@ -815,9 +866,14 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
     async def _ingest(
         self, d: dict[str, Any], msg_id: str, content: str, attachments: Any, timestamp: str, *,
-        chat_id: str, qq_chat_type: str, verbose: bool = False, **source_kwargs: Any) -> None:
+        chat_id: str, qq_chat_type: str, verbose: bool = False,
+        channel_context: Optional[str] = None, **source_kwargs: Any) -> None:
         """Shared inbound tail: fold attachment transcripts/file info and quoted context
-        into the text, drop empty events, remember the QQ chat kind and dispatch."""
+        into the text, drop empty events, remember the QQ chat kind and dispatch.
+
+        ``channel_context`` is prior group chatter for an @. It is not part of
+        ``text``, so a bare @ that only flushes that context still starts a turn.
+        """
         att = await self._process_attachments(attachments)
         text = content
         voice_transcripts = att["voice_transcripts"]
@@ -834,12 +890,14 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         if quoted["image_urls"]:
             image_urls = image_urls + quoted["image_urls"]
             image_media_types = image_media_types + quoted["image_media_types"]
-        if not text.strip() and not image_urls:
+        context = channel_context if channel_context and channel_context.strip() else None
+        if not text.strip() and not image_urls and not context:
             return
 
         self._chat_type_map[chat_id] = qq_chat_type
         event = MessageEvent(
             source=self.build_source(chat_id=chat_id,** source_kwargs), text=text,
+            channel_context=context,
             message_type=self._detect_message_type(image_urls, image_media_types), raw_message=d,
             message_id=msg_id, media_urls=image_urls, media_types=image_media_types,
             timestamp=self._parse_qq_timestamp(timestamp),
@@ -1654,7 +1712,9 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
     @staticmethod
     def _strip_at_mention(content: str) -> str:
-        return re.sub(r"^@\S+\s*", "", content.strip())
+        """Drop ``<@!app_id>`` tags and a leading ``@name`` prefix."""
+        stripped = re.sub(r"<@!?\d+>", "", content or "")
+        return re.sub(r"^@\S+\s*", "", stripped.strip()).strip()
 
     def _entry_matches(self, entries: list[str], target: str) -> bool:
         normalized_target = str(target).strip().lower()

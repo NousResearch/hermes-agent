@@ -9,7 +9,6 @@ import os
 import signal
 import sqlite3
 import sys
-import tempfile
 import time
 from contextlib import suppress
 from datetime import datetime, timezone, UTC
@@ -190,9 +189,9 @@ def preflight_state_db(home: Path) -> dict:
     _reclaim_abandoned_staging(home, prefix)
     stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%S-%fZ")
     destination = home / f"{prefix}{stamp}-{os.getpid()}.bak"
-    fd, name = tempfile.mkstemp(prefix=prefix, suffix=".partial", dir=home)
-    os.close(fd)
-    staged = Path(name)
+    # Named before it exists, so a SIGTERM at any point after creation reaches the
+    # cleanup below; _safe_copy_db creates it owner-only and refuses a symlink.
+    staged = home / f"{prefix}{stamp}-{os.getpid()}.partial"
     try:
         if not _safe_copy_db(source, staged):
             raise RuntimeError("SQLite safe copy failed; previous emergency snapshots were retained")

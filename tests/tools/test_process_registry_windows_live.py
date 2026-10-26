@@ -92,10 +92,13 @@ class TestWindowsSpawnParity:
         # The availability probe must not have flipped to True on Windows.
         assert pr._SYSTEMD_SCOPE_AVAILABLE is not True
 
-    def test_kill_process_windows_plain_path(self, registry):
-        """kill_process on Windows works without any systemd unit cleanup."""
-        session = registry.spawn_local("sleep 60")
-        time.sleep(1.0)
+    def test_unscoped_windows_stop_reports_unknown(self, registry):
+        """A wrapper handle without a native job scope cannot prove tree cleanup."""
+        from tests.waiting import wait_until
+        session = registry.spawn_local("echo native-stop-ready; exec sleep 2")
+        wait_until(lambda: 'native-stop-ready' in session.output_buffer, timeout=10)
         result = registry.kill_process(session.id)
-        assert result.get("status") in {"killed", "already_exited"}
-        assert session.systemd_unit == ""
+        assert (result['status'], result['error']) == ('error', 'process_stop_unknown')
+        assert session.systemd_unit == "" and session._scope_stop_pending
+        # The finite fixture completes naturally; no guessed descendant is signaled.
+        assert session._completion_event.wait(10)

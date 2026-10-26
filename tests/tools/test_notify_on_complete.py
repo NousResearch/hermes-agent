@@ -172,20 +172,27 @@ class TestCheckpointNotify:
             assert len(data) == 1
             assert data[0]["notify_on_complete"] is True
 
-    def test_recover_defaults_false(self, registry, tmp_path):
+    @pytest.mark.platforms("linux")
+    def test_recover_defaults_false(self, registry, tmp_path, monkeypatch):
         """Old checkpoint entries without the field default to False."""
-        checkpoint = tmp_path / "procs.json"
-        checkpoint.write_text(json.dumps([{
-            "session_id": "proc_live",
-            "command": "sleep 999",
-            "pid": os.getpid(),
-            "task_id": "t1",
-        }]))
-        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
-            recovered = registry.recover_from_checkpoint()
-            assert recovered == 1
-            s = registry.get("proc_live")
-            assert s.notify_on_complete is False
+        import shlex
+        import sys
+        from tools import process_registry as module
+        monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+        monkeypatch.setattr(module, '_systemd_run_user_scope_available', lambda: False)
+        session = registry.spawn_local('exec ' + shlex.join([
+            sys.executable, '-c', 'import threading; threading.Event().wait(15)']))
+        try:
+            checkpoint = module._checkpoint_path()
+            rows = json.loads(checkpoint.read_text())
+            for row in rows:
+                row.pop('notify_on_complete', None)
+            checkpoint.write_text(json.dumps(rows))
+            successor = ProcessRegistry()
+            assert successor.recover_from_checkpoint() == 1
+            assert successor.get(session.id).notify_on_complete is False
+        finally:
+            assert registry.kill_process(session.id)['status'] in {'killed', 'already_exited'}
 
 
 # =========================================================================

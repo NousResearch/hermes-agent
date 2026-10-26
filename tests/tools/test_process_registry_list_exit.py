@@ -1,11 +1,10 @@
-"""List refresh observes the child, not its descendants' capture-pipe lifetime."""
+"""List refresh preserves native job lifetime and one final owned completion."""
 
 import ctypes
 import json
 import os
 from pathlib import Path
 import shlex
-import signal
 import subprocess
 import sys
 import time
@@ -125,8 +124,11 @@ def _probe(root):
             time.sleep(0.01)
         assert all(s.process.poll() is None for s in sessions)
         (root / "owner-exit").touch()
-        assert owner.process.wait(timeout=5) == 0
-        assert owner._reader_thread.is_alive()  # Writer is still producing output.
+        from tools.process_registry_job import read_job_receipt
+        from tests.waiting import wait_until
+        wait_until(lambda: (row := read_job_receipt(owner)) and row['exit_code'] == 0, timeout=5)
+        assert owner.process.poll() is None  # Kernel scope still contains the writer.
+        assert owner._reader_thread.is_alive()
         started = time.monotonic()
         listed = registry.list_sessions(session_key="owner-session")
         elapsed = time.monotonic() - started
@@ -134,8 +136,12 @@ def _probe(root):
                           "elapsed": elapsed, "reader_alive": owner._reader_thread.is_alive()}), flush=True)
         assert elapsed < 2, "list waited for the descendant's pipe lifetime"
         assert [entry["session_id"] for entry in listed] == [owner.id]
-        assert listed[0]["status"] == "exited"
-        assert listed[0]["exit_code"] == 0
+        assert listed[0]["status"] == "running"
+        assert registry.completion_queue.empty()
+        (root / "owner-stop").touch()
+        assert owner.process.wait(timeout=5) == 0
+        assert owner._completion_event.wait(5)
+        assert registry.list_sessions(session_key="owner-session")[0]['status'] == 'exited'
         event = registry.completion_queue.get(timeout=2)
         assert (event["session_id"], event["session_key"], event["task_id"], event["owner_task_id"]) == (
             owner.id, "owner-session", "owner-task", "owner-owner")
@@ -154,16 +160,14 @@ def _probe(root):
         assert not registry.is_completion_consumed(owner.id)
         assert "owner-output" in registry.read_log(owner.id)["output"]
         assert registry.is_completion_consumed(owner.id)
-        print("PASS: list-only exit; one exact-owner event; running sibling isolated; unread output retained", flush=True)
+        print("PASS: native job lifetime; one exact-owner event; running sibling isolated; unread output retained", flush=True)
     finally:
         for name in ("owner", "sibling"):
             (root / (name + "-stop")).touch()
             (root / (name + "-exit")).touch()
         for session in sessions:
-            try:
-                os.killpg(session.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            result = registry.kill_process(session.id)
+            assert result['status'] in {'killed', 'already_exited'}, result
             session.process.wait(timeout=5)
             session._reader_thread.join(timeout=5)
         # This subprocess contains only our two child trees.

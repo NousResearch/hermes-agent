@@ -517,6 +517,26 @@ def _rearm_uncompressed_overflow_warn(
 # ── JEV drift-triggered compaction ──
 
 
+def _drift_confirm_client(agent: Any):
+    """Client for the ambiguous-band judge, or ``(None, None)``.
+
+    Rides the auxiliary "compression" task — the same cheap route the summarizer
+    takes (provider/model/base_url/api_key resolve exactly like the summary call) —
+    never the main chat model: this check runs at turn start and must stay cheap.
+    """
+    try:
+        from agent.auxiliary_client import _resolve_task_provider_model, resolve_provider_client
+        provider, model, base_url, api_key, _mode = _resolve_task_provider_model("compression")
+        client, resolved_model = resolve_provider_client(
+            provider or "auto", model=model, task="compression", raw_codex=True,
+            explicit_base_url=base_url, explicit_api_key=api_key,
+        )
+        return client, (resolved_model or model or agent.model)
+    except Exception:
+        logger.debug("Drift confirm client unavailable", exc_info=True)
+        return None, None
+
+
 def _drift_model_check(agent: Any, incoming: str, prior_excerpt: str) -> Optional[bool]:
     """Ambiguous-band tiebreak: ask a model whether replying needs the earlier context.
 
@@ -525,8 +545,7 @@ def _drift_model_check(agent: Any, incoming: str, prior_excerpt: str) -> Optiona
     missing an early compaction is harmless, a wrong one is lossy.
     """
     try:
-        from agent.auxiliary_client import resolve_provider_client
-        client, _ = resolve_provider_client(agent.provider or "auto", model=agent.model, raw_codex=True)
+        client, confirm_model = _drift_confirm_client(agent)
         if client is None:
             return None
         prompt = (
@@ -536,8 +555,8 @@ def _drift_model_check(agent: Any, incoming: str, prior_excerpt: str) -> Optiona
             f"EARLIER CONTEXT:\n{prior_excerpt[-4000:]}\n\nNEW MESSAGE:\n{incoming[-1000:]}"
         )
         resp = client.chat.completions.create(
-            model=agent.model, messages=[{"role": "user", "content": prompt}],
-            max_tokens=16, temperature=0,
+            model=confirm_model, messages=[{"role": "user", "content": prompt}],
+            max_tokens=16, temperature=0, timeout=20,
         )
         choices = getattr(resp, "choices", None) or []
         text = str((choices[0].message.content or "") if choices else "").strip().upper()

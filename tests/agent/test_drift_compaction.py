@@ -89,11 +89,19 @@ class TestDependenceScore:
 
     def test_disjoint_texts_score_low(self):
         score = drift_dependence_score(
-            "redeploy the kubernetes cluster in frankfurt",
+            "redeploy the kubernetes cluster in the frankfurt datacenter",
             ["the quarterly budget spreadsheet needs revision", "invoice totals look wrong"],
         )
         assert score is not None
         assert score <= _DRIFT_INDEPENDENT_MAX
+
+    def test_short_generic_followup_has_no_signal(self):
+        # "fix the second bug too" is dependent on history despite zero lexical overlap;
+        # too little signal must route to the model check, never the clear-independent band.
+        assert drift_dependence_score(
+            "fix the second bug too",
+            ["the gateway crash loop kept respawning the telegram adapter"],
+        ) is None
 
     def test_shared_vocabulary_scores_high(self):
         score = drift_dependence_score(
@@ -106,6 +114,35 @@ class TestDependenceScore:
     def test_too_little_signal_is_none(self):
         assert drift_dependence_score("ok", ["nothing useful here"]) is None
         assert drift_dependence_score("a real message with words", []) is None
+
+
+class TestDriftModelCheck:
+    """The ambiguous-band judge's parse contract (client is a mocked aux model)."""
+
+    @staticmethod
+    def _fake_client(content):
+        msg = SimpleNamespace(content=content)
+        client = MagicMock()
+        client.chat.completions.create.return_value = SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+        return client
+
+    def test_parses_yes_no(self):
+        from agent.turn_context_compaction import _drift_model_check
+
+        agent = SimpleNamespace(provider="x", model="m")
+        with patch("agent.turn_context_compaction._drift_confirm_client",
+                   return_value=(self._fake_client("NO"), "m")):
+            assert _drift_model_check(agent, "question", "context") is False
+        with patch("agent.turn_context_compaction._drift_confirm_client",
+                   return_value=(self._fake_client("YES"), "m")):
+            assert _drift_model_check(agent, "question", "context") is True
+
+    def test_unavailable_client_stays_none(self):
+        from agent.turn_context_compaction import _drift_model_check
+
+        agent = SimpleNamespace(provider="x", model="m")
+        with patch("agent.turn_context_compaction._drift_confirm_client", return_value=(None, None)):
+            assert _drift_model_check(agent, "question", "context") is None
 
     def test_ambiguous_band_detection(self):
         assert drift_score_ambiguous(None) is True

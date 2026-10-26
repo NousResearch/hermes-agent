@@ -495,6 +495,10 @@ def _should_idle_compact(
 
 _DRIFT_DEPENDENT_MIN = 0.45    # >= : lexically entangled with the old region → keep it
 _DRIFT_INDEPENDENT_MAX = 0.15  # <= : disjoint from it → safe to compact away
+# Below this many content words the clear bands are untrustworthy: a short generic
+# follow-up ("fix the second bug too") depends on history despite zero lexical
+# overlap. Too little signal routes to the model check instead.
+_DRIFT_MIN_SIGNAL_WORDS = 5
 _DRIFT_STOPWORDS = frozenset(
     "a an and are as at be been but by can did do does for from had has have how if in into is it "
     "its just may might must not of on or our should so than that the their them there these they this "
@@ -524,7 +528,7 @@ def drift_dependence_score(incoming: str, prior_texts: list[str]) -> Optional[fl
     runs on every turn start and must cost no provider call.
     """
     incoming_words = _drift_content_words(incoming)
-    if len(incoming_words) < 3:
+    if len(incoming_words) < _DRIFT_MIN_SIGNAL_WORDS:
         return None
     older: set[str] = set()
     for text in prior_texts:

@@ -3621,7 +3621,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             and any(str(ch) == str(event.source.chat_id) and self.is_in_voice_channel(gid)
                     for gid, ch in self._voice_text_channels.items()))
 
-    async def _synthesize_auto_tts(self, text_content: str, *, event=None) -> Tuple[List[str], Optional[str]]:
+    async def _synthesize_auto_tts(self, text_content: str, *, event=None) -> tuple[list[str], Optional[str]]:
         """Discord override: stream the audio into the VC live instead of file synthesis.
 
         When ``discord.voice_fx.stream_replies.enabled`` is set and the reply's chat maps
@@ -3636,8 +3636,18 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         Returns:
             ``(existing_paths, requested_path)``; empty paths when streamed into the VC.
         """
+        import os as _os
+        if _os.environ.get("HERMES_STTS_TRACE"):
+            logger.warning("[stts-trace] _synthesize_auto_tts CALLED (event=%s chat=%s stream_enabled=%s text_len=%s)",
+                           event is not None,
+                           getattr(getattr(event, "source", None), "chat_id", "?"),
+                           self._stream_tts_enabled(), len(text_content or ""))
         if event is not None and self._stream_tts_enabled() and text_content and text_content.strip():
             try:
+                import os as _os
+                if _os.environ.get("HERMES_STTS_TRACE"):
+                    logger.warning("[stts-trace] _synthesize_auto_tts streaming branch ENTER (chat=%s bound=%s)",
+                                   event.source.chat_id, dict(self._voice_text_channels))
                 for gid, text_ch_id in self._voice_text_channels.items():
                     if str(text_ch_id) == str(event.source.chat_id) and self.is_in_voice_channel(gid):
                         streamed = await self.play_reply_streaming_in_voice(gid, text_content)
@@ -4043,9 +4053,15 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
 
     _STREAM_PIECE_CHARS_DEFAULT = 250
 
-    def _stream_tts_cfg(self) -> Dict[str, Any]:
+    def _stream_tts_cfg(self) -> dict[str, Any]:
         cfg = getattr(self, "_voice_fx_cfg", None) or {}
-        return cfg.get("stream_replies") if isinstance(cfg.get("stream_replies"), dict) else {}
+        section = cfg.get("stream_replies") if isinstance(cfg.get("stream_replies"), dict) else {}
+        import os as _os
+        if _os.environ.get("HERMES_STTS_TRACE"):
+            logger.warning("[stts-trace] _stream_tts_cfg -> _voice_fx_cfg=%s stream_replies=%s enabled=%s",
+                           {k: (v if k != "ack_phrases" else "<...>") for k, v in cfg.items()} or "EMPTY",
+                           section, bool(section.get("enabled")))
+        return section
 
     def _stream_tts_piece_chars(self) -> int:
         try:
@@ -4063,7 +4079,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         return bool(self._stream_tts_cfg().get("enabled"))
 
     @staticmethod
-    def _chatterbox_pcm_config() -> Optional[Dict[str, Any]]:
+    def _chatterbox_pcm_config() -> Optional[dict[str, Any]]:
         """Chatterbox pcm-endpoint settings when the configured provider is a
         Chatterbox server (local branch experiment); None keeps the wav path.
 
@@ -4092,7 +4108,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         }
         return merged
 
-    async def _synthesize_piece_pcm(self, piece: str, timeout_s: float, pcm_cfg: Dict[str, Any]) -> Optional[bytes]:
+    async def _synthesize_piece_pcm(self, piece: str, timeout_s: float, pcm_cfg: dict[str, Any]) -> Optional[bytes]:
         """Render one piece as raw 24 kHz mono PCM -> 48 kHz stereo via the resampler.
 
         Same endpoint as the wav bridge, ``response_format: pcm``; skips the
@@ -4178,9 +4194,17 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         """
         cfg = self._stream_tts_cfg()
         if not (self._stream_tts_enabled() and text and text.strip()):
+            import os as _os
+            if _os.environ.get("HERMES_STTS_TRACE"):
+                logger.warning("[stts-trace] play_reply_streaming_in_voice DECLINE-at-entry: enabled=%s text_len=%s",
+                               self._stream_tts_enabled(), len(text or ""))
             return False
         mixer = self._voice_mixers.get(guild_id)
         if mixer is None:
+            import os as _os
+            if _os.environ.get("HERMES_STTS_TRACE"):
+                logger.warning("[stts-trace] play_reply_streaming_in_voice NO-MIXER guild=%s installed=%s",
+                               guild_id, list(self._voice_mixers.keys()))
             return False
         # Same spoken-script prep the file-TTS path gets (base.prepare_tts_text): strips
         # /reasoning-show reasoning blocks, the file-mutation verifier footer, and flattens
@@ -4197,8 +4221,14 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         rewrite_min = int(cfg.get("rewrite_min_chars", 400))
         if len(text) >= rewrite_min:
             try:
+                import os as _os
+                import time as _time
+                _rw_t0 = _time.time() if _os.environ.get("HERMES_STTS_TRACE") else 0.0
                 from tools.tts_rewrite import rewrite_text_for_speech
                 rewritten = await asyncio.to_thread(rewrite_text_for_speech, text)
+                if _os.environ.get("HERMES_STTS_TRACE"):
+                    logger.warning("[stts-trace] pre-rewrite done in %.1fs: %d -> %s chars",
+                                   _time.time() - _rw_t0, len(text), len(rewritten or ""))
                 if rewritten and rewritten.strip():
                     text = rewritten
             except Exception as e:
@@ -4274,7 +4304,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             # Only reply pumps register for voice-leave teardown; interim pumps are
             # deliberately fire-and-forget. The slot pops itself when the pump ends,
             # guarded so a newer pump's registration is never clobbered by a stale pop.
-            def _pop_teardown_task(done_task: "asyncio.Task", *, _gid: int = guild_id) -> None:
+            def _pop_teardown_task(done_task: asyncio.Task, *, _gid: int = guild_id) -> None:
                 if self._stream_tts_tasks.get(_gid) is done_task:
                     self._stream_tts_tasks.pop(_gid, None)
             self._stream_tts_tasks[guild_id] = task

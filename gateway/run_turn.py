@@ -1304,6 +1304,12 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             message_type is not None
             and str(getattr(message_type, "value", message_type)).lower() == "voice"
         )
+        import os as _trace_os
+        if _trace_os.environ.get("HERMES_STTS_TRACE"):
+            _probe = getattr(_stts_adapter, "_should_auto_tts_for_chat", None)
+            _probe_val = _probe(source.chat_id) if callable(_probe) else "n/a"
+            logger.warning("[stts-trace] _run_agent_start_streaming_tts: message_type=%s voice_input=%s adapter=%s auto_tts_chat=%s",
+                           message_type, _is_voice_input, _stts_adapter is not None, _probe_val)
         if _stts_adapter is None or not _is_voice_input or not _stts_adapter._should_auto_tts_for_chat(source.chat_id):
             return
         try:
@@ -1317,7 +1323,11 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             if _stts_consumer.active:
                 streaming_tts_consumer_holder[0] = _stts_consumer
                 _stts_consumer.start()
+            elif _trace_os.environ.get("HERMES_STTS_TRACE"):
+                logger.warning("[stts-trace] StreamingTTSConsumer inactive (streamer=None for cfg)")
         except Exception as _stts_err:
+            if _trace_os.environ.get("HERMES_STTS_TRACE"):
+                logger.warning("[stts-trace] consumer arm CRASHED: %s", _stts_err)
             logger.debug("Could not set up streaming TTS consumer: %s", _stts_err)
 
     async def _run_agent_stream_consumer_task(self, stream_consumer_holder: list) -> None:

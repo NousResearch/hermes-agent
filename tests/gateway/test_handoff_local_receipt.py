@@ -310,6 +310,82 @@ async def test_the_bots_own_bot_chat_after_a_reset_handoff_and_the_lanes_new_is_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('lands', ['after the title read', 'before the displace write'])
+async def test_a_delivery_racing_the_lanes_new_mints_the_fresh_bot_chat(tmp_path, monkeypatch, lands):
+    """The lane's ``/new`` frees the handed-off Bot Chat's title from the store's worker thread,
+    outside the titled-create lock. A delivery it lands in the middle of still lands in exactly one
+    canonical Bot Chat, a fresh one, instead of failing on the title that vanished under it."""
+    from gateway import session_bot
+    runner, warm, owner, ref, _telegram, route = await _handed_off_bot_chat(tmp_path)
+    runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
+    runner._cached_agent_for = lambda route: None
+    release, displaceable = session_bot.release_superseded_bot_chat, session_bot.displaceable_bot_chat
+    if lands == 'before the displace write':  # the /new switched the lane; its rename is still pending
+        monkeypatch.setattr(session_bot, 'release_superseded_bot_chat', lambda *_args: None)
+        runner.session_store.reset_session(route)
+    seen = []
+
+    def racing(authority, row):
+        found = displaceable(authority, row)
+        seen.append(found)
+        if lands == 'after the title read' and len(seen) == 1:
+            runner.session_store.reset_session(route)  # the lane held it when the delivery read it
+        elif lands == 'before the displace write' and len(seen) == 2:  # under the lock
+            release(warm.db, runner.session_store, route, ref.session_id)
+        return found
+    monkeypatch.setattr(session_bot, 'displaceable_bot_chat', racing)
+    fresh = (await session_bot._target(warm, owner))[0].session_id
+    assert fresh != ref.session_id
+    assert warm.db.get_session_by_title('Bot Chat')['id'] == fresh
+    assert warm.db.get_session(ref.session_id)['title'] == f'Bot Chat (telegram {ref.session_id})'
+
+
+def _resume_gateway(runner, authority):
+    """The platform's ``/resume`` handler (``GatewayRunner._handle_resume_command``) on the real store,
+    run by an admin (``--all`` widens it to every titled conversation)."""
+    from gateway.run import GatewayRunner
+    from hermes_state import AsyncSessionDB
+    gateway = object.__new__(GatewayRunner)
+    gateway.adapters, gateway.config, gateway._voice_mode, gateway._running_agents = {}, runner.config, {}, {}
+    gateway._session_db, gateway.session_store = AsyncSessionDB(authority.db), runner.session_store
+    gateway.session_authority = authority
+    gateway._is_user_authorized = gateway._resume_caller_is_admin = lambda _source: True
+    return gateway
+
+
+@pytest.mark.asyncio
+async def test_a_platform_resume_of_a_local_conversation_continues_its_current_head(tmp_path):
+    """Bot Chat X, then a local ``/new`` (the receipt names the new segment X2), then an admin's
+    ``/resume --all Bot Chat`` on Telegram: the title still names X, the first segment. The lane
+    continues the conversation's head, as ``/handoff`` carries it, so X2 never stays a local row
+    whose receipt was released (refused ``storage_unavailable`` after a restart)."""
+    from gateway.platforms.event import MessageEvent
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_contract import Principal, SessionRef
+    from gateway.session_local import create_local_session
+    from gateway.session_local_title import resolve_titled_session
+    from hermes_state_local import local_receipt
+    runner = _Runner(tmp_path)
+    warm = await initialize_session_authority(runner, profile_id='fixture', instance_id='warm')
+    owner = Principal('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control'}), 'socket')
+    ref = create_local_session(warm, owner, {'request_id': 'bot-chat', 'source': 'gui', 'cwd': str(tmp_path),
+                                             'model': 'frozen', 'toolsets': []})
+    warm.db.set_session_title(ref.session_id, 'Bot Chat')
+    runner.session_store.reset_session(warm.sessions[ref.session_id].route)
+    head = SessionRef('fixture', local_receipt(warm.db, ref.session_id)['entry']['session_id'])
+    telegram = _source()
+    reply = await _resume_gateway(runner, warm)._handle_resume_command(
+        MessageEvent(text='/resume --all Bot Chat', source=telegram))
+    route = runner.session_store._generate_session_key(telegram)
+    assert runner.session_store.lookup_by_session_key(route).session_id == head.session_id, reply
+
+    cold = await initialize_session_authority(_Runner(tmp_path), profile_id='fixture', instance_id='cold')
+    cold.authorize(owner, head, 'session:control')
+    assert resolve_titled_session(cold, owner, 'Bot Chat') == head
+    assert cold.sessions[head.session_id].route == route
+
+
+@pytest.mark.asyncio
 async def test_a_moved_receipt_with_a_malformed_lineage_never_stops_the_boot(tmp_path, monkeypatch):
     from gateway.session_authority import initialize_session_authority
     from gateway.session_contract import Principal

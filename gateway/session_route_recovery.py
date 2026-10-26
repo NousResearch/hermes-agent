@@ -165,6 +165,21 @@ def superseded_hand_off(authority, ref):
     return bool(live is not None and live.superseded) or _names_another_conversation(authority, ref.session_id, route)
 
 
+async def conversation_head(runner, session_id):
+    """``(authority, local owner or None, row id)`` a repoint of *session_id* onto a messaging lane
+    carries (``/handoff``, a platform ``/resume``): a local conversation's current head
+    (``hermes_state_local.handoff_head``), never an earlier ``/new`` segment, which would move that
+    history onto the lane while the live conversation stays local, its receipt released (#143286)."""
+    import asyncio
+    from gateway.session_authorities import active_authority
+    from hermes_state_local import handoff_head
+    authority = active_authority(runner)
+    db = authority.db if authority is not None else getattr(runner._session_db, '_db', runner._session_db)
+    if db is None:
+        return authority, None, session_id
+    return (authority, *await asyncio.to_thread(handoff_head, db, session_id))
+
+
 def follow_hand_off(authority, source, route, owner, local_owner):
     """After ``/handoff`` repointed *route* at *owner* (the lane's logical id of the conversation's
     head): the local mount a viewer still holds (*local_owner*, the Desktop that ran it) moves onto

@@ -186,8 +186,12 @@ async def _target(authority, actor):
         # None: a concurrent delivery created it first. A title held by an API conversation no FIFO
         # can own is moved aside first, under the same lock (MSG-21, #140769).
         ref = await _create_bot_chat(authority, actor, displace=None if row is None else displaced)
+    if ref is None and (row := authority.db.get_session_by_title('Bot Chat')) is None:
+        # Moved aside since it was read: a lane's /new frees a handed-off Bot Chat's title off the
+        # titled-create lock (``release_superseded_bot_chat``). None again: a concurrent delivery minted.
+        if (ref := await _create_bot_chat(authority, actor)) is None:
+            row = authority.db.get_session_by_title('Bot Chat')
     if ref is None:
-        row = authority.db.get_session_by_title('Bot Chat')
         tip = authority.db.get_compression_tip(row['id'])
         target = authority.db.get_session(tip)
         if target is None:
@@ -336,7 +340,11 @@ async def _create_bot_chat(authority, actor, *, displace=None):
             if displace is None or held['id'] != displace or displaceable_bot_chat(authority, held) != displace:
                 return None
             logger.warning("Bot Chat title held by %s, a conversation no FIFO can own: moving it aside", displace)
-            if not await tracked_write(authority, partial(_displace_bot_chat, authority.db, displace)):
+            # False: the title moved since the check. A lane's ``/new`` frees a handed-off Bot Chat's
+            # title from the store's worker thread, outside this lock (``release_superseded_bot_chat``):
+            # nobody holds it then, so this delivery mints the replacement.
+            if (not await tracked_write(authority, partial(_displace_bot_chat, authority.db, displace))
+                    and authority.db.get_session_by_title('Bot Chat') is not None):
                 return None
         # The Bot Chat follows its profile whoever mints it (a Bot or cron delivery, a peer DM),
         # the same contract Desktop's create asks for. A later profile change reaches it.

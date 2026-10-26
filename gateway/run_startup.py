@@ -1889,19 +1889,14 @@ class GatewayStartupMixin:
         (``handoff_head``), so its whole chain moves onto the lane together with the local receipt
         that guards it, and a viewer still holding it open (the Desktop that ran /handoff) follows
         it (#143286)."""
-        from gateway.session_authorities import active_authority
-        from hermes_state_local import handoff_head
-        authority = active_authority(self)
-        db = authority.db if authority is not None else getattr(self._session_db, '_db', self._session_db)
-        local_owner, target = (None, cli_session_id) if db is None else await asyncio.to_thread(
-            handoff_head, db, cli_session_id)
+        from gateway.session_route_recovery import conversation_head, follow_hand_off
+        authority, local_owner, target = await conversation_head(self, cli_session_id)
         # Ensure a session_store entry exists for this key; switch_session then re-points it.
         await self.async_session_store.get_or_create_session(dest.source)
         switched = await self.async_session_store.switch_session(session_key, target, preserve_prompt_pin=False)
         if switched is None:
             raise RuntimeError(f"could not switch session key {session_key} → {target}")
         if authority is not None:
-            from gateway.session_route_recovery import follow_hand_off
             follow_hand_off(authority, dest.source, session_key, authority.logical_owner(target), local_owner)
 
     async def _process_handoff(self, row: dict[str, Any], profile_name: Optional[str] = None) -> None:

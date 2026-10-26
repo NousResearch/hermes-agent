@@ -26,7 +26,9 @@ from gateway.session import SessionEntry, SessionSource, SessionStore
 from gateway.run_shutdown import _delivery_target_key, _log_suppressed, _notice_target_key, _send_error, _send_failed
 from gateway.run_notifications_update import GatewayUpdateNotificationsMixin
 from gateway.run_notifications_ownership import GatewayNotificationOwnershipMixin
-from gateway.run_notifications_busy_result import CarriedCompletion
+from gateway.run_notifications_busy_result import (carry_completion_into_running_turn,
+                                                  record_coalesced_completion_siblings,
+                                                  settle_carried_completions, settle_completion_claims)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -1301,7 +1303,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             completion_ids = [claim.delegation_id] if claim.claim_id else []
             completion_ids += [sibling["delegation_id"] for sibling, claim_id in sibling_claims if claim_id]
             evt = {**evt, "completion_ids": completion_ids}
-            carry = self._carry_completion_into_running_turn(synth_text, evt, claim, identity, sibling_claims)
+            carry = carry_completion_into_running_turn(self, synth_text, evt, claim, identity, sibling_claims)
             if carry is True:
                 carried = True  # the running turn's tool result delivers it; claims settle there
                 return True
@@ -1322,104 +1324,11 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             return False
         finally:
             if not carried:
-                if identity_claimed and not accepted:
-                    with self._completion_delivery_lock:
-                        self._completion_deliveries_inflight.discard(identity)
-                operation = "complete" if accepted else "defer" if refused or claim.defer else "release"
-                if claim.claim_id:
-                    self._settle_durable_claim(operation, claim.delegation_id, claim.claim_id)
-                for sibling, claim_id in sibling_claims:
-                    if claim_id:
-                        self._settle_durable_claim(operation, sibling["delegation_id"], claim_id)
-                if accepted and sibling_claims:
-                    self._record_coalesced_completion_siblings([event for event, _claim_id in sibling_claims])
-
-    def _busy_result_mode(self, evt_type: str) -> str:
-        """The profile in scope's busy-result mode for ``evt_type`` (see the sibling module)."""
-        from gateway.run_notifications_busy_result import busy_result_mode
-        return busy_result_mode(evt_type)
-
-    def _carry_completion_into_running_turn(self, synth_text: str, evt: dict, claim, identity, sibling_claims):
-        """``steer`` mode: hand a claimed completion to the session's running agent, which appends it
-        to its next tool result (``agent.background_results``), instead of queueing a new turn. A
-        delegation returns True and its claims stay held until ``_settle_carried_completions`` sees
-        whether a tool batch carried it; a process completion returns that outcome as a future."""
-        from gateway.run_notifications_busy_result import BUSY_RESULT_MODE_KEYS, offer_process_completion
-        if evt.get("type") not in BUSY_RESULT_MODE_KEYS or evt.get("task_failure_notice") or evt.get("origin_session_id"):
-            return False
-        from gateway.run import _AGENT_PENDING_SENTINEL
-        state = self._peek_session_state(str(evt.get("session_key") or ""))
-        agent = state.turn.agent if state is not None else None
-        if agent is None or agent is _AGENT_PENDING_SENTINEL or not callable(getattr(agent, "steer", None)):
-            return False
-        if self._busy_result_mode(evt["type"]) != "steer":
-            return False
-        from agent.background_results import offer
-        carried = CarriedCompletion(evt, claim.delegation_id, claim.claim_id, identity, tuple(sibling_claims))
-        self.__dict__.setdefault("_carrying_agents", {})[id(agent)] = agent
-        if evt["type"] == "completion":
-            return offer_process_completion(agent, carried, synth_text)
-        offer(agent, carried, synth_text)
-        logger.info("Carrying async delegation %s into the running turn of %s",
-                    claim.delegation_id or "<legacy>", evt.get("session_key"))
-        return True
+                settle_completion_claims(self, claim, sibling_claims, identity, identity_claimed, accepted, refused)
 
     async def _settle_carried_completions(self, agent: Any = None, *, final: bool = False) -> None:
-        """Acknowledge completions a tool result carried; at turn end (``final``) hand the rest back
-        to the completion queue (claims deferred, no attempt spent) so they arrive as the next turn."""
-        try:
-            await self._settle_carried_completions_unguarded(agent, final=final)
-        except Exception:  # health: allow BLE001 -- runs in a turn's cleanup; the claim lease re-offers anything unsettled
-            logger.warning("Could not settle carried subagent completions", exc_info=True)
-
-    async def _settle_carried_completions_unguarded(self, agent: Any, *, final: bool) -> None:
-        from agent.background_results import take_delivered, take_outcome
-        agents = self.__dict__.get("_carrying_agents") or {}
-        if agent is not None and id(agent) not in agents:
-            return
-        for current in [agent] if agent is not None else list(agents.values()):
-            if final:
-                agents.pop(id(current), None)
-            # Settling an outcome can register a new carry: run_turn settles while the agent slot is
-            # still held, so a delivery landing now sees that agent and re-registers. Drain until
-            # quiet, bounded so a hot queue still ends.
-            for _ in range(64):
-                if final:
-                    delivered, undelivered = take_outcome(current)
-                else:
-                    delivered, undelivered = take_delivered(current), []
-                if not delivered and not undelivered:
-                    break
-                for carried in delivered:
-                    await self._settle_carried_completion(carried, "complete")
-                for carried, _text in undelivered:
-                    await self._settle_carried_completion(carried, "defer")
-
-    async def _settle_carried_completion(self, carried: CarriedCompletion, operation: str) -> None:
-        from tools.process_registry import process_registry as _pr
-        if carried.waiter is not None:  # a process completion: its waiting delivery call settles it
-            if not carried.waiter.done():
-                carried.waiter.set_result(operation == "complete")
-            return
-        async with self._completion_event_scope(carried.evt):
-            if carried.claim_id:
-                self._settle_durable_claim(operation, carried.delegation_id, carried.claim_id)
-            for sibling, claim_id in carried.siblings:
-                if claim_id:
-                    self._settle_durable_claim(operation, sibling["delegation_id"], claim_id)
-        if operation == "complete":
-            if carried.identity is not None:
-                with self._completion_delivery_lock:
-                    self._mark_completions_delivered_locked((carried.identity,))
-            if carried.siblings:
-                self._record_coalesced_completion_siblings([event for event, _claim_id in carried.siblings])
-            return
-        if carried.identity is not None:
-            with self._completion_delivery_lock:
-                self._completion_deliveries_inflight.discard(carried.identity)
-        evt = {k: v for k, v in carried.evt.items() if k != "completion_ids"}
-        for event in (evt, *(sibling for sibling, _claim_id in carried.siblings)):
-            _pr.completion_queue.put(event)
+        """Acknowledge completions a tool result carried (see ``run_notifications_busy_result``)."""
+        await settle_carried_completions(self, agent, final=final)
 
     @staticmethod
     def _event_route_key(evt: dict, fields: tuple[str, ...]) -> tuple[str, ...]:
@@ -1455,12 +1364,6 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             )
         lines.append("If a result does not change the current conclusion, absorb it silently.]")
         return "\n".join(lines)
-
-    def _record_coalesced_completion_siblings(self, events: list[dict]) -> None:
-        """Extend a successful primary delivery claim to its batched siblings."""
-        identities = [i for i in map(self._completion_delivery_identity, events) if i is not None]
-        with self._completion_delivery_lock:
-            self._mark_completions_delivered_locked(identities)
 
     async def _flush_process_completion_batch(self, key: tuple[str, ...]) -> None:
         """Deliver one short-window completion batch and resolve its waiters."""
@@ -1500,7 +1403,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 if delivered is not None:
                     break
             if delivered is True and len(entries) > 1:
-                self._record_coalesced_completion_siblings([evt for _text, evt, _future in entries])
+                record_coalesced_completion_siblings(self, [evt for _text, evt, _future in entries])
         except asyncio.CancelledError:
             # Shutdown cancellation: recover undetached entries and resolve every waiter as retryable.
             delivered = False

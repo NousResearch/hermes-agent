@@ -800,3 +800,40 @@ def test_publication_uses_the_runtime_store_when_the_tree_records_none(tmp_path,
     assert len(written) == len(_launchers.WINDOWS_BIN_LAUNCHERS)
     for path in written:
         assert shlex.quote(str(python)) in Path(path).read_text(encoding="utf-8-sig")
+
+
+@pytest.mark.parametrize("shape", ["site-packages", "external-stamp"])
+def test_external_runtime_ignores_shared_store_python(tmp_path, monkeypatch, shape):
+    from hermes_cli import gateway
+
+    repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    if shape == "site-packages":
+        external = tmp_path / "Cellar/hermes-agent/0.22.4/libexec/lib/python3.14/site-packages"
+        external.parent.mkdir(parents=True)
+        shutil.move(repo, external)
+    else:
+        external = repo
+        (external / "install-stamp.json").write_text(
+            json.dumps({"commit": "a" * 40, "updateMechanism": "external", "distribution": "nix"}),
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(gateway, "PROJECT_ROOT", external)
+    assert (home / "tools" / "facts.json").is_file()
+
+    assert _launchers.resolve_store_python(external) is None
+    assert _launchers.resolve_store_python(external, publication=True) is None
+    assert Path(gateway.get_python_path()) == Path(sys.executable)
+
+    gateway._prepare_service_launcher()
+    assert not (external / ".hermes" / "bin").exists()
+
+    command = _launchers.installation_command(external, ["gateway", "run"])
+    assert Path(command[0]) == Path(sys.executable)
+    assert str(external / ".hermes" / "bin" / "hermes") not in command
+    assert not Path(command[0]).samefile(interpreter) or Path(sys.executable).samefile(interpreter)
+
+    probe = _launchers.runtime_command(external, code="import ruamel.yaml; print('external-ok')")
+    result = subprocess.run(probe, cwd=tmp_path, capture_output=True, text=True, timeout=30, encoding="utf-8", check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "external-ok"
+

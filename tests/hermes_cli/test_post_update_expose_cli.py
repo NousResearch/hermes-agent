@@ -276,6 +276,20 @@ class TestExposeCli:
         result = _launchers.expose_cli()
         assert result == {"ok": True, "skipped": "no-store-python"}
 
+    @posix_only
+    @pytest.mark.parametrize("pkg_dir", ["site-packages", "dist-packages"])
+    def test_site_packages_install_skips_externally_owned(self, fake_install, monkeypatch, tmp_path, pkg_dir):
+        home, _ = fake_install
+        external = tmp_path / "Cellar/hermes-agent/0.22.4/libexec/lib/python3.14" / pkg_dir
+        external.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_INSTALL_ROOT", str(external))
+
+        result = _launchers.expose_cli()
+
+        assert result == {"ok": True, "skipped": "externally-owned"}
+        assert not (external / ".hermes").exists()
+        assert not (home / ".local" / "bin").exists()
+
     @pytest.mark.parametrize("create", [
         pytest.param(True, marks=pytest.mark.platforms("linux")),
         pytest.param(False, marks=posix_only),

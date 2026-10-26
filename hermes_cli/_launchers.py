@@ -114,6 +114,31 @@ def _is_windows() -> bool:
     return os.name == "nt"
 
 
+def _is_external_runtime(repo_root: Path) -> bool:
+    """True when *repo_root* is owned by an external package manager or interpreter
+    (Homebrew/pip site-packages, Nix, Docker, Termux APT) rather than a PM store."""
+    root = Path(repo_root).resolve()
+    if any(part in ("site-packages", "dist-packages") for part in root.parts):
+        return True
+    if Path("/nix/store") in root.parents:
+        return True
+    try:
+        method = (root / ".install_method").read_text(encoding="utf-8-sig").strip().lower()
+    except OSError:
+        method = ""
+    if method in ("apt", "docker", "nix", "nixos", "home-manager"):
+        return True
+    if (root / ".git").exists():
+        return False
+    from hermes_cli.steward import read_install_stamp
+
+    stamp = read_install_stamp(root)
+    return (
+        stamp.get("updateMechanism") == "external"
+        or stamp.get("distribution") in ("apt-termux", "docker", "nix")
+    )
+
+
 def resolve_store_python(repo_root: Path, *, publication: bool = False) -> Path | None:
     """Read PM's committed Python tool, without adopting unrecorded bytes.
 
@@ -124,6 +149,8 @@ def resolve_store_python(repo_root: Path, *, publication: bool = False) -> Path 
     scratch cleanup may delete, leaving the launcher to exit 127 forever
     (#131745). It still supplies the store when the tree records none.
     """
+    if _is_external_runtime(repo_root):
+        return None
     if publication:
         own = _store_python(store_root(repo_root, honor_runtime_override=False))
         if own is not None:
@@ -835,13 +862,11 @@ def expose_cli(project_root: Path | None = None, *, create: bool = True) -> dict
         cli_cfg = (load_config() or {}).get("cli", {})
         if isinstance(cli_cfg, dict) and not cli_cfg.get("expose_on_path", True):
             return {"ok": True, "skipped": "config-disabled"}
-    from hermes_cli.steward import read_install_stamp
-
     if _is_bundled_payload(root):
         if create and sys.platform == "darwin":
             return _symlink_sealed_launchers(root.parent / "bin")
         return {"ok": True, "skipped": "bundle-owns-launchers"}
-    if read_install_stamp(root).get("updateMechanism") == "external":
+    if _is_external_runtime(root):
         return {"ok": True, "skipped": "externally-owned"}
     if resolve_store_python(root, publication=True) is None:
         return {"ok": True, "skipped": "no-store-python"}

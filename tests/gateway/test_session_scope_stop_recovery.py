@@ -95,17 +95,16 @@ async def test_finished_scope_success_removes_pending_checkpoint_immediately(tmp
 async def test_completed_log_reader_cannot_hide_unattempted_owned_scope(tmp_path, monkeypatch):
     from gateway.session_ancillary import process_stop_pending, record_process_stop, retry_process_stop
     from tools import process_registry as module
-    from tools.process_registry_chat_execution import spawn_local_pipe
     from tools.process_registry_output_log import output_dir
     db, authority = _authority(tmp_path, monkeypatch)
     original = module.ProcessRegistry()
     monkeypatch.setattr(module, 'process_registry', original)
     neighbor = _spawn(original, tmp_path, 'neighbor')
     output_dir().mkdir(mode=0o700, parents=True, exist_ok=True)
-    own = original._new_session('logged scope', 's', 's', 'route', str(tmp_path))
+    monkeypatch.setattr(module, 'worker_output_log', lambda sid: output_dir() / (sid + '.log'))
+    own = original.spawn_local(shlex.join([sys.executable, '-c', 'print("scope output")']),
+                               cwd=str(tmp_path), task_id='s', owner_task_id='s', session_key='route')
     log = output_dir() / (own.id + '.log')
-    spawn_local_pipe(original, own, shlex.join([sys.executable, '-c', 'print("scope output")']),
-                     None, False, None, log=log)
     try:
         assert await asyncio.to_thread(own._completion_event.wait, 10)
         assert log.with_suffix('.exit').read_text().strip() == '0'

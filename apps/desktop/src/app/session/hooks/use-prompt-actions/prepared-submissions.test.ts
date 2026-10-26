@@ -1,6 +1,7 @@
 import { afterEach, expect, test, vi } from 'vitest'
 
 import { listPreparedImageDrafts, type PreparedSubmission, preparedSubmissionKey, readPreparedSubmission, removePreparedSubmission, writePreparedSubmission } from './prepared-submissions'
+import { storedJournal } from './prepared-submissions-test-utils'
 import type { SubmissionDestination } from './submission-destination'
 
 afterEach(() => { vi.unstubAllGlobals(); localStorage.clear() })
@@ -16,10 +17,10 @@ test('image recovery never offers expanded slash intent as an ordinary draft and
     await writePreparedSubmission(key, { id: key, text, attachments, params: { submission_id: key }, owner: { connectionId: 'local', profile: 'default' } })
   }
 
-  const before = localStorage.getItem('hermes.desktop.preparedSubmissions.v1')
+  const before = storedJournal()
   expect((await listPreparedImageDrafts('stored', destination.scopeKey)).map(entry => entry.key)).toEqual([ordinary])
   expect(await listPreparedImageDrafts('another', destination.scopeKey)).toEqual([])
-  expect(localStorage.getItem('hermes.desktop.preparedSubmissions.v1')).toBe(before)
+  expect(storedJournal()).toEqual(before)
   expect((await readPreparedSubmission(slash))?.text).toBe('expanded skill instructions')
 })
 

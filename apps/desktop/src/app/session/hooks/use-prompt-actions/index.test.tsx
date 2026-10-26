@@ -41,7 +41,7 @@ import { SESSION_COMPRESS_TIMEOUT_MS } from './slash'
 // never-settling in-flight promise from one test into the next.
 beforeEach(() => {
   clearSingleFlightSessionResumeState()
-  window.localStorage.removeItem('hermes.desktop.preparedSubmissions.v1')
+  Object.keys(window.localStorage).filter(key => key.startsWith('hermes.desktop.preparedSubmissions.v2:')).forEach(key => window.localStorage.removeItem(key))
   // Queue mutations build on the persisted map, not the atom — a queue an
   // earlier test left in storage would otherwise sit ahead of this test's send.
   window.localStorage.removeItem('hermes.desktop.composerQueue.v1')
@@ -322,7 +322,7 @@ describe('terminal receipt settlement', () => {
     try {
       expect(await handle!.submitText('next input', { fromQueue: true })).toBe(true)
       expect(handle!.state()).toMatchObject({ busy: true, awaitingResponse: true, streamId: 'owner-stream', turnLive: true })
-      expect(JSON.parse(window.localStorage.getItem('hermes.desktop.preparedSubmissions.v1')!)).toEqual({})
+      expect(Object.keys(window.localStorage).filter(key => key.startsWith('hermes.desktop.preparedSubmissions.v2:'))).toEqual([])
     } finally { $connection.set(null) }
   })
 

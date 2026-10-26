@@ -5,6 +5,16 @@ import type { SubmissionDestination } from './submission-destination'
 import type { SubmitTextOptions } from './utils'
 
 const STORAGE_KEY = 'hermes.desktop.preparedSubmissions.v1'
+// One localStorage key per browser journal entry. Every tab of the origin shares this storage with
+// last-writer-wins per KEY, so while the journal was one blob under STORAGE_KEY, two tabs rewriting
+// it at once could drop an entry the other had just written or restore one it had just retired.
+// Writing or retiring an entry now touches only keys of its own.
+const ENTRY_PREFIX = 'hermes.desktop.preparedSubmissions.v2:'
+// The blob may still hold an earlier build's uncertain sends. They stay adoptable from it, behind
+// any entry under its own key, and the blob is never rewritten: retiring a key also retires the
+// blob's entry there, recorded under its own key as that entry's id. So no tab can undo another's
+// retirement, and a newer entry that a still-open tab of the earlier build writes stays visible.
+const LEGACY_RETIRED_PREFIX = 'hermes.desktop.preparedSubmissions.v1.retired:'
 
 export interface PreparedSubmission {
   id: string
@@ -38,17 +48,22 @@ function readLegacySpent(): Record<string, string> {
   return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, string> : {}
 }
 
-function readSpent(): Record<string, string> {
-  const spent = readLegacySpent()
+// Every value stored under a key starting with `prefix`, by the rest of that key.
+function readPrefixed(prefix: string): Record<string, string> {
+  const values: Record<string, string> = {}
 
   for (let index = 0; index < window.localStorage.length; index += 1) {
     const key = window.localStorage.key(index)
-    const id = key?.startsWith(SPENT_PREFIX) ? window.localStorage.getItem(key) : null
+    const value = key?.startsWith(prefix) ? window.localStorage.getItem(key) : null
 
-    if (key && id) { spent[key.slice(SPENT_PREFIX.length)] = id }
+    if (key && value) { values[key.slice(prefix.length)] = value }
   }
 
-  return { ...spent, ...Object.fromEntries(retired) }
+  return values
+}
+
+function readSpent(): Record<string, string> {
+  return { ...readLegacySpent(), ...readPrefixed(SPENT_PREFIX), ...Object.fromEntries(retired) }
 }
 
 function writeSpent(key: string, id: string | undefined): void {
@@ -81,7 +96,8 @@ async function readJournal(): Promise<Record<string, PreparedSubmission>> {
     throw new Error('Invalid prepared submission journal')
   }
 
-  const journal = parsed as Record<string, PreparedSubmission>
+  const stored = parsed as Record<string, PreparedSubmission>
+  const journal = native ? stored : readBrowserJournal(stored)
 
   for (const [key, id] of Object.entries(readSpent())) {
     if (journal[key]?.id === id) {
@@ -95,6 +111,17 @@ async function readJournal(): Promise<Record<string, PreparedSubmission>> {
   }
 
   return journal
+}
+
+// The entries under their own keys, over the legacy blob's entries not yet retired.
+function readBrowserJournal(legacy: Record<string, PreparedSubmission>): Record<string, PreparedSubmission> {
+  for (const [key, id] of Object.entries(readPrefixed(LEGACY_RETIRED_PREFIX))) {
+    if (legacy[key]?.id === id) { delete legacy[key] }
+  }
+
+  const entries = Object.entries(readPrefixed(ENTRY_PREFIX)).map(([key, entry]) => [key, JSON.parse(entry)])
+
+  return { ...legacy, ...Object.fromEntries(entries) }
 }
 
 function clearSpent(key: string): void {
@@ -111,9 +138,11 @@ async function retireJournalEntry(key: string): Promise<void> {
     return
   }
 
-  const journal: Record<string, PreparedSubmission> = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || '{}')
-  delete journal[key]
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(journal))
+  // Remove first: under a full quota, the space this frees can let the marker write succeed.
+  window.localStorage.removeItem(ENTRY_PREFIX + key)
+  const legacy: Record<string, PreparedSubmission> = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || '{}')
+
+  if (legacy[key]) { window.localStorage.setItem(LEGACY_RETIRED_PREFIX + key, legacy[key].id) }
 }
 
 export function preparedSubmissionKey(
@@ -236,11 +265,9 @@ export async function writePreparedSubmission(key: string, entry: PreparedSubmis
     return
   }
 
-  const journal: Record<string, PreparedSubmission> = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || '{}')
-  journal[key] = entry
   // Browser-only clients retain reload recovery, not a process-crash guarantee.
   // Native write failures never fall back here: sending requires their ACK.
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(journal))
+  window.localStorage.setItem(ENTRY_PREFIX + key, JSON.stringify(entry))
   clearSpent(key)
 }
 

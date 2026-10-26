@@ -1,6 +1,6 @@
 name: hermes-windows-tasks
 repo: https://github.com/Yicheng-Mark/hermes-windows-plugins
-sha: 122b1e265481ad57510573ebd18b0b3bec989b7e
+sha: 9778252252aeec293e0d234ffe24d20de9eb2fc4
 subdir: windows-tasks
 description: >-
   Answer "what does this machine run on its own, and did it work" on Windows: win_scheduled_tasks

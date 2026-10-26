@@ -90,6 +90,20 @@ def _env_on_all_adapters_down_override() -> str | None:
     return None
 
 
+def _coerce_reply_to_mode(value: Any) -> Any:
+    """Normalise a legacy bool ``reply_to_mode`` before adapters read it.
+
+    ``gateway.json`` stored ``false``/``true``. ``False`` means ``"off"`` and
+    ``True`` means ``"first"``. Non-bool values, including newer string modes,
+    pass through unchanged.
+    """
+    if value is False:
+        return "off"
+    if value is True:
+        return "first"
+    return value
+
+
 def _normalize_transport_token(value: Any) -> str:
     """Canonical streaming transport token. YAML 1.1 parses bare ``on``/``off`` as
     booleans (``mode: off`` → ``False`` → ``"false"`` would ENABLE streaming), so
@@ -467,7 +481,7 @@ class PlatformConfig:
             token=data.get("token"),
             api_key=data.get("api_key"),
             home_channel=HomeChannel.from_dict(home) if isinstance(home, dict) else None,
-            reply_to_mode=data.get("reply_to_mode", "first"),
+            reply_to_mode=_coerce_reply_to_mode(data.get("reply_to_mode", "first")),
             gateway_restart_notification=_coerce_bool(toplevel_or_extra("gateway_restart_notification"), True),
             typing_indicator=_coerce_bool(toplevel_or_extra("typing_indicator"), True),
             typing_status_text=toplevel_or_extra("typing_status_text"),  # string passthrough, no coercion

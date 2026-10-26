@@ -2532,6 +2532,7 @@ class TestKimiTemperatureOmitted:
             # the aux call must still omit temperature or the endpoint 400s every request.
             ("k3", True),
             ("k3-256k", True),
+            ("k3.1-pro", True),  # the dot is a token boundary, so the K3.1 line is covered too
             ("kimi-coding/k3", True),
             ("kimi-k3-cot", True),
             ("kimi-for-coding", True),

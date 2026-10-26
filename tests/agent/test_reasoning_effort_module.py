@@ -190,7 +190,7 @@ class TestRequestedEffort:
 
 
 class TestIsKimiK3Slug:
-    @pytest.mark.parametrize("model", ["k3", "k3-256k", "kimi-k3", "kimi-k3-cot", "moonshotai/kimi-k3", "K3"])
+    @pytest.mark.parametrize("model", ["k3", "k3-256k", "k3.1-pro", "k3.1-preview", "kimi-k3", "kimi-k3-cot", "moonshotai/kimi-k3", "K3"])
     def test_code_endpoint_k3_ids_match(self, model):
         assert is_kimi_k3_slug(model) is True
 

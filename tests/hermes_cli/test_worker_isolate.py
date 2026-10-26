@@ -502,6 +502,26 @@ def test_launcher_argv_parser_rejects_unknown_flags():
     assert parsed[1] == "/p/wt"
     assert parsed[2] == ["/e1", "/e2"]
     assert parsed[3] == ["cmd", "x"]
+    assert parsed[4] is False  # cron flag
+    assert parsed[5] is None  # scratch path
+
+
+def test_launcher_argv_parser_handles_scratch_flag():
+    """``--scratch <path>`` parses into the scratch slot (t_a968012b)."""
+    from hermes_cli.worker_isolate import _parse_launcher_argv
+
+    parsed = _parse_launcher_argv(["/p/a", "--scratch", "/p/scratch", "--", "cmd"])
+    assert parsed[1] is None  # no worktree
+    assert parsed[5] == "/p/scratch"
+    # --scratch and --worktree are mutually exclusive.
+    with pytest.raises(ValueError):
+        _parse_launcher_argv(["/p/a", "--worktree", "/p/wt", "--scratch", "/p/s", "--", "cmd"])
+    # --scratch and --cron are mutually exclusive.
+    with pytest.raises(ValueError):
+        _parse_launcher_argv(["/p/a", "--cron", "--scratch", "/p/s", "--", "cmd"])
+    # Missing value for --scratch.
+    with pytest.raises(ValueError):
+        _parse_launcher_argv(["/p/a", "--scratch", "--", "cmd"])
 
 
 def test_enter_isolation_distinct_exit_codes_on_missing_paths(tmp_path):
@@ -640,17 +660,57 @@ def test_build_isolated_cron_worker_argv_rejects_empty():
         build_isolated_cron_worker_argv(["x"], agent_home="")
 
 
+def test_build_isolated_scratch_worker_argv_shape():
+    """The scratch-mode argv carries ``--scratch <path>`` and NOT ``--worktree``."""
+    from hermes_cli.worker_isolate import build_isolated_scratch_worker_argv
+
+    argv = build_isolated_scratch_worker_argv(
+        ["hermes", "chat"], agent_home="/p/agent", scratch="/p/scratch",
+    )
+    assert argv[0] == "unshare"
+    assert argv[1] == "-Urm"
+    assert "--scratch" in argv
+    assert argv[argv.index("--scratch") + 1] == "/p/scratch"
+    assert "--worktree" not in argv
+    assert "--cron" not in argv
+    # The worker argv comes after the ``--`` separator.
+    assert argv[-2:] == ["hermes", "chat"]
+
+
+def test_build_isolated_scratch_worker_argv_extra_rw():
+    from hermes_cli.worker_isolate import build_isolated_scratch_worker_argv
+
+    argv = build_isolated_scratch_worker_argv(
+        ["x"], agent_home="/p", scratch="/p/scratch", extra_rw=["/extra"],
+    )
+    assert "--rw" in argv
+    assert argv[argv.index("--rw") + 1] == "/extra"
+
+
+def test_build_isolated_scratch_worker_argv_rejects_empty():
+    from hermes_cli.worker_isolate import build_isolated_scratch_worker_argv
+    import pytest
+
+    with pytest.raises(ValueError):
+        build_isolated_scratch_worker_argv([], agent_home="/p/agent", scratch="/p/s")
+    with pytest.raises(ValueError):
+        build_isolated_scratch_worker_argv(["x"], agent_home="", scratch="/p/s")
+    with pytest.raises(ValueError):
+        build_isolated_scratch_worker_argv(["x"], agent_home="/p/agent", scratch="")
+
+
 def test_launcher_argv_parser_accepts_cron_flag(tmp_path):
     """``--cron`` parses cleanly; mutually exclusive with --worktree."""
     from hermes_cli.worker_isolate import _parse_launcher_argv
 
     args = [str(tmp_path), "--cron", "--", "echo", "x"]
-    agent_home, worktree, extra_rw, worker_argv, cron = _parse_launcher_argv(args)
+    agent_home, worktree, extra_rw, worker_argv, cron, scratch = _parse_launcher_argv(args)
     assert agent_home == str(tmp_path)
     assert worktree is None
     assert extra_rw == []
     assert worker_argv == ["echo", "x"]
     assert cron is True
+    assert scratch is None
 
 
 def test_launcher_argv_parser_rejects_cron_with_worktree(tmp_path):

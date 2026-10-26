@@ -141,13 +141,19 @@ def test_default_spawn_wraps_worktree_task_in_unshare(tmp_path, monkeypatch):
     assert str(worktree) in cmd
 
 
-def test_default_spawn_does_not_wrap_scratch_task(tmp_path, monkeypatch):
-    """A scratch task must NOT be wrapped -- the carve-out set is unsafe on arbitrary cwds."""
+def test_default_spawn_wraps_scratch_task_outside_agent_home(tmp_path, monkeypatch):
+    """A scratch task OUTSIDE the agent home must be wrapped (t_a968012b).
+
+    The scratch directory is carved out rw so the worker can write its
+    deliverables; the production tree stays read-only inside the sandbox.
+    """
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_dispatch as kbd
 
     agent_home = tmp_path / "agent"
-    agent_home.mkdir()
+    _seed_repo(agent_home)
+    # A scratch dir that is a SIBLING of the agent home (the real layout:
+    # <parent>/kanban/boards/<board>/workspaces/<task-id>).
     scratch = tmp_path / "scratch"
     scratch.mkdir()
 
@@ -156,7 +162,55 @@ def test_default_spawn_does_not_wrap_scratch_task(tmp_path, monkeypatch):
     _drive_spawn(kb, kbd, monkeypatch, task, str(scratch), str(agent_home), seen)
 
     cmd = seen["cmd"]
-    # No unshare prefix when the task is not worktree-anchored.
+    assert cmd[0] == "unshare", f"expected unshare prefix; full cmd={cmd!r}"
+    assert cmd[1] == "-Urm"
+    assert "hermes_cli.worker_isolate" in cmd
+    assert "_launcher" in cmd
+    assert str(agent_home) in cmd
+    assert "--scratch" in cmd
+    assert str(scratch) in cmd
+    # The worktree carve-out must NOT be used for a scratch task.
+    assert "--worktree" not in cmd
+
+
+def test_default_spawn_does_not_wrap_scratch_task_inside_agent_home(tmp_path, monkeypatch):
+    """A scratch task INSIDE the agent home must NOT be wrapped.
+
+    Carving out a path inside the tree we are protecting would hand the
+    worker write access to production.
+    """
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    agent_home = tmp_path / "agent"
+    _seed_repo(agent_home)
+    scratch = agent_home / "scratch-inside"
+    scratch.mkdir(parents=True, exist_ok=True)
+
+    task = _make_task(kb, workspace_kind="scratch", workspace_path=str(scratch))
+    seen: dict = {}
+    _drive_spawn(kb, kbd, monkeypatch, task, str(scratch), str(agent_home), seen)
+
+    cmd = seen["cmd"]
+    # No unshare prefix when the scratch path lives inside the protected tree.
+    assert cmd[0] != "unshare"
+
+
+def test_default_spawn_does_not_wrap_dir_workspace(tmp_path, monkeypatch):
+    """A ``dir`` workspace is not carved out -- only worktree/scratch are."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    agent_home = tmp_path / "agent"
+    _seed_repo(agent_home)
+    dirws = tmp_path / "dirws"
+    dirws.mkdir()
+
+    task = _make_task(kb, workspace_kind="dir", workspace_path=str(dirws))
+    seen: dict = {}
+    _drive_spawn(kb, kbd, monkeypatch, task, str(dirws), str(agent_home), seen)
+
+    cmd = seen["cmd"]
     assert cmd[0] != "unshare"
 
 

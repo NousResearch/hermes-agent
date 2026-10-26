@@ -285,17 +285,24 @@ def _build_launcher_argv(
     worktree: Optional[str],
     extra_rw: Sequence[str],
     cron: bool = False,
+    scratch: Optional[str] = None,
 ) -> List[str]:
     """Argv for the launcher itself (without the ``unshare -Urm`` prefix).
 
     Layout: ``[<py>, -m, hermes_cli.worker_isolate, _launcher, <agent_home>,
-    [--cron] [--worktree <path>] [--rw <path>...] -- <worker argv...>]``.
+    [--cron] [--worktree <path> | --scratch <path>] [--rw <path>...] --
+    <worker argv...>]``.
 
     The ``--cron`` flag tells the launcher that the worker has no per-task
     worktree: the carve-out set computes the worker's branch ref directory
     from the agent home's own ``.git/HEAD`` instead of from a worktree's
     HEAD. Used by ``build_isolated_cron_worker_argv`` for the cron
     subprocess path (``t_102333c4``).
+
+    The ``--scratch`` flag tells the launcher that the worker's writable
+    area is a plain per-task directory rather than a git worktree, so the
+    carve-out set is that directory instead of the worktree + its branch
+    ref dir. Used by ``build_isolated_scratch_worker_argv``.
     """
     argv: List[str] = list(_launcher_module_target())
     argv.append(agent_home)
@@ -303,9 +310,46 @@ def _build_launcher_argv(
         argv.append("--cron")
     if worktree:
         argv += ["--worktree", worktree]
+    if scratch:
+        argv += ["--scratch", scratch]
     if extra_rw:
         argv += ["--rw", *extra_rw]
     return argv
+
+
+def build_isolated_scratch_worker_argv(
+    command: Sequence[str],
+    *,
+    agent_home: str,
+    scratch: str,
+    extra_rw: Sequence[str] = (),
+) -> List[str]:
+    """Return the launcher-prefixed argv for a SCRATCH-workspace worker.
+
+    Scratch tasks (the default workspace kind) get their own per-task
+    directory rather than a git worktree. The production tree is still
+    flipped read-only inside the namespace; the scratch directory itself
+    is carved out read-write so the worker can write its deliverables.
+
+    The scratch path MUST live outside the agent home -- carving out a path
+    inside the tree we are protecting would hand the worker write access
+    to production. The dispatcher enforces that with
+    ``_is_outside_agent_home``; this function refuses an empty path but
+    cannot verify containment on its own, so it is the caller's job.
+
+    Mutually exclusive with the worktree and cron modes: the launcher
+    takes exactly one of ``--worktree`` / ``--scratch`` / ``--cron``.
+    """
+    if not command:
+        raise ValueError("worker command must be a non-empty sequence")
+    if not agent_home:
+        raise ValueError("agent_home is required for worker isolation")
+    if not scratch:
+        raise ValueError("scratch path is required for scratch worker isolation")
+    launcher_argv = _build_launcher_argv(
+        agent_home=agent_home, worktree=None, extra_rw=extra_rw, scratch=scratch,
+    )
+    return ["unshare", "-Urm", *launcher_argv, "--", *command]
 
 
 def build_isolated_cron_worker_argv(
@@ -400,12 +444,18 @@ def _launcher_main(argv: List[str]) -> int:
 
     args = argv[2:]
     try:
-        agent_home, worktree, extra_rw, worker_argv, cron = _parse_launcher_argv(args)
+        agent_home, worktree, extra_rw, worker_argv, cron, scratch = _parse_launcher_argv(args)
     except ValueError as exc:
         sys.stderr.write(f"hermes worker isolation: {exc}\n")
         return 64
 
-    rc = _enter_isolation(agent_home=agent_home, worktree=worktree, extra_rw=extra_rw, cron=cron)
+    rc = _enter_isolation(
+        agent_home=agent_home,
+        worktree=worktree,
+        extra_rw=extra_rw,
+        cron=cron,
+        scratch=scratch,
+    )
     if rc != 0:
         return rc
 
@@ -417,21 +467,26 @@ def _launcher_main(argv: List[str]) -> int:
         return 127  # EX_NOTFOUND -- but only as a fallback; the worker IS the long-lived thing.
 
 
-def _parse_launcher_argv(args: List[str]) -> tuple[str, Optional[str], List[str], List[str], bool]:
+def _parse_launcher_argv(args: List[str]) -> tuple[str, Optional[str], List[str], List[str], bool, Optional[str]]:
     """Parse the post-``_launcher`` argv into (agent_home, worktree, extras,
-    worker_argv, cron_flag).
+    worker_argv, cron_flag, scratch).
 
-    ``cron_flag=True`` means the worker has no per-task worktree; the
+    ``cron_flag=True`` means the worker has no per-task worktree: the
     launcher reads ``<agent_home>/.git/HEAD`` to determine the branch ref
     carve-out directory (vs the worktree's HEAD on the dispatch path).
     ``--cron`` is mutually exclusive with ``--worktree``: a cron worker
     has no worktree, so combining them is rejected to keep the parse
     unambiguous.
+
+    ``scratch`` is the per-task writable directory for a scratch-workspace
+    worker. ``--scratch`` is mutually exclusive with both ``--worktree``
+    and ``--cron``: exactly one writable-area mode may be in effect.
     """
     if not args or args[0].startswith("-"):
         raise ValueError("first arg must be the agent home path")
     agent_home = args[0]
     worktree: Optional[str] = None
+    scratch: Optional[str] = None
     extra_rw: List[str] = []
     cron = False
     i = 1
@@ -449,6 +504,16 @@ def _parse_launcher_argv(args: List[str]) -> tuple[str, Optional[str], List[str]
             worktree = args[i + 1]
             i += 2
             continue
+        if a == "--scratch":
+            if i + 1 >= len(args):
+                raise ValueError("--scratch requires a value")
+            if cron:
+                raise ValueError("--cron and --scratch are mutually exclusive")
+            if worktree is not None:
+                raise ValueError("--worktree and --scratch are mutually exclusive")
+            scratch = args[i + 1]
+            i += 2
+            continue
         if a == "--rw":
             i += 1
             while i < len(args) and not args[i].startswith("-"):
@@ -461,11 +526,16 @@ def _parse_launcher_argv(args: List[str]) -> tuple[str, Optional[str], List[str]
     worker_argv = args[i + 1:]
     if not worker_argv:
         raise ValueError("worker argv after -- is empty")
-    return agent_home, worktree, extra_rw, worker_argv, cron
+    return agent_home, worktree, extra_rw, worker_argv, cron, scratch
 
 
 def _enter_isolation(
-    *, agent_home: str, worktree: Optional[str], extra_rw: Sequence[str], cron: bool = False,
+    *,
+    agent_home: str,
+    worktree: Optional[str],
+    extra_rw: Sequence[str],
+    cron: bool = False,
+    scratch: Optional[str] = None,
 ) -> int:
     """Apply the bind dance. Mirrors the validated reference launcher,
     with two security-tightening departures:
@@ -569,6 +639,23 @@ def _enter_isolation(
                 # ref files in a directory that doesn't exist on disk).
                 _ensure_dir_in_stage(stage, parent, worker_ref_dir)
                 carve.append(worker_ref_dir)
+        elif scratch:
+            # Scratch workspace: the per-task directory is the worker's
+            # writable area. It lives OUTSIDE the agent home (the
+            # dispatcher proves that with ``_is_outside_agent_home``), so
+            # the agent home stays read-only while the scratch dir is
+            # bound back in read-write from the staging view.
+            #
+            # A scratch task has no git worktree, so there is no branch ref
+            # to carve out -- the worker's git writes against the
+            # production checkout get the standard ro denial, which is the
+            # intended behaviour for a scratch worker.
+            if not os.path.isdir(scratch):
+                sys.stderr.write(
+                    f"hermes worker isolation: scratch path {scratch!r} is not a directory\n"
+                )
+                return 95
+            carve.append(scratch)
         for extra in extra_rw:
             carve.append(extra)
         for sub in carve:

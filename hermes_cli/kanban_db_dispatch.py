@@ -3387,14 +3387,24 @@ def _isolation_worker_argv(task: Task, command: list[str], workspace: Optional[s
     the helper returns the unwrapped ``command`` and emits a single
     once-per-process warning. Never silently pretends isolation happened.
 
-    The helper only wraps worktree-anchored tasks (``workspace_kind == "worktree"``
-    AND the workspace resolves to ``<agent_home>/.worktrees/<id>``). For
-    everything else (scratch tasks, dir workspaces, or a non-resolvable
-    agent home) isolation is SKIPPED with a one-shot warning -- we never
-    wrap an arbitrary cwd into the carve-out set, because doing so would
-    either over-grant (carve out a path the policy should keep ro) or
-    hide a bug by accidentally writing into a path the policy never
-    permitted in the first place.
+    The helper wraps two kinds of tasks:
+
+    * **worktree-anchored** (``workspace_kind == "worktree"`` AND the
+      workspace resolves to ``<agent_home>/.worktrees/<id>``) -- the
+      per-task worktree is carved out rw, the production tree is ro.
+    * **scratch-anchored** (``workspace_kind == "scratch"`` AND the
+      workspace resolves OUTSIDE the agent home) -- the per-task scratch
+      directory is carved out rw, the production tree is ro. A scratch
+      workspace that lives INSIDE the agent home is refused: carving out
+      a path inside the tree we are protecting would hand the worker
+      write access to production.
+
+    Everything else (a ``dir`` workspace, a ``manual``/``none`` kind, or a
+    scratch path we cannot prove is outside the agent home) is SKIPPED with
+    a one-shot warning -- we never wrap an arbitrary cwd into the carve-out
+    set, because doing so would either over-grant (carve out a path the
+    policy should keep ro) or hide a bug by accidentally writing into a
+    path the policy never permitted in the first place.
 
     Layer 1 (the dispatcher provisioning the worktree before the sandbox
     exists) is enforced by ``kanban_db_workspace._resolve_worktree_workspace``
@@ -3402,7 +3412,8 @@ def _isolation_worker_argv(task: Task, command: list[str], workspace: Optional[s
     materialized the worktree by the time we get here.
     """
     from hermes_cli.worker_isolate import (
-        build_isolated_worker_argv, load_configured_isolation_mode, resolve_isolation_mode,
+        build_isolated_scratch_worker_argv, build_isolated_worker_argv,
+        load_configured_isolation_mode, resolve_isolation_mode,
     )
 
     policy = resolve_isolation_mode(load_configured_isolation_mode())
@@ -3418,27 +3429,33 @@ def _isolation_worker_argv(task: Task, command: list[str], workspace: Optional[s
         return command
 
     # The carve-out set is only safe when the workspace is a real
-    # dispatcher-provisioned worktree path under agent_home/.worktrees/<id>.
-    # We refuse to carve out anything else (see docstring); skip the wrap
-    # in that case so a non-worktree task still spawns.
-    if not (task.workspace_kind == "worktree"
-            and workspace
-            and os.path.isdir(workspace)
-            and _is_worktree_under_agent_home(workspace, agent_home)):
-        _log_isolation_skip(
-            task,
-            reason=(
-                f"workspace {workspace!r} is not a dispatcher-provisioned worktree "
-                f"under {agent_home}/.worktrees (kind={task.workspace_kind!r})"
-            ),
+    # dispatcher-provisioned worktree path under agent_home/.worktrees/<id>,
+    # or a scratch path we can prove lives OUTSIDE the agent home.
+    if task.workspace_kind == "worktree" and workspace and os.path.isdir(workspace) \
+            and _is_worktree_under_agent_home(workspace, agent_home):
+        return build_isolated_worker_argv(
+            command,
+            agent_home=agent_home,
+            worktree=workspace,
         )
-        return command
 
-    return build_isolated_worker_argv(
-        command,
-        agent_home=agent_home,
-        worktree=workspace,
+    if task.workspace_kind == "scratch" and workspace and os.path.isdir(workspace) \
+            and _is_outside_agent_home(workspace, agent_home):
+        return build_isolated_scratch_worker_argv(
+            command,
+            agent_home=agent_home,
+            scratch=workspace,
+        )
+
+    _log_isolation_skip(
+        task,
+        reason=(
+            f"workspace {workspace!r} is neither a dispatcher-provisioned worktree "
+            f"under {agent_home}/.worktrees nor a scratch path outside {agent_home} "
+            f"(kind={task.workspace_kind!r})"
+        ),
     )
+    return command
 
 
 def _resolve_worker_agent_home(task: Task) -> Optional[str]:
@@ -3487,6 +3504,39 @@ def _is_worktree_under_agent_home(workspace: str, agent_home: str) -> bool:
     except (OSError, ValueError):
         return False
     return ws == wt or ws.startswith(wt + os.sep)
+
+
+def _is_outside_agent_home(workspace: str, agent_home: str) -> bool:
+    """True iff ``workspace`` resolves OUTSIDE the agent home tree.
+
+    Used to decide whether a SCRATCH-workspace task can be wrapped in the
+    mount-namespace sandbox (t_a968012b). The scratch directory is carved
+    out rw so the worker can write its deliverables -- but carving out a
+    path INSIDE the agent home would hand the worker write access to the
+    very production tree the sandbox exists to protect.
+
+    "Outside" means outside the agent home SUBTREE, not outside some
+    arbitrary common root: the sandbox's staging bind covers
+    ``<parent-of-agent-home>`` and flips only the agent home read-only, so
+    a scratch directory that is a sibling of the agent home (the normal
+    layout -- ``<parent>/kanban/boards/<board>/workspaces/<task-id>``)
+    stays writable while the agent home does not.
+    """
+    try:
+        ws = os.path.realpath(workspace)
+        home = os.path.realpath(agent_home)
+    except OSError:
+        return False
+    if ws == home:
+        return False
+    # "Inside the agent home subtree" is a PREFIX test, not a
+    # common-root test: ``/p/agent/sub`` is inside ``/p/agent`` even
+    # though ``commonpath`` would happily return ``/p`` for a sibling.
+    # ``os.path.commonpath`` only proves containment when it returns
+    # the agent home itself.
+    if ws.startswith(home + os.sep):
+        return False
+    return True
 
 
 _ISOLATION_SKIP_LOGGED: set[str] = set()

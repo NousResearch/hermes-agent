@@ -254,6 +254,7 @@ import {
 } from './external-terminal'
 import { f12ShortcutDecision, toF12KeyboardEventPayload } from './f12-shortcut'
 import { resolveFeatureFlags } from './feature-flags'
+import { registerFileDataUrlRead } from './file-data-url-ipc'
 import {
   installFindShortcut,
   installFoundInPageForwarder,
@@ -304,7 +305,7 @@ import {
   SAFE_STORAGE_ENCODING,
   TEXT_PREVIEW_SOURCE_MAX_BYTES,
   tightenSecretFileMode,
-  writeSecretFileAtomic
+  writeSecretFileAtomic,
 } from './hardening'
 import { assertNotPassiveSpawn } from './host-backend-singleton'
 import { HERMES_HUB_FALLBACK_ORIGIN, HERMES_HUB_ORIGIN, isHermesHubClipboardWrite } from './hub-iframe-policy'
@@ -16377,24 +16378,10 @@ ipcMain.handle('hermes:data-url-read-max:set', (_event, maxMb) => {
   }
 })
 
-ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath) => {
-  // Backend-reported paths are WSL/POSIX (`/home/...`, `/mnt/c/...`); on a
-  // Windows host bridge them to a UNC/drive form, same as directory reads.
-  const bridgedPath = resolveIpcFileReadPath(filePath)
-
-  try {
-    return await readFileDataUrlForIpc(bridgedPath, {
-      maxBytes: dataUrlReadMaxBytesFromMb(dataUrlReadMaxMb),
-      mimeType: mimeTypeForPath(resolveRequestedPathForIpc(bridgedPath, { purpose: 'File preview' })),
-      purpose: 'File preview'
-    })
-  } catch (error) {
-    if (isMissingFileError(error)) {
-      return missingFileResult(filePath, error)
-    }
-
-    throw error
-  }
+registerFileDataUrlRead(ipcMain, {
+  maxBytes: () => dataUrlReadMaxBytesFromMb(dataUrlReadMaxMb),
+  mimeTypeForPath,
+  resolveReadPath: resolveIpcFileReadPath
 })
 
 // Remote attachment transfer is independent of the preview / Settings path.

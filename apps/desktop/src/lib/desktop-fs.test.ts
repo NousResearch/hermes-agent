@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import * as apiClient from '@/api/client'
 import { setApiRequestConnection } from '@/api/client'
 import { $connection } from '@/store/session'
 
@@ -94,13 +95,15 @@ describe('desktop filesystem facade', () => {
       entries: [{ name: 'local', path: '/local', isDirectory: true }]
     })
     await expect(readDesktopFileText('/work/file.txt')).resolves.toMatchObject({ text: 'local' })
-    await expect(readDesktopFileDataUrl('/work/file.txt')).resolves.toBe('data:text/plain;base64,bG9jYWw=')
+    await expect(readDesktopFileDataUrl('/work/file.txt', '/work/report.md', 2_097_152)).resolves.toBe(
+      'data:text/plain;base64,bG9jYWw='
+    )
     await expect(desktopGitRoot('/work')).resolves.toBe('/local')
     await expect(selectDesktopPaths({ directories: true })).resolves.toEqual(['/local'])
 
     expect(readDir).toHaveBeenCalledWith('/work')
     expect(readFileText).toHaveBeenCalledWith('/work/file.txt')
-    expect(readFileDataUrl).toHaveBeenCalledWith('/work/file.txt')
+    expect(readFileDataUrl).toHaveBeenCalledWith('/work/file.txt', '/work/report.md', 2_097_152)
     expect(gitRoot).toHaveBeenCalledWith('/work')
     expect(selectPaths).toHaveBeenCalledWith({ directories: true, profile: 'team-local' })
     expect(api).not.toHaveBeenCalled()
@@ -131,13 +134,18 @@ describe('desktop filesystem facade', () => {
 
     await expect(readDesktopDir('/home/user/project')).resolves.toMatchObject({ entries: [{ name: 'remote' }] })
     await expect(readDesktopFileText('/home/user/project/a b.txt')).resolves.toMatchObject({ text: 'remote' })
-    await expect(readDesktopFileDataUrl('/home/user/project/a b.txt')).resolves.toBe('data:text/plain;base64,cmVtb3Rl')
+    await expect(
+      readDesktopFileDataUrl('/home/user/project/a b.txt', '/home/user/project/report.md', 2_097_152)
+    ).resolves.toBe('data:text/plain;base64,cmVtb3Rl')
     await expect(desktopGitRoot('/home/user/project')).resolves.toBe('/remote')
     await expect(desktopDefaultCwd()).resolves.toEqual({ cwd: '/backend/project', branch: 'main' })
 
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/list?path=%2Fhome%2Fuser%2Fproject' })
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/read-text?path=%2Fhome%2Fuser%2Fproject%2Fa%20b.txt' })
-    expect(api).toHaveBeenCalledWith({ path: '/api/fs/read-data-url?path=%2Fhome%2Fuser%2Fproject%2Fa%20b.txt' })
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/fs/read-data-url?path=%2Fhome%2Fuser%2Fproject%2Fa%20b.txt&relative_to_file=%2Fhome%2Fuser%2Fproject%2Freport.md&max_bytes=2097152',
+      profile: undefined
+    })
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/git-root?path=%2Fhome%2Fuser%2Fproject' })
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/default-cwd' })
     expect(readDir).not.toHaveBeenCalled()
@@ -157,6 +165,13 @@ describe('desktop filesystem facade', () => {
       path: '/api/files/mkdir',
       profile: 'team-remote'
     })
+  })
+
+  it('rejects an empty data URL response', async () => {
+    $connection.set({ mode: 'remote' } as never)
+    api.mockResolvedValueOnce({} as never)
+
+    await expect(readDesktopFileDataUrl('/remote/chart.svg')).rejects.toThrow('empty data URL')
   })
 
   it('does not retry the same unreadable path through the local facade', async () => {
@@ -396,4 +411,40 @@ describe('desktop filesystem facade', () => {
 
     await expect(readDesktopFileText('/gone.txt')).rejects.toBeInstanceOf(DesktopFileMissingError)
   })
+  it('keeps document scope, byte cap and session owner together on remote image reads', async () => {
+    $connection.set({ mode: 'remote', profile: 'window-profile' } as never)
+    apiClient.setSessionOwnerResolver(() => ({ connectionId: 'image-owner', profile: 'owner-profile' }))
+    const request = vi.spyOn(apiClient, 'hermesApi').mockResolvedValue('data:image/png;base64,YQ==')
+    try {
+      await readDesktopFileDataUrl('/workspace/chart.png', {
+        maxBytes: 4,
+        relativeToFile: '/workspace/report.md',
+        sessionId: 'session-a'
+      })
+      expect(request).toHaveBeenCalledWith({
+        connectionId: 'image-owner',
+        path: '/api/fs/read-data-url?path=%2Fworkspace%2Fchart.png&session_id=session-a&relative_to_file=%2Fworkspace%2Freport.md&max_bytes=4',
+        profile: 'owner-profile'
+      })
+    } finally {
+      request.mockRestore()
+      apiClient.setSessionOwnerResolver(null)
+    }
+  })
+
+  it('separates a session image cache by session and registered owner', () => {
+    let owner = { connectionId: 'owner-a', profile: 'profile-a' }
+    apiClient.setSessionOwnerResolver(() => owner)
+    try {
+      const first = desktopFsCacheKey(undefined, { sessionId: 'session-a' })
+      expect(desktopFsCacheKey(undefined, { sessionId: 'session-b' })).not.toBe(first)
+      owner = { connectionId: 'owner-b', profile: 'profile-a' }
+      expect(desktopFsCacheKey(undefined, { sessionId: 'session-a' })).not.toBe(first)
+      owner = { connectionId: 'owner-a', profile: 'profile-b' }
+      expect(desktopFsCacheKey(undefined, { sessionId: 'session-a' })).not.toBe(first)
+    } finally {
+      apiClient.setSessionOwnerResolver(null)
+    }
+  })
+
 })

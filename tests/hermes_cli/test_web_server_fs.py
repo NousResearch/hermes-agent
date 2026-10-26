@@ -2,7 +2,7 @@ import base64
 import os
 import urllib.parse
 import json
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 import pytest
@@ -324,6 +324,107 @@ def test_fs_read_data_url_rejects_over_cap(client, tmp_path, monkeypatch):
     response = client.get("/api/fs/read-data-url", params={"path": str(target)})
 
     assert response.status_code == 413
+
+
+def test_fs_read_data_url_enforces_smaller_requested_cap(client, tmp_path):
+    target = tmp_path / "image.png"
+    target.write_bytes(b"1234")
+
+    response = client.get(
+        "/api/fs/read-data-url", params={"path": str(target), "max_bytes": 3}
+    )
+
+    assert response.status_code == 413
+
+
+def test_fs_read_data_url_rejects_sensitive_files(client, tmp_path):
+    target = tmp_path / ".env"
+    target.write_text("SECRET=1")
+
+    response = client.get("/api/fs/read-data-url", params={"path": str(target)})
+
+    assert response.status_code == 403
+
+
+def test_fs_read_data_url_rejects_symlink_outside_source_directory(client, tmp_path):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    markdown = docs / "report.md"
+    markdown.write_text("# Report")
+    outside = tmp_path / "outside.svg"
+    outside.write_text("<svg/>")
+    linked_image = docs / "chart.svg"
+    linked_image.symlink_to(outside)
+
+    response = client.get(
+        "/api/fs/read-data-url",
+        params={"path": str(linked_image), "relative_to_file": str(markdown)},
+    )
+
+    assert response.status_code == 403
+
+
+def test_fs_read_data_url_rejects_symlink_swap_before_open(client, tmp_path, monkeypatch):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    markdown = docs / "report.md"
+    markdown.write_text("# Report")
+    image = docs / "chart.svg"
+    image.write_text('<svg id="inside"/>')
+    outside = tmp_path / "outside.svg"
+    outside.write_text('<svg id="outside"/>')
+    real_open = file_routes.os.open
+    swapped = False
+
+    def swapping_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if Path(path) == image and not swapped:
+            swapped = True
+            image.unlink()
+            image.symlink_to(outside)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(file_routes.os, "open", swapping_open)
+
+    response = client.get(
+        "/api/fs/read-data-url",
+        params={"path": str(image), "relative_to_file": str(markdown)},
+    )
+
+    assert response.status_code == 403
+
+
+def test_fs_read_data_url_rejects_source_directory_swap_before_open(client, tmp_path, monkeypatch):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    markdown = docs / "report.md"
+    markdown.write_text("# Original")
+    image = docs / "chart.svg"
+    image.write_text('<svg id="inside"/>')
+    replacement = tmp_path / "replacement-docs"
+    replacement.mkdir()
+    (replacement / "report.md").write_text("# Replacement")
+    (replacement / "chart.svg").write_text('<svg id="outside"/>')
+    original = tmp_path / "original-docs"
+    real_open = file_routes.os.open
+    swapped = False
+
+    def swapping_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if Path(path) == image and not swapped:
+            swapped = True
+            docs.rename(original)
+            replacement.rename(docs)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(file_routes.os, "open", swapping_open)
+
+    response = client.get(
+        "/api/fs/read-data-url",
+        params={"path": str(image), "relative_to_file": str(markdown)},
+    )
+
+    assert response.status_code == 403
 
 
 def test_fs_download_streams_file_without_data_url_cap(client, tmp_path, monkeypatch):
@@ -1378,3 +1479,100 @@ def test_agent_fs_path_leaves_host_paths_to_fs_path(monkeypatch, tmp_path):
     assert web_server_files._agent_fs_path("note.txt", cwd=str(tmp_path)) == target.resolve()
     assert web_server_files._agent_container_path("//server/share/x") is None
     assert web_server_files._agent_container_path("C:/data/x") is None
+
+
+def test_scoped_image_read_never_falls_back_from_ssh_to_host(client, monkeypatch, tmp_path):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    source = docs / "report.md"
+    source.write_text("# Report")
+    image = docs / "chart.svg"
+    image.write_text("<svg/>")
+    reads = []
+
+    class Backend:
+        def read_bytes(self, path, *, max_bytes):
+            reads.append(path)
+            return b"remote", 6, path
+
+    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: Backend())
+    response = client.get(
+        "/api/fs/read-data-url",
+        params={"path": str(image), "relative_to_file": str(source)},
+    )
+    assert response.status_code == 501
+    assert reads == []
+
+
+def test_scoped_image_read_keeps_hosted_policy_for_source_and_target(client, monkeypatch, tmp_path):
+    source = tmp_path / "report.md"
+    source.write_text("# Report")
+    image = tmp_path / "chart.svg"
+    image.write_text("<svg/>")
+    guarded = []
+    monkeypatch.setattr(file_routes, "_hosted_fs_read_guard", lambda path, request: guarded.append(path))
+    response = client.get(
+        "/api/fs/read-data-url",
+        params={"path": str(image), "relative_to_file": str(source)},
+    )
+    assert response.status_code == 200
+    assert guarded == [image, source]
+
+
+def test_scoped_read_acquires_offline_guard_before_any_descriptor(monkeypatch, tmp_path):
+    events = []
+    target = tmp_path / "chart.svg"
+    target.write_text("<svg/>")
+    real_open = file_routes.os.open
+
+    @contextmanager
+    def reject_guard(path):
+        events.append("guard")
+        raise file_routes.HTTPException(status_code=409, detail="Live database")
+        yield
+
+    def record_open(path, *args, **kwargs):
+        if Path(path) == target:
+            events.append("open")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(file_routes, "_serve_offline", reject_guard)
+    monkeypatch.setattr(file_routes.os, "open", record_open)
+    with pytest.raises(file_routes.HTTPException) as error:
+        file_routes._fs_read_scoped_bytes(target, 1024)
+    assert error.value.status_code == 409
+    assert events == ["guard"]
+
+
+def test_scoped_read_closes_descriptor_before_releasing_offline_guard(monkeypatch, tmp_path):
+    events = []
+    target = tmp_path / "chart.svg"
+    target.write_text("<svg/>")
+    real_fdopen = file_routes.os.fdopen
+
+    @contextmanager
+    def guard(path):
+        events.append("guard-enter")
+        yield
+        events.append("guard-exit")
+
+    class TrackedHandle:
+        def __init__(self, *args, **kwargs):
+            self.handle = real_fdopen(*args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self.handle, name)
+
+        def __enter__(self):
+            self.handle.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            result = self.handle.__exit__(*args)
+            events.append("closed")
+            return result
+
+    monkeypatch.setattr(file_routes, "_serve_offline", guard)
+    monkeypatch.setattr(file_routes.os, "fdopen", TrackedHandle)
+    assert file_routes._fs_read_scoped_bytes(target, 1024) == b"<svg/>"
+    assert events == ["guard-enter", "closed", "guard-exit"]

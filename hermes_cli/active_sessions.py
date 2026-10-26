@@ -285,7 +285,7 @@ _queued_releases_lock = threading.Lock()
 
 
 def _registry_key(path: Path) -> str:
-    return os.path.normcase(os.path.abspath(path))
+    return os.path.normcase(os.path.realpath(path))
 
 
 def mark_release_queued(lease: ActiveSessionLease) -> None:

@@ -4080,7 +4080,6 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 store.close()
             except Exception:
                 logger.debug("Failed to close response store for %s", self.name, exc_info=True)
-        _api_runs._close_run_state(self)
         with suppress(Exception):
             await asyncio.to_thread(self._memory_sessions.close_all)
         try:
@@ -4091,6 +4090,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 await self._runner.cleanup()
                 self._runner = None
         finally:
+            _api_runs._close_run_state(self)  # after site.stop(): no late request re-mints the executor
             self._close_cached_session_dbs()
             self._app = None
         logger.info("[%s] API server stopped", self.name)

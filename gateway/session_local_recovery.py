@@ -403,8 +403,7 @@ def release_handed_off_receipts(db, *, epoch):
         _epoch(conn, epoch)
         moved = {owner: (target, source) for owner, (target, source) in moved_receipts(conn).items()
                  if _messaging_platform(source) is not None}
-        hand_off_conversations(conn, moved)
-        return moved
+        return hand_off_conversations(conn, moved)
     for owner, (target, source) in db._execute_write(write).items():
         logging.getLogger(__name__).info(
             'Local session %s was handed off to %s (row %s); released its local receipt', owner, source, target)

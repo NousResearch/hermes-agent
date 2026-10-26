@@ -357,20 +357,24 @@ async def _create_bot_chat(authority, actor, *, displace=None):
 def _bot_chat_creation_id(authority, actor):
     """The first creation identity whose session is not spent. Generation 0 keeps the historical
     ``bot-chat:<profile>`` id; a generation is spent once its session was deleted (retired: a retry
-    must never resurrect it) or renamed (titled, but not "Bot Chat" — or the lookup had found it),
-    and a replacement takes the next one. Derived from durable rows only, so a restart and two
-    concurrent deliveries (serialized by the titled-create lock) pick the same identity. An
-    existing UNtitled session is the same creation interrupted before its title: it is reused."""
+    must never resurrect it), renamed (titled, but not "Bot Chat" — or the lookup had found it) or
+    handed off to a messaging lane, and a replacement takes the next one. Derived from durable rows
+    only, so a restart and two concurrent deliveries (serialized by the titled-create lock) pick the
+    same identity. An existing UNtitled local session is the same creation interrupted before its
+    title: it is reused."""
     from gateway.session_local_recovery import local_identity
+    from gateway.session_route_recovery import _messaging_platform
     from hermes_state_mutation_retirement import first_generation
     base = 'bot-chat:' + authority.profile_id
     request_id = lambda generation: base if generation == 0 else f'{base}:{generation}'
 
-    def titled(conn, sid):
-        row = conn.execute('SELECT title FROM sessions WHERE id=?', (sid,)).fetchone()
-        return row is not None and bool(row[0])
+    def spent(conn, sid):
+        row = conn.execute('SELECT title, source FROM sessions WHERE id=?', (sid,)).fetchone()
+        # Handed off (``/handoff``), it is a messaging lane's conversation: its receipt went with it,
+        # and a reset's head carried its name there (``hermes_state_local.hand_off_conversations``).
+        return row is not None and (bool(row[0]) or _messaging_platform(row[1]) is not None)
     generation, _sid = first_generation(
-        authority.db, lambda n: local_identity(authority.profile_id, actor.subject, request_id(n)), spent=titled)
+        authority.db, lambda n: local_identity(authority.profile_id, actor.subject, request_id(n)), spent=spent)
     return request_id(generation)
 
 

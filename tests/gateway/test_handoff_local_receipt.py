@@ -270,11 +270,66 @@ async def test_a_second_chat_handed_off_to_the_same_home_chat_supersedes_the_fir
     assert warm.agent(ref) is None
     assert await _bot_row(warm, owner) is None
 
-    cold = await initialize_session_authority(_Runner(tmp_path), profile_id='fixture', instance_id='cold')
-    cold.authorize(owner, other, 'session:control')
-    cold.authorize(owner, ref, 'session:read')
+    # H handed off there again: the lane names H once more, and Y is the one that is history now.
+    await _handoff(runner, warm, ref.session_id, telegram)
+    warm.authorize(owner, ref, 'session:submit')
     with pytest.raises(RuntimeStoreError, match='session_superseded'):
-        cold.authorize(owner, ref, 'session:control')
+        warm.authorize(owner, other, 'session:submit')
+
+    cold = await initialize_session_authority(_Runner(tmp_path), profile_id='fixture', instance_id='cold')
+    cold.authorize(owner, ref, 'session:control')
+    cold.authorize(owner, other, 'session:read')
+    with pytest.raises(RuntimeStoreError, match='session_superseded'):
+        cold.authorize(owner, other, 'session:control')
+
+
+@pytest.mark.asyncio
+async def test_the_bots_own_bot_chat_after_a_reset_handoff_and_the_lanes_new_is_replaced(tmp_path):
+    """The Bot Chat a delivery minted (its automatic creation id), reset locally, handed off, then the
+    platform's ``/new``: the next delivery mints the next generation. The handed-off creation row
+    (its name went to the head) is spent, never reused as an unfinished creation."""
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_bot import _target
+    from gateway.session_contract import Principal
+    runner = _Runner(tmp_path)
+    runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
+    runner._cached_agent_for = lambda route: None
+    warm = await initialize_session_authority(runner, profile_id='fixture', instance_id='warm')
+    owner = Principal('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control',
+                                                     'session:submit'}), 'socket')
+    first = (await _target(warm, owner))[0]
+    runner.session_store.reset_session(warm.sessions[first.session_id].route)
+    telegram = _source()
+    route = await _handoff(runner, warm, first.session_id, telegram)
+    head = runner.session_store.lookup_by_session_key(route).session_id
+    assert warm.db.get_session_by_title('Bot Chat')['id'] == head
+    runner.session_store.reset_session(route)  # Telegram's /new
+    fresh = (await _target(warm, owner))[0].session_id
+    assert fresh not in (first.session_id, head)
+    assert warm.db.get_session_by_title('Bot Chat')['id'] == fresh
+
+
+@pytest.mark.asyncio
+async def test_a_moved_receipt_with_a_malformed_lineage_never_stops_the_boot(tmp_path, monkeypatch):
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_contract import Principal
+    from gateway.session_local import create_local_session
+    from hermes_state_local import POLICY_PREFIX
+    runner = _Runner(tmp_path)
+    warm = await initialize_session_authority(runner, profile_id='fixture', instance_id='warm')
+    owner = Principal('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control'}), 'socket')
+    ref = create_local_session(warm, owner, {'request_id': 'chat', 'source': 'gui', 'cwd': str(tmp_path),
+                                             'model': 'frozen', 'toolsets': []})
+    with monkeypatch.context() as patch:
+        _as_an_older_build(patch)
+        await _handoff(runner, warm, ref.session_id, _source())
+    key = POLICY_PREFIX + ref.session_id
+    warm.db._execute_write(lambda conn: conn.execute(
+        "UPDATE state_meta SET value=json_set(value, '$.lineage', json(?)) WHERE key=?",
+        (json.dumps([ref.session_id, {}]), key)))
+    cold = await initialize_session_authority(_Runner(tmp_path), profile_id='fixture', instance_id='cold')
+    with cold.db._read_ctx() as conn:
+        assert conn.execute('SELECT 1 FROM state_meta WHERE key=?', (key,)).fetchone()
 
 
 def _serve(tmp_path, monkeypatch):

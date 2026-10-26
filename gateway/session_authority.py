@@ -275,7 +275,8 @@ class SessionAuthority:
         from gateway.config import Platform
         self._require_admission_open()
         live = self.sessions.get(sid)
-        took_over = live is None or live.route != route
+        # *sid* takes the route over: new here, moved onto it, or back after another conversation had it.
+        took_over = live is None or live.route != route or live.superseded
         if live is None:
             live = self.sessions[sid] = LiveSession(source, route)
         elif (live.source is not None and live.source.platform == Platform.LOCAL

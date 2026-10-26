@@ -213,17 +213,22 @@ def hand_off_conversations(conn, moved):
     """Retire the receipts in *moved* (``moved_receipts``: a messaging lane took over each one's
     current target) and move the rest of each conversation onto that lane with it. Its earlier
     ``/new`` segments take the lane's identity, so they open there as read-only history (a lane
-    moved past them) instead of staying local rows no receipt restores; the conversation's title
-    follows its head, which the lane continues as its own conversation."""
-    for owner, (target, _source) in moved.items():
+    moved past them) instead of staying local rows no receipt restores; the conversation's name
+    follows its head, which the lane continues as its own conversation. Returns the receipts it
+    handed off: one whose lineage is malformed stays as it is (its own reads refuse it, logged)."""
+    handed = {}
+    for owner, (target, source) in moved.items():
         saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (POLICY_PREFIX + owner,)).fetchone()
-        lineage = (_receipt(saved[0]) or {}).get('lineage') if saved else None
-        segments = [sid for sid in dict.fromkeys([owner, *(lineage if isinstance(lineage, list) else ())])
-                    if isinstance(sid, str)]
+        lineage = (_receipt(saved[0]) or {}).get('lineage', [owner]) if saved else [owner]
+        if not isinstance(lineage, list) or not all(isinstance(sid, str) for sid in lineage):
+            continue
+        segments = list(dict.fromkeys([owner, *lineage]))
         conn.execute(f'UPDATE sessions SET ({_LANE_IDENTITY}) = (SELECT {_LANE_IDENTITY} FROM sessions WHERE id=?) '
                      'WHERE id IN (SELECT value FROM json_each(?)) AND id != ?', (target, json.dumps(segments), target))
         _title_follows_head(conn, owner, _segment_root(conn, segments, target))
-    release_receipts(conn, moved)
+        handed[owner] = (target, source)
+    release_receipts(conn, handed)
+    return handed
 
 
 def _receipt(raw):
@@ -245,17 +250,16 @@ def _segment_root(conn, segments, target):
     return segments[index]
 
 
-_TITLE_RANK = {'derived': 0, 'llm': 1, 'user': 2}
-
-
 def _title_follows_head(conn, owner, head):
-    """The conversation's name (a Bot Chat's registry title included) moves to its head, over a title
-    the segment only got generated; a name the user gave the segment itself stays."""
+    """The conversation's name (a Bot Chat's registry title included) moves to its head, over a
+    title of lower provenance there (a generated one); a name of equal rank the head carries stays
+    (``SessionDB._title_rank``: a pre-provenance title ranks as the user's)."""
+    from hermes_state import SessionDB
     row = conn.execute('SELECT title, title_source, hidden FROM sessions WHERE id=?', (owner,)).fetchone()
     if head == owner or row is None or not row[0]:
         return
     kept = conn.execute('SELECT title, title_source FROM sessions WHERE id=?', (head,)).fetchone()
-    if kept is None or (kept[0] and _TITLE_RANK.get(kept[1], 0) >= _TITLE_RANK.get(row[1], 0)):
+    if kept is None or (kept[0] and SessionDB._title_rank(kept[1]) >= SessionDB._title_rank(row[1])):
         return
     conn.execute('UPDATE sessions SET title=NULL WHERE id IN (?,?)', (owner, head))
     conn.execute('UPDATE sessions SET title=?, title_source=?, hidden=? WHERE id=?', (*row, head))

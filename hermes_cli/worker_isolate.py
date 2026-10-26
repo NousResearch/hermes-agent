@@ -639,7 +639,7 @@ def _worker_branch_ref_dir(agent_home: str, worktree: str) -> Optional[str]:
         # containing ``gitdir: <path>``. The real HEAD lives at
         # ``<path>/HEAD``.
         try:
-            line = open(worktree_git, "r", encoding="utf-8").read().strip()
+            line = open(worktree_git, "r", encoding="utf-8-sig").read().strip()
         except OSError:
             return None
         if not line.startswith("gitdir:"):
@@ -655,7 +655,7 @@ def _worker_branch_ref_dir(agent_home: str, worktree: str) -> Optional[str]:
     if not head_path or not os.path.isfile(head_path):
         return None
     try:
-        head = open(head_path, "r", encoding="utf-8").read().strip()
+        head = open(head_path, "r", encoding="utf-8-sig").read().strip()
     except OSError:
         return None
     # Detached HEAD (``<sha>``) -- no branch ref dir to carve out.
@@ -715,7 +715,7 @@ def _agent_home_branch_ref_dir(agent_home: str) -> Optional[str]:
     if not os.path.isfile(head_path):
         return None
     try:
-        head = open(head_path, "r", encoding="utf-8").read().strip()
+        head = open(head_path, "r", encoding="utf-8-sig").read().strip()
     except OSError:
         return None
     if not head.startswith("ref:"):

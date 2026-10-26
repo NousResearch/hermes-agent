@@ -27,7 +27,6 @@ export async function dispatchRegistryApiRequest<Backend extends { mode: string 
     ) => Promise<Response>
     localRoute: (profile: string | undefined) => RegistryLocalRoute
     path: (path: string, profile: string | undefined, backend: Backend, method: string) => string
-    poolKeys: () => Iterable<string>
     timeout: (timeoutMs: number | undefined) => number
     tag: (path: string, response: Response, connectionId: string) => Response
   }
@@ -35,16 +34,15 @@ export async function dispatchRegistryApiRequest<Backend extends { mode: string 
   // Passive reads stay OUT of the claim: an interactive open must never
   // coalesce onto their no-warm-backend rejection.
   // Persisted owner hints can route a background GET to This device long
-  // after the primary moved remote. Only hold the forced-local route when
-  // this exact profile's child is cold; explicit dials and writes still start.
+  // after the primary moved remote. Always resolve those GETs passively:
+  // sampling a warm pool here races with eviction before ensure. A caller
+  // preparing an explicit write opts into a dial with passive: false.
   const localRoute =
     connectionId === 'local' && (request.method || 'GET').toUpperCase() === 'GET' ? deps.localRoute(routeProfile) : null
 
   const passive =
-    Boolean(request.passive) ||
-    Boolean(
-      localRoute && !localRoute.delegate && !localRoute.refuse && ![...deps.poolKeys()].includes(localRoute.poolKey)
-    )
+    request.passive === true ||
+    Boolean(localRoute && !localRoute.delegate && !localRoute.refuse && request.passive !== false)
 
   const backend = passive
     ? await deps.ensure(connectionId, routeProfile, true)

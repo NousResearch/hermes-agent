@@ -346,7 +346,8 @@ describe('connection-aware plugin host APIs', () => {
     )
     expect(hermesApi).toHaveBeenNthCalledWith(2, {
       connectionId: 'source-a',
-      path: '/api/sessions/bot-chat/mutation-snapshot?profile=backend-worker'
+      path: '/api/sessions/bot-chat/mutation-snapshot?profile=backend-worker',
+      passive: false
     })
     expect(hermesApi).toHaveBeenNthCalledWith(3, {
       connectionId: 'source-a',

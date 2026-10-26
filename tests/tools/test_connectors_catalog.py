@@ -251,6 +251,9 @@ def test_a_failed_row_keeps_its_reason_and_try_again_works_while_the_card_is_ope
             apply_answer(operation, json.dumps({"targets": [{"name": "blender", "status": "approved"}]}))
             wait_for(TargetState.connected)
             apply_answer(operation, json.dumps({"targets": [{"name": "krita", "status": "skipped"}]}))
+            # Skipping the last open row must settle the operation by itself; the cleanup below
+            # only rescues a failed run and must not stand in for this.
+            wait_until(lambda: not thread.is_alive(), timeout=10, what="the operation to settle once krita is skipped")
         finally:
             # A failed step leaves krita pending (or the operation not yet open), and the tool thread,
             # not a daemon, would hold the interpreter open until the operation's 600 s deadline.
@@ -263,6 +266,7 @@ def test_a_failed_row_keeps_its_reason_and_try_again_works_while_the_card_is_ope
 
             wait_until(released, timeout=10, what="the manage_catalog thread to return")
     assert result["out"]["targets"][0]["state"] == TargetState.connected.value
+    assert result["out"]["targets"][1]["state"] == TargetState.skipped.value
     assert len(installer.installs) == 2
 
     # A failed row does not hold the turn to the deadline: once it is the last open row, the

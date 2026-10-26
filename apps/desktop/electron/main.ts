@@ -1145,7 +1145,12 @@ if (IS_WINDOWS || process.platform === 'linux') {
       alreadyNoSandbox: windowsSandboxFallbackActive || alreadyHasNoSandbox(process.argv, process.env),
       alreadySoftware,
       sandboxRelaunchAttempted: windowsNoSandboxRelaunchAttempted,
-      softwareRelaunchAttempted: linuxGpuRelaunchAttempted
+      softwareRelaunchAttempted: linuxGpuRelaunchAttempted,
+      // SwiftShader still spawns a GPU child: a death under the NVIDIA ANGLE
+      // fallback is not "already software" — `--disable-gpu` is the last rung
+      // and without it the FATAL abort takes the app down (issues #129174,
+      // #131321; witnessed on Kepler + driver 470).
+      nvidiaSwiftShaderActive: nvidiaEglFallbackActive
     })
 
     if (path === 'no-sandbox') {
@@ -1177,20 +1182,47 @@ if (IS_WINDOWS || process.platform === 'linux') {
     if (path === 'disable-gpu') {
       linuxGpuRelaunchAttempted = true
       linuxGpuFallbackActive = true
-      linuxGpuFallbackSticky = true
 
       const reason =
-        String(details?.reason || '').toLowerCase() === 'launch-failure' ? 'gpu-launch-failure' : 'gpu-crash'
+        String(details?.reason || '').toLowerCase() === 'launch-failed' ? 'gpu-launch-failure' : 'gpu-crash'
 
-      try {
-        writeLinuxGpuMarker(app.getPath('userData'), linuxGpuFallbackMarker(reason, app.getVersion()))
-      } catch {
-        void 0
+      // A GPU death under the NVIDIA SwiftShader rung is evidence AGAINST the
+      // SwiftShader path (it could not launch a GPU child either — witnessed
+      // as error_code=1002 ×6 → "GPU process isn't usable" on Kepler + driver
+      // 470), not a new witness FOR it. So: clear the nvidia marker so the
+      // next launch honestly re-probes hardware GL (which was never tested
+      // this boot), and do NOT sticky-pin the linux marker — that would pin
+      // software rendering forever, the unbounded-pin bug behind #131321,
+      // worst on a 0.0.0 source install where no version change re-probes.
+      // A host whose hardware GL is ALSO broken re-engages SwiftShader through
+      // the NVIDIA handler's designed path on that probe; this rescue bounds
+      // every launch with a working --disable-gpu boot. LOCAL PATCH
+      // (issues #129174 / #131321).
+      if (nvidiaEglFallbackActive) {
+        try {
+          writeNvidiaEglMarker(app.getPath('userData'), { state: 'ok' })
+        } catch {
+          void 0
+        }
+
+        console.warn(
+          `[hermes] GPU child gone under the NVIDIA SwiftShader fallback (reason=${details?.reason}); ` +
+            'clearing the fallback witness and relaunching once with --disable-gpu — the next launch ' +
+            're-probes hardware GL (#129174, #131321)'
+        )
+      } else {
+        linuxGpuFallbackSticky = true
+
+        try {
+          writeLinuxGpuMarker(app.getPath('userData'), linuxGpuFallbackMarker(reason, app.getVersion()))
+        } catch {
+          void 0
+        }
+
+        console.warn(
+          `[hermes] Linux GPU child gone (reason=${details?.reason}); relaunching once with --disable-gpu (#124843)`
+        )
       }
-
-      console.warn(
-        `[hermes] Linux GPU child gone (reason=${details?.reason}); relaunching once with --disable-gpu (#124843)`
-      )
 
       try {
         app.relaunch({ args: buildDisableGpuRelaunchArgs(process.argv.slice(1)) })

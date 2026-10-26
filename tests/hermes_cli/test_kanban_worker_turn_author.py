@@ -1,57 +1,19 @@
-"""A Kanban worker's turns are authored by the dispatcher, not the operator.
+"""A dispatcher-authored ``chat -q`` run carries its turn author, as ``chat -Q`` already does.
 
-The dispatcher spawns ``hermes chat -q "work kanban task <id>"``. Without an author, memory providers
-filed that prompt and the worker's reply under the human's peer ("the user mentioned kanban task
-t_..."). The spawn now names a bot author and the non-quiet one-shot path forwards it to every turn,
-the same contract the quiet path and Bot Mode deliveries already follow.
+``HERMES_TURN_AUTHOR`` names who wrote a one-shot run's prompts. The non-quiet ``-q`` path ignored it,
+so the turn reached memory providers as the operator's and tool subprocesses inherited the variable.
 """
 
 from __future__ import annotations
 
 import os
-import subprocess
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
 import cli
-from agent.turn_author import TURN_AUTHOR_ENV, parse_turn_author
-
-
-def _task(kb):
-    return kb.Task(
-        id="t_author", title="author", body=None, assignee="elias", status="running", priority=0,
-        created_by="test", created_at=1, started_at=None, completed_at=None, workspace_kind="dir",
-        workspace_path=None, claim_lock="lock", claim_expires=None, tenant=None, current_run_id=3,
-    )
-
-
-def test_worker_spawn_names_the_dispatcher_as_a_bot_author(monkeypatch, tmp_path):
-    root = tmp_path / ".hermes"
-    (root / "profiles" / "elias").mkdir(parents=True)
-    root.joinpath("config.yaml").write_text("{}\n", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(root))
-    monkeypatch.setenv(TURN_AUTHOR_ENV, '{"id": "operator", "name": "human", "is_bot": false}')
-
-    from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_dispatch as kbd
-
-    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
-    captured = {}
-
-    def fake_popen(cmd, *args, **kwargs):
-        captured["env"] = dict(kwargs.get("env") or {})
-        return SimpleNamespace(pid=4321)
-
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    kbd._default_spawn(_task(kb), str(workspace))
-
-    author = parse_turn_author(captured["env"].get(TURN_AUTHOR_ENV))
-    assert author is not None and author["is_bot"] is True
-    assert author["id"].startswith("bot:")
+from agent.turn_author import TURN_AUTHOR_ENV
 
 
 def _one_shot_cli(monkeypatch):

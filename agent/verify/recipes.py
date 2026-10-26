@@ -11,7 +11,9 @@ recipe missed (``hermes_cli.verify_cmd._merge_project_facts_commands``).
 
 from __future__ import annotations
 
+import ast
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -171,6 +173,127 @@ def _detect_node_recipe(root: Path, pkg: dict[str, Any]) -> Recipe:
 
 _PYTHON_INSTALL = {"uv": "uv sync", "poetry": "poetry install", "pipenv": "pipenv install"}
 
+_PYTHON_TEST_MAX_DEPTH = 8
+_PYTHON_TEST_MAX_DIRS = 4096
+_PYTHON_TEST_MAX_FILES = 512
+_PYTHON_TEST_MAX_BYTES = 256 * 1024
+_PYTHON_TEST_IGNORED_DIRS = frozenset({
+    "__pycache__", "build", "dist", "node_modules", "site-packages", "vendor", "venv",
+})
+
+
+def _is_python_test_filename(name: str) -> bool:
+    return name.endswith(".py") and (name.startswith("test_") or name.endswith("_test.py"))
+
+
+def _find_python_test_files(root: Path) -> list[Path]:
+    """Find real Python test-file candidates without walking generated/dependency trees forever."""
+    found: list[Path] = []
+    visited_dirs = 0
+
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        visited_dirs += 1
+        if visited_dirs > _PYTHON_TEST_MAX_DIRS:
+            return found
+        directory = Path(dirpath)
+        try:
+            depth = len(directory.relative_to(root).parts)
+        except ValueError:
+            continue
+
+        dirnames[:] = sorted(
+            name for name in dirnames
+            if depth < _PYTHON_TEST_MAX_DEPTH
+            and not name.startswith(".")
+            and name not in _PYTHON_TEST_IGNORED_DIRS
+        )
+        for name in sorted(filenames):
+            if not _is_python_test_filename(name):
+                continue
+            path = directory / name
+            try:
+                if path.is_symlink() or path.stat().st_size > _PYTHON_TEST_MAX_BYTES:
+                    continue
+            except OSError:
+                continue
+            found.append(path)
+            if len(found) >= _PYTHON_TEST_MAX_FILES:
+                return found
+
+    return found
+
+
+def _dotted_name(node: ast.expr) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        owner = _dotted_name(node.value)
+        return f"{owner}.{node.attr}" if owner else node.attr
+    return ""
+
+
+def _python_test_styles(path: Path) -> tuple[bool, bool]:
+    """Return ``(has_pytest, has_unittest)`` from executable test declarations."""
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"), filename=str(path))
+    except (OSError, SyntaxError, ValueError):
+        return False, False
+
+    unittest_modules: set[str] = set()
+    unittest_cases: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "unittest":
+                    unittest_modules.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module == "unittest":
+            unittest_cases.update(alias.asname or alias.name for alias in node.names)
+
+    has_pytest = any(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_")
+        for node in tree.body
+    )
+    has_unittest = False
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        has_test_method = any(
+            isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name.startswith("test_")
+            for item in node.body
+        )
+        if not has_test_method:
+            continue
+        bases = {_dotted_name(base) for base in node.bases}
+        is_unittest_case = any(
+            base in unittest_cases
+            or any(
+                base == f"{module}.{case}"
+                for module in unittest_modules
+                for case in ("TestCase", "IsolatedAsyncioTestCase")
+            )
+            for base in bases
+        )
+        has_unittest = has_unittest or is_unittest_case
+        has_pytest = has_pytest or not is_unittest_case
+
+    return has_pytest, has_unittest
+
+
+def _python_test_commands(root: Path) -> list[str]:
+    """Choose a runner from actual bounded test files; pytest wins for mixed suites."""
+    has_pytest = False
+    has_unittest = False
+    for path in _find_python_test_files(root):
+        file_pytest, file_unittest = _python_test_styles(path)
+        has_pytest = has_pytest or file_pytest
+        has_unittest = has_unittest or file_unittest
+
+    if has_pytest:
+        return ["python -m pytest"]
+    if has_unittest:
+        return ["python -m unittest discover"]
+    return []
+
 
 def _detect_python_recipe(root: Path) -> Recipe | None:
     pyproject = _read_text(root, "pyproject.toml")
@@ -183,7 +306,7 @@ def _detect_python_recipe(root: Path) -> Recipe | None:
     install = _PYTHON_INSTALL.get(detect_package_manager(root) or "") or (
         "pip install -e ." if pyproject and not requirements else "pip install -r requirements.txt"
     )
-    pytest_or_empty = ["pytest"] if (root / "tests").exists() else []
+    test_commands = _python_test_commands(root)
 
     # Precedence: Django, then FastAPI/uvicorn, then Flask, then generic.
     if manage_py or "django" in lower:
@@ -196,20 +319,20 @@ def _detect_python_recipe(root: Path) -> Recipe | None:
     if "fastapi" in lower or "uvicorn" in lower:
         app_module = (_first_existing(root, ("main.py", "app.py")) or "main.py").removesuffix(".py") + ":app"
         return Recipe(
-            name="FastAPI app", kind="fastapi", bootstrap=[install], test=pytest_or_empty,
+            name="FastAPI app", kind="fastapi", bootstrap=[install], test=test_commands,
             start=f"uvicorn {app_module} --host 0.0.0.0 --port 8000", port=8000,
             evidence=["Detected Python project", "Detected FastAPI/Uvicorn dependency"],
         )
     if "flask" in lower:
         app_module = _first_existing(root, ("app.py", "main.py")) or "app.py"
         return Recipe(
-            name="Flask app", kind="flask", bootstrap=[install], test=pytest_or_empty,
+            name="Flask app", kind="flask", bootstrap=[install], test=test_commands,
             start=f"flask --app {app_module} run --host 0.0.0.0 --port 5000", port=5000,
             evidence=["Detected Python project", "Detected Flask dependency"],
         )
     return Recipe(
         name="Python project", kind="python", bootstrap=[install],
-        test=pytest_or_empty or ["python -m unittest discover"],
+        test=test_commands,
         evidence=["Detected Python project"],
     )
 

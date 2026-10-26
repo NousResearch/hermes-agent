@@ -4,12 +4,16 @@ The handoff scan folds every row up to the newest in-transcript handoff into the
 tail walk charged that handoff, a summary row that alone pushed the transcript over the soft ceiling ended
 the walk on itself: the planned window held only the handoff and compress() returned the
 ``empty_post_handoff_window`` no-op at every trigger (live: four no-ops in a row, prompt 47k -> 66.7k on a
-64k window, after a manual compress followed by one automatic compaction).
+64k window, after a manual compress followed by one automatic compaction). Rolling micro-compaction plans
+its window with the same walk, so the same marker stalled it: no exchange after the marker was ever absorbed.
 """
 
 from unittest.mock import patch
 
-from agent.context_compressor import SUMMARY_PREFIX, ContextCompressor, _estimate_msg_budget_tokens
+from agent.context_compressor import (
+    COMPRESSED_SUMMARY_METADATA_KEY, MICRO_COMPACT_MARKER_KEY, SUMMARY_PREFIX, ContextCompressor,
+    _estimate_msg_budget_tokens,
+)
 
 
 def _compressor() -> ContextCompressor:
@@ -20,9 +24,9 @@ def _compressor() -> ContextCompressor:
         )
 
 
-def _handoff(body_words: int = 1_800) -> dict:
-    return {"role": "user", "content": f"{SUMMARY_PREFIX}\n## Goal\n" + " ".join(["earlier"] * body_words),
-            "_compressed_summary": True}
+def _handoff(body_words: int = 1_800, role: str = "user", **meta: bool) -> dict:
+    return {"role": role, "content": f"{SUMMARY_PREFIX}\n## Goal\n" + " ".join(["earlier"] * body_words),
+            COMPRESSED_SUMMARY_METADATA_KEY: True, **meta}
 
 
 def _turns(n: int, words: int = 330) -> list[dict]:
@@ -33,10 +37,9 @@ def _turns(n: int, words: int = 330) -> list[dict]:
     return rows
 
 
-def _over_ceiling_only_with_handoff(cc: ContextCompressor, head: list[dict]) -> list[dict]:
+def _over_ceiling_only_with(cc: ContextCompressor, handoff: dict, head: list[dict]) -> list[dict]:
     """Rows after the handoff fit the soft ceiling; adding the handoff breaks it."""
     soft = cc._tail_soft_ceiling(cc.tail_token_budget)
-    handoff = _handoff()
     for n in range(4, 80):
         turns = _turns(n)
         after = sum(map(_estimate_msg_budget_tokens, turns))
@@ -47,7 +50,7 @@ def _over_ceiling_only_with_handoff(cc: ContextCompressor, head: list[dict]) -> 
 
 def test_leading_handoff_does_not_collapse_the_window_to_itself():
     cc = _compressor()
-    messages = _over_ceiling_only_with_handoff(cc, head=[])
+    messages = _over_ceiling_only_with(cc, _handoff(), head=[])
     with patch.object(cc, "_generate_summary", return_value="NEW SUMMARY BODY"):
         result = cc.compress(messages, current_tokens=60_000)
 
@@ -59,18 +62,19 @@ def test_leading_handoff_does_not_collapse_the_window_to_itself():
     assert result[-1]["content"] == messages[-1]["content"]
 
 
-def test_handoff_behind_a_protected_head_folds_the_turns_after_it():
-    """Gateway manual compress keeps protect_first_n=3: the handoff sits at index 3 of the next transcript."""
+def test_rolling_micro_compaction_absorbs_the_exchange_after_its_marker():
     cc = _compressor()
-    head = [
-        {"role": "user", "content": "first request"},
-        {"role": "assistant", "content": "first answer"},
-        {"role": "user", "content": "second request"},
-    ]
-    messages = _over_ceiling_only_with_handoff(cc, head=head)
-    start, end = cc._compress_window(messages)
-    handoff_idx = len(head)
-    assert start == 0
-    # The window reaches past the old handoff into the turns after it, not just the rows in front of it.
-    assert end > handoff_idx + 1
-    assert cc.has_content_to_compress(messages) is True
+    cc._micro_compact_enabled = True
+    # Under the defrag threshold, yet large enough to break the soft ceiling on its own.
+    marker = _handoff(body_words=500, role="assistant", **{MICRO_COMPACT_MARKER_KEY: True})
+    head = [{"role": "system", "content": "system prompt"}, {"role": "user", "content": "first request"}]
+    messages = _over_ceiling_only_with(cc, marker, head=head)
+
+    with patch.object(cc, "_micro_summarize_one", return_value="ROLLING SUMMARY"):
+        result = cc._micro_compact([dict(m) for m in messages])
+
+    contents = [str(m.get("content")) for m in result]
+    assert not any(c.startswith("answer 0 ") for c in contents)
+    assert any("question 0 " in c for c in contents)  # user text is never absorbed
+    assert sum(1 for m in result if m.get(MICRO_COMPACT_MARKER_KEY)) == 1
+    assert result[-1]["content"] == messages[-1]["content"]

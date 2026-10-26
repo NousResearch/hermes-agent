@@ -68,12 +68,15 @@ describe('relaunchNow', () => {
         const { relaunchIfNoSandboxCameTooLate } = await import('./linux-sandbox-relaunch')
 
         expect(
-          relaunchIfNoSandboxCameTooLate({
-            commandLine: { hasSwitch: name => name === 'no-sandbox' },
-            relaunch: () => events.push('relaunch'),
-            releaseSingleInstanceLock: () => events.push('release'),
-            exit: () => events.push('exit')
-          })
+          relaunchIfNoSandboxCameTooLate(
+            {
+              commandLine: { hasSwitch: name => name === 'no-sandbox' },
+              relaunch: () => events.push('relaunch'),
+              releaseSingleInstanceLock: () => events.push('release'),
+              exit: () => events.push('exit')
+            },
+            () => events.push('beforeExit')
+          )
         ).toBe(false)
         expect(events).toEqual([])
         expect(process.env.TMPDIR).toBe(dir)

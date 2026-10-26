@@ -76,8 +76,11 @@ interface SandboxRelaunchHost extends RelaunchHost {
 }
 
 // Call once, in the lock-owning instance, after every runtime switch source
-// (sandbox ladder, config.yaml) has run and before `ready`.
-export function relaunchIfNoSandboxCameTooLate(host: SandboxRelaunchHost): boolean {
+// (sandbox ladder, config.yaml) has run and before `ready`. `beforeExit` runs
+// only when this instance exits for the relaunch: a deliberate restart this
+// early must clear what a mid-boot abort would leave behind (the NVIDIA boot
+// witness), or the next launch reads it as a GPU failure.
+export function relaunchIfNoSandboxCameTooLate(host: SandboxRelaunchHost, beforeExit: () => void): boolean {
   const relaunch = linuxNoSandboxRelaunch({
     platform: process.platform,
     runtimeNoSandbox: host.commandLine.hasSwitch('no-sandbox'),
@@ -97,6 +100,8 @@ export function relaunchIfNoSandboxCameTooLate(host: SandboxRelaunchHost): boole
   // file reuses that descriptor.
   delete process.env[LAUNCHER_READY_FD_ENV]
   restoreLaunchTmpdir(process.env)
+  // Before the relaunch: an AppImage target starts at once and reads the witness.
+  beforeExit()
   relaunchNow(host, relaunch.args, relaunch.strategy, process.env)
   host.exit(0)
 

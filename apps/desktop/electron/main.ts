@@ -1284,7 +1284,7 @@ let desktopSshPathOverride = ''
 
 // Linux: a runtime `--no-sandbox` kills renderers on /dev/shm (linux-sandbox-relaunch.ts).
 if (isPrimaryInstance) {
-  relaunchIfNoSandboxCameTooLate(app)
+  relaunchIfNoSandboxCameTooLate(app, () => nvidiaEglRecovery.cleanExit())
 }
 
 // ACTIVE_HERMES_ROOT — the canonical mutable Hermes install. Same path

@@ -1,5 +1,6 @@
 name: serverless-inference-for-hermes
 title: CoreWeave Inference
+image: https://raw.githubusercontent.com/coreweave/serverless-inference-for-hermes/b422641464873f06d2ab657123763b818e4a5913/assets/catalog-banner.svg
 repo: https://github.com/coreweave/serverless-inference-for-hermes
 sha: 4fb2c1e63cce98bf5563372e5836e94fe92e1448
 description: "CoreWeave Serverless Inference model provider. Disclosure — Hermes sends model discovery and chat requests, including prompts and tool results, to https://api.inference.wandb.ai/v1 (CoreWeave / W&B Inference) using COREWEAVE_API_KEY; the installed provider registers a profile only and reads no credential files, starts no processes and adds no telemetry."

@@ -21,6 +21,9 @@ from agent.transports.codex_app_server import (
 def _bare_client() -> CodexAppServerClient:
     client = object.__new__(CodexAppServerClient)
     client._closed = False
+    client._close_lock = threading.Lock()
+    client._close_complete = False
+    client._closing_descendants = None
     client._pending = {}
     client._pending_lock = threading.Lock()
     client._next_id = 1

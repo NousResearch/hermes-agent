@@ -51,12 +51,8 @@ def test_agent_close_releases_codex_app_server_session(monkeypatch):
     assert agent._session_messages == []
 
 
-def test_close_clears_reference_even_when_session_close_raises(monkeypatch):
-    """A wedged app-server must not strand a stale session reference.
-
-    The attribute is cleared BEFORE close() precisely so a raising close
-    can't leave a dead session attached to the agent.
-    """
+def test_close_retains_failed_owner_until_retry_confirms_exit(monkeypatch):
+    """An uncertain close must keep the original owner reachable for another attempt."""
     agent = _bare_agent("test-codex-lifecycle-raises")
     codex_session = _FakeCodexSession(raises=True)
     agent._codex_session = codex_session
@@ -67,6 +63,11 @@ def test_close_clears_reference_even_when_session_close_raises(monkeypatch):
     agent.close()
 
     assert codex_session.close_calls == 1
+    assert agent._codex_session is codex_session
+    codex_session._raises = False
+    agent.close()
+    agent.close()
+    assert codex_session.close_calls == 2
     assert agent._codex_session is None
 
 
@@ -87,7 +88,7 @@ def test_release_clients_releases_codex_app_server_session():
     a rebuilt agent spawns its own app-server child, so the evicted one must be closed here too — and
     repeated release/close must not re-close it."""
     agent = _bare_agent("test-codex-evict")
-    codex_session = _FakeCodexSession(raises=True)
+    codex_session = _FakeCodexSession()
     agent._codex_session = codex_session
     agent._session_messages = []
 

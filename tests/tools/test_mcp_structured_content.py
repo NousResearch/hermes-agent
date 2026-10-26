@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests.agent.test_tool_call_incremental_persistence import _attach_real_session_db, _make_agent, _mock_tool_call
 from tools import mcp_tool
 from tools import mcp_tool_content as _mcp_content
 from tools import mcp_tool_handlers as _mcp_handlers
@@ -347,3 +348,66 @@ class TestDroppedBlockNotice:
         data = json.loads(handler({}))
         assert data["structuredContent"] == payload
         assert "[MCP content dropped" in data["result"]
+
+class TestMcpAppViewRecord:
+    """MCP Apps: a model call of a tool whose live definition declares ``_meta.ui.resourceUri``
+    fills the view slot the executor binds for it, and the commit copies it onto the durable tool
+    row — the server and tool it ran on, the arguments sent and the raw ``CallToolResult`` with
+    ``isError`` kept, whether the model calls it directly or through the ``tool_call`` bridge. A tool
+    without a UI, or another tool dispatched inside the call (``execute_code``), leaves the slot
+    untouched; a result written after the commit never reaches the row."""
+
+    def test_handler_and_commit_leave_the_view_record_on_the_row(self, _patch_mcp_server, tmp_path, monkeypatch):
+        from mcp.types import CallToolResult, TextContent, Tool
+
+        from tools import mcp_app_host
+        from tools.mcp_tool_schema import mcp_prefixed_tool_name
+        from tools.registry import registry
+
+        mcp_tool._servers["test-server"]._tools = [
+            Tool(name="view", inputSchema={"type": "object"},
+                 _meta={"ui": {"resourceUri": "ui://test-server/view.html"}}),
+            Tool(name="plain", inputSchema={"type": "object"})]
+        _patch_mcp_server.call_tool = AsyncMock(
+            return_value=CallToolResult(content=[TextContent(type="text", text="no such city")], isError=True))
+        names = {tool: mcp_prefixed_tool_name("test-server", tool) for tool in ("view", "plain")}
+        slots, bind_slot = {}, mcp_app_host.bind_slot
+
+        def spy_bind_slot(name, slot):  # the executor's slots, by tool name
+            slots[name] = slot
+            return bind_slot(name, slot)
+
+        monkeypatch.setattr(mcp_app_host, "bind_slot", spy_bind_slot)
+        agent = _make_agent()
+        agent.valid_tool_names = {*names.values(), "tool_call"}
+        db = _attach_real_session_db(agent, tmp_path / "state.db", "sid")
+        bridged = json.dumps({"calls": [{"name": names["view"], "arguments": {"city": "Lima"}}]})
+        calls = [_mock_tool_call("tool_call", bridged, "call-bridged"),
+                 _mock_tool_call(names["view"], '{"city": "Atlantis"}', "call-view"),
+                 _mock_tool_call(names["plain"], "{}", "call-plain")]
+        messages = [{"role": "user", "content": "weather?"}, {"role": "assistant", "content": "", "tool_calls": [
+            {"id": c.id, "type": "function", "function": {"name": c.function.name, "arguments": c.function.arguments}}
+            for c in calls]}]
+        agent._flush_messages_to_session_db(messages)
+        for tool, name in names.items():
+            registry.register(name=name, toolset="mcp-test-server", handler=_mcp_handlers._make_tool_handler(
+                "test-server", tool, 30.0), schema={"name": name, "description": "", "parameters": {"type": "object"}})
+        try:
+            agent._execute_tool_calls_sequential(SimpleNamespace(content="", tool_calls=calls), messages, "task-1")
+        finally:
+            for name in names.values():
+                registry.deregister(name)
+
+        record = {"server": "test-server", "tool": "view", "arguments": {"city": "Atlantis"},
+                  "result": {"content": [{"type": "text", "text": "no such city"}], "isError": True}}
+        assert db.get_tool_call("sid", "call-view")["mcp_app"] == record
+        assert db.get_tool_call("sid", "call-bridged")["mcp_app"] == {**record, "arguments": {"city": "Lima"}}
+        plain = db.get_tool_call("sid", "call-plain")
+        assert plain is not None and "mcp_app" not in plain and slots[names["plain"]] == {}
+        mcp_app_host.record_result(slots[names["view"]], CallToolResult(content=[TextContent(type="text", text="late")]))
+        row = next(m for m in messages if m.get("tool_call_id") == "call-view")
+        assert row["display_metadata"]["mcp_app"] == record == db.get_tool_call("sid", "call-view")["mcp_app"]
+        outer = {}
+        with bind_slot("execute_code", outer):
+            _mcp_handlers._make_tool_handler("test-server", "view", 30.0)({"city": "Oslo"})
+        assert outer == {}

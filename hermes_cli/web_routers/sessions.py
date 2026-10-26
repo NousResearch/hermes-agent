@@ -704,6 +704,12 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
         message = _with_tool_call_labels(message)
         if coerce is not None:
             message = coerce(message)
+        # An MCP App view record carries the call's arguments and raw result; ``mcp.app.view``
+        # serves those on demand, so a transcript page keeps only the server and tool it names.
+        meta = message.get("display_metadata")
+        if isinstance(meta, dict) and isinstance(record := meta.get("mcp_app"), dict):
+            view = {key: record[key] for key in ("server", "tool") if key in record}
+            message = {**message, "display_metadata": {**meta, "mcp_app": view}}
         # Same read-side typing as session.resume (tui_gateway/session_history.py).
         failed_turn = not message.get("display_kind") and untyped_failed_turn_display_kind(
             message.get("role"), message.get("content"))

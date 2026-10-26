@@ -155,6 +155,14 @@ def launch_dotenv_keys() -> frozenset[str]:
     return frozenset(_LOADED_DOTENV_KEYS)
 
 
+def dotenv_published_values(name: str) -> frozenset[str]:
+    """The values dotenv loads in this process last wrote to ``name``, its name matched case-insensitively:
+    on Windows ``https_proxy`` in a .env and an inherited ``HTTPS_PROXY`` are one environment variable."""
+    folded = name.upper()
+    with _DOTENV_LOCK:
+        return frozenset(value for key, (_base, value, _pass) in _DOTENV_PUBLISHED.items() if key.upper() == folded)
+
+
 def managed_dotenv_keys() -> frozenset[str]:
     """KEY names the administrator-managed ``.env`` loaded (see ``_MANAGED_DOTENV_KEYS``). Policy for
     every profile: never stripped from a routed child, and re-applied over the routed scope."""

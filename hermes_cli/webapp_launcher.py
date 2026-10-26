@@ -108,7 +108,9 @@ def _open_privately(target: Path, url: str) -> bool:
     user-only ``webapp`` folder, readable by this OS user alone, and open that page. Pages of earlier
     launches go first, so at most one is left, and its link stops working within the link's lifetime.
     False, leaving no page, on WSL (the Windows browser cannot read the page as this user only), when the
-    folder or page cannot be kept user-only, or when no browser opens it."""
+    folder or page cannot be kept user-only, or when no browser opens it. On macOS ``webbrowser`` hands the
+    URL to ``osascript`` on stdin, never in argv, so the page mainly protects the BSDs and illumos, where
+    ``xdg-open`` or ``firefox`` gets the URL in argv."""
     from gateway.webapp_listener import TOKEN_PATH, _close_to_other_users, _readable_by_other_users
     from hermes_constants import is_wsl
     if os.name == "nt" or is_wsl():
@@ -345,6 +347,7 @@ def cmd_webapp(args) -> int:
         # carries it to the browser; failing that, the user opens it by hand.
         if not args.no_open and _open_privately(target, link["url"]):
             print("Opened the Webapp in your browser.")
+            print("If no browser opened, run `hermes webapp --no-open` for a link.")
             return 0
         print(f"Open this link in your browser within {link['expires_in_seconds']} seconds. It works "
               "once and signs the browser in as you, so keep it private:")

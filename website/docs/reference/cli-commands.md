@@ -1942,8 +1942,9 @@ Windows it checks nothing, and the link travels only in the browser launcher's c
 standard users cannot read. On macOS, the BSDs and illumos neither holds, so the command never passes
 the link to a browser launcher: it writes it into a page only your OS user can read
 (`webapp/launch-*.html` in the gateway home) and opens that page. Where it cannot open a browser, and
-on WSL, it prints the link for you to open. Until it is used it signs a browser in as you, so keep it
-private.
+on WSL, it prints the link for you to open. On macOS a browser can open where you don't see it (over
+SSH, on the Mac's own screen): if none did, run `hermes webapp --no-open` for the link. Until it is
+used it signs a browser in as you, so keep it private.
 
 For a named profile served by the default gateway (`hermes -p work webapp`), the Webapp opens on that
 profile.

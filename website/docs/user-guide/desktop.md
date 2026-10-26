@@ -57,8 +57,10 @@ Linux the gateway checks that the browser's connection belongs to your OS user; 
 travels only in the browser launcher's command line, which other standard users cannot read. On macOS,
 the BSDs and illumos neither holds, so the command writes the link into a page only your OS user can
 read (in the gateway home's `webapp` folder) and opens that page: the launcher sees only its path.
-Where it cannot open a browser (`--no-open`, an SSH session) and on WSL (where the Windows browser
-reaches the gateway through WSL's relay), it prints the one-use link for you to open instead; until it
+On macOS a browser can open where you don't see it (over SSH, on the Mac's own screen): if none did,
+run `hermes webapp --no-open` for the link. Where it cannot open a browser (`--no-open`, an SSH session
+on the BSDs or illumos) and on WSL (where the Windows browser reaches the gateway through WSL's
+relay), it prints the one-use link for you to open instead; until it
 is used it signs a browser in as you, so keep it private. `hermes webapp --sign-out` signs out every
 tab at once: their open connections close, Bot Desktop viewers included, and each shows the sign-in
 instructions. Behind the sign-in gate (below) it also signs out every browser that signed in with a

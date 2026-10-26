@@ -48,6 +48,12 @@ def register(ctx):
         if json.loads((root / "mode.json").read_text()) == "transform":
             return "Public transformed answer."
     ctx.register_hook("transform_llm_output", transform)
+    def held_transform(response_text, **kwargs):
+        with (root / "held-transform.jsonl").open("a") as output:
+            output.write(json.dumps(response_text) + "\\n")
+        return "Public held answer."
+    if json.loads((root / "mode.json").read_text()) == "held":
+        ctx.register_hook("transform_llm_output", held_transform, hold_stream=True)
     def observe(**payload):
         with (root / "stream-observer.jsonl").open("a") as output:
             output.write(json.dumps(payload) + "\\n")
@@ -344,6 +350,21 @@ def test_unreviewed_output_cannot_bypass_policy(gate_runtime, case):
         assert not requests
         assert result["failed"] is True
         assert result["failure_reason"] == "final_policy_unsupported_runtime"
+
+
+@pytest.mark.parametrize("streaming", [True, False])
+def test_review_sees_one_held_stream_rewrite(gate_runtime, streaming):
+    start, db, _requests, plugin, _root = gate_runtime
+    agent, delivered = start("held", streaming=streaming)
+    result = agent.run_conversation("Check the evidence.")
+    assert agent._hold_stream is True
+    assert result["final_response"] == "Public held answer."
+    assert result["pre_transform_response"] is None
+    assert [json.loads(line) for line in (plugin / "held-transform.jsonl").read_text().splitlines()] == ["PRIVATE_DRAFT"]
+    seen = json.loads((plugin / "seen.jsonl").read_text().splitlines()[0])
+    assert seen["final_response"] == "Public held answer."
+    assert not any(delivered)
+    assert "PRIVATE_DRAFT" not in json.dumps(db.get_messages("completion-session"))
 
 
 @pytest.mark.parametrize("mode", ["allow", "fail", "invalid", "error", "timeout", "mutate"])

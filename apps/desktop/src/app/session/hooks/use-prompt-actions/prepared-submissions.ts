@@ -161,10 +161,10 @@ export async function readPreparedSubmission(key: string): Promise<PreparedSubmi
 // entry stays adoptable after a reload.
 // Web Locks exist only in secure contexts, so the Webapp served over plain HTTP to a
 // non-loopback address has none, while its tabs still share this journal. The browser gives
-// such a page no other atomic cross-tab primitive, so nothing is excluded there; each step is
-// safe to run in two tabs instead. A new send gets a key no other send uses
-// (preparedSubmissionSlot). Adoption matches an exact submission id, so two tabs that adopt one
-// entry both send its retained request id and payload, which the gateway admits once.
+// such a page no other atomic cross-tab primitive, so nothing is excluded there. Two tabs' sends
+// are kept apart instead: a new send gets a key no other send uses (preparedSubmissionSlot), and
+// adoption matches an exact submission id, so two tabs that adopt one entry both send its
+// retained request id and payload, which the gateway admits once.
 const owned = new Map<string, () => void>()
 
 const webLocks = () => (typeof navigator === 'undefined' ? undefined : navigator.locks)

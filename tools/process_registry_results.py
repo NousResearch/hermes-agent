@@ -53,7 +53,7 @@ def save_completed_result(session) -> bool:
     with session._lock:
         record = {key: getattr(session, key) for key in _RESULT_FIELDS}
         record["completion_consumed"] = session.completion_consumed
-        record.update(pid=session.pid, host_start_time=session.host_start_time,
+        record.update(pid=session.pid, host_start_time=session.host_start_time, pid_scope=session.pid_scope,
                       ownership_generation=session.ownership_generation, handoff_note=session.handoff_note)
         record["output"] = session.output_buffer[-MAX_OUTPUT_CHARS:]
     # Live-output opt-out must not persist raw credentials in durable receipts.
@@ -147,7 +147,7 @@ def _owns_result(owner: str, parent: str | None) -> bool:
 
 def load_completed_results(prefix: str = "", *, owns_entry=None, strict=False) -> dict:
     """Restore read-only snapshots; no process handles, watchers, or queue events."""
-    from tools.process_registry import ProcessSession
+    from tools.process_registry import ProcessSession, _checkpoint_path
 
     from gateway.session_context import get_session_env
 
@@ -156,8 +156,15 @@ def load_completed_results(prefix: str = "", *, owns_entry=None, strict=False) -
         return {}
     results = {}
     try:
+        try:
+            checkpoint = json.loads(_checkpoint_path().read_text(encoding='utf-8-sig'))
+        except FileNotFoundError:
+            checkpoint = []
+        if not isinstance(checkpoint, list) or any(not isinstance(row, dict) for row in checkpoint):
+            raise ValueError('invalid process checkpoint')
+        scopes = {row.get('session_id'): row.get('pid_scope', 'host') for row in checkpoint}
         paths = _result_paths()
-    except OSError:
+    except (OSError, ValueError):
         if strict:
             raise
         logger.warning("Could not read retained process results", exc_info=True)
@@ -175,6 +182,7 @@ def load_completed_results(prefix: str = "", *, owns_entry=None, strict=False) -
                 **{key: record[key] for key in _RESULT_FIELDS},
                 exited=True, output_buffer=record["output"], completion_consumed=record.get('completion_consumed', False),
                 pid=record.get('pid'), host_start_time=record.get('host_start_time'),
+                pid_scope=scopes.get(record['id'], record.get('pid_scope', 'host')),
                 ownership_generation=record.get('ownership_generation', 0), handoff_note=record.get('handoff_note', ''),
             )
             session._completion_event.set()

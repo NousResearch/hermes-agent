@@ -32,7 +32,7 @@ class ShellBackend:
 
 @pytest.mark.asyncio
 @pytest.mark.live_system_guard_bypass  # Backend wrapper detaches only these captured finite fixture children.
-async def test_lost_backend_handle_keeps_fifo_fenced_through_foreign_writes_until_real_exit(tmp_path, monkeypatch):
+async def test_lost_backend_handle_keeps_fifo_fenced_through_foreign_writes_after_wrapper_exit(tmp_path, monkeypatch):
     from gateway.session_ancillary import process_stop_pending
     from tools import process_registry as module
     db, authority = _authority(tmp_path, monkeypatch)
@@ -83,17 +83,18 @@ async def test_lost_backend_handle_keeps_fifo_fenced_through_foreign_writes_unti
         assert not executed and alive() and process_stop_pending(db, 's') == token
         assert list_session_admissions(db, session_id='s')[0]['status'] == 'queued'
         # The original backend still has the real resource/exit producer. No
-        # host PID inference or invented handle is needed to establish completion.
+        # Its wrapper result is history; it cannot prove descendant cleanup.
         release.touch()
         assert await asyncio.to_thread(process._completion_event.wait, 15)
         await asyncio.to_thread(wait_until, lambda: not alive(), timeout=10)
         assert process.exit_code == 0 and 'original backend output' in process.output_buffer
-        assert process.id not in {row['session_id'] for row in json.loads(module._checkpoint_path().read_text())}
+        assert process.id in {row['session_id'] for row in json.loads(module._checkpoint_path().read_text())}
         await _submit(authority, 'second human continuation')
         await asyncio.wait_for(authority.sessions['s'].task, 15)
-        assert executed == ['first human continuation', 'second human continuation']
-        assert process_stop_pending(db, 's') is None
-        retained = current.get(process.id)
+        assert executed == []
+        assert process_stop_pending(db, 's') == token
+        from tools.process_registry_results import load_completed_results
+        retained = load_completed_results(owns_entry=lambda row: row['id'] == process.id, strict=True)[process.id]
         assert retained.exit_code == 0 and 'original backend output' in retained.output_buffer
     finally:
         release.touch()

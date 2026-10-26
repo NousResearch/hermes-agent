@@ -261,6 +261,7 @@ class _SandboxEnv:
         hook = self.hooks.pop(step, None)
         if hook:
             hook()
+            self.alive = False  # The fixture wrapper finishes after the callback.
         return {"output": out}
 
 
@@ -277,7 +278,7 @@ def _poll_sandbox(registry, session, env):
     registry._env_poller_loop(session, env, "/tmp/bg.log", "/tmp/bg.pid", "/tmp/bg.exit")
 
 
-def test_a_sandbox_exit_read_after_a_kill_keeps_the_kill(monkeypatch):
+def test_sandbox_exit_after_refused_stop_preserves_actual_exit(monkeypatch):
     registry = ProcessRegistry()
     killed = []
     env = _SandboxEnv(hooks={"exit": lambda: killed.append(registry.kill_process("proc_sandbox"))})
@@ -285,12 +286,13 @@ def test_a_sandbox_exit_read_after_a_kill_keeps_the_kill(monkeypatch):
 
     _poll_sandbox(registry, session, env)
 
-    assert killed[0]["status"] == "killed"
+    assert killed[0]["status"] == "error"
+    assert session._scope_stop_pending
     assert (session.exit_code, session.completion_reason, session.termination_source) == (
-        -15, "killed", "process.kill")
+        0, "exited", "")
 
 
-def test_a_sandbox_lost_after_a_kill_keeps_the_kill(monkeypatch):
+def test_sandbox_loss_after_refused_stop_remains_unknown(monkeypatch):
     registry = ProcessRegistry()
 
     def kill_then_lose_the_backend():
@@ -302,8 +304,9 @@ def test_a_sandbox_lost_after_a_kill_keeps_the_kill(monkeypatch):
 
     _poll_sandbox(registry, session, env)
 
+    assert session._scope_stop_pending
     assert (session.exit_code, session.completion_reason, session.termination_source) == (
-        -15, "killed", "process.kill")
+        -1, "lost", "backend_lost")
 
 
 def test_a_lost_sandbox_without_a_kill_is_reported_lost(monkeypatch):
@@ -323,9 +326,8 @@ def test_a_lost_sandbox_without_a_kill_is_reported_lost(monkeypatch):
     assert session._completion_event.is_set()
 
 
-def test_sandbox_output_fetched_before_a_kill_is_not_added_after_it(monkeypatch):
-    """The kill published its snapshot; a delta the poller already had in hand must not grow
-    the session's output past what the caller and the completion were given."""
+def test_sandbox_output_continues_after_refused_stop(monkeypatch):
+    """A refused Stop preserves the reader so its later output is not discarded."""
     registry = ProcessRegistry()
     killed = []
     env = _SandboxEnv(delta="FINAL", alive=True,
@@ -336,10 +338,11 @@ def test_sandbox_output_fetched_before_a_kill_is_not_added_after_it(monkeypatch)
     _poll_sandbox(registry, session, env)
 
     assert killed[0]["output"] == "partial"
-    assert session.output_buffer == "partial"
+    assert killed[0]["status"] == "error"
+    assert session.output_buffer == "partialFINAL"
 
 
-def test_a_log_rotation_seen_after_a_kill_does_not_clear_its_output(monkeypatch):
+def test_log_rotation_after_refused_sandbox_stop_preserves_current_output(monkeypatch):
     registry = ProcessRegistry()
     env = _SandboxEnv(delta="partial", alive=True)
     session = _sandbox_session(registry, monkeypatch, env)
@@ -347,14 +350,16 @@ def test_a_log_rotation_seen_after_a_kill_does_not_clear_its_output(monkeypatch)
 
     def rotated_on_the_second_read(command, **kwargs):
         if command.startswith("O=7;"):  # second log read: the log shrank, so the offset restarts
-            registry.kill_process("proc_sandbox")
+            assert registry.kill_process("proc_sandbox")["status"] == "error"
+            env.alive = False
             return {"output": "3 0\nnew"}
         return execute(command, **kwargs)
 
     monkeypatch.setattr(env, "execute", rotated_on_the_second_read)
     _poll_sandbox(registry, session, env)
 
-    assert session.output_buffer == "partial"
+    assert session.output_buffer == "new"
+    assert session._scope_stop_pending
 
 
 def _scoped_session(registry, monkeypatch, sid, stops, **fields) -> ProcessSession:

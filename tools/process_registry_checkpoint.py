@@ -28,6 +28,23 @@ class ProcessCheckpointMixin:
         self._write_checkpoint()
         return stopped
 
+    def _refuse_backend_stop(self, session, consume_output):
+        """The opaque wrapper API supplies no birth-bound job/tree cleanup proof."""
+        from tools.process_registry import _completion_output
+        from tools.process_registry_results import save_completed_result
+        with session._lock:
+            session._scope_stop_pending = True
+            if consume_output:
+                session.completion_consumed = True
+                self._completion_consumed.add(session.id)
+            result = {'status': 'error', 'error': 'process_stop_unknown',
+                      'session_id': session.id, 'process_running': not session.exited,
+                      **_completion_output(session)}
+        self._write_checkpoint()
+        if session.exited:
+            save_completed_result(session)
+        return result
+
     # ----- Checkpoint (crash recovery) -----
 
     def _write_checkpoint(self, extra_entries: Optional[list[dict[str, Any]]] = None, *, exclude_ids=(), retain_ids=(), _lock_held=False):
@@ -50,7 +67,8 @@ class ProcessCheckpointMixin:
                     entry["command"] = redact_sensitive_text(s.command, code_file=True)
                     entry['handoff_note'] = redact_sensitive_text(s.handoff_note, code_file=True)
                     entry["owner_task_id"] = s.owner_task_id or s.task_id
-                    if s.exited and not s._scope_stop_pending and not s.systemd_unit and s.id not in retain_ids:
+                    if (s.exited and s.pid_scope == 'host' and not s._scope_stop_pending
+                            and not s.systemd_unit and s.id not in retain_ids):
                         retired.append(entry)
                     else:
                         entries.append(entry)
@@ -92,6 +110,12 @@ class ProcessCheckpointMixin:
                                (receipt := retained.get(entry['session_id']))
                                and all(entry.get(field) == receipt.get(field)
                                        for field in (*OWNERSHIP_FIELDS, 'pid', 'host_start_time'))))]
+                # Completed output history cannot discharge an opaque backend
+                # resource, including when an older cache omitted its scope.
+                present = {entry['session_id'] for entry in entries}
+                entries.extend(entry for entry in previous if entry.get('pid_scope', 'host') != 'host'
+                               and entry.get('session_id') not in present and entry.get('session_id') not in exclude_ids)
+                known.update(entry.get('session_id') for entry in entries)
                 entries.extend(self._foreign_handoffs(path, known))
                 atomic_json_write(path, entries)
             # Never acquire the registry lock inside the file lock: an atomic

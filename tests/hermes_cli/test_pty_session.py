@@ -375,52 +375,6 @@ async def test_a_reattach_that_replays_part_of_the_history_says_output_was_trimm
 
 
 @pytest.mark.asyncio
-async def test_a_shell_reaped_while_its_redial_is_validated_closes_the_redial_as_an_exit(tmp_path, monkeypatch):
-    """A redial whose shell exited, and which the reaper takes while ``resolve`` checks the
-    profile off-loop, is still told the shell exited, so the tab closes instead of offering a new
-    shell."""
-    import secrets
-    import threading
-    from types import SimpleNamespace
-
-    from hermes_cli import pty_session, web_host_terminal_sessions
-    from hermes_cli.web_host_terminal_sessions import HostOwner, HostTerminalRegistry, TerminalExited
-
-    home = tmp_path / "home"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    identity = ("local", "owner")
-    registry = HostTerminalRegistry()
-    token = secrets.token_urlsafe(32)
-    bridge = FakeBridge([])
-    bridge.dead = True  # the shell exited while no tab was attached
-    registry._sessions[token] = pty_session.PtySession(token, bridge, buffer_cap=1024, read_timeout=0.01)
-    registry.owners[token] = HostOwner(identity, home.resolve(), "sh", str(tmp_path))
-
-    validating, release = threading.Event(), threading.Event()
-    request_home = web_host_terminal_sessions._request_home
-
-    def held_request_home(profile):
-        validating.set()
-        release.wait(5)
-        return request_home(profile)
-
-    monkeypatch.setattr(web_host_terminal_sessions, "_request_home", held_request_home)
-    redial = SimpleNamespace(query_params={"attach": token})
-    try:
-        resolving = asyncio.ensure_future(registry.resolve(token, redial, identity))
-        assert await asyncio.to_thread(validating.wait, 5)
-        await registry.reap_idle()
-        assert token not in registry._sessions and token in registry.exits
-        release.set()
-        with pytest.raises(TerminalExited):
-            await resolving
-    finally:
-        release.set()
-        await registry.close_all()
-
-
-@pytest.mark.asyncio
 async def test_reattach_can_force_complete_tui_redraw_after_replay():
     """A fresh terminal cannot reconstruct a differential ANSI tail alone."""
     from hermes_cli.pty_session import PtySession

@@ -1372,6 +1372,29 @@ def _reclaim_fds_best_effort() -> None:
         apply_nofile_soft_limit(None)
 
 
+def _enter_queued_delivery_identity(queued_job: dict) -> Optional[contextvars.Token]:
+    """Bind the cron identity of the execution a queued delivery belongs to, or ``None``.
+
+    Read from the execution ledger, never from the queued payload alone: a row whose execution is
+    absent or belongs to another job binds nothing, so identity-gated platforms fail closed.
+    """
+    execution_id = str(queued_job.get("execution_id") or "")
+    job_id = str(queued_job.get("id") or "")
+    if not execution_id or not job_id:
+        return None
+    try:
+        record = get_execution(execution_id)
+    except Exception:
+        logger.debug("Queued delivery %s: execution lookup failed", execution_id, exc_info=True)
+        return None
+    if not record or str(record.get("job_id") or "") != job_id:
+        logger.warning(
+            "Queued delivery %s: no matching execution for job %s; sending without cron identity",
+            execution_id, job_id)
+        return None
+    return enter_cron_execution(queued_job, execution_id, record)
+
+
 def drain_delivery_queue(adapters, loop) -> int:
     """Send queued worker results through this gateway's live adapters."""
     from cron.delivery_queue import _path, drain
@@ -1382,10 +1405,17 @@ def drain_delivery_queue(adapters, loop) -> int:
     if not _path().exists():
         return 0
     def send(queued_job, queued_content, queued_for_failure):
-        error = _deliver_result(
-            queued_job, queued_content, adapters=adapters, loop=loop,
-            for_failure=queued_for_failure,
-        )
+        # The queued send IS the fire's delivery, so it carries the fire's identity: platforms that
+        # admit a report only for its own job (``ctx.current_cron_execution()``) refused every
+        # queued run otherwise.
+        identity_token = _enter_queued_delivery_identity(queued_job)
+        try:
+            error = _deliver_result(
+                queued_job, queued_content, adapters=adapters, loop=loop,
+                for_failure=queued_for_failure,
+            )
+        finally:
+            exit_cron_execution(identity_token)
         # The ping left the process: book the incident alerted. A notice every target hid
         # (warning notifications suppressed) is a durable disposition, not an alert.
         if (not error and queued_for_failure

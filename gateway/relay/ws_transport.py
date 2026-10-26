@@ -227,6 +227,12 @@ def _event_from_wire(raw: dict[str, Any]) -> MessageEvent:
 
     reply_to = raw.get("reply_to") or {}
     prompt_response = raw.get("prompt_response")
+    # Heartbeat / roster turns are no-op turns: the owner pauses them silently and the
+    # gateway must not convert a bare `NO_REPLY` into a visible warning post. Mark them
+    # as not needing a reply so the silence marker is allowed on what is otherwise a
+    # "user turn" from the gateway's point of view.
+    _heartbeat = text.startswith(":heartbeat:") or text.startswith(":double_vertical_bar:")
+    reply_expected = False if _heartbeat else None
     return MessageEvent(
         text=text,
         message_type=msg_type,
@@ -244,6 +250,7 @@ def _event_from_wire(raw: dict[str, Any]) -> MessageEvent:
         # Structured interactive-prompt reply, verbatim off the wire; the adapter
         # consumes it to resolve pending approvals/confirms/clarifies.
         prompt_response=dict(prompt_response) if isinstance(prompt_response, dict) else None,
+        reply_expected=reply_expected,
     )
 
 

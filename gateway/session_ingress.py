@@ -191,6 +191,29 @@ def pause_notice(authority, ref, reason):
     if live.pause_notified:
         return None
     live.pause_notified = True
+    if reason == 'unknown_execution':
+        # Self-recovery: the in-memory guard above resets on every restart,
+        # so an old-epoch paused session re-noticed after each restart. A
+        # durable sidecar (outside state.db) records one delivered notice per
+        # (profile, session, reason) per 24h; any storage failure fails open
+        # to posting the notice, never to dropping it.
+        try:
+            from hermes_constants import get_hermes_home
+
+            from gateway.self_recovery import PauseNoticeRegistry, pause_sidecar_path
+
+            # The platform is part of the key: a Slack conversation and a
+            # Telegram conversation are different conversations even if a
+            # session id were ever reused across them (an existing test
+            # exercises exactly that shape).
+            platform = getattr(getattr(live.source, 'platform', None), 'value', None) or 'unknown'
+            registry = PauseNoticeRegistry(pause_sidecar_path(get_hermes_home()))
+            if not registry.should_notify(
+                f"{ref.profile_id}:{ref.session_id}:{platform}", reason
+            ):
+                return None
+        except Exception:
+            pass
     if reason == 'runtime_draining':
         # Transient: the row runs when the restarted owner drains it, so /reset would be wrong advice.
         return '⏳ Hermes is restarting — your message is saved and will be answered when it is back.'

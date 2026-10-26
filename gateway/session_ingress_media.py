@@ -208,17 +208,45 @@ def reconcile_native_retry(db, *, principal_id, session_id, request_id, payload,
     changed bytes or any other changed field still conflict. A delivery committed in
     ``pre_gateway_dispatch``-rewritten form resolves to its committed payload when the resend matches
     the fingerprint recorded at ingress (``ingress_fingerprint``); a changed resend, or a row
-    committed before fingerprints, is compared exactly as above."""
+    committed before fingerprints, is compared exactly as above.
+
+    The provider message time (``timestamp``) is not part of a message's identity. Slack and other
+    adapters re-send every delivery with a fresh arrival-time timestamp that hashes into
+    ``native_text_v1.timestamp`` (session_envelope.py:216), so a redelivery's fingerprint differs
+    from the stored receipt even though the content is identical, and a text-only message has no
+    media to fall through to the byte comparison. The identity checks below therefore compare a
+    fingerprint with that field stripped for both the stored receipt and the current payload: a
+    text-only redelivery resolves to its committed receipt instead of raising ``admission_conflict``.
+    """
     fresh = payload.get('native_text_v1', {}).get('media') or []
+
+    def content_fingerprint(arp_payload):
+        envelope = {**arp_payload['native_text_v1']}
+        envelope.pop('ingress_sha256', None)
+        if 'media' in envelope:
+            envelope['media'] = [[media['sha256'], media['size']] for media in envelope['media']]
+        envelope.pop('timestamp', None)
+        received = {**arp_payload, 'native_text_v1': envelope}
+        received.pop('raw_message', None)
+        canonical = json.dumps(received, sort_keys=True, separators=(',', ':'), default=repr)
+        return hashlib.sha256(canonical.encode()).hexdigest()
+
     with db._read_ctx() as conn:
         row = conn.execute('SELECT status, payload_json FROM session_admissions WHERE principal_id=? AND '
                            'target_session_id=? AND request_id=?', (principal_id, session_id, request_id)).fetchone()
     retained = json.loads(row[1]) if row is not None else {}
-    recorded = retained.get('native_text_v1', {}).get('ingress_sha256')
-    if recorded is not None and recorded == ingress_fingerprint(payload, raw):
+    retained_ntv = retained.get('native_text_v1', {}) or {}
+    recorded = retained_ntv.get('ingress_sha256')
+
+    # Admission identity: identical content (provider message time and raw transport fields
+    # stripped) resolves to the stored receipt; a changed resend still conflicts. A row committed
+    # before fingerprints is compared exactly as above (its content fingerprint decides the rest).
+    if (recorded is not None and recorded == ingress_fingerprint(payload, raw)) or (
+        row is not None and content_fingerprint(payload) == content_fingerprint(retained)
+    ):
         resolved = retained
     else:
-        committed = retained.get('native_text_v1', {}).get('media')
+        committed = retained_ntv.get('media')
         if not fresh or not committed or [(r['sha256'], r['size']) for r in committed] != [
                 (r['sha256'], r['size']) for r in fresh]:
             return payload

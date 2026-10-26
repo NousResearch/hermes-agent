@@ -1,7 +1,6 @@
 """Gateway session management: message sources, the persisted routing index (SessionStore),
 explicit resets and the dynamic "Current Session Context" system prompt section."""
 
-import asyncio
 import hashlib
 import logging
 import os
@@ -20,6 +19,7 @@ from gateway.session_prompt_pin import SessionPromptPinMixin, sanitize_prompt_pi
 from gateway.session_recovery import SessionRecoveryMixin
 from gateway.session_lifecycle import SessionLifecycleMixin, _iso, _new_session_id, _now, _parse_iso
 from gateway.session_transcript import SessionTranscriptMixin
+from gateway.session_async_store import AsyncSessionStore
 # Inverse of _session_key_namespace, defined storage-side (hermes_state must not import gateway).
 from hermes_state_keys import profile_from_session_key_namespace
 
@@ -765,23 +765,6 @@ class _RouteDecision:
         self.prev_session_id = ended.session_id
 
 
-class AsyncSessionStore:
-    """Async boundary for the synchronous, thread-safe SessionStore."""
-
-    def __init__(self, store: "SessionStore") -> None:
-        self._store = store
-
-    def __getattr__(self, name: str):
-        attr = getattr(self._store, name)
-        if not callable(attr):
-            return attr
-
-        async def _offloaded(*args, **kwargs) -> Any:
-            return await asyncio.to_thread(attr, *args, **kwargs)
-
-        return _offloaded
-
-
 class SessionStore(
     SessionPersistenceMixin, SessionRecoveryMixin, SessionLifecycleMixin, SessionTranscriptMixin,
     SessionPromptPinMixin,
@@ -1093,15 +1076,6 @@ class SessionStore(
         with self._lock:
             entry = self._entry_locked(session_key)
             return default if entry is None else entry.metadata.get(key, default)
-
-    def set_session_metadata(self, session_key: str, key: str, value: Any) -> bool:
-        """Persist a small JSON-serializable metadata value. Deliberately does NOT advance
-        ``updated_at``: a background write must not make an idle session look fresh.
-
-        Internal bookkeeping must not advance the user-activity clock used by housekeeping
-        and restart recovery.
-        """
-        return self._update_entry(session_key, lambda e: e.metadata.__setitem__(key, value))
 
     def set_model_override(self, session_key: str, override: Optional[dict[str, Any]]) -> None:
         """Persist (or clear, with ``None``) the /model override; non-secret keys only."""

@@ -1623,7 +1623,19 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                 self._wedged_agent_count(), self._restart_safe_cron_count(),
             )
             return False
-        timeout = float(getattr(self, "_restart_after_turn_timeout", 0.0) or 0.0)
+        from gateway.self_recovery import effective_restart_wait_timeout
+
+        configured_timeout = float(getattr(self, "_restart_after_turn_timeout", 0.0) or 0.0)
+        timeout = effective_restart_wait_timeout(
+            configured_timeout, bool(getattr(self, "_restart_via_service", False))
+        )
+        if timeout < configured_timeout:
+            logger.info(
+                "Service-restart after-turn wait capped from %.0fs to %.0fs so a "
+                "reload cannot park the gateway in draining",
+                configured_timeout,
+                timeout,
+            )
         if timeout <= 0:
             logger.info(
                 "Restart requested with %d active work unit(s); "

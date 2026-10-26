@@ -28,10 +28,12 @@ def _message(text, ts, **extra):
     ({}, _message("reaction:added:eyes", "1.3", thread_ts=THREAD, _hermes_force_process=True), True),
     ({}, _message("done?", "1.4", thread_ts=THREAD), None),
     ({}, _message(f"<@{OTHER_USER_ID}> can you check?", "1.5", thread_ts=THREAD), False),
-    ({"free_response_channels": CHANNEL_ID}, _message("side chatter", "1.6"), False),
-    ({"free_response_channels": CHANNEL_ID, "reply_in_thread": False}, _message("any update?", "1.7"), None),
+    ({"free_response_channels": CHANNEL_ID, "allow_bots": "all"},
+     _message("side chatter", "1.6", subtype="bot_message", bot_id="B999"), False),
+    ({"free_response_channels": CHANNEL_ID, "reply_in_thread": False, "allow_bots": "all"},
+     _message("any update?", "1.7", subtype="bot_message", bot_id="B999", thread_ts=THREAD), False),
     ({}, _message(f"<@{OTHER_USER_ID}> and <@{BOT_USER_ID}|hermes> both look", "1.8", thread_ts=THREAD), True),
-], ids=["dm", "mention", "reaction", "thread-followup", "peer-addressed", "free-channel-top-level",
+], ids=["dm", "mention", "reaction", "thread-followup", "peer-addressed", "bot-free-channel-top-level",
         "flat-channel-followup", "peer-led-but-mentions-bot"])
 async def test_admitted_message_carries_whether_it_was_addressed(adapter, extra, event, expected):
     adapter.config.extra.update(extra)

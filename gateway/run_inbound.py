@@ -1231,7 +1231,31 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                     return True, None  # a /stop or /new came after its command, as it clears the slot
                 # A failed admit stays the authority's answer (refusal notice or turn error), never a
                 # pending legacy turn: that would run unadmitted, outside the FIFO's order.
-                return True, await admit_message(authority, event)
+                # Self-recovery: identical admission-error replies (runtime_draining /
+                # admission_conflict) are throttled per conversation so one draining
+                # episode cannot flood the chat with an error post per message. The
+                # wire refusal itself is unchanged for other reasons, and the first
+                # three identical replies still post as today.
+                from hermes_state_runtime import RuntimeStoreError
+
+                try:
+                    return True, await admit_message(authority, event)
+                except RuntimeStoreError as exc:
+                    if exc.reason not in ("runtime_draining", "admission_conflict"):
+                        raise
+                    from gateway.self_recovery import (
+                        error_diagnosis_text,
+                        get_error_notice_throttle,
+                    )
+
+                    verdict, count = get_error_notice_throttle(self).observe(
+                        (exc.reason, str(_quick_key))
+                    )
+                    if verdict == "post":
+                        raise
+                    if verdict == "diagnosis":
+                        return True, error_diagnosis_text(exc.reason, count)
+                    return True, None
         if (authority is None and not is_internal and not event.get_command()
                 and getattr(self, 'session_authority', None) is not None):
             # Scoped to a home this process does not serve: never fall back to the launch ledger.

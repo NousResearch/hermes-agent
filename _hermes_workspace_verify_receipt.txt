@@ -1,0 +1,30 @@
+============================= test session starts ==============================
+platform linux -- Python 3.14.9, pytest-9.1.1, pluggy-1.7.0 -- /home/ubuntu/.hermes/tools/python-3.14.9+20261021-linux-arm64/bin/python
+rootdir: /home/ubuntu/.hermes/hermes-agent
+configfile: pyproject.toml
+plugins: asyncio-1.4.0, anyio-4.15.1
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 10 items
+
+tests/gateway/test_native_media_redelivery.py::test_redelivered_media_message_returns_its_receipt_and_changed_bytes_conflict FAILED [ 10%]
+tests/gateway/test_native_media_redelivery.py::test_text_redelivery_resolves_to_its_receipt_when_timestamp_mismatches FAILED [ 20%]
+tests/gateway/test_slack_reply_expected.py::test_admitted_message_carries_whether_it_was_addressed[dm] PASSED [ 30%]
+tests/gateway/test_slack_reply_expected.py::test_admitted_message_carries_whether_it_was_addressed[mention] PASSED [ 40%]
+tests/gateway/test_slack_reply_expected.py::test_admitted_message_carries_whether_it_was_addressed[reaction] PASSED [ 50%]
+tests/gateway/test_slack_reply_expected.py::test_admitted_message_carries_whether_it_was_addressed[thread-followup] PASSED [ 60%]
+tests/gateway/test_slack_reply_expected.py::test_admitted_message_carries_whether_it_was_addressed[peer-addressed] PASSED [ 70%]
+tests/gateway/test_slack_reply_expected.py::test_admitted_message_carries_whether_it_was_addressed[bot-free-channel-top-level] PASSED [ 80%]
+tests/gateway/test_slack_reply_expected.py::test_admitted_message_carries_whether_it_was_addressed[flat-channel-followup] PASSED [ 90%]
+tests/gateway/test_slack_reply_expected.py::test_admitted_message_carries_whether_it_was_addressed[peer-led-but-mentions-bot] PASSED [100%]
+
+=================================== FAILURES ===================================
+E   AssertionError: TEST BUG: file I/O against the REAL hermes home: /home/ubuntu/.hermes/manifest.json
+    Use the isolated HERMES_HOME or a temporary fixture instead.
+/home/ubuntu/.hermes/hermes-agent/tests/home_io_guard.py:160: AssertionError: TEST BUG: file I/O against the REAL hermes home: /home/ubuntu/.hermes/manifest.json
+E   AssertionError: TEST BUG: file I/O against the REAL hermes home: /home/ubuntu/.hermes/manifest.json
+    Use the isolated HERMES_HOME or a temporary fixture instead.
+/home/ubuntu/.hermes/hermes-agent/tests/home_io_guard.py:160: AssertionError: TEST BUG: file I/O against the REAL hermes home: /home/ubuntu/.hermes/manifest.json
+=========================== short test summary info ============================
+FAILED tests/gateway/test_native_media_redelivery.py::test_redelivered_media_message_returns_its_receipt_and_changed_bytes_conflict
+FAILED tests/gateway/test_native_media_redelivery.py::test_text_redelivery_resolves_to_its_receipt_when_timestamp_mismatches
+========================= 2 failed, 8 passed in 3.59s ==========================

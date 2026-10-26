@@ -81,6 +81,7 @@ from hermes_state_maintenance import SessionMaintenanceMixin
 from hermes_state_gateway import SessionGatewayMixin
 from hermes_state_compression import SessionCompressionMixin
 from hermes_state_search import SessionSearchMixin
+from hermes_state_write_lock import lock_until_deadline, write_lock_timeout_diagnostic
 
 try:  # Hard dependency, but tolerate scaffold-phase imports before pip install.
     import psutil
@@ -1038,7 +1039,7 @@ class SessionDB(
             # stable post-close state (identity cleared → adopt / reopen path).
             fn_started = False
             try:
-                with self._lock:
+                with lock_until_deadline(self._lock, deadline, patience_s):
                     self._raise_if_db_replaced()
                     if self._conn is None:  # close() raced this writer
                         self._reopen_after_close_locked(context="write")
@@ -1089,14 +1090,10 @@ class SessionDB(
                         # Say what actually happened, not disk/permission damage. The holder goes to
                         # the log, not the message: classify_persistence_error() buckets by phrase and
                         # a holder's argv (a worktree named fix-corrupt-db) would flip the bucket.
-                        log_write_lock_holders(self.db_path, patience_s)
-                        raise sqlite3.OperationalError(
-                            f"database is locked (another Hermes process held the "
-                            f"state.db write lock for over {patience_s:.0f}s — "
-                            "likely a long maintenance operation such as VACUUM, "
-                            "a large WAL checkpoint, or an older pre-update "
-                            "process; the database itself is healthy)"
-                        ) from exc
+                        message, report_holders = write_lock_timeout_diagnostic(exc, patience_s)
+                        if report_holders:
+                            log_write_lock_holders(self.db_path, patience_s)
+                        raise sqlite3.OperationalError(message) from exc
                     if (
                         _DISK_IO_ERROR_MARKER in err_msg and not fn_started and not ioerr_begin_retried
                         and self._sleep_before_write_retry(deadline, patience_s)

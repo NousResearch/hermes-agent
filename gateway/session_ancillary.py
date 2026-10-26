@@ -261,13 +261,40 @@ def _owned_targets(connection, ref, params, *, select):
     with live.event_stream.lock:
         _require_current_route(authority, ref)
         agent, records = _owner_objects(authority, ref)
-        module = sys.modules.get('tools.process_registry')
-        if module is None:
-            return None, []
-        registry = module.process_registry
-        keys, owners = _ownership(authority, ref, agent, records)
-        with registry._lock:
-            return registry, [p.id for p in _owned_locked(registry, keys, owners) if select(p)]
+        return _process_targets(authority, ref, agent, records, select=select)
+
+
+def _process_targets(authority, ref, agent, records, *, select):
+    module = sys.modules.get('tools.process_registry')
+    if module is None:
+        return None, []
+    registry = module.process_registry
+    keys, owners = _ownership(authority, ref, agent, records)
+    with registry._lock:
+        return registry, [p.id for p in _owned_locked(registry, keys, owners) if select(p)]
+
+
+async def interrupt_processes(authority, ref, agent):
+    """Stop this conversation's processes, including intentionally persisted jobs.
+
+    Capture IDs before yielding: a successor can reuse the raw owner and route while a
+    slow kill runs, but its new process must never enter this Stop's target set. Run again
+    at the interrupted turn boundary to catch a spawn already in flight when Stop arrived.
+    The native interrupt receipt acknowledges the request, not verified process quiescence.
+    """
+    if agent is None:
+        lookup = (getattr(authority.runner, '_resident_agent_for', None)
+                  or getattr(authority.runner, '_cached_agent_for', None))
+        agent = lookup(authority.sessions[ref.session_id].route) if lookup is not None else None
+    # Turn Stop leaves detached delegations running; their raw owners are not this agent's.
+    registry, targets = _process_targets(authority, ref, agent, (),
+        select=lambda p: not p.exited or p._scope_stop_pending)
+    if targets:
+        def kill():
+            results = [registry.kill_process(pid, source='session.interrupt', consume_output=True) for pid in targets]
+            return all(r.get('status') in {'killed', 'already_exited'} and 'scope_stop_failed' not in r for r in results)
+        return await asyncio.to_thread(kill)
+    return True
 
 
 async def kill_process(connection, ref, params):
@@ -577,6 +604,7 @@ def _ownership(authority, ref, agent, records):
     keys, owners = {authority.sessions[ref.session_id].route, target}, {target}
     if agent is not None:
         owners.add(getattr(agent, 'session_id', None))
+        owners.update(getattr(agent, '_process_owner_task_ids', ()))
     owners.update(r.get('subagent_id') for r in records)
     owners.discard(None)
     owners.discard('')

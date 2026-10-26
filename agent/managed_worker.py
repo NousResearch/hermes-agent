@@ -179,29 +179,52 @@ class WorkerControls:
         self.channel, self.route = channel, route
         self.agent = None
         self.stopped = threading.Event()
+        self.stop_processes_requested = False
         self.finish = threading.Event()
         self.clarifications = {}
         self.lock = threading.Lock()
         self.reader = threading.Thread(target=self.read, name='managed-controls', daemon=True)
         self.reader.start()
 
-    def stop(self):
+    def stop(self, *, processes=False):
         self.stopped.set()
+        self.stop_processes_requested = self.stop_processes_requested or processes
         if self.agent is not None:
             from agent.interrupt_compat import request_hard_interrupt
             request_hard_interrupt(self.agent)  # parity with the canonical Stop (SessionAuthority.interrupt)
+            if self.stop_processes_requested:
+                self.stop_processes()
         with self.lock:
             for state in self.clarifications.values():
                 state['answer'] = _INTERRUPTED
                 state['event'].set()
+
+    def stop_processes(self):
+        """A worker owns one admission; only its conversation's raw owners and route match.
+
+        Snapshot before signalling, as in the in-process owner. Explicit Stop reaches
+        persisted jobs too; ordinary turn retirement keeps its existing persistence policy.
+        """
+        from tools.process_registry import process_registry
+        owners = set(getattr(self.agent, '_process_owner_task_ids', ()))
+        owners.add(getattr(self.agent, 'session_id', None))
+        owners.discard(None)
+        owners.discard('')
+        with process_registry._lock:
+            targets = [p.id for p in (*process_registry._running.values(), *process_registry._finished.values())
+                       if p.session_key == self.route and p.owner_task_id in owners
+                       and (not p.exited or p._scope_stop_pending)]
+        results = [process_registry.kill_process(pid, source='session.interrupt', consume_output=True) for pid in targets]
+        if any(r.get('status') not in {'killed', 'already_exited'} or 'scope_stop_failed' in r for r in results):
+            raise RuntimeError('process_stop_unknown')
 
     def read(self):
         from tools.approval import resolve_gateway_approval
         try:
             while True:
                 frame = read_frame(sys.stdin.buffer)
-                if frame == {'type': 'stop'}:
-                    self.stop()
+                if frame in ({'type': 'stop'}, {'type': 'stop', 'processes': True}):
+                    self.stop(processes=frame.get('processes', False))
                     continue
                 if frame == {'type': 'finish'}:
                     self.finish.set()
@@ -398,8 +421,12 @@ def execute(frame, channel):
             before = (getattr(agent, 'session_prompt_tokens', 0) or 0,
                       getattr(agent, 'session_completion_tokens', 0) or 0)
             # Most failed results name no provider or model; the owner's error card needs the agent's.
-            result = {'provider': getattr(agent, 'provider', None), 'model': getattr(agent, 'model', None),
-                      **run_worker_turns(agent, frame, history)}
+            try:
+                result = {'provider': getattr(agent, 'provider', None), 'model': getattr(agent, 'model', None),
+                          **run_worker_turns(agent, frame, history)}
+            finally:
+                if getattr(controls, 'stop_processes_requested', False):
+                    controls.stop_processes()  # a spawn may have crossed the first Stop snapshot
             result['_turn_input_tokens'] = max(0, (getattr(agent, 'session_prompt_tokens', 0) or 0) - before[0])
             result['_turn_output_tokens'] = max(0, (getattr(agent, 'session_completion_tokens', 0) or 0) - before[1])
             retire_agent(agent)

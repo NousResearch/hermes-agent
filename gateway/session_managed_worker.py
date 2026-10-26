@@ -227,7 +227,7 @@ class ManagedWorker:
     def control(self, frame):
         if self.closed.is_set():
             raise RuntimeStoreError('managed_worker_lost')
-        if frame == {'type': 'stop'}:
+        if frame in ({'type': 'stop'}, {'type': 'stop', 'processes': True}):
             if self.stopped_at is None:
                 self.stopped_at = time.monotonic()
             self.stop.set()
@@ -348,7 +348,7 @@ def interrupt_managed(authority, actor, ref, generation):
         return False
     authority.authorize(actor, ref, 'session:control')
     authority.check_approval_generation(ref.session_id, generation)
-    worker.control({'type': 'stop'})
+    worker.control({'type': 'stop', 'processes': True})
     return True
 
 

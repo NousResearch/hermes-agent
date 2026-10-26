@@ -165,12 +165,20 @@ def run_tool_round(
         failed = True
         return _verdict("break")
 
-    # Read only this round's terminal/code gate envelopes, never historical or
-    # arbitrary tool prose. A non-consent result must not become a model retry.
+    # Read only this round's native carrier or terminal/code gate envelopes,
+    # never historical or arbitrary tool prose. Non-consent must not become a retry.
     import json
     from agent.approval_outcomes import APPROVAL_OUTCOMES, APPROVAL_OUTCOME_NOTICES
     for row in messages[result_start:]:
-        if row.get("role") != "tool" or row.get("name") not in {"terminal", "execute_code"}:
+        if row.get("role") != "tool":
+            continue
+        outcome = row.get("_native_approval_outcome")
+        if type(outcome) is str and outcome in APPROVAL_OUTCOMES:
+            _turn_exit_reason = "approval_" + outcome
+            final_response = APPROVAL_OUTCOME_NOTICES[outcome]
+            failed = True
+            return _verdict("break")
+        if row.get("name") not in {"terminal", "execute_code"}:
             continue
         try:
             envelope = json.loads(row.get("content", ""))

@@ -2467,7 +2467,8 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             agent, function_name, function_args, effective_task_id, tool_call_id, _tool_middleware_trace
         )
     if block_message is not None:
-        result = json.dumps({"error": block_message}, ensure_ascii=False)
+        from agent.approval_outcomes import pre_tool_block_result
+        result = pre_tool_block_result(block_message)
         emit_terminal_post_tool_call(
             agent, function_name=function_name, function_args=function_args, result=result,
             effective_task_id=effective_task_id, tool_call_id=tool_call_id, status="blocked",

@@ -2079,7 +2079,8 @@ def _get_pre_tool_call_directive_details(
         if action == "block" and not message:
             continue
         if action == "block":
-            return _PreToolCallDirective(action="block", message=message, modified_args=modified_args)
+            # Plugin text is never a native approval carrier, even if it is a str subclass.
+            return _PreToolCallDirective(action="block", message=str(message), modified_args=modified_args)
         # approve is held back until the whole list has been scanned for a veto.
         if first_approve is None:
             rule_key = result.get("rule_key")
@@ -2122,7 +2123,7 @@ def _resolve_block_from_details(
     """The ONE place for the fail-closed approval logic: ``block`` blocks with its message; an
     ``approve`` whose gate errors, denies, or times out is blocked; anything else proceeds."""
     if details.action == "block":
-        return details.message
+        return str(details.message) if details.message is not None else None
     if details.action != "approve":
         return None
     try:
@@ -2134,6 +2135,15 @@ def _resolve_block_from_details(
                 turn_id=turn_id, tool_call_id=tool_call_id, session_id=session_id)
         try:
             result = request_tool_approval(tool_name, details.message or "", rule_key=details.rule_key or tool_name)
+            if not isinstance(result, dict) or type(result.get("approved")) is not bool:
+                raise ValueError("Invalid approval gate result")
+            if not result["approved"]:
+                message = str(result.get("message") or f"BLOCKED: plugin approval required for {tool_name}")
+                from agent.approval_outcomes import APPROVAL_OUTCOMES, _NativeApprovalBlock
+                outcome = result.get("outcome")
+                if type(outcome) is str and outcome in APPROVAL_OUTCOMES:
+                    return _NativeApprovalBlock(message, outcome)
+                return message
         finally:
             if approval_tokens is not None:
                 with suppress(Exception):
@@ -2142,8 +2152,6 @@ def _resolve_block_from_details(
         # Fail-closed: if the gate itself errors, block rather than silently execute an action a
         # plugin flagged for approval.
         return f"BLOCKED: plugin approval gate failed for {tool_name}"
-    if not result.get("approved"):
-        return str(result.get("message") or f"BLOCKED: plugin approval required for {tool_name}")
     return None
 
 

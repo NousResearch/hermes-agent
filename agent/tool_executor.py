@@ -654,7 +654,11 @@ def _blocked_tool_result(agent, ref: _ToolCallRef, *, block_body: dict[str, Any]
     """Synthesize the result for a call blocked by scope/plugin/pruned-args (``block_body``, the
     JSON the model sees) or by guardrail policy (``guardrail_decision``) and emit its terminal post_tool_call."""
     if block_body is not None:
-        result = json.dumps(block_body, ensure_ascii=False)
+        if block_error_type == "plugin_block":
+            from agent.approval_outcomes import pre_tool_block_result
+            result = pre_tool_block_result(block_body["error"])
+        else:
+            result = json.dumps(block_body, ensure_ascii=False)
         error_type, error_message = block_error_type, block_body.get("message") or block_body["error"]
     else:
         result = agent._guardrail_block_result(guardrail_decision)
@@ -1132,6 +1136,12 @@ def _commit_tool_result(
     # string-safe fallback so a rejected image result never poisons history.
     _tool_content = agent._tool_result_content_for_active_model(function_name, persisted_result)
     tool_message = make_tool_result_message(function_name, _tool_content, tool_call_id, effect_disposition=effect_disposition)
+    # Capture provenance from the original result, not wrapped/spilled tool prose.
+    # Per-result state survives concurrent workers without ambient ContextVars.
+    from agent.approval_outcomes import native_approval_outcome
+    outcome = native_approval_outcome(function_result)
+    if blocked and outcome is not None:
+        tool_message["_native_approval_outcome"] = outcome
     # Prepare presentation data before the append. The emitting completion callback
     # stays below the durability fence; raw tool/model content remains unchanged.
     prepare_metadata = getattr(agent, "tool_result_metadata_callback", None)

@@ -16,6 +16,7 @@
 // `desktop.electron_flags` read from config.yaml by a launch that bypassed
 // `hermes desktop` — restarts once with the flag on argv instead.
 
+import { LAUNCHER_READY_FD_ENV } from './linux-launcher-ready'
 import { alreadyHasNoSandbox, buildNoSandboxRelaunchArgs } from './windows-sandbox-fallback'
 
 export interface SandboxRelaunch {
@@ -69,6 +70,10 @@ export function relaunchIfNoSandboxCameTooLate(host: RelaunchHost): boolean {
   }
 
   console.warn('[hermes] --no-sandbox requested after Chromium started; relaunching with it on the command line')
+  // The launcher's ready pipe is not inherited across the relaunch; a stale fd
+  // number would make the next process write its reveal byte into whatever
+  // file reuses that descriptor.
+  delete process.env[LAUNCHER_READY_FD_ENV]
   host.relaunch(relaunch)
   host.exit(0)
 

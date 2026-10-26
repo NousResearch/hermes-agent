@@ -6,6 +6,8 @@ import { parseArgs } from 'node:util'
 import { isMain } from './frontend-common.mjs'
 
 const receiptName = 'hermes-build.json'
+// What `hermes update` leaves in a product it could not rebuild (STALE_MARKER in hermes_cli/webapp.py).
+const staleMarker = '.hermes-stale'
 const workspaces = { tui: 'ui-tui', web: 'web', desktop: 'apps/desktop' }
 // Another product's output under a workspace is never this product's input.
 const generated = new Set(['node_modules', 'dist', 'dist-webapp', 'build', 'release', '.cache', '.git', 'coverage', 'test-results', 'playwright-report'])
@@ -207,7 +209,7 @@ export function recordProduct({ source, product, out, inputs, stampClock }) {
 export function outputIntact(out, product) {
   try {
     const saved = JSON.parse(readFileSync(join(out, receiptName), 'utf8'))
-    return saved.schema === 1 && saved.product === product && saved.outputHash === outputHash(out, ['.hermes-stale'])
+    return saved.schema === 1 && saved.product === product && saved.outputHash === outputHash(out, [staleMarker])
   } catch { return false }
 }
 

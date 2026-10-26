@@ -795,6 +795,7 @@ from hermes_cli.web_routers import (
     chat_ws as _chat_ws_routes,
     chat_workspaces as _chat_workspaces_routes,
     dashboard_ui as _dashboard_ui_routes,
+    computer as _computer_routes,
     webapp as _webapp_routes,
     shared_metrics as _shared_metrics_routes,
     delegation as _delegation_routes,
@@ -806,6 +807,7 @@ from fastapi import Depends as _Depends
 from hermes_cli.web_server_surface import route_on as _route_on
 
 app.include_router(_files_routes.router)
+app.include_router(_computer_routes.router)
 # The Webapp's routes exist only on the surfaces whose policy names them (404 elsewhere).
 app.include_router(_upload_routes.router, dependencies=[_Depends(_route_on("browser_files"))])
 app.include_router(_git_routes.router)

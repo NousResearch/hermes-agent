@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- new DEFAULT_CONFIG keys register here by design (config system rules): computer_view adds one key + its rationale comment
 """Default configuration data for Hermes Agent: DEFAULT_CONFIG and OPTIONAL_ENV_VARS.
 
 Pure-data leaf module — must not import from hermes_cli.config. Comments are the user-facing
@@ -1009,6 +1010,10 @@ DEFAULT_CONFIG = {
         # auxiliary calls, retries, fallbacks and cache writes are missed, so the total can be
         # 10x-100x under the provider bill.
         "show_token_analytics": False,
+        # Computer view (dashboard Mission Control screenshot ticker): opt-IN capture of the
+        # live desktop screen. Privacy-sensitive — physical-screen pixels behind the auth
+        # token; stays off until the operator explicitly enables it.
+        "computer_view": False,
         # IPs / bounded CIDRs of reverse proxies trusted to supply X-Forwarded-Proto/-For. Loopback
         # always trusted; wildcards and /0 rejected (spoofing guard).
         "trusted_proxies": [],

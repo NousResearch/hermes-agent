@@ -42,9 +42,14 @@ function hintedRatio(aspectRatio?: string): number {
 }
 
 /** A relative path names a file in the producing session's working directory, on its profile. The
- *  gateway resolves it there only for a save that names that session, and in its own cwd otherwise. */
-async function sessionFileOrigin(storedSessionId: null | string): Promise<GatewayFileOrigin> {
+ *  gateway resolves it there only for a save that names that session, and in its own cwd otherwise.
+ *  A chat not stored yet names its live runtime session, as the chat's other file opens do. */
+async function sessionFileOrigin(storedSessionId: null | string, runtimeId: null | string): Promise<GatewayFileOrigin> {
   if (!storedSessionId) {
+    if (runtimeId) {
+      return { sessionId: runtimeId }
+    }
+
     throw new Error('No session to resolve a relative image path in')
   }
 
@@ -70,7 +75,9 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
   const [canvasGone, setCanvasGone] = useState<string | null>(null)
   const [lightboxOpen, setLightboxOpen] = useState<string | null>(null)
   const { download, saving } = useImageDownload(src)
-  const storedSessionId = useStore(useSessionView().$storedId)
+  const view = useSessionView()
+  const storedSessionId = useStore(view.$storedId)
+  const runtimeId = useStore(view.$runtimeId)
 
   // Completed but no usable image (generation failed): the agent's prose carries
   // the explanation, so render nothing here.
@@ -98,7 +105,7 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
           } else if (isRemoteGateway() && isFileMediaPath(image)) {
             void downloadGatewayMediaFile(image).catch(error => notifyError(error, copy.imageDownloadFailed))
           } else if (isRemoteGateway() && !isInlineMediaSrc(image)) {
-            void sessionFileOrigin(storedSessionId)
+            void sessionFileOrigin(storedSessionId, runtimeId)
               .then(origin => downloadGatewayMediaFile(image, origin))
               .catch(error => notifyError(error, copy.imageDownloadFailed))
           } else {

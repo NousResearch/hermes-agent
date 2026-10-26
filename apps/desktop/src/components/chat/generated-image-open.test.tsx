@@ -6,7 +6,7 @@ import { I18nProvider } from '@/i18n'
 import { createBrowserFilesBridge } from '@/lib/browser-files'
 import type { BrowserBootstrap } from '@/lib/browser-transport'
 import { $notifications } from '@/store/notifications'
-import { $connection, $selectedStoredSessionId, $sessions } from '@/store/session'
+import { $activeSessionId, $connection, $selectedStoredSessionId, $sessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import { GeneratedImage } from './generated-image-result'
@@ -37,6 +37,7 @@ afterEach(() => {
   $connection.set(null)
   $sessions.set([])
   $selectedStoredSessionId.set(null)
+  $activeSessionId.set(null)
   $notifications.set([])
   window.document.documentElement.removeAttribute('data-hermes-desktop-host')
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
@@ -99,6 +100,33 @@ it.each([
   await expect(saveGatewayFile.mock.results[0]!.value).resolves.toEqual({ path: saved, saved: true })
   expect(JSON.stringify(saveGatewayFile.mock.calls)).not.toContain('secret-token')
   expect(openExternal).not.toHaveBeenCalled()
+})
+
+// A chat with no stored id yet names its live runtime session, as the chat's other file opens do.
+it('saves a relative gateway image from a chat not stored yet through its runtime session', async () => {
+  saveGatewayFile.mockResolvedValue({ path: '/srv/project/renders/out.png', saved: true })
+  window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+  $connection.set({
+    baseUrl: 'https://gateway.example',
+    connectionId: 'remote-1',
+    mode: 'remote',
+    token: 'secret-token'
+  } as unknown as HermesConnection)
+  $activeSessionId.set('runtime-1')
+
+  const link = openImageLink('renders/out.png')
+  await act(async () => {
+    fireEvent.click(link)
+  })
+
+  await vi.waitFor(
+    () =>
+      expect(saveGatewayFile).toHaveBeenCalledWith(
+        expect.objectContaining({ path: 'renders/out.png', sessionId: 'runtime-1' })
+      ),
+    { timeout: 2000 }
+  )
+  expect($notifications.get().map(({ title }) => title)).not.toContain('Image download failed')
 })
 
 // Anything else opens as on main: a web image's own URL.

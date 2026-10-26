@@ -10,6 +10,10 @@ import { buildInputs, outputIntact, recordProduct, sourceHash } from './freshnes
 // Vite's build manifest (apps/desktop/vite.config.ts names it too): the files a generation emitted.
 const manifestName = 'renderer-manifest.json'
 
+// The build still publishes; say why open tabs of the previous generation may miss this chunk.
+const notKept = (from, error) =>
+  console.warn(`webapp: could not keep ${from} for tabs on the previous generation (${error?.code ?? error})`)
+
 /** Keep in ``next`` the lazy chunks an open tab of the previous generation still loads: only missing
  *  regular files from a generation intact against its receipt, never through a symlink or over a file.
  *  A manifest omits the chunks its generation inherited, so retention stays one generation back. */
@@ -38,17 +42,23 @@ export function keepPreviousGeneration(previous, next) {
     }
     try {
       mkdirSync(dirname(to), { recursive: true })
-    } catch {
-      continue // e.g. a new file stands where the name's directory would go
+    } catch (error) {
+      // Quiet when a new file stands where the name's directory would go.
+      if (!['EEXIST', 'ENOTDIR'].includes(error?.code)) notKept(from, error)
+      continue
     }
     try {
       copyFileSync(from, to, constants.COPYFILE_EXCL)
       kept.push(name)
     } catch (error) {
-      // Only ever this copy's own partial file (EEXIST: one stood there after all).
+      if (error?.code === 'EEXIST') continue // a new file stood there after all
+      notKept(from, error)
+      // Only ever this copy's own partial file.
       try {
-        if (error?.code !== 'EEXIST') rmSync(to, { force: true })
-      } catch { /* a failed cleanup must not fail the build either */ }
+        rmSync(to, { force: true })
+      } catch (cleanup) {
+        console.warn(`webapp: could not remove the partial copy ${to} (${cleanup?.code ?? cleanup})`)
+      }
     }
   }
   return kept

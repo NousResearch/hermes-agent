@@ -42,7 +42,7 @@ import {
 } from '@/store/session'
 import { $sessionStates, isLiveTurnAwaitingEvents, isSessionRemote } from '@/store/session-states'
 import { flushStreamDeltas } from '@/store/stream-delta-flush'
-import { clearSessionSubagents } from '@/store/subagents'
+import { pruneFinishedSessionSubagents } from '@/store/subagents'
 import { runGatewayRestart } from '@/store/system-actions'
 import { clearSessionTodos } from '@/store/todos'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
@@ -800,7 +800,9 @@ export function usePromptActions({
     })
 
     clearSessionTodos(sessionId)
-    clearSessionSubagents(sessionId)
+    // Stop ends this turn only: background subagents keep running and keep their rows; the
+    // stopped turn's own children drop out of the next roster snapshot.
+    pruneFinishedSessionSubagents(sessionId)
     // No resetSessionBackground() here. A plain interrupt (Stop, or "send now"
     // on a queued message while busy) keeps the timeline, and the gateway's
     // session.interrupt deliberately leaves terminal(background=true) processes

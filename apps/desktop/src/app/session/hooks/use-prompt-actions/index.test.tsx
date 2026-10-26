@@ -31,6 +31,7 @@ import {
   setSessions
 } from '@/store/session'
 import { dropSessionState, publishSessionState } from '@/store/session-states'
+import { $subagentsBySession, upsertSubagent } from '@/store/subagents'
 import { $wakeWord, resetWakeWordState } from '@/store/wake-word'
 
 import { actRender, Harness, type HarnessHandle, RUNTIME_SESSION_ID, sessionInfo } from './index-test-utils'
@@ -5155,11 +5156,17 @@ describe('usePromptActions background processes: interrupt vs rewind', () => {
     return handle!
   }
 
-  it('cancelRun interrupts the turn but leaves running background processes alone', async () => {
+  it('cancelRun interrupts the turn but leaves running background processes and subagents alone', async () => {
     const requestGateway = vi.fn(async () => ({}) as never)
     const handle = await mount(requestGateway)
+    upsertSubagent(RUNTIME_SESSION_ID, { goal: 'review', status: 'running', subagent_id: 'bg-review', task_index: 0 })
+    upsertSubagent(RUNTIME_SESSION_ID, { goal: 'old', status: 'completed', subagent_id: 'done-1', task_index: 1 })
 
     await handle.cancelRun()
+
+    expect(($subagentsBySession.get()[RUNTIME_SESSION_ID] ?? []).map(row => [row.id, row.status])).toEqual([
+      ['bg-review', 'running']
+    ])
 
     expect(requestGateway).toHaveBeenCalledWith('session.interrupt', { session_id: RUNTIME_SESSION_ID })
     expect(requestGateway).not.toHaveBeenCalledWith('process.kill', expect.anything())

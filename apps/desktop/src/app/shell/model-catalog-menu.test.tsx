@@ -873,3 +873,74 @@ describe('the catalog renders per-model pricing', () => {
     expect(screen.queryByText('free')).toBeNull()
   })
 })
+
+describe('a user-defined proxy in front of several upstreams', () => {
+  // One provider entry (a local gateway, a resold relay) whose catalog is flat
+  // `upstream/model` ids. The menu shows only the part after the slash, so
+  // without the split the same model from two upstreams reads as two
+  // identical rows.
+  const proxyProvider = {
+    is_user_defined: true,
+    models: ['wb-proxy/glm-5.3-flash', 'zcode/GLM-5.3-Flash', 'wb-proxy/step-5-preview'],
+    name: 'MAGPIE GATEWAY',
+    slug: 'magpie'
+  }
+
+  it('labels each upstream inside the group, so same-named rows stay distinguishable', async () => {
+    getGlobalModelOptions.mockResolvedValue({ providers: [proxyProvider] })
+    renderMenu({ model: 'zcode/GLM-5.3-Flash', provider: 'magpie' })
+
+    await screen.findByText('wb-proxy')
+    expect(screen.getByText('zcode')).toBeTruthy()
+    // The same model name twice — one row per upstream, never one duplicate.
+    expect(screen.getAllByText('GLM 5.3')).toHaveLength(2)
+  })
+
+  it('groups the rows under their upstream, keeping the catalog order inside', async () => {
+    getGlobalModelOptions.mockResolvedValue({ providers: [proxyProvider] })
+    renderMenu({ model: 'zcode/GLM-5.3-Flash', provider: 'magpie' })
+
+    const wbProxy = await screen.findByText('wb-proxy')
+    const zcode = screen.getByText('zcode')
+    const step = screen.getByText('Step 5')
+    const follows = (a: Element, b: Element) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
+
+    expect(follows(wbProxy, step)).toBe(true)
+    expect(follows(step, zcode)).toBe(true)
+  })
+
+  it('keeps a built-in catalog flat — its prefix is the model author, not an upstream', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [{ models: ['anthropic/claude-opus-5', 'openai/gpt-5.5'], name: 'OpenRouter', slug: 'openrouter' }]
+    })
+    renderMenu()
+
+    await screen.findByText('Opus 5')
+    expect(screen.queryByText('anthropic')).toBeNull()
+    expect(screen.queryByText('openai')).toBeNull()
+  })
+
+  it('finds a source by name while searching, still grouped under it', async () => {
+    getGlobalModelOptions.mockResolvedValue({ providers: [proxyProvider] })
+    renderMenu({ model: 'zcode/GLM-5.3-Flash', provider: 'magpie' })
+
+    await screen.findByText('wb-proxy')
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search models' }), { target: { value: 'zcode' } })
+
+    await vi.waitFor(() => {
+      expect(screen.getByText('GLM 5.3')).toBeTruthy()
+      expect(screen.queryByText('Step 5')).toBeNull()
+    })
+    expect(screen.getByText('zcode')).toBeTruthy()
+  })
+
+  it('names the upstream on a starred row from a split provider', async () => {
+    getGlobalModelOptions.mockResolvedValue({ providers: [proxyProvider] })
+    toggleFavoriteModel('magpie', 'wb-proxy/step-5-preview')
+    renderMenu({ model: 'zcode/GLM-5.3-Flash', provider: 'magpie' })
+
+    const favoriteRow = (await screen.findByText('Step 5')).closest('[role="menuitem"]')!
+
+    expect(favoriteRow.textContent).toContain('wb-proxy')
+  })
+})

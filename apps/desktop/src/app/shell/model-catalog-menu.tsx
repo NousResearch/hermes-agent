@@ -45,6 +45,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { isSubmitEnter } from '@/lib/ime'
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import { groupModelSources, type ModelSourceGroup } from '@/lib/model-source'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import { accountResetMs, formatReset, modelResetMs } from '@/lib/provider-limit'
 import { reasoningEffortLabel } from '@/lib/reasoning-effort'
@@ -205,6 +206,11 @@ interface ModelCatalogMenuProps {
 interface ProviderGroup {
   families: ModelFamily[]
   provider: ModelOptionProvider
+  /** Upstream split for a user-defined proxy whose catalog is flat
+   *  `upstream/model` ids; null when the row is a plain single-source
+   *  provider (or a built-in marketplace, where the prefix is the model's
+   *  author, not an upstream). */
+  sources: ModelSourceGroup[] | null
 }
 
 function queryErrorMessage(error: unknown): null | string {
@@ -771,7 +777,7 @@ export function ModelCatalogMenu({
           {favoriteRows.length > 0 ? (
             <DropdownMenuGroup className="py-0.5">
               <DropdownMenuLabel className={catalogGroupLabel}>{copy.favorites}</DropdownMenuLabel>
-              {favoriteRows.map(({ family, provider }, index) => (
+              {favoriteRows.map(({ family, provider, source }, index) => (
                 <Fragment key={`${provider.slug}:${family.id}`}>
                   {favoritesSpanProviders && favoriteRows[index - 1]?.provider.slug !== provider.slug ? (
                     <DropdownMenuLabel className={favoriteProviderLabel}>{provider.name}</DropdownMenuLabel>
@@ -788,6 +794,7 @@ export function ModelCatalogMenu({
                     onSubOpenChange={handleSubOpenChange}
                     provider={provider}
                     search={search}
+                    source={source}
                   />
                 </Fragment>
               ))}
@@ -826,29 +833,67 @@ export function ModelCatalogMenu({
                 {/* Window plans past an allowance: one line saying what happens next (pay as you go
                     or wait for the reset) instead of a note on every row. */}
                 {!collapsed && !search ? <PlanLimitLine className="px-2 pb-1" provider={group.provider} /> : null}
-                {!collapsed &&
-                  group.families.map((family, familyIdx) => (
-                    <Fragment key={`${group.provider.slug}:${family.id}`}>
-                      {!search && sectionTitle(group, familyIdx, copyPicker) ? (
-                        <DropdownMenuLabel className="px-2 pb-0.5 pt-1.5 text-[0.6rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary)">
-                          {sectionTitle(group, familyIdx, copyPicker)}
-                        </DropdownMenuLabel>
-                      ) : null}
-                      <ModelFamilyRow
-                        controller={controller}
-                        current={current}
-                        defaultEffort={defaultEffort}
-                        family={family}
-                        favorite={favoriteSet.has(favoriteModelKey(group.provider.slug, family.id))}
-                        kbProps={kbRowProps(`${group.provider.slug}:${family.id}`)}
-                        loadingModels={loadingModels}
-                        onSelect={selectFamily}
-                        onSubOpenChange={handleSubOpenChange}
-                        provider={group.provider}
-                        search={search}
-                      />
-                    </Fragment>
-                  ))}
+                {/* A proxy in front of several upstreams: one quiet label per
+                    source, then that source's rows — the same model name under
+                    two upstreams finally reads as two different models. */}
+                {!collapsed && group.sources
+                  ? group.sources.map(source => {
+                      const byId = new Map(group.families.map(family => [family.id, family]))
+
+                      const sourceFamilies = source.models
+                        .map(id => byId.get(id))
+                        .filter(family => family !== undefined)
+
+                      return (
+                        <Fragment key={`${group.provider.slug}:${source.source}`}>
+                          <DropdownMenuLabel className={sourceGroupLabel}>{source.source}</DropdownMenuLabel>
+                          {sourceFamilies.map((family, familyIdx) => (
+                            <Fragment key={`${group.provider.slug}:${family.id}`}>
+                              {sectionLabel(
+                                { families: sourceFamilies, provider: group.provider },
+                                familyIdx,
+                                search,
+                                copyPicker
+                              )}
+                              <ModelFamilyRow
+                                controller={controller}
+                                current={current}
+                                defaultEffort={defaultEffort}
+                                family={family}
+                                favorite={favoriteSet.has(favoriteModelKey(group.provider.slug, family.id))}
+                                kbProps={kbRowProps(`${group.provider.slug}:${family.id}`)}
+                                loadingModels={loadingModels}
+                                onSelect={selectFamily}
+                                onSubOpenChange={handleSubOpenChange}
+                                provider={group.provider}
+                                search={search}
+                              />
+                            </Fragment>
+                          ))}
+                        </Fragment>
+                      )
+                    })
+                  : null}
+                {!collapsed && !group.sources
+                  ? group.families.map((family, familyIdx) => (
+                      <Fragment key={`${group.provider.slug}:${family.id}`}>
+                        {sectionLabel(group, familyIdx, search, copyPicker)}
+                        <ModelFamilyRow
+                          controller={controller}
+                          current={current}
+                          defaultEffort={defaultEffort}
+                          family={family}
+                          favorite={favoriteSet.has(favoriteModelKey(group.provider.slug, family.id))}
+                          kbProps={kbRowProps(`${group.provider.slug}:${family.id}`)}
+                          loadingModels={loadingModels}
+                          onSelect={selectFamily}
+                          onSubOpenChange={handleSubOpenChange}
+                          provider={group.provider}
+                          search={search}
+                        />
+                      </Fragment>
+                    ))
+                  : null}
                 {!collapsed &&
                   slug === LOCAL_PROVIDER_SLUG &&
                   shownDownloads.map(job => (
@@ -963,6 +1008,8 @@ interface KbRowProps {
 interface FavoriteRow {
   family: ModelFamily
   provider: ModelOptionProvider
+  /** The upstream behind a split provider row; null for a plain provider. */
+  source: null | string
 }
 
 /** Resolve stored favorites into paintable rows, in the order the user
@@ -974,8 +1021,20 @@ function resolveFavoriteRows(providers: readonly ModelOptionProvider[], keys: re
   const byKey = new Map<string, FavoriteRow>()
 
   for (const provider of providers) {
+    // Same split the provider groups use, so a favorite row names its source
+    // exactly the way the group below it does.
+    const sources = provider.is_user_defined === true ? groupModelSources(provider.models ?? []) : null
+
+    const sourceOf = sources
+      ? new Map(sources.flatMap(group => group.models.map(model => [model, group.source] as const)))
+      : null
+
     for (const family of collapseModelFamilies(provider.models ?? [])) {
-      byKey.set(favoriteModelKey(provider.slug, family.id), { family, provider })
+      byKey.set(favoriteModelKey(provider.slug, family.id), {
+        family,
+        provider,
+        source: sourceOf?.get(family.id) ?? null
+      })
     }
   }
 
@@ -1009,6 +1068,10 @@ interface ModelFamilyRowProps {
   onSubOpenChange?: (open: boolean, key: string) => void
   provider: ModelOptionProvider
   search: string
+  /** The upstream behind a split provider row (`upstream/model` ids behind
+   *  one user-defined proxy); null for a plain provider, which renders no
+   *  per-row source. */
+  source?: null | string
 }
 
 /** One model family row: the favorite star, the trigger that commits the
@@ -1027,7 +1090,8 @@ function ModelFamilyRow({
   onSelect,
   onSubOpenChange,
   provider,
-  search
+  search,
+  source
 }: ModelFamilyRowProps): ReactElement {
   const { t } = useI18n()
   const copy = t.shell.modelMenu
@@ -1172,6 +1236,12 @@ function ModelFamilyRow({
             <HighlightMatches foldSeparators query={search} text={name} />
           </span>
           {tag ? <ModelChip>{tag}</ModelChip> : null}
+          {/* The upstream behind a proxy row, shown only where the group
+              itself doesn't already label it (Favorites): the same model name
+              from two upstreams must stay two distinguishable rows. */}
+          {source ? (
+            <span className="shrink-0 font-mono text-[0.625rem] text-(--ui-text-tertiary)">{source}</span>
+          ) : null}
           {decoration.badge ? (
             <Badge className="shrink-0 uppercase tracking-wide" data-model-menu-row-badge="" size="xs" variant="muted">
               {decoration.badge}
@@ -1241,6 +1311,12 @@ const catalogGroupLabel =
 // in normal case and indented to the model names it labels, so it reads as
 // a sub-group rather than a sibling section.
 const favoriteProviderLabel = 'pt-1.5 pb-0 pr-2 pl-7.75 text-[0.625rem] text-(--ui-text-tertiary)'
+
+// An upstream inside a split provider group (`upstream/model` ids behind one
+// user-defined proxy): the row ink, mono and indented under the model names
+// it labels, quieter than a section heading — it names WHERE the model comes
+// from, it is not a section of the catalog.
+const sourceGroupLabel = 'px-2.5 pb-0.5 pt-1 pl-6 font-mono text-[0.625rem] text-(--ui-text-tertiary)'
 
 /** The picker's chips: a filled tag for what the model IS (its variant), an
  *  outlined one for how this row is SET (fast, effort), so the two read as
@@ -1415,13 +1491,52 @@ function groupModels(
 
     // Favorites already paint in the Favorites section, so drop them here:
     // an open menu never lists the same model twice.
-    const families = allFamilies.filter(
+    let families = allFamilies.filter(
       family =>
         (shown.has(family.id) || family.id === activeId) && !favorites?.has(favoriteModelKey(provider.slug, family.id))
     )
 
+    // The rows this group will actually paint — the source split labels
+    // exactly these, so a shortlist or a search that empties a source drops
+    // its label with its rows.
+    const shownIds = new Set(families.map(family => family.id))
+
     if (families.length > 0) {
-      groups.push({ families, provider })
+      // A user-defined proxy is one provider entry in front of several
+      // upstreams: its catalog is flat `upstream/model` ids and the menu shows
+      // only the part after the slash, so the same model from two upstreams
+      // reads as two identical rows. Split the group by that prefix — it is
+      // the source. The split is decided by the provider's WHOLE catalog (a
+      // shortlist or a search that narrows to one upstream still labels it —
+      // otherwise a lone match would lose its origin), each source keeping
+      // only the rows actually shown. Built-in catalogs keep their flat list:
+      // their prefix is the model's author, not an upstream.
+      const fanOut = provider.is_user_defined === true ? groupModelSources(allFamilies.map(family => family.id)) : null
+
+      const sources = fanOut
+        ? fanOut
+            .map(group => ({ ...group, models: group.models.filter(id => shownIds.has(id)) }))
+            .filter(group => group.models.length > 0)
+        : null
+
+      if (sources) {
+        const byId = new Map(families.map(family => [family.id, family]))
+        const ordered: ModelFamily[] = []
+
+        for (const group of sources) {
+          for (const id of group.models) {
+            const family = byId.get(id)
+
+            if (family) {
+              ordered.push(family)
+            }
+          }
+        }
+
+        families = ordered
+      }
+
+      groups.push({ families, provider, sources })
     }
   }
 
@@ -1458,7 +1573,10 @@ function nousPricingPoll(data: ModelOptionsResult | undefined, updates: number):
 // current-model pin above, so a pinned custom model lands under "Other models" instead of taking the
 // first pick's "Recommended" heading.
 function recommendedFirst(provider: ModelOptionProvider, families: ModelFamily[]): ModelFamily[] {
-  const split = splitRecommended(provider, families.map(family => family.id))
+  const split = splitRecommended(
+    provider,
+    families.map(family => family.id)
+  )
 
   if (!split) {
     return families
@@ -1471,18 +1589,31 @@ function recommendedFirst(provider: ModelOptionProvider, families: ModelFamily[]
 
 // Window plans, no query: "Recommended" above the first of the plan's featured families and
 // "Other models" above the first family after them. The backend already lists the picks first.
-function sectionTitle(
-  group: ProviderGroup,
+// A search is its own ranking, so no sections while searching; with a source split the
+// boundaries are computed inside each source's own rows.
+function sectionLabel(
+  group: { families: readonly ModelFamily[]; provider: ModelOptionProvider },
   familyIdx: number,
+  search: string,
   words: { sectionOther: string; sectionRecommended: string }
-): null | string {
+): null | ReactElement {
+  if (search) {
+    return null
+  }
+
   const section = sectionAt(
     group.provider,
     group.families.map(family => family.id),
     familyIdx
   )
 
-  return section === 'recommended' ? words.sectionRecommended : section === 'other' ? words.sectionOther : null
+  const title = section === 'recommended' ? words.sectionRecommended : section === 'other' ? words.sectionOther : null
+
+  return title === null ? null : (
+    <DropdownMenuLabel className="px-2 pb-0.5 pt-1.5 text-[0.6rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary)">
+      {title}
+    </DropdownMenuLabel>
+  )
 }
 
 // Small hooks kept at the bottom so the component reads top-down.

@@ -60,11 +60,8 @@ def test_the_same_download_url_can_be_retried_a_few_times_then_dies(browser_down
     assert browser.post(route, params=params).status_code == 401
     assert browser.get(web_server_file_tickets.ROUTES["stream"], params=params).status_code == 401
 
-    # A handful of uses, not a credential that lasts for the TTL. A HEAD of the
-    # URL is admitted like a GET and uses one up.
-    assert 2 < web_server_file_tickets.DOWNLOAD_MAX_REDEMPTIONS <= 5
-    for _ in range(web_server_file_tickets.DOWNLOAD_MAX_REDEMPTIONS - 3):
-        assert browser.get(route, params=params).content == b"hello"
+    # Three admitted requests, not a credential that lasts for the TTL: the GET
+    # and its retry above, then a HEAD, which is admitted like a GET and uses one up.
     assert browser.head(route, params=params).status_code == 200
     assert browser.get(route, params=params).status_code == 401
     assert browser.head(route, params=params).status_code == 401

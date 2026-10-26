@@ -17,6 +17,7 @@
 // `hermes desktop` — restarts once with the flag on argv instead.
 
 import { LAUNCHER_READY_FD_ENV } from './linux-launcher-ready'
+import { relaunchExecPath } from './relaunch-target'
 import { alreadyHasNoSandbox, buildNoSandboxRelaunchArgs } from './windows-sandbox-fallback'
 
 export interface SandboxRelaunch {
@@ -54,6 +55,7 @@ export function linuxNoSandboxRelaunch(options: {
   runtimeNoSandbox: boolean
   argv: readonly string[]
   env: NodeJS.ProcessEnv
+  execPath?: string
   launchedWithoutSandbox?: boolean
 }): SandboxRelaunch | null {
   const launchedWithoutSandbox = options.launchedWithoutSandbox ?? LAUNCHED_WITHOUT_SANDBOX
@@ -63,10 +65,9 @@ export function linuxNoSandboxRelaunch(options: {
   }
 
   const args = buildNoSandboxRelaunchArgs(options.argv.slice(1))
+  const execPath = relaunchExecPath(options.execPath ?? process.execPath, options.env)
 
-  // An AppImage's execPath lives in a FUSE mount that disappears with this
-  // process; relaunch the image itself.
-  return options.env.APPIMAGE ? { args, execPath: options.env.APPIMAGE } : { args }
+  return execPath ? { args, execPath } : { args }
 }
 
 interface RelaunchHost {

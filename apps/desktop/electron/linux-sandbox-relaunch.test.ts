@@ -6,21 +6,51 @@ const argv = ['/opt/Hermes/hermes', '--ozone-platform=x11', 'hermes://session/ab
 
 describe('Linux runtime --no-sandbox relaunch', () => {
   it('moves a runtime-only --no-sandbox onto argv exactly once', () => {
-    const relaunch = linuxNoSandboxRelaunch({ platform: 'linux', runtimeNoSandbox: true, argv, env: {}, launchedWithoutSandbox: false })
+    const relaunch = linuxNoSandboxRelaunch({
+      platform: 'linux',
+      runtimeNoSandbox: true,
+      argv,
+      env: {},
+      launchedWithoutSandbox: false
+    })
 
     expect(relaunch).toEqual({ args: ['--ozone-platform=x11', 'hermes://session/abc', '--no-sandbox'] })
 
     // The relaunched process started unsandboxed, so it never restarts again.
     expect(
-      linuxNoSandboxRelaunch({ platform: 'linux', runtimeNoSandbox: true, argv: ['/opt/Hermes/hermes', ...relaunch!.args], env: {}, launchedWithoutSandbox: true })
+      linuxNoSandboxRelaunch({
+        platform: 'linux',
+        runtimeNoSandbox: true,
+        argv: ['/opt/Hermes/hermes', ...relaunch!.args],
+        env: {},
+        launchedWithoutSandbox: true
+      })
     ).toBeNull()
   })
 
   it('leaves sandboxed launches, launch-time opt-outs and other platforms alone', () => {
-    expect(linuxNoSandboxRelaunch({ platform: 'linux', runtimeNoSandbox: false, argv, env: {}, launchedWithoutSandbox: false })).toBeNull()
-    expect(linuxNoSandboxRelaunch({ platform: 'linux', runtimeNoSandbox: true, argv, env: {}, launchedWithoutSandbox: true })).toBeNull()
+    expect(
+      linuxNoSandboxRelaunch({
+        platform: 'linux',
+        runtimeNoSandbox: false,
+        argv,
+        env: {},
+        launchedWithoutSandbox: false
+      })
+    ).toBeNull()
+    expect(
+      linuxNoSandboxRelaunch({ platform: 'linux', runtimeNoSandbox: true, argv, env: {}, launchedWithoutSandbox: true })
+    ).toBeNull()
     // Windows reads the switch per child launch, so its runtime fallback works in place.
-    expect(linuxNoSandboxRelaunch({ platform: 'win32', runtimeNoSandbox: true, argv, env: {}, launchedWithoutSandbox: false })).toBeNull()
+    expect(
+      linuxNoSandboxRelaunch({
+        platform: 'win32',
+        runtimeNoSandbox: true,
+        argv,
+        env: {},
+        launchedWithoutSandbox: false
+      })
+    ).toBeNull()
   })
 
   // The relaunch skips `hermes desktop`, so it must not inherit the long TMPDIR
@@ -70,10 +100,32 @@ describe('Linux runtime --no-sandbox relaunch', () => {
       platform: 'linux',
       runtimeNoSandbox: true,
       argv: ['/tmp/.mount_HermesX/hermes'],
-      env: { APPIMAGE: '/home/u/Apps/Hermes.AppImage' },
+      execPath: '/tmp/.mount_HermesX/hermes',
+      env: { APPIMAGE: '/home/u/Apps/Hermes.AppImage', APPDIR: '/tmp/.mount_HermesX' },
       launchedWithoutSandbox: false
     })
 
     expect(relaunch).toEqual({ args: ['--no-sandbox'], execPath: '/home/u/Apps/Hermes.AppImage' })
+  })
+
+  // AppImage apps (terminals, IDEs) export APPIMAGE/APPDIR to everything they
+  // start; Hermes launched from one must relaunch itself, not that app.
+  it('relaunches this executable when APPIMAGE was inherited from another AppImage', () => {
+    for (const env of [
+      { APPIMAGE: '/home/u/Apps/Terminal.AppImage' },
+      { APPIMAGE: '/home/u/Apps/Terminal.AppImage', APPDIR: '/tmp/.mount_TermY' },
+      { APPIMAGE: '/home/u/Apps/Terminal.AppImage', APPDIR: '/opt/Herm' }
+    ]) {
+      expect(
+        linuxNoSandboxRelaunch({
+          platform: 'linux',
+          runtimeNoSandbox: true,
+          argv,
+          execPath: '/opt/Hermes/hermes',
+          env,
+          launchedWithoutSandbox: false
+        })
+      ).toEqual({ args: ['--ozone-platform=x11', 'hermes://session/abc', '--no-sandbox'] })
+    }
   })
 })

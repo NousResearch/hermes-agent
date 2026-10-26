@@ -123,6 +123,7 @@ class StreamDeliveryMixin:
     @_current_streamed_assistant_text.setter
     def _current_streamed_assistant_text(self, value: str) -> None:
         self._streamed_assistant_text_parts = [value] if value else []
+        self._stream_text_fired = bool(value)
 
     def _record_streamed_assistant_text(self, text: str) -> None:
         """Accumulate visible assistant text emitted through stream callbacks (superseded writers excluded)."""
@@ -358,10 +359,17 @@ class StreamDeliveryMixin:
             text = scrubber.feed(text) if scrubber is not None else sanitize_context(text)
             # Only strip leading newlines on the first delta — mid-stream "\n" is legitimate markdown.
             # Check the parts list, not the joined property (joining per token copies the whole reply).
-            if not prepended_break and not getattr(self, "_streamed_assistant_text_parts", None):
+            # The parts list only grows on display delivery, so also track whether any text delta fired
+            # at all: hook-only surfaces (no display callback) would otherwise strip every delta.
+            if (
+                not prepended_break
+                and not getattr(self, "_stream_text_fired", False)
+                and not getattr(self, "_streamed_assistant_text_parts", None)
+            ):
                 text = text.lstrip("\n")
         if not text:
             return
+        self._stream_text_fired = True
         delivered = self._deliver_to_stream_callbacks(text)
         self._enqueue_stream_hook("on_stream_delta", delta=text, kind="text")
         if delivered:

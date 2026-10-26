@@ -99,6 +99,27 @@ class TestFireStreamDeltaEmptiness:
         assert agent._current_streamed_assistant_text == "again"
 
 
+    def test_hook_only_surface_keeps_later_leading_newlines(self):
+        agent = _make_agent()
+        agent.stream_delta_callback = None
+        agent._stream_callback = None
+        hooked = []
+        agent._enqueue_stream_hook = lambda event, **f: hooked.append(f.get("delta"))
+        agent._fire_stream_delta("\n\nalong the coast.")
+        agent._fire_stream_delta("\n\nAnd no wonder")
+        assert hooked == ["along the coast.", "\n\nAnd no wonder"]
+
+    def test_hook_only_surface_strips_again_after_clear(self):
+        agent = _make_agent()
+        agent.stream_delta_callback = None
+        agent._stream_callback = None
+        hooked = []
+        agent._enqueue_stream_hook = lambda event, **f: hooked.append(f.get("delta"))
+        agent._fire_stream_delta("hello")
+        agent._current_streamed_assistant_text = ""
+        agent._fire_stream_delta("\n\nagain")
+        assert hooked == ["hello", "again"]
+
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

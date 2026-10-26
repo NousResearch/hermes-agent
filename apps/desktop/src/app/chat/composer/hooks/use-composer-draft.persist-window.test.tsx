@@ -40,19 +40,21 @@ vi.mock('@assistant-ui/react', () => ({
   useAui: () => ({ composer: () => runtime.composer }),
   useAuiState: (selector: (state: { composer: { text: string } }) => unknown) =>
     selector({ composer: runtime.getState() }),
-  useComposerRuntime: () => ({ getState: runtime.getState, subscribe: runtime.subscribe })
+  useComposerRuntime: () => runtime
 }))
 
 const SCOPE = 'session-persist-window'
+const OTHER_SCOPE = 'session-persist-window-other'
 let draft: ReturnType<typeof useComposerDraft>
+const queueEditRef = { current: null as QueueEditState | null }
 
-function Harness() {
+function Harness({ scope = SCOPE }: { scope?: string }) {
   draft = useComposerDraft({
-    activeQueueSessionKey: SCOPE,
+    activeQueueSessionKey: scope,
     focusKey: null,
     inputDisabled: false,
-    queueEditRef: { current: null as QueueEditState | null },
-    sessionId: SCOPE
+    queueEditRef,
+    sessionId: scope
   })
 
   return (
@@ -80,6 +82,7 @@ describe('useComposerDraft — the draft stash window starts at the keystroke', 
     vi.useRealTimers()
     mainComposerScope.clear()
     clearSessionDraft(SCOPE)
+    clearSessionDraft(OTHER_SCOPE)
   })
 
   it('stashes typed text one persist debounce after the keystroke, while its store write still coalesces', () => {
@@ -132,5 +135,28 @@ describe('useComposerDraft — the draft stash window starts at the keystroke', 
     window.dispatchEvent(new Event('beforeunload'))
 
     expect(takeSessionDraft(SCOPE).text).toBe('')
+  })
+
+  it('writes back neither by its delayed save nor on a session switch a draft it never edited', () => {
+    const { rerender } = render(<Harness scope={OTHER_SCOPE} />)
+    stashSessionDraft(SCOPE, 'sent from the other window', [])
+    rerender(<Harness scope={SCOPE} />)
+
+    // The other window sends it inside this window's post-load save delay.
+    clearSessionDraft(SCOPE)
+    act(() => {
+      vi.advanceTimersByTime(DRAFT_PERSIST_DEBOUNCE_MS)
+    })
+    expect(takeSessionDraft(SCOPE).text).toBe('')
+
+    rerender(<Harness scope={OTHER_SCOPE} />)
+    expect(takeSessionDraft(SCOPE).text).toBe('')
+
+    // An attachment-only edit is this window's own: the switch still saves it.
+    act(() => {
+      mainComposerScope.$attachments.set([{ id: 'notes.md', kind: 'file', label: 'notes.md', occurrenceId: 'occ-1' }])
+    })
+    rerender(<Harness scope={SCOPE} />)
+    expect(takeSessionDraft(OTHER_SCOPE).attachments.map(a => a.occurrenceId)).toEqual(['occ-1'])
   })
 })

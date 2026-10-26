@@ -62,6 +62,24 @@ import { useComposerScope } from '../scope'
 import type { ChatBarProps } from '../types'
 import { useComposerVisible } from '../visibility'
 
+/** A draft as this window last loaded or stashed it; attachments by occurrence. */
+interface SavedDraft {
+  attachments: string[]
+  text: string
+}
+
+const attachmentOccurrence = (attachment: ComposerAttachment) => attachment.occurrenceId ?? attachment.id
+
+const savedDraft = (text: string, attachments: ComposerAttachment[]): SavedDraft => ({
+  attachments: attachments.map(attachmentOccurrence),
+  text
+})
+
+const isSavedDraft = (saved: SavedDraft, text: string, attachments: ComposerAttachment[]) =>
+  text === saved.text &&
+  attachments.length === saved.attachments.length &&
+  attachments.every((attachment, index) => attachmentOccurrence(attachment) === saved.attachments[index])
+
 interface UseComposerDraftArgs {
   activeQueueSessionKey: string | null
   focusKey: ChatBarProps['focusKey']
@@ -143,10 +161,11 @@ export function useComposerDraft({
   // session switch mid-flight files one session's draft under another's key
   // (#54527).
   const draftScopeRef = useRef(activeQueueSessionKey)
-  // The text this window last loaded from or stashed for draftScopeRef's scope.
-  // Another window can send (clear) that draft while this editor still shows
-  // it, so the unload flush saves only text that differs from this baseline.
-  const savedDraftTextRef = useRef('')
+  // The draft (text + attachment occurrences) this window last loaded from or
+  // stashed for draftScopeRef's scope. Another window can send (clear) or
+  // rewrite that draft while this editor still shows it, so every save path
+  // stashes only state that differs from this baseline: this window's own edits.
+  const savedDraftRef = useRef<SavedDraft>({ attachments: [], text: '' })
   const sessionIdRef = useRef(sessionId)
   sessionIdRef.current = sessionId
   const queueEditStateRef = useRef<QueueEditState | null>(queueEditRef.current)
@@ -324,10 +343,21 @@ export function useComposerDraft({
 
   const stashAt = (scope: string | null, text = draftRef.current, attachments = attachmentScope.$attachments.get()) => {
     if (sameDraftScope(scope, draftScopeRef.current)) {
-      savedDraftTextRef.current = text
+      savedDraftRef.current = savedDraft(text, attachments)
     }
 
     stashSessionDraft(scope, text, attachments)
+  }
+
+  // The automatic saves (debounce, session switch, HUD flush): a draft this
+  // window has not edited since it loaded or saved it is left to the stash,
+  // which may hold a newer value (or none, once sent) from another window.
+  const stashOwnEdits = (scope: string | null, text: string, attachments = attachmentScope.$attachments.get()) => {
+    if (sameDraftScope(scope, draftScopeRef.current) && isSavedDraft(savedDraftRef.current, text, attachments)) {
+      return
+    }
+
+    stashAt(scope, text, attachments)
   }
 
   // A rejected or unconfirmed send is restored with its identity, so Enter on that exact draft is
@@ -479,7 +509,7 @@ export function useComposerDraft({
       }
 
       pendingDraftPersistRef.current = null
-      stashAt(scope, text)
+      stashOwnEdits(scope, text)
     }, DRAFT_PERSIST_DEBOUNCE_MS)
   }
 
@@ -660,7 +690,7 @@ export function useComposerDraft({
     draftRetryRef.current = readDraftRetry(activeQueueSessionKey)
 
     const { attachments, text } = takeSessionDraft(activeQueueSessionKey)
-    savedDraftTextRef.current = text
+    savedDraftRef.current = savedDraft(text, attachments)
     loadIntoComposer(text, attachments, true)
 
     return () => {
@@ -668,9 +698,9 @@ export function useComposerDraft({
       const editing = queueEditStateRef.current
 
       if (editing?.sessionKey === activeQueueSessionKey) {
-        stashAt(activeQueueSessionKey, editing.draft, editing.attachments)
+        stashOwnEdits(activeQueueSessionKey, editing.draft, editing.attachments)
       } else if (!isBrowsingHistory(sessionId)) {
-        stashAt(activeQueueSessionKey, latestText)
+        stashOwnEdits(activeQueueSessionKey, latestText)
       }
     }
   }, [activeQueueSessionKey]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -684,7 +714,7 @@ export function useComposerDraft({
     if (mode === 'flush') {
       window.clearTimeout(draftPersistTimerRef.current)
       pendingDraftPersistRef.current = null
-      stashAt(draftScopeRef.current, syncDraftFromEditor())
+      stashOwnEdits(draftScopeRef.current, syncDraftFromEditor())
 
       return
     }
@@ -692,7 +722,7 @@ export function useComposerDraft({
     reloadPersistedDrafts()
     draftRetryRef.current = readDraftRetry(draftScopeRef.current)
     const stashed = takeSessionDraft(draftScopeRef.current)
-    savedDraftTextRef.current = stashed.text
+    savedDraftRef.current = savedDraft(stashed.text, stashed.attachments)
     loadIntoComposer(stashed.text, stashed.attachments)
   }
 
@@ -729,7 +759,8 @@ export function useComposerDraft({
 
       // Only this window's own unsaved edits: an untouched editor may still
       // show a draft another window has since sent, and must not restore it.
-      if (latestText === savedDraftTextRef.current) {
+      // Text alone: attachments are memory-only and close with the window.
+      if (latestText === savedDraftRef.current.text) {
         return
       }
 

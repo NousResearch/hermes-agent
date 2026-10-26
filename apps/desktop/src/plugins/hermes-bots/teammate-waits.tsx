@@ -139,7 +139,7 @@ interface DeliveryRowProps {
   sender: RosterRow
 }
 
-function DeliveryRow({ now, row, sender, roster }: DeliveryRowProps) {
+export function DeliveryRow({ now, row, sender, roster }: DeliveryRowProps) {
   const b = useBots()
   const meta = useValue($botMeta)
   const teammate = teammateFor(roster, sender, row)
@@ -189,6 +189,7 @@ function DeliveryRow({ now, row, sender, roster }: DeliveryRowProps) {
         disabled={!teammate}
         onClick={teammate ? () => void openRosterBot(teammate) : undefined}
         size="micro"
+        type="button"
         variant="ghost"
       >
         {b.waiting.open}
@@ -198,6 +199,7 @@ function DeliveryRow({ now, row, sender, roster }: DeliveryRowProps) {
           aria-label={b.waiting.dismiss}
           onClick={() => dismissDelivery(row.delivery_id)}
           size="icon-xs"
+          type="button"
           variant="ghost"
         >
           <Codicon name="close" />

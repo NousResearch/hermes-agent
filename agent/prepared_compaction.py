@@ -235,10 +235,20 @@ class PreparedCompaction:
         # Set by the first compaction that needed memory-provider context; such compactions summarise fresh.
         self._needs_provider_context = False
         self._busy_window: Optional[tuple[str, int, int]] = None  # last window the slot cap refused (counted once)
+        self._taken: Optional[PreparedSummary] = None  # handed to compress(), not yet spliced by adopt()
+
+    def _count_unspliced(self) -> None:
+        """A summary take() handed out that adopt() never spliced (the compaction aborted or no-opped after
+        taking it) is counted once, at the next touch, so every summary ends as used or discarded."""
+        with self._lock:
+            taken, self._taken = self._taken, None
+        if taken is not None:
+            _record("discarded", reason="compaction_aborted", wait_seconds=taken.waited)
 
     def discard(self, reason: str, code: str = "session_boundary") -> None:
         """Drop the candidate and cancel a running pass (it can no longer publish); ``code`` is the closed
         reason opt-in shared metrics count."""
+        self._count_unspliced()
         with self._lock:
             entry, pending, self._entry, self._pending = self._entry, self._pending, None, None
             if pending is not None:
@@ -265,6 +275,7 @@ class PreparedCompaction:
         """The completed candidate when it fits ``compress()``'s planned window, else what a running pass
         whose window fits publishes while this compaction waits for it, else None. Either way the state is
         cleared and a running pass is cancelled: this compaction consumes or supersedes it."""
+        self._count_unspliced()
         with self._lock:
             entry, pending = self._entry, self._pending
             self._entry = None
@@ -304,7 +315,10 @@ class PreparedCompaction:
             "prepared compaction: splice hit session=%s window=%d-%d (fresh cut %d)", session_id, entry.compress_start,
             entry.compress_end, end,
         )
-        return replace(entry, waited=waited)  # counted as used once adopt() splices it
+        taken = replace(entry, waited=waited)  # counted as used once adopt() splices it
+        with self._lock:
+            self._taken = taken
+        return taken
 
     def _await(self, pending: _PendingPass) -> tuple[Optional[PreparedSummary], Optional[_Miss]]:
         """Wait on the compacting thread for *pending*: what it published, or None and why (the host's
@@ -339,10 +353,11 @@ class PreparedCompaction:
                     return None, _Miss("wait_timeout", "running pass did not finish in time")
         finally:
             pending.on_progress = pending.on_reading = None
-        if pending.cancelled.is_set():
-            return None, _Miss("discarded_while_waiting", "running pass discarded")
-        with self._lock:
+        with self._lock:  # a discard() between the pass publishing and this wake took the entry and cancelled
             entry, self._entry = self._entry, None
+            discarded = pending.cancelled.is_set()
+        if discarded:
+            return None, _Miss("discarded_while_waiting", "running pass discarded")
         if entry is None or entry.identities != pending.window.identities:
             return None, _Miss("pass_failed_while_waiting", "running pass failed")
         return entry, None
@@ -374,6 +389,7 @@ class PreparedCompaction:
         Never raises."""
         token: Optional[_PendingPass] = None
         try:
+            self._count_unspliced()
             if self._blocked(agent, compressor, origin):
                 return None
             with self._lock:
@@ -508,6 +524,11 @@ def release_for_agent(agent: Any) -> None:
 def adopt(compressor: Any, prepared: PreparedSummary) -> None:
     """Leave the live compressor as the inline summary call would have: the summary is the iterative base,
     failure state cleared, the pass's main-model fallback (if any) carried over, its call in the telemetry."""
+    state = getattr(compressor, "prepared_compaction", None)
+    if state is not None:
+        with state._lock:
+            if state._taken is prepared:
+                state._taken = None
     compressor._record_summary_success(prepared.body)
     for name, value in prepared.call_state.items():
         setattr(compressor, name, value)

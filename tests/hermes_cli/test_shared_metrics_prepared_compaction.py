@@ -164,6 +164,18 @@ def test_waste_modes_say_why(monkeypatch, marks):
         ("discarded", "none", "session_boundary", "none", "none"),
     ]
 
+    # A compaction that took the summary and then aborted before splicing it: counted at the next touch.
+    aborted = _compressor()
+    _run_pass(aborted, msgs, "tool-batch")
+    held = aborted.prepared_compaction._entry
+    taken = aborted.prepared_compaction.take(msgs, held.session_id, held.compress_start, held.compress_end, eligible=True)
+    assert taken is not None
+    before = len(marks)
+    aborted.on_session_end(held.session_id, msgs)
+    assert [row for row in _events(marks[before:]) if row[0] == "discarded"] == [
+        ("discarded", "none", "compaction_aborted", "none", "none"),
+    ]
+
     # A pass whose summary call fails with a terminal access error.
     failed = _compressor()
     monkeypatch.setattr(type(failed), "_generate_summary", module.ContextCompressor._generate_summary)

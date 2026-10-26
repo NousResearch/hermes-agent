@@ -5353,6 +5353,7 @@
               "enum": [
                 "agent_released",
                 "aux_fallback_main",
+                "compaction_aborted",
                 "fresh_required",
                 "head_moved",
                 "host_cancelled",

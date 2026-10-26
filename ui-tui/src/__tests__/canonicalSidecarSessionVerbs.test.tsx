@@ -36,7 +36,11 @@ const sidecarCalls = (request: ReturnType<typeof vi.fn>) =>
 
 afterEach(() => resetUiState())
 
-async function overlayKey(gw: GatewayClient, key: string, expected = '/agents kill is not available on the shared gateway yet') {
+async function overlayKey(
+  gw: GatewayClient,
+  key: string,
+  expected = '/agents kill is not available on the shared gateway yet'
+) {
   patchUiState({ sid: 'owner' })
   applyAgentSnapshot('owner', {
     delegations: [],
@@ -126,7 +130,7 @@ const SITES: [string, () => Promise<void>][] = [
     }
   ],
   [
-    'agentsOverlay::togglePause (p) is the owner\'s delegation.pause',
+    "agentsOverlay::togglePause (p) is the owner's delegation.pause",
     async () => {
       const { gw, request } = owner(method => (method === 'delegation.pause' ? { paused: true } : {}))
       await overlayKey(gw, 'p', 'spawning paused')

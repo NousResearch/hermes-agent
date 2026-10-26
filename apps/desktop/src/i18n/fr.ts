@@ -3209,7 +3209,8 @@ export const frOverrides = {
     exported: 'Profil exporté',
     failedImport: "Échec de l'importation du profil",
     failedExport: "Échec de l'exportation du profil",
-    exportNeedsHost: name => `Le navigateur ne peut pas enregistrer une archive de profil. Sur l'hôte Hermes, exécutez : hermes profile export ${name}`,
+    exportNeedsHost: name =>
+      `Le navigateur ne peut pas enregistrer une archive de profil. Sur l'hôte Hermes, exécutez : hermes profile export ${name}`,
     allProfiles: 'Tous les profils',
     showAllProfiles: 'Afficher tous les profils',
     switchToProfile: name => `Basculer vers ${name}`,
@@ -4625,7 +4626,8 @@ export const frOverrides = {
     }
   },
   rightSidebar: {
-    terminalDropUnquotable: (shell, paths) => `Impossible de saisir ces noms en toute sécurité dans ${shell} : ${paths}`,
+    terminalDropUnquotable: (shell, paths) =>
+      `Impossible de saisir ces noms en toute sécurité dans ${shell} : ${paths}`,
     aria: 'Barre latérale droite',
     panelsAria: 'Panneaux de la barre latérale droite',
     files: 'Système de fichiers',

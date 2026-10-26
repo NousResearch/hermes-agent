@@ -3193,7 +3193,8 @@ export const esOverrides = {
     exported: 'Perfil exportado',
     failedImport: 'No se pudo importar el perfil',
     failedExport: 'No se pudo exportar el perfil',
-    exportNeedsHost: name => `El navegador no puede guardar un archivo de perfil. En el host de Hermes, ejecuta: hermes profile export ${name}`,
+    exportNeedsHost: name =>
+      `El navegador no puede guardar un archivo de perfil. En el host de Hermes, ejecuta: hermes profile export ${name}`,
     allProfiles: 'Todos los perfiles',
     showAllProfiles: 'Mostrar todos los perfiles',
     switchToProfile: name => `Cambiar a ${name}`,
@@ -4601,7 +4602,8 @@ export const esOverrides = {
     }
   },
   rightSidebar: {
-    terminalDropUnquotable: (shell, paths) => `Estos nombres no se pueden escribir de forma segura en ${shell}: ${paths}`,
+    terminalDropUnquotable: (shell, paths) =>
+      `Estos nombres no se pueden escribir de forma segura en ${shell}: ${paths}`,
     aria: 'Barra lateral derecha',
     panelsAria: 'Paneles de la barra lateral derecha',
     files: 'Sistema de archivos',

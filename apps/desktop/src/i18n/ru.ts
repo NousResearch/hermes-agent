@@ -2070,7 +2070,8 @@ export const ruOverrides = {
     exported: 'Профиль экспортирован',
     failedImport: 'Не удалось импортировать профиль',
     failedExport: 'Не удалось экспортировать профиль',
-    exportNeedsHost: name => `Браузер не может сохранить архив профиля. На хосте Hermes выполните: hermes profile export ${name}`,
+    exportNeedsHost: name =>
+      `Браузер не может сохранить архив профиля. На хосте Hermes выполните: hermes profile export ${name}`,
     allProfiles: 'Все профили',
     showAllProfiles: 'Показать все профили',
     switchToProfile: name => `Переключиться на ${name}`,

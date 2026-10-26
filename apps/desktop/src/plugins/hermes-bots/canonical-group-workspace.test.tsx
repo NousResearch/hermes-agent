@@ -12,13 +12,19 @@ vi.mock('@hermes/plugin-sdk', async () => {
   const { CANONICAL_GROUP_LOCALES } = await import('./canonical-group-locales')
   const { ConfirmDialog } = await import('@/components/ui/confirm-dialog')
 
-  return { ...await pluginSdkMock(gateway.host), atom, useValue: useStore, ConfirmDialog,
+  return {
+    ...(await pluginSdkMock(gateway.host)),
+    atom,
+    useValue: useStore,
+    ConfirmDialog,
     useI18n: () => ({ t: en }),
-    usePluginI18n: () => (key: string) => CANONICAL_GROUP_LOCALES.en[key.replace('canonical.', '') as keyof typeof CANONICAL_GROUP_LOCALES.en] ?? key,
+    usePluginI18n: () => (key: string) =>
+      CANONICAL_GROUP_LOCALES.en[key.replace('canonical.', '') as keyof typeof CANONICAL_GROUP_LOCALES.en] ?? key,
     Button: (p: ComponentProps<'button'>) => <button {...p} />,
     Input: (p: ComponentProps<'input'>) => <input {...p} />,
     RowButton: (p: ComponentProps<'button'>) => <button type="button" {...p} />,
-    host: { ...gateway.host, requestProfile: request } }
+    host: { ...gateway.host, requestProfile: request }
+  }
 })
 import { host } from '@hermes/plugin-sdk'
 
@@ -28,12 +34,25 @@ import { CanonicalGroupWorkspace } from './canonical-group-workspace'
 import { $groupChatWorkspace } from './group-chat'
 import { GroupChatWorkspace } from './group-chat-view'
 const originalDesktop = window.hermesDesktop
-beforeEach(() => { Object.defineProperty(window, 'hermesDesktop', { configurable: true, writable: true, value: undefined }) })
-afterEach(() => { cleanup(); request.mockReset(); localStorage.clear(); window.hermesDesktop = originalDesktop; vi.unstubAllGlobals() })
+beforeEach(() => {
+  Object.defineProperty(window, 'hermesDesktop', { configurable: true, writable: true, value: undefined })
+})
+afterEach(() => {
+  cleanup()
+  request.mockReset()
+  localStorage.clear()
+  window.hermesDesktop = originalDesktop
+  vi.unstubAllGlobals()
+})
 
 it('preserves the unsent draft when only the room display name changes', async () => {
-  request.mockImplementation(async (_route, method) => method === 'groups.state'
-    ? { room: { name: 'Room' }, driver_status: {} } : method === 'groups.log' ? { events: [] } : {})
+  request.mockImplementation(async (_route, method) =>
+    method === 'groups.state'
+      ? { room: { name: 'Room' }, driver_status: {} }
+      : method === 'groups.log'
+        ? { events: [] }
+        : {}
+  )
   const binding = { connectionId: 'local', profile: 'team', roomId: 'rename', roomName: 'Room' }
   const view = render(<CanonicalGroupWorkspace binding={binding} />)
   await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
@@ -49,13 +68,22 @@ it('preserves the unsent draft when only the room display name changes', async (
 
 it('restores a frozen send after remount and retires only its acknowledged exact retry', async () => {
   const binding = { connectionId: 'remote', profile: 'team', roomId: 'restore' }
-  const entry = await prepareCanonicalGroupSend(binding, { text: 'Original', attachments: [{ path: '/owner/image.png', mime_type: 'image/png' }] })
+  const entry = await prepareCanonicalGroupSend(binding, {
+    text: 'Original',
+    attachments: [{ path: '/owner/image.png', mime_type: 'image/png' }]
+  })
   request.mockImplementation(async (_route, method) => {
-    if (method === 'groups.state') {return { room: { name: 'Room' }, driver_status: {} }}
+    if (method === 'groups.state') {
+      return { room: { name: 'Room' }, driver_status: {} }
+    }
 
-    if (method === 'groups.log') {return { events: [] }}
+    if (method === 'groups.log') {
+      return { events: [] }
+    }
 
-    if (method === 'groups.send') {throw new Error('lost ACK')}
+    if (method === 'groups.send') {
+      throw new Error('lost ACK')
+    }
 
     return {}
   })
@@ -69,8 +97,13 @@ it('restores a frozen send after remount and retires only its acknowledged exact
   first.unmount()
   render(<CanonicalGroupWorkspace binding={binding} />)
   await screen.findByRole('button', { name: 'Retry' })
-  request.mockImplementation(async (_route, method) => method === 'groups.state'
-    ? { room: { name: 'Room' }, driver_status: {} } : method === 'groups.log' ? { events: [] } : {})
+  request.mockImplementation(async (_route, method) =>
+    method === 'groups.state'
+      ? { room: { name: 'Room' }, driver_status: {} }
+      : method === 'groups.log'
+        ? { events: [] }
+        : {}
+  )
   await waitFor(() => expect((screen.getByRole('button', { name: 'Retry' }) as HTMLButtonElement).disabled).toBe(false))
   fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
   await waitFor(async () => expect(await readCanonicalGroupSend(binding)).toBeUndefined())
@@ -89,20 +122,38 @@ it('blocks Send until journal restore and durable preparation complete', async (
   const journal: Record<string, unknown> = {}
 
   const native = {
-    read: vi.fn().mockImplementationOnce(() => new Promise<string>(resolve => { releaseRead = resolve }))
+    read: vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<string>(resolve => {
+            releaseRead = resolve
+          })
+      )
       .mockImplementation(async () => JSON.stringify(journal)),
     compareAndSet: vi.fn(async (key: string, _expected: string | null, value: string | null) => {
-      await new Promise<void>(resolve => { releaseWrite = resolve })
+      await new Promise<void>(resolve => {
+        releaseWrite = resolve
+      })
 
-      if (value === null) {delete journal[key]} else {journal[key] = JSON.parse(value)}
+      if (value === null) {
+        delete journal[key]
+      } else {
+        journal[key] = JSON.parse(value)
+      }
 
       return { applied: true, current: value }
     })
   }
 
   window.hermesDesktop = { preparedSubmissions: native } as unknown as typeof window.hermesDesktop
-  request.mockImplementation(async (_route, method) => method === 'groups.state'
-    ? { room: { name: 'Room' }, driver_status: {} } : method === 'groups.log' ? { events: [] } : {})
+  request.mockImplementation(async (_route, method) =>
+    method === 'groups.state'
+      ? { room: { name: 'Room' }, driver_status: {} }
+      : method === 'groups.log'
+        ? { events: [] }
+        : {}
+  )
   render(<CanonicalGroupWorkspace binding={{ connectionId: 'remote', profile: 'team', roomId: 'new' }} />)
   await screen.findByText('Room')
   fireEvent.change(screen.getByRole('textbox'), { target: { value: 'New text' } })
@@ -123,11 +174,17 @@ it('blocks Send until journal restore and durable preparation complete', async (
 it('captures exact pending attempts through confirmation and never retargets or retries unknown work', async () => {
   const action = { kind: 'discard', member_id: 'worker', task_id: 'old-task', execution_generation: 7 }
   request.mockImplementation(async (_route, method) => {
-    if (method === 'groups.state') {return { room: { name: 'Room' }, driver_status: { pending_actions: [action] } }}
+    if (method === 'groups.state') {
+      return { room: { name: 'Room' }, driver_status: { pending_actions: [action] } }
+    }
 
-    if (method === 'groups.log') {return { events: [], has_more: false }}
+    if (method === 'groups.log') {
+      return { events: [], has_more: false }
+    }
 
-    if (method === 'groups.discard') {throw new Error('stale_attempt')}
+    if (method === 'groups.discard') {
+      throw new Error('stale_attempt')
+    }
 
     return {}
   })
@@ -140,19 +197,35 @@ it('captures exact pending attempts through confirmation and never retargets or 
   await screen.findByText('stale_attempt')
   const call = request.mock.calls.find(c => c[1] === 'groups.discard')!
   expect(call[0]).toMatchObject({ connectionId: 'remote', targetProfile: 'team' })
-  expect(call[2]).toEqual({ room_id: 'ack-room', member_id: 'worker', task_id: 'old-task', execution_generation: 7, profile: 'team' })
+  expect(call[2]).toEqual({
+    room_id: 'ack-room',
+    member_id: 'worker',
+    task_id: 'old-task',
+    execution_generation: 7,
+    profile: 'team'
+  })
   expect(request.mock.calls.every(c => c[1].startsWith('groups.'))).toBe(true)
 })
 
 it('reads back retry on the same authority and sends only through the group driver', async () => {
   request.mockImplementation(async (_route, method) => {
-    if (method === 'groups.state') {return { room: { name: 'Room' }, driver_status: { pending_actions: [{ kind: 'retry', member_id: 'w', task_id: 't', execution_generation: 2 }] } }}
+    if (method === 'groups.state') {
+      return {
+        room: { name: 'Room' },
+        driver_status: { pending_actions: [{ kind: 'retry', member_id: 'w', task_id: 't', execution_generation: 2 }] }
+      }
+    }
 
-    if (method === 'groups.log') {return { events: [{ seq: 1, kind: 'message', payload: { text: 'Owner reply' } }], has_more: false }}
+    if (method === 'groups.log') {
+      return { events: [{ seq: 1, kind: 'message', payload: { text: 'Owner reply' } }], has_more: false }
+    }
 
     return {}
   })
-  const group = registerCanonicalGroup({ connectionId: 'local', profile: 'default' }, { room_id: 'r', name: 'Room', members: [] })
+  const group = registerCanonicalGroup(
+    { connectionId: 'local', profile: 'default' },
+    { room_id: 'r', name: 'Room', members: [] }
+  )
   render(<GroupChatWorkspace group={group} members={[]} origin="key" />)
   fireEvent.click(await screen.findByRole('button', { name: 'Retry' }))
   await waitFor(() => expect(request.mock.calls.filter(c => c[1] === 'groups.state').length).toBeGreaterThan(1))
@@ -165,10 +238,15 @@ it('reads back retry on the same authority and sends only through the group driv
 
 // Review 5475590057 P3: another window won the room's one intent slot after this one restored.
 // Send converges on that durable winner (4149282e49) but this window's typed text is kept, not lost.
-it('a Send that converges on another window\'s pending intent keeps this window\'s draft', async () => {
+it("a Send that converges on another window's pending intent keeps this window's draft", async () => {
   const binding = { connectionId: 'remote', profile: 'team', roomId: 'two-windows' }
-  request.mockImplementation(async (_route, method) => method === 'groups.state'
-    ? { room: { name: 'Room' }, driver_status: {} } : method === 'groups.log' ? { events: [] } : {})
+  request.mockImplementation(async (_route, method) =>
+    method === 'groups.state'
+      ? { room: { name: 'Room' }, driver_status: {} }
+      : method === 'groups.log'
+        ? { events: [] }
+        : {}
+  )
   render(<CanonicalGroupWorkspace binding={binding} />)
   await screen.findByText('Room')
   await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
@@ -176,20 +254,35 @@ it('a Send that converges on another window\'s pending intent keeps this window\
   fireEvent.change(screen.getByRole('textbox'), { target: { value: 'typed here' } })
   fireEvent.click(screen.getByRole('button', { name: 'Send' }))
   await waitFor(async () => expect(await readCanonicalGroupSend(binding)).toBeUndefined())
-  expect(request.mock.calls.filter(c => c[1] === 'groups.send').map(c => c[2])).toEqual([{ ...other.params, profile: 'team' }])
+  expect(request.mock.calls.filter(c => c[1] === 'groups.send').map(c => c[2])).toEqual([
+    { ...other.params, profile: 'team' }
+  ])
   await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('typed here'))
   expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false)
 })
 
 it('shows which bots are working, and still says the group is working on a gateway without member activity', async () => {
-  const members = [{ member_id: 'ops', profile: 'ops', handle: 'ops', display_name: 'Ops' },
-    { member_id: 'qa', profile: 'qa', handle: 'qa', display_name: 'QA' }]
+  const members = [
+    { member_id: 'ops', profile: 'ops', handle: 'ops', display_name: 'Ops' },
+    { member_id: 'qa', profile: 'qa', handle: 'qa', display_name: 'QA' }
+  ]
 
-  let driver: Record<string, unknown> = { working: true, member_activity: [
-    { member_id: 'qa', status: 'queued' }, { member_id: 'ops', status: 'running' }, { member_id: 'ops', status: 'queued' }] }
+  let driver: Record<string, unknown> = {
+    working: true,
+    member_activity: [
+      { member_id: 'qa', status: 'queued' },
+      { member_id: 'ops', status: 'running' },
+      { member_id: 'ops', status: 'queued' }
+    ]
+  }
 
-  request.mockImplementation(async (_route, method) => method === 'groups.state'
-    ? { room: { name: 'Room', members }, driver_status: driver } : method === 'groups.log' ? { events: [] } : {})
+  request.mockImplementation(async (_route, method) =>
+    method === 'groups.state'
+      ? { room: { name: 'Room', members }, driver_status: driver }
+      : method === 'groups.log'
+        ? { events: [] }
+        : {}
+  )
   const view = render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'busy' }} />)
   await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Working: Ops'))
   const phase = (name: string) => screen.getByText(name).closest('li')?.getAttribute('data-phase')
@@ -206,15 +299,29 @@ it('shows which bots are working, and still says the group is working on a gatew
   await waitFor(() => expect(screen.getByRole('status').textContent).toBe('The group is working…'))
 })
 
-
-const roomReads = (members: unknown[] = [], events: unknown[] = []) => (method: string) => method === 'groups.state'
-  ? { room: { name: 'Room', members }, driver_status: {} } : method === 'groups.log' ? { events } : undefined
+const roomReads =
+  (members: unknown[] = [], events: unknown[] = []) =>
+  (method: string) =>
+    method === 'groups.state'
+      ? { room: { name: 'Room', members }, driver_status: {} }
+      : method === 'groups.log'
+        ? { events }
+        : undefined
 
 it('describes only a send restored from the journal as restored, never an ordinary in-flight send', async () => {
   let ack!: () => void
-  request.mockImplementation(async (_route, method) => roomReads()(method)
-    ?? (method === 'groups.send' ? new Promise(resolve => { ack = () => resolve({}) }) : {}))
-  const view = render(<CanonicalGroupWorkspace binding={{ connectionId: 'remote', profile: 'team', roomId: 'ordinary' }} />)
+  request.mockImplementation(
+    async (_route, method) =>
+      roomReads()(method) ??
+      (method === 'groups.send'
+        ? new Promise(resolve => {
+            ack = () => resolve({})
+          })
+        : {})
+  )
+  const view = render(
+    <CanonicalGroupWorkspace binding={{ connectionId: 'remote', profile: 'team', roomId: 'ordinary' }} />
+  )
   await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
   fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Hello' } })
   fireEvent.click(screen.getByRole('button', { name: 'Send' }))
@@ -229,16 +336,29 @@ it('describes only a send restored from the journal as restored, never an ordina
   await screen.findByText(/unconfirmed send was restored/)
 })
 
-it('renames the room and disbands it only through ConfirmDialog, which stays open with a failed disband\'s error', async () => {
+it("renames the room and disbands it only through ConfirmDialog, which stays open with a failed disband's error", async () => {
   const onBack = vi.fn()
   let disbands = 0
-  request.mockImplementation(async (_route, method) => roomReads()(method)
-    ?? (method === 'groups.disband' && ++disbands === 1 ? Promise.reject(new Error('disband failed')) : {}))
-  render(<CanonicalGroupWorkspace binding={{ connectionId: 'remote', profile: 'team', roomId: 'controls' }} onBack={onBack} />)
+  request.mockImplementation(
+    async (_route, method) =>
+      roomReads()(method) ??
+      (method === 'groups.disband' && ++disbands === 1 ? Promise.reject(new Error('disband failed')) : {})
+  )
+  render(
+    <CanonicalGroupWorkspace
+      binding={{ connectionId: 'remote', profile: 'team', roomId: 'controls' }}
+      onBack={onBack}
+    />
+  )
   fireEvent.click(await screen.findByRole('button', { name: 'Rename' }))
   fireEvent.change(screen.getByRole('textbox', { name: 'New name' }), { target: { value: ' Renamed ' } })
   fireEvent.click(screen.getByRole('button', { name: 'Save' }))
-  await waitFor(() => expect(request.mock.calls.find(c => c[1] === 'groups.rename')?.[2]).toMatchObject({ room_id: 'controls', name: 'Renamed' }))
+  await waitFor(() =>
+    expect(request.mock.calls.find(c => c[1] === 'groups.rename')?.[2]).toMatchObject({
+      room_id: 'controls',
+      name: 'Renamed'
+    })
+  )
   const disband = screen.getByRole('button', { name: /disband/i }) as HTMLButtonElement
   await waitFor(() => expect(disband.disabled).toBe(false))
   fireEvent.click(disband)
@@ -250,15 +370,20 @@ it('renames the room and disbands it only through ConfirmDialog, which stays ope
   fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /disband/i }))
   await waitFor(() => expect(onBack).toHaveBeenCalledOnce())
   expect(request.mock.calls.filter(c => c[1] === 'groups.disband').map(c => c[2])).toEqual([
-    expect.objectContaining({ room_id: 'controls', cancel_id: expect.any(String) }), expect.objectContaining({ room_id: 'controls' })])
+    expect.objectContaining({ room_id: 'controls', cancel_id: expect.any(String) }),
+    expect.objectContaining({ room_id: 'controls' })
+  ])
 })
 
 it('leaves the in-panel room after a disband even though no tab supplies onBack', async () => {
   request.mockImplementation(async (_route, method) => roomReads()(method) ?? {})
-  const group = registerCanonicalGroup({ connectionId: 'local', profile: 'default' }, { room_id: 'panel', name: 'Room', members: [] })
+  const group = registerCanonicalGroup(
+    { connectionId: 'local', profile: 'default' },
+    { room_id: 'panel', name: 'Room', members: [] }
+  )
   $groupChatWorkspace.set(group)
   render(<GroupChatWorkspace group={group} members={[]} origin="key" />)
-  const disband = await screen.findByRole('button', { name: /disband/i }) as HTMLButtonElement
+  const disband = (await screen.findByRole('button', { name: /disband/i })) as HTMLButtonElement
   await waitFor(() => expect(disband.disabled).toBe(false))
   fireEvent.click(disband)
   fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: /disband/i }))
@@ -269,15 +394,21 @@ it('drops a disbanded room from the sidebar list and its bindings, with the disb
   vi.mocked(host.notify).mockClear()
   let disbanded = false
   const room = { room_id: 'gone', name: 'Doomed', members: [] }
-  request.mockImplementation(async (_route, method) => method === 'groups.disband' ? (disbanded = true, {})
-    : method === 'groups.capabilities' ? { driver: true } : method === 'groups.list' ? { rooms: disbanded ? [] : [room], next_offset: null }
-      : roomReads()(method) ?? {})
+  request.mockImplementation(async (_route, method) =>
+    method === 'groups.disband'
+      ? ((disbanded = true), {})
+      : method === 'groups.capabilities'
+        ? { driver: true }
+        : method === 'groups.list'
+          ? { rooms: disbanded ? [] : [room], next_offset: null }
+          : (roomReads()(method) ?? {})
+  )
   render(<CanonicalGroupList onOpen={vi.fn()} />)
   await screen.findByRole('button', { name: 'Doomed' })
   const binding = { connectionId: 'remote', profile: 'team', roomId: 'gone', roomName: 'Doomed' }
   const key = registerCanonicalGroup(binding, room)
   render(<CanonicalGroupWorkspace binding={binding} onBack={vi.fn()} />)
-  const disband = await screen.findByRole('button', { name: /disband/i }) as HTMLButtonElement
+  const disband = (await screen.findByRole('button', { name: /disband/i })) as HTMLButtonElement
   await waitFor(() => expect(disband.disabled).toBe(false))
   fireEvent.click(disband)
   fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: /disband/i }))
@@ -288,7 +419,10 @@ it('drops a disbanded room from the sidebar list and its bindings, with the disb
 })
 
 it('@-completes room members with the exact handle the gateway resolves', async () => {
-  request.mockImplementation(async (_route, method) => roomReads([{ member_id: 'm1', profile: 'ops', handle: 'ops-2', display_name: 'Ops Bot' }])(method) ?? {})
+  request.mockImplementation(
+    async (_route, method) =>
+      roomReads([{ member_id: 'm1', profile: 'ops', handle: 'ops-2', display_name: 'Ops Bot' }])(method) ?? {}
+  )
   render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'mentions' }} />)
   await screen.findByText('Ops Bot')
   await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
@@ -304,37 +438,75 @@ it('uploads pasted and dropped files through the room upload and previews commit
   Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() })
   const image = { attachment_id: 'img', kind: 'image', name: 'shot.png', mime: 'image/png', size: 1 }
   const large = { ...image, attachment_id: 'large', name: 'large.png', size: 6 * 1024 * 1024 }
-  const events = [{ seq: 1, room_id: 'paste', event_id: 'e1', kind: 'message.member', payload: { attachments: [image, large] } }]
-  request.mockImplementation(async (_route, method, params) => roomReads([], events)(method)
-    ?? (method === 'groups.attachment.upload' ? { attachment_id: `att-${params.name}`, kind: params.kind, name: params.name, mime: params.mime, size: 1 }
-      : method === 'groups.attachment.download' ? { ...image, data_base64: 'QQ==' } : {}))
+  const events = [
+    { seq: 1, room_id: 'paste', event_id: 'e1', kind: 'message.member', payload: { attachments: [image, large] } }
+  ]
+  request.mockImplementation(
+    async (_route, method, params) =>
+      roomReads([], events)(method) ??
+      (method === 'groups.attachment.upload'
+        ? { attachment_id: `att-${params.name}`, kind: params.kind, name: params.name, mime: params.mime, size: 1 }
+        : method === 'groups.attachment.download'
+          ? { ...image, data_base64: 'QQ==' }
+          : {})
+  )
   const observers: IntersectionObserverCallback[] = []
-  vi.stubGlobal('IntersectionObserver', class { constructor(callback: IntersectionObserverCallback) { observers.push(callback) } observe() {} disconnect() {} })
+  vi.stubGlobal(
+    'IntersectionObserver',
+    class {
+      constructor(callback: IntersectionObserverCallback) {
+        observers.push(callback)
+      }
+      observe() {}
+      disconnect() {}
+    }
+  )
   render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'paste' }} />)
   await waitFor(() => expect(observers).toHaveLength(1))
   expect(request.mock.calls.some(c => c[1] === 'groups.attachment.download')).toBe(false)
   act(() => observers[0]([{ isIntersecting: true }] as IntersectionObserverEntry[], {} as IntersectionObserver))
   await waitFor(() => expect(screen.getByRole('img', { name: 'shot.png' }).getAttribute('src')).toBe('blob:preview'))
-  expect(request.mock.calls.filter(c => c[1] === 'groups.attachment.download').map(c => c[2].attachment_id)).toEqual(['img'])
+  expect(request.mock.calls.filter(c => c[1] === 'groups.attachment.download').map(c => c[2].attachment_id)).toEqual([
+    'img'
+  ])
   const box = screen.getByRole('textbox')
   await waitFor(() => expect((box as HTMLTextAreaElement).disabled).toBe(false))
   fireEvent.paste(box, { clipboardData: { files: [], types: ['text/plain'] } })
-  fireEvent.paste(box, { clipboardData: { files: [new File(['a'], 'a.png', { type: 'image/png' })], types: ['Files'] } })
+  fireEvent.paste(box, {
+    clipboardData: { files: [new File(['a'], 'a.png', { type: 'image/png' })], types: ['Files'] }
+  })
   await screen.findByText('a.png')
   fireEvent.drop(box, { dataTransfer: { files: [new File(['b'], 'b.txt', { type: 'text/plain' })], types: ['Files'] } })
   await screen.findByText('b.txt')
-  expect(request.mock.calls.filter(c => c[1] === 'groups.attachment.upload').map(c => [c[2].name, c[2].kind])).toEqual([['a.png', 'image'], ['b.txt', 'file']])
+  expect(request.mock.calls.filter(c => c[1] === 'groups.attachment.upload').map(c => [c[2].name, c[2].kind])).toEqual([
+    ['a.png', 'image'],
+    ['b.txt', 'file']
+  ])
 })
 
 it('re-gates previews on the observer after the room is hidden and shown, instead of refetching them all at once', async () => {
   Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:preview') })
   Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() })
   const image = { attachment_id: 'img', kind: 'image', name: 'shot.png', mime: 'image/png', size: 1 }
-  const events = [{ seq: 1, room_id: 'toggle', event_id: 'e1', kind: 'message.member', payload: { attachments: [image] } }]
-  request.mockImplementation(async (_route, method) => roomReads([], events)(method)
-    ?? (method === 'groups.attachment.download' ? { ...image, data_base64: 'QQ==' } : {}))
+  const events = [
+    { seq: 1, room_id: 'toggle', event_id: 'e1', kind: 'message.member', payload: { attachments: [image] } }
+  ]
+  request.mockImplementation(
+    async (_route, method) =>
+      roomReads([], events)(method) ??
+      (method === 'groups.attachment.download' ? { ...image, data_base64: 'QQ==' } : {})
+  )
   const observers: IntersectionObserverCallback[] = []
-  vi.stubGlobal('IntersectionObserver', class { constructor(callback: IntersectionObserverCallback) { observers.push(callback) } observe() {} disconnect() {} })
+  vi.stubGlobal(
+    'IntersectionObserver',
+    class {
+      constructor(callback: IntersectionObserverCallback) {
+        observers.push(callback)
+      }
+      observe() {}
+      disconnect() {}
+    }
+  )
   const downloads = () => request.mock.calls.filter(c => c[1] === 'groups.attachment.download').length
   const binding = { connectionId: 'local', profile: 'team', roomId: 'toggle' }
   const view = render(<CanonicalGroupWorkspace binding={binding} />)
@@ -352,35 +524,73 @@ it('re-gates previews on the observer after the room is hidden and shown, instea
 it('keeps automatic preview downloads bounded and never requests one file twice at once', async () => {
   Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:preview') })
   Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() })
-  const image = (n: number) => ({ attachment_id: `img-${n}`, kind: 'image', name: `shot-${n}.png`, mime: 'image/png', size: 4 * 1024 * 1024 })
-  const events = Array.from({ length: 20 }, (_, n) => ({ seq: n + 1, room_id: 'bound', event_id: `e${n}`, kind: 'message.member', payload: { attachments: [image(n)] } }))
+  const image = (n: number) => ({
+    attachment_id: `img-${n}`,
+    kind: 'image',
+    name: `shot-${n}.png`,
+    mime: 'image/png',
+    size: 4 * 1024 * 1024
+  })
+  const events = Array.from({ length: 20 }, (_, n) => ({
+    seq: n + 1,
+    room_id: 'bound',
+    event_id: `e${n}`,
+    kind: 'message.member',
+    payload: { attachments: [image(n)] }
+  }))
   const held: Array<() => void> = []
-  request.mockImplementation(async (_route, method) => roomReads([], events)(method)
-    ?? (method === 'groups.attachment.download' ? new Promise(resolve => { held.push(() => resolve({ ...image(0), data_base64: 'QQ==' })) }) : {}))
+  request.mockImplementation(
+    async (_route, method) =>
+      roomReads([], events)(method) ??
+      (method === 'groups.attachment.download'
+        ? new Promise(resolve => {
+            held.push(() => resolve({ ...image(0), data_base64: 'QQ==' }))
+          })
+        : {})
+  )
   const observers: IntersectionObserverCallback[] = []
-  vi.stubGlobal('IntersectionObserver', class { constructor(callback: IntersectionObserverCallback) { observers.push(callback) } observe() {} disconnect() {} })
+  vi.stubGlobal(
+    'IntersectionObserver',
+    class {
+      constructor(callback: IntersectionObserverCallback) {
+        observers.push(callback)
+      }
+      observe() {}
+      disconnect() {}
+    }
+  )
 
   const seen = (callback: IntersectionObserverCallback, isIntersecting: boolean) =>
     act(() => callback([{ isIntersecting }] as IntersectionObserverEntry[], {} as IntersectionObserver))
 
-  const downloads = () => request.mock.calls.filter(c => c[1] === 'groups.attachment.download').map(c => c[2].attachment_id)
+  const downloads = () =>
+    request.mock.calls.filter(c => c[1] === 'groups.attachment.download').map(c => c[2].attachment_id)
   const binding = { connectionId: 'remote', profile: 'team', roomId: 'bound' }
   const view = render(<CanonicalGroupWorkspace binding={binding} />)
   await waitFor(() => expect(observers).toHaveLength(20))
 
   // A fast scroll: every preview enters and leaves the viewport before any download finishes.
-  for (const callback of [...observers]) { seen(callback, true); seen(callback, false) }
+  for (const callback of [...observers]) {
+    seen(callback, true)
+    seen(callback, false)
+  }
   expect(downloads()).toEqual(['img-0', 'img-1'])
   // Hidden and shown again while img-0 is pending, with a slot free: the same file is not requested twice.
-  await act(async () => { held[1]() })
+  await act(async () => {
+    held[1]()
+  })
   view.rerender(<CanonicalGroupWorkspace binding={binding} visible={false} />)
   view.rerender(<CanonicalGroupWorkspace binding={binding} />)
   await waitFor(() => expect(observers).toHaveLength(40))
   seen(observers[20], true)
-  await act(async () => { await Promise.resolve() })
+  await act(async () => {
+    await Promise.resolve()
+  })
   expect(downloads()).toEqual(['img-0', 'img-1'])
   // The shared request still paints the re-shown preview, and the previews that scrolled away are never requested.
-  await act(async () => { held.splice(0).forEach(release => release()) })
+  await act(async () => {
+    held.splice(0).forEach(release => release())
+  })
   await screen.findByRole('img', { name: 'shot-0.png' })
   expect(downloads()).toEqual(['img-0', 'img-1'])
 })
@@ -388,29 +598,65 @@ it('keeps automatic preview downloads bounded and never requests one file twice 
 it('starts waiting previews in order as downloads succeed or fail, never more than two at once', async () => {
   Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:preview') })
   Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() })
-  const image = (n: number) => ({ attachment_id: `img-${n}`, kind: 'image', name: `shot-${n}.png`, mime: 'image/png', size: 1 })
-  const events = Array.from({ length: 6 }, (_, n) => ({ seq: n + 1, room_id: 'drain', event_id: `e${n}`, kind: 'message.member', payload: { attachments: [image(n)] } }))
+  const image = (n: number) => ({
+    attachment_id: `img-${n}`,
+    kind: 'image',
+    name: `shot-${n}.png`,
+    mime: 'image/png',
+    size: 1
+  })
+  const events = Array.from({ length: 6 }, (_, n) => ({
+    seq: n + 1,
+    room_id: 'drain',
+    event_id: `e${n}`,
+    kind: 'message.member',
+    payload: { attachments: [image(n)] }
+  }))
   const held = new Map<string, (ok: boolean) => void>()
   let running = 0
   let peak = 0
-  request.mockImplementation(async (_route, method, params) => roomReads([], events)(method)
-    ?? (method === 'groups.attachment.download' ? new Promise((resolve, reject) => {
-      peak = Math.max(peak, ++running)
-      held.set(params.attachment_id, ok => {
-        running--
+  request.mockImplementation(
+    async (_route, method, params) =>
+      roomReads([], events)(method) ??
+      (method === 'groups.attachment.download'
+        ? new Promise((resolve, reject) => {
+            peak = Math.max(peak, ++running)
+            held.set(params.attachment_id, ok => {
+              running--
 
-        if (ok) {resolve({ ...image(Number(params.attachment_id.slice(4))), data_base64: 'QQ==' })} else {reject(new Error('gone'))}
-      })
-    }) : {}))
+              if (ok) {
+                resolve({ ...image(Number(params.attachment_id.slice(4))), data_base64: 'QQ==' })
+              } else {
+                reject(new Error('gone'))
+              }
+            })
+          })
+        : {})
+  )
   const observers: IntersectionObserverCallback[] = []
-  vi.stubGlobal('IntersectionObserver', class { constructor(callback: IntersectionObserverCallback) { observers.push(callback) } observe() {} disconnect() {} })
-  const downloads = () => request.mock.calls.filter(c => c[1] === 'groups.attachment.download').map(c => c[2].attachment_id)
-  const settle = (outcomes: Record<string, boolean>) => act(async () => { Object.entries(outcomes).forEach(([id, ok]) => held.get(id)?.(ok)) })
+  vi.stubGlobal(
+    'IntersectionObserver',
+    class {
+      constructor(callback: IntersectionObserverCallback) {
+        observers.push(callback)
+      }
+      observe() {}
+      disconnect() {}
+    }
+  )
+  const downloads = () =>
+    request.mock.calls.filter(c => c[1] === 'groups.attachment.download').map(c => c[2].attachment_id)
+  const settle = (outcomes: Record<string, boolean>) =>
+    act(async () => {
+      Object.entries(outcomes).forEach(([id, ok]) => held.get(id)?.(ok))
+    })
   render(<CanonicalGroupWorkspace binding={{ connectionId: 'remote', profile: 'team', roomId: 'drain' }} />)
   await waitFor(() => expect(observers).toHaveLength(6))
 
   // Every preview stays in view, so four wait behind the first two.
-  for (const callback of observers) {act(() => callback([{ isIntersecting: true }] as IntersectionObserverEntry[], {} as IntersectionObserver))}
+  for (const callback of observers) {
+    act(() => callback([{ isIntersecting: true }] as IntersectionObserverEntry[], {} as IntersectionObserver))
+  }
   await waitFor(() => expect(downloads()).toEqual(['img-0', 'img-1']))
   // A finished and a failed download each hand their slot to the next waiting preview.
   await settle({ 'img-0': true, 'img-1': false })
@@ -426,13 +672,33 @@ it('lets a connection whose downloads never settle stall only its own previews',
   Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:preview') })
   Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() })
   const image = (id: string) => ({ attachment_id: id, kind: 'image', name: `${id}.png`, mime: 'image/png', size: 1 })
-  const message = (id: string, seq: number) => ({ seq, room_id: id[0], event_id: `e-${id}`, kind: 'message.member', payload: { attachments: [image(id)] } })
-  request.mockImplementation(async (route, method, params) => route.connectionId === 'hung'
-    ? roomReads([], [message('a0', 1), message('a1', 2)])(method) ?? (method === 'groups.attachment.download' ? new Promise(() => {}) : {})
-    : roomReads([], [message('b0', 1)])(method) ?? (method === 'groups.attachment.download' ? { ...image(params.attachment_id), data_base64: 'QQ==' } : {}))
+  const message = (id: string, seq: number) => ({
+    seq,
+    room_id: id[0],
+    event_id: `e-${id}`,
+    kind: 'message.member',
+    payload: { attachments: [image(id)] }
+  })
+  request.mockImplementation(async (route, method, params) =>
+    route.connectionId === 'hung'
+      ? (roomReads([], [message('a0', 1), message('a1', 2)])(method) ??
+        (method === 'groups.attachment.download' ? new Promise(() => {}) : {}))
+      : (roomReads([], [message('b0', 1)])(method) ??
+        (method === 'groups.attachment.download' ? { ...image(params.attachment_id), data_base64: 'QQ==' } : {}))
+  )
   const observers: IntersectionObserverCallback[] = []
-  vi.stubGlobal('IntersectionObserver', class { constructor(callback: IntersectionObserverCallback) { observers.push(callback) } observe() {} disconnect() {} })
-  const seen = (callback: IntersectionObserverCallback) => act(() => callback([{ isIntersecting: true }] as IntersectionObserverEntry[], {} as IntersectionObserver))
+  vi.stubGlobal(
+    'IntersectionObserver',
+    class {
+      constructor(callback: IntersectionObserverCallback) {
+        observers.push(callback)
+      }
+      observe() {}
+      disconnect() {}
+    }
+  )
+  const seen = (callback: IntersectionObserverCallback) =>
+    act(() => callback([{ isIntersecting: true }] as IntersectionObserverEntry[], {} as IntersectionObserver))
   const stuck = render(<CanonicalGroupWorkspace binding={{ connectionId: 'hung', profile: 'team', roomId: 'a' }} />)
   await waitFor(() => expect(observers).toHaveLength(2))
   observers.forEach(seen)
@@ -441,21 +707,44 @@ it('lets a connection whose downloads never settle stall only its own previews',
   await waitFor(() => expect(observers).toHaveLength(3))
   seen(observers[2])
   await screen.findByRole('img', { name: 'b0.png' })
-  expect(request.mock.calls.filter(c => c[1] === 'groups.attachment.download').map(c => c[2].attachment_id)).toEqual(['a0', 'a1', 'b0'])
+  expect(request.mock.calls.filter(c => c[1] === 'groups.attachment.download').map(c => c[2].attachment_id)).toEqual([
+    'a0',
+    'a1',
+    'b0'
+  ])
 })
 
 it('uploads a file pasted while another upload runs once that one finishes, instead of dropping it', async () => {
   let release!: () => void
-  const receipt = (params: Record<string, string>) => ({ attachment_id: `att-${params.name}`, kind: params.kind, name: params.name, mime: params.mime, size: 1 })
-  request.mockImplementation(async (_route, method, params) => roomReads()(method) ?? (method !== 'groups.attachment.upload' ? {}
-    : params.name === 'first.png' ? new Promise(resolve => { release = () => resolve(receipt(params)) }) : receipt(params)))
+  const receipt = (params: Record<string, string>) => ({
+    attachment_id: `att-${params.name}`,
+    kind: params.kind,
+    name: params.name,
+    mime: params.mime,
+    size: 1
+  })
+  request.mockImplementation(
+    async (_route, method, params) =>
+      roomReads()(method) ??
+      (method !== 'groups.attachment.upload'
+        ? {}
+        : params.name === 'first.png'
+          ? new Promise(resolve => {
+              release = () => resolve(receipt(params))
+            })
+          : receipt(params))
+  )
   const uploads = () => request.mock.calls.filter(c => c[1] === 'groups.attachment.upload').map(c => c[2].name)
   render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'queue' }} />)
   const box = screen.getByRole('textbox')
   await waitFor(() => expect((box as HTMLTextAreaElement).disabled).toBe(false))
-  fireEvent.paste(box, { clipboardData: { files: [new File(['a'], 'first.png', { type: 'image/png' })], types: ['Files'] } })
+  fireEvent.paste(box, {
+    clipboardData: { files: [new File(['a'], 'first.png', { type: 'image/png' })], types: ['Files'] }
+  })
   await waitFor(() => expect(uploads()).toEqual(['first.png']))
-  fireEvent.paste(box, { clipboardData: { files: [new File(['b'], 'second.txt', { type: 'text/plain' })], types: ['Files'] } })
+  fireEvent.paste(box, {
+    clipboardData: { files: [new File(['b'], 'second.txt', { type: 'text/plain' })], types: ['Files'] }
+  })
   await act(async () => release())
   await screen.findByText('second.txt')
   expect(screen.getByText('first.png')).toBeTruthy()

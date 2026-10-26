@@ -6,7 +6,13 @@ import { WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-launch-session'
 import { $desktopBoot } from '@/store/boot'
 import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
 
-import { $terminals, closeAllTerminals, closeOtherTerminals, createTerminal, updateTerminalReviveBuffer } from './terminals'
+import {
+  $terminals,
+  closeAllTerminals,
+  closeOtherTerminals,
+  createTerminal,
+  updateTerminalReviveBuffer
+} from './terminals'
 import { useTerminalSession } from './use-terminal-session'
 
 const emulator = vi.hoisted(() => ({
@@ -56,9 +62,13 @@ vi.mock('@xterm/xterm', () => ({
     }
     attachCustomKeyEventHandler() {}
     write(data: string, callback?: () => void) {
-      if (data === '\u001bc') {emulator.output = ''}
+      if (data === '\u001bc') {
+        emulator.output = ''
+      }
 
-      if (data.includes('\u001b[6n')) {emulator.input('\u001b[1;1R')}
+      if (data.includes('\u001b[6n')) {
+        emulator.input('\u001b[1;1R')
+      }
       emulator.output += data
       callback?.()
     }
@@ -112,15 +122,24 @@ class Socket {
       }
 
       const metadata = Socket.persistent
-        ? { shell: 'fish', cwd: '/work', terminalId: this.url.searchParams.get('attach') || `shell-${Socket.instances.length}`, closed: this.url.searchParams.get('action') === 'close' }
+        ? {
+            shell: 'fish',
+            cwd: '/work',
+            terminalId: this.url.searchParams.get('attach') || `shell-${Socket.instances.length}`,
+            closed: this.url.searchParams.get('action') === 'close'
+          }
         : { shell: 'fish' }
 
       this.onmessage?.({ data: '\u0000HERMES_TERMINAL_META:' + JSON.stringify(metadata) } as MessageEvent)
 
-      if ('closed' in metadata && metadata.closed) {this.close()}
+      if ('closed' in metadata && metadata.closed) {
+        this.close()
+      }
     })
   }
-  send(data: string) { this.sent.push(data) }
+  send(data: string) {
+    this.sent.push(data)
+  }
   close(code = 1000, reason = '') {
     this.readyState = 3
     this.onclose?.(new CloseEvent('close', { code, reason }))
@@ -156,17 +175,20 @@ beforeEach(() => {
   // A Webapp tab dials each host terminal with a one-use ticket from the ticket route.
   const realFetch = globalThis.fetch
   let minted = 0
-  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const mint = new URL(String(input), window.location.href)
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const mint = new URL(String(input), window.location.href)
 
-    if (mint.pathname.endsWith('/api/webapp/socket-ticket') && mint.searchParams.get('socket') === 'host-terminal') {
-      minted += 1
+      if (mint.pathname.endsWith('/api/webapp/socket-ticket') && mint.searchParams.get('socket') === 'host-terminal') {
+        minted += 1
 
-      return new Response(JSON.stringify({ ticket: `shell-ticket-${minted}` }), { status: 200 })
-    }
+        return new Response(JSON.stringify({ ticket: `shell-ticket-${minted}` }), { status: 200 })
+      }
 
-    return realFetch(input, init)
-  }))
+      return realFetch(input, init)
+    })
+  )
 })
 
 afterEach(() => {
@@ -183,32 +205,35 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-it.each([1006, 1000])('retains the saved tab on transport loss (%s) and lets Enter recover in the same scrollback', async code => {
-  seedWebappSession('test-token')
-  vi.stubGlobal('WebSocket', Socket)
-  installBrowserDesktopBridge()
-  const id = createTerminal('/work')
-  updateTerminalReviveBuffer(id, SAVED_HISTORY)
-  render(<Harness id={id} />)
-  await waitFor(() => expect(screen.getByText('open')).toBeTruthy())
-  const first = Socket.instances[0]
-  act(() => {
-    first.output('live output')
-    first.close(code)
-  })
-  expect($terminals.get().find(tab => tab.id === id)?.reviveBuffer).toBe(SAVED_HISTORY)
-  expect(screen.getByText('closed')).toBeTruthy()
-  expect(emulator.output).toMatch(/disconnected.*Enter/i)
-  const prior = emulator.output
-  act(() => emulator.input('\r'))
-  await waitFor(() => expect(screen.getByText('open')).toBeTruthy())
-  expect(Socket.instances).toHaveLength(2)
-  expect(emulator.output.startsWith(prior)).toBe(true)
-  expect(emulator.output).toContain('saved history')
-  expect(emulator.output).toContain('live output')
-  act(() => Socket.instances[1].close(4410, 'shell exited'))
-  expect($terminals.get().some(tab => tab.id === id)).toBe(false)
-})
+it.each([1006, 1000])(
+  'retains the saved tab on transport loss (%s) and lets Enter recover in the same scrollback',
+  async code => {
+    seedWebappSession('test-token')
+    vi.stubGlobal('WebSocket', Socket)
+    installBrowserDesktopBridge()
+    const id = createTerminal('/work')
+    updateTerminalReviveBuffer(id, SAVED_HISTORY)
+    render(<Harness id={id} />)
+    await waitFor(() => expect(screen.getByText('open')).toBeTruthy())
+    const first = Socket.instances[0]
+    act(() => {
+      first.output('live output')
+      first.close(code)
+    })
+    expect($terminals.get().find(tab => tab.id === id)?.reviveBuffer).toBe(SAVED_HISTORY)
+    expect(screen.getByText('closed')).toBeTruthy()
+    expect(emulator.output).toMatch(/disconnected.*Enter/i)
+    const prior = emulator.output
+    act(() => emulator.input('\r'))
+    await waitFor(() => expect(screen.getByText('open')).toBeTruthy())
+    expect(Socket.instances).toHaveLength(2)
+    expect(emulator.output.startsWith(prior)).toBe(true)
+    expect(emulator.output).toContain('saved history')
+    expect(emulator.output).toContain('live output')
+    act(() => Socket.instances[1].close(4410, 'shell exited'))
+    expect($terminals.get().some(tab => tab.id === id)).toBe(false)
+  }
+)
 
 it.each(['attach', 'disconnect'])('cleans up the %s attempt before retry and ignores its late exit', async failure => {
   seedWebappSession('test-token')
@@ -224,7 +249,10 @@ it.each(['attach', 'disconnect'])('cleans up the %s attempt before retry and ign
     listeners.add(key)
     const unsubscribe = onData(sid, callback)
 
-    return () => { listeners.delete(key); unsubscribe() }
+    return () => {
+      listeners.delete(key)
+      unsubscribe()
+    }
   })
   vi.spyOn(api, 'onExit').mockImplementation((sid, callback) => {
     const key = Symbol()
@@ -232,7 +260,10 @@ it.each(['attach', 'disconnect'])('cleans up the %s attempt before retry and ign
     exits.push(callback)
     const unsubscribe = onExit(sid, callback)
 
-    return () => { listeners.delete(key); unsubscribe() }
+    return () => {
+      listeners.delete(key)
+      unsubscribe()
+    }
   })
   const dispose = vi.spyOn(api, 'dispose')
 
@@ -397,7 +428,7 @@ it('keeps a signed-out tab and says to sign in again instead of reconnecting', a
 
 // Native Desktop's shell is a local process (node-pty over IPC). A failed spawn prints main's error
 // line and leaves the tab closed: no retry hint, and Enter starts no second shell.
-it('native Desktop: a failed start shows main\'s error and Enter does not start another shell', async () => {
+it("native Desktop: a failed start shows main's error and Enter does not start another shell", async () => {
   const start = vi.fn().mockRejectedValue(new Error('spawn /bin/nope ENOENT'))
 
   delete window.document.documentElement.dataset.hermesDesktopHost

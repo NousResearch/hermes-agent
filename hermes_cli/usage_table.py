@@ -77,8 +77,7 @@ def _pool_state(provider: str, account: dict, has_usage: bool) -> tuple[str, str
         return "yes", ""
     if state == "unavailable":
         return "no", f"sign in again: hermes auth add {provider}"
-    # A capped account idles until its reset, longer than its access token lives, so its windows go
-    # blank while its cooldown still says when it is back: give both.
+    # A blank capped row still knows from its cooldown when it is back: give both.
     blank = _blank_reason(account, has_usage) if not account["windows"] else ""
     if state == "limited":
         back = account.get("resets_at")
@@ -92,7 +91,7 @@ def _blank_reason(account: dict, has_usage: bool) -> str:
         return "provider reports no usage"
     expires = account.get("token_expires_at")
     if expires and datetime.fromisoformat(expires).timestamp() <= time.time():
-        return "token expired: hermes usage --refresh"
+        return "token renewal failed: try again"
     return "usage read failed"
 
 

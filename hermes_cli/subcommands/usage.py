@@ -87,7 +87,7 @@ def cmd_usage(args: argparse.Namespace) -> int:
     rows = []
     providers = _usage_providers(args)
     for provider in providers:
-        accounts = fetch_pool_accounts(provider, refresh_expired=getattr(args, "refresh", False))
+        accounts = fetch_pool_accounts(provider)
         if accounts:
             documents.append(pool_usage_document(provider, accounts))
             blocks.append(render_pool_lines(provider, accounts))
@@ -139,8 +139,4 @@ def build_usage_parser(subparsers) -> None:
     usage_parser.add_argument(
         "--details", action="store_true",
         help="Print the /usage block per provider (every window, a pool account by account) instead of the table")
-    usage_parser.add_argument(
-        "--refresh", action="store_true",
-        help="First renew the expired access tokens of pooled accounts, capped ones included, so idle "
-             "accounts report usage instead of an auth error; a capped account stays benched")
     usage_parser.set_defaults(func=cmd_usage)

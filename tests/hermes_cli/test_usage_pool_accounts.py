@@ -90,12 +90,31 @@ def pool_home(tmp_path, monkeypatch):
     monkeypatch.setattr(anthropic_credentials, "read_claude_code_credentials", lambda: None)
     monkeypatch.setitem(account_usage._USAGE_FETCHERS, "anthropic", anthropic_usage)
     monkeypatch.setitem(account_usage._USAGE_FETCHERS, "openrouter", lambda base_url, api_key: _usage("openrouter"))
+    # The command renews expired tokens first. By default the token endpoint is unreachable (a transient
+    # failure); a test that needs a renewal replaces this.
+    monkeypatch.setattr(anthropic_credentials, "refresh_anthropic_oauth_pure", _unreachable_token_endpoint)
 
     def write(pool: dict) -> list:
         (home / "auth.json").write_text(json.dumps({"version": 1, "credential_pool": pool}))
         return used_tokens
 
     return write
+
+
+def _unreachable_token_endpoint(refresh_token, *, use_json=False):
+    raise RuntimeError("token endpoint unreachable")
+
+
+def _renew(refreshed: list):
+    def refresh(refresh_token, *, use_json=False):
+        refreshed.append(refresh_token)
+        return {"access_token": "renewed-access-token", "refresh_token": f"{refresh_token}-next",
+                "expires_at_ms": int(time.time() * 1000) + 3600_000}
+    return refresh
+
+
+def _stored(provider: str = "anthropic") -> list[dict]:
+    return json.loads((Path(os.environ["HERMES_HOME"]) / "auth.json").read_text())["credential_pool"][provider]
 
 
 def _usage_cmd(capsys, *argv: str) -> tuple[int, str, str]:
@@ -132,24 +151,34 @@ def test_the_table_lists_every_account_of_every_provider_usable_first(pool_home,
     assert list(rows) == ["seat-1", "seat-2", "seat-3", "openrouter-1", "zai-1"]
     assert rows["seat-1"] == ["anthropic", "seat-1", "seat1", "busy@example.com", "Max 5x", "51%", "12%",
                               rows["seat-1"][7], "yes"]
-    assert rows["seat-2"][-2:] == ["?", "token expired: hermes usage --refresh"]
+    assert rows["seat-2"][-2:] == ["?", "token renewal failed: try again"]
     assert rows["seat-3"][5:7] == ["0%", "100%"] and rows["seat-3"][-2] == "no"
     assert rows["seat-3"][-1].startswith("back ")
     assert rows["zai-1"][-2:] == ["?", "provider reports no usage"]
     assert "anthropic: 1 of 3 accounts usable, 1 unknown" in text
 
 
-def test_a_capped_account_with_an_expired_token_says_why_its_row_is_blank(pool_home, capsys):
+def test_a_capped_account_whose_renewal_fails_says_why_its_row_is_blank(pool_home, capsys):
+    reset_at = time.time() + 2 * 24 * 3600
     capped = _seat(2, "idle-access-token", expires_in_s=-3600, last_status="exhausted",
-                   last_status_at=time.time() - 3600, last_error_code=429,
-                   last_error_reset_at=time.time() + 2 * 24 * 3600)
+                   last_status_at=time.time() - 3600, last_error_code=429, last_error_reset_at=reset_at)
     pool_home({"anthropic": [_TWO_SEATS[0], capped]})
 
     code, text, _ = _usage_cmd(capsys)
     note = _table(text)["seat-2"][-1]
 
     assert code == 0
-    assert note.startswith("back ") and note.endswith(", token expired: hermes usage --refresh")
+    assert note.startswith("back ") and note.endswith(", token renewal failed: try again")
+    assert (_stored()[1]["last_status"], _stored()[1]["last_error_reset_at"]) == ("exhausted", reset_at)
+
+
+def test_a_failed_renewal_does_not_bench_a_healthy_account(pool_home, capsys):
+    pool_home({"anthropic": _TWO_SEATS})
+
+    code, _, _ = _usage_cmd(capsys)
+
+    assert code == 0
+    assert [row.get("last_status") for row in _stored()] == [None, None]
 
 
 def test_provider_narrows_the_table_to_one_provider(pool_home, capsys):
@@ -188,54 +217,43 @@ def test_json_keeps_the_single_account_keys_and_adds_the_accounts(pool_home, cap
     assert document["pool"] == {"ready": 1, "limited": 0, "unknown": 1, "unavailable": 0, "total": 2}
 
 
-def test_refresh_renews_only_the_expired_token_and_that_account_reports_usage(pool_home, capsys, monkeypatch):
+def test_only_the_expired_token_is_renewed_and_that_account_reports_usage(pool_home, capsys, monkeypatch):
     pool_home({"anthropic": _TWO_SEATS})
     refreshed: list[str] = []
+    monkeypatch.setattr(anthropic_credentials, "refresh_anthropic_oauth_pure", _renew(refreshed))
 
-    def refresh(refresh_token, *, use_json=False):
-        refreshed.append(refresh_token)
-        return {"access_token": "renewed-access-token", "refresh_token": "refresh-2-next",
-                "expires_at_ms": int(time.time() * 1000) + 3600_000}
-
-    monkeypatch.setattr("agent.anthropic_credentials.refresh_anthropic_oauth_pure", refresh)
-
-    code, text, _ = _usage_cmd(capsys, "--refresh", "--details")
+    code, text, _ = _usage_cmd(capsys, "--details")
 
     assert code == 0 and refreshed == ["refresh-2"]
     assert "2 of 2 accounts ready" in text
 
 
-def test_refresh_renews_a_benched_account_and_keeps_its_cooldown(pool_home, capsys, monkeypatch):
+def test_a_benched_account_is_renewed_and_keeps_its_cooldown(pool_home, capsys, monkeypatch):
     # A capped account idles until its weekly reset, so its token expires while it is benched.
     reset_at = time.time() + 2 * 24 * 3600
     benched = _seat(2, "idle-access-token", expires_in_s=-3600, last_status="exhausted",
                     last_status_at=time.time() - 3600, last_error_code=429, last_error_reset_at=reset_at)
     pool_home({"anthropic": [_TWO_SEATS[0], benched]})
-    monkeypatch.setattr("agent.anthropic_credentials.refresh_anthropic_oauth_pure",
-                        lambda refresh_token, *, use_json=False: {
-                            "access_token": "renewed-access-token", "refresh_token": "refresh-2-next",
-                            "expires_at_ms": int(time.time() * 1000) + 3600_000})
+    monkeypatch.setattr(anthropic_credentials, "refresh_anthropic_oauth_pure", _renew([]))
 
-    code, text, _ = _usage_cmd(capsys, "--refresh")
+    code, text, _ = _usage_cmd(capsys)
 
-    stored = json.loads((Path(os.environ["HERMES_HOME"]) / "auth.json").read_text())["credential_pool"]["anthropic"]
     assert code == 0
-    assert stored[1]["access_token"] == "renewed-access-token"
-    assert (stored[1]["last_status"], stored[1]["last_error_reset_at"]) == ("exhausted", reset_at)
-    assert "token expired" not in text
+    assert _stored()[1]["access_token"] == "renewed-access-token"
+    assert (_stored()[1]["last_status"], _stored()[1]["last_error_reset_at"]) == ("exhausted", reset_at)
+    assert "renewal failed" not in text
 
 
-def test_refresh_leaves_the_pool_alone_when_no_token_has_expired(pool_home, capsys):
+def test_a_read_leaves_the_pool_alone_when_no_token_has_expired(pool_home, capsys):
     # An elapsed cooldown is what a session's pre-request sweep would clear and persist.
     rested = _seat(2, "rested-access-token", expires_in_s=3 * 3600,
                    last_status="exhausted", last_status_at=time.time() - 7 * 24 * 3600)
     pool_home({"anthropic": [_TWO_SEATS[0], rested]})
 
-    code, _, _ = _usage_cmd(capsys, "--refresh")
+    code, _, _ = _usage_cmd(capsys)
 
-    stored = json.loads((Path(os.environ["HERMES_HOME"]) / "auth.json").read_text())
     assert code == 0
-    assert [row.get("last_status") for row in stored["credential_pool"]["anthropic"]] == [None, "exhausted"]
+    assert [row.get("last_status") for row in _stored()] == [None, "exhausted"]
 
 
 def test_a_seat_without_a_token_is_never_read_with_another_credential(pool_home, capsys):

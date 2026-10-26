@@ -708,7 +708,6 @@ windows; OpenRouter credits — without starting a session, so shell scripts and
 hermes usage                          # one row per account of every signed-in provider
 hermes usage --provider openai-codex  # one provider
 hermes usage --details                # the /usage block: every window, a pool account by account
-hermes usage --refresh                # first renew idle accounts' expired access tokens
 hermes usage --json                   # one JSON document on stdout (the configured provider)
 hermes usage --all --json             # {"providers": [one document per provider]}
 ```
@@ -731,9 +730,11 @@ openai-codex: 1 of 1 account usable
 With `--details`, a provider with two or more pooled credentials is shown account by account: a summary
 line (`3 of 5 accounts ready · 2 unknown`), then each account's state, every window (5-hour session, week,
 per-model weeks) and how long its access token lives. An account no session has used for a while has an
-expired access token, the provider refuses its usage read, and it shows as `unknown` with `token
-expired`. `--refresh` first renews those tokens, capped accounts included, without returning a capped
-account to rotation.
+expired access token, which the provider refuses for a usage read. So the command first renews every
+access token that has expired or is about to, capped accounts included, the same refresh a session runs
+before a request. A fresh token is never renewed. The renewal leaves each account's status alone: a
+capped account stays benched, and a failed renewal does not bench a healthy one (only a revoked login
+is marked for sign-in).
 
 | Option | Description |
 |--------|-------------|
@@ -741,11 +742,10 @@ account to rotation.
 | `--json` | Print one JSON document (the configured provider's) instead of the table. |
 | `--details` | Print the `/usage` block per provider instead of the table. |
 | `--all` | With `--json` or `--details`, also show every other pooled provider (the table always does). With `--json`, prints `{"providers": [...]}`, one document per provider. |
-| `--refresh` | Renew the expired access tokens of pooled accounts before fetching their usage, capped accounts included. A capped account keeps its cooldown. |
 
 Credentials resolve exactly as they do for `/usage` in a session with no live agent (the auth store, then
-the credential pool); the command never adds or refreshes a credential it would not use for chat. Pooled
-accounts are read with their own tokens and are refreshed only with `--refresh`. Exit code
+the credential pool); the command never adds a credential it would not use for chat. Pooled accounts are read
+with their own tokens, after the renewal above. Exit code
 `0` on success; `1` with a single stderr line when no credential is configured for the provider, the provider
 has no usage endpoint, or the fetch fails (stdout stays empty).
 

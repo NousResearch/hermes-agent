@@ -517,7 +517,7 @@ class ProviderUsageAccount(Result):
 
     ``token_expires_at``: when the account's access token expires (ISO), if known. A past value
     explains ``unknown``: the provider refuses a usage read with an expired token, and the token is
-    refreshed only when a session next draws from the pool (or by ``hermes usage --refresh``)."""
+    refreshed only when a session next draws from the pool (or by ``hermes usage``)."""
 
     id: str
     label: str = ""

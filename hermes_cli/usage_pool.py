@@ -17,15 +17,16 @@ from typing import Optional
 _FETCH_WORKERS = 8
 
 
-def fetch_pool_accounts(provider: str, *, refresh_expired: bool = False) -> Optional[list[dict]]:
+def fetch_pool_accounts(provider: str) -> Optional[list[dict]]:
     """Per-account usage rows for *provider*'s pool, fetched now; None unless the provider has a
     multi-entry pool and a usage endpoint (the picker's rule), so every other case keeps the
     single-account path.
 
-    Each account is read with its own token and never refreshed on failure. *refresh_expired* first
-    renews every live entry's expiring access token, benched ones included (an account capped until
-    its weekly reset idles longer than its token lives), so it reports usage instead of a 401.
-    The renewal keeps each entry's cooldown: a read never returns a capped account to rotation."""
+    Each live entry whose access token has expired (or is about to) is renewed first, benched ones
+    included: an account capped until its weekly reset idles longer than its token lives, and the
+    provider refuses a usage read with an expired token. This is the refresh a session runs before a
+    request, so a fresh token costs nothing and is never renewed. The renewal keeps each entry's
+    cooldown: a read never returns a capped account to rotation. A failed read is not retried."""
     from agent.account_usage import fetch_account_usage
     from agent.account_usage_cache import has_account_usage
     from agent.credential_pool import STATUS_DEAD, load_pool
@@ -34,11 +35,10 @@ def fetch_pool_accounts(provider: str, *, refresh_expired: bool = False) -> Opti
 
     if len(read_credential_pool(provider)) < 2 or not has_account_usage(provider):
         return None
-    if refresh_expired:
-        pool = load_pool(provider)
-        for entry in pool.entries():
-            if entry.last_status != STATUS_DEAD:
-                pool.renew_token(entry.id)
+    pool = load_pool(provider)
+    for entry in pool.entries():
+        if entry.last_status != STATUS_DEAD:
+            pool.renew_token(entry.id)
     requests: list[dict] = []
     pool_usage_accounts(provider, requests)
     with ThreadPoolExecutor(max_workers=_FETCH_WORKERS) as workers:
@@ -69,7 +69,7 @@ def _token_line(provider: str, account: dict) -> str:
         return ""
     left = datetime.fromisoformat(expires).timestamp() - time.time()
     if left <= 0:
-        return "token expired (idle): refreshes on its next request, or run `hermes usage --refresh`"
+        return "token expired and its renewal failed: run `hermes usage` again"
     return f"token expires in {max(1, round(left / 3600))}h" if left >= 3600 else f"token expires in {round(left / 60)}m"
 
 

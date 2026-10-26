@@ -397,6 +397,7 @@ def test_text_frames_count_their_utf8_bytes_against_the_input_queue():
     """A text frame is written as UTF-8, so it counts its UTF-8 bytes: a non-ASCII paste fills the
     input queue at the same bound as the bytes it will write, not at a multiple of it."""
     from hermes_cli import web_host_terminal_sessions as host_sessions
+    from hermes_cli.web_server_chat import _RESIZE_RE
 
     keys, _ = keys_filling_the_input_queue(text=True)
     inbox = host_sessions._InputQueue()
@@ -408,9 +409,10 @@ def test_text_frames_count_their_utf8_bytes_against_the_input_queue():
     while not inbox.empty():
         inbox.get_nowait()
     assert inbox.queued == 0
-    # A lone surrogate never comes off a WebSocket (text frames are valid UTF-8), but counting one
-    # must not fail the reader.
-    assert host_sessions._frame_cost({"text": "\ud800"}) == 3 + host_sessions._FRAME_OVERHEAD_BYTES
+    # A frame counts exactly what ``_input_runs`` writes for it.
+    frame = {"type": "websocket.receive", "text": keys[0]}
+    written, = host_sessions._input_runs([frame], _RESIZE_RE)
+    assert host_sessions._frame_cost(frame) == len(written) + host_sessions._FRAME_OVERHEAD_BYTES
 
 
 def test_a_paste_or_keys_alone_do_not_fill_the_input_queue():

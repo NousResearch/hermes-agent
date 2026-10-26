@@ -309,16 +309,19 @@ async def _admit(ws: WebSocket, registry: HostTerminalRegistry):
     return session, owner
 
 
+def _frame_payload(msg: dict) -> bytes:
+    """What a frame writes to the program: a binary frame's bytes, a text frame's UTF-8. The
+    WebSocket library decodes a text frame strictly, so its text always encodes back."""
+    raw = msg.get("bytes")
+    return (msg.get("text") or "").encode("utf-8") if raw is None else raw
+
+
 def _frame_cost(item) -> int:
     """What a queued item counts against ``_INPUT_QUEUE_BYTES``: its payload and the per-frame overhead."""
     if not isinstance(item, dict):  # the reader's last item: None or the error that ended reading
         return _FRAME_OVERHEAD_BYTES
-    raw = item.get("bytes")
-    if raw is None:
-        # The UTF-8 ``_input_runs`` writes, not characters: a CJK or emoji paste is 3-4 bytes each.
-        # ``surrogatepass`` so counting a frame never fails the reader or the get that uncounts it.
-        raw = (item.get("text") or "").encode("utf-8", "surrogatepass")
-    return len(raw) + _FRAME_OVERHEAD_BYTES
+    # The bytes ``_input_runs`` writes, not characters: a CJK or emoji paste is 3-4 bytes each.
+    return len(_frame_payload(item)) + _FRAME_OVERHEAD_BYTES
 
 
 class _InputQueue(asyncio.Queue):
@@ -434,9 +437,7 @@ def _input_runs(frames: list[dict], resize_re):
     """``frames`` in order: consecutive keystrokes joined into one run, resizes as ``(cols, rows)``."""
     run = b""
     for msg in frames:
-        raw = msg.get("bytes")
-        if raw is None:
-            raw = (msg.get("text") or "").encode("utf-8")
+        raw = _frame_payload(msg)
         match = resize_re.fullmatch(raw) if raw else None
         if match is None:
             run += raw

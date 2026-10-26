@@ -345,8 +345,10 @@ The cancel is a *request*, not a kill: it is recorded against that run's executi
 up at the run's next cancel check (well under a second for a script). The run then books a
 `cancelled` row with its reason, so `hermes cron runs <job_id>` shows why it stopped instead of an
 unexplained timeout or a bare failure. A cancelled run sends no failure notice and does not count
-toward the job's failure streak. The same stop is available as `POST /api/cron/jobs/{id}/cancel`
-and as the agent's `cronjob_manage` action `cancel`.
+toward the job's failure streak. The same stop is available as `POST /api/cron/jobs/{id}/cancel`,
+as the agent's `cronjob_manage` action `cancel`, and in the Desktop: a job with a run in flight
+shows **Stop** in its header (it reads **Stopping…** until the run has booked its `cancelled`
+row, then a *Run cancelled* toast confirms it).
 
 **Removing a job stops its live run.** `hermes cron remove` (and the dashboard/Desktop delete or
 the agent's `remove` action) cancels a run that is in flight, booked `cancelled` with the reason
@@ -1172,7 +1174,8 @@ hermes cron create "0 7 * * 1-5" "Morning brief" --catch-up off   # a stale brie
 hermes cron edit <job> --catch-up on                                # always run once on return
 ```
 
-(`cronjob_manage` takes `catch_up: true|false`.) Without it, recurring jobs follow
+(`cronjob_manage` takes `catch_up: true|false`; the Desktop job editor has the same choice as
+**Missed runs**: *Use the default*, *Run once when back*, *Skip them*.) Without it, recurring jobs follow
 `cron.catch_up_missed` and one-shots keep their 120-second grace: a reminder missed by more than
 that is dropped. A one-shot with `--catch-up on` instead fires once, late, when the scheduler is
 back.

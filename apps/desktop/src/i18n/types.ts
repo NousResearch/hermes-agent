@@ -16,6 +16,7 @@ import type { CatalogTranslations } from './types_catalog'
 import type { CatalogInstallTranslations } from './types_catalog_install'
 import type { ClarifyCopy } from './types_clarify'
 import type { ConnectorAccountsTranslations, ConnectorCardTranslations } from './types_connectors'
+import type { CronControlCopy } from './types_cron_control'
 import type { GatewayGroupOpenCopy, SkillDeepLinkCopy } from './types_deep_links'
 import type { ExternalOpenFailedCopy } from './types_external_open'
 import type { FirstRunCopy } from './types_first_run'
@@ -2587,6 +2588,7 @@ export interface Translations extends NoticeTranslations {
 
   cron: {
     close: string
+    control: CronControlCopy
     title: string
     count: (count: number) => string
     search: string

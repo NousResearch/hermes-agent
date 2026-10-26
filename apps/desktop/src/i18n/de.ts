@@ -5,6 +5,7 @@ import { deBoot } from './de_boot'
 import { deClarify } from './de_clarify'
 import { deConnectorAccounts } from './de_connector_accounts'
 import { deConnectorCard } from './de_connector_card'
+import { deCronControl } from './de_cron_control'
 import { deErrorCodes } from './de_error_codes'
 import { deErrorLayers } from './de_error_layers'
 import { deFirstRun } from './de_first_run'
@@ -3370,6 +3371,7 @@ export const deOverrides = {
     declined: 'Modelländerung abgebrochen – Sie haben die Warnung zur Datentrainings-Stufe abgelehnt.'
   },
   cron: {
+    control: deCronControl,
     close: 'Cron schließen',
     title: 'Geplante Jobs',
     count: count => `${count} ${count === 1 ? 'Job' : 'Jobs'}`,

@@ -6,6 +6,7 @@ import { frBoot } from './fr_boot'
 import { frClarify } from './fr_clarify'
 import { frConnectorAccounts } from './fr_connector_accounts'
 import { frConnectorCard } from './fr_connector_card'
+import { frCronControl } from './fr_cron_control'
 import { frErrorCodes } from './fr_error_codes'
 import { frErrorLayers } from './fr_error_layers'
 import { frFirstRun } from './fr_first_run'
@@ -3375,6 +3376,7 @@ export const frOverrides = {
       'Changement de modèle annulé — vous avez refusé l’avertissement sur le niveau d’entraînement sur les données.'
   },
   cron: {
+    control: frCronControl,
     close: 'Fermer le cron',
     title: 'Tâches planifiées',
     count: count => `${count} ${count === 1 ? 'tâche' : 'tâches'}`,

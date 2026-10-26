@@ -57,8 +57,10 @@ def build_kanban_policy(connection, params, config):
             context = kb.build_worker_context(conn, task.id)
             skills = list(task.skills or ())
             if kb._retry_status_for_run(conn, task.id, task.current_run_id) == 'review':
-                # Same rule as the dispatcher's review lane: the reviewer always loads sdlc-review.
-                skills = list(dict.fromkeys([*skills, 'sdlc-review']))
+                from hermes_cli.kanban_db_dispatch import _skill_disabled_for_assignee
+                # Rebuilding the owner's policy must preserve the dispatcher's opt-out.
+                if not _skill_disabled_for_assignee('sdlc-review', task.assignee):
+                    skills = list(dict.fromkeys([*skills, 'sdlc-review']))
     except (ValueError, OSError, sqlite3.Error) as exc:
         raise RuntimeStoreError('invalid_kanban_claim') from exc
     cwd = task.workspace_path
@@ -357,7 +359,12 @@ def worker_result(path, params):
         row = conn.execute("SELECT payload FROM task_events WHERE run_id=? AND task_id=? AND kind='worker_result' ORDER BY id DESC LIMIT 1",
             (params['run_id'], params['task_id'])).fetchone()
         result = json.loads(row[0]) if row else {}
-        return result if result.get('claim_lock') == params['claim_lock'] else {}
+        result = result if result.get('claim_lock') == params['claim_lock'] else {}
+        done = conn.execute("SELECT 1 FROM tasks t JOIN task_runs r ON r.task_id=t.id "
+            "WHERE t.id=? AND r.id=? AND r.claim_lock=? AND t.status='done'",
+            (params['task_id'], params['run_id'], params['claim_lock'])).fetchone()
+        # An operator's durable completion wins over a late/refused worker result.
+        return dict(result, exit_code=0) if done else result
 
 
 def worker_exit_code(path, params):

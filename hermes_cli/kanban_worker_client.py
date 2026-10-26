@@ -33,7 +33,7 @@ def admission_answer_budget():
 
 
 async def run(params, board_db):
-    from hermes_cli.gateway_client import connect_gateway, GatewayClientError, GatewayUnavailableError
+    from hermes_cli.gateway_client import connect_gateway, GatewayClientError, GatewayUnavailableError, GatewayRPCError
     if os.environ.get('HERMES_TUI_GATEWAY_URL'):
         raise GatewayClientError('Kanban requires the assigned local profile owner')
     deadline = time.monotonic() + OWNER_WAIT_S
@@ -52,6 +52,11 @@ async def run(params, board_db):
             if exc.state not in _TRANSIENT_OWNER_STATES or time.monotonic() >= deadline:
                 raise
             await asyncio.sleep(1)
+        except GatewayRPCError as exc:
+            from gateway.session_kanban import worker_result
+            if str(exc) == 'stale_kanban_claim' and worker_result(board_db, params).get('exit_code') == 0:
+                return 0
+            raise
 
 
 async def _discard(events):
@@ -61,6 +66,7 @@ async def _discard(events):
 
 async def _submit_claim(client, params, board_db):
     from hermes_cli.gateway_client import GatewayClientError
+    from gateway.session_kanban import worker_result
     db = str(await asyncio.to_thread(Path(board_db).resolve))
     # The owner answers only after it checks the claim and writes its ``owner_admitted`` marker
     # in one board write transaction. The board (the cross-profile dispatch bus) can make that
@@ -75,10 +81,9 @@ async def _submit_claim(client, params, board_db):
     while receipt['status'] not in {'terminal', 'unknown'}:
         await asyncio.sleep(.2)
         receipt = await client.rpc('prompt.receipt', session_id=sid, admission_id=receipt['admission_id'])
-    if receipt['status'] == 'unknown':
-        raise GatewayClientError('Kanban execution unknown; retained by owner')
-    from gateway.session_kanban import worker_result
     result = worker_result(board_db, params)
+    if receipt['status'] == 'unknown' and not result:
+        raise GatewayClientError('Kanban execution unknown; retained by owner')
     # The attempt's reply ends the log, as a one-shot worker's did: crash diagnostics quote it.
     if result.get('last_output'):
         print(result['last_output'])

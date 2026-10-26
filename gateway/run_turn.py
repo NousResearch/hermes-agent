@@ -754,8 +754,8 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         if not _adapter_supports_edit and not _adapter_supports_native_stream and on_missing_cursor == "raise":
             raise RuntimeError("skip streaming for non-editable platform")
         _effective_cursor = scfg.cursor if _adapter_supports_edit else ""
-        # Some Matrix clients render the cursor as tofu: stream text, no cursor.
-        if source.platform == Platform.MATRIX:
+        # Matrix tofu and QQ replace-frames both reject a cursor that appears then vanishes.
+        if source.platform in (Platform.MATRIX, Platform.QQBOT):
             _effective_cursor = ""
         # Fresh-final applies to Telegram only (others edit in place cheaply).
         # Fresh-final applies to Telegram only — other platforms either edit in place cheaply (Discord,

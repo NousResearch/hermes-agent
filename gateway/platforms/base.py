@@ -4843,7 +4843,7 @@ class BasePlatformAdapter(ABC):
                     if safe_split > _cp_limit // 4:
                         split_at = safe_split
             chunk_body = remaining[:split_at]
-            remaining = remaining[split_at:].lstrip()
+            remaining = remaining[split_at:].lstrip(" ").lstrip("\n")  # keep indentation (#54579)
             full_chunk = prefix + chunk_body
             # Walk only chunk_body (not the prepended prefix) for the fence state.
             in_code, lang = fence_state_after(chunk_body, carry_lang is not None, carry_lang or "")

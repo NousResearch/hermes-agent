@@ -370,18 +370,21 @@ function TouchUserBubble({ children, className, editable, showRestore, showStop 
 }
 
 /** Sticky human bubbles clamp to ~2 lines with a soft fade so a long prompt
- *  doesn't dominate the viewport while the response streams underneath; the
- *  clamp lifts on hover / focus (see styles.css). We measure the *unclamped*
- *  inner wrapper so the ResizeObserver only fires on real content / width
- *  changes, not on every frame while the outer max-height animates open.
- *  Touch has no hover to lift it, so a touch bubble is never clamped. */
+ *  doesn't dominate the viewport while the response streams underneath. The
+ *  clamp lifts only in the edit composer (styles.css), not on hover. A touch
+ *  bubble used to skip the clamp because hover was the only way to read the
+ *  rest; that left the whole prompt pinned over a phone. Touch still clamps.
+ *  A watch window has no edit button on touch, so it stays open there.
+ *  We measure the *unclamped* inner wrapper so the ResizeObserver only fires
+ *  on real content / width changes, not on every frame while the outer
+ *  max-height animates open. */
 function useUserBubbleClamp(readOnly: boolean, touch: boolean) {
   const clampInnerRef = useRef<HTMLDivElement | null>(null)
   const [bodyClamped, setBodyClamped] = useState(false)
   const lastClampHeightRef = useRef(-1)
   const lineHeightRef = useRef(0)
   const [expanded, setExpanded] = useState(false)
-  const clampActive = !touch && !(readOnly && expanded)
+  const clampActive = !(readOnly && (touch || expanded))
 
   const measureClamp = useCallback((entries: readonly ResizeObserverEntry[]) => {
     const inner = clampInnerRef.current

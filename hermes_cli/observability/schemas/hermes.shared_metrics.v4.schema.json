@@ -5351,6 +5351,7 @@
             },
             "reason": {
               "enum": [
+                "agent_released",
                 "aux_fallback_main",
                 "discarded_while_waiting",
                 "fresh_required",

@@ -677,8 +677,8 @@ With `compression.prepare_ahead: true` (read at agent construction, so it takes 
 session or gateway agent rebuild), `agent/prepared_compaction.py` writes the next summary before
 the trigger fires. When the last provider-reported prompt count is within 12% of the trigger
 (`threshold_tokens`) below it, the turn loop starts one background pass, before a tool batch runs or
-at turn end. Turn-end passes are skipped for cron runs and delegated children, whose sessions end
-with the turn. The pass plans the same window `compress()` plans (`_plan_compaction_window`) and calls
+at turn end. Turn-end passes are skipped for cron runs, delegated children and one-shot sessions
+(`hermes chat -q`, `-z`), whose agents end with the turn. The pass plans the same window `compress()` plans (`_plan_compaction_window`) and calls
 the same `_generate_summary` on a copy of the compressor and of the window's messages, so the live
 transcript, the system prompt and the prompt cache are untouched until compaction. There is one pass
 per compaction: while a summary is held, no further pass starts, however much the prompt grows.
@@ -712,7 +712,12 @@ compactions where a memory provider contributes summary context (the first such 
 further passes for that agent, since each would be thrown away). A running pass overtaken by compaction or a session
 boundary (including a rebind to another session id on `/resume` or `/branch`) is cancelled: it
 cannot publish, and its summary stream is closed rather than billed to completion. A failed pass pauses further passes but never arms the live compressor's failure cooldown. State is per compressor and in memory only, so a gateway agent
-eviction or process restart simply means the next compaction runs inline. Plugin context engines,
+eviction or process restart simply means the next compaction runs inline; releasing the agent (cache
+eviction, a rewind, `close()`) also cancels a running pass. A held summary therefore helps only an
+agent that lives across turns (interactive CLI, TUI/Desktop and messaging sessions); a `-q --resume`
+chain builds a new agent per run and gets no head start. Pass log lines carry `session=<id>`, and
+opt-in shared metrics count adoption and every pass and splice outcome
+(`hermes.prepared_compaction.count`, see the shared-metrics guide). Plugin context engines,
 Codex app-server sessions, native Responses compaction and micro-compaction are not prepared.
 
 

@@ -181,8 +181,9 @@ def test_gates_start_no_pass(setup):
     assert cc.calls == []
 
 
-@pytest.mark.parametrize("agent_attrs", [{"platform": "cron"}, {"platform": "subagent"}, {"_delegate_depth": 1}],
-                         ids=["cron", "subagent-platform", "delegated-child"])
+@pytest.mark.parametrize("agent_attrs", [
+    {"platform": "cron"}, {"platform": "subagent"}, {"_delegate_depth": 1}, {"_oneshot_session": True},
+], ids=["cron", "subagent-platform", "delegated-child", "one-shot"])
 def test_turn_end_pass_skipped_where_the_session_ends_with_the_turn(agent_attrs):
     cc = _compressor()
     agent = _agent(cc)
@@ -483,15 +484,17 @@ def test_session_reset_during_the_wait_wakes_it_without_waiting_for_the_pass():
     assert cc.prepared_compaction._entry is None
 
 
-@pytest.mark.parametrize("boundary", ["reset", "end", "rebind"])
+@pytest.mark.parametrize("boundary", ["reset", "end", "rebind", "agent-released"])
 def test_session_boundary_discards_candidate_and_running_pass(boundary):
     def cross(cc, msgs):
         if boundary == "reset":
             cc.on_session_reset()
         elif boundary == "end":
             cc.on_session_end("S1", msgs)
-        else:  # /resume or /branch onto another session
+        elif boundary == "rebind":  # /resume or /branch onto another session
             cc.bind_session_state(None, "S2")
+        else:  # gateway cache eviction / rewind / close release the agent without a session boundary
+            pc.release_for_agent(_agent(cc))
 
     msgs = _messages(30)
     completed = _compressor()

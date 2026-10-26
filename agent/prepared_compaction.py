@@ -211,10 +211,15 @@ def _worker_copy(compressor: Any) -> Any:
 
 
 def _blocked_for_platform(agent: Any, origin: str) -> bool:
-    """A turn-end pass in a session that ends with its turn (a cron run, a delegated child) is never used."""
+    """A turn-end pass in a session that ends with its turn (a cron run, a delegated child, a one-shot) is never
+    used."""
     if origin != "turn-end":
         return False
-    return getattr(agent, "platform", None) in ("cron", "subagent") or getattr(agent, "_delegate_depth", 0) > 0
+    if getattr(agent, "platform", None) in ("cron", "subagent") or getattr(agent, "_delegate_depth", 0) > 0:
+        return True
+    from agent.oneshot_footprint import agent_is_oneshot
+
+    return agent_is_oneshot(agent)  # ``chat -q``: the agent is released right after the reply
 
 
 class PreparedCompaction:
@@ -228,17 +233,20 @@ class PreparedCompaction:
         # Set by the first compaction that needed memory-provider context; such compactions summarise fresh.
         self._needs_provider_context = False
 
-    def discard(self, reason: str) -> None:
-        """Drop the candidate and cancel a running pass (it can no longer publish)."""
+    def discard(self, reason: str, code: str = "session_boundary") -> None:
+        """Drop the candidate and cancel a running pass (it can no longer publish); ``code`` is the closed
+        reason opt-in shared metrics count."""
         with self._lock:
             entry, pending, self._entry, self._pending = self._entry, self._pending, None, None
         if pending is not None:
-            pending.cancel("session_boundary")
+            pending.cancel(code)
         if entry is not None or pending is not None:
-            _record("discarded", reason="session_boundary")
-        if entry is not None:
+            _record("discarded", reason=code)
+        dropped = entry or (pending.window if pending is not None else None)
+        if dropped is not None:
             logger.info(
-                "prepared compaction: dropped window=%d-%d reason=%s", entry.compress_start, entry.compress_end, reason,
+                "prepared compaction: dropped session=%s window=%d-%d reason=%s%s", dropped.session_id,
+                dropped.compress_start, dropped.compress_end, reason, "" if entry is not None else " (pass running)",
             )
 
     def stop_for_provider_context(self) -> None:
@@ -285,11 +293,12 @@ class PreparedCompaction:
                 pending.cancel(code if code in _WAIT_CANCEL_REASONS else "superseded")
         if reason is not None or entry is None:
             if entry is not None or pending is not None:
-                logger.info("prepared compaction: splice miss reason=%s", reason)
+                logger.info("prepared compaction: splice miss session=%s reason=%s", session_id, reason)
                 _record("discarded", reason=reason.code, wait_seconds=waited)
             return None
         logger.info(
-            "prepared compaction: splice hit window=%d-%d (fresh cut %d)", entry.compress_start, entry.compress_end, end,
+            "prepared compaction: splice hit session=%s window=%d-%d (fresh cut %d)", session_id, entry.compress_start,
+            entry.compress_end, end,
         )
         _record("used", reason="aux_fallback_main" if entry.telemetry.get("fallback_used") else None, wait_seconds=waited)
         return entry
@@ -312,8 +321,8 @@ class PreparedCompaction:
         cancel_check = _capture_aux_cancel_check()
         fallback = time.monotonic() + float(_effective_aux_timeout("compression", None))
         logger.info(
-            "prepared compaction: waiting for the running pass window=%d-%d",
-            pending.window.compress_start, pending.window.compress_end,
+            "prepared compaction: waiting for the running pass session=%s window=%d-%d",
+            pending.window.session_id, pending.window.compress_start, pending.window.compress_end,
         )
         try:
             while not pending.done.wait(
@@ -422,8 +431,8 @@ class PreparedCompaction:
         started = time.monotonic()
         try:
             logger.info(
-                "prepared compaction: pass started origin=%s window=%d-%d turns=%d",
-                origin, window.compress_start, window.compress_end, len(turns),
+                "prepared compaction: pass started session=%s origin=%s window=%d-%d turns=%d",
+                window.session_id, origin, window.compress_start, window.compress_end, len(turns),
             )
             with (
                 thread_scoped_silence(), aux_interrupt_protection(cancel_event=token.cancelled),
@@ -431,7 +440,8 @@ class PreparedCompaction:
             ):
                 summary = worker._generate_summary(turns, focus_topic=focus)
             if token.cancelled.is_set():
-                logger.info("prepared compaction: pass cancelled after %.1fs (superseded)", time.monotonic() - started)
+                logger.info("prepared compaction: pass cancelled session=%s after %.1fs (%s)", window.session_id,
+                            time.monotonic() - started, token.cancel_reason)
             elif summary:
                 telemetry = worker._active_compression_telemetry or {}
                 entry = PreparedSummary(
@@ -440,17 +450,19 @@ class PreparedCompaction:
                     call_state={name: getattr(worker, name, None) for name in _SUMMARY_CALL_STATE},
                     telemetry={key: telemetry.get(key) for key in _SUMMARY_CALL_TELEMETRY},
                 )
-                logger.info("prepared compaction: pass completed window=%d-%d in %.1fs",
-                            window.compress_start, window.compress_end, time.monotonic() - started)
+                logger.info("prepared compaction: pass completed session=%s window=%d-%d in %.1fs",
+                            window.session_id, window.compress_start, window.compress_end, time.monotonic() - started)
             else:
-                logger.warning("prepared compaction: pass failed after %.1fs: %s", time.monotonic() - started,
+                logger.warning("prepared compaction: pass failed session=%s after %.1fs: %s", window.session_id,
+                               time.monotonic() - started,
                                worker._last_summary_error or "summariser returned nothing")
                 event, failure_class = "pass_failed", _pass_failure_class(worker)
         except AuxiliaryExplicitCancellation:
             # The closed stream raises a BaseException; it must not reach the thread's excepthook (stderr).
-            logger.info("prepared compaction: pass cancelled after %.1fs (superseded)", time.monotonic() - started)
+            logger.info("prepared compaction: pass cancelled session=%s after %.1fs (%s)", window.session_id,
+                            time.monotonic() - started, token.cancel_reason)
         except Exception:
-            logger.warning("prepared compaction: pass crashed", exc_info=True)
+            logger.warning("prepared compaction: pass crashed session=%s", window.session_id, exc_info=True)
             event, failure_class = "internal_error", "exception"
         finally:
             with self._lock:
@@ -478,6 +490,14 @@ def _pass_failure_class(worker: Any) -> str:
 
     terminal = next((cls for flag, cls, _ in _TERMINAL_SUMMARY_FAILURES if getattr(worker, flag, False)), None)
     return terminal or (worker._active_compression_telemetry or {}).get("failure_class") or "summary_generation_failed"
+
+
+def release_for_agent(agent: Any) -> None:
+    """The agent is being released (cache eviction, rewind, close): no compaction of it can splice the summary,
+    so stop paying for a running pass."""
+    prepared = getattr(getattr(agent, "context_compressor", None), "prepared_compaction", None)
+    if prepared is not None:
+        prepared.discard("agent released", "agent_released")
 
 
 def adopt(compressor: Any, prepared: PreparedSummary) -> None:

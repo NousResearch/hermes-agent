@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 
 from tools.registry import tool_error
+
+logger = logging.getLogger(__name__)
 
 
 def _store(parent):
@@ -63,8 +66,14 @@ def bind_child(parent, child, task, resume=None, *, extension, options, routing_
         nonlocal last_touch
         now = time.monotonic()
         if now - last_touch >= 1:
-            store.touch(record["session_id"], token)
             last_touch = now
+            try:
+                store.touch(record["session_id"], token)
+            except Exception:  # health: allow BLE001 -- activity bookkeeping must not suppress progress
+                logger.debug("Retained child activity update failed", exc_info=True)
+            finally:
+                # Back off after failures too, including time spent waiting on SQLite.
+                last_touch = time.monotonic()
         if progress:
             return progress(*args, **kwargs)
 

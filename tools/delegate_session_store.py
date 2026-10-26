@@ -262,7 +262,8 @@ class DelegateSessionStore:
 
     def touch(self, session_id, token):
         return bool(self.db._write_rowcount("UPDATE delegate_sessions SET last_activity_at = MAX(last_activity_at, ?) "
-                    "WHERE session_id = ? AND run_token = ? AND status = 'running'", (time.time(), session_id, token)))
+                    "WHERE session_id = ? AND run_token = ? AND status = 'running'", (time.time(), session_id, token),
+                    patience_s=self.db._ACTIVITY_WRITE_PATIENCE_S))
 
     def release(self, session_id, token, *, current_session_id=None):
         def settle(conn):

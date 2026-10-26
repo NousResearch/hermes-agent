@@ -1054,12 +1054,8 @@ def recover_with_credential_pool(
         # Pass classified semantics, not just the status: a billing 403 and an edge-throttle 403
         # need opposite cooldowns.
         if effective_reason is not None:
-            failure_reason = effective_reason.value
-            if effective_reason == FailoverReason.billing and billing_unverified:
-                # Ambiguous billing body: size the cooldown as transient, not a 1-hour bench.
-                from agent.credential_pool import FAILURE_REASON_BILLING_UNVERIFIED
-                failure_reason = FAILURE_REASON_BILLING_UNVERIFIED
-            kwargs["failure_reason"] = failure_reason
+            from agent.credential_pool_model_cooldowns import pool_failure_reason
+            kwargs["failure_reason"] = pool_failure_reason(effective_reason, error_context, billing_unverified)
         model = getattr(agent, "model", None)
         if isinstance(model, str) and model.strip():
             kwargs["model"] = model
@@ -3703,19 +3699,8 @@ def extract_api_error_context(error: Exception) -> dict[str, Any]:
 
 def _requeue_pending_steer(agent, steer_text: str) -> None:
     """Put drained steer text back so the caller's fallback delivers it as a next-turn user message."""
-    # Under the lock the slot is read directly: an initialized agent always has both attributes, so a
-    # missing ``_pending_steer`` there is a real bug and must fail loud. The lock-less branch only
-    # exists for test stubs built via ``object.__new__`` that skipped ``__init__``.
-    _lock = getattr(agent, "_pending_steer_lock", None)
-    if _lock is not None:
-        with _lock:
-            if agent._pending_steer:
-                agent._pending_steer = agent._pending_steer + "\n" + steer_text
-            else:
-                agent._pending_steer = steer_text
-    else:
-        existing = getattr(agent, "_pending_steer", None)
-        agent._pending_steer = (existing + "\n" + steer_text) if existing else steer_text
+    from agent.interrupt_control import requeue_drained_steer
+    requeue_drained_steer(agent, steer_text)
 
 
 def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: int) -> None:

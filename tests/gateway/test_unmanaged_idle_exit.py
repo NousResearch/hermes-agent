@@ -89,3 +89,22 @@ async def test_queued_work_clients_adapters_and_cron_each_keep_it_up(tmp_path, m
         assert "idle probe failed" in run_idle_exit.busy_reason(runner, window=0.2)
     finally:
         db.close()
+
+
+def test_secondary_local_session_adapter_does_not_count_as_messaging(tmp_path, monkeypatch):
+    """A secondary local session leaves an adapter map behind after the client disconnects."""
+    runner, _home, db, _stops = _runner(tmp_path, monkeypatch)
+    secondary_home = tmp_path / "secondary"
+    secondary_home.mkdir()
+    secondary_db = SessionDB(db_path=secondary_home / "state.db")
+    runner.session_authorities.add(
+        secondary_home, SimpleNamespace(profile_id=str(secondary_home), db=secondary_db), name="secondary")
+    try:
+        runner._profile_adapters["secondary"] = {Platform.LOCAL: object()}
+        assert run_idle_exit.busy_reason(runner, window=0.2) is None
+
+        runner._profile_adapters["secondary"][Platform.TELEGRAM] = object()
+        assert "telegram" in run_idle_exit.busy_reason(runner, window=0.2)
+    finally:
+        secondary_db.close()
+        db.close()

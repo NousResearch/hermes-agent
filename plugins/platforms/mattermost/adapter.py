@@ -105,6 +105,7 @@ class MattermostAdapter(BasePlatformAdapter):
     """Gateway adapter for Mattermost (self-hosted or cloud)."""
 
     splits_long_messages = True  # send() chunks via truncate_message(MAX_POST_LENGTH)
+    serial_receive_loop = True  # the WebSocket loop awaits each event before reading the next
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.MATTERMOST)

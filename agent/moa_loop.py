@@ -22,6 +22,7 @@ from typing import Any
 
 from agent.auxiliary_client import call_llm
 from agent.message_content import flatten_message_text
+from agent.message_metadata import DATA_USE
 from agent.moa_alternation import destination_key, is_role_alternation_rejection, merge_same_role_messages
 from agent.transports import get_transport
 from agent.usage_pricing import CanonicalUsage
@@ -125,11 +126,8 @@ def _resolve_preset_cached(preset_name: str) -> tuple[dict[str, Any], Any]:
     (skips resolve_moa_preset's full validation of the moa block on every create())."""
     from hermes_cli.config import get_config_path, load_config
     from hermes_cli.moa_config import resolve_moa_preset
-    from utils import file_signature
-    try:
-        cfg_stamp = file_signature(get_config_path().stat())
-    except OSError:
-        cfg_stamp = None
+    from hermes_cli.config_backend import config_version_or_none
+    cfg_stamp = config_version_or_none(get_config_path())
     moa_raw = load_config().get("moa") or {}
     key = (cfg_stamp, preset_name)
     with _preset_cache_lock:
@@ -795,6 +793,9 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 rendered[-1]["content"] = rendered[-1]["content"] + "\n" + block
             else:
                 rendered.append({"role": "assistant", "content": block})
+            # The preview is still the raw result, so the folded turn keeps its data-use requirement.
+            if msg.get(DATA_USE):
+                rendered[-1][DATA_USE] = sorted({*rendered[-1].get(DATA_USE, ()), *msg[DATA_USE]})
         # system and any other role are ignored.
 
     # Anthropic rejects trailing assistant prefill: end on a synthetic user request.

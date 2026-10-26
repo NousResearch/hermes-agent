@@ -127,6 +127,7 @@ _DEFAULT_PAYLOADS = {
     },
     "on_session_finalize": {"session_id": "test-session"},
     "on_session_reset": {"session_id": "test-session"},
+    "on_session_delete": {"session_id": "test-session", "reason": "delete", "profile": "default"},
     "pre_api_request": {
         "session_id": "test-session", "task_id": "test-task", "platform": "cli",
         "model": "claude-sonnet-4-6", "provider": "anthropic",
@@ -259,7 +260,7 @@ def _cmd_revoke(args) -> None:
         return
     print(f"Removed {removed} allowlist entry/entries for: {args.command}")
     print(
-        "Note: a running gateway stops running it when the next local session opens (unless "
+        "Note: a running gateway stops running it within about 30 seconds (unless "
         "--accept-hooks / HERMES_ACCEPT_HOOKS / hooks_auto_accept approves every hook there); "
         "other running processes keep it until they restart."
     )

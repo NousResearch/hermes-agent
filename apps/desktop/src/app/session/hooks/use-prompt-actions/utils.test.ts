@@ -1,7 +1,9 @@
 import type { AppendMessage } from '@assistant-ui/react'
+import { JsonRpcGatewayError } from '@hermes/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
+import { errorRecoveryPlan } from '@/lib/error-surface'
 
 import {
   acquireSubmitInFlight,
@@ -20,6 +22,7 @@ import {
   isSubmitInFlight,
   isTargetSessionBusy,
   markSessionRecentlyInterrupted,
+  ownershipErrorSurface,
   readFileDataUrlForAttach,
   RECENT_INTERRUPT_COOLDOWN_MS,
   releaseSubmitInFlight,
@@ -136,6 +139,16 @@ describe('session error classifiers', () => {
     expect(isSessionBusyError(new Error('session busy'))).toBe(true)
     expect(isSessionNotFoundError(new Error('other'))).toBe(false)
     expect(isSessionBusyError(new Error('other'))).toBe(false)
+  })
+})
+
+describe('ownershipErrorSurface', () => {
+  it('drops Retry for a read-only stored chat: resending reproduces the refusal', () => {
+    const err = new JsonRpcGatewayError('session_read_only', { code: 4001, data: { reason: 'session_read_only' } })
+    const { errorSurface } = ownershipErrorSurface(err)
+
+    expect(errorSurface).toEqual({ layer: 'gateway', code: 'session_read_only', retryable: false })
+    expect(errorRecoveryPlan(errorSurface)).toMatchObject({ retry: false, startNewSession: true })
   })
 })
 
@@ -471,26 +484,19 @@ describe('renderRpcResult', () => {
       )
     })
 
-    it('appends account_lines before credits_lines when present', () => {
+    it('appends credits_lines when present', () => {
       const body = renderRpcResult(
         {
           calls: 1,
           input: 10,
           output: 20,
           total: 30,
-          account_lines: ['📈 Account limits', 'Provider: openai-codex (Plus)', 'Weekly: 12% used'],
           credits_lines: ['Nous credits: 8,420 remaining', 'Resets: 2026-08-01']
         },
         'usage'
       )
 
-      expect(body.split('\n').slice(1)).toEqual([
-        '📈 Account limits',
-        'Provider: openai-codex (Plus)',
-        'Weekly: 12% used',
-        'Nous credits: 8,420 remaining',
-        'Resets: 2026-08-01'
-      ])
+      expect(body.split('\n').slice(1)).toEqual(['Nous credits: 8,420 remaining', 'Resets: 2026-08-01'])
     })
   })
 

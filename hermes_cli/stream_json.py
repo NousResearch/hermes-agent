@@ -96,6 +96,9 @@ class StreamJsonEmitter:
                    "duration_ms": int((time.time() - self._start) * 1000)}
         if data.get("error"):
             payload["error"] = str(data["error"])
+        if data.get("replay_gap"):
+            # The viewer fell behind and re-attached: ``text`` events stopped there; ``text`` is the whole reply.
+            payload["replay_gap"] = True
         self._emit(payload)
         print(f"\nsession_id: {session_id or self._session_id}", file=sys.stderr)  # same stderr contract as -Q
         return exit_code

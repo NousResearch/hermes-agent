@@ -1,6 +1,7 @@
 import { randomUuid } from '@hermes/shared'
 
 import type { HermesApiRequest } from '@/global'
+import { dismissNotification } from '@/store/notifications'
 
 interface BrowserWindowOptions {
   api: <T>(request: HermesApiRequest) => Promise<T>
@@ -9,6 +10,16 @@ interface BrowserWindowOptions {
 }
 
 const POPUP_BLOCKED = 'Webapp window did not open. Allow popups for this site and try again.'
+
+/** The blocked-window rejection. Its toast goes up under `notificationId` (runWindowOpen), so a
+ *  window that says `ready` after the deadline can take it back down. */
+class WindowBlockedError extends Error {
+  readonly notificationId = `webapp-window-blocked:${randomUuid()}`
+
+  constructor() {
+    super(POPUP_BLOCKED)
+  }
+}
 
 // The new window gets its own browsing context group: it does not share this tab's event loop,
 // starts with empty sessionStorage and gets no Referer. The cost: window.open returns null whether
@@ -19,8 +30,12 @@ const WINDOW_FEATURES = 'noopener,noreferrer'
 // A window that has not said `ready` by then is reported as blocked. In Chrome, Edge and WebKit a
 // window that opened said it within 0.4 s (the launch-link handoff page) and about 1.3 s (the
 // whole app on a gated host), even with the browser held to one CPU. A slower window still opens
-// after the toast, and on a launch-link tab it still signs in.
+// and takes the toast back down, and on a launch-link tab it still signs in.
 const READY_DEADLINE_MS = 3_000
+
+// How long a pop-out keeps listening past the deadline: for a window that starts late, or one the
+// user opens from the browser's blocked-popup prompt.
+const LATE_WINDOW_MS = 30_000
 
 // A gated host's window is the app itself, which says `ready` at boot on the channel this
 // parameter names (`announceWebappWindow`).
@@ -47,23 +62,32 @@ function openGatedWindow(target: URL): Promise<{ ok: true }> {
   href.searchParams.set(HELLO_PARAM, id)
 
   return new Promise((resolve, reject) => {
-    const finish = (error?: Error) => {
-      window.clearTimeout(deadline)
-      channel.close()
+    const blocked = new WindowBlockedError()
 
-      if (error) {reject(error)} else {resolve({ ok: true })}
+    const close = () => {
+      window.clearTimeout(deadline)
+      window.clearTimeout(expiry)
+      channel.close()
     }
 
-    const deadline = window.setTimeout(() => finish(new Error(POPUP_BLOCKED)), READY_DEADLINE_MS)
+    const deadline = window.setTimeout(() => reject(blocked), READY_DEADLINE_MS)
+    const expiry = window.setTimeout(close, LATE_WINDOW_MS)
 
+    // Before the deadline this resolves; past it the promise has rejected, and the window that
+    // opened after all takes its toast down.
     channel.onmessage = event => {
-      if (event.data?.type === 'ready') {finish()}
+      if (event.data?.type === 'ready') {
+        close()
+        resolve({ ok: true })
+        dismissNotification(blocked.notificationId)
+      }
     }
 
     try {
       window.open(href.href, '_blank', WINDOW_FEATURES)
     } catch (error) {
-      finish(asError(error))
+      close()
+      reject(asError(error))
     }
   })
 }
@@ -85,6 +109,7 @@ function openLaunchLinkWindow(
   launch.hash = new URLSearchParams({ channel: id, query: target.search, route: target.hash.slice(1) }).toString()
 
   return new Promise((resolve, reject) => {
+    const blocked = new WindowBlockedError()
     let minting = false
     let closed = false
 
@@ -102,8 +127,8 @@ function openLaunchLinkWindow(
       settle(error)
     }
 
-    const deadline = window.setTimeout(() => settle(new Error(POPUP_BLOCKED)), READY_DEADLINE_MS)
-    const expiry = window.setTimeout(() => close(new Error(POPUP_BLOCKED)), 30_000)
+    const deadline = window.setTimeout(() => settle(blocked), READY_DEADLINE_MS)
+    const expiry = window.setTimeout(() => close(blocked), LATE_WINDOW_MS)
 
     channel.onmessage = event => {
       if (closed) {return}
@@ -111,6 +136,7 @@ function openLaunchLinkWindow(
       if (event.data?.type === 'ready' && !minting) {
         minting = true
         window.clearTimeout(deadline)
+        dismissNotification(blocked.notificationId)
         void api<{ ticket: string }>({ method: 'POST', path: '/api/webapp/window-ticket' }).then(({ ticket }) => {
           if (closed) {return}
           channel.postMessage({ ticket })

@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { $notifications } from '@/store/notifications'
+import { openNewWindow } from '@/store/windows'
 import { browserOpensWebappWindows, stubBroadcastChannels } from '@/test/webapp-windows'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
-import { createBrowserWindowOpener } from './browser-window'
+import { announceWebappWindow, createBrowserWindowOpener } from './browser-window'
 
 const POPUP_BLOCKED = 'Webapp window did not open. Allow popups for this site and try again.'
 const bootstrap = window as Window & { __HERMES_AUTH_REQUIRED__?: boolean }
@@ -16,6 +18,7 @@ afterEach(() => {
   window.history.replaceState(null, '', '/')
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
+  $notifications.set([])
 })
 
 function opener(privateSession: boolean, api = vi.fn()) {
@@ -54,8 +57,55 @@ function handoffPage(href: string): unknown[] {
   return received
 }
 
+/** The toasts showing, by message. */
+function toasts(): string[] {
+  return $notifications.get().map(({ message }) => message)
+}
+
+/** The window opens that address late and boots the Webapp, which says its hello. */
+function bootLate(href: string) {
+  const opener = window.location.href
+  window.history.replaceState(null, '', href)
+  announceWebappWindow()
+  window.history.replaceState(null, '', opener)
+}
+
+// A window that boots after the deadline (a slow machine, or a gated window landing on the login
+// page or a 503) opened after all: its late `ready` takes the "Allow popups" toast back down.
+describe('a window that says ready after the deadline', () => {
+  it.each([
+    ['gated host', false],
+    ['launch-link', true]
+  ])('takes the blocked-popup toast down on a %s pop-out', async (_name, privateSession) => {
+    vi.useFakeTimers()
+    const ticket = 'd'.repeat(43)
+    const channels = stubBroadcastChannels()
+    const open = vi.spyOn(window, 'open').mockReturnValue(null)
+    const api = vi.fn().mockResolvedValue({ ticket })
+
+    ;(window as unknown as { hermesDesktop: object }).hermesDesktop = {
+      openWindow: () => opener(privateSession, api)(target())
+    }
+
+    const opening = openNewWindow()
+    await vi.advanceTimersByTimeAsync(3_000)
+    await opening
+    expect(toasts()).toEqual([POPUP_BLOCKED])
+
+    await vi.advanceTimersByTimeAsync(1_000)
+    const href = String(open.mock.calls[0]?.[0])
+    const received = privateSession ? handoffPage(href) : (bootLate(href), [])
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(toasts()).toEqual([])
+    expect(received).toEqual(privateSession ? [{ ticket }] : [])
+    expect(api).toHaveBeenCalledTimes(privateSession ? 1 : 0)
+    expect(channels.size).toBe(0)
+  })
+})
+
 describe('gated host pop-out', () => {
-  it('reports a window the browser blocked within seconds', async () => {
+  it('reports a window the browser blocked within seconds and stops listening for a late one', async () => {
     vi.useFakeTimers()
     const { channels, open } = browserOpensWebappWindows({ blocked: true })
     const result = outcome(opener(false)(target()))
@@ -65,6 +115,9 @@ describe('gated host pop-out', () => {
     await vi.advanceTimersByTimeAsync(5_000)
     expect(result()).toBe(POPUP_BLOCKED)
     expect(open.mock.calls[0]?.[2]).toBe('noopener,noreferrer')
+    // Still listening: a late window could yet say ready.
+    expect(channels.size).toBe(1)
+    await vi.advanceTimersByTimeAsync(25_000)
     expect(channels.size).toBe(0)
   })
 

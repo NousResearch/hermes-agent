@@ -81,6 +81,10 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         help="Absolute or ~ path to a Python in your own venv (e.g. ~/venvs/report/bin/python) "
             "for a .py --script / --monitor-script, so it can import packages Hermes does not "
             "ship. .sh/.bash still run under bash. Omit to use Hermes' Python.")
+    cron_create.add_argument("--timezone",
+        help="IANA zone for this job's schedule (e.g. Asia/Hong_Kong), so the cron "
+            "expression is read as THAT zone's wall clock whatever the profile's timezone "
+            "is. Omit to inherit the profile timezone.")
     cron_create.add_argument(
         "--continuity", dest="continuity", action="store_const", const=True, default=None,
         help="Each run wakes up with the job's own previous output injected "
@@ -151,6 +155,9 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_edit.add_argument("--interpreter",
         help="Absolute or ~ path to a Python for a .py script / monitor script. "
             "Pass empty string to clear (back to Hermes' Python).")
+    cron_edit.add_argument("--timezone",
+        help="IANA zone for this job's schedule. Pass empty string to clear the pin "
+            "(back to the profile timezone); next_run_at is recomputed in the new zone.")
 
     # lifecycle actions
     cron_pause = cron_subparsers.add_parser("pause", help="Pause a scheduled job")

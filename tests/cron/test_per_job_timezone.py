@@ -1,0 +1,202 @@
+"""Per-job ``timezone``: one store, several zones, each job on its own wall clock.
+
+The failing shape this pins (the reason a compute-only fix is not enough — upstream PR #137231
+fixed ``compute_next_run`` but not the dispatch path): with the profile pinned to
+``America/Los_Angeles`` and a job pinned to ``America/New_York`` running ``0 9 * * 1-5``, the
+due scan normalized the stored New-York instant into the profile zone, so the repair predicate
+``_stored_wall_clock_is_future`` compared wall clocks across zones, decided the run was still
+in the future and re-anchored to the NEXT day. The due occurrence was silently dropped — the
+symptom is "no error, no fire, the next_run_at just moved".
+
+Everything here goes through the public store API (``create_job`` / ``get_due_jobs``), never by
+calling the internal predicates, so the tests fail on the real symptom rather than on a
+hand-built intermediate value.
+"""
+
+import logging
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+import pytest
+
+pytest.importorskip("croniter")
+
+import hermes_time
+from cron import jobs
+
+LA = ZoneInfo("America/Los_Angeles")
+NY = ZoneInfo("America/New_York")
+HK = ZoneInfo("Asia/Hong_Kong")
+
+WEEKDAY_9AM = "0 9 * * 1-5"
+DAILY_9AM = "0 9 * * *"
+
+
+@pytest.fixture
+def la_profile(monkeypatch):
+    """Configure the profile zone the way production does: ``HERMES_TIMEZONE`` + cache reset."""
+    monkeypatch.setenv("HERMES_TIMEZONE", "America/Los_Angeles")
+    hermes_time.reset_cache()
+    yield LA
+    hermes_time.reset_cache()
+
+
+@pytest.fixture
+def cron_store(tmp_path, monkeypatch):
+    """Isolated store + a frozen clock the test moves explicitly."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    class Clock:
+        instant = datetime(2026, 10, 22, 12, 0, tzinfo=NY)
+
+        def set(self, value):
+            self.instant = value
+
+        def now(self):
+            # Production shape: _hermes_now() is aware in the PROFILE zone.
+            return self.instant.astimezone(hermes_time.get_timezone() or LA)
+
+    clock = Clock()
+    monkeypatch.setattr(jobs, "_hermes_now", clock.now)
+    with jobs.use_cron_store(tmp_path / "cron"):
+        yield clock
+
+
+def _add_job(schedule, *, timezone=None, next_run_at):
+    """Create a real job through the public door, then park its instant where the test needs it."""
+    job = jobs.create_job(
+        prompt="probe", schedule=schedule, model="fixture", deliver="local",
+        timezone=timezone)
+    stored = jobs.load_jobs()
+    row = next(r for r in stored if r["id"] == job["id"])
+    row["next_run_at"] = next_run_at.isoformat()
+    jobs.save_jobs(stored)
+    return job["id"]
+
+
+class TestPinnedTimezoneIsDue:
+    """§0 of the design: the pinned job must be DUE, and the repair path must not touch it."""
+
+    @pytest.mark.parametrize("job_zone", ["America/New_York", "Asia/Hong_Kong"])
+    def test_job_east_of_the_profile_zone_fires_on_time(
+        self, la_profile, cron_store, job_zone, caplog,
+    ):
+        """East of the profile zone is the direction that used to be dropped every time."""
+        nine_am = datetime(2026, 10, 22, 9, 0, tzinfo=ZoneInfo(job_zone))
+        cron_store.set(nine_am)
+        job_id = _add_job(WEEKDAY_9AM, timezone=job_zone, next_run_at=nine_am)
+        caplog.set_level(logging.INFO, logger="cron.scheduler")
+
+        due = [j["id"] for j in jobs.get_due_jobs()]
+
+        assert due == [job_id], "the pinned occurrence is due and must be returned"
+        stored = next(r for r in jobs.load_jobs() if r["id"] == job_id)
+        assert stored["next_run_at"] == nine_am.isoformat(), (
+            "a pinned job's instant must never be rewritten into the profile zone")
+        assert "Recomputing cron run" not in caplog.text, (
+            "the offset repair only exists for jobs that FOLLOW the profile zone")
+
+    def test_two_pinned_jobs_keep_their_own_nine_am(self, la_profile, cron_store):
+        """One store, one profile zone, two jobs: each fires at ITS 09:00, not the other's."""
+        ny_job = _add_job(
+            WEEKDAY_9AM, timezone="America/New_York",
+            next_run_at=datetime(2026, 10, 22, 9, 0, tzinfo=NY))
+        hk_job = _add_job(
+            WEEKDAY_9AM, timezone="Asia/Hong_Kong",
+            next_run_at=datetime(2026, 10, 23, 9, 0, tzinfo=HK))
+
+        # 09:00 New York == 21:00 Hong Kong == 06:00 Los Angeles: only the NY job is due.
+        cron_store.set(datetime(2026, 10, 22, 9, 0, tzinfo=NY))
+        assert [j["id"] for j in jobs.get_due_jobs()] == [ny_job]
+        # The tick claims the fired job and advances it in ITS zone — the write site that would
+        # otherwise jump a slot (and the claim is what retires the pending_slot stamp).
+        assert jobs.claim_job_for_fire(ny_job) is True
+
+        # A day later, 09:00 Hong Kong (== 18:00 the previous day in LA) is the HK job's turn.
+        cron_store.set(datetime(2026, 10, 23, 9, 0, tzinfo=HK))
+        assert [j["id"] for j in jobs.get_due_jobs()] == [hk_job]
+        advanced = next(r for r in jobs.load_jobs() if r["id"] == ny_job)
+        assert datetime.fromisoformat(advanced["next_run_at"]).astimezone(NY).hour == 9
+
+    def test_unpinned_job_still_follows_the_profile_zone(self, la_profile, cron_store):
+        """The default is unchanged: absent pin == profile wall clock (no migration needed)."""
+        nine_la = datetime(2026, 10, 22, 9, 0, tzinfo=LA)
+        cron_store.set(nine_la)
+        job_id = _add_job(WEEKDAY_9AM, next_run_at=nine_la)
+
+        assert [j["id"] for j in jobs.get_due_jobs()] == [job_id]
+
+
+class TestComputeNextRunUsesTheJobZone:
+    def test_next_run_lands_on_the_job_wall_clock(self, la_profile):
+        schedule = jobs.parse_schedule(WEEKDAY_9AM)
+        base = datetime(2026, 10, 22, 10, 0, tzinfo=NY).isoformat()
+
+        pinned = datetime.fromisoformat(
+            jobs.compute_next_run(schedule, base, timezone="America/New_York"))
+        inherited = datetime.fromisoformat(jobs.compute_next_run(schedule, base))
+
+        assert (pinned.hour, pinned.minute) == (9, 0)
+        assert pinned.astimezone(NY).date() == datetime(2026, 10, 23).date()
+        # Same instant computed in the profile zone would land at 09:00 LOS ANGELES.
+        assert inherited.astimezone(LA).hour == 9
+        assert pinned != inherited
+
+    def test_dst_transitions_hold_the_job_wall_clock(self, la_profile):
+        """Spring-forward (Mar 8 2026) and fall-back (Nov 1 2026) days stay at 09:00 job time."""
+        schedule = jobs.parse_schedule(DAILY_9AM)
+        for base in ("2026-03-07T09:00:00-05:00", "2026-10-31T09:00:00-04:00"):
+            nxt = datetime.fromisoformat(
+                jobs.compute_next_run(schedule, base, timezone="America/New_York"))
+            assert (nxt.astimezone(NY).hour, nxt.astimezone(NY).minute) == (9, 0), base
+
+    def test_fall_back_second_occurrence_is_strictly_later(self, la_profile):
+        """qwen-code#11723 class: no immediate re-fire inside the repeated autumn hour."""
+        base = datetime(2026, 11, 1, 1, 15, tzinfo=NY, fold=1)  # 01:15 EST (second 01:15)
+        nxt = datetime.fromisoformat(
+            jobs.compute_next_run({"kind": "cron", "expr": "30 1 * * *"},
+                                  base.isoformat(), timezone="America/New_York"))
+        assert nxt.timestamp() > base.timestamp()
+
+
+class TestInheritanceAndDegradation:
+    def test_null_and_absent_are_the_same_job(self, la_profile, cron_store):
+        explicit = jobs.create_job(
+            prompt="null", schedule=WEEKDAY_9AM, model="fixture", deliver="local",
+            timezone=None)
+        absent = jobs.create_job(
+            prompt="absent", schedule=WEEKDAY_9AM, model="fixture", deliver="local")
+        rows = {r["prompt"]: r for r in jobs.load_jobs()}
+        assert "timezone" not in rows["null"] and "timezone" not in rows["absent"]
+        assert explicit["next_run_at"] == absent["next_run_at"]
+
+    def test_clearing_the_pin_through_update_drops_the_key(self, la_profile, cron_store):
+        job = jobs.create_job(
+            prompt="p", schedule=WEEKDAY_9AM, model="fixture", deliver="local",
+            timezone="Asia/Hong_Kong")
+        jobs.update_job(job["id"], {"timezone": ""})
+        assert "timezone" not in jobs.load_jobs()[0]
+
+    def test_changing_the_pin_recomputes_the_stored_instant(self, la_profile, cron_store):
+        job = jobs.create_job(
+            prompt="p", schedule=WEEKDAY_9AM, model="fixture", deliver="local",
+            timezone="America/New_York")
+        before = jobs.load_jobs()[0]["next_run_at"]
+
+        jobs.update_job(job["id"], {"timezone": "Asia/Hong_Kong"})
+        after = jobs.load_jobs()[0]["next_run_at"]
+
+        assert after != before, "the instant belongs to the old zone; it must move"
+        assert datetime.fromisoformat(after).astimezone(HK).hour == 9
+
+    def test_a_corrupt_stored_zone_does_not_break_the_scan(self, la_profile, cron_store):
+        nine_la = datetime(2026, 10, 22, 9, 0, tzinfo=LA)
+        cron_store.set(nine_la)
+        job_id = _add_job(WEEKDAY_9AM, next_run_at=nine_la)
+        stored = jobs.load_jobs()
+        stored[0]["timezone"] = "Mars/Olympus_Mons"  # hand-edited store
+        jobs.save_jobs(stored)
+
+        due = [j["id"] for j in jobs.get_due_jobs()]
+
+        assert due == [job_id], "a bad zone degrades to the profile zone, it does not hide the job"

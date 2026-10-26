@@ -42,6 +42,17 @@ def _validate_job_mode_invariants(
             scripts_dir=display_hermes_home() + "/scripts/", script=script))
 
 
+def validate_schedule_knobs(schedule: dict, timezone: Optional[str]) -> None:
+    """Per-job schedule knobs are validated at BOTH doors — ``create_job`` and ``update_job`` — so
+    an update cannot store a value a create would reject.
+
+    Raises ValueError for an unknown IANA zone.
+    """
+    from cron.jobs_time import normalize_timezone
+
+    normalize_timezone(timezone)
+
+
 def _script_is_command_line(script: str) -> bool:
     """A ``script`` with whitespace that resolves to no file is a command line (``echo hi``),
     not a path; run every tick it would deliver "Script not found" as the payload. A plain

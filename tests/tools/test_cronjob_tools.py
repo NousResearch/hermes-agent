@@ -802,3 +802,43 @@ class TestGithubExemptionAbuse:
         assert _scan_cron_prompt(
             "generate a keypair and explain id_rsa vs id_ed25519"
         ) == ""
+
+
+class TestScheduleKnobToolSurface:
+    """The model-facing tool must expose the per-job timezone knob (§4)."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_cron_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
+        monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+        monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+
+    def _stored(self):
+        from cron.jobs import load_jobs
+        return load_jobs()[0]
+
+    def test_create_stores_timezone(self):
+        created = json.loads(cronjob(
+            action="create", prompt="HK open", schedule="0 9 * * 1-5",
+            timezone="Asia/Hong_Kong"))
+        assert created["success"] is True, created
+        job = self._stored()
+        assert job["timezone"] == "Asia/Hong_Kong"
+        assert job["next_run_at"].endswith("+08:00") or job["next_run_at"].endswith("+09:00")
+
+    def test_create_rejects_an_unknown_zone(self):
+        created = json.loads(cronjob(
+            action="create", prompt="x", schedule="0 9 * * *",
+            timezone="Mars/Olympus_Mons"))
+        assert created["success"] is False
+        assert "timezone" in created["error"].lower()
+
+    def test_update_clears_the_zone(self):
+        created = json.loads(cronjob(
+            action="create", prompt="x", schedule="0 9 * * *",
+            timezone="Asia/Hong_Kong"))
+        job_id = created["job_id"]
+
+        updated = json.loads(cronjob(action="update", job_id=job_id, timezone=""))
+        assert updated["success"] is True, updated
+        assert "timezone" not in self._stored(), "'' clears the pin; the key is dropped"

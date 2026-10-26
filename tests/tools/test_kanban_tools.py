@@ -79,7 +79,126 @@ def test_show_defaults_to_env_task_id(worker_env):
     assert d["task"]["id"] == worker_env
     assert d["task"]["status"] == "running"
     assert "worker_context" in d
-    assert "runs" in d
+    # Runs are rendered in worker_context; the raw list comes back with full=true.
+    assert "runs" in json.loads(kt._handle_show({"full": True}))
+
+
+def _kb_conn():
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    return kb, kbc.connect()
+
+
+def test_show_does_not_repeat_what_worker_context_carries(worker_env):
+    """The default (lean) result must not repeat the body, comments, runs and
+    the long event log that worker_context already renders in full."""
+    kb, conn = _kb_conn()
+    try:
+        conn.execute("UPDATE tasks SET body = ? WHERE id = ?",
+                     ("opening post with a distinctive marker XQZ", worker_env))
+        kb.add_comment(conn, worker_env, "reviewer", "short note ZZY")
+    finally:
+        conn.close()
+    from tools import kanban_tools as kt
+    for i in range(6):
+        assert json.loads(kt._handle_heartbeat({"note": f"hb {i}"}))["ok"]
+    assert len(json.loads(kt._handle_show({"full": True}))["events"]) > 3
+    out = kt._handle_show({})
+    d = json.loads(out)
+    assert "XQZ" in d["worker_context"] and "ZZY" in d["worker_context"]
+    assert out.count("XQZ") == 1, "body is returned twice"
+    assert out.count("ZZY") == 1, "comment is returned twice"
+    assert "body" not in d["task"]
+    assert "runs" not in d
+    assert len(d["events"]) <= 3
+    assert d["task"]["id"] == worker_env
+    assert {"parents", "children", "unsatisfied_parents"} <= set(d)
+
+
+def test_show_keeps_comment_that_worker_context_truncates(worker_env):
+    """worker_context caps each comment at 2 KB; a reviewer's fix often sits on
+    the last line, so the lean result must still carry it."""
+    long_body = ("x" * 3000) + "\nLAST LINE: the fix is here"
+    kb, conn = _kb_conn()
+    try:
+        kb.add_comment(conn, worker_env, "reviewer", long_body)
+        kb.add_comment(conn, worker_env, "other", "short")
+    finally:
+        conn.close()
+    from tools import kanban_tools as kt
+    out = kt._handle_show({})
+    d = json.loads(out)
+    assert "LAST LINE: the fix is here" not in d["worker_context"]
+    assert "LAST LINE: the fix is here" in out
+    assert [c["author"] for c in d["comments"]] == ["reviewer"]
+
+
+def test_show_keeps_comments_beyond_worker_context_tail(worker_env):
+    from hermes_cli import kanban_db_context as ctx
+    kb, conn = _kb_conn()
+    try:
+        for i in range(ctx._CTX_MAX_COMMENTS + 2):
+            kb.add_comment(conn, worker_env, "w", f"comment-nr-{i:03d}")
+    finally:
+        conn.close()
+    from tools import kanban_tools as kt
+    out = kt._handle_show({})
+    for i in range(ctx._CTX_MAX_COMMENTS + 2):
+        assert out.count(f"comment-nr-{i:03d}") == 1, i
+
+
+def test_show_keeps_open_run_that_is_not_the_current_one(worker_env):
+    """worker_context renders closed runs only. The worker's own open run is
+    left out of the lean view, but an orphaned open run must stay visible."""
+    kb, conn = _kb_conn()
+    try:
+        run_id = kb.get_task(conn, worker_env).current_run_id
+    finally:
+        conn.close()
+    from tools import kanban_tools as kt
+    assert "runs" not in json.loads(kt._handle_show({}))
+    kb, conn = _kb_conn()
+    try:
+        conn.execute("UPDATE tasks SET current_run_id = NULL WHERE id = ?", (worker_env,))
+        conn.commit()
+    finally:
+        conn.close()
+    d = json.loads(kt._handle_show({}))
+    assert [r["id"] for r in d["runs"]] == [run_id]
+
+
+def test_show_keeps_body_that_worker_context_truncates(worker_env):
+    from hermes_cli import kanban_db_context as ctx
+    body = ("b" * (ctx._CTX_MAX_BODY_BYTES + 10)) + "END-OF-BODY"
+    _, conn = _kb_conn()
+    try:
+        conn.execute("UPDATE tasks SET body = ? WHERE id = ?", (body, worker_env))
+    finally:
+        conn.close()
+    from tools import kanban_tools as kt
+    d = json.loads(kt._handle_show({}))
+    assert d["task"]["body"] == body
+
+
+def test_show_full_true_returns_everything(worker_env):
+    kb, conn = _kb_conn()
+    try:
+        conn.execute("UPDATE tasks SET body = ? WHERE id = ?", ("body-AAA", worker_env))
+        kb.add_comment(conn, worker_env, "reviewer", "note-BBB")
+    finally:
+        conn.close()
+    from tools import kanban_tools as kt
+    d = json.loads(kt._handle_show({"full": True}))
+    assert d["task"]["body"] == "body-AAA"
+    assert [c["body"] for c in d["comments"]] == ["note-BBB"]
+    assert d.get("runs")
+    assert "events" in d and "worker_context" in d
+
+
+def test_show_schema_advertises_full_flag():
+    from tools.kanban_tools_schemas import KANBAN_SHOW_SCHEMA
+    props = KANBAN_SHOW_SCHEMA.get("parameters", KANBAN_SHOW_SCHEMA).get("properties", {})
+    assert props.get("full", {}).get("type") == "boolean"
 
 
 def test_show_bare_call_outside_worker_returns_orientation_not_error(monkeypatch, worker_env):

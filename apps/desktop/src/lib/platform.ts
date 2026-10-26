@@ -76,5 +76,5 @@ export function isBrowserHostedDesktop() {
  * not serve, and it refuses them (`profile_mismatch`). Native Desktop starts on `default`.
  */
 export function initialGatewayProfile(): string {
-  return (isBrowserHostedDesktop() && browserLaunchProfile()) || 'default'
+  return isBrowserHostedDesktop() ? browserLaunchProfileOrDefault() : 'default'
 }

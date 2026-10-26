@@ -1,5 +1,5 @@
 import type { HermesApiRequest } from '@/global'
-import { browserLaunchProfile } from '@/lib/platform'
+import { browserLaunchProfileOrDefault } from '@/lib/platform'
 
 // The multiplexer applies a park, unpark or standalone change on its 30 s profile rescan, and none
 // of those changes the installed list, so a known served set is re-read on that cadence.
@@ -51,7 +51,7 @@ export function createServedProfiles(api: <T>(request: HermesApiRequest) => Prom
 
       // Absent on a backend older than the field; [] on a gateway that serves only its own profile.
       served = Array.isArray(shared)
-        ? new Set([...shared.map(name => profileKey(String(name))), profileKey(browserLaunchProfile())])
+        ? new Set([...shared.map(name => profileKey(String(name))), browserLaunchProfileOrDefault()])
         : null
     } catch {
       // A failed read keeps the last answer: a status blip must not change which profiles are reachable.

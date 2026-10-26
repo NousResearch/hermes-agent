@@ -451,6 +451,9 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
     # Frames waiting for a profile's start, per start, in arrival order; one lane task drains each.
     held: dict[str, collections.deque] = {}
     held_lanes: set[asyncio.Task] = set()
+    # Held frames count against the serial lane's bound: once that many wait, the dispatcher waits for
+    # room, the queue fills and the reader parks, as it does behind a busy handler.
+    held_room = asyncio.Semaphore(_WS_DISPATCH_QUEUE_MAX)
 
     async def _dispatch_one(req: Any) -> None:
         """Dispatch one request and write its inline reply."""
@@ -504,15 +507,22 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             while frames:
                 await _dispatch_one(frames[0])
                 frames.popleft()
+                held_room.release()
         except _SendFailed:
             if not send_failed.done():
                 send_failed.set_result(None)
         finally:
             del held[key]
 
-    def _hold_for_profile_start(req: Any) -> bool:
-        start = authority_connection.awaits_profile_start(req, held) if authority_connection is not None else None
+    async def _hold_for_profile_start(req: Any) -> bool:
+        if authority_connection is None or authority_connection.awaits_profile_start(req, held) is None:
+            return False
+        await _unless_dispatch_failed(held_room.acquire())
+        # Asked again after waiting for room: the start may have ended and its lane drained meanwhile,
+        # and then the frame goes to the serial lane behind the frames that lane already answered.
+        start = authority_connection.awaits_profile_start(req, held)
         if start is None:
+            held_room.release()
             return False
         key, started = start
         if key in held:
@@ -551,7 +561,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
                 concurrent_reads.add(task)
                 task.add_done_callback(_finish_concurrent_read)
                 continue
-            if _hold_for_profile_start(req):
+            if await _hold_for_profile_start(req):
                 continue
             await _dispatch_one(req)
 

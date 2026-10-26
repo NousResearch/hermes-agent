@@ -187,3 +187,34 @@ async def test_a_profile_bound_grant_naming_a_starting_profile_is_refused_at_onc
     rig.create(sock, 'beta', 'bound-names-beta')
     reply = await sock.reply('bound-names-beta', timeout=10)
     assert reply.get('error', {}).get('message') == 'profile_mismatch', reply
+
+
+@pytest.mark.asyncio
+async def test_frames_held_for_a_starting_profile_still_park_the_reader(rig, monkeypatch):
+    """Held frames count against the socket's dispatch bound: a flood naming the starting profile stops
+    being read off the socket once that many wait, instead of piling up in memory, and every frame is
+    still answered once the start ends."""
+    from tui_gateway import ws as ws_mod
+
+    bound = 4
+    monkeypatch.setattr(ws_mod, '_WS_DISPATCH_QUEUE_MAX', bound)
+    sock = await rig.connect()
+    flood = 10 * bound
+    for n in range(flood):
+        sock.inbound.put_nowait({'jsonrpc': '2.0', 'id': f'held-{n}', 'method': 'ping', 'params': {'profile': 'beta'}})
+
+    # The reader settles once it parks: what it took is the held bound, the queue bound and one frame
+    # each in the dispatcher's and the reader's hands.
+    unread = flood
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        if sock.inbound.qsize() == unread:
+            break
+        unread = sock.inbound.qsize()
+    assert flood - sock.inbound.qsize() <= 2 * bound + 2, 'held frames escaped the dispatch bound'
+    assert not sock.replies  # all still waiting for beta
+
+    rig.release.set()
+    await asyncio.wait_for(rig.serving, 30)
+    answered = [await sock.reply(f'held-{n}', timeout=10) for n in range(flood)]
+    assert [reply['id'] for reply in answered] == [f'held-{n}' for n in range(flood)]

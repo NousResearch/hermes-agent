@@ -93,9 +93,90 @@ export interface RelaunchHost {
 }
 
 /**
+ * Whether `strategy` can start this app again. A spawn failure is reported
+ * asynchronously, after the caller has already exited, so the image is
+ * checked up front and a refusal is logged now; the caller then keeps running
+ * in place of the relaunch.
+ */
+export function canRelaunch(strategy: RelaunchStrategy): boolean {
+  if (strategy.kind === 'electron') {
+    return true
+  }
+
+  try {
+    fs.accessSync(strategy.image, fs.constants.X_OK)
+
+    return true
+  } catch (error) {
+    const reason = (error as NodeJS.ErrnoException).code ?? String(error)
+    console.error(`[hermes] cannot start ${strategy.image} again (${reason}); continuing without the relaunch`)
+
+    return false
+  }
+}
+
+// libuv's spawn keeps every descriptor this process inherited without
+// O_CLOEXEC, which Chromium's launcher (app.relaunch) closes. Ours include the
+// AppImage runtime's keepalive pipe, whose last reader keeps this process's
+// FUSE mount and squashfuse daemon alive, and the launcher's ready pipe. The
+// child therefore goes through /bin/sh, which drops every fd above 2 and then
+// execs the image. POSIX only promises redirections on fds 0-9 and dash
+// exits on `exec 10<&-`, so higher numbers are closed where the shell takes
+// them (bash, busybox) and left in place under dash.
+const EXEC_WITH_STDIO_ONLY = `big=
+(eval 'exec 10<&-') 2>/dev/null && big=1
+for f in /proc/self/fd/*; do
+  n=\${f##*/}
+  case $n in
+    0 | 1 | 2) continue ;;
+    [3-9]) ;;
+    *) [ -n "$big" ] || continue ;;
+  esac
+  eval "exec $n<&-"
+done
+exec "$0" "$@"`
+
+/**
+ * `env` without the PATH-style entries inside this mount, which the image's
+ * AppRun prepended (PATH, LD_LIBRARY_PATH, XDG_DATA_DIRS, ...). The new
+ * image's AppRun prepends its own, while this mount goes away as soon as the
+ * child stops holding it: a lookup through it while its FUSE daemon exits
+ * fails with ENOTCONN, which aborted the new AppRun's `env bash`.
+ */
+function withoutMountEntries(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const appDir = env.APPDIR && posix.resolve(env.APPDIR)
+
+  if (!appDir) {
+    return env
+  }
+
+  const inMount = (entry: string) => entry === appDir || entry.startsWith(`${appDir}/`)
+  const cleaned: NodeJS.ProcessEnv = { ...env }
+
+  for (const [key, value] of Object.entries(env)) {
+    const entries = value?.split(':') ?? []
+
+    if (!entries.some(inMount)) {
+      continue
+    }
+
+    const kept = entries.filter(entry => !inMount(entry)).join(':')
+
+    if (kept) {
+      cleaned[key] = kept
+    } else {
+      delete cleaned[key]
+    }
+  }
+
+  return cleaned
+}
+
+/**
  * Start this app again with `args`; the caller exits right after.
- * The detached child outlives this process (and its mount) and takes the
- * single-instance lock itself, so the lock is dropped first.
+ * Check `canRelaunch(strategy)` first. The detached child outlives this
+ * process (and its mount) and takes the single-instance lock itself, so the
+ * lock is dropped first.
  */
 export function relaunchNow(
   host: RelaunchHost,
@@ -110,7 +191,13 @@ export function relaunchNow(
   }
 
   host.releaseSingleInstanceLock()
-  const child = spawn(strategy.image, args, { detached: true, stdio: 'ignore', env })
+
+  const child = spawn('/bin/sh', ['-c', EXEC_WITH_STDIO_ONLY, strategy.image, ...args], {
+    detached: true,
+    stdio: 'ignore',
+    env: withoutMountEntries(env)
+  })
+
   child.on('error', error => console.error(`[hermes] relaunching ${strategy.image} failed: ${error.message}`))
   child.unref()
 }

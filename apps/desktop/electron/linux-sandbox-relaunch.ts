@@ -17,7 +17,7 @@
 // `hermes desktop` — restarts once with the flag on argv instead.
 
 import { LAUNCHER_READY_FD_ENV } from './linux-launcher-ready'
-import { type RelaunchHost, relaunchNow, type RelaunchStrategy, relaunchStrategy } from './relaunch-target'
+import { canRelaunch, type RelaunchHost, relaunchNow, type RelaunchStrategy, relaunchStrategy } from './relaunch-target'
 import { alreadyHasNoSandbox, buildNoSandboxRelaunchArgs } from './windows-sandbox-fallback'
 
 export interface SandboxRelaunch {
@@ -85,7 +85,9 @@ export function relaunchIfNoSandboxCameTooLate(host: SandboxRelaunchHost): boole
     env: process.env
   })
 
-  if (!relaunch) {
+  // An image that cannot start leaves this instance running, as before the
+  // relaunch existed, instead of exiting with nothing to replace it.
+  if (!relaunch || !canRelaunch(relaunch.strategy)) {
     return false
   }
 

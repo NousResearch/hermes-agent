@@ -544,6 +544,12 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
           : {})
       })
 
+      // Prefs a deleted profile left under this name must not become the new
+      // bot's. Older builds without the door keep them, as before.
+      if (typeof host.dropLeftoverProfilePrefs === 'function') {
+        host.dropLeftoverProfilePrefs(slug, target || null)
+      }
+
       // Discarded mid-create: delete the profile this flight minted, configure nothing.
       if (generation !== draftGenRef.current) {
         discardDraftProfile(slug, target)

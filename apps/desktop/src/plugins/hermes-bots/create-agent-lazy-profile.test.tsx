@@ -31,6 +31,7 @@ const mocks = vi.hoisted(() => ({
   connections: vi.fn(async () => [] as { id: string; label: string }[]),
   createCanonicalChat: vi.fn(async () => 'session-1'),
   deleteBot: vi.fn(async () => undefined),
+  dropLeftoverProfilePrefs: vi.fn(),
   /** Flipped off to model a desktop build that predates the live surface. */
   hasCapabilitiesView: { value: true },
   notify: vi.fn(),
@@ -59,6 +60,7 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
     host: {
       ...original.host,
       connections: mocks.connections,
+      dropLeftoverProfilePrefs: mocks.dropLeftoverProfilePrefs,
       notify: mocks.notify,
       notifyError: mocks.notifyError,
       request: mocks.request,
@@ -309,6 +311,64 @@ describe('materializing the draft profile', () => {
         profile: 'inbox-triage'
       })
     )
+  })
+})
+
+// A create never lands on a live name, so a folder or startup profile stored
+// under the new bot's name was left by a deleted profile. Bot Mode creates
+// through its own RPC, so it has to drop them the way the profile dialog does.
+describe('leftover prefs under the new bot name', () => {
+  it('drops them once the create succeeded', async () => {
+    let created = false
+    const base = mocks.request.getMockImplementation()!
+    mocks.request.mockImplementation(async (method: string, params?: unknown) => {
+      if (method === 'profiles.create') {
+        created = true
+      }
+
+      return base(method, params)
+    })
+    mocks.dropLeftoverProfilePrefs.mockImplementationOnce(() => expect(created).toBe(true))
+
+    await renderDialog(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+
+    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith('inbox-triage', { kickoff: true }))
+    expect(mocks.dropLeftoverProfilePrefs.mock.calls).toEqual([['inbox-triage', null]])
+  })
+
+  it('names the machine a remote bot was created on', async () => {
+    mocks.connections.mockResolvedValue([
+      { id: 'local', label: 'This Mac' },
+      { id: 'studio', label: 'Studio' }
+    ])
+
+    await renderDialog(true)
+    await screen.findByText('Create on')
+    fireEvent.click(controlUnder('Create on'))
+    fireEvent.click(await screen.findByRole('option', { name: 'Studio' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+
+    await waitFor(() => expect(mocks.dropLeftoverProfilePrefs).toHaveBeenCalled())
+    expect(mocks.dropLeftoverProfilePrefs.mock.calls).toEqual([['inbox-triage', 'studio']])
+  })
+
+  it('keeps them when the create fails', async () => {
+    const base = mocks.request.getMockImplementation()!
+    mocks.request.mockImplementation(async (method: string, params?: unknown) => {
+      if (method === 'profiles.create') {
+        throw new Error('disk full')
+      }
+
+      return base(method, params)
+    })
+
+    await renderDialog(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+
+    await waitFor(() => expect(createCalls()).toHaveLength(1))
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(mocks.dropLeftoverProfilePrefs).not.toHaveBeenCalled()
   })
 })
 

@@ -47,6 +47,7 @@ import { onGatewayEvent } from '@/contrib/events'
 import { registry } from '@/contrib/registry'
 import type { WorkspaceMode } from '@/contrib/types'
 import { deleteProfile, getLogs, getStatus, hermesApi, type HermesGateway } from '@/hermes'
+import { dropBrowserProfilePrefs } from '@/lib/browser-profile-prefs'
 import { traceIdentityChange } from '@/lib/identity-trace'
 import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
 import {
@@ -672,6 +673,22 @@ export const host = {
     }
 
     prewarmProfileBackend(name)
+  },
+
+  /** Call after a plugin's own `profiles.create` succeeded, never before: a
+   *  create never lands on a live profile's name, so a folder or startup
+   *  profile this tab stored under it was left by a deleted profile. The same
+   *  cleanup the core create dialog runs. A profile created on another
+   *  connection (`connectionId` neither empty nor `local`) is not this tab's,
+   *  so the name here keeps its prefs. No-op outside the browser-hosted app. */
+  dropLeftoverProfilePrefs: (profile: string, connectionId?: null | string): void => {
+    const connection = String(connectionId ?? '').trim()
+
+    if (connection && connection !== 'local') {
+      return
+    }
+
+    dropBrowserProfilePrefs(profile)
   },
 
   /** Delete a profile THROUGH the desktop's teardown-routed REST path — the

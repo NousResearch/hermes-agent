@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { installBrowserDesktopBridge } from '@/lib/browser-desktop-bridge'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { host as pluginHost } from '@/sdk'
 import { requestGatewayForAgent } from '@/store/gateway'
 import {
   $activeGatewayProfile,
@@ -188,4 +189,39 @@ describe('browser default folder follows the profile a new session belongs to', 
       ...FOREGROUND_CREATE_DIAL
     )
   })
+
+  // Bot Mode creates and duplicates through its own profiles.create, then
+  // calls this door. A folder an older deletion left under the reused name
+  // must not become the new bot's.
+  it.each([
+    { connectionId: null, expected: '' },
+    { connectionId: 'local', expected: '' },
+    // Created on another machine: the name here still owns its folder.
+    { connectionId: 'studio', expected: '/srv/deleted-writer' }
+  ])(
+    'a Bot Mode "+" after creating writer on $connectionId starts in "$expected"',
+    async ({ connectionId, expected }) => {
+      await saveFolderOn('writer', '/srv/deleted-writer')
+      vi.mocked(requestGatewayForAgent).mockResolvedValue(created('bot'))
+      const { result } = mountActions()
+      const route = { connectionId: 'local', profile: 'writer' }
+
+      pluginHost.dropLeftoverProfilePrefs('writer', connectionId)
+      // The window's own profile keeps its folder.
+      act(() => result.current.startFreshSessionDraft())
+      expect($currentCwd.get()).toBe('/srv/alpha')
+
+      await act(() =>
+        result.current.openNewSessionTile('center', {
+          listed: false,
+          route,
+          workspaceScope: { ownerRoute: route, workspaceMode: 'bots', workspaceOwnerKey: 'bot:local::writer' }
+        })
+      )
+
+      const params = vi.mocked(requestGatewayForAgent).mock.calls.find(([, , method]) => method === 'session.create')?.[3]
+      expect(params).toMatchObject({ profile: 'writer' })
+      expect((params as { cwd?: string } | undefined)?.cwd ?? '').toBe(expected)
+    }
+  )
 })

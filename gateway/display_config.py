@@ -202,3 +202,29 @@ def _normalise(setting: str, value: Any) -> Any:
     """Normalise a user-supplied value for *setting*; unknown settings pass through."""
     norm = _NORMALISERS.get(setting)
     return norm(value) if norm else value
+
+
+# LOCAL's per-platform config key (``_platform_config_key(Platform.LOCAL)``): where a local session's
+# ``/reasoning show|hide`` and ``/footer`` save, and what every local surface reads.
+LOCAL_DISPLAY_KEY = "cli"
+# The per-platform display settings a local surface takes from the local key over the global one.
+_LOCAL_OVERLAY_KEYS = ("show_reasoning", "runtime_footer")
+
+
+def local_display_config(display: Any) -> dict[str, Any]:
+    """*display* (a ``config.yaml`` ``display`` block) as a local surface (classic CLI, Ink, Desktop,
+    a local turn) resolves it: ``display.platforms.cli.<key>`` over ``display.<key>`` for the settings
+    the local commands save there. No second key is written; the block is returned copied."""
+    display = dict(display) if isinstance(display, dict) else {}
+    platforms = display.get("platforms")
+    local = platforms.get(LOCAL_DISPLAY_KEY) if isinstance(platforms, dict) else None
+    if not isinstance(local, dict):
+        return display
+    for key in _LOCAL_OVERLAY_KEYS:
+        value = local.get(key)
+        if value is None:
+            continue
+        if isinstance(value, dict) and isinstance(display.get(key), dict):
+            value = {**display[key], **value}
+        display[key] = _normalise(key, value)
+    return display

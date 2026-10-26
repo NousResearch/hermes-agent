@@ -1,15 +1,23 @@
+// health: allow FILE_LINES -- locale data: translated copy for the usage-window plan UI (allowance gauges, Large/Free tags, the limit card), one key per string
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { deBoot } from './de_boot'
 import { deClarify } from './de_clarify'
 import { deConnectorAccounts } from './de_connector_accounts'
 import { deConnectorCard } from './de_connector_card'
+import { deErrorCodes } from './de_error_codes'
+import { deErrorLayers } from './de_error_layers'
 import { deFirstRun } from './de_first_run'
+import { deGatewayHost } from './de_gateway_host'
 import { deLocalModels } from './de_local_models'
 import { deModelMenu } from './de_model_menu'
 import { deModelSettings } from './de_model_settings'
 import { deNotices } from './de_notices'
+import { deNotifications } from './de_notifications'
 import { deOnboarding } from './de_onboarding'
+import { dePluginPreviewAccess } from './de_plugin_preview_access'
+import { dePluginUpdate } from './de_plugin_update'
+import { dePreviewWeb } from './de_preview_web'
 import { deProjects } from './de_projects'
 import { deSharedMetrics } from './de_shared_metrics'
 import { deThemePicker } from './de_theme_picker'
@@ -456,6 +464,7 @@ export const deOverrides = {
       microphoneConstraintsUnsupported: 'Mikrofon-Einschränkungen werden von diesem Gerät nicht unterstützt.',
       microphoneFailed: 'Mikrofon fehlgeschlagen',
       microphoneInUse: 'Das Mikrofon wird bereits von einer anderen App verwendet.',
+      microphoneNeedsHttps: 'Das Mikrofon braucht eine sichere Verbindung. Öffne die Webapp über HTTPS oder über einen SSH-Tunnel zu 127.0.0.1, um es zu nutzen.',
       microphonePermissionDenied: 'Die Mikrofonberechtigung wurde verweigert.',
       microphoneStartFailed: 'Mikrofonaufnahme konnte nicht gestartet werden.',
       microphoneUnsupported: 'Diese Laufzeitumgebung unterstützt keine Mikrofonaufnahme.',
@@ -493,14 +502,6 @@ export const deOverrides = {
     }
   },
   ...deNotices,
-  billingBlock: {
-    titleNous: 'Keine Nous-Credits mehr',
-    titleProvider: provider => `Keine Credits mehr — ${provider}`,
-    fallbackMessage: 'Auf Ihrem Konto sind keine Credits mehr übrig. Fügen Sie Credits hinzu, um fortzufahren.',
-    openBilling: 'Billing öffnen',
-    addCredits: 'Credits hinzufügen',
-    dismiss: 'Schließen'
-  },
   sendDiagnostics: {
     title: 'Diagnosedaten an Nous senden',
     privacyNotice:
@@ -928,53 +929,7 @@ export const deOverrides = {
         masterPasswordPlaceholder: 'Master-Passwort'
       }
     },
-    notifications: {
-      title: 'Benachrichtigungen',
-      intro: 'OS-Benachrichtigungen (keine In-App-Toasts). Pro Gerät.',
-      enableAll: 'Benachrichtigungen aktivieren',
-      enableAllDesc: 'Aus schaltet jede Benachrichtigung unten stumm.',
-      focusedHint: 'Abschluss-Alerts feuern nur, während Hermes im Hintergrund ist.',
-      kinds: {
-        approval: {
-          label: 'Genehmigung nötig',
-          description: 'Ein Befehl wartet darauf, dass Sie ihn genehmigen oder ablehnen.'
-        },
-        input: {
-          label: 'Eingabe nötig',
-          description: 'Hermes hat eine Frage gestellt oder braucht ein Passwort oder Geheimnis.'
-        },
-        turnDone: {
-          label: 'Antwort bereit',
-          description: 'Ein Turn wurde beendet, während Hermes im Hintergrund war.'
-        },
-        turnError: {
-          label: 'Turn fehlgeschlagen',
-          description: 'Fehler bei Background-Turns.'
-        },
-        backgroundDone: {
-          label: 'Hintergrund-Task fertig',
-          description: 'Ein Terminal-Befehl im Hintergrund wurde abgeschlossen.'
-        },
-        credits: {
-          label: 'Credit-Alerts',
-          description: 'Der Credit-Zugriff wird pausiert oder wiederhergestellt.'
-        },
-        plugin: {
-          label: 'Plugin-Benachrichtigungen',
-          description: 'Ein Desktop-Plugin hat eine Benachrichtigung gesendet, während Hermes im Hintergrund war.'
-        }
-      },
-      test: 'Testbenachrichtigung senden',
-      testTitle: 'Hermes',
-      testBody: 'Benachrichtigungen funktionieren.',
-      testSent:
-        'Test gesendet. Wenn nichts erscheint, überprüfen Sie die Benachrichtigungsberechtigungen Ihres Betriebssystems und Fokus/Nicht stören.',
-      testUnsupported: 'Dieses System unterstützt keine nativen Benachrichtigungen.',
-      completionSoundTitle: 'Abschluss-Sound',
-      completionSoundDesc:
-        'Wird abgespielt, wenn ein Agent-Turn endet. Wählen Sie eine Vorlage aus und hören Sie sie hier an.',
-      completionSoundPreview: 'Vorschau'
-    },
+    notifications: deNotifications,
     sections: {
       model: 'Modell',
       chat: 'Chat',
@@ -1728,8 +1683,7 @@ export const deOverrides = {
     },
     gateway: {
       loading: 'Gateway-Einstellungen werden geladen…',
-      unavailableTitle: 'Gateway-Einstellungen nicht verfügbar',
-      unavailableDesc: 'Die Desktop-IPC-Brücke stellt keine Gateway-Einstellungen bereit.',
+      ...deGatewayHost,
       title: 'Gateway-Verbindung',
       envOverride: 'ENV-Überschreibung',
       intro:
@@ -2046,6 +2000,17 @@ export const deOverrides = {
         effectScheduled: (targetName: string, effectiveAt: string, creditsDelta?: string) =>
           `Wechsel zu ${targetName} – wirksam ${effectiveAt}. Jetzt keine Abbuchung; bis dahin behalten Sie Ihren aktuellen Tarif.${creditsDelta ? ` Änderung der monatlichen Credits: ${creditsDelta}.` : ''}`
       },
+      keepGoingOnCredits: {
+        title: 'Mit Credits weitermachen',
+        description:
+          'Nutzt Ihre Credits, wenn die enthaltene Nutzung aufgebraucht ist. Aus: Hermes wartet auf das Zurücksetzen.',
+        approveInBrowser:
+          'Bestätige Remote Spending im Browser, um das zu ändern. Es wird übernommen, sobald du bestätigst.',
+        openAgain: 'Erneut öffnen',
+        cancel: 'Abbrechen',
+        approvedRetry: 'Remote Spending ist bestätigt, aber die Änderung wurde nicht gespeichert.',
+        tryAgain: 'Erneut versuchen'
+      },
       autoReload: {
         threshold: 'Schwellenwert',
         thresholdAria: 'Schwellenwert für automatisches Aufladen',
@@ -2125,6 +2090,21 @@ export const deOverrides = {
             captionDefault: 'Standardobergrenze',
             captionSpending: 'Monatliche Remote-Ausgaben',
             valueUsed: (spent: string, limit: string) => `${spent} von ${limit} genutzt`
+          },
+          window: {
+            today: 'Heute',
+            week: 'Diese Woche',
+            month: 'Dieser Monat',
+            topTier: 'Große Modelle (monatlich)',
+            barLabel: (title: string) => `${title}: genutztes Inklusivvolumen`,
+            captionPaused: 'Pausiert: Abo-Zahlung fehlgeschlagen',
+            captionPausedOther: 'Pausiert: siehe Abrechnung im Portal',
+            captionTopTierUsedUp: 'Monatskontingent aufgebraucht, Credits decken den Rest',
+            captionTopTierUsedUpKeepGoingOff:
+              'Monatskontingent aufgebraucht, andere enthaltene Modelle funktionieren weiter',
+            captionResetsIn: (duration: string) => `Wird in ${duration} zurückgesetzt`,
+            captionIncluded: 'Inklusivvolumen',
+            valueUsed: (percent: string) => `${percent} genutzt`
           }
         },
         planCard: {
@@ -2513,24 +2493,13 @@ export const deOverrides = {
         unsupported_gpu: 'GPU nicht unterstützt',
         unknown: 'Status unbekannt'
       },
-      catalogTitle: 'Plugin-Katalog',
-      catalogBrowse: 'Durchsuchen',
-      catalogHide: 'Katalog-Browser ausblenden',
-      catalogHint:
-        'Klicken Sie bei einem Plugin auf „+ Zu diesem Agenten hinzufügen“ – geprüfte Einträge werden an ihrem gepinnten Commit in das gewählte Profil installiert. Gebündelte Agent+Desktop-Plugins bieten beide Hälften an.',
       alreadyInstalled: name => `${name} ist in diesem Profil bereits installiert.`,
       catalogProvenance: sha => `Aus dem Hermes-Katalog installiert${sha ? ` am Pin ${sha}` : ''}.`,
       pinnedProvenance: sha =>
         `An Commit ${sha} gepinnt. Updates werden abgelehnt, bis es mit einem neuen Pin neu installiert wird.`,
       pinnedBadge: sha => `gepinnt @ ${sha}`,
-      updateToPin: sha => `Auf ${sha} aktualisieren`,
-      updateFailed: name => `${name} konnte nicht aktualisiert werden`,
-      updated: name =>
-        `${name} wurde auf den aktuellen Katalog-Pin aktualisiert. Starten Sie das Gateway neu, damit es wirksam wird.`,
-      updateConsentTitle: (name: string) => `${name} fordert mehr an`,
-      updateConsentBody: (name: string, sha: string) =>
-        `Der neue Katalog-Pin von ${name} (${sha}) fügt Oberflächen hinzu, die die installierte Version nicht hat. Wenden Sie ihn nur an, wenn Sie ihnen vertrauen:`,
-      updateConsentConfirm: 'Update anwenden',
+      ...dePluginUpdate,
+      ...dePluginPreviewAccess,
       uninstall: 'Deinstallieren',
       uninstallTip: (name: string, profile: string) => `${name} aus ${profile} deinstallieren`,
       uninstallConfirmTitle: (name: string) => `${name} deinstallieren?`,
@@ -3236,6 +3205,7 @@ export const deOverrides = {
     exported: 'Profil exportiert',
     failedImport: 'Profil konnte nicht importiert werden',
     failedExport: 'Profil konnte nicht exportiert werden',
+    exportNeedsHost: name => `Der Browser kann kein Profilarchiv speichern. Führe auf dem Hermes-Host aus: hermes profile export ${name}`,
     allProfiles: 'Alle Profile',
     showAllProfiles: 'Alle Profile anzeigen',
     switchToProfile: name => `Zu ${name} wechseln`,
@@ -3867,7 +3837,7 @@ export const deOverrides = {
       '/init': 'AGENTS.md-Projektanweisungen aus einem Repo-Scan erzeugen oder aktualisieren',
       '/suggestions': 'Vorgeschlagene Automatisierungen prüfen (annehmen/verwerfen)',
       '/blueprint': 'Eine Automatisierung aus einer Blueprint-Vorlage einrichten',
-      '/browser': 'Browser des Agenten verwalten [connect|disconnect|status|use]',
+      '/browser': 'Browser des Agenten verwalten [connect|disconnect|status]',
       '/palette': 'Die unscharfe Befehlspalette öffnen (auch Strg+P)',
       '/usage': 'Token-Nutzung und Ratenlimits anzeigen; `reset` löst ein angespartes Codex-Limit-Reset ein',
       '/subscription': 'Ihren Nous-Tarif ansehen und im Browser ändern',
@@ -3948,43 +3918,6 @@ export const deOverrides = {
     snippetsDesc: 'Wählen Sie einen Start-Prompt, um ihn in den Composer einzufügen.',
     dropFiles: 'Dateien zum Anhängen ablegen',
     dropSession: 'Ablegen, um diesen Chat zu verlinken',
-    mcpSuggestions: {
-      label: server => `${server} hinzufügen`,
-      tip: keyword => `Vorgeschlagen, weil Sie „${keyword}“ erwähnt haben – zum Verbinden klicken`,
-      connecting: server => `${server} wird verbunden…`,
-      cancelTip: 'Klicken zum Abbrechen',
-      added: server => `${server} hinzugefügt`,
-      addedTip: 'Verbunden — seine Tools sind in diesem Chat bereit',
-      connectFailed: server => `${server} konnte nicht verbunden werden`
-    },
-    skillSuggestions: {
-      label: skill => `Fähigkeit verwenden: ${skill}`,
-      tip: skill => `Sie haben „${skill}“ erwähnt – klicken, um mit diesem Skill zu beginnen`,
-      done: skill => `/skill hinzugefügt: ${skill}`,
-      doneTip: 'Die Fähigkeit wird beim Senden geladen'
-    },
-    githubSuggestions: {
-      label: 'GitHub einrichten',
-      tip: 'GitHub funktioniert hier über die gh-CLI-Skills – klicken, um Ihr Konto zu verbinden',
-      done: '/github-auth hinzugefügt',
-      doneTip: 'Senden Sie die Nachricht, und der Agent führt Sie durch die GitHub-Anmeldung'
-    },
-    repairSuggestions: {
-      label: server => `${server} erneut verbinden`,
-      tip: server => `Ein ${server}-Aufruf ist gerade mit einem Verbindungsfehler fehlgeschlagen`,
-      working: server => `${server} wird erneut verbunden…`,
-      workingTip: 'Klicken zum Abbrechen',
-      done: server => `${server} erneut verbunden`,
-      doneTip: 'Frische Anmeldedaten sind in diesem Chat aktiv',
-      failed: server => `${server} konnte nicht erneut verbunden werden`
-    },
-    cronSuggestions: {
-      label: 'Dies planen',
-      tip: phrase => `„${phrase}“ klingt wiederkehrend — führen Sie es stattdessen nach Zeitplan aus`,
-      prefix: 'Als geplanten Job einrichten:',
-      done: 'Für Planung markiert',
-      doneTip: 'Senden Sie die Nachricht, und der Agent erstellt den Job'
-    },
     snippets: {
       codeReview: {
         label: 'Code-Review',
@@ -4416,28 +4349,25 @@ export const deOverrides = {
     signIn: 'Anmelden',
     signInHeading: 'Melden Sie sich mit einem Nous-Konto an, um mehr Modelle und Tools freizuschalten.',
     settingUp: 'Kostenlose Inferenz wird eingerichtet…',
-    codeBody: 'Geben Sie diesen Code in Ihrem Browser ein, um die Anmeldung abzuschließen.',
-    copyLink: 'Link kopieren',
+    finishInBrowser: 'Im Browser abschließen',
     doNotShare: 'Diesen Code nicht weitergeben.',
+    openPageAgain: 'Seite erneut öffnen',
     waiting: 'Warten auf Anmeldung…',
     finishingHeading: 'Anmeldung wird abgeschlossen…',
     finishingBody: 'Im Browser bestätigt. Ihre Konto-Tokens werden abgerufen.',
-    signedInAs: email => `Angemeldet als ${email}`,
+    signedInAsLabel: 'Angemeldet als',
     signedIn: 'Angemeldet.',
     completedBody: 'Ihr Konto hat jetzt Zugriff auf Inferenz und Tools.',
+    reconnect: 'Neu verbinden',
+    openConnectors: 'Konnektoren öffnen',
     defaultModel: 'Standardmodell',
     change: 'Ändern',
     done: 'Fertig',
     notNow: 'Nicht jetzt',
     tryAgain: 'Erneut versuchen',
-    startAgain: 'Neu starten',
     didNotComplete: 'Anmeldung nicht abgeschlossen',
-    rejectedBody: 'Die Anmeldung wurde im Browser abgelehnt. Sie bleiben im kostenlosen Tarif.',
-    supersededBody: 'Ein neuerer Anmeldecode hat diesen ersetzt.',
     timedOutHeading: 'Anmeldung abgelaufen',
     timedOutBody: 'Der Code wurde nicht rechtzeitig verwendet. Sie bleiben im kostenlosen Tarif.',
-    retiredBody:
-      'Diese Gratis-Tarif-Identität wurde bereits verwendet oder ist abgelaufen; beim nächsten Start wird eine neue eingerichtet.',
     errorBody: 'Die Anmeldung wurde nicht abgeschlossen; starten Sie sie erneut.',
     busyHeading: 'Fast geschafft',
     busyBody: wait =>
@@ -4494,7 +4424,32 @@ export const deOverrides = {
     wasPrice: 'war',
     customModel: 'Eigenes Modell',
     addCustomModelAction: 'Eigenes Modell hinzufügen…',
-    customModelPlaceholder: 'Modell-ID eingeben, z. B. openai/gpt-5'
+    customModelPlaceholder: 'Modell-ID eingeben, z. B. openai/gpt-5',
+    today: 'Heute',
+    week: 'Woche',
+    month: 'Monat',
+    topTier: 'Große Modelle (monatlich)',
+    included: 'Alle Modelle unten sind enthalten',
+    pausedRenewal: 'pausiert: Verlängerung unbezahlt',
+    pausedOther: 'pausiert',
+    includedUsedUp: 'Inklusivvolumen aufgebraucht',
+    limitReached: (name: string) => `${name} erreicht`,
+    limitNames: {
+      day: 'Tageslimit',
+      month: 'Monatslimit',
+      top_tier: 'Monatslimit für große Modelle',
+      week: 'Wochenlimit'
+    },
+    limitThenCredits: 'kostenpflichtige Modelle nutzen jetzt dein Guthaben (Pay-as-you-go)',
+    limitThenCreditsLarge: 'Große Modelle nutzen jetzt dein Guthaben (Pay-as-you-go)',
+    limitThenWait: 'bis dahin nur kostenlose Modelle',
+    limitThenWaitLarge: 'Große Modelle bis dahin pausiert',
+    percentUsed: (percent: string) => `${percent} genutzt`,
+    resetsIn: (duration: string) => `Zurücksetzung in ${duration}`,
+    usageLevels: { free: 'Kostenlos', top_tier: 'Groß' },
+    sectionRecommended: 'Empfohlen',
+    sectionOther: 'Weitere Modelle',
+    largeFootnote: 'Große Modelle zählen auch zu deinem Monatslimit für große Modelle.'
   },
   modelVisibility: {
     title: 'Modelle',
@@ -4663,6 +4618,7 @@ export const deOverrides = {
     }
   },
   rightSidebar: {
+    terminalDropUnquotable: (shell, paths) => `Diese Namen lassen sich in ${shell} nicht sicher eintippen: ${paths}`,
     aria: 'Rechte Sidebar',
     panelsAria: 'Panels der rechten Sidebar',
     files: 'Dateisystem',
@@ -4764,60 +4720,7 @@ export const deOverrides = {
       sentTitle: 'An Chat gesendet',
       sentMessage: count => `Einträge aus dem Log (${count}) wurden zum Composer hinzugefügt`
     },
-    web: {
-      appFailedToBoot: 'Die Vorschau-App konnte nicht gestartet werden',
-      serverNotFound: 'Server nicht gefunden',
-      remoteLoopback:
-        'Diese Adresse verweist auf den Rechner, auf dem Ihr Agent läuft – nicht auf diesen. Das Browserfenster lädt Seiten lokal, daher braucht ein entfernter Entwicklungsserver eine Portweiterleitung oder einen erreichbaren Hostnamen.',
-      failedToLoad: 'Vorschau konnte nicht geladen werden',
-      tryAgain: 'Nochmal versuchen',
-      restarting: 'Hermes wird neu gestartet …',
-      askRestart: 'Hermes bitten, den Server neu zu starten',
-      lookingRestart: taskId => `Hermes sucht nach einem Vorschau-Server zum Neustarten (${taskId})`,
-      restartingTitle: 'Vorschau-Server wird neu gestartet',
-      restartingMessage: 'Hermes arbeitet im Hintergrund. Beobachte im Fortschritt die Vorschau-Konsole.',
-      startRestartFailed: message => `Server-Neustart konnte nicht gestartet werden: ${message}`,
-      restartFailed: 'Server-Neustart fehlgeschlagen',
-      hideConsole: 'Vorschau-Konsole ausblenden',
-      showConsole: 'Vorschau-Konsole anzeigen',
-      hideDevTools: 'Vorschau-DevTools ausblenden',
-      openDevTools: 'Vorschau-DevTools öffnen',
-      goBack: 'Zurück',
-      goForward: 'Vor',
-      reload: 'Seite neu laden',
-      address: 'Adresse',
-      addressPlaceholder: 'Adresse eingeben',
-      blankPageBody: 'Geben Sie oben eine Adresse ein, um zu browsen, oder bitten Sie Hermes, eine Seite zu öffnen.',
-      finishedRestarting: message => `Hermes hat den Vorschau-Server neu gestartet${message ? `: ${message}` : ''}`,
-      failedRestarting: message => `Server-Neustart fehlgeschlagen: ${message}`,
-      unknownError: 'unbekannter Fehler',
-      restartedTitle: 'Vorschau-Server neu gestartet',
-      reloadingNow: 'Die Vorschau wird jetzt neu geladen.',
-      restartFailedTitle: 'Vorschau-Neustart fehlgeschlagen',
-      restartFailedMessage: 'Hermes konnte den Server nicht neu starten.',
-      stillWorking:
-        'Hermes arbeitet noch, aber es ist noch kein Ergebnis des Neustarts eingetroffen. Der Server-Befehl läuft möglicherweise im Vordergrund.',
-      workspaceReloading: 'Arbeitsbereich geändert, Vorschau wird neu geladen',
-      fileChanged: url => `Datei geändert, Vorschau wird neu geladen: ${url}`,
-      filesChanged: (count, url) => `${count} Dateiänderungen, Vorschau wird neu geladen: ${url}`,
-      watchFailed: message => `Vorschau-Datei konnte nicht überwacht werden: ${message}`,
-      moduleMimeDescription:
-        'Modul-Skripte werden mit dem falschen MIME-Typ ausgeliefert. Das bedeutet meist, dass ein statischer Datei-Server eine Vite/React-App ausliefert statt des Projekt-Entwicklungs-Servers.',
-      loadFailedConsole: (code, message) => `Laden fehlgeschlagen${code ? ` (${code})` : ''}: ${message}`,
-      unreachableDescription: 'Die Vorschau-Seite konnte nicht erreicht werden.',
-      openTarget: url => `${url} öffnen`,
-      fallbackTitle: 'Vorschau',
-      annotate: 'Annotieren',
-      annotateOn: 'Annotation beenden',
-      annotateNeedPage: 'Öffnen Sie zuerst eine Seite im In-App-Browser.',
-      annotateFailed: 'Annotationsmodus konnte nicht gestartet werden',
-      commenting: 'Kommentieren',
-      addComments: count => (count === 1 ? '1 Kommentar hinzufügen' : `${count} Kommentare hinzufügen`),
-      commentPlaceholder: 'Kommentar hinzufügen …',
-      commentTitle: n => `Kommentar ${n}`,
-      saveComment: 'Speichern',
-      cancelComment: 'Kommentar abbrechen'
-    }
+    web: dePreviewWeb
   },
   interfaceMode: {
     title: 'Oberflächenmodus',
@@ -4931,36 +4834,9 @@ export const deOverrides = {
       react: 'Reagieren',
       dismissError: 'Fehler schließen',
       responseStopped: 'Antwort gestoppt',
-      errorLayers: {
-        auth: 'Authentifizierungsfehler',
-        billing: 'Keine Credits mehr',
-        disk: 'Festplatte voll',
-        endpoint: 'Benutzerdefinierter Endpunktfehler',
-        gateway: 'Gateway-Fehler',
-        generic: 'Turn fehlgeschlagen',
-        provider: 'Anbieterfehler',
-        runtime: 'Lokaler Laufzeitfehler',
-        streaming: 'Streaming-Verbindungsfehler'
-      },
-      errorLayerBodies: {
-        auth: 'Der KI-Dienst hat Ihre Anmeldung abgelehnt. Prüfen Sie die Zugangsdaten für diesen Anbieter und senden Sie Ihre Nachricht erneut.',
-        billing:
-          'Ihr Konto hat bei diesem Anbieter kein Guthaben mehr. Laden Sie Guthaben auf oder wechseln Sie den Anbieter und senden Sie erneut.',
-        disk: 'Ihre Festplatte ist voll, daher konnte Hermes dieses Gespräch nicht speichern. Geben Sie Speicherplatz frei und versuchen Sie es erneut.',
-        endpoint:
-          'Hermes erreicht Ihren eigenen Modellserver nicht. Prüfen Sie, ob er läuft, und senden Sie Ihre Nachricht erneut.',
-        gateway:
-          'Beim Starten dieser Antwort ist in Hermes ein internes Problem aufgetreten. Senden Sie Ihre Nachricht erneut; wenn es bestehen bleibt, senden Sie Diagnosedaten.',
-        generic:
-          'Beim Antworten ist etwas schiefgelaufen. Versuchen Sie es erneut oder kopieren Sie die Details, wenn es bestehen bleibt.',
-        provider:
-          'Der KI-Dienst konnte diese Anfrage nicht abschließen. Versuchen Sie es gleich erneut oder wechseln Sie den Anbieter.',
-        runtime:
-          'Beim Starten dieser Antwort ist in Hermes ein internes Problem aufgetreten. Senden Sie Ihre Nachricht erneut; wenn es bestehen bleibt, senden Sie Diagnosedaten.',
-        streaming:
-          'Die Verbindung ist abgebrochen, bevor die Antwort fertig war. Versuchen Sie es erneut, um sie noch einmal zu senden.'
-      },
+      ...deErrorLayers,
       errorCodes: {
+        ...deErrorCodes,
         auth: {
           title: provider => `${provider} hat Ihre Anmeldung abgelehnt`,
           body: provider =>
@@ -5099,6 +4975,10 @@ export const deOverrides = {
         free_tier_refused: {
           title: 'Hermes konnte das ohne Anmeldung nicht senden',
           body: 'Eine Anmeldung mit einem Nous-Konto ist kostenlos.'
+        },
+        usage_window: {
+          title: 'Enthaltene Nutzung aufgebraucht',
+          body: 'Die enthaltene Nutzung Ihres Plans ist bis zum Zurücksetzen aufgebraucht. Laden Sie in /topup Credits auf, um weiterzumachen.'
         }
       },
       errorAuthKinds: {
@@ -5115,6 +4995,12 @@ export const deOverrides = {
       errorGenericProvider: 'Der KI-Dienst',
       errorToastTitle: 'Hermes konnte die Antwort nicht fertigstellen',
       errorRetry: 'Erneut versuchen',
+      errorSwitchToModel: (model, note) => (note ? `Zu ${model} wechseln (${note})` : `Zu ${model} wechseln`),
+      errorSwitchModelFailed: 'Modell konnte nicht gewechselt werden',
+      errorUseCredits: 'Mit Guthaben weitermachen aktivieren',
+      errorUseCreditsFailed: 'Mit Guthaben weitermachen konnte nicht aktiviert werden',
+      errorAddCredits: 'Guthaben aufladen',
+      errorOpenBillingSettings: 'Abrechnungseinstellungen öffnen',
       errorLimitResets: (time: string) => `Limit wird um ${time} zurückgesetzt`,
       errorRetryAtReset: (time: string) => `Erneut versuchen, wenn das Limit zurückgesetzt wird (${time})`,
       errorRetryScheduled: (time: string, wait: string) => `Neuer Versuch um ${time} – in ${wait}`,
@@ -5530,6 +5416,7 @@ export const deOverrides = {
     imageAttach: 'Bild anhängen',
     imageWriteFailed: 'Bild konnte nicht auf die Festplatte geschrieben werden.',
     imageAttachFailed: 'Bild-Anhängen fehlgeschlagen',
+    attachFailed: 'Anhängen fehlgeschlagen',
     pastedContent: 'Eingefügter Inhalt',
     pasteAttachFailed: 'Eingefügter Text konnte nicht angehängt werden',
     attachImages: 'Bilder anhängen',
@@ -5537,6 +5424,7 @@ export const deOverrides = {
     noClipboardImage: 'Kein Bild in der Zwischenablage',
     clipboardPasteFailed: 'Zwischenablage-Einfügen fehlgeschlagen',
     dropFiles: 'Dateien ablegen',
+    dropFilesMore: (count: number) => `und ${count} weitere`,
     handoff: {
       pickPlatform: 'Ziel wählen',
       success: platform => `Übergeben an ${platform}. Jederzeit hier fortsetzen.`,

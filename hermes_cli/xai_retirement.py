@@ -132,7 +132,7 @@ def apply_migration(
     """
     from ruamel.yaml import YAML  # local import — avoid hard dep at module load
     config_path = Path(config_path)
-    if not config_path.exists():
+    if not config_path.exists():  # config-reader: ok — file tooling (edits the local file)
         raise FileNotFoundError(config_path)
     unchanged = ApplyResult(file_path=config_path, backup_path=None, issues_resolved=[], config_changed=False)
     if not issues:
@@ -142,7 +142,7 @@ def apply_migration(
     yaml = YAML(typ="rt")
     yaml.width = ROUNDTRIP_YAML_WIDTH
     yaml.preserve_quotes = True
-    with config_path.open("r", encoding="utf-8-sig") as fh:
+    with config_path.open("r", encoding="utf-8-sig") as fh:  # config-reader: ok — file tooling (the local file itself)
         doc = yaml.load(fh)
     if doc is None:
         return unchanged
@@ -175,5 +175,5 @@ def apply_migration(
     # 0640 / container installs; a root-run migration must not flip ownership).
     buf = io.StringIO()
     yaml.dump(doc, buf)
-    atomic_write_text(config_path, buf.getvalue(), preserve_mode=True)
+    atomic_write_text(config_path, buf.getvalue(), preserve_mode=True)  # config-reader: ok — file tooling (the local file itself)
     return ApplyResult(file_path=config_path, backup_path=backup_path, issues_resolved=resolved, config_changed=True)

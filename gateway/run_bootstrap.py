@@ -49,12 +49,28 @@ async def _start_gateway_replace_existing_instance(existing_pid: int, replace: b
 
     # Never signal a process not provably ours (a poisoned PID record → cross-profile restart loop).
     if _replace_target_belongs_to_other_profile(existing_pid):
-        from gateway.status import _get_process_hermes_home
+        from gateway.status import _get_process_hermes_home, write_runtime_status
         logger.error(
             "Refusing --replace: PID %d cannot be proven to belong "
             "to this profile's gateway (HERMES_HOME %s). Remove the "
             "stale PID record or stop the owning profile explicitly.",
             existing_pid, _get_process_hermes_home())
+        # The stamp must be ON DISK before this process exits: every CLI exit path funnels
+        # through _exit_after_graceful_shutdown(), whose os._exit() never flushes the queued
+        # runtime-status writer. A fire-and-forget stamp can die in the queue, the supervisor
+        # retries into the same stale record, and the loop this refusal exists to break keeps
+        # going (#135392). Bounded wait: a stalled disk delays the exit by at most 5 s, it
+        # never hangs the start.
+        try:
+            write_runtime_status(
+                gateway_state="startup_failed",
+                exit_reason="gateway_replace_ownership_unproven",
+                wait_timeout=5.0,
+            )
+        except Exception:
+            # Persistence must never abort the start; the traceback (DEBUG) keeps the
+            # failure visible for the next bug report.
+            logger.debug("Could not stamp runtime status after the ownership refusal", exc_info=True)
         return False
     existing_start_time = get_process_start_time(existing_pid)
     logger.info("Replacing existing gateway instance (PID %d) with --replace.", existing_pid)
@@ -270,6 +286,7 @@ async def _start_gateway_start_control_socket(runner):
             unserve_profile_verb, serve_profile_verb,
         )
         from gateway.run_plugin_rewire import reload_plugins_verb
+        from gateway.run_active_work_verb import active_work_verb
         from gateway.drain_control import RESTART_WAIT_REASON
         descriptor = runner.session_runtime_descriptor
 
@@ -322,17 +339,17 @@ async def _start_gateway_start_control_socket(runner):
         def _rescan_profiles_handler() -> dict:
             """``hermes profile create/delete`` asks the multiplexer to reconcile ``profiles/`` now
             (the watcher also rescans periodically). Runs on the socket executor: marshal onto the loop
-            and wait briefly so the caller learns whether the profile is served."""
-            if not getattr(runner.config, "multiplex_profiles", False):
-                return {"multiplex": False, "served_profiles": runner.served_profile_names()}
+            and wait briefly so the caller learns whether the profile is served. A gateway standalone
+            only because the host had one profile starts multiplexing in place on this rescan."""
             future = asyncio.run_coroutine_threadsafe(
                 runner.reconcile_served_profiles(reason="control-socket"), _main_loop)
             try:
                 # Bounded: a token-less create reconciles in milliseconds; a credential-add whose adapter
                 # connect outlasts this keeps running and the caller sees ``pending`` (not an error).
-                return {"multiplex": True, **future.result(timeout=5.0)}
+                result = future.result(timeout=5.0)
             except concurrent.futures.TimeoutError:
-                return {"multiplex": True, "pending": True, "served_profiles": runner.served_profile_names()}
+                result = {"pending": True, "served_profiles": runner.served_profile_names()}
+            return {"multiplex": bool(getattr(runner.config, "multiplex_profiles", False)), **result}
 
         _control_server = GatewayControlServer(
             verb_handlers={"pause-for-update": _pause_for_update_handler, "identify": _identify_runtime,
@@ -341,10 +358,17 @@ async def _start_gateway_start_control_socket(runner):
                            "unserve-profile": unserve_profile_verb(runner),
                            "serve-profile": serve_profile_verb(runner),
                            "purge-profile-identity": purge_profile_identity_verb(runner),
+                           # `hermes gateway stop/restart` refuse while this names live work.
+                           "active-work": active_work_verb(runner, _main_loop),
                            # A plugin installed/enabled by another process loads now and re-wires the
                            # live adapters' handlers (#87770); tools/prompt still wait for the next session.
                            "reload-plugins": reload_plugins_verb(runner, _main_loop)})
         _control_server.ticket_store = runner.session_ticket_store
+        # The Webapp's verbs answer from the socket's first moment ("starting" until the listener
+        # settles): a client polling a restarting gateway must never read "unknown verb" as a failure.
+        from gateway.webapp_listener import register_control_verbs
+        from hermes_constants import get_hermes_home
+        register_control_verbs(runner, get_hermes_home(), server=_control_server)
         if not await _control_server.start():
             _control_server = None
         else:
@@ -390,6 +414,8 @@ def _start_gateway_start_cron_and_housekeeping(runner):
         # default's. Absent (no multiplexed adapters), delivery for a secondary profile falls
         # back to the primary's routed adapters or fails closed — the job still FIRES.
         cron_start_kwargs["profile_adapters"] = getattr(runner, "_profile_adapters", None)
+        # A secondary bot that dropped is still that profile's own: never borrow meanwhile.
+        cron_start_kwargs["profile_bot_platforms"] = getattr(runner, "_profile_bot_platforms", None)
         # runner.adapters belongs to the LAUNCH profile (``default``, or the ``--profile``
         # name); naming it keeps the ticker from routing a secondary's cron through that bot
         # and lets a named multiplexer's own jobs reuse its live adapters.

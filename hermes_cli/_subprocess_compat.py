@@ -637,7 +637,7 @@ def parse_linux_proc_stat_start_time(raw: str) -> int:
 def posix_is_zombie(pid: int) -> bool:
     """Zombie via ``/proc/<pid>/stat`` field 3, or ``ps -o state=`` without /proc (macOS/BSD)."""
     try:
-        with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
+        with open(f"/proc/{pid}/stat", encoding="utf-8", errors="surrogateescape") as fh:
             stat_suffix = parse_linux_proc_stat_suffix(fh.read())
         return stat_suffix[0] == "Z"
     except FileNotFoundError:
@@ -765,8 +765,12 @@ def pid_is_hermes(pid: int, *, expected_start_time: int | None = None) -> bool:
         return False
 
 
-def kill_process_tree(proc: subprocess.Popen) -> None:
+def kill_process_tree(proc: subprocess.Popen, *, grace: float = 0.0) -> None:
     """Best-effort terminate *proc* and its descendants on both platforms; never raises.
+
+    ``grace`` > 0 (POSIX): SIGTERM the tree first and SIGKILL only if *proc* outlives ``grace``
+    seconds, so a git can delete its lock and tmp files on the way out (Windows always forces);
+    when *proc* exits in time, what is left of the group it leads is SIGKILLed.
 
     ``proc.kill()`` alone only terminates the direct child. This is cleanup on an already-failing
     path whose contract is to fail open, so every failure (access denied, already reaped) is
@@ -786,6 +790,27 @@ def kill_process_tree(proc: subprocess.Popen) -> None:
     try:
         from agent.deadline import kill_process_tree as _deadline_kill_tree
 
+        if grace > 0 and not IS_WINDOWS:
+            import signal as _signal
+
+            try:
+                leads_group = os.getpgid(proc.pid) == proc.pid
+            except ProcessLookupError:
+                leads_group = False
+            _deadline_kill_tree(proc.pid, sig=_signal.SIGTERM)
+            try:
+                proc.wait(timeout=grace)
+            except subprocess.TimeoutExpired:
+                pass
+            else:
+                # The leader went on TERM; a group member that ignores it would outlive us. The
+                # pgid stays reserved while any member lives, so this reaches only that group.
+                if leads_group:
+                    try:
+                        os.killpg(proc.pid, _signal.SIGKILL)  # windows-footgun: ok — POSIX-only branch
+                    except ProcessLookupError:
+                        pass
+                return
         _deadline_kill_tree(proc.pid)
     except Exception:
         _legacy_kill_process_tree(proc)

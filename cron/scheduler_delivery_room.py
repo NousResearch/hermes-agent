@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import re
+import sqlite3
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -81,5 +82,5 @@ def deliver_to_room(job: dict, content: str, address: str, *, for_failure: bool 
             run_key=run_key, text=_redact_cron_payload(content, "room payload"), notice=for_failure)
         logger.info("Job '%s': posted to Group Chat %s (seq %s)", job_id, room_id, event.get("seq"))
         return None
-    except Exception as exc:
+    except (ValueError, OSError, sqlite3.Error) as exc:  # room/validation errors are ValueErrors
         return f"{target} delivery failed: {exc}"

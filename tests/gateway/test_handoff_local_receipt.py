@@ -449,6 +449,118 @@ async def test_a_moved_conversation_is_read_only_once_its_lane_is_taken_over(tmp
 
 
 @pytest.mark.asyncio
+async def test_a_moved_conversation_mounted_by_startup_recovery_is_read_only_once_its_lane_is_taken_over(
+        tmp_path, monkeypatch):
+    """Bot Chat A moves onto a Telegram chat and stays there for months: its idle local routing entry
+    is pruned (``session_store_max_age_days``). A restart finds the lane's input still queued, so
+    startup recovery is what mounts A, and the lane's next inbound reuses that mount. Once another
+    chat is handed off to the lane, A is its history: a viewer's turn would run as that chat's."""
+    from datetime import datetime, timedelta
+    from gateway.config import GatewayConfig, Platform, PlatformConfig
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.run_runtime import recover_profile_native_sessions
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_contract import Principal
+    from gateway.session_ingress_context import native_callback, register_transport_home
+    from gateway.session_local import create_local_session
+    from hermes_state_runtime import RuntimeStoreError
+    from tests.gateway.test_command_bypass_active_session import _StubAdapter
+    monkeypatch.setenv('TELEGRAM_ALLOWED_USERS', '42')
+    monkeypatch.setattr('gateway.run._hermes_home', tmp_path)
+    monkeypatch.setattr('hermes_state.DEFAULT_DB_PATH', tmp_path / 'state.db')
+
+    def boot():
+        runner = GatewayRunner(GatewayConfig(multiplex_profiles=False, sessions_dir=tmp_path / 'sessions'))
+        adapter = _StubAdapter(PlatformConfig(enabled=True, token='fixture'), Platform.TELEGRAM)
+        adapter.gateway_runner, runner.adapters = runner, {Platform.TELEGRAM: adapter}
+        register_transport_home(runner, None, tmp_path)
+        return runner, adapter.build_source(chat_id='42', chat_type='dm', user_id='42')
+
+    def chat(authority, title):
+        ref = create_local_session(authority, owner, {'request_id': title, 'source': 'gui', 'cwd': str(tmp_path),
+                                                      'model': 'frozen', 'toolsets': []})
+        authority.db.set_session_title(ref.session_id, title)
+        return ref
+
+    runner, telegram = boot()
+    warm = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='warm')
+    warm._schedule = lambda ref: None
+    owner = Principal('owner', warm.profile_id, frozenset({'session:create', 'session:read', 'session:control',
+                                                           'session:submit'}), 'socket')
+    a = chat(warm, 'Chat A')
+    route = await _handoff(runner, warm, a.session_id, telegram)
+    queued = MessageEvent(text='still queued at the restart', source=telegram, message_id='queued')
+    with native_callback(runner, queued, tmp_path):
+        assert (await warm.admit_native(queued)).ref == a
+    store = runner.session_store
+    for entry in store._entries.values():
+        if entry.session_key != route:
+            entry.updated_at = datetime.now() - timedelta(days=120)
+    assert store.prune_old_entries(90) == 1
+    store.close_all_db_handles()
+
+    runner, telegram = boot()
+    try:
+        cold = await initialize_session_authority(runner, profile_id=warm.profile_id, instance_id='restarted')
+        cold._schedule = lambda ref: None
+        assert await recover_profile_native_sessions(runner, cold) == {a.session_id: 'ready'}
+        cold.register(telegram)
+        cold.authorize(owner, a, 'session:submit')  # the lane's conversation: writable there
+        await _handoff(runner, cold, chat(cold, 'Chat B').session_id, telegram)
+        cold.authorize(owner, a, 'session:read')
+        for capability in ('session:submit', 'session:control'):
+            with pytest.raises(RuntimeStoreError, match='session_superseded'):
+                cold.authorize(owner, a, capability)
+    finally:
+        runner.session_store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_a_moved_conversation_resumed_on_another_chat_moves_there(tmp_path):
+    """Bot Chat A moves onto Telegram chat 4242, chat B is handed off there in turn (A is that chat's
+    history now), then an admin's ``/resume --all Chat A`` brings A to chat 77. Its mount follows it:
+    a turn or a Stop through it acts on chat 77, never on B, which holds 4242; and once chat 77 moves
+    on (its ``/new``) A is that chat's history, read-only again."""
+    from gateway.platforms.event import MessageEvent
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_contract import Principal
+    from gateway.session_local import create_local_session
+    from hermes_state_runtime import RuntimeStoreError
+    runner = _Runner(tmp_path)
+    warm = await initialize_session_authority(runner, profile_id='fixture', instance_id='warm')
+    owner = Principal('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control',
+                                                     'session:submit'}), 'socket')
+
+    def chat(title):
+        ref = create_local_session(warm, owner, {'request_id': title, 'source': 'gui', 'cwd': str(tmp_path),
+                                                 'model': 'frozen', 'toolsets': []})
+        warm.db.set_session_title(ref.session_id, title)
+        return ref
+
+    first, second = _source(), _source(chat_id='77')
+    a = chat('Chat A')
+    await _handoff(runner, warm, a.session_id, first)
+    await _handoff(runner, warm, chat('Chat B').session_id, first)
+    with pytest.raises(RuntimeStoreError, match='session_superseded'):
+        warm.authorize(owner, a, 'session:submit')
+    await _resume_gateway(runner, warm)._handle_resume_command(
+        MessageEvent(text='/resume --all Chat A', source=second))
+    route = runner.session_store._generate_session_key(second)
+    assert runner.session_store.lookup_by_session_key(route).session_id == a.session_id
+    warm.register(second)  # that chat's next inbound
+    warm.authorize(owner, a, 'session:submit')
+    live = warm.sessions[a.session_id]
+    assert (live.source.chat_id, live.route) == ('77', route)
+
+    runner.session_store.reset_session(route)
+    warm.register(second)
+    for capability in ('session:submit', 'session:control'):
+        with pytest.raises(RuntimeStoreError, match='session_superseded'):
+            warm.authorize(owner, a, capability)
+
+
+@pytest.mark.asyncio
 async def test_a_moved_receipt_with_a_malformed_lineage_never_stops_the_boot(tmp_path, monkeypatch):
     from gateway.session_authority import initialize_session_authority
     from gateway.session_contract import Principal

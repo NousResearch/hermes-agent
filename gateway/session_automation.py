@@ -485,7 +485,6 @@ async def admit_automation(authority, adapter, event, identity, replaces=None):
     own transaction, so neither lands without the other."""
     authority._require_admission_open()
     payload, entry = snapshot_automation(authority, adapter, event, identity)
-    from gateway.session_authority import LiveSession
     sid = (payload.get('local_automation_v1') or payload['native_text_v1']['automation'])['owner']
     ref = SessionRef(authority.profile_id, sid)
     source, envelope = event.source, payload.get('native_text_v1')
@@ -494,7 +493,9 @@ async def admit_automation(authority, adapter, event, identity, replaces=None):
         # drain resolves no adapter for this session after a restart.
         from gateway.session_envelope import restore_native_source
         source = restore_native_source(payload, authority.runner)
-    authority.sessions.setdefault(ref.session_id, LiveSession(source, entry.session_key))
+    if ref.session_id not in authority.sessions:  # the route's conversation may be a moved local chat
+        from gateway.session_route_recovery import mount
+        authority.sessions[ref.session_id] = mount(authority, ref.session_id, source, entry.session_key)
     from functools import partial
     from gateway.session_runtime_workers import tracked_write
     admitted, replaced = partial(authority._admitted, ref, event), []

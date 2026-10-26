@@ -279,13 +279,18 @@ class SessionAuthority:
         # *sid* takes the route over: new here, moved onto it, or back after another conversation had it.
         took_over = live is None or live.route != route or live.superseded
         if live is None:
+            from gateway.session_route_recovery import mount
+            live = self.sessions[sid] = mount(self, sid, source, route)
+        elif live.route != route:
+            # *sid* moved lanes: ``/handoff`` or a platform ``/resume`` took a local conversation over
+            # (its repoint retired the local receipt), or a ``/resume`` moved it on to another chat.
+            # Its open viewers follow it, so a turn or a Stop through this mount reaches the lane that
+            # holds it now, never the conversation that replaced it on the old one (#143286).
             from gateway.session_route_recovery import moved_local
-            live = self.sessions[sid] = LiveSession(source, route, handed_off=moved_local(self, sid, source))
-        elif (live.source is not None and live.source.platform == Platform.LOCAL
-              and source.platform != Platform.LOCAL):
-            # A local conversation a messaging lane took over (``/handoff``): its repoint retired the
-            # local receipt, so its open viewers follow it onto the lane (#143286).
-            live.source, live.route, live.handed_off = source, route, True
+            left_local = live.source is not None and live.source.platform == Platform.LOCAL
+            live.handed_off = (live.handed_off or (left_local and source.platform != Platform.LOCAL)
+                               or moved_local(self, sid, source))
+            live.source, live.route = source, route
         if took_over:
             # The lane moved on to *sid*: a cold history mount or a chat handed off earlier that is
             # still on its route is now another conversation's, so it goes read-only
@@ -651,7 +656,9 @@ class SessionAuthority:
                         check_local_input(
                             self, SessionRef(self.profile_id, sid), row, source=source)
                 self._require_admission_open()
-                self.sessions.setdefault(sid, LiveSession(source, route))
+                if sid not in self.sessions:  # ``mount``: a moved local chat keeps ``handed_off`` here too
+                    from gateway.session_route_recovery import mount
+                    self.sessions[sid] = mount(self, sid, source, route)
                 if any(row['status'] == 'unknown' for row in rows):
                     raise RuntimeStoreError('unknown_execution')
                 self._schedule(SessionRef(self.profile_id, sid))

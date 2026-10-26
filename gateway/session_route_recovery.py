@@ -110,7 +110,6 @@ def _mount_plan(authority, sid):
 def restore_routed_session(authority, sid):
     """Publish *sid* as its lane would after a restart; None when this row is not one a route or a
     messaging-platform row can stand for."""
-    from gateway.session_authority import LiveSession
     from gateway.session_contract import SessionRef
     plan = _mount_plan(authority, sid)
     if plan is None:
@@ -121,9 +120,18 @@ def restore_routed_session(authority, sid):
     # Re-pin the persisted receiving bot so delivery after a restart goes through it or nowhere,
     # never the default bot by heuristic (gateway/AGENTS.md § Identity survives the process).
     source = authority.runner._restored_source(entry)
-    authority.sessions.setdefault(sid, LiveSession(source, route, superseded=superseded, history_mount=True,
-                                                   handed_off=moved_local(authority, sid, source)))
+    authority.sessions.setdefault(sid, mount(authority, sid, source, route, superseded=superseded,
+                                             history_mount=True))
     return SessionRef(authority.profile_id, sid)
+
+
+def mount(authority, sid, source, route, **flags):
+    """The live entry of *sid* on *route*, however it is mounted (the lane's inbound, startup recovery
+    of its queued input, a cold open, an automation wake): ``handed_off`` comes from the row
+    (``moved_local``), so a moved local conversation goes read-only once its lane takes up another
+    one, whichever path mounted it first (#143286)."""
+    from gateway.session_authority import LiveSession
+    return LiveSession(source, route, handed_off=moved_local(authority, sid, source), **flags)
 
 
 def moved_local(authority, sid, source):

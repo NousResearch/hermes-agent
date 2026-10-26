@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from tools.mcp_oauth_provider import HermesProviderMixin
+from tools.mcp_oauth_provider import HermesProviderMixin, normalize_advertised_auth_server_url
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +127,13 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                 if prm:
                     self.context.protected_resource_metadata = prm
                     if prm.authorization_servers:
-                        self.context.auth_server_url = str(prm.authorization_servers[0])
+                        # Normalize the pydantic root slash here, once, so every later consumer
+                        # (SDK issuer match, device-flow metadata, token issuer binding) agrees
+                        # with the authorization server's own slashless ``issuer``.
+                        advertised = str(prm.authorization_servers[0])
+                        self.context.auth_server_url = (
+                            normalize_advertised_auth_server_url(advertised) or advertised
+                        )
                     break
             # ASM discovery against auth_server_url (server_url fallback for legacy providers).
             for url in build_oauth_authorization_server_metadata_discovery_urls(self.context.auth_server_url, server_url):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -43,19 +44,26 @@ def test_main_reports_marker_write_failure(monkeypatch, capsys):
     assert "could not write the marker" in capsys.readouterr().err
 
 
-def test_helper_imports_without_optional_dependencies():
+def test_helper_runs_without_optional_dependencies(tmp_path):
     """ExecStop must work even when application dependencies are unavailable."""
     project_root = Path(__file__).resolve().parents[2]
     env = os.environ.copy()
     env["PYTHONPATH"] = str(project_root)
+    env["HERMES_HOME"] = str(tmp_path)
 
     result = subprocess.run(
-        [sys.executable, "-S", "-c", "import hermes_systemd_planned_stop"],
+        [sys.executable, "-S", "-m", "hermes_systemd_planned_stop", str(os.getpid())],
         cwd=project_root,
         env=env,
         capture_output=True,
+        check=False,
         text=True,
         timeout=10,
     )
 
     assert result.returncode == 0, result.stderr
+    marker = tmp_path / ".gateway-planned-stop.json"
+    record = json.loads(marker.read_text(encoding="utf-8"))
+    assert record["target_pid"] == os.getpid()
+    assert record["trigger_watcher"] is False
+    assert marker.stat().st_mode & 0o777 == 0o600

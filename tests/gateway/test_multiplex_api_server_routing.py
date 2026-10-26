@@ -8,6 +8,10 @@ from __future__ import annotations
 
 from typing import Any, cast
 
+import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
+
 from gateway.config import GatewayConfig, PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
@@ -90,6 +94,38 @@ class TestApiServerProfileResolution:
             adapter._resolve_request_profile(cast(Any, _FakeReq("hermes")))
             == "hermes"
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("gateway_home,answers", [
+    ("", {"hermes": 200, "default": 200, "worker": 404}),                # default-profile gateway
+    ("profiles/worker", {"hermes": 404, "default": 404, "worker": 200}),  # another named profile
+    ("profiles/hermes", {"hermes": 200, "default": 404, "worker": 404}),  # a real legacy 'hermes'
+])
+async def test_single_profile_gateway_answers_the_hermes_handle_only_for_its_own_profile(
+        tmp_path, monkeypatch, gateway_home, answers):
+    """Multiplexing off: '/p/hermes/' is Bot Mode's handle for the default profile (#118076), so a
+    default-profile gateway serves it, a gateway running another profile refuses it with the
+    unknown-profile 404 peers key their fallback on, and a real 'hermes' profile keeps its name."""
+    root = tmp_path / "root"
+    for home in (root, root / "profiles" / "worker", root / "profiles" / "hermes"):
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root / gateway_home))
+    adapter = _make_adapter(multiplex=False)
+
+    async def handler(request):
+        return web.json_response({"profile": _api_request_profile.get()})
+
+    app = web.Application(middlewares=[adapter._make_profile_prefix_middleware()])
+    app.router.add_get("/p/{profile}/v1/test", handler)
+    async with TestClient(TestServer(app)) as cli:
+        for prefix, status in answers.items():
+            resp = await cli.get(f"/p/{prefix}/v1/test")
+            body = await resp.json()
+            assert (prefix, resp.status) == (prefix, status)
+            assert body == ({"profile": None} if status == 200 else {"error": "Unknown or unconfigured profile"})
+
 
 
 

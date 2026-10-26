@@ -37,8 +37,14 @@ def tighten_lock_mode(fd: int) -> None:
         if not stat.S_ISREG(info.st_mode):
             raise PermissionError('unsafe gateway lock owner or type')
         return
-    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():  # windows-footgun: ok — POSIX branch
+    uid = os.getuid()  # windows-footgun: ok — POSIX branch
+    if not stat.S_ISREG(info.st_mode):
         raise PermissionError('unsafe gateway lock owner or type')
+    if info.st_uid != uid:
+        # A bind mount that reports every file as the host user (sshfs/colima, NAS shares) lands here.
+        raise PermissionError(
+            f'unsafe gateway lock owner: owned by uid {info.st_uid}, but this gateway runs as uid {uid}. '
+            'In Docker, set HERMES_UID/HERMES_GID to the data directory owner.')
     if stat.S_IMODE(info.st_mode) & 0o077:
         if info.st_nlink != 1:
             raise PermissionError('unsafe gateway lock link count')

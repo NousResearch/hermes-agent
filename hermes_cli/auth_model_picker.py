@@ -225,10 +225,15 @@ def _picker_order(model_ids: list[str], current_model: str, window_usage) -> tup
             if rest:
                 sections[len(head)] = SECTION_OTHER
     else:
-        # Reorder: current model first, then the rest (deduplicated)
-        ordered = list(dict.fromkeys(
-            ([current_model] if current_model and current_model in model_ids else []) + list(model_ids)
-        ))
+        # Current model first, then the rest case-insensitively alphabetical (deduped).
+        # Provider/catalog order is often non-deterministic (Ollama Cloud merges live
+        # + registry lists; OpenRouter's models.dev order isn't stable). See #57578.
+        # Window plans keep Recommended / Other section order above.
+        rest = sorted(
+            (mid for mid in dict.fromkeys(model_ids) if not (current_model and mid == current_model)),
+            key=str.casefold,
+        )
+        ordered = ([current_model] if current_model and current_model in model_ids else []) + rest
     return ordered, sections, (ordered.index(current_model) if current_model in ordered else 0)
 
 
@@ -261,8 +266,9 @@ def _prompt_model_selection(
     confirm_api_key: str = "", usage=None,
     notes: Optional[dict[str, str]] = None, title: str = "Select default model:",
 ) -> Optional[str]:
-    """Interactive model picker; current_model listed first. Returns the chosen model ID or None. *title* heads
-    the menu (a plugin picking a model for something other than the default says so).
+    """Interactive model picker; current model first, then A–Z. Returns the chosen model ID or None.
+
+    *title* heads the menu (a plugin picking a model for something other than the default says so).
 
     With *pricing* (``{model_id: {prompt, completion}}``) a compact price column is shown; models in
     *unavailable_models* render grayed out and unselectable with an upgrade link to *portal_url*.

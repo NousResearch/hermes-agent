@@ -1,14 +1,14 @@
 name: agent-reel
 repo: https://github.com/Sahil-SS9/agent-reel
-sha: "0e4e24c507b1034c007c86d08b33c55c522d8f07"
+sha: "acfc2469e019f51ea30852224939e43cf9668a85"
 version: "0.1.0"
 title: Agent Reel
-description: "Turns your own Hermes history into a comic. It reads your sessions, tool calls and kanban cards read-only, finds a story with a problem, a struggle and a result, and writes a chapter script where every line and caption carries the ids of the messages that state it — a claim the cited messages do not support is refused, not printed. A series ledger remembers what each chapter told, carries one open thread into the next, and refuses repeats; an idea deck of 16.9 billion frames keeps each chapter's world, villain and genre different. It then draws the episode with your own image route (your harness's image tool, a local ComfyUI, or your own API key) in one of 55 art styles, letters it with SIL OFL fonts, and exports pages, panels, X/LinkedIn/Discord sizes and a PDF. Disclosure — reads your Hermes history read-only (no file created, renamed, truncated or deleted, proven with strace in scripts/readonly_proof.sh) and sends redacted text to Hermes's own model for writing and truth checks, and panel prompts to the image route you choose; writes plans, renders, a series ledger and character kits under the plugin data directory; no telemetry, no auto-posting, and no key at all is needed for the host or ComfyUI routes."
+description: "Turns your own agent history into a comic (Hermes, Claude Code, Codex, OpenCode or any JSONL log). It reads your sessions, tool calls and kanban cards read-only, finds a story with a problem, a struggle and a result, and writes a chapter script where every line and caption carries the ids of the messages that state it — a claim the cited messages do not support is refused, not printed. A series ledger remembers what each chapter told, carries one open thread into the next, and refuses repeats; an idea deck of 16.9 billion frames keeps each chapter's world, villain and genre different. It then draws the episode with your own image route (your harness's image tool, a local ComfyUI, or your own API key) in one of 55 art styles, letters it with SIL OFL fonts, and exports pages, panels, X/LinkedIn/Discord sizes and a PDF. Disclosure — reads your Hermes history read-only (no file created, renamed, truncated or deleted, proven with strace in scripts/readonly_proof.sh) and sends redacted text to Hermes's own model for writing and truth checks, and panel prompts to the image route you choose; writes plans, renders, a series ledger and character kits under the plugin data directory; no telemetry, no auto-posting, and no key at all is needed for the host or ComfyUI routes."
 maintainer: Sahil-SS9
 tier: community
 category: general
 requires_hermes: ">=0.21.5"
-docs_url: https://github.com/Sahil-SS9/agent-reel/blob/0e4e24c507b1034c007c86d08b33c55c522d8f07/README.md
+docs_url: https://github.com/Sahil-SS9/agent-reel/blob/acfc2469e019f51ea30852224939e43cf9668a85/README.md
 readme: true
 platforms: [linux, macos, windows]
 capabilities:
@@ -17,8 +17,7 @@ capabilities:
   provides_middleware: []
   requires_env: [OPENAI_API_KEY, GEMINI_API_KEY, FAL_KEY]
 known_issues:
-  - "53 of the 55 art styles are marked experimental and the render refuses them unless the caller opts in; only anime and ink-pen-sketch have been proven on a real render."
-  - "The paid image routes (OpenAI, Gemini, fal) have their request shapes implemented but have not produced a real image on the developer's machine (billing blocked); the host and ComfyUI routes are tested."
-  - "Other-agent harnesses are read-only tested: Claude Code produces a real episode, while Codex and Pi corpora on the developer's machine were too thin to form a story and are documented as untested."
-  - "A dialogue line too long for a balloon at page size is split into two balloons rather than dropped; two dense panels per chapter can still end up with no pocket, and the run reports the line as unplaced instead of inventing space."
-  - "Rendering spends money on the image route you choose (roughly 3-20p per panel on the paid APIs, free on a local GPU); --budget caps new images per episode and cached panels are reused."
+  - "Panel images are drawn by the image route you choose: roughly 3-20p per panel on the paid APIs, free on a local GPU. --budget caps new images per episode and cached panels are reused."
+  - "All 55 styles render. --strict-styles limits a render to the styles that carry a recorded bake-off; without it, every style is available."
+  - "A dialogue line with no pocket in the art at page size is recorded in the sidecar as unplaced and reported by the run, rather than given invented space."
+  - "Public mode refuses any real person without a consent record; photo likeness is allowed only for yourself."

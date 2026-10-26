@@ -97,6 +97,7 @@ def test_the_launchers_idle_check_sleeps_until_the_screen_could_be_due():
     assert next_check_in(0, None) == runtime.DEFAULT_IDLE_STOP_MINUTES * 60  # off: re-read the setting later
 
 
+@pytest.mark.platforms("posix")  # start.lock is an fcntl lock (runtime._flocked)
 @pytest.mark.parametrize("judged", ["the old screen", "any screen"])
 def test_an_idle_check_that_waited_on_the_lock_never_stops_the_replacement_screen(tmp_path, monkeypatch, judged):
     """The idle decision is taken before ``start.lock``; a stop + start that holds the lock meanwhile replaces

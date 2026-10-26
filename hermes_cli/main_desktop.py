@@ -254,9 +254,35 @@ def _recover_interrupted_swap(live: Path, aside: Path) -> None:
     shutil.rmtree(aside, ignore_errors=True)
 
 
-def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[Path]:
+def _move_live_app_aside(live_root: Path, previous: Path, release_dir: Path, held_by: Optional[list]) -> None:
+    """First swap rename. On Windows a refusal names the programs whose working folder is inside
+    ``release/`` (#101789) and retries once only after the user consented to closing them."""
+    try:
+        _rename_riding_out_file_lock(live_root, previous)
+        return
+    except PermissionError:
+        if sys.platform != "win32":
+            raise
+        from hermes_cli.desktop_release_holders import find_release_cwd_holders, release_after_refused_rename
+        holders, closed = release_after_refused_rename(release_dir)
+        if not closed:
+            if held_by is not None:
+                held_by.extend(holders)
+            raise
+    try:
+        _rename_riding_out_file_lock(live_root, previous)
+    except PermissionError:
+        if held_by is not None:
+            held_by.extend(find_release_cwd_holders(release_dir))
+        raise
+
+
+def _swap_staged_desktop_app(
+    desktop_dir: Path, staging_dir: Path, *, held_by: Optional[list] = None,
+) -> Optional[Path]:
     """Promote a VERIFIED staged pack over ``release/`` by two renames (live → ``.previous``, staged →
-    live); a failure between them rolls back. Returns the live exe or None (live app kept). Never raises."""
+    live); a failure between them rolls back. Returns the live exe or None (live app kept). Never raises.
+    ``held_by`` collects the named programs that blocked the swap (Windows cwd holders)."""
     staged_exe = _desktop_packaged_executable_in(staging_dir)
     if staged_exe is None:
         shutil.rmtree(staging_dir, ignore_errors=True)
@@ -278,7 +304,7 @@ def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[P
             stopped = _stop_desktop_processes_locking_build(desktop_dir, also_posix=True)
             if stopped:
                 logger.info("stopped desktop processes before staged app promotion: %s", stopped)
-            _rename_riding_out_file_lock(live_root, previous)
+            _move_live_app_aside(live_root, previous, release_dir, held_by)
         try:
             _rename_riding_out_file_lock(staged_root, live_root)
         except OSError:
@@ -292,6 +318,9 @@ def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[P
         return None
     finally:
         shutil.rmtree(staging_dir, ignore_errors=True)
+        if sys.platform == "win32":
+            from hermes_cli.desktop_release_holders import discard_consent
+            discard_consent(release_dir)  # a consent covers exactly one swap attempt
     return live_root / staged_exe.relative_to(staged_root)
 
 
@@ -540,23 +569,6 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path, *, also_posix: bool
         except Exception:
             continue
         if release_dir in exe_path.parents:
-            victims.append(proc)
-            continue
-        # A foreign helper the app spawned (IME/AV/assistant component) keeps the app's
-        # cwd = release/<name> after the app itself is killed, and Windows refuses to
-        # rename a directory that is any live process's cwd - the stage-and-swap then
-        # dies with WinError 32 (2026-09-22: Sogou IME helper blocked win-unpacked).
-        try:
-            cwd = proc.cwd()
-        except Exception:
-            continue
-        if not cwd:
-            continue
-        try:
-            cwd_path = Path(cwd).resolve()
-        except OSError:
-            continue
-        if cwd_path == release_dir or release_dir in cwd_path.parents:
             victims.append(proc)
 
     stopped: list[int] = []
@@ -1420,7 +1432,13 @@ def _promote_staged_desktop_app(
             print(f"✗ The built {staged_executable.name} failed its integrity check: {error}\n"
                   f"    at: {staged_executable}")
         raise RuntimeError(f"Desktop build produced no launchable app. {_PREVIOUS_APP_KEPT}")
-    packaged_executable = _swap_staged_desktop_app(desktop_dir, staging_dir)
+    held_by: list = []
+    packaged_executable = _swap_staged_desktop_app(desktop_dir, staging_dir, held_by=held_by)
+    if packaged_executable is None and held_by:
+        from hermes_cli.desktop_release_holders import describe_block, holder_names
+        print(describe_block(held_by, desktop_dir / "release"))
+        raise RuntimeError(
+            f"Could not publish the desktop build: {holder_names(held_by)} is using its folder. {_PREVIOUS_APP_KEPT}")
     if packaged_executable is None:
         print(f"✗ Could not install the rebuilt desktop app into {desktop_dir / 'release'}")
         raise RuntimeError(f"Could not publish the desktop build. {_PREVIOUS_APP_KEPT}")

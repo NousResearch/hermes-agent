@@ -42,6 +42,25 @@ export interface HandoffResult {
   branch: string
   /** C2: `ok:true` with follow-up work that failed after the commit point. */
   warnings: string[]
+  /** #101789: programs outside Hermes whose working folder blocked the Desktop app swap. */
+  releaseHolders: ReleaseHolder[]
+}
+
+export interface ReleaseHolder {
+  pid: number
+  name: string
+  exe: string
+}
+
+function toReleaseHolders(raw: unknown): ReleaseHolder[] {
+  if (!Array.isArray(raw)) {
+    return []
+  }
+
+  return raw
+    .filter(item => item && typeof item === 'object')
+    .map(item => ({ pid: Number(item.pid), name: String(item.name ?? ''), exe: String(item.exe ?? '') }))
+    .filter(holder => Number.isInteger(holder.pid) && holder.pid > 0 && holder.name && holder.exe)
 }
 
 export function handoffResultPath(hermesHome: string): string {
@@ -137,7 +156,8 @@ function toHandoffResult(parsed: any, manual: boolean): HandoffResult {
     manual,
     message: typeof parsed?.message === 'string' ? parsed.message : '',
     branch: typeof parsed?.branch === 'string' ? parsed.branch : '',
-    warnings: Array.isArray(parsed?.warnings) ? parsed.warnings.map(String).filter(Boolean) : []
+    warnings: Array.isArray(parsed?.warnings) ? parsed.warnings.map(String).filter(Boolean) : [],
+    releaseHolders: toReleaseHolders(parsed?.release_holders)
   }
 }
 

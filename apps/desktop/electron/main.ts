@@ -263,6 +263,7 @@ import {
 } from './find-in-page'
 import { createFirstRunSetupGate } from './first-run-setup-gate'
 import { registerFsIpc } from './fs-ipc'
+import { directoryExists, fileExists, isGitCheckout } from './fs-probes'
 import { downloadViaTokenToFile as downloadViaNativeGatewayToFile } from './gateway-download-transport'
 import type {
   GatewayFileSaveContext,
@@ -504,6 +505,7 @@ import {
   probeCachedConnectionInstallId,
   rememberConnectionInstallId
 } from './registry-backend-identity'
+import { releaseHolderRetry } from './release-holder-consent'
 import * as remoteLifecycle from './remote-lifecycle'
 import {
   attachPowerResumeRemoteRevalidation,
@@ -2696,26 +2698,6 @@ async function advanceBootProgress(phase, message, progress) {
   }
 }
 
-function fileExists(filePath) {
-  try {
-    return fs.statSync(filePath).isFile()
-  } catch {
-    return false
-  }
-}
-
-function isGitCheckout(root: string): boolean {
-  return fs.existsSync(path.join(root, '.git'))
-}
-
-function directoryExists(filePath) {
-  try {
-    return fs.statSync(filePath).isDirectory()
-  } catch {
-    return false
-  }
-}
-
 // --- in-app update mutual exclusion (#50238) -------------------------------
 // The Tauri updater writes HERMES_HOME/.hermes-update-in-progress for the whole
 // duration of an `--update` run (see update.rs UpdateMarkerGuard). If the user
@@ -2846,7 +2828,8 @@ async function waitForUpdateToFinish() {
     log: rememberLog,
     dialog,
     shell,
-    openUpdates: sendOpenUpdatesRequested
+    openUpdates: sendOpenUpdatesRequested,
+    closeHoldersAndRetry: releaseHolderRetry({ isWindows: IS_WINDOWS, resolveUpdateRoot, applyUpdates, log: rememberLog })
   })
 
   if (outcome === 'cancelled') {

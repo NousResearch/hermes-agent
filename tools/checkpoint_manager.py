@@ -233,7 +233,7 @@ def _index_path(store: Path, dir_hash: str) -> Path:
     return store / _INDEXES_DIRNAME / dir_hash
 
 
-def _store_pathspecs(base: Path, working_dir) -> List[str]:
+def _store_pathspecs(base: Path, working_dir) -> list[str]:
     """Pathspecs naming the checkpoint base and its ``store_lock`` file inside ``working_dir``.
 
     Empty when the base is outside the working directory (or is the working directory
@@ -249,7 +249,7 @@ def _store_pathspecs(base: Path, working_dir) -> List[str]:
     return [rel.as_posix(), lock.as_posix()]
 
 
-def _stage_all_args(base: Path, working_dir) -> List[str]:
+def _stage_all_args(base: Path, working_dir) -> list[str]:
     """``git add -A`` that never stages the checkpoint base itself.
 
     With HERMES_HOME (or a profile home) as the working directory the store sits inside
@@ -262,7 +262,7 @@ def _stage_all_args(base: Path, working_dir) -> List[str]:
     return ["add", "-A", *_exclude_store_args(base, working_dir)]
 
 
-def _exclude_store_args(base: Path, working_dir) -> List[str]:
+def _exclude_store_args(base: Path, working_dir) -> list[str]:
     """``-- :(exclude)<base> :(exclude)<lock>`` for git commands, or ``[]`` when not needed."""
     paths = _store_pathspecs(base, working_dir)
     return ["--", *(f":(exclude){p}" for p in paths)] if paths else []

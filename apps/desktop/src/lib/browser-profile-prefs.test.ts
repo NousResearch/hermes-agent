@@ -9,10 +9,10 @@ import { applyConfiguredDefaultProjectDir } from '@/store/session'
 import { dropTilesForProfile, migrateTilesForProfile } from '@/store/session-states'
 
 import { createBrowserProfileBridge } from './browser-profile'
-import { browserDefaultProjectDirKey } from './browser-settings'
+import { browserDefaultProjectDirKey, createBrowserSettings } from './browser-settings'
 import { browserStartupProfileKey } from './browser-startup-profile'
 
-type BootstrapWindow = Window & { __HERMES_BASE_PATH__?: string }
+type BootstrapWindow = Window & { __HERMES_BASE_PATH__?: string; __HERMES_DASHBOARD_PROFILE__?: string }
 
 const win = window as BootstrapWindow
 
@@ -24,6 +24,7 @@ function host(basePath = '/hermes') {
 function unhost() {
   delete document.documentElement.dataset.hermesDesktopHost
   delete win.__HERMES_BASE_PATH__
+  delete win.__HERMES_DASHBOARD_PROFILE__
 }
 
 function putFolder(profile: string, dir: string, basePath = '/hermes') {
@@ -253,5 +254,62 @@ describe('browser profile prefs follow rename and delete', () => {
     expect(localStorage.getItem(browserDefaultProjectDirKey('/hermes', 'renamed'))).toBeNull()
     expect(JSON.parse(localStorage.getItem(browserStartupProfileKey('/hermes'))!).profile).toBe('alpha')
     expect($defaultProfileRoute.get()).toEqual({ connectionId: null, profile: 'alpha' })
+  })
+})
+
+// An older build keyed the folder on the tab's named profile or 'default'. A tab
+// opened without `?profile=` names none, so on a gateway served as `alpha` the
+// folder alpha's tab chose sits under 'default'.
+describe('browser folder saved by an older build', () => {
+  const legacyKey = 'hermes:browser:default-project-dir:["/hermes","default"]'
+
+  it('moves the folder to the profile the gateway serves, once, so default does not inherit it', () => {
+    host()
+    win.__HERMES_DASHBOARD_PROFILE__ = 'alpha'
+    localStorage.setItem(legacyKey, '/srv/alpha')
+
+    expect(resolveNewSessionCwd('alpha')).toBe('/srv/alpha')
+    expect(resolveNewSessionCwd('default')).toBe('')
+    expect(localStorage.getItem(legacyKey)).toBeNull()
+
+    // Later choices are the new build's own: default's folder stays default's.
+    putFolder('default', '/srv/default')
+    localStorage.removeItem(browserDefaultProjectDirKey('/hermes', 'alpha'))
+
+    expect(resolveNewSessionCwd('alpha')).toBe('')
+    expect(resolveNewSessionCwd('default')).toBe('/srv/default')
+  })
+
+  it('shows the moved folder in Settings for a tab that names no profile', async () => {
+    host()
+    win.__HERMES_DASHBOARD_PROFILE__ = 'alpha'
+    localStorage.setItem(legacyKey, '/srv/alpha')
+
+    const settings = createBrowserSettings({ basePath: '/hermes', currentProfile: () => null })
+
+    await expect(settings.getDefaultProjectDir()).resolves.toMatchObject({ dir: '/srv/alpha' })
+    expect(localStorage.getItem(legacyKey)).toBeNull()
+  })
+
+  it('keeps a folder the served profile already chose and leaves the old one where it was', () => {
+    host()
+    win.__HERMES_DASHBOARD_PROFILE__ = 'alpha'
+    localStorage.setItem(legacyKey, '/srv/legacy')
+    putFolder('alpha', '/srv/alpha-own')
+
+    expect(resolveNewSessionCwd('alpha')).toBe('/srv/alpha-own')
+    expect(resolveNewSessionCwd('default')).toBe('/srv/legacy')
+  })
+
+  it('leaves a gateway served as default alone, and a later launch as alpha does not take its folder', () => {
+    host()
+    localStorage.setItem(legacyKey, '/srv/default')
+
+    expect(resolveNewSessionCwd('default')).toBe('/srv/default')
+
+    win.__HERMES_DASHBOARD_PROFILE__ = 'alpha'
+
+    expect(resolveNewSessionCwd('alpha')).toBe('')
+    expect(resolveNewSessionCwd('default')).toBe('/srv/default')
   })
 })

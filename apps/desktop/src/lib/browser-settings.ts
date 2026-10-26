@@ -21,15 +21,54 @@ export function browserDefaultProjectDirKey(basePath: string, profile: string): 
   return `hermes:browser:default-project-dir:${JSON.stringify([basePath || '/', owner])}`
 }
 
+/**
+ * An older build keyed the folder on the profile the tab named, else 'default'.
+ * A tab opened without `?profile=` names none, so on a gateway served as
+ * another profile the folder that profile's tab chose sits under 'default'.
+ * The first read on this build moves it to the served profile, unless that
+ * profile already has its own. The marker keeps a later launch as another
+ * profile from taking default's own folder.
+ */
+function adoptLegacyLaunchFolder(basePath: string): void {
+  const marker = `hermes:browser:default-project-dir-adopted:${JSON.stringify([basePath || '/'])}`
+
+  if (readKey(marker)) {
+    return
+  }
+
+  writeKey(marker, '1')
+
+  const launch = browserLaunchProfile()
+
+  if (!launch || launch === 'default') {
+    return
+  }
+
+  const legacyKey = browserDefaultProjectDirKey(basePath, 'default')
+  const ownKey = browserDefaultProjectDirKey(basePath, launch)
+  const legacy = readKey(legacyKey)?.trim()
+
+  if (legacy && !readKey(ownKey)?.trim()) {
+    writeKey(ownKey, legacy)
+    writeKey(legacyKey, null)
+  }
+}
+
+function folderKey(basePath: string, profile: string): string {
+  adoptLegacyLaunchFolder(basePath)
+
+  return browserDefaultProjectDirKey(basePath, profile)
+}
+
 /** The profile's own default folder, or '' when it never chose one. */
 export function readBrowserDefaultProjectDir(basePath: string, profile: string): string {
-  return readKey(browserDefaultProjectDirKey(basePath, profile))?.trim() || ''
+  return readKey(folderKey(basePath, profile))?.trim() || ''
 }
 
 /** Rename moves the folder with the profile, or the lack of one. */
 export function migrateBrowserFolderPref(basePath: string, from: string, to: string): void {
-  const sourceKey = browserDefaultProjectDirKey(basePath, from)
-  const destKey = browserDefaultProjectDirKey(basePath, to)
+  const sourceKey = folderKey(basePath, from)
+  const destKey = folderKey(basePath, to)
 
   if (sourceKey === destKey) {
     return
@@ -40,7 +79,7 @@ export function migrateBrowserFolderPref(basePath: string, from: string, to: str
 }
 
 export function dropBrowserFolderPref(basePath: string, profile: string): void {
-  writeKey(browserDefaultProjectDirKey(basePath, profile), null)
+  writeKey(folderKey(basePath, profile), null)
 }
 
 /**
@@ -56,7 +95,7 @@ export function createBrowserSettings({
   basePath,
   currentProfile
 }: BrowserSettingsOptions): Window['hermesDesktop']['settings'] {
-  const key = () => browserDefaultProjectDirKey(basePath, currentProfile() ?? '')
+  const key = () => folderKey(basePath, currentProfile() ?? '')
 
   return {
     getDefaultProjectDir: async () => ({

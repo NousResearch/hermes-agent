@@ -135,6 +135,53 @@ def test_with_no_free_port_start_refuses_and_names_the_setting(machine):
     assert "port" not in _webapp_block(machine["solo"])
 
 
+def test_two_profiles_starting_at_once_never_save_the_same_port(machine):
+    """Each standalone profile's gateway has its own change lock, so two first Starts can overlap. The
+    probes wait for each other: without a lock both gateways share, both would see the same free port
+    and save it. Each runs as its own profile (a context-local home, as its gateway's scope does)."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    twin = _write(machine["root"] / "profiles" / "twin", "gateway:\n  standalone: true\n")
+    both_probe = threading.Barrier(2, timeout=2)
+
+    def port_free(_host, port):
+        try:
+            both_probe.wait()  # until the other probes too, or (holding the lock) it never can
+        except threading.BrokenBarrierError:
+            pass
+        return port not in machine["listening"]
+
+    machine["monkeypatch"].setattr(webapp_access, "_port_free", port_free)
+
+    def start(home: Path) -> int:
+        token = set_hermes_home_override(home)
+        try:
+            host, port, public_url, _callback = webapp_access.plan("lan")
+            webapp_access.serve(host, public_url, port)
+            return _webapp_block(home)["port"]
+        finally:
+            reset_hermes_home_override(token)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        starts = [pool.submit(start, home) for home in (machine["solo"], twin)]
+        chosen = sorted(started.result(timeout=30) for started in starts)
+    # 9120 is the default profile's, 9121 is in use, 9122 is the other profile's.
+    assert chosen == [9123, 9124]
+
+
+def test_a_start_that_fails_after_choosing_keeps_the_port(machine):
+    """The port is saved when it is chosen, before the bundle build and the registration, so another
+    profile never takes it; a Start that then fails leaves the profile that port and nothing else."""
+    webapp_access.plan("lan")
+    assert _webapp_block(machine["solo"]) == {"port": 9123}
+    machine["probed"].clear()
+    _host, port, _public_url, callback = webapp_access.plan("lan")
+    assert (port, callback, machine["probed"]) == (None, "http://192.168.1.50:9123/auth/callback", [])
+
+
 def test_the_probe_sees_a_port_a_listener_holds():
     """On a port the OS picked, not a real service's."""
     with socket.socket() as held:

@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import threading
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlsplit
@@ -155,8 +156,9 @@ def _register_nous_sign_in(callback_url: str) -> None:
 def plan(mode: str, public_url: Optional[str] = None) -> tuple[str, Optional[int], str, str]:
     """Check that *mode* can be served and signed in to; returns ``(host, port, public_url, callback)``:
     the bind host, the port to write (None to keep the config's, :func:`_port_to_serve`) and the URL to
-    pin for :func:`serve`, and the sign-in callback for :func:`register`. Changes nothing, so Start
-    runs it before any slow or lasting step."""
+    pin for :func:`serve`, and the sign-in callback for :func:`register`. Changes nothing but the port
+    claim of a standalone profile that has none (:func:`_port_to_serve`), so Start runs it, in the
+    config write scope, before any slow or lasting step."""
     if mode == "lan":
         address = lan_address()
         if address is None:
@@ -177,6 +179,11 @@ def plan(mode: str, public_url: Optional[str] = None) -> tuple[str, Optional[int
 
 #: How many ports above the default Start tries for a standalone profile's Webapp.
 _PORT_SEARCH = 100
+#: Under the Hermes root every profile shares: one standalone profile's gateway at a time chooses and
+#: saves its Webapp port, so a Start in another gateway's process sees that claim before it chooses.
+_PORT_CLAIM_LOCK = Path("webapp") / "port-claim.lock"
+_PORT_CLAIM_HOLDER = threading.local()
+_PORT_CLAIM_TIMEOUT_SECONDS = 10.0
 
 
 def _port_to_serve(home: Path, host: str) -> tuple[int, Optional[int]]:
@@ -187,18 +194,41 @@ def _port_to_serve(home: Path, host: str) -> tuple[int, Optional[int]]:
     profile's gateway with no ``webapp.port`` would find the default port taken by the default gateway's
     Webapp, so it gets the first port above it that no other Hermes home on this machine claims and
     nothing listens on now, and Start writes it to that profile's ``webapp.port``: the profile keeps that
-    address across restarts, and the gateway, the launcher and the sign-in callback all use it."""
+    address across restarts, and the gateway, the launcher and the sign-in callback all use it.
+
+    Each standalone profile's gateway has its own change lock, so the port is chosen and saved under a
+    lock every gateway on this machine shares, before the slow steps of Start: a Start that fails after
+    this keeps the port, which is that profile's from then on, as one a finished Start writes. *home* is
+    the home in scope, whose config :func:`save_config` writes (Start runs in its gateway's scope)."""
     from gateway.webapp_listener import DEFAULT_PORT, webapp_settings
+    from hermes_cli.auth import _file_lock
     from hermes_constants import named_profile_home
 
-    if _own_port(home) is not None or named_profile_home(home) is None:
+    profile = named_profile_home(home)
+    if _own_port(home) is not None or profile is None:
         return webapp_settings(home).port, None
-    claimed = _claimed_ports(home)
-    for port in range(DEFAULT_PORT + 1, DEFAULT_PORT + 1 + _PORT_SEARCH):
-        if port not in claimed and _port_free(host, port):
-            return port, port
+    try:
+        with _file_lock(profile.parent.parent / _PORT_CLAIM_LOCK, _PORT_CLAIM_HOLDER, _PORT_CLAIM_TIMEOUT_SECONDS,
+                        "Timed out waiting for another Hermes profile to choose its Webapp port"):
+            claimed = _claimed_ports(home)
+            for port in range(DEFAULT_PORT + 1, DEFAULT_PORT + 1 + _PORT_SEARCH):
+                if port not in claimed and _port_free(host, port):
+                    _save_port(port)
+                    return port, port
+    except TimeoutError as exc:
+        raise WebappAccessError(f"{exc}. Start again in a moment.") from exc
     raise WebappAccessError(f"No free port for the Webapp from {DEFAULT_PORT + 1} to {DEFAULT_PORT + _PORT_SEARCH}. "
                             f"Set webapp.port in {home / 'config.yaml'} to a free port, then start again.")
+
+
+def _save_port(port: int) -> None:
+    """Claim *port* as the ``webapp.port`` of the home in scope, changing nothing else."""
+    from hermes_cli.config import load_config, save_config
+
+    cfg = load_config()
+    webapp = cfg.get("webapp")
+    cfg["webapp"] = {**(webapp if isinstance(webapp, dict) else {}), "port": port}
+    save_config(cfg)
 
 
 def _own_port(home: Path) -> Optional[object]:

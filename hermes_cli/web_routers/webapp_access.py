@@ -120,9 +120,11 @@ async def webapp_access_status(profile: Optional[str] = None):
 async def start_webapp_access(body: StartBody, profile: Optional[str] = None):
     profile = destructive_profile(profile, "POST /api/webapp-access/start")
     async with _one_change_at_a_time():
+        # Writes a standalone profile's first port claim, so it takes the config lock.
         gateway, (host, port, public_url, callback) = await _scoped(
-            profile, lambda gateway: (gateway, webapp_access.plan(body.mode, body.public_url)))
-        # The bundle before anything lasting: a failed build registers, writes and restarts nothing.
+            profile, lambda gateway: (gateway, webapp_access.plan(body.mode, body.public_url)), config_write=True)
+        # The bundle before anything else lasting: a failed build registers, restarts and writes nothing
+        # but that port claim.
         await _in_gateway_home(gateway, webapp_access.build_bundle)
         await _in_gateway_home(gateway, lambda: webapp_access.register(callback))
         await _scoped(profile, lambda _gateway: webapp_access.serve(host, public_url, port), config_write=True)

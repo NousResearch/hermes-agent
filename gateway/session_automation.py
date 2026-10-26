@@ -255,13 +255,15 @@ async def _withdraw(authority, row):
 async def withdraw_consumed_process_notices(authority, ref):
     """Withdraw queued completion inputs whose native results Stop has consumed."""
     from tools.process_registry import process_registry
+    from gateway.session_ancillary import process_stop_pending
+    stopping = process_stop_pending(authority.db, ref.session_id) is not None
     for row in list_session_admissions(authority.db, session_id=ref.session_id):
         if row['status'] != 'queued' or not row['principal_id'].startswith('automation:'):
             continue
         descriptor = _descriptor(row['payload'])
         identities = descriptor.get('identities', [descriptor.get('identity')])
         if any(len(identity) > 1 and identity[0] == 'completion'
-               and process_registry.is_completion_consumed(identity[1]) for identity in _identities(identities)):
+               and (stopping or process_registry.is_completion_consumed(identity[1])) for identity in _identities(identities)):
             if not await _withdraw(authority, row):
                 return False
     return True
@@ -523,7 +525,9 @@ async def admit_automation(authority, adapter, event, identity, replaces=None):
         from tools.process_registry import process_registry
         descriptor = payload.get('local_automation_v1') or payload['native_text_v1']['automation']
         for producer in _identities(descriptor.get('identities', [identity])):
-            if len(producer) > 1 and producer[0] == 'completion' and process_registry.is_completion_consumed(producer[1]):
+            if len(producer) > 1 and producer[0] == 'completion' and (
+                    process_registry.is_completion_consumed(producer[1])
+                    or conn.execute('SELECT 1 FROM state_meta WHERE key=?', ('gateway.process_stop.v1:' + sid,)).fetchone()):
                 raise RuntimeStoreError('process_result_consumed')
         if replaces is not None:
             _replace_queued(replaces, ref.session_id, replaced)(conn)

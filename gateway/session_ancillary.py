@@ -93,6 +93,14 @@ def _recover_stopped_processes(authority, ref):
                or entry['host_start_time'] <= 0 or entry['pid'] <= 0) for entry in entries):
             return False
         process_registry.recover_from_checkpoint(owns_entry=owned)
+        # Completed results are absent from the running-PID checkpoint. A Stop
+        # retry still owns their undelivered completions after the owner reloads.
+        from tools.process_registry_results import load_completed_results
+        retained = load_completed_results(owns_entry=owned, strict=True)
+        with process_registry._lock:
+            for pid, result in retained.items():
+                if pid not in process_registry._running:
+                    process_registry._finished.setdefault(pid, result)
         remaining = json.loads(_checkpoint_path().read_text(encoding='utf-8-sig'))
         if not isinstance(remaining, list) or any(not isinstance(entry, dict) for entry in remaining):
             return False
@@ -372,15 +380,32 @@ async def interrupt_processes(authority, ref, agent):
     # Turn Stop leaves detached delegations running; their raw owners are not this agent's.
     registry, targets = _process_targets(authority, ref, agent, (),
         select=lambda p: not p.exited or p._scope_stop_pending or p.systemd_unit
-        or (p.notify_on_complete and not registry.is_completion_consumed(p.id)))
+        or (p.notify_on_complete and not p.completion_consumed))
     if targets:
         # Stop cancels these autonomous notices even if termination is refused or a reader
         # is still publishing its exit. Output remains in the native process result.
         with registry._lock:
             registry._completion_consumed.update(targets)
         def kill():
+            from tools.process_registry_results import save_completed_result
             results = [registry.kill_process(pid, source='session.interrupt', consume_output=True) for pid in targets]
-            return all(r.get('status') in {'killed', 'already_exited'} and 'scope_stop_failed' not in r for r in results)
+            durable = True
+            for pid, result in zip(targets, results):
+                if result.get('status') not in {'killed', 'already_exited'} or 'scope_stop_failed' in result:
+                    durable = False
+                    continue
+                with registry._lock:
+                    process = registry._finished.get(pid) or registry._running.get(pid)
+                if process is None:
+                    durable = False
+                    continue
+                with process._lock:
+                    process.completion_consumed = True
+                if not save_completed_result(process):
+                    with process._lock:
+                        process.completion_consumed = False
+                    durable = False
+            return durable
         killed = await asyncio.to_thread(kill)
     else:
         killed = True

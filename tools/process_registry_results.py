@@ -46,12 +46,13 @@ def _result_paths():
     return [path for _, path in retained[:MAX_RETAINED_RESULTS]]
 
 
-def save_completed_result(session) -> None:
+def save_completed_result(session) -> bool:
     from agent.redact import redact_sensitive_text, redact_terminal_output
     from tools.process_registry import MAX_OUTPUT_CHARS
 
     with session._lock:
         record = {key: getattr(session, key) for key in _RESULT_FIELDS}
+        record["completion_consumed"] = session.completion_consumed
         record["output"] = session.output_buffer[-MAX_OUTPUT_CHARS:]
     # Live-output opt-out must not persist raw credentials in durable receipts.
     record["output"] = redact_terminal_output(record["output"], record["command"], force=True)
@@ -61,11 +62,33 @@ def save_completed_result(session) -> None:
         from hermes_constants import assert_named_profile_home_live
         assert_named_profile_home_live(directory)
         make_user_dir(directory, mode=0o700, parents=True, exist_ok=True)
-        atomic_json_write(directory / f"{session.id}.json", record, mode=0o600)
-        _result_paths()
-    except OSError:
+        from hermes_cli.active_sessions import _FileLock
+        with _FileLock(directory / '.lock'):
+            path = directory / f"{session.id}.json"
+            # A reader can have captured its result before Stop consumed it. An
+            # older writer must never undo the committed consumption verdict.
+            record['completion_consumed'] |= completed_result_consumed(session.id)
+            atomic_json_write(path, record, mode=0o600)
+            _result_paths()
+        return True
+    except (OSError, ValueError, TypeError):
         # Preserve live delivery on disk failure, but never silently claim durability.
         logger.warning("Could not retain completed process result %s", session.id, exc_info=True)
+        return False
+
+
+def completed_result_consumed(session_id: str) -> bool:
+    """Read the existing native result's monotonic consumption verdict after reload."""
+    if not isinstance(session_id, str) or not re.fullmatch(r'proc_[\w]+', session_id):
+        return False
+    path = get_hermes_home() / 'logs' / 'process-results' / f'{session_id}.json'
+    try:
+        record = json.loads(path.read_text(encoding='utf-8-sig'))
+    except FileNotFoundError:
+        return False
+    if not isinstance(record, dict) or record.get('id') != session_id:
+        raise ValueError('invalid retained process result')
+    return record.get('completion_consumed') is True
 
 
 def _owns_result(owner: str, parent: str | None) -> bool:
@@ -84,19 +107,21 @@ def _owns_result(owner: str, parent: str | None) -> bool:
         db.close()
 
 
-def load_completed_results(prefix: str = "") -> dict:
+def load_completed_results(prefix: str = "", *, owns_entry=None, strict=False) -> dict:
     """Restore read-only snapshots; no process handles, watchers, or queue events."""
     from tools.process_registry import ProcessSession
 
     from gateway.session_context import get_session_env
 
     owner = get_session_env("HERMES_SESSION_ID", "")
-    if not owner:
+    if not owner and owns_entry is None:
         return {}
     results = {}
     try:
         paths = _result_paths()
     except OSError:
+        if strict:
+            raise
         logger.warning("Could not read retained process results", exc_info=True)
         return results
     for path in paths:
@@ -106,14 +131,16 @@ def load_completed_results(prefix: str = "") -> dict:
             record = json.loads(path.read_text(encoding="utf-8-sig"))
             if record["id"] != path.stem or not re.fullmatch(r"proc_[\w]+", record["id"]):
                 continue
-            if not _owns_result(owner, record.get("parent_session_id")):
+            if not (owns_entry(record) if owns_entry is not None else _owns_result(owner, record.get("parent_session_id"))):
                 continue
             session = ProcessSession(
                 **{key: record[key] for key in _RESULT_FIELDS},
-                exited=True, output_buffer=record["output"],
+                exited=True, output_buffer=record["output"], completion_consumed=record.get('completion_consumed', False),
             )
             session._completion_event.set()
             results[session.id] = session
         except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
+            if strict:
+                raise
             logger.debug("Skipping unreadable process result %s", path.name, exc_info=True)
     return results

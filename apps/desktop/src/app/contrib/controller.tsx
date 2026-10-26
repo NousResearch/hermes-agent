@@ -64,6 +64,7 @@ import {
   FILE_BROWSER_MAX_WIDTH,
   FILE_BROWSER_MIN_WIDTH,
   fileBrowserSide,
+  FILES_PANE_MAX_WIDTH,
   setFileBrowserOpen,
   setSidebarOpen,
   SIDEBAR_DEFAULT_WIDTH,
@@ -264,7 +265,7 @@ registry.registerMany([
       revealAliases: ['file-browser'],
       width: FILE_BROWSER_DEFAULT_WIDTH,
       minWidth: FILE_BROWSER_MIN_WIDTH,
-      maxWidth: FILE_BROWSER_MAX_WIDTH,
+      maxWidth: FILES_PANE_MAX_WIDTH,
       tabTitle: () => <LocalizedTabTitle select={t => t.sidebar.files} />,
       tabTitleText: () => translateNow('sidebar.files')
     },

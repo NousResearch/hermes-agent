@@ -16,11 +16,15 @@ import { closeWidget, dispatchWidgetInput } from '../sdk/host.js'
 import { $agentDockCollapsed } from './agentRoster.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import {
+  type ComposerActions,
+  type ComposerState,
   type GatewayRpc,
+  type GatewayServices,
   type InputHandlerActions,
   type InputHandlerContext,
   type InputHandlerResult,
-  type OverlayState
+  type OverlayState,
+  type UiState
 } from './interfaces.js'
 import {
   $isBlocked,
@@ -128,6 +132,55 @@ export function shouldOpenRewindOnDoubleEsc(opts: {
   hasSession: boolean
 }): boolean {
   return opts.canonical && opts.hasSession && !opts.busy && !opts.hasDraft && !opts.blocked
+}
+
+/** The second Esc of a double-Esc: interrupt a busy turn, discard a draft, or open the rewind picker.
+ * True when it acted. */
+function runDoubleEsc(o: {
+  actions: InputHandlerContext['actions']
+  cActions: ComposerActions
+  cState: ComposerState
+  gw: GatewayServices['gw']
+  isBlocked: boolean
+  live: UiState
+  startedBlocked: boolean
+}): boolean {
+  const { actions, cActions, cState, gw, isBlocked, live } = o
+  const hasDraft = Boolean(cState.input || cState.inputBuf.length)
+  const escAction = resolveDoubleEscAction({ busy: live.busy, hasDraft, hasSession: Boolean(live.sid) })
+
+  // Draft discard keeps its above-isBlocked placement (#116443): the prompt overlays must not
+  // swallow discarding an unsent draft. The interrupt does NOT — an approval/clarify overlay owns
+  // Esc/Ctrl+C until answered, so it only fires with no overlay up.
+  if (escAction === 'interrupt' && live.sid && !isBlocked) {
+    void turnController.interruptTurn({ appendMessage: actions.appendMessage, gw, sid: live.sid, sys: actions.sys })
+
+    return true
+  }
+
+  if (escAction === 'clear') {
+    if (cState.input.trim()) {
+      cActions.pushHistory(cState.input)
+    }
+
+    cActions.clearIn()
+
+    return true
+  }
+
+  const rewind = shouldOpenRewindOnDoubleEsc({
+    blocked: isBlocked || o.startedBlocked,
+    busy: live.busy,
+    canonical: gw.isCanonical,
+    hasDraft,
+    hasSession: Boolean(live.sid)
+  })
+
+  if (rewind) {
+    actions.dispatchSubmission('/rewind')
+  }
+
+  return rewind
 }
 
 /**
@@ -499,45 +552,8 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         const startedBlocked = escBlockedRef.current
         escBlockedRef.current = isBlocked
 
-        if (isDouble) {
-          const escAction = resolveDoubleEscAction({
-            busy: live.busy,
-            hasDraft: Boolean(cState.input || cState.inputBuf.length),
-            hasSession: Boolean(live.sid)
-          })
-
-          // Draft discard keeps its above-isBlocked placement (#116443): the
-          // prompt overlays must not swallow discarding an unsent draft. The
-          // interrupt does NOT — an approval/clarify overlay owns Esc/Ctrl+C
-          // until answered, so it only fires with no overlay up.
-          if (escAction === 'interrupt' && live.sid && !isBlocked) {
-            return turnController.interruptTurn({
-              appendMessage: actions.appendMessage,
-              gw: gateway.gw,
-              sid: live.sid,
-              sys: actions.sys
-            })
-          }
-
-          if (escAction === 'clear') {
-            if (cState.input.trim()) {
-              cActions.pushHistory(cState.input)
-            }
-
-            return cActions.clearIn()
-          }
-
-          const rewind = shouldOpenRewindOnDoubleEsc({
-            blocked: isBlocked || startedBlocked,
-            busy: live.busy,
-            canonical: gateway.gw.isCanonical,
-            hasDraft: Boolean(cState.input || cState.inputBuf.length),
-            hasSession: Boolean(live.sid)
-          })
-
-          if (rewind) {
-            return actions.dispatchSubmission('/rewind')
-          }
+        if (isDouble && runDoubleEsc({ actions, cActions, cState, gw: gateway.gw, isBlocked, live, startedBlocked })) {
+          return
         }
       }
     }

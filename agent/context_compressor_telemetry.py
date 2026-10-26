@@ -100,6 +100,22 @@ class CompressionTelemetryMixin:
             accumulate = key in {"queue_wait_ms", "summary_generation_ms"} and value is not None
             telemetry[key] = (telemetry.get(key) or 0) + value if accumulate else value
 
+    def _note_aux_route_fallback(self, route: dict[str, str]) -> None:
+        """``call_llm`` answered the summary from a fallback route after the configured one failed (dead
+        endpoint, quota): record it like the compressor's own main-model fallback, so telemetry says
+        ``fallback_used`` and, when the main model answered, the user is told their compression model is broken."""
+        failed_model = route.get("failed_model")
+        if not failed_model:
+            return
+        telemetry = getattr(self, "_active_compression_telemetry", None)
+        if isinstance(telemetry, dict):
+            telemetry["fallback_used"] = True
+            telemetry["failure_class"] = telemetry.get("failure_class") or "aux_model_fallback"
+        if route.get("model") == self.model:  # the user warning says "summarised with your main model"
+            self._last_aux_model_failure_model = failed_model
+            failure = route.get("failure") or "unknown error"
+            self._last_aux_model_failure_error = failure if len(failure) <= 220 else failure[:217].rstrip() + "..."
+
     def _compression_method(self) -> str:
         """How the summary that replaced the middle window was produced."""
         if getattr(self, "_last_summary_fallback_used", False):

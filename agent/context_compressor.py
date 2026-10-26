@@ -3822,7 +3822,6 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             self.summary_model or self.model, f"{len(prompt):,}", _latency_info["prompt_build_ms"],
         )
         try:
-            # Compression is atomic: shield the summary call from gateway interrupts. Re-entrant.
             with aux_interrupt_protection():
                 response = call_llm(**call_kwargs)
         finally:
@@ -3843,6 +3842,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             )
         if self._compression_cancelled():
             raise AuxiliaryExplicitCancellation()
+        self._note_aux_route_fallback(_aux_route)
         # Reasoning-field fallback (DeepSeek/Qwen/Kimi put the summary in reasoning_content); capped.
         content = extract_content_or_reasoning(response, max_reasoning_chars=8000)
         where = f"(provider={self.provider or 'auto'} model={self.summary_model or self.model})"

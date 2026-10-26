@@ -122,7 +122,8 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     add_yes_flag(sessions_delete, "Skip confirmation")
 
     sessions_prune = sessions_subparsers.add_parser(
-        "prune", help="Delete old sessions (filterable by time window, source, title, ...)")
+        "prune", help="Delete old sessions (filterable by time window, source, title, ...) "
+                      "— offline unless it goes through the gateway")
     _add_session_filter_args(
         sessions_prune, "Delete sessions older than AGE — days if bare number, or a duration "
         "like '5h'/'2d'/'1w', or an ISO timestamp (bare prune with no filters "
@@ -146,7 +147,8 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     _flag(sessions_archive, "--include-open", help="Also archive never-ended sessions, e.g. Desktop chats")
 
     sessions_optimize = sessions_subparsers.add_parser(
-        "optimize", help="Reclaim disk space: merge FTS5 segments + VACUUM (no data change)")
+        "optimize", help="Reclaim disk space: merge FTS5 segments + VACUUM (no data change) "
+                         "— offline, every holder stopped")
     _flag(sessions_optimize, "--force",
         help="Run even while another Hermes process (gateway, Desktop, dashboard, cron) holds state.db — rewriting the store under a live writer can leave every agent refusing turns until all writers are stopped")
 
@@ -166,15 +168,18 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
         help="Skip the timestamped state.db backup taken before writing (not recommended)")
 
     sessions_optimize_storage = sessions_subparsers.add_parser("optimize-storage",
-        help="Migrate the search index to the compact v23 layout (reclaims disk on large DBs)",
+        help="Migrate the search index to the compact v23 layout (reclaims disk on large DBs) "
+             "— offline, every holder stopped",
         description="Rebuild the full-text search index in the compact v23 "
             "external-content layout. On large databases this reclaims a "
             "large fraction of state.db (the old layout stored duplicate "
             "copies of every message and indexed tool output). Runs "
-            "foreground with a progress bar, throttles so a running gateway "
-            "stays responsive, and VACUUMs at the end. Safe to interrupt and "
-            "re-run — it resumes where it left off. No conversation data is "
-            "changed; only the search index is rebuilt.")
+            "foreground with a progress bar and VACUUMs at the end. Safe to "
+            "interrupt and re-run — it resumes where it left off. No "
+            "conversation data is changed; only the search index is rebuilt. "
+            "OFFLINE: it refuses while any other process holds state.db — stop "
+            "the gateway, quit the Desktop app and pause cron first, then "
+            "re-run. `--force` overrides this check.")
     _flag(sessions_optimize_storage, "--no-vacuum", default=False,
         help="Skip the final VACUUM (index is rebuilt but freed pages aren't returned to the OS until a later VACUUM)")
     _flag(sessions_optimize_storage, "--yes", "-y", default=False,

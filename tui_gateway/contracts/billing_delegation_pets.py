@@ -11,7 +11,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
-from .common import MessageReaction, OpenModel, ProfileParams, SessionParams
+from .common import MessageReaction, OpenModel, PlanUsage, ProfileParams, SessionParams
 from .registry import method
 
 # ── billing envelope ──────────────────────────────────────────────────────────────────────────
@@ -161,9 +161,14 @@ class BillingStateResult(Result):
     payment_method: BillingPaymentMethod | None = None
     monthly_cap: BillingMonthlyCap | None = None
     auto_reload: BillingAutoReload | None = None
+    # Window plans: "Keep going on credits". None = no control (not admin,
+    # other plan, or an older portal).
+    keep_going_on_credits: bool | None = None
     portal_url: str | None = None
     error: str | None = None
     usage: UsageModel | None = None
+    # Usage-window gauges (today / week / top-tier); None on credit-grant / free / logged-out.
+    plan_usage: PlanUsage | None = None
 
 
 method("billing.state", params=ProfileParams, result=BillingStateResult,
@@ -218,6 +223,7 @@ class SubscriptionStateResult(Result):
     portal_url: str | None = None
     error: str | None = None
     usage: UsageModel | None = None
+    plan_usage: PlanUsage | None = None
 
 
 method("subscription.state", params=ProfileParams, result=SubscriptionStateResult,
@@ -339,6 +345,14 @@ class BillingMutationResult(BillingEnvelope):
 
 method("billing.auto_reload", params=BillingAutoReloadParams, result=BillingMutationResult,
        doc="Enable/disable auto top-up with its threshold and reload amount (billing:manage).")
+
+
+class BillingKeepGoingOnCreditsParams(ProfileParams):
+    enabled: bool = False
+
+
+method("billing.keep_going_on_credits", params=BillingKeepGoingOnCreditsParams, result=BillingMutationResult,
+       doc="Window plans: turn 'Keep going on credits' on/off (billing:manage).")
 
 
 class BillingStepUpParams(ProfileParams):

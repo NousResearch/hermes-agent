@@ -78,7 +78,8 @@ def test_real_agent_worker_persists_context_usage_and_releases_lease(tmp_path, p
             assert not proof['failed'], proof
             assert 'RECOVERY_ACK_WORKER_INFERENCE' in proof['result'], proof
             if probe_constructors:
-                assert proof['refusals']['child'] == 'worker_child_registration_required', proof['refusals']
+                # A child is reserved by the owner under this execution, never opened on SQLite (#141793).
+                assert proof['refusals']['child'] == 'opened:ChildSessionStore', proof['refusals']
                 assert proof['refusals']['cron'] == 'worker_cron_registration_required', proof['refusals']
                 assert proof['refusals']['ledger'] == 'worker_delegation_ledger_unavailable', proof['refusals']
                 success, doc, final_response, error = proof['refusals']['script_result']

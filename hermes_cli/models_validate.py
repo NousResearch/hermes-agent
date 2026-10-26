@@ -358,10 +358,15 @@ def _validate_ollama_native(req: _Request) -> Optional[dict[str, Any]]:
 def _validate_custom(req: _Request) -> dict[str, Any]:
     from hermes_cli import models as _m
 
-    # Probe with the auth shape the api_mode expects.
+    # Probe with the auth shape the api_mode expects. The user is validating an explicit
+    # add-model entry, so give the slowest live catalogs the full discovery budget instead of
+    # inheriting probe_api_models' snappier default: an entitlement gateway answering in ~8s TTFB
+    # was reported unreachable on every attempt (#134735).
     anthropic_style = req.api_mode == "anthropic_messages"
     probe_kwargs = {"api_mode": req.api_mode} if anthropic_style else {}
-    probe = _m.probe_api_models(req.api_key, req.base_url, request_headers=req.headers, **probe_kwargs)
+    probe = _m.probe_api_models(
+        req.api_key, req.base_url, request_headers=req.headers,
+        timeout=_m.CUSTOM_ENDPOINT_PROBE_TIMEOUT, **probe_kwargs)
     api_models = probe.get("models")
     if api_models is not None:
         match = _match_in_catalog(req.lookup, api_models, suggest_query=req.requested)

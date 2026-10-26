@@ -121,4 +121,33 @@ describe('useComposerActions drop warnings', () => {
     expect(warning?.detail?.split('\n')).toHaveLength(50)
     expect(warning?.detail).toContain('huge-49.zip')
   })
+
+  // Three failures can still overflow when their names are long: shorten them, keep them whole in the detail.
+  it('bounds the warning for long names and keeps every full name in its detail', async () => {
+    const stageFileForAttach = vi.fn(async () => {
+      throw new Error('Upload request is too large')
+    })
+
+    const value = { getPathForFile: () => '', stageFileForAttach }
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value })
+
+    const { result } = renderHook(() =>
+      useComposerActions({ activeSessionId: null, currentCwd: '/w', requestGateway: vi.fn() })
+    )
+
+    const names = Array.from({ length: 3 }, (_, index) => `long-${index}-${'x'.repeat(200)}.zip`)
+
+    await act(async () => {
+      await result.current.attachDroppedItems(names.map(name => ({ file: new File(['x'], name), path: '' })))
+    })
+
+    const warning = $notifications.get().find(notice => notice.message.includes('long-0-'))
+
+    expect(warning).toMatchObject({ kind: 'warning' })
+    expect(warning?.message.length).toBeLessThan(300)
+    expect(warning?.message).toContain('…')
+    expect(warning?.message).toContain('Upload request is too large')
+    expect(warning?.message).toMatch(/and \d+ more$/)
+    expect(warning?.detail?.split('\n')).toEqual(names.map(name => `Could not attach ${name}: Upload request is too large`))
+  })
 })

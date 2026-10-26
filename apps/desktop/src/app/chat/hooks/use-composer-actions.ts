@@ -24,6 +24,8 @@ import { notify, notifyError, readableError } from '@/store/notifications'
 
 import type { ImageDetachResponse } from '../../types'
 
+import { type DropFailure, dropWarning } from './drop-warning'
+
 const IMAGE_EXTENSION_PATTERN = /\.(png|jpe?g|gif|webp|bmp|tiff?|svg|ico)$/i
 
 const BLOB_MIME_EXTENSION: Record<string, string> = {
@@ -46,9 +48,6 @@ function blobExtension(blob: Blob): string {
 export function isImagePath(filePath: string): boolean {
   return IMAGE_EXTENSION_PATTERN.test(filePath)
 }
-
-/** How many failed drop items the warning names before it counts the rest. */
-const DROP_FAILURES_SHOWN = 3
 
 /** A dropped File the composer sends as an image; never a folder, which has no bytes. */
 function isDroppedImage(file: File, filePath: string, isDirectory?: boolean): boolean {
@@ -141,15 +140,13 @@ export async function stageDroppedFilePath(candidate: DroppedFile): Promise<stri
 
 /** Stage a drop for the main composer's chips. A rejected stage keeps its
  * reason in the failure the drop warning shows, not a bare "Could not attach". */
-async function stageDropForChip(candidate: DroppedFile, label: string): Promise<{ failure: string; path: string }> {
-  const failure = `Could not attach ${label}`
-
+async function stageDropForChip(candidate: DroppedFile, name: string): Promise<{ failure: DropFailure; path: string }> {
   try {
-    return { failure, path: await stageDroppedFilePath(candidate) }
+    return { failure: { name }, path: await stageDroppedFilePath(candidate) }
   } catch (error) {
     const reason = readableError(error, '').message
 
-    return { failure: reason ? `${failure}: ${reason}` : failure, path: '' }
+    return { failure: reason ? { name, reason } : { name }, path: '' }
   }
 }
 
@@ -812,7 +809,7 @@ export function useComposerActions({
 
       let attached = false
       // Every item that failed, so a drop that attached some files still names the rest.
-      const failures: string[] = []
+      const failures: DropFailure[] = []
 
       for (const candidate of candidates) {
         const { file, isDirectory, path: knownPath } = candidate
@@ -826,7 +823,7 @@ export function useComposerActions({
               continue
             }
 
-            failures.push(`Could not attach folder ${knownPath || ''}`)
+            failures.push({ name: `folder ${knownPath || ''}` })
 
             continue
           }
@@ -838,7 +835,7 @@ export function useComposerActions({
               continue
             }
 
-            failures.push(`Could not attach ${knownPath}`)
+            failures.push({ name: knownPath })
 
             continue
           }
@@ -849,7 +846,7 @@ export function useComposerActions({
             continue
           }
 
-          failures.push(`Could not attach ${knownPath || 'file'}`)
+          failures.push({ name: knownPath || 'file' })
 
           continue
         }
@@ -875,7 +872,7 @@ export function useComposerActions({
             continue
           }
 
-          failures.push(`Could not attach ${file.name || 'image'}`)
+          failures.push({ name: file.name || 'image' })
 
           continue
         }
@@ -893,18 +890,7 @@ export function useComposerActions({
       }
 
       if (failures.length) {
-        // Name the first few and count the rest so a large drop can't grow the toast
-        // off screen; the full list rides in the collapsible detail.
-        const hidden = failures.length - DROP_FAILURES_SHOWN
-        const shown = failures.slice(0, DROP_FAILURES_SHOWN).join('; ')
-        const more = copy.dropFilesMore
-
-        notify({
-          kind: 'warning',
-          title: copy.dropFiles,
-          message: hidden > 0 ? `${shown}; ${more(hidden)}` : shown,
-          ...(hidden > 0 ? { detail: failures.join('\n') } : {})
-        })
+        notify({ kind: 'warning', title: copy.dropFiles, ...dropWarning(failures, copy.dropFilesMore) })
       }
 
       return attached

@@ -1501,29 +1501,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     # -- Multi-profile multiplexing (/p/<profile>/...) --------------------------------
 
     def _resolve_request_profile(self, request: web.Request):
-        """Resolve + validate the /p/<profile>/ prefix: ``None`` (no prefix, or multiplexing
-        off and the prefix names this gateway's own profile), the served profile name, or
-        ``_PROFILE_REJECTED`` (-> 404). Fail closed: a foreign prefix must never be ignored."""
-        profile = (request.match_info.get("profile") or "").strip()
-        if not profile:
-            return None
-        cfg = getattr(self.gateway_runner, "config", None)
-        if not getattr(cfg, "multiplex_profiles", False):
-            return None if _prefix_names_served_profile(profile) else _PROFILE_REJECTED
-        try:
-            from hermes_cli.profiles import profiles_to_serve
-            served = {name for name, _ in profiles_to_serve(multiplex=True)}
-        except Exception:
-            return _PROFILE_REJECTED
-        if profile in served:
-            return profile
-        # 'hermes' is the reserved @handle a peer always advertises its default profile
-        # under (apps/desktop hermes-bots/data.ts:botHandle), never a real profile name.
-        # Addressing the mirror by that handle must reach the same profile it labels
-        # (#118076), unless a profile is actually named 'hermes'.
-        if profile == "hermes" and "hermes" not in served and "default" in served:
-            return "default"
-        return _PROFILE_REJECTED
+        from gateway.platforms.api_server_profile_prefix import resolve_request_profile
+        return resolve_request_profile(self, request)
 
     @staticmethod
     def _profile_scope(profile: Optional[str]):

@@ -91,7 +91,11 @@ def _request(
 def _base_url(peer: dict, profile: str | None) -> str:
     url = str(peer.get("url") or "").rstrip("/")
     if profile:
-        # Multiplex mirror: same handlers, scoped to the named profile.
+        # Multiplex mirror: same handlers, scoped to the named profile. The mirror is keyed by
+        # profile name, and Bot Mode shows a peer's default profile as @hermes (#118076); an
+        # older peer has no alias for it on its side.
+        if profile.lower() == "hermes":
+            profile = "default"
         return f"{url}/p/{urllib.parse.quote(profile, safe='')}"
     return url
 

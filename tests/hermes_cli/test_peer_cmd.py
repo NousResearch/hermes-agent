@@ -41,6 +41,11 @@ def test_base_url_bare_and_profile():
     assert peer_cmd._base_url(peer, "researcher") == "http://spark.lan:8377/p/researcher"
 
 
+def test_base_url_addresses_the_default_handle_by_profile_name():
+    # Bot Mode shows a peer's default profile as @hermes; an older peer serves it only at /p/default (#118076).
+    assert peer_cmd._base_url({"url": "http://spark.lan:8377"}, "Hermes") == "http://spark.lan:8377/p/default"
+
+
 # ── registry round-trip (isolated config) ────────────────────────────────────
 
 

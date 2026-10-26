@@ -405,6 +405,15 @@ def test_cli_and_dashboard_receive_graph_aware_deadlock_diagnostic(
     kb._INITIALIZED_PATHS.clear()
     kb.init_db()
 
+    # This test is about graph-aware diagnostics (review_dependency_deadlock),
+    # not profile liveness. "builder"/"reviewer" are symbolic test assignees
+    # with no installed Hermes profile, so without this they would also trip
+    # _rule_dead_assignee (critical severity) and shadow the diagnostic under
+    # test, which is the exact dead_assignee regression this guards against.
+    from hermes_cli import profiles as hermes_profiles
+
+    monkeypatch.setattr(hermes_profiles, "profile_exists", lambda _name: True)
+
     with kbc.connect() as conn:
         parent_id = kb.create_task(conn, title="Implementation", assignee="builder")
         child_id = kb.create_task(

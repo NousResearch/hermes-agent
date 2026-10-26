@@ -482,7 +482,10 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
             if emitter is not None:
                 emitter.emit_result({"failed": True, "error": "credentials or agent init failed"},
                                     session_id=cli.session_id or "", exit_code=fail_code)
-            exit_single_query(fail_code)  # credentials or agent init failed
+            exit_single_query(
+                fail_code,
+                kanban_cause=getattr(cli, "_kanban_exit_cause", None),
+            )  # credentials or agent init failed
         # No welcome banner (~420 ms cold); session id / resume hint come from _print_exit_summary().
         _query_label = query or ("[image attached]" if single_query_images else "")
         if _query_label:

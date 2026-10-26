@@ -133,7 +133,7 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
 
 # Mirror gateway/kanban_watchers.py TERMINAL_KINDS: claim silent kinds (archived/unblocked) too so the cursor advances
 # past them and they can't wedge a later completed/blocked event behind an unclaimed row.
-_KANBAN_NOTIFY_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked")
+_KANBAN_NOTIFY_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "config_fatal", "dead_assignee", "status", "archived", "unblocked")
 # kanban, /loop + /heartbeat and the bot mailbox share one idle-poll cadence; probing the lease registry on
 # every 0.5s queue timeout cost ~a core at 11 sessions (#108005).
 _KANBAN_POLL_SECONDS = _LOOP_POLL_SECONDS = _BOT_DELIVERY_POLL_SECONDS = 5.0
@@ -322,8 +322,17 @@ _KANBAN_EVENT_FORMATTERS = {
     "blocked": ("⏸", lambda t, p, title: " blocked" + (f": {str(p.get('reason'))[:160]}" if p.get("reason") else "")),
     "gave_up": ("✖", lambda t, p, title: " gave up after repeated spawn failures"
                 + (f"\n{str(p.get('error'))[:200]}" if p.get("error") else "")),
-    "crashed": ("✖", lambda t, p, title: " worker crashed (pid gone); dispatcher will retry"),
+    "crashed": ("🚨", lambda t, p, title: (
+        " blocked: provider configuration is unusable; fix it, then unblock or reassign"
+        if p.get("config_fatal") else " worker crashed (pid gone); dispatcher will retry"
+    )),
     "timed_out": ("⏱", _kb_timed_out),
+    "config_fatal": ("🚨", lambda t, p, title: (
+        " blocked: provider configuration is unusable; fix it, then unblock or reassign"
+    )),
+    "dead_assignee": ("🚨", lambda t, p, title: (
+        f" blocked: assignee profile {p.get('assignee')!r} is unavailable; restore it or reassign"
+    )),
     "status": ("🔄", lambda t, p, title: f" → {p.get('status') or ''}"),
 }
 

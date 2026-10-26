@@ -33,15 +33,15 @@ def _kbn():
 # "status" covers dashboard drag-drop and `_set_status_direct()`.
 # ``review_requested`` wakes the origin like a block but is not one;
 # the task is not archived so later review cycles keep notifying.
-TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested")
+TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "config_fatal", "dead_assignee", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested")
 # Kinds that hand a decision back to the origin, which must take a turn.
 # status/archived/unblocked are bookkeeping.
-_WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected")
+_WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "config_fatal", "dead_assignee", "blocked", "review_requested", "changes_requested", "block_loop_detected")
 
 
 def diagnostic_event(ev) -> bool:
     """Infrastructure attention is distinct from an explicit owner decision."""
-    if ev.kind in {"crashed", "timed_out", "gave_up"}:
+    if ev.kind in {"crashed", "timed_out", "gave_up", "config_fatal", "dead_assignee"}:
         return True
     if ev.kind in {"blocked", "block_loop_detected"}:
         return (ev.payload or {}).get("kind") != "needs_input"
@@ -453,6 +453,15 @@ def _fmt_timed_out(ev, n) -> tuple:
     return f"⏱ {n.head} ran past {span} and was stopped; it will be retried automatically.", None, None
 
 
+def _fmt_crashed(ev, n) -> tuple:
+    if _payload(ev, "config_fatal"):
+        return (
+            f"🚨 {n.head} is blocked: its provider configuration is unusable. "
+            "Fix the provider setup, then unblock or reassign the task.", None, None,
+        )
+    return f"✖ {n.head} — its worker stopped unexpectedly; it will be retried automatically.", None, None
+
+
 def _fmt_stale_waiting_manager_escalated(ev, n) -> tuple:
     """Bounded retry/backoff exhausted with no resolution: named a manager
     (config-resolved, never hardcoded) and left a durable board comment.
@@ -507,10 +516,16 @@ _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
     "completed": _fmt_completed,
     "blocked": lambda ev, n: (f"⏸ {n.head} blocked{_clip(ev, 'reason', ': {}', 160)}", None, None),
     "gave_up": _fmt_gave_up,
-    "crashed": lambda ev, n: (
-        f"✖ {n.head} — its worker stopped unexpectedly; it will be retried automatically.", None, None,
-    ),
+    "crashed": _fmt_crashed,
     "timed_out": _fmt_timed_out,
+    "config_fatal": lambda ev, n: (
+        f"🚨 {n.head} is blocked: its profile configuration is unusable. "
+        "Fix the profile/provider setup, then unblock or reassign affected cards.", None, None,
+    ),
+    "dead_assignee": lambda ev, n: (
+        f"🚨 {n.head} is blocked: assignee profile {_payload(ev, 'assignee')!r} is unavailable. "
+        "Restore it or reassign the task to an installed profile.", None, None,
+    ),
     "status": lambda ev, n: (f"🔄 {n.head} → {_payload(ev, 'status') or ''}", None, None),
     "review_requested": _fmt_review_requested,
     "changes_requested": _fmt_changes_requested,

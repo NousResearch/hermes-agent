@@ -617,7 +617,12 @@ def _cmd_show(args: argparse.Namespace) -> int:
 
     # Diagnostics up top so CLI users see distress signals before scrolling.
     from hermes_cli import kanban_diagnostics as kd
-    diags = kd.compute_task_diagnostics(task, events, runs, graph=graph)
+    from hermes_cli.profiles import profile_exists
+    from hermes_cli.kanban_db_dispatch import _assignee_is_claimable_here
+    diags = kd.compute_task_diagnostics(
+        task, events, runs, graph=graph,
+        config={"profile_exists": profile_exists, "assignee_claimable": _assignee_is_claimable_here},
+    )
     if diags:
         print(f"\n  Diagnostics ({len(diags)}):")
         _print_diagnostics(diags, "    ", with_kind=False)

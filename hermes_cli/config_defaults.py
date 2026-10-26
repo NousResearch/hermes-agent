@@ -1856,6 +1856,11 @@ DEFAULT_CONFIG = {
         # Auto-block after this many consecutive non-success attempts (spawn_failed, timed_out,
         # crashed) for the same task/profile. Reassignment resets the streak.
         "failure_limit": 2,
+        # Floor (seconds) between live credential re-probes for the SAME config_fatal-parked
+        # profile (#t_f9a0fdf7): without it every dispatcher tick would fire one authenticated
+        # HTTP call per parked profile. Clamped to a 30s minimum; a probe that still fails is
+        # re-tried on the next eligible tick, a confirmed pass requeues the parked cards once.
+        "config_fatal_recheck_interval_seconds": 300,
         # Worker stdout/stderr log rotation at spawn time (2 MiB + one backup). Raise to keep more
         # early failure evidence from long-running workers.
         "worker_log_rotate_bytes": 2 * 1024 * 1024,

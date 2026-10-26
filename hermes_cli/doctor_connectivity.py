@@ -403,6 +403,67 @@ def _probe_github_token() -> ProbeResult:
     return _row(name, "fail", f"(HTTP {r.status_code} from api.github.com)")
 
 
+def probe_active_provider_credential(timeout: float = 10.0) -> dict:
+    """Cheap, read-only verdict on THIS profile's ACTIVE provider credential — the one the next
+    agent turn would actually use — for automation that needs a boolean rather than the full
+    doctor report (``hermes doctor --check-active-provider``; the Kanban dispatcher's
+    config_fatal recovery check runs it as a subprocess per parked profile).
+
+    Returns ``{"ok": bool, "provider": str | None, "reason": str, "detail": str}``. Any
+    ambiguous outcome (resolution failure, network error, a non-200/401/403/429 status) reports
+    ``ok=False`` — fail closed, never let an inconclusive probe look like a healthy credential.
+    """
+    from hermes_cli.runtime_provider import resolve_runtime_provider, format_runtime_provider_error
+    try:
+        runtime = resolve_runtime_provider()
+    except Exception as exc:
+        return {"ok": False, "provider": None, "reason": "resolve_failed",
+                "detail": format_runtime_provider_error(exc)}
+    provider = runtime.get("provider") or ""
+    from agent.command_token_source import materialize_probe_api_key
+    # A callable credential (for example a key_cmd or Entra source) has not proved it can mint
+    # until it is invoked. Materialize it before the request so recovery unblocks only after the
+    # same credential path the next turn uses has produced a bearer token.
+    cred = materialize_probe_api_key(runtime.get("api" + "_key"))
+    base_url = (runtime.get("base_url") or "").rstrip("/")
+    if not cred or not base_url:
+        return {"ok": False, "provider": provider, "reason": "no_credential",
+                "detail": "No usable API key / base URL resolved for the active provider."}
+    try:
+        import httpx
+        api_mode = str(runtime.get("api_mode") or "").strip().lower()
+        if api_mode == "anthropic_messages":
+            # Native Anthropic does not accept the generic Bearer /models probe. Normalise exactly
+            # as its client does (including Azure's api-version), then use the native auth family.
+            from agent.anthropic_adapter import _COMMON_BETAS, _OAUTH_ONLY_BETAS, _base_client_kwargs
+            from agent.anthropic_credentials import _is_oauth_token
+            from agent.anthropic_endpoints import _requires_bearer_auth
+
+            normalized, kwargs = _base_client_kwargs(base_url, None)
+            is_oauth = _is_oauth_token(cred)
+            headers = {"anthropic-version": "2023-06-01", "User-Agent": _HERMES_USER_AGENT}
+            if is_oauth or _requires_bearer_auth(normalized):
+                headers["Authorization"] = f"Bearer {cred}"
+            else:
+                headers["x-api-key"] = cred
+            if is_oauth:
+                headers["anthropic-beta"] = ",".join(_COMMON_BETAS + _OAUTH_ONLY_BETAS)
+            resp = httpx.get(normalized + "/v1/models", headers=headers,
+                             params=kwargs.get("default_query"), timeout=timeout)
+        else:
+            resp = httpx.get(base_url + "/models",
+                             headers={"Authorization": f"Bearer {cred}", "User-Agent": _HERMES_USER_AGENT},
+                             timeout=timeout)
+    except Exception as exc:
+        return {"ok": False, "provider": provider, "reason": "network_error", "detail": str(exc)}
+    if resp.status_code in (200, 429):  # 429 = valid key, rate-limited
+        return {"ok": True, "provider": provider, "reason": "", "detail": f"HTTP {resp.status_code}"}
+    if resp.status_code in (401, 403):
+        return {"ok": False, "provider": provider, "reason": "credential_rejected",
+                "detail": f"HTTP {resp.status_code}"}
+    return {"ok": False, "provider": provider, "reason": "inconclusive", "detail": f"HTTP {resp.status_code}"}
+
+
 def build_probes() -> list:
     """(label, callable) pairs in display order."""
     global _APIKEY_PROVIDERS_CACHE

@@ -84,6 +84,46 @@ def _unseen_terminal_events(tid):
         conn.close()
 
 
+def test_dead_assignee_event_notifies_subscriber(tmp_path, monkeypatch):
+    """A missing assignee profile must enter the existing alert channel."""
+    db_path = tmp_path / "dead-assignee.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="dead assignee", assignee="broken-profile")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb._append_event(conn, tid, "dead_assignee", {"assignee": "broken-profile"})
+        conn.commit()
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+    assert len(adapter.sent) == 1
+    assert "assignee profile 'broken-profile' is unavailable" in adapter.sent[0]["text"]
+
+
+def test_structured_provider_config_crash_does_not_promise_a_retry(tmp_path, monkeypatch):
+    db_path = tmp_path / "provider-config.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="provider config", assignee="broken-profile")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb._append_event(conn, tid, "crashed", {"config_fatal": True})
+        conn.commit()
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+    assert len(adapter.sent) == 1
+    assert "provider configuration is unusable" in adapter.sent[0]["text"]
+    assert "retried automatically" not in adapter.sent[0]["text"]
+
+
 def test_kanban_notifier_replays_telegram_dm_topic_delivery_metadata(tmp_path, monkeypatch):
     db_path = tmp_path / "dm-topic-metadata.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))

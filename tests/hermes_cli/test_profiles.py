@@ -1751,3 +1751,19 @@ class TestCloneAllExcludesRuntimeTrees:
             assert not (clone / name).exists(), name
         assert (clone / "skills" / "greet" / "SKILL.md").is_file()
         assert (clone / "config.yaml").is_file()
+
+
+def test_delete_profile_refuses_to_orphan_nonterminal_kanban_cards(profile_env, monkeypatch):
+    """Tombstoning a profile with open work must be explicit rather than silently
+    leaving cards assigned to a profile no dispatcher can launch."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(profile_env / ".hermes"))
+    kb.init_db()
+    create_profile("orphaned", no_alias=True)
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="must reassign", assignee="orphaned")
+    with pytest.raises(ValueError, match=tid):
+        delete_profile("orphaned", yes=True)
+    assert profiles.profile_exists("orphaned")

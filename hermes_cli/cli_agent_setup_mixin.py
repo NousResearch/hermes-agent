@@ -234,6 +234,7 @@ class CLIAgentSetupMixin:
         runtime = None
         _model_at_entry = self.model
         self._credentials_rate_limited = False
+        self._kanban_exit_cause = None
         try:
             # target_model: the ladder's model-keyed rungs (Zen/Go api_mode, Copilot/Nous
             # api_mode) must see the model this CLI will actually send, not config's `default`,
@@ -256,6 +257,7 @@ class CLIAgentSetupMixin:
                 print(message, file=sys.stderr)  # quiet/stream-json: stdout is machine-readable
             else:
                 ChatConsole().print(f"[bold red]{message}[/]")
+            self._kanban_exit_cause = "provider_config"
             return False
         api_key = runtime.get("api_key")
         base_url = runtime.get("base_url")
@@ -286,10 +288,12 @@ class CLIAgentSetupMixin:
                     print("\n⚠️  No inference provider is configured.")
                 print("   Run 'hermes model' to choose a provider, or "
                       "'hermes setup' for first-time setup.")
+                self._kanban_exit_cause = "provider_config"
                 return False
         if not isinstance(base_url, str) or not base_url:
             print("\n⚠️  Provider resolver returned an empty base URL. "
                   "Check your provider config or run: hermes setup")
+            self._kanban_exit_cause = "provider_config"
             return False
         credentials_changed = api_key != self.api_key or base_url != self.base_url
         routing_changed = resolved_routing != (self.provider, self.api_mode, self.acp_command, self.acp_args)

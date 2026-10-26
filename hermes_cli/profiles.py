@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -1512,6 +1513,45 @@ class ProfileIdentitySettlementPending(RuntimeError):
             f"still pending — run: {self.retry_command}")
 
 
+def _open_kanban_cards_for_profile(profile: str) -> list[str]:
+    """Return non-terminal cards assigned to ``profile`` across local boards.
+
+    Profile deletion must not silently orphan cards. This deliberately uses a
+    read-only SQLite connection rather than Kanban mutators: profile management
+    can be invoked while a dispatcher has the board open, and an unreadable
+    board is treated as a refusal rather than a reason to proceed blindly.
+    """
+    from hermes_cli import kanban_db as kb
+
+    candidates = [("default", kb.kanban_db_path("default"))]
+    try:
+        root = kb.boards_root()
+        if root.exists():
+            for entry in root.iterdir():
+                if entry.is_dir() and (entry / "kanban.db").exists():
+                    candidates.append((entry.name, entry / "kanban.db"))
+    except OSError as exc:
+        raise RuntimeError(f"could not inspect Kanban boards before deleting {profile!r}: {exc}") from exc
+
+    open_cards: list[str] = []
+    for board, path in candidates:
+        if not path.exists():
+            continue
+        try:
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+            try:
+                rows = conn.execute(
+                    "SELECT id FROM tasks WHERE assignee = ? AND status NOT IN ('done', 'archived')",
+                    (profile,),
+                ).fetchall()
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:
+            raise RuntimeError(f"could not inspect Kanban board {board!r} before deleting {profile!r}: {exc}") from exc
+        open_cards.extend(f"{board}/{row[0]}" for row in rows)
+    return open_cards
+
+
 def delete_profile(name: str, yes: bool = False) -> Path:
     """Delete a profile, its wrapper script, and its gateway service (service disabled first
     to prevent auto-restart, gateway stopped if running)."""
@@ -1519,6 +1559,14 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     if canon == "default":
         raise ValueError("Cannot delete the default profile (~/.hermes).\nTo remove everything, use: hermes uninstall")
     canon, profile_dir = _existing_profile_dir(canon)
+    open_cards = _open_kanban_cards_for_profile(canon)
+    if open_cards:
+        rendered = ", ".join(open_cards[:12])
+        suffix = " …" if len(open_cards) > 12 else ""
+        raise ValueError(
+            f"Cannot delete profile {canon!r}: {len(open_cards)} non-terminal Kanban card(s) are still "
+            f"assigned to it ({rendered}{suffix}). Reassign, complete, or archive those cards first."
+        )
     gw_running = _check_gateway_running(profile_dir)
     wrapper_path = _get_wrapper_dir() / canon
     has_wrapper = wrapper_path.exists()

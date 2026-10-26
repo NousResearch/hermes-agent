@@ -163,8 +163,25 @@ def _print_summary(should_fix: bool, total: Finding) -> None:
     print()
 
 
+def _check_active_provider_json() -> int:
+    """`hermes doctor --check-active-provider`: one JSON line, no other output.
+
+    Automation seam for the Kanban dispatcher's config_fatal recovery check (#t_f9a0fdf7):
+    it needs a boolean verdict about THIS profile's active provider credential from a
+    separate process bound to that profile's HERMES_HOME/secret scope, not the full
+    human-readable doctor report.
+    """
+    import json
+    from hermes_cli.doctor_connectivity import probe_active_provider_credential
+    result = probe_active_provider_credential()
+    print(json.dumps(result), flush=True)
+    return 0 if result.get("ok") else 1
+
+
 def run_doctor(args):
     """Run diagnostic checks."""
+    if getattr(args, 'check_active_provider', False):
+        return _check_active_provider_json()
     should_fix = getattr(args, 'fix', False)
     # Doctor runs from the interactive CLI, so CLI-gated tool checks (e.g. cronjob) see the same context.
     os.environ.setdefault("HERMES_INTERACTIVE", "1")

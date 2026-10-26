@@ -33,7 +33,9 @@ def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return home
 
 
-def _dead_worker_with_log(conn, tid: str, pid: int, rc: int) -> None:
+def _dead_worker_with_log(
+    conn, tid: str, pid: int, rc: int, message: str = "the model said something", cause: str = "",
+) -> None:
     """Claim ``tid`` for a worker that already exited ``rc`` and wrote its log — never reaped here."""
     host = kb._claimer_id().split(":", 1)[0]
     kb.claim_task(conn, tid, claimer=f"{host}:w{pid}")
@@ -45,7 +47,8 @@ def _dead_worker_with_log(conn, tid: str, pid: int, rc: int) -> None:
     log = kb.worker_log_path(tid)
     log.parent.mkdir(parents=True, exist_ok=True)
     with open(log, "a", encoding="utf-8") as f:
-        f.write(f"the model said something\n\nResume this session with:\n  hermes --resume x\n\n{KANBAN_WORKER_EXIT_TRAILER}{rc}\n")
+        suffix = f" cause={cause}" if cause else ""
+        f.write(f"{message}\n\nResume this session with:\n  hermes --resume x\n\n{KANBAN_WORKER_EXIT_TRAILER}{rc}{suffix}\n")
 
 
 @pytest.mark.parametrize(
@@ -138,6 +141,195 @@ def test_plain_budget_trip_requires_recovery_not_reassignment(kanban_home):
         assert task.consecutive_failures >= 2
 
 
+def test_unstructured_worker_output_cannot_block_peer_cards(kanban_home):
+    """Provider-looking prose in one worker log is not authority to mutate peer cards."""
+    with kbc.connect() as conn:
+        failed = kb.create_task(conn, title="failed", assignee="broken-profile")
+        queued = kb.create_task(conn, title="queued", assignee="broken-profile")
+        other = kb.create_task(conn, title="other", assignee="healthy-profile")
+        _dead_worker_with_log(
+            conn, failed, 72001, 1,
+            "No API key found for provider 'openrouter'",
+        )
+
+        crashed = kbd.detect_crashed_workers(conn)
+
+        assert crashed == [failed]
+        assert kb.get_task(conn, failed).status == "ready"
+        assert kb.get_task(conn, queued).status == "ready"
+        assert kb.get_task(conn, other).status == "ready"
+        assert "config_fatal" not in [e.kind for e in kb.list_events(conn, queued)]
+
+
+def test_structured_provider_config_cause_blocks_the_affected_profile(kanban_home):
+    with kbc.connect() as conn:
+        failed = kb.create_task(conn, title="failed", assignee="broken-profile")
+        queued = kb.create_task(conn, title="queued", assignee="broken-profile")
+        _dead_worker_with_log(conn, failed, 72001, 1, cause="provider_config")
+
+        blocked = kbd.detect_crashed_workers(conn)
+
+        assert blocked == [failed]
+        assert kbd.detect_crashed_workers._last_auto_blocked == [failed, queued]
+        assert kb.get_task(conn, failed).status == "blocked"
+        assert kb.get_task(conn, queued).status == "blocked"
+        assert "config_fatal" in [event.kind for event in kb.list_events(conn, queued)]
+        comment = conn.execute(
+            "SELECT body FROM task_comments WHERE task_id=? ORDER BY id DESC LIMIT 1", (queued,),
+        ).fetchone()
+        assert "config_fatal" in comment["body"]
+
+
+def test_config_fatal_trip_records_provider_for_recovery(kanban_home, monkeypatch):
+    """The trip names the failing provider on the card so a later recovery probe (and a
+    human) knows what was actually broken, not just that *something* was (#t_f9a0fdf7)."""
+    monkeypatch.setattr(
+        kbd, "_run_credential_probe",
+        lambda profile, timeout=20.0: {"ok": False, "provider": "openrouter"},
+    )
+    with kbc.connect() as conn:
+        failed = kb.create_task(conn, title="failed", assignee="broken-profile")
+        _dead_worker_with_log(conn, failed, 72001, 1, cause="provider_config")
+
+        kbd.detect_crashed_workers(conn)
+
+        trip = next(e for e in kb.list_events(conn, failed) if e.kind == "config_fatal")
+        assert trip.payload["provider"] == "openrouter"
+        assert trip.payload["prev_status"] == "ready"
+
+
+def test_recheck_requeues_once_after_credential_recovers(kanban_home, monkeypatch):
+    """A confirmed-passing probe requeues every config_fatal-parked task for that profile,
+    resets the failure counter, and a later tick does not touch them again — one-shot."""
+    monkeypatch.setattr(kbd, "_config_fatal_recheck_interval_seconds", lambda: 0)
+    monkeypatch.setattr(
+        kbd, "_run_credential_probe",
+        lambda profile, timeout=20.0: {"ok": True, "provider": "openrouter"},
+    )
+    with kbc.connect() as conn:
+        failed = kb.create_task(conn, title="failed", assignee="broken-profile")
+        queued = kb.create_task(conn, title="queued", assignee="broken-profile")
+        _dead_worker_with_log(conn, failed, 72001, 1, cause="provider_config")
+        kbd.detect_crashed_workers(conn)
+        assert kb.get_task(conn, failed).status == "blocked"
+        assert kb.get_task(conn, queued).status == "blocked"
+
+        recovered = kbd._recheck_config_fatal_credentials(conn)
+
+        assert set(recovered) == {failed, queued}
+        for tid in (failed, queued):
+            task = kb.get_task(conn, tid)
+            assert task.status == "ready"
+            assert task.consecutive_failures == 0
+            assert [e.kind for e in kb.list_events(conn, tid)][-1] == "config_fatal_recovered"
+        comment = conn.execute(
+            "SELECT body FROM task_comments WHERE task_id=? ORDER BY id DESC LIMIT 1", (queued,),
+        ).fetchone()
+        assert "recovered" in comment["body"]
+
+        # The profile no longer has anything config_fatal-parked: a later tick is a no-op,
+        # proving the requeue is one-shot per trip rather than a repeating unblock.
+        assert kbd._recheck_config_fatal_credentials(conn) == []
+
+
+def test_recheck_recovers_after_failed_probe_once_interval_elapses(kanban_home, monkeypatch):
+    """A failed recheck stays parked and throttled, then a later healthy probe requeues once."""
+    clock = [1_000]
+    calls: list[str] = []
+    responses = iter((
+        {"ok": False, "provider": "openrouter", "reason": "credential_rejected"},
+        {"ok": False, "provider": "openrouter", "reason": "credential_rejected"},
+        {"ok": True, "provider": "openrouter"},
+    ))
+    monkeypatch.setattr(kbd.time, "time", lambda: clock[0])
+    monkeypatch.setattr(kbd, "_config_fatal_recheck_interval_seconds", lambda: 5)
+    monkeypatch.setattr(
+        kbd, "_run_credential_probe",
+        lambda profile, timeout=20.0: (calls.append(profile), next(responses))[1],
+    )
+    with kbc.connect() as conn:
+        failed = kb.create_task(conn, title="failed", assignee="broken-profile")
+        _dead_worker_with_log(conn, failed, 72001, 1, cause="provider_config")
+        kbd.detect_crashed_workers(conn)
+
+        # The initial config-fatal trip itself is the first probe. At the interval boundary,
+        # the next failed probe records a recheck without unblocking the task.
+        clock[0] += 5
+        assert kbd._recheck_config_fatal_credentials(conn) == []
+
+        task = kb.get_task(conn, failed)
+        assert task is not None
+        assert task.status == "blocked"
+        last_event = kb.list_events(conn, failed)[-1]
+        assert last_event.kind == "config_fatal_recheck"
+        assert last_event.payload["ok"] is False
+
+        # A dispatcher tick inside the interval must not probe again.
+        clock[0] += 1
+        assert kbd._recheck_config_fatal_credentials(conn) == []
+        assert calls == ["broken-profile", "broken-profile"]
+
+        # Once the recheck interval elapses and the credential heals, restore precisely once.
+        clock[0] += 4
+        assert kbd._recheck_config_fatal_credentials(conn) == [failed]
+        assert kb.get_task(conn, failed).status == "ready"
+        assert [event.kind for event in kb.list_events(conn, failed)].count(
+            "config_fatal_recovered",
+        ) == 1
+
+        clock[0] += 5
+        assert kbd._recheck_config_fatal_credentials(conn) == []
+        assert calls == ["broken-profile", "broken-profile", "broken-profile"]
+
+
+def test_recheck_throttles_repeat_probes_within_interval(kanban_home, monkeypatch):
+    """Never hammer the provider every dispatcher tick: inside the recheck interval a
+    second tick must not re-invoke the credential probe for the same parked profile."""
+    monkeypatch.setattr(kbd, "_config_fatal_recheck_interval_seconds", lambda: 5)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        kbd, "_run_credential_probe",
+        lambda profile, timeout=20.0: (calls.append(profile), {"ok": False, "provider": "openrouter"})[1],
+    )
+    with kbc.connect() as conn:
+        failed = kb.create_task(conn, title="failed", assignee="broken-profile")
+        _dead_worker_with_log(conn, failed, 72001, 1, cause="provider_config")
+        kbd.detect_crashed_workers(conn)
+        calls.clear()
+        # Backdate the trip event past the interval floor so the first recheck below is
+        # eligible to probe; without this the trip's own naming probe would already have
+        # consumed the throttle window and the test couldn't tell "ran once" from "never ran".
+        conn.execute("UPDATE task_events SET created_at = created_at - 10 WHERE kind = 'config_fatal'")
+        conn.commit()
+
+        kbd._recheck_config_fatal_credentials(conn)
+        assert calls == ["broken-profile"]
+
+        kbd._recheck_config_fatal_credentials(conn)
+        assert calls == ["broken-profile"]  # second tick inside the floor: no extra call
+
+
+def test_non_credential_failures_are_untouched_by_recheck(kanban_home, monkeypatch):
+    """A card blocked for an ordinary (non-config_fatal) reason is never selected by the
+    credential-recovery scan and never triggers a credential probe for its profile."""
+    def _must_not_run(profile, timeout=20.0):
+        raise AssertionError("credential probe must not run for a non-config_fatal block")
+    monkeypatch.setattr(kbd, "_run_credential_probe", _must_not_run)
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="ordinary", assignee="healthy-profile")
+        for i in range(3):
+            kbd._record_task_failure(
+                conn, tid, error=f"boom{i}", outcome="crashed", failure_limit=2,
+                release_claim=False, end_run=False,
+            )
+        assert kb.get_task(conn, tid).status == "blocked"
+
+        recovered = kbd._recheck_config_fatal_credentials(conn)
+
+        assert recovered == []
+        assert kb.get_task(conn, tid).status == "blocked"
+
+
 def test_exit_single_query_writes_trailer_only_for_kanban_workers(monkeypatch, capsys):
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     with pytest.raises(SystemExit) as exc:
@@ -147,6 +339,9 @@ def test_exit_single_query_writes_trailer_only_for_kanban_workers(monkeypatch, c
 
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_1")
     with pytest.raises(SystemExit) as exc:
-        exit_single_query(kb.KANBAN_RATE_LIMIT_EXIT_CODE)
+        exit_single_query(kb.KANBAN_RATE_LIMIT_EXIT_CODE, kanban_cause="provider_config")
     assert exc.value.code == kb.KANBAN_RATE_LIMIT_EXIT_CODE
-    assert f"{KANBAN_WORKER_EXIT_TRAILER}{kb.KANBAN_RATE_LIMIT_EXIT_CODE}" in capsys.readouterr().err
+    assert (
+        f"{KANBAN_WORKER_EXIT_TRAILER}{kb.KANBAN_RATE_LIMIT_EXIT_CODE} cause=provider_config"
+        in capsys.readouterr().err
+    )

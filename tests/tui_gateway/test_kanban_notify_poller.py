@@ -140,6 +140,21 @@ class TestCollectKanbanNotifications:
         assert len(rows) == 1
         assert rows[0]["last_event_id"] > pre_cursor
 
+    def test_dead_assignee_event_is_rendered_before_its_cursor_advances(self):
+        tid = _create_subscribed_task()
+        conn = kbc.connect()
+        try:
+            kb._append_event(conn, tid, "dead_assignee", {"assignee": "gone"})
+            conn.commit()
+        finally:
+            conn.close()
+
+        texts = _collect_kanban_notifications(_session())
+
+        assert len(texts) == 1
+        assert "assignee profile 'gone' is unavailable" in texts[0]
+        assert _collect_kanban_notifications(_session()) == []
+
     def test_non_tui_subscription_does_not_open_board_writable(self):
         tid = _create_subscribed_task(platform="telegram", chat_id="chat-1")
         # New subs start caught up at creation time (issue #29905); record the

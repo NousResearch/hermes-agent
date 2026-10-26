@@ -197,6 +197,21 @@ def test_engine_works_on_sqlite_row_objects(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+def test_dead_assignee_is_critical_and_ignores_terminal_cards():
+    missing = lambda _name: False
+    diags = kd.compute_task_diagnostics(
+        _task(assignee="deleted-profile"), [], [], now=100,
+        config={"profile_exists": missing},
+    )
+    assert [d.kind for d in diags] == ["dead_assignee"]
+    assert diags[0].severity == "critical"
+    assert diags[0].data["assignee"] == "deleted-profile"
+    assert kd.compute_task_diagnostics(
+        _task(status="done", assignee="deleted-profile"), [], [], now=100,
+        config={"profile_exists": missing},
+    ) == []
+
+
 def test_stranded_in_ready_fires_when_age_exceeds_threshold():
     """Default threshold = 30 min. A ready task promoted 45 min ago
     with no claim should fire as a warning."""

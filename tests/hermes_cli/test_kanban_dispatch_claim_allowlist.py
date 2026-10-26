@@ -78,6 +78,49 @@ def test_unset_allowlist_keeps_default_claimable(kanban_home, all_assignees_spaw
     assert res.skipped_nonspawnable == []
 
 
+def test_missing_assignee_profile_blocks_only_that_card_before_spawn(kanban_home, monkeypatch):
+    """A missing local profile is a card-local actionable failure, not an idle lane."""
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: name == "healthy")
+    spawned = []
+    with kbc.connect() as conn:
+        missing = kb.create_task(conn, title="missing", assignee="gone")
+        healthy = kb.create_task(conn, title="healthy", assignee="healthy")
+        result = kbd.dispatch_once(
+            conn, spawn_fn=lambda task, _workspace: spawned.append(task.id) or 4242,
+        )
+        missing_task = kb.get_task(conn, missing)
+        healthy_task = kb.get_task(conn, healthy)
+        missing_events = kb.list_events(conn, missing)
+        comments = kb.list_comments(conn, missing)
+
+    assert result.auto_blocked == [missing]
+    assert missing_task.status == "blocked"
+    assert healthy_task.status == "running"
+    assert spawned == [healthy]
+    assert any(event.kind == "dead_assignee" for event in missing_events)
+    assert any("Reassign this task" in comment.body for comment in comments)
+
+
+def test_allowlist_excluded_remote_profile_is_not_blocked_locally(kanban_home, monkeypatch):
+    """A named profile owned by another home stays ready for that owner."""
+    from hermes_cli import profiles
+
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n  dispatch_profiles: [local]\n", encoding="utf-8",
+    )
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: name == "local")
+    with kbc.connect() as conn:
+        remote = kb.create_task(conn, title="remote", assignee="remote")
+        result = kbd.dispatch_once(conn, dry_run=False)
+        task = kb.get_task(conn, remote)
+
+    assert result.auto_blocked == []
+    assert result.skipped_nonspawnable == [remote]
+    assert task.status == "ready"
+
+
 @pytest.mark.parametrize("value", ["", None], ids=["empty_string", "bare_key"])
 def test_present_blank_or_null_allowlist_skips_all_cards(
     kanban_home, all_assignees_spawnable, value, caplog,

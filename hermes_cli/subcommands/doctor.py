@@ -22,4 +22,10 @@ def build_doctor_parser(subparsers, *, cmd_doctor: Callable) -> None:
         help="Acknowledge a security advisory by ID and exit. After ack, the "
             "advisory will no longer trigger startup banners. Run `hermes "
             "doctor` first to see active advisories and their IDs.")
+    doctor_parser.add_argument(
+        "--check-active-provider", action="store_true",
+        help="Automation-only: print one JSON line verifying THIS profile's active "
+            "provider credential with a single cheap authenticated call, then exit "
+            "(skips every other check). Exit 0 when the credential is usable, 1 "
+            "otherwise. Used by the Kanban dispatcher's config_fatal recovery check.")
     doctor_parser.set_defaults(func=cmd_doctor)

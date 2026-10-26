@@ -95,9 +95,11 @@ async function stageBrowserFile(
   onStaged: OnStaged
 ): Promise<string> {
   // The server refuses a larger file anyway, with a 413 that doesn't name the limit: say it here.
+  // The reason leaves out the name, which a drop warning adds: a long name would push the reason
+  // past readableError's length cap and lose the limit.
   if (file.size > BROWSER_UPLOAD_MAX_BYTES) {
     throw new Error(
-      `${file.name || 'The file'} is larger than ${BROWSER_UPLOAD_MAX_BYTES / (1024 * 1024)} MiB, the largest file the browser can attach.`
+      `The file is larger than ${BROWSER_UPLOAD_MAX_BYTES / (1024 * 1024)} MiB, the largest file the browser can attach.`
     )
   }
 

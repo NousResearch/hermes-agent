@@ -64,7 +64,7 @@ describe('browser file stage size', () => {
   // A picked or dropped file over the upload limit gets the server's 413 "Upload request is too large",
   // which doesn't say what the limit is, and a refused image pick used to show nothing at all.
   const tooLarge = (name: string, type: string) => new File([new Uint8Array(BROWSER_UPLOAD_MAX_BYTES + 1)], name, { type })
-  const limitMessage = (name: string) => `${name} is larger than 16 MiB, the largest file the browser can attach.`
+  const limitMessage = 'The file is larger than 16 MiB, the largest file the browser can attach.'
 
   async function installBrowser() {
     seedWebappSession('served-token')
@@ -105,7 +105,7 @@ describe('browser file stage size', () => {
     })
 
     expect(uploads()).toHaveLength(0)
-    expect($notifications.get()).toContainEqual(expect.objectContaining({ kind: 'error', message: limitMessage('huge.png') }))
+    expect($notifications.get()).toContainEqual(expect.objectContaining({ kind: 'error', message: limitMessage }))
   })
 
   it('names the limit when a dropped file over it cannot be attached', async () => {
@@ -120,7 +120,23 @@ describe('browser file stage size', () => {
     expect(attached).toBe(false)
     expect(uploads()).toHaveLength(0)
     expect($notifications.get()).toContainEqual(
-      expect.objectContaining({ kind: 'warning', message: `Could not attach huge.zip: ${limitMessage('huge.zip')}` })
+      expect.objectContaining({ kind: 'warning', message: `Could not attach huge.zip: ${limitMessage}` })
     )
+  })
+
+  // The reason is the same for any name: a long one used to push it past readableError's length cap.
+  it('still names the limit when the dropped file has a long name', async () => {
+    await installBrowser()
+    const { result } = renderComposer()
+    const name = `${'a'.repeat(150)}.zip`
+
+    await act(async () => {
+      await result.current.attachDroppedItems([{ file: tooLarge(name, 'application/zip'), path: '' }])
+    })
+
+    const warning = $notifications.get().find(notice => notice.kind === 'warning')
+
+    expect(warning?.message).toMatch(/^Could not attach a+/)
+    expect(warning?.message).toContain(limitMessage)
   })
 })

@@ -1613,8 +1613,12 @@ def _(rid, params: dict) -> dict:
     on different machines). Runs on the RPC pool (_LONG_HANDLERS)."""
     client_redirect_uri = _str_arg(params, "client_redirect_uri") or None
     try:
-        name, servers, err = _mcp_config_server_or_error(rid, params)
-        if err:
+        name = _str_arg(params, "name")
+        servers, plugins = _mcp_server_rows()
+        if name not in servers:
+            return _err(rid, 4064, f"server '{name}' not found")
+        # A plugin server that declares OAuth signs in like any other; only its token store changes.
+        if servers[name].get("auth") != "oauth" and (err := _mcp_plugin_write_error(rid, name, plugins)):
             return err
         cfg = dict(servers[name])
         if not cfg.get("url"):
@@ -1624,7 +1628,7 @@ def _(rid, params: dict) -> dict:
         cfg["auth"] = "oauth"
         hermes_home = str(_tools_mod("hermes_constants").get_hermes_home().expanduser().resolve(strict=False))
         result = _tools_mod("tui_gateway.mcp_oauth_sessions").start_flow(
-            hermes_home, name, cfg, client_redirect_uri=client_redirect_uri)
+            hermes_home, name, cfg, client_redirect_uri=client_redirect_uri, save_config=plugins.get(name) is None)
     except ValueError as e:
         return _err(rid, 4001, str(e))
     return _ok(rid, {"ok": True, **{k: result[k] for k in ("session_id", "auth_url", "flow")}})

@@ -42,6 +42,10 @@ export const pluginServersQueryKey = (scope: ProfileScope) => scoped(scope, 'plu
 
 export const PLUGIN_SERVERS_STALE_TIME = 5 * MINUTE
 
+export function invalidatePluginServers(scope: ProfileScope): void {
+  void queryClient.invalidateQueries({ queryKey: pluginServersQueryKey(scope) })
+}
+
 export const pluginProbeQueryKey = (scope: ProfileScope, name: string) => scoped(scope, 'plugin-probe', name)
 
 export function invalidatePluginProbe(scope: ProfileScope, name: string): void {

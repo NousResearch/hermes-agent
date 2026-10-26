@@ -277,7 +277,9 @@ async def auth_mcp_server(name: str, request: Request, profile: Optional[str] = 
     servers, plugins, flow_home = await asyncio.to_thread(_read)
     if name not in servers:
         raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
-    if plugin := plugins.get(name):
+    plugin = plugins.get(name)
+    # A plugin server that declares OAuth signs in like any other; only its token store changes.
+    if plugin and servers[name].get("auth") != "oauth":
         raise HTTPException(status_code=409, detail=f"Server '{name}' is provided by plugin '{plugin}' and cannot be modified")
     cfg = dict(servers[name])
     if not cfg.get("url"):
@@ -302,7 +304,8 @@ async def auth_mcp_server(name: str, request: Request, profile: Optional[str] = 
         if any(f.server_name == name and f.hermes_home == flow_home for f in live):
             raise HTTPException(status_code=409, detail=f"MCP OAuth for '{name}' is already in progress")
         _mcp_oauth_flows[flow_id] = flow
-    threading.Thread(target=_run_dashboard_mcp_oauth, args=(flow, cfg), daemon=True, name=f"mcp-oauth-{name}").start()
+    threading.Thread(target=_run_dashboard_mcp_oauth, args=(flow, cfg), kwargs={"save_config": plugin is None},
+                     daemon=True, name=f"mcp-oauth-{name}").start()
     try:
         await flow.wait_for_authorization_url(timeout=30)
     except Exception as exc:

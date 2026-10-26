@@ -61,10 +61,12 @@ def finish_flow(session_id: str) -> None:
 
 def start_flow(
     hermes_home: str, server_name: str, cfg: dict, *, reconnect_live: bool = False,
-    url_timeout: float = 30.0, client_redirect_uri: Optional[str] = None) -> dict[str, Any]:
+    url_timeout: float = 30.0, client_redirect_uri: Optional[str] = None,
+    save_config: bool = True) -> dict[str, Any]:
     """Begin an MCP OAuth flow and return ``{session_id, auth_url, flow}``; blocks up to
     ``url_timeout`` for the authorization URL. With ``client_redirect_uri`` (invalid values
-    raise ``ValueError``) no gateway-side listener is bound."""
+    raise ``ValueError``) no gateway-side listener is bound. ``save_config=False`` (a plugin's
+    server) keeps only the tokens."""
     from tools.mcp_dashboard_oauth import DashboardOAuthFlow
     if client_redirect_uri is not None:
         client_redirect_uri = _validate_client_redirect_uri(client_redirect_uri)
@@ -87,7 +89,7 @@ def start_flow(
     rec = register_flow(flow, httpd=httpd)
     threading.Thread(
         target=run_worker, args=(hermes_home, server_name, dict(cfg), reconnect_live),
-        kwargs={"flow": flow, "on_done": lambda: _shutdown_listener(rec)},
+        kwargs={"flow": flow, "on_done": lambda: _shutdown_listener(rec), "save_config": save_config},
         daemon=True, name=f"mcp-oauth-{server_name}").start()
     try:
         auth_url = None

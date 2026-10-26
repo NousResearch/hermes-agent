@@ -1,9 +1,10 @@
-import type { ConnectorCatalogRow } from '@hermes/shared'
+import type { ConnectorCatalogRow, McpServerRuntimeRow, McpServerSummary } from '@hermes/shared'
 import { describe, expect, it } from 'vitest'
 
+import { localWay } from '../derive'
 import type { AccountRow } from '../types'
 
-import { EMPTY_POLICY, joinHostedConnectors } from './join'
+import { EMPTY_POLICY, joinHostedConnectors, pluginServerRows } from './join'
 
 const GMAIL: ConnectorCatalogRow = { category: 'mail', description: 'Mail', name: 'Gmail', slug: 'gmail' }
 
@@ -61,5 +62,59 @@ describe('joinHostedConnectors with several accounts', () => {
     expect(row.accounts?.map(entry => entry.connection_id)).toEqual(['ca_new'])
     expect(row.retiredAccounts?.map(entry => entry.connection_id)).toEqual(['ca_replaced'])
     expect(row.connectionStatus).toBe('active')
+  })
+})
+
+function pluginServer(overrides: Partial<McpServerSummary>): McpServerSummary {
+  return {
+    args: [],
+    enabled: true,
+    env: [],
+    name: 'sigrex',
+    plugin: 'sigrex',
+    source: 'plugin',
+    transport: 'http',
+    url: 'https://mcp.example',
+    ...overrides
+  }
+}
+
+const RUNTIME_FAILED: McpServerRuntimeRow = {
+  connected: false,
+  disabled: false,
+  name: 'sigrex',
+  plugin: 'sigrex',
+  source: 'plugin',
+  status: 'failed',
+  tools: 0,
+  transport: 'http'
+}
+
+describe('pluginServerRows', () => {
+  it('offers Authenticate for a plugin server that declares OAuth and holds no token', () => {
+    const [row] = pluginServerRows({
+      runtime: [RUNTIME_FAILED],
+      servers: [pluginServer({ auth: 'oauth', oauth_tokens_present: false })]
+    })
+
+    expect(row.status).toBe('needs-auth')
+    expect(localWay(row).verb).toBe('authenticate')
+  })
+
+  it('reports a signed-in plugin server by its runtime state', () => {
+    const [row] = pluginServerRows({
+      runtime: [{ ...RUNTIME_FAILED, connected: true, status: 'connected', tools: 12 }],
+      servers: [pluginServer({ auth: 'oauth', oauth_tokens_present: true })]
+    })
+
+    expect(row.status).toBe('ok')
+    expect(localWay(row).verb).toBeUndefined()
+  })
+
+  it('never offers Authenticate for a plugin server without OAuth', () => {
+    const [row] = pluginServerRows({ runtime: [RUNTIME_FAILED], servers: [pluginServer({})] })
+
+    expect(row.status).toBe('error')
+    expect(row.canAuthenticate).toBe(false)
   })
 })

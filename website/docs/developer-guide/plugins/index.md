@@ -152,6 +152,36 @@ and spend limit (below) unless it sets its own. Other harnesses ignore this exte
 `trust` can sit beside `app`, `requires` and `liveness` in the same server
 entry (see [Application declarations](./application-declarations.md)).
 
+A remote server that requires an OAuth sign-in declares it the same way. Agent
+Plugins v1 leaves authorization to the client and gives `mcp.json` no field for
+it, so without this declaration the server answers 401 and Hermes reports it
+as not connected:
+
+```json
+{
+  "extensions": {
+    "com.nousresearch.hermes": {
+      "servers": {
+        "trade": { "auth": "oauth" }
+      }
+    }
+  }
+}
+```
+
+The entry then behaves like a `config.yaml` server with `auth: oauth`. The user
+signs in once with `hermes mcp login trade`, or with **Authenticate** on the
+server's card under **Capabilities → Connectors** in Hermes Desktop. Hermes
+discovers the authorization server, registers its client, stores the token in
+the active profile and refreshes it. The package never sees the token, and
+signing in adds nothing to `config.yaml`. Until the user signs in, the server
+stays out of the session and every other component of the package keeps
+loading. `oauth` is the only accepted value, and it applies only to a
+`streamable-http` server. A Hermes release that predates the key either
+ignores it with a diagnostic or refuses the whole package, depending on its
+age, so set your catalog entry's `requires_hermes` to the first release that
+supports it.
+
 A server whose tools spend money or credits can declare what each call costs
 and a budget per chat. Hermes then names the cost in the approval prompt along
 with the chat's running total, and a call that would take the chat past

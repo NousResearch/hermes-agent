@@ -118,6 +118,23 @@ def cmd_remove(name: str) -> None:
     console.print()
 
 
+def _package_mcp_sign_ins(target: Path) -> list[str]:
+    """The package's OAuth MCP servers whose sign-in leaves with it. Tokens are stored by server name, so a
+    later package declaring the same name must not inherit them; a config.yaml server of that name keeps
+    them (the user's own entry signs in with the same token)."""
+    from hermes_cli.agent_plugins import AgentPluginError, oauth_server_names
+    from hermes_cli.mcp_config import _get_mcp_servers
+
+    if not (target / "plugin.json").is_file():
+        return []
+    try:
+        names = oauth_server_names(target)
+    except AgentPluginError:
+        return []
+    configured = _get_mcp_servers()
+    return [name for name in names if name not in configured]
+
+
 def _remove_user_plugin(plugins_dir: Path, name: str, target: Path) -> dict[str, Any]:
     """Shared ``remove`` tail for the CLI, the dashboard and the ``plugins.manage`` RPC.
 
@@ -135,9 +152,14 @@ def _remove_user_plugin(plugins_dir: Path, name: str, target: Path) -> dict[str,
     aliases = _pc()._plugin_aliases(key) | {target.name}
     from hermes_cli.plugin_oauth import forget_plugin_grants, plugin_key
     grant_key = plugin_key(target)  # grants are stored by directory key, which the manifest name may not match
+    mcp_sign_ins = _package_mcp_sign_ins(target)  # read before the tree goes
     _pc()._toggle_plugin_toolset(key, enable=False)
     _remove_plugin_core(target)
     forget_plugin_grants(grant_key)  # a later plugin installed under the same key must not inherit the sign-in
+    if mcp_sign_ins:
+        from tools.mcp_oauth_manager import get_manager
+        for server in mcp_sign_ins:
+            get_manager().remove(server)
     return {"ok": True, "name": name, **_pc()._forget_plugin_config(aliases)}
 
 

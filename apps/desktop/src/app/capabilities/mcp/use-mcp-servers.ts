@@ -26,6 +26,7 @@ import type { HermesConfigRecord } from '@/types/hermes'
 import { hermesConfigCacheWriter, useHermesConfigRecord } from '../../hooks/use-config-record'
 import { useOnProfileSwitch } from '../../hooks/use-on-profile-switch'
 import { useProfileSwitchLatch } from '../../hooks/use-profile-switch-latch'
+import { invalidatePluginServers } from '../connectors/data/keys'
 import { seedOptions } from '../connectors/data/persist'
 
 import { parseServersDoc, withEnabled } from './mcp-doc'
@@ -177,11 +178,14 @@ export function useMcpServers({ gateway, profile }: UseMcpServersOptions): McpSe
       }
 
       fleet.setProbe(serverName, result)
-      const probedConfig = result.ok ? { ...servers[serverName], auth: 'oauth' } : servers[serverName]
-      probeCache.set(probeKey(serverName, probedConfig, scopeProfileKey), { at: Date.now(), result })
 
-      if (result.ok) {
-        const nextServers = { ...servers, [serverName]: { ...servers[serverName], auth: 'oauth' } }
+      if (!(serverName in servers)) {
+        // A plugin's server: signing in stored its token and wrote nothing to config.yaml.
+        invalidatePluginServers(profile)
+      } else if (result.ok) {
+        const probedConfig = { ...servers[serverName], auth: 'oauth' }
+        probeCache.set(probeKey(serverName, probedConfig, scopeProfileKey), { at: Date.now(), result })
+        const nextServers = { ...servers, [serverName]: probedConfig }
         setConfig(current => (current ? { ...current, mcp_servers: nextServers } : current))
 
         if (draft.dirty) {
@@ -191,7 +195,9 @@ export function useMcpServers({ gateway, profile }: UseMcpServersOptions): McpSe
         } else {
           draft.resetDraft(nextServers)
         }
+      }
 
+      if (result.ok) {
         notify({
           kind: 'success',
           title: m.authenticatedTitle,

@@ -1,0 +1,28 @@
+name: squad-hub
+title: Hermes Agent Squads Hub
+repo: https://github.com/PuntoyComaTech/hermes-agent-squads
+sha: 2695b14754f5dc186e431dc27a2d870664031321
+subdir: squads/_plugins/squad-hub
+description: >-
+  One Desktop list for Hermes Agent Squads: bot, project, folder, worktree and chat, several bots open at once
+  without a profile switch; a read-only squad timeline with what went wrong; a bell for what waits on you; PR chips
+  per worktree; live Kanban cards in chat; squad managers ask with clarify buttons; the empty chat names the squad and
+  project. Disclosure — reads other profiles' session lists and Kanban boards through Hermes RPC/REST (running
+  backends only), writes its own desktop_cards setting on manager profiles; no network calls of its own, no
+  telemetry, never reads .env or credentials.
+maintainer: PuntoyComaTech
+tier: community
+category: desktop
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/PuntoyComaTech/hermes-agent-squads/tree/2695b14754f5dc186e431dc27a2d870664031321/squads/_plugins/squad-hub#readme
+version: "1.1.1"
+screenshots:
+  - https://raw.githubusercontent.com/PuntoyComaTech/hermes-agent-squads/2695b14754f5dc186e431dc27a2d870664031321/squads/_plugins/squad-hub/docs/empty-chat.png
+  - https://raw.githubusercontent.com/PuntoyComaTech/hermes-agent-squads/2695b14754f5dc186e431dc27a2d870664031321/squads/_plugins/squad-hub/docs/timeline.png
+  - https://raw.githubusercontent.com/PuntoyComaTech/hermes-agent-squads/2695b14754f5dc186e431dc27a2d870664031321/squads/_plugins/squad-hub/docs/bell.png
+  - https://raw.githubusercontent.com/PuntoyComaTech/hermes-agent-squads/2695b14754f5dc186e431dc27a2d870664031321/squads/_plugins/squad-hub/docs/card.png
+capabilities:
+  provides_tools: []
+  provides_hooks: [post_tool_call, transform_llm_output]
+  provides_middleware: []
+  requires_env: []

@@ -10,10 +10,12 @@ compressor are untouched, so the prompt cache is too.
 At the next automatic threshold compaction ``compress`` takes the completed
 summary if the messages it covers are still the same messages: same session,
 same head boundary, a boundary no later than the current tail cut, and the same
-message structure (roles, tool call and result ids, and the durable
-``message_uid`` where both sides carry one) up to that boundary. Message text is
-not compared: plugins rewrite text in place, and a summary written before such a
-rewrite still summarises the same messages. On a hit the summary replaces
+message structure (roles, tool call and result ids) up to that boundary, each
+message vouched for by its durable ``message_uid``. The text of a persisted
+message is not compared: plugins rewrite text in place, and a summary written
+before such a rewrite still summarises the same messages. Only a message that
+has no uid on one side (caller-supplied history that is never persisted) is
+compared by text, since nothing else can tell it from a different message. On a hit the summary replaces
 ``messages[start:candidate_end]`` and every message after the candidate
 boundary, however many arrived since the pass started, stays verbatim in the
 tail. On a miss compaction runs inline exactly as without the flag.
@@ -39,6 +41,7 @@ compressor on a splice, as an inline summary would.
 from __future__ import annotations
 
 import copy
+import hashlib
 import logging
 import threading
 import time
@@ -70,8 +73,8 @@ _SUMMARY_CALL_TELEMETRY = (
     "summary_input_sampled_record_count", "summary_input_elided_record_count", "fallback_used", "failure_class",
 )
 
-# Per message: (structure, durable uid or None).
-_Identity = tuple[str, Optional[str]]
+# Per message: (structure, durable uid or None, text digest).
+_Identity = tuple[str, Optional[str], str]
 
 
 @dataclass(frozen=True)
@@ -114,16 +117,22 @@ class _PendingPass:
 
 
 def _message_identity(msg: Any) -> _Identity:
-    """Role, tool call ids/names and tool result ids, plus the durable ``message_uid`` when the message
-    has been persisted. Text, tool arguments and result bodies are left out: the no-LLM prune and
-    plugins rewrite them in place, while the splice only needs whole messages that line up."""
+    """Role, tool call ids/names and tool result ids; the durable ``message_uid`` when the message has
+    been persisted; and a digest of its text for messages no uid vouches for. Tool arguments and result
+    bodies are left out: the no-LLM prune rewrites them in place."""
     if not isinstance(msg, dict):
-        return "?", None
+        return "?", None, ""
+    from agent.memory_manager import sanitize_context
+    from agent.message_content import flatten_message_text
     from agent.message_metadata import message_uid_or_none
 
     role = str(msg.get("role") or "")
+    uid = message_uid_or_none(msg)
     if role == "tool":
-        return f"tool\x1f{msg.get('tool_call_id') or ''}", message_uid_or_none(msg)
+        return f"tool\x1f{msg.get('tool_call_id') or ''}", uid, ""
+    # Normalised the way a SessionDB round trip normalises it.
+    text = sanitize_context(flatten_message_text(msg.get("content"))).strip()
+    digest = hashlib.blake2b(text.encode("utf-8", errors="replace"), digest_size=8).hexdigest()
     parts = [role]
     for tc in msg.get("tool_calls") or []:
         if isinstance(tc, dict):
@@ -131,7 +140,7 @@ def _message_identity(msg: Any) -> _Identity:
             parts.append(f"{tc.get('id', '')}:{fn.get('name', '') if isinstance(fn, dict) else ''}")
         else:
             parts.append(f"{getattr(tc, 'id', '')}:{getattr(getattr(tc, 'function', None), 'name', '')}")
-    return "\x1f".join(parts), message_uid_or_none(msg)
+    return "\x1f".join(parts), uid, digest
 
 
 def prefix_identities(messages: list[dict[str, Any]], end: int) -> tuple[_Identity, ...]:
@@ -151,12 +160,15 @@ def _mismatch(
         return f"prepared boundary {window.compress_end} is inside the protected tail (cut {end})"
     if window.compress_end > len(messages):
         return "transcript shorter than the prepared window"
-    for idx, ((structure, uid), msg) in enumerate(zip(window.identities, messages)):
-        now_structure, now_uid = _message_identity(msg)
+    for idx, ((structure, uid, digest), msg) in enumerate(zip(window.identities, messages)):
+        now_structure, now_uid, now_digest = _message_identity(msg)
         if now_structure != structure:
             return f"message {idx} changed shape"
-        if uid and now_uid and uid != now_uid:
-            return f"message {idx} is a different message (rewound or branched)"
+        if uid and now_uid:
+            if uid != now_uid:
+                return f"message {idx} is a different message (rewound or branched)"
+        elif digest != now_digest:
+            return f"message {idx} changed and has no durable id to vouch for it"
     return None
 
 

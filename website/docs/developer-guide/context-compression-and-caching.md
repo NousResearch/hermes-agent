@@ -686,9 +686,11 @@ per compaction: while a summary is held, no further pass starts, however much th
 At the next automatic threshold compaction `compress()` splices the completed summary when it still
 covers the same messages: same session, unchanged head boundary, a candidate boundary no later than
 the fresh tail cut, and the same message structure up to that boundary (role, tool call ids and
-names, tool result ids, and the durable `message_uid` where both sides carry one). Message text,
-tool arguments and tool bodies are not compared: the no-LLM prune and plugins rewrite them in place,
-and the summary still describes the same messages. A dropped or inserted message, or a rewind or
+names, tool result ids), each message vouched for by its durable `message_uid`. The text of a
+persisted message, tool arguments and tool bodies are not compared: the no-LLM prune and plugins
+rewrite them in place, and the summary still describes the same messages. A message without a uid on
+one side (caller-supplied `conversation_history` that is never persisted) is compared by text, since
+nothing else can tell it from a different message. A dropped or inserted message, or a rewind or
 branch into the window (new `message_uid`s), is a miss. The summary then covers
 `[head, candidate boundary)` and every later message, however many arrived after the pass started, is
 kept as tail; tail rules such as lean-mode tool stubbing still apply to them. Summary placement and

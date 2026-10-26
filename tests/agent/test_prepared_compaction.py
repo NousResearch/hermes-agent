@@ -279,24 +279,38 @@ def test_in_place_text_rewrite_of_summarised_messages_keeps_the_candidate():
     assert entry.summary in _summary_row(compressed)["content"]
 
 
-@pytest.mark.parametrize("change", ["message dropped", "rewound", "head moved", "other session"])
+def _drop_pair_and_regrow(cc, live, start):
+    # Caller-supplied history is never persisted, so no uid vouches for it; after regrowth the roles
+    # still alternate and line up, but the summarized messages are not the same messages.
+    del live[start + 1:start + 3]
+    live += _messages(2, tag="regrown")[1:]
+
+
+def _drop_and_reshape(cc, live, start):
+    del live[start + 1:start + 3]
+    live[start + 1]["tool_calls"] = [{"id": "c1", "function": {"name": "x"}}]
+
+
+_PREFIX_CHANGES = {  # name -> (history persisted with uids?, change applied before compaction)
+    "message dropped": (True, _drop_and_reshape),
+    # A rewind into the window that regrew the same shape: the rows are new messages.
+    "rewound": (True, lambda cc, live, start: live[start + 1].update(message_uid="uid-after-rewind")),
+    "pair dropped from history without uids": (False, _drop_pair_and_regrow),
+    "head moved": (True, lambda cc, live, start: setattr(cc, "compression_count", 1)),  # head protection decays
+    "other session": (True, lambda cc, live, start: setattr(cc, "_session_id", "S2")),
+}
+
+
+@pytest.mark.parametrize("change", list(_PREFIX_CHANGES))
 def test_changed_prefix_never_splices(change):
+    persisted, apply_change = _PREFIX_CHANGES[change]
     cc = _compressor()
     msgs = _messages(30)
-    for i, msg in enumerate(msgs):
+    for i, msg in enumerate(msgs if persisted else []):
         msg["message_uid"] = f"uid-{i}"
     entry = _prepare(cc, msgs)
     live = copy.deepcopy(msgs)
-    if change == "message dropped":
-        del live[entry.compress_start + 1:entry.compress_start + 3]  # roles still alternate; positions shift
-        live[entry.compress_start + 1]["tool_calls"] = [{"id": "c1", "function": {"name": "x"}}]
-    elif change == "rewound":
-        # A rewind into the window that regrew the same shape: the rows are new messages.
-        live[entry.compress_start + 1]["message_uid"] = "uid-after-rewind"
-    elif change == "head moved":
-        cc.compression_count = 1  # head protection decays after a compaction
-    else:
-        cc._session_id = "S2"
+    apply_change(cc, live, entry.compress_start)
     compressed = cc.compress(live, current_tokens=cc.threshold_tokens + 1)
     assert [c["worker"] for c in cc.calls] == [True, False], "inline summary expected"
     assert "Summary v2" in _summary_row(compressed)["content"]

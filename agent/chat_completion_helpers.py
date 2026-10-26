@@ -1402,11 +1402,11 @@ def _build_bedrock_kwargs(agent, api_messages, tools_for_api, reasoning_config):
 def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id):
     from agent.codex_responses_adapter import classify_responses_route
     from agent.native_compaction import native_compaction_context_management
-    is_codex_backend, is_xai_responses, is_github_responses = classify_responses_route(agent)
+    is_codex_backend, is_xai_responses, endpoint = classify_responses_route(agent)
     # Native server-side compaction (gpt-5.6 on direct OpenAI / ChatGPT Codex routes
     # only) — None on every other route/model, leaving the request unchanged.
     context_management = native_compaction_context_management(agent, is_codex_backend=is_codex_backend,
-        is_xai_responses=is_xai_responses, is_github_responses=is_github_responses)
+        is_xai_responses=is_xai_responses, endpoint=endpoint)
     # xAI's /responses endpoint 400s on ``pattern``/``format`` schema keywords and on
     # ``enum`` values containing ``/`` — strip them (#27197). Deep-copy first: the
     # sanitizers mutate in place and tools_for_api aliases agent.tools (#27907).
@@ -1426,9 +1426,9 @@ def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, re
         cache_scope_id=cache_scope_id, base_url=agent.base_url,
         max_tokens=ephemeral_out if ephemeral_out is not None else agent.max_tokens,
         timeout=agent._resolved_api_call_timeout(), request_overrides=request_overrides,
-        provider=getattr(agent, "provider", None), is_github_responses=is_github_responses,
+        provider=getattr(agent, "provider", None),
         is_codex_backend=is_codex_backend, is_xai_responses=is_xai_responses,
-        github_reasoning_extra=agent._github_models_reasoning_extra_body() if is_github_responses else None,
+        profile_reasoning=agent._endpoint_reasoning_payload() if endpoint.profile_reasoning else None,
         replay_encrypted_reasoning=bool(getattr(agent, "_codex_reasoning_replay_enabled", True)),
         context_management=context_management, text_verbosity=getattr(agent, "text_verbosity", None))
 
@@ -1441,8 +1441,8 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
     _is_qwen = agent._is_qwen_portal()
     _is_or = agent._is_openrouter_url()
     _host = agent._base_url_lower
-    _is_gh = base_url_host_matches(_host, "models.github.ai") or base_url_host_matches(_host, "githubcopilot.com")
     _is_lmstudio = (agent.provider or "").strip().lower() == "lmstudio"
+    _profile_endpoint = agent._reasoning_endpoint_profile() is not None
 
     # _fixed_temperature_for_model may return the OMIT_TEMPERATURE sentinel
     # (temperature omitted entirely), a numeric override, or None.
@@ -1463,7 +1463,7 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
 
     _ephemeral_out = _consume_ephemeral_max_output(agent)
     from agent.reasoning_carriers import shape_wire_carriers
-    api_messages = shape_wire_carriers(api_messages, model=agent.model, base_url=agent.base_url)
+    api_messages = shape_wire_carriers(api_messages, model=agent.model, base_url=agent.base_url, scope=agent)
     # Strip image parts for non-vision models on BOTH paths (registered
     # providers with profiles used to bypass it).
     _common = dict(model=agent.model, messages=agent._prepare_messages_for_non_vision_model(api_messages),
@@ -1487,7 +1487,6 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         is_openrouter=_is_or,
         is_nous=base_url_host_matches(_host, "nousresearch.com"),
         is_qwen_portal=_is_qwen,
-        is_github_models=_is_gh,
         is_nvidia_nim=base_url_host_matches(_host, "integrate.api.nvidia.com"),
         is_kimi=any(base_url_host_matches(agent.base_url, h) for h in ("api.kimi.com", "moonshot.ai", "moonshot.cn")),
         is_tokenhub=base_url_host_matches(_host, "tokenhub.tencentmaas.com"),
@@ -1496,7 +1495,7 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         qwen_prepare_inplace_fn=agent._qwen_prepare_chat_messages_inplace if _is_qwen else None,
         fixed_temperature=_fixed_temp,
         omit_temperature=_omit_temp,
-        github_reasoning_extra=agent._github_models_reasoning_extra_body() if _is_gh else None,
+        profile_endpoint=_profile_endpoint, endpoint_reasoning=agent._endpoint_reasoning_payload() if _profile_endpoint else None,
         provider_name=agent.provider,
     )
 
@@ -1628,7 +1627,7 @@ def _assistant_tool_call_dict(agent, tool_call, index: int) -> dict:
     extra = getattr(tool_call, "extra_content", None)
     if extra is not None:
         tc_dict["extra_content"] = _dump_if_model(extra)
-    # Copilot's Gemini 3 variant signs the call inside ``function`` (replayed only to Copilot).
+    # Some gateways sign Gemini 3 calls inside ``function`` (replayed only where the endpoint profile asks).
     from agent.reasoning_carriers import field
     fn_sig = field(tool_call, "thought_signature") or getattr(tool_call.function, "thought_signature", None)
     if isinstance(fn_sig, str) and fn_sig:
@@ -1731,7 +1730,7 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
 
     from agent.reasoning_carriers import carrier_record
     if record := carrier_record(assistant_message):
-        # Gemini text-turn signature / Copilot reasoning_opaque+text: top-level for the live
+        # Gemini text-turn signature / profile-declared reasoning carriers: top-level for the live
         # history, a private reasoning_details record for persistence (reasoning_carriers.py).
         msg.update({k: v for k, v in record.items() if k != "type"})
         msg["reasoning_details"] = [*msg.get("reasoning_details", ()), record]
@@ -1864,7 +1863,7 @@ def _fallback_api_mode_resolved(agent, fb_provider: str, fb_model: str, fb_base_
         return "anthropic_messages"
     if agent._is_azure_openai_url(fb_base_url):
         return "chat_completions"  # Azure serves gpt-5.x on /chat/completions — no Responses API.
-    # Provider exceptions (Copilot gpt-5-mini) stay inside the requires-responses predicate.
+    # Per-model provider exceptions stay inside the requires-responses predicate.
     if agent._is_direct_openai_url(fb_base_url) or agent._provider_model_requires_responses_api(fb_model, provider=fb_provider):
         return "codex_responses"
     host = base_url_hostname(fb_base_url)
@@ -3121,7 +3120,7 @@ class _StreamingCall(StreamingWaitMonitor):
             # whose deltas carry only this field otherwise trips the empty-stream guard (#56516).
             if reasoning_text is None and isinstance(getattr(delta, "model_extra", None), dict):
                 reasoning_text = delta.model_extra.get("reasoning_content") or delta.model_extra.get("reasoning")
-            # Copilot /chat/completions names its readable reasoning ``reasoning_text``.
+            # A profile-declared text carrier doubles as the readable reasoning.
             reasoning_text = carriers.feed(delta, reasoning_text)
             if reasoning_text:
                 # Summary-part models omit the separator between markdown blocks; re-insert it.

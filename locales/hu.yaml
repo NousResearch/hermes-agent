@@ -2035,7 +2035,6 @@ cli:
     cleared_picker_cache: "A modellválasztó gyorsítótára törölve. Frissítés..."
     moa_one_shot_queued: "Egyszeri MoA-futás sorba állítva a {preset} előbeállítással; a kör után az előző modell visszaáll."
     normalized_model: "A(z) '{old}' modell normalizálva erre: '{new}' ({provider})."
-    normalized_copilot_model: "A(z) '{old}' Copilot-modell normalizálva erre: '{new}'."
     stripped_provider_prefix: "A szolgáltató-előtag eltávolítva a(z) '{old}' névről; a(z) '{new}' lesz használva ({provider})."
     restored_from_session: "Modell visszaállítva a munkamenetből: {model}"
     could_not_load_config: "❌ nem sikerült betölteni a konfigurációt: {error}"

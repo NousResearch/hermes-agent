@@ -2018,7 +2018,6 @@ cli:
     cleared_picker_cache: "Кэш списка моделей очищен. Обновляю..."
     moa_one_shot_queued: "Разовый запуск MoA с пресетом {preset} поставлен в очередь; после этого хода вернётся предыдущая модель."
     normalized_model: "Модель «{old}» нормализована в «{new}» для {provider}."
-    normalized_copilot_model: "Модель Copilot «{old}» нормализована в «{new}»."
     stripped_provider_prefix: "Из «{old}» убран префикс провайдера; для {provider} используется «{new}»."
     restored_from_session: "Модель восстановлена из сеанса: {model}"
     could_not_load_config: "❌ не удалось загрузить конфигурацию: {error}"

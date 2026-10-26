@@ -6,15 +6,23 @@ serves the current profile, asks it for a one-use launch link over the control s
 only) and opens that link, so the credential appears in no argv, output or link. On Linux the gateway
 checks that the browser's connection is the user's; on Windows nothing checks it, and the link travels
 only in the browser launcher's command line, which other standard users cannot read. On macOS, the BSDs
-and WSL neither holds, so it prints the one-use link for the user to open instead.
+and illumos neither holds, so it writes the link into a page only the user can read and opens that page:
+the launcher's command line carries only the page's path. Where it cannot open a browser, and on WSL
+(whose Windows browser reaches the gateway through a relay any Windows account can use), it prints the
+link for the user to open instead.
 ``--status`` and ``--sign-out`` talk to a running gateway and never start one.
 """
 from __future__ import annotations
 
+import html
+import ipaddress
 import json
+import os
+import secrets
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 RESTART_COMMAND = "hermes gateway restart"
 # The gateway reads the Webapp's settings and sign-in providers only when it starts.
@@ -24,6 +32,12 @@ STARTED_BEFORE_ON = f"The gateway started before the Webapp was turned on. Resta
 # socket answers, so the gateway running predates them (an upgrade it has not restarted onto).
 OLDER_GATEWAY = ("The running gateway is older than the Webapp and does not know its commands. Restart it "
                  f"onto this version of Hermes: {RESTART_COMMAND}")
+# Browsers keep secure-context APIs (crypto.subtle, mediaDevices, navigator.clipboard, Notification) from a
+# plain-HTTP origin that is not loopback.
+PLAIN_HTTP_NOTE = ("This address is plain HTTP, so the browser turns off what needs a secure connection: the bot "
+                   "screen, the microphone (dictation, live voice and the remote wake word), reading the clipboard "
+                   "(terminal paste, pasting an image) and system notifications. Open the Webapp over HTTPS "
+                   "(webapp.public_url) or through an SSH tunnel to 127.0.0.1 to use them.")
 # How long --sign-out waits for a gateway that is still starting to answer (30 s).
 _START_WAIT_ATTEMPTS, _START_WAIT_INTERVAL = 60, 0.5
 
@@ -88,6 +102,47 @@ def _open(url: str) -> bool:
         return False
 
 
+# The page a private launch link reaches the browser in: it moves on to the link at once and names nothing
+# else, so the referrer and any script stay out of it.
+_LAUNCH_PAGE = ('<!doctype html><meta charset="utf-8"><meta name="referrer" content="no-referrer">'
+                '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'">'
+                '<meta http-equiv="refresh" content="0;url={url}"><title>Opening Hermes</title>'
+                '<p><a href="{url}">Open Hermes Webapp</a></p>\n')
+
+
+def _open_privately(target: Path, url: str) -> bool:
+    """Open *url*, a launch link nobody checks the redeemer of, in a browser without handing it to the
+    browser launcher, whose command line other local users can read: write it into a page in *target*'s
+    user-only ``webapp`` folder, readable by this OS user alone, and open that page. Pages of earlier
+    launches go first, so at most one is left, and its link stops working within the link's lifetime.
+    False, leaving no page, on WSL (the Windows browser cannot read the page as this user only), when the
+    folder or page cannot be kept user-only, or when no browser opens it. On macOS ``webbrowser`` hands the
+    URL to ``osascript`` on stdin, never in argv, so the page mainly protects the BSDs and illumos, where
+    ``xdg-open`` or ``firefox`` gets the URL in argv."""
+    from gateway.webapp_listener import TOKEN_PATH, _close_to_other_users, _readable_by_other_users
+    from hermes_constants import is_wsl
+    if os.name == "nt" or is_wsl():
+        return False
+    folder = Path(target).absolute() / TOKEN_PATH.parent  # HERMES_HOME may be relative; a file: URI is not
+    try:
+        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+        _close_to_other_users(folder)
+        if _readable_by_other_users(folder):
+            return False
+        for earlier in folder.glob("launch-*.html"):
+            earlier.unlink(missing_ok=True)
+        page = folder / f"launch-{secrets.token_hex(8)}.html"
+        fd = os.open(page, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(_LAUNCH_PAGE.format(url=html.escape(url, quote=True)))
+    except OSError:
+        return False
+    if _open(page.as_uri()):
+        return True
+    page.unlink(missing_ok=True)
+    return False
+
+
 def _profile_choice(home: Path, target: Path) -> dict:
     """``{"profile": name}`` when the gateway serves *home* as one of its named profiles, so the
     Webapp opens on the profile this command ran for."""
@@ -96,6 +151,17 @@ def _profile_choice(home: Path, target: Path) -> dict:
         return {}
     name = profile_name_for_home(home)
     return {"profile": name} if name and name != "default" else {}
+
+
+def _rerun_command(*flags: str) -> str:
+    """``hermes webapp *flags*`` for the profile this run used: ``-p`` re-homed only this process, so a
+    bare rerun gets the sticky profile, and the command keeps ``-p <name>`` when that names another one."""
+    import shlex
+    from hermes_cli.main import explicit_cli_profile
+    from hermes_cli.profiles import get_active_profile
+    name = explicit_cli_profile()
+    profile = ["-p", shlex.quote(name)] if name and name != get_active_profile() else []
+    return " ".join(["hermes", *profile, "webapp", *flags])
 
 
 def older_gateway(response: dict) -> bool:
@@ -123,6 +189,36 @@ def _off_message(target: Path, then: str) -> str:
     return f"The Webapp is off. Set webapp.enabled: true in {target / 'config.yaml'}, then {then}."
 
 
+def _plain_http_note(url: str) -> str | None:
+    """:data:`PLAIN_HTTP_NOTE` when *url* is plain HTTP on a host other than loopback, else None.
+    Browsers count ``localhost``, ``*.localhost``, 127.0.0.0/8 and ``::1`` as secure contexts."""
+    parts = urlsplit(url)
+    if parts.scheme != "http":
+        return None
+    host = (parts.hostname or "").rstrip(".")
+    if host == "localhost" or host.endswith(".localhost"):
+        return None
+    try:
+        return None if ipaddress.ip_address(host).is_loopback else PLAIN_HTTP_NOTE
+    except ValueError:
+        return PLAIN_HTTP_NOTE
+
+
+def _browser_address(target: Path, settings, served_url: str) -> str:
+    """Where a browser opens the Webapp the gateway serves at *served_url* (its loopback dial origin), as
+    ``webapp-launch`` works it out: ``webapp.public_url`` when set, else behind sign-in the LAN address
+    Web Access registered Nous sign-in for, else *served_url* (a private Webapp's launch link). Read from
+    *target*'s config now, not from when the gateway started."""
+    from hermes_cli.web_server_boundary import public_hosts_engage_gate, public_url_hosts, should_require_auth
+    from hermes_cli.webapp_access import registered_lan_origin
+    # The sign-in gate gateway.run_api.start_gateway_api engages on the Webapp's listener; without it
+    # webapp-launch hands out the loopback launch link and never reads the registration, which outlives
+    # a move back to a loopback bind.
+    gated = should_require_auth(settings.host) or public_hosts_engage_gate(public_url_hosts(settings.public_url))
+    lan = registered_lan_origin(target, urlsplit(served_url).port) if gated else None
+    return settings.public_url or lan or served_url
+
+
 def _status(target: Path) -> int:
     try:
         response = _control(target, "webapp-status")
@@ -140,7 +236,10 @@ def _status(target: Path) -> int:
     if status["state"] == "serving":
         print(f"Serving at {status['url']}")
         from gateway.webapp_listener import webapp_settings
-        if not webapp_settings(target).enabled:
+        settings = webapp_settings(target)
+        if note := _plain_http_note(_browser_address(target, settings, status["url"])):
+            print(note)
+        if not settings.enabled:
             print(f"{target / 'config.yaml'} no longer turns the Webapp on: it stops at the next gateway restart "
                   f"({RESTART_COMMAND}).")
     elif status["state"] == "starting":
@@ -287,6 +386,8 @@ def cmd_webapp(args) -> int:
     if not response.get("ok"):
         return _explain_refused_launch(target, response)
     link = response["result"]
+    if note := _plain_http_note(link["url"]):
+        print(note)
     if link.get("sign_in"):
         # The Webapp is behind the dashboard's sign-in: the page asks for it, so its address is no secret.
         if not args.no_open and _open(link["url"]):
@@ -295,8 +396,13 @@ def cmd_webapp(args) -> int:
             print(f"Open the Webapp and sign in with your dashboard account: {link['url']}")
         return 0
     if link.get("private"):
-        # macOS, the BSDs, WSL: nothing checks who redeems this one-use link, so it is for the user to
-        # open, never for a browser launcher whose arguments other processes can read.
+        # macOS, the BSDs, illumos, WSL: nothing checks who redeems this one-use link, so it never goes to a
+        # browser launcher, whose arguments other users' processes can read. A page only this user can read
+        # carries it to the browser; failing that, the user opens it by hand.
+        if not args.no_open and _open_privately(target, link["url"]):
+            print("Opened the Webapp in your browser.")
+            print(f"If no browser opened, run `{_rerun_command('--no-open')}` for a link.")
+            return 0
         print(f"Open this link in your browser within {link['expires_in_seconds']} seconds. It works "
               "once and signs the browser in as you, so keep it private:")
         print(f"  {link['url']}")

@@ -262,6 +262,7 @@ _UPDATE_PIPELINE = (
     "hermes_cli/_launchers.py",
     "hermes_cli/release_channels.py",
     "hermes_cli/gitlock.py",  # git self-heal + partial-clone fetch
+    "hermes_cli/git_commit_graph.py",  # every update starts the install checkout's graph refresh
     "hermes_cli/process_identity.py",  # marker owner liveness
     "hermes_cli/runtime_state.py",
     "hermes_cli/relaunch.py",
@@ -345,6 +346,7 @@ _UPDATE_DEPENDENCIES = (
     "hermes_cli/backup.py",  # pre-update backup
     "hermes_cli/backup_cron_prompts.py",  # restore_cron_prompt_fields_if_degraded (update_cmd_config)
     "hermes_cli/backup_restore.py",
+    "hermes_cli/config_backend.py",  # update_channel writes the channel key through the seam
     "hermes_cli/relay_plugin_migrate.py",
     "hermes_cli/macos_tcc_anchor.py",
     "hermes_cli/model_catalog.py",

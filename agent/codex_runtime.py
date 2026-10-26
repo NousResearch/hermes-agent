@@ -959,7 +959,7 @@ class _CodexResponseAssembler:
     def _pending_function_key(self, item_id: str, output_index: Any) -> str | None:
         if item_id in self.pending_function_calls:
             return item_id
-        # Copilot rotates opaque item IDs between SSE events. The response-local
+        # Some Responses backends rotate opaque item IDs between SSE events. The response-local
         # output_index still identifies the call, including index zero.
         if output_index is not None:
             return next((key for key, pending in self.pending_function_calls.items()

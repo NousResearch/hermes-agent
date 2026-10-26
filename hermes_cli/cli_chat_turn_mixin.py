@@ -334,6 +334,11 @@ class CLIChatTurnMixin:
         _persist_clean_user_message = message if (turn.voice_prefix or agent_message != message) else None
         _one_turn_model_restore = getattr(self, "_pending_one_turn_model_restore", None)
         self._pending_one_turn_model_restore = None
+        # Set only by a dispatcher-spawned `-q` run; a human turn keeps today's call shape.
+        from agent.interrupt_compat import _accepts_keyword
+        _author = getattr(self, "_single_query_turn_author", None)
+        _author_kwargs = ({"turn_author": _author}
+                          if _author is not None and _accepts_keyword(self.agent.run_conversation, "turn_author") else {})
         try:
             from agent.notification_presentation import notification_turn
             muted = getattr(turn, "mute_notification_reply", False)
@@ -343,6 +348,7 @@ class CLIChatTurnMixin:
                     conversation_history=self.conversation_history[:-1],
                     stream_callback=None if muted else turn.stream_callback, task_id=self.session_id,
                     persist_user_message=_persist_clean_user_message, moa_config=_moa_cfg,
+                    **_author_kwargs,
                 )
             if getattr(self, "_pending_moa_disable_after_turn", False):
                 _restore = getattr(self, "_pending_moa_restore_model", None) or {}

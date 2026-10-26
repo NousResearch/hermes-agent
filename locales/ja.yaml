@@ -2018,7 +2018,6 @@ cli:
     cleared_picker_cache: "モデル選択のキャッシュをクリアしました。更新中..."
     moa_one_shot_queued: "プリセット {preset} で MoA を 1 回だけ実行するようキューに入れました。このターンの後に元のモデルに戻ります。"
     normalized_model: "{provider} 向けにモデル '{old}' を '{new}' に正規化しました。"
-    normalized_copilot_model: "Copilot モデル '{old}' を '{new}' に正規化しました。"
     stripped_provider_prefix: "'{old}' からプロバイダーの接頭辞を取り除き、{provider} では '{new}' を使用します。"
     restored_from_session: "セッションからモデルを復元しました: {model}"
     could_not_load_config: "❌ 設定を読み込めませんでした: {error}"

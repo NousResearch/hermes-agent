@@ -69,6 +69,50 @@ function EventBody({ event, notice }: { event: CanonicalGroupEvent; notice?: str
 // Previews download the whole file over RPC; larger or unsized images keep only Download.
 const IMAGE_PREVIEW_MAX_BYTES = 5 * 1024 * 1024
 
+// Automatic previews share a small download budget per connection, in request order; a file already
+// downloading is joined rather than requested again. Manual Download stays outside it. The budget is
+// per connection because a remote whose dial hangs holds its slots for good, and must not stall others.
+type Preview = Awaited<ReturnType<typeof fetchCanonicalGroupAttachment>>
+interface PreviewQueue { slots: number; waiters: Array<() => void> }
+const previewDownloads = new Map<string, Promise<Preview>>()
+const previewQueues = new Map<string, PreviewQueue>()
+
+function releasePreviewSlot(queue: PreviewQueue) {
+  const next = queue.waiters.shift()
+
+  if (next) {next()} else {queue.slots++}
+}
+
+function queuePreview(connectionId: string, key: string, fetch: () => Promise<Preview>, onPreview: (preview: Preview) => void) {
+  const queue = previewQueues.get(connectionId) ?? { slots: 2, waiters: [] }
+  previewQueues.set(connectionId, queue)
+  let cancelled = false
+  const deliver = (download: Promise<Preview>) => void download.then(preview => { if (!cancelled) {onPreview(preview)} }, () => undefined)
+
+  const run = () => {
+    let download = previewDownloads.get(key)
+
+    if (download) {releasePreviewSlot(queue)} else {
+      download = fetch().finally(() => { previewDownloads.delete(key); releasePreviewSlot(queue) })
+      previewDownloads.set(key, download)
+    }
+
+    deliver(download)
+  }
+
+  const running = previewDownloads.get(key)
+
+  if (running) {deliver(running)} else if (queue.slots > 0) {queue.slots--; run()} else {queue.waiters.push(run)}
+
+  // A preview that leaves before its turn gives up its place without sending a request.
+  return () => {
+    cancelled = true
+    const at = queue.waiters.indexOf(run)
+
+    if (at >= 0) {queue.waiters.splice(at, 1)}
+  }
+}
+
 function ImagePreview({ binding, eventId, attachment, disabled }: {
   binding: CanonicalGroupBinding; eventId: string; attachment: CanonicalGroupAttachment; disabled: boolean
 }) {
@@ -79,30 +123,31 @@ function ImagePreview({ binding, eventId, attachment, disabled }: {
   const { connectionId, profile, roomId } = binding
   const previewable = !!attachmentId && size !== undefined && size <= IMAGE_PREVIEW_MAX_BYTES
 
-  // History loads the whole room: fetch only near the viewport, which also bounds concurrent downloads.
+  // History loads the whole room: fetch only near the viewport. Leaving before its turn gives up the queued place;
+  // a started download runs to completion and is shared if the preview returns.
   useEffect(() => {
     const el = box.current
 
-    if (near || disabled || !el) {return}
-    const observer = new IntersectionObserver(entries => { if (entries.some(entry => entry.isIntersecting)) {setNear(true)} }, { rootMargin: '200px' })
+    if (src || disabled || !el) {return}
+    const observer = new IntersectionObserver(entries => setNear(entries[entries.length - 1].isIntersecting), { rootMargin: '200px' })
     observer.observe(el)
 
     return () => observer.disconnect()
-  }, [near, disabled])
+  }, [src, disabled])
 
   useEffect(() => {
     if (disabled || !near || !attachmentId || !previewable) {return}
-    let cancelled = false
     let url = ''
+    const key = JSON.stringify([connectionId, profile, roomId, eventId, attachmentId])
+
     // A failed preview leaves the Download button as the way to the file.
-    void fetchCanonicalGroupAttachment({ connectionId, profile, roomId }, eventId, attachmentId).then(({ bytes, mime }) => {
-      if (cancelled) {return}
+    const cancel = queuePreview(connectionId, key, () => fetchCanonicalGroupAttachment({ connectionId, profile, roomId }, eventId, attachmentId), ({ bytes, mime }) => {
       url = URL.createObjectURL(new Blob([bytes], { type: mime }))
       setSrc(url)
-    }, () => undefined)
+    })
 
     // Dropping `near` makes a re-shown room wait on the observer again, not refetch every preview seen so far at once.
-    return () => { cancelled = true; URL.revokeObjectURL(url); setSrc(''); setNear(false) }
+    return () => { cancel(); URL.revokeObjectURL(url); setSrc(''); setNear(false) }
   }, [connectionId, profile, roomId, eventId, attachmentId, disabled, near, previewable])
 
   return previewable ? <div ref={box}>{src && <img alt={attachment.name} className="max-h-64 max-w-full rounded object-contain" src={src} />}</div> : null

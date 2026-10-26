@@ -1910,7 +1910,7 @@ function registerMediaProtocol(): void {
   protocol.handle(MEDIA_PROTOCOL, handler)
 }
 
-let mainWindow = null
+let mainWindow: any = null
 const backendConnectionState = createBackendConnectionState<ReturnType<typeof spawn>, any>()
 
 const localBackendLifecycle = createLocalBackendLifecycle<ChildProcess>({
@@ -5586,7 +5586,7 @@ async function resourceBufferFromUrl(rawUrl) {
   })
 }
 
-async function saveImageFromUrl(rawUrl) {
+async function saveImageFromUrl(rawUrl: string, parentWindow?: BrowserWindow | null) {
   const { buffer, mimeType } = (await resourceBufferFromUrl(rawUrl)) as any
   const extension = extensionForMimeType(mimeType) || '.png'
   // Generated-image URLs (fal.media etc.) usually end in an extensionless
@@ -5604,14 +5604,25 @@ async function saveImageFromUrl(rawUrl) {
     // Downloads directory to offer.
   }
 
-  const result = await dialog.showSaveDialog(mainWindow, {
+  const targetWindow =
+    parentWindow && !parentWindow.isDestroyed()
+      ? parentWindow
+      : mainWindow && !mainWindow.isDestroyed()
+        ? mainWindow
+        : null
+
+  const dialogOptions = {
     title: 'Save Image',
     defaultPath: downloadsDir ? path.join(downloadsDir, fallbackName) : fallbackName,
     filters: [
       { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'] },
       { name: 'All Files', extensions: ['*'] }
     ]
-  })
+  }
+
+  const result = targetWindow
+    ? await dialog.showSaveDialog(targetWindow, dialogOptions)
+    : await dialog.showSaveDialog(dialogOptions)
 
   if (result.canceled || !result.filePath) {
     return false
@@ -7542,7 +7553,10 @@ function gatewayFileRequestPath(
     : pathWithGlobalRemoteProfile(requestPath, profile, profileRouteOptions(profile))
 }
 
-async function saveGatewayFile(payload: GatewayFileSavePayload = {}): Promise<GatewayFileSaveResult> {
+async function saveGatewayFile(
+  payload: GatewayFileSavePayload = {},
+  parentWindow?: BrowserWindow | null
+): Promise<GatewayFileSaveResult> {
   const filePath = gatewayFilePath(payload.path)
 
   if (!filePath) {
@@ -7564,9 +7578,18 @@ async function saveGatewayFile(payload: GatewayFileSavePayload = {}): Promise<Ga
     payload.sessionId
   )
 
+  const targetWindow =
+    parentWindow && !parentWindow.isDestroyed()
+      ? parentWindow
+      : mainWindow && !mainWindow.isDestroyed()
+        ? mainWindow
+        : null
+
   const deps: GatewayFileSaveDeps = {
     showSaveDialog: (options: GatewaySaveDialogOptions): Promise<GatewaySaveDialogResult> =>
-      dialog.showSaveDialog(mainWindow, options)
+      targetWindow
+        ? dialog.showSaveDialog(targetWindow, options)
+        : dialog.showSaveDialog(options)
   }
 
   return saveGatewayDownload(requestPaths, ctx, {
@@ -16327,7 +16350,7 @@ ipcMain.handle('hermes:ambient:claim', (_event: IpcMainInvokeEvent, key: unknown
 
 const nativeNotifications = registerNativeNotifications({
   getMainWindow: (): BrowserWindow | null => mainWindow,
-  focusWindow
+  focusWindow: activateWindow
 })
 
 // Data-URL file load cap (composer attach + local previews). Main owns the
@@ -16481,7 +16504,7 @@ ipcMain.handle('hermes:readPluginSource', async (_event: unknown, filePath: unkn
   }
 })
 
-ipcMain.handle('hermes:selectPaths', async (_event, options: any = {}) => {
+ipcMain.handle('hermes:selectPaths', async (event, options: any = {}) => {
   const properties = selectPathsDialogProperties(options || {})
 
   let resolvedDefaultPath
@@ -16500,12 +16523,20 @@ ipcMain.handle('hermes:selectPaths', async (_event, options: any = {}) => {
     }
   }
 
-  const result = await dialog.showOpenDialog(mainWindow, {
+  const parentWindow =
+    (event?.sender ? BrowserWindow.fromWebContents(event.sender) : null) ||
+    (mainWindow && !mainWindow.isDestroyed() ? mainWindow : null)
+
+  const dialogOptions = {
     title: options?.title || 'Add context',
     defaultPath: resolvedDefaultPath,
     properties: properties as any,
     filters: Array.isArray(options?.filters) ? options.filters : undefined
-  })
+  }
+
+  const result = parentWindow
+    ? await dialog.showOpenDialog(parentWindow, dialogOptions)
+    : await dialog.showOpenDialog(dialogOptions)
 
   if (result.canceled) {
     return []
@@ -16518,14 +16549,27 @@ ipcMain.handle('hermes:selectPaths', async (_event, options: any = {}) => {
 registerClipboardTextIpc(ipcMain, clipboard)
 
 // Save dialogs: the path picker (profile export) and /save's main-process write (save-text-file.ts).
-registerSaveDialogIpc(ipcMain, {
-  defaultDir: () => app.getPath('documents'),
-  showSaveDialog: options => dialog.showSaveDialog(mainWindow, options)
-})
+registerSaveDialogIpc(
+  ipcMain,
+  {
+    defaultDir: () => app.getPath('documents'),
+    showSaveDialog: (options, parentWindow) => {
+      const win =
+        (parentWindow && !parentWindow.isDestroyed() ? parentWindow : null) ||
+        (mainWindow && !mainWindow.isDestroyed() ? mainWindow : null)
+      return win ? dialog.showSaveDialog(win, options) : dialog.showSaveDialog(options)
+    }
+  },
+  event => ((event as any)?.sender ? BrowserWindow.fromWebContents((event as any).sender) : null)
+)
 
-ipcMain.handle('hermes:saveGatewayFile', (_event, payload) => saveGatewayFile(payload))
+ipcMain.handle('hermes:saveGatewayFile', (event, payload) =>
+  saveGatewayFile(payload, event?.sender ? BrowserWindow.fromWebContents(event.sender) : null)
+)
 
-ipcMain.handle('hermes:saveImageFromUrl', (_event, url) => saveImageFromUrl(String(url || '')))
+ipcMain.handle('hermes:saveImageFromUrl', (event, url) =>
+  saveImageFromUrl(String(url || ''), event?.sender ? BrowserWindow.fromWebContents(event.sender) : null)
+)
 
 // The custom context menu's edit verbs. They act on the SENDER's focused
 // element, so the renderer restores focus to the editable before invoking.
@@ -17102,12 +17146,20 @@ ipcMain.handle('hermes:setting:defaultProjectDir:set', async (_event, dir) => {
   return { dir: next }
 })
 
-ipcMain.handle('hermes:setting:defaultProjectDir:pick', async () => {
-  const result = await dialog.showOpenDialog({
+ipcMain.handle('hermes:setting:defaultProjectDir:pick', async (event: any) => {
+  const parentWindow =
+    ((event as any)?.sender ? BrowserWindow.fromWebContents((event as any).sender) : null) ||
+    (mainWindow && !mainWindow.isDestroyed() ? mainWindow : null)
+
+  const dialogOptions = {
     title: 'Choose default project directory',
-    properties: ['openDirectory', 'createDirectory'],
+    properties: ['openDirectory', 'createDirectory'] as any,
     defaultPath: readDefaultProjectDir() || app.getPath('home')
-  })
+  }
+
+  const result = parentWindow
+    ? await dialog.showOpenDialog(parentWindow, dialogOptions)
+    : await dialog.showOpenDialog(dialogOptions)
 
   if (result.canceled || result.filePaths.length === 0) {
     return { canceled: true, dir: null }
@@ -17996,15 +18048,18 @@ app.whenReady().then(() => {
     handleDeepLink(_coldStartLink)
   }
 
-  app.on('activate', () => {
+  app.on('activate', (_event: any, hasVisibleWindows: boolean) => {
     // Recreate the primary window if it's gone. Guard on mainWindow directly
     // (not just total window count) so a dock click still restores the main
     // window when only secondary session windows remain open.
     // #130810: a dock/taskbar activate is explicit, so restore with
     // activation (restore + show + focus), not the ambient showInactive path.
+    // When visible windows already exist (e.g. secondary/profile windows),
+    // do not force-activate mainWindow so notification clicks and app
+    // switches don't steal focus away from the active target window.
     if (!mainWindow || mainWindow.isDestroyed()) {
       createWindow()
-    } else {
+    } else if (!hasVisibleWindows || (!mainWindow.isVisible() && !BrowserWindow.getFocusedWindow())) {
       activateWindow(mainWindow)
     }
   })

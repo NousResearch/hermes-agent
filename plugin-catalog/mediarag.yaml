@@ -1,6 +1,6 @@
 name: mediarag
 repo: https://github.com/dyiapanis/mediarag
-sha: 6c3bba2b6a21e48ffdae1992638d2e4e6c3358e3
+sha: 11a970e70c5b4ba80e8cb2638334cbf486a69c39
 description: |
   Multimodal local search over documents and media: pdf, office files, notes, images,
   audio and subtitles in one corpus, queried by meaning from any MCP-capable agent.

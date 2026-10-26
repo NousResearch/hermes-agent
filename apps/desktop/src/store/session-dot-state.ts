@@ -165,6 +165,9 @@ export const $sessionDotStateById = computed(
     // claim as background processes — and it yields to `working` below the
     // moment the parent turn itself is live (synchronous orchestrator children).
     claim(delegating, 'background')
+    // A queue paused behind a turn lost in a restart waits on the user's Discard, and a turn that
+    // never finished must not read as finished-unread. A turn actually running speaks over it.
+    claim(paused, 'needs-input')
     claim(working, 'working')
 
     // Stalled REFINES working rather than rivalling it — the turn is still
@@ -179,9 +182,6 @@ export const $sessionDotStateById = computed(
       }
     }
 
-    // A queue paused behind a turn lost in a restart waits on the user's Discard, and a turn that
-    // never finished must not read as finished-unread.
-    claim(paused, 'needs-input')
     claim(attention, 'needs-input')
 
     return (dotStates = stableRecord(dotStates, next))

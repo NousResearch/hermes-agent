@@ -289,6 +289,14 @@ they persist nothing, so the gate does not apply to them. Two consequences:
   network-backed store.
 - **Fork transcripts reach the archive** through `on_pre_compress()`.
 
+The host keeps everything else off for `agent_context="subagent"`, whether or
+not your provider reads the label: no `prefetch()`/`queue_prefetch()`, no
+`sync_turn()`, `on_turn_start()`, `on_session_end()` or `on_delegation()`.
+`initialize()`, `on_session_switch()` and `on_pre_compress()` still run, so a
+checkpoint provider must save on `on_pre_compress()` regardless of how it
+scopes non-primary writes — skipping it there either breaks the checkpoint
+contract (success without a save) or kills the fork at its first compaction.
+
 What your provider receives depends on its declared API version. Version 1
 providers (the implicit default — every pre-existing provider) keep the
 historical contract: the raw message list, exactly as before. Version 2

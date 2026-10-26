@@ -65,3 +65,30 @@ def test_resolve_notifications_mode_reads_config_yaml(tmp_path, monkeypatch, yam
         monkeypatch.setenv("HERMES_TELEGRAM_NOTIFICATIONS", env_mode)
 
     assert _resolve_notifications_mode() == expected
+
+
+def test_resolve_notifications_mode_profile_home_wins(tmp_path, monkeypatch):
+    """A multiplexed profile's config.yaml wins over the process root home."""
+    import gateway.run as gateway_run
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from plugins.platforms.telegram.adapter import _resolve_notifications_mode
+
+    root = tmp_path / "root"
+    profile = tmp_path / "profile"
+    root.mkdir()
+    profile.mkdir()
+    (root / "config.yaml").write_text(
+        "display:\n  platforms:\n    telegram:\n      notifications: important\n",
+        encoding="utf-8",
+    )
+    (profile / "config.yaml").write_text(
+        "display:\n  platforms:\n    telegram:\n      notifications: all\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", root)
+    monkeypatch.delenv("HERMES_TELEGRAM_NOTIFICATIONS", raising=False)
+    token = set_hermes_home_override(profile)
+    try:
+        assert _resolve_notifications_mode() == "all"
+    finally:
+        reset_hermes_home_override(token)

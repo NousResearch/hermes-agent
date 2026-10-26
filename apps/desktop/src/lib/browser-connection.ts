@@ -11,7 +11,7 @@ import {
   navigateToBrowserLogin,
   ticketedWebsocketUrl
 } from '@/lib/browser-transport'
-import { browserLaunchProfile } from '@/lib/platform'
+import { browserLaunchProfileOrDefault } from '@/lib/platform'
 
 /** The serving origin is the only connection a browser-hosted Desktop has. */
 export function requireBrowserConnection(connectionId?: null | string): void {
@@ -27,7 +27,7 @@ export function requireBrowserConnection(connectionId?: null | string): void {
 function ridesWithProfile(profile?: null | string): boolean {
   const name = profile?.trim()
 
-  return Boolean(name) && name !== (browserLaunchProfile() || 'default')
+  return Boolean(name) && name !== browserLaunchProfileOrDefault()
 }
 
 function connectionFor(bootstrap: BrowserBootstrap, profile?: null | string): HermesConnection {

@@ -1,6 +1,6 @@
 import { normalizeBasePath } from '@hermes/shared'
 
-import { type BrowserHostGlobals, browserLaunchProfile } from './platform'
+import { type BrowserHostGlobals, browserLaunchProfileOrDefault } from './platform'
 import { readKey, writeKey } from './storage'
 
 interface BrowserSettingsOptions {
@@ -16,7 +16,7 @@ export function browserPageBasePath(): string {
 /** A profile not named is the one the serving gateway runs as, the profile its
  * REST answers for when a request names none. */
 export function browserDefaultProjectDirKey(basePath: string, profile: string): string {
-  const owner = profile.trim() || browserLaunchProfile() || 'default'
+  const owner = profile.trim() || browserLaunchProfileOrDefault()
 
   return `hermes:browser:default-project-dir:${JSON.stringify([basePath || '/', owner])}`
 }
@@ -38,9 +38,9 @@ function adoptLegacyLaunchFolder(basePath: string): void {
     return
   }
 
-  const launch = browserLaunchProfile()
+  const launch = browserLaunchProfileOrDefault()
 
-  if (launch && launch !== 'default') {
+  if (launch !== 'default') {
     const ownKey = browserDefaultProjectDirKey(basePath, launch)
     const legacy = readKey(browserDefaultProjectDirKey(basePath, 'default'))?.trim()
 

@@ -38,6 +38,11 @@ export function browserLaunchProfile(): string {
   return String((window as Window & BrowserHostGlobals).__HERMES_DASHBOARD_PROFILE__ ?? '').trim()
 }
 
+/** The profile a request that names none reaches: the one the server runs as, else `default`. */
+export function browserLaunchProfileOrDefault(): string {
+  return browserLaunchProfile() || 'default'
+}
+
 /**
  * The server served this page as the browser-hosted Desktop: a gated host
  * (cookie auth) or the Webapp surface (its session arrives by launch link).

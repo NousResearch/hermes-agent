@@ -8,6 +8,7 @@ that profile's ``webapp.port``, so the gateway binds it, the launcher prints and
 callback names it, and it stays the same across restarts. A ``webapp.port`` the user set always stays.
 No test binds a real port: what listens is faked, and the probe itself is checked on OS-chosen ports.
 """
+import os
 import socket
 from pathlib import Path
 
@@ -135,41 +136,80 @@ def test_with_no_free_port_start_refuses_and_names_the_setting(machine):
     assert "port" not in _webapp_block(machine["solo"])
 
 
-def test_two_profiles_starting_at_once_never_save_the_same_port(machine):
-    """Each standalone profile's gateway has its own change lock, so two first Starts can overlap. The
-    probes wait for each other: without a lock both gateways share, both would see the same free port
-    and save it. Each runs as its own profile (a context-local home, as its gateway's scope does)."""
-    import threading
-    from concurrent.futures import ThreadPoolExecutor
+#: How long one Start waits for the other to reach its step in the test below before it fails.
+_SYNC_SECONDS = 20
 
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+def _start_in_a_process_of_its_own(home: str, first: bool, first_holds, second_selecting, results) -> None:
+    """One standalone profile's Start in a process of its own, for the test below. The first holds the
+    port it chose, unsaved, in the probe until the second reaches the port claim; the second starts only
+    once the first holds it. Reports the port *home* saved, or the traceback."""
+    import traceback
+
+    from hermes_cli import auth
+    from hermes_constants import set_hermes_home_override
+
+    os.environ["HERMES_HOME"] = home
+    set_hermes_home_override(Path(home))
+    webapp_access.nous_signed_in = lambda: True
+    webapp_access.lan_address = lambda: "192.168.1.50"
+    listening = {9121}
+    try:
+        if first:
+            def port_free(_host, port):
+                if not first_holds.is_set():
+                    first_holds.set()
+                    if not second_selecting.wait(_SYNC_SECONDS):
+                        raise AssertionError("the second Start never reached the port claim")
+                return port not in listening
+        else:
+            file_lock = auth._file_lock
+
+            def claim_lock(lock_path, *args, **kwargs):
+                if Path(lock_path).name == "port-claim.lock":
+                    second_selecting.set()  # about to wait for the lock the first holds
+                return file_lock(lock_path, *args, **kwargs)
+
+            def port_free(_host, port):
+                second_selecting.set()  # with no lock between them, it probes while the first holds its port
+                return port not in listening
+
+            auth._file_lock = claim_lock
+            if not first_holds.wait(_SYNC_SECONDS):
+                raise AssertionError("the first Start never chose a port")
+        webapp_access._port_free = port_free
+        host, port, public_url, _callback = webapp_access.plan("lan")
+        webapp_access.serve(host, public_url, port)
+        results.put((home, _webapp_block(Path(home)).get("port")))
+    except BaseException:
+        results.put((home, traceback.format_exc()))
+
+
+def test_two_profiles_starting_at_once_never_save_the_same_port(machine):
+    """Each standalone profile's gateway has its own change lock and process, so two first Starts can
+    overlap. Here each runs in a process of its own with its own home under one root, and the first holds
+    the port it chose, unsaved, until the second is at the port claim: waiting for the lock or, with no
+    lock between the processes, probing the same free port. Without that lock both save that port.
+    Spawned, not forked, as on Windows, whose byte lock is just as cross-process."""
+    import multiprocessing
 
     twin = _write(machine["root"] / "profiles" / "twin", "gateway:\n  standalone: true\n")
-    both_probe = threading.Barrier(2, timeout=2)
-
-    def port_free(_host, port):
-        try:
-            both_probe.wait()  # until the other probes too, or (holding the lock) it never can
-        except threading.BrokenBarrierError:
-            pass
-        return port not in machine["listening"]
-
-    machine["monkeypatch"].setattr(webapp_access, "_port_free", port_free)
-
-    def start(home: Path) -> int:
-        token = set_hermes_home_override(home)
-        try:
-            host, port, public_url, _callback = webapp_access.plan("lan")
-            webapp_access.serve(host, public_url, port)
-            return _webapp_block(home)["port"]
-        finally:
-            reset_hermes_home_override(token)
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        starts = [pool.submit(start, home) for home in (machine["solo"], twin)]
-        chosen = sorted(started.result(timeout=30) for started in starts)
+    spawn = multiprocessing.get_context("spawn")
+    first_holds, second_selecting, results = spawn.Event(), spawn.Event(), spawn.Queue()
+    starts = [spawn.Process(target=_start_in_a_process_of_its_own,
+                            args=(str(home), home == machine["solo"], first_holds, second_selecting, results))
+              for home in (machine["solo"], twin)]
+    for start in starts:
+        start.start()
+    try:
+        saved = dict(results.get(timeout=2 * _SYNC_SECONDS + 30) for _ in starts)
+    finally:
+        for start in starts:
+            start.join(timeout=10)
+            if start.is_alive():
+                start.kill()
     # 9120 is the default profile's, 9121 is in use, 9122 is the other profile's.
-    assert chosen == [9123, 9124]
+    assert saved == {str(machine["solo"]): 9123, str(twin): 9124}
 
 
 def test_a_start_that_fails_after_choosing_keeps_the_port(machine):

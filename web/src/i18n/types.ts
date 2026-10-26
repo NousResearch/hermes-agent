@@ -150,6 +150,15 @@ export interface Translations {
       multiplexOn: string;
       multiplexOff?: string;
       multiplexUnset?: string;
+      multiplexSwitchLabel?: string;
+      multiplexSwitchOn?: string;
+      multiplexSwitchAvailable?: string;
+      multiplexStayOn?: string;
+      multiplexEngaged?: string;
+      linkedTo?: string;
+      linkedProfileWhatsAppOff?: string;
+      openManagingProfile?: string;
+      ownNumberHint?: string;
       ingressOwnedByHost: string;
       colChat: string;
       colKind: string;

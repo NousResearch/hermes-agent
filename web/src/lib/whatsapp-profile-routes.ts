@@ -158,21 +158,59 @@ export function whatsappChatKind(chatId: string, kind?: string | null): "group" 
   return "dm";
 }
 
+function whatsappNameIsPlaceholder(name: string, chatId: string): boolean {
+  const trimmed = name.trim();
+  const local = chatId.split("@")[0];
+  if (
+    !trimmed ||
+    trimmed === chatId ||
+    trimmed === local ||
+    /^\d+$/.test(trimmed) ||
+    /@(g\.us|s\.whatsapp\.net|lid)$/i.test(trimmed)
+  ) {
+    return true;
+  }
+  return /^(unknown|unnamed)( (number|contact|group|chat))?$/i.test(trimmed);
+}
+
 export function whatsappChatLabel(
   chatId: string,
   name?: string | null,
   kind?: string | null,
 ): string {
   const trimmed = name?.trim() ?? "";
-  const local = chatId.split("@")[0];
-  const placeholder =
-    !trimmed ||
-    trimmed === chatId ||
-    trimmed === local ||
-    /^\d+$/.test(trimmed) ||
-    /@(g\.us|s\.whatsapp\.net|lid)$/i.test(trimmed);
-  if (!placeholder) return trimmed;
-  return whatsappChatKind(chatId, kind) === "group" ? "Unnamed group" : "Unnamed contact";
+  if (!whatsappNameIsPlaceholder(trimmed, chatId)) return trimmed;
+  const digits = chatId.split("@")[0].split(":")[0].replace(/\D/g, "");
+  if (whatsappChatKind(chatId, kind) === "group") return digits || "Unnamed group";
+  return digits || "Unnamed contact";
+}
+
+/** The host profile owns the route table. A selected profile is linked when it is a target and not the owner. */
+export function whatsappRouteManager(args: {
+  selectedProfile: string;
+  hostProfile: string;
+  routes: { profile: string }[];
+}): { manager: string; linked: boolean } {
+  const manager = args.hostProfile.trim() || "default";
+  const selected = args.selectedProfile.trim() || manager;
+  const linked =
+    selected !== manager &&
+    args.routes.some((row) => row.profile.trim() === selected);
+  return { manager, linked };
+}
+
+/**
+ * On when the host flag is true, or the running gateway is already serving
+ * more than one profile and did not refuse to multiplex.
+ */
+export function whatsappMultiplexerEngaged(
+  flag: boolean | null,
+  sharedWith: string[] | null | undefined,
+  standaloneReason: string | null | undefined,
+): boolean {
+  if (flag === true) return true;
+  if (standaloneReason) return false;
+  return Array.isArray(sharedWith) && sharedWith.length > 1;
 }
 
 export function formatWhatsAppLastSeen(unix: number | null | undefined): string {

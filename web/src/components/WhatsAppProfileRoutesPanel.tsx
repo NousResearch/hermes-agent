@@ -5,9 +5,11 @@ import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
+import { Switch } from "@nous-research/ui/ui/components/switch";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { useI18n } from "@/i18n";
-import { api, getManagementProfile } from "@/lib/api";
+import { useProfileScope } from "@/contexts/useProfileScope";
+import { api } from "@/lib/api";
 import { errorMessage } from "@/lib/api-error";
 import { cn, themedBody } from "@/lib/utils";
 import {
@@ -18,6 +20,8 @@ import {
   multiplexProfilesFlag,
   persistWhatsAppProfileRoutes,
   resolveHostProfileName,
+  whatsappMultiplexerEngaged,
+  whatsappRouteManager,
   unassignedWhatsAppChats,
   validateWhatsAppRouteChatId,
   validateWhatsAppRouteName,
@@ -37,14 +41,20 @@ type RouteModalState =
 
 export function WhatsAppProfileRoutesPanel({
   showToast,
+  onLinkChange,
 }: {
   showToast: (message: string, type: "success" | "error") => void;
+  onLinkChange?: (link: { linked: boolean; manager: string }) => void;
 }) {
   const { t } = useI18n();
   const copy = t.channelsPage?.whatsappRoutes;
 
+  const { profile: selectedProfile, setProfile } = useProfileScope();
   const [hostProfile, setHostProfile] = useState("default");
   const [multiplexFlag, setMultiplexFlag] = useState<boolean | null>(null);
+  const [sharedWith, setSharedWith] = useState<string[] | null>(null);
+  const [standaloneReason, setStandaloneReason] = useState<string | null>(null);
+  const [engaging, setEngaging] = useState(false);
   const [profileNames, setProfileNames] = useState<string[]>([]);
   const [routes, setRoutes] = useState<WhatsAppProfileRouteRow[]>([]);
   const [seenChats, setSeenChats] = useState<WhatsAppSeenChatView[]>([]);
@@ -73,9 +83,11 @@ export function WhatsAppProfileRoutesPanel({
     () => unassignedWhatsAppChats(seenChats, routes),
     [seenChats, routes],
   );
-  const managementProfile = getManagementProfile();
-  const viewingSecondary =
-    Boolean(managementProfile) && managementProfile !== hostProfile;
+  const link = useMemo(
+    () => whatsappRouteManager({ selectedProfile, hostProfile, routes }),
+    [selectedProfile, hostProfile, routes],
+  );
+  const engaged = whatsappMultiplexerEngaged(multiplexFlag, sharedWith, standaloneReason);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -84,11 +96,14 @@ export function WhatsAppProfileRoutesPanel({
       const host = resolveHostProfileName(profiles);
       setHostProfile(host);
       setProfileNames(profiles.map((p) => p.name));
-      const [config, seen] = await Promise.all([
+      const [config, seen, status] = await Promise.all([
         api.getConfig(host, { includeDefaults: false }),
         api.getWhatsAppSeenChats().catch(() => ({ chats: [] as WhatsAppSeenChatView[] })),
+        api.getStatus().catch(() => null),
       ]);
       setMultiplexFlag(multiplexProfilesFlag(config));
+      setSharedWith(status?.gateway_shared_with ?? null);
+      setStandaloneReason(status?.multiplex_standalone_reason ?? null);
       setRoutes(whatsappProfileRoutesFromList(extractProfileRoutes(config)));
       setSeenChats(seen.chats ?? []);
     } catch (e) {
@@ -104,6 +119,35 @@ export function WhatsAppProfileRoutesPanel({
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    onLinkChange?.(link);
+  }, [link, onLinkChange]);
+
+  const engageMultiplexer = async (next: boolean) => {
+    if (!next) {
+      showToast(
+        copy?.multiplexStayOn ??
+          "The host gateway stays on. One gateway per host cannot be switched off. Clear routes to stop sending chats to other profiles.",
+        "error",
+      );
+      return;
+    }
+    setEngaging(true);
+    try {
+      await api.saveConfig({ gateway: { multiplex_profiles: true } }, hostProfile);
+      setMultiplexFlag(true);
+      showToast(
+        copy?.multiplexEngaged ??
+          `Multiplexer on. It is linked to ${hostProfile}. Restart the gateway if it is not already serving every profile.`,
+        "success",
+      );
+    } catch (e) {
+      showToast(`Could not turn the multiplexer on: ${errorMessage(e)}`, "error");
+    } finally {
+      setEngaging(false);
+    }
+  };
 
   const closeModal = useCallback(() => {
     setModal(null);
@@ -242,26 +286,75 @@ export function WhatsAppProfileRoutesPanel({
         <span className="font-mondwest text-sm text-foreground">
           {copy?.title ?? "One number, many profiles"}
         </span>
-        <p className="text-xs text-muted-foreground">
-          {copy?.hostIntro ??
-            "WhatsApp bridge and multiplex routing live on the host (default) profile config, not the profile picker selection."}
-        </p>
-        <p className="text-xs text-muted-foreground">
-          {(copy?.hostProfileLabel ?? "Host profile")}:{" "}
-          <code className="font-courier">{hostProfile}</code>
-          {" · "}
-          {multiplexFlag === false
-            ? (copy?.multiplexOff ??
-              "Multiplex routing is off. Saved routes apply once gateway.multiplex_profiles is on.")
-            : multiplexFlag === true
-              ? (copy?.multiplexOn ?? "Multiplex routing is on (gateway.multiplex_profiles).")
-              : (copy?.multiplexUnset ??
-                "gateway.multiplex_profiles is not set in this config. The gateway decides at startup.")}
-        </p>
-        {viewingSecondary && (
+        <div className="flex items-center justify-between gap-3 rounded-sm border border-border bg-background px-3 py-2">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm font-medium text-foreground">
+                {copy?.multiplexSwitchLabel ?? "Multiplexer"}
+              </span>
+              <span
+                className={cn(
+                  "rounded-sm border px-1.5 py-0.5 text-[11px] font-medium uppercase tracking-wide",
+                  engaged
+                    ? "border-primary bg-primary/15 text-foreground"
+                    : "border-foreground/40 bg-background text-foreground",
+                )}
+              >
+                {engaged
+                  ? (copy?.multiplexSwitchOn ?? "On")
+                  : (copy?.multiplexSwitchAvailable ?? "Available")}
+              </span>
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {engaged
+                ? (copy?.multiplexOn ?? "Multiplex routing is on.")
+                : (copy?.multiplexOff ??
+                  "Available, and off. Turn it on to route this number's chats to other profiles.")}{" "}
+              {(copy?.linkedTo ?? "Linked to")}{" "}
+              {link.linked ? (
+                <button
+                  type="button"
+                  className="font-courier text-foreground underline"
+                  onClick={() => setProfile(link.manager)}
+                >
+                  {link.manager}
+                </button>
+              ) : (
+                <span className="font-courier text-foreground">{link.manager}</span>
+              )}
+              .
+            </p>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {engaging ? <Spinner className="text-sm" /> : null}
+            <Switch
+              checked={engaged}
+              disabled={link.linked || engaging}
+              onCheckedChange={(next) => void engageMultiplexer(next)}
+              aria-label={
+                link.linked
+                  ? `${copy?.multiplexSwitchLabel ?? "Multiplexer"}, ${copy?.linkedTo ?? "linked to"} ${link.manager}`
+                  : (copy?.multiplexSwitchLabel ?? "Multiplexer")
+              }
+            />
+          </div>
+        </div>
+        {link.linked ? (
           <p className="text-xs text-muted-foreground">
-            {copy?.ingressOwnedByHost ??
-              "WhatsApp ingress is owned by the host profile; enabling WhatsApp on a secondary profile does not start a second bridge."}
+            {(copy?.linkedProfileWhatsAppOff ??
+              "This profile receives chats from that number, so its own WhatsApp stays off.")}{" "}
+            <button
+              type="button"
+              className="text-foreground underline"
+              onClick={() => setProfile(link.manager)}
+            >
+              {copy?.openManagingProfile ?? `Open ${link.manager}`}
+            </button>
+          </p>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            {copy?.ownNumberHint ??
+              "Each profile can still pair its own WhatsApp number. That number is a separate bridge on the same gateway, not a second multiplexer."}
           </p>
         )}
       </div>

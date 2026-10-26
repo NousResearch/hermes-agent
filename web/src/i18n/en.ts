@@ -131,13 +131,26 @@ export const en: Translations = {
       hostIntro:
         "WhatsApp bridge and multiplex routing live on the host (default) profile config, not the profile picker selection.",
       hostProfileLabel: "Host profile",
-      multiplexOn: "Multiplex routing is on (gateway.multiplex_profiles).",
+      multiplexOn: "Multiplex routing is on.",
       multiplexOff:
-        "Multiplex routing is off. Saved routes apply once gateway.multiplex_profiles is on.",
+        "Available, and off. Turn it on to route this number's chats to other profiles.",
       multiplexUnset:
         "gateway.multiplex_profiles is not set in this config. The gateway decides at startup.",
+      multiplexSwitchLabel: "Multiplexer",
+      multiplexSwitchOn: "On",
+      multiplexSwitchAvailable: "Available",
+      multiplexStayOn:
+        "The host gateway stays on. One gateway per host cannot be switched off. Clear routes to stop sending chats to other profiles.",
+      multiplexEngaged:
+        "Multiplexer on. Restart the gateway if it is not already serving every profile.",
+      linkedTo: "Linked to",
+      linkedProfileWhatsAppOff:
+        "This profile receives chats from that number, so its own WhatsApp stays off.",
+      openManagingProfile: "Open the profile that manages it",
+      ownNumberHint:
+        "Each profile can still pair its own WhatsApp number. That number is a separate bridge on the same gateway, not a second multiplexer.",
       ingressOwnedByHost:
-        "WhatsApp ingress is owned by the host profile; enabling WhatsApp on a secondary profile does not start a second bridge.",
+        "The route table belongs to the host profile. Another profile can still pair a different WhatsApp number as its own bridge.",
       colChat: "Chat",
       colKind: "Kind",
       colProfile: "Profile",

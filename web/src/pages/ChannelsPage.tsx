@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   Bot,
@@ -147,6 +147,8 @@ function normalizeWhatsAppMode(mode: unknown): "bot" | "self-chat" | null {
 
 export default function ChannelsPage() {
   const [platforms, setPlatforms] = useState<MessagingPlatform[]>([]);
+  const [whatsAppManagedBy, setWhatsAppManagedBy] = useState<string | null>(null);
+  const whatsAppManagedByRef = useRef<string | null>(null);
   const [envPath, setEnvPath] = useState("~/.hermes/.env");
   const [gatewayStartCommand, setGatewayStartCommand] = useState(
     "hermes gateway start",
@@ -263,7 +265,14 @@ export default function ChannelsPage() {
     }
   };
 
+  const onWhatsAppLinkChange = useCallback((link: { linked: boolean; manager: string }) => {
+    const manager = link.linked ? link.manager : null;
+    whatsAppManagedByRef.current = manager;
+    setWhatsAppManagedBy(manager);
+  }, []);
+
   const handleToggle = async (platform: MessagingPlatform) => {
+    if (platform.id === "whatsapp" && whatsAppManagedByRef.current) return;
     const next = !platform.enabled;
     setTogglingId(platform.id);
     try {
@@ -622,6 +631,11 @@ export default function ChannelsPage() {
                           {platform.error_message}
                         </span>
                       )}
+                      {platform.id === "whatsapp" && whatsAppManagedBy && (
+                        <span className="text-xs text-muted-foreground">
+                          WhatsApp stays off on this profile. {whatsAppManagedBy} manages that number.
+                        </span>
+                      )}
                       {platform.id === "whatsapp" && platform.state === "needs_qr" && (
                         <span className="text-xs text-muted-foreground">
                           WhatsApp logged this device out. Pair with QR to link again.
@@ -652,9 +666,14 @@ export default function ChannelsPage() {
                         <Spinner className="text-sm" />
                       ) : (
                         <Switch
-                          checked={platform.enabled}
+                          checked={platform.id === "whatsapp" && whatsAppManagedBy ? false : platform.enabled}
+                          disabled={platform.id === "whatsapp" && Boolean(whatsAppManagedBy)}
                           onCheckedChange={() => void handleToggle(platform)}
-                          aria-label={`Enable ${platform.name}`}
+                          aria-label={
+                            platform.id === "whatsapp" && whatsAppManagedBy
+                              ? `WhatsApp is off. Managed by ${whatsAppManagedBy}`
+                              : `Enable ${platform.name}`
+                          }
                         />
                       )}
                     </div>
@@ -704,7 +723,10 @@ export default function ChannelsPage() {
                       setRestartNeeded={setRestartNeeded}
                       showToast={showToast}
                     />
-                    <WhatsAppProfileRoutesPanel showToast={showToast} />
+                    <WhatsAppProfileRoutesPanel
+                      showToast={showToast}
+                      onLinkChange={onWhatsAppLinkChange}
+                    />
                   </div>
                 )}
               </CardContent>

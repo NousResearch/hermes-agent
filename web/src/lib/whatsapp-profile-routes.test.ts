@@ -11,7 +11,9 @@ import {
   unassignedWhatsAppChats,
   validateWhatsAppRouteChatId,
   whatsappChatLabel,
+  whatsappMultiplexerEngaged,
   whatsappProfileRoutesFromList,
+  whatsappRouteManager,
   whatsappRouteCountsByProfile,
   whatsappRouteNameForChat,
 } from "./whatsapp-profile-routes";
@@ -73,13 +75,17 @@ describe("whatsappRouteCountsByProfile", () => {
 });
 
 describe("whatsapp chat labels", () => {
-  it("shows a group name and hides the JID", () => {
+  it("shows a real name, and the number when the name is missing", () => {
     expect(whatsappChatLabel("120363@g.us", "Design")).toBe("Design");
-    expect(whatsappChatLabel("120363@g.us", "120363@g.us")).toBe("Unnamed group");
-    expect(whatsappChatLabel("120363000000000001@g.us", "120363000000000001")).toBe(
-      "Unnamed group",
+    expect(whatsappChatLabel("120363@g.us", "120363@g.us")).toBe("120363");
+    expect(whatsappChatLabel("120363000000000001@g.us", "unknown")).toBe(
+      "120363000000000001",
     );
-    expect(whatsappChatLabel("1555@s.whatsapp.net", "")).toBe("Unnamed contact");
+    expect(whatsappChatLabel("1555@s.whatsapp.net", "")).toBe("1555");
+    expect(whatsappChatLabel("15551234567@s.whatsapp.net", "unknown number")).toBe(
+      "15551234567",
+    );
+    expect(whatsappChatLabel("15551234567", "15551234567")).toBe("15551234567");
   });
 
   it("offers only chats that are not already routed", () => {
@@ -155,6 +161,30 @@ describe("profile route location", () => {
     expect(multiplexProfilesFlag({ multiplex_profiles: false, gateway: { multiplex_profiles: true } })).toBe(
       false,
     );
+  });
+});
+
+describe("whatsapp multiplexer link", () => {
+  const routes = [{ profile: "ops" }, { profile: "market" }];
+
+  it("treats the selected profile as linked when it is a route target", () => {
+    expect(whatsappRouteManager({
+      selectedProfile: "ops",
+      hostProfile: "default",
+      routes,
+    })).toEqual({ manager: "default", linked: true });
+    expect(whatsappRouteManager({
+      selectedProfile: "",
+      hostProfile: "default",
+      routes,
+    })).toEqual({ manager: "default", linked: false });
+  });
+
+  it("is engaged when the flag is on or the gateway already serves several profiles", () => {
+    expect(whatsappMultiplexerEngaged(true, null, null)).toBe(true);
+    expect(whatsappMultiplexerEngaged(null, ["default", "ops"], null)).toBe(true);
+    expect(whatsappMultiplexerEngaged(null, ["default"], "a secondary gateway is still running")).toBe(false);
+    expect(whatsappMultiplexerEngaged(false, null, null)).toBe(false);
   });
 });
 

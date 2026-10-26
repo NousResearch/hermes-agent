@@ -152,7 +152,7 @@ it.each(['window', 'session'] as const)('hands off a private %s through a one-us
     close = vi.fn()
   }
   vi.stubGlobal('BroadcastChannel', Channel)
-  const open = vi.spyOn(window, 'open').mockReturnValue({} as Window)
+  const open = vi.spyOn(window, 'open').mockReturnValue(null)
   expect(installBrowserDesktopBridge()).toBe(true)
 
   const pending = kind === 'window'
@@ -183,8 +183,7 @@ it.each(['window', 'session'] as const)('hands off a private %s through a one-us
   expect(handoff.get('query')).toContain('profile=research')
   expect(handoff.get('route')).toBe(kind === 'window' ? '/' : '/session%20%2F%201')
   expect(handoff.get('query')?.includes('watch=1')).toBe(kind === 'session')
-  expect(target).toBe('_blank')
-  expect(features).toBeUndefined()
+  expect([target, features]).toEqual(['_blank', 'noopener,noreferrer'])
   expect(String(opened)).not.toContain(token)
   expect(String(opened)).not.toContain(ticket)
   expect(window.location.search).toBe('?profile=coder')

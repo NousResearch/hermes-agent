@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { reconnectMovedCloudAgent } from '@/app/settings/cloud-team-change'
 import { $connection } from '@/store/session'
 import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
+import { browserOpensWebappWindows } from '@/test/webapp-windows'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
 import { desktopGit } from './desktop-git'
@@ -329,7 +330,7 @@ describe('browser-hosted Desktop bridge', () => {
     // A gated host opens the window directly; a launch-link tab hands it a session first.
     win.__HERMES_AUTH_REQUIRED__ = true
     window.history.replaceState(null, '', '/?profile=work#/existing')
-    const open = vi.spyOn(window, 'open').mockImplementation(() => ({}) as Window)
+    const { open } = browserOpensWebappWindows()
 
     expect(installBrowserDesktopBridge()).toBe(true)
     await expect(
@@ -343,7 +344,7 @@ describe('browser-hosted Desktop bridge', () => {
     expect(url.searchParams.get('watch')).toBe('1')
     expect(url.hash).toBe('#/session%20%2F%201')
     expect(target).toBe('_blank')
-    expect(features).toBeUndefined()
+    expect(features).toBe('noopener,noreferrer')
   })
 
   it('hands only the schemes Electron opens externally to window.open', async () => {
@@ -395,7 +396,7 @@ describe('browser-hosted Desktop bridge', () => {
     // A gated host opens the window directly; a launch-link tab hands it a session first.
     win.__HERMES_AUTH_REQUIRED__ = true
     window.history.replaceState(null, '', '/?profile=work#/existing')
-    const open = vi.spyOn(window, 'open').mockImplementation(() => ({}) as Window)
+    const { open } = browserOpensWebappWindows()
 
     expect(installBrowserDesktopBridge()).toBe(true)
     await expect(win.hermesDesktop!.openSessionWindow('session-1', opts)).resolves.toEqual({ ok: true })

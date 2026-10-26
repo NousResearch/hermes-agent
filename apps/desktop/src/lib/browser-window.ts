@@ -10,85 +10,147 @@ interface BrowserWindowOptions {
 
 const POPUP_BLOCKED = 'Webapp window did not open. Allow popups for this site and try again.'
 
-// No `noopener`: with it, window.open returns null even when the window opens (HTML "window
-// open steps"), so a blocked popup cannot be told from an open one. Severing `opener` on the
-// handle keeps the window from reaching this one. The rest of what noopener prevented now
-// happens: the browser copies this tab's sessionStorage into the window and sends this URL as a
-// same-origin Referer. The only credential in that copy is the launch-link one, which the window
-// ticket below hands over anyway.
-function openWebappWindow(href: string): Window | null {
-  const opened = window.open(href, '_blank')
+// The new window gets its own browsing context group: it does not share this tab's event loop,
+// starts with empty sessionStorage and gets no Referer. The cost: window.open returns null whether
+// or not the window opened (HTML "window open steps"), so each window says `ready` on a
+// BroadcastChannel instead.
+const WINDOW_FEATURES = 'noopener,noreferrer'
 
-  if (!opened) {return null}
+// A window that has not said `ready` by then is reported as blocked. In Chrome, Edge and WebKit a
+// window that opened said it within 0.4 s (the launch-link handoff page) and about 1.3 s (the
+// whole app on a gated host), even with the browser held to one CPU. A slower window still opens
+// after the toast, and on a launch-link tab it still signs in.
+const READY_DEADLINE_MS = 3_000
 
-  opened.opener = null
+// A gated host's window is the app itself, which says `ready` at boot on the channel this
+// parameter names (`announceWebappWindow`).
+const HELLO_PARAM = 'hello'
 
-  return opened
+const helloChannel = (id: string) => `hermes.webapp.hello:${id}`
+
+// Not crypto.randomUUID: it exists only in secure contexts, and a gated host may be served over
+// plain HTTP from another machine.
+const helloId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('')
+
+const asError = (error: unknown) => (error instanceof Error ? error : new Error(String(error)))
+
+/** Open synchronously in the user gesture; never rely on an opener/storage copy. */
+export function createBrowserWindowOpener({ api, basePath, privateSession }: BrowserWindowOptions) {
+  return (target: URL): Promise<{ ok: true }> =>
+    privateSession ? openLaunchLinkWindow(target, api, basePath) : openGatedWindow(target)
+}
+
+function openGatedWindow(target: URL): Promise<{ ok: true }> {
+  const id = helloId()
+  const channel = new BroadcastChannel(helloChannel(id))
+  const href = new URL(target)
+  href.searchParams.set(HELLO_PARAM, id)
+
+  return new Promise((resolve, reject) => {
+    const finish = (error?: Error) => {
+      window.clearTimeout(deadline)
+      channel.close()
+
+      if (error) {reject(error)} else {resolve({ ok: true })}
+    }
+
+    const deadline = window.setTimeout(() => finish(new Error(POPUP_BLOCKED)), READY_DEADLINE_MS)
+
+    channel.onmessage = event => {
+      if (event.data?.type === 'ready') {finish()}
+    }
+
+    try {
+      window.open(href.href, '_blank', WINDOW_FEATURES)
+    } catch (error) {
+      finish(asError(error))
+    }
+  })
 }
 
 /**
- * Open synchronously in the user gesture. A launch-link tab's window signs in with a one-use ticket
- * and does not rely on the opener or on the sessionStorage copy.
+ * The window opens on the handoff page, which says `ready` and signs in with a one-use ticket this
+ * tab mints for it. Past the deadline the promise rejects as blocked, but the channel stays open
+ * until the handoff expires: a window that starts late, or one the user opens from the browser's
+ * blocked-popup prompt, still signs in.
  */
-export function createBrowserWindowOpener({ api, basePath, privateSession }: BrowserWindowOptions) {
-  return (target: URL): Promise<{ ok: true }> => {
-    if (!privateSession) {
-      if (!openWebappWindow(target.href)) {
-        return Promise.reject(new Error(POPUP_BLOCKED))
-      }
+function openLaunchLinkWindow(
+  target: URL,
+  api: BrowserWindowOptions['api'],
+  basePath: string
+): Promise<{ ok: true }> {
+  const id = randomUuid()
+  const channel = new BroadcastChannel(`hermes.webapp.window:${id}`)
+  const launch = new URL(`${basePath}/webapp/window`, window.location.origin)
+  launch.hash = new URLSearchParams({ channel: id, query: target.search, route: target.hash.slice(1) }).toString()
 
-      return Promise.resolve({ ok: true })
+  return new Promise((resolve, reject) => {
+    let minting = false
+    let closed = false
+
+    // Once the deadline has rejected the promise, a later done or error only closes the channel.
+    const settle = (error?: Error) => {
+      window.clearTimeout(deadline)
+
+      if (error) {reject(error)} else {resolve({ ok: true })}
     }
 
-    const id = randomUuid()
-    const channel = new BroadcastChannel(`hermes.webapp.window:${id}`)
-    const launch = new URL(`${basePath}/webapp/window`, window.location.origin)
-    launch.hash = new URLSearchParams({ channel: id, query: target.search, route: target.hash.slice(1) }).toString()
+    const close = (error?: Error) => {
+      closed = true
+      window.clearTimeout(expiry)
+      channel.close()
+      settle(error)
+    }
 
-    return new Promise((resolve, reject) => {
-      let minting = false
-      let settled = false
+    const deadline = window.setTimeout(() => settle(new Error(POPUP_BLOCKED)), READY_DEADLINE_MS)
+    const expiry = window.setTimeout(() => close(new Error(POPUP_BLOCKED)), 30_000)
 
-      const finish = (error?: Error) => {
-        if (settled) {return}
-        settled = true
-        window.clearTimeout(timeout)
-        channel.close()
+    channel.onmessage = event => {
+      if (closed) {return}
 
-        if (error) {reject(error)} else {resolve({ ok: true })}
+      if (event.data?.type === 'ready' && !minting) {
+        minting = true
+        window.clearTimeout(deadline)
+        void api<{ ticket: string }>({ method: 'POST', path: '/api/webapp/window-ticket' }).then(({ ticket }) => {
+          if (closed) {return}
+          channel.postMessage({ ticket })
+        }).catch(error => {
+          if (closed) {return}
+          channel.postMessage({ error: 'Could not authorize this window. Try opening it again from the original tab.' })
+          close(asError(error))
+        })
+      } else if (event.data?.type === 'done') {
+        close()
+      } else if (event.data?.type === 'error') {
+        close(new Error('Could not authorize the Webapp window. Try opening it again.'))
       }
+    }
 
-      const timeout = window.setTimeout(() => finish(new Error(POPUP_BLOCKED)), 30_000)
+    try {
+      window.open(launch.href, '_blank', WINDOW_FEATURES)
+    } catch (error) {
+      close(asError(error))
+    }
+  })
+}
 
-      channel.onmessage = event => {
-        if (settled) {return}
+/**
+ * In a window a gated host opened: say `ready` on the channel its address names, then drop the
+ * name from the address. The message carries nothing, so a same-origin page that guessed the
+ * name could at most spare the opener its blocked-popup toast.
+ */
+export function announceWebappWindow(): void {
+  const url = new URL(window.location.href)
+  const id = url.searchParams.get(HELLO_PARAM)
 
-        if (event.data?.type === 'ready' && !minting) {
-          minting = true
-          void api<{ ticket: string }>({ method: 'POST', path: '/api/webapp/window-ticket' }).then(({ ticket }) => {
-            if (settled) {return}
-            channel.postMessage({ ticket })
-          }).catch(error => {
-            if (settled) {return}
-            channel.postMessage({ error: 'Could not authorize this window. Try opening it again from the original tab.' })
-            finish(error instanceof Error ? error : new Error(String(error)))
-          })
-        } else if (event.data?.type === 'done') {
-          finish()
-        } else if (event.data?.type === 'error') {
-          finish(new Error('Could not authorize the Webapp window. Try opening it again.'))
-        }
-      }
+  if (id === null) {return}
+  url.searchParams.delete(HELLO_PARAM)
+  window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`)
 
-      try {
-        if (!openWebappWindow(launch.href)) {
-          finish(new Error(POPUP_BLOCKED))
-        }
-      } catch (error) {
-        finish(error instanceof Error ? error : new Error(String(error)))
-      }
-    })
-  }
+  if (!/^[a-f0-9]{32}$/.test(id)) {return}
+  const channel = new BroadcastChannel(helloChannel(id))
+  channel.postMessage({ type: 'ready' })
+  channel.close()
 }
 
 /** The secondary-window URL showing one session, or null for an empty session id. */

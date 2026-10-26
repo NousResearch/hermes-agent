@@ -134,7 +134,7 @@ class CancelRequest:
     def reason(self) -> str:
         if self._reason is None:
             with contextlib.suppress(ValueError, OSError):
-                recorded = _marker_path(self.execution_id).read_text(encoding="utf-8").strip()
+                recorded = _marker_path(self.execution_id).read_text(encoding="utf-8-sig").strip()
                 if recorded:
                     self._reason = recorded
             self._reason = self._reason or _DEFAULT_REASON

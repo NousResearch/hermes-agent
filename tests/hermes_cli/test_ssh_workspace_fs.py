@@ -338,7 +338,6 @@ def test_ssh_workspace_factory_closes_replaced_connection_before_dialing_new_key
 
     monkeypatch.setattr(ssh_workspace_fs, "SSHEnvironment", SharedSocketSsh)
     monkeypatch.setattr(ssh_workspace_fs, "_BACKENDS", {})
-    monkeypatch.setattr(ssh_workspace_fs, "_DIAL_LOCKS", {})
 
     def open_with(key: str):
         return ssh_workspace_fs.get_ssh_workspace_fs("remote-dev", {**_ssh_terminal("ssh.example"), "ssh_key": key})
@@ -428,16 +427,24 @@ def test_ssh_workspace_factory_does_not_hold_unrelated_endpoint_locks(gated_ssh,
     mover = threading.Thread(
         target=lambda: moved.append(ssh_workspace_fs.get_ssh_workspace_fs("remote-dev", _ssh_terminal("new.example"))),
         daemon=True)
+    others: list = []
+    opener = threading.Thread(
+        target=lambda: others.append(ssh_workspace_fs.get_ssh_workspace_fs("other", _ssh_terminal("old.example"))),
+        daemon=True)
     mover.start()
     try:
         assert gated_ssh.dialing.wait(5)
         assert gated_ssh.cleaned == ["old.example"]
         # The old endpoint's lock was released after cleanup, so another profile can dial it now.
-        other = ssh_workspace_fs.get_ssh_workspace_fs("other", _ssh_terminal("old.example"))
-        assert other is not first
+        opener.start()
+        opener.join(2)
+        assert not opener.is_alive(), "a hanging dial on one endpoint blocked a dial on another"
+        assert others[0] is not first
     finally:
         gated_ssh.release.set()
         mover.join(5)
+        if opener.ident is not None:
+            opener.join(5)
     assert moved and moved[0] is not first
     assert lock_waits == []
 

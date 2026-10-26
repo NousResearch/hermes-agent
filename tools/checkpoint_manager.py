@@ -782,7 +782,7 @@ class CheckpointManager:
         are dropped when the store exceeds this after a commit.
     max_file_size_mb : int
         Skip adding any single file larger than this to a checkpoint.
-        (Implemented via ``.gitignore`` excludes + a post-stage size check.)
+        (Implemented via pre-stage pathspec excludes + a post-stage size check.)
     """
 
     def __init__(
@@ -1461,14 +1461,7 @@ class CheckpointManager:
             # First snapshot for this project.
             index_file.parent.mkdir(parents=True, exist_ok=True)
 
-        # Stage with per-project index.  Include a per-stage file-size filter
-        # via ``core.bigFileThreshold`` is not what we want — instead, we
-        # rely on the exclude file for broad patterns and post-stage prune
-        # any path whose size exceeds max_file_size_mb.
-        ok, _, err = _run_git(
-            ["add", "-A"], store, working_dir,
-            timeout=_GIT_TIMEOUT * 2, index_file=index_file,
-        )
+        ok, err = self._stage_with_oversize_preflight(store, working_dir, index_file)
         if not ok:
             logger.debug("Checkpoint git-add failed: %s", err)
             return False
@@ -1576,6 +1569,63 @@ class CheckpointManager:
             return path.stat().st_size > cap
         except OSError:
             return False
+
+    def _stage_with_oversize_preflight(
+        self, store: Path, working_dir: str, index_file: Path,
+    ) -> tuple[bool, str]:
+        """Stage the worktree without opening files already over the size cap."""
+        add_args = ["add", "-A"]
+        oversize_pathspec: Optional[Path] = None
+        if self.max_file_size_mb > 0:
+            oversize = self._oversize_paths_for_staging(store, working_dir, index_file)
+            if oversize is None:
+                return False, "oversize preflight failed"
+            if oversize:
+                oversize_pathspec = self._write_oversize_pathspec(oversize)
+                add_args.extend([
+                    f"--pathspec-from-file={oversize_pathspec}",
+                    "--pathspec-file-nul",
+                ])
+        try:
+            ok, _, err = _run_git(
+                add_args, store, working_dir,
+                timeout=_GIT_TIMEOUT * 2, index_file=index_file,
+            )
+            return ok, err
+        finally:
+            if oversize_pathspec is not None:
+                _unlink_quiet(oversize_pathspec)
+
+    def _oversize_paths_for_staging(
+        self, store: Path, working_dir: str, index_file: Path,
+    ) -> Optional[list[str]]:
+        """Return tracked or untracked paths that Git must not open for staging."""
+        ok, stdout, _ = _run_git(
+            ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+            store, working_dir, index_file=index_file,
+        )
+        if not ok:
+            return None
+        abs_workdir = _normalize_path(working_dir)
+        return [
+            rel for rel in stdout.split("\x00")
+            if rel and self._exceeds_size_cap(abs_workdir / rel)
+        ]
+
+    @staticmethod
+    def _write_oversize_pathspec(paths: list[str]) -> Path:
+        """Write NUL-delimited literal excludes suitable for ``git add``."""
+        fd, raw_path = tempfile.mkstemp(prefix="hermes-checkpoint-", suffix=".pathspec")
+        path = Path(raw_path)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                for rel in paths:
+                    handle.write(os.fsencode(f":(exclude,top,literal){rel}"))
+                    handle.write(b"\0")
+        except Exception:
+            _unlink_quiet(path)
+            raise
+        return path
 
     def _drop_oversize_from_index(
         self, store: Path, working_dir: str, index_file: Path,

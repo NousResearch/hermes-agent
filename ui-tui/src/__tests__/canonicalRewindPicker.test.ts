@@ -18,9 +18,15 @@ const messages = [
   { role: 'assistant', content: 'a3', row_id: 16 }
 ]
 
-function harness(rewindRefusal?: Error) {
+function harness(rewindRefusal?: Error, repaintFailure?: Error) {
+  let cut = false
+
   const request = vi.fn(async (method: string, params: any) => {
     if (method === 'session.resume') {
+      if (cut && repaintFailure) {
+        throw repaintFailure
+      }
+
       return { session_id: 'owner', revision: 7, execution_generation: 3, messages, info: { model: 'm' } }
     }
 
@@ -28,6 +34,8 @@ function harness(rewindRefusal?: Error) {
       if (rewindRefusal) {
         throw rewindRefusal
       }
+
+      cut = true
 
       return { session_id: 'owner', operation: 'rewind', revision: 8, execution_generation: 4, rewound_count: 6 }
     }
@@ -38,6 +46,7 @@ function harness(rewindRefusal?: Error) {
   const sys = vi.fn()
   const send = vi.fn()
   const setHistoryItems = vi.fn()
+  const composer = { enqueue: vi.fn(), setInput: vi.fn() }
 
   const ctx = {
     slashFlightRef: { current: 0 },
@@ -45,11 +54,11 @@ function harness(rewindRefusal?: Error) {
     transcript: { page: vi.fn(), panel: vi.fn(), send, sys, setHistoryItems, trimLastExchange: (items: unknown[]) => items },
     local: { getHistoryItems: () => [], getLastUserMsg: () => '', maybeWarn: vi.fn() },
     session: { resumeById: vi.fn() },
-    composer: { enqueue: vi.fn() },
+    composer,
     voice: {}
   }
 
-  return { request, send, setHistoryItems, slash: createSlashHandler(ctx as any), sys }
+  return { composer, request, send, setHistoryItems, slash: createSlashHandler(ctx as any), sys }
 }
 
 const mutations = (request: ReturnType<typeof harness>['request']) =>
@@ -97,7 +106,7 @@ describe('/rewind picker (#21910)', () => {
 
   it('a busy refusal at send time prints the stop-first text and sends nothing', async () => {
     const busy = new JsonRpcGatewayError('session_busy', { code: 4001, data: { reason: 'session_busy' } })
-    const { send, slash, sys } = harness(busy)
+    const { composer, send, slash, sys } = harness(busy)
 
     slash('/rewind')
     await flush()
@@ -107,6 +116,22 @@ describe('/rewind picker (#21910)', () => {
 
     expect(send).not.toHaveBeenCalled()
     expect(sys.mock.calls.map(([text]) => String(text)).join('\n')).toContain('Stop the current reply first')
+    // Nothing was cut, so the edit goes back into the composer instead of vanishing with the picker.
+    expect(composer.setInput).toHaveBeenCalledWith('again')
+  })
+
+  it('a cut that commits but cannot repaint keeps the edit as that session\'s next prompt', async () => {
+    const { composer, send, slash } = harness(undefined, new Error('transport closed'))
+
+    slash('/rewind')
+    await flush()
+    $overlayState.get().rewind!.onSubmit($overlayState.get().rewind!.targets[0]!, 'first, edited')
+    await flush()
+    await flush()
+    await flush()
+
+    expect(send).not.toHaveBeenCalled()
+    expect(composer.enqueue).toHaveBeenCalledWith('first, edited', 'first, edited', expect.objectContaining({ sid: 'owner' }))
   })
 
   it('does not open while a turn runs', async () => {

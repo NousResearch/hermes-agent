@@ -19,8 +19,9 @@ import pytest
 
 from tools.connectors import live
 from tools.connectors.catalog_tool import NOT_HERE, manage_catalog
-from tools.connectors.contract import TargetState
+from tools.connectors.contract import SettleReason, TargetState
 from tools.connectors.run import apply_answer
+from tests.waiting import wait_until
 
 
 @pytest.fixture(autouse=True)
@@ -242,14 +243,25 @@ def test_a_failed_row_keeps_its_reason_and_try_again_works_while_the_card_is_ope
             {"action": "install", "items": [{"kind": "plugin", "id": "blender"}, {"kind": "plugin", "id": "krita"}]},
             session_id="s1", connection_callback=card, card_surface=True, installer=installer))))
         thread.start()
-        operation = wait_for(TargetState.failed)
-        assert operation.targets[0].detail == "clone failed: network down"
-        assert not operation.settled  # krita still waits on the user
-        installer.install_error = ""
-        apply_answer(operation, json.dumps({"targets": [{"name": "blender", "status": "approved"}]}))
-        wait_for(TargetState.connected)
-        apply_answer(operation, json.dumps({"targets": [{"name": "krita", "status": "skipped"}]}))
-        thread.join(5)
+        try:
+            operation = wait_for(TargetState.failed)
+            assert operation.targets[0].detail == "clone failed: network down"
+            assert not operation.settled  # krita still waits on the user
+            installer.install_error = ""
+            apply_answer(operation, json.dumps({"targets": [{"name": "blender", "status": "approved"}]}))
+            wait_for(TargetState.connected)
+            apply_answer(operation, json.dumps({"targets": [{"name": "krita", "status": "skipped"}]}))
+        finally:
+            # A failed step leaves krita pending (or the operation not yet open), and the tool thread,
+            # not a daemon, would hold the interpreter open until the operation's 600 s deadline.
+            # Continue on whatever operation it has open until the thread returns.
+            def released():
+                if (still_open := live.current("s1")) is not None:
+                    still_open.settle(SettleReason.continue_)
+                    still_open.wake.set()
+                return not thread.is_alive()
+
+            wait_until(released, timeout=10, what="the manage_catalog thread to return")
     assert result["out"]["targets"][0]["state"] == TargetState.connected.value
     assert len(installer.installs) == 2
 

@@ -165,6 +165,21 @@ async def test_a_later_disconnect_gets_a_fresh_redial_budget(monkeypatch, _worke
 
 
 @pytest.mark.asyncio
+async def test_repeated_receipt_disconnects_cannot_reset_the_redial_budget(monkeypatch, _worker_env):
+    # Every dial succeeds, but receipt reads disconnect. Advancing monotonic time
+    # by 100 seconds per check must exhaust one recovery budget rather than reset it.
+    monkeypatch.setattr(kanban_worker_client, "time", _Clock([0, 100, 200, 300, 400]))
+    owner = _Owner(connects=[None, None, None],
+                   receipts=[_disconnect(), _disconnect(), _disconnect()])
+    monkeypatch.setattr(gateway_client, "connect_gateway", owner.connect())
+
+    with pytest.raises(gateway_client.GatewayClientError, match="after admission"):
+        await kanban_worker_client.run({"task_id": "t1"}, str(_worker_env / "kanban.db"))
+    assert owner.calls.count("kanban.run") == 1
+    assert owner.dials == 2
+
+
+@pytest.mark.asyncio
 async def test_the_redial_budget_bounds_a_flapping_gateway(monkeypatch, _worker_env):
     monkeypatch.setattr(kanban_worker_client, "OWNER_WAIT_S", 0.0)
     owner = _Owner(connects=[None, None], receipts=["pending", _disconnect(), "terminal"])

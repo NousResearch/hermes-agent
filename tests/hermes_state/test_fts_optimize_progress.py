@@ -157,8 +157,11 @@ def test_writer_that_opens_the_store_mid_run_gets_the_paced_cycle(legacy_db, mon
         return more
 
     legacy_db.fts_rebuild_step = step_then_writer_opens
-    assert legacy_db.optimize_fts_storage(progress_cb=events.append, vacuum=False)["ok"] is True
+    result = legacy_db.optimize_fts_storage(progress_cb=events.append, vacuum=True)
+    # The writer is still there at the end: no minutes-long VACUUM lock over its appends.
+    assert result == {"ok": True, "vacuumed": False, "vacuum_skipped": "in_use"}
     chunks = [e for e in events if e["phase"] != "done"]
+    assert not [e for e in chunks if e["phase"] == "vacuum"]
     assert chunks[0]["paced"] is False and all(e["paced"] for e in chunks[1:])
     # Every chunk after the writer appeared yields the write lock for at least the duty-cycle floor.
     teardown = [e for e in chunks if e["phase"] == "teardown"]

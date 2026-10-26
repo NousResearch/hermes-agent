@@ -1055,7 +1055,7 @@ def _cmd_optimize_storage(db, args):
         if free_bytes < need_bytes:
             print("\n⚠ Not enough free disk to complete safely. Free up space, or run with --no-vacuum "
                   "(rebuilds the index but doesn't reclaim space until a later VACUUM).")
-            return
+            return 1
     if before_mb > 500:
         print("  This may take a while on a large database. It runs in the foreground with progress below; "
               "safe to Ctrl-C and re-run (it resumes).")
@@ -1087,7 +1087,10 @@ def _cmd_optimize_storage(db, args):
         return 1
     print("✓ Search index optimized.")
     _print_size_change(db, before_mb, prefix="  ")
-    if result.get("vacuumed") is False:
+    if result.get("vacuum_skipped") == "in_use":
+        print("  (VACUUM skipped: another process is using the database. Re-run `hermes sessions optimize` "
+              "with it closed to reclaim freed space.)")
+    elif result.get("vacuumed") is False:
         print("  (VACUUM was skipped or failed — run `hermes sessions optimize` later to reclaim freed space.)")
 
 

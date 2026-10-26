@@ -1,14 +1,22 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
+import type * as Routing from './routing'
+import { requestForBot } from './routing'
 import { TEAMMATE_WAIT_LOCALES } from './teammate-wait-locales'
 import {
   failureReasonText,
+  listDeliveries,
   senderForSession,
   type TeammateDelivery,
   teammateFor,
   visibleDeliveries
 } from './teammate-waits'
 import type { RosterRow } from './types'
+
+vi.mock('./routing', async importOriginal => ({
+  ...(await importOriginal<typeof Routing>()),
+  requestForBot: vi.fn()
+}))
 
 const bot = (name: string, id: string, resolved = id): RosterRow =>
   ({ name, canonical_session: { id, resolved_id: resolved } }) as RosterRow
@@ -51,6 +59,17 @@ describe('teammate-wait strip', () => {
         messages.reasons.provider_auth_or_access
       )
     }
+  })
+
+  it('a failed poll is an error the query keeps the last rows through; only a missing method is empty', async () => {
+    const sender = bot('alice', 'a-root')
+    const request = vi.mocked(requestForBot)
+
+    request.mockRejectedValueOnce(Object.assign(new Error('Method not found'), { code: -32601 }))
+    await expect(listDeliveries(sender)).resolves.toEqual([])
+
+    request.mockRejectedValueOnce(new Error('request timed out'))
+    await expect(listDeliveries(sender)).rejects.toThrow('request timed out')
   })
 
   it('a teammate the roster has not caught up with is never the sender in disguise', () => {

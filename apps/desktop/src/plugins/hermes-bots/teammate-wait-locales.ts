@@ -20,6 +20,8 @@ export type TeammateWaitMessages = {
   dismiss: string
   /** The do-not-resend rule, shown under a row whose outcome is unknown and as the strip's tooltip. */
   neverResent: string
+  /** The last poll failed: the rows shown are the last ones the gateway answered. */
+  stale: string
 }
 
 const en: TeammateWaitMessages = {
@@ -49,7 +51,8 @@ const en: TeammateWaitMessages = {
   open: 'Open',
   dismiss: 'Dismiss',
   neverResent:
-    'Nothing here is ever resent. An unknown outcome means the teammate may already have acted — open its chat before asking again.'
+    'Nothing here is ever resent. An unknown outcome means the teammate may already have acted — open its chat before asking again.',
+  stale: "Couldn't refresh — showing the last known state."
 }
 
 const ja: TeammateWaitMessages = {
@@ -79,7 +82,8 @@ const ja: TeammateWaitMessages = {
   open: '開く',
   dismiss: '閉じる',
   neverResent:
-    'ここにある依頼は自動で再送されません。結果不明の場合、相手がすでに実行した可能性があります。もう一度頼む前にそのチャットを確認してください。'
+    'ここにある依頼は自動で再送されません。結果不明の場合、相手がすでに実行した可能性があります。もう一度頼む前にそのチャットを確認してください。',
+  stale: '更新できませんでした — 最後に確認した状態を表示しています。'
 }
 
 const zh: TeammateWaitMessages = {
@@ -108,7 +112,8 @@ const zh: TeammateWaitMessages = {
   unknownOutcome: '结果未知',
   open: '打开',
   dismiss: '忽略',
-  neverResent: '这里的请求永远不会自动重发。结果未知表示队友可能已经执行——再次请求前请先打开它的聊天查看。'
+  neverResent: '这里的请求永远不会自动重发。结果未知表示队友可能已经执行——再次请求前请先打开它的聊天查看。',
+  stale: '无法刷新——显示的是上次已知的状态。'
 }
 
 const zhHant: TeammateWaitMessages = {
@@ -137,7 +142,8 @@ const zhHant: TeammateWaitMessages = {
   unknownOutcome: '結果未知',
   open: '開啟',
   dismiss: '忽略',
-  neverResent: '這裡的請求永遠不會自動重送。結果未知表示隊友可能已經執行——再次請求前請先開啟它的聊天查看。'
+  neverResent: '這裡的請求永遠不會自動重送。結果未知表示隊友可能已經執行——再次請求前請先開啟它的聊天查看。',
+  stale: '無法重新整理——顯示的是上次已知的狀態。'
 }
 
 export const TEAMMATE_WAIT_LOCALES = { en, ja, zh, 'zh-hant': zhHant }

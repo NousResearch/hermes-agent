@@ -116,6 +116,33 @@ class TestDesktopEndpointEdit:
         assert entry["key_env"] == "HERMES_CUSTOM_MYEP_API_KEY"
         assert entry["extra_headers"] == {"X-Org-Token": "hdr-old-fixture"}
 
+    @pytest.mark.parametrize("old_credential", [{"api_key": "sk-old-origin-fixture"},
+                                                {"key_env": "MY_OWN_LLM_KEY"}])
+    def test_default_save_probe_never_reloads_the_old_hosts_key(self, monkeypatch, old_credential):
+        """Explicit blank key + make_default: validation probes the new host keyless."""
+        from hermes_cli.config import load_config, save_config, save_env_value
+
+        cfg = load_config()
+        entry = cfg["providers"]["myep"]
+        for field in ("key_env", "key_cmd", "extra_headers"):
+            entry.pop(field)
+        entry.update(old_credential)
+        save_config(cfg)
+        save_env_value("MY_OWN_LLM_KEY", "sk-old-origin-fixture")
+        probed: list[tuple[str, str]] = []
+
+        def _probe(api_key, base_url, *_a, **_k):
+            probed.append((api_key, base_url))
+            return {"models": ["m"], "probed_url": f"{base_url}/models", "resolved_base_url": None,
+                    "suggested_base_url": None, "used_fallback": False}
+
+        monkeypatch.setattr("hermes_cli.models.probe_api_models", _probe)
+        response = self._edit("https://llm.new.example/v1", api_key="", make_default=True)
+
+        assert response.status_code == 200, response.text
+        assert probed and all(base == "https://llm.new.example/v1" for _key, base in probed)
+        assert all("sk-old-origin-fixture" not in str(key) for key, _base in probed)
+
     def test_new_origin_with_its_key_drops_every_old_credential(self):
         from hermes_cli.config import get_env_value, load_config
 

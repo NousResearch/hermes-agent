@@ -2346,17 +2346,23 @@ DEFAULT_CONFIG = {
         "check": True,
         # Pre-update backup. quick = snapshot small critical state (pairing JSONs, cron jobs,
         # config.yaml, .env, auth.json, profile DBs) into <HERMES_HOME>/state-snapshots/, skipping
-        # files >1 GiB; restore via ``/snapshot``. full = quick PLUS a ``hermes backup`` zip in
+        # files over pre_update_snapshot_max_mb (default 1 GiB); restore via ``/snapshot``. full = quick PLUS a ``hermes backup`` zip in
         # <HERMES_HOME>/backups/ (``hermes import`` restores; slow on large homes; ``--backup``
         # forces once). off = none (``--no-backup`` forces once). Legacy booleans: true -> full,
         # false -> off.
-        # Pre-update safety backup — ONE consolidated mechanism, three modes: Files over 1 GiB (e.g. a
-        # bloated state.db) are skipped with a warning so the snapshot stays fast. This is the #48200
+        # Pre-update safety backup — ONE consolidated mechanism, three modes: Files over the quick
+        # snapshot cap (e.g. a bloated state.db) are skipped with a warning so the snapshot stays fast. This is the #48200
         # (wrong-path wipe) safety net.
         "pre_update_backup": "quick",
         # Full backup zips to retain (older pruned after each success; floored to 1 so the newest is
         # always kept). The quick snapshot always keeps exactly 1.
         "backup_keep": 5,
+        # Per-file size ceiling (MiB) for the *quick* pre-update snapshot.
+        # Default 1024 (1 GiB). Raise when state.db is only a few GiB but
+        # still needs a clean make-before-break path (#66726). Set to 0
+        # for no per-file cap (create_quick_snapshot gets max_file_size=None).
+        # Full zip backups are unaffected.
+        "pre_update_snapshot_max_mb": 1024,
         # Uncommitted source-tree changes during NON-interactive updates (desktop, gateway — no TTY;
         # interactive updates always stash and ask). stash = stash, pull, restore on top (conflicts
         # stay in a git stash). discard = stash and drop after the pull (stash-and-drop, not reset

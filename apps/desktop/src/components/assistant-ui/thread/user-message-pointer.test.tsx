@@ -61,6 +61,16 @@ describe('user message reactions by pointer', () => {
     expect(await screen.findByRole('button', { name: '👍' })).toBeTruthy()
   })
 
+  it('clamps the pinned user bubble on a touch layout', async () => {
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+    $touchPointer.set(true)
+    render(<Harness />)
+
+    const text = await screen.findByText('edit me please')
+
+    expect(text.closest('.sticky-human-clamp')).toBeTruthy()
+  })
+
   it('leaves a touch long-press in a touch-layout browser tab to the platform', async () => {
     window.document.documentElement.dataset.hermesDesktopHost = 'browser'
     $touchPointer.set(true)

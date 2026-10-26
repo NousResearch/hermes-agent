@@ -16,7 +16,9 @@ from agent.reasoning_promotion import answer_in_reasoning_capability
 from agent.repetition_guard import STOP_PATH_MIN_CHARS, is_runaway_repetition
 from agent.stream_delivery import publish_held_final_row
 from agent.turn_failure_copy import stamp_failure
-from agent.turn_dropped_tool_call import reprompt_dropped_tool_call
+from agent.turn_dropped_tool_call import (
+    REPROMPT, UNEXECUTED, reprompt_dropped_tool_call, unexecuted_markup_result,
+)
 from agent.turn_empty_response import recover_empty_response
 from agent.turn_stop_gates import apply_stop_gates
 from agent.turn_truncation import partial_result, repetition_copy
@@ -33,6 +35,16 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_thinking_prefill", "_empty_recovery_synthetic", "_empty_terminal_sentinel",
     "_dropped_toolcall_nudge",
 )
+
+
+def _pop_ephemeral_tail(messages: Any) -> None:
+    """Strip trailing prefill / empty-retry / re-prompt scaffolding rows."""
+    while (
+        messages
+        and isinstance(messages[-1], dict)
+        and any(messages[-1].get(flag) for flag in _EPHEMERAL_SCAFFOLDING_FLAGS)
+    ):
+        messages.pop()
 
 
 @dataclass
@@ -297,18 +309,18 @@ def finish_text_response(
 
     # Dropped tool call (empty tool_calls on finish_reason="tool_calls", or tool-call markup left in
     # the content): re-prompt instead of ending the turn unstarted; else the stall budget clears.
-    if reprompt_dropped_tool_call(agent, assistant_message, finish_reason, final_msg, messages):
+    _dropped = reprompt_dropped_tool_call(agent, assistant_message, finish_reason, final_msg, messages)
+    if _dropped == REPROMPT:
         final_response = None
         return _verdict("continue")
 
     # Pop prefill / empty-retry scaffolding before the final response or
     # verification follow-up; it must not become durable transcript.
-    while (
-        messages
-        and isinstance(messages[-1], dict)
-        and any(messages[-1].get(flag) for flag in _EPHEMERAL_SCAFFOLDING_FLAGS)
-    ):
-        messages.pop()
+    _pop_ephemeral_tail(messages)
+    if _dropped == UNEXECUTED:
+        return _verdict("return", unexecuted_markup_result(
+            agent, messages, conversation_history, api_call_count, effective_task_id,
+        ))
 
     _sg = apply_stop_gates(
         agent, final_msg, final_response=final_response, messages=messages,

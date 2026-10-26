@@ -690,6 +690,22 @@ def live_inflight_execution(job_id: str) -> Optional[dict[str, Any]]:
     return record
 
 
+def cancellable_execution(job_id: str) -> Optional[dict[str, Any]]:
+    """The job's newest claimed/running attempt under a LIVE owner, even when it is not the latest row.
+
+    A Run-now refused while a run is live books its own newer ``failed`` row ("Fire claim was not
+    acquired"), so ``live_inflight_execution`` (latest row only) would call the live run idle and a
+    cancel would never reach it.
+    """
+    with _transaction() as conn:
+        rows = conn.execute(
+            """SELECT * FROM executions WHERE job_id=? AND status IN ('claimed', 'running')
+               ORDER BY julianday(claimed_at) DESC, claimed_at DESC, id DESC""",
+            (job_id,),
+        ).fetchall()
+    return next((dict(row) for row in rows if _row_owner_live(row)), None)
+
+
 def latest_executions(job_ids: list[str]) -> dict[str, dict[str, Any]]:
     """Load latest execution for many jobs in one query."""
     clean = [str(job_id) for job_id in dict.fromkeys(job_ids) if job_id]

@@ -22,7 +22,7 @@ from typing import Any, Dict, Optional, Protocol
 
 from hermes_constants import get_hermes_home
 
-from cron.executions import live_inflight_execution
+from cron.executions import cancellable_execution
 
 # A marker whose run was SIGKILLed before it could clean up is unreadable garbage. Canceling a
 # job is rare, so the prune rides along with the write instead of needing its own sweep.
@@ -183,7 +183,7 @@ def run_job_unless_cancelled(run_job, job, run_kwargs, teardown, fence, executio
 
 def cancel_run(job_id: str, *, reason: Optional[str] = None) -> dict[str, Any]:
     """Request cancellation of the job's live run. A job with nothing in flight is a no-op."""
-    record = live_inflight_execution(job_id)
+    record = cancellable_execution(job_id)
     if record is None:
         return {
             "success": True,

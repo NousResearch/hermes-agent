@@ -692,7 +692,9 @@ def _cancel_cron_job_sync(job_id: str, profile: Optional[str] = None):
     """Stop the job's live run; ``cancelled: false`` when nothing is in flight. Schedule untouched."""
     selected = _job_profile(job_id, profile)
     job = _found(_call_cron_for_profile(selected, "resolve_job_ref", job_id))
-    return {**_call_cron_for_profile(selected, "cancel_job_run", job["id"]), "job_id": job["id"]}
+    # The reason lands in the run history row, so it names the surface that asked.
+    result = _call_cron_for_profile(selected, "cancel_job_run", job["id"], reason="cancelled on request (Stop)")
+    return {**result, "job_id": job["id"]}
 
 
 def _delete_cron_job_sync(job_id: str, profile: Optional[str] = None):

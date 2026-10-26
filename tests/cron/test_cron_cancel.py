@@ -62,6 +62,21 @@ def test_cancel_run_targets_the_live_execution():
     assert CancelRequest(record["id"]).is_set()
 
 
+def test_cancel_reaches_a_live_run_behind_a_refused_trigger():
+    """A Run-now refused while a run is live books a newer failed row; the live run stays cancellable."""
+    from cron.cancellation import cancel_run
+    from cron.executions import _transaction, create_execution, finish_execution
+
+    live = _claim("job-busy")
+    refused = create_execution("job-busy", source="test")
+    finish_execution(refused["id"], success=False, error="Fire claim was not acquired")
+    with _transaction() as conn:  # the refused row is the job's newest attempt
+        conn.execute("UPDATE executions SET claimed_at='2999-01-01T00:00:00+00:00' WHERE id=?", (refused["id"],))
+
+    result = cancel_run("job-busy")
+    assert result["cancelled"] and result["execution_id"] == live["id"]
+
+
 def test_cancel_is_a_noop_when_nothing_is_in_flight():
     from cron.cancellation import cancel_run
 
@@ -142,7 +157,7 @@ def test_cancelling_a_script_job_kills_it_and_names_the_reason(tmp_path, monkeyp
         while not ready.exists() and thread.is_alive() and time.monotonic() < deadline:
             time.sleep(0.01)
         assert ready.exists(), f"script must start before it can be cancelled (results={results})"
-        pid = int(ready.read_text(encoding="utf-8"))
+        pid = int(ready.read_text(encoding="utf-8-sig"))
 
         request_cancel("exec-live-script", reason="operator asked")
         thread.join(timeout=20)
@@ -156,7 +171,7 @@ def test_cancelling_a_script_job_kills_it_and_names_the_reason(tmp_path, monkeyp
         assert not _alive(pid), "the cancelled script must not outlive the cancel"
     finally:
         if ready.exists():
-            pid = int(ready.read_text(encoding="utf-8"))
+            pid = int(ready.read_text(encoding="utf-8-sig"))
             if _alive(pid):
                 os.kill(pid, 9)
         thread.join(timeout=20)

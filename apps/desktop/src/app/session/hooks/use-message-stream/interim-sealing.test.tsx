@@ -1,5 +1,5 @@
 import type { GatewayEvent } from '@hermes/shared'
-import { act, cleanup } from '@testing-library/react'
+import { act, cleanup, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
@@ -19,16 +19,28 @@ function mountStream() {
   stream = renderMessageStream(SID)
 }
 
-const start = () => act(() => stream.handleEvent({ payload: {}, session_id: SID, type: 'message.start' }))
+const start = (seq?: number) =>
+  act(() => stream.handleEvent({ payload: {}, session_id: SID, ...(seq === undefined ? {} : { seq }), type: 'message.start' }))
 
-const delta = (text: string) =>
-  act(() => stream.handleEvent({ payload: { text }, session_id: SID, type: 'message.delta' }))
+const delta = (text: string, seq?: number) =>
+  act(() =>
+    stream.handleEvent({ payload: { text }, session_id: SID, ...(seq === undefined ? {} : { seq }), type: 'message.delta' })
+  )
 
-const interim = (text: string) =>
-  act(() => stream.handleEvent({ payload: { text, already_streamed: true }, session_id: SID, type: 'message.interim' }))
+const interim = (text: string, seq?: number) =>
+  act(() =>
+    stream.handleEvent({
+      payload: { text, already_streamed: true },
+      session_id: SID,
+      ...(seq === undefined ? {} : { seq }),
+      type: 'message.interim'
+    })
+  )
 
-const complete = (text: string) =>
-  act(() => stream.handleEvent({ payload: { text }, session_id: SID, type: 'message.complete' }))
+const complete = (text: string, seq?: number) =>
+  act(() =>
+    stream.handleEvent({ payload: { text }, session_id: SID, ...(seq === undefined ? {} : { seq }), type: 'message.complete' })
+  )
 
 const completePreviewed = (text: string) =>
   act(() =>
@@ -386,6 +398,87 @@ describe('useMessageStream interim text sealing', () => {
     expect(texts.filter(t => t.includes('partial streamed'))).toHaveLength(1)
     expect(texts[0]).toBe('partial streamed answer continued')
   })
+
+  it('ignores an interim redelivered after terminal completion', async () => {
+    mountStream()
+    await start()
+    await complete('same final')
+
+    await interim('same final')
+
+    expect(assistantMessages()).toEqual(['same final'])
+    expect(getState().messages.filter(message => message.role === 'assistant' && !message.hidden)).toHaveLength(1)
+    expect(getState().turnLive).toBe(false)
+  })
+
+  it.each([false, true])('drops terminal stragglers before a timer flush (sequenced=%s)', async sequenced => {
+    vi.useFakeTimers()
+
+    try {
+      mountStream()
+      await start(sequenced ? 1 : undefined)
+      await complete('same final', sequenced ? 3 : undefined)
+
+      await delta('same final', sequenced ? 2 : undefined)
+      // Reproduce the loaded renderer: the coalescing timer runs BEFORE the
+      // late interim gets an opportunity to discard the queued bytes.
+      await act(() => vi.advanceTimersByTimeAsync(100))
+      expect(assistantMessages()).toEqual(['same final'])
+
+      await interim('same final', sequenced ? 2 : undefined)
+      expect(assistantMessages()).toEqual(['same final'])
+
+      await start(sequenced ? 4 : undefined)
+      await delta('next reply', sequenced ? 5 : undefined)
+      await act(() => vi.advanceTimersByTimeAsync(100))
+      expect(assistantMessages()).toEqual(['same final', 'next reply'])
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('ignores an interim redelivered from a completed turn after a new turn starts', async () => {
+    mountStream()
+    await start(1)
+    await interim('first reply', 2)
+    await complete('first reply', 3)
+    await start(4)
+
+    await interim('first reply', 2)
+
+    expect(assistantMessages()).toEqual(['first reply'])
+    expect(getState().turnLive).toBe(true)
+  })
+
+  it.each(['message.delta', 'message.interim'] as const)(
+    'renders %s when a backend restart resets the replay sequence',
+    async type => {
+      mountStream()
+      await act(() =>
+        stream.handleEvent({ type: 'message.start', session_id: SID, seq: 1, replayEpoch: 'before', payload: {} })
+      )
+      await act(() =>
+        stream.handleEvent({
+          type: 'message.complete', session_id: SID, seq: 137, replayEpoch: 'before', payload: { text: 'previous reply' }
+        })
+      )
+
+      // The mounted renderer survives the backend process; the new socket
+      // tags its frames with the new replay epoch and starts seq at 1 again.
+      await act(() =>
+        stream.handleEvent({ type: 'message.start', session_id: SID, seq: 1, replayEpoch: 'after', payload: {} })
+      )
+      await act(() =>
+        stream.handleEvent({
+          type, session_id: SID, seq: 2, replayEpoch: 'after', payload: { text: 'after restart', already_streamed: true }
+        })
+      )
+
+      await waitFor(() => expect(assistantMessages()).toEqual(['previous reply', 'after restart']))
+      expect(getState().turnLive).toBe(true)
+    }
+  )
 
   it('ignores malformed message.interim payload', async () => {
     mountStream()

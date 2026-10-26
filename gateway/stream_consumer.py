@@ -30,7 +30,7 @@ from gateway.config import (
 from gateway.response_filters import (
     is_intentional_silence_response as _is_intentional_silence_response,
     is_partial_silence_marker as _is_partial_silence_marker)
-from gateway.stream_consumer_directives import has_pending_media_directive
+from gateway.stream_consumer_directives import has_pending_media_directive, strip_image_tags_for_display
 from gateway.stream_consumer_fences import ensure_closed_code_fences
 from gateway.stream_consumer_transport import StreamTransportMixin
 from gateway.stream_consumer_fallback import StreamFallbackMixin
@@ -977,5 +977,12 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     # non-streaming paths share the same regex, so a tag is treated identically whichever path delivered the
     # text.
     def _clean_for_display(text: str) -> str:
-        """Hide MEDIA:<path> / [[audio_as_voice]] directives; media is delivered post-stream."""
-        return _BasePlatformAdapter.strip_media_directives_for_display(text)
+        """Hide MEDIA:<path> / [[audio_as_voice]] directives and markdown/HTML image tags; both are
+        delivered post-stream as native attachments.
+
+        Image tags are the ones the non-streaming path's ``extract_images`` split attaches: once a
+        tag becomes an attachment it must not also render as text — on Discord ``![alt](url)``
+        shows as ``!alt`` plus an unfurl (#141806). The tag is removed without trimming the text
+        around it, so interim frames stay prefix-stable.
+        """
+        return strip_image_tags_for_display(_BasePlatformAdapter.strip_media_directives_for_display(text))

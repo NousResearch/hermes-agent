@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import psutil
 import pytest
 
+from hermes_cli.process_identity import worker_birth
 from hermes_state import SessionDB
 from hermes_state_runtime import RuntimeStoreError, begin_runtime_epoch, register_worker_execution
 from gateway.session_contract import SessionRef
@@ -38,7 +39,7 @@ def test_bridge_publishes_committed_completion_and_rejects_another_principal(tmp
         connection = SimpleNamespace(authority=authority, actor=actor)
         ref = SessionRef('profile', 'parent')
         scope = dict(profile_id='profile', session_id='parent', execution_id='worker', generation=0,
-                     pid=worker.pid, birth=psutil.Process(worker.pid).create_time(), secret='private-worker-secret')
+                     pid=worker.pid, birth=worker_birth(psutil.Process(worker.pid)), secret='private-worker-secret')
         claim = _claim(connection, ref, scope)
         register_worker_execution(db, epoch=epoch, execution_id='worker', session_id='parent', generation=0,
                                   kind='compute', adoption_secret=claim)

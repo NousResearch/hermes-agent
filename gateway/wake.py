@@ -47,7 +47,8 @@ PERMANENT_REFUSAL_REASONS = frozenset({'not_found', 'invalid_params'})
 
 class WakeNotAccepted(RuntimeError):
     """No adapter admission: retry without treating a healthy chat as dead. ``reason`` is the
-    store's refusal code when the session authority refused it (None: the adapter did not accept);
+    store's refusal code when the session authority refused it, ``runtime_draining`` when the
+    adapter path refused it during a drain (None: the adapter did not accept);
     ``permanent`` is set once the refusal is proven final (``refusal_proven_permanent``)."""
 
     def __init__(self, message: str = "internal wake not accepted by adapter", *, reason: Optional[str] = None):
@@ -100,9 +101,24 @@ async def admit_internal_event(adapter: Any, event: Any) -> None:
     not model execution, authorization of a later turn, or successful outbound delivery.
     """
     event._gateway_accepted = False
+    # A draining gateway answers new work with a drain notice and discards queued follow-ups,
+    # so a wake admitted now would never run. Refuse it so the caller keeps it for a retry.
+    if _runner_draining(adapter):
+        raise WakeNotAccepted("gateway is draining; retry after restart", reason="runtime_draining")
     await adapter.handle_message(event)
     if event._gateway_accepted is not True:
         raise WakeNotAccepted()
+    # handle_message can await before it claims or queues the event (Telegram topic recovery, the
+    # busy handler's profile scope). A drain seen here dooms the stored event: the drain gate refuses
+    # a claimed turn and the pending discard drops a queued follow-up. Refuse it so the producer
+    # retries it after the restart.
+    if _runner_draining(adapter):
+        raise WakeNotAccepted("gateway began draining during admission; retry after restart",
+                              reason="runtime_draining")
+
+
+def _runner_draining(adapter: Any) -> bool:
+    return getattr(getattr(adapter, "gateway_runner", None), "_draining", False) is True
 
 
 async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source: Any = None,

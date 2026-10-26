@@ -1,0 +1,21 @@
+name: dynamic-memory
+title: "Dynamic Memory (keyword index)"
+repo: https://github.com/ockentap/hermes-dynamic-memory
+sha: bd0dd6eef7659fe95f6fcb604116f3d62ee13c16
+subdir: plugin/memory-shaper
+description: "Keyword-index memory for Hermes: a small resident index of 'keyword,keyword -> file.md' routing lines stays in the system prompt while verbose topic files stay on disk and are read only when the conversation touches their keywords. Retrieval is done by the model reading a literal index — no embeddings, no vector store, no retrieval service. Disclosure — a pre_tool_call hook and a tool_execution middleware refuse any other tool's write to the memory index (write_file, patch, shell redirects, tee, sed -i) and refuse malformed index lines with a fix message rather than fixing them silently, while read-only commands always pass so the agent can audit the file it maintains; a documented escape hatch lets a scripted rewrite proceed when the sentinel file $HERMES_HOME/state/.memory_shaper_rewrite_approved exists. The plugin touches only $HERMES_HOME/memories/MEMORY.md and its sibling topic files, makes no network calls, runs no subprocesses and spawns nothing in the background."
+maintainer: ockentap
+tier: community
+category: memory
+version: "1.4.4"
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/ockentap/hermes-dynamic-memory#readme
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - "The routing rule from skill/ (or an equivalent line in your personality file) is part of the setup: stock Hermes injects the index with no instructions, so without the rule the agent still finds the right file, but by brute-force filesystem search which does not scale."
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_tool_call]
+  provides_middleware: [tool_execution]
+  requires_env: []

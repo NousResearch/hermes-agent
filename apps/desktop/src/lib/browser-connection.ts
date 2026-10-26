@@ -120,14 +120,6 @@ export function createBrowserConnectionBridge({ api, bootstrap }: BrowserConnect
   }
 
   const getGatewayWsUrl = async (profile?: null | string) => {
-    // A profile created since the last inventory read is missing from the cached set, though the
-    // multiplexer adopted it before its create returned: read the inventory once before refusing.
-    // An unchanged list within the set's TTL re-reads only `/api/profiles`; a failed read refuses on
-    // the set already cached, as before.
-    if (!reachesSocket(profile)) {
-      await installedProfiles().catch(() => undefined)
-    }
-
     // Its ticket would mint, then the gateway would close the dial (4403) without a reason to show.
     if (!reachesSocket(profile)) {
       throw new UnservedProfileError((profile ?? '').trim())

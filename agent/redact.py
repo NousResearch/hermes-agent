@@ -159,6 +159,8 @@ _PREFIX_PATTERNS = [
     r"pplx-[A-Za-z0-9]{10,}",           # Perplexity
     r"fal_[A-Za-z0-9_-]{10,}",          # Fal.ai
     r"fc-[A-Za-z0-9]{10,}",             # Firecrawl
+    r"cfut_[A-Za-z0-9_-]{20,}",         # Cloudflare API user token (CF_DNS_API_TOKEN, etc.)
+    r"cftoken_[A-Za-z0-9_-]{20,}",      # Cloudflare scoped API token
     r"bb_live_[A-Za-z0-9_-]{10,}",      # BrowserBase
     r"gAAAA[A-Za-z0-9_=-]{20,}",        # Codex encrypted tokens
     r"AKIA[A-Z0-9]{16}",                # AWS Access Key ID

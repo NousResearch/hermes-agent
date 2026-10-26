@@ -163,7 +163,21 @@ class TestStorageFiles:
         storage.restore(snap)
         assert storage.cimd_rejected()
         assert storage.has_cached_tokens()
-        assert (tmp_path / "mcp-tokens" / "srv.json").stat().st_mode & 0o777 == 0o600
+
+    @pytest.mark.platforms("posix")
+    def test_restored_snapshot_files_are_owner_only(self, tmp_path, monkeypatch):
+        """POSIX mode bits express this contract; Windows stat does not report ACLs."""
+        from tools.mcp_oauth import HermesTokenStorage
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("srv")
+        _seed(tmp_path, "srv", "x")
+        storage.mark_cimd_rejected()
+        snap = storage.snapshot()
+        storage.remove()
+        storage.restore(snap)
+        for name in snap:
+            assert (tmp_path / "mcp-tokens" / name).stat().st_mode & 0o777 == 0o600
 
     def test_rollback_skips_only_when_a_newer_token_landed(self, tmp_path, monkeypatch):
         """Client/metadata left behind by a FAILED attempt must not block restoring the old grant."""
@@ -188,9 +202,8 @@ class TestStorageFiles:
 # ---------------------------------------------------------------------------
 
 def _interactive(monkeypatch):
-    stdin = MagicMock()
-    stdin.isatty.return_value = True
-    monkeypatch.setattr("tools.mcp_oauth.sys.stdin", stdin)
+    # These tests exercise pool lifecycle, not the host's console detection.
+    monkeypatch.setattr("tools.mcp_oauth._is_interactive", lambda: True)
 
 
 class TestManagerPools:
@@ -334,8 +347,8 @@ class TestManagerPools:
 
 
 def test_config_cache_sees_a_same_size_rewrite_with_a_pinned_mtime(tmp_path):
-    """The resolver's cache is keyed on ctime too: ``cp -p``/``os.utime`` rewrites that keep mtime,
-    size and inode must still be re-read, or a withdrawn export would stay cached as shared."""
+    """Content edits preserving mtime, size and inode must still be re-read, or a withdrawn
+    export would stay cached as shared (Windows creation time also stays unchanged)."""
     import os
 
     from tools.mcp_oauth import _load_mcp_server_config

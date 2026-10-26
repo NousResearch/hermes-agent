@@ -692,9 +692,8 @@ class TestIsInteractive:
     def test_suppress_interactive_oauth_disables_stdin_prompts(self, monkeypatch):
         import tools.mcp_oauth as mod
 
-        mock_stdin = MagicMock()
-        mock_stdin.isatty.return_value = True
-        monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
+        # Exercise suppression independently of the native console API.
+        monkeypatch.setattr(mod, "_stdin_is_console", lambda: True)
 
         assert _is_interactive() is True
         with mod.suppress_interactive_oauth():
@@ -711,9 +710,7 @@ class TestIsInteractive:
         import threading
         import tools.mcp_oauth as mod
 
-        mock_stdin = MagicMock()
-        mock_stdin.isatty.return_value = True
-        monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
+        monkeypatch.setattr(mod, "_stdin_is_console", lambda: True)
 
         loop = asyncio.new_event_loop()
         loop_thread = threading.Thread(target=loop.run_forever, daemon=True)
@@ -964,8 +961,8 @@ class TestWaitForCallbackPasteIntegration:
 
         mod._oauth_port = _find_free_port()
         mock_stdin = MagicMock()
-        mock_stdin.isatty.return_value = True
         monkeypatch.setattr(mod.sys, "stdin", mock_stdin)
+        monkeypatch.setattr(mod, "_stdin_is_console", lambda: True)
 
         async def instant_sleep(_):
             pass

@@ -335,10 +335,8 @@ def test_readding_a_removed_server_lifts_the_rebuild_tombstone(local, monkeypatc
     home, _grant = local
     assert _remove_mcp_server("srv") is True
     assert HermesTokenStorage("srv", hermes_home=home).rebuild_blocked()
-    # Interactive stdin so the only thing standing between us and a provider is the tombstone.
-    from unittest.mock import MagicMock
-    stdin = MagicMock(); stdin.isatty.return_value = True
-    monkeypatch.setattr("tools.mcp_oauth.sys.stdin", stdin)
+    # Console detection has its own tests; only the tombstone should block this provider.
+    monkeypatch.setattr("tools.mcp_oauth._is_interactive", lambda: True)
     assert get_manager().get_or_build_provider("srv", SERVER["url"], None) is None, "blocked while tombstoned"
 
     assert _save_mcp_server("srv", dict(SERVER)) is True

@@ -277,9 +277,10 @@ _SKIP_TOKENS = frozenset({"skip", "cancel", "s", "n", "no", "q", "quit"})
 _USER_SKIPPED_SENTINEL = "__hermes_user_skipped__"
 
 
-# config.yaml path -> ((mtime_ns, size, ino), parsed mapping). The shared-pool authority is re-checked
-# before every request, so parse only when the file changed (the steady state costs one ``stat``).
-_CONFIG_CACHE: dict[str, tuple[tuple[int, int, int], dict[str, Any]]] = {}
+# config.yaml path -> (exact file bytes, parsed mapping). Metadata alone cannot prove authority:
+# Windows creation time and inode can stay unchanged across a same-size, restored-mtime edit.
+# Read on every authority check, but only parse when the content changes.
+_CONFIG_CACHE: dict[str, tuple[bytes, dict[str, Any]]] = {}
 _CONFIG_CACHE_LOCK = threading.Lock()
 
 
@@ -288,37 +289,34 @@ _CONFIG_UNREADABLE = object()
 
 def _read_config_as_written(home: Path) -> Any:
     """*home*'s ``config.yaml`` exactly as written: a dict, None when there is no file, or
-    ``_CONFIG_UNREADABLE``. Cached on :func:`utils.file_signature` (ctime included, so a same-size
-    rewrite with a pinned mtime is still seen); the signature is re-checked after the read so a
-    write racing the parse is never cached under the old key.
+    ``_CONFIG_UNREADABLE``. Cache by content, not filesystem metadata, and parse exactly the bytes
+    used as the key. A concurrent replacement cannot cache one document under another's key.
 
     Uses the as-written primitive, not the profile-aware loaders: the export contract compares the
     entries verbatim, and an overlay, inherited value or ``${VAR}`` expansion would change what two
     profiles appear to agree on. This read decides credential sharing, not runtime behavior."""
     import hermes_yaml as yaml
 
-    from hermes_cli.config import read_user_config_raw
-    from utils import file_signature
+    from utils import fast_safe_load
 
     path = home / "config.yaml"
     try:
-        sig = file_signature(path.stat())
+        content = path.read_bytes()
     except FileNotFoundError:
         return None
     except OSError:
         return _CONFIG_UNREADABLE
     with _CONFIG_CACHE_LOCK:
         cached = _CONFIG_CACHE.get(str(path))
-    if cached is not None and cached[0] == sig:
+    if cached is not None and cached[0] == content:
         return cached[1]
     try:
-        data = read_user_config_raw(path)
-        stable = file_signature(path.stat()) == sig
+        data = fast_safe_load(content.decode("utf-8-sig"))
+        data = data if isinstance(data, dict) else {}
     except (OSError, TypeError, ValueError, yaml.YAMLError):
         return _CONFIG_UNREADABLE
-    if stable:
-        with _CONFIG_CACHE_LOCK:
-            _CONFIG_CACHE[str(path)] = (sig, data)
+    with _CONFIG_CACHE_LOCK:
+        _CONFIG_CACHE[str(path)] = (content, data)
     return data
 
 

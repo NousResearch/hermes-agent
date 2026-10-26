@@ -1906,7 +1906,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # Forward-only default: the checkout already contains the release; nothing to fetch.
             fetch_args = None
         elif release_sha:
-            fetch_args = _check.release_fetch_args(target_ref, completion_request)
+            fetch_args = ["fetch", "--no-tags", "origin", target_ref]
         else:
             fetch_args = ["fetch", "origin", _check.tracking_refspec("origin", branch)]
         from hermes_cli.gitlock import fetch_with_partial_clone_recovery, is_partial_clone_pack_objects_crash
@@ -1927,6 +1927,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                          if "No space left on device" in (fetch_result.stderr or "") else "fetch_failed")
             sys.exit(1)
 
+        _check.fetch_release_tag(git_cmd, _m().PROJECT_ROOT, completion_request)
         current_branch = _current_branch_name(git_cmd, check=True)
         _commit.record_run_start(git_cmd, _m().PROJECT_ROOT)
         held_message = None

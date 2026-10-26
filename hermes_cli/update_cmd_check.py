@@ -271,16 +271,26 @@ def select_apply_target(args, branch: str, request: dict, *, git_cmd, stop) -> t
     return f"origin/{target.branch}", None, False, target.repository
 
 
-def release_fetch_args(target_ref: str, request: dict) -> list[str]:
-    """Fetch a pinned release commit together with its own release tag.
+def fetch_release_tag(git_cmd: list[str], root: Path, request: dict) -> None:
+    """Fetch a pinned release's own tag when this checkout lacks it.
 
     The checkout's version is the newest release tag merged into HEAD (version_info), so a
-    tagless fetch moved HEAD to vX.Y.Z while every reader -- /health, the install stamp, the
-    receipt, About -- still named the previous release (#143656). Only that one tag: other
-    tags would drag their histories into a shallow checkout.
+    tagless release fetch moved HEAD to vX.Y.Z while every reader -- /health, the install
+    stamp, the receipt, About -- still named the previous release (#143656). Best effort and
+    create-only: a fork or mirror without the tag still updates, and an existing local tag
+    never moves (the stable pin contract). Only that one tag: others drag in their histories.
     """
+    from hermes_cli._subprocess_compat import no_prompt_git_kwargs
+    from hermes_cli.update_cmd import NETWORK_GIT_TIMEOUT_SECONDS
+
     tag = request.get("release_tag")
-    return ["fetch", "--no-tags", "origin", target_ref, *([f"+refs/tags/{tag}:refs/tags/{tag}"] if tag else [])]
+    if not tag or _git(git_cmd, root, ["rev-parse", "--verify", "--quiet", f"refs/tags/{tag}"]).returncode == 0:
+        return
+    try:
+        _git(git_cmd, root, ["fetch", "--no-tags", "origin", f"refs/tags/{tag}:refs/tags/{tag}"],
+             timeout=NETWORK_GIT_TIMEOUT_SECONDS, **no_prompt_git_kwargs())
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 def hold_channel_release_behind_runtime(git_cmd, target_ref: str, channel: str) -> str | None:

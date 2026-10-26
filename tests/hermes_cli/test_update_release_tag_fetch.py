@@ -41,7 +41,8 @@ def test_stable_update_fetch_brings_the_release_tag(tmp_path, monkeypatch):
     target_ref, _sha, _is_head, _repo = update_cmd_check.select_apply_target(
         SimpleNamespace(branch=None), "main", request, git_cmd=["git"], stop=lambda: None)
 
-    _git(checkout, *update_cmd_check.release_fetch_args(target_ref, request))
+    _git(checkout, "fetch", "--no-tags", "origin", target_ref)
+    update_cmd_check.fetch_release_tag(["git"], checkout, request)
     _git(checkout, "merge", "-q", "--ff-only", release)
 
     info = _git_version_info(checkout)

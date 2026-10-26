@@ -38,12 +38,36 @@ def _size_delta_label(saved_mb: float) -> str:
     return f"reclaimed {saved_mb:.1f} MB" if saved_mb >= 0 else f"grew by {-saved_mb:.1f} MB"
 
 
-def _confirm_prompt(prompt: str) -> bool:
-    """Prompt for y/N confirmation, safe against non-TTY environments."""
+def _confirm_prompt(prompt: str) -> bool | None:
+    """Prompt for y/N confirmation. ``None`` when stdin is not a terminal and hits EOF (/dev/null, an empty
+    pipe: cron, a wrapper), which is not the same as the user saying no; Ctrl-D at a terminal is a no.
+    Ctrl-C propagates: an interrupt is neither a no nor a success."""
     try:
         return input(prompt).strip().lower() in {"y", "yes"}
-    except (EOFError, KeyboardInterrupt):
-        return False
+    except EOFError:
+        print()
+        # isatty() alone is True for Windows NUL; the console check keeps `< NUL` unattended (#113977).
+        from hermes_cli.gateway_windows import _stdin_console_mode_ok, _stdin_is_interactive
+        return False if _stdin_is_interactive(isatty=sys.stdin.isatty(), console_mode_ok=_stdin_console_mode_ok()) else None
+
+
+def _confirm_or_exit_code(prompt: str, *, declined: str = "Cancelled.", unattended: str | None = "--yes") -> int | None:
+    """``None`` to proceed, else the exit code after saying why not. A decline exits 0; a run nobody could
+    answer exits 1, so a cron job or wrapper that forgot *unattended* does not read "nothing happened" as
+    success."""
+    try:
+        answer = _confirm_prompt(prompt)
+    except KeyboardInterrupt:
+        print("\nInterrupted; nothing was changed.")
+        return 130
+    if answer:
+        return None
+    if answer is None:
+        hint = f" Pass {unattended} to run it unattended." if unattended else " Run it from an interactive terminal."
+        print(f"No answer on a non-interactive stdin; nothing was changed.{hint}")
+        return 1
+    print(declined)
+    return 0
 
 
 def _not_found(session_id) -> int:
@@ -156,6 +180,7 @@ def _cmd_repair(args):
         f"    hermes sessions recover --source {source_hint} \\\n"
         "        --output recovered-state.db"
     )
+    return 1
 
 
 def _cmd_recover(args):
@@ -349,7 +374,7 @@ def _cmd_export(db, args):
             filters = build_prune_filters(args)
         except ValueError as e:
             print(f"Error: {e}")
-            return
+            return 1
         # A backup includes protected rows; prune's keep rules must not omit them.
         filters["archived"] = None
         filters["include_pinned"] = True
@@ -387,29 +412,30 @@ def _cmd_export(db, args):
         return False
 
     def _collect_sessions():
-        """--session-id / filters / bare export -> redacted session dicts, or None after printing an error."""
+        """--session-id / filters / bare export -> redacted session dicts, None after a dry-run preview,
+        or an exit code after printing an error."""
         def _one(session_id):
             return _redact(db.export_session(session_id, **projection))
         if args.session_id:
             resolved = db.resolve_session_id(args.session_id)
             if resolved and _too_large([resolved]):
-                return None
+                return 1
             data = _one(resolved) if resolved else None
             if not data:
-                _not_found(args.session_id)
-                return None
+                return _not_found(args.session_id)
             return [data]
         if filters:
             candidates = db.list_prune_candidates(**filters)
             if args.dry_run:
                 return _print_dry_run_preview(candidates, filters)
             if _too_large([row["id"] for row in candidates]):
-                return None
+                return 1
             return [s for s in (_one(row["id"]) for row in candidates) if s]
         if args.dry_run:
-            return print("--dry-run requires at least one filter.")
+            print("--dry-run requires at least one filter.")
+            return 1
         if _too_large():
-            return None
+            return 1
         return [_redact(s) for s in db.export_all(source=None, **projection)]
     if getattr(args, "only", None):
         return _export_flat("only", args, _collect_sessions)
@@ -456,8 +482,10 @@ def _export_flat(kind, args, collect):
     unusable, message, render = _FLAT_EXPORTERS[kind]
     if unusable(args):
         print(message)
-        return
+        return 1
     sessions = collect()
+    if isinstance(sessions, int):
+        return sessions
     if sessions is not None:
         from hermes_cli.session_export import default_save_filename
         name = (default_save_filename(sessions[0].get("id", ""), args.format) if len(sessions) == 1
@@ -475,13 +503,13 @@ def _export_trace(db, args, filters):
         session_id = rows[0].get("id") if rows else None
         if not session_id:
             print("No session found to export. Pass --session-id.")
-            return
+            return 1
     from agent.trace_upload import TraceRedactionError, build_trace_jsonl, upload_session_trace
     redact_trace = not getattr(args, "no_redact", False)
     if getattr(args, "upload", False):
         if not session_id:
             print("--upload exports one session: pass --session-id (or drop filters to use the most recent).")
-            return
+            return 1
         resolved = db.resolve_session_id(session_id)
         db.close()
         print(upload_session_trace(resolved, cwd="", redact=redact_trace, private=not getattr(args, "public", False)))
@@ -505,7 +533,7 @@ def _export_trace(db, args, filters):
             jsonl = _render_trace(ids[0])
             if not jsonl:
                 print(f"No transcript to export for session '{ids[0]}'.")
-                return
+                return 1
             args.output = _output_file_in_dir(args.output, f"{ids[0]}.trace.jsonl")
             _write_output(args.output, jsonl, f"Exported 1 session trace to {args.output}")
         else:
@@ -520,6 +548,7 @@ def _export_trace(db, args, filters):
             print(f"Exported {exported} session trace(s) to {out_dir}")
     except TraceRedactionError:
         print("Redaction failed; refusing to export unredacted trace content.")
+        return 1
 
 
 def _export_markdown(db, args, filters, redact):
@@ -527,7 +556,7 @@ def _export_markdown(db, args, filters, redact):
     from hermes_cli.session_export_md import append_manifest_entry, write_session_markdown
     if args.output == "-":
         print("Markdown/QMD export writes files; stdout (-) is only supported with --format jsonl.")
-        return
+        return 1
     output_dir = _export_dir(args.output)
 
     def _export_one(session_id: str, *, include_lineage: bool = False):
@@ -547,17 +576,17 @@ def _export_markdown(db, args, filters, redact):
         return data, path, snapshots
     if args.delete_after_verified and not args.yes:
         print("--delete-after-verified requires --yes.")
-        return
+        return 1
     if args.delete_after_verified and not args.session_id:
         print("--delete-after-verified is only supported with --session-id.")
-        return
+        return 1
     lineage_is_logical = getattr(args, "lineage", "single") == "logical"
     if args.session_id:
         return _export_markdown_single(db, args, _export_one, output_dir, lineage_is_logical)
     if not filters:
         print("Refusing bulk export without a filter. Pass --session-id or "
               "at least one filter (e.g. --older-than 90, --source telegram).")
-        return
+        return 1
     candidates = db.list_prune_candidates(**filters)
     if args.dry_run:
         return _print_dry_run_preview(candidates, filters)
@@ -588,10 +617,10 @@ def _export_markdown_single(db, args, export_one, output_dir, lineage_is_logical
             )
         except FileExistsError as e:
             print(f"Export already exists: {e}. Pass --force to overwrite.")
-            return
+            return 1
         if not data or not exported_path:
             print(f"Session '{target_id}' disappeared during export; nothing was deleted.")
-            return
+            return 1
         exported_items.append((data, exported_path, snapshots))
     message_count = sum(len(data.get("messages") or []) for data, _path, _ in exported_items)
     n = len(exported_items)
@@ -606,7 +635,7 @@ def _export_markdown_single(db, args, export_one, output_dir, lineage_is_logical
         ok, reason = verify_export_file(exported_path, data)
         if not ok:
             print(f"Export verification failed; not deleting session '{data.get('id')}': {reason}")
-            return
+            return 1
         expected_messages.update(snapshots)
     try:
         if not db.delete_session(
@@ -615,10 +644,10 @@ def _export_markdown_single(db, args, export_one, output_dir, lineage_is_logical
         ):
             print(f"Exported, but session '{resolved_session_id}' was not deleted because its history or delegate set "
                   "changed after export.")
-            return
+            return 1
     except SessionActiveWriteGuardError as exc:
         print(f"Exported, but not deleted: {exc}")
-        return
+        return 1
     delegates = len(delete_target_ids) - 1
     delegate_suffix = f" and {delegates} delegate session{'' if delegates == 1 else 's'}" if delegates else ""
     print(f"Deleted exported session '{resolved_session_id}'{delegate_suffix}.")
@@ -633,9 +662,9 @@ def _cmd_delete(db, args):
     # The delete is honored (explicit id), but a pin is a "keep" flag: say so instead of silently destroying it.
     _pinned_note = " (this session is PINNED)" if (db.get_session(resolved_session_id) or {}).get("pinned") else ""
     if not args.yes:
-        if not _confirm_prompt(f"Delete session '{resolved_session_id}'{_pinned_note} and all its messages? [y/N] "):
-            print("Cancelled.")
-            return
+        refused = _confirm_or_exit_code(f"Delete session '{resolved_session_id}'{_pinned_note} and all its messages? [y/N] ")
+        if refused is not None:
+            return refused
     elif _pinned_note:
         print(f"Warning: deleting a pinned session '{resolved_session_id}'.")
     from hermes_state_runtime import RuntimeStoreError
@@ -679,7 +708,7 @@ def _prune_never_active_keyed(db, args):
         if seconds is None:
             print(f"Error: --older-than '{older_than}' is not a duration. "
                   "Use a bare number of days or a form like '2d' / '1w'.")
-            return
+            return 1
         days = seconds / 86400.0
     candidates = db.list_never_active_keyed_sessions(older_than_days=days)
     if not candidates:
@@ -696,9 +725,9 @@ def _prune_never_active_keyed(db, args):
     if args.dry_run:
         print("Dry run — nothing deleted.")
         return
-    if not args.yes and not _confirm_prompt(f"Delete {len(candidates)} session(s)? [y/N] "):
-        print("Aborted.")
-        return
+    if not args.yes and (refused := _confirm_or_exit_code(f"Delete {len(candidates)} session(s)? [y/N] ",
+                                                          declined="Aborted.")) is not None:
+        return refused
     owner = getattr(args, "owner_endpoint", None)
     if owner is not None:
         from hermes_cli.gateway_client import GatewayClientError
@@ -753,7 +782,7 @@ def _cmd_prune_or_archive(db, args, action):
     if not prune and not any(v for k, v in filters.items() if k != "older_than_days"):
         print("Refusing to archive every ended session: pass at least one "
               "filter (e.g. --newer-than 5h, --source cli, --title codex).")
-        return
+        return 1
 
     # Prune skips archived rows unless --include-archived; archive only targets not-yet-archived rows.
     filters["archived"] = None if prune and getattr(args, "include_archived", False) else False
@@ -803,9 +832,9 @@ def _cmd_prune_or_archive(db, args, action):
             print(f"Dry run — nothing {'deleted' if prune else 'archived'}.")
             return
     verb = "Delete" if prune else "Archive"
-    if not args.yes and not _confirm_prompt(f"{verb} these {len(candidates)} session(s) ({_span})? [y/N] "):
-        print("Cancelled.")
-        return
+    if not args.yes and (refused := _confirm_or_exit_code(
+            f"{verb} these {len(candidates)} session(s) ({_span})? [y/N] ")) is not None:
+        return refused
     if prune and getattr(args, "owner_endpoint", None) is not None:
         # The live gateway owns the store: it deletes, through the housekeeping retirement path.
         from hermes_cli.gateway_client import GatewayClientError
@@ -962,7 +991,7 @@ def _cmd_optimize(db, args):
         n = db.vacuum()  # merges FTS5 segments then VACUUMs; returns indexes merged
     except Exception as e:
         print(f"Error: optimization failed: {e}")
-        return
+        return 1
     print(f"Optimized {n} FTS index(es).")
     _print_size_change(db, before_mb)
 
@@ -978,6 +1007,59 @@ def _cmd_clean_markers(db, args):
         if report["backup_path"]:
             print(f"  backup: {report['backup_path']}")
         print(f"✓ Cleared {report['rows_affected']} row(s).")
+
+
+_BACKFILL_LABELS = {"backfill": "Rebuilding index", "backfill_cjk": "Building CJK index"}
+_COUNTED_PHASES = frozenset({*_BACKFILL_LABELS, "teardown"})
+
+
+def _optimize_progress_line(info) -> str:
+    phase, pct = info.get("phase"), f"{info.get('percent', 0):3d}%"
+    counts = f"({info.get('indexed', 0):,}/{info.get('total', 0):,}"
+    paced = " — paced: another process is using the database" if info.get("paced") else ""
+    if phase in _BACKFILL_LABELS:
+        return f"  {_BACKFILL_LABELS[phase]}: {pct} {counts} messages){paced}"
+    if phase == "teardown":
+        table = str(info.get("table", "")).removeprefix("fts_v22_trash_")
+        return (f"  Reclaiming old index: table {info.get('table_index', 0)}/{info.get('table_count', 0)} "
+                f"({table}) {pct} {counts} rows){paced}")
+    elapsed = int(info.get("elapsed", 0))
+    return (f"  Compacting database (VACUUM): {elapsed // 60}m {elapsed % 60:02d}s elapsed, "
+            f"{info.get('size_bytes', 0) / 2**20:,.1f} MB → ~{info.get('estimated_bytes', 0) / 2**20:,.1f} MB")
+
+
+class _OptimizeProgress:
+    """``optimize_fts_storage`` progress: one self-overwriting line per phase (and per old-index
+    table), space-padded over the previous text (``ESC[K`` leaks under prompt_toolkit)."""
+
+    def __init__(self):
+        self._key, self._last, self._line = None, None, ""
+
+    def __call__(self, info) -> None:
+        phase = info.get("phase")
+        key = (phase, info.get("table"))
+        if key != self._key:
+            # The phase or table moved on, so the previous one ran to completion.
+            self.close(completed=True)
+            self._key = key
+        if phase == "done" or (phase in _COUNTED_PHASES and not info.get("total") and not info.get("table")):
+            return
+        self._last = info
+        self._draw(_optimize_progress_line(info))
+
+    def _draw(self, line: str) -> None:
+        if line == self._line:  # a table's final chunk, its DROP and the switch all report 100%
+            return
+        print(f"\r{line}{' ' * max(0, len(self._line) - len(line))}", end="", flush=True)
+        self._line = line
+
+    def close(self, completed: bool = False) -> None:
+        last = self._last
+        if completed and last and last.get("phase") in _COUNTED_PHASES:
+            self._draw(_optimize_progress_line({**last, "percent": 100, "indexed": last.get("total", 0)}))
+        if self._line:
+            print(flush=True)
+        self._last, self._line = None, ""
 
 
 def _cmd_optimize_storage(db, args):
@@ -1002,41 +1084,36 @@ def _cmd_optimize_storage(db, args):
         if free_bytes < need_bytes:
             print("\n⚠ Not enough free disk to complete safely. Free up space, or run with --no-vacuum "
                   "(rebuilds the index but doesn't reclaim space until a later VACUUM).")
-            return
+            return 1
     if before_mb > 500:
         print("  This may take a while on a large database. It runs in the foreground with progress below; "
               "safe to Ctrl-C and re-run (it resumes).")
-    if not getattr(args, "yes", False):
-        try:
-            resp = input("Proceed? [y/N] ").strip().lower()
-        except EOFError:
-            resp = ""
-        if resp not in ("y", "yes"):
-            print("Cancelled.")
-            return
-    _last = {"phase": None}
-    labels = {"teardown": "Reclaiming old index", "vacuum": "Compacting database (VACUUM)", "done": "Done"}
-
-    def _progress(info):
-        phase = info.get("phase")
-        if phase == "backfill":
-            print(f"\r  Rebuilding index: {info.get('percent', 0):3d}% "
-                  f"({info.get('indexed',0):,}/{info.get('total',0):,})", end="", flush=True)
-        elif phase != _last["phase"]:
-            print(f"\n  {labels.get(phase, phase)}…", flush=True)
-        _last["phase"] = phase
+    if not getattr(args, "yes", False) and (refused := _confirm_or_exit_code("Proceed? [y/N] ")) is not None:
+        return refused
+    # optimize_fts_storage re-scans for holders itself (--force past one, or a writer that opens the
+    # store mid-run) and paces while one is there; the progress line says so.
+    progress = _OptimizeProgress()
     print("Optimizing search-index storage…")
     try:
-        result = db.optimize_fts_storage(progress_cb=_progress, vacuum=do_vacuum)
+        result = db.optimize_fts_storage(progress_cb=progress, vacuum=do_vacuum)
+    except KeyboardInterrupt:
+        progress.close()
+        print("Interrupted — no data was lost; re-run to resume.")
+        return 130
     except Exception as e:
-        print(f"\nError: optimization failed: {e}\nNo data was lost. Re-run to resume.")
-        return
+        progress.close()
+        print(f"Error: optimization failed: {e}\nNo data was lost. Re-run to resume.")
+        return 1
+    progress.close()
     if not result.get("ok"):
-        print(f"\nCould not optimize: {result.get('reason', 'unknown')}")
-        return
-    print("\n✓ Search index optimized.")
+        print(f"Could not optimize: {result.get('reason', 'unknown')}")
+        return 1
+    print("✓ Search index optimized.")
     _print_size_change(db, before_mb, prefix="  ")
-    if result.get("vacuumed") is False:
+    if result.get("vacuum_skipped") == "in_use":
+        print("  (VACUUM skipped: another process is using the database. Re-run `hermes sessions optimize` "
+              "with it closed to reclaim freed space.)")
+    elif result.get("vacuumed") is False:
         print("  (VACUUM was skipped or failed — run `hermes sessions optimize` later to reclaim freed space.)")
 
 
@@ -1061,9 +1138,10 @@ def _cmd_repair_routing(db, args):
               "Re-run with --apply to perform them.")
         return
     print("\nStop the gateway before applying — a running gateway still holds the old routing mapping in memory.")
-    if not _confirm_prompt(f"Adopt {len(adoptable)} orphaned session(s)? [y/N] "):
-        print("Aborted — nothing was changed.")
-        return
+    refused = _confirm_or_exit_code(f"Adopt {len(adoptable)} orphaned session(s)? [y/N] ",
+                                    declined="Aborted — nothing was changed.", unattended=None)
+    if refused is not None:
+        return refused
     repaired = 0
     for record in adoptable:
         if db.adopt_orphaned_gateway_session(record["orphan_id"], record["donor_id"]):
@@ -1209,9 +1287,10 @@ def _cmd_repair_prompts(db, args):
         return 0
 
     # JSON mode is the non-interactive automation surface; --apply is the explicit mutation opt-in.
-    if not as_json and not _confirm_prompt(f"Clear {len(findings)} stored prompt(s)? [y/N] "):
-        print("Aborted - nothing was changed.")
-        return 0
+    if not as_json and (refused := _confirm_or_exit_code(
+            f"Clear {len(findings)} stored prompt(s)? [y/N] ", declined="Aborted - nothing was changed.",
+            unattended="--json")) is not None:
+        return refused
 
     cleared = []
     for finding in findings:

@@ -455,7 +455,7 @@ def _(rid, params: dict) -> dict:
     # Hermes-owned strip (no-boot-through-venv).
     _compat = _tools_mod("hermes_cli._subprocess_compat")
     return _captured_exec(
-        rid, [sys.executable, "-m", "hermes_cli.main", *argv], min(int(params.get("timeout", 240)), 600),
+        rid, [sys.executable, "-P", "-m", "hermes_cli.main", *argv], min(int(params.get("timeout", 240)), 600),
         on_result=lambda r: _ok(rid, {
             "blocked": False, "code": r.returncode, "output": (_joined_output(r) or "(no output)")[:48_000]}),
         timeout_err=(5016, "cli.exec: timeout"), fail_code=5017,

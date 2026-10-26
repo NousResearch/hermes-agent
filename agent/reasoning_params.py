@@ -1,6 +1,6 @@
 """Provider reasoning-parameter policy for ``AIAgent``.
 
-When ``reasoning`` extra_body is safe to send, LM Studio / Ollama / GitHub Models capability probes,
+When ``reasoning`` extra_body is safe to send, LM Studio / Ollama / endpoint-profile capability probes,
 ``reasoning_content`` echo families, and strict-API tool-call sanitising.
 Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
 """
@@ -16,6 +16,9 @@ _OPENROUTER_REASONING_PREFIXES = (
     "deepseek/", "anthropic/", "openai/", "x-ai/", "google/gemini-2", "google/gemma-4",
     "qwen/qwen3", "tencent/hy", "xiaomi/",
 )
+
+# Hosts whose reasoning gate core owns: a plugin claiming one in ``hostnames`` never replaces it.
+_CORE_REASONING_GATED_HOSTS = ("nousresearch.com", "ai-gateway.vercel.sh", "ollama.com")
 
 # Probe results cache per (model, base_url). Definitive values cache permanently; an
 # "unknown" value (empty list / None) caches 60s so a transient failure neither sticks
@@ -92,13 +95,11 @@ class ReasoningParamsMixin:
         url = self._base_url_lower
         if base_url_host_matches(url, "nousresearch.com") or base_url_host_matches(url, "ai-gateway.vercel.sh"):
             return True
-        if base_url_host_matches(url, "models.github.ai") or base_url_host_matches(url, "githubcopilot.com"):
-            try:
-                from hermes_cli.models import github_model_reasoning_efforts
-
-                return bool(github_model_reasoning_efforts(self.model))
-            except Exception:
-                return False
+        if (profile := self._reasoning_endpoint_profile()) is not None:
+            # A claimed endpoint gates on its own catalog: reasoning goes out iff it declares a payload.
+            from agent.provider_route_hooks import ask_profile
+            return ask_profile(profile, "reasoning_payload", None, self.model, None,
+                               base_url=self.base_url, scope=self) is not None
         if (self.provider or "").strip().lower() == "lmstudio":
             # "off-only" (or absent) means no real reasoning capability.
             return any(opt and opt != "off" for opt in self._lmstudio_reasoning_options_cached())
@@ -137,21 +138,28 @@ class ReasoningParamsMixin:
             return False
         return bool(_cached_probe(self, "_ollama_thinking_cache", ollama_model_supports_thinking, None, lambda v: v is not None))
 
-    def _github_models_reasoning_extra_body(self) -> dict | None:
-        """Format reasoning payload for GitHub Models/OpenAI-compatible routes."""
-        try:
-            from hermes_cli.models import clamp_github_reasoning_effort, github_model_reasoning_efforts
-        except Exception:
+    def _reasoning_endpoint_profile(self):
+        """The profile claiming this endpoint (``providers.profile_for_host``) that gates its reasoning, or None.
+        Endpoints core gates itself (Nous Portal, Vercel AI Gateway, LM Studio, Ollama Cloud, OpenRouter) keep
+        core's gate even when a plugin claims their host for metadata or auxiliary routing."""
+        url = self._base_url_lower
+        if ((self.provider or "").strip().lower() == "lmstudio" or self._is_openrouter_url()
+                or any(base_url_host_matches(url, host) for host in _CORE_REASONING_GATED_HOSTS)):
             return None
+        from providers import profile_for_host
 
-        supported = github_model_reasoning_efforts(self.model)
-        if not supported:
-            return None
+        return profile_for_host(str(getattr(self, "base_url", None) or ""))
 
-        cfg = self.reasoning_config if isinstance(self.reasoning_config, dict) else {}
-        if cfg.get("enabled") is False:
+    def _endpoint_reasoning_payload(self) -> dict | None:
+        """``reasoning_payload`` of the profile gating this endpoint's reasoning for the agent's model and
+        ``reasoning_config`` (``_reasoning_endpoint_profile``), or None when no profile does."""
+        base_url = getattr(self, "base_url", None)
+        profile = self._reasoning_endpoint_profile()
+        if profile is None:
             return None
-        return {"effort": clamp_github_reasoning_effort(cfg.get("effort"), supported)}
+        from agent.provider_route_hooks import ask_profile
+        return ask_profile(profile, "reasoning_payload", None, self.model, self.reasoning_config,
+                           base_url=str(base_url), scope=self)
 
     def _build_assistant_message(self, assistant_message, finish_reason: str) -> dict:
         """``build_assistant_message``; a held turn's row with visible text comes back typed hidden

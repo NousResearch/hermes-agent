@@ -2018,7 +2018,6 @@ cli:
     cleared_picker_cache: "已清除模型選擇器快取。正在重新整理..."
     moa_one_shot_queued: "已排入 MoA 單次執行（預設集 {preset}）；本輪結束後將還原先前的模型。"
     normalized_model: "已將 {provider} 的模型 '{old}' 正規化為 '{new}'。"
-    normalized_copilot_model: "已將 Copilot 模型 '{old}' 正規化為 '{new}'。"
     stripped_provider_prefix: "已移除 '{old}' 的提供方前綴；{provider} 將使用 '{new}'。"
     restored_from_session: "已從工作階段還原模型：{model}"
     could_not_load_config: "❌ 無法載入設定：{error}"

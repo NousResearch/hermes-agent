@@ -52,6 +52,23 @@ _RESTART_BUDGET = 3
 _RESTART_WINDOW_SECS = 600.0
 
 
+def _hosted_ambient_credentials(home: Path) -> dict[str, str]:
+    """``env_vars`` of this home's hosted ``ambient_credentials`` providers (``GH_TOKEN``-style names the
+    child-env scrub always strips), read the way that provider reads them in-process: ``get_secret``
+    under the home's scope, so the launch home keeps its shell value and a routed home never gets it."""
+    from agent.secret_scope import build_profile_secret_scope, get_secret, reset_secret_scope, set_secret_scope
+    from hermes_cli.plugin_host_profiles import is_hosted_profile
+    from providers import list_providers
+    names = {name for p in list_providers() if p.ambient_credentials and is_hosted_profile(p) for name in p.env_vars}
+    if not names:
+        return {}
+    token = set_secret_scope(build_profile_secret_scope(home), profile_home=str(home))
+    try:
+        return {name: value for name in sorted(names) if (value := get_secret(name))}
+    finally:
+        reset_secret_scope(token)
+
+
 class PluginHost:
     """One host process for one :class:`~hermes_cli.plugins.PluginManager` (one profile home)."""
 
@@ -110,6 +127,7 @@ class PluginHost:
     def _env(self) -> dict[str, str]:
         from tools.environments.local import served_profile_child_env
         env = self._base_context.run(served_profile_child_env, target_home=self._home, inherit_credentials=True)
+        env.update(self._base_context.run(_hosted_ambient_credentials, self._home))
         repo_root = str(Path(__file__).resolve().parents[1])
         env["PYTHONPATH"] = os.pathsep.join(p for p in (repo_root, env.get("PYTHONPATH", "")) if p)
         env.setdefault("HERMES_PLUGIN_HOST_LOG_LEVEL", "WARNING")

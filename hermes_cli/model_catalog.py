@@ -18,7 +18,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from hermes_cli.version_info import get_version_info
+from hermes_cli.version_info import hermes_user_agent
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -39,8 +39,6 @@ DEFAULT_FETCH_TIMEOUT = 8.0
 # on every picker build. Same window as the models.dev registry's failure backoff.
 FETCH_RETRY_DELAY_SECONDS = 300.0
 SUPPORTED_SCHEMA_VERSION = 1
-
-_HERMES_USER_AGENT = f"hermes-cli/{get_version_info().base_version}"
 
 # In-process cache, invalidated against the disk file's path + mtime and TTL. The path matters:
 # under a multiplexed gateway each profile has its own ``<home>/cache/model_catalog.json``, and
@@ -127,7 +125,7 @@ def _cache_path() -> Path:
 def _fetch_manifest(url: str, timeout: float) -> dict[str, Any] | None:
     """HTTP GET the manifest URL and return a validated dict, or None on failure."""
     try:
-        req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": _HERMES_USER_AGENT})
+        req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": hermes_user_agent()})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode())
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:

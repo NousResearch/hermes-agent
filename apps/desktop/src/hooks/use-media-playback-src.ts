@@ -1,6 +1,8 @@
+import { useStore } from '@nanostores/react'
 import { type SyntheticEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { useComposerScope } from '@/app/chat/composer/scope'
+import { useSessionView } from '@/app/chat/session-view'
 import { mediaKind, resolveMediaPlaybackSrc } from '@/lib/media'
 
 type PlaybackEvent = SyntheticEvent<HTMLAudioElement | HTMLVideoElement>
@@ -31,6 +33,12 @@ export function useMediaPlaybackSrc(path: string) {
     [scope.connectionId, scope.profile]
   )
 
+  // The transcript's own session: a Docker agent's /workspace clip lives in its sandbox.
+  const view = useSessionView()
+  const storedId = useStore(view.$storedId)
+  const runtimeId = useStore(view.$runtimeId)
+  const sessionId = storedId || runtimeId || undefined
+
   const [media, setMedia] = useState({ failed: false, path, src: '' })
   const loadedSrc = useRef('')
   // Minted for a source that failed before it ever loaded; it gets no retry of its own.
@@ -47,7 +55,7 @@ export function useMediaPlaybackSrc(path: string) {
       return
     }
 
-    void resolveMediaPlaybackSrc(path, owner)
+    void resolveMediaPlaybackSrc(path, owner, sessionId)
       .then(value => {
         if (value.startsWith('blob:')) {
           objectUrl = value
@@ -72,7 +80,7 @@ export function useMediaPlaybackSrc(path: string) {
         URL.revokeObjectURL(objectUrl)
       }
     }
-  }, [kind, owner, path])
+  }, [kind, owner, path, sessionId])
 
   const onLoadedMetadata = useCallback((event: PlaybackEvent) => {
     const element = event.currentTarget
@@ -115,7 +123,7 @@ export function useMediaPlaybackSrc(path: string) {
 
       const point = { element, paused: element.paused, time: element.currentTime }
 
-      void resolveMediaPlaybackSrc(path, owner)
+      void resolveMediaPlaybackSrc(path, owner, sessionId)
         .then(fresh => {
           if (fresh === failing || fresh.startsWith('blob:')) {
             if (fresh !== failing) {
@@ -136,7 +144,7 @@ export function useMediaPlaybackSrc(path: string) {
         })
         .catch(fail)
     },
-    [owner, path]
+    [owner, path, sessionId]
   )
 
   // An element with preload="none" fetches nothing for a new source until asked, so one

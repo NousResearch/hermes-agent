@@ -772,7 +772,7 @@ def _anthropic_oauth_credentials_present() -> bool:
 
 def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list[dict]:
     """Keep only rows backed by explicit user configuration — ``list_authenticated_providers`` also
-    discovers ambient credentials (e.g. GitHub CLI -> Copilot) Desktop chat pickers must not show."""
+    discovers ambient credentials (e.g. another CLI's login token) Desktop chat pickers must not show."""
     from hermes_cli.auth import is_provider_explicitly_configured
 
     current_slug = str(ctx.current_provider or "").strip().lower()
@@ -789,7 +789,7 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
             # wrote an enabled preset into RAW config (the DEFAULT_CONFIG preset must not show MoA).
             return _raw_config_has_enabled_moa_preset()
         return (
-            # Anthropic OAuth (device flow / Claude Code) and external-process CLIs (copilot-acp) are
+            # Anthropic OAuth (device flow / Claude Code) and external-process CLIs (ACP agents) are
             # deliberate sign-ins that leave no trace in config/env; keep the rows discovery accepted.
             (slug == "anthropic" and _anthropic_oauth_credentials_present())
             or _external_process_signed_in(slug)

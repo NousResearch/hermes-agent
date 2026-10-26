@@ -9,7 +9,7 @@ const STORAGE_KEY = 'hermes.desktop.preparedSubmissions.v1'
 // last-writer-wins per KEY, so while the journal was one blob under STORAGE_KEY, two tabs rewriting
 // it at once could drop an entry the other had just written or restore one it had just retired.
 // Writing or retiring an entry now touches only keys of its own.
-const ENTRY_PREFIX = 'hermes.desktop.preparedSubmissions.v2:'
+export const ENTRY_PREFIX = 'hermes.desktop.preparedSubmissions.v2:'
 // The blob may still hold an earlier build's uncertain sends. They stay adoptable from it, behind
 // any entry under its own key, and the blob is never rewritten: retiring a key also retires the
 // blob's entry there only when that entry carries the retired id, recorded as that id under a

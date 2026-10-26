@@ -1,8 +1,6 @@
-import type { PreparedSubmission } from './prepared-submissions'
+import { ENTRY_PREFIX, type PreparedSubmission } from './prepared-submissions'
 
 // The browser journal as localStorage holds it: one key per entry.
-const ENTRY_PREFIX = 'hermes.desktop.preparedSubmissions.v2:'
-
 const storedKeys = () => Array.from({ length: window.localStorage.length }, (_, index) => window.localStorage.key(index)!)
 
 const removeStoredKeys = (remove: (key: string) => boolean) => {

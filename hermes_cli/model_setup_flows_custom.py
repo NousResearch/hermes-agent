@@ -121,7 +121,7 @@ def _model_flow_custom(config):
     it appears in the provider menu on subsequent runs."""
     from hermes_cli.main_provider_setup import _auto_provider_name, _prompt_custom_api_mode_selection, _save_custom_provider
     from hermes_cli.auth import _save_model_choice, deactivate_provider
-    from hermes_cli.config import drop_credentials_of_other_route, get_env_value
+    from hermes_cli.config import get_env_value
     from hermes_cli.secret_prompt import masked_secret_prompt
     current_url = get_env_value("OPENAI_BASE_URL") or ""
     current_key = get_env_value("OPENAI_API_KEY") or ""
@@ -204,10 +204,13 @@ def _model_flow_custom(config):
         print(f"  API key saved to .env as {custom_key_env}")
 
     def _apply_endpoint(model: dict) -> None:
-        prior = dict(model)
+        from utils import same_base_url_origin
+        if not same_base_url_origin(str(model.get("base_url") or current_url), effective_url):
+            # An inline key (or its legacy ``api`` alias) was entered for the previous host.
+            model.pop("api_key", None)
+            model.pop("api", None)
         model["provider"] = "custom"
         model["base_url"] = effective_url
-        drop_credentials_of_other_route(model, prior)
         # A previous endpoint's key_env pointer would outrank the credential written below.
         model.pop("key_env", None)
         model.pop("api_key_env", None)

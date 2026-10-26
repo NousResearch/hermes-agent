@@ -57,6 +57,26 @@ def test_cli_blank_key_reuses_stored_key_only_on_its_own_origin(monkeypatch, url
     assert env_text.count("sk-old-origin-fixture") == (2 if expected_key == "sk-old-origin-fixture" else 1)
 
 
+@pytest.mark.parametrize(("url", "kept"), [
+    ("https://llm.new.example/v1", False),   # new host, saved keyless: the inline credential goes
+    ("https://llm.old.example/v2", True),    # same origin: it is still that host's credential
+])
+def test_cli_keyless_save_drops_the_previous_hosts_model_credential(monkeypatch, url, kept):
+    from hermes_cli.config import load_config, save_config
+
+    cfg = load_config()
+    cfg["model"] = {"provider": "custom", "default": "m", "base_url": "https://llm.old.example/v1",
+                    "api_key": "sk-inline-old-fixture", "api": "sk-inline-old-fixture"}
+    save_config(cfg)
+
+    assert _drive_cli_custom_flow(monkeypatch, url, ["", ""]) == [""]
+
+    model = load_config()["model"]
+    assert model["base_url"] == url
+    assert (model.get("api_key"), model.get("api")) == (
+        ("sk-inline-old-fixture",) * 2 if kept else (None, None))
+
+
 class TestDesktopEndpointEdit:
     @pytest.fixture(autouse=True)
     def _client(self, _isolate_hermes_home):

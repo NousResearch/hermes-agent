@@ -21,7 +21,9 @@ def _resolve_model() -> str:
     with contextlib.suppress(Exception):
         from hermes_cli.models import get_preferred_silent_default_model
         return get_preferred_silent_default_model()
-    return "z-ai/glm-5.2"
+    # Data-only module (no heavy imports), so this holds when the lookup above fails.
+    from hermes_cli.models_catalog_static import PREFERRED_SILENT_DEFAULT_MODEL
+    return PREFERRED_SILENT_DEFAULT_MODEL
 
 
 def _resolve_session_platform() -> str:

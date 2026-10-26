@@ -361,7 +361,7 @@ class TestDefaultModelFromCache:
             fetch.assert_not_called()
 
 
-    def test_shipped_manifest_labels_glm52_default(self, isolated_home):
+    def test_shipped_manifest_labels_the_silent_default(self, isolated_home):
         """Contract with the in-repo manifest: both provider blocks label the
         same default entry the code constant points at."""
         from hermes_cli import model_catalog

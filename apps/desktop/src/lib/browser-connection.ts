@@ -118,9 +118,32 @@ export function createBrowserConnectionBridge({ api, bootstrap }: BrowserConnect
     return [...new Set((result.profiles || []).map(profile => String(profile.name || '').trim()).filter(Boolean))]
   }
 
-  // Every installed profile, with the served set brought up to date for that list.
-  const installedProfiles = async () => {
-    const profiles = await getProfiles()
+  // The list read in flight. Both mounted pickers read the roster on the same list refresh, so
+  // concurrent callers share it; it is dropped once it settles, so no answer outlives its read.
+  let profilesRead: null | Promise<string[]> = null
+
+  const readProfiles = (join: boolean) => {
+    if (join && profilesRead) {
+      return profilesRead
+    }
+
+    const read = getProfiles()
+    const settle = () => {
+      if (profilesRead === read) {
+        profilesRead = null
+      }
+    }
+
+    profilesRead = read
+    read.then(settle, settle)
+
+    return read
+  }
+
+  // Every installed profile, with the served set brought up to date for that list. `join: false`
+  // starts a read of its own, for a caller that needs a list newer than the read in flight.
+  const installedProfiles = async (join = true) => {
+    const profiles = await readProfiles(join)
     await served.refresh(profiles)
 
     return profiles
@@ -247,7 +270,8 @@ export function createBrowserConnectionBridge({ api, bootstrap }: BrowserConnect
     },
     // A profile created since the last inventory read is missing from the cached set, though the
     // multiplexer adopted it before its create returned. Selection reads the inventory once before
-    // it routes, so the profile rides the tab's socket; dials keep reading the cache alone.
+    // it routes, so the profile rides the tab's socket; dials keep reading the cache alone. The read
+    // is its own: one already in flight may have gone out before the create.
     refreshServedProfile: async (profile: string) => {
       if (reachesSocket(profile)) {
         return
@@ -256,7 +280,7 @@ export function createBrowserConnectionBridge({ api, bootstrap }: BrowserConnect
       let timer: ReturnType<typeof setTimeout> | undefined
 
       await Promise.race([
-        installedProfiles().then(
+        installedProfiles(false).then(
           () => undefined,
           () => undefined
         ),

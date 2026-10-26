@@ -233,6 +233,47 @@ describe('the served set read', () => {
     expect(statusReads()).toBe(4)
   })
 
+  it('is one /api/profiles read for concurrent inventory reads, as both mounted pickers make on one refresh', async () => {
+    const fetchMock = stubGateway({ profiles: ['default', 'research', 'solo'], status: reports(['default', 'research']) })
+    const desktop = installServedBridge()
+
+    const [rail, statusbar] = await Promise.all([desktop.getAgentRoster?.(), desktop.getAgentRoster?.()])
+    expect(rail?.agents.map(agent => agent.profile)).toEqual(['default', 'research', 'solo'])
+    expect(statusbar?.agents).toEqual(rail?.agents)
+    expect(callsTo(fetchMock, '/api/profiles')).toBe(1)
+
+    // Once it settles, the next refresh reads the list again.
+    await desktop.getAgentRoster?.()
+    expect(callsTo(fetchMock, '/api/profiles')).toBe(2)
+  })
+
+  it('lets a pick read the list itself rather than join a read that predates a new profile', async () => {
+    const gateway: Gateway = { profiles: ['default'], status: reports(['default']) }
+    const fetchMock = stubGateway(gateway)
+    const desktop = installServedBridge()
+    await desktop.getProfileRoutes?.(['default'])
+
+    // The roster's list read answers with the list from before the create, and only once released.
+    let release!: () => void
+    const held = new Promise<void>(resolve => (release = resolve))
+    const answer = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementationOnce(async (url, init) => {
+      const response = await answer(url, init)
+      await held
+
+      return response
+    })
+    const roster = desktop.getAgentRoster?.()
+
+    gateway.profiles = ['default', 'fresh']
+    gateway.status = reports(['default', 'fresh'])
+    await desktop.refreshServedProfile?.('fresh')
+    await expect(desktop.getConnection('fresh')).resolves.toMatchObject({ sharedPrimary: true })
+
+    release()
+    await roster
+  })
+
   it('keeps the last answer when a later read fails', async () => {
     const gateway: Gateway = { profiles: ['default', 'research', 'solo'], status: reports(['default', 'research']) }
     stubGateway(gateway)

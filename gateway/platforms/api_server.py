@@ -123,6 +123,7 @@ from gateway.platforms.base import (
     validate_media_delivery_path)
 from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 from gateway.platforms.api_server_response_store import ResponseStore
+from gateway.platforms.api_server_image_parts import _normalize_image_part
 from agent.i18n import t
 from agent.redact import redact_sensitive_text
 from agent.interrupt_compat import request_hard_interrupt
@@ -404,36 +405,6 @@ def _normalize_chat_content(content: Any, *, _max_depth: int = 10, _depth: int =
 _TEXT_PART_TYPES = frozenset({"text", "input_text", "output_text"})
 _IMAGE_PART_TYPES = frozenset({"image_url", "input_image"})
 _FILE_PART_TYPES = frozenset({"file", "input_file"})
-
-
-def _normalize_image_part(part: dict[str, Any]) -> dict[str, Any]:
-    """Validate one image part (Responses top-level ``image_url`` string or Chat Completions
-    ``{"url", "detail"}`` dict) into the canonical vision shape; raises ValueError."""
-    detail = part.get("detail")
-    image_ref = part.get("image_url")
-    if isinstance(image_ref, dict):
-        url_value = image_ref.get("url")
-        detail = image_ref.get("detail", detail)
-    else:
-        url_value = image_ref
-    if not isinstance(url_value, str) or not url_value.strip():
-        raise ValueError("invalid_image_url:Image parts must include a non-empty image URL.")
-    url_value = url_value.strip()
-    lowered = url_value.lower()
-    if lowered.startswith("data:"):
-        if not lowered.startswith("data:image/") or "," not in url_value:
-            raise ValueError(
-                "unsupported_content_type:Only image data URLs are supported. "
-                "Non-image data payloads are not supported.")
-    elif not (lowered.startswith("http://") or lowered.startswith("https://")):
-        raise ValueError(
-            "invalid_image_url:Image inputs must use http(s) URLs or data:image/... URLs.")
-    image_part: dict[str, Any] = {"type": "image_url", "image_url": {"url": url_value}}
-    if detail is not None:
-        if not isinstance(detail, str) or not detail.strip():
-            raise ValueError("invalid_content_part:Image detail must be a non-empty string when provided.")
-        image_part["image_url"]["detail"] = detail.strip()
-    return image_part
 
 
 def _normalize_multimodal_content(content: Any) -> Any:
@@ -2191,7 +2162,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     def _create_agent(
         self, ephemeral_system_prompt: Optional[str] = None, session_id: Optional[str] = None,
-        stream_delta_callback=None, tool_progress_callback=None, tool_start_callback=None,
+        stream_delta_callback=None, stream_retract_callback=None, tool_progress_callback=None, tool_start_callback=None,
         tool_complete_callback=None, interim_assistant_callback=None, reasoning_callback=None,
         status_callback=None, gateway_session_key: Optional[str] = None,
         requested_model: Optional[str] = None, requested_provider: Optional[str] = None,
@@ -2248,6 +2219,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "enabled_toolsets": enabled_toolsets, "session_id": session_id,
             "platform": "api_server",
             "stream_delta_callback": stream_delta_callback,
+            "stream_retract_callback": stream_retract_callback,
             "tool_progress_callback": tool_progress_callback,
             "tool_start_callback": tool_start_callback,
             "tool_complete_callback": tool_complete_callback,
@@ -3129,6 +3101,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             if delta:
                 events.enqueue("assistant.delta", {"message_id": message_id, "delta": delta})
 
+        def _retract() -> None:
+            # The model call restarted: every delta so far is withdrawn, the next starts over (#142333).
+            events.enqueue("assistant.retract", {"message_id": message_id})
+
         def _tool_progress(event_type: str, tool_name: str | None = None, preview: str | None = None, args=None, **kwargs) -> None:
             if event_type == "reasoning.available":
                 events.enqueue("tool.progress", {"message_id": message_id, "tool_name": tool_name or "_thinking", "delta": preview or ""})
@@ -3158,7 +3134,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 await queue.put(_event_payload("message.started", {"message": {"id": message_id, "role": "assistant"}}))
                 history = await self._conversation_history_for_session(session_id)
                 result, usage = await self._run_agent(
-                    conversation_history=history, stream_delta_callback=_delta,
+                    conversation_history=history, stream_delta_callback=_delta, stream_retract_callback=_retract,
                     tool_progress_callback=_tool_progress, interim_assistant_callback=_commentary,
                     active_run_id=run_id, approval_notify_callback=approval_notify,
                     approval_session_key=run_id, **ctx["run_kwargs"])
@@ -3670,7 +3646,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     async def _run_agent(
         self, user_message: str, conversation_history: list[dict[str, str]],
         ephemeral_system_prompt: Optional[str] = None, session_id: Optional[str] = None,
-        stream_delta_callback=None, tool_progress_callback=None, tool_start_callback=None,
+        stream_delta_callback=None, stream_retract_callback=None, tool_progress_callback=None, tool_start_callback=None,
         tool_complete_callback=None, interim_assistant_callback=None, reasoning_callback=None,
         status_callback=None, agent_ref: Optional[list] = None, active_run_id: Optional[str] = None,
         gateway_session_key: Optional[str] = None, requested_model: Optional[str] = None,
@@ -3701,7 +3677,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             from gateway.session_api_turn import run_api_turn
             return await run_api_turn(self, user_message=user_message, conversation_history=conversation_history,
                 ephemeral_system_prompt=ephemeral_system_prompt, session_id=session_id,
-                stream_delta_callback=stream_delta_callback, tool_progress_callback=tool_progress_callback,
+                stream_delta_callback=stream_delta_callback, stream_retract_callback=stream_retract_callback,
+                tool_progress_callback=tool_progress_callback,
                 tool_start_callback=tool_start_callback, tool_complete_callback=tool_complete_callback,
                 interim_assistant_callback=interim_assistant_callback, reasoning_callback=reasoning_callback,
                 status_callback=status_callback, walked_from=walked_from,
@@ -3731,7 +3708,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 try:
                     agent = self._create_agent(
                         ephemeral_system_prompt=ephemeral_system_prompt, session_id=session_id,
-                        stream_delta_callback=stream_delta_callback, tool_progress_callback=tool_progress_callback,
+                        stream_delta_callback=stream_delta_callback, stream_retract_callback=stream_retract_callback,
+                        tool_progress_callback=tool_progress_callback,
                         tool_start_callback=tool_start_callback, tool_complete_callback=tool_complete_callback,
                         interim_assistant_callback=interim_assistant_callback,
                         reasoning_callback=reasoning_callback, status_callback=status_callback,

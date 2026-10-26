@@ -11,7 +11,7 @@ _FREEFORM_EVENTS = frozenset({
     "tool.start", "tool.complete", "tool.generating", "error", "reaction",
 })
 _PRESENTATION_CALLBACKS = (
-    "stream_delta_callback", "interim_assistant_callback", "reasoning_callback",
+    "stream_delta_callback", "stream_retract_callback", "interim_assistant_callback", "reasoning_callback",
     "tool_progress_callback",
     "tool_start_callback", "tool_complete_callback", "tool_gen_callback", "reaction_callback",
 )

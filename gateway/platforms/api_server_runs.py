@@ -1026,6 +1026,14 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         with suppress(Exception):
             loop.call_soon_threadsafe(run.put_event, _run_event(run_id, "message.delta", delta=delta))
 
+    def _retract_cb() -> None:
+        # Every ``message.delta`` so far is withdrawn: the model call restarted and the next
+        # delta starts the reply over (#142333).
+        if run_id not in self._run_streams:
+            return
+        with suppress(Exception):
+            loop.call_soon_threadsafe(run.put_event, _run_event(run_id, "message.retract"))
+
     def _interim_cb(text: str, *, already_streamed: bool = False) -> None:
         # Mid-turn assistant commentary (Codex ``phase="commentary"``, text beside tool calls),
         # same ``message.interim`` contract as the TUI gateway; reasoning never reaches this
@@ -1080,7 +1088,7 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
 
             with observe_api_controls(run.admission, _control_cb):
                 result, usage = await observe_api_turn(
-                    run.admission, stream_delta_callback=_text_cb,
+                    run.admission, stream_delta_callback=_text_cb, stream_retract_callback=_retract_cb,
                     tool_start_callback=_tool_start, tool_complete_callback=_tool_complete)
             # The canonical turn has no agent object here; the served pair rides on the
             # committed usage/result runtime metadata when the turn recorded one.
@@ -1089,7 +1097,8 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         else:
             with self._profile_scope(run.request_profile):
                 agent = self._create_agent(
-                    stream_delta_callback=_text_cb, tool_progress_callback=self._make_run_event_callback(run_id, loop),
+                    stream_delta_callback=_text_cb, stream_retract_callback=_retract_cb,
+                    tool_progress_callback=self._make_run_event_callback(run_id, loop),
                     interim_assistant_callback=_interim_cb, **run.agent_kwargs)
             self._active_run_agents[run_id] = agent
             approval_notify = _make_approval_notify(self, run, _api_server=_api_server)

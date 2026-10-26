@@ -1260,9 +1260,12 @@ def _sync_failover_system_message(agent, api_messages, active_system_prompt):
 
 
 def _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry):
-    """After a successful fallback activation: sync the system message and arm
-    ``restart_with_rebuilt_messages``. Callers also zero ``retry_count`` /
-    ``compression_attempts`` and ``break`` the retry loop."""
+    """After a successful fallback activation: withdraw the failed call's streamed text, sync
+    the system message and arm ``restart_with_rebuilt_messages``. Callers also zero
+    ``retry_count`` / ``compression_attempts`` and ``break`` the retry loop."""
+    # The fallback's deltas follow on the same reply; without this a streaming client shows
+    # the dead text (a refusal, a fragment) until the final answer replaces it (#142333).
+    agent._fire_stream_retract()
     active_system_prompt = _sync_failover_system_message(
         agent, api_messages, active_system_prompt)
     _retry.primary_recovery_attempted = False

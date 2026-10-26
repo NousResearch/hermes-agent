@@ -16,8 +16,9 @@ from hermes_state_runtime import RuntimeStoreError, admit_session_input, _json
 api_execution: ContextVar[dict | None] = ContextVar('api_execution', default=None)
 _SETTINGS_PREFIX = 'gateway.api.settings.v1.'
 # Request-owned sinks an API observer may register for its admission's execution.
-_OBSERVER_KEYS = ('stream_delta_callback', 'tool_start_callback', 'tool_complete_callback',
-                  'reasoning_callback', 'status_callback', 'interim_assistant_callback')
+_OBSERVER_KEYS = ('stream_delta_callback', 'stream_retract_callback', 'tool_start_callback',
+                  'tool_complete_callback', 'reasoning_callback', 'status_callback',
+                  'interim_assistant_callback')
 _TOOL_SINKS = {'tool_start_callback', 'tool_complete_callback'}
 _SETTING_KEYS = ('ephemeral_system_prompt', 'requested_model', 'requested_provider',
                  'model_options', 'route', 'session_model', 'confirmed_runtime_lock',
@@ -500,7 +501,16 @@ def wire_api_observers(agent, owner, want_interim):
             publish_api_tool_progress(authority, session_id, generation, event_type, *args, **kwargs)
         if progress is not None:
             return progress(event_type, *args, **kwargs)
+    retract = getattr(agent, 'stream_retract_callback', None)
+
+    def stream_retract_callback():
+        # The streamed text is withdrawn (the model call restarted, #142333): the observers'
+        # ``assistant.retract`` / ``message.retract``, then the turn's own sink.
+        publish('stream_retract_callback')
+        if retract is not None:
+            retract()
     agent.reasoning_callback = lambda text: publish('reasoning_callback', text)
+    agent.stream_retract_callback = stream_retract_callback
     agent.status_callback = status_callback
     agent.tool_progress_callback = tool_progress_callback
     if want_interim:
@@ -510,6 +520,8 @@ def wire_api_observers(agent, owner, want_interim):
 def publish_api_event(authority, session_id, event_type, payload):
     if event_type == 'message.delta' and payload['text'] is not None:  # a None segment boundary is viewer-only
         return _notify_observers(authority, session_id, 'stream_delta_callback', payload['text'])
+    if event_type == 'message.retract':
+        return _notify_observers(authority, session_id, 'stream_retract_callback')
     return False
 
 

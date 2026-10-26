@@ -132,6 +132,19 @@ class StreamDeliveryMixin:
                 parts = self._streamed_assistant_text_parts = []
             parts.append(text)
 
+    def _fire_stream_retract(self) -> bool:
+        """Withdraw the visible text streamed on this reply: the model call restarts (fallback
+        after a content-filter stop or a malformed response, a reconnect mid tool-call) and the
+        deltas already delivered are not part of the answer. Fires ``stream_retract_callback``
+        only when something visible reached a consumer (the ``_visible_text_delivered`` rule), and
+        clears the record either way so the dead text is never stitched into a later partial.
+        True when a sink accepted it; a sink that raises never breaks the restart."""
+        if not (self._current_streamed_assistant_text or "").strip():
+            self._current_streamed_assistant_text = ""
+            return False
+        self._current_streamed_assistant_text = ""
+        return self._call_quietly(getattr(self, "stream_retract_callback", None))
+
     @staticmethod
     def _normalize_interim_visible_text(text: str) -> str:
         return re.sub(r"\s+", " ", text).strip() if isinstance(text, str) else ""

@@ -65,6 +65,22 @@ def test_a_human_lease_keeps_the_screen_until_nothing_has_used_it_for_four_windo
     assert runtime.stop_if_idle() is True and stops == [True], "abandoned: no use for four windows"
 
 
+def test_a_short_window_never_times_out_a_human_between_two_viewer_stamps(tmp_path, monkeypatch):
+    """An attached viewer stamps activity at most once a minute (and the panel clock repaints once a
+    minute), so stamps can be about two minutes apart. With idle_stop_minutes: 0.1 four windows are
+    24 s: the human's screen must not be stopped in that gap."""
+    sd, stops = _running(monkeypatch, tmp_path)
+    monkeypatch.setattr(runtime, "idle_stop_seconds", lambda: 6.0)
+    monkeypatch.setattr(lease, "get", lambda profile_key=None: lease.Lease(holder=lease.HUMAN, viewer_id="v1"))
+    (sd / "activity").touch()
+
+    _age(sd / "activity", 150)
+    assert runtime.stop_if_idle() is False and stops == [], "a human between two viewer stamps was timed out"
+
+    _age(sd / "activity", runtime.HUMAN_LEASE_ABANDONED_MIN_S + 60)
+    assert runtime.stop_if_idle() is True and stops == [True], "abandoned: no use past the floor"
+
+
 def test_idle_stop_disabled_by_zero(tmp_path, monkeypatch):
     sd, stops = _running(monkeypatch, tmp_path)
     monkeypatch.setattr(runtime, "idle_stop_seconds", lambda: 0.0)

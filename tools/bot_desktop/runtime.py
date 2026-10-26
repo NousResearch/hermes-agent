@@ -426,9 +426,12 @@ def _should_auto_start(env: dict[str, str]) -> bool:
 DEFAULT_IDLE_STOP_MINUTES = 30
 # A human holding the screen is never timed out while there is evidence of one: an attached viewer stamps
 # ``activity`` (every RFB update it receives, at most once a minute; the panel clock repaints every minute).
-# A human lease with no stamp for this many windows is a link that dropped and never came back, or a
-# corrupt lease file (which reads as human): the screen is stopped like any idle one.
+# A human lease with no stamp for this many windows, and never less than HUMAN_LEASE_ABANDONED_MIN_S, is
+# a link that dropped and never came back, or a corrupt lease file (which reads as human): the screen is
+# stopped like any idle one. The floor keeps a short window (idle_stop_minutes: 0.1) from timing out a
+# human between two viewer stamps, which can be up to about two minutes apart.
 HUMAN_LEASE_ABANDONED_WINDOWS = 4
+HUMAN_LEASE_ABANDONED_MIN_S = 600.0
 
 
 def touch_activity() -> None:
@@ -475,14 +478,16 @@ def _idle_due(launcher: Optional[tuple[int, float]]) -> Optional[float]:
     if idle is None or idle < limit:
         return None
     from tools.bot_desktop import lease as _bd_lease
-    if _bd_lease.get().holder == _bd_lease.HUMAN and idle < limit * HUMAN_LEASE_ABANDONED_WINDOWS:
+    abandoned_after = max(limit * HUMAN_LEASE_ABANDONED_WINDOWS, HUMAN_LEASE_ABANDONED_MIN_S)
+    if _bd_lease.get().holder == _bd_lease.HUMAN and idle < abandoned_after:
         return None
     return idle
 
 
 def stop_if_idle(launcher: Optional[tuple[int, float]] = None) -> bool:
     """Stop this profile's screen when it has been idle past the limit and no human holds it (a human lease
-    with no use for ``HUMAN_LEASE_ABANDONED_WINDOWS`` windows counts as abandoned). True when
+    with no use for ``HUMAN_LEASE_ABANDONED_WINDOWS`` windows, and at least ``HUMAN_LEASE_ABANDONED_MIN_S``,
+    counts as abandoned). True when
     it was stopped. ``launcher`` names the screen the caller judges (the launcher's own check passes it).
 
     The decision is taken again under ``start.lock`` before anything is killed: a check that waited on the

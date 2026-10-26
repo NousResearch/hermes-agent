@@ -154,7 +154,7 @@ def test_a_screen_in_use_is_kept_and_a_returning_gateway_reattaches(abandoned_sc
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from tools.bot_desktop import runtime
 
-    sd, launcher = abandoned_screen(idle_stop_minutes=0.1)  # 6 s; a human lease lapses after 4 windows (24 s)
+    sd, launcher = abandoned_screen(idle_stop_minutes=0.1)  # 6 s; a human lease lapses after 10 min (the floor over 4 windows)
     log = sd / "launcher.log"
 
     def checks_kept() -> int:
@@ -186,7 +186,7 @@ def test_a_screen_in_use_is_kept_and_a_returning_gateway_reattaches(abandoned_sc
     wait_until(lambda: checks_kept() >= seen + 1, timeout=30, what="an idle check while a human holds the screen")
     assert _alive(launcher)
 
-    # ...but a human lease nothing has used for four windows (the viewer's link dropped and never came back)
+    # ...but a human lease nothing has used past its lapse (the viewer's link dropped and never came back)
     # no longer keeps it.
     old = time.time() - 3600
     os.utime(sd / "activity", (old, old))

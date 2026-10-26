@@ -123,7 +123,21 @@ def _auxiliary_result(agent):
 def test_managed_acp_does_not_report_requested_model(tmp_path, monkeypatch, boundary):
     from agent.copilot_acp_client import CopilotACPClient
     from agent.model_selection_store import list_outcomes
+    from providers.base import ProviderProfile
     from run_agent import AIAgent
+
+    # Copilot left core for the github-copilot labs plugin (upstream 1da2eb42dc): an ACP
+    # provider reaches the runtime only through its registered ProviderProfile. Register the
+    # fixture profile the same way the out-of-tree plugin does, so this agent really runs on
+    # the ACP stdio wire.
+    class _FixtureACPProfile(ProviderProfile):
+        def create_client(self, **client_kwargs):
+            return CopilotACPClient(**client_kwargs)
+
+    monkeypatch.setattr("providers.get_provider_profile", lambda name: (
+        _FixtureACPProfile(name="copilot-acp", api_mode="chat_completions", base_url="acp://copilot",
+                           auth_type="external_process") if name == "copilot-acp" else None))
+
 
     # An actual JSON-RPC peer, with no provider identity in its prompt response.
     peer = tmp_path / "peer.py"

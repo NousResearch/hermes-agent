@@ -180,6 +180,7 @@ inline affordance — "Change", "Open logs").
 that sit inside a heading/sentence; replaces `h-auto px-0 py-0`), `micro`
 (status-stack/table-footers), and the icon family `icon` / `icon-xs` /
 `icon-sm` / `icon-lg` / `icon-titlebar`.
+`touch` provides a 44px minimum target for compact mobile navigation.
 
 **Tooltips only when hover teaches something new.** `<Tip>` is for discovery,
 not a tax on every icon. Ask: does hover reveal something the user cannot
@@ -268,6 +269,20 @@ blurred backdrop.
   touched toggles is costing input width (the composer's voice controls).
 
 ## Layout
+
+In the browser-hosted Desktop, composer controls retain 44px targets on
+coarse-pointer surfaces. Its collapse stages budget the actual control-size
+token; below the two-target width budget, the context menu and Send occupy
+separate rows rather than clipping or shrinking. Native Desktop keeps the
+compact stages sized for 24px controls.
+The voice engine split-button uses `--composer-voice-menu-size`: compact on
+desktop, matching `--composer-control-size` on touch surfaces.
+Narrow browser touch layouts show the current session tab with an open-tab
+count. Its menu exposes every tab, while the new-tab action remains beside it.
+In the browser-hosted Desktop, outside taps dismiss narrow sidebar overlays;
+cancelled or scrolling gestures do not. Native Desktop keeps its overlay until
+Escape, the toggle or hover-out. Touch transcript gestures select a pane without
+focusing its composer.
 
 - **Gutters:** `PAGE_INSET_X` (`src/app/layout-constants.ts`) for page side
   padding; `PAGE_INSET_NEG_X` to bleed a child to the edge. Don't hardcode

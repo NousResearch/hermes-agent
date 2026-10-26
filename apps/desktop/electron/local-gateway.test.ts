@@ -226,6 +226,20 @@ test('private dial credential is one-use and bound to the requesting native wind
   expect(dials.headers({ ...details, webContentsId: 7 })).toBeNull()
 })
 
+test('a voice socket dialed on its own /api/ws reservation drops Origin; other paths do not', () => {
+  const dial = (path: string, dials = createLocalGatewayDials()) => {
+    const url = new URL(dials.prepare('http://127.0.0.1:1234', 'voice-ticket', 7))
+    url.searchParams.delete('ticket')
+    url.pathname = path
+
+    return dials.headers({ url: url.toString(), webContentsId: 7, resourceType: 'webSocket', requestHeaders: { Origin: 'http://renderer' } })
+  }
+
+  expect(dial('/api/audio/speak-stream')).toEqual({})
+  expect(dial('/api/audio/transcribe-stream')).toEqual({})
+  expect(dial('/api/pty')).toBeNull()
+})
+
 test('a dial against a replaced local gateway forgets the cached endpoint once and re-ensures', async () => {
   const { redialLocalGateway } = await import('./local-gateway')
   const endpoints = [{ instance_id: 'dead' }, { instance_id: 'alive' }]

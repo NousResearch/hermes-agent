@@ -362,7 +362,9 @@ _BACKGROUND_NOTES = {
 
 def _dispatched_payload(batch: _Batch, units: list[tuple[_Batch, str]]) -> dict:
     """Model-facing handle for an accepted background call: one entry per async unit."""
-    goals = [t["goal"] for t in batch.task_list]
+    # Running members only: a routing-denied or refused member never runs, so the handle
+    # lists it under its typed outcome (``results``/``refused``), never as a running goal.
+    goals = [t["goal"] for _, t, _ in batch.children]
     n = len(batch.children)  # running children; refused tasks are listed under "refused"
     payload = {
         "status": "dispatched", "mode": "background", "count": n,

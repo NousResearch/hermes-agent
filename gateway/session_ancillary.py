@@ -138,13 +138,21 @@ async def attach_file(connection, ref, params):
     """Desktop's non-image attachment: stage the file for this session (its frozen launch cwd and
     the owner profile's ``attachments/``) and hand back the ``@file:`` ref its next submit carries.
     The sidecar handler looked the session up in its own table, which never holds an authority
-    session, so every file drop failed with ``session not found``."""
-    if (set(params) - {'session_id', 'profile', 'path', 'data_url', 'name'} or not ref.session_id
-            or any(not isinstance(value, str) for value in params.values())):
+    session, so every file drop failed with ``session not found``.
+
+    A browser pick arrives as ``staged_upload`` (the Webapp upload route's receipt,
+    ``hermes_cli/staged_uploads.py``): it is copied out of the profile it was uploaded to, which must
+    be one this connection may reach."""
+    staged_upload = params.get('staged_upload')
+    if (set(params) - {'session_id', 'profile', 'path', 'data_url', 'name', 'staged_upload'} or not ref.session_id
+            or any(not isinstance(value, str) for key, value in params.items() if key != 'staged_upload')
+            or (staged_upload is not None and not isinstance(staged_upload, dict))):
         raise RuntimeStoreError('invalid_params')
     if ref.session_id not in connection.subscriptions:
         raise RuntimeStoreError('permission_denied')
     authorize(connection, ref, params, 'session:submit')
+    if staged_upload is not None and not _reachable_upload_home(connection, staged_upload.get('profile_home')):
+        raise RuntimeStoreError('permission_denied')
     from gateway.session_policy import policy_for_source
     authority = connection.authority
     policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
@@ -153,17 +161,41 @@ async def attach_file(connection, ref, params):
     # The staging helpers are bound onto the sidecar module's globals (method_ctx.bind_module).
     from tui_gateway import server
     session = {'cwd': policy.cwd, 'profile_home': authority.profile_id}
+
+    def stage():
+        if staged_upload is not None:
+            # Only the receipt is read: a supplied path/data_url never stands in for a missing upload.
+            return server._stage_browser_file_attachment(session, staged_upload, params.get('name', ''))
+        return server._stage_session_file_attachment(
+            session, raw_path=params.get('path', ''), data_url=params.get('data_url', ''),
+            name=params.get('name', ''))
     try:
-        stored, uploaded = await asyncio.to_thread(
-            server._stage_session_file_attachment, session, raw_path=params.get('path', ''),
-            data_url=params.get('data_url', ''), name=params.get('name', ''))
-    except ValueError as exc:
+        stored, uploaded = await asyncio.to_thread(stage)
+    except (ValueError, OverflowError) as exc:
         raise RuntimeStoreError('invalid_params') from exc
     except OSError as exc:
         raise RuntimeStoreError('storage_unavailable') from exc
     ref_path = server._attachment_ref_path(session, stored)
     return {'attached': True, 'name': stored.name, 'path': str(stored), 'ref_path': ref_path,
             'ref_text': f'@file:{server._format_ref_value(ref_path)}', 'uploaded': uploaded}
+
+
+def _reachable_upload_home(connection, raw_home) -> bool:
+    """A staged upload's source profile: this authority's own home or, for a host-scoped grant, a
+    sibling this process serves (an owner-routed tile can receive a foreground browser pick). Never
+    any other profile on disk, whatever its descriptor names."""
+    from pathlib import Path
+    if not isinstance(raw_home, str) or not raw_home:
+        return False
+    homes = {connection.authority.profile_id}
+    if connection.host_scoped:
+        registry = getattr(getattr(connection.authority, 'runner', None), 'session_authorities', None)
+        homes |= {sibling.profile_id for sibling in (registry or ())}
+    try:
+        target = Path(raw_home).resolve()
+        return any(Path(home).resolve() == target for home in homes)
+    except (OSError, ValueError):
+        return False
 
 
 async def approvals(connection, ref, params, *, ack=False):
@@ -411,7 +443,8 @@ def _owner_objects(authority, ref, *, include_fallback_evicted=False):
 
 def physical_target(authority, ref):
     from gateway.config import Platform
-    if authority.sessions[ref.session_id].source.platform == Platform.LOCAL:
+    source = authority.sessions[ref.session_id].source  # None: a history mount
+    if source is not None and source.platform == Platform.LOCAL:
         from hermes_state_local import local_receipt
         return local_receipt(authority.db, ref.session_id)['entry']['session_id']
     return ref.session_id

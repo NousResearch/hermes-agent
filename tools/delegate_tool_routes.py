@@ -287,8 +287,14 @@ def _undeclared_error(provider: DelegationProvider, index: int, names: list[str]
 
 def _route_one(provider: DelegationProvider, declared: dict[str, dict[str, Any]], index: int,
                task: Mapping[str, Any], config: Mapping[str, Any]) -> dict[str, Any]:
+    # Guided-routing-managed tasks (``routing_role`` set) consume ``reasoning_effort`` as a routing
+    # requirement through tools/delegate_tool_routing.resolve_delegation_route (the store's
+    # decision carries the effort back onto the child), so the key is not a backend parameter for
+    # them and must not trip the undeclared-parameter refusal below.
+    _managed = bool(task.get("routing_role"))
     undeclared = sorted(name for name, value in task.items()
-                        if value is not None and name not in declared and name not in RESERVED_TASK_PARAMETERS)
+                        if value is not None and name not in declared and name not in RESERVED_TASK_PARAMETERS
+                        and not (_managed and name == "reasoning_effort"))
     if undeclared:
         raise DelegationRouteError(_undeclared_error(provider, index, undeclared, config))
     params = {name: task[name] for name in declared if task.get(name) is not None}

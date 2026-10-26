@@ -14,10 +14,12 @@ import {
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
+import { selectDesktopPaths } from '@/lib/desktop-fs'
 import { pathLeaf } from '@/lib/display-path'
 import { triggerHaptic } from '@/lib/haptics'
 import { Archive, ArchiveOff, FolderOpen, Loader2, Trash2 } from '@/lib/icons'
 import { purgeInFlightTurnJournals } from '@/lib/inflight-turn-journal'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import { applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd } from '@/store/session'
@@ -370,9 +372,13 @@ function DefaultProjectDirSetting() {
     setBusy(true)
 
     try {
-      const picked = await settings.pickDefaultProjectDir()
+      // A browser tab has no native dialog for the server's disk: pick through the server
+      // folder browser Projects already use.
+      const picked = isBrowserHostedDesktop()
+        ? { dir: (await selectDesktopPaths({ defaultPath: dir ?? undefined, directories: true }))[0] ?? null }
+        : await settings.pickDefaultProjectDir()
 
-      if (picked.canceled || !picked.dir) {
+      if (!picked.dir) {
         return
       }
 
@@ -385,7 +391,7 @@ function DefaultProjectDirSetting() {
     } finally {
       setBusy(false)
     }
-  }, [s])
+  }, [dir, s])
 
   const clear = useCallback(async () => {
     const settings = window.hermesDesktop?.settings

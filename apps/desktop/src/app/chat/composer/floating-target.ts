@@ -2,6 +2,7 @@ import { flushSync } from 'react-dom'
 
 import { $activeTreeGroup, $hoveredTreeGroup, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import { isEditableTarget, OVERLAY_SURFACE } from '@/lib/keybinds/combo'
+import { isTouchInteraction } from '@/lib/touch-interaction'
 import { $composerPopout } from '@/store/composer-popout'
 
 import { $floatingComposerOwner, type FloatingComposerOwner } from './floating-state'
@@ -87,7 +88,7 @@ function selectionOutsideComposer(): boolean {
 function focusSelectedComposer() {
   const owner = $floatingComposerOwner.get()
 
-  if (!owner || selectionOutsideComposer() || inFloatingLayer(document.activeElement)) {
+  if (!owner || isTouchInteraction() || selectionOutsideComposer() || inFloatingLayer(document.activeElement)) {
     return
   }
 
@@ -187,7 +188,7 @@ function trackPointer(event: PointerEvent) {
     active.dataset.slot === 'composer-rich-input' &&
     active.closest<HTMLElement>('[data-composer-owner]')?.dataset.composerOwner === id
 
-  if (event.type === 'pointermove' && !alreadyTyping && !keepsOwnFocus(active)) {
+  if (event.type === 'pointermove' && !isTouchInteraction(event) && !alreadyTyping && !keepsOwnFocus(active)) {
     focusSelectedComposer()
   }
 }
@@ -218,7 +219,7 @@ function trackFocus(event: FocusEvent) {
   // A delayed focus/restore isn't a navigation gesture. A clicked control,
   // keyboard Tab, or the inline edit opened by a bubble click still keeps its
   // normal focus, without redirecting to the input.
-  if (keyboardNavigation || keepsOwnFocus(target) || (pointerDownTarget && target.contains(pointerDownTarget))) {
+  if (isTouchInteraction() || keyboardNavigation || keepsOwnFocus(target) || (pointerDownTarget && target.contains(pointerDownTarget))) {
     flushSync(() => selectSurface(id))
   } else {
     // A refused redirect leaves focus where it landed: that element's focusin

@@ -269,19 +269,20 @@ def build_lifecycle_child(request, parent):
     from tools import delegate_tool as dt
 
     cfg = dt._load_config()
-    creds = dt._resolve_delegation_credentials(cfg, parent)
     task = {"goal": request.goal, "context": request.context, "model": request.model,
             "routing_role": request.routing_role, "routing_mode": request.routing_mode,
             "routing_policy_id": request.routing_policy_id,
             "routing_requirements": request.routing_requirements}
+    routes, route_error = dt._routes_for([task], cfg, None, parent)
+    if route_error or (routes and routes[0].error):
+        raise DelegationRoutingBlocked("unsupported_executor", route_error or routes[0].error)
     children, error = dt._build_children(
-        [task], [None], creds, top_role=request.role,
+        [task], [None], routes, top_role=request.role,
         max_iterations=cfg.get("max_iterations", dt.DEFAULT_MAX_ITERATIONS),
-        parent_agent=parent, routing_cfg=cfg, live_deleg_id=None, live_writers=[],
-        allowed_toolsets=list(request.allowed_toolsets) if request.allowed_toolsets else None,
+        parent_agent=parent, live_deleg_id=None, live_writers=[],
     )
-    if error:
-        raise DelegationRoutingBlocked("unsupported_executor", error)
+    if error or not children:
+        raise DelegationRoutingBlocked("unsupported_executor", error or "managed child construction refused")
     return children[0][2]
 
 

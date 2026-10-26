@@ -126,11 +126,8 @@ def _resolve_preset_cached(preset_name: str) -> tuple[dict[str, Any], Any]:
     (skips resolve_moa_preset's full validation of the moa block on every create())."""
     from hermes_cli.config import get_config_path, load_config
     from hermes_cli.moa_config import resolve_moa_preset
-    from utils import file_signature
-    try:
-        cfg_stamp = file_signature(get_config_path().stat())
-    except OSError:
-        cfg_stamp = None
+    from hermes_cli.config_backend import config_version_or_none
+    cfg_stamp = config_version_or_none(get_config_path())
     moa_raw = load_config().get("moa") or {}
     key = (cfg_stamp, preset_name)
     with _preset_cache_lock:
@@ -435,6 +432,22 @@ def _slot_runtime_managed(slot: dict[str, Any], *, execution_id: str, slot_id: s
     return moa_runtime_overrides(resolution), resolution
 
 
+def _slot_request_headers(runtime: dict[str, Any], agent: Any = None) -> dict[str, str] | None:
+    """User-initiated request headers of the slot's provider, attributed at that provider's own endpoint
+    (MoA attributes by slot provider, whatever account host the slot resolved to). Asked like every
+    per-request hook (``route_answer``: memoized, one failure policy for the agent's session)."""
+    from agent.auxiliary_client import _normalize_aux_provider
+    from agent.provider_route_hooks import route_answer
+    from providers import get_provider_profile
+
+    provider = _normalize_aux_provider(str(runtime.get("provider") or ""))
+    profile = get_provider_profile(provider) if provider else None
+    if profile is None:
+        return None
+    return route_answer("request_headers", provider=provider, base_url=profile.base_url or "",
+                        model=str(runtime.get("model") or ""), user_initiated=True, scope=agent)
+
+
 def _run_reference(
     slot: dict[str, Any], ref_messages: list[dict[str, Any]], *, temperature: float | None = None,
     max_tokens: int | None = None, reference_timeout: float | None = None, context_length_cache: Any = None,
@@ -502,10 +515,9 @@ def _run_reference(
             )
         trimmed = _maybe_apply_moa_cache_control(trimmed, _with_cache_disabled(runtime, cache_disabled), cache_ttl=cache_ttl)
 
-        # Copilot gates premium models on request attribution; MoA fan-out serves the
-        # user's current turn, so mirror the main agent's x-initiator header.
-        from agent.auxiliary_client import _normalize_aux_provider
-        is_copilot = _normalize_aux_provider(str(runtime.get("provider") or "")) in ("copilot", "copilot-acp")
+        # Providers may gate premium models on request attribution; MoA fan-out serves the
+        # user's current turn, so mirror the main agent's user-initiated request headers.
+        initiator_headers = _slot_request_headers(runtime, agent)
         from agent.managed_route_aux_wire import observe_moa_request
         from agent.managed_route_health import record_response_identity
         health_route = managed_resolution or {}
@@ -518,14 +530,14 @@ def _run_reference(
                         task="moa_reference", messages=trimmed, temperature=temperature,
                         max_tokens=max_tokens,
                         timeout=reference_timeout, reasoning_config=reasoning_config,
-                        extra_headers={"x-initiator": "user"} if is_copilot else None, **runtime,
+                        extra_headers=initiator_headers, **runtime,
                     )
             else:
                 response = call_llm(
                     task="moa_reference", messages=trimmed, temperature=temperature,
                     max_tokens=max_tokens,
                     timeout=reference_timeout, reasoning_config=reasoning_config,
-                    extra_headers={"x-initiator": "user"} if is_copilot else None, **runtime,
+                    extra_headers=initiator_headers, **runtime,
                 )
             record_response_identity(observation, response)
         output_text = _extract_text(response)

@@ -6,6 +6,7 @@ import { translateNow, useI18n } from '@/i18n'
 import { isSlashCommandText } from '@/lib/chat-runtime'
 import { isSideTaskSlashCommand } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
+import { isTouchInteraction } from '@/lib/touch-interaction'
 import type { BusyInputMode } from '@/store/busy-input-mode'
 import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
 import {
@@ -247,6 +248,16 @@ export function useComposerSubmit({
     [activeQueueSessionKeyRef, inputDisabled, paneVisible, scope.target, sessionId, surfaceId]
   )
 
+  // A phone keyboard the user put away stays down after a send, so the reply
+  // is readable; desktop always returns the caret to the composer.
+  const editorHasFocus = () => Boolean(editorRef.current?.contains(document.activeElement))
+
+  const refocusAfterSend = (editorHadFocus: boolean) => {
+    if (editorHadFocus || !isTouchInteraction()) {
+      focusInput()
+    }
+  }
+
   // Returns false when the submit was refused and must not refocus the input.
   const submitWhileBusy = (text: string, payloadPresent: boolean, blockingPrompt: boolean) => {
     // Slash commands should execute immediately even while the agent is
@@ -341,7 +352,6 @@ export function useComposerSubmit({
       triggerHaptic('submit')
       resetBrowseState(sessionId)
       clearDraft()
-      focusInput()
 
       return 'answered'
     }
@@ -383,6 +393,8 @@ export function useComposerSubmit({
       return
     }
 
+    const editorHadFocus = editorHasFocus()
+
     // Source the text from the DOM editor, not React state. The AUI composer
     // state (`draft`) and the derived `hasComposerPayload` lag the DOM by a
     // render, so on fast typing or IME composition the final keystroke(s) may
@@ -415,6 +427,8 @@ export function useComposerSubmit({
     const parked = answerParkedCardWithDraft(text, payloadPresent)
 
     if (parked === 'answered') {
+      refocusAfterSend(editorHadFocus)
+
       return
     }
 
@@ -448,7 +462,7 @@ export function useComposerSubmit({
       dispatchSubmit(text, submittedAttachments, undefined, retry && { submission_id: retry.id })
     }
 
-    focusInput()
+    refocusAfterSend(editorHadFocus)
   }
 
   // Redirect the live turn with a correction. The gateway either restarts the
@@ -527,8 +541,9 @@ export function useComposerSubmit({
       return
     }
 
+    const editorHadFocus = editorHasFocus()
     queueCurrentDraft()
-    focusInput()
+    refocusAfterSend(editorHadFocus)
   }
 
   return { dispatchSubmit, queueDraft, steerDraft, submitDraft }

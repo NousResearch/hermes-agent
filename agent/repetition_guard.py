@@ -12,6 +12,8 @@ from __future__ import annotations
 import math
 from collections import Counter
 
+import httpx
+
 # Below this length the check doesn't run: short truncations trivially
 # contain repeated tokens and are legitimately continued.
 MIN_FRAGMENT_LENGTH = 400
@@ -192,3 +194,49 @@ class RunawayStreamWatch:
         tail = "".join(self._parts)[-_STREAM_TAIL_CHARS:]
         self._parts = [tail]
         return is_runaway_repetition(tail)
+
+
+# Tool-call argument JSON escapes newlines inside strings, so a legitimate call never streams a
+# 4 KiB run of raw whitespace between tokens. A runaway one (seen on ~1% of OpenAI Responses requests)
+# streams it at ~100 chars/s forever: every delta is non-empty, so stall watchdogs count it as progress.
+TOOL_ARGS_WHITESPACE_LIMIT = 4096
+
+
+class DegenerateToolArgumentsError(httpx.RemoteProtocolError):
+    """The stream is unusable: a tool call's arguments turned into an endless whitespace run.
+    A transport error, so each wire's stream retry reopens the request; the partial call never runs."""
+
+
+class ToolArgsWhitespaceWatch:
+    """Length of the raw-whitespace run ending a tool call's streamed arguments, one per call.
+
+    Spaces inside a JSON string are content (a ``write_file`` line of 5,000 spaces is valid), so
+    there a run counts only once it holds a raw newline, which JSON forbids inside strings.
+    ``feed`` raises :class:`DegenerateToolArgumentsError` at ``TOOL_ARGS_WHITESPACE_LIMIT``."""
+
+    __slots__ = ("_escaped", "_in_string", "_raw_newline", "_run")
+
+    def __init__(self) -> None:
+        self._in_string = self._escaped = self._raw_newline = False
+        self._run = 0
+
+    def feed(self, delta: str) -> None:
+        for ch in delta:
+            if ch in " \t\r\n":
+                self._escaped = False
+                self._run += 1
+                self._raw_newline = self._raw_newline or ch in "\r\n"
+                if self._run >= TOOL_ARGS_WHITESPACE_LIMIT and (self._raw_newline or not self._in_string):
+                    raise DegenerateToolArgumentsError(
+                        f"tool-call arguments degenerated into {self._run} consecutive whitespace characters")
+                continue
+            self._run, self._raw_newline = 0, False
+            if self._in_string:
+                if self._escaped:
+                    self._escaped = False
+                elif ch == "\\":
+                    self._escaped = True
+                elif ch == '"':
+                    self._in_string = False
+            elif ch == '"':
+                self._in_string = True

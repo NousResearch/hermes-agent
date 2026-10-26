@@ -424,7 +424,9 @@ def _admission_outcome(authority, admission_id, fallback=None):
     reply = (fallback or {}).get('reply', '')
     if saved is not None:
         reply = saved['result'].get('final_response', '')
-        status = 'settled' if row['outcome'] == 'completed' else 'failed'
+        # A turn stopped mid-run (the sender's message_agent cancel, or a Stop on the target) did
+        # not fail: the sender hears ``cancelled``, never a failure to retry or report as broken.
+        status = {'completed': 'settled', 'interrupted': 'cancelled'}.get(row['outcome'], 'failed')
         # A successful bare silence marker is a delivery decision (same rule as the gateway and
         # the live Bot Chat completion): the turn stays in the target's transcript, the sender
         # never sees the marker as prose.

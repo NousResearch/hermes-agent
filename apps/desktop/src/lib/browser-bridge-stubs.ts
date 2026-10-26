@@ -55,6 +55,10 @@ export const BROWSER_BRIDGE_STUBS = {
     status: async () => ({ portalBaseUrl: '', signedIn: false })
   },
   continueBootstrapLocal: async () => ({ ok: true }),
+  // The OS file-list clipboard (CF_HDROP etc.) is read by the Electron main
+  // process; a browser tab only sees cloned File objects with no native paths,
+  // so the renderer's paste pipeline falls back to its snapshot.
+  readClipboardFilePaths: async () => ({ status: 'unsupported' as const, files: [] }),
   getBootProgress: async () => readyBootProgress(),
   getBootstrapState: async () => readyBootstrapState(),
   getRecentLogs: async () => ({ lines: [], path: '' }),

@@ -19,6 +19,7 @@ import { useBots } from './i18n'
 import { displayName } from './labels'
 import { openRosterBot } from './roster-actions'
 import { botRosterMeta, requestForBot } from './routing'
+import type { TeammateWaitMessages } from './teammate-wait-locales'
 import type { RosterRow } from './types'
 
 export type DeliveryState = 'claimed' | 'failed' | 'queued' | 'waiting_on_you' | 'working'
@@ -74,6 +75,20 @@ export function visibleDeliveries(rows: TeammateDelivery[], dismissed: Record<st
   return rows.filter(row => row.state !== 'failed' || !dismissed[row.delivery_id])
 }
 
+/** Plain words for a failed row's typed reason. A code this build has no words for (or the owner's
+ *  `unknown`) shows the owner's own error line instead, never the raw code. */
+export function failureReasonText(
+  reason: null | string | undefined,
+  error: null | string | undefined,
+  reasons: TeammateWaitMessages['reasons']
+) {
+  if (reason && reason !== 'unknown' && Object.hasOwn(reasons, reason)) {
+    return reasons[reason]
+  }
+
+  return error?.trim() || reasons.unknown
+}
+
 function teammateFor(roster: RosterRow[], sender: RosterRow, row: TeammateDelivery): RosterRow {
   const sameSource = (bot: RosterRow) => (bot.connectionId || '') === (sender.connectionId || '')
 
@@ -83,8 +98,8 @@ function teammateFor(roster: RosterRow[], sender: RosterRow, row: TeammateDelive
   )
 }
 
-const compactAge = (since: number) => {
-  const { unit, value } = coarseElapsed(Date.now() - since * 1000)
+const compactAge = (since: number, now: number) => {
+  const { unit, value } = coarseElapsed(now - since * 1000)
 
   return `${value}${String(unit).charAt(0)}`
 }
@@ -100,7 +115,15 @@ async function listDeliveries(sender: RosterRow): Promise<TeammateDelivery[]> {
   }
 }
 
-function DeliveryRow({ row, sender, roster }: { roster: RosterRow[]; row: TeammateDelivery; sender: RosterRow }) {
+interface DeliveryRowProps {
+  /** When the rows were last fetched: an unchanged poll result still re-renders, so ages keep counting. */
+  now: number
+  roster: RosterRow[]
+  row: TeammateDelivery
+  sender: RosterRow
+}
+
+function DeliveryRow({ now, row, sender, roster }: DeliveryRowProps) {
   const b = useBots()
   const meta = useValue($botMeta)
   const teammate = teammateFor(roster, sender, row)
@@ -115,7 +138,7 @@ function DeliveryRow({ row, sender, roster }: { roster: RosterRow[]; row: Teamma
       : row.state === 'failed'
         ? unknown
           ? b.waiting.unknownOutcome
-          : b.waiting.failed(row.reason || 'unknown')
+          : b.waiting.failed(failureReasonText(row.reason, row.error, b.waiting.reasons))
         : b.waiting[row.state]
 
   return (
@@ -143,7 +166,7 @@ function DeliveryRow({ row, sender, roster }: { roster: RosterRow[]; row: Teamma
           {label}
         </span>
       </Tip>
-      <span className="ml-auto shrink-0 tabular-nums text-(--ui-text-quaternary)">{compactAge(row.since)}</span>
+      <span className="ml-auto shrink-0 tabular-nums text-(--ui-text-quaternary)">{compactAge(row.since, now)}</span>
       <button
         className="shrink-0 rounded px-1.5 text-(--ui-text-secondary) hover:bg-(--ui-surface-hover)"
         onClick={() => void openRosterBot(teammate)}
@@ -204,7 +227,7 @@ export function TeammateWaits() {
       </Tip>
       <ul className="m-0 list-none p-0">
         {rows.map(row => (
-          <DeliveryRow key={row.delivery_id} roster={roster} row={row} sender={sender} />
+          <DeliveryRow key={row.delivery_id} now={deliveries.dataUpdatedAt} roster={roster} row={row} sender={sender} />
         ))}
       </ul>
       {anyUnknown ? <p className="m-0 pt-0.5 text-(--ui-text-tertiary)">{b.waiting.neverResent}</p> : null}

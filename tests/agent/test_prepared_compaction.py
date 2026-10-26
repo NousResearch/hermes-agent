@@ -4,14 +4,16 @@ Behaviour contracts, with the summariser stubbed at its model boundary:
 
 * flag off (the default) leaves the whole compression path as it was: no state, no pass, inline summary;
 * a pass never changes the live transcript or compressor, and runs under the caller's profile scope;
-* append-only growth keeps a candidate, which splices at its own boundary with newer messages kept as tail;
-* a rewritten prefix, a moved head, another session's transcript or more than a tail budget of growth past
-  the candidate never splices;
-* a completed candidate splices while an extension pass runs; without one, compaction waits for a running
-  pass whose window fits (forwarding its progress to the host) until the host's deadline, and a pass
-  overtaken by compaction or a session boundary cannot publish (a same-session rebind keeps the candidate);
-* manual, focus, overflow-recovery and memory-context compactions summarise fresh;
-* the no-LLM prune and blank-echo drop between pass and splice do not invalidate the candidate.
+* one pass per compaction: the candidate splices at its own boundary and every message after it, however
+  many, stays verbatim in the tail;
+* in-place text rewrites (plugins, the no-LLM prune, blank-echo drop) keep the candidate; a changed message
+  structure, a rewound transcript, a moved head or another session's transcript never splices;
+* without a completed candidate, compaction waits for a running pass whose window fits (forwarding its
+  progress to the host) until the host's deadline, and a pass overtaken by compaction or a session boundary
+  cannot publish (a same-session rebind keeps the candidate);
+* manual, focus, overflow-recovery and memory-context compactions summarise fresh, and memory-provider
+  context stops further passes;
+* a splice leaves the live compressor as the inline call would: main-model fallback state and telemetry.
 """
 from __future__ import annotations
 
@@ -91,17 +93,13 @@ def _grow(msgs: list, n: int, size: int = 1200, tag: str = "new") -> list:
     return msgs + _messages(n, size=size, tag=tag)[1:]
 
 
-# A later prompt that grew by more than the extension threshold since the first pass was planned.
-_GROWN_TOKENS = 19500 + pc.MIN_EXTENSION_DELTA_TOKENS
-
-
 def _agent(cc, tokens: int = 19500):
     cc.last_prompt_tokens = tokens
     return SimpleNamespace(context_compressor=cc, compression_enabled=True, api_mode="chat_completions")
 
 
 def _prepare(cc, msgs, tokens: int = 19500):
-    thread = pc.maybe_prepare(_agent(cc, tokens), msgs, origin="test")
+    thread = pc.maybe_prepare(_agent(cc, tokens), msgs, origin="tool-batch")
     assert thread is not None, "expected a pass to start"
     thread.join(5.0)
     entry = cc.prepared_compaction._entry
@@ -183,6 +181,19 @@ def test_gates_start_no_pass(setup):
     assert cc.calls == []
 
 
+@pytest.mark.parametrize("agent_attrs", [{"platform": "cron"}, {"platform": "subagent"}, {"_delegate_depth": 1}],
+                         ids=["cron", "subagent-platform", "delegated-child"])
+def test_turn_end_pass_skipped_where_the_session_ends_with_the_turn(agent_attrs):
+    cc = _compressor()
+    agent = _agent(cc)
+    for name, value in agent_attrs.items():
+        setattr(agent, name, value)
+    assert pc.maybe_prepare(agent, _messages(30), origin="turn-end") is None
+    thread = pc.maybe_prepare(agent, _messages(30), origin="tool-batch")  # mid-turn passes still run
+    assert thread is not None
+    thread.join(5.0)
+
+
 def test_pass_runs_under_the_callers_profile_scope(tmp_path):
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
@@ -221,14 +232,16 @@ def test_append_only_growth_splices_at_the_candidate_boundary_keeping_newer_mess
 
 
 @pytest.mark.parametrize("pass_state", ["completed", "running"])
-def test_growth_past_the_candidate_beyond_the_tail_budget_summarises_inline(pass_state):
-    """A stale window never splices, and a running pass with a stale window is not waited on."""
+def test_growth_past_the_candidate_beyond_the_tail_budget_still_splices_keeping_it_all_in_the_tail(pass_state):
+    """However much arrived after the pass started, it joins the tail: no second summary call."""
     cc = _compressor()
     msgs = _messages(30)
     if pass_state == "running":
         cc.gate = threading.Event()
         running = pc.maybe_prepare(_agent(cc), msgs, origin="test")
         assert running is not None
+        pending = cc.prepared_compaction._pending
+        threading.Thread(target=lambda: wait_until(lambda: pending.on_progress is not None) and cc.gate.set()).start()
     else:
         _prepare(cc, msgs)
     window = (cc.prepared_compaction._entry or cc.prepared_compaction._pending.window)
@@ -237,24 +250,49 @@ def test_growth_past_the_candidate_beyond_the_tail_budget_summarises_inline(pass
     assert start == window.compress_start and end > window.compress_end
     assert estimate_messages_tokens_rough(later[window.compress_end:end]) > cc.tail_token_budget
 
-    compressed = cc.compress(later, current_tokens=cc.threshold_tokens + 1)
+    from agent.auxiliary_client import aux_progress_hook
+
+    with aux_progress_hook(lambda: None):  # a host hook marks the moment the wait starts
+        compressed = cc.compress(later, current_tokens=cc.threshold_tokens + 1)
 
     if pass_state == "running":
         running.join(5.0)
-        assert [c["worker"] for c in cc.calls] == [False], "not waited on: cancelled, one inline summary"
-    else:
-        assert sorted(c["worker"] for c in cc.calls) == [False, True], "one pass, one inline summary"
-    assert "Summary v" in _summary_row(compressed)["content"] and cc.prepared_compaction._entry is None
+    assert [c["worker"] for c in cc.calls] == [True], "one summary, written by the pass"
+    kept = later[window.compress_end:]
+    for original, row in zip(kept, compressed[-len(kept):]):
+        assert original["content"] in row["content"]
+    assert cc.prepared_compaction._entry is None
 
 
-@pytest.mark.parametrize("change", ["middle rewritten", "head moved", "other session"])
+def test_in_place_text_rewrite_of_summarised_messages_keeps_the_candidate():
+    """Plugins rewrite message text in place (redaction, pre-compaction notes): still the same messages."""
+    cc = _compressor()
+    msgs = _messages(30)
+    for i, msg in enumerate(msgs):
+        msg["message_uid"] = f"uid-{i}"
+    entry = _prepare(cc, msgs)
+    live = copy.deepcopy(msgs)
+    live[entry.compress_start + 1]["content"] = "rewritten by a plugin"
+    live[entry.compress_start + 2]["content"] = [{"type": "input_text", "text": "structured rewrite"}]
+    compressed = cc.compress(live, current_tokens=cc.threshold_tokens + 1)
+    assert [c["worker"] for c in cc.calls] == [True]
+    assert entry.summary in _summary_row(compressed)["content"]
+
+
+@pytest.mark.parametrize("change", ["message dropped", "rewound", "head moved", "other session"])
 def test_changed_prefix_never_splices(change):
     cc = _compressor()
     msgs = _messages(30)
+    for i, msg in enumerate(msgs):
+        msg["message_uid"] = f"uid-{i}"
     entry = _prepare(cc, msgs)
     live = copy.deepcopy(msgs)
-    if change == "middle rewritten":
-        live[entry.compress_start + 1]["content"] = "rewritten"
+    if change == "message dropped":
+        del live[entry.compress_start + 1:entry.compress_start + 3]  # roles still alternate; positions shift
+        live[entry.compress_start + 1]["tool_calls"] = [{"id": "c1", "function": {"name": "x"}}]
+    elif change == "rewound":
+        # A rewind into the window that regrew the same shape: the rows are new messages.
+        live[entry.compress_start + 1]["message_uid"] = "uid-after-rewind"
     elif change == "head moved":
         cc.compression_count = 1  # head protection decays after a compaction
     else:
@@ -274,6 +312,9 @@ def test_fresh_summary_paths_ignore_and_drop_the_candidate(kwargs):
     cc.compress(msgs, current_tokens=cc.threshold_tokens + 1, **kwargs)
     assert [c["worker"] for c in cc.calls] == [True, False]
     assert cc.prepared_compaction._entry is None
+    # Provider context would be needed by every later compaction too: no more passes paid for and dropped.
+    stopped = pc.maybe_prepare(_agent(cc), msgs, origin="test") is None
+    assert stopped is ("memory_context" in kwargs)
 
 
 def test_prune_and_blank_echo_drop_do_not_invalidate_the_candidate():
@@ -304,49 +345,24 @@ def test_prune_and_blank_echo_drop_do_not_invalidate_the_candidate():
     assert [c["worker"] for c in cc.calls] == [True], "the candidate must still splice"
 
 
-def test_fingerprint_survives_a_session_db_round_trip(tmp_path):
+def test_identity_survives_a_session_db_round_trip_and_catches_a_rewind(tmp_path):
     from hermes_state import SessionDB
 
     msgs = _messages(20)
-    msgs[3]["content"] += "  \n"  # trailing whitespace the store strips
     db = SessionDB(db_path=tmp_path / "state.db")
     db.create_session("S1", source="cli")
     for m in msgs[1:]:
         db.append_message("S1", role=m["role"], content=m["content"])
     replayed = [msgs[0]] + db.get_messages_as_conversation("S1")
-    assert pc.fingerprint(replayed, "S1", 4, 15) == pc.fingerprint(msgs, "S1", 4, 15)
-    replayed[5]["content"] = "edited"
-    assert pc.fingerprint(replayed, "S1", 4, 15) != pc.fingerprint(msgs, "S1", 4, 15)
+    window = pc._Window("S1", 4, 15, pc.prefix_identities(replayed, 15))
+    assert pc._mismatch(window, msgs, "S1", 4, 15) is None, "the live dicts before their first persist"
+    assert pc._mismatch(window, replayed, "S1", 4, 15) is None
+    rewound = copy.deepcopy(replayed)
+    rewound[6]["message_uid"] = "a-new-row"
+    assert "different message" in pc._mismatch(window, rewound, "S1", 4, 15)
 
 
 # --------------------------------------------------------------------------- running passes
-
-
-def test_completed_candidate_splices_while_an_extension_pass_runs(monkeypatch):
-    cc = _compressor()
-    cc.tail_token_budget = 12_000  # room for a gap that starts an extension yet still splices
-    msgs = _messages(80)
-    first = _prepare(cc, msgs)
-    grown = _grow(msgs, 14, size=2600)
-    _, _, _, end = cc._plan_compaction_window(grown)
-    gap = estimate_messages_tokens_rough(grown[first.compress_end:end])
-    assert pc.MIN_EXTENSION_DELTA_TOKENS <= gap <= cc.tail_token_budget
-    cc.gate = threading.Event()
-    running = pc.maybe_prepare(_agent(cc, _GROWN_TOKENS), grown, origin="test")
-    assert running is not None
-    misfit = pc.PreparedCompaction._misfit
-
-    def publish_mid_take(*args):  # the extension finishes while compaction checks the candidate
-        if not cc.gate.is_set():
-            cc.gate.set()
-            running.join(5.0)
-        return misfit(*args)
-
-    monkeypatch.setattr(pc.PreparedCompaction, "_misfit", staticmethod(publish_mid_take))
-    compressed = cc.compress(grown, current_tokens=cc.threshold_tokens + 1)
-    assert first.summary in _summary_row(compressed)["content"]
-    assert len(cc.calls) == 2 and cc.calls[1]["previous"] == first.body, "the pass was an extension"
-    assert cc.prepared_compaction._entry is None, "a pass planned before this compaction cannot outlive it"
 
 
 def test_compaction_waits_for_a_running_pass_and_forwards_its_progress():
@@ -455,18 +471,25 @@ def test_session_reset_during_the_wait_wakes_it_without_waiting_for_the_pass():
 
 @pytest.mark.parametrize("boundary", ["reset", "end", "rebind"])
 def test_session_boundary_discards_candidate_and_running_pass(boundary):
-    cc = _compressor()
+    def cross(cc, msgs):
+        if boundary == "reset":
+            cc.on_session_reset()
+        elif boundary == "end":
+            cc.on_session_end("S1", msgs)
+        else:  # /resume or /branch onto another session
+            cc.bind_session_state(None, "S2")
+
     msgs = _messages(30)
-    _prepare(cc, msgs)
+    completed = _compressor()
+    _prepare(completed, msgs)
+    cross(completed, msgs)
+    assert completed.prepared_compaction._entry is None
+
+    cc = _compressor()
     cc.gate = threading.Event()
-    running = pc.maybe_prepare(_agent(cc, _GROWN_TOKENS), _grow(msgs, 14, size=2600), origin="test")
+    running = pc.maybe_prepare(_agent(cc), msgs, origin="test")
     assert running is not None
-    if boundary == "reset":
-        cc.on_session_reset()
-    elif boundary == "end":
-        cc.on_session_end("S1", msgs)
-    else:  # /resume or /branch onto another session
-        cc.bind_session_state(None, "S2")
+    cross(cc, msgs)
     cc.gate.set()
     running.join(5.0)
     assert cc.prepared_compaction._entry is None and cc.prepared_compaction._pending is None
@@ -482,57 +505,17 @@ def test_same_session_rebind_keeps_the_candidate():
     assert [c["worker"] for c in cc.calls] == [True]
 
 
-# --------------------------------------------------------------------------- extension, failures
+# --------------------------------------------------------------------------- one pass, failures, fallback
 
 
-def test_small_delta_keeps_the_candidate_without_copying_or_taking_a_slot(monkeypatch):
-    cc = _compressor()
-    msgs = _messages(30)
-    first = _prepare(cc, msgs)
-    copies, plans, plan = [], [], cc._plan_compaction_window
-    monkeypatch.setattr(pc.copy, "deepcopy", lambda value, *a: copies.append(value) or value)
-    monkeypatch.setattr(cc, "_plan_compaction_window", lambda m: plans.append(1) or plan(m))
-    held = [pc._slots.acquire(blocking=False)]  # leave exactly one slot free
-    try:
-        assert pc.maybe_prepare(_agent(cc), _grow(msgs, 4), origin="test") is None
-        assert pc._slots.acquire(blocking=False), "the skip held a slot"
-        pc._slots.release()
-    finally:
-        for ok in held:
-            if ok:
-                pc._slots.release()
-    assert copies == [] and cc.prepared_compaction._entry is first and len(cc.calls) == 1
-    assert plans == [], "an unchanged prompt size skips re-planning the window on the turn thread"
-
-
-def test_grown_prompt_with_a_small_window_delta_keeps_the_candidate_and_rearms_the_skip(monkeypatch):
-    """Prompt growth that landed in the protected tail: the full check keeps the candidate, and the next
-    tool batch measures growth from that check instead of re-planning again."""
+def test_a_held_candidate_starts_no_further_pass_however_far_the_prompt_grows(monkeypatch):
     cc = _compressor()
     msgs = _messages(30)
     first = _prepare(cc, msgs)
     plans, plan = [], cc._plan_compaction_window
     monkeypatch.setattr(cc, "_plan_compaction_window", lambda m: plans.append(1) or plan(m))
-    grown = _grow(msgs, 4)
-    for _ in range(2):
-        assert pc.maybe_prepare(_agent(cc, _GROWN_TOKENS), grown, origin="test") is None
-    kept = cc.prepared_compaction._entry
-    assert plans == [1] and len(cc.calls) == 1
-    assert (kept.compress_end, kept.summary, kept.prompt_tokens) == (first.compress_end, first.summary, _GROWN_TOKENS)
-
-
-def test_extension_pass_summarises_only_the_delta_on_top_of_the_previous_body():
-    cc = _compressor()
-    msgs = _messages(30)
-    first = _prepare(cc, msgs)
-    grown = _grow(msgs, 14, size=2600)
-    second = _prepare(cc, grown, _GROWN_TOKENS)
-    call = cc.calls[1]
-    assert call["previous"] == first.body
-    assert call["n_turns"] == second.compress_end - first.compress_end
-    assert call["first"] == grown[first.compress_end]["content"][:10]
-    cc.compress(grown, current_tokens=cc.threshold_tokens + 1)
-    assert len(cc.calls) == 2 and cc._previous_summary == second.body
+    assert pc.maybe_prepare(_agent(cc, cc.threshold_tokens - 1), _grow(msgs, 30, size=2600), origin="test") is None
+    assert plans == [] and len(cc.calls) == 1 and cc.prepared_compaction._entry is first
 
 
 def test_failed_pass_backs_off_without_touching_live_failure_state(tmp_path, monkeypatch):
@@ -544,21 +527,52 @@ def test_failed_pass_backs_off_without_touching_live_failure_state(tmp_path, mon
     cc = _compressor()
     cc.bind_session_state(db, "S1")
     msgs = _messages(30)
-    first = _prepare(cc, msgs)
 
     monkeypatch.setattr(_StubCompressor, "_generate_summary", module.ContextCompressor._generate_summary)
     call = MagicMock(side_effect=RuntimeError("No LLM provider configured"))
     monkeypatch.setattr(module, "call_llm", call)
-    grown = _grow(msgs, 14, size=2600)
-    thread = pc.maybe_prepare(_agent(cc, _GROWN_TOKENS), grown, origin="test")
+    thread = pc.maybe_prepare(_agent(cc), msgs, origin="test")
     thread.join(5.0)
 
     assert call.call_count == 1
-    assert cc.prepared_compaction._entry is first, "a failed extension keeps the previous candidate"
+    assert cc.prepared_compaction._entry is None
     assert cc._summary_failure_cooldown_until == 0.0 and cc._last_summary_error is None
     assert db.get_compression_failure_cooldown("S1") is None
-    assert pc.maybe_prepare(_agent(cc, _GROWN_TOKENS), grown, origin="test") is None, "backs off"
+    assert pc.maybe_prepare(_agent(cc), msgs, origin="test") is None, "backs off"
     assert call.call_count == 1
+
+
+def test_splice_carries_the_passs_main_model_fallback_and_call_telemetry(monkeypatch):
+    """The summary model failed inside the pass and the main model answered: the live compressor ends up
+    as the inline call would leave it (sticky main-model route, the user warning's source, the call's
+    telemetry), not as if the broken summary model had worked."""
+    import agent.context_compressor as module
+
+    cc = _compressor()
+    cc.summary_model = "broken/summary-model"
+    msgs = _messages(30)
+    monkeypatch.setattr(_StubCompressor, "_generate_summary", module.ContextCompressor._generate_summary)
+
+    calls = []
+
+    def call_llm(**kwargs):
+        calls.append(threading.current_thread().name)
+        if len(calls) == 1:
+            raise RuntimeError("model not found")  # the configured summary model is broken
+        message = SimpleNamespace(content="Recovered summary.", reasoning_content=None, reasoning=None)
+        return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason="stop")])
+
+    monkeypatch.setattr(module, "call_llm", call_llm)
+    _prepare(cc, msgs)
+    cc.compress(msgs, current_tokens=cc.threshold_tokens + 1)
+
+    assert calls == ["compaction-prepare"] * 2, "summary model failed, main model answered, both in the pass"
+    assert cc.summary_model == "", "later compactions go straight to the main model, as inline"
+    assert cc._last_aux_model_failure_model == "broken/summary-model"
+    telemetry = cc._last_compression_telemetry
+    assert telemetry["prepared_summary"] is True and telemetry["fallback_used"] is True
+    assert telemetry["aux_model"] and telemetry["aux_call_duration_ms"] is not None
+    assert telemetry["method"] == "aux_fallback_main"
 
 
 # --------------------------------------------------------------------------- the real turn loop

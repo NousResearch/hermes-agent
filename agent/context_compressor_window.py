@@ -45,13 +45,23 @@ class CompactionWindowMixin:
 
     def _take_prepared_summary(
         self, messages: list[dict[str, Any]], compress_start: int, compress_end: int, *, fresh: bool,
+        provider_context: bool,
     ) -> Optional[PreparedSummary]:
         """The summary prepared in the background for this window, which an automatic compaction splices at
-        ITS boundary; newer messages (at most one more tail budget) stay outside the summary, in the tail.
-        ``fresh`` compactions (manual, focus, overflow recovery, memory-provider context) summarize anew."""
+        ITS boundary; every newer message stays outside the summary, in the tail. ``fresh`` compactions
+        (manual, focus, overflow recovery, memory-provider context) summarize anew, and once a memory
+        provider supplies context no further summaries are prepared (each would be thrown away)."""
         if self.prepared_compaction is None:
             return None
+        if provider_context:
+            self.prepared_compaction.stop_for_provider_context()
         return self.prepared_compaction.take(
-            messages, self._session_id, compress_start, compress_end, eligible=not fresh,
-            max_gap_tokens=self.tail_token_budget,
+            messages, self._session_id, compress_start, compress_end, eligible=not (fresh or provider_context),
         )
+
+    def _adopt_prepared_summary(self, prepared: PreparedSummary) -> str:
+        """Adopt a prepared summary as an inline summary call would have left it; returns the handoff text."""
+        from agent.prepared_compaction import adopt
+
+        adopt(self, prepared)
+        return prepared.summary

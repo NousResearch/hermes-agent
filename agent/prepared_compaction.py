@@ -2,22 +2,23 @@
 
 When the provider-reported prompt size comes within ``PREPARE_BAND_RATIO`` of
 the compaction trigger, the turn loop (before a tool batch runs, and at turn
-end) starts a background pass. The pass plans the same window
+end) starts ONE background pass. The pass plans the same window
 ``ContextCompressor.compress`` would plan and runs the existing summariser on a
 copy of the compressor and of that window's messages. The live transcript and
 compressor are untouched, so the prompt cache is too.
 
 At the next automatic threshold compaction ``compress`` takes the completed
-candidate if it still fits: same head boundary, a boundary no later than the
-current tail cut, an unchanged transcript up to that boundary, and at most the
-tail token budget between that boundary and the current cut. On a hit the
-candidate's summary replaces ``messages[start:candidate_end]``; everything
-after the candidate boundary stays outside the summary, as tail, including
-messages a fresh plan would have summarised (existing tail handling, such as
-lean-mode tool-result stubs, still applies). On a miss compaction runs inline
-exactly as without the flag.
+summary if the messages it covers are still the same messages: same session,
+same head boundary, a boundary no later than the current tail cut, and the same
+message structure (roles, tool call and result ids, and the durable
+``message_uid`` where both sides carry one) up to that boundary. Message text is
+not compared: plugins rewrite text in place, and a summary written before such a
+rewrite still summarises the same messages. On a hit the summary replaces
+``messages[start:candidate_end]`` and every message after the candidate
+boundary, however many arrived since the pass started, stays verbatim in the
+tail. On a miss compaction runs inline exactly as without the flag.
 
-When no completed candidate fits but a running pass would, compaction waits for
+When no completed summary exists but a running pass fits, compaction waits for
 that pass instead of starting the same summary over: the pass's streamed
 progress and local prompt reading feed the waiting compaction's hooks, so the
 host's idle watchdog and deadline extension see a live summary exactly as they
@@ -29,65 +30,72 @@ stream is closed instead of being billed to completion for nothing.
 State is per compressor and in memory only; every session boundary (reset,
 end, or a rebind to another session id) discards it. Manual, focus,
 overflow-recovery and memory-provider-context compactions always summarise
-fresh. A failed pass backs off further passes but never touches the live
-compressor's cooldown or failure state.
-
-The fingerprint ignores what the no-LLM prune rewrites (tool result bodies,
-tool call arguments, image parts), so a prune between pass and splice does not
-invalidate a summary written from a superset of the same information.
+fresh; the first compaction that needs provider context stops further passes
+for the agent, since every later one would need it too. A failed pass backs off
+further passes but never touches the live compressor's cooldown or failure
+state; a pass that recovered on the main model hands that fallback to the live
+compressor on a splice, as an inline summary would.
 """
 from __future__ import annotations
 
 import copy
-import dataclasses
-import hashlib
 import logging
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-# Start passes once the real prompt count is within this fraction of the
+# Start a pass once the real prompt count is within this fraction of the
 # compaction trigger (a band below ``threshold_tokens``).
 PREPARE_BAND_RATIO = 0.12
-# A completed candidate that still fits is only extended once this many rough
-# tokens sit between its boundary and the current cut; until then it keeps
-# splicing and the summariser is not called once per chatty turn.
-MIN_EXTENSION_DELTA_TOKENS = 8_000
 # Minimum pause after a failed pass (the summariser's own cooldown applies when longer).
 _FAILED_PASS_BACKOFF_SECONDS = 60.0
 # Background passes running across the process (a cancelled pass frees its slot as it unwinds; its
 # provider stream closes on the aux cancel path, normally within one chunk).
 _slots = threading.BoundedSemaphore(2)
-
-
 # How often a compaction waiting on a running pass re-checks cancellation and the deadline.
 _WAIT_POLL_SECONDS = 0.5
+# Compressor state a summary call leaves behind besides the summary: the main-model fallback after a
+# failed summary model (sticky for the session) and the warning it raises. A splice adopts the pass's.
+_SUMMARY_CALL_STATE = (
+    "summary_model", "_last_aux_model_failure_error", "_last_aux_model_failure_model", "_last_aux_resolved_model",
+)
+# Attempt telemetry the summary call fills; a splice copies the pass's values onto the attempt.
+_SUMMARY_CALL_TELEMETRY = (
+    "aux_prompt_tokens", "aux_output_reservation", "aux_provider", "aux_model", "effective_aux_context", "fit_margin",
+    "aux_call_duration_ms", "queue_wait_ms", "prompt_build_ms", "time_to_first_progress_ms", "summary_generation_ms",
+    "summary_input_chars", "summary_input_sampled_chars", "summary_input_omitted_chars", "summary_input_record_count",
+    "summary_input_sampled_record_count", "summary_input_elided_record_count", "fallback_used", "failure_class",
+)
+
+# Per message: (structure, durable uid or None).
+_Identity = tuple[str, Optional[str]]
 
 
 @dataclass(frozen=True)
 class _Window:
+    session_id: str
     compress_start: int
     compress_end: int
-    fingerprint: str
+    identities: tuple[_Identity, ...]  # one per message of ``messages[:compress_end]``
 
 
 @dataclass(frozen=True)
 class PreparedSummary(_Window):
     summary: str  # prefixed handoff text, exactly as ``_generate_summary`` returns it
     body: str  # bare body the next compaction extends iteratively
-    prompt_tokens: int  # provider-reported prompt size when this candidate was last planned or checked
+    call_state: dict[str, Any] = field(default_factory=dict, compare=False)  # _SUMMARY_CALL_STATE after the pass
+    telemetry: dict[str, Any] = field(default_factory=dict, compare=False)  # _SUMMARY_CALL_TELEMETRY of the pass
 
 
 class _PendingPass:
     """The one running pass allowed to publish: its planned window, completion and cancel events, and
     the progress and prompt-reading hooks of a compaction waiting on it."""
 
-    def __init__(self, window: _Window, prompt_tokens: int) -> None:
+    def __init__(self, window: _Window) -> None:
         self.window = window
-        self.prompt_tokens = prompt_tokens
         self.done = threading.Event()
         # Set once nothing can use the pass any more; its summary stream is closed (the aux hard-cancel path).
         self.cancelled = threading.Event()
@@ -105,71 +113,70 @@ class _PendingPass:
             hook(seconds)
 
 
-def _text_of(content: Any) -> str:
-    if content is None:
-        return ""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "\n".join(
-            part if isinstance(part, str) else part["text"]
-            for part in content
-            if isinstance(part, str)
-            or (isinstance(part, dict) and part.get("type") in (None, "text") and isinstance(part.get("text"), str))
-        )
-    return str(content)
-
-
-def _message_identity(msg: Any) -> str:
-    """Role, text, tool call ids/names and tool result ids; nothing the prune pass rewrites.
-    Text is normalised the way a SessionDB round trip normalises it."""
+def _message_identity(msg: Any) -> _Identity:
+    """Role, tool call ids/names and tool result ids, plus the durable ``message_uid`` when the message
+    has been persisted. Text, tool arguments and result bodies are left out: the no-LLM prune and
+    plugins rewrite them in place, while the splice only needs whole messages that line up."""
     if not isinstance(msg, dict):
-        return "?"
-    from agent.memory_manager import sanitize_context
+        return "?", None
+    from agent.message_metadata import message_uid_or_none
 
     role = str(msg.get("role") or "")
     if role == "tool":
-        return f"tool\x1f{msg.get('tool_call_id') or ''}"
-    parts = [role, sanitize_context(_text_of(msg.get("content"))).strip()]
+        return f"tool\x1f{msg.get('tool_call_id') or ''}", message_uid_or_none(msg)
+    parts = [role]
     for tc in msg.get("tool_calls") or []:
         if isinstance(tc, dict):
             fn = tc.get("function") or {}
             parts.append(f"{tc.get('id', '')}:{fn.get('name', '') if isinstance(fn, dict) else ''}")
         else:
             parts.append(f"{getattr(tc, 'id', '')}:{getattr(getattr(tc, 'function', None), 'name', '')}")
-    return "\x1f".join(parts)
+    return "\x1f".join(parts), message_uid_or_none(msg)
 
 
-def fingerprint(messages: list[dict[str, Any]], session_id: str, start: int, end: int) -> str:
-    """Identity of ``messages[:end]`` for a window ``[start, end)`` of ``session_id``."""
-    digest = hashlib.sha256(f"{session_id}\x1f{start}:{end}".encode("utf-8", errors="replace"))
-    for msg in messages[:end]:
-        digest.update(_message_identity(msg).encode("utf-8", errors="replace"))
-        digest.update(b"\x1e")
-    return digest.hexdigest()
+def prefix_identities(messages: list[dict[str, Any]], end: int) -> tuple[_Identity, ...]:
+    """Identity of each message in ``messages[:end]``."""
+    return tuple(_message_identity(msg) for msg in messages[:end])
 
 
 def _mismatch(
-    entry: _Window, messages: list[dict[str, Any]], session_id: str, start: int, end: int,
+    window: _Window, messages: list[dict[str, Any]], session_id: str, start: int, end: int,
 ) -> Optional[str]:
-    """Why ``entry`` does not fit the planned window ``[start, end)`` of ``messages``, or None."""
-    if entry.compress_start != start:
-        return f"head moved ({entry.compress_start} -> {start})"
-    if entry.compress_end > end:
-        return f"prepared boundary {entry.compress_end} is inside the protected tail (cut {end})"
-    if entry.compress_end > len(messages) or fingerprint(messages, session_id, start, entry.compress_end) != entry.fingerprint:
-        return "transcript changed"
+    """Why *window* cannot splice into the planned window ``[start, end)`` of ``messages``, or None."""
+    if window.session_id != session_id:
+        return "another session"
+    if window.compress_start != start:
+        return f"head moved ({window.compress_start} -> {start})"
+    if window.compress_end > end:
+        return f"prepared boundary {window.compress_end} is inside the protected tail (cut {end})"
+    if window.compress_end > len(messages):
+        return "transcript shorter than the prepared window"
+    for idx, ((structure, uid), msg) in enumerate(zip(window.identities, messages)):
+        now_structure, now_uid = _message_identity(msg)
+        if now_structure != structure:
+            return f"message {idx} changed shape"
+        if uid and now_uid and uid != now_uid:
+            return f"message {idx} is a different message (rewound or branched)"
     return None
 
 
 def _worker_copy(compressor: Any) -> Any:
-    """A compressor copy whose writes stay off the live one: no durable row, no attempt
-    telemetry, no host cancel consult (those belong to a foreground attempt)."""
+    """A compressor copy whose writes stay off the live one: no durable row, private attempt
+    telemetry, no host cancel consult (those belong to a foreground attempt), and the per-call
+    fallback fields cleared as a compaction attempt clears them."""
     worker = copy.copy(compressor)
     worker._session_db = None
-    worker._active_compression_telemetry = worker._last_compression_telemetry = None
     worker._compression_cancelled_check = None
+    worker._last_aux_model_failure_error = worker._last_aux_model_failure_model = None
+    worker._begin_compression_telemetry(current_tokens=None)
     return worker
+
+
+def _blocked_for_platform(agent: Any, origin: str) -> bool:
+    """A turn-end pass in a session that ends with its turn (a cron run, a delegated child) is never used."""
+    if origin != "turn-end":
+        return False
+    return getattr(agent, "platform", None) in ("cron", "subagent") or getattr(agent, "_delegate_depth", 0) > 0
 
 
 class PreparedCompaction:
@@ -180,6 +187,8 @@ class PreparedCompaction:
         self._entry: Optional[PreparedSummary] = None
         self._pending: Optional[_PendingPass] = None  # the one pass allowed to publish
         self._retry_after = 0.0  # monotonic; set by a failed pass
+        # Set by the first compaction that needed memory-provider context; such compactions summarise fresh.
+        self._needs_provider_context = False
 
     def discard(self, reason: str) -> None:
         """Drop the candidate and cancel a running pass (it can no longer publish)."""
@@ -192,23 +201,27 @@ class PreparedCompaction:
                 "prepared compaction: dropped window=%d-%d reason=%s", entry.compress_start, entry.compress_end, reason,
             )
 
+    def stop_for_provider_context(self) -> None:
+        """A memory provider supplied summary context: stop preparing summaries that would be discarded."""
+        if not self._needs_provider_context:
+            self._needs_provider_context = True
+            logger.info("prepared compaction: off for this agent (memory provider supplies compaction context)")
+
     def take(
-        self, messages: list[dict[str, Any]], session_id: str, start: int, end: int, *,
-        eligible: bool, max_gap_tokens: int,
+        self, messages: list[dict[str, Any]], session_id: str, start: int, end: int, *, eligible: bool,
     ) -> Optional[PreparedSummary]:
         """The completed candidate when it fits ``compress()``'s planned window, else what a running pass
-        whose window fits publishes while this compaction waits for it, else None. A window whose boundary
-        trails the cut by more than ``max_gap_tokens`` is stale. Either way the state is cleared and a
-        running pass is cancelled: this compaction consumes or supersedes it."""
+        whose window fits publishes while this compaction waits for it, else None. Either way the state is
+        cleared and a running pass is cancelled: this compaction consumes or supersedes it."""
         with self._lock:
             entry, pending = self._entry, self._pending
             self._entry = None
         reason = None if eligible else "fresh summary required"
         if reason is None and entry is not None:
-            reason = self._misfit(entry, messages, session_id, start, end, max_gap_tokens)
+            reason = _mismatch(entry, messages, session_id, start, end)
         try:
             if eligible and (entry is None or reason is not None):
-                if pending is not None and self._misfit(pending.window, messages, session_id, start, end, max_gap_tokens) is None:
+                if pending is not None and _mismatch(pending.window, messages, session_id, start, end) is None:
                     entry, reason = self._await(pending)
                 elif entry is None:
                     reason = "running pass does not fit" if pending is not None else "no candidate"
@@ -228,20 +241,6 @@ class PreparedCompaction:
             "prepared compaction: splice hit window=%d-%d (fresh cut %d)", entry.compress_start, entry.compress_end, end,
         )
         return entry
-
-    @staticmethod
-    def _misfit(
-        window: _Window, messages: list[dict[str, Any]], session_id: str, start: int, end: int, max_gap_tokens: int,
-    ) -> Optional[str]:
-        """Why *window* cannot splice into the planned window ``[start, end)``, or None."""
-        reason = _mismatch(window, messages, session_id, start, end)
-        if reason is None:
-            from agent.model_metadata import estimate_messages_tokens_rough
-
-            gap = estimate_messages_tokens_rough(messages[window.compress_end:end])
-            if gap > max_gap_tokens:
-                reason = f"stale candidate (~{gap} tokens past its boundary, budget {max_gap_tokens})"
-        return reason
 
     def _await(self, pending: _PendingPass) -> tuple[Optional[PreparedSummary], Optional[str]]:
         """Wait on the compacting thread for *pending*: what it published, or None and why (the host's
@@ -280,11 +279,11 @@ class PreparedCompaction:
             return None, "running pass discarded"
         with self._lock:
             entry, self._entry = self._entry, None
-        if entry is None or entry.fingerprint != pending.window.fingerprint:
+        if entry is None or entry.identities != pending.window.identities:
             return None, "running pass failed"
         return entry, None
 
-    def _blocked(self, agent: Any, compressor: Any) -> bool:
+    def _blocked(self, agent: Any, compressor: Any, origin: str) -> bool:
         if not getattr(agent, "compression_enabled", False) or getattr(agent, "_persist_disabled", False):
             return True  # compression off, or a background-review fork of the live session
         if (
@@ -293,6 +292,8 @@ class PreparedCompaction:
             or getattr(compressor, "_micro_compact_enabled", False)
         ):
             return True  # another path owns compaction, or history is rewritten every turn
+        if self._needs_provider_context or _blocked_for_platform(agent, origin):
+            return True
         if compressor.awaiting_real_usage_after_compression or compressor._fallback_compression_streak >= 2:
             return True  # no real usage yet, or the summary model is benched after repeated fallbacks
         tokens = compressor.last_prompt_tokens
@@ -305,64 +306,41 @@ class PreparedCompaction:
     def maybe_prepare(
         self, agent: Any, compressor: Any, messages: list[dict[str, Any]], origin: str,
     ) -> Optional[threading.Thread]:
-        """Start a pass when the next compaction is near; returns the started thread. Never raises."""
+        """Start the pass when the next compaction is near and none ran yet; returns the started thread.
+        Never raises."""
         token: Optional[_PendingPass] = None
         try:
-            if self._blocked(agent, compressor):
+            if self._blocked(agent, compressor, origin):
                 return None
             with self._lock:
-                if self._pending is not None:
-                    return None
-                completed = self._entry
-            tokens = compressor.last_prompt_tokens
-            if completed is not None and 0 <= tokens - completed.prompt_tokens < MIN_EXTENSION_DELTA_TOKENS:
-                # The prompt has barely grown since the candidate's boundary was the cut: keep it without
-                # re-planning and re-fingerprinting the transcript before every tool batch.
-                return None
+                if self._pending is not None or self._entry is not None:
+                    return None  # one summary per compaction: later messages join the tail at the splice
             working, _, start, end = compressor._plan_compaction_window(messages)
             if start >= end:
                 return None
-            session_id = compressor._session_id
-            extend = None
-            if completed is not None and _mismatch(completed, working, session_id, start, end) is None:
-                from agent.model_metadata import estimate_messages_tokens_rough
-
-                delta = estimate_messages_tokens_rough(working[completed.compress_end:end])
-                if delta < MIN_EXTENSION_DELTA_TOKENS:
-                    logger.debug("prepared compaction: keeping window=%d-%d, delta ~%d tokens",
-                                 completed.compress_start, completed.compress_end, delta)
-                    with self._lock:  # measure the next skip from this check, not from the plan
-                        if self._entry is completed:
-                            self._entry = dataclasses.replace(completed, prompt_tokens=tokens)
-                    return None
-                extend = completed
             worker = _worker_copy(compressor)
             # Same handoff rehydration and window rows compress() uses (mutates only the worker).
             scan = worker._scan_window_handoffs(working, start, end, working[start:end])
             if scan.tail_start != end:
                 return None  # a handoff inside the protected tail: leave it to compress()
             turns = scan.turns_to_summarize
-            if extend is not None:
-                worker._previous_summary = extend.body
-                turns = working[extend.compress_end:end]
             if not turns:
                 return None
             focus = worker._derive_auto_focus_topic(working)
-            window_fingerprint = fingerprint(working, session_id, start, end)
+            window = _Window(compressor._session_id, start, end, prefix_identities(working, end))
             # Never queue threads that retain transcripts while every slot is busy.
             if not _slots.acquire(blocking=False):
                 return None
             with self._lock:
-                if self._pending is not None:
+                if self._pending is not None or self._entry is not None:
                     _slots.release()
                     return None
-                token = self._pending = _PendingPass(_Window(start, end, window_fingerprint), tokens)
+                token = self._pending = _PendingPass(window)
             from agent.memory_provider import spawn_context_thread
 
             # Profile and secret scope ride the contextvars into the pass.
             thread = spawn_context_thread(
-                self._run_pass, name="compaction-prepare",
-                args=(worker, copy.deepcopy(turns), focus, token, origin, extend),
+                self._run_pass, name="compaction-prepare", args=(worker, copy.deepcopy(turns), focus, token, origin),
             )
             thread.start()
             return thread
@@ -378,19 +356,18 @@ class PreparedCompaction:
 
     def _run_pass(
         self, worker: Any, turns: list[dict[str, Any]], focus: Optional[str], token: _PendingPass, origin: str,
-        extend: Optional[PreparedSummary],
     ) -> None:
         from agent.auxiliary_client import AuxiliaryExplicitCancellation, aux_interrupt_protection, aux_progress_hook
         from agent.local_prompt_progress import prompt_reading_hook
         from agent.thread_scoped_output import thread_scoped_silence
 
-        start, end, window_fingerprint = token.window.compress_start, token.window.compress_end, token.window.fingerprint
+        window = token.window
         entry: Optional[PreparedSummary] = None
         started = time.monotonic()
         try:
             logger.info(
-                "prepared compaction: pass started origin=%s window=%d-%d turns=%d extends=%s",
-                origin, start, end, len(turns), extend is not None,
+                "prepared compaction: pass started origin=%s window=%d-%d turns=%d",
+                origin, window.compress_start, window.compress_end, len(turns),
             )
             with (
                 thread_scoped_silence(), aux_interrupt_protection(cancel_event=token.cancelled),
@@ -400,11 +377,15 @@ class PreparedCompaction:
             if token.cancelled.is_set():
                 logger.info("prepared compaction: pass cancelled after %.1fs (superseded)", time.monotonic() - started)
             elif summary:
+                telemetry = worker._active_compression_telemetry or {}
                 entry = PreparedSummary(
-                    start, end, window_fingerprint, summary, worker._previous_summary, token.prompt_tokens,
+                    window.session_id, window.compress_start, window.compress_end, window.identities,
+                    summary, worker._previous_summary,
+                    call_state={name: getattr(worker, name, None) for name in _SUMMARY_CALL_STATE},
+                    telemetry={key: telemetry.get(key) for key in _SUMMARY_CALL_TELEMETRY},
                 )
                 logger.info("prepared compaction: pass completed window=%d-%d in %.1fs",
-                            start, end, time.monotonic() - started)
+                            window.compress_start, window.compress_end, time.monotonic() - started)
             else:
                 logger.warning("prepared compaction: pass failed after %.1fs: %s", time.monotonic() - started,
                                worker._last_summary_error or "summariser returned nothing")
@@ -425,6 +406,18 @@ class PreparedCompaction:
                         )
             token.done.set()
             _slots.release()
+
+
+def adopt(compressor: Any, prepared: PreparedSummary) -> None:
+    """Leave the live compressor as the inline summary call would have: the summary is the iterative base,
+    failure state cleared, the pass's main-model fallback (if any) carried over, its call in the telemetry."""
+    compressor._record_summary_success(prepared.body)
+    for name, value in prepared.call_state.items():
+        setattr(compressor, name, value)
+    telemetry = getattr(compressor, "_active_compression_telemetry", None)
+    if isinstance(telemetry, dict):
+        telemetry.update({key: value for key, value in prepared.telemetry.items() if value is not None})
+        telemetry["prepared_summary"] = True
 
 
 def maybe_prepare(agent: Any, messages: list[dict[str, Any]], *, origin: str) -> Optional[threading.Thread]:

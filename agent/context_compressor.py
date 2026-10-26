@@ -5488,7 +5488,8 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
             return canonical_messages
         prepared = self._take_prepared_summary(
-            messages, compress_start, compress_end, fresh=bool(force or focus_topic or bypass_cooldown or memory_context.strip()),
+            messages, compress_start, compress_end, fresh=bool(force or focus_topic or bypass_cooldown),
+            provider_context=bool(memory_context.strip()),
         )
         if prepared:
             compress_end = prepared.compress_end
@@ -5530,8 +5531,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         summary = None  # pre-LLM summary skip (feasibility or benched model): no LLM call; Phase 4 inserts the deterministic fallback
         if prepared:
             # The pass ran this window through _generate_summary; adopt its result as an inline call would.
-            self._record_summary_success(prepared.body)
-            summary = prepared.summary
+            summary = self._adopt_prepared_summary(prepared)
         elif not feasibility_skip:
             summary = self._summarize_window(
                 messages, turns_to_summarize, scan, focus_topic, memory_context, bypass_cooldown,

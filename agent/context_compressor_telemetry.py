@@ -56,6 +56,8 @@ class CompressionTelemetryMixin:
             "method": "none", "items_dropped": 0, "messages_before": None, "messages_after": None,
             "tokens_before": None, "tokens_after": None, "tokens_reclaimed": None, "token_count_method": None,
             "tool_results_pruned": None, "reasoning_items_pruned": None, "has_focus_topic": False,
+            # True when the summary came from an opt-in prepared (background) pass (compression.prepare_ahead).
+            "prepared_summary": False,
         }
         self._active_compression_telemetry = self._last_compression_telemetry = telemetry
         return telemetry

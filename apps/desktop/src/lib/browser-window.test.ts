@@ -133,4 +133,23 @@ describe('launch-link pop-out', () => {
     expect(channels.size).toBe(0)
     expect(result()).toBe(POPUP_BLOCKED)
   })
+
+  it('signs in a window opened from a plain-HTTP tab, which has no crypto.randomUUID', async () => {
+    vi.useFakeTimers()
+    const { getRandomValues } = crypto
+    vi.stubGlobal('crypto', { getRandomValues: getRandomValues.bind(crypto) })
+    const ticket = 'c'.repeat(43)
+    const channels = stubBroadcastChannels()
+    const open = vi.spyOn(window, 'open').mockReturnValue(null)
+    const api = vi.fn().mockResolvedValue({ ticket })
+    const result = outcome(opener(true, api)(target()))
+
+    const received = handoffPage(String(open.mock.calls[0]?.[0]))
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(api).toHaveBeenCalledOnce()
+    expect(received).toEqual([{ ticket }])
+    expect(channels.size).toBe(0)
+    expect(result()).toBe('opened')
+  })
 })

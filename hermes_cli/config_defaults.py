@@ -967,7 +967,8 @@ DEFAULT_CONFIG = {
         "runtime_footer": {
             "enabled": False,
             # order shown; drop any to hide. Opt-in extras: latency, served_model (alias → the
-            # deployment a routing proxy reported / Hermes' fallback route).
+            # deployment a routing proxy reported in a header OR the response body / Hermes'
+            # fallback route).
             "fields": ["model", "context_pct", "cwd"],
         },
         # CLI/TUI status bar fields. Non-empty = only listed fields show (built-in order kept,

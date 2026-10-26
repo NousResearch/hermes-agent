@@ -148,6 +148,12 @@ def normalize_model_response(
     from hermes_cli.observability.shared_metrics_harness import record_reply_content
     record_reply_content(agent, response, assistant_message)
 
+    # Served-model capture for gateways that name the deployment in the response BODY
+    # (agent/served_model.py). Runs before the post-API hooks so subscribers see it too;
+    # a value the httpx header hook already stamped for this response wins.
+    from agent.served_model import capture_served_model
+    capture_served_model(agent, response)
+
     content = assistant_message.content
     if content and not agent.quiet_mode:
         if agent.verbose_logging:

@@ -580,10 +580,13 @@ export default class App extends PureComponent<Props, State> {
 
     this.lastStdinTime = now
 
+    let consumedInput = false
+
     try {
       let chunk
 
       while ((chunk = this.props.stdin.read() as string | null) !== null) {
+        consumedInput = true
         // Process the input chunk
         this.processInput(chunk)
       }
@@ -606,14 +609,20 @@ export default class App extends PureComponent<Props, State> {
         stdin.addListener('readable', this.handleReadable)
       }
 
-      // Issue #31486: even after re-attaching, any bytes already buffered
-      // when the loop threw are stranded because Node only fires 'readable'
-      // on buffer transitions, not for data the consumer already saw. Schedule
-      // one drain on the next macrotask so the handler runs against a fresh
-      // try/catch and clears whatever is left.
-      if (this.rawModeEnabledCount > 0 && stdin.readableLength > 0) {
+      // Re-pump both JS-buffered input (issue #31486) and native TTY input.
+      // TTY streams have highWaterMark=0: after read() consumes a chunk,
+      // native polling can be stopped while readableLength is already zero.
+      // If dispatch throws before the loop's next read(), nothing re-arms
+      // polling. A recovery read is required even with an empty JS buffer.
+      // Retain buffered-byte recovery without adding retries for read()
+      // failures that consumed no input and left no buffered bytes.
+      if (this.rawModeEnabledCount > 0 && (consumedInput || stdin.readableLength > 0)) {
         setImmediate(() => {
-          if (this.rawModeEnabledCount > 0 && this.props.stdin.readableLength > 0) {
+          if (
+            this.rawModeEnabledCount > 0 &&
+            !stdin.destroyed &&
+            stdin.listeners('readable').includes(this.handleReadable)
+          ) {
             this.handleReadable()
           }
         })

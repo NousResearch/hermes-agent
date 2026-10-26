@@ -258,31 +258,25 @@ def _arguments() -> argparse.Namespace:
 def _stop_auto_started_gateway(home: Path, timeout: float = 60.0) -> None:
     """Stop the gateway the one-shot chat auto-started for ``home`` and wait for it to exit.
 
-    Left alone it lingers for ``gateway.unmanaged_idle_exit_seconds`` after every smoke run. Stopping
-    it before the package export also settles its asynchronous rows (delivery, first-reply latency),
-    so SQLite and the export see the same counters.
+    Left alone it lingers for ``gateway.unmanaged_idle_exit_seconds`` after every smoke run. Only the
+    live process the gateway's own identity check proves is ``home``'s gateway (start time, gateway
+    command line, home) is signalled: a stale ``gateway.pid`` whose PID was recycled is left alone.
     """
     import psutil
+    from gateway.status import live_gateway_pid_for_home
 
-    try:
-        record = json.loads((home / "gateway.pid").read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
-        return
-    if (
-        not isinstance(record, dict)
-        or record.get("kind") != "hermes-gateway"
-        or Path(str(record.get("hermes_home"))).resolve() != home.resolve()
-    ):
+    pid = live_gateway_pid_for_home(home)
+    if pid is None:
         return
     try:
-        gateway = psutil.Process(int(record["pid"]))
+        gateway = psutil.Process(pid)  # binds the create time: terminate() refuses a reused PID
         gateway.terminate()
         gateway.wait(timeout=timeout)
     except psutil.NoSuchProcess:
         return
     except psutil.TimeoutExpired as exc:
         raise AssertionError(
-            f"Auto-started gateway {record['pid']} did not exit within {timeout:.0f}s"
+            f"Auto-started gateway {pid} did not exit within {timeout:.0f}s"
         ) from exc
 
 
@@ -739,6 +733,9 @@ def _validate_packages(
 def main() -> int:
     args = _arguments()
     hermes_repo = args.hermes_repo.resolve()
+    # The gateway identity check must come from the tree under test, not whatever tree the venv's
+    # editable install points at.
+    sys.path.insert(0, str(hermes_repo))
     relay_python = args.relay_python.resolve() if args.relay_python else None
     hermes = _resolve_hermes_executable(hermes_repo)
     if relay_python is not None and not any(

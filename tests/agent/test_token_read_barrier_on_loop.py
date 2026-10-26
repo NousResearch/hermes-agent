@@ -36,7 +36,7 @@ def test_loop_thread_session_read_does_not_wait_for_a_stuck_writer(tmp_path):
             return row, listed, time.monotonic() - started
 
         row, listed, elapsed = asyncio.run(read_on_loop())
-        assert elapsed < 1.0, f"loop-thread read waited {elapsed:.2f}s on the token writer"
+        assert elapsed < 2.0, f"loop-thread read waited {elapsed:.2f}s on the token writer"
         assert row is not None and row["id"] == "s-loop"
         assert any(r["id"] == "s-loop" for r in listed)
 

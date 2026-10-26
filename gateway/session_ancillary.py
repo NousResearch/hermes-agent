@@ -88,7 +88,7 @@ def _recover_stopped_processes(authority, ref):
         entries = json.loads(_checkpoint_path().read_text(encoding='utf-8-sig'))
         if not isinstance(entries, list) or any(not isinstance(entry, dict) for entry in entries):
             return False
-        if any(owned(entry) and (entry.get('pid_scope', 'host') != 'host'
+        if any(owned(entry) and (entry.get('pid_scope', 'host') != 'host' or entry.get('wsl_chain')
                or type(entry.get('host_start_time')) is not int or type(entry.get('pid')) is not int
                or entry['host_start_time'] <= 0 or entry['pid'] <= 0) for entry in entries):
             return False

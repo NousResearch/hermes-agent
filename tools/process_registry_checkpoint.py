@@ -65,7 +65,8 @@ class ProcessCheckpointMixin:
             from utils import atomic_json_write
             path = _checkpoint_path()
             # Every interpreter of the profile rewrites this file from its own table. Keep
-            # untracked live processes and worker output-log handoffs under the same file lock.
+            # untracked resource evidence under the same file lock. An empty local
+            # table is not a cleanup verdict for another interpreter's processes.
             with _FileLock(path.with_name(path.name + ".lock")):
                 from tools.process_registry_handoff import merge_ownership, OWNERSHIP_FIELDS
                 from tools.process_registry_results import completed_ownership
@@ -110,20 +111,17 @@ class ProcessCheckpointMixin:
             return False
 
     def _foreign_handoffs(self, path, known) -> list[dict[str, Any]]:
-        """Native processes and worker handoffs this writer never tracked must remain recoverable.
-        No signals here: an unrelated live PID or unresolved scope keeps its existing metadata."""
-        from pathlib import Path
-        from tools.process_registry_output_log import _exit_path, adoptable_log
+        """Only a writer that tracked/reconciled a resource may retire its evidence.
+
+        In particular, remote PIDs and WSL launcher PIDs cannot establish the
+        backend job's fate. Even a host probe is not this unrelated writer's
+        authority to discard a record; recovery supplies explicit exclusions.
+        """
         try:
             on_disk = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
             return []
-        return [entry for entry in on_disk if isinstance(entry, dict) and entry.get("session_id") not in known
-                and (entry.get("systemd_unit")
-                     or (entry.get("pid_scope", "host") == "host" and self._detached_host_fate(
-                         entry.get("pid"), entry.get("host_start_time")) == "running")
-                     or ((log := adoptable_log(entry.get("output_log"))) and Path(log).exists()
-                         and _exit_path(log).exists()))]
+        return [entry for entry in on_disk if isinstance(entry, dict) and entry.get("session_id") not in known]
 
     def recover_from_checkpoint(self, *, owns_entry=None, stop_scopes=False) -> int:
         """On gateway startup, probe PIDs from the checkpoint file; returns how many
@@ -148,18 +146,17 @@ class ProcessCheckpointMixin:
                 unresolved_scope_entries.append(entry)
                 continue
             pid, pid_scope = entry.get("pid"), entry.get("pid_scope", "host")
-            if not pid:
+            if not pid or pid_scope != "host" or entry.get('wsl_chain'):
+                # No backend handle survives interpreter loss. A WSL launcher
+                # can exit while its Linux job lives; neither is a host PID
+                # recovery target or proof of quiescence.
+                unresolved_scope_entries.append(entry)
                 continue
             # The registry is process-global, so every profile's checkpoint carries every live
             # process; a multiplexer recovering several homes must adopt each session once.
             with self._lock:
                 already_tracked = entry.get("session_id") in self._running
             if already_tracked:
-                continue
-            if pid_scope != "host":  # in-sandbox PIDs mean nothing once the env handle is gone
-                logger.info(
-                    "Skipping recovery for non-host process: %s (pid=%s, scope=%s)",
-                    entry.get("command", "unknown")[:60], pid, pid_scope)
                 continue
             # Alive and still ours: re-attach. A start-time probe that cannot
             # be read is not proof the PID was reused — dropping it would leave

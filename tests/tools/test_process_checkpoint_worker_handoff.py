@@ -39,12 +39,16 @@ def test_owner_checkpoint_write_keeps_a_live_worker_handoff(tmp_path, monkeypatc
             pid_scope='host', host_start_time=pr.ProcessRegistry._safe_host_start_time(owner_proc.pid))
         owner._write_checkpoint()  # the owner's own process start
         ids = {entry['session_id'] for entry in json.loads(checkpoint.read_text())}
-        assert ids == {'proc_owner', 'proc_worker'}, ids
+        assert ids == {'proc_owner', 'proc_worker', 'proc_gone'}, ids
         # The next interpreter still adopts the worker's process from the file.
         successor = pr.ProcessRegistry()
         successor._running['proc_owner'] = owner._running['proc_owner']
-        assert successor.recover_from_checkpoint() == 1
+        assert successor.recover_from_checkpoint() == 2
         assert successor.get('proc_worker') is not None
+        # The unrelated writer preserved the record; actual native recovery
+        # now collects its lost log-backed result and retires the checkpoint.
+        gone_session = successor.get('proc_gone')
+        assert gone_session._completion_event.wait(10)
     finally:
         for proc in (worker_proc, owner_proc):
             proc.kill()

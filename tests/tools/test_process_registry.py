@@ -1261,7 +1261,7 @@ class TestCheckpoint:
             assert registry.get("proc_remote") is None
 
             data = json.loads(checkpoint.read_text())
-            assert data == []
+            assert data == original, 'a lost backend handle is not evidence the remote job stopped'
 
     def test_checkpoint_redacts_command_with_inline_secret(self, registry, tmp_path):
         """Issue #77484: the checkpoint file persists raw commands; inline

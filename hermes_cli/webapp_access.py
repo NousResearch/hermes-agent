@@ -209,8 +209,10 @@ def _port_to_serve(home: Path, host: str) -> tuple[int, Optional[int]]:
     profile = named_profile_home(home)
     if _own_port(home) is not None or profile is None:
         return webapp_settings(home).port, None
+    lock = profile.parent.parent / _PORT_CLAIM_LOCK
+    _create_user_only(lock)
     try:
-        with _file_lock(profile.parent.parent / _PORT_CLAIM_LOCK, _PORT_CLAIM_HOLDER, _PORT_CLAIM_TIMEOUT_SECONDS,
+        with _file_lock(lock, _PORT_CLAIM_HOLDER, _PORT_CLAIM_TIMEOUT_SECONDS,
                         "Timed out waiting for another Hermes profile to choose its Webapp port"):
             claimed = _claimed_ports(home)
             for port in range(DEFAULT_PORT + 1, DEFAULT_PORT + 1 + _PORT_SEARCH):
@@ -221,6 +223,17 @@ def _port_to_serve(home: Path, host: str) -> tuple[int, Optional[int]]:
         raise WebappAccessError(f"{exc}. Start again in a moment.") from exc
     raise WebappAccessError(f"No free port for the Webapp from {DEFAULT_PORT + 1} to {DEFAULT_PORT + _PORT_SEARCH}. "
                             f"Set webapp.port in {home / 'config.yaml'} to a free port, then start again.")
+
+
+def _create_user_only(lock: Path) -> None:
+    """Create *lock* (0600) and its folder (0700) before :func:`_file_lock` opens it, which would create
+    both with the umask's mode: the folder also holds the Webapp's credentials. A folder other users can
+    reach is closed to them again, as the credential writers do (POSIX)."""
+    from gateway.webapp_listener import _close_to_other_users
+
+    lock.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _close_to_other_users(lock.parent)
+    os.close(os.open(lock, os.O_WRONLY | os.O_CREAT, 0o600))
 
 
 def _save_port(port: int) -> None:

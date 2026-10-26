@@ -10,6 +10,7 @@ No test binds a real port: what listens is faked, and the probe itself is checke
 """
 import os
 import socket
+import stat
 from pathlib import Path
 
 import pytest
@@ -142,6 +143,23 @@ def test_a_start_refused_for_no_nous_account_saves_no_port(machine, mode, url):
     with pytest.raises(webapp_access.WebappAccessError, match="Sign in to your Nous account"):
         webapp_access.plan(mode, url)
     assert _webapp_block(machine["solo"]) == {} and machine["probed"] == []
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("existing", [None, 0o775])
+def test_choosing_a_port_keeps_the_credential_folder_user_only(machine, existing):
+    """The port-claim lock lives in the root's ``webapp`` folder, beside the Webapp's credentials."""
+    folder = machine["root"] / "webapp"
+    if existing is not None:
+        folder.mkdir()
+        folder.chmod(existing)
+    previous = os.umask(0o002)
+    try:
+        webapp_access.plan("lan")
+    finally:
+        os.umask(previous)
+    assert stat.S_IMODE(folder.stat().st_mode) == 0o700
+    assert stat.S_IMODE((folder / "port-claim.lock").stat().st_mode) == 0o600
 
 
 #: How long one Start waits for the other to reach its step in the test below before it fails.

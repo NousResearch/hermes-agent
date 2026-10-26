@@ -90,7 +90,8 @@ class SessionAuthorities:
 
     def __iter__(self):
         """The built authorities, retiring ones included. A slot still being built is no authority
-        yet: every walk sees its profile exactly as before ``add`` reserved it (``starting`` names it)."""
+        yet, so iteration and ``len`` skip it (``starting`` names it); membership (``in``) still sees
+        it, so ``add`` refuses a second build of that profile."""
         # A snapshot, as in ``serving``: other threads walk the set while the loop hot-serves.
         return (authority for authority in list(self._by_key.values()) if authority is not None)
 

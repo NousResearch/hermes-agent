@@ -93,20 +93,24 @@ def _recover_stopped_processes(authority, ref):
                or entry['host_start_time'] <= 0 or entry['pid'] <= 0) for entry in entries):
             return False
         process_registry.recover_from_checkpoint(owns_entry=owned)
-        # Completed results are absent from the running-PID checkpoint. A Stop
-        # retry still owns their undelivered completions after the owner reloads.
+        remaining = json.loads(_checkpoint_path().read_text(encoding='utf-8-sig'))
+        if not isinstance(remaining, list) or any(not isinstance(entry, dict) for entry in remaining):
+            return False
+        with process_registry._lock:
+            tracked = {**process_registry._finished, **process_registry._running}
+        if any(owned(entry) and (entry.get('session_id') not in tracked or
+               (entry.get('systemd_unit') and tracked[entry['session_id']].systemd_unit != entry['systemd_unit']))
+               for entry in remaining):
+            return False
+        # Result snapshots carry output, never evidence that a recorded native
+        # scope stopped. Import them only after the checkpoint proof above.
         from tools.process_registry_results import load_completed_results
         retained = load_completed_results(owns_entry=owned, strict=True)
         with process_registry._lock:
             for pid, result in retained.items():
                 if pid not in process_registry._running:
                     process_registry._finished.setdefault(pid, result)
-        remaining = json.loads(_checkpoint_path().read_text(encoding='utf-8-sig'))
-        if not isinstance(remaining, list) or any(not isinstance(entry, dict) for entry in remaining):
-            return False
-        with process_registry._lock:
-            tracked = {*process_registry._running, *process_registry._finished}
-        return all(not owned(entry) or entry.get('session_id') in tracked for entry in remaining)
+        return True
     except (OSError, ValueError, TypeError):
         return False
 

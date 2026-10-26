@@ -20,7 +20,8 @@ def _spawn(registry, root, owner='s'):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('reused_pid', [False, True], ids=['dead-wrapper', 'reused-wrapper-pid'])
-async def test_refused_owned_scope_survives_reload_without_signaling_foreign_pid(tmp_path, monkeypatch, reused_pid):
+@pytest.mark.parametrize('retained_snapshot', [False, True], ids=['cold', 'retained-result-cached'])
+async def test_refused_owned_scope_survives_reload_without_signaling_foreign_pid(tmp_path, monkeypatch, reused_pid, retained_snapshot):
     from tools import process_registry as module
     from gateway.session_ancillary import process_stop_pending, retry_process_stop
     db, authority = _authority(tmp_path, monkeypatch)
@@ -48,6 +49,10 @@ async def test_refused_owned_scope_survives_reload_without_signaling_foreign_pid
         reloaded.sessions['s'] = LiveSession(authority.sessions['s'].source, 'route')
         registry = module.ProcessRegistry()
         monkeypatch.setattr(module, 'process_registry', registry)
+        if retained_snapshot:
+            from tools.process_registry_results import load_completed_results
+            registry._finished.update(load_completed_results(owns_entry=lambda row: row['id'] == own.id, strict=True))
+            assert own.id in registry._finished and not registry._finished[own.id].systemd_unit
         monkeypatch.setattr(registry, '_terminate_host_pid', lambda *a, **kw: pytest.fail('a dead/reused wrapper PID was signaled'))
         attempts.clear()
         assert not await retry_process_stop(reloaded, REF)

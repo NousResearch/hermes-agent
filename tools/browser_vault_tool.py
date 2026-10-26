@@ -33,6 +33,10 @@ import secrets
 import logging
 from typing import Any, Dict, Optional
 
+from agent.vault_messenger_restore import (
+    RESTORE_LABEL, RESTORE_ORIGIN, RESTORE_TAB_PROBE,
+    build_restore_fill_js, build_restore_inspection_js,
+)
 from tools.browser_vault_context import plugin_errors_as_refusal, saved_origins, snapshot_refusal, write_backend_code
 
 logger = logging.getLogger(__name__)
@@ -167,6 +171,7 @@ def _current_page_origin(task_id: str) -> Optional[str]:
 
 # Per kind: a JS probe that is truthy on a tab holding the form this kind fills.
 _TAB_PROBES = {
+    "messenger-restore-pin": RESTORE_TAB_PROBE,
     "login": "!!document.querySelector('input[type=password]')",
     "payment": "!!document.querySelector('input[autocomplete^=cc-], [name*=card i], [placeholder*=card i], [name*=cvc i], [name*=cvv i]')",
     "address": "!!document.querySelector('input[autocomplete^=address-], [autocomplete=postal-code], [name*=address i], [name*=zip i], [name*=postal i]')",
@@ -194,6 +199,8 @@ def _bound_page_origin(task_id: str, meta: Any, probe_kind: str) -> str | dict[s
     nothing wildcard or parent-domain is inferred. The caller hands the returned origin to ``build_fill_js``,
     which re-asserts it inside the page immediately before the write (navigation between check and fill)."""
     allowed = saved_origins(meta)
+    if probe_kind == "messenger-restore-pin":
+        allowed = [origin for origin in allowed if origin == RESTORE_ORIGIN]
     if not allowed:
         return {"success": False, "error_type": "no_origin",
                 "error": f"Vault item {meta.id!r} has no bound origin; {meta.kind} items are filled only on "
@@ -418,8 +425,9 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
 def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     """Fill the current page's password field from a vault handle.
 
-    Password-only: the identifier is agent-visible metadata (see
-    browser_vault_list) and is typed by the agent via normal input tools.
+    Password-only, except the explicitly labelled Messenger restore PIN adapter
+    (``agent.vault_messenger_restore``). The identifier is agent-visible metadata
+    (see browser_vault_list) and is typed by the agent via normal input tools.
     The password is resolved server-side and injected via in-page JS over
     the supervisor CDP WebSocket; the result reports only counts/metadata.
     """
@@ -450,7 +458,9 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         )
     # Origin binding pre-check (the authoritative re-check runs inside the fill script), before the user is
     # asked to confirm a card, before the backend's fill_context is entered and before any value is resolved.
-    page_origin = _bound_page_origin(effective_task_id, meta, meta.kind)
+    restore_pin = meta.kind == "login" and meta.label == RESTORE_LABEL
+    probe_kind = "messenger-restore-pin" if restore_pin else meta.kind
+    page_origin = _bound_page_origin(effective_task_id, meta, probe_kind)
     if isinstance(page_origin, dict):
         return json.dumps(page_origin)
     if meta.kind == "payment" and not _confirm_payment_fill(meta.label, page_origin):
@@ -482,8 +492,10 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
     from agent.vault_store import ADDRESS_FIELDS, PAYMENT_FIELDS, scrub_secret_from_text
 
     # ── Inspect + classify page controls ────────────────────────────────────
+    restore_pin = meta.kind == "login" and meta.label == RESTORE_LABEL
     nonce = secrets.token_hex(8)  # binds this fill to THIS inspection's stamps
-    inspect = _eval_js(effective_task_id, build_inspection_js(nonce))
+    inspection_builder = build_restore_inspection_js if restore_pin else build_inspection_js
+    inspect = _eval_js(effective_task_id, inspection_builder(nonce))
     if not inspect.get("success"):
         return json.dumps(
             {"success": False, "error": f"Could not inspect page inputs: {inspect.get('error', 'eval failed')}"}
@@ -499,7 +511,9 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
     for raw in raw_controls:
         if not isinstance(raw, dict):
             continue
-        result = classify(LoginControl.from_dict(raw))
+        control = LoginControl.from_dict(raw)
+        result = (ClassifiedLoginControl(control, 100, "current-password")
+                  if restore_pin else classify(control))
         if result is not None:
             classified.append(result)
     if not classified:
@@ -529,8 +543,11 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
         register_vault_redaction_value(value)
 
     try:
+        fill_builder = build_restore_fill_js if restore_pin else build_fill_js
+        if restore_pin:
+            fills = [{**f, "token": "messenger-restore-pin"} for f in fills]
         fill_result = _eval_js_secret(
-            effective_task_id, build_fill_js(fills, expected_origin=page_origin, nonce=nonce)
+            effective_task_id, fill_builder(fills, expected_origin=page_origin, nonce=nonce)
         )
     except Exception as exc:  # health: allow BLE001 -- any CDP failure becomes a typed result; its text is scrubbed of the secret
         return json.dumps(

@@ -1750,6 +1750,11 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             _out = f"[… output truncated — showing last {len(_tail)} chars]\n{_tail}"
         else:
             _out = _raw
+        if getattr(session, 'ownership_generation', 0) > 0:
+            # The watcher can predate an authenticated native handoff. Its
+            # original child identity cannot override the committed parent.
+            watcher = {**watcher, 'parent_session_id': session.parent_session_id,
+                       'session_key': session.session_key}
         return {
             "type": "completion",
             "session_id": session_id,

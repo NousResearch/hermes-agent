@@ -3,6 +3,7 @@
 import json
 import logging
 import time
+from contextlib import nullcontext
 from typing import Any, Dict, List, Optional
 
 from agent.redact import redact_sensitive_text
@@ -29,12 +30,12 @@ class ProcessCheckpointMixin:
 
     # ----- Checkpoint (crash recovery) -----
 
-    def _write_checkpoint(self, extra_entries: Optional[list[dict[str, Any]]] = None, *, exclude_ids=()):
+    def _write_checkpoint(self, extra_entries: Optional[list[dict[str, Any]]] = None, *, exclude_ids=(), _lock_held=False):
         """Write running process metadata to the checkpoint file atomically."""
         from tools.process_registry import _checkpoint_path, _CHECKPOINT_FIELDS
 
         try:
-            with self._lock:
+            with nullcontext() if _lock_held else self._lock:
                 entries = []
                 for s in {**self._finished, **self._running}.values():
                     if s.exited and not s._scope_stop_pending and not s.systemd_unit:
@@ -49,6 +50,7 @@ class ProcessCheckpointMixin:
                     # PID, never re-runs it), so masking is lossless.
                     # See #77484.
                     entry["command"] = redact_sensitive_text(s.command, code_file=True)
+                    entry['handoff_note'] = redact_sensitive_text(s.handoff_note, code_file=True)
                     entry["owner_task_id"] = s.owner_task_id or s.task_id
                     entries.append(entry)
                 if extra_entries:
@@ -62,10 +64,29 @@ class ProcessCheckpointMixin:
             # Every interpreter of the profile rewrites this file from its own table. Keep
             # untracked live processes and worker output-log handoffs under the same file lock.
             with _FileLock(path.with_name(path.name + ".lock")):
+                from tools.process_registry_handoff import merge_ownership
+                from tools.process_registry_results import completed_ownership
+                try:
+                    previous = json.loads(path.read_text(encoding='utf-8-sig'))
+                except FileNotFoundError:
+                    previous = []
+                updates = merge_ownership(entries, previous)
+                updates.update(merge_ownership(entries, completed_ownership(entries)))
                 entries.extend(self._foreign_handoffs(path, known))
                 atomic_json_write(path, entries)
+            # Never acquire the registry lock inside the file lock: an atomic
+            # handoff holds them in registry→file order. Refresh stale caches only
+            # after releasing the file so their later completion routes correctly.
+            with nullcontext() if _lock_held else self._lock:
+                for sid, update in updates.items():
+                    session = self._running.get(sid) or self._finished.get(sid)
+                    if session is not None and session.ownership_generation <= update['ownership_generation']:
+                        for field, value in update.items():
+                            setattr(session, field, value)
+            return True
         except Exception as e:
             logger.debug("Failed to write checkpoint file: %s", e, exc_info=True)
+            return False
 
     def _foreign_handoffs(self, path, known) -> list[dict[str, Any]]:
         """Native processes and worker handoffs this writer never tracked must remain recoverable.

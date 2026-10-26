@@ -122,7 +122,8 @@ async def probe(mode):
                     assert rows[0]['status'] == 'running' and 'PROCESS_OWNED' in rows[0]['output_tail']
                     # Real process handoff stores the parent physical ID as its routing key.
                     transferred = process_registry.transfer_ownership(
-                        processes[1].id, from_owner='foreign', to_owner=sid, to_task_id=sid, to_session_key=sid)
+                        processes[1].id, from_owner='foreign', to_owner=sid, to_task_id=sid, to_session_key=sid,
+                        to_parent_session_id=sid)
                     assert transferred is processes[1]
                     handed = await rpc(ws, 'process.list', session_id=sid)
                     assert {p['session_id'] for p in handed['result']['processes']} == {p.id for p in processes[:2]}, handed

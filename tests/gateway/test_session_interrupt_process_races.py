@@ -4,12 +4,14 @@ from dataclasses import replace
 import shlex
 import sys
 import threading
+import uuid
 
 import pytest
 
 from hermes_state_runtime import RuntimeStoreError
 from tests.gateway.test_session_authority_cancel_settlement import ACTOR, REF, _authority, _submit, _wire_turn_agent
 from tests.gateway.test_session_authority_preadopt_stop import Agent
+from tests.waiting import wait_until
 
 
 @pytest.fixture
@@ -23,8 +25,14 @@ def registry(monkeypatch):
 
 
 def spawn(registry, tmp_path):
-    command = shlex.join([sys.executable, '-c', 'import threading; threading.Event().wait(40)'])
-    return registry.spawn_local(command, cwd=str(tmp_path), task_id='s', owner_task_id='s', session_key='route')
+    ready = tmp_path / ('ready-' + uuid.uuid4().hex)
+    code = f'import pathlib,threading; pathlib.Path({str(ready)!r}).touch(); threading.Event().wait(120)'
+    # These tests exercise native FIFO boundaries, not interactive bash's
+    # SIGTERM handling. Exec and readiness keep the owned fixture in Python.
+    command = 'exec ' + shlex.join([sys.executable, '-c', code])
+    process = registry.spawn_local(command, cwd=str(tmp_path), task_id='s', owner_task_id='s', session_key='route')
+    wait_until(ready.exists, timeout=20, what='owned fixture ready')
+    return process
 
 
 @pytest.mark.asyncio

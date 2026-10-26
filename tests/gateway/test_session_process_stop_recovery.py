@@ -4,6 +4,7 @@ import json
 import shlex
 import sys
 from types import SimpleNamespace
+import uuid
 
 import pytest
 
@@ -11,6 +12,7 @@ from gateway.session_authority import LiveSession, SessionAuthority
 from hermes_state_runtime import RuntimeStoreError, admit_session_input, begin_runtime_epoch, list_session_admissions, recover_session_inputs
 from tests.gateway.test_session_authority_cancel_settlement import ACTOR, REF, _authority, _submit, _wire_turn_agent
 from tests.gateway.test_session_authority_preadopt_stop import Agent
+from tests.waiting import wait_until
 
 
 @pytest.fixture
@@ -24,9 +26,18 @@ def registry(monkeypatch):
 
 
 def _spawn(registry, root, *, owner='s', route='route', command=None):
-    command = command or shlex.join([sys.executable, '-c', 'import threading; threading.Event().wait(60)'])
-    return registry.spawn_local(command, cwd=str(root), task_id=owner, owner_task_id=owner,
-                                session_key=route, persist_on_release=True)
+    ready = None
+    if command is None:
+        ready = root / ('ready-' + uuid.uuid4().hex)
+        code = f'import pathlib,threading; pathlib.Path({str(ready)!r}).touch(); threading.Event().wait(120)'
+        # Native recovery/fencing is independent of interactive login-shell
+        # teardown. The real owned Python job is ready before the Stop begins.
+        command = 'exec ' + shlex.join([sys.executable, '-c', code])
+    process = registry.spawn_local(command, cwd=str(root), task_id=owner, owner_task_id=owner,
+                                   session_key=route, persist_on_release=True)
+    if ready is not None:
+        wait_until(ready.exists, timeout=20, what='owned recovery fixture ready')
+    return process
 
 
 @pytest.mark.asyncio

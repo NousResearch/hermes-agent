@@ -53,23 +53,43 @@ def save_completed_result(session) -> bool:
     with session._lock:
         record = {key: getattr(session, key) for key in _RESULT_FIELDS}
         record["completion_consumed"] = session.completion_consumed
+        record.update(pid=session.pid, host_start_time=session.host_start_time,
+                      ownership_generation=session.ownership_generation, handoff_note=session.handoff_note)
         record["output"] = session.output_buffer[-MAX_OUTPUT_CHARS:]
     # Live-output opt-out must not persist raw credentials in durable receipts.
     record["output"] = redact_terminal_output(record["output"], record["command"], force=True)
     record["command"] = redact_sensitive_text(record["command"], code_file=True, force=True)
+    record['handoff_note'] = redact_sensitive_text(record['handoff_note'], code_file=True, force=True)
     directory = get_hermes_home() / "logs" / "process-results"
     try:
         from hermes_constants import assert_named_profile_home_live
         assert_named_profile_home_live(directory)
         make_user_dir(directory, mode=0o700, parents=True, exist_ok=True)
         from hermes_cli.active_sessions import _FileLock
-        with _FileLock(directory / '.lock'):
-            path = directory / f"{session.id}.json"
-            # A reader can have captured its result before Stop consumed it. An
-            # older writer must never undo the committed consumption verdict.
-            record['completion_consumed'] |= completed_result_consumed(session.id)
-            atomic_json_write(path, record, mode=0o600)
-            _result_paths()
+        from tools.process_registry import _checkpoint_path
+        from tools.process_registry_handoff import merge_ownership, OWNERSHIP_FIELDS
+        checkpoint = _checkpoint_path()
+        # Match the checkpoint writer's lock order. A retired/cached reader can
+        # finish after handoff; merge its immutable process's committed identity
+        # before it publishes either the retained receipt or completion event.
+        with _FileLock(checkpoint.with_name(checkpoint.name + '.lock')):
+            try:
+                previous = json.loads(checkpoint.read_text(encoding='utf-8-sig'))
+            except FileNotFoundError:
+                previous = []
+            merge_ownership([record], previous)
+            with _FileLock(directory / '.lock'):
+                path = directory / f"{session.id}.json"
+                merge_ownership([record], completed_ownership([record]))
+                # A stale result writer cannot unconsume a completed Stop.
+                record['completion_consumed'] |= completed_result_consumed(session.id)
+                atomic_json_write(path, record, mode=0o600)
+                _result_paths()
+        with session._lock:
+            if session.ownership_generation <= record['ownership_generation']:
+                for field in OWNERSHIP_FIELDS:
+                    setattr(session, field, record[field])
+            session.completion_consumed |= record['completion_consumed']
         return True
     except (OSError, ValueError, TypeError):
         # Preserve live delivery on disk failure, but never silently claim durability.
@@ -89,6 +109,24 @@ def completed_result_consumed(session_id: str) -> bool:
     if not isinstance(record, dict) or record.get('id') != session_id:
         raise ValueError('invalid retained process result')
     return record.get('completion_consumed') is True
+
+
+def completed_ownership(entries):
+    """Same native process receipts only; caller holds its profile checkpoint lock."""
+    records = []
+    for entry in entries:
+        sid = entry.get('session_id', entry.get('id'))
+        if not isinstance(sid, str) or not re.fullmatch(r'proc_[\w]+', sid):
+            continue
+        path = get_hermes_home() / 'logs' / 'process-results' / f'{sid}.json'
+        try:
+            record = json.loads(path.read_text(encoding='utf-8-sig'))
+        except FileNotFoundError:
+            continue
+        if not isinstance(record, dict) or record.get('id') != sid:
+            raise ValueError('invalid retained process ownership')
+        records.append(record)
+    return records
 
 
 def _owns_result(owner: str, parent: str | None) -> bool:
@@ -136,6 +174,8 @@ def load_completed_results(prefix: str = "", *, owns_entry=None, strict=False) -
             session = ProcessSession(
                 **{key: record[key] for key in _RESULT_FIELDS},
                 exited=True, output_buffer=record["output"], completion_consumed=record.get('completion_consumed', False),
+                pid=record.get('pid'), host_start_time=record.get('host_start_time'),
+                ownership_generation=record.get('ownership_generation', 0), handoff_note=record.get('handoff_note', ''),
             )
             session._completion_event.set()
             results[session.id] = session

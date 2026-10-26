@@ -4839,6 +4839,7 @@ export const frOverrides = {
       yesterday: time => `Hier, ${time}`,
       copy: 'Copier',
       refresh: 'Actualiser',
+      reply: 'Répondre',
       moreActions: "Plus d'actions",
       branchNewChat: 'Créer une branche dans une nouvelle conversation',
       react: 'Réagir',

@@ -469,7 +469,13 @@ declare global {
       resolveFavicon?: (url: string) => Promise<string>
       sanitizeWorkspaceCwd: (cwd?: null | string) => Promise<{ cwd: string; sanitized: boolean }>
       settings: {
-        getDefaultProjectDir: () => Promise<{ defaultLabel: string; dir: null | string; resolvedCwd: string }>
+        getDefaultProjectDir: () => Promise<{
+          defaultLabel: string
+          dir: null | string
+          resolvedCwd: string
+          /** Validated terminal hint, scoped to the first local launch profile. */
+          launchWorkspace?: { cwd: string; profile: string } | null
+        }>
         pickDefaultProjectDir: () => Promise<{ canceled: boolean; dir: null | string }>
         setDefaultProjectDir: (dir: null | string) => Promise<{ dir: null | string }>
       }

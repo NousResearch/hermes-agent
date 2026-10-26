@@ -714,7 +714,7 @@ import {
   writeGpuStackCookieMarker
 } from './windows-stack-cookie-fallback'
 import { readWindowsUserEnvVar } from './windows-user-env'
-import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
+import { isPackagedInstallPath as isPackagedInstallPathUnderRoots, resolveWorkspaceCwd } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
 import { resolvePickerDefaultPath, setActiveGatewayProfile, setWslBridgeProfileState } from './wsl-path-bridge'
 
@@ -4793,40 +4793,25 @@ function isPackagedInstallPath(dir) {
   })
 }
 
+function resolveHermesWorkspace() {
+  // Settings win; only the CLI's explicit hint may pre-attach a new chat.
+  // Dev/process/home fallbacks remain execution defaults, not workspace intent.
+  return resolveWorkspaceCwd(
+    [
+      { cwd: readDefaultProjectDir() },
+      { cwd: process.env.HERMES_DESKTOP_CWD, source: 'launch' },
+      { cwd: IS_PACKAGED ? null : process.env.INIT_CWD },
+      { cwd: IS_PACKAGED ? null : process.cwd() },
+      { cwd: !IS_PACKAGED ? SOURCE_REPO_ROOT : null },
+      { cwd: app.getPath('home') }
+    ],
+    app.getPath('home'),
+    cwd => !isPackagedInstallPath(cwd) && directoryExists(cwd)
+  )
+}
+
 function resolveHermesCwd() {
-  // In a packaged build, `process.cwd()` resolves to the install root (e.g.
-  // `…/win-unpacked` on Windows or `/Applications/Hermes.app/Contents/...`
-  // on macOS). Sessions spawned there leave files inside the app bundle
-  // and bewilder users when "where did my files go?" is the install dir.
-  // The user-configurable default project directory wins over everything,
-  // followed by env hints (only honored when packaged if they point at a
-  // real directory), then the home dir.
-  const candidates = [
-    readDefaultProjectDir(),
-    process.env.HERMES_DESKTOP_CWD,
-    IS_PACKAGED ? null : process.env.INIT_CWD,
-    IS_PACKAGED ? null : process.cwd(),
-    !IS_PACKAGED ? SOURCE_REPO_ROOT : null,
-    app.getPath('home')
-  ]
-
-  for (const candidate of candidates) {
-    if (!candidate) {
-      continue
-    }
-
-    const resolved = path.resolve(String(candidate))
-
-    if (isPackagedInstallPath(resolved)) {
-      continue
-    }
-
-    if (directoryExists(resolved)) {
-      return resolved
-    }
-  }
-
-  return app.getPath('home')
+  return resolveHermesWorkspace().cwd
 }
 
 function sanitizeWorkspaceCwd(cwd) {
@@ -10514,6 +10499,8 @@ function broadcastConnectionsChanged(payload: { connectionId: string; reason: 'r
 // startHermes() and cleared when the primary is torn down; while a primary is
 // live this must NOT follow active-profile.json (see primary-profile-pin.ts).
 const primaryProfilePin = new PrimaryProfilePin()
+// Unlike the restartable routing pin, a terminal hint belongs to the first launch only.
+let launchWorkspaceProfile: string | null = null
 
 function primaryProfileKey() {
   return primaryProfilePin.resolve(readActiveDesktopProfile)
@@ -11883,6 +11870,7 @@ async function startHermes(requestedProfile?: string) {
   // Pin the routing table to the profile this primary actually boots as; a
   // later hermes:profile:remember must not retarget requests mid-life.
   primaryProfilePin.pin(primaryProfile)
+  launchWorkspaceProfile ??= primaryProfile
 
   // Legacy path callers without an explicit profile belong to the primary
   // window backend. Profile-scoped callers still pass their key directly.
@@ -17078,11 +17066,16 @@ ipcMain.handle('hermes:openPreviewInBrowser', async (_event, url) => {
 // settings mount and seeds the value into the picker; writing back persists
 // it via writeDefaultProjectDir so resolveHermesCwd picks it up on the next
 // session spawn (no app restart needed).
-ipcMain.handle('hermes:setting:defaultProjectDir:get', async () => ({
-  dir: readDefaultProjectDir(),
-  defaultLabel: app.getPath('home'),
-  resolvedCwd: resolveHermesCwd()
-}))
+ipcMain.handle('hermes:setting:defaultProjectDir:get', async () => {
+  const { cwd, launchCwd } = resolveHermesWorkspace()
+
+  return {
+    dir: readDefaultProjectDir(),
+    defaultLabel: app.getPath('home'),
+    resolvedCwd: cwd,
+    launchWorkspace: launchCwd && launchWorkspaceProfile ? { cwd: launchCwd, profile: launchWorkspaceProfile } : null
+  }
+})
 
 ipcMain.handle('hermes:workspace:sanitize', async (_event, cwd) => sanitizeWorkspaceCwd(cwd))
 

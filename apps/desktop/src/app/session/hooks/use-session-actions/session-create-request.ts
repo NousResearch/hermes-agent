@@ -8,15 +8,19 @@ import {
   normalizeProfileKey,
   resolveNewChatOwnerRoute
 } from '@/store/profile'
+import { $projectScope, ALL_PROJECTS } from '@/store/project-scope'
 import {
+  $connection,
   $currentCwdExplicit,
   $currentFastMode,
   $currentModel,
   $currentProvider,
   $currentReasoningEffort,
   $currentServiceTier,
+  getConfiguredDefaultProjectDir,
   getCurrentModelSource
 } from '@/store/session'
+import { cwdForSessionOwner } from '@/store/session-launch-workspace'
 import type { SessionCreateResponse } from '@/types/hermes'
 
 type RequestGateway = <T>(method: string, params?: Record<string, unknown>) => Promise<T>
@@ -79,6 +83,17 @@ export async function createGatewaySession(
   return create(params)
 }
 
+function sessionCreateCwd(cwd: string, profile: string, capturedRoute: AgentProfileRoute | null): string {
+  return cwdForSessionOwner(
+    cwd,
+    $currentCwdExplicit.get() || $projectScope.get() !== ALL_PROJECTS,
+    getConfiguredDefaultProjectDir(),
+    capturedRoute?.targetProfile || profile,
+    capturedRoute?.connectionId ||
+      ($connection.get()?.mode === 'local' ? $connection.get()?.connectionId || 'local' : 'unknown')
+  )
+}
+
 // `session.create` params from the current profile + sticky-UI model/effort/fast,
 // ensuring the gateway is on that profile first. Shared by the primary send path
 // and the "open in split" tile path; `cwd` is the one thing that differs (the
@@ -121,6 +136,8 @@ export async function desktopSessionCreateParams(
     requestedProfile ||
     $newChatProfile.get() ||
     normalizeProfileKey($activeGatewayProfile.get())
+
+  cwd = sessionCreateCwd(cwd, profile, capturedRoute)
 
   if (capturedRoute) {
     await ensureGatewayAgent(capturedRoute.connectionId, profile)

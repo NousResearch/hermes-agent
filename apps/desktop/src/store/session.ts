@@ -16,6 +16,7 @@ import type { TileSessionFocusStamp } from '@/lib/session-timer-since'
 import { persistBoolean, persistString, readJson, storedBoolean, storedString, writeJson } from '@/lib/storage'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
+import { applyLaunchWorkspace, launchWorkspaceCwd } from './session-launch-workspace'
 import { $removedSessionIds, isSessionRemovalPending, tombstoneRowIds } from './session-removal'
 import type { SessionOwnerRoute, SessionOwnerScope } from './session-request-router'
 import { clearUnreadOnOpen } from './session-unread-remote'
@@ -355,15 +356,17 @@ export async function syncConfiguredDefaultProjectDir(shouldPublish: () => boole
   if (!settings) {
     if (shouldPublish()) {
       configuredDefaultProjectDir = ''
+      applyLaunchWorkspace(null)
     }
 
     return configuredDefaultProjectDir
   }
 
-  const { dir } = await settings()
+  const { dir, launchWorkspace } = await settings()
 
   if (shouldPublish()) {
     configuredDefaultProjectDir = dir?.trim() || ''
+    applyLaunchWorkspace(launchWorkspace)
   }
 
   return configuredDefaultProjectDir
@@ -385,7 +388,7 @@ export async function ensureDefaultWorkspaceCwd(shouldPublish: () => boolean = (
     return
   }
 
-  const configured = getConfiguredDefaultProjectDir()
+  const configured = getConfiguredDefaultProjectDir() || launchWorkspaceCwd($connection.get())
 
   // Transient: each source below is already remembered or comes from config, so
   // persisting would only promote a configured default into the per-backend
@@ -1852,20 +1855,9 @@ export const $currentCwdExplicit = atom(false)
 export const setCurrentCwdExplicit = (next: Updater<boolean>) => updateAtom($currentCwdExplicit, next)
 
 export const workspaceCwdForNewSession = (): string => {
-  // A bare new chat starts DETACHED — no inherited cwd, so the composer's coding
-  // rail (which keys off $currentCwd) shows no branch and the first message runs
-  // in the gateway's default rather than silently in the last repo you touched.
-  // Only an explicit default-project-dir setting pre-attaches. Entering a
-  // project/worktree attaches its cwd directly (startSessionInWorkspace), so the
-  // "remember where I was when I'm in a project" case is unaffected.
-  //
-  // This must behave identically in local and remote mode: the remembered CWD
-  // under the remote-keyed workspaceCwdKey() can be from a *different* project
-  // than the one the user is currently scoped into, and bare-new-session in
-  // the wrong workspace was the #57911 symptom. Resume/restore still reads
-  // the remembered cwd via ensureDefaultWorkspaceCwd (where it remains
-  // remote-keyed and intentionally sticky).
-  return getConfiguredDefaultProjectDir()
+  // Remembered/live workspaces are not new-chat defaults (#57911). Only a
+  // setting or a validated terminal launch for this local profile pre-attaches.
+  return getConfiguredDefaultProjectDir() || launchWorkspaceCwd($connection.get())
 }
 
 export const setCurrentBranch = (next: Updater<string>) => updateAtom($currentBranch, next)

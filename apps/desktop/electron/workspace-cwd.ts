@@ -31,4 +31,30 @@ function isPackagedInstallPath(dir, { installRoots, isPackaged }: { installRoots
   return false
 }
 
+interface WorkspaceCwdCandidate {
+  cwd: null | string | undefined
+  source?: 'launch'
+}
+
+/** Validate the existing cwd ladder while retaining explicit terminal-launch intent. */
+export function resolveWorkspaceCwd(
+  candidates: WorkspaceCwdCandidate[],
+  home: string,
+  acceptsDirectory: (cwd: string) => boolean
+): { cwd: string; launchCwd: string } {
+  for (const candidate of candidates) {
+    if (!candidate.cwd) {
+      continue
+    }
+
+    const cwd = path.resolve(candidate.cwd)
+
+    if (acceptsDirectory(cwd)) {
+      return { cwd, launchCwd: candidate.source === 'launch' ? cwd : '' }
+    }
+  }
+
+  return { cwd: home, launchCwd: '' }
+}
+
 export { isPackagedInstallPath }

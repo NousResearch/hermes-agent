@@ -508,11 +508,13 @@ def _resolve_chat_argv(
     passes as the explicit ``cwd`` of ``session.create`` when attached to the
     in-memory gateway, whose own cwd is the dashboard's launch dir).
     ``session_subject`` is the authenticated dashboard login's structured subject
-    (``gateway.session_identity.authenticated_subject``): it rides to the child as
-    ``HERMES_TUI_SESSION_SUBJECT`` so the private-control-socket bootstrap can name
-    it on the session-ticket (``gateway/control_socket.py``, #138915) — without it
-    the resume admits as the host UID and refuses a login-stamped ``desktop`` row
-    the same login created through the serve backend (#144140).
+    (``gateway.session_identity.authenticated_subject``): a child that mints its
+    own ticket (no attach URL) gets it as ``HERMES_TUI_SESSION_SUBJECT`` so the
+    private-control-socket bootstrap can name it on the session-ticket
+    (``gateway/control_socket.py``, #138915) — without it the resume admits as the
+    host UID and refuses the ``desktop`` rows an issuer-less login created through
+    the serve backend (#144140). Serve's ``<provider>:<user>`` stamp drops the
+    issuer, so a self-hosted OIDC login's rows stay refused either way.
     """
     from hermes_cli.web_server_profiles import _config_profile_scope, _resolve_profile_dir
     from hermes_cli.web_server_sessions import _open_session_db_for_profile, _session_latest_descendant
@@ -560,8 +562,8 @@ def _resolve_chat_argv(
     # deploys have no COLORTERM, so hex colors would snap to the 256 palette.
     env.setdefault("COLORTERM", "truecolor")
     env["HERMES_TUI_DASHBOARD"] = "1"
-    if session_subject:
-        env["HERMES_TUI_SESSION_SUBJECT"] = session_subject
+    # Only the signed-in login below names whom a chat acts for, never the dashboard's own env.
+    env.pop("HERMES_TUI_SESSION_SUBJECT", None)
 
     if resume:
         _resume_db = _open_session_db_for_profile(
@@ -585,6 +587,10 @@ def _resolve_chat_argv(
     # it never spawns a standalone `tui_gateway.entry` writer.
     if profile_dir is None and (gateway_ws_url := _build_gateway_ws_url()):
         env["HERMES_TUI_GATEWAY_URL"] = gateway_ws_url
+    elif session_subject:
+        # The ticket that bootstrap mints acts for the signed-in login, as the dashboard's
+        # owner forward does for its REST mutations (#138915).
+        env["HERMES_TUI_SESSION_SUBJECT"] = session_subject
 
     return list(argv), str(cwd) if cwd else None, env
 

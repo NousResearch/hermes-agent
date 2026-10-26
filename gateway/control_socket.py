@@ -35,6 +35,8 @@ _MAX_UNIX_PATH = 100  # sun_path limit is 104 on macOS/BSD, 108 on Linux; margin
 # Single-line JSON in/out; bounded so a misbehaving peer can't balloon memory.
 _MAX_REQUEST_BYTES = 64 * 1024
 _MAX_RESPONSE_BYTES = 512 * 1024
+# The longest subject a session-ticket names: the peer's own, or a login it forwards (#138915).
+MAX_TICKET_SUBJECT_CHARS = 256
 _DEFAULT_CLIENT_TIMEOUT = 2.0
 # What a filesystem that cannot host an AF_UNIX node answers: a Docker Desktop (virtiofs) bind mount
 # refuses the socket, and an inode a previous container left there can be neither stat'ed nor
@@ -384,7 +386,7 @@ class GatewayControlServer:
         # (``authenticated_subject``'s ``auth:v1:[provider, issuer, user]`` form); a bare label
         # like ``admin`` could collide with another stored owner representation, so it fails closed.
         subject = params.get("subject", peer_subject)
-        if not isinstance(subject, str) or not subject or len(subject) > 256:
+        if not isinstance(subject, str) or not subject or len(subject) > MAX_TICKET_SUBJECT_CHARS:
             raise PermissionError("invalid bootstrap subject")
         if subject is not peer_subject and not _structured_login_subject(subject):
             raise PermissionError("invalid bootstrap subject")

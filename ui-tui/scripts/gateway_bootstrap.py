@@ -59,6 +59,7 @@ def bootstrap(start: bool, recover: bool = False) -> dict:
     from hermes_cli.gateway_runtime_discovery import connect_private
 
     home = get_hermes_home().resolve()
+    session_subject = os.environ.get("HERMES_TUI_SESSION_SUBJECT", "")  # health: allow HX002 -- per-request dashboard login crossing the process boundary to the spawned child; env is this boundary's existing contract (HERMES_TUI_RESUME, HERMES_TUI_GATEWAY_URL), not a behavioural setting
     # Launch policy travels in session.create, not into daemon-wide defaults. That includes the
     # Kanban board `hermes --tui` pins at launch (_pin_kanban_board_env): a daemon started from
     # here would otherwise resolve every later chat's, Desktop window's and cron job's board to
@@ -67,7 +68,7 @@ def bootstrap(start: bool, recover: bool = False) -> dict:
                 "HERMES_INFERENCE_PROVIDER", "HERMES_TUI_TOOLSETS", "HERMES_TUI_SKILLS",
                 "HERMES_CWD", "TERMINAL_CWD", "HERMES_YOLO", "HERMES_ACCEPT_HOOKS",
                 "HERMES_TUI_CHECKPOINTS", "HERMES_TUI_PASS_SESSION_ID", "HERMES_KANBAN_BOARD",
-                "HERMES_TUI_CLIENT_ENV"):
+                "HERMES_TUI_CLIENT_ENV", "HERMES_TUI_SESSION_SUBJECT"):
         os.environ.pop(key, None)
     receipt = (ensure_gateway_runtime(home, timeout=30, idle_exit=True) if start
                else discover_gateway_endpoint(home, timeout=5))
@@ -82,11 +83,11 @@ def bootstrap(start: bool, recover: bool = False) -> dict:
     control = control_home_for(home, endpoint)
     # A standalone dashboard hands its authenticated login down with the chat PTY (#144140):
     # naming it here (the mint relabels only for a verified same-user peer, and only for the
-    # structured ``auth:v1:`` form) lets the resume adopt the login-stamped rows that same
-    # login created through the serve backend, instead of refusing them as the host UID's.
+    # structured ``auth:v1:`` form) makes the resume act as that login, not the host UID: an
+    # issuer-less login then adopts the rows serve stamped with its ``<provider>:<user>`` label.
+    # That label drops the issuer, so a self-hosted OIDC login's serve rows stay refused.
     params = {"profile_id": endpoint.profile_id, "instance_id": endpoint.instance_id,
               "purpose": "interactive"}
-    session_subject = os.environ.get("HERMES_TUI_SESSION_SUBJECT", "")  # health: allow HX002 -- per-request dashboard login crossing the process boundary to the spawned child; env is this boundary's existing contract (HERMES_TUI_RESUME, HERMES_TUI_GATEWAY_URL), not a behavioural setting
     if session_subject:
         params["subject"] = session_subject
     request = json.dumps({"protocol": 1, "id": 1, "verb": "session-ticket",

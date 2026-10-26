@@ -472,24 +472,45 @@ async def _pty_channel_marker_state(
     return active_session_file, marker_preexisting, resume
 
 
-def _pty_session_subject_kwargs(ws: WebSocket) -> dict:
-    """The chat argv kwarg carrying the opening login's structured subject, or {}.
+def _pty_session_subject(ws: WebSocket, cred: str) -> Optional[str]:
+    """The opening login's structured subject, or None.
 
-    Forwarded to the PTY child's gateway bootstrap (#144140): without it the
-    resume admits as the host UID and refuses a login-stamped ``desktop`` row the
-    same login created through the serve backend. Only a real dashboard login is
-    forwarded — the server-internal credential stays unforwarded, and the
-    identityless legacy-token path stamps no identity at all, so both bootstrap
-    exactly as before. A forwarded login still only ever adopts rows its own
-    label owns (``hermes_state_local_migration.login_owned_by``).
+    Forwarded to the PTY child's gateway bootstrap (#144140) so the resume acts
+    as that login, not the host UID: it adopts unowned legacy rows and the rows
+    serve stamped with the login's own ``<provider>:<user>`` label, never another
+    login's or the host UID's (``hermes_state_local_migration.validate_legacy_row``).
+    That label drops the issuer, so it names only an issuer-less login: a
+    self-hosted OIDC login's serve rows stay refused. Only a browser ticket's
+    login (*cred* as ``_ws_gate`` names it) is forwarded: that ticket carries the
+    login's issuer (``POST /api/auth/ws-ticket``), while the ``?token=`` leg
+    stamps none, so its subject could spell another issuer's issuer-less
+    ``<provider>:<user>`` stamp. That leg, the server-internal credential, the
+    identityless legacy-token path and a subject longer than the session-ticket
+    mint takes (that chat would never connect) bootstrap exactly as before.
     """
     identity = getattr(ws, "_hermes_auth_identity", None)
-    if identity is None:
-        return {}
+    if cred not in ("ticket", "ticket-subprotocol") or identity is None:
+        return None
+    from gateway.control_socket import MAX_TICKET_SUBJECT_CHARS
     from gateway.session_identity import authenticated_subject, is_authenticated_identity
     if not is_authenticated_identity(identity):
-        return {}
-    return {"session_subject": authenticated_subject(identity)}
+        return None
+    subject = authenticated_subject(identity)
+    return subject if len(subject) <= MAX_TICKET_SUBJECT_CHARS else None
+
+
+def _keepalive_key(token: Optional[str], profile: Optional[str], resume: Optional[str],
+                   subject: Optional[str]) -> Optional[str]:
+    """The registry key a keep-alive ``?attach=`` PTY lives under: ``token\\0profile\\0resume``
+    (an explicit resume keyed on its canonical target, never the active-session fallback), then
+    the login that opened it. Another login presenting the same tab token (a sign-out and sign-in
+    in one tab) supersedes that terminal instead of reattaching the first login's, whose child
+    may act as that login (#144140). No segment holds a NUL (``pty_ws`` refuses one in the query;
+    a subject is ASCII-escaped JSON), so no query value can spell another chat's key."""
+    if token is None or not (resume or profile or subject):
+        return token
+    key = f"{token}\0{profile or ''}\0{resume or ''}"
+    return f"{key}\0{subject}" if subject else key
 
 
 @router.websocket("/api/pty")
@@ -500,6 +521,11 @@ async def pty_ws(ws: WebSocket) -> None:
     if gate is None:
         return
     peer, mode, cred = gate
+    if any("\0" in (ws.query_params.get(name) or "") for name in ("attach", "profile", "resume")):
+        # Each is a NUL-separated segment of the keep-alive key (_keepalive_key).
+        _log.warning("pty refused: NUL in a keep-alive key segment peer=%s", peer)
+        await ws.close(code=4400)
+        return
     await ws.accept()
     _log.info("pty accepted peer=%s mode=%s cred=%s", peer, mode, cred)
 
@@ -529,8 +555,9 @@ async def pty_ws(ws: WebSocket) -> None:
         # See #93518.
         await ws.send_json({"type": "resume", "id": resume})
 
-    resolve_kwargs = {"resume": resume, "sidecar_url": sidecar_url, "profile": profile}
-    resolve_kwargs.update(_pty_session_subject_kwargs(ws))
+    subject = _pty_session_subject(ws, cred)
+    resolve_kwargs = {"resume": resume, "sidecar_url": sidecar_url, "profile": profile,
+                      "session_subject": subject}
     if active_session_file is not None:
         resolve_kwargs["active_session_file"] = str(active_session_file)
     # A picked workspace only applies to a FRESH chat; a resumed session keeps its own cwd.
@@ -561,13 +588,10 @@ async def pty_ws(ws: WebSocket) -> None:
         return
 
     raw_attach_token = ws.query_params.get("attach") or None
-    attach_token = raw_attach_token
     registry_resume = raw_resume
     if raw_resume and env:
         registry_resume = env.get("HERMES_TUI_RESUME") or raw_resume
-    if attach_token is not None and (registry_resume or profile):
-        # Key explicit resumes on their canonical target, never the active-session fallback.
-        attach_token = f"{attach_token}\0{profile or ''}\0{registry_resume or ''}"
+    attach_token = _keepalive_key(raw_attach_token, profile, registry_resume, subject)
 
     def _spawn():
         return PtyBridge.spawn(argv, cwd=cwd, env=env)

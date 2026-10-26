@@ -425,7 +425,7 @@ def test_auto_started_gateway_does_not_inherit_client_behaviour_env(tmp_path, mo
         return SimpleNamespace(pid=1)
     monkeypatch.setattr(gateway_runtime_start.subprocess, 'Popen', popen)
     for name in ('HERMES_EPHEMERAL_SYSTEM_PROMPT', 'HERMES_PREFILL_MESSAGES_FILE', 'HERMES_INFERENCE_PROVIDER',
-                 'HERMES_ENABLE_PROJECT_PLUGINS', 'HERMES_TUI_CLIENT_ENV'):
+                 'HERMES_ENABLE_PROJECT_PLUGINS', 'HERMES_TUI_CLIENT_ENV', 'HERMES_TUI_SESSION_SUBJECT'):
         monkeypatch.setenv(name, 'from-the-first-client')
     monkeypatch.setenv('PATH', '/client/bin:/usr/bin')
     gateway_runtime_start.spawn_unmanaged_gateway(home, deadline=time.monotonic() + 30)

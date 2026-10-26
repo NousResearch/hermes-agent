@@ -98,6 +98,20 @@ test('an evicted forced-local child cannot be restarted by a stale-hint GET', as
   assert.deepEqual(desktop.sent, [])
 })
 
+test('a passive hide PATCH uses a warm forced-local child but refuses cold or evicted children', async () => {
+  const desktop = fixture(true)
+  const key = 'conn:local::research'
+  await assert.rejects(desktop.dispatch('PATCH', 'local', 'research', true), /Passive read: no warm backend/)
+  desktop.pool.set(key, { mode: 'local', scope: key })
+  await desktop.dispatch('PATCH', 'local', 'research', true)
+  desktop.pool.delete(key)
+  await assert.rejects(desktop.dispatch('PATCH', 'local', 'research', true), /Passive read: no warm backend/)
+  assert.deepEqual(desktop.starts, [])
+  assert.deepEqual(desktop.claims, [])
+
+  assert.deepEqual(desktop.sent, [`${key}:/api/sessions/s-1?profile=research`])
+})
+
 test('a cold forced-local snapshot and its write use the same backend and CAS identity', async () => {
   const pool = new Map<string, { mode: string }>()
   const wire: Array<{ backend: { mode: string }; path: string; method: string; body?: unknown }> = []

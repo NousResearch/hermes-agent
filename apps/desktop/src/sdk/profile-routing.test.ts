@@ -344,12 +344,13 @@ describe('connection-aware plugin host APIs', () => {
       })
     )
     expect(hermesApi).toHaveBeenNthCalledWith(2, {
-      connectionId: 'source-a', path: '/api/sessions/bot-chat/mutation-snapshot?profile=backend-worker', passive: false
+      connectionId: 'source-a', path: '/api/sessions/bot-chat/mutation-snapshot?profile=backend-worker', passive: true
     })
     expect(hermesApi).toHaveBeenNthCalledWith(3, {
       connectionId: 'source-a',
       path: '/api/sessions/bot-chat',
       method: 'PATCH',
+      passive: true,
       body: { hidden: true, profile: 'backend-worker', expected_revision: 31,
         expected_generation: 5, request_id: expect.any(String) }
     })
@@ -366,6 +367,76 @@ describe('connection-aware plugin host APIs', () => {
     await host.setPersistedSessionHidden(null, { sessionId: 'remote-chat', profile: 'default', hidden: true })
 
     expect(vi.mocked(hermesApi).mock.calls.map(([request]) => request.connectionId)).toEqual([null, null])
+  })
+
+  it('does not cold-start a forced-local child for the background hide snapshot', async () => {
+    const route = { connectionId: 'local', mode: 'local' as const, profile: 'research', targetProfile: 'research' }
+    vi.mocked(hermesApi).mockImplementation(async request => {
+      if (request.passive !== true) { throw new Error('cold child started') }
+      throw new Error('Passive read: no warm backend for "conn:local::research"')
+    })
+
+    await expect(host.setPersistedSessionHidden(route, { sessionId: 'cold', profile: 'research', hidden: true }))
+      .rejects.toThrow('Passive read: no warm backend')
+    expect(hermesApi).toHaveBeenCalledOnce()
+    expect(hermesApi).toHaveBeenCalledWith({ connectionId: 'local',
+      path: '/api/sessions/cold/mutation-snapshot?profile=research', passive: true })
+  })
+
+  it('hides on a warm forced-local backend with a fenced passive PATCH', async () => {
+    const route = { connectionId: 'local', mode: 'local' as const, profile: 'research', targetProfile: 'research' }
+    vi.mocked(hermesApi).mockImplementation(async request => {
+      if (request.passive !== true) { throw new Error('child started') }
+
+      return (request.method === 'PATCH' ? { ok: true, hidden: true } :
+        { exists: true, runtime_revision: 23, runtime_generation: 7 }) as never
+    })
+
+    await expect(host.setPersistedSessionHidden(route, { sessionId: 'warm', profile: 'research', hidden: true }))
+      .resolves.toEqual({ ok: true, hidden: true })
+    expect(hermesApi).toHaveBeenNthCalledWith(2, { connectionId: 'local', path: '/api/sessions/warm',
+      method: 'PATCH', passive: true, body: { hidden: true, profile: 'research',
+        expected_revision: 23, expected_generation: 7, request_id: expect.any(String) } })
+  })
+
+  it('does not respawn an evicted child between the hide snapshot and PATCH', async () => {
+    const route = { connectionId: 'local', mode: 'local' as const, profile: 'research', targetProfile: 'research' }
+    let warm = true
+    vi.mocked(hermesApi).mockImplementation(async request => {
+      if (request.passive !== true) { throw new Error('evicted child restarted') }
+
+      if (!warm) { throw new Error('Passive write: no warm backend') }
+
+      warm = false
+
+      return { exists: true, runtime_revision: 2, runtime_generation: 1 } as never
+    })
+
+    await expect(host.setPersistedSessionHidden(route, { sessionId: 'evicted', profile: 'research', hidden: true }))
+      .rejects.toThrow('Passive write: no warm backend')
+    expect(hermesApi).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(hermesApi).mock.calls[1][0]).toMatchObject({ connectionId: 'local',
+      method: 'PATCH', passive: true, body: { profile: 'research', expected_revision: 2,
+        expected_generation: 1, request_id: expect.any(String) } })
+  })
+
+  it('keeps the older-server snapshot-route fallback passive and owner-scoped', async () => {
+    const route = { connectionId: 'local', mode: 'local' as const, profile: 'research', targetProfile: 'research' }
+    vi.mocked(hermesApi).mockImplementation(async request => {
+      if (request.passive !== true) { throw new Error('child started') }
+
+      if (request.method !== 'PATCH') {
+        throw new Error('404: {"detail":"No such API endpoint: /api/sessions/old/mutation-snapshot"}')
+      }
+
+      return { ok: true, hidden: true } as never
+    })
+
+    await host.setPersistedSessionHidden(route, { sessionId: 'old', profile: 'research', hidden: true })
+    expect(hermesApi).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(hermesApi).mock.calls[1][0]).toEqual({ connectionId: 'local',
+      path: '/api/sessions/old', method: 'PATCH', passive: true,
+      body: { hidden: true, profile: 'research' } })
   })
 
   it('forwards an explicit timeout so long-running methods outlive the generic deadline', async () => {

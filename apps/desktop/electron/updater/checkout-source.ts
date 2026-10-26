@@ -54,11 +54,19 @@ function probeFlags(probe: SourceUpdateProbe): string[] {
   ]
 }
 
-/** Every update child's env: the system proxy when none is set (#123387), then this process's env. */
-export async function sourceUpdateEnvironment(updateRoot: string, hermesHome: string): Promise<NodeJS.ProcessEnv> {
+/**
+ * Every update child's env: this process's env plus the system proxy when none
+ * is set (#123387). The proxy env comes last so its extended NO_PROXY is the
+ * one the children read; it is empty whenever the user set a proxy.
+ */
+export async function sourceUpdateEnvironment(
+  updateRoot: string,
+  hermesHome: string,
+  note?: (message: string) => void
+): Promise<NodeJS.ProcessEnv> {
   const env: NodeJS.ProcessEnv = {
-    ...(await updateProxyEnv()),
     ...process.env,
+    ...(await updateProxyEnv(process.env, note)),
     ...buildDesktopBackendEnv(),
     HERMES_HOME: hermesHome,
     HERMES_INSTALL_ROOT: updateRoot

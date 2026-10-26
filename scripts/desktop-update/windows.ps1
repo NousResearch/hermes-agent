@@ -762,6 +762,21 @@ function Get-DesktopWorkingDirectory {
     return [Environment]::GetFolderPath('UserProfile')
 }
 
+function Restore-UserProxyEnv {
+    # Port of restoreUserProxyEnv (electron/updater/system-proxy-env.ts): the Desktop handed its
+    # system proxy to the update only. HERMES_UPDATE_SYSTEM_PROXY names the variables it added and
+    # HERMES_UPDATE_USER_NO_PROXY holds the user's own NO_PROXY it extended.
+    foreach ($key in ("$env:HERMES_UPDATE_SYSTEM_PROXY" -split ',')) {
+        if (@('HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY') -contains $key) { Remove-Item "Env:$key" -ErrorAction SilentlyContinue }
+    }
+    $saved = [Environment]::GetEnvironmentVariable('HERMES_UPDATE_USER_NO_PROXY', 'Process')
+    if ($null -ne $saved) {
+        [Environment]::SetEnvironmentVariable('NO_PROXY', $saved, 'Process')
+        Remove-Item Env:HERMES_UPDATE_USER_NO_PROXY -ErrorAction SilentlyContinue
+    }
+    Remove-Item Env:HERMES_UPDATE_SYSTEM_PROXY -ErrorAction SilentlyContinue
+}
+
 function Start-DesktopRelaunch {
     # Returns $true only when a launch VERIFIABLY happened (WMI accepted and
     # the pid exists, or the fallback spawn returned a live process). The
@@ -892,6 +907,8 @@ function Start-DesktopRelaunch {
             Write-HandoffLog "WARNING: explorer relaunch failed: $($_.Exception.Message); falling back"
         }
     }
+    # Only the tethered rung below inherits this script's env; the relaunched app gets the user's own.
+    Restore-UserProxyEnv
     if (-not $spawned) {
         try {
             # Fallback keeps the old behavior (console tie-in and all) --

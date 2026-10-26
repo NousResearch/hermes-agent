@@ -7,8 +7,13 @@ import { app } from 'electron'
 import { resolveDesktopHermesHome } from './data-paths'
 import { releasePackagedWorkingDirectory } from './packaged-working-directory'
 import { readDesktopLaunchConfig } from './renderer-heap-flags'
+import { restoreUserProxyEnv } from './updater/system-proxy-env'
 import { wslgLaunchArgs } from './wslg-launch'
 import { spawnWslgLaunch } from './wslg-launch-process'
+
+// A Desktop relaunched by an update (any rung: hand-off script, staged updater,
+// Start-Process) must not keep the system proxy the update's children were given.
+restoreUserProxyEnv(process.env)
 
 // `hermes desktop` asks this binary whether Chromium's namespace sandbox starts under the host's
 // AppArmor policy (#130177). Chromium creates its sandboxed zygote before any JS runs, so reaching

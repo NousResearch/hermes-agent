@@ -682,6 +682,20 @@ deliver_outcome() { # the truth-determining half: swap bundles / gate the relaun
   fi
 }
 
+restore_user_proxy_env() { # port of restoreUserProxyEnv (electron/updater/system-proxy-env.ts):
+  # the Desktop gave its system proxy to the update only; the relaunched app gets the user's own env.
+  local key saved keys
+  IFS=, read -r -a keys <<< "${HERMES_UPDATE_SYSTEM_PROXY:-}"
+  for key in ${keys[@]+"${keys[@]}"}; do
+    case "$key" in HTTPS_PROXY|https_proxy|HTTP_PROXY|http_proxy|NO_PROXY|no_proxy) unset "$key" ;; esac
+  done
+  for key in NO_PROXY no_proxy; do
+    saved="HERMES_UPDATE_USER_$key"
+    if printenv "$saved" >/dev/null; then export "$key=$(printenv "$saved")"; unset "$saved"; fi
+  done
+  unset HERMES_UPDATE_SYSTEM_PROXY
+}
+
 launch_app() { # attempted BEFORE the terminal event (launch acceptance is
   # part of the outcome — gille's review). Returns nonzero when a launch
   # was due but did not verifiably happen; caller downgrades to manual.
@@ -699,7 +713,7 @@ launch_app() { # attempted BEFORE the terminal event (launch acceptance is
     /usr/bin/xattr -dr com.apple.quarantine "$RELAUNCH_TARGET" 2>/dev/null || true
     # `open` talks to launchd and FAILS LOUDLY on a broken/unlaunchable
     # bundle — its exit code IS launch acceptance here.
-    /usr/bin/open "$RELAUNCH_TARGET" || { log "WARNING: open rejected the app"; return 1; }
+    ( restore_user_proxy_env; /usr/bin/open "$RELAUNCH_TARGET" ) || { log "WARNING: open rejected the app"; return 1; }
   elif [ "$GATE" = "relaunch" ]; then
     # setsid only proves the wrapper shell started, so verify acceptance:
     # spawn, then confirm the child is still alive shortly after — an
@@ -707,6 +721,7 @@ launch_app() { # attempted BEFORE the terminal event (launch acceptance is
     # within the window and downgrades to manual instead of lying.
     (cd "${RELAUNCH_CWD:-/}" 2>/dev/null || cd /
      # The relaunched app must not inherit the hand-off's update env.
+     restore_user_proxy_env
      env -u HERMES_UPDATE_STATUS_FILE -u HERMES_UPDATE_STARTED_AT -u HERMES_UPDATE_HANDOFF_PID -u PYTHONUNBUFFERED \
        setsid "$RELAUNCH_TARGET" ${RELAUNCH_ARGS[@]+"${RELAUNCH_ARGS[@]}"} >/dev/null 2>&1 &
      echo $! > "$STATUS.launchpid") || { log "WARNING: relaunch spawn failed"; return 1; }

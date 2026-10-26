@@ -1410,6 +1410,8 @@ def start_server(
     until the ready sentinel is written so its SDK import can't hold the GIL
     against the pre-bind path.
     """
+    from hermes_cli.update_proxy_env import restore_user_proxy_env
+    restore_user_proxy_env()  # a backend an update replayed keeps the user's proxy env, not the update's
     _apply_ssh_session_token(ssh_session_token or "")
     _apply_ssh_owner_nonce(ssh_owner_nonce)
 

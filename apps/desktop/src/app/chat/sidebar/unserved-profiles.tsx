@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react'
+import { type ComponentProps, useEffect, useState } from 'react'
 
+import { ProfileGlyph } from '@/components/ui/profile-glyph'
 import { useI18n } from '@/i18n'
 import { isBrowserHostedDesktop } from '@/lib/platform'
+import { cn } from '@/lib/utils'
 import { normalizeProfileKey } from '@/store/profile'
 import type { ProfileInfo } from '@/types/hermes'
 
@@ -42,6 +44,16 @@ export function useUnservedProfiles(profiles: readonly ProfileInfo[]): ReadonlyS
   }, [profiles])
 
   return unserved
+}
+
+/** A profile menu row's mark, greyed when the row's profile is not served here. Both pickers' rows
+ *  use it with `UnservedProfileNote`, so an unserved row looks the same in each. */
+export function ProfileRowGlyph({
+  className,
+  unserved,
+  ...props
+}: ComponentProps<typeof ProfileGlyph> & { unserved: boolean }) {
+  return <ProfileGlyph aria-hidden="true" className={cn(unserved && 'grayscale', className)} {...props} />
 }
 
 /** What an unserved row says beside its name; the row itself is disabled and greyed. Its accessible

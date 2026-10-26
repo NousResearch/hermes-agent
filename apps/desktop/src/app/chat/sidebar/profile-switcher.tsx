@@ -108,7 +108,7 @@ import { buildRestGroups, countRestAgents, type FleetAgent, type FleetGroup, fle
 import { useLocalDeviceSwitch } from './local-device-switch'
 import { ProfileLaunchContextMenu, ProfileLaunchMenuSection } from './profile-launch-menu'
 import { ProfileRemoteOverrideDialog } from './profile-remote-override-dialog'
-import { UnservedProfileNote, useUnservedProfiles } from './unserved-profiles'
+import { ProfileRowGlyph, UnservedProfileNote, useUnservedProfiles } from './unserved-profiles'
 import { useFleetRoster } from './use-fleet-roster'
 import { useProfilePrewarm } from './use-profile-prewarm'
 import { useProfileRailRefreshOnActive } from './use-profile-rail-refresh-on-active'
@@ -1036,13 +1036,7 @@ function ProfileDropdownItem({
         value={name}
       >
         <span className="flex min-w-0 items-center gap-1.5">
-          <ProfileGlyph
-            aria-hidden="true"
-            className={cn(unserved && 'grayscale')}
-            color={color}
-            isDefault={isDefault}
-            name={name}
-          />
+          <ProfileRowGlyph color={color} isDefault={isDefault} name={name} unserved={unserved} />
           <span className="truncate">{label}</span>
           {summary && !hideStatus && <ProfileStatusDot summary={summary} />}
         </span>

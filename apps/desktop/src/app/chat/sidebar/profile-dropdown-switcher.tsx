@@ -54,7 +54,7 @@ import { FleetGatewayMenuGroup } from './fleet-gateway-menu-group'
 import { buildRestGroups, type FleetAgent, fleetRouteKey } from './fleet-rail'
 import { useLocalDeviceSwitch } from './local-device-switch'
 import { ProfileLaunchContextMenu } from './profile-launch-menu'
-import { UnservedProfileNote, useUnservedProfiles } from './unserved-profiles'
+import { ProfileRowGlyph, UnservedProfileNote, useUnservedProfiles } from './unserved-profiles'
 import { useFleetRoster } from './use-fleet-roster'
 import { useProfilePrewarm } from './use-profile-prewarm'
 import { useProfileRailRefreshOnActive } from './use-profile-rail-refresh-on-active'
@@ -318,13 +318,7 @@ function ProfileItem({ color, connectionId, isDefault, label, launchMenu, name, 
       value={name}
     >
       <span className="flex min-w-0 items-center gap-1.5">
-        <ProfileGlyph
-          aria-hidden="true"
-          className={cn(unserved && 'grayscale')}
-          color={color}
-          isDefault={isDefault}
-          name={name}
-        />
+        <ProfileRowGlyph color={color} isDefault={isDefault} name={name} unserved={unserved} />
         <span className="truncate">{label}</span>
       </span>
       {unserved && <UnservedProfileNote />}

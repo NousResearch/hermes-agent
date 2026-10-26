@@ -309,6 +309,7 @@ export interface OverlayState {
   pager: null | PagerState
   petPicker: boolean
   pluginsHub: boolean
+  rewind: null | RewindOverlay
   secret: null | SecretReq
   vaultCode: null | VaultCodeReq
   vaultSaveLogin: null | VaultSaveLoginReq
@@ -317,6 +318,19 @@ export interface OverlayState {
   skillsHub: boolean
   subscription: SubscriptionOverlayState | null
   sudo: null | SudoReq
+}
+
+/** One earlier user prompt the rewind picker can return to (`row_id` is its durable message row). */
+export interface RewindTarget {
+  rowId: number
+  text: string
+  turn: number
+}
+
+export interface RewindOverlay {
+  /** Oldest first, as stored. */
+  targets: RewindTarget[]
+  onSubmit: (target: RewindTarget, text: string) => void
 }
 
 export interface PagerState {
@@ -610,6 +624,7 @@ export interface SlashHandlerContext {
 
 export interface AppLayoutActions {
   answerApproval: (choice: string) => void
+  answerApprovalTell: (text: string) => void
   answerClarifyQuestion: (qid: string, answer: string) => void
   answerSecret: (value: string) => void
   answerSudo: (pw: string) => void
@@ -683,6 +698,7 @@ export interface AppOverlaysProps {
   compIdx: number
   completions: CompletionItem[]
   onApprovalChoice: (choice: string) => void
+  onApprovalTell: (text: string) => void
   onClarifyCancel: () => void
   onClarifyQuestionAnswer: (qid: string, value: string) => void
   onActiveSessionSelect: (sessionId: string) => void

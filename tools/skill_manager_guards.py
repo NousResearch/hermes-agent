@@ -103,8 +103,9 @@ def _is_path_redirect(path: Path) -> bool:
 
 
 def _validate_delete_target(skill_dir: Path) -> Optional[str]:
-    """Last-line guard before rmtree: even a poisoned tree must never delete (1) a path outside
-    every known skills root, (2) a skills root itself, (3) a symlink/junction (rmtree follows it).
+    """Last-line guard before the destructive delete (a relocation, formerly an rmtree): even a
+    poisoned tree must never (1) move/delete a path outside every known skills root, (2) a skills
+    root itself, (3) a symlink/junction.
 
     ``_find_skill`` already restricts ``skill_dir`` to a real ``SKILL.md`` parent discovered by walking the
     skills roots, so the agent cannot inject an arbitrary path the way Kilo Code's HTTP endpoint could

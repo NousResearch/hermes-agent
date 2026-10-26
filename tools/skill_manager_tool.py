@@ -11,7 +11,9 @@ import contextvars as _ctxvars
 import hashlib
 import json
 from contextlib import ExitStack, suppress
+from datetime import UTC, datetime
 import logging
+import os
 import re
 import shutil
 from pathlib import Path
@@ -575,8 +577,10 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str | N
 
 
 def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> dict[str, Any]:
-    """Delete a skill. ``absorbed_into``: None = undeclared (legacy, accepted); "" = explicit prune;
-    "<skill>" = absorbed into that umbrella, which must exist (so the model can't claim one)."""
+    """Delete a skill by RELOCATING it to the curator archive (``skills/.archive/``, flattened by
+    name; restorable with ``hermes curator restore``) — never rmtree. ``absorbed_into``: None =
+    undeclared (legacy, accepted); "" = explicit prune; "<skill>" = absorbed into that umbrella,
+    which must exist (so the model can't claim one)."""
     skill_dir, guard = _locate_for_write(name, "delete")
     if guard := guard or _curator_consolidation_delete_guard(name, absorbed_into):
         return guard
@@ -590,10 +594,8 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> dict[str, A
             return _err(f"absorbed_into='{absorbed_target}' does not exist. "
                         f"Create or patch the umbrella skill first, then retry the delete.")
     skills_root = _containing_skills_root(skill_dir)
-    if unsafe := _validate_delete_target(skill_dir):  # defense-in-depth before rmtree
+    if unsafe := _validate_delete_target(skill_dir):  # defense-in-depth before the destructive delete
         return _err(unsafe)
-    # Curator consolidations must be RECOVERABLE (`hermes curator restore`): archive instead
-    # of rmtree. Foreground deletes keep hard-delete semantics.
     absorbed_note = f" Content absorbed into '{absorbed_target}'." if absorbed_target else ""
     if _is_background_review():
         try:
@@ -606,9 +608,34 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> dict[str, A
         return {"success": True,
                 "message": f"Skill '{name}' archived ({archive_msg}).{absorbed_note}",
                 "_archived": True}
-    shutil.rmtree(skill_dir)
+    # Every foreground skill_manage delete is RELOCATED to the curator archive layout — the
+    # same ``skills/.archive/`` dir `archive_skill` uses, flattened under the skill name,
+    # timestamp suffix on collision — so the copy stays restorable with `hermes curator restore
+    # <name>`. A degraded model emission can satisfy the delete branch (a sole delete with a
+    # fabricated ``absorbed_into=""`` is a valid prune), so this must NOT fall back to rmtree on
+    # failure: if the move fails the skill stays where it is (fail closed). The guards above
+    # already ran, and a move adds no rmtree-style escape risk.
+    from tools.skill_usage import _archive_dir
+    archive_name = Path(name).name
+    dest = _archive_dir() / archive_name
+    if dest.exists():
+        dest = dest.with_name(f"{dest.name}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}")
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        skill_dir.rename(dest)
+    except OSError:
+        try:
+            shutil.move(str(skill_dir), str(dest))
+        except Exception as e:
+            return _err(f"failed to relocate '{name}' to the archive: {e}")
+    # `curator purge` ages archives by mtime; a move keeps the skill's last-edit mtime, so an
+    # idle skill deleted today would already look older than any TTL.
+    with suppress(OSError):
+        os.utime(dest)
     _rmdir_if_empty(skill_dir.parent, skills_root)  # empty category dir, never the root
-    return {"success": True, "message": f"Skill '{name}' deleted.{absorbed_note}"}
+    return {"success": True,
+            "message": f"Skill '{name}' deleted. Recoverable via archive at {dest} "
+                       f"(hermes curator restore {archive_name}).{absorbed_note}"}
 
 
 def _rmdir_if_empty(parent: Path, stop: Path) -> None:
@@ -762,14 +789,15 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
         clear_skills_system_prompt_cache(clear_snapshot=True)
     # Curator telemetry: only the background review fork marks a skill agent-created
     # (foreground creates belong to the user). A recoverable curator archive keeps its
-    # record as STATE_ARCHIVED (`hermes curator status`/`restore`); only a hard delete forgets.
+    # record as STATE_ARCHIVED (`hermes curator status`/`restore`); a foreground delete
+    # forgets the record — its relocated copy stays restorable via `hermes curator restore`.
     with suppress(Exception):
         from tools.skill_usage import bump_patch, forget, record_created
         # During the curator consolidation pass, a verified consolidation must be RECOVERABLE: archival into
         # ~/.hermes/skills/.archive/ is documented as the maximum destructive action the curator may take,
         # and `hermes curator restore` promises the skill can be brought back. Route through the recoverable
         # archive primitive instead of permanent rmtree so a misjudged consolidation can be undone (#29912).
-        # Foreground, user-directed deletes keep their existing hard-delete semantics.
+        # Foreground deletes are recoverable too: _delete_skill relocates into the same archive layout.
         from tools.skill_provenance import is_background_review
         if action == "create":
             record_created(name, agent_created=is_background_review(),

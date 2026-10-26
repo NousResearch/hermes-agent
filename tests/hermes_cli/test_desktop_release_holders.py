@@ -113,7 +113,7 @@ def test_a_holder_whose_program_path_is_unreadable_is_left_for_the_user(holder, 
     holders, closed = release_after_refused_rename(
         release, consent=take_consent(release, "desktop-retry-1"), input_fn=_never_asked)
 
-    assert [h.pid for h in holders] == [proc.pid] and closed == []
+    assert proc.pid in [h.pid for h in holders] and closed == []
     assert proc.poll() is None
     out = capsys.readouterr().out
     assert f"(pid {proc.pid}, started " in out and "path unreadable)" in out

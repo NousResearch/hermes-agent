@@ -1,7 +1,10 @@
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useEffect, useRef } from 'react'
 
+import { dismissNotification } from '@/store/notifications'
 import { $resumeReattachSessionId } from '@/store/session'
+
+import { type ResumeAttemptOptions, resumeFailedToastId } from './use-session-actions/resume-latches'
 
 interface ResumeReattachOptions {
   activeSessionId: string | null
@@ -9,7 +12,12 @@ interface ResumeReattachOptions {
   creatingSessionRef: MutableRefObject<boolean>
   currentView: string
   gatewayState: string | undefined
-  resumeSession: (sessionId: string, focus: boolean) => Promise<unknown>
+  resumeSession: (
+    sessionId: string,
+    focus: boolean,
+    ownerRoute?: undefined,
+    options?: ResumeAttemptOptions
+  ) => Promise<unknown>
   routedSessionId: string | null
   selectedStoredSessionIdRef: MutableRefObject<string | null>
 }
@@ -25,7 +33,8 @@ const REATTACH_MAX_MS = 8_000
  * selection and the gateway are all unchanged. A turn still running there then
  * never streams its reply in, and the view keeps "Result unavailable" for good.
  * Retries back off and stop after MAX_REATTACH_ATTEMPTS; the history stays on
- * screen either way, and a reconnect or reselect resumes it as before.
+ * screen either way, and a reconnect or reselect resumes it as before. They
+ * are quiet: no app-wide toast wipe, no repeat "Resume failed" (resume-latches).
  */
 export function useResumeReattach({
   activeSessionId,
@@ -42,6 +51,12 @@ export function useResumeReattach({
 
   useEffect(() => {
     const attempts = attemptsRef.current
+
+    // A retry re-attached: the incident's "Resume failed" toast is stale now
+    // (retries no longer clear the app's toasts on entry).
+    if (activeSessionId && routedSessionId && attempts.count > 0 && attempts.sessionId === routedSessionId) {
+      dismissNotification(resumeFailedToastId(routedSessionId))
+    }
 
     // A bound runtime (or another chat) starts the next detach on a fresh cycle.
     if (activeSessionId || attempts.sessionId !== routedSessionId) {
@@ -73,7 +88,7 @@ export function useResumeReattach({
         }
 
         attempts.count += 1
-        void resumeSession(sessionId, true)
+        void resumeSession(sessionId, true, undefined, { reattach: true })
       },
       Math.min(REATTACH_MAX_MS, REATTACH_BASE_MS * 2 ** attempts.count)
     )

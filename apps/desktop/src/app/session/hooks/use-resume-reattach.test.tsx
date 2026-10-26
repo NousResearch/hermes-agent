@@ -29,13 +29,15 @@ describe('a failed resume that still painted the history', () => {
     setResumeExhaustedSessionId(null)
   })
 
-  it('re-attaches on backoff, bounded, and never covers the history with the exhausted error', () => {
+  it('skips a timer that fires after the selection moved or a runtime bound, and stays bounded', () => {
     vi.useFakeTimers()
     const resumeSession = vi.fn(async () => undefined)
+    const activeSessionIdRef: MutableRefObject<null | string> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: 'session-1' }
 
     const props: Props = {
       activeSessionId: null,
-      activeSessionIdRef: { current: null } as MutableRefObject<null | string>,
+      activeSessionIdRef,
       creatingSessionRef: { current: false },
       currentView: 'chat',
       freshDraftReady: false,
@@ -48,27 +50,41 @@ describe('a failed resume that still painted the history', () => {
       routedSessionId: 'session-1',
       runtimeIdByStoredSessionIdRef: { current: new Map<string, string>() },
       selectedStoredSessionId: 'session-1',
-      selectedStoredSessionIdRef: { current: 'session-1' } as MutableRefObject<null | string>,
+      selectedStoredSessionIdRef,
       startFreshSessionDraft: vi.fn()
     }
 
     const { rerender } = render(<Harness {...props} />)
     resumeSession.mockClear() // the mount resume is the one that failed
 
-    // What resumeSession does on that failure: history painted, latch armed.
-    setResumeReattachSessionId('session-1')
-    rerender(<Harness {...props} />)
-
-    vi.advanceTimersByTime(1_000)
-    expect(resumeSession).toHaveBeenCalledTimes(1)
-    expect(resumeSession).toHaveBeenCalledWith('session-1', true)
-
-    // Every retry clears the latch at entry and fails the same way again.
-    for (let i = 0; i < 8; i += 1) {
+    // resumeSession arms the latch on that failure, and clears it at the
+    // entry of every later attempt, which then fails the same way.
+    const failAgain = () => {
       setResumeReattachSessionId(null)
       rerender(<Harness {...props} />)
       setResumeReattachSessionId('session-1')
       rerender(<Harness {...props} />)
+    }
+
+    // The refs move before the route/props catch up (renderer timers lag).
+    failAgain()
+    selectedStoredSessionIdRef.current = 'session-2'
+    vi.advanceTimersByTime(1_000)
+    selectedStoredSessionIdRef.current = 'session-1'
+
+    failAgain()
+    activeSessionIdRef.current = 'runtime-1'
+    vi.advanceTimersByTime(1_000)
+    activeSessionIdRef.current = null
+
+    expect(resumeSession).not.toHaveBeenCalled()
+
+    failAgain()
+    vi.advanceTimersByTime(1_000)
+    expect(resumeSession).toHaveBeenCalledWith('session-1', true, undefined, { reattach: true })
+
+    for (let i = 0; i < 8; i += 1) {
+      failAgain()
       vi.advanceTimersByTime(8_000)
     }
 

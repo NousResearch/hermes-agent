@@ -6,6 +6,7 @@ import type { SessionProfileRoute } from '@/store/session-request-router'
 import { markSelectionRestore } from '@/store/session-states'
 
 import { useResumeReattach } from './use-resume-reattach'
+import type { ResumeAttemptOptions } from './use-session-actions/resume-latches'
 
 interface RouteResumeOptions {
   activeSessionId: string | null
@@ -19,7 +20,7 @@ interface RouteResumeOptions {
     sessionId: string,
     focus: boolean,
     ownerRoute?: SessionProfileRoute,
-    options?: { authoritativeSnapshot?: boolean }
+    options?: ResumeAttemptOptions
   ) => Promise<unknown>
   // Stored-session id whose most recent resume failed terminally (set by
   // useSessionActions, mirrored from $resumeFailedSessionId). While this equals

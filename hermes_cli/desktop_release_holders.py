@@ -105,7 +105,7 @@ def take_consent(release_dir: Path, *, now: Callable[[], float] = time.time) -> 
     """The program paths the user agreed to close for this one retry; the file is consumed."""
     path = release_dir / CONSENT_FILE_NAME
     try:
-        raw = path.read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8-sig")
     except OSError:
         return frozenset()
     with contextlib.suppress(OSError):

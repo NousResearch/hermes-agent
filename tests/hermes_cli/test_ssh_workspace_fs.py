@@ -1,5 +1,6 @@
 import base64
 import io
+import threading
 
 import pytest
 
@@ -150,3 +151,102 @@ def test_ssh_workspace_factory_disables_agent_file_sync(monkeypatch):
             "sync_files": False,
         }
     ]
+
+
+def _ssh_terminal(host: str) -> dict:
+    return {"backend": "ssh", "cwd": "/srv/repos", "ssh_host": host, "ssh_user": "dev"}
+
+
+@pytest.fixture
+def gated_ssh(monkeypatch):
+    """A fake SSHEnvironment that records each dial; a dial to a ``hanging`` host blocks until ``release``."""
+
+    class GatedSshEnvironment:
+        created: list = []
+        cleaned: list = []
+        hanging: set = set()
+        failing: set = set()
+        dialing = threading.Event()
+        release = threading.Event()
+
+        def __init__(self, **kwargs):
+            self.created.append(kwargs["host"])
+            if kwargs["host"] in self.hanging:
+                self.dialing.set()
+                self.release.wait(5)
+            if kwargs["host"] in self.failing:
+                raise OSError("connection timed out")
+            self.host = kwargs["host"]
+            self.cwd = kwargs["cwd"]
+            self.timeout = kwargs["timeout"]
+            self._remote_home = "/home/dev"
+
+        def cleanup(self):
+            self.cleaned.append(self.host)
+
+    monkeypatch.setattr(ssh_workspace_fs, "SSHEnvironment", GatedSshEnvironment)
+    monkeypatch.setattr(ssh_workspace_fs, "_BACKENDS", {})
+    yield GatedSshEnvironment
+    GatedSshEnvironment.release.set()
+
+
+def test_ssh_workspace_factory_serves_other_profiles_while_one_host_hangs(gated_ssh):
+    gated_ssh.hanging.add("down.example")
+    results: dict = {}
+
+    def open_profile(profile_key: str, host: str) -> None:
+        results[profile_key] = ssh_workspace_fs.get_ssh_workspace_fs(profile_key, _ssh_terminal(host))
+
+    down = threading.Thread(target=open_profile, args=("down", "down.example"), daemon=True)
+    up = threading.Thread(target=open_profile, args=("up", "up.example"), daemon=True)
+    down.start()
+    try:
+        assert gated_ssh.dialing.wait(5)
+        up.start()
+        up.join(2)
+        assert not up.is_alive(), "a hanging dial on one profile blocked another profile"
+        assert results["up"].cwd == "/srv/repos"
+        assert "down" not in results
+    finally:
+        gated_ssh.release.set()
+        down.join(5)
+        if up.ident is not None:
+            up.join(5)
+    assert results["down"] is not None
+
+
+def test_ssh_workspace_factory_dials_one_profile_once_for_concurrent_requests(gated_ssh):
+    gated_ssh.hanging.add("ssh.example")
+    backends: list = []
+
+    def open_profile() -> None:
+        backends.append(ssh_workspace_fs.get_ssh_workspace_fs("remote-dev", _ssh_terminal("ssh.example")))
+
+    threads = [threading.Thread(target=open_profile, daemon=True) for _ in range(2)]
+    threads[0].start()
+    assert gated_ssh.dialing.wait(5)
+    threads[1].start()
+    gated_ssh.release.set()
+    for thread in threads:
+        thread.join(5)
+        assert not thread.is_alive()
+
+    assert gated_ssh.created == ["ssh.example"]
+    assert len(backends) == 2 and backends[0] is backends[1]
+
+
+def test_ssh_workspace_factory_replaces_changed_config_and_drops_failed_redial(gated_ssh):
+    first = ssh_workspace_fs.get_ssh_workspace_fs("remote-dev", _ssh_terminal("old.example"))
+    assert ssh_workspace_fs.get_ssh_workspace_fs("remote-dev", _ssh_terminal("old.example")) is first
+
+    second = ssh_workspace_fs.get_ssh_workspace_fs("remote-dev", _ssh_terminal("new.example"))
+    assert second is not first
+    assert gated_ssh.cleaned == ["old.example"]
+
+    gated_ssh.failing.add("down.example")
+    with pytest.raises(SshWorkspaceFsError, match="Could not connect") as raised:
+        ssh_workspace_fs.get_ssh_workspace_fs("remote-dev", _ssh_terminal("down.example"))
+
+    assert raised.value.code == "ECONN"
+    assert gated_ssh.cleaned == ["old.example", "new.example"]
+    assert "remote-dev" not in ssh_workspace_fs._BACKENDS

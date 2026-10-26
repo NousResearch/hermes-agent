@@ -34,8 +34,11 @@ class _SshFsConfig:
     timeout: int
 
 
+# ``_CACHE_LOCK`` guards only the dicts; a dial holds just its profile's lock, so one unreachable host
+# cannot stall file requests on every other SSH profile.
 _CACHE_LOCK = threading.RLock()
 _BACKENDS: dict[str, tuple[_SshFsConfig, SshWorkspaceFs]] = {}
+_DIAL_LOCKS: dict[str, threading.Lock] = {}
 
 
 class SshWorkspaceFs:
@@ -281,11 +284,12 @@ def get_ssh_workspace_fs(profile_key: str, terminal_config: dict[str, Any]) -> S
         raise SshWorkspaceFsError("ECONN", "SSH host and user are required")
 
     with _CACHE_LOCK:
-        cached = _BACKENDS.get(profile_key)
+        dial_lock = _DIAL_LOCKS.setdefault(profile_key, threading.Lock())
+    with dial_lock:
+        with _CACHE_LOCK:
+            cached = _BACKENDS.get(profile_key)
         if cached and cached[0] == config:
             return cached[1]
-        if cached:
-            cached[1]._env.cleanup()
         try:
             env = SSHEnvironment(
                 host=config.host,
@@ -297,7 +301,14 @@ def get_ssh_workspace_fs(profile_key: str, terminal_config: dict[str, Any]) -> S
                 sync_files=False,
             )
         except Exception as exc:
+            with _CACHE_LOCK:
+                _BACKENDS.pop(profile_key, None)
+            if cached:
+                cached[1]._env.cleanup()
             raise SshWorkspaceFsError("ECONN", "Could not connect to the SSH workspace") from exc
         backend = SshWorkspaceFs(env)
-        _BACKENDS[profile_key] = (config, backend)
+        with _CACHE_LOCK:
+            _BACKENDS[profile_key] = (config, backend)
+        if cached:
+            cached[1]._env.cleanup()
         return backend

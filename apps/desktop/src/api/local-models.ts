@@ -1,4 +1,4 @@
-import type { LocalCatalogModel, LocalHardware, LocalModelsStatus, LocalRuntimeJob } from '@/types/hermes'
+import type { LocalCatalogModel, LocalEngine, LocalHardware, LocalModelsStatus, LocalRuntimeJob } from '@/types/hermes'
 
 import { hermesApi, profileScoped } from './client'
 
@@ -204,5 +204,88 @@ export function sideloadLocalModel(
     body: { path },
     method: 'POST',
     path: '/api/local-models/sideload'
+  })
+}
+
+// ── Engine registry ────────────────────────────────────────────────────────
+// The `managed` engine is Hermes' own llama.cpp build (install/update flows);
+// users can register their own binaries (path + launch args + env) and pick
+// which engine the local endpoint runs on. Mutating routes bounce the
+// runtime; the pane follows the usual status polling, no job needed.
+
+export interface LocalEngineFields {
+  args: string[]
+  backend: string
+  env: Record<string, string>
+  name: string
+  path: string
+}
+
+export function getLocalEngines(scope?: LocalModelsScope): Promise<{ engines: LocalEngine[] }> {
+  return hermesApi<{ engines: LocalEngine[] }>({
+    ...(scope ?? profileScoped()),
+    path: '/api/local-models/engines'
+  })
+}
+
+export function addLocalEngine(
+  fields: LocalEngineFields,
+  scope?: LocalModelsScope
+): Promise<{ engine: LocalEngine; ok: boolean }> {
+  return hermesApi<{ engine: LocalEngine; ok: boolean }>({
+    ...(scope ?? profileScoped()),
+    body: fields,
+    method: 'POST',
+    path: '/api/local-models/engines'
+  })
+}
+
+export function updateLocalEngine(
+  engineId: string,
+  fields: LocalEngineFields,
+  scope?: LocalModelsScope
+): Promise<{ engine: LocalEngine; ok: boolean }> {
+  return hermesApi<{ engine: LocalEngine; ok: boolean }>({
+    ...(scope ?? profileScoped()),
+    body: fields,
+    method: 'PUT',
+    path: `/api/local-models/engines/${encodeURIComponent(engineId)}`
+  })
+}
+
+export function deleteLocalEngine(
+  engineId: string,
+  scope?: LocalModelsScope
+): Promise<{ ok: boolean; was_active: boolean }> {
+  return hermesApi<{ ok: boolean; was_active: boolean }>({
+    ...(scope ?? profileScoped()),
+    method: 'DELETE',
+    path: `/api/local-models/engines/${encodeURIComponent(engineId)}`
+  })
+}
+
+export function selectLocalEngine(
+  engineId: string,
+  scope?: LocalModelsScope
+): Promise<{ engine_id: string; ok: boolean; started: boolean }> {
+  return hermesApi<{ engine_id: string; ok: boolean; started: boolean }>({
+    ...(scope ?? profileScoped()),
+    body: { engine_id: engineId },
+    method: 'POST',
+    path: `/api/local-models/engines/${encodeURIComponent(engineId)}/select`
+  })
+}
+
+/** Run `<binary> --version` server-side without loading a model. Pass a raw
+ *  `path` to test a not-yet-registered binary, or an engine id otherwise. */
+export function probeLocalEngine(
+  args: { engineId?: string; path?: string },
+  scope?: LocalModelsScope
+): Promise<{ ok: boolean; path?: string; version: string }> {
+  return hermesApi<{ ok: boolean; path?: string; version: string }>({
+    ...(scope ?? profileScoped()),
+    body: { engine_id: args.engineId ?? '', path: args.path ?? '' },
+    method: 'POST',
+    path: '/api/local-models/engines/probe'
   })
 }

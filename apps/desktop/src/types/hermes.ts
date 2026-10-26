@@ -1493,6 +1493,10 @@ export interface LocalModelsStatus {
   runtime_backend: string | null
   server_running: boolean
   server_base_url: string | null
+  /** Which registered engine answers the local endpoint (see LocalEngine).
+   *  Optional so an older gateway (no registry) simply renders no engine row. */
+  active_engine_id?: string
+  active_engine_name?: string
   active_model_id: string | null
   loaded_models: Record<string, string>
   /** Models loading into memory right now: real per-tensor load percent. */
@@ -1500,6 +1504,23 @@ export interface LocalModelsStatus {
   placement?: Record<string, LocalModelPlacement>
   models: { id: string; size_bytes: number; size_label: string }[]
   models_dir: string
+}
+
+/** One registered llama.cpp engine (`GET /api/local-models/engines`). The
+ *  `managed` entry is Hermes' own PM-managed build (install/update flows);
+ *  `external` entries are the user's own binaries (path + args + env). */
+export interface LocalEngine {
+  id: string
+  name: string
+  kind: 'managed' | 'external'
+  path: string
+  backend: string
+  args: string[]
+  env: Record<string, string>
+  builtin: boolean
+  active: boolean
+  /** Whether the path currently points at a runnable file. */
+  installed: boolean
 }
 
 export interface LocalHardware {

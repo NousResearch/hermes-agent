@@ -5,6 +5,7 @@ import json
 import logging
 from pathlib import Path
 import sqlite3
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -69,3 +70,112 @@ def request_native_stop(conn, task_id, event_id):
         if not done.cancelled() and (error := done.exception()) is not None:
             logger.warning('Task %s is blocked; native process Stop is unconfirmed (%s)', task_id, type(error).__name__)
     task.add_done_callback(completed)
+
+
+def block_native_task(
+    conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
+    kind: Optional[str] = None, expected_run_id: Optional[int] = None,
+) -> bool:
+    """Commit the native block before requesting scoped Stop for prior owner sessions."""
+    stops = []
+    changed = _commit_block(conn, task_id, reason=reason, kind=kind, expected_run_id=expected_run_id, stops=stops)
+    if changed and stops:
+        request_native_stop(conn, task_id, stops[-1])
+    return changed
+
+
+def _commit_block(
+    conn: sqlite3.Connection, task_id: str, *, reason, kind, expected_run_id, stops,
+) -> bool:
+    """``running``/``ready`` -> ``blocked`` (or ``todo`` / ``triage``, see
+    :func:`kb._route_block`). ``kind='dependency'`` with no incomplete parent is
+    re-kinded to ``needs_input`` (sticky) so ``recompute_ready`` cannot
+    promote it into a context-free respawn. ``transient`` still counts
+    toward the loop breaker so a forever-flaky task escalates. True on any
+    transition.
+
+    An already-``blocked`` card that the failure breaker parked UNTYPED
+    (``block_kind IS NULL``, no live run) is classified in place when *kind*
+    is supplied: ``block_kind``/``block_recurrences`` are set and a ``blocked``
+    audit event is appended, while status, failure evidence and the terminal
+    runs stay exactly as the breaker left them. A typed block, a card with a
+    live run, or a kind-less call on a blocked card are still refused.
+    """
+    from hermes_cli import kanban_db as kb
+    if kind is not None and kind not in kb.VALID_BLOCK_KINDS:
+        raise ValueError(f"block kind must be one of {sorted(kb.VALID_BLOCK_KINDS)} or None")
+    with kb.write_txn(conn):
+        cur_row = conn.execute(
+            "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if cur_row is None:
+            return False
+        # The breaker (``_record_task_failure``) parks cards ``blocked`` with no
+        # ``block_kind`` and no ``blocked`` event -- the policy is the
+        # supervisor's, not the kernel's -- but the transition guard below only
+        # matches running/ready, so that policy could never be attached later
+        # (#117363). Classify in place; never re-type or flap status. A caller
+        # asserting run ownership (``expected_run_id``) cannot own a parked
+        # card -- its run is over -- so it is refused like any stale worker.
+        if cur_row["status"] == "blocked":
+            if kind is None or expected_run_id is not None or kb._row_get(cur_row, "block_kind") is not None:
+                return False
+            classified = conn.execute(
+                "UPDATE tasks SET block_kind = ?, block_recurrences = 1 "
+                "WHERE id = ? AND status = 'blocked' AND block_kind IS NULL "
+                "AND current_run_id IS NULL",
+                (kind, task_id),
+            ).rowcount
+            if classified != 1:
+                return False
+            kb._append_event(conn, task_id, "blocked", {
+                "kind": kind, "reason": reason, "classified_in_place": True,
+            })
+            stops.append(conn.execute('SELECT last_insert_rowid()').fetchone()[0])
+            return True
+        source_status = kb._retry_status_for_run(conn, task_id) if cur_row["status"] == "running" else "ready"
+        requested_kind = kind
+        rekind_reason = None
+        # ``dependency`` only waits on incomplete parents. A worker filing that
+        # kind with none open would park in ``todo`` and ``recompute_ready``
+        # would promote+respawn it context-free on the next tick. Re-kind to
+        # ``needs_input`` so it is sticky until a human unblocks.
+        if kind == "dependency" and kb._parents_satisfied(conn, task_id):
+            kind = "needs_input"
+            rekind_reason = "no_open_parent"
+        new_status, event_kind, set_sql, params, payload = kb._route_block(
+            kind, reason, source_status, prev_kind=kb._row_get(cur_row, "block_kind"),
+            prev_recurrences=int(kb._row_get(cur_row, "block_recurrences") or 0),
+        )
+        if rekind_reason:
+            payload["requested_kind"] = requested_kind
+            payload["rekind_reason"] = rekind_reason
+        sql = f"""
+                UPDATE tasks
+                   SET status        = '{new_status}',
+                       claim_lock    = NULL,
+                       claim_expires = NULL,
+                       worker_pid    = NULL,
+                       {set_sql}
+                 WHERE id = ?
+                   AND status IN ('running', 'ready')
+                """
+        params = (*params, task_id)
+        if expected_run_id is not None:
+            sql += " AND current_run_id = ?"
+            params = (*params, int(expected_run_id))
+        if conn.execute(sql, params).rowcount != 1:
+            return False
+        run_id = kb._end_or_synthesize_run(
+            conn, task_id, outcome="blocked", status="blocked", summary=reason, synthesize=bool(reason),
+        )
+        kb._append_event(conn, task_id, event_kind, payload, run_id=run_id)
+        if event_kind in {'blocked', 'block_loop_detected'}:
+            stops.append(conn.execute('SELECT last_insert_rowid()').fetchone()[0])
+        blocked_task = kb.get_task(conn, task_id)
+        if kind == "dependency":
+            # Historical ordering: the dependency lane fires inside the txn.
+            kb._fire_task_hook("kanban_task_blocked", blocked_task, task_id, run_id, reason=reason)
+            return True
+    kb._fire_task_hook("kanban_task_blocked", blocked_task, task_id, run_id, reason=reason)
+    return True

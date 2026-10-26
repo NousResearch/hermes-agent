@@ -83,7 +83,6 @@ def test_foreign_native_policy_binding_cannot_select_a_session(owned_board, mism
         context[{'board': 'db', 'task': 'task_id', 'run': 'run_id'}[mismatch]] = {
             'board': str(board.home / 'foreign-board.db'), 'task': 'foreign-task', 'run': board.run_id + 1}[mismatch]
     board.admit(board.run_id, context_changes=context, binding_changes=binding)
-    token = kb.list_events(board.conn, board.task_id)[-1].id
     with pytest.raises(RuntimeError, match='another profile|identity is unverified'):
         kb.block_task(board.conn, board.task_id, kind='needs_input', expected_run_id=board.run_id)
     assert board.calls == []
@@ -93,7 +92,6 @@ def test_foreign_native_policy_binding_cannot_select_a_session(owned_board, mism
 def test_stop_replay_excludes_successor_owner_recorded_after_accepted_event(owned_board):
     board = owned_board
     previous = board.admit(board.run_id)
-    token = kb.list_events(board.conn, board.task_id)[-1].id
     assert kb.block_task(board.conn, board.task_id, kind='needs_input', expected_run_id=board.run_id)
     accepted = kb.list_events(board.conn, board.task_id)[-1].id
     assert board.calls == [('session.resume', {'session_id': previous}),
@@ -135,7 +133,6 @@ def test_no_delivery_until_guarded_block_commits(owned_board, monkeypatch, refus
 def test_native_delivery_failure_preserves_accepted_block(owned_board, monkeypatch, failure):
     board = owned_board
     board.admit(board.run_id)
-    token = kb.list_events(board.conn, board.task_id)[-1].id
     if failure == 'unavailable':
         monkeypatch.setattr('hermes_cli.gateway_runtime.discover_gateway_endpoint',
                             lambda home: SimpleNamespace(state='missing', endpoint=None))
@@ -161,7 +158,6 @@ def test_native_delivery_failure_preserves_accepted_block(owned_board, monkeypat
 async def test_owner_loop_commits_and_schedules_self_rpc_without_blocking(owned_board, monkeypatch):
     board = owned_board
     board.admit(board.run_id)
-    token = kb.list_events(board.conn, board.task_id)[-1].id
     entered, release, finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
     rpc = board.client.rpc
 

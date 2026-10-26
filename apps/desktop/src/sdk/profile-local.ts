@@ -1,6 +1,8 @@
 // `host.warmProfile` and `host.dropLeftoverProfilePrefs`: profile verbs that
 // touch only this window's pool and storage, never the profile itself.
 
+import { LOCAL_CONNECTION_ID } from '@hermes/shared'
+
 import { dropBrowserProfilePrefs } from '@/lib/browser-profile-prefs'
 import { prewarmProfileBackend } from '@/store/profile'
 
@@ -35,7 +37,7 @@ export function warmProfile(profile: string): void {
 export function dropLeftoverProfilePrefs(profile: string, connectionId?: null | string): void {
   const connection = String(connectionId ?? '').trim()
 
-  if (connection && connection !== 'local') {
+  if (connection && connection !== LOCAL_CONNECTION_ID) {
     return
   }
 

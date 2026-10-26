@@ -1140,3 +1140,94 @@ class TestTeamsRequireMention:
         adapter = self._make_adapter(**extra)
         assert adapter._require_mention is expected
         assert adapter._extra.get("require_mention") == yaml_value  # extras stay readable on the instance
+
+
+# ---------------------------------------------------------------------------
+# Tests: long messages (chunk size, and continuation chunks threaded in channels)
+# ---------------------------------------------------------------------------
+
+class TestTeamsLongMessages:
+    CHANNEL = "19:abc@thread.tacv2"
+    GROUP_CHAT = "19:def@thread.v2"
+
+    def _make_adapter(self):
+        adapter = TeamsAdapter(_make_config(client_id="bot-id", client_secret="secret", tenant_id="tenant"))
+        adapter._app = MagicMock()
+        ids = iter(str(n) for n in range(1000, 2000))
+
+        def _result(*_args, **_kwargs):
+            return SimpleNamespace(id=next(ids))
+
+        adapter._app.send = AsyncMock(side_effect=_result)
+        adapter._app.reply = AsyncMock(side_effect=_result)
+        return adapter
+
+    @staticmethod
+    def _long(n_chars, word="alert "):
+        return (word * (n_chars // len(word) + 1)).strip()
+
+    @pytest.mark.asyncio
+    async def test_report_above_old_4096_default_is_one_message(self):
+        adapter = self._make_adapter()
+        result = await adapter.send(self.CHANNEL, self._long(9000))
+        assert result.success
+        assert adapter._app.send.await_count == 1
+        assert adapter._app.reply.await_count == 0
+        assert "(1/" not in adapter._app.send.await_args.args[1]
+
+    @pytest.mark.asyncio
+    async def test_chunks_are_budgeted_in_utf16_units(self):
+        adapter = self._make_adapter()
+        # 13,000 emoji and spaces are 25,999 characters (under the budget) but 38,999 UTF-16 units (over it).
+        await adapter.send(self.CHANNEL, " ".join(["\U0001F600"] * 13000))
+        sent = [c.args[1] for c in adapter._app.send.await_args_list] + [c.args[2] for c in adapter._app.reply.await_args_list]
+        assert len(sent) == 2
+        assert all(len(chunk.encode("utf-16-le")) // 2 <= TeamsAdapter.MAX_MESSAGE_LENGTH for chunk in sent)
+
+    @pytest.mark.asyncio
+    async def test_channel_continuations_reply_in_thread_of_first_post(self):
+        adapter = self._make_adapter()
+        result = await adapter.send(self.CHANNEL, self._long(70000))
+        assert result.success
+        assert adapter._app.send.await_count == 1  # one top-level post
+        root = "1000"  # id returned for the first post
+        assert adapter._app.reply.await_count == 2
+        for call in adapter._app.reply.await_args_list:
+            assert call.args[0] == self.CHANNEL and call.args[1] == root
+        assert result.message_id == "1002"
+
+    @pytest.mark.asyncio
+    async def test_reply_to_threads_every_chunk_under_it(self):
+        adapter = self._make_adapter()
+        await adapter.send(self.CHANNEL, self._long(70000), reply_to="777")
+        assert adapter._app.send.await_count == 0
+        assert [c.args[1] for c in adapter._app.reply.await_args_list] == ["777", "777", "777"]
+
+    @pytest.mark.asyncio
+    async def test_conversation_already_in_a_thread_keeps_continuations_there(self):
+        adapter = self._make_adapter()
+        await adapter.send(f"{self.CHANNEL};messageid=555", self._long(70000))
+        assert adapter._app.send.await_count == 1
+        assert {c.args[1] for c in adapter._app.reply.await_args_list} == {"555"}
+
+    @pytest.mark.asyncio
+    async def test_group_chat_has_no_threads_and_stays_flat(self):
+        adapter = self._make_adapter()
+        await adapter.send(self.GROUP_CHAT, self._long(70000))
+        assert adapter._app.send.await_count == 3
+        assert adapter._app.reply.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_failed_threaded_reply_falls_back_to_flat_send(self):
+        adapter = self._make_adapter()
+        adapter._app.reply = AsyncMock(side_effect=RuntimeError("400"))
+        result = await adapter.send(self.CHANNEL, self._long(30000))
+        assert result.success
+        assert adapter._app.send.await_count == 2  # nothing is lost
+
+    @pytest.mark.asyncio
+    async def test_send_error_reports_failure(self):
+        adapter = self._make_adapter()
+        adapter._app.send = AsyncMock(side_effect=RuntimeError("boom"))
+        result = await adapter.send(self.CHANNEL, "hi")
+        assert not result.success and result.retryable

@@ -1,0 +1,36 @@
+name: mediarag
+repo: https://github.com/dyiapanis/mediarag
+sha: 6c3bba2b6a21e48ffdae1992638d2e4e6c3358e3
+description: |
+  Multimodal local search over documents and media: pdf, office files, notes, images,
+  audio and subtitles in one corpus, queried by meaning from any MCP-capable agent.
+  Documents and media sit level in the same index, so "which file mentions the landing"
+  and "where is the clip where I said it" are the same kind of question. Retrieval is
+  hybrid — semantic vectors fused with an FTS5/BM25 keyword lane — and results carry
+  snippets, timestamps and image thumbnails.
+
+  Everything runs locally: the corpus is a SQLite file you own, the embedding weights
+  download once (~480MB) and every search after that runs offline. Nothing is uploaded
+  and there is no telemetry — the only network calls are ones you ask for: an http(s)
+  source you add, or the optional Raindrop adapter.
+
+  Ships as an Agent Plugins v1 package — a stdio MCP server for conforming clients, plus
+  five native Hermes tools so one gateway serves every agent with the model loaded once.
+  Linux and Windows.
+maintainer: dyiapanis
+tier: community
+category: tools
+docs_url: https://github.com/dyiapanis/mediarag#readme
+version: "0.1.4"
+readme: true
+platforms: [linux, windows]
+capabilities:
+  provides_tools:
+    - mediarag_search
+    - mediarag_add_note
+    - mediarag_ingest_dir
+    - mediarag_add_source
+    - mediarag_status
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

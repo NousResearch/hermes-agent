@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-10-13T18:12:26Z",
+  "updated_at": "2026-10-26T02:45:22Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -153,6 +153,10 @@
           "description": ""
         },
         {
+          "id": "deepseek/deepseek-v4.1-flash-1017",
+          "description": "dated snapshot of v4.1-flash"
+        },
+        {
           "id": "deepseek/deepseek-v4-flash-0731",
           "description": "dated snapshot of v4-flash"
         },
@@ -174,7 +178,8 @@
         },
         {
           "id": "z-ai/glm-5.3",
-          "description": ""
+          "description": "default",
+          "default": true
         },
         {
           "id": "z-ai/glm-5.3-flash",
@@ -186,8 +191,7 @@
         },
         {
           "id": "z-ai/glm-5.2",
-          "description": "default",
-          "default": true
+          "description": ""
         },
         {
           "id": "xiaomi/mimo-v2.6-pro",
@@ -409,6 +413,9 @@
           "id": "deepseek/deepseek-v4.1-flash"
         },
         {
+          "id": "deepseek/deepseek-v4.1-flash-1017"
+        },
+        {
           "id": "deepseek/deepseek-v4-flash-0731"
         },
         {
@@ -424,7 +431,8 @@
           "id": "minimax/minimax-m3"
         },
         {
-          "id": "z-ai/glm-5.3"
+          "id": "z-ai/glm-5.3",
+          "default": true
         },
         {
           "id": "z-ai/glm-5.3-flash"
@@ -433,8 +441,7 @@
           "id": "z-ai/glm-5.3-flashx"
         },
         {
-          "id": "z-ai/glm-5.2",
-          "default": true
+          "id": "z-ai/glm-5.2"
         },
         {
           "id": "xiaomi/mimo-v2.6-pro"

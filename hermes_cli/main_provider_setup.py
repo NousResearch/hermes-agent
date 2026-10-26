@@ -663,8 +663,8 @@ def _offer_reasoning_after_pick(model_before: str, saves_before: int) -> None:
 
 def _prompt_main_reasoning_effort(model: str, provider: str) -> None:
     """The effort step every ``hermes model`` flow shares: after a main-model pick, offer the
-    model's supported levels (Copilot publishes a per-model set; everything else gets the full
-    ladder) and persist ``agent.reasoning_effort``. Skipped when the catalog says the route has
+    model's supported levels (a profile may declare a per-model set via ``setup_reasoning_efforts``;
+    everything else gets the full ladder) and persist ``agent.reasoning_effort``. Skipped when the catalog says the route has
     no reasoning control; "Skip" leaves the current value alone."""
     from hermes_cli.config import load_config, save_config
     from hermes_cli.setup import _current_reasoning_effort, _set_reasoning_effort
@@ -684,9 +684,11 @@ def _main_model_reasoning_efforts(model: str, provider: str) -> Optional[list[st
     """Levels to offer for *model* on *provider*: None when the route has no reasoning control."""
     from hermes_constants import VALID_REASONING_EFFORTS
     slug = (provider or "").strip().lower()
-    if slug == "copilot":
-        from hermes_cli.models import github_model_reasoning_efforts
-        return github_model_reasoning_efforts(model) or None
+    from providers import get_provider_profile
+    profile = get_provider_profile(slug) if slug else None
+    declared = profile.setup_reasoning_efforts(model) if profile and profile.setup_reasoning_efforts else None
+    if declared is not None:
+        return list(declared) or None
     try:
         from agent.models_dev import get_model_capabilities
         meta = get_model_capabilities(slug, model)

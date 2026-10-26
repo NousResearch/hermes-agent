@@ -9,7 +9,8 @@ import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from tools.computer_use.backend import ActionResult, UIElement, image_dimensions_from_bytes
+from agent.image_eviction_policy import image_dimensions_from_bytes
+from tools.computer_use.backend import ActionResult, UIElement
 
 # Linux/X11 surfaces GNOME Shell / desktop backdrop windows ahead of real app windows with no useful z-order; they
 # are targetable but capture as empty, so default capture skips them.

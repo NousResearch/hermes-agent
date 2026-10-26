@@ -120,6 +120,36 @@ def test_failed_write_removes_only_its_partial_upload(sessions, tmp_path, monkey
     assert set(root.iterdir()) == {survivor}
 
 
+def test_a_host_file_outside_the_workspace_is_copied_whole_whatever_its_size(sessions, tmp_path, monkeypatch):
+    """Native Desktop attaches a file the gateway can read by its path. One outside the session's
+    workspace is copied into the profile's ``attachments/`` whole, whatever its size: the cap on
+    bytes sent inline in a data URL does not apply to it. Inline bytes keep that cap."""
+    import sys
+    import types
+
+    monkeypatch.setattr(server, "_ATTACHMENT_MAX_BYTES", 16)
+    source = tmp_path / "downloads" / "archive.bin"
+    source.parent.mkdir()
+    payload = bytes(range(256)) * 4
+    source.write_bytes(payload)
+    fake_cli = types.ModuleType("cli")
+    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._split_path_input = lambda raw: (raw, "")
+    fake_cli._resolve_attachment_path = lambda raw: source
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+    response = server._methods["file.attach"](1, {"session_id": "first", "path": str(source)})
+
+    assert "error" not in response, response
+    stored = Path(response["result"]["path"])
+    assert stored.parent == (tmp_path / "profile" / "attachments").resolve()
+    assert stored.read_bytes() == payload
+    assert response["result"]["uploaded"] is True
+
+    inline = upload("first", "archive.bin", payload)
+    assert inline["error"]["code"] == 5028 and "too large" in inline["error"]["message"]
+
+
 def test_cross_session_attached_images_allocate_unique_paths(sessions, tmp_path):
     session_a = sessions["first"]
     session_b = sessions["second"]
@@ -136,3 +166,19 @@ def test_cross_session_attached_images_allocate_unique_paths(sessions, tmp_path)
     assert path_b.read_bytes() == img_bytes_b
     assert path_a.exists() and path_b.exists()
 
+
+
+def test_upload_never_writes_through_a_planted_symlink(sessions, tmp_path):
+    """A repo-shipped dangling symlink at the candidate name must not redirect the upload."""
+    root = tmp_path / "profile" / "attachments"
+    root.mkdir(parents=True)
+    outside = tmp_path / "outside.txt"
+    (root / "notes.txt").symlink_to(outside)
+
+    response = upload("first", "notes.txt", b"user upload")
+
+    assert "error" not in response, response
+    stored = Path(response["result"]["path"])
+    assert not outside.exists()
+    assert stored.parent == root.resolve() and stored.name == "notes-2.txt"
+    assert stored.read_bytes() == b"user upload"

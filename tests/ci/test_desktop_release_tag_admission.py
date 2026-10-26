@@ -227,6 +227,25 @@ def test_claim_on_origin_main_is_admitted_and_exports_the_full_sha(
     assert f"sha={expected}" in gh_output
 
 
+def test_claim_on_a_release_branch_is_admitted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    origin, clone = _seed_repo(tmp_path)
+    # A hotfix lands on origin's release/0.1.2 only; main never sees it.
+    _git("checkout", "-b", "release/0.1.2", cwd=origin)
+    (origin / "fix.txt").write_text("hotfix\n", encoding="utf-8")
+    _git("add", "-A", cwd=origin)
+    _git("commit", "-m", "hotfix", cwd=origin)
+    _git("checkout", "main", cwd=origin)
+    _git("fetch", "origin", cwd=clone)
+    _git("checkout", "--detach", "origin/release/0.1.2", cwd=clone)
+    monkeypatch.setenv("GIT_COMMITTER_DATE", "@1790000000 +0000")
+    _git("tag", "-a", "rc.1-v0.1.2", "-m", _claim_message(clone), cwd=clone)
+    _git("push", "origin", "refs/tags/rc.1-v0.1.2", cwd=clone)
+
+    proc = _run_admission(clone, "v0.1.2", "rc.1-v0.1.2")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert f"sha={_git('rev-parse', 'HEAD', cwd=clone)}" in (clone / "github_output.txt").read_text(encoding="utf-8")
+
+
 def test_claim_not_on_origin_main_is_refused(tmp_path: Path):
     _origin, clone = _seed_repo(tmp_path)
     # A commit that exists ONLY in the clone — never pushed, never reviewed.
@@ -238,7 +257,7 @@ def test_claim_not_on_origin_main_is_refused(tmp_path: Path):
 
     proc = _run_admission(clone, "v0.1.2", "rc.1-v0.1.2")
     assert proc.returncode != 0, "a tag off origin/main must not be admitted"
-    assert "is not on main" in proc.stdout + proc.stderr
+    assert "is not on main or a release/* branch" in proc.stdout + proc.stderr
     # And nothing was exported for the signing jobs to consume.
     assert "sha=" not in (clone / "github_output.txt").read_text(encoding="utf-8")
 

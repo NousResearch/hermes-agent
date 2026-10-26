@@ -77,8 +77,8 @@ def test_terminal_error_keeps_partial_and_collapses_this_turns_trail(status, mes
     messages = _messages_with_fragment()
     error = _Http(status, message)
     classified = classify_api_error(error, provider="openrouter", model="m")
-    retry = SimpleNamespace(copilot_stale_cred_retry_attempted=False, primary_recovery_attempted=True)
-    with patch("agent.conversation_loop._is_copilot_provider", lambda a: False), \
+    retry = SimpleNamespace(provider_stale_refresh_attempted=False, primary_recovery_attempted=True)
+    with patch("agent.conversation_loop._credential_refresh_profile", lambda a: None), \
             patch("agent.turn_recovery_autorecover.auto_recover_after_exhaustion", lambda *a, **k: None):
         verdict = settle_unrecovered_error(
             _Agent(), api_error=error, classified=classified, _retry=retry, status_code=status,

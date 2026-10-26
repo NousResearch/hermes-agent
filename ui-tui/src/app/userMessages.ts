@@ -85,9 +85,12 @@ export const backendSlowStartStatus = (): string => t('userMessages.backend.slow
 // ── stderr noise ──────────────────────────────────────────────────────────
 
 // Only real failures: a traceback, a CRITICAL log line, an `XxxError:` / `XxxException:`
-// head, or the gateway's own turn/exit markers. Dependency `DeprecationWarning` /
+// head, the gateway's own turn/exit markers, or the canonical bootstrap's verdict lines
+// (`gateway incompatible: runtime_protocol`, `gateway inaccessible: …` and their remedy, see
+// ui-tui/scripts/gateway_bootstrap.py failure_message). Dependency `DeprecationWarning` /
 // `UserWarning` lines are noise and stay in /logs only.
-const STDERR_PROBLEM_RE = /Traceback|\b[A-Z][A-Za-z]*(?:Error|Exception)\b:|CRITICAL|\[gateway-turn\]|\[gateway-exit\]/
+const STDERR_PROBLEM_RE =
+  /Traceback|\b[A-Z][A-Za-z]*(?:Error|Exception)\b:|CRITICAL|\[gateway-turn\]|\[gateway-exit\]|^gateway (?:absent|conflict|draining|inaccessible|incompatible|starting|unavailable): /
 
 /** Only lines that look like a failure earn an activity row; the rest stay in /logs. */
 export const stderrLooksLikeProblem = (line: string): boolean => STDERR_PROBLEM_RE.test(line)
@@ -132,7 +135,11 @@ const RPC_ERROR_ROWS: RpcErrorRow[] = [
     (code, text) => (code === RPC_SESSION_NOT_FOUND || code === undefined) && SESSION_NOT_FOUND_RE.test(text),
     () => t('userMessages.rpc.sessionNotFound')
   ],
+  // A stored chat the gateway opens read-only (gateway/session_history_mount.py) names its refusal by reason.
+  [(_code, text) => text === 'session_read_only', () => t('userMessages.rpc.sessionReadOnly')],
+  [(_code, text) => text === 'session_has_children', () => t('userMessages.rpc.sessionHasChildren')],
   [(_code, text) => NOT_CONNECTED_RE.test(text), () => t('userMessages.rpc.notConnected')],
+  [(_code, text) => text.trim() === 'launch_credentials_unavailable', () => t('userMessages.rpc.launchCredentialsChanged')],
   [(_code, text) => TIMED_OUT_RE.exec(text), m => t('userMessages.rpc.timedOut', m?.[1] ?? '?')]
 ]
 
@@ -171,10 +178,40 @@ export const describeRpcError = (err: unknown): string => {
   return text
 }
 
+/** The shared owner's slash.exec refuses every command outside its reviewed reads with
+ *  `unsupported_command` (gateway/session_commands.py): name the command, as the classic CLI does. */
+export const isUnsupportedCommand = (err: unknown): boolean =>
+  (err as { data?: { reason?: string } } | null)?.data?.reason === 'unsupported_command'
+
+/** The shared owner refuses `!cmd` / `{!cmd}` for a session whose terminal backend is not local
+ *  (gateway/session_shell.py): the command would run on the gateway host, outside the session's
+ *  sandbox. Name the backend and point at the agent; other errors read as describeRpcError. */
+export const describeShellExecError = (err: unknown): string => {
+  const data = (err as { data?: { detail?: unknown; reason?: unknown } } | null)?.data
+
+  if (data?.reason === 'unsupported_terminal_backend') {
+    const backend = typeof data.detail === 'string' ? data.detail.trim() : ''
+
+    // An older gateway names no backend: say so without a backend-shaped sentence.
+    return backend ? t('userMessages.rpc.shellBackendRefused', backend) : t('userMessages.rpc.shellBackendRefusedUnnamed')
+  }
+
+  return describeRpcError(err)
+}
+
 /** The slash worker (built-in command helper) failed; name the command, not the helper. */
 export const describeSlashExecError = (command: string, err: unknown): string => {
   const { message } = rpcShape(err)
   const text = message ?? ''
+
+  if (isUnsupportedCommand(err)) {
+    // The owner names what to use instead for its client-local refusals (gateway/session_commands.py
+    // REFUSAL_HINTS) in `data.detail`; print it under the refusal.
+    const detail = (err as { data?: { detail?: unknown } } | null)?.data?.detail
+    const refusal = t('canonical.controls.notAvailable', command)
+
+    return typeof detail === 'string' && detail.trim() ? `${refusal}\n${detail.trim()}` : refusal
+  }
 
   if (/slash worker timed out/.test(text)) {
     return t('userMessages.rpc.slashTimedOut', command)

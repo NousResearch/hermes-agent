@@ -39,7 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 
-from pm.network import is_transient, retry_network
+from pm.network import edge_block, is_transient, retry_network
 
 # GitHub's release-asset CDN (release-assets.githubusercontent.com, which
 # TUR's pool 302s to) 403s unknown tool UAs from CI runner IP ranges --
@@ -48,6 +48,7 @@ from pm.network import is_transient, retry_network
 _UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) hermes-pm/1.0", "Accept-Encoding": "identity"}
 _LOOPBACK = ("http://127.0.0.1:", "http://localhost:", "http://[::1]:")
 _CHUNK = 1 << 20  # read/write block, also the minimum range size
+_CHECKPOINT_SECONDS = 5.0
 
 
 class _HttpsRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -134,10 +135,14 @@ class DownloadTransportError(DownloadError):
         # A host that does not resolve is not worth a retry, but the pinned
         # mirror is a different host and the hash still guards the bytes.
         unresolved = isinstance(getattr(cause, "reason", cause), socket.gaierror)
+        # Any 5xx is the upstream host failing, not its bytes changing: a CDN's
+        # origin-down codes (520-527) are what a dead third-party host returns.
         self.fallback_allowed = (
-            self.status in (401, 403, 404, 410) or unresolved or is_transient(cause)
+            self.status in (401, 403, 404, 410) or (self.status or 0) >= 500
+            or unresolved or is_transient(cause)
         )
-        reason = f"{cause}; the host refused access" if self.status in (401, 403) else str(cause)
+        refused = edge_block(cause) or ("the host refused access" if self.status in (401, 403) else None)
+        reason = f"{cause}; {refused}" if refused else str(cause)
         super().__init__(f"download failed from {url}: {reason}")
 
 
@@ -275,6 +280,7 @@ class Download:
             self.partials_dir = paths.partials_root()
         self._owns_pause_event = pause_event is None
         self._paused = pause_event if pause_event is not None else threading.Event()
+        self._durable_done = 0
 
     def pause(self) -> None:
         """Request a stop between chunks; run() raises DownloadPaused."""
@@ -370,20 +376,25 @@ class Download:
                 return source.dest.stat().st_size
             # Recheck identity after waiting for another process's partial.
             remote = self._probe(source.url)
-            tick(self._partial_ranges(source, remote) if remote.ranged else [], remote.total)
+            covered = self._partial_ranges(source, remote) if remote.ranged else []
+            self._durable_done = sum(end - start for start, end in covered)
+            tick(covered, remote.total)
+            resumable = bool(remote.total and remote.ranged and (source.sha256 or remote.etag))
 
             def report(written: _Ranges) -> None:
                 tick(written, remote.total)
 
             def fetch() -> int:
                 self._check_pause()
-                if remote.total and remote.ranged and (source.sha256 or remote.etag):
+                if resumable:
                     return self._fetch_ranged(source, remote, report)
                 return self._fetch_single(source, remote, report)
 
             configured_connections = self.connections
             try:
-                size = retry_network(fetch, wait=self._wait_retry)
+                size = retry_network(fetch, wait=self._wait_retry,
+                                     progress=(lambda: self._durable_done) if self.resume and resumable else None,
+                                     fallback_available=bool(source.fallbacks))
             except (OSError, http.client.HTTPException) as exc:
                 if isinstance(exc, urllib.error.URLError) or is_transient(exc):
                     raise DownloadTransportError(source.url, exc) from exc
@@ -461,14 +472,14 @@ class Download:
 
     @staticmethod
     def _write_sidecar(side: Path, part: Path, covered: _Ranges, remote: _Remote, sha256: str) -> None:
-        from pm.filesystem import durable_write_bytes
+        from pm.filesystem import durable_write_bytes, retry_held
 
-        # All writers have closed before coverage is persisted. A sidecar can
-        # describe durable bytes, never data still buffered in a worker.
+        # Workers flush before announcing coverage. Snapshot those ranges,
+        # fsync the data, then atomically publish only that durable snapshot.
         with part.open("r+b") as stream:
             os.fsync(stream.fileno())
         record = {"total": remote.total, "etag": remote.etag, "sha256": sha256, "ranges": covered}
-        durable_write_bytes(side, json.dumps(record).encode("utf-8"))
+        retry_held(lambda: durable_write_bytes(side, json.dumps(record).encode("utf-8")))
 
     def _fetch_ranged(self, source: Source, remote: _Remote, tick) -> int:
         key = self._key(source.url)
@@ -487,6 +498,7 @@ class Download:
                 side.unlink(missing_ok=True)
                 raise protocol_error
             self._write_sidecar(side, part, covered, remote, source.sha256)
+            self._durable_done = sum(end - start for start, end in covered)
             if self._paused.is_set():
                 raise DownloadPaused(source.url)
             if errors:
@@ -500,10 +512,39 @@ class Download:
                     self.connections = 1
                     continue
                 raise next((error for error in errors if not is_transient(error)), errors[0])
-            written = sum(end - start for start, end in covered)
+            written = self._durable_done
             if written != remote.total:
                 raise http.client.IncompleteRead(b"", remote.total - written)
             return written
+
+    def _read_range(self, source: Source, remote: _Remote, part: Path,
+                    start: int, end: int, stop: threading.Event, record) -> None:
+        if self._paused.is_set() or stop.is_set():
+            return
+        headers = {**_UA, "Range": f"bytes={start}-{end - 1}"}
+        if remote.etag:
+            headers["If-Range"] = remote.etag
+        request = urllib.request.Request(source.url, headers=headers)
+        with _OPENER.open(request, timeout=120) as response, part.open("r+b") as stream:
+            _validate_range(response, start, end, remote.total)
+            if remote.etag and _strong_etag(response) != remote.etag:
+                raise _RangeError("remote representation changed during download")
+            stream.seek(start)
+            position = start
+            while position < end:
+                if self._paused.is_set() or stop.is_set():
+                    return
+                chunk = response.read(min(_CHUNK, end - position))
+                if not chunk:
+                    raise http.client.IncompleteRead(b"", end - position)
+                stream.write(chunk)
+                stream.flush()
+                position += len(chunk)
+                # A complete checkpoint must not bypass the body-bounds check
+                # if the process dies between the last write and EOF validation.
+                if position == end and response.read(1):
+                    raise _RangeError("range body exceeds its declared bounds")
+                record(start, position)
 
     def _ranged_attempt(self, source: Source, remote: _Remote, part: Path,
                         covered: _Ranges, connections: int, tick) -> tuple[_Ranges, list[Exception]]:
@@ -521,35 +562,18 @@ class Download:
         pending = len(ranges)
         covered = list(covered)
         reported = list(covered)
+        checkpointed = list(covered)
+        next_checkpoint = time.monotonic() + _CHECKPOINT_SECONDS
+
+        def record(start: int, position: int) -> None:
+            with lock:
+                covered[:] = _coalesce(covered + [(start, position)])
+                updated.set()
 
         def worker(start: int, end: int) -> None:
             nonlocal pending
             try:
-                if self._paused.is_set() or stop.is_set():
-                    return
-                headers = {**_UA, "Range": f"bytes={start}-{end - 1}"}
-                if remote.etag:
-                    headers["If-Range"] = remote.etag
-                request = urllib.request.Request(source.url, headers=headers)
-                with _OPENER.open(request, timeout=120) as response, part.open("r+b") as stream:
-                    _validate_range(response, start, end, remote.total)
-                    if remote.etag and _strong_etag(response) != remote.etag:
-                        raise _RangeError("remote representation changed during download")
-                    stream.seek(start)
-                    position = start
-                    while position < end:
-                        if self._paused.is_set() or stop.is_set():
-                            return
-                        chunk = response.read(min(_CHUNK, end - position))
-                        if not chunk:
-                            raise http.client.IncompleteRead(b"", end - position)
-                        stream.write(chunk)
-                        position += len(chunk)
-                        with lock:
-                            covered[:] = _coalesce(covered + [(start, position)])
-                            updated.set()
-                    if response.read(1):
-                        raise _RangeError("range body exceeds its declared bounds")
+                self._read_range(source, remote, part, start, end, stop, record)
             except Exception as exc:
                 if isinstance(exc, urllib.error.HTTPError):
                     exc.close()
@@ -566,11 +590,27 @@ class Download:
             observer_failed = False
             finished = not ranges
             while not finished:
-                updated.wait()
+                updated.wait(max(0.0, next_checkpoint - time.monotonic()))
                 with lock:
                     snapshot = list(covered)
                     finished = pending == 0
                     updated.clear()
+                now = time.monotonic()
+                if now >= next_checkpoint:
+                    if snapshot != checkpointed:
+                        try:
+                            self._write_sidecar(part.with_suffix(".ranges"), part, snapshot, remote, source.sha256)
+                        except OSError as exc:
+                            logging.getLogger(__name__).warning(
+                                "could not save download progress for %s; continuing: %s", source.dest.name, exc,
+                            )
+                        except BaseException:
+                            stop.set()
+                            raise
+                        else:
+                            self._durable_done = sum(end - start for start, end in snapshot)
+                            checkpointed = snapshot
+                    next_checkpoint = time.monotonic() + _CHECKPOINT_SECONDS
                 # Only the coordinator observes progress. Slow UI/worker IPC
                 # coalesces intermediate snapshots, never holds up range writes.
                 if not observer_failed and snapshot != reported:

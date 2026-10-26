@@ -75,7 +75,7 @@ vi.mock('../session/hooks/use-prompt-actions', () => ({
     return { submitText: fixture.submitText }
   }
 }))
-vi.mock('@/components/boot-failure-overlay', () => ({ BootFailureOverlay: () => null }))
+vi.mock('@/components/boot-failure-overlay', () => ({ StartupOverlay: () => null }))
 vi.mock('@/components/confirm-host', () => ({ ConfirmHost: () => null }))
 vi.mock('@/components/desktop-install-overlay', () => ({ DesktopInstallOverlay: () => null }))
 vi.mock('@/components/find-bar', () => ({ FindBar: () => null }))
@@ -224,7 +224,9 @@ describe('ContribWiring background queue: independent remote owner', () => {
       attachments: [],
       fromQueue: true,
       sessionId: 'rt-remote',
-      storedSessionId: 'stored-remote'
+      storedSessionId: 'stored-remote',
+      // The queued row's id rides every drain so the gateway admits it at most once.
+      submission_id: expect.any(String)
     })
     expect.soft(fixture.remoteRequest).toHaveBeenCalledExactlyOnceWith('remote-healthy', 'worker', 'prompt.submit', {
       session_id: 'rt-remote',

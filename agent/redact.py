@@ -17,6 +17,12 @@ from agent.file_safety import _BLOCKED_PROJECT_ENV_BASENAMES as _ENV_FILE_BASENA
 
 logger = logging.getLogger(__name__)
 
+# Browser and CDP results can be a page-controlled JSON tree. The walkers stop
+# at this depth and replace the remainder, so a nested payload cannot raise
+# RecursionError on the way to the model.
+REDACT_WALK_MAX_DEPTH = 320
+REDACT_WALK_DEPTH_MARKER = "[redacted: nesting limit]"
+
 # ---------------------------------------------------------------------------
 # Vault-value redaction registry (profile-scoped, bounded)
 # ---------------------------------------------------------------------------
@@ -147,6 +153,11 @@ _PREFIX_PATTERNS = [
     # ``***``. Kept free of nested unbounded repeats so the pattern passes the
     # same structural gate plugins must.
     r"sk-[A-Za-z0-9_-](?:\.?[A-Za-z0-9_-]){9,}",
+    # Context7 API keys: a fixed vendor prefix (``ctx7sk-``) plus an opaque body.
+    # The generic ``sk-`` family cannot catch it: the matcher's lookbehind
+    # rejects a prefix preceded by a word char, and here the ``sk-`` sits inside
+    # ``ctx7sk-`` - so a bare Context7 key passed through unmasked (#142576).
+    r"ctx7sk-[A-Za-z0-9_-]{10,}",
     r"ghp_[A-Za-z0-9]{10,}",            # GitHub PAT (classic)
     r"github_pat_[A-Za-z0-9_]{10,}",    # GitHub PAT (fine-grained)
     r"gho_[A-Za-z0-9]{10,}",            # GitHub OAuth access token
@@ -547,6 +558,12 @@ _URL_BARE_TOKEN_RE = re.compile(
 
 # JWTs always start with "eyJ" (base64 "{"); 1-, 2- and 3-part forms.
 _JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_=-]{4,}){0,2}")
+
+# Links ``hermes webapp`` prints that sign a browser in as the user: the gateway's browser credential
+# after ``hermes-session=`` and the one-use ticket of a ``/webapp/launch`` link. Both values are
+# URL-safe base64 (43 characters); the 20-character floor leaves placeholders and code (``${token}``).
+_WEBAPP_LINK_CREDENTIAL_RE = re.compile(
+    r"((?<![A-Za-z0-9_-])hermes-session=|/webapp/launch#(?:[^\s#]*?&)?ticket=)[A-Za-z0-9_-]{20,}")
 
 # E.164 phone numbers, 7-15 digits; the lookahead rejects hex strings / identifiers.
 _SIGNAL_PHONE_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
@@ -974,6 +991,11 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
 
     if "eyJ" in text:
         text = _JWT_RE.sub(lambda m: _mask_token(m.group(0)), text)
+
+    # A Webapp sign-in link signs a browser in as the user, so its credential is masked whatever the
+    # web-URL policy below.
+    if "hermes-session=" in text or "/webapp/launch#" in text:
+        text = _WEBAPP_LINK_CREDENTIAL_RE.sub(lambda m: m.group(1) + "***", text)
 
     if redact_url_credentials:  # opt-in; known credential shapes in URLs are caught above
         # NOTE: Web-URL redaction (query params + userinfo + HTTP access-log request targets) is

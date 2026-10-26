@@ -1,0 +1,18 @@
+name: comment-scraper
+repo: https://github.com/supertj/comment-scraper-mcp
+sha: fd739bc532f351d22f056ff74bf48a1a14beca7f
+subdir: plugin
+title: Comment Scraper
+description: "Ask about the Reddit and Hacker News threads you exported with the Comment Scraper browser extension: list, read, search and quote them by comment number. Disclosure — starts a local stdio MCP server with npx -y comment-scraper-mcp@0.1.0, which npx downloads from npm on first run; the server only reads JSON exports in ~/Downloads and the folders directly inside it, never writes files, makes no network requests, stores no credentials and sends no telemetry."
+maintainer: Comment Scraper
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://comment-scraper.com/docs
+version: "0.1.0"
+image: https://raw.githubusercontent.com/supertj/comment-scraper-mcp/fd739bc532f351d22f056ff74bf48a1a14beca7f/plugin/assets/icon.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

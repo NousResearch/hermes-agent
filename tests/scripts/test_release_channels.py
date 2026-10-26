@@ -13,6 +13,8 @@ import xml.sax.saxutils
 
 import pytest
 
+from scripts.releases import lanes as lane_set
+
 
 @contextmanager
 def object_server():
@@ -527,7 +529,7 @@ def test_accepted_release_receipts_feed_the_protected_head_without_rebuilding(tm
                             lambda policy, env, **_kwargs: (tag, commit))
         monkeypatch.setattr(channel_releases.stable, "final_context",
                             lambda env: (tag, commit, {"claim_epoch": 1_787_965_323,
-                                                       "skip_bundles": False, "skip_tests": False}))
+                                                       "lanes": lane_set.DEFAULT}))
         monkeypatch.setattr(channel_releases, "accepted_stable", lambda *args, **kwargs: accepted)
         promotion_attempts = [0]
         def promote_stable_feeds(*args):
@@ -651,15 +653,15 @@ def test_accepted_stable_reads_the_release_archive_by_tag(monkeypatch):
         objects[key] = raw
         candidate_env = {"CANDIDATE_MANIFEST_SHA256": hashlib.sha256(raw).hexdigest(), "CANDIDATE_MANIFEST_URL": pub.public_base + "/" + key}
         assert channel_releases.accepted_stable(pub, candidate_env, attempt, commit, release_epoch,
-                                                skip_tests=False) == candidate
+                                                lanes=lane_set.DEFAULT) == candidate
         # Passed smokes cannot stand behind a claim that skipped tests, or the reverse.
         with pytest.raises(ValueError, match="test policy"):
             channel_releases.accepted_stable(pub, candidate_env, attempt, commit, release_epoch,
-                                             skip_tests=True)
+                                             lanes=lane_set.select(without=["smoke"]))
         faults["stale_public"] = b"{}"
         with pytest.raises(ChannelError):
             channel_releases.accepted_stable(pub, candidate_env, attempt, commit, release_epoch,
-                                             skip_tests=False)
+                                             lanes=lane_set.DEFAULT)
 
 
 def test_request_inputs_are_rejected_before_allocating():

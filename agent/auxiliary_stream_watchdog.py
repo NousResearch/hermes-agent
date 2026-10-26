@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import inspect
 import threading
-import time
 from types import SimpleNamespace
 from typing import Any, Optional
+
+from agent.sleep_clock import awake_seconds
 
 
 def _stream_socket(stream: Any) -> Any:
@@ -40,12 +41,13 @@ def _close_chunk_stream(chunks: Any, *, allow_aclose: bool = False) -> Any:
 class ChatStreamWatchdog:
     """Re-armed by substantive chunks only. Silence before the first token is bounded by
     *first_token_window* (the main loop's stale patience: reasoning models think silently for
-    minutes); ``None`` leaves it to the request timeout (a local server's silent prefill)."""
+    minutes); ``None`` leaves it to the request timeout (a local server's silent prefill).
+    Windows run on the awake clock, so time the computer spends asleep doesn't count."""
 
     def __init__(self, stream: Any, window: float, *, first_token_window: Optional[float] = None):
         self.window = window
         self.first_token_window = first_token_window
-        self._started = time.monotonic()
+        self._started = awake_seconds()
         self._lock = threading.Lock()
         self._deadline: Optional[float] = None
         self._timer: Optional[threading.Timer] = None
@@ -79,7 +81,7 @@ class ChatStreamWatchdog:
     def _rearm(self, window: float) -> None:
         # A pending timer re-checks the deadline when it fires; replace it only when the new
         # deadline is earlier (the first token swaps the long first-token window for the short one).
-        previous, self._deadline = self._deadline, time.monotonic() + window
+        previous, self._deadline = self._deadline, awake_seconds() + window
         if self._timer is None or (previous is not None and self._deadline < previous):
             if self._timer is not None:
                 self._timer.cancel()
@@ -103,7 +105,7 @@ class ChatStreamWatchdog:
         with self._lock:
             if self._done or self._deadline is None or generation != self._generation:
                 return
-            remaining = self._deadline - time.monotonic()
+            remaining = self._deadline - awake_seconds()
             if remaining > 0:
                 self._schedule(remaining)
                 return
@@ -122,7 +124,7 @@ class ChatStreamWatchdog:
     def timeout_error(self) -> TimeoutError:
         """Zero-output stalls say "no-progress timeout" (same-provider retry stays allowed, see
         ``_should_skip_same_provider_retry``); a mid-stream stall goes straight to fallback."""
-        elapsed = time.monotonic() - self._started
+        elapsed = awake_seconds() - self._started
         if not self.saw_progress:
             return TimeoutError(
                 f"Auxiliary chat stream produced no output within {self.first_token_window or 0:.1f}s "

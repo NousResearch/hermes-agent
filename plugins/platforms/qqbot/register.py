@@ -37,12 +37,15 @@ async def standalone_send(pconfig, chat_id, message, *, thread_id=None, media_fi
 
 def setup_qqbot() -> None:
     """Interactive setup: scan-to-configure or manual App ID / App Secret."""
+    from hermes_cli.cli_output import print_info, print_success, print_warning
+    from hermes_cli.config import save_env_value
     from hermes_cli.gateway_setup_wizard import (
-        _confirm_reconfigure, _gw, _offer_home_channel, _print_setup_header, _prompt_csv, _save_env_values,
+        confirm_reconfigure, offer_home_channel, print_setup_header, prompt_csv, save_env_values,
     )
+    from hermes_cli.setup import prompt, prompt_choice, prompt_yes_no
 
-    _print_setup_header("🐧 QQ Bot")
-    if not _confirm_reconfigure("QQ Bot", "QQ_APP_ID", "QQ_CLIENT_SECRET"):
+    print_setup_header("🐧 QQ Bot")
+    if not confirm_reconfigure("QQ Bot", "QQ_APP_ID", "QQ_CLIENT_SECRET"):
         return
 
     print()
@@ -51,36 +54,34 @@ def setup_qqbot() -> None:
         "Enter existing App ID and App Secret manually",
     ]
     credentials = None
-    if _gw().prompt_choice("  How would you like to set up QQ Bot?", method_choices, 0) == 0:
+    if prompt_choice("  How would you like to set up QQ Bot?", method_choices, 0) == 0:
         try:
             from .onboard import qr_register
             credentials = qr_register()
         except KeyboardInterrupt:
             print()
-            _gw().print_warning("  QQ Bot setup cancelled.")
+            print_warning("  QQ Bot setup cancelled.")
             return
         if not credentials:
-            _gw().print_info("  QR setup did not complete. Continuing with manual input.")
+            print_info("  QR setup did not complete. Continuing with manual input.")
 
     if not credentials:
         print()
-        _gw()._print_info_lines(
-            "  Go to https://q.qq.com to register a QQ Bot application.",
-            "  Note your App ID and App Secret from the application page.",
-        )
+        print_info("  Go to https://q.qq.com to register a QQ Bot application.")
+        print_info("  Note your App ID and App Secret from the application page.")
         print()
-        app_id = _gw().prompt("  App ID", password=False)
+        app_id = prompt("  App ID", password=False)
         if not app_id:
-            _gw().print_warning("  Skipped — QQ Bot won't work without an App ID.")
+            print_warning("  Skipped — QQ Bot won't work without an App ID.")
             return
-        app_secret = _gw().prompt("  App Secret", password=True)
+        app_secret = prompt("  App Secret", password=True)
         if not app_secret:
-            _gw().print_warning("  Skipped — QQ Bot won't work without an App Secret.")
+            print_warning("  Skipped — QQ Bot won't work without an App Secret.")
             return
         credentials = {"app_id": app_id.strip(), "client_secret": app_secret.strip(), "user_openid": ""}
 
-    _gw().save_env_value("QQ_APP_ID", credentials["app_id"])
-    _gw().save_env_value("QQ_CLIENT_SECRET", credentials["client_secret"])
+    save_env_value("QQ_APP_ID", credentials["app_id"])
+    save_env_value("QQ_CLIENT_SECRET", credentials["client_secret"])
     user_openid = credentials.get("user_openid", "")
 
     print()
@@ -89,38 +90,38 @@ def setup_qqbot() -> None:
         "Allow all direct messages",
         "Only allow listed user OpenIDs",
     ]
-    access_idx = _gw().prompt_choice("  How should direct messages be authorized?", access_choices, 0)
+    access_idx = prompt_choice("  How should direct messages be authorized?", access_choices, 0)
     if access_idx == 0:
-        _gw().save_env_value("QQ_ALLOW_ALL_USERS", "false")
+        save_env_value("QQ_ALLOW_ALL_USERS", "false")
         allowed = ""
         if user_openid:
             print()
-            if _gw().prompt_yes_no(f"  Add yourself ({user_openid}) to the allow list?", True):
+            if prompt_yes_no(f"  Add yourself ({user_openid}) to the allow list?", True):
                 allowed = user_openid
-                _gw().print_success(f"  Allow list set to {user_openid}")
-        _gw().save_env_value("QQ_ALLOWED_USERS", allowed)
-        _gw().print_success("  DM pairing enabled.")
-        _gw().print_info("  Unknown users can request access; approve with `hermes pairing approve`.")
+                print_success(f"  Allow list set to {user_openid}")
+        save_env_value("QQ_ALLOWED_USERS", allowed)
+        print_success("  DM pairing enabled.")
+        print_info("  Unknown users can request access; approve with `hermes pairing approve`.")
     elif access_idx == 1:
-        _save_env_values(QQ_ALLOW_ALL_USERS="true", QQ_ALLOWED_USERS="")
-        _gw().print_warning("  Open DM access enabled for QQ Bot.")
+        save_env_values(QQ_ALLOW_ALL_USERS="true", QQ_ALLOWED_USERS="")
+        print_warning("  Open DM access enabled for QQ Bot.")
     else:
-        allowlist = _prompt_csv("  Allowed user OpenIDs (comma-separated)", user_openid or "")
-        _save_env_values(QQ_ALLOW_ALL_USERS="false", QQ_ALLOWED_USERS=allowlist)
-        _gw().print_success("  Allowlist saved.")
+        allowlist = prompt_csv("  Allowed user OpenIDs (comma-separated)", user_openid or "")
+        save_env_values(QQ_ALLOW_ALL_USERS="false", QQ_ALLOWED_USERS=allowlist)
+        print_success("  Allowlist saved.")
 
     print()
     if user_openid:
-        _offer_home_channel("QQBOT_HOME_CHANNEL", user_openid, "your QQ user ID")
+        offer_home_channel("QQBOT_HOME_CHANNEL", user_openid, "your QQ user ID")
     else:
-        home_channel = _gw().prompt("  Home channel OpenID (for cron/notifications, or empty)", password=False)
+        home_channel = prompt("  Home channel OpenID (for cron/notifications, or empty)", password=False)
         if home_channel:
-            _gw().save_env_value("QQBOT_HOME_CHANNEL", home_channel.strip())
-            _gw().print_success(f"  Home channel set to {home_channel.strip()}")
+            save_env_value("QQBOT_HOME_CHANNEL", home_channel.strip())
+            print_success(f"  Home channel set to {home_channel.strip()}")
 
     print()
-    _gw().print_success("🐧 QQ Bot configured!")
-    _gw().print_info(f"  App ID: {credentials['app_id']}")
+    print_success("🐧 QQ Bot configured!")
+    print_info(f"  App ID: {credentials['app_id']}")
 
 
 # System-prompt platform hint (PlatformEntry.platform_hint); cached-prompt bytes, keep stable.

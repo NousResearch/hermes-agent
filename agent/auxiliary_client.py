@@ -121,6 +121,7 @@ def aux_probe_mode():
 
 from agent.credential_pool import load_pool
 from agent.custom_entry_pool import entry_scoped_pool, pool_for_aux_provider
+from agent.message_metadata import data_use_requirement
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
 from hermes_cli.config import get_hermes_home
 from hermes_cli.config_providers import _canonical_api_mode
@@ -447,8 +448,8 @@ def _run_protected_sync_provider_call(callback: Callable[[dict[str, Any]], Any],
 
     Aux clients are process-shared and cannot be closed to wake one request, so the callback (incl.
     stream aggregation) runs in a daemon while the owner polls cancellation; on cancel the owner
-    unwinds at once and the daemon finishes under the provider timeout in ``kwargs`` (it owns no
-    transcript/commit state, never holds the session lock). Unprotected / no cancel source: direct.
+    unwinds at once; the daemon stops at its next streamed chunk, else under the provider timeout in ``kwargs``
+    (it owns no transcript/commit state, never holds the session lock). Unprotected / no cancel source: direct.
     """
     source_cancel_check = _capture_aux_cancel_check()
     if not _aux_interrupt_protected() or not callable(source_cancel_check):
@@ -936,13 +937,12 @@ def build_nvidia_nim_headers(base_url: str | None) -> dict:
 
 
 # Vercel AI Gateway attribution (HTTP-Referer → referrerUrl, X-Title → appName).
-from hermes_cli.version_info import get_version_info
+from hermes_cli.version_info import hermes_user_agent
 
-_AI_GATEWAY_HEADERS = {
-    "HTTP-Referer": "https://hermes-agent.nousresearch.com",
-    "X-Title": "Hermes Agent",
-    "User-Agent": f"HermesAgent/{get_version_info().base_version}",
-}
+
+def _ai_gateway_headers() -> dict[str, str]:
+    return {"HTTP-Referer": "https://hermes-agent.nousresearch.com", "X-Title": "Hermes Agent",
+            "User-Agent": hermes_user_agent("HermesAgent")}
 
 # Nous Portal attribution extra_body. Tags come from agent.portal_tags so the client= marker
 # tracks the canonical base version — never inline a literal here.
@@ -6635,7 +6635,7 @@ def _routes_to_custom_endpoint(provider_norm: str) -> bool:
 
 
 def _project_provider_profile(
-    provider: str, provider_norm: str, model: str, effective_base: str, reasoning_config: Optional[dict],
+    provider: str, provider_norm: str, model: str, effective_base: str, reasoning_config: Optional[dict], data_use: frozenset[str],
 ) -> _ProfileProjection:
     """Provider profile's extra_body / kwargs projection; partial on failure."""
     body: dict[str, Any] = {}
@@ -6656,7 +6656,7 @@ def _project_provider_profile(
             profile = get_provider_profile("custom")
         if profile is not None:
             messages_wire = profile.api_mode == "anthropic_messages"
-            body = profile.build_extra_body(model=model, base_url=effective_base, reasoning_config=reasoning_config) or {}
+            body = profile.build_extra_body(model=model, base_url=effective_base, reasoning_config=reasoning_config, data_use=data_use) or {}
             reasoning_extra, top_level = profile.build_api_kwargs_extras(
                 reasoning_config=reasoning_config, supports_reasoning=reasoning_config is not None,
                 model=model, base_url=effective_base,
@@ -6770,9 +6770,8 @@ def _build_call_kwargs(
             extra_body.pop("reasoning")
             if reasoning_config is None:
                 reasoning_config = task_reasoning
-    reasoning_config = clamp_reasoning_config(
-        known_reasoning_floor(reasoning_config, provider_norm, effective_base, model, task))
-    projection = _project_provider_profile(provider, provider_norm, model, effective_base, reasoning_config)
+    reasoning_config = clamp_reasoning_config(known_reasoning_floor(reasoning_config, provider_norm, effective_base, model, task))
+    projection = _project_provider_profile(provider, provider_norm, model, effective_base, reasoning_config, data_use_requirement(messages))
     kwargs.update(projection.top_level)
     merged_extra = _merge_aux_extra_body(extra_body, projection, reasoning_config, provider_norm)
     if "response_format" in merged_extra:
@@ -7177,11 +7176,8 @@ class _ChatStreamAccumulator:
         # llama-server prompt reading doesn't count toward the ceiling (``local_prompt_progress``).
         self._prompt_reading = PromptReadingClock(self._started)
         self._total_ceiling = total_ceiling
-        # Absolute instant the waiting host gives up; checked alongside (not instead of) the
-        # ceiling, and unaffected by pre-construction dispatch/TTFT.
-        # Checked as well as (not instead of) the ceiling above: the ceiling still bounds callers with no
-        # host deadline, and the host deadline is absolute, so it is unaffected by however long dispatch and
-        # TTFT took before this accumulator was constructed. See #99692.
+        # Absolute instant the waiting host gives up, checked as well as (not instead of) the ceiling, which
+        # still bounds callers with no host deadline; unaffected by pre-construction dispatch/TTFT (#99692).
         self._host_deadline = host_deadline
         self.content_parts: list[str] = []
         self.reasoning_parts: list[str] = []
@@ -7192,7 +7188,10 @@ class _ChatStreamAccumulator:
         self.resp_model = model or ""
 
     def _check_deadlines(self) -> None:
-        """Raise TimeoutError past the total ceiling or the host deadline."""
+        """Raise TimeoutError past the total ceiling or the host deadline; a host hard cancel (/stop, session
+        boundary) stops the stream at its next chunk instead of letting the daemon bill on to the deadline."""
+        if _aux_interrupt_cancel_requested():
+            raise AuxiliaryExplicitCancellation()
         now = time.monotonic()
         if self._total_ceiling is not None and (now - self._started - self._prompt_reading.seconds) >= self._total_ceiling:
             raise TimeoutError(f"Auxiliary streamed call timed out after {self._total_ceiling:.0f}s "
@@ -7836,12 +7835,9 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     regardless of user intent. Auth errors from an explicit provider may only use the task's
     own configured fallback_chain; they never imply an unconfigured provider hop."""
     task, tag, resolved_provider = route.task, route.tag, route.resolved_provider
-    # Respect explicit provider choice for transient errors (auth, request validation, etc.) but allow
-    # fallback when the provider clearly cannot serve the request due to capacity: payment/quota exhaustion
-    # and connection failures are capacity problems, not request constraints. See #26803: daily token quota
-    # (429 + "too many tokens per day") must fall back just like a 402 credit error.
-    # Rate limits are included: after retries are exhausted, a 429 means the provider is at capacity. See
-    # #52228. See #26803: daily token quota must fall back like a 402 credit error.
+    # Respect explicit provider choice for transient errors (auth, request validation, etc.) but fall back when
+    # the provider cannot serve due to capacity: payment/quota exhaustion (a daily-token 429 like a 402, #26803),
+    # connection failures, and a 429 after retries are exhausted (#52228) are not request constraints.
     is_auto = resolved_provider in {"auto", "", None}
     reason = next((label for predicate, label in _FALLBACK_REASONS if predicate(first_err)), None)
     is_capacity_error = any(
@@ -7910,6 +7906,9 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
         _record_route_info(route.route_info, _fallback_provider_from_label(fb_label), fb_model)
         fb_resp = yield _LadderStep("fallback", (fb_client, fb_model, fb_label))
         if fb_resp is not None:
+            if route.route_info is not None:  # tell the caller its own route failed, not only where it landed
+                route.route_info.update(failed_model=route.final_model or "", failure=f"{reason}: {first_err}",
+                                        fallback_label=fb_label)
             return fb_resp
         fb_client, fb_model, fb_label = _next_fallback_after_quarantine(
             task, resolved_provider, is_auto, route, _chain_failed_model, _chain_failure_scope,

@@ -67,6 +67,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--wheelhouse", type=Path)
     parser.add_argument("--requirements", type=Path)
     parser.add_argument("--requirement", action="append", default=[])
+    parser.add_argument("--lock", type=Path,
+                        help="uv.lock the requirements were exported from; its overrides apply")
     args = parser.parse_args(argv)
     requirements = list(args.requirement)
     if args.requirements is not None:
@@ -121,6 +123,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             executable = pm.build_requirements_environment(
                 requirements, out=args.out, python=args.python, cache=args.cache,
                 wheelhouse=args.wheelhouse, offline=args.offline, sealed=args.sealed, explicit=True,
+                lock=args.lock,
             )
         else:
             executable = pm.build_environment(

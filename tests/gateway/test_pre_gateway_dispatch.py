@@ -221,7 +221,7 @@ async def test_hook_fires_once_at_messaging_ingress_and_never_when_an_admission_
 
     admitted = []
     monkeypatch.setattr("hermes_cli.lifecycle.ainvoke_hook", hook)
-    monkeypatch.setattr(authorities, "active_authority", lambda _runner: object())
+    monkeypatch.setattr(authorities, "active_authority", lambda _runner: SimpleNamespace(route_epoch=lambda _route: 0))
     monkeypatch.setattr(ingress, "admit_message", admit)
     runner, adapter = _make_runner(Platform.WHATSAPP)
     runner._is_user_authorized_for_source = lambda _s: True

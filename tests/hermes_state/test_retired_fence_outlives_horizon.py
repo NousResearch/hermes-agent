@@ -70,3 +70,31 @@ def test_a_swept_session_fence_ages_out_at_the_horizon(tmp_path):
         for sid in ("swept", "empty"):
             assert db.get_meta(RETIRED_PREFIX + sid) is None, f"{sid}: a sweep's marker never ages out"
         assert db.get_meta(RETIRED_PREFIX + "deleted") is not None
+
+
+@pytest.mark.parametrize("sid, ages_out", [("user-42", True), ("api-0123456789abcdef", False)],
+                         ids=["caller-named", "door-derived"])
+def test_a_swept_api_session_keeps_its_fence_only_when_a_door_derived_its_id(tmp_path, sid, ages_out):
+    from hermes_state_mutation_retirement import RETIRED_PREFIX, create_conflict, prune_retired_tombstones
+    with SessionDB(tmp_path / "state.db") as db:
+        db.create_session(sid, source="api_server")
+        db.end_session(sid, "test")
+        assert db.prune_sessions(older_than_days=None) == 1
+        db._execute_write(lambda conn: prune_retired_tombstones(conn, older_than=0))
+        assert (db.get_meta(RETIRED_PREFIX + sid) is None) is ages_out
+        with db._read_ctx() as conn:
+            assert (create_conflict(conn, sid) is None) is ages_out
+
+
+def test_a_permanent_marker_an_earlier_release_wrote_for_a_swept_api_session_stays(tmp_path):
+    """An earlier release gave a swept caller-named API id the same permanent marker as a user
+    delete (``{"retired_at"}`` only). The two can't be told apart, so the upgraded prune pass keeps
+    both: a deleted id must never come back."""
+    import json
+    from hermes_state_mutation_retirement import RETIRED_PREFIX, create_conflict, prune_retired_tombstones
+    with SessionDB(tmp_path / "state.db") as db:
+        db.set_meta(RETIRED_PREFIX + "user-42", json.dumps({"retired_at": time.time() - 30 * 86400}))
+        db._execute_write(lambda conn: prune_retired_tombstones(conn))
+        assert db.get_meta(RETIRED_PREFIX + "user-42") is not None
+        with db._read_ctx() as conn:
+            assert create_conflict(conn, "user-42") == ("session_deleted", "Session was deleted; its id cannot be reused")

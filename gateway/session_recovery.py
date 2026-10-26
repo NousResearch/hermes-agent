@@ -410,6 +410,12 @@ class SessionRecoveryMixin:
                     create_kwargs.get("session_id"), session_key, during, e),
             )
 
+    def _row_settled(self, session_id: str) -> None:
+        """The route transition that published *session_id* returned (its state.db half done or
+        failed): from here a missing or ended row is real again (see ``_is_session_ended_in_db``)."""
+        with self._lock:
+            self._rows_pending.discard(session_id)
+
     @staticmethod
     def _session_create_kwargs(
         *, session_id, session_key, origin, source_value, display_name, parent_session_id,

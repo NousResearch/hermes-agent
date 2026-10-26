@@ -383,14 +383,14 @@ def test_generated_unicode_vbs_round_trips_service_identity(monkeypatch, tmp_pat
     if legacy:
         script.write_text(content, encoding="utf-8", newline="")
     else:
-        gateway_windows._atomic_write(script, content, script.with_suffix(".tmp"))
+        gateway_windows._atomic_write(script, content, script.with_suffix(".tmp"), encoding="utf-16")
         assert script.read_bytes().decode("utf-16") == content
     xml = gateway_windows._build_scheduled_task_xml("Hermes_Gateway", script, "DOMAIN\\owner")
     verify_windows_task(xml, home, "DOMAIN\\owner", "S-1-5-21-123")
 
     startup = home / "Startup.vbs"
     startup_content = gateway_windows._build_startup_launcher(script.with_suffix(".cmd"))
-    gateway_windows._atomic_write(startup, startup_content, startup.with_suffix(".tmp"))
+    gateway_windows._atomic_write(startup, startup_content, startup.with_suffix(".tmp"), encoding="utf-16")
     assert startup.read_bytes().decode("utf-16") == startup_content
     assert str(home) in startup_content
 
@@ -417,7 +417,10 @@ def test_native_unicode_launcher_runs_in_requested_home(monkeypatch, tmp_path, s
     ])
     build = gateway_windows._build_gateway_vbs_script if suffix == ".vbs" else gateway_windows._build_gateway_cmd_script
     script = tmp_path / ("launcher" + suffix)
-    gateway_windows._atomic_write(script, build(sys.executable, str(home), str(home), ""), script.with_suffix(".tmp"))
+    gateway_windows._atomic_write(
+        script, build(sys.executable, str(home), str(home), ""), script.with_suffix(".tmp"),
+        encoding="utf-16" if suffix == ".vbs" else "utf-8",
+    )
     command = ["cscript.exe", "//B", "//Nologo", str(script)] if suffix == ".vbs" else ["cmd.exe", "/d", "/c", str(script)]
     spawn_options = {}
     if suffix == ".cmd":
@@ -557,6 +560,23 @@ def test_reconcile_leaves_one_autostart_mechanism(monkeypatch, tmp_path):
     gateway_windows.reconcile_autostart_launchers()
     assert gateway_windows.redundant_autostart_entries() == []
     assert [p.name for p in (tmp_path / "no-task" / "Startup").iterdir()] == ["Hermes_Gateway_alice.vbs"]
+
+
+def test_reconcile_rewrites_an_older_startup_entry_as_utf16(monkeypatch, tmp_path):
+    """wscript.exe reads a BOM-less .vbs in the ANSI code page: an older UTF-8 Startup entry chaining a
+    non-ASCII path quits silently at logon (FileExists on the garbled target is false). The update
+    reconcile rewrites it as UTF-16 with a BOM."""
+    import codecs
+    startup, script = _startup_with_fallback_and_legacy_entries(monkeypatch, tmp_path / "Usuário 方舟")
+    (startup / "Hermes_Gateway_alice.cmd").unlink()
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: script)
+
+    assert gateway_windows.reconcile_autostart_launchers() == ([], [])
+    raw = (startup / "Hermes_Gateway_alice.vbs").read_bytes()
+    assert raw.startswith(codecs.BOM_UTF16_LE)
+    assert raw.decode("utf-16") == gateway_windows._build_startup_launcher(script)
+    assert sorted(p.name for p in startup.iterdir()) == ["Hermes_Gateway_alice.vbs"]
 
 
 def test_reconcile_warns_when_legacy_entry_cannot_be_removed(monkeypatch, tmp_path):

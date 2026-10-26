@@ -116,6 +116,7 @@ class SimplexAdapter(BasePlatformAdapter):
     """SimpleX Chat adapter using the simplex-chat daemon WebSocket API."""
 
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
+    serial_receive_loop = True  # the WebSocket loop awaits each event before reading the next
 
     def __init__(self, config: PlatformConfig, **kwargs):
         super().__init__(config=config, platform=Platform("simplex"))

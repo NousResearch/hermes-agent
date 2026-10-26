@@ -270,7 +270,7 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
         />
         {labeled(
           b.editor.liveCapabilities,
-          <ResizableFrame height={460} minHeight={300}>
+          <ResizableFrame>
             <CapabilitiesView
               embedded
               fixedProfile={backendProfile}

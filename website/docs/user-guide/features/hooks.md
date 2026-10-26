@@ -454,7 +454,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `transform_terminal_output` | Transform | After bounded foreground process capture, before final output limiting; first string replaces output. | `command`, `output`, `returncode`, `task_id`, `env_type` | Command/output may contain credentials. |
 | `pre_transcription` | Transform | Fired by the STT dispatcher after provider resolution and before any backend (built-in, command-type, or plugin-registered) is invoked; dict results are applied in registration order, last-writer-wins per field (`prompt`, `language`, `model`; `file_path` is read-only). | `file_path`, `provider`, `model`, `language`, `prompt`, `source` | The final prompt is uploaded to the configured STT provider with the audio — keep secrets out of hook returns. |
 | `pre_llm_call` | Directive/control | Once per turn before the loop; all valid string/`{"context": ...}` returns are joined and injected into the user message. | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id` | Full user message and conversation history. |
-| `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform` | Full prompt, response, and history. |
+| `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform`, `side_question_token` | Full prompt, response, and history. |
 | `transform_llm_output` | Transform | Before `post_llm_call` and final delivery; first non-empty string replaces the response. | `response_text`, `session_id`, `model`, `platform` | Full final assistant text. |
 | `pre_verify` | Directive/control | At the bounded edited-code verify gate; first valid continue/block-stop directive keeps the turn going. | `session_id`, `platform`, `model`, `coding`, `attempt`, `final_response`, `changed_paths` | Draft response and changed paths. |
 | `pre_api_request` | Observer | Per provider attempt, immediately before the request; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `user_message`, `conversation_history`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `retry_count`, `request_messages`, `message_count`, `tool_count`, `approx_input_tokens`, `request_char_count`, `max_tokens`, `started_at`, `middleware_trace`, `request` | High sensitivity: legacy `user_message`, `conversation_history`, and `request_messages` are intentionally raw; prefer sanitized `request`. |
@@ -471,6 +471,8 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `on_session_end` | Observer | Canonically at each turn finalization; CLI/TUI exits have additional reduced legacy shapes. Return ignored. | Canonical: `session_id`, `task_id`, `turn_id`, `completed`, `failed`, `interrupted`, `turn_exit_reason`, `model`, `platform`; exit paths may add `reason`/`api_request_id` and omit fields. | IDs, model/platform, and outcome; canonical payload has no message body. |
 | `on_session_finalize` | Observer | CLI/TUI/gateway teardown through `finalize_session`; gateway shutdown may finalize without a reset. Return ignored. | Surface-dependent `session_id`, `platform`, optionally `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
 | `on_session_reset` | Observer | CLI/TUI session boundary and gateway after the replacement session exists; return ignored. | CLI: `session_id`, `platform`, `reason`; TUI: `session_id`, `platform`; gateway: those plus `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
+| `on_session_delete` | Observer | After a session delete or deliberate archive commits (CLI, TUI, Desktop/dashboard, gateway API, sweeps, prune); return ignored. | `session_id`, `reason`, `profile`, optional `deleted_ids` (full set when more than one row went), `sessions_dir` | Session identifiers only; no message content. |
+| `post_compaction` | Observer | Once per committed compaction, on every path: automatic and manual compaction in the agent loop (CLI, TUI, Desktop, gateway hygiene, overflow recovery), the gateway's `/compress` (`session.mutate compress`), Codex app-server compactions, micro-compaction and proactive tool-result pruning. Not fired for attempts that changed nothing (aborted, blocked, refused). Timeout-bounded; return ignored. | `session_id`, `old_session_id`, `kind`, `reason`, `before_tokens`, `after_tokens`, `messages_removed` | Identifiers and counts only. |
 | `agent_loop_stopped` | Observer | Immediately after a real running agent is interrupted — gateway `_interrupt_and_clear_session` or TUI/desktop `session.interrupt`; return ignored. | `session_key`, `platform`, `reason`, `invalidation_reason` | Session/routing identifiers and interruption reasons; no message body. |
 | `on_skill_lifecycle` | Observer | After an authoritative skill-usage state change; return ignored. | `action`, `skill_name`, `provenance`, `task_id`, `session_id`, `use_count`, `reused`, `reuse_after_patch` | Exposes the local skill name and provenance. |
 | `subagent_start` | Observer | Child constructed and about to run; return ignored. | `parent_session_id`, `parent_turn_id`, `parent_subagent_id`, `child_session_id`, `child_subagent_id`, `child_role`, `child_goal` | Child goal may contain user/project content. |
@@ -776,6 +778,7 @@ def my_callback(session_id: str, user_message: str, assistant_response: str,
 | `conversation_history` | `list` | Copy of the full message list after the turn completed |
 | `model` | `str` | The model identifier |
 | `platform` | `str` | Where the session is running |
+| `side_question_token` | `str \| None` | One-use token for [`ctx.side_question`](../../developer-guide/plugin-llm-access.md#asking-the-sessions-own-agent-ctxside_question), shared by every plugin of the session's profile; `None` unless a loaded plugin holds the `llm.side_question` capability, and always `None` for cron runs and subagent turns |
 
 **Fires:** In `agent/turn_finalizer.py` (`finalize_turn()`, called by `run_conversation()` in `agent/conversation_loop.py`), after the tool loop exits with a final response. Guarded by `if final_response and not interrupted` — so it does **not** fire when the user interrupts mid-turn or the agent hits the iteration limit without producing a response.
 
@@ -1081,9 +1084,62 @@ def my_callback(session_id: str, platform: str, **kwargs):
 
 ---
 
+### `on_session_delete`
+
+Fires **once per operation, after the transaction commits**, when a session actually went away: deleted (single, bulk, the empty-session sweep, retention prune, ghost-prune maintenance, profile repair) or deliberately archived. Every surface ends in the same `SessionDB` methods, so CLI (`hermes sessions delete|prune|archive`, `/exit --delete`), TUI, Desktop/dashboard (single and bulk delete, archive) and the gateway API server are all covered. Plugins that keep per-session state on disk can clean up without polling the session store.
+
+**Callback signature:**
+
+```python
+def my_callback(session_id: str, reason: str, profile: str | None, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `session_id` | `str` | The session the operation targeted. Always present. |
+| `reason` | `str` | `"delete"`, `"archive"`, `"empty_sweep"`, `"prune"`, `"ghost_prune"` or `"profile_repair"`. |
+| `profile` | `str \| None` | Profile that owns the session store (`"default"` for the root home), `None` for a store outside any profile home. |
+| `deleted_ids` | `list[str]`, optional | Every row removed, including cascade-deleted delegate children, compression-chain links and each row of a bulk delete. Present when more than one row went. |
+| `sessions_dir` | `str`, optional | The profile's `sessions/` dir when the caller passed one. |
+
+**Fires:** Post-commit only, and only when something changed: unknown ids, repeat archives and un-archives stay silent. `reason="archive"` means the user hid the session (the transcript is kept and it can be un-archived); the idle auto-archive sweep and profile adoption do not fire. A failing callback is logged and skipped like every other observer and never fails the delete. The payload carries no message content.
+
+**Delivery scope:** Process-local — the callback runs only in the process that committed the delete. It is not a durable cross-process delivery channel, and it carries no exactly-once guarantee: external side effects driven from the callback should tolerate a missed or duplicated invocation.
+
+**Return value:** Ignored.
+
+**Use cases:** Delete a per-session sidecar database or cache directory, close a linked task when the user archives its chat, emit "session deleted" analytics.
+
+---
+
 See the **[Build a Plugin guide](../../developer-guide/plugins/index.md)** for the full walkthrough including tool schemas, handlers, and advanced hook patterns.
 
 ---
+
+### `post_compaction`
+
+Fires once after a compaction **committed**, so plugins (memory providers, context engines, external knowledge stores) can tell that detail they injected earlier was just summarized away and re-inject it, typically from their next `pre_llm_call`.
+
+**Callback signature:**
+
+```python
+def my_callback(session_id: str, kind: str, reason: str, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `session_id` | `str` | The session that holds the compacted transcript now. |
+| `old_session_id` | `str` | The session the compaction started in when it rotated to a new one; `""` when compacted in place. |
+| `kind` | `str` | `"summarize"` (full compaction), `"micro_summarize"`, `"prune_tool_results"` or `"provider_native"` (Codex app-server). |
+| `reason` | `str` | What triggered it: `"manual"` (`/compress`), `"pre_api"`, `"post_tool"`, `"overflow"`, `"gateway_hygiene"`, `"between_turns"`, `"proactive_prune"`, `"provider"`, or `"unknown"`. |
+| `before_tokens` / `after_tokens` | `int \| None` | Rough token estimates of the transcript before and after; `None` when unknown (Codex owns the thread). |
+| `messages_removed` | `int \| None` | Messages before minus after; `None` when unknown. |
+
+**Fires:** in the agent loop, in the process that compacted (CLI, TUI and Desktop backends, gateway agents, cron); for the gateway's `/compress`, in the gateway after the commit. Attempts that changed nothing (summary aborted, blocked by a cooldown, refused because it would grow) and background-review forks fire nothing.
+
+**Return value:** Ignored. A callback that raises is logged and skipped; the compaction is already committed and is unaffected. Callbacks are bounded by `plugins.hook_callback_timeout`.
+
+**Use cases:** Re-inject session context after compaction, refresh an external index, count compactions.
 
 ### `agent_loop_stopped`
 
@@ -1721,7 +1777,10 @@ def my_callback(
 When CLI streaming is enabled, an append-only transform is printed after the
 streamed body. A transform that replaces the response is printed in full after
 the streamed body, labeled as a post-stream transformation, so replacement
-content is never silently lost.
+content is never silently lost. In the TUI, the desktop app and messaging chats
+that edit a streamed message in place, the streamed reply is replaced by the
+rewrite when the turn completes. The hook runs on the finished text, so the
+unrewritten reply is visible while it streams.
 
 ```python
 import os, re
@@ -1736,6 +1795,34 @@ def register(ctx):
 ```
 
 The hook is guarded on a non-empty, non-interrupted response — it will not fire on stop-button interrupts or empty turns. Exceptions are logged as warnings and do not break agent execution.
+
+#### Holding the reply until it is rewritten (`hold_stream=True`) {#hold-stream}
+
+The hook runs on the finished reply, so with streaming on the user watches the unrewritten text arrive and then sees it replaced. A plugin that must see the reply before the user does (redaction, policy filters) declares it when it registers:
+
+```python
+def register(ctx):
+    ctx.register_hook("transform_llm_output", redact, hold_stream=True)
+```
+
+While a plugin loaded in a profile holds the stream, that profile's sessions show the reply only as the rewritten final:
+
+| Surface | While the reply is held | When the turn ends |
+|---|---|---|
+| Messaging (Telegram, Discord, Slack, Matrix, …) | The platform's typing indicator; no draft, edit or native stream message | The rewrite is sent once as a normal message (a long one splits like any reply) |
+| Slack over Relay | Typing indicator; no `chat.*Stream` message | The rewrite, sent once |
+| TUI, desktop app, classic CLI, ACP editors | The usual busy/thinking indicator; no reply text | The rewrite, shown once |
+| API server (`/v1/chat/completions`, `/v1/responses`, streaming) | The response stream is open with no text | The rewrite is the response's only text |
+
+What else is held:
+
+- **Commentary** (model text sent between tool calls, `display.interim_assistant_messages`) never passes through `transform_llm_output`, so a held turn drops it. It stays in the model's context but is stored hidden, so resuming or reopening the session (TUI, desktop app, dashboard, classic CLI) does not show it either. The same goes for every other model text the user never got: an answer Hermes sent back for another try (late language-server errors, verify-on-stop), a reply cut by the output limit before its continuation, a call to an unknown tool.
+- **Every way a turn ends passes through the hook.** A reply cut by the output limit on every continuation, an iteration-budget summary, a provider or compression error, an interrupt: whatever text the turn ends with reaches the user only after `transform_llm_output` saw it, and model text is stored as the rewrite.
+- **A failing hook withholds the reply.** If no hook rewrote the reply and one raised or timed out, the user gets a short "reply withheld" notice, never the original.
+- **The hook set is fixed for the turn.** A held turn runs the `transform_llm_output` hooks that were loaded when it started, even if plugins are re-discovered mid-turn.
+- **Tool progress and reasoning** are not the reply and keep their own settings (`display.tool_progress`, `display.show_reasoning`). Turn them off as well if model output the plugin never saw must not reach the user.
+
+`hold_stream` applies to `transform_llm_output` only; on any other hook it is ignored with a warning. Plugins that register `transform_llm_output` without it keep normal streaming.
 
 ### API-request observer hooks
 
@@ -1755,7 +1842,7 @@ Fires for a failed provider attempt with status/retry timing, an `error` object,
 
 #### `pre_auxiliary_call` / `post_auxiliary_call`
 
-Auxiliary LLM calls — session titling, context compression, MoA advisors and the aggregator, vision, approval classification, memory and other side tasks — run outside the main tool-calling loop and do **not** fire `pre_api_request` / `post_api_request` (those stay turn-scoped, so a trace-per-turn plugin never sees side traffic by accident). Subscribe to `pre_auxiliary_call` / `post_auxiliary_call` instead: they fire once per physical provider attempt (retries and fallbacks included) with the same payload shape plus `aux_task` (the task name, e.g. `title_generation`, `compression`, `moa_aggregator`, `vision`). `session_id` / `task_id` / `turn_id` are the parent turn's when the call runs under one, empty otherwise; `api_request_id` (`aux-…`) is shared by every attempt of one logical call and `retry_count` distinguishes them. Both are observer-only and fail-open: a raising or timed-out callback is logged and the auxiliary task proceeds. `post_auxiliary_call` carries `error` / `error_type` when the attempt raised and `streaming: True` (with `usage`/`response` `None`) when the response is handed back as a stream.
+Auxiliary LLM calls — session titling, context compression, MoA advisors and the aggregator, vision, approval classification, memory and other side tasks — run outside the main tool-calling loop and do **not** fire `pre_api_request` / `post_api_request` (those stay turn-scoped, so a trace-per-turn plugin never sees side traffic by accident). Subscribe to `pre_auxiliary_call` / `post_auxiliary_call` instead: they fire once per physical provider attempt (retries and fallbacks included) with the same payload shape plus `aux_task` (the task name, e.g. `title_generation`, `compression`, `moa_aggregator`, `vision`, `plugin_side_question` for a plugin's [`ctx.side_question`](../../developer-guide/plugin-llm-access.md#asking-the-sessions-own-agent-ctxside_question), which also carries the asking plugin's `plugin_id`). `session_id` / `task_id` / `turn_id` are the parent turn's when the call runs under one, empty otherwise; `api_request_id` (`aux-…`) is shared by every attempt of one logical call and `retry_count` distinguishes them. Both are observer-only and fail-open: a raising or timed-out callback is logged and the auxiliary task proceeds. `post_auxiliary_call` carries `error` / `error_type` when the attempt raised and `streaming: True` (with `usage`/`response` `None`) when the response is handed back as a stream.
 
 ### `on_skill_lifecycle`
 
@@ -2015,7 +2102,7 @@ printf '{}\n'
 
 ### Consent model
 
-Each unique `(event, command)` pair prompts the user for approval the first time Hermes sees it, then persists the decision to `~/.hermes/shell-hooks-allowlist.json`. Subsequent runs (CLI or gateway) skip the prompt. The classic CLI asks on its terminal before it opens its gateway session; the gateway re-reads `hooks:` and the allowlist whenever a local session (CLI, TUI, Desktop) is created or resumed, so a hook added, approved, removed or revoked since the gateway started takes effect then.
+Each unique `(event, command)` pair prompts the user for approval the first time Hermes sees it, then persists the decision to `~/.hermes/shell-hooks-allowlist.json`. Subsequent runs (CLI or gateway) skip the prompt. The classic CLI asks on its terminal before it opens its gateway session; the gateway re-reads `hooks:` and the allowlist whenever a local session (CLI, TUI, Desktop) is created or resumed, so a hook added, approved, removed or revoked since the gateway started takes effect then. A change to a profile's allowlist or `hooks:` block (an approval, `hermes hooks revoke`, an edit) also takes effect within about 30 seconds without any session opening, on every profile a gateway serves.
 
 Three escape hatches bypass the interactive prompt — any one is sufficient:
 
@@ -2023,7 +2110,7 @@ Three escape hatches bypass the interactive prompt — any one is sufficient:
 2. `HERMES_ACCEPT_HOOKS=1` environment variable
 3. `hooks_auto_accept: true` in `~/.hermes/config.yaml`
 
-Non-TTY runs (gateway, cron, CI) need one of these three — otherwise any newly-added hook silently stays un-registered and logs a warning. `hermes gateway run --accept-hooks` (like `HERMES_ACCEPT_HOOKS=1` on the gateway) approves the hooks of every profile that gateway serves, including hooks added after it started.
+Only a foreground `hermes chat` (or `hermes rl`) ever asks. The gateway, cron, `hermes mcp-serve --tools` (the mcp-serve plugin), `hermes acp` and CI never prompt, even when stdin looks like a terminal (a hidden console from a Windows login-item launcher does), so they need one of these three or an allowlist entry. Otherwise a newly-added hook stays un-registered and a warning names the profile's allowlist file it is missing from (`profiles/<name>/shell-hooks-allowlist.json` for a non-default profile). `hermes gateway run --accept-hooks` (like `HERMES_ACCEPT_HOOKS=1` on the gateway) approves the hooks of every profile that gateway serves, including hooks added after it started.
 
 **Script edits are silently trusted.** The allowlist keys on the exact command string, not the script's hash, so editing the script on disk does not invalidate consent. `hermes hooks doctor` flags mtime drift so you can spot edits and decide whether to re-approve.
 
@@ -2050,7 +2137,7 @@ The command string must match the configured hook command exactly. A path-keyed 
 |---------|--------------|
 | `hermes hooks list` | Dump configured hooks with matcher, timeout, and consent status |
 | `hermes hooks test <event> [--for-tool X] [--payload-file F]` | Fire every matching hook against a synthetic payload and print the parsed response |
-| `hermes hooks revoke <command>` | Remove every allowlist entry matching `<command>` (the gateway stops running it when the next local session opens; messaging-only gateways on restart) |
+| `hermes hooks revoke <command>` | Remove every allowlist entry matching `<command>` (a running gateway stops running it within about 30 seconds) |
 | `hermes hooks doctor` | For every configured hook: check exec bit, allowlist status, mtime drift, JSON output validity, and rough execution time |
 
 ### Security

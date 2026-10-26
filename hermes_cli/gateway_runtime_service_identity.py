@@ -5,7 +5,6 @@ programs. Manager-loaded values take precedence over filenames and disk copies.
 """
 from __future__ import annotations
 
-import codecs
 import json
 import os
 from pathlib import Path
@@ -307,6 +306,21 @@ def read_definition(path: Path) -> bytes:
         return value
 
 
+def launcher_text(raw: bytes) -> str:
+    """Current .vbs launchers are UTF-16 with a BOM (wscript.exe reads a BOM-less script in the ANSI
+    code page); launchers written by older versions, and every other service definition, are UTF-8.
+    Undecodable bytes raise ``ValueError``."""
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        try:
+            return raw.decode("utf-16")
+        except UnicodeDecodeError:
+            _unverified()
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        _unverified()
+
+
 def _vbs_identity(script: str) -> tuple[str, list[str]]:
     # Recognize the vendor's complete template, not a HERMES_HOME substring
     # inside an arbitrary executable script. Doubled quotes are VB literals.
@@ -380,9 +394,6 @@ def verify_windows_task(xml: str | bytes, home: Path, account: str, sid: str) ->
     script = _absolute(match[1])
     if script.suffix.lower() != '.vbs':
         _unverified()
-    raw = read_definition(script)
-    # New launchers use WSH's Unicode format; installed pre-fix UTF-8 scripts still need recognition.
-    encoding = "utf-16" if raw.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)) else "utf-8-sig"
-    configured, argv = _vbs_identity(raw.decode(encoding))
+    configured, argv = _vbs_identity(launcher_text(read_definition(script)))
     verify_home(home, configured)
     verify_gateway_argv(argv, home)

@@ -503,7 +503,14 @@ def get_profiles_sessions(
 
     sort_key = "last_active" if order == "recent" else "started_at"
     merged.sort(key=lambda s: s.get(sort_key) or s.get("started_at") or 0, reverse=True)
-    window = _pinned_window(merged, offset, limit)
+    if archived == "only":
+        # Pinned live chats back-fill this view, but cannot consume positions
+        # in its archived-only cursor (whose total counts only archived rows).
+        window = _pinned_window([s for s in merged if s.get("archived")], offset, limit)
+        # Keep backfill after the window: clients retain only limit rows plus pins.
+        window.extend(s for s in merged if s.get("pinned") and not s.get("archived"))
+    else:
+        window = _pinned_window(merged, offset, limit)
     if not full:
         _strip_session_list_rows(window)
     return {"sessions": window, "total": sum(totals.values()), "profile_totals": totals,

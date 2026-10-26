@@ -51,11 +51,13 @@ import { detectTrigger, openDirectiveScope, textBeforeCaret, type TriggerState }
 import { ComposerTriggerPopover } from '@/app/chat/composer/trigger-popover'
 import { isRedoShortcut, isUndoShortcut } from '@/app/chat/composer/undo-history'
 import { chipTypedUrlOnSpace, linkifyUrls } from '@/app/chat/composer/url-refs'
+import { type DropFailure, dropWarning } from '@/app/chat/hooks/drop-warning'
 import {
   extractDroppedFiles,
   HERMES_PATHS_MIME,
   isImagePath,
-  partitionDroppedFiles
+  partitionDroppedFiles,
+  stageDroppedFilePath
 } from '@/app/chat/hooks/use-composer-actions'
 import { uploadComposerAttachment } from '@/app/session/hooks/use-prompt-actions'
 import { hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
@@ -77,9 +79,10 @@ import { Loader2Icon } from '@/lib/icons'
 import { isMacPlatform } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 import type { ComposerAttachment } from '@/store/composer'
-import { notifyError } from '@/store/notifications'
+import { notify, notifyError, readableError } from '@/store/notifications'
 import { $terminalBackend } from '@/store/session'
-import { isSessionRemote } from '@/store/session-states'
+import { ambientRequestFor } from '@/store/session-gone-latch'
+import { isSessionRemote, requestForOwnedSession } from '@/store/session-states'
 import { useForcedTextDirection } from '@/store/text-direction'
 import { notifyThreadEditClose } from '@/store/thread-scroll'
 
@@ -122,7 +125,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   const expanded = draft.includes('\n')
   const canSubmit = draft.trim().length > 0
   const at = useAtCompletions({ cwd, gateway, sessionId })
-  const slash = useSlashCompletions({ gateway })
+  const slash = useSlashCompletions({ gateway, sessionId })
   const emoji = useEmojiCompletions()
 
   // Timers this composer schedules must not outlive it. Every callback below
@@ -306,7 +309,9 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
     }
 
     const before = textBeforeCaret(editor)
-    const detected = detectTrigger(before ?? composerPlainText(editor))
+    const typed = detectTrigger(before ?? composerPlainText(editor))
+    // A `/` source with no adapter offers no menu (the onboarding chat before its setup ends).
+    const detected = typed?.kind === '/' && !slash.adapter ? null : typed
 
     if (detected) {
       const rect = editor.getBoundingClientRect()
@@ -325,7 +330,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
     if (detected?.kind !== trigger?.kind || detected?.query !== trigger?.query) {
       setTriggerActive(0)
     }
-  }, [trigger])
+  }, [slash.adapter, trigger])
 
   const closeTrigger = useCallback(() => {
     setTrigger(null)
@@ -462,22 +467,41 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
 
       const remote = isSessionRemote(sessionId)
 
+      // Staged on the edited session's owner: a bare-profile owner otherwise
+      // rides the ambient socket, which refuses another profile's session.
+      const ambient = ambientRequestFor(gateway)
+
       const requestGateway = <T,>(method: string, params?: Record<string, unknown>) =>
-        gateway.request<T>(method, params)
+        requestForOwnedSession<T>(sessionId, ambient, method, params)
 
       const refs: InlineRefInput[] = []
+      // The staging reason leaves out the name (the main composer's drop warning adds it): name
+      // each rejected file here too, in the same bounded warning, so several aren't told apart.
+      const failures: DropFailure[] = []
 
       for (const candidate of osDrops) {
-        const path = candidate.path || ''
+        let path: string
+
+        try {
+          // A rejected stage carries the server's or a proxy's reason (an nginx 413).
+          path = await stageDroppedFilePath(candidate)
+        } catch (err) {
+          const name = candidate.file?.name || candidate.path || 'file'
+          const reason = readableError(err, '').message
+
+          failures.push(reason ? { name, reason } : { name })
+
+          continue
+        }
 
         if (!path) {
           continue
         }
 
-        const kind: ComposerAttachment['kind'] =
-          candidate.file?.type.startsWith('image/') || isImagePath(candidate.file?.name || path) ? 'image' : 'file'
-
         try {
+          const kind: ComposerAttachment['kind'] =
+            candidate.file?.type.startsWith('image/') || isImagePath(candidate.file?.name || path) ? 'image' : 'file'
+
           const uploaded = await uploadComposerAttachment(
             { detail: path, id: attachmentId(kind, path), kind, label: pathLabel(path), path },
             { backendCwd: cwd, remote, requestGateway, sessionId, terminalBackend: $terminalBackend.get() }
@@ -493,9 +517,14 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
         }
       }
 
+      // A warning, as in the main composer, so the same drop looks the same wherever it lands.
+      if (failures.length) {
+        notify({ kind: 'warning', title: t.desktop.dropFiles, ...dropWarning(failures, t.desktop.dropFilesMore) })
+      }
+
       return refs
     },
-    [cwd, gateway, sessionId, t.desktop.dropFiles]
+    [cwd, gateway, sessionId, t.desktop.dropFiles, t.desktop.dropFilesMore]
   )
 
   const resetDragState = useCallback(() => {

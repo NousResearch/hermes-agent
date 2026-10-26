@@ -9,7 +9,7 @@ import { map, type MapStore } from 'nanostores'
 
 import type { HermesApiRequest } from '@/global'
 
-import { CANONICAL_GATEWAY_PROTOCOL, CanonicalDesktopProtocol, canonicalProfile, canonicalPromptParams, canonicalSessionKey, recordCanonicalOwner, splitRewindSubmit } from './canonical-protocol'
+import { CanonicalDesktopProtocol, canonicalProfile, canonicalPromptParams, canonicalSessionKey, openGatewaySocket, recordCanonicalOwner, splitRewindSubmit } from './canonical-protocol'
 
 // Desktop startup fires a burst of read-only data calls (config, profiles,
 // model info/options, cron) the moment the backend passes readiness. On a
@@ -78,8 +78,18 @@ function legacyParams(method: string, params: Record<string, unknown>): Record<s
   return Object.fromEntries(Object.entries(params).filter(([key]) => !strip.includes(key)))
 }
 
+// A caller timeout of 0 (or less) means no deadline, as in the shared channel, which arms no timer
+// for it. Callers that wait on a way-out offer instead (onboarding.state / onboarding.start) pass 0.
+function requestDeadline(timeoutMs: number | undefined): number {
+  const budget = timeoutMs ?? DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS
+
+  return budget > 0 ? Date.now() + budget : Number.POSITIVE_INFINITY
+}
+
 function remainingRequestBudget(deadline: number, signal?: AbortSignal): number {
   signal?.throwIfAborted()
+
+  if (deadline === Number.POSITIVE_INFINITY) { return 0 }
   const remaining = deadline - Date.now()
 
   if (remaining <= 0) { throw new Error('Hermes gateway request timed out') }
@@ -317,6 +327,10 @@ export class HermesGateway extends JsonRpcGatewayClient {
     })
   }
 
+  protected override isDesktopLocal(): boolean {
+    return this.canonical
+  }
+
   override async connect(wsUrl: string): Promise<void> {
     this.connectionGeneration++
     this.canonical = new URL(wsUrl).searchParams.has('native_dial')
@@ -376,7 +390,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
   override async request<T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number, signal?: AbortSignal): Promise<T> {
     if (!this.canonical) { return super.request<T>(method, legacyParams(method, params), timeoutMs, signal) }
     const generation = this.connectionGeneration
-    const deadline = Date.now() + (timeoutMs ?? DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS)
+    const deadline = requestDeadline(timeoutMs)
     // A truncating submit (edit / regenerate / restore) is the owner's rewind, then the submit.
     const rewind = method === 'prompt.submit' ? splitRewindSubmit(params) : null
 
@@ -403,6 +417,12 @@ export class HermesGateway extends JsonRpcGatewayClient {
     // The attach may have identified the named launch profile behind an
     // implicit route. Its revision and generation are cached under that owner.
     params = this.routeCanonicalParams(method, params)
+
+    // Answered locally only once the owner's route is known: a named launch profile's
+    // retained rewind is keyed under its name, which a redial forgets until the attach.
+    const local = this.protocol.localAnswer(method, params)
+
+    if (local) { return local as T }
 
     let prepared = this.protocol.prepare(method, params)
     const wireMethod = this.protocol.wire(method, prepared)
@@ -508,17 +528,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
       onUnhandledRequest: request =>
         console.warn(`[gateway] Hermes Desktop has no server-request registry for ${request.method} (${request.id})`),
       requestTimeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS,
-      socketFactory: url => {
-        const parsed = new URL(url)
-
-        if (!parsed.searchParams.has('native_dial')) {return new WebSocket(url)}
-        const ticket = parsed.searchParams.get('ticket')
-
-        if (!ticket) {throw new Error('Native gateway requires a fresh private ticket')}
-        parsed.searchParams.delete('ticket')
-
-        return new WebSocket(parsed.toString(), [CANONICAL_GATEWAY_PROTOCOL, `hermes-gateway-ticket.${ticket}`])
-      }
+      socketFactory: openGatewaySocket
     })
     this.onEvent(event => {
       if (!this.canonical) { return }
@@ -798,4 +808,33 @@ export function sessionReadOwnerPin(id: string, profile?: ProfileScope): { conne
     connectionId,
     ...(profile == null && ownerProfile ? { profile: ownerProfile } : {})
   }
+}
+
+/** The backend a gateway FILE request naming session `id` must go to: the owner's
+ *  backend-facing profile, plus its connection when that is not the ambient one.
+ *  Null when no owner profile is known. A file route looks `session_id` up in
+ *  the profile the request names, so the id must never travel with another
+ *  profile: a caller that gets null names no session at all. */
+export function sessionFileOwnerScope(id: string): { connectionId?: string; profile: string } | null {
+  const owner = _sessionOwnerResolver?.(id)
+
+  if (!owner) {
+    return null
+  }
+
+  if (typeof owner === 'string') {
+    const profile = owner.trim()
+
+    return profile ? { profile } : null
+  }
+
+  const profile = String(owner.targetProfile || owner.profile || '').trim()
+
+  if (!profile) {
+    return null
+  }
+
+  const connectionId = String(owner.connectionId ?? '').trim()
+
+  return connectionId && connectionId !== (ambientOwnerConnectionId() ?? 'local') ? { connectionId, profile } : { profile }
 }

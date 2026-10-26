@@ -33,3 +33,14 @@ def test_local_hermes_dm_lands_once_in_the_profile_that_owns_the_handle(tmp_path
 
     assert ack["status"] == "queued" and ack["to"] == "@hermes"
     assert [home for home, _params in authority.calls] == [owner.resolve()]
+
+
+@pytest.mark.parametrize("real_hermes", [False, True])
+def test_roster_shows_one_hermes_handle(tmp_path, real_hermes):
+    root = _managed_home(tmp_path, teammates=("researcher", "hermes") if real_hermes else ("researcher",))
+
+    teammates = bot_mode_probe.get_bot_mode_protocol_section(root / "profiles" / "researcher").split("Your teammates")[1]
+    assert teammates.count("`@hermes`") == 1
+    assert ("`@default`" in teammates) is real_hermes
+    you = bot_mode_probe.get_bot_mode_protocol_section(root).split("Your teammates")[0]
+    assert ("You are `@default`" if real_hermes else "You are `@hermes`") in you

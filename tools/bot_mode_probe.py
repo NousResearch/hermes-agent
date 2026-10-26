@@ -65,9 +65,11 @@ def _profile_name(home: Path) -> str:
     return home.name if home.parent.name == "profiles" else "default"
 
 
-def _handle(name: str) -> str:
-    # The mention middleware aliases the default profile as @hermes.
-    return "hermes" if name == "default" else name
+def _handle(name: str, names: Collection[str]) -> str:
+    """The @handle a local profile answers to; ``names`` are the roster's folder ids. The default
+    profile is @hermes only while no real profile holds that name: a pre-reservation
+    ``profiles/hermes`` keeps @hermes, and the default answers to @default."""
+    return "hermes" if name == "default" and "hermes" not in names else name
 
 
 def _profile_for_handle(handle: str, names: Collection[str]) -> str:
@@ -174,11 +176,11 @@ def _friendly_names(profile_dir: Path) -> tuple[str, str]:
     return _swallow(_read, ("", ""))
 
 
-def _display_name(name: str, profile_dir: Path) -> str:
+def _display_name(name: str, profile_dir: Path, names: Collection[str]) -> str:
     """Human-facing sender name, in the Desktop's ``botFriendlyNames`` order: Bot Mode title,
     then profile.yaml ``display_name`` (``hermes profile rename``), else the @handle — the
     renamed primary signs as ``Maia (@hermes)``, not ``hermes (@hermes)`` (#89720)."""
-    return next((n for n in _friendly_names(profile_dir) if n), None) or _handle(name)
+    return next((n for n in _friendly_names(profile_dir) if n), None) or _handle(name, names)
 
 
 # Tokens the Desktop mention parser reserves; a bot titled "Hermes" never hijacks @hermes.
@@ -237,7 +239,8 @@ def _remote_roster(root: Path) -> list[dict]:
 def local_taken_forms(root: Path) -> set[str]:
     """Bare forms this gateway's own profiles answer to (handles + friendly-name slugs); a remote
     row must not be offered under any of them, since local resolution wins (``_resolve_local_name``)."""
-    return {_handle(name) for name, _d in _roster(root)} | set(local_alias_map(root))
+    names = [name for name, _d in _roster(root)]
+    return {_handle(name, names) for name in names} | set(local_alias_map(root))
 
 
 def _remote_paragraph(root: Path) -> str:
@@ -280,7 +283,9 @@ def _build_section(home: Path) -> str:
     if not _any_managed(root):
         return ""
 
-    roster_lines = [_bullet(f"@{_handle(name)}", _profile_role(d)) for name, d in _roster(root) if name != me]
+    roster = _roster(root)
+    names = [name for name, _d in roster]
+    roster_lines = [_bullet(f"@{_handle(name, names)}", _profile_role(d)) for name, d in roster if name != me]
     roster_block = "\n".join(roster_lines) or "- (no teammates yet)"
 
     return (
@@ -306,7 +311,7 @@ def _build_section(home: Path) -> str:
         "concisely via message_agent to their handle, and if it is a pure FYI "
         "with nothing to add, staying silent is fine — never ping-pong "
         "acknowledgements.\n"
-        f"You are `@{_handle(me)}`. Your teammates (live roster; roles from their "
+        f"You are `@{_handle(me, names)}`. Your teammates (live roster; roles from their "
         "profiles):\n"
         f"{roster_block}"
         + _remote_paragraph(home)

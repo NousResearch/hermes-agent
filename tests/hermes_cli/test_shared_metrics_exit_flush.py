@@ -3,11 +3,14 @@
 The gateway (SIGTERM, update restart, idle exit all funnel through ``_exit_after_graceful_shutdown``),
 the compute host, a SIGTERMed kanban worker and an orphaned slash worker leave via ``os._exit``, so a
 session still open at the stop never wrote its summary rows to the opt-in local store. The flush is
-bounded and creates nothing when collection is off.
+bounded, creates nothing when collection is off, and runs every profile's runtime under that profile's
+own consent (a multiplex gateway exits from the launch profile's scope).
 """
 
 from __future__ import annotations
 
+import json
+import os
 import sqlite3
 import threading
 import time
@@ -20,6 +23,8 @@ from hermes_cli import lifecycle, plugins
 from hermes_cli.observability import relay_shared_metrics
 from hermes_cli.observability import shared_metrics_process as process_metrics
 from hermes_cli.plugins import PluginManager
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from tests.waiting import wait_until
 
 
 class _Exited(Exception):
@@ -42,12 +47,29 @@ def _metric_names(home: Path) -> set[str]:
         return {name for (name,) in conn.execute("SELECT metric_name FROM counter_aggregates")}
 
 
-@pytest.fixture
-def metrics_home(tmp_path, monkeypatch):
-    """Real NeMo Relay runtime over a temp HERMES_HOME; ``policy['on']`` is the opt-in answer."""
+def _open_consent_windows(home: Path) -> list[tuple]:
+    with sqlite3.connect(_store(home).as_uri() + "?mode=ro", uri=True) as conn:
+        return conn.execute("SELECT opened_at FROM send_consent_windows WHERE closed_at IS NULL").fetchall()
+
+
+def _require_native_relay() -> None:
     relay = pytest.importorskip("nemo_relay")
     if getattr(relay, "_native", None) is None:
         pytest.skip("NeMo Relay native binding is unavailable on this platform")
+
+
+def _zero_plugin_runtimes(monkeypatch) -> None:
+    relay_shared_metrics._reset_for_tests()
+    relay_runtime._reset_for_tests()
+    manager = PluginManager()
+    manager._discovered = True  # a runtime with zero plugins (#64178)
+    monkeypatch.setattr(plugins, "_plugin_manager", manager)
+
+
+@pytest.fixture
+def metrics_home(tmp_path, monkeypatch):
+    """Real NeMo Relay runtime over a temp HERMES_HOME; ``policy['on']`` is the opt-in answer."""
+    _require_native_relay()
     home = tmp_path / "hermes-home"
     policy = {"on": True}
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -55,30 +77,23 @@ def metrics_home(tmp_path, monkeypatch):
         "hermes_cli.config.read_raw_config_readonly",
         lambda: {"telemetry": {"shared_metrics": {"enabled": policy["on"], "send": False}}},
     )
-    relay_shared_metrics._reset_for_tests()
-    relay_runtime._reset_for_tests()
-    manager = PluginManager()
-    manager._discovered = True  # a runtime with zero plugins (#64178)
-    monkeypatch.setattr(plugins, "_plugin_manager", manager)
+    _zero_plugin_runtimes(monkeypatch)
     yield home, policy
     relay_shared_metrics._reset_for_tests()
     relay_runtime._reset_for_tests()
 
 
-def _finished_task_in_open_session() -> None:
+def _finished_task_in_open_session(session_id: str = "open-session") -> None:
     """One completed task in a session that stays open, as a messaging or Desktop chat does."""
-    event = {"session_id": "open-session", "task_id": "task-1", "platform": "cli"}
+    event = {"session_id": session_id, "task_id": "task-1", "platform": "cli"}
     lifecycle.invoke_hook("on_session_start", **event, turn_id="turn-1")
     relay_shared_metrics.start_task_run(**event)
     lifecycle.invoke_hook("pre_llm_call", **event, turn_id="turn-1", messages=["hello"])  # a user turn
     relay_shared_metrics.finish_task_run(**event, result={"completed": True, "final_response": "ok"})
 
 
-def _wait_for(home: Path, metric: str, deadline_s: float = 10.0) -> None:
-    deadline = time.monotonic() + deadline_s
-    while metric not in _metric_names(home):
-        assert time.monotonic() < deadline, f"{metric} never reached the store"
-        time.sleep(0.05)
+def _wait_for(home: Path, metric: str) -> None:
+    wait_until(lambda: metric in _metric_names(home), what=f"{metric} in the store")
 
 
 def test_graceful_gateway_exit_writes_the_open_sessions_summary(metrics_home, monkeypatch):
@@ -165,6 +180,51 @@ def test_graceful_exit_with_collection_off_creates_no_store(metrics_home, monkey
         gateway_run._exit_after_graceful_shutdown(0)
 
     assert not (home / "telemetry").exists()
+
+
+def _write_policy(home: Path, **policy) -> None:
+    config = home / "config.yaml"
+    config.write_text(json.dumps({"telemetry": {"shared_metrics": policy}}))
+    later = time.time() + 5  # a rewrite inside one mtime tick must still read as a change
+    os.utime(config, (later, later))
+
+
+def test_exit_flush_applies_each_profiles_own_consent(tmp_path, monkeypatch):
+    """A multiplex gateway exits from the launch profile's scope. A routed profile with sending off
+    keeps it off (no consent window opened on its store), and one that turned collection off after
+    its turn gets no exit rows; both rulings are that profile's own, not the launch profile's."""
+    import gateway.run as gateway_run
+
+    _require_native_relay()
+    launch, send_off, revoked = (tmp_path / name for name in ("launch", "send-off", "revoked"))
+    for home in (launch, send_off, revoked):
+        home.mkdir()
+    _write_policy(launch, enabled=True, send=True, endpoint="http://127.0.0.1:9/never")
+    _write_policy(send_off, enabled=True, send=False)
+    _write_policy(revoked, enabled=True, send=False)
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    _zero_plugin_runtimes(monkeypatch)
+    try:
+        for home in (send_off, revoked):  # routed turns, each under its own profile scope
+            token = set_hermes_home_override(str(home))
+            try:
+                _finished_task_in_open_session(f"open-{home.name}")
+                _wait_for(home, "hermes.task_run.finished")
+            finally:
+                reset_hermes_home_override(token)
+        _write_policy(revoked, enabled=False, send=False)
+        rows_before_exit = _metric_names(revoked)
+
+        monkeypatch.setattr(gateway_run.os, "_exit", _fake_exit)
+        with pytest.raises(_Exited):
+            gateway_run._exit_after_graceful_shutdown(0)
+
+        assert "hermes.session.count" in _metric_names(send_off)  # its own consent still flushes it
+        assert _open_consent_windows(send_off) == []
+        assert _metric_names(revoked) == rows_before_exit
+    finally:
+        relay_shared_metrics._reset_for_tests()
+        relay_runtime._reset_for_tests()
 
 
 def test_a_wedged_exit_flush_never_holds_the_exit(monkeypatch):

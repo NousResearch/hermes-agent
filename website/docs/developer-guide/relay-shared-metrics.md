@@ -365,7 +365,12 @@ like `interactive`, as they did before the value existed; `background` and `dele
 runs are unattended and excluded there. Packages written before `one_shot` existed
 carry these runs as `interactive` and still validate. `hermes -z` leaves through
 `os._exit`, so it closes its metrics session before exiting rather than relying on the
-atexit hook.
+atexit hook. Graceful gateway, compute-host, SIGTERMed kanban-worker and orphaned
+slash-worker stops also leave through `os._exit` and run the same flush, bounded at 3 s.
+Every runtime's exit flush, export and send pass binds that runtime's own profile, so a
+process serving several profiles applies each profile's own collection and send consent:
+a profile that turned collection off since its last turn drops its in-memory rows
+instead of writing them.
 
 Each tool invocation is represented by a Relay tool lifecycle named
 `hermes.tool_call`. The terminal counter contains only bounded tool category,

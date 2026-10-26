@@ -10,10 +10,11 @@ import threading
 import uuid
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
-from time import monotonic_ns
-from typing import Any, Callable
+from time import monotonic, monotonic_ns
+from typing import Any, Callable, Iterator
 
 from agent import relay_runtime
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from agent.portal_tags import get_conversation_context
 from hermes_cli.version_info import get_version_info
 
@@ -629,6 +630,16 @@ class _Runtime:
             _forget(self._sessions, session.session_id, session)
 
     def shutdown(self) -> None:
+        # Callers (the atexit hook, an os._exit flush, a multiplex host's teardown) hold the launch
+        # profile's scope: this profile's own collection gate and send consent decide its exit.
+        with self._owner_scope():
+            if not enabled():  # revoked since its last turn: drop the data, never export it
+                if self._registered:
+                    self.deactivate()
+                return
+            self._close_and_export()
+
+    def _close_and_export(self) -> None:
         with self._sessions_lock:
             self._active = False
             session_ids = list(self._sessions)
@@ -643,6 +654,15 @@ class _Runtime:
         self._flush_and_export("Hermes shared-metrics shutdown flush failed")
         self._deregister()
         self._release()
+
+    @contextlib.contextmanager
+    def _owner_scope(self) -> Iterator[None]:
+        """Bind this runtime's profile home for work that can run outside its own turns."""
+        token = set_hermes_home_override(self.host.profile_key)
+        try:
+            yield
+        finally:
+            reset_hermes_home_override(token)
 
     def _deregister(self) -> None:
         self._safe(self.relay.subscribers.deregister, self._subscriber_name)
@@ -752,13 +772,15 @@ class _Runtime:
             self._flush_and_export(failure_message)
 
     def _flush_and_export(self, failure_message: str) -> None:
-        """Flush the Relay subscriber, then export; a failed flush skips the export."""
+        """Flush the Relay subscriber, then export under this profile's scope (its send consent,
+        whoever triggered the flush); a failed flush skips the export."""
         try:
             self.relay.subscribers.flush()
         except Exception:
             logger.warning(failure_message, exc_info=True)
         else:
-            self._export()
+            with self._owner_scope():
+                self._export()
 
     def _abort_session(self, session: _MetricsSession, base_event: dict[str, Any]) -> bool:
         """Mark the session closing and system-abort its open tasks; False if already closing."""
@@ -1273,9 +1295,11 @@ class _Runtime:
         with self._send_lock:
             # One in-flight pass per process; the next hook fire picks up what is pending.
             if self._send_thread is None or not self._send_thread.is_alive():
-                self._send_thread = threading.Thread(
-                    target=self._run_send_pass, args=(resolved.endpoint,),
-                    name="hermes-shared-metrics-send", daemon=True,
+                from agent.memory_provider import spawn_context_thread
+
+                # Context copy: the pass re-checks consent (still_consented) in THIS profile's scope.
+                self._send_thread = spawn_context_thread(
+                    self._run_send_pass, name="hermes-shared-metrics-send", args=(resolved.endpoint,)
                 )
                 self._send_thread.start()
 
@@ -1487,11 +1511,23 @@ def start_task_run(
 def shutdown_runtimes() -> None:
     """Run each live runtime's exit flush now, for a process that leaves through ``os._exit`` (the
     ``hermes -z`` exit) and so never reaches the atexit hook that closes sessions and writes
-    ``task_run.finished`` / ``session.count``."""
+    ``task_run.finished`` / ``session.count``. Each runtime binds its own profile while it does."""
     with _RUNTIME_LOCK:
         runtimes = [runtime for runtime in _RUNTIMES.values() if isinstance(runtime, _Runtime)]
     for runtime in runtimes:
         runtime._safe(runtime.shutdown)
+
+
+def drain_deferred_writes(deadline: float) -> None:
+    """Write each live store's deferred rows (its atexit ``drain_deferred``, which ``os._exit`` also
+    skips), waiting on a busy store no later than ``deadline`` (``time.monotonic``)."""
+    with _RUNTIME_LOCK:
+        stores = [runtime.subscriber.store for runtime in _RUNTIMES.values() if isinstance(runtime, _Runtime)]
+    for store in stores:
+        remaining_ms = int((deadline - monotonic()) * 1000)
+        if remaining_ms <= 0:
+            return
+        _Runtime._safe(store.drain_deferred, busy_timeout_ms=remaining_ms)
 
 
 def close_session_run(session_id: str) -> None:

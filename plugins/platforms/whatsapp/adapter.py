@@ -28,6 +28,21 @@ def _wenv(name: str, default: str = "") -> str:
     """WHATSAPP_* env via the profile secret scope (multiplexed profiles see their own .env, not the process-global value)."""
     return get_scoped_secret(name, default)
 
+
+def _send_throttle_budget_s() -> float:
+    """Client-side seconds to add to bridge POST timeouts on send paths.
+
+    WHATSAPP_SEND_DELAY_MS parks every outgoing send in the bridge's throttled
+    queue for at least this long before the socket call starts (plus the queue
+    wait behind other sends). A client timeout that ignores it reports a false
+    timeout while the bridge keeps transmitting, and a retry duplicates the
+    message (#139261).
+    """
+    try:
+        return max(0.0, int(_wenv("WHATSAPP_SEND_DELAY_MS", "0") or 0) / 1000.0)
+    except (TypeError, ValueError):
+        return 0.0
+
 logger = logging.getLogger(__name__)
 
 # Owner-typed inbound text is prefixed at MessageEvent construction so transcripts stay disambiguated before silent_ingest.
@@ -315,6 +330,7 @@ _BRIDGE_PASSTHROUGH_ENV = (
     "WHATSAPP_ALLOWED_USERS", "WHATSAPP_ALLOW_FROM", "WHATSAPP_DM_POLICY", "WHATSAPP_GROUP_POLICY",
     "WHATSAPP_GROUP_ALLOWED_USERS", "WHATSAPP_GROUP_ALLOW_FROM", "WHATSAPP_REQUIRE_MENTION",
     "WHATSAPP_MENTION_PATTERNS", "WHATSAPP_FREE_RESPONSE_CHATS", "WHATSAPP_DEBUG",
+    "WHATSAPP_SEND_DELAY_MS",
     "WHATSAPP_FORWARD_OWNER_MESSAGES", "WHATSAPP_MAX_MESSAGE_LENGTH",
     "WHATSAPP_CHUNK_DELAY_MS", "WHATSAPP_SEND_TIMEOUT_MS",
 )
@@ -794,7 +810,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 payload: dict[str, Any] = {"chatId": chat_id, "message": chunk}
                 if reply_to and idx == 0:
                     payload["replyTo"] = reply_to  # Reply-to on the first chunk only.
-                result = await self._post_bridge_message("send", payload, timeout=30)
+                result = await self._post_bridge_message("send", payload, timeout=30 + _send_throttle_budget_s())
                 if not result.success:
                     return SendResult(success=False, error=result.error)
                 last_message_id = result.message_id
@@ -810,7 +826,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     @_needs_bridge
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
         try:
-            async with self._bridge_req("post", "edit", 15, json={"chatId": to_whatsapp_jid(chat_id), "messageId": message_id, "message": content}) as resp:
+            async with self._bridge_req("post", "edit", 15 + _send_throttle_budget_s(), json={"chatId": to_whatsapp_jid(chat_id), "messageId": message_id, "message": content}) as resp:
                 return SendResult(success=True, message_id=message_id) if resp.status == 200 else SendResult(success=False, error=await resp.text())
         except Exception as e:
             return SendResult(success=False, error=str(e))
@@ -822,7 +838,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         jid = to_whatsapp_jid(chat_id)
         payload: dict[str, Any] = {"chatId": jid, "filePath": file_path, "mediaType": media_type}
         payload.update({k: v for k, v in (("caption", caption), ("fileName", file_name)) if v})
-        result = await self._post_bridge_message("send-media", payload, timeout=120)
+        result = await self._post_bridge_message("send-media", payload, timeout=120 + _send_throttle_budget_s())
         if result.success and result.message_id:
             # A later quote of this attachment carries only a thumbnail stub; the bridge's cache
             # knows inbound media only, so index our own sends (the cron-delivered image case).
@@ -835,7 +851,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     async def send_poll(self, chat_id: str, question: str, options: list[str], *, selectable_count: int = 1) -> SendResult:
         """Native WhatsApp poll (low-level transport primitive; approval UX stays gateway-owned)."""
         payload: dict[str, Any] = {"chatId": to_whatsapp_jid(chat_id), "question": question, "options": list(options or []), "selectableCount": selectable_count}
-        return await self._post_bridge_message("send-poll", payload, timeout=30)
+        return await self._post_bridge_message("send-poll", payload, timeout=30 + _send_throttle_budget_s())
 
     async def send_clarify(self, chat_id: str, question: str, choices: Optional[list], clarify_id: str, session_key: str,
                            metadata: Optional[dict[str, Any]] = None) -> SendResult:
@@ -856,7 +872,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
         payload.update({k: v for k, v in (("name", name), ("address", address)) if v})
-        return await self._post_bridge_message("send-location", payload, timeout=30)
+        return await self._post_bridge_message("send-location", payload, timeout=30 + _send_throttle_budget_s())
 
     async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
                          metadata: Optional[dict[str, Any]] = None) -> SendResult:

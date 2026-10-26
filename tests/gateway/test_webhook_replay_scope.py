@@ -24,8 +24,11 @@ async def test_cron_route_replay_fires_the_job_once():
     """cron_job routes never reach the durable ledger, so a replayed signed delivery must not re-fire."""
     a = _adapter({"nightly": {"secret": "s", "prompt": "x", "cron_job": "job1"}})
     fired = []
-    a._handle_cron_trigger = lambda *args, **kw: (fired.append(args[4]),
-                                                 web.json_response({"status": "accepted"}, status=202))[1]
+
+    async def _fire(*args, **kw):
+        fired.append(args[4])
+        return web.json_response({"status": "accepted"}, status=202)
+    a._handle_cron_trigger = _fire
     app = web.Application()
     app.router.add_post("/webhooks/{route_name}", a._handle_webhook)
     body = b'{"k":1}'

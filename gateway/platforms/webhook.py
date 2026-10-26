@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import subprocess
 import time
 import uuid
@@ -41,6 +42,7 @@ from gateway.platforms._shared import secrets_match, timestamp_fresh
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.tcp_site import start_tcp_site
+from gateway.platforms import webhook_receipts as receipts
 from gateway.platforms.webhook_coalesce import WebhookCoalescer, validate_coalesce_config
 from gateway.platforms.webhook_filters import DEFAULT_SCRIPT_TIMEOUT_SECONDS, WebhookRouteProcessor
 from gateway.platforms.webhook_mcp_events import (
@@ -239,6 +241,11 @@ class WebhookAdapter(BasePlatformAdapter):
         self._seen_deliveries: dict[_WebhookDeliveryIdentity, float] = {}
         self._idempotency_ttl: int = 3600  # 1 hour
         self._seen_deliveries_next_prune_at: float = 0.0
+        # Durable receipts (webhook_receipts.py): the claim that dedupes non-ledger routes across
+        # restarts, and the delivery history `hermes webhook history` shows.
+        from hermes_constants import get_hermes_home
+        self._receipts = receipts.WebhookReceipts(receipts.receipts_path(get_hermes_home()), float(
+            extra.get("receipt_retention_days", receipts.DEFAULT_RETENTION_DAYS)))
         self._rate_counts: dict[str, deque[float]] = {}  # per-route hit timestamps in a fixed window
         self._rate_limit: int = int(extra.get("rate_limit", 30))  # per minute
         self._max_body_bytes: int = int(extra.get("max_body_bytes", 1_048_576))  # 1MB
@@ -386,15 +393,18 @@ class WebhookAdapter(BasePlatformAdapter):
         window.append(now)
         return True
 
-    def _delivery_id_seen(self, identity: _WebhookDeliveryIdentity, now: float) -> bool:
-        """True when ``identity`` is already inside the idempotency TTL (read-only)."""
+    async def _record_delivery_id(self, identity: _WebhookDeliveryIdentity, now: float, receipt: dict,
+                                  event_type: str) -> bool:
+        """Durably claim this route/profile-qualified delivery; False when it was already claimed, even by
+        a previous gateway process. The claim row id rides on *receipt* so the final answer settles it.
+        A failed receipts write raises: the caller answers 5xx and the provider retries."""
         seen_at = self._seen_deliveries.get(identity)
-        return seen_at is not None and now - seen_at < self._idempotency_ttl
-
-    def _record_delivery_id(self, identity: _WebhookDeliveryIdentity, now: float) -> bool:
-        """Return True when this route/profile-qualified delivery should be processed."""
-        if self._delivery_id_seen(identity, now):
+        if seen_at is not None and now - seen_at < self._idempotency_ttl:
             return False
+        row_id = await asyncio.to_thread(self._receipts.claim, identity, event_type, now)
+        if row_id is None:
+            return False
+        receipt["claim_row"] = row_id
         self._seen_deliveries.pop(identity, None)
         self._seen_deliveries[identity] = now
         if len(self._seen_deliveries) > max(self._rate_limit * 2, 128):
@@ -607,6 +617,8 @@ class WebhookAdapter(BasePlatformAdapter):
             result = await self._direct_deliver(prompt, delivery)
         except Exception:
             logger.exception("[webhook] direct-deliver failed route=%s delivery=%s", route_name, delivery_id)
+            # The send may have reached the target: keep the claim so a retry cannot post it twice.
+            receipts.current().update(outcome_unknown=True, reason="delivery outcome unknown (send raised)")
             return web.json_response(failed, status=502)
         if result.success:
             return web.json_response({"status": "delivered", "route": route_name, "target": delivery["deliver"],
@@ -614,6 +626,7 @@ class WebhookAdapter(BasePlatformAdapter):
         # Target rejected it — 502 with a generic error (don't leak adapter detail).
         logger.warning("[webhook] direct-deliver target rejected route=%s target=%s error=%s", route_name,
                        delivery["deliver"], result.error)
+        receipts.current()["reason"] = f"target rejected the message: {result.error or 'no detail'}"
         return web.json_response(failed, status=502)
 
     def _cron_trigger_unavailable(self) -> web.Response:
@@ -625,26 +638,23 @@ class WebhookAdapter(BasePlatformAdapter):
         )
 
     async def _handle_cron_trigger(self, prompt: str, route_config: dict, route_name: str, event_type: str,
-                                   delivery_id: str, now: float, profile: Optional[str] = None) -> web.Response:
+                                   delivery_id: str, profile: Optional[str] = None) -> web.Response:
         """cron_job: fire an EXISTING cron job on this event instead of starting a webhook agent session.
 
         The rendered prompt is transient per-run context (same rail as ``cronjob(action='run', prompt=...)``);
         the job's own prompt, skills, model and delivery apply. Same auth/rate-limit/filter/script pipeline
         as agent routes. 202 is returned only after the at-most-once fire claim is acquired under the
         routed profile; the delivery ID is consumed at that same moment. A later worker runs the claimed
-        snapshot without claiming again. Unknown/unrunnable/busy targets are 503 and leave the delivery
-        ID unconsumed so the producer can retry. There is no second fire queue.
+        snapshot without claiming again. Unknown/unrunnable/busy targets are 503, and filing that answer
+        releases the delivery's receipt claim so the producer's retry is processed. There is no second fire queue.
         """
         job_ref = str(route_config["cron_job"])
+        receipt = receipts.current()
+        receipt["ref"] = f"cron_job:{job_ref}"
         event_context = (f"This run was triggered by webhook event '{event_type}' on route '{route_name}' "
                          f"(not the schedule).\n\n{prompt}")
         logger.info("[webhook] cron-trigger event=%s route=%s job=%s delivery=%s", event_type, route_name, job_ref,
                     delivery_id)
-        identity = _WebhookDeliveryIdentity.from_parts(profile, route_name, delivery_id)
-        if self._delivery_id_seen(identity, now):
-            logger.info("[webhook] Skipping duplicate delivery %s on route %s", delivery_id, route_name)
-            return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)
-
         try:
             from tools.cronjob_tools import admit_job_for_event
             # The job store belongs to the ROUTED profile, not the gateway's default home;
@@ -658,13 +668,10 @@ class WebhookAdapter(BasePlatformAdapter):
         if not admitted.get("claimed") or not isinstance(admitted.get("job"), dict):
             logger.warning("[webhook] cron-trigger job=%s route=%s not admitted: %s", job_ref, route_name,
                            admitted.get("error"))
+            receipt["reason"] = str(admitted.get("error") or "")  # local history only, never the response
             return self._cron_trigger_unavailable()
 
         claimed_job = admitted["job"]
-        if not self._record_delivery_id(identity, now):
-            # Peek lost a race with another recorder for this ID. We already hold the
-            # fire claim, so dispatch the claimed run rather than stranding it.
-            logger.info("[webhook] cron-trigger delivery %s recorded concurrently after claim", delivery_id)
 
         async def _run_admitted() -> None:
             try:
@@ -724,7 +731,23 @@ class WebhookAdapter(BasePlatformAdapter):
         return prompt
 
     async def _handle_webhook(self, request: web.Request) -> web.Response:
-        """POST /webhooks/{route_name} — receive and process a webhook event."""
+        """POST /webhooks/{route_name} — receive and process a webhook event, then file its receipt."""
+        receipt: dict[str, Any] = {}
+        token = receipts.CURRENT.set(receipt)
+        try:
+            response = await self._process_webhook(request, receipt)
+        except sqlite3.Error:
+            logger.exception("[webhook] Delivery receipts unavailable for route %s", receipt.get("route"))
+            return _json_error("Delivery receipts unavailable; retry this delivery", 503)
+        finally:
+            receipts.CURRENT.reset(token)
+        if "route" in receipt and response.status != 429:  # authenticated, and not a flood-shed answer
+            if await receipts.file_receipt(self._receipts, receipt, response):
+                self._seen_deliveries.pop(_WebhookDeliveryIdentity.from_parts(
+                    receipt["profile"], receipt["route"], receipt["delivery_id"]), None)
+        return response
+
+    async def _process_webhook(self, request: web.Request, receipt: dict) -> web.Response:
         route_name, route_config, profile, error_response = self._resolve_route(request)
         if error_response is None:
             raw_body, error_response = await self._read_authenticated_body(request, route_name, route_config)
@@ -732,6 +755,8 @@ class WebhookAdapter(BasePlatformAdapter):
             return error_response
         headers = request.headers
         delivery_id = _header_delivery_id(headers)
+        # Authenticated from here on: every answer below is filed as a receipt.
+        receipt.update(route=route_name, profile=profile, delivery_id=delivery_id, event_type="")
         # A parked profile is retried, before any delivery id is recorded. The check resolves
         # ``profile_routes`` against the very source admission builds for this delivery.
         from gateway.platforms.webhook_ingress import parked_profile_refusal
@@ -752,6 +777,7 @@ class WebhookAdapter(BasePlatformAdapter):
         delivery_id = mcp_event_delivery_id(route_config, payload) or delivery_id
         event_type = (headers.get("X-GitHub-Event", "") or headers.get("X-GitLab-Event", "")
                       or payload.get("event_type", "") or payload.get("type", "") or "unknown")
+        receipt.update(delivery_id=delivery_id, event_type=event_type)
         allowed_events = route_config.get("events", [])
         if allowed_events and event_type not in allowed_events:
             logger.debug("[webhook] Ignoring event %s for route %s (allowed: %s)", event_type, route_name,
@@ -782,18 +808,19 @@ class WebhookAdapter(BasePlatformAdapter):
         now = time.time()  # idempotency: skip duplicate deliveries (webhook retries)
         delivery_identity = _WebhookDeliveryIdentity.from_parts(profile, route_name, delivery_id)
         coalesce = route_config.get("coalesce")
-        if route_config.get("cron_job"):
-            # cron_job routes consume the delivery ID only after durable fire-claim
-            # admission. Peek/record happen inside _handle_cron_trigger.
-            return await self._handle_cron_trigger(
-                prompt, route_config, route_name, event_type, delivery_id, now, profile)
-        # deliver_only and coalesced events act before (or without) a durable admission, so
-        # the ledger cannot dedupe a provider retry or a replayed signed delivery; the route-scoped
-        # in-memory guard is their only replay defence (main dedupes every route here).
-        non_durable = bool(route_config.get("deliver_only") or isinstance(coalesce, dict))
-        if non_durable and not self._record_delivery_id(delivery_identity, now):
+        # deliver_only, cron_job and coalesced events act before (or without) a durable admission, so
+        # the ledger cannot dedupe a provider retry or a replayed signed delivery; the durable receipt
+        # claim is their replay defence, across restarts too (main dedupes every route here). A refused
+        # cron admission or a rejected direct delivery answers 5xx, and filing that answer releases the claim.
+        non_durable = bool(route_config.get("deliver_only") or route_config.get("cron_job")
+                           or isinstance(coalesce, dict))
+        if route_config.get("deliver_only"):
+            receipt["ref"] = f"deliver:{route_config.get('deliver', 'log')}"
+        if non_durable and not await self._record_delivery_id(delivery_identity, now, receipt, event_type):
             logger.info("[webhook] Skipping duplicate delivery %s on route %s", delivery_id, route_name)
             return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)
+        if route_config.get("cron_job"):
+            return await self._handle_cron_trigger(prompt, route_config, route_name, event_type, delivery_id, profile)
         if route_config.get("deliver_only"):
             return await self._handle_deliver_only(prompt, payload, route_config, route_name, event_type, delivery_id,
                                                    profile)
@@ -831,7 +858,9 @@ class WebhookAdapter(BasePlatformAdapter):
             if outcome is None:
                 logger.error("[webhook] Coalesced delivery %s on route %s was not admitted", delivery_id, route_name)
                 for released in (*superseded, delivery_id):
-                    self._seen_deliveries.pop(_WebhookDeliveryIdentity.from_parts(profile, route_name, released), None)
+                    identity = _WebhookDeliveryIdentity.from_parts(profile, route_name, released)
+                    self._seen_deliveries.pop(identity, None)
+                    await asyncio.to_thread(self._receipts.release, identity, "coalesced batch was not admitted")
         task = asyncio.create_task(_admit_or_log())
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
@@ -889,6 +918,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 await self._deliver_to(snapshot_destination(self, self._delivery_info.get(session_chat_id)),
                                        session_chat_id, reply)
             return "accepted"
+        receipts.current()["ref"] = f"admission:{receipt.admission_id}"
         from gateway.session_authorities import active_authority, authority_for_profile_id
         runner = self._message_handler.__self__
         authority = authority_for_profile_id(runner, receipt.ref.profile_id) or active_authority(runner)

@@ -174,3 +174,16 @@ def test_one_targets_setup_failure_keeps_the_others_combined_reply(tmp_path, mon
     assert [entry["label"] for entry in _spec(calls)] == ["@researcher"]
     assert "disk full" in ack["fan_out"][1]["error"] and not ack["fan_out"][0].get("error")
 
+
+def test_a_peer_and_a_local_bot_sharing_a_name_are_two_recipients(tmp_path):
+    from types import SimpleNamespace
+
+    from tools import bot_mode_probe as probe
+
+    home = _managed_home(tmp_path, teammates=("qa",), peers=("mini",))
+    (home / "profiles" / "qa" / "profile.yaml").write_text("display_name: Mini\n", encoding="utf-8")
+    sender = SimpleNamespace(root=home, roster_homes=dict(probe._roster(home)), peers=probe._peers(home))
+
+    # 'mini' goes to the peer (dispatch checks peers first); 'qa' is the local bot named Mini.
+    assert coordination.split_targets("mini, qa", sender) == ["mini", "qa"]
+    assert coordination.split_targets("qa, Mini, mini/default", sender) == ["qa", "Mini", "mini/default"]

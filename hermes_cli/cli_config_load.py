@@ -119,8 +119,8 @@ _AUXILIARY_TASK_ENV = {
 _CWD_PLACEHOLDERS = (".", "auto", "cwd")
 
 
-def _mirror_config_to_env(defaults, _file_has_terminal_config):
-    """Project config.yaml values into the env vars the tool modules read (terminal/browser/auxiliary/security/sessions). Env always wins when already set."""
+def _mirror_config_to_env(defaults, terminal_config_keys=frozenset()):
+    """Project config.yaml values into the env vars the tool modules read (terminal/browser/auxiliary/security/sessions). Env wins when already set unless the file explicitly provides that key."""
     from cli import _AUXILIARY_TASK_ENV, _CWD_PLACEHOLDERS, _TERMINAL_ENV_MAPPINGS
     terminal_config = defaults.get("terminal", {})
 
@@ -149,7 +149,7 @@ def _mirror_config_to_env(defaults, _file_has_terminal_config):
         if env_var == "TERMINAL_CWD":
             if not _is_gateway:
                 os.environ[env_var] = str(val)
-        elif _file_has_terminal_config or env_var not in os.environ:
+        elif config_key in terminal_config_keys or env_var not in os.environ:
             os.environ[env_var] = json.dumps(val) if isinstance(val, (list, dict)) else str(val)
 
     browser_config = defaults.get("browser", {})
@@ -270,7 +270,7 @@ def load_cli_config() -> dict[str, Any]:
     defaults = _cli_config_defaults()
 
     # Only a file's terminal section may overwrite terminal env vars already set by .env.
-    _file_has_terminal_config = False
+    terminal_config_keys = frozenset()
 
     if config_exists(config_path):
         try:
@@ -278,7 +278,8 @@ def load_cli_config() -> dict[str, Any]:
 
             file_config = _normalize_root_model_keys(read_config_doc(config_path) or {})
 
-            _file_has_terminal_config = "terminal" in file_config
+            raw_terminal_config = file_config.get("terminal", {})
+            terminal_config_keys = frozenset(raw_terminal_config) if isinstance(raw_terminal_config, dict) else frozenset()
             _merge_file_config(defaults, file_config)
         except Exception as e:
             logger.warning("Failed to load cli-config.yaml: %s", e)
@@ -293,7 +294,7 @@ def load_cli_config() -> dict[str, Any]:
 
     defaults = managed_scope.apply_managed_overlay(defaults)
 
-    _mirror_config_to_env(defaults, _file_has_terminal_config)
+    _mirror_config_to_env(defaults, terminal_config_keys)
 
     return defaults
 

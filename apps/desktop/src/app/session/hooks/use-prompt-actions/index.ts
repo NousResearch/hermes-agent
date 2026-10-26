@@ -910,7 +910,7 @@ export function usePromptActions({
         try {
           const result = await target.requestGateway<SessionRedirectResponse>(
             mode === 'steer' ? 'session.steer' : 'session.redirect',
-            { session_id: id, text }
+            { session_id: id, submission_ref: messageId, text, input_visibility: 'visible' }
           )
 
           // TUI-26: a bare stop phrase typed mid-turn into a LOCAL voice chat ended that chat on
@@ -1010,9 +1010,13 @@ export function usePromptActions({
       }
 
       const send = async (id: string): Promise<boolean> => {
-        const response = await target.requestGateway<SessionRedirectResponse>('session.steer', { session_id: id, text })
+        const response = await target.requestGateway<{ status?: string }>('session.steer', {
+          session_id: id,
+          text,
+          input_visibility: 'hidden'
+        })
 
-        return response?.status === 'queued'
+        return response?.status === 'queued' || response?.status === 'streaming'
       }
 
       try {
@@ -1062,7 +1066,8 @@ export function usePromptActions({
       truncateRowId?: number,
       sourceText?: string,
       rebindRowIds?: readonly number[],
-      confirmDeepTruncate?: boolean
+      confirmDeepTruncate?: boolean,
+      submissionRef?: string
     ) =>
       runRewindSubmit(
         requestGateway,
@@ -1081,7 +1086,8 @@ export function usePromptActions({
         truncateRowId,
         sourceText,
         rebindRowIds,
-        confirmDeepTruncate
+        confirmDeepTruncate,
+        submissionRef
       ),
     [activeSessionIdRef, requestGateway, selectedStoredSessionIdRef]
   )
@@ -1132,7 +1138,8 @@ export function usePromptActions({
           plan.truncateRowId,
           plan.sourceText,
           durableRowIdsForRebind(messages),
-          plan.confirmDeepTruncate
+          plan.confirmDeepTruncate,
+          plan.submissionRef
         )
 
         applySurvivorRowIds(sessionId, survivorRowIds)
@@ -1207,7 +1214,9 @@ export function usePromptActions({
       setMutableRef(busyRef, true)
       setBusy(true)
       setAwaitingResponse(true)
-      updateSessionState(sessionId, state => applyRewindOptimistic(state, plan.sourceIndex))
+      updateSessionState(sessionId, state =>
+        applyRewindOptimistic(state, plan.sourceIndex, undefined, plan.submissionRef)
+      )
 
       try {
         const survivorRowIds = await submitRewindPrompt(
@@ -1219,7 +1228,8 @@ export function usePromptActions({
           plan.truncateRowId,
           plan.sourceText,
           durableRowIdsForRebind(messages),
-          true
+          true,
+          plan.submissionRef
         )
 
         applySurvivorRowIds(sessionId, survivorRowIds)
@@ -1327,6 +1337,10 @@ export function usePromptActions({
 
         surfacedConfirmed = retryKeepsDeepConfirm(plan, messages, retryPlan, refreshed)
 
+        updateSessionState(sessionId, state =>
+          applyRewindOptimistic(state, retryPlan.sourceIndex, retryPlan.editedMessage, retryPlan.submissionRef)
+        )
+
         const survivorRowIds = await submitRewindPrompt(
           sessionId,
           retryPlan.text,
@@ -1336,7 +1350,8 @@ export function usePromptActions({
           retryPlan.truncateRowId,
           retryPlan.sourceText,
           durableRowIdsForRebind(refreshed),
-          surfacedConfirmed
+          surfacedConfirmed,
+          retryPlan.submissionRef
         )
 
         applySurvivorRowIds(sessionId, survivorRowIds)
@@ -1350,7 +1365,7 @@ export function usePromptActions({
         }
       }
     },
-    [applySurvivorRowIds, resumeStoredSession, selectedStoredSessionIdRef, submitRewindPrompt]
+    [applySurvivorRowIds, resumeStoredSession, selectedStoredSessionIdRef, submitRewindPrompt, updateSessionState]
   )
 
   // Roll an optimistic edit/truncation back to the original history so the UI stays in sync with
@@ -1425,7 +1440,9 @@ export function usePromptActions({
       setMutableRef(busyRef, true)
       setBusy(true)
       setAwaitingResponse(true)
-      updateSessionState(sessionId, state => applyRewindOptimistic(state, plan.sourceIndex, plan.editedMessage))
+      updateSessionState(sessionId, state =>
+        applyRewindOptimistic(state, plan.sourceIndex, plan.editedMessage, plan.submissionRef)
+      )
 
       try {
         const survivorRowIds = await submitRewindPrompt(
@@ -1437,7 +1454,8 @@ export function usePromptActions({
           plan.truncateRowId,
           plan.sourceText,
           durableRowIdsForRebind(messages),
-          plan.confirmDeepTruncate
+          plan.confirmDeepTruncate,
+          plan.submissionRef
         )
 
         applySurvivorRowIds(sessionId, survivorRowIds)

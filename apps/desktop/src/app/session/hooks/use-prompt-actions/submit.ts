@@ -1082,6 +1082,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
         const submitParams = (targetId: string) => ({
           session_id: targetId,
+          submission_ref: optimisticId,
           text,
           submission_id: submissionId,
           ...(imageAttachments.length && { attachments: imageAttachments }),

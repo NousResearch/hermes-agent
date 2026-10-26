@@ -1,4 +1,4 @@
-import type { ConnectionRequestPayload, FreeTierChallengePayload, ToolLabel } from '@hermes/shared'
+import type { ConnectionRequestPayload, FreeTierChallengePayload, QueuedPrompt, ToolLabel } from '@hermes/shared'
 
 import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
 
@@ -817,9 +817,7 @@ export interface SessionResumeResult {
     streaming?: boolean
     user?: string
   }
-  queued?: null | {
-    user?: string
-  }
+  queued?: null | Partial<QueuedPrompt>
   // The oldest gateway approval still waiting for a response. This is returned
   // on resume so a reconnect can restore a prompt whose original event was
   // emitted while the client transport was detached.

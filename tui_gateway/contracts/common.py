@@ -6,6 +6,8 @@ from typing import Annotated, Literal
 
 from pydantic import Field
 
+from .observations import SubmissionState
+
 from .base import JsonValue, Params, Payload, Result, WireEnum
 
 
@@ -106,6 +108,7 @@ class SessionLiveInfo(OpenModel):
     system_prompt: str | None = None
     credential_warning: str | None = None
     lazy: bool | None = None
+    submission_state: SubmissionState | None = None
 
 
 class StoredSessionRow(OpenModel):

@@ -717,15 +717,22 @@ def write_json(obj: dict) -> bool:
 
 def _event_frame(event: str, sid: str, payload: dict | None = None) -> dict:
     _contracts.check_payload(event, payload)
+    from tui_gateway.turn_observation import stamp_turn
     params: dict = {"type": event, "session_id": sid, **({"payload": payload} if payload is not None else {})}
+    stamp_turn(params, _sessions)
     return {"jsonrpc": "2.0", "method": "event", "params": params}
 
 
 def _emit(event: str, sid: str, payload: dict | None = None) -> bool:
     from agent.notification_presentation import event_presentation_muted
-    if event_presentation_muted(event, sid):
-        return False
-    return write_json(_event_frame(event, sid, payload))
+    from tui_gateway.turn_observation import emit_observed
+
+    def write_presented(kind, key, data):
+        if event_presentation_muted(kind, key):
+            return False
+        return write_json(_event_frame(kind, key, data))
+
+    return emit_observed(event, sid, payload, write_presented)
 
 
 from tui_gateway import server_requests as _server_requests
@@ -1553,6 +1560,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
     if session is None:
         session = next((c for c in _sessions.values() if c.get("agent") is agent), None)
     agent = session_runtime_view(agent)
+    from tui_gateway.input_observation import cached_snapshot
     sess = session or {}
     mirror = _metadata_mirror(session)
     cwd = _display_session_cwd(session)
@@ -1590,6 +1598,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         reasoning_effort_wire = str(clamp_effort(reasoning_effort, route_supported_efforts(
             pending_provider or provider, model, getattr(agent, "api_mode", None))) or "")
     info: dict = {
+        "submission_state": cached_snapshot(sess),
         "model": model,
         "provider": pending_provider or provider,
         "reasoning_effort": reasoning_effort, "reasoning_effort_wire": reasoning_effort_wire,
@@ -2162,6 +2171,7 @@ from . import (
     methods_complete as _methods_complete, methods_config as _methods_config,
     methods_config_set as _methods_config_set, methods_images as _methods_images,
     methods_profiles as _methods_profiles, methods_prompt as _methods_prompt, methods_session as _methods_session,
+    methods_corrections as _methods_corrections,
     methods_tools as _methods_tools, methods_tools_plugin_servers as _methods_tools_plugin_servers,
     methods_projects as _methods_projects, methods_session_foreign as _methods_session_foreign,
     methods_session_control as _methods_session_control, methods_subagents as _methods_subagents,
@@ -2177,7 +2187,7 @@ for _m in (
     _session_compression, _change_watcher, _tool_progress, _session_notifications,
     _prompt_attachments, _session_history, _agent_callbacks, _session_auto_continue, _plugin_inject, _rpc_dispatch,
     _methods_complete_helpers, _methods_slash, _methods_voice, _methods_browser,
-    _methods_session, _methods_prompt, _methods_config,
+    _methods_session, _methods_corrections, _methods_prompt, _methods_config,
     _methods_config_set, _methods_complete, _methods_tools, _methods_tools_plugin_servers, _methods_profiles, _methods_images,
     _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects, _methods_session_foreign,
     _methods_session_control, _methods_subagents, _methods_vault, _methods_free_tier, _methods_connectors,

@@ -92,11 +92,15 @@ def test_desktop_prompt_during_a_gateway_turn_runs_after_it_in_the_owner_fifo(mo
         assert claimed["admission_id"] == bot["admission_id"]
         authority = _owner(monkeypatch, db, key, epoch)
 
+        # submission_ref: what a shared-session client (the iPhone app) adds to every send.
         reply = server.handle_request({"id": "p", "method": "prompt.submit",
-                                       "params": {"session_id": sid, "text": "my own question"}})
+                                       "params": {"session_id": sid, "text": "my own question",
+                                                  "submission_ref": "phone-ref"}})
 
         assert "error" not in reply, reply  # main: 4090 SESSION_NOT_OWNED
         assert reply["result"]["status"] == "queued" and reply["result"]["forwarded"] is True
+        # The owner admitted it; this backend minted no occurrence, so the ack claims none.
+        assert "submission" not in reply["result"]
         assert turns == [] and db.get_messages_as_conversation(key) == []  # nothing ran here
         rows = list_session_admissions(db, session_id=key)
         assert [(r["principal_id"], r["status"]) for r in rows] == [("bot", "started"), (rows[1]["principal_id"], "queued")]

@@ -12,6 +12,7 @@ from pydantic import Field
 from .base import JsonValue, Params, Result, WireEnum
 from .common import OpenModel, PendingApproval, SessionParams
 from .registry import method
+from .observations import InputSubmission
 
 # ── prompt.submit ─────────────────────────────────────────────────────────────────────────────
 
@@ -30,6 +31,8 @@ class PromptSubmitParams(SessionParams):
     ``truncate_before_message_id``, or the legacy ``truncate_before_user_ordinal``)."""
 
     text: JsonValue = ""
+    # Invalid optional refs, including non-strings, are ignored without changing work.
+    submission_ref: JsonValue = None
     display_kind: str | None = None  # only "hidden" is honoured; anything else renders as a user row
     interrupted: bool | None = None  # client-side barge-in: the turn's model message carries the note
     queued: bool | None = None  # client queue drain — the busy path must hold it, never redirect/steer
@@ -77,6 +80,7 @@ class PromptSubmitResult(Result):
     # the OWNER's FIFO (``status: queued``) and runs there after the current turn; nothing runs here.
     admission_id: str | None = None
     forwarded: bool | None = None
+    submission: InputSubmission | None = None
 
 
 method("prompt.submit", params=PromptSubmitParams, result=PromptSubmitResult,

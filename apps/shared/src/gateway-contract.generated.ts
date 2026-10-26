@@ -571,6 +571,7 @@ export interface SessionLiveInfo {
   system_prompt?: string | null
   credential_warning?: string | null
   lazy?: boolean | null
+  submission_state?: SubmissionState | null
   [key: string]: unknown
 }
 /** ``tui_gateway/server.py::_project_info_for_cwd``. */
@@ -621,6 +622,45 @@ export interface McpServerStatus {
   tool_count?: number | null
   error?: string | null
   [key: string]: unknown
+}
+/** Bounded evidence owned by the gateway queue; absence does not prove cancellation. */
+export interface SubmissionState {
+  revision: number
+  queued: InputBatchProjection[]
+  queued_complete: boolean
+  outcomes: InputOutcome[]
+  outcomes_truncated_before_revision: number | null
+}
+export interface InputBatchProjection {
+  inputs: InputOccurrence[]
+  inputs_complete: boolean
+}
+/** A fresh accepted RPC occurrence; reused refs do not deduplicate work. */
+export interface InputOccurrence {
+  id: string
+  ref?: string | null
+}
+export interface InputOutcome {
+  revision: number
+  input: InputOccurrence
+  disposition: InputOutcomeDisposition
+  reason?: string | null
+  into_inputs?: InputOccurrence[] | null
+  turn?: TurnDescriptor | null
+  status?: 'complete' | 'error' | 'interrupted' | null
+}
+export type InputOutcomeDisposition = 'cancelled' | 'absorbed' | 'failed_before_start' | 'unresolved' | 'terminal'
+/** One runner invocation, scoped by replay epoch and runtime session. */
+export interface TurnDescriptor {
+  id: string
+  source: ConnectionTurnSource | UnattributedTurnSource
+}
+export interface ConnectionTurnSource {
+  kind: 'connection'
+  socket_id: string
+}
+export interface UnattributedTurnSource {
+  kind: 'mixed' | 'unknown'
 }
 /** ``provider_configured`` is the loose answer; the boot record's fields (``ready``, ``free_tier_account``, ``free_tier_route``, ``other_providers``, ``inference_provider``) ride along on the launch profile. An unknown ``profile`` answers ``ok=False`` + ``error``. */
 export interface SetupStatusResult {
@@ -2739,6 +2779,7 @@ export interface PromptSubmitParams {
   session_id: string
   profile?: string | null
   text?: unknown
+  submission_ref?: unknown
   display_kind?: string | null
   interrupted?: boolean | null
   queued?: boolean | null
@@ -2764,8 +2805,16 @@ export interface PromptSubmitResult {
   turn_isolation?: boolean | null
   admission_id?: string | null
   forwarded?: boolean | null
+  submission?: InputSubmission | null
 }
 export type PromptSubmitStatus = 'streaming' | 'queued' | 'steered' | 'redirected'
+export interface InputSubmission {
+  input_id: string
+  ref?: string | null
+  disposition: SubmissionDisposition
+  turn?: TurnDescriptor | null
+}
+export type SubmissionDisposition = 'starting' | 'queued' | 'merged' | 'absorbed' | 'steered' | 'redirected' | 'unresolved'
 export interface ClipboardPasteParams {
   session_id: string
   profile?: string | null
@@ -3183,9 +3232,16 @@ export interface SessionResumeResult {
   pending_connection?: ConnectionRequestPayload | null
   todo_state?: TodoState | null
   auto_continue?: AutoContinue | null
+  submission_state?: SubmissionState | null
 }
 /** ``session_auto_continue._inflight_snapshot``: the live (or retained failed) turn a reconnecting client rebuilds its bubbles from. */
 export interface InflightTurn {
+  turn?: TurnDescriptor | null
+  input?: ProjectedInput | null
+  inputs?: InputOccurrence[] | null
+  inputs_complete?: boolean | null
+  input_observations?: InputObservation[] | null
+  input_observations_complete?: boolean | null
   assistant?: string
   streaming?: boolean
   user?: string
@@ -3198,8 +3254,25 @@ export interface InflightTurn {
   recoverable?: boolean | null
   error_surface?: Record<string, unknown> | null
 }
+/** The canonical user transcript projection; null at the containing field suppresses display. */
+export interface ProjectedInput {
+  role: 'user'
+  text: string
+  display_kind?: string | null
+  display_metadata?: unknown | null
+}
+export interface InputObservation {
+  inputs: InputOccurrence[]
+  inputs_complete: boolean
+  kind: 'steer' | 'redirect'
+  input: ProjectedInput | null
+  offset: number
+}
 export interface QueuedPrompt {
   user: string
+  input?: ProjectedInput | null
+  inputs?: InputOccurrence[] | null
+  inputs_complete?: boolean | null
 }
 /** One unanswered server→client request (``server_requests.Request.snapshot``); the reconnecting client re-delivers it to its request handlers. */
 export interface OpenRequestEntry {
@@ -3258,6 +3331,7 @@ export interface SessionActivateResult {
   pending_connection?: ConnectionRequestPayload | null
   todo_state?: TodoState | null
   auto_continue?: AutoContinue | null
+  submission_state?: SubmissionState | null
 }
 export interface SessionListParams {
   profile?: string | null
@@ -3397,6 +3471,7 @@ export interface SessionCwdSetResult {
   system_prompt?: string | null
   credential_warning?: string | null
   lazy?: boolean | null
+  submission_state?: SubmissionState | null
   [key: string]: unknown
 }
 export interface SessionCloseParams {
@@ -3585,10 +3660,14 @@ export interface SessionCorrectionParams {
   session_id: string
   profile?: string | null
   text: string
+  submission_ref?: unknown
+  input_visibility?: unknown
 }
 export interface SessionCorrectionResult {
-  status: CorrectionStatus
-  text: string
+  status: CorrectionStatus | 'streaming'
+  text?: string | null
+  submission?: InputSubmission | null
+  turn_isolation?: boolean | null
 }
 export type CorrectionStatus = 'queued' | 'redirected' | 'rejected'
 export interface SpawnTreeSaveParams {
@@ -5587,8 +5666,13 @@ export interface GatewayReadyPayload {
   skin: SkinPayload
   change_events: boolean
   replay_epoch: string
+  shared_session?: SharedSessionCapability | null
   heartbeat?: boolean | null
   session_authority?: boolean | null
+}
+export interface SharedSessionCapability {
+  version: 1
+  socket_id: string
 }
 /** ``agent/onboarding_record.py::_transition``: the run ``run_id`` stopped being in progress. ``stored_session_id`` is its chat at the compression tip. ``done``: the first-task card was answered; ``skipped``: Skip setup; ``replaced``: a rerun opened a new run; ``deleted``: its chat was deleted. */
 export interface OnboardingEndedPayload {
@@ -5615,17 +5699,29 @@ export interface SetupReadyPayload {
 /** Every ``_emit("error", …)`` site sets exactly ``message``. */
 export interface ErrorPayload {
   message: string
+  inputs?: InputOccurrence[] | null
+  inputs_complete?: boolean | null
 }
 /** ``tui_gateway/model_switch.py`` capability-refresh notice. */
 export interface NoticePayload {
   message: string
 }
-/** ``message.start``. Empty from the TUI gateway's emitters and for an ordinary admission; ``gateway/session_authority._stamp_claim`` adds an automation admission's async-result card (``session_automation.admission_display``: a background-process completion) and its model text, so a viewer that did not submit the turn paints the same header the submitter would. */
+/** ``message.start``. Empty for an ordinary session-authority admission; ``gateway/session_authority._stamp_claim`` adds an automation admission's async-result card (``session_automation.admission_display``: a background-process completion) and its model text, so a viewer that did not submit the turn paints the same header the submitter would. */
 export interface MessageStartPayload {
   display_kind?: string | null
   display_text?: string | null
   notification_category?: string | null
   text?: string | null
+  input?: ProjectedInput | null
+  inputs?: InputOccurrence[] | null
+  inputs_complete?: boolean | null
+}
+export interface MessageInputPayload {
+  inputs: InputOccurrence[]
+  inputs_complete: boolean
+  kind: 'steer' | 'redirect'
+  input: ProjectedInput | null
+  offset: number
 }
 /** ``message.delta``. A session-authority local-viewer turn also publishes ``text: null``: the reply segment boundary (the agent's ``stream_delta_callback(None)``, before tool lines) that closes the classic CLI's reply box. Every other viewer ignores an empty chunk. */
 export interface MessageDeltaPayload {
@@ -5662,6 +5758,8 @@ export interface MessageCompletePayload {
   error_surface?: ErrorSurface | null
   partial?: boolean | null
   persisted_turn?: PersistedTurn | null
+  inputs?: InputOccurrence[] | null
+  inputs_complete?: boolean | null
 }
 /** ``prompt_turn._result_status``. */
 export type TurnStatus = 'complete' | 'error' | 'interrupted'
@@ -7016,11 +7114,13 @@ export interface BackendGatewayEventMap {
   'message.complete': MessageCompletePayload
   /** One streamed chunk of the assistant reply (null text: segment boundary). */
   'message.delta': MessageDeltaPayload
+  /** An accepted visible correction in the captured execution. */
+  'message.input': MessageInputPayload
   /** Interim assistant commentary (text beside tool calls) sealed as its own segment. */
   'message.interim': MessageInterimPayload
   /** The agent reacted to a message; paint it live. */
   'message.reaction': MessageReactionPayload
-  /** A turn began streaming; an automation turn carries its async-result card. */
+  /** A turn began streaming; an automation turn carries its async-result card, an observed execution its canonical input and occurrence evidence. */
   'message.start': MessageStartPayload
   /** The MoA aggregator started. */
   'moa.aggregating': MoaAggregatingPayload
@@ -7155,6 +7255,7 @@ export const GATEWAY_EVENT_TYPES = [
   'gateway.ready',
   'message.complete',
   'message.delta',
+  'message.input',
   'message.interim',
   'message.reaction',
   'message.start',

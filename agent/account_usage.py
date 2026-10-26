@@ -944,8 +944,23 @@ def _call_plugin_usage_hook(profile, base_url: Optional[str], api_key: Optional[
 def fetch_account_usage(
     provider: Optional[str], *, base_url: Optional[str] = None, api_key: Optional[str] = None,
     read_only: bool = False, identity_id: Optional[str] = None,
+    max_age_s: Optional[float] = None,
 ) -> Optional[AccountUsageSnapshot]:
-    from agent.account_usage_cache import remember_account_usage
+    """Fetch a provider's account usage.
+
+    ``max_age_s`` lets a caller accept a recent cached reading instead of spending
+    the endpoint's per-account budget again: when the cache holds a snapshot for
+    this account younger than that, it is returned and no request is made. The
+    default (None) always fetches, which is what a gauge the user just opened
+    wants.
+    """
+    from agent.account_usage_cache import cached_account_usage_within, remember_account_usage
+
+    if max_age_s is not None and max_age_s > 0:
+        recent = cached_account_usage_within(
+            provider, max_age_s, identity_id=identity_id, base_url=base_url)
+        if recent is not None:
+            return recent
 
     slug = str(provider or "").strip().lower()
     # The picker's per-credential path resolves variants that never rotate/refresh a credential

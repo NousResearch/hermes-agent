@@ -184,3 +184,48 @@ def test_read_only_fetch_remembered_under_identity_slot(monkeypatch, tmp_path):
     assert snapshot is not None and snapshot.windows[0].used_percent == 66.0
     assert cached_account_usage("openai-codex") is None, \
         "a per-credential snapshot must never pose as the provider-wide gauge"
+
+
+def test_a_recent_cached_snapshot_is_served_without_a_second_fetch(monkeypatch):
+    """max_age_s lets a caller accept a recent reading instead of spending the
+    endpoint's per-account budget again: two readers with their own cadences are
+    what turn two polite callers into a 429."""
+    slug = "cache-share-probe"
+    calls: list[int] = []
+
+    def fake_fetch(base_url=None, api_key=None):
+        calls.append(1)
+        return account_usage.AccountUsageSnapshot(
+            provider=slug, source=slug, fetched_at=datetime.now(UTC), plan="Team",
+            windows=(account_usage.AccountUsageWindow(
+                label="Current session", used_percent=10.0, reset_at=datetime.now(UTC)),))
+
+    monkeypatch.setitem(account_usage._USAGE_FETCHERS, slug, fake_fetch)
+
+    first = fetch_account_usage(slug)
+    assert len(calls) == 1 and first is not None
+
+    served = fetch_account_usage(slug, max_age_s=60)
+    assert len(calls) == 1, "a recent cached reading must not cost another request"
+    assert served is first
+
+    assert fetch_account_usage(slug) is not None
+    assert len(calls) == 2, "without max_age_s the call still fetches"
+
+
+def test_a_snapshot_older_than_the_window_is_not_served(monkeypatch):
+    """The window is a bound, not a preference: older evidence is fetched again."""
+    slug = "cache-share-stale-probe"
+    calls: list[int] = []
+    old = datetime.now(UTC) - timedelta(seconds=600)
+
+    def fake_fetch(base_url=None, api_key=None):
+        calls.append(1)
+        return account_usage.AccountUsageSnapshot(
+            provider=slug, source=slug, fetched_at=old, plan=None,
+            windows=(account_usage.AccountUsageWindow(label="Current week", used_percent=1.0),))
+
+    monkeypatch.setitem(account_usage._USAGE_FETCHERS, slug, fake_fetch)
+    fetch_account_usage(slug)
+    fetch_account_usage(slug, max_age_s=60)
+    assert len(calls) == 2, "a ten-minute-old snapshot is outside a 60s window"

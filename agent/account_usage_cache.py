@@ -131,6 +131,30 @@ def cached_account_usage(
     with _lock:
         return _snapshots.get(_key(provider, identity_id, base_url))
 
+def cached_account_usage_within(
+    provider: str, max_age_s: float, *, identity_id: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> Optional[AccountUsageSnapshot]:
+    """The cached snapshot for this account when it is younger than ``max_age_s``.
+
+    For callers that only need a recent-enough reading. The usage endpoints are
+    budgeted per account, not per caller, so a second caller with its own cadence
+    is what turns two polite readers into a 429; this is the check that lets them
+    share one reading instead.
+    """
+    from agent.account_usage import AccountUsageSnapshot as _Snapshot
+
+    snapshot = cached_account_usage(provider, identity_id=identity_id, base_url=base_url)
+    if not isinstance(snapshot, _Snapshot):
+        return None
+    try:
+        age = time.time() - snapshot.fetched_at.timestamp()
+    except (AttributeError, TypeError, ValueError, OSError, OverflowError):
+        return None
+    if age < 0 or age > max_age_s:
+        return None
+    return snapshot
+
 
 def snapshot_is_stale(snapshot: Optional[AccountUsageSnapshot]) -> bool:
     """True when the snapshot is too old to render as a live gauge (the picker shows state

@@ -731,7 +731,7 @@ def _resume_live_unpersisted(ctx: _Resume, live_sid: str, live: dict) -> dict:
     model, provider = _live_session_identity(live)
     return _ok(ctx.rid, _attach_todo_state({
         "session_id": live_sid, "stored_session_id": str(live.get("session_key") or ""),
-        "message_count": len(messages), "messages": messages,
+        "message_count": len(messages), "messages": messages, **_live_liveness(live_sid, live),
         "info": {"model": model, "provider": provider, "lazy": True,
                  "desktop_contract": DESKTOP_BACKEND_CONTRACT,
                  "profile_name": profile_name_for_home(live.get("profile_home")) or _response_profile_name(ctx.profile)}}, live))

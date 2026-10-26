@@ -201,6 +201,29 @@ describe('persistent browser terminals', () => {
     expect(localStorage.length).toBe(0)
   })
 
+  // The shell exited while the tab was away: the redial is refused with the exit reason.
+  it('reports a redial refused because the shell exited as an exit, and forgets it', async () => {
+    const api = install()
+    const session = await api.start({ cwd: '/original', restoreKey: 'tab-one' })
+    const exit = vi.fn()
+    api.onExit(session.id, exit)
+    Socket.instances[0].close(1006)
+    Socket.reply = socket => socket.close(4410, 'Process exited')
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(Socket.instances).toHaveLength(2)
+    expect(exit).toHaveBeenCalledExactlyOnceWith({ code: null, signal: null })
+    expect(localStorage.length).toBe(0)
+  })
+
+  it('rejects resuming a saved shell that exited with the exit signal, and forgets it', async () => {
+    const api = install()
+    await api.start({ cwd: '/original', restoreKey: 'tab-one' })
+    Socket.reply = socket => socket.close(4410, 'Process exited')
+    await expect(api.start({ restoreKey: 'tab-one', resumeOnly: true })).rejects.toMatchObject({ signal: 'exited' })
+    expect(Socket.instances[1].url.searchParams.get('attach')).toBe('opaque-server-id')
+    expect(localStorage.length).toBe(0)
+  })
+
   it('reports a 4410 close without the exit reason as expired', async () => {
     const api = install()
     const session = await api.start({ cwd: '/original', restoreKey: 'tab-one' })

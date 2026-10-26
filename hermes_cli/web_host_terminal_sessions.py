@@ -16,6 +16,7 @@ import json
 from pathlib import Path
 import re
 import secrets
+import time
 
 from fastapi import HTTPException, WebSocket, WebSocketDisconnect
 
@@ -42,6 +43,10 @@ class TerminalDenied(Exception):
 
 class TerminalExpired(Exception):
     pass
+
+
+class TerminalExited(TerminalExpired):
+    """The shell exited by itself (``exit``, Ctrl-D); the server did not end it."""
 
 
 def _home_live(home: Path) -> bool:
@@ -95,6 +100,10 @@ def _request_home(profile: str | None) -> Path:
 
 
 class HostTerminalRegistry(PtySessionRegistry):
+    # The most exited shells remembered at once: a tab that redials after the reaper took its
+    # shell still learns that it exited (``resolve``).
+    _EXITS_KEPT = 4 * _MAX_SHELLS
+
     def __init__(self):
         # Every live shell keeps a read in flight. On the loop's default executor, retained
         # shells would queue the keystroke fences, ownership checks, uploads and SessionDB
@@ -103,6 +112,9 @@ class HostTerminalRegistry(PtySessionRegistry):
             ttl=RETENTION_SECONDS, max_sessions=_MAX_SHELLS, buffer_cap=1024 * 1024, read_timeout=0.2,
             drain_executor=ThreadPoolExecutor(_MAX_SHELLS, thread_name_prefix="host-pty-drain"))
         self.owners: dict[str, HostOwner] = {}
+        # Token -> (owner identity, when it was reaped) of shells that exited by themselves, for
+        # the retention TTL.
+        self.exits: dict[str, tuple[tuple[str, str], float]] = {}
 
     def _reap_one_idle_or_raise(self) -> None:
         # Retention is a promise, not an LRU hint; never evict a live shell to
@@ -140,6 +152,9 @@ class HostTerminalRegistry(PtySessionRegistry):
         session = self._sessions.get(token)
         owner = self.owners.get(token)
         if session is None or owner is None:
+            gone = self.exits.get(token)
+            if gone is not None and gone[0] == identity:
+                raise TerminalExited()
             raise TerminalExpired()
         if owner.identity != identity:
             raise TerminalDenied()
@@ -152,8 +167,11 @@ class HostTerminalRegistry(PtySessionRegistry):
         await asyncio.to_thread(validate)
         # No await between the final check and the caller's attach claim. The
         # home was just checked off-loop; every input write checks it again.
-        if (self._sessions.get(token) is not session
-                or (not closing and (not session.alive or self.expired(session)))):
+        if self._sessions.get(token) is not session:
+            raise TerminalExpired()
+        if not closing and _exited(session):
+            raise TerminalExited()
+        if not closing and self.expired(session):
             raise TerminalExpired()
         return session, owner
 
@@ -169,20 +187,37 @@ class HostTerminalRegistry(PtySessionRegistry):
         # One thread hop per tick keeps every shell's marker reads off the loop.
         owners = list(self.owners.items())
         retired = await asyncio.to_thread(lambda: {token for token, owner in owners if not owner.current()})
+        now = time.monotonic() if now is None else now
         for token, owner in owners:
             session = self._sessions.get(token)
             if session is not None and (token in retired or self._reapable(session, now)):
+                if token not in retired and _exited(session):
+                    self._remember_exit(token, owner, now)
                 await self.remove(token)
         for token in list(self.owners):
             if token not in self._sessions:
                 self.owners.pop(token, None)
+        for token in [token for token, (_, at) in self.exits.items() if now - at > self._ttl]:
+            del self.exits[token]
+
+    def _remember_exit(self, token: str, owner: HostOwner, now: float) -> None:
+        self.exits[token] = (owner.identity, now)
+        while len(self.exits) > self._EXITS_KEPT:
+            del self.exits[next(iter(self.exits))]
 
     async def close_all(self):
         await super().close_all()
         self.owners.clear()
+        self.exits.clear()
         # Every drain is cancelled by now; a read still in flight returns within its
         # timeout, so let it finish behind us. A closed registry never spawns again.
         self._drain_executor.shutdown(wait=False)
+
+
+def _exited(session: PtySession) -> bool:
+    """Whether a session still in the registry lost its shell: the server pops a session before
+    it closes one, so only the shell's own exit leaves a dead one behind."""
+    return not session.alive or not session.bridge.is_alive()
 
 
 def get_host_terminals(app) -> HostTerminalRegistry:
@@ -418,6 +453,7 @@ async def _pump_input(ws: WebSocket, registry: HostTerminalRegistry, token: str,
 
 async def host_terminal(ws: WebSocket) -> None:
     """Called only after both the existing WS gate and host policy have passed."""
+    from hermes_cli.pty_session import WS_CLOSE_PROCESS_EXITED, WS_CLOSE_PROCESS_EXITED_REASON
     from hermes_cli.web_server_chat import _pty_fail
     session = None
     try:
@@ -440,6 +476,9 @@ async def host_terminal(ws: WebSocket) -> None:
         await _pump_input(ws, registry, token, session, owner)
     except TerminalDenied:
         await ws.close(code=4403, reason="Terminal belongs to another identity or profile")
+    except TerminalExited:
+        # The same close an attached tab gets when its shell exits: the tab closes too.
+        await ws.close(code=WS_CLOSE_PROCESS_EXITED, reason=WS_CLOSE_PROCESS_EXITED_REASON)
     except (TerminalExpired, FileNotFoundError, HTTPException):
         await ws.close(code=4410, reason="Terminal or profile expired; open a new terminal")
     except RegistryFull:

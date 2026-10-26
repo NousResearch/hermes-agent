@@ -912,15 +912,17 @@ export function rehydrateLiveSessionStatuses(
 /** Params for the live-status poll. With a session open the session RPC
  *  dispatcher routes it to that session's owner, so it names nothing. With none
  *  open it rides the active socket, and a profile that shares the primary socket
- *  (a Webapp tab's live pick, a global remote) is only reached by naming it: the
- *  socket answers an unnamed request for its own profile, and the sidebar would
- *  paint that profile's turns instead of the selected one's.
+ *  (a Webapp tab's live pick, a native local profile, a global remote) is only
+ *  reached by naming it: the socket answers an unnamed request for its own
+ *  profile, and the sidebar would paint that profile's turns instead of the
+ *  selected one's.
  *
  *  The published descriptor is not enough on its own: a reconnect republishes
- *  the primary's own descriptor (sharedPrimary false) while the picked profile
- *  stays selected. So a remote descriptor that isn't the selected profile's own
- *  asks main for the selected profile's route, the check requestGatewayForProfile
- *  routes by. A local descriptor never shares the primary and asks nothing. */
+ *  the primary's own descriptor (sharedPrimary false, local or remote) while the
+ *  picked profile stays selected. So a descriptor that isn't the selected
+ *  profile's own asks main for the selected profile's route, the check
+ *  requestGatewayForProfile routes by. The selected profile's own descriptor
+ *  asks nothing. */
 async function liveStatusParams(activeGatewayProfile: string): Promise<Record<string, unknown>> {
   const connection = $connection.get()
 
@@ -933,9 +935,8 @@ async function liveStatusParams(activeGatewayProfile: string): Promise<Record<st
   }
 
   const ownSocket =
-    connection.mode !== 'remote' ||
-    (Boolean(connection.profile?.trim()) &&
-      normalizeProfileKey(connection.profile) === normalizeProfileKey(activeGatewayProfile))
+    Boolean(connection.profile?.trim()) &&
+    normalizeProfileKey(connection.profile) === normalizeProfileKey(activeGatewayProfile)
 
   return !ownSocket && (await sharedPrimaryRoute(activeGatewayProfile)) ? { profile: activeGatewayProfile } : {}
 }

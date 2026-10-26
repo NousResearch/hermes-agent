@@ -610,6 +610,55 @@ def test_ensure_dir_in_stage_creates_missing_path():
         assert os.path.isdir(os.path.join(stage, ".git", "refs", "heads", "fix"))
 
 
+def test_make_staging_dir_is_outside_the_agent_home(tmp_path, monkeypatch):
+    """The staging bind target must NOT live inside the tree being protected.
+
+    ``tempfile.mkdtemp()`` honours ``TMPDIR``, and this fleet's TMPDIR is
+    ``~/.hermes/profiles/<profile>/cache/scratch`` -- inside the agent home.
+    The staging dir therefore has to be created somewhere outside it.
+    (t_4722df6f)
+    """
+    from hermes_cli.worker_isolate import _make_staging_dir
+
+    parent = str(tmp_path / "agent-home-parent")
+    os.makedirs(parent)
+
+    # A TMPDIR that points INSIDE the protected tree must be ignored.
+    inside_tmpdir = os.path.join(parent, "profiles", "friday", "cache", "scratch")
+    os.makedirs(inside_tmpdir)
+    monkeypatch.setenv("TMPDIR", inside_tmpdir)
+    monkeypatch.delenv("HERMES_ISOLATE_STAGE_DIR", raising=False)
+
+    stage = _make_staging_dir(parent)
+    try:
+        assert stage is not None, "a staging dir must be creatable outside the agent home"
+        assert os.path.isdir(stage)
+        # Not inside the protected tree.
+        assert not stage.startswith(parent + os.sep)
+    finally:
+        if stage and os.path.isdir(stage):
+            os.rmdir(stage)
+
+
+def test_make_staging_dir_honours_operator_override(tmp_path, monkeypatch):
+    """``HERMES_ISOLATE_STAGE_DIR`` wins when it points outside the tree."""
+    from hermes_cli.worker_isolate import _make_staging_dir
+
+    parent = str(tmp_path / "parent")
+    os.makedirs(parent)
+    override_base = str(tmp_path / "override-base")
+    os.makedirs(override_base)
+    monkeypatch.setenv("HERMES_ISOLATE_STAGE_DIR", override_base)
+
+    stage = _make_staging_dir(parent)
+    try:
+        assert stage is not None
+        assert stage.startswith(override_base + os.sep)
+    finally:
+        if stage and os.path.isdir(stage):
+            os.rmdir(stage)
+
+
 # ---------------------------------------------------------------------------
 # Cron spawn path (t_102333c4)
 # ---------------------------------------------------------------------------

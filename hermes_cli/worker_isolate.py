@@ -571,7 +571,13 @@ def _enter_isolation(
         sys.stderr.write(f"hermes worker isolation: parent {parent!r} not a directory\n")
         return 90
 
-    stage = tempfile.mkdtemp(prefix="hermes-isolate-stage.")
+    stage = _make_staging_dir(parent)
+    if stage is None:
+        sys.stderr.write(
+            f"hermes worker isolation: no staging directory outside {parent!r} "
+            "could be created\n"
+        )
+        return 91
     try:
         # 1. rw staging view of the parent, taken BEFORE the tree is flipped
         #    ro. The carve-out sources bind from this rw staging view because
@@ -829,6 +835,65 @@ def _agent_home_branch_ref_dir(agent_home: str) -> Optional[str]:
             return ref_file
         return None
     return os.path.join(agent_home, ".git", "refs", "heads", branch_dir)
+
+
+def _make_staging_dir(parent: str) -> Optional[str]:
+    """Create the rw staging directory for the bind dance, OUTSIDE ``parent``.
+
+    The staging directory is the mount TARGET of ``mount --bind <parent>
+    <stage>``. ``tempfile.mkdtemp()`` honours ``TMPDIR``, and on this
+    fleet ``TMPDIR`` is ``~/.hermes/profiles/<profile>/cache/scratch`` --
+    which lives INSIDE ``parent`` (``~/.hermes``) for every profile. That
+    makes the staging bind a bind whose target lives inside its own
+    source.
+
+    Inside the ``unshare -Urm`` namespace the launcher runs as uid 0 and
+    the kernel DOES accept that bind (verified 2026-10-26, t_4722df6f:
+    ``mount --bind /home/serveradmin/.hermes <dir-inside-it>`` succeeds
+    with rc=0 inside the namespace). So this is NOT a correctness fix for
+    the mounted path -- it removes a needless coupling between the
+    sandbox and the operator's ``TMPDIR``, and it keeps the staging bind
+    out of the tree that is being protected (a staging directory that
+    lives inside the agent home is one more thing the worker can see and
+    scribble on before the read-only flip lands).
+
+    Candidates, in order:
+
+    1. ``HERMES_ISOLATE_STAGE_DIR`` (operator override, if set and valid)
+    2. ``/tmp`` (and ``/var/tmp``) -- outside the agent home on any sane host
+    3. the current working directory, when it is outside ``parent``
+
+    Returns the created path, or ``None`` when no candidate is usable.
+    """
+    import tempfile
+
+    candidates: List[str] = []
+
+    override = os.environ.get("HERMES_ISOLATE_STAGE_DIR", "").strip()
+    if override:
+        candidates.append(override)
+
+    for tmpdir in ("/tmp", "/var/tmp"):
+        if os.path.isdir(tmpdir) and os.access(tmpdir, os.W_OK):
+            candidates.append(tmpdir)
+
+    cwd = os.getcwd()
+    if cwd:
+        candidates.append(cwd)
+
+    for base in candidates:
+        try:
+            real_base = os.path.realpath(base)
+        except OSError:
+            continue
+        # Keep the staging bind out of the protected tree.
+        if real_base == parent or real_base.startswith(parent + os.sep):
+            continue
+        try:
+            return tempfile.mkdtemp(prefix="hermes-isolate-stage.", dir=real_base)
+        except OSError:
+            continue
+    return None
 
 
 def _mount(args: List[str]) -> int:

@@ -37,10 +37,12 @@ from hermes_cli.models_catalog_static import (
     PREFERRED_SILENT_DEFAULT_MODEL,
     VERCEL_AI_GATEWAY_MODELS,
     _AGGREGATOR_PROVIDERS,
+    _ALIBABA_TOKEN_PLAN_PROVIDERS,
     _AZURE_FOUNDRY_RESPONSES_PREFIXES,
     _BORROWED_MODEL_PROVIDERS,
     _COPILOT_MODEL_ALIASES,
     _LIVE_FIRST_PICKER_PROVIDERS,
+    _LIVE_TERMINAL_PICKER_PROVIDERS,
     _MODELS_DEV_PREFERRED,
     _OPENAI_FAST_MODE_PREFIXES,
     _OPENAI_ULTRAFAST_MODELS,
@@ -50,6 +52,7 @@ from hermes_cli.models_catalog_static import (
     _PROVIDER_RETIRED_ALIASES,
     _SILENT_DEFAULT_PROVIDERS,
     _xai_finalize_catalog)
+from hermes_cli.models_relay_catalog import _relay_model_catalog
 from hermes_cli.models_reasoning_caps import (
     _OPENROUTER_CATALOG_URL,
     _seed_reasoning_caps)
@@ -572,6 +575,9 @@ def recommended_nous_default_model() -> dict[str, Any]:
 def get_default_model_for_provider(provider: str) -> str:
     """Cost-safe default model for a provider, or "" — the NON-INTERACTIVE fallback when a provider
     is configured but no model was ever selected."""
+    if provider in _ALIBABA_TOKEN_PLAN_PROVIDERS:
+        from providers.alibaba_token_plan_models import DEFAULT_MODEL
+        return DEFAULT_MODEL
     models = _PROVIDER_MODELS.get(provider, [])
     if provider in _SILENT_DEFAULT_PROVIDERS:
         preferred = get_preferred_silent_default_model(provider)
@@ -1696,8 +1702,14 @@ def probe_profile_catalog(normalized: str, profile, api_key: Optional[str], base
 def merge_profile_catalog(normalized: str, profile, live: Optional[list[str]]) -> Optional[list[str]]:
     """Combine a profile's live catalog with its curated list the way the ``/model`` picker does, so
     first-time setup (``model_setup_flows._api_key_provider_model_list``) offers the same rows the
-    picker will later show. Empty live → ``fallback_models`` (None when the profile has none)."""
-    if not live:
+    picker will later show. Failed probes use ``fallback_models``; terminal empty results stay empty.
+
+    Subscription-tier providers (``_LIVE_TERMINAL_PICKER_PROVIDERS``) skip the merge entirely when
+    the live probe succeeds: entitlements vary per plan, so curated-only ids are phantom rows that
+    404 every turn and can never age out through a merge that only adds (#119481)."""
+    if normalized in _LIVE_TERMINAL_PICKER_PROVIDERS and live is not None:
+        rows = live
+    elif not live:
         rows = CuratedFallbackModels(profile.fallback_models) if profile.fallback_models else None
     else:
         curated = list(_PROVIDER_MODELS.get(normalized, [])) or list(profile.fallback_models or ())
@@ -1764,26 +1776,6 @@ def _configured_relay_base_url(provider: str) -> str:
     return "" if normalize_route_base_url(base_url) in canonical else base_url
 
 
-def _relay_model_catalog(normalized: str, relay: str) -> Optional[list[str]]:
-    """Live catalog probed at a configured ``model.base_url`` relay, or None to fall through.
-
-    Returns only the relay's live ids (no curated merge): a relay user must see the relay's
-    catalog, and a failed/empty probe degrades to the canonical fetchers untouched.
-    """
-    try:
-        from providers import get_provider_profile
-
-        profile = get_provider_profile(normalized)
-        if profile is None or getattr(profile, "auth_type", "") != "api_key":
-            return None
-        api_key, _ = _api_key_credentials(normalized)
-        live = profile.fetch_models(api_key=api_key, base_url=relay)
-        return [str(m) for m in (live or []) if m] or None
-    except Exception:
-        return None
-
-
-
 # Canonical fetchers that already resolve `model.base_url` themselves for the configured
 # provider AND degrade to their curated list when that relay fails — `_anthropic_catalog`,
 # `_custom_catalog`, `_openai_catalog` (via `_openai_discovery_base_url`) and the simple
@@ -1835,7 +1827,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     relay = _configured_relay_base_url(provider or "")
     if relay and normalized not in _RELAY_AWARE_CATALOG_FETCHERS:
         relayed = _relay_model_catalog(normalized, relay)
-        if relayed:
+        if relayed or (normalized in _ALIBABA_TOKEN_PLAN_PROVIDERS and relayed is not None):
             return _chat_catalog_rows(relayed)
         return _static_catalog(normalized, _PROVIDER_CATALOG_FETCHERS.get(normalized))
     fetcher = _PROVIDER_CATALOG_FETCHERS.get(normalized)

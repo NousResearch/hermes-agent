@@ -2018,7 +2018,6 @@ cli:
     cleared_picker_cache: "Glanadh taisce roghnóir na samhlacha. Á athnuachan..."
     moa_one_shot_queued: "Aonurchar MoA curtha i scuaine leis an réamhshocrú {preset}; cuirfear an tsamhail roimhe seo ar ais tar éis an tseala seo."
     normalized_model: "Normalaíodh an tsamhail '{old}' go '{new}' do {provider}."
-    normalized_copilot_model: "Normalaíodh samhail Copilot '{old}' go '{new}'."
     stripped_provider_prefix: "Baineadh réimír an tsoláthraí de '{old}'; ag úsáid '{new}' do {provider}."
     restored_from_session: "Samhail aischurtha ón seisiún: {model}"
     could_not_load_config: "❌ níorbh fhéidir an chumraíocht a lódáil: {error}"

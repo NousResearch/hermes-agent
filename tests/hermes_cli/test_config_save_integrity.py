@@ -38,7 +38,8 @@ class _ReadFaults:
     """Counts parses of config.yaml and fails the chosen one with a transient EMFILE (intact file)."""
 
     def __init__(self, monkeypatch, path):
-        self.path, self.count, self.fail_at, real = str(path), 0, 0, config_mod.fast_safe_load
+        import utils
+        self.path, self.count, self.fail_at, real = str(path), 0, 0, utils.fast_safe_load
 
         def flaky(stream):
             if getattr(stream, "name", None) == self.path:
@@ -46,7 +47,8 @@ class _ReadFaults:
                 if self.count == self.fail_at:
                     raise OSError(errno.EMFILE, "Too many open files")
             return real(stream)
-        monkeypatch.setattr(config_mod, "fast_safe_load", flaky)
+        # Every config read parses through the file config backend, which calls utils.fast_safe_load.
+        monkeypatch.setattr(utils, "fast_safe_load", flaky)
 
     def arm(self, fail_at=0):
         self.count, self.fail_at = 0, fail_at
@@ -157,7 +159,7 @@ def test_unreadable_config_serves_one_cached_fallback_until_it_reads(home, monke
     once, not per call: ~250x slower loads before), and the first load once the file opens again
     reads the real file even though its signature never changed."""
     import builtins
-    from hermes_cli import config_backups
+    from hermes_cli import config_backend, config_backups
     from hermes_cli.config_read_errors import FailedConfigRead
     path = home / "config.yaml"
     _fresh_process(home, _CONFIG)
@@ -170,7 +172,7 @@ def test_unreadable_config_serves_one_cached_fallback_until_it_reads(home, monke
         if blocked[0] and str(file) == str(path):
             raise OSError(errno.EMFILE, "Too many open files")
         return builtins.open(file, *args, **kwargs)
-    monkeypatch.setattr(config_mod, "open", guarded_open, raising=False)
+    monkeypatch.setattr(config_backend, "open", guarded_open, raising=False)
     monkeypatch.setattr(config_backups, "load_newest_good_backup", lambda p: rebuilds.append(p) or real_backup(p))
 
     for _ in range(5):

@@ -36,6 +36,7 @@ from agent.surface_switch import (
 )
 from agent.turn_context import PreflightCompressionTimedOut, build_turn_context
 from hermes_cli.observability.shared_metrics_efficiency import record_cache_break, record_prompt_rebuild
+from hermes_cli.plugins_dispatch import held_stream_transforms
 from agent.turn_retry_state import TurnRetryState
 from agent.turn_scripted_prelude import Prelude, play_prelude
 # Phase helpers of the turn loop, bound at import so a source-tree swap cannot load a
@@ -361,32 +362,15 @@ def _apply_active_turn_redirect(agent: Any, messages: list[dict[str, Any]], text
     agent._stream_needs_break = True
 
 
-def _is_copilot_provider(agent: Any) -> bool:
-    """Delegate to ``AIAgent._is_copilot_provider``; the fallback keeps the ``github-copilot`` /
-    ``github`` aliases so credential recovery is not skipped for them."""
-    try:
-        return bool(agent._is_copilot_provider())
-    except Exception:
-        return (getattr(agent, "provider", "") or "").strip().lower() in {
-            "copilot",
-            "github-copilot",
-            "github",
-        }
+def _credential_refresh_profile(agent: Any) -> Any:
+    """The profile owning the live credential's runtime refresh: the agent's provider by name, else
+    (a ``custom`` route at a provider's host) the profile serving the base URL's host. Only profiles
+    that override ``refresh_runtime_credentials`` qualify."""
+    from agent.provider_route_hooks import route_profiles
 
-
-def _is_stale_copilot_credential_error(status_code: Optional[int], error_message: str) -> bool:
-    """Detect a Copilot 400 that is really a STALE / DEGRADED credential (status 400 AND an
-    integrator/model-not-supported marker, so a wrong model name never triggers the
-    single-shot re-exchange). Caller enforces scoping/guard."""
-    lowered = (error_message or "").lower()
-    if status_code != 400 and "error code: 400" not in lowered:
-        return False
-    return any(marker in lowered for marker in (
-        "model_not_available_for_integrator",
-        "not available for integrator",
-        "model_not_supported",
-        "the requested model is not supported",
-    ))
+    profiles = route_profiles("refresh_runtime_credentials", (getattr(agent, "provider", "") or "").strip().lower(),
+                              str(getattr(agent, "base_url", "") or ""))
+    return profiles[0] if profiles else None
 
 
 def _pressure_with_real_floor(compressor: Any, rough_tokens: int) -> int:
@@ -1608,7 +1592,7 @@ def _codex_app_server_turn(agent: Any, s: Any) -> Optional[dict[str, Any]]:
     codex_result = agent._run_codex_app_server_turn(
         user_message=s.user_message, original_user_message=s.original_user_message,
         messages=s.messages, effective_task_id=s.effective_task_id,
-        should_review_memory=s._should_review_memory,
+        should_review_memory=s._should_review_memory, turn_id=s.turn_id,
     )
     from agent.turn_recovery import activate_codex_app_server_fallback
     if not activate_codex_app_server_fallback(agent, codex_result):
@@ -1664,6 +1648,12 @@ def _run_conversation_turn(
         agent._try_refresh_env_client_credentials()
     except Exception:
         logger.debug("per-turn env credential refresh failed", exc_info=True)
+
+    # A loaded ``hold_stream`` transform in this profile: the user sees only its rewritten final, made
+    # by the transforms live now (a plugin reload mid-turn cannot drop them before the final). Set
+    # before any exit, so an early one never reads the previous turn's hold.
+    agent._held_transforms = held_stream_transforms()
+    agent._hold_stream = bool(agent._held_transforms)
 
     # Per-turn setup: build_turn_context mutates ``agent`` and returns the locals the loop reads.
     try:
@@ -1807,6 +1797,7 @@ def run_conversation(
     addresses, after every history rewrite including post-turn micro-compaction.
     """
     from agent.turn_context import export_current_turn_boundary
+    from agent.turn_finalizer import settle_held_final
     from agent.voice_turn_route import end_voice_turn_route
     from tools.vision_tools_history_budget import native_turn_images
 
@@ -1835,6 +1826,7 @@ def run_conversation(
             )
         finally:
             end_voice_turn_route(agent)
+    settle_held_final(agent, result)
     result = export_current_turn_boundary(agent, result, user_message)
     if isinstance(result, dict):
         result["user_intervened"] = bool(getattr(agent, "_turn_user_intervened", False))

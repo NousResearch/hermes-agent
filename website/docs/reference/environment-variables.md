@@ -26,14 +26,8 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `HERMES_CODEX_BASE_URL` | Route the `openai-codex` (ChatGPT subscription) provider through a proxy instead of the default Codex backend. Applies everywhere the credential is used: pool resolution, auxiliary/raw clients, and 401/429 credential rotation. `model.base_url` under `model.provider: openai-codex` is the secondary override when this is unset. |
 | `LM_API_KEY` | API key for LM Studio (`lmstudio` provider). Often a placeholder for local servers |
 | `LM_BASE_URL` | LM Studio base URL (default: `http://localhost:1234/v1`) |
-| `COPILOT_GITHUB_TOKEN` | GitHub token for Copilot API — first priority (OAuth `gho_*` or fine-grained PAT `github_pat_*`; classic PATs `ghp_*` are **not supported**) |
-| `GH_TOKEN` | GitHub token — second priority for Copilot (also used by `gh` CLI) |
-| `GITHUB_TOKEN` | GitHub token — third priority for Copilot |
-| `HERMES_COPILOT_ACP_COMMAND` | Override Copilot ACP CLI binary path (default: `copilot`) |
-| `COPILOT_CLI_PATH` | Alias for `HERMES_COPILOT_ACP_COMMAND` |
-| `HERMES_COPILOT_ACP_ARGS` | Override Copilot ACP arguments (default: `--acp --stdio`) |
-| `COPILOT_ACP_BASE_URL` | Override Copilot ACP base URL |
-| `COPILOT_API_BASE_URL` | Override the Copilot API base URL (`copilot` provider) |
+| `GH_TOKEN` | GitHub token (also used by the `gh` CLI); honoured wherever Hermes reads `GITHUB_TOKEN` |
+| `GITHUB_TOKEN` | GitHub token for GitHub API access (Skills Hub, git credentials, update checks; see the Skills Hub row below) |
 | `GLM_API_KEY` | z.ai / ZhipuAI GLM API key ([z.ai](https://z.ai)) |
 | `ZAI_API_KEY` | Alias for `GLM_API_KEY` |
 | `Z_AI_API_KEY` | Alias for `GLM_API_KEY` |

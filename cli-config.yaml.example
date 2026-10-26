@@ -81,7 +81,6 @@ model:
   #   "nous-api"     - Nous Portal API key (requires: NOUS_API_KEY)
   #   "anthropic"    - Direct Anthropic API (requires: ANTHROPIC_API_KEY)
   #   "openai-codex" - OpenAI Codex (requires: hermes auth)
-  #   "copilot"      - GitHub Copilot / GitHub Models (requires: GITHUB_TOKEN)
   #   "gemini"      - Use Google AI Studio direct (requires: GOOGLE_API_KEY or GEMINI_API_KEY)
   #   "zai"         - Use z.ai / ZhipuAI GLM models (requires: GLM_API_KEY)
   #   "kimi-coding"  - Kimi / Moonshot AI (requires: KIMI_API_KEY)
@@ -1066,6 +1065,14 @@ group_sessions_per_user: true
 # of the file's pages are reclaimable — a dense database never pays for a full
 # rewrite to reclaim a few MB.
 #
+# A CLI/TUI/Desktop session left with no viewer (a killed terminal, a dropped
+# connection, a gateway restart) is ended by the gateway orphan_end_grace_s
+# seconds later, once its running turn settles. It stays resumable, and a viewer
+# that comes back within the grace keeps it open. 0 never ends it. After a
+# restart it also waits out the rest of 6h since the session's last activity.
+# It replaces dashboard.ws_orphan_reap_grace_s / startup_orphan_sweep for these
+# sessions; while it is unset, their opt-outs (0 / false) still turn it off.
+#
 # Uncomment to change the defaults shown; auto_prune: true bounds the file,
 # auto_prune: false keeps every ended session and silences the low-disk prompt.
 # sessions:
@@ -1074,6 +1081,7 @@ group_sessions_per_user: true
 #   vacuum_after_prune: true
 #   min_vacuum_interval_days: 30
 #   min_interval_hours: 24
+#   orphan_end_grace_s: 300
 
 # Optional direct endpoint for autonomous Bot Mode rooms spanning gateways.
 # Leave unset for the safe default: Desktop coordinates cross-gateway rooms and

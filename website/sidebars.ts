@@ -414,6 +414,7 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/devops/devops-actual-setup',
+                    'user-guide/skills/optional/devops/devops-briq',
                     'user-guide/skills/optional/devops/devops-docker-management',
                     'user-guide/skills/optional/devops/devops-hermes-s6-container-supervision',
                     'user-guide/skills/optional/devops/devops-inference-sh-cli',

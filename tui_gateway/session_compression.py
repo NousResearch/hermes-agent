@@ -270,7 +270,9 @@ def _compress_session_history(
     from agent.conversation_compression import finalize_context_engine_compression_notification
     from agent.conversation_compression_manual import (
         AGGRESSIVE_UNSUPPORTED, MIN_MESSAGES, compress_now, parse_compress_args)
-    agent = session["agent"]
+    agent = session.get("agent")
+    if agent is None:  # restored session, no turn yet: refuse cleanly instead of AttributeError on None
+        raise ValueError("No active agent -- send a message first.")
     # Snapshot under the lock so the LLM-bound compression call does NOT hold history_lock for the
     # request — otherwise prompt.submit etc. block on the dispatcher loop while compaction runs.
     if before_messages is None or history_version is None:

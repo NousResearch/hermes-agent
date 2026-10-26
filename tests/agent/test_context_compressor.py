@@ -1664,7 +1664,11 @@ class TestAbortOnSummaryFailure:
 
 
 
-    def test_aux_fallback_clears_persisted_session_cooldown_before_retry(self, tmp_path):
+    def test_aux_fallback_arms_and_keeps_persisted_session_cooldown_before_retry(self, tmp_path):
+        # The old contract here was "fallback clears the live cooldown before the main
+        # retry" — exactly the shape that re-hammers a dead route on every event. The
+        # fallback now ARMS the fallback cooldown; the single bypass-cooldown retry
+        # still runs and a SUCCESS clears it.
         db = SessionDB(db_path=tmp_path / "state.db")
         db.create_session("s1", "cli")
         db.record_compression_failure_cooldown("s1", time.time() + 999.0, "timeout")
@@ -1676,8 +1680,11 @@ class TestAbortOnSummaryFailure:
         c._fallback_to_main_for_compression(Exception("provider down"), "failed")
 
         assert c.summary_model == ""
-        assert c._summary_failure_cooldown_until == 0.0
-        assert db.get_compression_failure_cooldown("s1") is None
+        # A live cooldown is never zeroed by the fallback, and the arm (300s floor) applies.
+        remaining = c._summary_failure_cooldown_until - time.monotonic()
+        assert remaining > 295.0, remaining
+        state = db.get_compression_failure_cooldown("s1")
+        assert state is not None and state["remaining_seconds"] > 295.0
 
     def test_success_clears_persisted_session_cooldown(self, tmp_path):
         mock_response = MagicMock()

@@ -453,6 +453,10 @@ offline (no network call, no subprocess):
   auxiliary task runs on a local or self-hosted server (a local provider id such
   as Ollama/LM Studio/llama.cpp, or a loopback/private-network base URL). The
   URL itself stays local.
+- `compression_prepare_ahead` (`on`/`off`): whether the profile's config turns on
+  `compression.prepare_ahead` (prepared compaction), read with the same truthiness
+  the agent uses (absent or false reads `off`). Snapshots counted before this field
+  existed carry no value for it and still package.
 
 ### Decision-data metrics
 
@@ -555,6 +559,17 @@ Added inside package schema v4. No connector slug, tool name or query text appea
 | `hermes.tool_search.count` | scope (`local`, `connector`, `both`: which catalogs the search read), hits bucket (`0` … `gte_11`, distinct tools returned), outcome (`hits`, `no_hits`, `connector_unavailable`, `error`) | Does `tool_search` find tools, and how often does the hosted connector leg fail. One row per `tool_search` call. |
 | `hermes.tool_batch.count` | provider, model, size bucket (logical calls; each `tool_call` entry counts once), connector share (`none`, `some`, `all`) | How many calls a model packs into one reply, and how much of it is connector work. One row per model reply that calls tools. |
 | `hermes.connector_chain.count` | searches-before bucket (`tool_search` calls since the previous connector execute), described first (`yes`/`no`: the tool was named in an earlier `tool_describe` of the conversation), outcome (the tool outcome) | Do models search and describe before they execute a connector tool, and does skipping it fail more. One row per executed connector entry. |
+
+#### Prepared compaction
+
+Added inside package schema v4. Answers whether installs that turn on `compression.prepare_ahead`
+(see `compression_prepare_ahead` on the snapshot) get a usable summary, or pay for passes nothing uses,
+wait on them, or see a spliced compaction fail. No transcript text, window index, summary or miss text
+appears in any dimension: the free-text splice-miss reason is reduced to a closed code.
+
+| Metric | Dimensions | Question it answers |
+|---|---|---|
+| `hermes.prepared_compaction.count` | event (`pass_started`, `pass_completed`, `pass_failed`, `pass_cancelled`, `used`, `discarded`, `compaction_failed`, `auto_disabled`, `skipped_busy`, `internal_error`), origin (`tool_batch`, `turn_end`: the hook that started the pass; `none` on compaction-side events), reason (`none`, `fresh_required`, `provider_context`, `other_session`, `head_moved`, `inside_tail`, `transcript_shorter`, `shape_changed`, `rewound`, `text_changed`, `running_not_fit`, `wait_timeout`, `host_cancelled`, `discarded_while_waiting`, `pass_failed_while_waiting`, `superseded`, `session_boundary`, `aux_fallback_main`), failure class (the `hermes.compression.count` vocabulary; `none` unless the event is a failure), wait bucket (`none`, `lt_1s`, `1s_to_5s`, `5s_to_30s`, `30s_to_120s`, `gte_120s`: how long a compaction waited on a running pass) | Do prepared passes pay off, and if not, why. Pass side (from the background thread): `pass_started`, `pass_completed` (summary published), `pass_failed` (the summariser returned nothing; its class is the one an inline attempt would log, a terminal summary failure first), `pass_cancelled` (the pass saw its cancel event; reason `superseded`, `session_boundary`, `wait_timeout` or `host_cancelled`, set by whoever cancelled it), `skipped_busy` (the process-wide cap of two concurrent passes refused one) and `internal_error` (failure class `exception`). Compaction side: `used` (the summary was spliced; reason `aux_fallback_main` when the pass fell back from the summary model to the main model), `discarded` (a completed or running summary the compaction did not use, with the splice-miss code and any wait; a session boundary dropping one reads `session_boundary`), `compaction_failed` (a compaction that spliced a prepared summary but did not commit, with its attempt class) and `auto_disabled` (the first compaction needing memory-provider context turned passes off for the agent). One pass can count on both sides, e.g. `discarded` + `pass_cancelled` for a running pass that did not fit. |
 
 <!-- ---- v5 harness ---- -->
 #### Agent-harness accuracy
@@ -679,7 +694,8 @@ Package schemas v1, v2 and v3 remain unchanged for existing outbox files. New
 packages use v4, which adds `failure_class` to `hermes.compression.count` and
 `hermes.memory.op.count` and still accepts their v3 field sets (and, extended in place with additive values only, also after v4 shipped in a stable release,
 `failure_class` on `hermes.extension.install.count` / `hermes.update.run` plus `registry` on the
-former, still accepting their earlier v4 field sets), as v3 accepted the v2
+former, still accepting their earlier v4 field sets; `hermes.prepared_compaction.count` and the
+snapshot's optional `compression_prepare_ahead` arrived the same way), as v3 accepted the v2
 field sets of `hermes.model_route.count`, `hermes.tool_call.count` and the task
 counters, so counters recorded before an upgrade drain safely.
 Vocabularies derived from in-repo registries (tool names, platforms, memory

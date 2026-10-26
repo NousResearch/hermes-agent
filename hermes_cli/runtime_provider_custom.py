@@ -298,19 +298,22 @@ def codex_model_provider_id(requested_provider: str) -> Optional[str]:
 # ── identity recovery (bare "custom" -> durable ``custom:<name>``) ─────────────────────────
 
 
-def _find_custom_identity(matches: Callable[[dict[str, Any]], bool],
-                          config: Optional[dict[str, Any]] = None, prefer: Optional[str] = None) -> Optional[str]:
-    """First enabled entry in ``providers:`` then legacy ``custom_providers:`` where ``matches(entry)``
-    holds (*prefer* when it is one of them), as its canonical ``custom:<name>`` slug. A legacy entry
-    whose slug a ``providers:`` entry with an endpoint owns never matches: runtime resolution runs that one.
-    *config* defaults to the active profile's."""
+def _matching_custom_identities(matches: Callable[[dict[str, Any]], bool],
+                                config: Optional[dict[str, Any]] = None) -> list[str]:
+    """Every enabled entry where ``matches(entry)`` holds, in config order, as canonical
+    ``custom:<name>`` slugs. A legacy entry whose slug a ``providers:`` entry with an endpoint owns
+    never matches: runtime resolution runs that one. *config* defaults to the active profile's.
+
+    Separate from :func:`_find_custom_identity` because some signals (a model id) can select more
+    than one entry, and the caller has to know that rather than take the first."""
     from hermes_cli.config import is_provider_enabled
     rp = _rp()
     try:
         config = rp.load_config() if config is None else config
     except Exception:
-        return None
-    first, owned = None, set()
+        return []
+    found: list[str] = []
+    owned = set()
     providers = config.get("providers")
     if isinstance(providers, dict):
         for ep_name, entry in providers.items():
@@ -320,9 +323,7 @@ def _find_custom_identity(matches: Callable[[dict[str, Any]], bool],
             if _entry_url(entry):
                 owned.add(slug)
             if matches(entry):
-                if prefer is None or slug == prefer:
-                    return slug
-                first = first or slug
+                found.append(slug)
     try:
         custom_providers = rp.get_compatible_custom_providers(config)
     except Exception:
@@ -333,10 +334,20 @@ def _find_custom_identity(matches: Callable[[dict[str, Any]], bool],
             slug = custom_provider_slug(name, str(entry.get("provider_key", "") or ""))
             if slug in owned and not entry.get("provider_key"):
                 continue
-            if prefer is None or slug == prefer:
-                return slug
-            first = first or slug
-    return first
+            found.append(slug)
+    return list(dict.fromkeys(found))
+
+
+def _find_custom_identity(matches: Callable[[dict[str, Any]], bool],
+                          config: Optional[dict[str, Any]] = None, prefer: Optional[str] = None) -> Optional[str]:
+    """First enabled entry in ``providers:`` then legacy ``custom_providers:`` where ``matches(entry)``
+    holds (*prefer* when it is one of them), as its canonical ``custom:<name>`` slug. A legacy entry
+    whose slug a ``providers:`` entry with an endpoint owns never matches: runtime resolution runs that one.
+    *config* defaults to the active profile's."""
+    found = _matching_custom_identities(matches, config)
+    if prefer is not None and prefer in found:
+        return prefer
+    return found[0] if found else None
 
 
 def find_custom_provider_identity(base_url: str) -> Optional[str]:
@@ -356,9 +367,18 @@ def _model_id_matches(value: Any, target: str) -> bool:
 def find_custom_provider_identity_by_model(model: str) -> Optional[str]:
     """Map a model id back to the ``custom:<name>`` entry that serves it — companion to
     :func:`find_custom_provider_identity` for persistence paths where no base_url survived the
-    round-trip (the session row always stores the model name)."""
+    round-trip (the session row always stores the model name).
+
+    A model id is a *weak* signal: two scopes of one relay routinely offer the same model per
+    account, and several entries then serve it. Answering the first would name whichever entry sits
+    first in ``providers:`` and bill its credential — the same wrong-scope failure as #118285, one
+    layer down. Ambiguity answers ``None`` so the caller can fall through to a signal that does name
+    a scope (the configured provider) instead of inventing one."""
     target = str(model or "").strip().lower()
-    return _find_custom_identity(lambda entry: _entry_serves_model(entry, target)) if target else None
+    if not target:
+        return None
+    found = _matching_custom_identities(lambda entry: _entry_serves_model(entry, target))
+    return found[0] if len(found) == 1 else None
 
 
 def _entry_serves_model(entry: dict[str, Any], target: str) -> bool:
@@ -437,6 +457,12 @@ def canonical_custom_identity(*, base_url: Optional[str] = None, config_provider
         return None
     if entry is None:
         return None
+    # The candidate's OWN identity. A base_url reverse lookup returns the first scope on a shared
+    # endpoint — naming, and billing, the wrong one (#118285). The endpoint stays a fallback for an
+    # entry that carries no identity of its own.
+    identity = custom_provider_slug(str(entry.get("name") or ""), str(entry.get("provider_key") or ""))
+    if identity:
+        return identity
     try:
         identity = find_custom_provider_identity(str(entry.get("base_url") or ""))
     except Exception:

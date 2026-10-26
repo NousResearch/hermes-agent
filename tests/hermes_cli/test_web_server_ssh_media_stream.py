@@ -236,6 +236,54 @@ def test_a_host_staged_clip_of_an_ssh_profile_streams_from_this_host(client, ssh
     assert workspace.reads == []
 
 
+@pytest.mark.parametrize("ssh_down", [False, True])
+def test_a_host_staged_clip_spelled_as_a_file_url_streams_from_this_host(client, ssh, monkeypatch, ssh_down):
+    from fastapi import HTTPException
+
+    _profile, workspace = ssh
+    staged = client.post("/api/chat/file-upload", params={"profile": "remote-dev"},
+                         files={"file": ("clip.mp4", b"host clip", "video/mp4")})
+    assert staged.status_code == 200, staged.text
+    if ssh_down:
+        def down(profile=None):
+            raise HTTPException(status_code=503, detail="SSH workspace is unavailable")
+
+        monkeypatch.setattr(file_routes, "_fs_backend", down)
+    query = {"path": Path(staged.json()["path"]).as_uri(), "profile": "remote-dev"}
+
+    direct = client.get("/api/files/stream", params=query, headers={"Range": "bytes=0-3"})
+    data_url = client.get("/api/fs/read-data-url", params=query)
+    download = client.get("/api/fs/download", params=query)
+    minted = client.post("/api/files/ticket", json={"route": "stream", **query})
+    assert minted.status_code == 200, minted.text
+    del client.headers[web_server._SESSION_HEADER_NAME]
+    ticketed = client.get("/api/files/stream", params={**query, "ticket": minted.json()["ticket"]})
+
+    assert (direct.status_code, direct.content) == (206, b"host"), direct.text
+    assert data_url.json() == {"dataUrl": "data:video/mp4;base64,aG9zdCBjbGlw"}
+    assert (download.status_code, download.content) == (200, b"host clip")
+    assert (ticketed.status_code, ticketed.content) == (200, b"host clip")
+    assert workspace.reads == []
+
+
+def test_a_file_url_off_this_hosts_staging_still_goes_to_the_ssh_workspace(client, ssh, monkeypatch):
+    _profile, workspace = ssh
+    asked = []
+    monkeypatch.setattr(workspace, "inspect_file", lambda path: asked.append(path) or (CLIP, len(BYTES)))
+    staged = client.post("/api/chat/file-upload", params={"profile": "remote-dev"},
+                         files={"file": ("clip.mp4", b"host clip", "video/mp4")})
+    staged_path = Path(staged.json()["path"])
+    beside = staged_path.parent.parent / "clip.mp4"  # not directly in the staging folder
+    beside.write_bytes(b"host file")
+    encoded = staged_path.as_uri().replace(f"/{staged_path.name}", f"%2f{staged_path.name}")
+
+    for url in (beside.as_uri(), encoded):
+        response = _stream(client, path=url)
+        assert (response.status_code, response.content) == (200, BYTES), url
+    # Neither is a host-staged file, so the SSH workspace was asked for both.
+    assert len(asked) == 2
+
+
 def test_a_down_ssh_host_is_unavailable_to_the_stream(client, ssh, monkeypatch):
     from tools.environments.base import EnvironmentConnectionError
 

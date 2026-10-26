@@ -37,7 +37,7 @@ from hermes_cli.web_server_remote_media import remote_media_response
 from hermes_cli.web_upload_limit import CHAT_IMAGE_MAX_BYTES
 from hermes_cli.web_server_surface import route_on
 from hermes_cli.web_server_files import (
-    SANDBOX_NOT_FOUND, _agent_fs_path, _fs_path, _hosted_fs_read_guard, _is_unmapped_container_path,
+    SANDBOX_NOT_FOUND, _agent_fs_path, _file_url_path, _fs_path, _hosted_fs_read_guard, _is_unmapped_container_path,
     _managed_file_entry, _managed_response_meta, _resolve_managed_path, _session_workspace_key,
 )
 from hermes_cli.web_models import (
@@ -339,7 +339,13 @@ def _is_host_file(path: str, profile: Optional[str]) -> bool:
     """Whether *path* is a file the profile keeps on this host even when its workspace is an SSH
     machine, read back to be previewed and sent: a browser paste in its image cache, or a file the
     browser's picker staged in its uploads folder. Only a file directly in one of those two folders
-    counts, after resolving symlinks and ``..``, so an SSH profile reads no other host file here."""
+    counts, after resolving symlinks and ``..``, so an SSH profile reads no other host file here.
+    A ``file:`` URL counts by the native path it names, decoded once as ``_fs_path`` decodes it."""
+    if path.lower().startswith("file:"):
+        try:
+            path = _file_url_path(path)
+        except ValueError:
+            return False
     if not Path(path).is_absolute():
         return False
     try:

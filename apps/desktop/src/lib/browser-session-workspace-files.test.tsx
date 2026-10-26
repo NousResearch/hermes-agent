@@ -1,3 +1,5 @@
+import '@/store/session-states'
+
 import { EditorView } from '@codemirror/view'
 import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
@@ -10,11 +12,12 @@ import { LocalFilePreview } from '@/app/chat/right-rail/preview-file'
 import { SessionViewProvider } from '@/app/chat/session-view'
 import { MarkdownImage } from '@/components/assistant-ui/markdown-text'
 import { $previewTabs } from '@/store/preview'
-import { $connection } from '@/store/session'
+import { $connection, _resetSessionOwnerHintsForTests, setSessionOwnerHint } from '@/store/session'
 import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
 import { readDesktopFileText, writeDesktopFileText } from './desktop-fs'
+import { normalizeOrLocalPreviewTarget } from './local-preview'
 import { resolveMediaPlaybackSrc } from './media'
 
 // The pane's consent dialog needs a QueryClientProvider; these tests read files, not consent.
@@ -30,13 +33,36 @@ const CLIP = '/workspace/clip.mp4'
 const win = window
 let requests: { body: Record<string, unknown>; method: string; url: URL }[] = []
 
+// The profile each session belongs to. `ops-session` is a Bot's: the window stays on `default`.
+const SESSION_OWNERS: Record<string, string> = { 'ops-session': 'ops', 'sess-1': 'default', 'stored-1': 'default' }
+
+const profileOf = (request: (typeof requests)[number]) =>
+  request.url.searchParams.get('profile') ?? (request.body.profile as string | undefined) ?? null
+
+const sessionOf = (request: (typeof requests)[number]) =>
+  request.url.searchParams.get('session_id') ?? (request.body.session_id as string | undefined) ?? null
+
 beforeEach(() => {
   requests = []
   seedWebappSession('served-token')
+  _resetSessionOwnerHintsForTests()
+
+  for (const [sessionId, profile] of Object.entries(SESSION_OWNERS)) {
+    setSessionOwnerHint(sessionId, { connectionId: LOCAL_CONNECTION_ID, profile })
+  }
+
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: URL, init?: RequestInit) => {
-      requests.push({ body: JSON.parse(String(init?.body ?? '{}')), method: init?.method ?? 'GET', url: input })
+      const request = { body: JSON.parse(String(init?.body ?? '{}')), method: init?.method ?? 'GET', url: input }
+
+      requests.push(request)
+      const sessionId = sessionOf(request)
+
+      // The gateway looks a session up in the profile the request names, nowhere else.
+      if (sessionId && SESSION_OWNERS[sessionId] !== (profileOf(request) ?? 'default')) {
+        return new Response(JSON.stringify({ detail: 'Session not found' }), { status: 404 })
+      }
 
       const answers: Record<string, unknown> = {
         '/api/files/ticket': { ticket: 'stream-ticket' },
@@ -55,6 +81,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  _resetSessionOwnerHintsForTests({ storage: true })
   $previewTabs.set([])
   clearWebappSession()
   Reflect.deleteProperty(win, 'hermesDesktop')
@@ -190,6 +217,53 @@ describe('Save in a session sandbox', () => {
         }
       }
     }
+  })
+})
+
+describe('a session owned by another profile than the window', () => {
+  const OPS = 'ops-session'
+
+  it('reads its file with the profile that owns it', async () => {
+    await expect(readDesktopFileText(NOTE, { sessionId: OPS })).resolves.toMatchObject({ text: 'session note' })
+
+    const [read] = readsOf('/api/fs/read-text')
+
+    expect([profileOf(read), sessionOf(read)]).toEqual(['ops', OPS])
+  })
+
+  it('saves its file with the profile that owns it', async () => {
+    await expect(writeDesktopFileText(NOTE, 'edited', { sessionId: OPS })).resolves.toEqual({ path: NOTE })
+
+    const [save] = readsOf('/api/fs/write-text')
+
+    expect([profileOf(save), sessionOf(save)]).toEqual(['ops', OPS])
+  })
+
+  it('tickets its clip with the profile that owns it', async () => {
+    const src = new URL(await resolveMediaPlaybackSrc(CLIP, OWNER, OPS))
+
+    expect(requests[0].body).toEqual({ path: CLIP, profile: 'ops', route: 'stream', session_id: OPS })
+    expect(Object.fromEntries(src.searchParams)).toMatchObject({ profile: 'ops', session_id: OPS })
+  })
+
+  it('enriches a preview of its file with the profile that owns it', async () => {
+    await normalizeOrLocalPreviewTarget(NOTE, '/workspace', { sessionId: OPS })
+
+    const [read] = readsOf('/api/fs/read-text')
+
+    expect([profileOf(read), sessionOf(read)]).toEqual(['ops', OPS])
+  })
+
+  it('names no session when its owner is unknown, as a sessionless read does', async () => {
+    await readDesktopFileText(NOTE, { sessionId: 'unknown-session' })
+    await writeDesktopFileText(NOTE, 'edited', { sessionId: 'unknown-session' })
+    await resolveMediaPlaybackSrc(CLIP, OWNER, 'unknown-session')
+
+    expect(requests.map(request => [request.url.pathname, profileOf(request), sessionOf(request)])).toEqual([
+      ['/api/fs/read-text', 'default', null],
+      ['/api/fs/write-text', 'default', null],
+      ['/api/files/ticket', 'default', null]
+    ])
   })
 })
 

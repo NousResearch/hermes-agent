@@ -1,6 +1,6 @@
 import { fileUrlToNativePath, LOCAL_CONNECTION_ID } from '@hermes/shared'
 
-import { capabilityScoped, hermesApi, type OwnerScope } from '@/api/client'
+import { capabilityScoped, hermesApi, type OwnerScope, sessionFileOwnerScope } from '@/api/client'
 import type { HermesConnection } from '@/global'
 import { translateNow } from '@/i18n'
 import { desktopFsCacheKey, isReadFileErrorResult, readDesktopFileDataUrl } from '@/lib/desktop-fs'
@@ -247,15 +247,18 @@ export async function resolveMediaPlaybackSrc(path: string, owner?: OwnerScope, 
   if (window.hermesDesktop && ['audio', 'video'].includes(mediaKind(path))) {
     if (window.hermesDesktop.getGatewayFileStreamUrl) {
       const conn = $connection.get()
+      // A Docker agent's /workspace is its session's own sandbox. The session id goes only with
+      // the profile that owns it; with no known owner the clip names no session.
+      const session = sessionId ? sessionFileOwnerScope(sessionId) : null
+      const via = session ?? owner
 
       // A tile keeps its owner's profile for every ticket, renewals included, as its image reads do.
       return window.hermesDesktop.getGatewayFileStreamUrl({
-        connectionId: owner?.connectionId || conn?.connectionId,
+        connectionId: via?.connectionId || conn?.connectionId,
         // The gateway OS owns file-URI conversion, including drive letters and UNC hosts.
         path,
-        profile: owner?.profile || conn?.profile,
-        // A Docker agent's /workspace is its session's own sandbox.
-        ...(sessionId ? { sessionId } : {})
+        profile: via?.profile || conn?.profile,
+        ...(session ? { sessionId } : {})
       })
     }
 

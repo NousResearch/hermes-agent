@@ -24,6 +24,11 @@ BOT_CHAT_TITLE = "Bot Chat"
 _PEER_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _PROFILE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 
+# The @handle Bot Mode shows for a host's default profile, and the body of the 404 a peer's
+# /p/<profile>/ prefix middleware returns for a profile it does not serve (gateway/platforms/api_server.py).
+DEFAULT_PROFILE_HANDLE = "hermes"
+_UNKNOWN_PROFILE_ERROR = "Unknown or unconfigured profile"
+
 # One synchronous agent turn can legitimately take minutes.
 DM_TIMEOUT_S = 600
 LIST_TIMEOUT_S = 30
@@ -91,13 +96,38 @@ def _request(
 def _base_url(peer: dict, profile: str | None) -> str:
     url = str(peer.get("url") or "").rstrip("/")
     if profile:
-        # Multiplex mirror: same handlers, scoped to the named profile. The mirror is keyed by
-        # profile name, and Bot Mode shows a peer's default profile as @hermes (#118076); an
-        # older peer has no alias for it on its side.
-        if profile.lower() == "hermes":
-            profile = "default"
+        # Multiplex mirror: same handlers, scoped to the named profile.
         return f"{url}/p/{urllib.parse.quote(profile, safe='')}"
     return url
+
+
+def _peer_lacks_profile(exc: Exception) -> bool:
+    """True only for the peer's own "no such profile" verdict: the 404 its /p/<profile>/ prefix
+    middleware returns before any handler runs. A handler's 404 (unknown run or session) carries
+    ``{"error": {"message": ...}}`` and a transport failure is no verdict at all."""
+    if not isinstance(exc, urllib.error.HTTPError) or exc.code != 404:
+        return False
+    try:
+        body = json.loads(exc.read().decode("utf-8", "replace"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(body, dict) and body.get("error") == _UNKNOWN_PROFILE_ERROR
+
+
+def _resolve_base(peer: dict, profile: str | None, key: str) -> str:
+    """The mirror a target addresses. Bot Mode shows a peer's default profile as @hermes
+    (#118076), but a peer may also serve a real pre-reservation profile named ``hermes``, which
+    must keep winning — so ``/p/hermes`` is tried first and ``/p/default`` is used only when the
+    peer itself answers that it has no such profile (an older peer has no alias on its side)."""
+    base = _base_url(peer, profile)
+    if not profile or profile.lower() != DEFAULT_PROFILE_HANDLE:
+        return base
+    try:
+        _request(f"{base}/health", key)
+    except (urllib.error.URLError, TimeoutError, OSError, RuntimeError) as exc:
+        if _peer_lacks_profile(exc):
+            return _base_url(peer, "default")
+    return base
 
 
 def _find_bot_chat(base: str, key: str) -> str | None:
@@ -413,7 +443,7 @@ def cmd_peer(args) -> int:
     except (LookupError, PermissionError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
-    base = _base_url(peer, profile)
+    base = _resolve_base(peer, profile, key)
     if action in {"status", "stop"}:
         return _peer_run_ctl(args, action, peer_name, profile, base, key)
     message = _message_from_args(args)

@@ -41,9 +41,70 @@ def test_base_url_bare_and_profile():
     assert peer_cmd._base_url(peer, "researcher") == "http://spark.lan:8377/p/researcher"
 
 
-def test_base_url_addresses_the_default_handle_by_profile_name():
-    # Bot Mode shows a peer's default profile as @hermes; an older peer serves it only at /p/default (#118076).
-    assert peer_cmd._base_url({"url": "http://spark.lan:8377"}, "Hermes") == "http://spark.lan:8377/p/default"
+class _ProfilePeer(BaseHTTPRequestHandler):
+    """A peer whose /p/<profile>/ prefix answers like the real api_server middleware: a profile it
+    does not serve is a 404 ``{"error": "Unknown or unconfigured profile"}`` before any handler."""
+
+    served: set = set()
+    probe_status: int = 200
+    hits: list = []
+
+    def _answer(self):
+        _, _, profile, rest = (self.path.split("/", 3) + ["", "", "", ""])[:4]
+        type(self).hits.append(self.path)
+        if profile not in type(self).served:
+            return 404, {"error": "Unknown or unconfigured profile"}
+        if rest == "health":
+            return type(self).probe_status, {"status": "ok"}
+        if rest.startswith("api/sessions?"):
+            return 200, {"data": [{"id": f"bc_{profile}", "title": "Bot Chat"}]}
+        if rest.endswith("/chat"):
+            return 200, {"session_id": f"bc_{profile}", "message": {"content": f"from {profile}"}}
+        return 200, {"run_id": "run_1", "status": f"run in {profile}"}
+
+    def _reply(self):
+        self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        status, payload = self._answer()
+        body = json.dumps(payload).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    do_GET = do_POST = _reply
+
+    def log_message(self, *args):
+        pass
+
+
+@pytest.mark.parametrize("served,probe_status,expected", [
+    ({"default", "hermes"}, 200, "hermes"),   # a real legacy 'hermes' profile keeps precedence
+    ({"default"}, 200, "default"),            # the peer says it has none: the @hermes handle is its default
+    ({"default", "hermes"}, 503, "hermes"),   # a transient failure is no verdict, so never reroute
+])
+def test_hermes_handle_reaches_the_profile_the_peer_serves(monkeypatch, capsys, served, probe_status, expected):
+    """``box/hermes`` names the peer's real 'hermes' profile when it has one, and its default
+    profile (Bot Mode's @hermes handle, #118076) only when the peer answers it has no such profile;
+    dm, status and stop all address the same mirror."""
+    _ProfilePeer.served, _ProfilePeer.probe_status, _ProfilePeer.hits = served, probe_status, []
+    server = HTTPServer(("127.0.0.1", 0), _ProfilePeer)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"box": {"url": f"http://127.0.0.1:{server.server_port}"}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+    try:
+        replies = [
+            peer_cmd.cmd_peer(SimpleNamespace(peer_action="dm", target="box/hermes", message="hi", json=True)),
+            peer_cmd.cmd_peer(SimpleNamespace(peer_action="status", target="box/hermes", run_id="run_1", json=True)),
+            peer_cmd.cmd_peer(SimpleNamespace(peer_action="stop", target="box/hermes", run_id="run_1", json=True)),
+        ]
+    finally:
+        server.shutdown()
+    out = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert replies == [0, 0, 0]
+    assert [out[0]["reply"], out[1]["status"], out[2]["status"]] == [
+        f"from {expected}", f"run in {expected}", f"run in {expected}"]
+    assert {hit.split("/")[2] for hit in _ProfilePeer.hits if not hit.endswith("/health")} == {expected}
 
 
 # ── registry round-trip (isolated config) ────────────────────────────────────

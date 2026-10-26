@@ -15,23 +15,31 @@ from tools.process_registry_notifications import _format_async_delegation
 
 @pytest.mark.parametrize("outcome", ["denied", "timeout", "cancelled", "notify_failed", "blocked"])
 @pytest.mark.parametrize("batch", [False, True])
-def test_live_turn_to_completion(tmp_path, monkeypatch, outcome, batch):
+@pytest.mark.parametrize("tool_name", ["terminal", "execute_code"])
+def test_live_turn_to_completion(tmp_path, monkeypatch, outcome, batch, tool_name):
     monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **k: None)
     agent = _make_agent()
-    agent.valid_tool_names = {"terminal"}
-    agent.tools = [{"type": "function", "function": {"name": "terminal", "parameters": {"type": "object"}}}]
+    agent.valid_tool_names = {tool_name}
+    agent.tools = [{"type": "function", "function": {"name": tool_name, "parameters": {"type": "object"}}}]
+    arguments = {"command": "pwd"} if tool_name == "terminal" else {"code": "print('must not execute')"}
     agent.client.chat.completions.create.side_effect = [
-        _mock_response("", "tool_calls", [_mock_tool_call("terminal", '{"command":"pwd"}')]),
+        _mock_response("", "tool_calls", [_mock_tool_call(tool_name, json.dumps(arguments))]),
         _mock_response("done"),
     ]
     gate = approval._denied("Do NOT retry", pattern_key="test", description="test", outcome=outcome)
+    guard_target = ("tools.terminal_tool._check_all_guards" if tool_name == "terminal"
+                    else "tools.approval.check_execute_code_guard")
     with (
-        patch("tools.terminal_tool._check_all_guards", return_value=gate),
+        patch(guard_target, return_value=gate),
+        patch("tools.code_execution_tool.SANDBOX_AVAILABLE", True),
+        patch("tools.process_registry._is_supervised_gateway_process", return_value=False),
+        patch("tools.code_kernel.execute_in_session_kernel") as kernel,
         patch.object(agent, "_persist_session"),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
     ):
         result = agent.run_conversation("run the command")
+    kernel.assert_not_called()
     assert result.get("approval_outcome") == outcome
     assert result["failed"] is True
     assert agent.client.chat.completions.create.call_count == 1
@@ -46,7 +54,8 @@ def test_live_turn_to_completion(tmp_path, monkeypatch, outcome, batch):
     evt = process_registry.completion_queue.get(timeout=5)
     assert (evt["results"][0] if batch else evt)["approval_outcome"] == outcome
     text = _format_async_delegation(evt)
-    assert "Approval outcome:" in text
+    from agent.approval_outcomes import APPROVAL_OUTCOME_NOTICES
+    assert f"Approval outcome: {APPROVAL_OUTCOME_NOTICES[outcome]}" in text
     with sqlite3.connect(ad._db_path()) as db:
         row = db.execute("SELECT event_json FROM async_delegations WHERE delegation_id=?", (record["delegation_id"],)).fetchone()
     assert row is not None

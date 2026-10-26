@@ -1159,8 +1159,10 @@ def _memory_provider_init_kwargs(agent, platform) -> dict[str, Any]:
         "session_id": agent.session_id,
         "platform": platform or "cli",
         "hermes_home": str(get_hermes_home()),
-        # platform="cron" (scheduler) / "subagent" (delegate_task) → providers skip writes (MemoryProvider.initialize).
-        "agent_context": platform if platform in ("cron", "subagent") else "primary",
+        # platform="cron" (scheduler) / "subagent" (delegate_task) → providers skip writes (MemoryProvider.initialize);
+        # a fork that loads a provider only for the checkpoint gate names its scope (memory_agent_context).
+        "agent_context": getattr(agent, "memory_agent_context", None)
+        or (platform if platform in ("cron", "subagent") else "primary"),
     }
     if kwargs["platform"] == "cli":
         kwargs["warning_callback"] = agent._emit_warning
@@ -2125,7 +2127,7 @@ def init_agent(
     checkpoint_max_snapshots: int = 20, checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
     requested_provider: str | None = None, capabilities: Optional[dict[str, bool]] = None, cwd: Optional[str] = None,
-    side_agent: bool = False, memory_manager=None,
+    side_agent: bool = False, memory_manager=None, memory_agent_context: str | None = None,
     tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
 ):
     from agent.safe_worker_policy import safe_worker_enabled

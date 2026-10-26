@@ -134,6 +134,24 @@ def _refuse_checkpoint_required_on_plugin_context_engine(checkpoint_required: bo
     )
 
 
+def checkpoint_required_from_config() -> bool:
+    """Whether ``compression.checkpoint_required`` is armed, for sites that decide before an agent exists.
+
+    The fork sites need the answer before the child is built: the child arms the gate inside its own
+    init from the same ``load_config_readonly()`` call, so parent and child answer from one source and
+    a fork is given a provider exactly when it would refuse to compact without one. An unreadable
+    config reads as "not armed", matching ``init_agent``."""
+    from utils import is_truthy_value
+
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        compression = (load_config_readonly() or {}).get("compression") or {}
+    except Exception:  # health: allow BLE001 -- an unreadable config reads as not armed, like init_agent
+        return False
+    return isinstance(compression, dict) and is_truthy_value(compression.get("checkpoint_required"), default=False)
+
+
 _checkpoint_gate_warned: set[str] = set()
 
 

@@ -20,12 +20,13 @@ from tests.gateway.test_session_authorities_multiplex import _reserve_homes, _ru
 
 
 class _Socket:
-    """The browser end of one WebSocket: frames in, replies collected by id."""
+    """The browser end of one WebSocket: frames in, replies collected by id and in written order."""
 
     def __init__(self, authority):
         self.scope = {'hermes.session_authority': authority}
         self.inbound = asyncio.Queue()
         self.replies = {}
+        self.order = []
         self.arrived = asyncio.Event()
 
     async def accept(self, **_kw):
@@ -36,6 +37,7 @@ class _Socket:
             frame = json.loads(part)
             if 'id' in frame:
                 self.replies[frame['id']] = frame
+                self.order.append(frame['id'])
                 self.arrived.set()
 
     async def receive_text(self):
@@ -217,5 +219,54 @@ async def test_frames_held_for_a_starting_profile_still_park_the_reader(rig, mon
 
     rig.release.set()
     await asyncio.wait_for(rig.serving, 30)
-    answered = [await sock.reply(f'held-{n}', timeout=10) for n in range(flood)]
-    assert [reply['id'] for reply in answered] == [f'held-{n}' for n in range(flood)]
+    for n in range(flood):
+        await sock.reply(f'held-{n}', timeout=10)
+    # Written in arrival order, the frames the reader took only after the start ended included.
+    assert sock.order == [f'held-{n}' for n in range(flood)]
+
+
+@pytest.mark.asyncio
+async def test_a_frame_read_after_the_start_ends_still_queues_behind_the_held_frames(rig, monkeypatch):
+    """The start ended but its lane is still answering the frames held for it: a frame for that profile
+    read now joins the end of that queue instead of running on the serial lane ahead of them."""
+    from tui_gateway import ws as ws_mod
+
+    real_dispatch = ws_mod._dispatch_request
+    ran, first_held_running, first_held_may_finish = [], asyncio.Event(), asyncio.Event()
+
+    async def recording_dispatch(connection, req, method, transport):
+        ran.append(req.get('id'))
+        if req.get('id') == 'held-0':
+            first_held_running.set()
+            await asyncio.wait_for(first_held_may_finish.wait(), timeout=10)
+        return await real_dispatch(connection, req, method, transport)
+
+    monkeypatch.setattr(ws_mod, '_dispatch_request', recording_dispatch)
+    sock = await rig.connect()
+
+    def ping(request_id, **params):
+        sock.inbound.put_nowait({'jsonrpc': '2.0', 'id': request_id, 'method': 'ping', 'params': params})
+
+    ping('held-0', profile='beta')
+    ping('held-1', profile='beta')
+    ping('probe-held')  # the serial lane answers it only after it set both beta frames aside
+    await sock.reply('probe-held', timeout=10)
+    assert ran == ['probe-held']
+
+    rig.release.set()
+    await asyncio.wait_for(rig.serving, 30)
+    await asyncio.wait_for(first_held_running.wait(), 10)  # the lane drains: held-0 runs, held-1 waits
+    ping('late', profile='beta')
+    ping('probe-late')  # answered only after the serial lane took 'late'
+    await sock.reply('probe-late', timeout=10)
+    first_held_may_finish.set()
+    await sock.reply('late', timeout=10)
+
+    beta = ['held-0', 'held-1', 'late']
+    assert [request_id for request_id in ran if request_id in beta] == beta, ran
+    assert [request_id for request_id in sock.order if request_id in beta] == beta, sock.order
+    # Each ran on beta once it was served, not refused as a profile still starting or not served.
+    for request_id in beta:
+        error = sock.replies[request_id].get('error') or {}
+        assert error.get('message') != 'profile_mismatch', sock.replies[request_id]
+        assert (error.get('data') or {}).get('reason') != 'runtime_draining', sock.replies[request_id]

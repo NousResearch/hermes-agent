@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.helpers import cancel_task
+from gateway.platforms.helpers import normalize_bang_command
 from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms._shared import (
@@ -566,6 +567,9 @@ class MattermostAdapter(BasePlatformAdapter):
             message_text = self._apply_channel_gating(channel_id, message_text)
             if message_text is None:
                 return
+        # Mattermost clients execute built-in slash names (/status, /me, ...) and mobile
+        # blocks '/' posts outright (#25184); '!cmd' aliases reach the same commands.
+        message_text = normalize_bang_command(message_text)
         # Thread support: replies use root_id; in thread mode a top-level channel post is itself a valid root.
         thread_id = post.get("root_id") or None
         if not thread_id and self._reply_mode == "thread" and not is_dm and post_id:

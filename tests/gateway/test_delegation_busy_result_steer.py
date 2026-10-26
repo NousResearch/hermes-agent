@@ -50,10 +50,11 @@ def test_busy_result_rides_the_running_turns_tool_result_not_a_new_turn(steering
     assert settled == [("complete", "deleg_a")]
 
 
-def test_a_carry_that_lands_during_the_final_settle_is_still_settled(steering_runner):
+def test_a_carry_that_lands_during_the_final_settle_is_still_settled(steering_runner, monkeypatch):
     """run_turn settles while the agent slot is still held, so a delivery landing mid-settle sees
     that agent and registers a new carry; the final drain has to pick it up, not park its waiter."""
     from agent.background_results import attach_to_tool_tail, confirm_attached, offer
+    import gateway.run_notifications_busy_result as busy_result
     from gateway.run_notifications_busy_result import CarriedCompletion
 
     runner, adapter, agent, _registry, settled = steering_runner
@@ -61,11 +62,11 @@ def test_a_carry_that_lands_during_the_final_settle_is_still_settled(steering_ru
     assert asyncio.run(runner._deliver_completion_notification("subagent report", _async_event("deleg_a"))) is True
     confirm_attached(agent, attach_to_tool_tail(agent, [{"role": "tool", "tool_call_id": "c1", "content": "out"}]), True)
 
-    original = runner._settle_carried_completion
+    original = busy_result._settle_carried_completion
     landed = []
 
-    async def settle_and_land_another(carried, operation):
-        await original(carried, operation)
+    async def settle_and_land_another(mixin, carried, operation):
+        await original(mixin, carried, operation)
         if landed:
             return
         landed.append(True)
@@ -74,7 +75,7 @@ def test_a_carry_that_lands_during_the_final_settle_is_still_settled(steering_ru
         attached = attach_to_tool_tail(agent, [{"role": "tool", "tool_call_id": "c2", "content": "out"}])
         confirm_attached(agent, attached, True)
 
-    runner._settle_carried_completion = settle_and_land_another
+    monkeypatch.setattr(busy_result, "_settle_carried_completion", settle_and_land_another)
     asyncio.run(runner._settle_carried_completions(agent, final=True))
 
     assert settled == [("complete", "deleg_a"), ("complete", "deleg_b")]

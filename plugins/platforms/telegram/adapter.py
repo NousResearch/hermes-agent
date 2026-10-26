@@ -566,6 +566,157 @@ _POLLING_GENERATION_CONTEXT: ContextVar[Optional[int]] = ContextVar(
 )
 
 
+# Inbound rich_message rendering bounds. Bot API documents up to 16 levels of
+# block nesting; inline RichText nests independently. The cap keeps a malformed
+# or hostile payload from exhausting the interpreter stack.
+_RICH_INBOUND_MAX_DEPTH = 32
+
+
+def _rich_inline_to_text(value: Any, depth: int = 0) -> str:
+    """Render a Bot API ``RichText`` node to plain text.
+
+    ``RichText`` is a String, an Array of RichText, or a typed object
+    (``bold``, ``italic``, ``url``, ...) carrying its own nested ``text``.
+    Link destinations are kept as ``[text](url)`` so the agent can follow them.
+    """
+    if value is None or depth > _RICH_INBOUND_MAX_DEPTH:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(_rich_inline_to_text(item, depth + 1) for item in value)
+    if not isinstance(value, dict):
+        return ""
+    kind = value.get("type")
+    inner = _rich_inline_to_text(value.get("text"), depth + 1)
+    if kind == "url":
+        url = value.get("url") or ""
+        if not isinstance(url, str) or not url or inner == url:
+            return inner or (url if isinstance(url, str) else "")
+        return f"[{inner}]({url})" if inner else url
+    if kind == "code":
+        return f"`{inner}`" if inner else ""
+    if kind == "custom_emoji":
+        alt = value.get("alternative_text")
+        return alt if isinstance(alt, str) else ""
+    if kind == "mathematical_expression":
+        expr = value.get("expression")
+        return f"${expr}$" if isinstance(expr, str) and expr else ""
+    return inner
+
+
+_RICH_INBOUND_MEDIA_LABELS = {
+    "photo": "photo",
+    "video": "video",
+    "animation": "animation",
+    "audio": "audio",
+    "voice_note": "voice note",
+    "document": "document",
+    "map": "map",
+    "collage": "collage",
+    "slideshow": "slideshow",
+}
+
+
+def _rich_caption_to_text(caption: Any, depth: int) -> str:
+    """Render a ``RichBlockCaption`` (``text`` + optional ``credit``)."""
+    if isinstance(caption, dict) and ("text" in caption or "credit" in caption):
+        text = _rich_inline_to_text(caption.get("text"), depth + 1)
+        credit = _rich_inline_to_text(caption.get("credit"), depth + 1)
+        return f"{text} — {credit}" if text and credit else text or credit
+    return _rich_inline_to_text(caption, depth + 1)
+
+
+def _rich_blocks_to_lines(blocks: Any, depth: int = 0) -> List[str]:
+    """Render a list of Bot API ``RichBlock`` objects to plain-text lines.
+
+    Nested list items are indented two spaces per level; a list block's own
+    ``text`` and sibling ``blocks`` are kept after its items. Unknown block
+    types fall back to ``text`` + nested ``blocks`` so a future block type does
+    not silently lose content.
+    """
+    lines: List[str] = []
+    if not isinstance(blocks, list) or depth > _RICH_INBOUND_MAX_DEPTH:
+        return lines
+    indent = "  " * max(depth - 1, 0)
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        btype = str(block.get("type", "")).lower()
+        text = _rich_inline_to_text(block.get("text"), depth + 1)
+        credit = _rich_inline_to_text(block.get("credit"), depth + 1)
+
+        if btype == "list":
+            items = block.get("items")
+            if isinstance(items, list):
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    label = str(item.get("label") or "").strip()
+                    if item.get("has_checkbox"):
+                        mark = "[x]" if item.get("is_checked") else "[ ]"
+                        label = f"{label} {mark}".strip()
+                    body = _rich_blocks_to_lines(item.get("blocks"), depth + 1)
+                    if body:
+                        child_indent = indent + "  "
+                        lines.append(f"{indent}{label} {body[0]}".strip())
+                        lines.extend(f"{child_indent}{line}" for line in body[1:])
+                    elif label:
+                        lines.append(f"{indent}{label}")
+            # Fall through: keep the list block's own text / sibling blocks.
+        elif btype == "heading":
+            size = block.get("size")
+            level = size if isinstance(size, int) and 1 <= size <= 6 else 2
+            if text.strip():
+                lines.append(f"{indent}{'#' * level} {text}")
+            text = ""
+        elif btype == "pre":
+            language = block.get("language")
+            fence = f"```{language}" if isinstance(language, str) else "```"
+            lines.extend([indent + fence, *(indent + ln for ln in text.splitlines()), indent + "```"])
+            text = ""
+        elif btype == "divider":
+            lines.append(indent + "---")
+        elif btype == "mathematical_expression":
+            expr = block.get("expression")
+            if isinstance(expr, str) and expr:
+                lines.append(f"{indent}$${expr}$$")
+        elif btype == "table":
+            rows = block.get("cells")
+            for row in rows if isinstance(rows, list) else []:
+                if not isinstance(row, list):
+                    continue
+                cells = [
+                    _rich_inline_to_text(cell.get("text"), depth + 1).replace("\n", " ")
+                    for cell in row
+                    if isinstance(cell, dict)
+                ]
+                if any(cells):
+                    lines.append(indent + "| " + " | ".join(cells) + " |")
+            caption = _rich_caption_to_text(block.get("caption"), depth)
+            if caption:
+                lines.append(indent + caption)
+        elif btype in ("blockquote", "pullquote", "expandable_blockquote"):
+            quoted = text.splitlines() + _rich_blocks_to_lines(block.get("blocks"), depth + 1)
+            if credit:
+                quoted.append(f"— {credit}")
+            lines.extend(f"{indent}> {ln}" if ln.strip() else f"{indent}>" for ln in quoted)
+            continue
+        elif btype == "details":
+            summary = _rich_inline_to_text(block.get("summary"), depth + 1)
+            if summary.strip():
+                lines.append(indent + summary)
+        elif btype in _RICH_INBOUND_MEDIA_LABELS:
+            label = _RICH_INBOUND_MEDIA_LABELS[btype]
+            caption = _rich_caption_to_text(block.get("caption"), depth)
+            lines.append(f"{indent}[{label}: {caption}]" if caption else f"{indent}[{label}]")
+
+        if text.strip():
+            lines.extend(indent + ln for ln in text.splitlines())
+        lines.extend(_rich_blocks_to_lines(block.get("blocks"), depth + 1))
+    return lines
+
+
 class _PollingLifecycleAbort(RuntimeError):
     """Internal control flow for polling startup fenced by teardown."""
 
@@ -9768,40 +9919,16 @@ class TelegramAdapter(BasePlatformAdapter):
             if not isinstance(rich, dict):
                 return None
 
-            def _render(blocks: Any, depth: int = 0) -> List[str]:
-                lines: List[str] = []
-                if not isinstance(blocks, list):
-                    return lines
-                indent = "  " * max(depth - 1, 0)
-                for block in blocks:
-                    if not isinstance(block, dict):
-                        continue
-                    btype = str(block.get("type", "")).lower()
-                    if btype == "list":
-                        items = block.get("items")
-                        if isinstance(items, list):
-                            for item in items:
-                                if not isinstance(item, dict):
-                                    continue
-                                label = str(item.get("label") or "").strip()
-                                body = _render(item.get("blocks"), depth + 1)
-                                if body:
-                                    child_indent = indent + "  "
-                                    lines.append(f"{indent}{label} {body[0]}".strip())
-                                    lines.extend(
-                                        f"{child_indent}{line}" for line in body[1:]
-                                    )
-                                elif label:
-                                    lines.append(f"{indent}{label}")
-                        # Fall through so a future list block carrying its own
-                        # text or sibling blocks does not silently lose content.
-                    text = block.get("text")
-                    if isinstance(text, str) and text.strip():
-                        lines.append(indent + text)
-                    lines.extend(_render(block.get("blocks"), depth + 1))
-                return lines
-
-            rendered = "\n".join(_render(rich.get("blocks"))).strip()
+            rendered = "\n".join(_rich_blocks_to_lines(rich.get("blocks"))).strip()
+            if not rendered:
+                blocks = rich.get("blocks")
+                block_types = sorted({
+                    str(block.get("type")) for block in blocks if isinstance(block, dict)
+                }) if isinstance(blocks, list) else []
+                logger.warning(
+                    "[Telegram] rich_message inbound rendered empty; dropping (block types: %s)",
+                    ", ".join(block_types) or "none",
+                )
             return rendered or None
         except Exception:
             logger.warning("rich_message inbound recovery failed", exc_info=True)

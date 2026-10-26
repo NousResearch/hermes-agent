@@ -266,3 +266,103 @@ class TestRichMessageInboundFilter:
         f = self._filter()
         msg = Message(message_id=1, date=0, chat={"id": 1, "type": "private"})
         assert f(msg) is False
+
+
+def _recover(blocks):
+    msg = Message(message_id=1, date=0, chat={"id": 1, "type": "private"},
+                  api_kwargs={"rich_message": {"blocks": blocks}})
+    return _make_adapter()._recover_rich_message_inbound_text(msg)
+
+
+def _url(text, url):
+    return {"type": "url", "text": text, "url": url}
+
+
+class TestNestedRichText:
+    """RichText is a String, an Array of RichText, or a typed object."""
+
+    def test_heading_and_list_of_links_keep_text_and_destinations(self):
+        out = _recover([
+            {"type": "heading", "size": 2, "text": ["🔥 ", {"type": "bold", "text": "Main"}]},
+            {"type": "list", "items": [
+                {"label": "1.", "blocks": [{"type": "paragraph", "text": [
+                    _url("Six questions to a cloud provider", "https://example.com/a1"),
+                    " — ", {"type": "italic", "text": "CNews.Ru"}]}]},
+                {"label": "2.", "blocks": [{"type": "paragraph", "text": [
+                    _url("Certified cloud", "https://example.com/a2")]}]},
+            ]},
+        ])
+        assert out.splitlines() == [
+            "## 🔥 Main",
+            "1. [Six questions to a cloud provider](https://example.com/a1) — CNews.Ru",
+            "2. [Certified cloud](https://example.com/a2)",
+        ]
+
+    def test_object_paragraph_text(self):
+        assert _recover([{"type": "paragraph", "text": {"type": "bold", "text": "bold only"}}]) == "bold only"
+
+    def test_url_equal_to_text_is_not_duplicated(self):
+        assert _recover([{"type": "paragraph", "text": _url("https://x.test", "https://x.test")}]) == "https://x.test"
+
+    def test_inline_leaf_types(self):
+        out = _recover([{"type": "paragraph", "text": [
+            {"type": "code", "text": "x = 1"}, " ",
+            {"type": "custom_emoji", "custom_emoji_id": "1", "alternative_text": "🙂"}, " ",
+            {"type": "mathematical_expression", "expression": "x^2"},
+        ]}])
+        assert out == "`x = 1` 🙂 $x^2$"
+
+    def test_structural_blocks(self):
+        out = _recover([
+            {"type": "table", "cells": [[{"text": "a", "is_header": True},
+                                         {"text": {"type": "bold", "text": "b"}}]]},
+            {"type": "blockquote", "blocks": [{"type": "paragraph", "text": "quoted"}],
+             "credit": "author"},
+            {"type": "details", "summary": "summary", "blocks": [{"type": "paragraph", "text": "inside"}]},
+            {"type": "pre", "language": "py", "text": "x = 1"},
+            {"type": "photo", "photo": [], "caption": {"text": ["shot ", {"type": "italic", "text": "here"}]}},
+        ])
+        assert out.splitlines() == [
+            "| a | b |",
+            "> quoted",
+            "> — author",
+            "summary",
+            "inside",
+            "```py",
+            "x = 1",
+            "```",
+            "[photo: shot here]",
+        ]
+
+    def test_checkbox_items(self):
+        out = _recover([{"type": "list", "items": [
+            {"label": "-", "has_checkbox": True, "is_checked": True,
+             "blocks": [{"type": "paragraph", "text": "done"}]},
+            {"label": "-", "has_checkbox": True,
+             "blocks": [{"type": "paragraph", "text": "todo"}]},
+        ]}])
+        assert out.splitlines() == ["- [x] done", "- [ ] todo"]
+
+    def test_unknown_block_type_keeps_rich_text_and_children(self):
+        out = _recover([{"type": "future_block", "text": [{"type": "bold", "text": "own"}],
+                         "blocks": [{"type": "paragraph", "text": "child"}]}])
+        assert out.splitlines() == ["own", "child"]
+
+    def test_recursion_is_bounded(self):
+        inline = "deep"
+        for _ in range(5000):
+            inline = {"type": "bold", "text": [inline]}
+        blocks = [{"type": "paragraph", "text": "top"}]
+        nested = blocks
+        for _ in range(5000):
+            child = [{"type": "blockquote", "blocks": []}]
+            nested[0].setdefault("blocks", child)
+            nested = child
+        out = _recover([{"type": "paragraph", "text": [inline, "tail"]}, *blocks])
+        assert out.splitlines()[:2] == ["tail", "top"]
+
+    def test_empty_render_logs_warning(self, caplog):
+        with caplog.at_level("WARNING"):
+            assert _recover([{"type": "divider_like_future", "items": "x"}]) is None
+        assert "rendered empty" in caplog.text
+        assert "divider_like_future" in caplog.text

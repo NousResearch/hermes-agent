@@ -83,6 +83,11 @@ def _finite_viewer_turn() -> bool:
     return finite_turn_required() is True
 
 
+def _keep_rationale(previous: str, text: str) -> str:
+    """Latest non-empty interim commentary, keeping ``previous`` when ``text`` is blank."""
+    return str(text or "").strip() or previous
+
+
 def _persisted_turn(agent, agent_history, result, compressions) -> dict | None:
     """``message.complete.persisted_turn`` for this turn, the receipt the TUI gateway's own turns
     publish: clients bind the streamed reply to its stored row instead of comparing words. The
@@ -189,6 +194,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
     def __init__(self, runner: GatewayRunner, ctx: TurnContext) -> None:
         self._runner = runner
         self._ctx = ctx
+        # Latest interim assistant commentary. Displayed on the approval prompt only.
+        self._last_assistant_rationale = ""
         from gateway.session_authorities import active_authority
         authority = active_authority(runner)
         if authority is not None:
@@ -241,6 +248,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # delivery, or a final that arrives as commentary (codex app-server) suppresses the reply.
         want_interim_messages = (bool(ctx.interim_assistant_messages_enabled) and not ctx.scheduled_heartbeat
                                  and not held and not _finite_viewer_turn())
+        _last_assistant_rationale = ""
         if want_stream_deltas or want_interim_messages:
             try:
                 from gateway.stream_consumer import GatewayStreamConsumer
@@ -304,6 +312,11 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                     raise _NoStreamConsumer()
 
         def interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
+            nonlocal _last_assistant_rationale
+            # Keep the latest non-empty commentary even when this chunk is not shown. Approval
+            # prompts quote it so the user can see why the command was requested.
+            _last_assistant_rationale = _keep_rationale(_last_assistant_rationale, text)
+            self._last_assistant_rationale = _last_assistant_rationale
             if not ctx._run_still_current():
                 return
             unseen = False
@@ -708,8 +721,12 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         adapter.pause_typing_for_chat(ctx._status_chat_id)
         self._close_native_stream_boundary("Approval")
         # Redact credentials before display: the raw command string can carry secrets. Both the button and plain-text paths use this value.
-        cmd = _redact_approval_command(approval_data.get("command", ""))
+        cmd = approval_data.get("command", "")
+        cmd = _redact_approval_command(cmd)
         desc = approval_data.get("description") or ea_default_reason_text()
+        # Same redaction as the command. Display-only; it does not satisfy the approval.
+        _rationale = self._last_assistant_rationale
+        _rationale = _redact_approval_command(_rationale)
         flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
         # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
         if _renders_exec_approval_buttons(type(adapter)):
@@ -717,7 +734,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 fut = self._schedule(
                     adapter.send_exec_approval(
                         chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
-                        description=desc, metadata=ctx._status_thread_metadata, **flags,
+                        description=desc, metadata=ctx._status_thread_metadata,
+                        contextual_reason=_rationale, **flags,
                     ),
                     "send_exec_approval scheduling error",
                 )
@@ -776,7 +794,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 logger.warning("Button-based approval failed, falling back to text: %s", e)
         # Plain-text prompt with the adapter's typed prefix (e.g. `!approve`): typed "/" is blocked
         # in Slack threads and reserved by Matrix clients.
-        msg = _format_exec_approval_fallback(cmd, desc, getattr(adapter, "typed_command_prefix", "/"), **flags)
+        msg = _format_exec_approval_fallback(
+            cmd, desc, getattr(adapter, "typed_command_prefix", "/"),
+            contextual_reason=_rationale, **flags)
         try:
             # Mark as approval prompt: WeCom routes it through the control lane and Telegram pushes it
             # in "important" mode (#132516). Never ``notify`` — A2A reads that as the turn-final reply.

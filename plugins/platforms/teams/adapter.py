@@ -694,6 +694,11 @@ class TeamsAdapter(BasePlatformAdapter):
                 title=label, verb="hermes_approve",
                 data={**btn_data_base, "hermes_action": self._EA_CARD_ACTIONS[choice]}, **kw))
         body = _approval_body(self._truncate_preview(prompt.command, self._EA_CMD_BUDGET), prompt.description, always=True)
+        rationale = str(prompt.contextual_reason or "").strip()
+        if len(rationale) > 1500:
+            rationale = rationale[:1497] + "..."
+        if rationale:
+            body.insert(1, TextBlock(text=rationale, wrap=True))
         body.append(TextBlock(text=format_approval_deadline_line(approval_timeout_seconds()), wrap=True))
         if prompt.smart_denied:
             body.append(TextBlock(text=self._EA_SMART_DENY_LINE.strip(), wrap=True))

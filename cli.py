@@ -899,15 +899,21 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         verbose: Optional[bool] = None,
         compact: bool = False,
         resume: str | None = None,
+        session_id: str | None = None,
         checkpoints: bool = False,
         pass_session_id: bool = False,
         ignore_rules: bool = False,
     ):
-        """CLI args win over config; ``reasoning`` is per-run only; ``resume`` restores history from SQLite."""
+        """CLI args win over config; ``reasoning`` is per-run only; ``resume`` restores history from SQLite.
+
+        ``session_id`` starts a FRESH session with exactly that id (chat ``--session-id``; the id is
+        the routing key external orchestrators pre-register). Mutually exclusive with ``resume`` —
+        ``_init_runtime_state`` raises ValueError if both are set.
+        """
         self._init_display_options(verbose, compact)
         self._init_model_routing(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget,
                                  checkpoints, pass_session_id, ignore_rules)
-        self._init_runtime_state(resume)
+        self._init_runtime_state(resume, session_id)
 
 
     def _claim_active_session(self, surface: str = "cli", *, stderr: bool = False) -> bool:
@@ -1512,7 +1518,7 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             relaunch(self._pending_relaunch, preserve_inherited=False)
 
 
-def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget, verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills):
+def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget, verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills, session_id=None):
     """Resolve the toolset list (explicit / coding posture / platform default), construct HermesCLI, and start the background skills preload."""
     toolsets_list = None
     if isinstance(toolsets, str) and toolsets:
@@ -1547,6 +1553,7 @@ def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url
             verbose=verbose,
             compact=compact,
             resume=resume,
+            session_id=session_id,
             checkpoints=checkpoints,
             pass_session_id=pass_session_id,
             ignore_rules=ignore_rules,
@@ -1684,6 +1691,7 @@ def main(
     list_toolsets: bool = False,
     gateway: bool = False,
     resume: str | None = None,
+    session_id: str | None = None,
     worktree: bool = False,
     w: bool = False,
     checkpoints: bool = False,
@@ -1716,6 +1724,9 @@ def main(
         list_tools: List available tools and exit
         list_toolsets: List available toolsets and exit
         resume: Resume a previous session by its ID (e.g., 20260225_143052_a1b2c3)
+        session_id: Start a FRESH session with exactly this session ID (chat --session-id;
+            mutually exclusive with resume; shape + conflict re-validated in HermesCLI so
+            direct callers get the same contract as the hermes parser).
         worktree: Run in an isolated git worktree (for parallel agents). Alias: -w
         w: Shorthand for --worktree
     
@@ -1758,7 +1769,8 @@ def main(
             raise ValueError("--format stream-json requires -q/--query")
         quiet = True
     cli = _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget,
-                               verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills)
+                               verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills,
+                               session_id=session_id)
 
     # Join the background worktree creation before anything consumes TERMINAL_CWD.
     # A requested worktree whose setup failed aborts: never silently run without isolation.

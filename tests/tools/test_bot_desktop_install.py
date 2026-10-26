@@ -244,6 +244,45 @@ def _alive(pid: int) -> bool:
     return psutil.pid_exists(pid)
 
 
+def test_dnf_host_missing_fedora_packages_aborts_before_the_privileged_run(monkeypatch):
+    """#136688: the dnf branch serves the Fedora package list to every host with a dnf binary; on
+    Amazon Linux 2023 those names do not resolve and the privileged dnf run died opaquely after the
+    user had already said yes. The preflight names the failing packages and aborts first."""
+    import subprocess
+
+    monkeypatch.setattr(runtime, "package_manager", lambda: "dnf")
+    monkeypatch.setattr(runtime, "install_command", lambda: "sudo dnf install -y tigervnc-x11-server")
+    probe = subprocess.CompletedProcess((), 1, stdout="Last metadata expiration check: 0:01:00 ago.\n",
+                                        stderr="Error: No matching Packages found for tigervnc-x11-server\n")
+    monkeypatch.setattr(install.subprocess, "run", lambda *a, **k: probe)
+    monkeypatch.setattr(install, "_sudo_nopasswd", lambda: pytest.fail("sudo probe reached despite preflight abort"))
+    monkeypatch.setattr(install.subprocess, "Popen", lambda *a, **k: pytest.fail("package manager spawned"))
+    lines: list[str] = []
+    code = install.install_packages(ask_password=lambda: pytest.fail("password asked despite preflight abort"),
+                                    on_line=lines.append)
+    assert code == install.PREFLIGHT_UNAVAILABLE
+    assert any("tigervnc-x11-server" in line for line in lines), lines
+    assert any("Fedora-family host" in line for line in lines), lines
+
+
+def test_dnf_preflight_probe_failure_does_not_block_the_install(monkeypatch):
+    """A repo-cache refresh that times out or an offline host is not evidence the packages are missing:
+    only an explicit no-match aborts; a failed probe falls through to the normal install path."""
+    import subprocess
+
+    monkeypatch.setattr(runtime, "package_manager", lambda: "dnf")
+    monkeypatch.setattr(runtime, "install_command", lambda: "sudo dnf install -y tigervnc-x11-server")
+
+    def boom(*a, **k):
+        raise subprocess.TimeoutExpired(["dnf"], 1)
+
+    monkeypatch.setattr(install.subprocess, "run", boom)
+    monkeypatch.setattr(install, "_sudo_nopasswd", lambda: True)
+    monkeypatch.setattr(install, "_run", lambda *a, **k: 0)
+    code = install.install_packages(ask_password=lambda: "", on_line=lambda _l: None)
+    assert code == 0
+
+
 def test_install_slot_is_held_across_processes(tmp_path):
     """The gateway (Install card) and the CLI (`screen install`) are separate processes on one host: the
     single-flight must be a file lock in the profile's state dir, not only the in-process set."""

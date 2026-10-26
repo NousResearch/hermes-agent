@@ -191,6 +191,7 @@ def test_restored_notifications_leave_through_the_recorded_bot_or_not_at_all(mux
 
     # the recorded bot is down: nothing is admitted or sent, and the default bot never stands in
     r._profile_adapters["team_b"] = {}
+    r._profile_bot_platforms = {"team_b": {Platform.TELEGRAM}}
     r._profile_failed_platforms = {"team_b": {Platform.TELEGRAM: {}}}
     assert r._resolve_injection_adapter("telegram", r._build_process_event_source(via_team_b)) is None
     assert asyncio.run(r._inject_watch_notification("done", via_team_b)) is False

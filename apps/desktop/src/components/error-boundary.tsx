@@ -3,6 +3,7 @@ import { Component, type ErrorInfo, type ReactNode } from 'react'
 import { Button } from '@/components/ui/button'
 import { ErrorState } from '@/components/ui/error-state'
 import { useI18n } from '@/i18n'
+import { requestSendDiagnostics } from '@/store/send-diagnostics'
 
 export interface ErrorBoundaryFallbackProps {
   error: Error
@@ -24,10 +25,18 @@ interface ErrorBoundaryState {
 // the root. Retry only that exact transient error class, never arbitrary render
 // failures, and cap retries so a persistent failure still exposes the fallback.
 const ASSISTANT_UI_LOOKUP_ERROR = /(useClientLookup|tapClient(Lookup|Resource)).*out of bounds/
+// Vendor React throws this when portal teardown races a host subtree swap
+// (Radix menus/dialogs unmounting mid-commit — #98654, also seen in #41693).
+// The fiber graph settles once the swap completes, so a scheduled re-render
+// self-heals. Unlike the assistant-ui class, the throw comes from React
+// itself inside whatever boundary hosts the portal, so every boundary — not
+// just the root — gets the same capped recovery.
+const PORTAL_UNMOUNT_ERROR = /^Tried to unmount a fiber (?:that is already|that was not) unmounted/u
 const MAX_AUTO_RECOVERIES = 3
 const AUTO_RECOVERY_WINDOW_MS = 5_000
 
 const isTransientAssistantUiLookupError = (error: Error): boolean => ASSISTANT_UI_LOOKUP_ERROR.test(error.message)
+const isTransientPortalUnmountError = (error: Error): boolean => PORTAL_UNMOUNT_ERROR.test(error.message)
 
 export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   state: ErrorBoundaryState = { error: null }
@@ -70,8 +79,12 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
 
     this.props.onError?.(error, info)
 
-    if (this.props.label === 'root' && isTransientAssistantUiLookupError(error) && this.takeAutoRecoveryAttempt()) {
-      console.warn(`${tag} auto-recovering from assistant-ui lookup render race`, error.message)
+    const assistantUiLookupRace = this.props.label === 'root' && isTransientAssistantUiLookupError(error)
+    const portalTeardownRace = isTransientPortalUnmountError(error)
+
+    if ((assistantUiLookupRace || portalTeardownRace) && this.takeAutoRecoveryAttempt()) {
+      const race = portalTeardownRace ? 'portal teardown' : 'assistant-ui lookup'
+      console.warn(`${tag} auto-recovering from ${race} render race`, error.message)
       this.autoRecoveryPending = true
       this.scheduleAutoRecovery()
     }
@@ -143,10 +156,27 @@ function RootErrorFallback({ error, reset }: ErrorBoundaryFallbackProps) {
   const { t } = useI18n()
 
   return (
-    <div className="fixed inset-0 z-(--z-crash) grid place-items-center bg-(--ui-chat-surface-background) p-6">
+    <div
+      className="fixed inset-0 z-(--z-crash) grid place-items-center bg-(--ui-chat-surface-background) p-6"
+      // Masks a crashed app — must stay filled under window glass. Contract:
+      // `[data-glass-opaque]` in styles.css.
+      data-glass-opaque=""
+    >
       <ErrorState
         className="w-full max-w-[28rem]"
-        description={error.message || t.errors.boundaryDesc}
+        description={
+          <>
+            {t.errors.boundaryDesc}
+            {error.message ? (
+              <details className="mt-2 text-left text-xs text-muted-foreground">
+                <summary className="cursor-pointer select-none text-center">{t.errors.boundaryDetails}</summary>
+                <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap wrap-break-word font-mono text-[0.6875rem]">
+                  {error.message}
+                </pre>
+              </details>
+            ) : null}
+          </>
+        }
         title={t.errors.boundaryTitle}
       >
         <Button className="font-semibold" onClick={reset} size="lg">
@@ -157,6 +187,9 @@ function RootErrorFallback({ error, reset }: ErrorBoundaryFallbackProps) {
         </Button>
         <Button onClick={() => void window.hermesDesktop?.revealLogs()?.catch(() => undefined)} variant="text">
           {t.errors.openLogs}
+        </Button>
+        <Button onClick={() => requestSendDiagnostics(error.stack || error.message)} variant="text">
+          {t.errors.sendDiagnostics}
         </Button>
       </ErrorState>
     </div>

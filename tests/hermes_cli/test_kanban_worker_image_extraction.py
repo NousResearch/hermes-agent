@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 from agent.image_routing import (
     build_native_content_parts,
     extract_image_refs,
@@ -46,7 +47,7 @@ def kanban_home(tmp_path: Path, monkeypatch):
 
 
 def _add_task_with_body(body: str, *, title: str = "Look at this") -> str:
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         task_id = kb.create_task(
             conn,
@@ -61,7 +62,7 @@ def _add_task_with_body(body: str, *, title: str = "Look at this") -> str:
 
 
 def _read_body(task_id: str) -> str:
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         task = kb.get_task(conn, task_id)
         return (task.body if task is not None else "") or ""

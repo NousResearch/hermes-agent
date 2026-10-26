@@ -13,7 +13,7 @@ import { AlertTriangle, Save } from '@/lib/icons'
 import { resolveProfileColor } from '@/lib/profile-color'
 import { normalize } from '@/lib/text'
 import { notify, notifyError } from '@/store/notifications'
-import { $profileColors, refreshProfiles } from '@/store/profile'
+import { $profileColors, profileLabel, refreshProfiles } from '@/store/profile'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import {
@@ -133,7 +133,9 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
                   key={profile.name}
                   menuItems={
                     profile.is_default
-                      ? []
+                      ? // Renaming the default profile sets a presentation-only
+                        // display name (the canonical id stays "default").
+                        [{ icon: 'edit', label: p.renameMenu, onSelect: () => setPendingRename(profile) }]
                       : [
                           { icon: 'edit', label: p.renameMenu, onSelect: () => setPendingRename(profile) },
                           {
@@ -162,6 +164,7 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
 
       <RenameProfileDialog
         currentName={pendingRename?.name ?? ''}
+        isDefault={pendingRename?.is_default ?? false}
         onClose={() => setPendingRename(null)}
         onRenamed={selectAndRefresh}
         open={pendingRename !== null}
@@ -212,10 +215,10 @@ function ProfileRow({
         />
       }
       menuItems={menuItems}
-      menuLabel={profile.name}
+      menuLabel={profileLabel(profile)}
       onSelect={onSelect}
       rowKey={profile.name}
-      title={profile.name}
+      title={profileLabel(profile)}
     />
   )
 }
@@ -229,7 +232,7 @@ function ProfileDetail({ profile }: { profile: ProfileInfo }) {
       <header className="space-y-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <h3 className="text-[0.95rem] font-semibold tracking-tight text-foreground">{profile.name}</h3>
+            <h3 className="text-[0.95rem] font-semibold tracking-tight text-foreground">{profileLabel(profile)}</h3>
             {profile.is_default && <PanelPill tone="good">{p.defaultBadge}</PanelPill>}
             {profile.has_env && <PanelPill tone="muted">.env</PanelPill>}
           </div>
@@ -269,6 +272,7 @@ function SoulEditor({ profileName }: { profileName: string }) {
   const p = t.profiles
   const [content, setContent] = useState('')
   const [original, setOriginal] = useState('')
+  const [missing, setMissing] = useState(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<null | string>(null)
@@ -281,6 +285,7 @@ function SoulEditor({ profileName }: { profileName: string }) {
     setError(null)
     setContent('')
     setOriginal('')
+    setMissing(false)
 
     void (async () => {
       try {
@@ -289,6 +294,7 @@ function SoulEditor({ profileName }: { profileName: string }) {
         if (requestRef.current === profileName) {
           setContent(soul.content)
           setOriginal(soul.content)
+          setMissing(soul.exists === false)
         }
       } catch (err) {
         if (requestRef.current === profileName) {
@@ -311,6 +317,7 @@ function SoulEditor({ profileName }: { profileName: string }) {
     try {
       await updateProfileSoul(profileName, content)
       setOriginal(content)
+      setMissing(false)
       notify({ kind: 'success', title: p.soulSaved, message: profileName })
     } catch (err) {
       setError(err instanceof Error ? err.message : p.failedSaveSoul)
@@ -324,7 +331,7 @@ function SoulEditor({ profileName }: { profileName: string }) {
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <div>
           <PanelSectionLabel className="text-[0.7rem] tracking-[0.14em]">SOUL.md</PanelSectionLabel>
-          <p className="text-xs text-muted-foreground">{p.soulDesc}</p>
+          <p className="text-xs text-muted-foreground">{missing ? p.soulMissing : p.soulDesc}</p>
         </div>
         {dirty && <span className="text-[0.65rem] text-muted-foreground">{p.unsavedChanges}</span>}
       </div>

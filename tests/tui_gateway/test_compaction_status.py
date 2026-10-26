@@ -1,9 +1,9 @@
-"""Auto-compaction status re-tagging for the desktop "Summarizing…" indicator.
+"""Auto-compaction status re-tagging for TUI/desktop summarizing indicators.
 
 Auto-compaction reaches the gateway as a generic ``lifecycle`` status. The
-gateway re-tags it as ``kind="compacting"`` so drivers (the desktop app) can
-show an explicit summarizing indicator instead of the transcript appearing to
-silently reset mid-turn.
+gateway re-tags in-progress lines as ``kind="compacting"`` so drivers can
+show an explicit summarizing indicator instead of the turn looking hung
+(#97239). The marker-only match missed idle/preflight/retry wording.
 """
 
 from __future__ import annotations
@@ -51,9 +51,55 @@ def test_compaction_lifecycle_is_retagged(server, monkeypatch):
     assert events == [{"kind": "compacting", "text": COMPACTION_STATUS}]
 
 
+def test_idle_compaction_lifecycle_is_retagged(server, monkeypatch):
+    from agent.conversation_compression import IDLE_COMPACTION_STATUS_TEMPLATE
+
+    events = _capture(server, monkeypatch)
+    text = IDLE_COMPACTION_STATUS_TEMPLATE.format(idle_seconds=747, tokens=44_579)
+    server._status_update("sid", "lifecycle", text)
+
+    assert events == [{"kind": "compacting", "text": text}]
+
+
+def test_preflight_compaction_lifecycle_is_retagged(server, monkeypatch):
+    from agent.conversation_compression import PREFLIGHT_COMPRESSION_STATUS_TEMPLATE
+
+    events = _capture(server, monkeypatch)
+    text = PREFLIGHT_COMPRESSION_STATUS_TEMPLATE.format(
+        tokens=120_000, threshold=100_000
+    )
+    server._status_update("sid", "lifecycle", text)
+
+    assert events == [{"kind": "compacting", "text": text}]
+
+
+def test_compaction_done_is_not_retagged_as_compacting(server, monkeypatch):
+    from agent.conversation_compression import COMPACTION_DONE_STATUS
+
+    events = _capture(server, monkeypatch)
+    server._status_update("sid", "lifecycle", COMPACTION_DONE_STATUS)
+    assert events[0]["kind"] == "lifecycle"
+
+    events.clear()
+    server._status_update("sid", "compacted", COMPACTION_DONE_STATUS)
+    assert events[0]["kind"] == "compacted"
+
+
 def test_other_lifecycle_status_stays_lifecycle(server, monkeypatch):
     events = _capture(server, monkeypatch)
     server._status_update("sid", "lifecycle", "❌ Rate limited after 5 retries")
+
+    assert events[0]["kind"] == "lifecycle"
+
+
+def test_overflow_blocked_warning_stays_lifecycle(server, monkeypatch):
+    from agent.conversation_compression import CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE
+
+    events = _capture(server, monkeypatch)
+    text = CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(
+        tokens=85_000, threshold=72_000, reason="cooldown:30"
+    )
+    server._status_update("sid", "lifecycle", text)
 
     assert events[0]["kind"] == "lifecycle"
 
@@ -65,3 +111,24 @@ def test_manual_compressing_kind_is_preserved(server, monkeypatch):
     assert events[0]["kind"] == "compressing"
 
 
+def test_is_compaction_progress_status_covers_routine_in_progress_lines():
+    from agent.conversation_compression import (
+        COMPACTION_DONE_STATUS,
+        CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE,
+        ROUTINE_COMPRESSION_STATUS_SAMPLES,
+        is_compaction_progress_status,
+    )
+
+    for message in ROUTINE_COMPRESSION_STATUS_SAMPLES:
+        if message == COMPACTION_DONE_STATUS:
+            assert is_compaction_progress_status(message) is False
+        else:
+            assert is_compaction_progress_status(message) is True, message
+
+    assert is_compaction_progress_status(None) is False
+    assert is_compaction_progress_status("") is False
+    assert is_compaction_progress_status("❌ Rate limited after 5 retries") is False
+    overflow = CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(
+        tokens=85_000, threshold=72_000, reason="ineffective"
+    )
+    assert is_compaction_progress_status(overflow) is False

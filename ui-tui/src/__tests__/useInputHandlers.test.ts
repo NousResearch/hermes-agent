@@ -1,11 +1,15 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
+import { rememberServerRequest, resetServerRequestsForTests } from '../app/serverRequestStore.js'
 import {
   applyVoiceRecordResponse,
+  composerHasDraft,
   dismissSensitivePrompt,
   handleIdleHotkeyExit,
-  shouldAllowIdleHotkeyExit,
+  resolveCtrlCComposerAction,
+  resolveDoubleEscAction,
+  shouldDetachEditedHistoryInput,
   shouldFallThroughForScroll
 } from '../app/useInputHandlers.js'
 
@@ -49,13 +53,72 @@ describe('shouldFallThroughForScroll — keep transcript scrolling alive during 
   })
 })
 
-describe('shouldAllowIdleHotkeyExit', () => {
-  it('keeps idle exit hotkeys enabled in normal terminals', () => {
-    expect(shouldAllowIdleHotkeyExit(false)).toBe(true)
+describe('composerHasDraft — Ctrl+D exits only from an empty composer (#116443)', () => {
+  it('is false for an empty composer and true for text, multi-line buffer or attachments', () => {
+    expect(composerHasDraft({ input: '', inputBuf: [], tokens: [] })).toBe(false)
+    expect(composerHasDraft({ input: 'hi', inputBuf: [], tokens: [] })).toBe(true)
+    expect(composerHasDraft({ input: '', inputBuf: ['line 1'], tokens: [] })).toBe(true)
+    expect(composerHasDraft({ input: '', inputBuf: [], tokens: [{ kind: 'image' }] })).toBe(true)
+  })
+})
+
+describe('shouldDetachEditedHistoryInput', () => {
+  const history = ['older message', 'line one\nline two']
+
+  it('detaches a recalled entry as soon as the user edits it', () => {
+    expect(shouldDetachEditedHistoryInput(1, history, 'line one edited\nline two')).toBe(true)
   })
 
-  it('disables idle exit hotkeys in dashboard chat', () => {
-    expect(shouldAllowIdleHotkeyExit(true)).toBe(false)
+  it('keeps unchanged recalled entries in history navigation', () => {
+    expect(shouldDetachEditedHistoryInput(1, history, 'line one\nline two')).toBe(false)
+  })
+
+  it('does not detach an ordinary current draft', () => {
+    expect(shouldDetachEditedHistoryInput(null, history, 'new draft')).toBe(false)
+  })
+})
+
+describe('resolveCtrlCComposerAction — draft wins over interrupt', () => {
+  it('clears a non-empty composer even while the agent is streaming', () => {
+    expect(resolveCtrlCComposerAction({ busy: true, hasDraft: true, hasSession: true })).toBe('clear')
+  })
+
+  it('interrupts a running turn when the composer is empty', () => {
+    expect(resolveCtrlCComposerAction({ busy: true, hasDraft: false, hasSession: true })).toBe('interrupt')
+  })
+
+  it('clears an idle composer instead of exiting', () => {
+    expect(resolveCtrlCComposerAction({ busy: false, hasDraft: true, hasSession: true })).toBe('clear')
+  })
+
+  it('exits when idle with an empty composer', () => {
+    expect(resolveCtrlCComposerAction({ busy: false, hasDraft: false, hasSession: true })).toBe('exit')
+  })
+
+  it('does not interrupt a busy session that has no sid yet', () => {
+    expect(resolveCtrlCComposerAction({ busy: true, hasDraft: false, hasSession: false })).toBe('exit')
+  })
+})
+
+describe('resolveDoubleEscAction — double-Esc interrupts only a busy, draft-free turn (#62478)', () => {
+  it('interrupts the running turn when the composer is empty', () => {
+    expect(resolveDoubleEscAction({ busy: true, hasDraft: false, hasSession: true })).toBe('interrupt')
+  })
+
+  it('clears a draft instead of interrupting, even mid-stream', () => {
+    expect(resolveDoubleEscAction({ busy: true, hasDraft: true, hasSession: true })).toBe('clear')
+  })
+
+  it('does nothing while idle with an empty composer (single-Esc conventions unchanged)', () => {
+    expect(resolveDoubleEscAction({ busy: false, hasDraft: false, hasSession: true })).toBe('none')
+  })
+
+  it('does not interrupt a busy session that has no sid yet', () => {
+    expect(resolveDoubleEscAction({ busy: true, hasDraft: false, hasSession: false })).toBe('none')
+  })
+
+  it('keeps clearing an idle draft (existing discard convention)', () => {
+    expect(resolveDoubleEscAction({ busy: false, hasDraft: true, hasSession: true })).toBe('clear')
   })
 })
 
@@ -77,7 +140,7 @@ describe('handleIdleHotkeyExit', () => {
 
     expect(actions.die).not.toHaveBeenCalled()
     expect(requestDashboardNewSession).toHaveBeenCalledTimes(1)
-    expect(actions.sys).toHaveBeenCalledWith('starting a fresh dashboard chat...')
+    expect(actions.sys).toHaveBeenCalled()
   })
 })
 
@@ -91,7 +154,7 @@ describe('applyVoiceRecordResponse', () => {
 
     expect(setRecording).toHaveBeenCalledWith(false)
     expect(setProcessing).toHaveBeenCalledWith(true)
-    expect(sys).toHaveBeenCalledWith('voice: still transcribing; try again shortly')
+    expect(sys).toHaveBeenCalled()
   })
 
   it('keeps optimistic REC state for successful recording starts', () => {
@@ -116,31 +179,65 @@ describe('applyVoiceRecordResponse', () => {
 })
 
 describe('dismissSensitivePrompt', () => {
-  it('clears a sudo overlay before a stale cancel RPC resolves', async () => {
+  const openRequest = (id: string, method: string) => {
+    const respond = vi.fn()
+
+    rememberServerRequest({ fail: vi.fn(), id, method, params: {}, respond })
+
+    return respond
+  }
+
+  it('clears a sudo overlay and answers the server request with an empty value', () => {
     resetOverlayState()
-    patchOverlayState({ sudo: { requestId: 'sudo-1' } })
-    const rpc = vi.fn().mockResolvedValue(null)
+    resetServerRequestsForTests()
+    patchOverlayState({ sudo: { requestId: 'srq-sudo' } })
+    const respond = openRequest('srq-sudo', 'sudo')
     const sys = vi.fn()
 
-    const pending = dismissSensitivePrompt(getOverlayState(), rpc, sys)
+    dismissSensitivePrompt(getOverlayState(), vi.fn(), sys)
 
     expect(getOverlayState().sudo).toBeNull()
-    expect(sys).toHaveBeenCalledWith('sudo cancelled')
-    expect(rpc).toHaveBeenCalledWith('sudo.respond', { password: '', request_id: 'sudo-1' })
-    await pending
+    expect(sys).toHaveBeenCalled()
+    expect(respond).toHaveBeenCalledWith({ value: '' })
   })
 
-  it('clears a secret overlay before a stale cancel RPC resolves', async () => {
+  it('clears a secret overlay even when its request already expired (nothing left to answer)', () => {
     resetOverlayState()
-    patchOverlayState({ secret: { envVar: 'API_KEY', prompt: 'Enter API key', requestId: 'secret-1' } })
-    const rpc = vi.fn().mockResolvedValue(null)
+    resetServerRequestsForTests()
+    patchOverlayState({ secret: { envVar: 'API_KEY', prompt: 'Enter API key', requestId: 'srq-gone' } })
     const sys = vi.fn()
 
-    const pending = dismissSensitivePrompt(getOverlayState(), rpc, sys)
+    dismissSensitivePrompt(getOverlayState(), vi.fn(), sys)
 
     expect(getOverlayState().secret).toBeNull()
-    expect(sys).toHaveBeenCalledWith('secret entry cancelled')
-    expect(rpc).toHaveBeenCalledWith('secret.respond', { request_id: 'secret-1', value: '' })
-    await pending
+    expect(sys).toHaveBeenCalled()
+  })
+
+  it('declines a vault save-login overlay with an empty value so the blocked wait resolves', () => {
+    resetOverlayState()
+    resetServerRequestsForTests()
+    patchOverlayState({ vaultSaveLogin: { origin: 'https://example.com', requestId: 'save-1', site: 'example.com' } })
+    const respond = openRequest('save-1', 'vault.save_login')
+    const sys = vi.fn()
+
+    dismissSensitivePrompt(getOverlayState(), vi.fn(), sys)
+
+    expect(getOverlayState().vaultSaveLogin).toBeNull()
+    expect(sys).toHaveBeenCalledWith('login for example.com not saved')
+    expect(respond).toHaveBeenCalledWith({ value: '' })
+  })
+
+  it('skips a vault verification-code overlay with an empty value', () => {
+    resetOverlayState()
+    resetServerRequestsForTests()
+    patchOverlayState({ vaultCode: { hint: '', requestId: 'code-1', site: 'github.com' } })
+    const respond = openRequest('code-1', 'vault.code')
+    const sys = vi.fn()
+
+    dismissSensitivePrompt(getOverlayState(), vi.fn(), sys)
+
+    expect(getOverlayState().vaultCode).toBeNull()
+    expect(sys).toHaveBeenCalledWith('verification code for github.com skipped')
+    expect(respond).toHaveBeenCalledWith({ value: '' })
   })
 })

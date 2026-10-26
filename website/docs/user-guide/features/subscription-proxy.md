@@ -161,15 +161,22 @@ OpenAI-compatible client.
 
 ## Exposing on LAN
 
-By default the proxy binds `127.0.0.1` (localhost only). To let other
-machines on your network use it:
+By default the proxy binds `127.0.0.1` (localhost only). It refuses requests
+whose `Host` header is not its own address (`localhost`, `127.0.0.1`, `[::1]`
+or the bound IP) and any browser request from another site (an `Origin` other
+than its own, or a `Sec-Fetch-Site` of `cross-site`/`same-site`), so a web page
+open in your browser cannot use it. Clients such as SDKs and `curl` send
+neither header and are unaffected. To let other machines on your
+network use it:
 
 ```bash
 hermes proxy start --host 0.0.0.0 --port 8645
 ```
 
 ⚠ **Be aware:** anyone on your network can now use your Portal
-subscription. The proxy has no auth of its own — it accepts any bearer.
+subscription. A wildcard bind skips the `Host` check (any name may reach it),
+so it refuses every request a web page makes (any `Origin`, or a
+`Sec-Fetch-Site` other than `none`): browsers cannot use a wildcard-bound proxy. The proxy has no auth of its own — it accepts any bearer.
 Use a firewall, VPN, or reverse proxy with proper auth if you expose
 this beyond your trusted network.
 
@@ -195,7 +202,7 @@ proxy is a credential-attaching pass-through.
 ## Future: more OAuth providers
 
 The adapter system is pluggable. Adding a new provider (e.g.
-HuggingFace, GitHub Copilot's chat endpoint, Anthropic via OAuth)
+HuggingFace, Anthropic via OAuth)
 requires implementing `UpstreamAdapter` in
 `hermes_cli/proxy/adapters/<provider>.py` and registering it in
 `adapters/__init__.py`. Providers that aren't OpenAI-compatible at the

@@ -17,7 +17,13 @@ import { ContribRender } from '@/contrib/react/boundary'
 import { useI18n } from '@/i18n'
 import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
-import { $statusbarHiddenIds, setStatusbarItemVisible, toggleStatusbarVisible } from '@/store/statusbar-prefs'
+import {
+  $statusbarHiddenIds,
+  isStatusbarLayoutDefault,
+  resetStatusbarLayout,
+  setStatusbarItemVisible,
+  toggleStatusbarVisible
+} from '@/store/statusbar-prefs'
 
 // Shared chrome styling for interactive statusbar items (button / link / menu
 // trigger). The 'text' variant intentionally omits hover/transition/disabled.
@@ -176,6 +182,18 @@ function StatusbarVisibilityMenu({
             </ContextMenuCheckboxItem>
           ))}
           <ContextMenuSeparator />
+          {/* Disabled rather than hidden when nothing is customized: the row is
+              also how you find out there IS a shipped layout to get back to.
+              Groups with the hide row below — both act on the bar, not an item. */}
+          <ContextMenuItem
+            disabled={isStatusbarLayoutDefault(hiddenIds)}
+            onSelect={event => {
+              event.preventDefault()
+              resetStatusbarLayout()
+            }}
+          >
+            <span className="truncate">{copy.resetStatusbar}</span>
+          </ContextMenuItem>
         </>
       )}
       <ContextMenuItem onSelect={toggleStatusbarVisible}>

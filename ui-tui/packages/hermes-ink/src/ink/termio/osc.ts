@@ -201,7 +201,10 @@ export async function tmuxLoadBuffer(text: string): Promise<boolean> {
   const { code } = await execFileNoThrow('tmux', args, {
     input: text,
     useCwd: false,
-    timeout: 2000
+    timeout: 2000,
+    // tmux may daemonize a server while retaining the inherited stdio pipes;
+    // only the child exit code is needed for this call site.
+    resolveOnExit: true
   })
 
   return code === 0

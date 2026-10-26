@@ -8,69 +8,21 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
+import { $touchPointer } from '@/lib/touch-interaction'
+
+import { assistantMessage, stubThreadEnvironment, stubThreadViewportSize, userMessage } from '../test-utils'
 
 import { Thread } from '.'
-
-const createdAt = new Date('2026-05-01T00:00:00.000Z')
-
-class TestResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-
-vi.stubGlobal('ResizeObserver', TestResizeObserver)
-vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
-  window.setTimeout(() => callback(performance.now()), 0)
-)
-vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id))
-vi.stubGlobal('CSS', { escape: (str: string) => str })
-
-Element.prototype.scrollTo = function scrollTo() {}
+stubThreadEnvironment()
 
 afterEach(() => {
   cleanup()
+  $touchPointer.set(false)
+  vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
-function stubOffsetDimension(
-  prop: 'offsetHeight' | 'offsetWidth',
-  clientProp: 'clientHeight' | 'clientWidth',
-  fallback: number
-) {
-  const previous = Object.getOwnPropertyDescriptor(HTMLElement.prototype, prop)
-
-  Object.defineProperty(HTMLElement.prototype, prop, {
-    configurable: true,
-    get() {
-      return previous?.get?.call(this) || (this as HTMLElement)[clientProp] || fallback
-    }
-  })
-}
-
-stubOffsetDimension('offsetWidth', 'clientWidth', 800)
-stubOffsetDimension('offsetHeight', 'clientHeight', 600)
-
-function userMessage(): ThreadMessage {
-  return {
-    id: 'user-1',
-    role: 'user',
-    content: [{ type: 'text', text: 'edit me please' }],
-    attachments: [],
-    createdAt,
-    metadata: { custom: {} }
-  } as ThreadMessage
-}
-
-function assistantMessage(): ThreadMessage {
-  return {
-    id: 'assistant-1',
-    role: 'assistant',
-    content: [{ type: 'text', text: 'done' }],
-    status: { type: 'complete', reason: 'stop' },
-    createdAt,
-    metadata: { unstable_state: null, unstable_annotations: [], unstable_data: [], steps: [], custom: {} }
-  } as ThreadMessage
-}
+stubThreadViewportSize()
 
 function Harness({ onEdit }: { onEdit: (message: AppendMessage) => Promise<void> }) {
   const repository = ExportedMessageRepository.fromArray([userMessage(), assistantMessage()])
@@ -108,6 +60,16 @@ function Harness({ onEdit }: { onEdit: (message: AppendMessage) => Promise<void>
 // it. Capture process-level uncaught exceptions for the duration of the gesture
 // instead — an unguarded throw registers here and fails the test.
 describe('edit send arrow — macOS click gesture (blur races cancel)', () => {
+  it('keeps touch prose outside the edit button and requires explicit Edit', async () => {
+    $touchPointer.set(true)
+    render(<Harness onEdit={vi.fn(async () => {})} />)
+    const text = await screen.findByText('edit me please')
+    expect(text.closest('button, [role="button"]')).toBeNull()
+    fireEvent.click(text)
+    expect(screen.queryByRole('textbox', { name: 'Edit message' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit message' }))
+    expect(await screen.findByRole('textbox', { name: 'Edit message' })).toBeTruthy()
+  })
   it('sends without an uncaught "Composer is not available" when the arrow-click blurs the editor', async () => {
     const uncaught: unknown[] = []
 

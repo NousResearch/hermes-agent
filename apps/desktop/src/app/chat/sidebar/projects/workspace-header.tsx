@@ -5,11 +5,19 @@ import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
+import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { cn } from '@/lib/utils'
 import { openWorktreeDialog } from '@/store/coding-status'
 import { copyPath, revealPath } from '@/store/projects'
 
-import { SidebarRowLead } from '../chrome'
+import {
+  SIDEBAR_LEAD_ICON_SIZE,
+  SidebarRowBody,
+  SidebarRowLabel,
+  SidebarRowLead,
+  SidebarRowLeadGlyph,
+  SidebarRowShell
+} from '../chrome'
 
 // Branch/worktree labels routinely share a long prefix (`bb/coding-context-…`),
 // so plain end-truncation (`truncate`) hides exactly the suffix that tells two
@@ -32,13 +40,25 @@ function LaneLabel({ label, title }: { label: string; title?: string }) {
 }
 
 // "+" affordance shared by repo and worktree headers — reveals on header hover.
-export function WorkspaceAddButton({ label, onClick }: { label: string; onClick: () => void }) {
+// Also a drag source: dragging it starts the new-session drag pinned to the
+// project's path (`onPointerDown`), so the created session inherits the
+// project's cwd. A sub-threshold release stays an ordinary click (`onClick`).
+export function WorkspaceAddButton({
+  label,
+  onClick,
+  onPointerDown
+}: {
+  label: string
+  onClick: () => void
+  onPointerDown?: (event: React.PointerEvent<HTMLButtonElement>) => void
+}) {
   return (
     <Tip label={label}>
       <button
         aria-label={label}
         className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/workspace:opacity-100"
         onClick={onClick}
+        onPointerDown={onPointerDown}
         type="button"
       >
         <Codicon name="add" size="0.75rem" />
@@ -47,7 +67,41 @@ export function WorkspaceAddButton({ label, onClick }: { label: string; onClick:
   )
 }
 
+// Row-shaped "show more" — the ellipsis lead + a labeled link, the same shape
+// as the Back row — for project lists that can run long (expanded overview
+// rows, entered lanes, entered Home). A labeled row, not the icon-only glyph
+// below, because it's the only way to reach the rest of a project's sessions
+// and a hover-only tooltip read as "there are only five" (#83157, #93878).
+export function WorkspaceShowMoreRow({
+  disabled,
+  label,
+  onClick
+}: {
+  disabled?: boolean
+  label: string
+  onClick: () => void
+}) {
+  return (
+    <SidebarRowShell>
+      <SidebarRowBody
+        className="group/more w-full text-(--ui-text-tertiary) hover:text-foreground"
+        disabled={disabled}
+        onClick={onClick}
+      >
+        <SidebarRowLead>
+          <SidebarRowLeadGlyph>
+            <Codicon name="ellipsis" size={SIDEBAR_LEAD_ICON_SIZE} />
+          </SidebarRowLeadGlyph>
+        </SidebarRowLead>
+        <SidebarRowLabel className="text-xs underline-offset-4 group-hover/more:underline">{label}</SidebarRowLabel>
+      </SidebarRowBody>
+    </SidebarRowShell>
+  )
+}
+
 // Reveals the next page of already-loaded rows within a workspace/worktree.
+// Hangs off the lane instead of sitting in a row, so it repeats the row's
+// trailing inset (SidebarRowShell's `pr-2`) to stay on the edge the rows stop at.
 export function WorkspaceShowMoreButton({
   count,
   label,
@@ -64,7 +118,7 @@ export function WorkspaceShowMoreButton({
     <Tip label={text}>
       <button
         aria-label={text}
-        className="ml-auto grid size-5 place-items-center rounded-sm bg-transparent text-(--ui-text-tertiary) transition-colors hover:bg-(--ui-control-hover-background) hover:text-foreground"
+        className="mr-2 ml-auto grid size-5 place-items-center rounded-sm bg-transparent text-(--ui-text-tertiary) transition-colors hover:bg-(--ui-control-hover-background) hover:text-foreground"
         onClick={onClick}
         type="button"
       >
@@ -82,15 +136,20 @@ function useWorkspaceItems({ path, onRemove }: { path: null | string; onRemove: 
   const { t } = useI18n()
   const p = t.sidebar.projects
 
+  // The OS file manager needs the local filesystem; a remote backend's
+  // worktree is not on this computer (the file trees hide reveal the same way).
+  const localFs = !isDesktopFsRemoteMode()
+
   return (kit: MenuKit) => (
     <>
-      {renderActionItem(kit, {
-        disabled: !path,
-        icon: 'folder-opened',
-        key: 'reveal',
-        label: p.reveal,
-        onSelect: () => void revealPath(path)
-      })}
+      {localFs &&
+        renderActionItem(kit, {
+          disabled: !path,
+          icon: 'folder-opened',
+          key: 'reveal',
+          label: p.reveal,
+          onSelect: () => void revealPath(path)
+        })}
       {renderActionItem(kit, {
         disabled: !path,
         icon: 'copy',

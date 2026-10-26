@@ -16,6 +16,30 @@
 import type { ExecFileSyncOptionsWithStringEncoding } from 'node:child_process'
 
 /**
+ * Quote an executable token when Windows delegates execution to cmd.exe.
+ *
+ * With `shell: true`, spawn hands the whole command line to cmd.exe, which
+ * truncates it at the first unquoted space: `C:\Users\John Doe\...\hermes.cmd
+ * --version` runs `C:\Users\John` (#74064). Wrapping the executable in double
+ * quotes makes cmd.exe (with its `/s` strip-outer-quotes semantics) treat the
+ * path as one token; `command` must contain only the executable path — keep
+ * arguments in the separate array passed to spawn/execFileSync, and only the
+ * shell-delegating call sites pass `shell: true`. Already-quoted commands and
+ * non-Windows platforms are returned unchanged.
+ */
+export function windowsShellCommand(
+  command: string,
+  shell: boolean,
+  isWindows: boolean = process.platform === 'win32'
+): string {
+  if (!isWindows || !shell || !command || command.startsWith('"')) {
+    return command
+  }
+
+  return `"${command}"`
+}
+
+/**
  * Merge `windowsHide: true` into `options` when running on Windows, unless
  * the caller already specified a `windowsHide` value (which is preserved
  * as-is, including an explicit `false` for cases that intentionally want a

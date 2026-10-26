@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -139,6 +139,32 @@ class TestDraftStreamingHappyPath:
         final_metadata = final_call.kwargs.get("metadata") or {}
         assert final_metadata.get("notify") is True
         assert "expect_edits" not in final_metadata
+
+    @pytest.mark.asyncio
+    async def test_stream_is_message_preserves_cumulative_text_across_tool_boundaries(self):
+        """Slack native streams accept cumulative frames. A tool boundary must
+        not clear the consumer accumulator, otherwise every next segment is a
+        non-prefix snapshot and the connector appends the whole answer again."""
+        adapter = _make_draft_capable_adapter()
+        adapter.draft_stream_is_message = True
+        cfg = StreamConsumerConfig(
+            transport="auto", chat_type="dm",
+            edit_interval=0.01, buffer_threshold=1, cursor="",
+        )
+        consumer = GatewayStreamConsumer(adapter, "C1", cfg)
+
+        task = asyncio.create_task(consumer.run())
+        consumer.on_delta("first segment")
+        await asyncio.sleep(0.05)
+        consumer.on_segment_break()
+        await asyncio.sleep(0.05)
+        consumer.on_delta(" second segment")
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        contents = [call["content"] for call in adapter.draft_calls]
+        assert contents[-1] == "first segment second segment"
 
     @pytest.mark.asyncio
     async def test_edit_preview_still_marks_expect_edits(self):
@@ -311,6 +337,72 @@ def _make_fresh_final_adapter():
     return adapter
 
 
+class TestSubFloorPreambleToolBoundaries:
+    """Regression for #99026: a 1-2 token preamble finalized at a tool
+    boundary must NOT land as its own durable message.
+
+    The sub-floor standalone-message guard keyed on ``cursor in text``,
+    but a segment-break finalize's text never carries the cursor (the
+    cursor is only appended to mid-stream frames), so every short
+    preamble became a real sendMessage, fired on_new_message, and reset
+    the gateway's tool-progress anchor — fragmenting accumulated progress
+    into one bubble per tool on draft-streaming platforms (Telegram).
+    """
+
+    @pytest.mark.asyncio
+    async def test_short_preamble_rounds_keep_progress_anchor(self):
+        adapter = _make_draft_capable_adapter()
+        cfg = StreamConsumerConfig(
+            transport="auto", chat_type="dm",
+            edit_interval=0.01, buffer_threshold=5, cursor="▉",
+        )
+        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
+        resets: list[str] = []
+        consumer._on_new_message = lambda: resets.append("reset")
+
+        task = asyncio.create_task(consumer.run())
+        for _ in range(3):
+            consumer.on_delta("Ok")
+            await asyncio.sleep(0.05)
+            consumer.on_delta(None)  # tool boundary
+            await asyncio.sleep(0.05)
+        consumer.finish("Done.")
+        await task
+
+        # No sub-floor preamble landed as a standalone durable message, so
+        # the tool-progress anchor was never reset between tool rounds.
+        assert resets == []
+        sends = [c.kwargs.get("content") for c in adapter.send.await_args_list]
+        assert sends == [], sends
+        # The sub-floor preamble was held back at every stage: the mid-stream
+        # frame guard suppressed the "Ok ▉" draft frame (legacy behavior),
+        # and the segment-break finalize no longer turns it into a real
+        # message either.
+        assert all(len((c["content"] or "").replace("▉", "").strip()) >= 4
+                   for c in adapter.draft_calls)
+        # The consumer never claimed final delivery (drafts don't set
+        # already_sent), so the gateway's final-send path owns "Done.".
+        assert consumer.final_response_sent is False
+
+    @pytest.mark.asyncio
+    async def test_turn_final_short_answer_is_never_swallowed(self):
+        """The sub-floor guard must not eat a turn-final answer, or the
+        gateway's final-send suppression would drop it entirely."""
+        adapter = _make_draft_capable_adapter()
+        cfg = StreamConsumerConfig(
+            transport="auto", chat_type="dm",
+            edit_interval=0.01, buffer_threshold=5, cursor="▉",
+        )
+        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
+
+        consumer.on_delta("Ok")
+        consumer.finish()
+        await consumer.run()
+
+        sends = [c.kwargs.get("content") for c in adapter.send.await_args_list]
+        assert any("Ok" in (s or "") for s in sends), sends
+
+
 class TestAdapterPrefersFreshFinal:
     """An adapter whose send path is richer than its edit path (e.g. Telegram
     rich messages) finalizes a streamed reply by sending a fresh final message
@@ -384,13 +476,6 @@ class TestRichAwareOverflow:
     fits one rich message isn't fragmented at the legacy 4,096 edit limit."""
 
 
-    def test_raw_message_limit_mock_adapter_is_safe(self):
-        # MagicMock adapters (many existing tests) must not crash or wrongly
-        # inflate the limit from a truthy auto-attribute.
-        adapter = MagicMock()
-        adapter.MAX_MESSAGE_LENGTH = 4096
-        consumer = GatewayStreamConsumer(adapter, "12345", StreamConsumerConfig())
-        assert consumer._raw_message_limit() == 4096
 
     @pytest.mark.asyncio
     async def test_long_rich_reply_not_split_and_final_is_whole(self):

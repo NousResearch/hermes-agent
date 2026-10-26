@@ -7,7 +7,6 @@ test_kanban_tools.py.
 """
 from __future__ import annotations
 
-import json
 
 import pytest
 
@@ -28,15 +27,18 @@ def worker_env(monkeypatch, tmp_path):
     monkeypatch.setattr(_Path, "home", lambda: tmp_path)
 
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
     kb._INITIALIZED_PATHS.clear()
     kb.init_db()
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="worker-test", assignee="test-worker")
         kb.claim_task(conn, tid)
+        run_id = kb._current_run_id(conn, tid)
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
     return tid
 
 
@@ -48,9 +50,10 @@ def test_kanban_comment_body_scrubbed_github_pat(worker_env):
     """ghp_ PAT in comment body must be masked before DB write."""
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
     secret = "ghp_" + "A" * 40
     kt._handle_comment({"task_id": worker_env, "body": f"token: {secret}"})
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         comments = kb.list_comments(conn, worker_env)
     finally:
@@ -65,6 +68,7 @@ def test_kanban_block_reason_scrubbed_jwt(worker_env):
     """JWT in block reason must be masked before DB write."""
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
     # Minimal valid-ish JWT (header.payload.sig)
     jwt = (
         "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
@@ -72,13 +76,14 @@ def test_kanban_block_reason_scrubbed_jwt(worker_env):
         ".dozjgNryP4J3jVmNHl0w5N_5NjP1-iXkpHgcth826Iw"
     )
     kt._handle_block({"reason": f"Bearer {jwt}"})
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         run = kb.latest_run(conn, worker_env)
     finally:
         conn.close()
     # block_task stores reason as run.summary
     assert run is not None
+    assert run.outcome == "blocked"
     stored = run.summary or ""
     assert jwt not in stored
 
@@ -91,9 +96,10 @@ def test_kanban_comment_no_secret_passthrough(worker_env):
     """Plain text without credential patterns must pass through unchanged."""
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
     plain = "hello from the pipeline — no secrets here"
     kt._handle_comment({"task_id": worker_env, "body": plain})
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         comments = kb.list_comments(conn, worker_env)
     finally:
@@ -111,9 +117,10 @@ def test_scrub_respects_force_flag_regardless_of_config(worker_env, monkeypatch)
     monkeypatch.setenv("HERMES_REDACT_SECRETS", "false")
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
     secret = "ghp_" + "C" * 40
     kt._handle_comment({"task_id": worker_env, "body": f"token: {secret}"})
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         comments = kb.list_comments(conn, worker_env)
     finally:
@@ -130,13 +137,15 @@ def test_kanban_complete_result_field_scrubbed(worker_env):
     """Legacy result field must be scrubbed just like summary."""
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
     secret = "sk-" + "D" * 48
     kt._handle_complete({"result": f"finished with key={secret}"})
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         run = kb.latest_run(conn, worker_env)
     finally:
         conn.close()
     assert run is not None
-    stored = run.summary or run.result if hasattr(run, "result") else run.summary or ""
-    assert secret not in (stored or "")
+    assert run.outcome == "completed"
+    stored = run.summary or ""
+    assert secret not in stored

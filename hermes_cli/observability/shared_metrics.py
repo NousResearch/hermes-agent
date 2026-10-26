@@ -442,7 +442,11 @@ class SharedMetricsStore:
             with self._write(busy_timeout_ms=busy_timeout_ms) as connection:
                 for item in pending:
                     item(connection)
-        except Exception:
+        except Exception as exc:
+            if isinstance(exc, sqlite3.OperationalError) and ("locked" in str(exc) or "busy" in str(exc)):
+                with self._deferred_lock:  # still contended: keep them for the next write or exit drain
+                    self._deferred = [*pending, *self._deferred][-_DEFERRED_WRITES_MAX:]
+                return
             logger.warning("Unable to write %d deferred shared-metrics updates", len(pending), exc_info=True)
 
     def create_and_export_package_if_due(self) -> list[Path]:

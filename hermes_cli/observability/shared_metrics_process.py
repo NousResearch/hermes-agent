@@ -11,13 +11,13 @@ runtime; a claimed-but-unreported marker (the reporter died mid-way) is reclaime
 from __future__ import annotations
 
 import atexit
-import contextvars
 import json
 import logging
 import os
 import shutil
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +32,7 @@ _CRASH_CLASSES = (
 )
 #: Ceiling on ``flush_before_hard_exit``: a wedged flush costs its pending rows, never the exit.
 EXIT_FLUSH_TIMEOUT_S = 3.0
+_DRAIN_MARGIN_S = 0.1
 _STATE: dict[str, Any] = {}
 _STATE_LOCK = threading.Lock()
 
@@ -67,22 +68,28 @@ def stamp_exit(exit_kind: str, crash: str = "none") -> None:
 
 def flush_before_hard_exit(timeout_s: float = EXIT_FLUSH_TIMEOUT_S) -> bool:
     """For a graceful stop about to ``os._exit``: run the shared-metrics exit flush its skipped atexit
-    hook would have run (close each live runtime's sessions, write queued rows to the local store).
+    hooks would have run (close each live runtime's sessions under its own profile, write queued and
+    deferred rows to the local store).
 
-    Joined for at most ``timeout_s`` on a daemon thread, because the Relay flush waits on every managed
-    call still in flight and a wedged one must not hold the exit. Never imports the runtime module:
+    Bounded by ``timeout_s`` on a daemon thread, because the Relay flush waits on every managed call
+    still in flight and a wedged one must not hold the exit. Never imports the runtime module:
     collection off (or never started) means nothing to flush and nothing created. Never raises; True
     when the flush finished in time."""
     runtimes = sys.modules.get("hermes_cli.observability.relay_shared_metrics")
     if runtimes is None:
         return True
+    deadline = time.monotonic() + max(0.0, timeout_s)
+
+    def _flush() -> None:
+        runtimes.shutdown_runtimes()
+        runtimes.drain_deferred_writes(deadline - _DRAIN_MARGIN_S)  # done before the join gives up
+
     try:
-        # The caller's context, as the atexit hook would have had: the export reads profile config.
-        worker = threading.Thread(
-            target=contextvars.copy_context().run, args=(runtimes.shutdown_runtimes,),
-            name="hermes-shared-metrics-exit-flush", daemon=True)
+        from agent.memory_provider import spawn_context_thread
+
+        worker = spawn_context_thread(_flush, name="hermes-shared-metrics-exit-flush")
         worker.start()
-        worker.join(max(0.0, timeout_s))
+        worker.join(max(0.0, deadline - time.monotonic()))
     except Exception:
         logger.debug("Shared-metrics exit flush not started", exc_info=True)
         return False

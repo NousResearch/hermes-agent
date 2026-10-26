@@ -481,6 +481,18 @@ def test_status_gets_no_plain_http_warning_when_browsers_open_a_secure_address(w
     assert "plain http" not in capsys.readouterr().out.lower()
 
 
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost"])
+def test_status_of_a_private_webapp_ignores_a_lan_sign_in_registration_it_kept(world, capsys, host):
+    """Web Access keeps its LAN sign-in registration after webapp.host goes back to loopback. With no
+    sign-in gate, hermes webapp opens the loopback launch link, so --status does not warn."""
+    _home(world["root"], f"webapp:\n  enabled: true\n  host: {host}\n")
+    _register_lan_sign_in(world, "192.168.1.20")
+    assert launcher.cmd_webapp(_args(status=True)) == 0
+    out = capsys.readouterr().out
+    assert "Serving at http://127.0.0.1:9120" in out
+    assert "plain http" not in out.lower()
+
+
 @pytest.mark.parametrize("url", ["http://127.0.0.1:9120/", "http://127.0.0.2:9120/", "http://localhost:9120/",
                                  "http://hermes.localhost:9120/", "http://[::1]:9120/",
                                  "https://hermes.example.ts.net/"])

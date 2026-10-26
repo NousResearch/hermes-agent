@@ -265,6 +265,14 @@ async def prepare_history(authority, ref):
     return target, await asyncio.to_thread(display_rows, authority.db, target)
 
 
+def omitted_history_state(db, target):
+    """``(todo_state, message_count)`` of a resume that omits its transcript: bounded, indexed reads of the
+    physical *target* (the newest todo result, the stored count), never the compression lineage."""
+    from tui_gateway.tool_progress import _todo_state_from_db
+    row = db.get_session(target) or {}
+    return _todo_state_from_db(db, target), int(row.get('message_count') or 0)
+
+
 def _merge_live_in_stored_order(display, live):
     """The live rows in stored (``row_id``) order, each archived display row placed before the live
     row it preceded in display order.

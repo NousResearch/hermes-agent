@@ -247,7 +247,7 @@ class HostedRoomAuthorityRPC:
                   'task_id': current[1].task_id if current else None,
                   'execution_generation': current[2] if current else None,
                   'status': current[0]['status'] if current else 'idle'}
-        snapshot = await self.authority.attach(self.principal, self.ref)
+        snapshot = await self.authority.attach(self.principal, self.ref, history=False)  # prompts only
         if snapshot.prompts:
             prompt = next((p for p in snapshot.prompts if p.get('kind') == 'approval'), None)
             if prompt:
@@ -291,7 +291,7 @@ class HostedRoomAuthorityRPC:
     async def _approve(self, params):
         if params['choice'] not in {'once', 'deny'}:
             raise RuntimeStoreError('invalid_params')
-        snapshot = await self.authority.attach(self.principal, self.ref)
+        snapshot = await self.authority.attach(self.principal, self.ref, history=False)  # prompts only
         prompt = next((p for p in snapshot.prompts if p.get('prompt_id') == params['request_id']
                        and p.get('kind') == 'approval'), None)
         if prompt is None:

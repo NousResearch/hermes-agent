@@ -110,6 +110,21 @@ def model_only(row):
     return isinstance(metadata, dict) and bool(metadata.get(MODEL_ONLY_DISPLAY_METADATA_KEY))
 
 
+async def _resume_transcript(authority, ref, history, omit):
+    """A resume reply's transcript fields. *omit* (``omit_messages``): no rows and ``messages_omitted``, the
+    count and the todo plan from bounded reads of the physical tip, as the stdio resume answers it."""
+    # Its home module, not tui_gateway.server: importing the stdio sidecar points sys.stdout at stderr.
+    from tui_gateway.tool_progress import _todo_state_from_history
+    if not omit:
+        # The newest todo result in the transcript, the snapshot the session's agent hydrates
+        # from and its ``todo.updated`` frames carried: a viewer attaching shows the plan now.
+        return {'messages': history, 'message_count': len(history), 'todo_state': _todo_state_from_history(history)}
+    from gateway.session_local_recovery import omitted_history_state, transcript_target
+    todo_state, count = await asyncio.to_thread(
+        omitted_history_state, authority.db, transcript_target(authority, ref))
+    return {'messages': [], 'messages_omitted': True, 'message_count': count, 'todo_state': todo_state}
+
+
 class AuthorityConnection:
     def __init__(self, authority, transport, identity, *, operator=False):
         self.authority = authority
@@ -637,7 +652,10 @@ class AuthorityConnection:
             # whose earlier open found it busy (Desktop's warm `session.activate` resumes on one connection).
             from gateway.session_policy_refresh import refresh_resumed_policy
             await refresh_resumed_policy(self.authority, ref, attached=ref.session_id in self.subscriptions)
-        snapshot = await self.authority.attach(self.actor, ref)
+        # ``omit_messages``: the client pages the transcript itself (Desktop over REST), so the attach reads no
+        # compression lineage (a whole-lineage read here made every open of a long chat cost seconds).
+        omit = params.get('omit_messages') is True
+        snapshot = await self.authority.attach(self.actor, ref, history=not omit)
         self.subscriptions[ref.session_id] = snapshot.subscription_id
         self.handed_back.discard(ref.session_id)
         self._spawn_notice(ref)
@@ -651,15 +669,13 @@ class AuthorityConnection:
             info = await snapshot_info(self.authority, snapshot.handle.ref)
         from gateway.session_connections import pending_connection
         from gateway.session_server_requests import open_requests
-        # Its home module, not tui_gateway.server: importing the stdio sidecar points sys.stdout at stderr.
-        from tui_gateway.tool_progress import _todo_state_from_history
         history, display = list(snapshot.history), {}
         if params.get('display_projection'):
             # A micro-compaction merge stays in ``messages`` (an undo target); its originals are what shows.
             display['display_messages'] = display_projection(
                 [row for row in history if not model_only(row)], self.authority.profile_id)
         return {'session_id': ref.session_id, 'stored_session_id': ref.session_id,
-                'messages': history, **display, 'message_count': len(history),
+                **await _resume_transcript(self.authority, ref, history, omit), **display,
                 'running': snapshot.handle.execution_state == 'running',
                 'authority_epoch': snapshot.handle.authority_epoch,
                 'replay_epoch': snapshot.replay_epoch, 'last_sequence': snapshot.last_sequence,
@@ -670,10 +686,7 @@ class AuthorityConnection:
                 'pending_connection': pending_connection(self.authority, ref.session_id),
                 # Still-waiting server→client requests: the event ring cannot say "still open".
                 'open_requests': open_requests(self.authority.sessions[snapshot.handle.ref.session_id].event_stream,
-                                               snapshot.handle.ref.session_id),
-                # The newest todo result in the transcript, the snapshot the session's agent hydrates
-                # from and its ``todo.updated`` frames carried: a viewer attaching shows the plan now.
-                'todo_state': _todo_state_from_history(history)}
+                                               snapshot.handle.ref.session_id)}
 
     def _spawn_notice(self, ref):
         """Low-disk auto-prune question for this viewer, off the resume reply's path."""

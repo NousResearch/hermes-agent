@@ -347,10 +347,14 @@ class SessionAuthority:
                 raise RuntimeStoreError('not_found') from None
             raise
 
-    async def attach(self, actor, ref):
+    async def attach(self, actor, ref, *, history=True):
+        """Join *ref*'s event stream and snapshot it. ``history=False``: the snapshot carries no transcript
+        (``history == ()``), so the compression lineage is never read; for a viewer that pages the
+        transcript itself (Desktop over REST) or reads only the prompts and handle."""
         self.authorize(actor, ref, 'session:read')
-        from gateway.session_local_recovery import local_history, prepare_history
-        prepared = await prepare_history(self, ref)  # the lineage read stays off the loop and the lock
+        from gateway.session_local_recovery import local_history, prepare_history, transcript_target
+        # The lineage read stays off the loop and the lock; without history only the route is restored.
+        prepared = await prepare_history(self, ref) if history else (transcript_target(self, ref), None)
         from gateway.session_onboarding import keep_from_discard
         # The last await before the viewer joins: a fresh launch's claim is taken back with no yield
         # before the join, and a delete already past it answers not_found below.
@@ -376,7 +380,7 @@ class SessionAuthority:
             active_generation = handle.execution_generation if handle.execution_state == "running" else None
             prompts = live.controls.snapshot(ref.session_id, active_generation)
             epoch, sequence = live.event_stream.watermark()
-            history = self.unless_deleted(ref, lambda: tuple(local_history(self, ref, prepared)))
+            history = self.unless_deleted(ref, lambda: tuple(local_history(self, ref, prepared))) if history else ()
             snapshot = SubscriptionSnapshot(subscription, handle, epoch, sequence, history,
                                         tuple(self._pending_receipt(r) for r in pending_rows(self, ref)), prompts)
         from gateway.session_viewer_close import cancel_persisted_close

@@ -63,9 +63,10 @@ def test_ledger_never_vouches_for_an_earlier_boot_or_an_exited_backend(tmp_path,
     """The ledger survives reboots but boot ticks restart: an MCP-helper entry written in an
     earlier boot whose pid and start tick equal an unrelated process running now (early-boot
     services are deterministic) names a stranger, and its spawner is gone, so the orphan reaper
-    must leave the stranger alone. An older epoch-only serve entry whose backend has exited (a
-    zombie its parent has not reaped yet) no longer owns HERMES_HOME. Neither row survives the
-    next ledger write."""
+    must leave the stranger alone. Older epoch-only serve entries (written before boot ticks) keep
+    main's epoch match: one whose backend has exited (a zombie its parent has not reaped yet) and
+    one whose pid the stranger now holds no longer own HERMES_HOME. No row survives the next
+    ledger write."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     stranger = subprocess.Popen(["sleep", "60"], stdin=subprocess.DEVNULL)
     backend = subprocess.Popen(["true"], stdin=subprocess.DEVNULL)
@@ -84,6 +85,9 @@ def test_ledger_never_vouches_for_an_earlier_boot_or_an_exited_backend(tmp_path,
             {"pid": backend.pid, "create_time": psutil.Process(backend.pid).create_time(), "purpose": "serve",
              "install": install_id(), "spawner_pid": None, "spawner_create": None,
              "registered_at": time.time(), "argv": ""},
+            {"pid": stranger.pid, "create_time": live.create_time() - 3 * 86400, "purpose": "serve",
+             "install": install_id(), "spawner_pid": None, "spawner_create": None,
+             "registered_at": earlier_boot, "argv": ""},
         ]), encoding="utf-8")
 
         assert stranger.pid not in [e["pid"] for e in ledger_entries()]

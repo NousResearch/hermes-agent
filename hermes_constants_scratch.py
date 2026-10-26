@@ -268,9 +268,7 @@ def _registered_live_pids(home: Path) -> set[int]:
                 continue
             try:
                 if stamp_key == "create_time":
-                    # Boot-relative when recorded; an older epoch-only entry that a clock step
-                    # could have shifted stays owned rather than getting its tree killed.
-                    alive = entry_still_running(entry, keep_unprovable=True)
+                    alive = entry_still_running(entry)  # boot ticks survive a clock step
                 elif stamp is None:
                     alive = psutil.pid_exists(pid)
                 else:

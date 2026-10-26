@@ -168,20 +168,6 @@ def _verified_boot_start(pid: Optional[int], create_time: Optional[float]) -> Op
         return None
 
 
-def _step_can_explain_mismatch(pid: int, boot: Optional[float]) -> bool:
-    """A running ``pid`` failed an epoch-only match on Linux: a clock step explains that as well as
-    a reused pid, so the mismatch proves nothing. ``False`` when ``boot`` gave an exact verdict and
-    when ``pid`` is gone or a zombie (exited, only awaiting its parent's reap)."""
-    import psutil  # the caller's epoch match already needed it
-
-    if boot is not None or not getattr(psutil, "LINUX", False):
-        return False
-    try:
-        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
-    except psutil.Error:
-        return False
-
-
 # Layer 1 — spawn tags
 
 
@@ -458,7 +444,7 @@ def _append_entry(entry: LedgerEntry) -> bool:
             e for e in entries
             if isinstance(e.get("pid"), int)
             and e["pid"] != entry.pid
-            and entry_still_running(e, keep_unprovable=True)
+            and entry_still_running(e)
         ]
         pruned.append(asdict(entry))
         try:
@@ -526,18 +512,14 @@ def ledger_entries(
     ]
 
 
-def entry_still_running(entry: dict, *, keep_unprovable: bool = False) -> bool:
+def entry_still_running(entry: dict) -> bool:
     """Is the ledger *entry*'s process still the recorded incarnation (``None`` from psutil
-    counts as running)? ``keep_unprovable``: an older entry with only an epoch birth whose live
-    pid disagrees on Linux also counts, because a clock step explains that as well as pid reuse.
-    Readers that protect a process (ledger pruning, the scratch prune's owner check) pass it;
-    killers never do."""
-    pid, boot = entry.get("pid"), _entry_boot(entry, "boot_start")
+    counts as running)? Exact boot ticks within their boot survive a clock step; an entry
+    without them keeps the 2 s epoch match, so a step reads it as a reused pid."""
+    pid = entry.get("pid")
     if not isinstance(pid, int) or pid <= 0:
         return False
-    if _pid_alive_matches(pid, entry.get("create_time"), boot=boot) is not False:
-        return True
-    return keep_unprovable and _step_can_explain_mismatch(pid, boot)
+    return _pid_alive_matches(pid, entry.get("create_time"), boot=_entry_boot(entry, "boot_start")) is not False
 
 
 def spawner_is_dead(entry: dict) -> Optional[bool]:
@@ -548,10 +530,6 @@ def spawner_is_dead(entry: dict) -> Optional[bool]:
     # A spawner recorded in an earlier boot is dead (:func:`_entry_boot`), as the epoch match says.
     boot = _entry_boot(entry, "spawner_boot")
     alive = _pid_alive_matches(spawner_pid, entry.get("spawner_create"), boot=boot)
-    # An entry that survives a clock step (``boot_start``) with an epoch-only spawner: a step
-    # would read its live spawner as dead and let a reaper kill the child.
-    if alive is False and _entry_boot(entry, "boot_start") is not None and _step_can_explain_mismatch(spawner_pid, boot):
-        return None
     return None if alive is None else not alive
 
 

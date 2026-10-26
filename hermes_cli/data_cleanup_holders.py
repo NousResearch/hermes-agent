@@ -85,7 +85,7 @@ def _refuse_backend_writers(home: Path) -> None:
         pid = row.get("pid")
         if type(pid) is not int or pid <= 0:
             raise RuntimeError("backend ownership contains an invalid PID")
-        if entry_still_running(row, keep_unprovable=True):
+        if entry_still_running(row):
             raise RuntimeError(f"backend PID {pid} still owns {home}; close its desktop/dashboard before retrying")
 
 

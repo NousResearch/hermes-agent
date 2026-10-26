@@ -1,6 +1,6 @@
 name: hermes-workflows
 repo: https://github.com/jacobhausler/hermes-workflows
-sha: 8464682336f77a67d8f8258acb839c9e2dcf28d5
+sha: 464b4aa304960c89522e709d6b109d0fd08fe06e
 description: "Agent-owned workflow graphs for Hermes — a background runner executes
   a JSON DAG of agent nodes, fan-outs (quorum) and human/machine gates with fingerprint
   replay-skip resume, cooperative steer, typed failure events and compact status payloads;
@@ -36,7 +36,7 @@ tier: community
 category: automation
 requires_hermes: ">=0.21.4"
 docs_url: https://github.com/jacobhausler/hermes-workflows#readme
-version: "1.4.2"
+version: "1.4.3"
 image: 
   https://raw.githubusercontent.com/jacobhausler/hermes-workflows/8464682336f77a67d8f8258acb839c9e2dcf28d5/assets/dag-review.png
 screenshots:

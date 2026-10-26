@@ -1204,7 +1204,7 @@ class TestCheckpoint:
             "command": "daemonize",
             "pid": 999999999,
             "pid_scope": "host",
-            "host_start_time": 123.0,
+            "host_start_time": 123,
             "systemd_unit": "hermes-worker-proc_dead_scope.scope",
         }
         checkpoint.write_text(json.dumps([entry]))
@@ -1228,7 +1228,7 @@ class TestCheckpoint:
             "command": "daemonize",
             "pid": 999999999,
             "pid_scope": "host",
-            "host_start_time": 123.0,
+            "host_start_time": 123,
             "systemd_unit": "hermes-worker-proc_dead_scope.scope",
         }
         checkpoint.write_text(json.dumps([entry]))

@@ -51,3 +51,28 @@ def test_foreign_writer_leaves_host_verdict_to_recovery(tmp_path, monkeypatch, f
         if neighbor.poll() is None:
             neighbor.kill()
             neighbor.wait(timeout=10)
+
+
+def test_cached_unproved_process_is_never_rebound_by_writer_or_reader(tmp_path, monkeypatch):
+    from tools import process_registry as module
+    registry = module.ProcessRegistry()
+    neighbor = subprocess.Popen([sys.executable, '-c', 'import threading; threading.Event().wait(120)'])
+    try:
+        session = module.ProcessSession(id='proc_unproved_cached', command='old metadata', pid=neighbor.pid,
+                                        host_start_time=None, detached=True, task_id='owner')
+        registry._running[session.id] = session
+        monkeypatch.setattr(registry, '_safe_host_start_time',
+                            lambda *a: pytest.fail('writer/reader invented a missing recorded birth'))
+        assert registry._write_checkpoint()
+        assert registry.poll(session.id)['status'] == 'running'
+        assert session.host_start_time is None
+        assert registry._write_checkpoint()
+        row = json.loads(module._checkpoint_path().read_text())[0]
+        assert row['host_start_time'] is None and row['pid'] == neighbor.pid
+        assert neighbor.poll() is None
+        cold = module.ProcessRegistry()
+        assert cold.recover_from_checkpoint() == 0
+        assert json.loads(module._checkpoint_path().read_text()) == [row]
+    finally:
+        neighbor.kill()
+        neighbor.wait(timeout=10)

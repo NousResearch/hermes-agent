@@ -40,10 +40,8 @@ class ProcessCheckpointMixin:
                 retired = []
                 retiring = set()
                 for s in {**self._finished, **self._running}.values():
-                    # Backfill the start time so recovery can detect PID recycling
-                    # even for sessions spawned before this field existed.
-                    if s.host_start_time is None and s.pid_scope == "host" and s.pid:
-                        s.host_start_time = self._safe_host_start_time(s.pid)
+                    # Spawn captures identity from its fresh native handle.
+                    # A later writer cannot bind an old PID to today's process.
                     entry = {"session_id": s.id, **{f: getattr(s, f) for f in _CHECKPOINT_FIELDS}}
                     # Redact inline credentials before persisting (~/.hermes/processes.json).
                     # Recovery uses command only for display (adoption re-validates the
@@ -146,10 +144,12 @@ class ProcessCheckpointMixin:
                 unresolved_scope_entries.append(entry)
                 continue
             pid, pid_scope = entry.get("pid"), entry.get("pid_scope", "host")
-            if not pid or pid_scope != "host" or entry.get('wsl_chain'):
+            if (type(pid) is not int or pid <= 0 or pid_scope != "host" or entry.get('wsl_chain')
+                    or type(entry.get('host_start_time')) is not int or entry['host_start_time'] <= 0):
                 # No backend handle survives interpreter loss. A WSL launcher
                 # can exit while its Linux job lives; neither is a host PID
-                # recovery target or proof of quiescence.
+                # recovery target or proof of quiescence. Missing recorded
+                # birth identity cannot be reconstructed from the current PID.
                 unresolved_scope_entries.append(entry)
                 continue
             # The registry is process-global, so every profile's checkpoint carries every live

@@ -134,16 +134,14 @@ async def test_unproved_resource_survives_rewrite_and_recovery_without_signaling
     record_process_stop(authority, REF, 0)
     token = process_stop_pending(db, 's')
     try:
-        if binding != 'missing-birth':
-            monkeypatch.setattr(registry, '_detached_host_fate',
-                                lambda *a: pytest.fail('opaque resource was interpreted as a host PID'))
+        monkeypatch.setattr(registry, '_detached_host_fate',
+                            lambda *a: pytest.fail('opaque resource was interpreted as a host PID'))
         monkeypatch.setattr(registry, '_terminate_host_pid',
                             lambda *a, **kw: pytest.fail('unproved resource was signaled'))
         assert registry._write_checkpoint()
         assert json.loads(path.read_text()) == [entry]
-        if binding != 'missing-birth':
-            assert registry.recover_from_checkpoint() == 0
-            assert json.loads(path.read_text()) == [entry]
+        assert registry.recover_from_checkpoint() == 0
+        assert json.loads(path.read_text()) == [entry]
         assert not await retry_process_stop(authority, REF)
         assert json.loads(path.read_text()) == [entry]
         assert process_stop_pending(db, 's') == token

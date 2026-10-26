@@ -254,6 +254,44 @@ def _db_flush_row(agent, msg: dict, is_current_turn_user: bool) -> dict[str, Any
     return row
 
 
+def sync_rewritten_tool_rows(agent, batch: list[dict], contents_before: list[Any]) -> int:
+    """Carry an end-of-batch rewrite of already-flushed tool results (the turn budget's spill
+    stubs) onto their durable rows; returns the rows rewritten.
+
+    Each result was flushed as it landed, so its row holds the full body. Replay reads the
+    store, so a row left stale reloads the spilled bytes next turn: the request grows by
+    everything the budget removed and its cached prefix diverges at the first spilled row.
+    The full body survives as the archived twin ``rewrite_pruned_rows`` keeps, beside the
+    spill file. A store without the in-place writer, or a row another writer moved, keeps
+    today's row.
+    """
+    session_db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
+    rewrite = getattr(session_db, "rewrite_pruned_rows", None)
+    if getattr(agent, "_persist_disabled", False) or not session_id or not callable(rewrite):
+        return 0
+    changed = [
+        (msg, before) for msg, before in zip(batch, contents_before)
+        if msg.get(_DB_PERSISTED_MARKER) and msg.get("role") == "tool" and msg.get("content") != before]
+    if not changed:
+        return 0
+    rows = [(_db_flush_row(agent, {**msg, "content": before}, False), _db_flush_row(agent, msg, False))
+            for msg, before in changed]
+    from hermes_state_errors import PruneRowUnresolvedError
+    try:
+        with _persist_lock(agent):
+            written = rewrite(session_id, rows)
+    except PruneRowUnresolvedError as exc:  # PruneRowStaleError included: another writer owns the row now
+        logger.info("Tool-result rewrite not persisted; the stored row keeps the full body: %s", exc)
+        return 0
+    except Exception as exc:  # health: allow BLE001 -- a store failure must not fail the turn; the row keeps its body
+        logger.warning("Tool-result rewrite not persisted: %s", exc)
+        return 0
+    for (msg, _before), (_original, replacement) in zip(changed, rows):
+        if isinstance(replacement.get(DB_ROW_SNAPSHOT), str):
+            msg[DB_ROW_SNAPSHOT] = replacement[DB_ROW_SNAPSHOT]
+    return int(written)
+
+
 def _db_flush_collect(agent, messages: list[dict], conversation_history: Optional[list[dict]],
                       replay_history: bool = False):
     """Scan for un-flushed messages; returns ``(rows, msgs)`` to write in one transaction. ``replay_history``

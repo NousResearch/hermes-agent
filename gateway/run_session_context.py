@@ -11,10 +11,9 @@ class GatewaySessionContextMixin:
         from gateway.session_context import set_session_vars
         # Async-delivery capability tells async tools whether this channel can wake a later turn. Default
         # True keeps CLI/unknown paths working; stateless adapters (api_server) declare False.
-        _adapter = (getattr(self, "adapters", None) or {}).get(context.source.platform)
+        _adapter = self._intake_adapter_for(context.source)
         _async_delivery = getattr(_adapter, "supports_async_delivery", True)
-        # #98619: an admitted API turn carries its session-id provenance in the admission settings,
-        # and its rebound browser-controller identity; every other platform leaves both undeclared.
+        # An admitted API turn carries its session-history provenance in the admission settings.
         from gateway.session_api_turn import api_session_vars
         _api_vars = api_session_vars()
         _history_delivery = _api_vars.pop("session_history_delivery", None)

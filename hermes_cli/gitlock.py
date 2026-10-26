@@ -34,31 +34,74 @@ STALE_TMP_PACK_MIN_AGE_SECONDS = STALE_LOCK_MIN_AGE_SECONDS
 # ``shallow.lock`` is the one observed in the wild; the others are the same class of failure
 # (interrupted git operation). Locks held by a live git process are protected by the process guard.
 LOCK_NAMES = ("shallow.lock", "index.lock", "HEAD.lock", "MERGE_HEAD.lock")
+# Object-store indexes a killed git (Hermes kills git trees on timeout) leaves locked. Each lock fails
+# every later write of that file, so the commit-graph that keeps ``git tag --merged`` and ancestry
+# walks fast stops refreshing for good (one sat on a real checkout for two months).
+OBJECT_STORE_LOCK_NAMES = (
+    "objects/info/commit-graph.lock",
+    "objects/info/commit-graphs/commit-graph-chain.lock",
+    "objects/pack/multi-pack-index.lock",
+    "objects/pack/multi-pack-index.d/multi-pack-index-chain.lock",
+)
 # Temp-file prefixes git writes into .git/objects/pack during a transfer and renames away on
 # success; anything left with these names after a fetch died is garbage by definition.
 # ``.tmp-<pid>-pack*`` is the same thing from ``pack-objects`` (repack/gc) killed mid-write.
 _TMP_PACK_PREFIXES = ("tmp_pack_", "tmp_idx_", "tmp_rev_", "tmp_mtimes_", ".tmp-")
+# A split commit-graph write killed before its rename strands this in objects/info/commit-graphs.
+_TMP_GRAPH_PREFIX = "tmp_graph_"
+
+
+# pgrep's name pattern for every form git runs as: ``git``, the dashed executables it ships and
+# launches (git-core's ``git-commit-graph``, ``git-repack``; comm is cut to 15 chars), ``git.exe``.
+_PGREP_GIT = r"^git(-.*|\.exe)?$"
 
 
 def _git_proc_running() -> bool:
-    """True when a ``git`` process is running — the check that stops us yanking a lock a live fetch holds.
+    """Whether a git process may be running: the check that stops us yanking a lock a live git holds.
 
-    A failed probe logs and returns False; the age floor in the sweep still applies.
+    Fails closed: a probe that cannot tell (pgrep missing or failing, tasklist failing, a process
+    whose name psutil may not read) answers True and the sweep removes nothing. The age floor is
+    no proof on its own: a stopped or slow writer's lock ages like an abandoned one.
     """
+    if os.name != "nt":
+        try:
+            import psutil
+        except ImportError:  # the dependency-free bootstrap interpreter
+            pass
+        else:
+            return _psutil_git_running(psutil)
+    from hermes_cli._early_recovery import _git_program
+
     try:
         # One shared spawn for both probes: the argv is the platform fork, the
         # hide-flags wiring is common, so a console-less parent (pythonw backend)
         # never flashes a console for either (#117781).
-        argv = (["tasklist", "/FI", "IMAGENAME eq git.exe", "/FO", "CSV"]
-                if os.name == "nt" else ["pgrep", "-x", "git"])
+        argv = ["tasklist", "/FO", "CSV", "/NH"] if os.name == "nt" else ["pgrep", _PGREP_GIT]
         proc = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
                                timeout=10, creationflags=windows_hide_flags(), check=False)
-        if os.name == "nt":
-            return "git.exe" in proc.stdout.lower()
-        return proc.returncode == 0
-    except Exception:
-        logger.debug("git process probe failed; assuming no git running", exc_info=True)
-        return False
+    except Exception:  # health: allow BLE001 -- whatever stops the probe, the locks stay
+        logger.debug("git process probe failed; assuming git may be running", exc_info=True)
+        return True
+    if os.name == "nt":
+        return proc.returncode != 0 or any(
+            _git_program(line.split(",", 1)[0].strip('"')) for line in proc.stdout.splitlines())
+    return proc.returncode != 1  # 1 is pgrep's "no match"; 2 and 3 mean it could not tell
+
+
+def _psutil_git_running(psutil) -> bool:
+    from hermes_cli._early_recovery import _git_program
+
+    try:
+        for proc in psutil.process_iter():
+            try:
+                if _git_program(proc.name()) is not None:
+                    return True
+            except psutil.NoSuchProcess:  # exited between the listing and the read
+                continue
+    except Exception:  # health: allow BLE001 -- AccessDenied or a failed scan keeps the locks
+        logger.debug("git process scan failed; assuming git may be running", exc_info=True)
+        return True
+    return False
 
 
 def _sweep_stale(directory: Path, candidates: Callable[[], Iterable[Path]], *, min_age_seconds: Optional[int],
@@ -92,19 +135,28 @@ def _sweep_stale(directory: Path, candidates: Callable[[], Iterable[Path]], *, m
     return removed
 
 
+def _sweep_locks(git_dir: Path, names: Iterable[str], min_age_seconds: Optional[int]) -> list[str]:
+    return _sweep_stale(
+        git_dir, lambda: [git_dir / name for name in names],
+        min_age_seconds=min_age_seconds, default_age=STALE_LOCK_MIN_AGE_SECONDS,
+        skip_msg="git process running; skipping stale-lock sweep",
+        log_removed=lambda p, _size: logger.info("Removed stale git lock %s", p),
+    )
+
+
 def clear_stale_git_locks(repo_root: Path, *, min_age_seconds: Optional[int] = None) -> list[str]:
     """Remove abandoned ``.git`` lock files under ``repo_root``; returns the removed paths.
 
     Removes only when older than the age floor AND no git process is running. Never raises: a lock we cannot
     stat/unlink is skipped (it may have been re-created between the age check and the unlink; skipping is safe).
     """
-    git_dir = Path(repo_root) / ".git"
-    return _sweep_stale(
-        git_dir, lambda: [git_dir / name for name in LOCK_NAMES],
-        min_age_seconds=min_age_seconds, default_age=STALE_LOCK_MIN_AGE_SECONDS,
-        skip_msg="git process running; skipping stale-lock sweep",
-        log_removed=lambda p, _size: logger.info("Removed stale git lock %s", p),
-    )
+    return _sweep_locks(Path(repo_root) / ".git", (*LOCK_NAMES, *OBJECT_STORE_LOCK_NAMES), min_age_seconds)
+
+
+def clear_stale_object_store_locks(git_dir: Path) -> list[str]:
+    """``OBJECT_STORE_LOCK_NAMES`` only, under ``git_dir`` itself (a linked worktree's or submodule's
+    common dir), for repos Hermes does not own: index.lock / HEAD.lock there are the user's git's."""
+    return _sweep_locks(Path(git_dir), OBJECT_STORE_LOCK_NAMES, None)
 
 
 def release_dead_index_lock(repo_root: Path) -> bool:
@@ -334,23 +386,28 @@ def _migrate_earlier_maintenance_keys(repo_root: Path) -> None:
 
 
 def clear_stale_tmp_packs(repo_root: Path, *, min_age_seconds: Optional[int] = None) -> list[str]:
-    """Remove aborted-transfer temp pack files; same contract as clear_stale_git_locks.
+    """Remove aborted-transfer temp pack files and killed commit-graph writes' ``tmp_graph_*``;
+    same contract as clear_stale_git_locks.
 
     Resolves ``.git/objects/pack`` for a checkout and ``objects/pack`` for a bare repo such as
     the checkpoint store — a ``git gc`` killed by a timeout strands the same debris there."""
     pack_dir = _pack_dir(repo_root)
+    graph_dir = pack_dir.parent / "info" / "commit-graphs"
 
     def _candidates():
-        try:
-            return [e for e in pack_dir.iterdir() if e.name.startswith(_TMP_PACK_PREFIXES)]
-        except OSError:
-            return []
+        found = []
+        for directory, prefixes in ((pack_dir, _TMP_PACK_PREFIXES), (graph_dir, _TMP_GRAPH_PREFIX)):
+            try:
+                found += [e for e in directory.iterdir() if e.name.startswith(prefixes)]
+            except OSError:
+                pass
+        return found
 
     return _sweep_stale(
         pack_dir, _candidates,
         min_age_seconds=min_age_seconds, default_age=STALE_TMP_PACK_MIN_AGE_SECONDS,
         skip_msg="git process running; skipping tmp-pack sweep",
-        log_removed=lambda p, size: logger.info("Removed aborted-fetch pack debris %s (%d bytes)", p, size),
+        log_removed=lambda p, size: logger.info("Removed aborted-write git debris %s (%d bytes)", p, size),
     )
 
 
@@ -652,6 +709,13 @@ def heal_shallow_history(repo_root: Path, branch: str, **run_kwargs) -> bool:
     return _shallow_file_path(repo_root) is not None and fetch_full_commit_graph(repo_root, branch, **run_kwargs)
 
 
+# A tags-only refresh is a ref listing plus a few small tag objects; when GitHub is slow it can
+# stall for minutes, and a miss only leaves the version label stale until the next update. Filling
+# shallow history really transfers the commit graph, so it keeps the long budget.
+_TAG_REFRESH_TIMEOUT_SECONDS = 30
+_HISTORY_FETCH_TIMEOUT_SECONDS = 900
+
+
 def fetch_full_commit_graph(repo_root: Path, *extra_refspecs: str, **run_kwargs) -> bool:
     """Refresh release tags and fill shallow history before publishing identity.
 
@@ -684,7 +748,8 @@ def fetch_full_commit_graph(repo_root: Path, *extra_refspecs: str, **run_kwargs)
              *([f"--filter={fetch_filter}"] if fetch_filter else []),
              "--no-tags", "origin", "refs/tags/v*:refs/tags/v*", *extra_refspecs],
             cwd=str(repo_root), check=True, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=900, **run_kwargs,
+            encoding="utf-8", errors="replace",
+            timeout=_HISTORY_FETCH_TIMEOUT_SECONDS if shallow else _TAG_REFRESH_TIMEOUT_SECONDS, **run_kwargs,
         )
     finally:
         # git writes the partial-clone config before it fetches, so a failed fetch converts too.

@@ -21,9 +21,9 @@ from hermes_state_common import (
     _shape_preview, _sql_preview_raw, QUEUED_PROMPT_METADATA_KEY,
     _sql_in_window, _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id,
     escape_like as _escape_like, _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
-    _source_match_clause, emit_session_deleted,
+    _source_match_clause, emit_session_deleted, launch_stub_filter_sql,
 )
-from hermes_state_compression import _CHAIN_CAP
+from hermes_state_compression import _CHAIN_CAP, _UNSET_CREATED_SQL
 import hermes_state_workspace_filters as workspace_filters
 
 # caplog tests pin the "hermes_state" logger name.
@@ -44,9 +44,9 @@ def _delegate_from_json(col: str = "model_config") -> str:
 # ("merged config is empty → store NULL").
 _MODEL_CONFIG_ROW_MISSING = object()
 
-# ``lineage(id)``: the compression lineage of the session bound twice as ``(?, ?)`` —
-# ancestors through compression-ended parents plus compression continuations after it.
-_LINEAGE_CTE_SQL = """
+# ``lineage(id)``: the compression lineage of the session bound twice as ``(?, ?)`` — ancestors and
+# continuations over compression edges only (a branch forked from a compressed chat is another chat).
+_LINEAGE_CTE_SQL = f"""
             WITH RECURSIVE
               ancestors(id) AS (
                 SELECT ?
@@ -56,6 +56,7 @@ _LINEAGE_CTE_SQL = """
                 JOIN sessions child ON child.id = a.id
                 JOIN sessions parent ON parent.id = child.parent_session_id
                 WHERE parent.end_reason = 'compression'
+{_non_continuation_child_sql('child.', 'parent.id')}
               ),
               descendants(id) AS (
                 SELECT ?
@@ -65,6 +66,7 @@ _LINEAGE_CTE_SQL = """
                 JOIN sessions parent ON parent.id = d.id
                 JOIN sessions child ON child.parent_session_id = parent.id
                 WHERE parent.end_reason = 'compression'
+{_non_continuation_child_sql('child.', 'parent.id')}
               ),
               lineage(id) AS (
                 SELECT id FROM ancestors
@@ -90,49 +92,6 @@ def _parse_model_config(raw: Any) -> dict[str, Any]:
 def _where_sql(clauses: list[str], lead: str = "") -> str:
     """``WHERE a AND b`` (with *lead* prefix) or "" when there are no clauses."""
     return f"{lead}WHERE {' AND '.join(clauses)}" if clauses else ""
-
-
-def _session_filter_where(
-    *, exclude_children: bool = False, source: str | None = None, sources: list[str] | None = None,
-    session_key: str | None = None, exclude_sources: list[str] | None = None, cwd_prefix: str | None = None,
-    min_message_count: int = 0, archived_only: bool = False, include_archived: bool = False,
-    include_subagents: bool = False, local_created_sources: Sequence[str] | None = None,
-) -> tuple[list[str], list[Any]]:
-    """Shared ``sessions s`` WHERE builder so counts line up with listed rows. ``exclude_children``
-    hides sub-agent runs and compression continuations but keeps branch/reset children
-    (``_LISTABLE_CHILD_SQL``); ``include_subagents`` re-admits the sub-agent runs only
-    (``sessions.show_subagents``). Clause order is part of the SQL text contract."""
-    where: list[str] = []
-    params: list[Any] = []
-    if exclude_children and include_subagents:
-        where.append(f"({_LISTABLE_CHILD_SQL} OR {_delegate_from_json('s.model_config')} IS NOT NULL)")
-    elif exclude_children:
-        where += [_LISTABLE_CHILD_SQL, f"{_delegate_from_json('s.model_config')} IS NULL"]
-    # Show roots and user-visible branch/reset sessions, while still hiding sub-agent runs and compression
-    # continuations. All four carry parent_session_id, so the shared predicate classifies the edge from
-    # stable markers plus legacy-compatible parent metadata. Branch sessions are identified two ways, OR'd
-    # for robustness: 1. A stable ``_branched_from`` marker in model_config, written by /branch at creation
-    # time. This survives the parent being reopened and re-ended with a different end_reason (e.g.
-    # tui_shutdown overwriting 'branched'), which otherwise hides the branch — see issue #20856. 2. The
-    # legacy heuristic (parent ended with 'branched' before the child started), covering branch sessions
-    # created before the marker existed.
-    include_sources = [source] if source else list(sources or [])
-    source_clause, source_params = _source_match_clause(include_sources, local_created_sources)
-    for clause, values in (
-        (source_clause, source_params),
-        ("s.session_key = ?", [session_key] if session_key else []),
-        (f"s.source NOT IN ({_session_ids_placeholders(exclude_sources or ())})", exclude_sources or []),
-        (workspace_filters._cwd_prefix_clause(cwd_prefix) if cwd_prefix else ("", [])),
-        ("s.message_count >= ?", [min_message_count] if min_message_count > 0 else []),
-    ):
-        if values:
-            where.append(clause)
-            params.extend(values)
-    if archived_only:
-        where.append("s.archived = 1")
-    elif not include_archived:
-        where.append("s.archived = 0")
-    return where, params
 
 
 def _expand_compression_lineage_ids(conn, frontier: list[str]) -> list[str]:
@@ -260,10 +219,15 @@ _UPSERT_KEEP_EXISTING_SQL = ",\n".join(
     f"                       {col} = COALESCE(sessions.{col}, excluded.{col})" for col in (
         "session_key", "chat_id", "chat_type", "thread_id", "parent_session_id", "cwd", "profile_name",
         "transport_profile", "git_repo_root", "origin_json", "display_name",
-        # Immutable provenance (#56439): stamped once at first creation, never overwritten by later
-        # upserts — unlike ``source``, which stays live routing state.
-        "created_source",
     )
+) + ",\n" + (
+    # Accounting may insert before the creator ('unknown') and a routing write carries 'local':
+    # neither is creation provenance (_UNSET_CREATED_SQL), so a later creator replaces them and
+    # 'local' never replaces anything. A real source, once stamped, is preserved (#56439).
+    "                       created_source = CASE WHEN "
+    + _UNSET_CREATED_SQL.format(col="sessions.created_source")
+    + " THEN COALESCE(NULLIF(excluded.created_source, 'local'), sessions.created_source)"
+    " ELSE sessions.created_source END"
 )
 
 
@@ -819,6 +783,15 @@ class SessionSessionsMixin:
         )
         return self._session_row_dict(row) if row else None
 
+    def get_session_list_row(self, session_id: str) -> Optional[dict[str, Any]]:
+        """Picker columns only: the live listing skips ``get_session``'s prompt/tool JOIN and flush."""
+        row = self._read_one(
+            "SELECT id, source, title, started_at, ended_at, message_count, model, hidden, archived "
+            "FROM sessions WHERE id = ?",
+            (session_id,),
+        )
+        return dict(row) if row else None
+
     def get_recent_session_model_route(self, session_id: str) -> Optional[dict[str, Any]]:
         """Most recently used main-loop model route as one coherent per-call tuple
         (``session_model_usage`` keeps model+provider together; ``sessions`` mixes route changes).
@@ -1345,7 +1318,7 @@ class SessionSessionsMixin:
         archived must still return. ``local_created_sources`` restricts ``source='local'``
         rows to those surfaces before LIMIT/OFFSET."""
         self.flush_token_counts()  # rows carry token/cost totals
-        where_clauses, params = _session_filter_where(
+        where_clauses, params = workspace_filters.session_filter_where(
             exclude_children=not include_children, source=source, sources=sources, session_key=session_key,
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
             archived_only=archived_only, include_archived=include_archived, include_subagents=include_subagents,
@@ -1436,7 +1409,7 @@ class SessionSessionsMixin:
         # must stay reachable even when that row is also archived.
         if include_pinned:
             seen_ids = {s["id"] for s in sessions}
-            pinned_clauses, pinned_params = _session_filter_where(
+            pinned_clauses, pinned_params = workspace_filters.session_filter_where(
                 exclude_children=not include_children, source=source, sources=sources,
                 session_key=session_key, exclude_sources=exclude_sources, cwd_prefix=cwd_prefix,
                 min_message_count=min_message_count, archived_only=False, include_archived=True,
@@ -1554,11 +1527,13 @@ class SessionSessionsMixin:
     def search_sessions(
         self, source: str | Sequence[str] | None = None, limit: int = 20, offset: int = 0,
         workspace_key: str | None = None, local_created_sources: Sequence[str] | None = None,
+        skip_launch_stubs: bool = False,
     ) -> list[dict[str, Any]]:
         """Sessions MRU-first with a computed ``last_active``; ``workspace_key`` scopes to one workspace
         so ``hermes -c``/``--resume`` picks its last session. ``source`` may be one label or several.
-        ``local_created_sources`` restricts ``source='local'`` rows before LIMIT/OFFSET."""
-        where_clauses = []
+        ``local_created_sources`` restricts ``source='local'`` rows before LIMIT/OFFSET, and
+        ``skip_launch_stubs`` drops empty launch stubs (launch_stub_filter_sql) before it too."""
+        where_clauses = [launch_stub_filter_sql(self)] if skip_launch_stubs else []
         params: list = []
         if source:
             sources = [source] if isinstance(source, str) else list(source)
@@ -1582,12 +1557,14 @@ class SessionSessionsMixin:
         self, source: str | None = None, sources: list[str] | None = None, cwd_prefix: str | None = None,
         min_message_count: int = 0, include_archived: bool = False, archived_only: bool = False,
         exclude_children: bool = False, exclude_sources: list[str] | None = None, include_subagents: bool = False,
+        local_created_sources: Sequence[str] | None = None,
     ) -> int:
         """Count sessions with list_sessions_rich's filters so a paired "load more" total matches."""
-        where_clauses, params = _session_filter_where(
+        where_clauses, params = workspace_filters.session_filter_where(
             exclude_children=exclude_children, source=source, sources=sources,
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
             archived_only=archived_only, include_archived=include_archived, include_subagents=include_subagents,
+            local_created_sources=local_created_sources,
         )
         if exclude_children:
             from hermes_state_local import exclude_superseded_segments
@@ -1603,7 +1580,7 @@ class SessionSessionsMixin:
         exclude_children: bool = False,
     ) -> dict[str, int]:
         """``{source: count}`` via one GROUP BY; ``exclude_children`` mirrors listing visibility."""
-        where_clauses, params = _session_filter_where(
+        where_clauses, params = workspace_filters.session_filter_where(
             exclude_children=exclude_children, archived_only=archived_only,
             include_archived=include_archived,
         )

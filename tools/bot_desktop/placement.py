@@ -2,7 +2,8 @@
 
 ``bot_desktop.placement``:
   ``auto``      (default) follow the terminal backend when it is a sandbox that can host a stream
-                (docker / ssh / singularity); the gateway host when ``terminal.backend`` is local. A
+                (docker / ssh, or a plugin backend declaring ``supports_streams``); the
+                gateway host when ``terminal.backend`` is local. A
                 sandbox backend that CANNOT host one (modal, daytona, vercel) resolves to ``refused``:
                 the user chose a sandbox for the agent's actions, so quietly running the screen, cua-driver
                 and the browser on the host beside it would hand the agent a desktop outside that sandbox.
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 GATEWAY = "gateway"
 TERMINAL = "terminal"
 REFUSED = "refused"
-_STREAM_BACKENDS = ("docker", "ssh", "singularity")
+_STREAM_BACKENDS = ("docker", "ssh")
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,19 @@ def _terminal_backend() -> str:
     return str(_get_env_config().get("env_type") or "local")
 
 
+def _plugin_streams(backend: str) -> bool:
+    from tools.terminal_tool_config import _plugin_env_flag
+    return _plugin_env_flag(backend, "supports_streams") is True
+
+
+def _plugin_host_isolated() -> bool:
+    # Under host isolation a plugin's environment object reaches Hermes as an opaque placeholder, so its
+    # exec_prefix() is unreachable. (No bundled plugin backend declares supports_streams, so bundled
+    # plugins, which stay in-process, are not a case here.)
+    from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
+    return isolation_mode() == ISOLATION_HOST
+
+
 def resolve() -> Placement:
     # Backend first (env only): a local terminal IS the gateway host whatever the setting says, and that is
     # the common case — it must not cost a config load (this runs on every browser / cua-driver spawn).
@@ -58,6 +72,14 @@ def resolve() -> Placement:
         return Placement(GATEWAY, backend)
     if backend in _STREAM_BACKENDS:
         return Placement(TERMINAL, backend)
+    if _plugin_streams(backend):
+        if not _plugin_host_isolated():
+            return Placement(TERMINAL, backend)
+        return Placement(REFUSED, backend, (
+            f"terminal.backend is {backend}, a plugin that runs in the plugin host (plugins.isolation: host), "
+            f"and the host cannot hand its sandbox's exec channel to Hermes, so the screen cannot follow it. "
+            f"Set plugins.isolation: in_process, or bot_desktop.placement: gateway to run the desktop on the "
+            f"gateway host."))
     reason = (f"terminal.backend is {backend}, which cannot host a screen yet, and running the desktop on the "
               f"gateway host would put the agent's screen, browser and computer_use outside the sandbox you chose "
               f"for it. Set bot_desktop.placement: gateway to allow that explicitly.")

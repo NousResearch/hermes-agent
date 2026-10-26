@@ -190,7 +190,7 @@ def _catalog_provider_env_metadata() -> dict:
 
     # Env vars declared with a NON-provider category (e.g. the shared
     # GITHUB_TOKEN, a Skills-Hub "tool" credential) must not be promoted into a
-    # provider card even when a provider (Copilot) lists them as auth aliases.
+    # provider card even when a provider lists them as auth aliases.
     _non_provider_keys = {
         k for k, v in OPTIONAL_ENV_VARS.items()
         if (v or {}).get("category") and (v or {}).get("category") != "provider"

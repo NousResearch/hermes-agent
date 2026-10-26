@@ -17,7 +17,8 @@ def handlers(connection):
 
 def authorize(connection, ref, params, capability):
     connection.authority.authorize(connection.actor, ref, capability)
-    if 'profile' in params:
+    # The contract's ``profile`` is nullable; null means this owner, as an omitted key does.
+    if params.get('profile') is not None:
         from hermes_cli.profiles import profile_matches_home
         profile = params['profile']
         if not isinstance(profile, str):
@@ -177,6 +178,12 @@ async def correct(connection, ref, params, *, verb):
             or type(params.get('execution_generation')) is not int):
         raise RuntimeStoreError('invalid_params')
     authorize(connection, ref, params, 'session:control')
+    # TUI-26: text typed during a running turn in Ink's interrupt/steer busy modes arrives here, not
+    # at prompt.submit. A bare stop phrase in a LOCAL voice chat ends the chat and reaches no agent,
+    # whatever generation is running.
+    voice_stop = getattr(connection, '_typed_voice_stop', None)
+    if voice_stop is not None and await voice_stop(ref, params):
+        return {'voice_stopped': True}
     authority = connection.authority
     generation = params['execution_generation']
     live = authority.sessions[ref.session_id]
@@ -192,6 +199,15 @@ async def correct(connection, ref, params, *, verb):
         if latched:
             return {'status': 'queued', 'text': params['text'], 'execution_generation': generation,
                     'authority_epoch': authority.epoch}
+        # A claim can outlive the agent that carried it (a reaped turn the client still believes is
+        # running), and a redirect in the build window has no agent to queue behind. Nothing live can
+        # take the text, so answer 'rejected' — the wire contract's "not corrected, queue it as the
+        # next prompt" (desktop SessionRedirectResponse, tui_gateway's idle-steer reply). Raising here
+        # made clients discard the message (#141644). ``delivered: False`` is the confirmation a
+        # client may re-admit on: the live-agent 'rejected' below can follow delivery.
+        if agent is None:
+            return {'status': 'rejected', 'text': params['text'], 'execution_generation': generation,
+                    'authority_epoch': authority.epoch, 'delivered': False}
         method = getattr(agent, verb, None)
         if not callable(method):
             raise RuntimeStoreError('execution_not_ready')

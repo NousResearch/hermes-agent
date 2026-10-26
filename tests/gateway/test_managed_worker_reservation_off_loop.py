@@ -16,11 +16,12 @@ from gateway.session_contract import Principal, SessionRef
 from tests.waiting import wait_until
 
 CHILD = """import json, os, sys, time, psutil
+from hermes_cli.process_identity import worker_birth
 me = psutil.Process()
 out = os.fdopen(os.dup(sys.stdout.fileno()), 'wb', buffering=0)
 def send(frame):
     out.write((json.dumps(frame) + '\\n').encode())
-send({'type': 'hello', 'pid': me.pid, 'birth': me.create_time(), 'ancestors': [p.pid for p in me.parents()[:3]]})
+send({'type': 'hello', 'pid': me.pid, 'birth': worker_birth(me), 'ancestors': [p.pid for p in me.parents()[:3]]})
 for line in sys.stdin.buffer:
     frame = json.loads(line)
     if 'version' in frame:

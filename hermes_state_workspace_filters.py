@@ -1,5 +1,43 @@
 """Exact workspace and cwd filters for session listing."""
-from hermes_state_common import escape_like as _escape_like
+from typing import Any, Sequence
+
+from hermes_state_common import (
+    _LISTABLE_CHILD_SQL, _placeholders, _source_match_clause, _sql_json_extract,
+    escape_like as _escape_like,
+)
+
+
+def session_filter_where(
+    *, exclude_children: bool = False, source: str | None = None, sources: list[str] | None = None,
+    session_key: str | None = None, exclude_sources: list[str] | None = None, cwd_prefix: str | None = None,
+    min_message_count: int = 0, archived_only: bool = False, include_archived: bool = False,
+    include_subagents: bool = False, local_created_sources: Sequence[str] | None = None,
+) -> tuple[list[str], list[Any]]:
+    """Build the same session filters for row counts and listings."""
+    where: list[str] = []
+    params: list[Any] = []
+    delegate_from = _sql_json_extract("s.model_config", "$._delegate_from")
+    if exclude_children and include_subagents:
+        where.append(f"({_LISTABLE_CHILD_SQL} OR {delegate_from} IS NOT NULL)")
+    elif exclude_children:
+        where += [_LISTABLE_CHILD_SQL, f"{delegate_from} IS NULL"]
+    include_sources = [source] if source else list(sources or [])
+    source_clause, source_params = _source_match_clause(include_sources, local_created_sources)
+    for clause, values in (
+        (source_clause, source_params),
+        ("s.session_key = ?", [session_key] if session_key else []),
+        (f"s.source NOT IN ({_placeholders(exclude_sources or ())})", exclude_sources or []),
+        (_cwd_prefix_clause(cwd_prefix) if cwd_prefix else ("", [])),
+        ("s.message_count >= ?", [min_message_count] if min_message_count > 0 else []),
+    ):
+        if values:
+            where.append(clause)
+            params.extend(values)
+    if archived_only:
+        where.append("s.archived = 1")
+    elif not include_archived:
+        where.append("s.archived = 0")
+    return where, params
 
 
 def _workspace_key_clause(key: str) -> tuple[str, list[str]]:

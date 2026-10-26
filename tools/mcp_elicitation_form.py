@@ -142,11 +142,15 @@ def _question(f: FormField, header: str, error: str) -> dict:
 
 
 def _match_option(f: FormField, text: str) -> tuple[bool, Any]:
-    wanted = text.strip().casefold()
+    """Exact label/value first; a case-insensitive match only when exactly one option fits, so
+    ``enum: ["US", "us"]`` never silently swaps the user's pick for another option."""
+    wanted = text.strip()
     for value, label in f.options:
-        if wanted in (label.casefold(), str(value).casefold()):
+        if wanted in (label, str(value)):
             return True, value
-    return False, None
+    folded = wanted.casefold()
+    hits = [value for value, label in f.options if folded in (label.casefold(), str(value).casefold())]
+    return (True, hits[0]) if len(hits) == 1 else (False, None)
 
 
 def _coerce_multi(f: FormField, raw: Any) -> tuple[Any, str]:

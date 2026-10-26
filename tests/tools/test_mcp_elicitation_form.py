@@ -144,3 +144,15 @@ def test_no_question_opens_after_the_elicitation_deadline(monkeypatch):
     result = asyncio.run(_elicit())
     assert result.action == "cancel"
     assert len(asked) == 1
+
+
+@pytest.mark.parametrize("answer, outcome", [
+    ("us", (True, "us", "")),   # exact match wins over the first case-insensitive one
+    ("US", (True, "US", "")),
+    ("Us", (False, None, "'Us' is not one of: US, us")),  # ambiguous: re-asked, never guessed
+])
+def test_enum_pick_is_never_swapped_for_another_option(answer, outcome):
+    from tools.mcp_elicitation_form import coerce_answer, parse_form
+    field = parse_form({"properties": {"region": {"type": "string", "enum": ["US", "us"]}}})[0]
+    assert coerce_answer(field, answer) == outcome
+

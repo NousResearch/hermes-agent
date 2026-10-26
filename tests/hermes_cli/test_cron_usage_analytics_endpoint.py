@@ -69,7 +69,8 @@ def test_dashboard_analytics_is_profile_scoped_and_validates_period(monkeypatch)
 
 
 
-def test_analytics_http_reads_real_profile_stores_and_reports_limited_history(tmp_path, monkeypatch):
+@pytest.mark.parametrize("worker_store", ["initialized", "missing", "empty"])
+def test_analytics_http_reads_real_profile_stores_and_reports_limited_history(tmp_path, monkeypatch, worker_store):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
@@ -87,11 +88,15 @@ def test_analytics_http_reads_real_profile_stores_and_reports_limited_history(tm
     for profile, tokens in (("default", 10), ("worker", 20)):
         home = homes[profile]
         home.mkdir()
-        with SessionDB(home / "state.db") as db:
-            sid = "cron_shared_20261026_100000"
-            db.create_session(sid, source="cron")
-            db.update_token_counts(sid, input_tokens=tokens, estimated_cost_usd=0.1)
-            db.end_session(sid, "cron_complete")
+        if profile == "worker" and worker_store != "initialized":
+            if worker_store == "empty":
+                (home / "state.db").touch()
+        else:
+            with SessionDB(home / "state.db") as db:
+                sid = "cron_shared_20261026_100000"
+                db.create_session(sid, source="cron")
+                db.update_token_counts(sid, input_tokens=tokens, estimated_cost_usd=0.1)
+                db.end_session(sid, "cron_complete")
         token = set_hermes_home_override(str(home))
         try:
             row = executions.create_execution("shared", source="direct")
@@ -121,6 +126,33 @@ def test_analytics_http_reads_real_profile_stores_and_reports_limited_history(tm
         assert entries["default"]["total_tokens"] == 10
         assert entries["worker"]["history_limited"] is False
         assert entries["worker"]["completed"] == 1
-        assert entries["worker"]["total_tokens"] == 20
+        assert entries["worker"]["total_tokens"] == (20 if worker_store == "initialized" else 0)
+        assert entries["worker"]["usage_runs"] == (1 if worker_store == "initialized" else 0)
+        if worker_store != "initialized":
+            assert entries["worker"]["avg_tokens_per_run"] is None
+            assert entries["worker"]["avg_cost_usd_per_run"] is None
+            path = homes["worker"] / "state.db"
+            assert not path.exists() if worker_store == "missing" else path.stat().st_size == 0
         assert client.get("/api/cron/analytics?days=14").status_code == 400
     assert get_hermes_home_override() == previous_home
+
+
+
+@pytest.mark.parametrize("status, detail", [
+    (503, "Session store is busy (disk I/O or lock). Retry; the list was not cleared."),
+    (503, {"code": "corrupt_store", "message": "Run hermes doctor"}),
+    (500, "Session store is not initialized."),
+])
+def test_analytics_preserves_non_initialization_store_errors(monkeypatch, status, detail):
+    error = HTTPException(status_code=status, detail=detail)
+    monkeypatch.setattr(cron_router, "_list_cron_jobs_sync", lambda profile: [
+        {"id": "shared", "profile": "worker"},
+    ])
+
+    def refuse(profile, *, read_only):
+        raise error
+
+    monkeypatch.setattr(cron_router, "_open_session_db_for_profile", refuse)
+    with pytest.raises(HTTPException) as caught:
+        cron_router._list_cron_analytics_sync("all", 30)
+    assert caught.value is error

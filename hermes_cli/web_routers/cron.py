@@ -629,6 +629,12 @@ def _doc_matches_session(doc_ts: float, session: dict[str, Any], grace_seconds: 
 
 
 _CRON_ANALYTICS_PERIODS = {7, 30, 90}
+_EMPTY_CRON_USAGE_ANALYTICS = {
+    "usage_runs": 0, "total_tokens": 0, "avg_tokens_per_run": None,
+    "total_cost_usd": 0.0, "avg_cost_usd_per_run": None,
+    "actual_cost_runs": 0, "estimated_cost_runs": 0,
+    "unknown_cost_runs": 0, "incomplete_runs": 0,
+}
 
 
 def _list_cron_analytics_sync(profile: str = "all", days: int = 30):
@@ -652,11 +658,20 @@ def _list_cron_analytics_sync(profile: str = "all", days: int = 30):
             selected = str(job.get("profile") or job.get("profile_name") or "default")
             if not job_id:
                 continue
-            db = dbs.get(selected)
-            if db is None:
-                db = _open_session_db_for_profile(selected, read_only=True)
-                dbs[selected] = db
-            usage = db.cron_job_usage_analytics(job_id, since=cutoff_ts)
+            if selected not in dbs:
+                try:
+                    dbs[selected] = _open_session_db_for_profile(selected, read_only=True)
+                except HTTPException as exc:
+                    # Script-only profiles legitimately have ledger history but
+                    # no session store. Suppress only that exact open refusal;
+                    # corruption, contention and schema failures remain errors.
+                    if (exc.status_code != 503 or not isinstance(exc.detail, str)
+                            or not exc.detail.startswith("Session store is not initialized.")):
+                        raise
+                    dbs[selected] = None
+            db = dbs[selected]
+            usage = (db.cron_job_usage_analytics(job_id, since=cutoff_ts)
+                     if db is not None else _EMPTY_CRON_USAGE_ANALYTICS)
             attempts = _cron_execution_analytics_for_profile(selected, job_id, since=cutoff_iso)
             analytics.append({
                 "job_id": job_id,
@@ -667,7 +682,8 @@ def _list_cron_analytics_sync(profile: str = "all", days: int = 30):
             })
     finally:
         for db in dbs.values():
-            db.close()
+            if db is not None:
+                db.close()
     return {"period_days": period_days, "jobs": analytics}
 
 

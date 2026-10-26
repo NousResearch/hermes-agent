@@ -136,7 +136,8 @@ def build_approval_text(req: ApprovalRequest) -> str:
     if req.command_preview or req.cwd:
         lines = ["🔐 **命令执行审批**", ""]
         if req.command_preview:
-            lines.append(f"```\n{req.command_preview[:300]}\n```")
+            from gateway.stream_consumer_fences import escape_code_fences_for_display
+            lines.append(f"```\n{escape_code_fences_for_display(req.command_preview[:300])}\n```")
         if req.cwd:
             lines.append(f"📁 目录: {req.cwd}")
         if req.title and req.title != req.command_preview:

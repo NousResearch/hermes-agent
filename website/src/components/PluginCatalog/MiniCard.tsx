@@ -22,7 +22,7 @@ export default function MiniCard({ plugin }: { plugin: CatalogPlugin }) {
         <span className={styles.miniIcon} aria-hidden="true" title={category.label}>
           {category.icon}
         </span>
-        <span className={styles.miniName}>{plugin.name}</span>
+        <span className={styles.miniName}>{plugin.title || plugin.name}</span>
         <span
           className={styles.tierPill}
           style={{ color: tier.color, background: tier.bg, borderColor: tier.border }}

@@ -140,9 +140,9 @@ function PluginCard({
         <div className={styles.cardTop}>
           <span className={styles.cardIcon} title={category.label}>{category.icon}</span>
           <div className={styles.cardTitleGroup}>
-            <h3 className={styles.cardTitle} title={plugin.name}>
+            <h3 className={styles.cardTitle} title={plugin.title || plugin.name}>
               <Link className={styles.cardTitleLink} to={pagePath} onClick={(e) => e.stopPropagation()}>
-                {highlightMatch(plugin.name, query)}
+                {highlightMatch(plugin.title || plugin.name, query)}
               </Link>
             </h3>
             {typeof plugin.stars === "number" && (
@@ -347,6 +347,7 @@ function PluginCard({
 function buildSearchHaystack(p: CatalogPlugin): string {
   return [
     p.name,
+    p.title,
     p.description,
     p.maintainer,
     p.tier,
@@ -805,7 +806,7 @@ export default function PluginCatalogPage() {
                   categoryOf(featured).label,
                   featured.version && `v${featured.version}`,
                 ]}
-                title={featured.name}
+                title={featured.title || featured.name}
               />
             )}
             {grouped.map(([cat, plugins]) => {

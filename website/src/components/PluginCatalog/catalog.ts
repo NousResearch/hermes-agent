@@ -11,6 +11,7 @@ export interface PluginCapabilities {
 
 export interface CatalogPlugin {
   name: string;
+  title?: string;
   description: string;
   repo: string;
   sha: string;

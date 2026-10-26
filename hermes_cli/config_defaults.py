@@ -2022,6 +2022,11 @@ DEFAULT_CONFIG = {
                 "show_tip", "desktop_project", "close_terminal",
                 "set_theme", "read_terminal", "read_window_below", "focus_pane",
             ],
+            # Tools pinned eager, overriding every deferral rule — including the blanket one
+            # that defers ALL MCP tools. ``defer`` can only add, so this is the only lever for
+            # "this one server stays ambient, the rest go behind the bridge". Exact names, or a
+            # trailing-``*`` prefix (``mcp__qmd__*`` = one whole MCP server).
+            "eager": [],
         },
         # Remote connector discovery/lifecycle through the Nous tool gateway.
         # The flag is the user's off switch; availability additionally requires

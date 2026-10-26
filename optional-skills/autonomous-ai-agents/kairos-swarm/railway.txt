@@ -1,0 +1,9 @@
+# Railway environment variables for Kairos
+PYTHONPATH=/app
+API_HOST=0.0.0.0
+API_PORT=8001
+API_RELOAD=true
+LOG_FILE=logs/kairos.log
+PIP_CACHE_DIR=/tmp/pip_cache
+TMPDIR=/tmp
+TMP=/tmp

@@ -1017,7 +1017,7 @@ A [portable plugin package](../../developer-guide/plugins/index.md#portable-agen
 
 ## MCP Elicitation Support
 
-MCP servers can ask the user for structured input mid-tool-call via the `elicitation/create` protocol (mcp Python SDK ≥ 1.11.0). Hermes routes **form-mode** elicitations through its existing approval surface — an interactive prompt in the CLI/TUI, or approval buttons on gateway platforms like Telegram and Slack — so the request reaches you wherever the session lives. Each answer covers that one request, so the prompt offers only Allow Once and Deny. YOLO and `approvals.mode: off` do not answer these for you: the server is asking you a question, not asking permission. **URL-mode** elicitations (where a server points you at an external URL) are declined as unsupported.
+MCP servers can ask the user for structured input mid-tool-call via the `elicitation/create` protocol (mcp Python SDK ≥ 1.11.0). Hermes asks **form-mode** elicitations on the session's own clarify surface — the question panel in the CLI/TUI, a card in Desktop, the clarify prompt on messaging platforms — so the request reaches you wherever the session lives. Each field the server asks for becomes a question (choices for enums and yes/no fields, free text otherwise); answers are checked against the server's schema (whole numbers, ranges, lengths, `email`/`uri`/`date`/`date-time` formats) and a wrong answer is asked again, twice at most, before the form is declined. Skipping every field of a form with required fields declines; dismissing the prompt cancels. Your answers go to that MCP server only, not into the conversation. A form with no fields is a yes/no question. Where no clarify surface is bound, the request falls back to the approval prompt, which can only answer forms that a single Allow Once can fill. YOLO and `approvals.mode: off` do not answer these for you: the server is asking you a question, not asking permission. Cron and other unattended sessions decline. **URL-mode** elicitations (where a server points you at an external URL) are declined as unsupported.
 
 Elicitation is **enabled by default** per server. Configure it under the `elicitation` key:
 
@@ -1027,10 +1027,10 @@ mcp_servers:
     command: "my-mcp-server"
     elicitation:
       enabled: true    # default: true
-      timeout: 300     # seconds to wait for your answer (default: 300)
+      timeout: 300     # seconds to wait for your answer, for the whole form (default: 300)
 ```
 
-The 5-minute default timeout mirrors the gateway approval default so users on async surfaces have time to respond before the server gives up. Per-server metrics (requests, accepted, declined, errors) are tracked on the handler.
+The 5-minute default timeout mirrors the gateway approval default so users on async surfaces have time to respond before the server gives up. Once it passes, the server is told the request was cancelled and no further question of that form is asked; a question already on screen stays until you answer or dismiss it (or the clarify timeout ends it), and that late answer is discarded. Per-server metrics (requests, accepted, declined, errors) are tracked on the handler.
 
 ## MCP Events (experimental)
 

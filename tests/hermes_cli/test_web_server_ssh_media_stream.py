@@ -284,6 +284,28 @@ def test_a_file_url_off_this_hosts_staging_still_goes_to_the_ssh_workspace(clien
     assert len(asked) == 2
 
 
+@pytest.mark.parametrize("profile", ["remote-dev", "default"])
+def test_a_file_url_with_an_encoded_nul_is_an_invalid_path(client, ssh, monkeypatch, profile):
+    _profile, workspace = ssh
+
+    def refuse(path, *args, **kwargs):  # as the real adapter's path check refuses every file: URL
+        raise ssh_workspace_fs.SshWorkspaceFsError("EINVAL", "Invalid path")
+
+    monkeypatch.setattr(workspace, "read_bytes", refuse)
+    monkeypatch.setattr(workspace, "inspect_file", refuse)
+    query = {"path": "file:///tmp/clip%00.mp4", "profile": profile}
+
+    responses = [
+        client.get("/api/files/stream", params=query),
+        client.get("/api/fs/read-data-url", params=query),
+        client.get("/api/fs/download", params=query),
+    ]
+
+    for response in responses:
+        assert (response.status_code, response.json()) == (400, {"detail": "Invalid path"}), response.request.url
+    assert workspace.reads == []
+
+
 def test_a_down_ssh_host_is_unavailable_to_the_stream(client, ssh, monkeypatch):
     from tools.environments.base import EnvironmentConnectionError
 

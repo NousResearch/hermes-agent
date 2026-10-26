@@ -350,7 +350,7 @@ def _is_host_file(path: str, profile: Optional[str]) -> bool:
         return False
     try:
         target = Path(path).resolve(strict=True)
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):  # ValueError: a decoded NUL (``%00``)
         return False  # not on this host: the workspace's to answer
     with _profile_scope(profile):
         home = get_hermes_home()

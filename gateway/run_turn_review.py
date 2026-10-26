@@ -6,10 +6,15 @@ admission, freezes the terminal review candidate on it, and parks ``finish`` —
 that releases the token and spawns the candidate — where the turn's delivery owner reads it
 (``begin_gateway_review_admission``): the live session Event an adapter task completes with
 its send (``platforms/base_followup_admission.py``), the event a direct-call ingress completes
-itself, or the drain's handover (``session_ingress_review.py``). Ownership is released before
-the spawn hop, and a dropped candidate logs a body-free, owner-tagged slug. A finished admission
-stays bound until the next turn's ``bind_agent``: a hand-off that lands after a cancel completed
-the owner is dropped as ``delivery_unconfirmed``, never spawned through the facade.
+itself, or the drain's handover (``session_ingress_review.py``). A direct-call ingress's turn
+may run on another object than the one it was dispatched with (a ``pre_gateway_dispatch``
+rewrite copy, the orphan the FIFO rescue runs instead): its marker rides the turn
+(``carry_direct_call_ingress``) and the completion is re-homed onto the dispatched object once
+the handler returns (``rehome_turn_completion``), so the owner that reads that object completes
+it. Ownership is released before the spawn hop, and a dropped candidate logs a body-free,
+owner-tagged slug. A finished admission stays bound until the next turn's ``bind_agent``: a
+hand-off that lands after a cancel completed the owner is dropped as ``delivery_unconfirmed``,
+never spawned through the facade.
 """
 
 from __future__ import annotations
@@ -292,7 +297,9 @@ async def begin_gateway_review_admission(
     CLI->gateway handoff; the turn ``/retry`` nests, re-homed onto the command event its inline
     dispatch completes) — it may run beside a live adapter task on the same chat, whose Event
     carries that task's own completion, or beside a drain task that reads the guard it
-    installed."""
+    installed. ``event`` is the object the turn runs on; ``_handle_message`` carries the
+    direct-call marker onto it when it swapped the dispatched object for a copy or an orphan,
+    and moves the completion back once the handler returns."""
     from agent import review_admission
     from hermes_constants import hermes_home_key
 
@@ -311,3 +318,28 @@ async def begin_gateway_review_admission(
             )
     delivery_carrier._gateway_review_delivery_complete = admission.finish
     return admission
+
+
+def carry_direct_call_ingress(dispatched: Any, event: Any) -> None:
+    """``_handle_message`` runs the turn on ``event``, which may not be the object it was
+    dispatched with: a ``pre_gateway_dispatch`` rewrite is a ``dataclasses.replace`` copy,
+    and the FIFO orphan rescue runs the oldest orphan instead. A dynamic attribute survives
+    neither, so a direct-call ingress's marker is carried onto the turn's event: the
+    completion parks there, never on the chat's live adapter guard (whose task completes
+    its own turn) and never on a copy nobody reads."""
+    if event is not dispatched and getattr(
+        dispatched, "_gateway_review_completes_on_event", False
+    ):
+        event._gateway_review_completes_on_event = True
+
+
+def rehome_turn_completion(dispatched: Any, event: Any) -> None:
+    """Once the handler returns, the completion parked on the event the turn ran on belongs
+    on the object the caller dispatched: that is what its owner reads (``/retry``'s re-home
+    onto the command event, the drain's handover, the handoff's ``finally``). A no-op when
+    the turn ran on the dispatched object or parked nothing on the other one."""
+    if event is dispatched:
+        return
+    from gateway.slash_commands_session import rehome_review_delivery_completion
+
+    rehome_review_delivery_completion(event, dispatched)

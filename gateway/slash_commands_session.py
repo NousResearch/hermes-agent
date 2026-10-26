@@ -141,7 +141,9 @@ def rehome_review_delivery_completion(nested_event: MessageEvent, carrier: Messa
     A handler that nests a turn through an event it built itself (``/retry``) leaves that
     turn's review-ownership completion on the synthetic event: in-process,
     ``gateway.run_turn_review.begin_gateway_review_admission`` parks a direct-call ingress's
-    completion on the event it was dispatched with (``_gateway_review_completes_on_event``);
+    completion on the event it was dispatched with (``_gateway_review_completes_on_event``;
+    ``_handle_message`` moves it back there when the turn ran on a rewrite copy or a rescued
+    orphan instead);
     under a session authority the drain executes the turn and ``admit_message`` adopts the
     completion onto the event it waited with (``gateway.session_ingress_review``). No delivery
     path reads that event, so the token would stay live for the process lifetime. ``carrier``

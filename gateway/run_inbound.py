@@ -1253,6 +1253,11 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         """Handle an incoming message from any platform: auth → command check → running-agent
         interrupt → get/create session → build context → run agent → return response."""
         from gateway.run import _AGENT_PENDING_SENTINEL
+        from gateway.run_turn_review import carry_direct_call_ingress, rehome_turn_completion
+        # The object the caller dispatched: a direct-call ingress (the drain's executed row, a
+        # /retry re-send, the handoff) reads its turn's review completion off THIS object, while
+        # the turn may run on a rewrite copy or a rescued orphan (below).
+        dispatched = event
         _admitted = await self._hm_admit_event(event)
         if _admitted is None:
             return None
@@ -1317,6 +1322,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             return _limit_message
 
         event, source, is_internal = self._hm_rescue_orphaned_fifo(event, source, is_internal, _quick_key)
+        carry_direct_call_ingress(dispatched, event)
 
         _claim_state = self._session_state(_quick_key)
         if _active_session_lease is not None:
@@ -1358,6 +1364,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             # One-shot restore (/moa, /model --once) must run on EVERY exit path (success,
             # exception, interrupt); the generation guard makes a displaced turn's finalizer a no-op.
             self._restore_pending_one_turn_model_override(_quick_key, _run_generation)
+            rehome_turn_completion(dispatched, event)
             # SIGKILL/OOM skips finally, leaving the durable marker for the next unclean startup's
             # recovery pass. A turn the adapter delivers hands its marker to that lifecycle, which
             # clears it only once the reply is in the delivery ledger (else a kill in between

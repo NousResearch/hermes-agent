@@ -277,9 +277,11 @@ phone-specific notes:
   against the dossier before recording `found`.
 - **The page answers "whose number is this".** Running it reveals the subscriber behind the
   number - only run phone vectors on the consenting subject's own numbers.
-- **Two known domains refuse the static rung**: nuwber.com and clustrmaps.com resolve to
-  ranges the `web_extract` SSRF guard rejects ('private or internal network address') -
-  take their phone vectors straight to the browser rung instead of retry-looping.
+- **An SSRF-guard refusal can mean the broker is dead, not blocked.** A 'URL targets a private
+  or internal network address' refusal is the fetch guard refusing what DNS actually returns -
+  check the domain against a public resolver before rerunning through a browser: nuwber.com
+  (NXDOMAIN) and clustrmaps.com (public DNS answering 127.0.0.1) both turned out defunct,
+  their 'blocks' being DNS kill-switches. A dead domain is `not_found`, not `blocked`.
 
 **DNC one-shot** (`pdd.py dnc <subject>`, surfaced by `next` for US subjects with phones until
 `--filed`): register on the FTC's National Do Not Call Registry. Free, personal numbers only

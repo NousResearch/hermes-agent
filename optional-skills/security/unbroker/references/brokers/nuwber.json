@@ -3,7 +3,9 @@
   "name": "Nuwber",
   "category": "people_search",
   "priority": "high",
-  "jurisdictions": ["US"],
+  "jurisdictions": [
+    "US"
+  ],
   "parent": "nuwber",
   "owns": [],
   "search": {
@@ -12,9 +14,13 @@
     "fetch": "browser",
     "match_signal": "result",
     "antibot": "cloudflare",
-    "by": ["name", "phone", "address"],
+    "by": [
+      "name",
+      "phone",
+      "address"
+    ],
     "url_format_quirks": [
-      "TOOL QUIRK: this domain resolves to a range the Hermes web_extract SSRF guard refuses ('URL targets a private or internal network address'); take the phone vector straight to the browser rung instead of retrying web_extract."
+      "DEFUNCT: the domain no longer resolves (NXDOMAIN; NS records remain at Cloudflare but no A record - confirmed via 1.1.1.1, verified live 2026-10-26). Scan/opt-out moot; record not_found citing this. NOTE: an earlier quirk blamed the Hermes web_extract SSRF guard for unreachable scans - that was this same DNS state misread; the guard was correct to refuse."
     ]
   },
   "optout": {
@@ -30,12 +36,16 @@
       "phone_callback": false,
       "payment": false
     },
-    "inputs": ["contact_email", "profile_url"],
-    "notes": "People-search. Opt-out: submit the profile URL + email at /removal/link, confirm via the emailed link.",
+    "inputs": [
+      "contact_email",
+      "profile_url"
+    ],
+    "notes": "People-search. Opt-out: submit the profile URL + email at /removal/link, confirm via the emailed link. DEFUNCT: the domain no longer resolves (NXDOMAIN; NS records remain at Cloudflare but no A record - confirmed via 1.1.1.1, verified live 2026-10-26). Scan/opt-out moot; record not_found citing this. NOTE: an earlier quirk blamed the Hermes web_extract SSRF guard for unreachable scans - that was this same DNS state misread; the guard was correct to refuse.",
     "quirks": [
       "Opt-out URL is the documented public endpoint; datacenter IPs get 403 (anti-bot), so confirm the live flow via the operator's residential browser before the first submission, then set last_verified.",
       "Needs the confirmed profile_url (paste the listing URL you recorded).",
-      "Email verification required."
+      "Email verification required.",
+      "DEFUNCT: the domain no longer resolves (NXDOMAIN; NS records remain at Cloudflare but no A record - confirmed via 1.1.1.1, verified live 2026-10-26). Scan/opt-out moot; record not_found citing this. NOTE: an earlier quirk blamed the Hermes web_extract SSRF guard for unreachable scans - that was this same DNS state misread; the guard was correct to refuse."
     ],
     "est_processing_days": 3,
     "reappearance_risk": "medium"

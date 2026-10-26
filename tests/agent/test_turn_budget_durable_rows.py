@@ -115,3 +115,25 @@ def test_spilled_full_body_stays_searchable_and_next_flush_appends_once(agent_an
     assert agent._flush_messages_to_session_db(messages) is True
     replay = db.get_messages_as_conversation(agent.session_id, repair_alternation=True)
     assert [m["role"] for m in replay] == ["user", "assistant", "tool", "tool", "assistant"]
+
+
+
+def test_a_process_that_lost_the_turn_lease_leaves_the_rows_alone(agent_and_db):
+    agent, db = agent_and_db
+    assert db.try_acquire_session_turn_lease(agent.session_id, "process-a", ttl_seconds=60)
+    agent._active_session_turn_lease_holder = "process-a"
+    rewrite = db.rewrite_pruned_rows
+
+    def taken_over_first(*args, **kwargs):
+        # Another process takes the turn after A flushed the full rows and before A's rewrite commits.
+        db.release_session_turn_lease(agent.session_id, "process-a")
+        assert db.try_acquire_session_turn_lease(agent.session_id, "process-b", ttl_seconds=60)
+        return rewrite(*args, **kwargs)
+
+    db.rewrite_pruned_rows = taken_over_first
+    calls = [_tc("web_search", '{"query":"a"}', "l-large-1"), _tc("web_search", '{"query":"b"}', "l-large-2")]
+    _run_batch(agent, calls)
+
+    stored = [m["content"] for m in db.get_messages_as_conversation(agent.session_id) if m.get("role") == "tool"]
+    assert stored and all(_LARGE in body and PERSISTED_OUTPUT_TAG not in body for body in stored), (
+        "a rewrite under another process's lease must not land")

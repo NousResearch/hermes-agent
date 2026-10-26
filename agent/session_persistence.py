@@ -276,11 +276,14 @@ def sync_rewritten_tool_rows(agent, batch: list[dict], contents_before: list[Any
         return 0
     rows = [(_db_flush_row(agent, {**msg, "content": before}, False), _db_flush_row(agent, msg, False))
             for msg, before in changed]
-    from hermes_state_errors import PruneRowUnresolvedError
+    from hermes_state_errors import PruneRowUnresolvedError, SessionTurnLeaseLostError
     try:
         with _persist_lock(agent):
-            written = rewrite(session_id, rows)
-    except PruneRowUnresolvedError as exc:  # PruneRowStaleError included: another writer owns the row now
+            written = rewrite(
+                session_id, rows, turn_lease_holder=getattr(agent, "_active_session_turn_lease_holder", None),
+                turn_lease_ttl_seconds=getattr(agent, "_active_session_turn_lease_ttl_seconds", 300.0) or 300.0,
+            )
+    except (PruneRowUnresolvedError, SessionTurnLeaseLostError) as exc:  # another writer owns the row or turn
         logger.info("Tool-result rewrite not persisted; the stored row keeps the full body: %s", exc)
         return 0
     except Exception as exc:  # health: allow BLE001 -- a store failure must not fail the turn; the row keeps its body

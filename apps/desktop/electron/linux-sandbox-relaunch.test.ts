@@ -1,8 +1,22 @@
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+
 import { describe, expect, it, vi } from 'vitest'
 
 import { linuxNoSandboxRelaunch } from './linux-sandbox-relaunch'
 
 const argv = ['/opt/Hermes/hermes', '--ozone-platform=x11', 'hermes://session/abc']
+
+function restoreEnv(saved: NodeJS.ProcessEnv) {
+  for (const key of Object.keys(process.env)) {
+    if (!(key in saved)) {
+      delete process.env[key]
+    }
+  }
+
+  Object.assign(process.env, saved)
+}
 
 describe('Linux runtime --no-sandbox relaunch', () => {
   it('moves a runtime-only --no-sandbox onto argv exactly once', () => {
@@ -14,7 +28,10 @@ describe('Linux runtime --no-sandbox relaunch', () => {
       launchedWithoutSandbox: false
     })
 
-    expect(relaunch).toEqual({ args: ['--ozone-platform=x11', 'hermes://session/abc', '--no-sandbox'] })
+    expect(relaunch).toEqual({
+      args: ['--ozone-platform=x11', 'hermes://session/abc', '--no-sandbox'],
+      strategy: { kind: 'electron' }
+    })
 
     // The relaunched process started unsandboxed, so it never restarts again.
     expect(
@@ -78,6 +95,7 @@ describe('Linux runtime --no-sandbox relaunch', () => {
         relaunch: () => {
           relaunchEnv = { ...process.env }
         },
+        releaseSingleInstanceLock: () => undefined,
         exit: () => undefined
       })
 
@@ -85,14 +103,80 @@ describe('Linux runtime --no-sandbox relaunch', () => {
       expect(relaunchEnv.TMPDIR).toBe(shortDir)
       expect(relaunchEnv.HERMES_DESKTOP_TMPDIR).toBe(longDir)
     } finally {
-      for (const key of Object.keys(process.env)) {
-        if (!(key in saved)) {
-          delete process.env[key]
-        }
-      }
-
-      Object.assign(process.env, saved)
+      restoreEnv(saved)
     }
+  })
+
+  // Electron's relauncher execs its target with PR_SET_NO_NEW_PRIVS: the image's
+  // runtime then cannot FUSE-mount, and the old mount dies with this process.
+  it.skipIf(process.platform !== 'linux')(
+    'starts a mounted AppImage again as a detached child after dropping the lock',
+    async () => {
+      const saved = { ...process.env }
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-appimage-relaunch-'))
+      const report = path.join(dir, 'report')
+      const image = path.join(dir, 'Hermes.AppImage')
+      const shortDir = '/run/user/1000/hermes-desktop'
+      const events: string[] = []
+
+      fs.writeFileSync(
+        image,
+        `#!/bin/sh\nprintf '%s\\n' "$*" "$(cut -d' ' -f6 /proc/$$/stat) $$" "$TMPDIR" "\${HERMES_DESKTOP_READY_FD:-unset}" > "${report}.part"\nmv "${report}.part" "${report}"\n`,
+        { mode: 0o755 }
+      )
+
+      try {
+        process.env.TMPDIR = shortDir
+        process.env.HERMES_DESKTOP_TMPDIR = dir
+        process.env.HERMES_DESKTOP_READY_FD = '3'
+        delete process.env.ELECTRON_DISABLE_SANDBOX
+        vi.resetModules()
+        const { relaunchIfNoSandboxCameTooLate } = await import('./linux-sandbox-relaunch')
+
+        process.env.TMPDIR = dir
+        delete process.env.HERMES_DESKTOP_TMPDIR
+        process.env.APPIMAGE = image
+        process.env.APPDIR = path.dirname(process.execPath)
+
+        relaunchIfNoSandboxCameTooLate({
+          commandLine: { hasSwitch: name => name === 'no-sandbox' },
+          relaunch: () => events.push('relaunch'),
+          releaseSingleInstanceLock: () => events.push('release'),
+          exit: () => events.push('exit')
+        })
+
+        await vi.waitFor(() => expect(fs.existsSync(report)).toBe(true), { timeout: 5000 })
+        const [args, session, tmpdir, readyFd] = fs.readFileSync(report, 'utf8').split('\n')
+        const [sid, pid] = session.split(' ')
+
+        expect(events).toEqual(['release', 'exit'])
+        expect(args.split(' ').at(-1)).toBe('--no-sandbox')
+        // Its own session: nothing that ends this process's session takes it down.
+        expect(sid).toBe(pid)
+        expect(tmpdir).toBe(shortDir)
+        expect(readyFd).toBe('unset')
+      } finally {
+        restoreEnv(saved)
+        fs.rmSync(dir, { recursive: true, force: true })
+      }
+    }
+  )
+
+  // --appimage-extract-and-run users run without FUSE, which the image needs;
+  // the extracted directory is a plain one Electron can relaunch from.
+  it('relaunches the extracted executable of --appimage-extract-and-run, not the image', () => {
+    const appDir = '/run/user/1000/appimage_extracted_0123456789abcdef'
+
+    expect(
+      linuxNoSandboxRelaunch({
+        platform: 'linux',
+        runtimeNoSandbox: true,
+        argv: [`${appDir}/hermes`],
+        execPath: `${appDir}/hermes`,
+        env: { APPIMAGE: '/home/u/Apps/Hermes.AppImage', APPDIR: appDir },
+        launchedWithoutSandbox: false
+      })
+    ).toEqual({ args: ['--no-sandbox'], strategy: { kind: 'electron' } })
   })
 
   it('relaunches the AppImage itself rather than its vanishing mount', () => {
@@ -105,7 +189,10 @@ describe('Linux runtime --no-sandbox relaunch', () => {
       launchedWithoutSandbox: false
     })
 
-    expect(relaunch).toEqual({ args: ['--no-sandbox'], execPath: '/home/u/Apps/Hermes.AppImage' })
+    expect(relaunch).toEqual({
+      args: ['--no-sandbox'],
+      strategy: { kind: 'appimage', image: '/home/u/Apps/Hermes.AppImage' }
+    })
   })
 
   // The type-2 runtime mounts under $TMPDIR/.mount_<name><random>; a launch that
@@ -120,7 +207,10 @@ describe('Linux runtime --no-sandbox relaunch', () => {
       launchedWithoutSandbox: false
     })
 
-    expect(relaunch).toEqual({ args: ['--no-sandbox'], execPath: '/home/u/Apps/Hermes.AppImage' })
+    expect(relaunch).toEqual({
+      args: ['--no-sandbox'],
+      strategy: { kind: 'appimage', image: '/home/u/Apps/Hermes.AppImage' }
+    })
   })
 
   // AppImage apps (terminals, IDEs) export APPIMAGE/APPDIR to everything they
@@ -140,7 +230,10 @@ describe('Linux runtime --no-sandbox relaunch', () => {
           env,
           launchedWithoutSandbox: false
         })
-      ).toEqual({ args: ['--ozone-platform=x11', 'hermes://session/abc', '--no-sandbox'] })
+      ).toEqual({
+        args: ['--ozone-platform=x11', 'hermes://session/abc', '--no-sandbox'],
+        strategy: { kind: 'electron' }
+      })
     }
   })
 })

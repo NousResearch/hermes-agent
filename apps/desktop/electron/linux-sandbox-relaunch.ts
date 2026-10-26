@@ -17,12 +17,12 @@
 // `hermes desktop` — restarts once with the flag on argv instead.
 
 import { LAUNCHER_READY_FD_ENV } from './linux-launcher-ready'
-import { relaunchExecPath } from './relaunch-target'
+import { type RelaunchHost, relaunchNow, type RelaunchStrategy, relaunchStrategy } from './relaunch-target'
 import { alreadyHasNoSandbox, buildNoSandboxRelaunchArgs } from './windows-sandbox-fallback'
 
 export interface SandboxRelaunch {
   args: string[]
-  execPath?: string
+  strategy: RelaunchStrategy
 }
 
 // Captured when this module is evaluated, before main.ts sets
@@ -64,21 +64,20 @@ export function linuxNoSandboxRelaunch(options: {
     return null
   }
 
-  const args = buildNoSandboxRelaunchArgs(options.argv.slice(1))
-  const execPath = relaunchExecPath(options.execPath ?? process.execPath, options.env)
-
-  return execPath ? { args, execPath } : { args }
+  return {
+    args: buildNoSandboxRelaunchArgs(options.argv.slice(1)),
+    strategy: relaunchStrategy(options.execPath ?? process.execPath, options.env)
+  }
 }
 
-interface RelaunchHost {
+interface SandboxRelaunchHost extends RelaunchHost {
   commandLine: { hasSwitch(name: string): boolean }
-  relaunch(options: SandboxRelaunch): void
   exit(code: number): void
 }
 
 // Call once, in the lock-owning instance, after every runtime switch source
 // (sandbox ladder, config.yaml) has run and before `ready`.
-export function relaunchIfNoSandboxCameTooLate(host: RelaunchHost): boolean {
+export function relaunchIfNoSandboxCameTooLate(host: SandboxRelaunchHost): boolean {
   const relaunch = linuxNoSandboxRelaunch({
     platform: process.platform,
     runtimeNoSandbox: host.commandLine.hasSwitch('no-sandbox'),
@@ -96,7 +95,7 @@ export function relaunchIfNoSandboxCameTooLate(host: RelaunchHost): boolean {
   // file reuses that descriptor.
   delete process.env[LAUNCHER_READY_FD_ENV]
   restoreLaunchTmpdir(process.env)
-  host.relaunch(relaunch)
+  relaunchNow(host, relaunch.args, relaunch.strategy, process.env)
   host.exit(0)
 
   return true

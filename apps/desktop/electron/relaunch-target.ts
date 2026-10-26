@@ -1,7 +1,23 @@
+import { spawn } from 'node:child_process'
+import fs from 'node:fs'
 import path from 'node:path'
 
 // AppImage is Linux-only; POSIX semantics keep the answer identical on every test host.
 const posix = path.posix
+
+function isInside(dir: string, file: string): boolean {
+  const inside = posix.relative(dir, file)
+
+  return Boolean(inside) && !inside.startsWith('..') && !posix.isAbsolute(inside)
+}
+
+function realpathOrNull(target: string): string | null {
+  try {
+    return fs.realpathSync(target)
+  } catch {
+    return null
+  }
+}
 
 /**
  * The AppImage file this executable runs from, or undefined when it is not one.
@@ -29,19 +45,72 @@ export function ownAppImage(execPath: string, env: NodeJS.ProcessEnv): string | 
     return posix.dirname(exe).split('/').some(segment => segment.startsWith('.mount_')) ? appImage : undefined
   }
 
-  const inside = posix.relative(posix.resolve(appDir), exe)
+  if (isInside(posix.resolve(appDir), exe)) {
+    return appImage
+  }
 
-  return inside && !inside.startsWith('..') && !posix.isAbsolute(inside) ? appImage : undefined
+  // The runtime builds APPDIR from the raw $TMPDIR, while process.execPath has
+  // its symlinks resolved: TMPDIR=~/tmp on Fedora Atomic (/home -> /var/home).
+  const realAppDir = realpathOrNull(appDir)
+  const realExe = realpathOrNull(exe)
+
+  return realAppDir && realExe && isInside(realAppDir, realExe) ? appImage : undefined
+}
+
+export type RelaunchStrategy =
+  /** Electron's app.relaunch(): process.execPath again once this process exits. */
+  | { kind: 'electron' }
+  /** A FUSE-mounted AppImage: the image file again, started now as a detached child. */
+  | { kind: 'appimage'; image: string }
+
+/**
+ * How this app starts itself again.
+ *
+ * Electron's relauncher execs its target with PR_SET_NO_NEW_PRIVS, so a
+ * relaunched AppImage runtime cannot mount through the setuid fusermount
+ * (EPERM, exit 127), and process.execPath lives in this process's FUSE mount,
+ * which the runtime unmounts as soon as we exit. A mounted AppImage therefore
+ * starts its image file as an ordinary child. Under --appimage-extract-and-run
+ * APPDIR is a plain directory and the image would need the FUSE those users
+ * lack, so the executable in it is relaunched as usual.
+ */
+export function relaunchStrategy(
+  execPath: string = process.execPath,
+  env: NodeJS.ProcessEnv = process.env
+): RelaunchStrategy {
+  const image = ownAppImage(execPath, env)
+
+  if (!image || (env.APPDIR && posix.basename(posix.resolve(env.APPDIR)).startsWith('appimage_extracted_'))) {
+    return { kind: 'electron' }
+  }
+
+  return { kind: 'appimage', image }
+}
+
+export interface RelaunchHost {
+  relaunch(options: { args: string[] }): void
+  releaseSingleInstanceLock(): void
 }
 
 /**
- * The executable that starts this app again, or undefined for Electron's
- * default (process.execPath). A real AppImage runs from a mount that
- * disappears when this process exits, so it relaunches the image file instead.
+ * Start this app again with `args`; the caller exits right after.
+ * The detached child outlives this process (and its mount) and takes the
+ * single-instance lock itself, so the lock is dropped first.
  */
-export function relaunchExecPath(
-  execPath: string = process.execPath,
+export function relaunchNow(
+  host: RelaunchHost,
+  args: string[],
+  strategy: RelaunchStrategy = relaunchStrategy(),
   env: NodeJS.ProcessEnv = process.env
-): string | undefined {
-  return ownAppImage(execPath, env)
+): void {
+  if (strategy.kind === 'electron') {
+    host.relaunch({ args })
+
+    return
+  }
+
+  host.releaseSingleInstanceLock()
+  const child = spawn(strategy.image, args, { detached: true, stdio: 'ignore', env })
+  child.on('error', error => console.error(`[hermes] relaunching ${strategy.image} failed: ${error.message}`))
+  child.unref()
 }

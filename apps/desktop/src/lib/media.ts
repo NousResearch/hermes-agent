@@ -1,6 +1,6 @@
 import { fileUrlToNativePath, LOCAL_CONNECTION_ID } from '@hermes/shared'
 
-import { capabilityScoped, hermesApi, type OwnerScope } from '@/api/client'
+import { capabilityScoped, hermesApi, type OwnerScope, sessionFileOwnerScope } from '@/api/client'
 import type { HermesConnection } from '@/global'
 import { translateNow } from '@/i18n'
 import { desktopFsCacheKey, isReadFileErrorResult, readDesktopFileDataUrl } from '@/lib/desktop-fs'
@@ -239,7 +239,7 @@ export function rememberMediaImageFailure(key: string): void {
 // Audio/video need a seekable source instead of a whole-file data URL. Keep
 // remote URLs untouched. The Webapp supplies an authenticated HTTP source;
 // Electron's media protocol reads local files or proxies remote gateways.
-export async function resolveMediaPlaybackSrc(path: string, owner?: OwnerScope): Promise<string> {
+export async function resolveMediaPlaybackSrc(path: string, owner?: OwnerScope, sessionId?: string): Promise<string> {
   if (isInlineMediaSrc(path)) {
     return path
   }
@@ -247,13 +247,18 @@ export async function resolveMediaPlaybackSrc(path: string, owner?: OwnerScope):
   if (window.hermesDesktop && ['audio', 'video'].includes(mediaKind(path))) {
     if (window.hermesDesktop.getGatewayFileStreamUrl) {
       const conn = $connection.get()
+      // A Docker agent's /workspace is its session's own sandbox. The session id goes only with
+      // the profile that owns it; with no known owner the clip names no session.
+      const session = sessionId ? sessionFileOwnerScope(sessionId) : null
+      const via = session ?? owner
 
       // A tile keeps its owner's profile for every ticket, renewals included, as its image reads do.
       return window.hermesDesktop.getGatewayFileStreamUrl({
-        connectionId: owner?.connectionId || conn?.connectionId,
+        connectionId: via?.connectionId || conn?.connectionId,
         // The gateway OS owns file-URI conversion, including drive letters and UNC hosts.
         path,
-        profile: owner?.profile || conn?.profile
+        profile: via?.profile || conn?.profile,
+        ...(session ? { sessionId } : {})
       })
     }
 

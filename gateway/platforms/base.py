@@ -1004,13 +1004,13 @@ def _warn_unresolved_docker_media(candidate: Path, session_key: str, reason: str
 
 
 def _translate_docker_container_media_path(
-    candidate: Path, session_key: str = "", workspace_key: str = "", *, quiet: bool = False,
+    candidate: Path, session_key: str = "", workspace_key: str = "", *, quiet: bool = False, workspace_cwd: str = "",
 ) -> Optional[Path]:
     """Container-absolute path -> host path via longest-prefix match over ``docker_volumes``, the
     auto-mounted cache dirs (``/root/.hermes/...``), persistent ``/workspace`` and ``/root``.
 
-    ``workspace_key`` is the 16-hex digest of one session's host cwd. It selects that
-    session's ``<base>:ws:<digest>`` sandbox and is empty for MEDIA delivery.
+    ``workspace_key`` is the 16-hex digest of one session's host cwd ``workspace_cwd`` (its cwd
+    mount). It selects that session's ``<base>:ws:<digest>`` sandbox and is empty for MEDIA delivery.
     """
     if not candidate.as_posix().startswith("/"):  # POSIX even on Windows gateways (not is_absolute)
         return None
@@ -1029,7 +1029,7 @@ def _translate_docker_container_media_path(
     if "/workspace" not in mounted:
         mounts.extend(
             (root, Path("/workspace"))
-            for root in _default_docker_workspace_host_roots(session_key, workspace_key))
+            for root in _default_docker_workspace_host_roots(session_key, workspace_key, workspace_cwd))
     # Synthetic /root mounts catch stray home writes (/root/out.png; cache mounts are longer
     # prefixes). /root/.hermes/* that missed a cache mount is the container's credential surface —
     # translating it via the home mount would dodge the host denylist.

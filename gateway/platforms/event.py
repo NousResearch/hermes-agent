@@ -114,6 +114,10 @@ class MessageEvent:
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
+    # Set when ``admit_internal_event`` hands its producer a receipt before any drain began. The
+    # producer will not retry, so a restart drain runs this event instead of refusing it at the
+    # drain gate or discarding it as a queued follow-up (#138123).
+    _admitted_before_drain: bool = field(default=False, init=False, repr=False, compare=False)
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
 

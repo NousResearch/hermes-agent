@@ -111,6 +111,7 @@ import { pluginDecisions, profiles, skills, toolsets } from './bridge'
 import { composerHost } from './composer'
 import { i18nHost } from './i18n'
 import { planPluginOpenSession } from './plugin-open-session-plan'
+import { dropLeftoverProfilePrefs, warmProfile } from './profile-local'
 import {
   type PluginProfileRequestOptions,
   type PluginProfileRoute,
@@ -652,27 +653,8 @@ export const host = {
     syncWorkspaceRoute(to)
   },
 
-  /** Pre-dial a profile's gateway socket in the background — pool-only, no
-   *  activation, no navigation, no scope change. Delegates to
-   *  prewarmProfileBackend so plugin surfaces get the SAME pool-saturation
-   *  guard, hover dwell, and per-profile throttle as the built-in rail
-   *  (#91545): a pointer sweep across a plugin roster (bot-row's
-   *  onPointerEnter fires with no dwell of its own) previously spawned at
-   *  pointer speed, filled the local backend pool past maxBackends, and left
-   *  the next profile's spawn queued until the 30s slot timeout — observed
-   *  as a profile surface that hangs forever while every other profile
-   *  renders. It already no-ops for shared-remote routes and the primary.
-   *  Fire-and-forget: failures are swallowed — the click path re-runs its
-   *  own ensure and surfaces errors properly. */
-  warmProfile: (profile: string): void => {
-    const name = (profile ?? '').trim()
-
-    if (!name) {
-      return
-    }
-
-    prewarmProfileBackend(name)
-  },
+  warmProfile,
+  dropLeftoverProfilePrefs,
 
   /** Delete a profile THROUGH the desktop's teardown-routed REST path — the
    *  same door core surfaces use (DeleteProfileDialog). Electron intercepts

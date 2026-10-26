@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useState } from 'react'
 
 import { restoreListedSession } from '@/app/session/hooks/use-session-actions/utils'
@@ -22,7 +23,7 @@ import { purgeInFlightTurnJournals } from '@/lib/inflight-turn-journal'
 import { isBrowserHostedDesktop } from '@/lib/platform'
 import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
-import { applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd } from '@/store/session'
+import { $connection, applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd } from '@/store/session'
 import { untombstoneSessions } from '@/store/session-removal'
 import { forgetSessionUnread } from '@/store/session-unread'
 import { listEveryArchivedSession } from '@/store/sidebar-archive'
@@ -329,6 +330,7 @@ function AutoArchiveSetting() {
 function DefaultProjectDirSetting() {
   const { t } = useI18n()
   const s = t.settings.sessions
+  const profile = useStore($connection)?.profile ?? ''
   const [dir, setDir] = useState<null | string>(null)
   const [fallback, setFallback] = useState<string>('')
   const [busy, setBusy] = useState(false)
@@ -347,6 +349,13 @@ function DefaultProjectDirSetting() {
 
     let alive = true
 
+    // The folder on screen belongs to the profile this effect loaded. Drop it
+    // on a switch so the next paint and the next save both use the profile
+    // that is open now.
+    if (isBrowserHostedDesktop()) {
+      setDir(null)
+    }
+
     void settings.getDefaultProjectDir().then(result => {
       if (!alive) {
         return
@@ -360,7 +369,7 @@ function DefaultProjectDirSetting() {
     return () => {
       alive = false
     }
-  }, [])
+  }, [profile])
 
   const choose = useCallback(async () => {
     const settings = window.hermesDesktop?.settings

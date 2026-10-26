@@ -1635,6 +1635,7 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
     the main agent model (config ``model:``, then HERMES_MODEL) > the claimed welcome trial's. Re-read
     every tick (no cache) so ``hermes cron edit --model`` and ``hermes model`` both apply next tick."""
     from hermes_cli.anon_auth import trial_model
+    from hermes_cli.config_backend import config_exists
     model = job.get("model") or cron_env_setting("HERMES_MODEL") or ""
     _cron_default_provider = ""
     _cfg: dict = {}
@@ -1642,7 +1643,7 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
     try:
         from hermes_cli.config_effective import load_user_config_effective
         _cfg_path = str(_get_hermes_home() / "config.yaml")
-        if os.path.exists(_cfg_path):
+        if config_exists(_cfg_path):
             _cfg = load_user_config_effective(Path(_cfg_path))
             # Coerce null to {} so a falsy default never clobbers a resolved env value.
             _model_cfg = _cfg.get("model") or {}
@@ -4081,7 +4082,8 @@ def _maybe_run_worktree_maintenance() -> None:
     """Throttled worktree prune from the cron tick, on a daemon thread so the tick never waits on
     git. Same pruner as ``hermes -w`` startup (idle dirty/unpushed trees archived before removal,
     live trees untouched). Discovery is throttled per profile home, the prune once per repo across
-    served profiles. Runs in a copy of the caller's context (profile-home override); never raises."""
+    served profiles, and ``cron.scheduler_worktree_maintenance`` runs one sweep at a time per
+    process. Runs in a copy of the caller's context (profile-home override); never raises."""
     global _last_worktree_maintenance_at
     import contextvars
 
@@ -4097,20 +4099,10 @@ def _maybe_run_worktree_maintenance() -> None:
         _last_worktree_maintenance_at = {**stamps, home: now}
 
     def _run() -> None:
-        try:
-            from cron.scheduler_worktree_maintenance import claim_due_worktree_repos as claim
-            repos = claim(_worktree_maintenance_repos(), _WORKTREE_MAINTENANCE_INTERVAL_SECONDS)
-            if not repos:
-                return
-            from hermes_cli.worktree_ops import _prune_stale_worktrees
+        from cron.scheduler_worktree_maintenance import run_sweep
 
-            for repo in repos:
-                try:
-                    _prune_stale_worktrees(repo)
-                except Exception:
-                    logger.debug("Cron worktree maintenance failed for %s", repo, exc_info=True)
-        except Exception:
-            logger.debug("Cron worktree maintenance skipped", exc_info=True)
+        run_sweep(_worktree_maintenance_repos,
+                  interval_seconds=_WORKTREE_MAINTENANCE_INTERVAL_SECONDS)
 
     threading.Thread(target=contextvars.copy_context().run, args=(_run,), name="cron-worktree-prune",
                      daemon=True).start()

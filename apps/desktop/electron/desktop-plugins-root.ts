@@ -29,6 +29,10 @@ export interface DesktopHalfMarker {
   source: string
   /** mtimeMs of the source `plugin.js` at copy time; a newer source re-copies. */
   sourceMtimeMs: number
+  /** The package folder is a symlink (a dev checkout linked into `plugins/`):
+   *  the copy re-syncs on ANY byte difference and the renderer watches the
+   *  source, so saving the checkout hot-reloads the pane. */
+  linked?: boolean
   /** Where the PACKAGE came from, so "Install here" can install its agent half
    *  into another profile: the catalog sidecar's repo/sha, else the git remote. */
   repo?: string
@@ -67,6 +71,30 @@ async function packageOrigin(packageDir: string): Promise<Pick<DesktopHalfMarker
   return {}
 }
 
+const rootWriters = new Map<string, Promise<unknown>>()
+
+/** Run `task` once every earlier writer of the same app root has settled.
+ *  Every writer of `<root>` (each window's 5 s disk poll and its Plugins page,
+ *  the install/uninstall IPC) runs in this one main process, and each one
+ *  decides "copy or keep" before it publishes with rm + rename. Two passes
+ *  that overlap both copy, one `rename` lands on the other's fresh folder
+ *  (ENOTEMPTY), and that pass then skips the package, so a same-named package
+ *  in a later profile overwrote the default home's copy. */
+export function withDesktopPluginsRoot<T>(root: string, task: () => Promise<T>): Promise<T> {
+  const key = path.resolve(root)
+  const run = (rootWriters.get(key) ?? Promise.resolve()).then(task, task)
+  const settled = run.catch(() => undefined)
+
+  rootWriters.set(key, settled)
+  void settled.then(() => {
+    if (rootWriters.get(key) === settled) {
+      rootWriters.delete(key)
+    }
+  })
+
+  return run
+}
+
 export async function ensureDir(dir: string): Promise<string> {
   try {
     await fs.promises.mkdir(dir, { recursive: true })
@@ -78,11 +106,30 @@ export async function ensureDir(dir: string): Promise<string> {
   return dir
 }
 
-async function listDirs(dir: string): Promise<string[]> {
+async function listDirs(dir: string, followLinks = false): Promise<string[]> {
   try {
     const entries = await fs.promises.readdir(dir, { withFileTypes: true })
 
-    return entries.filter(entry => entry.isDirectory()).map(entry => entry.name)
+    // `Dirent.isDirectory()` is false for a symlink. A package root follows
+    // links to directories: `ln -s ~/src/my-plugin ~/.hermes/plugins/` is how a
+    // plugin is developed in place, and the Python loader already follows it.
+    const linkedDir = async (name: string) => {
+      try {
+        return (await fs.promises.stat(path.join(dir, name))).isDirectory()
+      } catch {
+        return false
+      }
+    }
+
+    const names: string[] = []
+
+    for (const entry of entries) {
+      if (entry.isDirectory() || (followLinks && entry.isSymbolicLink() && (await linkedDir(entry.name)))) {
+        names.push(entry.name)
+      }
+    }
+
+    return names
   } catch {
     return []
   }
@@ -100,7 +147,11 @@ export async function localHomes(hermesHome: string): Promise<string[]> {
  *  id, so a duplicate is the same plugin installed twice); the profile copy is
  *  left in place for the user to delete rather than destroyed. Emptied profile
  *  roots are removed so the migration is a no-op on the next launch. */
-export async function migrateProfileScopedDesktopPlugins(hermesHome: string, appRoot: string): Promise<string[]> {
+export function migrateProfileScopedDesktopPlugins(hermesHome: string, appRoot: string): Promise<string[]> {
+  return withDesktopPluginsRoot(appRoot, () => migrateProfileScoped(hermesHome, appRoot))
+}
+
+async function migrateProfileScoped(hermesHome: string, appRoot: string): Promise<string[]> {
   const moved: string[] = []
 
   for (const profile of await listDirs(path.join(hermesHome, 'profiles'))) {
@@ -194,11 +245,13 @@ export async function materializeDesktopHalf(
 
   const target = path.join(appRoot, packageName)
   const existing = await readMarker(target)
+  const linked = (await fs.promises.lstat(packageDir)).isSymbolicLink()
 
   const marker: DesktopHalfMarker = {
     package: packageName,
     source: sourceDir,
     sourceMtimeMs: stat.mtimeMs,
+    ...(linked ? { linked } : {}),
     ...(await packageOrigin(packageDir))
   }
 
@@ -229,7 +282,15 @@ export async function materializeDesktopHalf(
       }
     }
 
-    if (existing && existing.source === sourceDir && existing.sourceMtimeMs >= stat.mtimeMs) {
+    // An installed package re-copies when its source is newer. A linked dev
+    // checkout compares bytes: mtime alone misses a `cp -p` / `git stash pop`
+    // that lands an older timestamp, and the copy would stay stale silently.
+    if (
+      existing &&
+      existing.source === sourceDir &&
+      Boolean(existing.linked) === linked &&
+      (linked ? await sameFile(path.join(target, 'plugin.js'), entry) : existing.sourceMtimeMs >= stat.mtimeMs)
+    ) {
       return null
     }
   }
@@ -298,14 +359,18 @@ async function sourceGone(name: string, entry: string): Promise<boolean> {
  *  desktop half. First home wins for a name that appears in several profiles
  *  (the default home is first). Also drops root copies whose source package
  *  is gone — an uninstalled agent package must not leave a ghost pane. */
-export async function reconcileUnifiedDesktopHalves(hermesHome: string, appRoot: string): Promise<string[]> {
+export function reconcileUnifiedDesktopHalves(hermesHome: string, appRoot: string): Promise<string[]> {
+  return withDesktopPluginsRoot(appRoot, () => reconcilePass(hermesHome, appRoot))
+}
+
+async function reconcilePass(hermesHome: string, appRoot: string): Promise<string[]> {
   const touched: string[] = []
   const seen = new Set<string>()
 
   for (const home of await localHomes(hermesHome)) {
     const pluginsRoot = path.join(home, 'plugins')
 
-    for (const name of await listDirs(pluginsRoot)) {
+    for (const name of await listDirs(pluginsRoot, true)) {
       if (seen.has(name)) {
         continue
       }

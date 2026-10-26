@@ -7,7 +7,6 @@ import { Tip } from '@/components/ui/tooltip'
 import {
   deleteSession,
   getHermesConfigRecord,
-  listAllProfileSessions,
   peekConfigReadOrigin,
   retainConfigReadOrigin,
   saveHermesConfig,
@@ -15,15 +14,18 @@ import {
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
+import { selectDesktopPaths } from '@/lib/desktop-fs'
 import { pathLeaf } from '@/lib/display-path'
 import { triggerHaptic } from '@/lib/haptics'
 import { Archive, ArchiveOff, FolderOpen, Loader2, Trash2 } from '@/lib/icons'
 import { purgeInFlightTurnJournals } from '@/lib/inflight-turn-journal'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import { applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd } from '@/store/session'
 import { untombstoneSessions } from '@/store/session-removal'
 import { forgetSessionUnread } from '@/store/session-unread'
+import { listEveryArchivedSession } from '@/store/sidebar-archive'
 import type { HermesConfigRecord, SessionInfo } from '@/types/hermes'
 
 import { EmptyState, ListRow, SectionHeading, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
@@ -32,8 +34,6 @@ import { useDeepLinkHighlight } from './use-deep-link-highlight'
 import { useSettingDeepLink } from './use-setting-deep-link'
 
 const DEFAULT_AUTO_ARCHIVE_DAYS = 3
-
-const ARCHIVED_FETCH_LIMIT = 200
 
 interface SessionsSettingsProps {
   subpage?: string
@@ -64,8 +64,7 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
     setLoading(true)
 
     try {
-      const result = await listAllProfileSessions(ARCHIVED_FETCH_LIMIT, 0, 'only')
-      setLocalSessions(result.sessions)
+      setLocalSessions(await listEveryArchivedSession())
     } catch (err) {
       notifyError(err, s.failedLoad)
     } finally {
@@ -373,9 +372,13 @@ function DefaultProjectDirSetting() {
     setBusy(true)
 
     try {
-      const picked = await settings.pickDefaultProjectDir()
+      // A browser tab has no native dialog for the server's disk: pick through the server
+      // folder browser Projects already use.
+      const picked = isBrowserHostedDesktop()
+        ? { dir: (await selectDesktopPaths({ defaultPath: dir ?? undefined, directories: true }))[0] ?? null }
+        : await settings.pickDefaultProjectDir()
 
-      if (picked.canceled || !picked.dir) {
+      if (!picked.dir) {
         return
       }
 
@@ -388,7 +391,7 @@ function DefaultProjectDirSetting() {
     } finally {
       setBusy(false)
     }
-  }, [s])
+  }, [dir, s])
 
   const clear = useCallback(async () => {
     const settings = window.hermesDesktop?.settings

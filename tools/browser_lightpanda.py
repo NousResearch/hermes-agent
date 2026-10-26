@@ -1,9 +1,8 @@
-"""Lightpanda local engine for Browser Use mode.
+"""Lightpanda local engine.
 
-With ``browser.engine: lightpanda``, Browser Use mode spawns one ``lightpanda serve`` per
-browser session and points ``browser_exec`` at its CDP endpoint (``BU_CDP_URL``); the
-built-in ``browser_*`` tools keep going through ``agent-browser --engine lightpanda``.
-``tools.browser_tool`` owns the session cache, inactivity reaper and atexit sweep.
+With ``browser.engine: lightpanda``, each browser session spawns one ``lightpanda serve`` and
+``browser_exec`` drives its CDP endpoint (``BU_CDP_URL``). ``tools.browser_session`` owns the
+session cache, inactivity reaper and atexit sweep.
 """
 
 import functools
@@ -19,6 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
+from utils import atomic_json_write
+
 logger = logging.getLogger(__name__)
 
 LIGHTPANDA_INSTALL_URL = "https://lightpanda.io/docs/run-locally/installation/one-liner"
@@ -28,7 +29,7 @@ _READY_TIMEOUT_S = 10.0
 _POLL_INTERVAL_S = 0.1
 _STDERR_TAIL_LIMIT = 2000
 
-_servers: Dict[str, "LightpandaServer"] = {}
+_servers: "dict[str, LightpandaServer]" = {}
 _servers_lock = threading.Lock()
 
 
@@ -59,19 +60,24 @@ def _home_candidates() -> list:
     return candidates
 
 
+# System PATH fallbacks for a minimal service PATH (systemd units, launchd), Homebrew included.
+_SANE_PATH_DIRS = ("/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/sbin", "/usr/local/bin",
+                   "/usr/sbin", "/usr/bin", "/sbin", "/bin")
+
+
+def merge_sane_path(existing_path: str = "") -> str:
+    """``existing_path`` with the standard system dirs that exist appended (existing order kept)."""
+    parts = [p for p in (existing_path or "").split(os.pathsep) if p]
+    return os.pathsep.join(parts + [d for d in _SANE_PATH_DIRS if d not in parts and os.path.isdir(d)])
+
+
 def find_lightpanda_binary() -> Optional[str]:
-    """Return the lightpanda executable, or None. Order: PATH (with agent-browser's Homebrew/managed-node
-    fallbacks), then installer/agent-browser locations, then ``$HERMES_HOME/bin``. No Windows build."""
+    """Return the lightpanda executable, or None. Order: PATH (plus the standard system dirs), then the
+    installer's locations, then ``$HERMES_HOME/bin``. No Windows build."""
     if os.name == "nt":
         logger.debug("Lightpanda has no Windows build")
         return None
-    path_env = os.environ.get("PATH", "")
-    try:
-        from tools.browser_tool_install import _merge_browser_path
-        path_env = _merge_browser_path(path_env)
-    except Exception as e:
-        logger.debug("browser PATH merge unavailable: %s", e)
-    return shutil.which("lightpanda", path=path_env) or next(
+    return shutil.which("lightpanda", path=merge_sane_path(os.environ.get("PATH", ""))) or next(
         (str(c) for c in _home_candidates() if c.is_file() and os.access(c, os.X_OK)), None)
 
 
@@ -119,6 +125,7 @@ def _binary_supports_http_cache(binary: str) -> bool:
             [binary, "help"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3.0,
             stdin=subprocess.DEVNULL,
+            check=False,
         )
         return _HTTP_CACHE_FLAG in ((proc.stdout or "") + (proc.stderr or ""))
     except Exception as e:
@@ -131,12 +138,8 @@ def _record_path(session_name: str) -> Path:
 
 
 def _browser_env() -> dict:
-    try:
-        from tools.browser_tool import _build_browser_env
-        return _build_browser_env()
-    except Exception as e:
-        logger.debug("credential-scrubbed browser env unavailable: %s", e)
-        return os.environ.copy()
+    from tools.browser_session import build_browser_env
+    return build_browser_env()
 
 
 def _cdp_ready(url: str, timeout: float = 0.2) -> bool:
@@ -158,7 +161,7 @@ def _read_log_tail(path: str) -> str:
 
 
 def _terminate(proc: subprocess.Popen, what: str = "lightpanda") -> None:
-    """poll -> terminate -> wait(5) -> kill; shared with the real-profile Chrome cleanup."""
+    """poll -> terminate -> wait(5) -> kill (fallback when the tree-kill failed)."""
     try:
         if proc.poll() is None:
             proc.terminate()
@@ -188,12 +191,14 @@ def _write_record(server: LightpandaServer) -> None:
     record = {"pid": server.proc.pid, "port": server.port, "owner_pid": os.getpid(),
               "start_time": server.start_time, "started_at": time.time()}
     try:
-        (_state_dir() / f"{server.session_name}.json").write_text(json.dumps(record), encoding="utf-8")
+        # Temp + rename: an orphan sweep (another Hermes, or a cleanup thread) unlinks a record it
+        # cannot parse, so a torn in-place write would drop a live server's record.
+        atomic_json_write(_state_dir() / f"{server.session_name}.json", record, indent=None)
     except OSError as e:
         logger.debug("could not write lightpanda record for %s: %s", server.session_name, e)
 
 
-def launch_lightpanda(session_name: str, *, block_private_networks: bool = False) -> Tuple[Optional[LightpandaServer], Optional[str]]:
+def launch_lightpanda(session_name: str, *, block_private_networks: bool = False) -> tuple[Optional[LightpandaServer], Optional[str]]:
     """Start ``lightpanda serve`` on a free loopback port; ``(server, None)`` once ``/json/version`` answers,
     else ``(None, error)``. stderr goes to ``<state_dir>/<session>.log`` so a chatty child never blocks on a pipe."""
     binary = find_lightpanda_binary()
@@ -338,3 +343,37 @@ def reap_orphaned_lightpanda() -> int:
                 logger.debug("orphan lightpanda kill failed for pid %s: %s", pid, e)
         record_path.unlink(missing_ok=True)
     return reaped
+
+
+def using_lightpanda_engine() -> bool:
+    """True when ``browser.engine`` is ``lightpanda``."""
+    from tools.browser_session_cloud import get_browser_engine
+    return get_browser_engine() == "lightpanda"
+
+
+def lightpanda_engine_status() -> tuple[bool, str]:
+    """Whether ``browser.engine: lightpanda`` is actually in effect, and why.
+
+    ``(False, "")`` when the engine isn't lightpanda; else the reason names the setting shadowing it, in
+    session-creation precedence, with config-only gates (no network I/O) for ``/browser status`` and
+    ``hermes doctor``."""
+    if not using_lightpanda_engine():
+        return False, ""
+    from tools.browser_session_cdp import get_cdp_override_raw
+    from tools.browser_session_cloud import get_cloud_provider, use_real_profile
+    if get_cdp_override_raw():
+        return False, "a CDP override is active (/browser connect or browser.cdp_url)"
+    # Real profile before the cloud provider: browser_exec resolves it first, so it claims the session.
+    if use_real_profile():
+        return False, "browser.use_real_profile is on (Lightpanda cannot load a Chromium profile)"
+    try:
+        provider = get_cloud_provider()
+    except ValueError:  # an unknown explicit provider name: browser_exec reports it on use
+        provider = None
+    if provider is not None:
+        name = getattr(provider, "display_name", "") or type(provider).__name__
+        return False, f"cloud provider {name} is selected (browser.cloud_provider, or auto-detected from credentials)"
+    from tools.browser_use_cli import _read_browser_cfg, is_legacy_browser_use_cloud_config
+    if is_legacy_browser_use_cloud_config(_read_browser_cfg()):
+        return False, "Browser Use cloud (BROWSER_USE_API_KEY) is selected"
+    return True, "Hermes spawns `lightpanda serve` per browser session"

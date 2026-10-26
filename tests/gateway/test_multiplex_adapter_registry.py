@@ -261,6 +261,17 @@ def _install_secondary_reconnect_context(
     monkeypatch.setattr(runner, "_create_adapter", lambda platform, config: adapter)
 
 
+def _stub_secondary_start(monkeypatch, runner):
+    async def connect(adapter, platform):
+        return True
+
+    monkeypatch.setattr("hermes_cli.env_loader.hydrate_profile_secret_sources", lambda h: {})
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
+    monkeypatch.setattr(runner, "_snapshot_profile_busy_modes", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+    monkeypatch.setattr(runner, "_connect_initial_adapter_with_timeout", connect)
+
+
 class TestSecondaryProfileFatalRecovery:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("entry", ["startup", "reconnect"])
@@ -304,7 +315,7 @@ class TestSecondaryProfileFatalRecovery:
         )
         monkeypatch.setattr(runner, "_connect_adapter_with_timeout", connect)
         monkeypatch.setattr(runner, "_connect_initial_adapter_with_timeout", connect)
-        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
         monkeypatch.setattr(runner, "_snapshot_profile_busy_modes", lambda *a, **k: None)
         monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
         if entry == "startup":
@@ -338,7 +349,7 @@ class TestSecondaryProfileFatalRecovery:
         synced = []
         runner._sync_voice_mode_state_to_adapter = synced.append
         monkeypatch.setattr("hermes_cli.env_loader.hydrate_profile_secret_sources", lambda h: {})
-        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
         monkeypatch.setattr(runner, "_snapshot_profile_busy_modes", lambda *a, **k: None)
         monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
 
@@ -397,6 +408,39 @@ class TestSecondaryProfileFatalRecovery:
         assert redelivery_homes
         assert all(path != Path("/profiles/reviewer") for path in redelivery_homes)
 
+
+    @pytest.mark.asyncio
+    async def test_dropped_bot_is_never_swapped_for_the_primary(self, monkeypatch):
+        """A routed profile whose own bot dropped (disconnect pending, then no reconnect for a dead
+        credential) is still that bot's owner: its notices must not resolve the primary bot."""
+        from gateway.profile_routing import ProfileRoute
+        runner = _secondary_recovery_runner()
+        runner._adapter_disconnect_timeout_secs = lambda: 5
+        primary = object()
+        runner.adapters = {Platform.DISCORD: primary}
+        runner.config.profile_routes = [ProfileRoute("r", "discord", "reviewer", chat_id="C1")]
+        monkeypatch.setattr(gateway_run, "_multiplex_profile_homes",
+                            lambda config: [("reviewer", Path("/profiles/reviewer"))])
+        stale = _SecondaryRecoveryAdapter(retryable=False)
+        _install_secondary_reconnect_context(monkeypatch, runner, stale)
+        _stub_secondary_start(monkeypatch, runner)
+        assert await runner._start_one_profile_adapters("reviewer", Path("/profiles/reviewer"), {}) == 1
+        runner._profile_adapters["reviewer"][Platform.LOCAL] = object()
+        disconnecting, release = asyncio.Event(), asyncio.Event()
+
+        async def disconnect():
+            disconnecting.set()
+            await release.wait()
+
+        stale.disconnect = disconnect
+        handler = asyncio.create_task(
+            runner._handle_profile_adapter_fatal_error("reviewer", Platform.DISCORD, stale))
+        await asyncio.wait_for(disconnecting.wait(), 5)
+        assert runner._adapters_for_profile("reviewer").get(Platform.DISCORD) is None
+        release.set()
+        await handler
+        assert not runner._background_tasks
+        assert runner._adapters_for_profile("reviewer").get(Platform.DISCORD) is None
 
     @pytest.mark.asyncio
     async def test_secondary_reconnect_keeps_inbound_dedup(self, monkeypatch):
@@ -1054,14 +1098,21 @@ class TestSecondaryProfileConfigHandling:
         assert runner._profile_adapters["later"][photon] is later
 
     @pytest.mark.asyncio
-    async def test_secondary_profile_adapter_start_skips_whatsapp(self, monkeypatch):
-        """WhatsApp is shared process-level ingress like Relay: the bridge is
-        one authenticated session tied to a single phone number, so a
-        credential-less secondary profile must be skipped (not stall startup
-        in a connect/retry loop) while its other platforms start normally."""
+    @pytest.mark.parametrize("paired", [False, True])
+    async def test_secondary_profile_adapter_start_skips_whatsapp(self, monkeypatch, tmp_path, paired):
+        """Only paired secondaries start a profile-local WhatsApp adapter."""
         runner = _secondary_recovery_runner()
         direct = _SecondaryRecoveryAdapter()
+        _real_profile_scope = gateway_run._profile_runtime_scope
         _install_secondary_reconnect_context(monkeypatch, runner, direct)
+        monkeypatch.setattr(gateway_run, "_profile_runtime_scope", _real_profile_scope)
+        home = tmp_path / "secondary"
+        session = home / "platforms/whatsapp/session"
+        session.mkdir(parents=True)
+        if paired:
+            (session / "creds.json").write_text("{}")
+        statuses = []
+        monkeypatch.setattr(runner, "_update_platform_runtime_status", lambda *a, **kw: statuses.append((a, kw)))
         monkeypatch.setattr(
             "gateway.config.load_gateway_config",
             lambda: GatewayConfig(
@@ -1076,6 +1127,11 @@ class TestSecondaryProfileConfigHandling:
 
         def _create_adapter(platform, config):
             factory_calls.append(platform)
+            if platform is Platform.WHATSAPP:
+                from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+                wa = WhatsAppAdapter(config)
+                assert wa._session_path == session
+                return wa
             return direct
 
         async def _connect(adapter, platform):
@@ -1084,11 +1140,14 @@ class TestSecondaryProfileConfigHandling:
         monkeypatch.setattr(runner, "_create_adapter", _create_adapter)
         monkeypatch.setattr(runner, "_connect_initial_adapter_with_timeout", _connect)
 
-        connected = await runner._start_one_profile_adapters("clientbot", "/tmp/x", {})
+        monkeypatch.setattr(runner, "_configure_profile_adapter", lambda *a: None)
+        connected = await runner._start_one_profile_adapters("clientbot", home, {})
 
-        assert connected == 1
-        assert factory_calls == [Platform.DISCORD]
-        assert runner._profile_adapters["clientbot"] == {Platform.DISCORD: direct}
+        assert connected == (2 if paired else 1)
+        assert factory_calls == ([Platform.WHATSAPP, Platform.DISCORD] if paired else [Platform.DISCORD])
+        if not paired:
+            assert statuses[-1][1]["error_code"] == "whatsapp_unpaired"
+            assert "hermes -p clientbot whatsapp" in statuses[-1][1]["error_message"]
 
 
 class TestSecondaryProfileHookRegistration:

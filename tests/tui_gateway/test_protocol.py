@@ -37,10 +37,12 @@ def server():
     # unbound copy whose default sinks drop frames and treat every client as answerable. Likewise a test's
     # ``from tui_gateway.transport import bind_transport`` would bind a fresh module's ContextVar that the
     # server's ``current_transport()`` never reads (first-in-process test sees ``_stdio_transport`` as caller).
-    import tui_gateway.server_requests  # noqa: F401
-    import tui_gateway.transport  # noqa: F401
+    import tui_gateway.server_requests
+    import tui_gateway.transport
+    import hermes_constants  # real get_process_hermes_home: a mocked one put state.db under the cwd (repo)
     with patch.dict("sys.modules", {
-        "hermes_constants": MagicMock(get_hermes_home=MagicMock(return_value="/tmp/hermes_test")),
+        "hermes_constants": MagicMock(get_hermes_home=MagicMock(return_value="/tmp/hermes_test"),
+                                      get_process_hermes_home=hermes_constants.get_process_hermes_home),
         "hermes_cli.env_loader": MagicMock(),
         "hermes_cli.banner": MagicMock(),
         "hermes_state": MagicMock(),
@@ -68,8 +70,6 @@ def server():
     from tui_gateway import server_requests
     server_requests.reset_for_tests()
     mod._live_transports.clear()
-
-
 
 
 @pytest.fixture()
@@ -231,8 +231,8 @@ def _frames(buf):
     return [json.loads(line) for line in buf.getvalue().splitlines()]
 
 
-def _wait_open(server_requests, buf=None, timeout=10.0):
-    """The open request once its frame has been written (registration precedes the write).
+def _wait_open(server_requests, buf=None, timeout=10.0, windows=()):
+    """The open request once registered and delivered to the supplied captures.
 
     Generous deadline: the first send() in a process lazily imports the ws/contracts/replay modules,
     which can take seconds on a loaded CI box when this is the first server request of the run."""
@@ -240,7 +240,9 @@ def _wait_open(server_requests, buf=None, timeout=10.0):
     while time.monotonic() < deadline:
         with server_requests._lock:
             req = next(iter(server_requests._open.values()), None)
-        if req is not None and (buf is None or req.id in buf.getvalue()):
+        if req is not None and (buf is None or req.id in buf.getvalue()) and all(
+            req.frame() in window.frames for window in windows
+        ):
             return req
         time.sleep(0.01)
     raise AssertionError("server request never registered")
@@ -410,14 +412,14 @@ def _two_window_session(server, sid):
     from tui_gateway import server_requests
     from tui_gateway.transport import FanoutTransport
 
-    # The fanout awaits a WS peer's write_async on its loop; a peer without one is pruned on first write.
+    # The fake implements the same guarded batch boundary as a real WS peer.
     loop = asyncio.new_event_loop()
     threading.Thread(target=loop.run_forever, daemon=True).start()
     windows = (_silent_ws(), _silent_ws())
     for window in windows:
-        async def _write_async(obj, window=window):
-            return window.write(obj)
-        window._loop, window.write_async = loop, _write_async
+        async def _write_many_if_current_async(frames, is_current, window=window):
+            return all(not is_current() or window.write(frame) for frame in frames)
+        window._loop, window.write_many_if_current_async = loop, _write_many_if_current_async
         server_requests.advertise(window, True)
     _ws_session(server, sid, FanoutTransport(*windows))
     return windows
@@ -438,12 +440,11 @@ def test_window_owned_request_refuses_at_once_when_no_window_shows_the_session(s
     thread = threading.Thread(target=lambda: box.setdefault("r", server._ask("preview.read", "s-none", {}, timeout=30)),
                               daemon=True)
     thread.start()
-    req = _wait_open(server_requests)
+    req = _wait_open(server_requests, windows=windows)
     t0 = time.monotonic()
     assert server.dispatch(_not_shown(req), windows[0]) is None
     # A replayed decline from the same window is still one window's vote.
     server.dispatch(_not_shown(req), windows[0])
-    time.sleep(0.05)
     assert thread.is_alive()
     server.dispatch(_not_shown(req), windows[1])
     thread.join(timeout=2)
@@ -462,11 +463,10 @@ def test_window_owned_request_decline_does_not_beat_the_owner_window(server):
     thread = threading.Thread(target=lambda: box.setdefault("r", server._ask("preview.read", "s-own", {}, timeout=5)),
                               daemon=True)
     thread.start()
-    req = _wait_open(server_requests)
+    req = _wait_open(server_requests, windows=(bystander, owner))
     server.dispatch(_not_shown(req), bystander)
     # An unattributed decline (proxied / relayed frame) is not a window's vote either.
     assert server_requests.resolve_response(_not_shown(req)) is True
-    time.sleep(0.05)
     assert thread.is_alive() and [r["id"] for r in server_requests.open_requests("s-own")] == [req.id]
     server.dispatch({"jsonrpc": "2.0", "id": req.id, "result": {"value": '{"text": "page"}'}}, owner)
     thread.join(timeout=2)
@@ -488,7 +488,7 @@ def test_client_capabilities_advertises_counting_not_shown_declines(server):
 @pytest.mark.parametrize("method", ["secret", "sudo", "terminal.read", "tour"])
 def test_server_request_timeout_emits_one_request_cancel(capture, method):
     from tui_gateway import server_requests
-    server, buf = capture
+    _server, buf = capture
     assert server_requests.send(method, "s1", {}, timeout=0) is None
     request, cancel = _frames(buf)
     assert request["method"] == method
@@ -939,7 +939,7 @@ def test_deferred_hydration_falls_back_to_tip_when_lineage_exceeds_limit(server,
 
 def test_session_resume_guard_failure_fails_open(server, monkeypatch):
     """A transient guard error must not block resume (fail open, log only)."""
-    reopened = []
+    reads = []
 
     class _DB:
         def get_session(self, sid):
@@ -954,9 +954,17 @@ def test_session_resume_guard_failure_fails_open(server, monkeypatch):
         def assert_resume_safe(self, _sid):
             raise RuntimeError("database is locked")
 
-        def reopen_session(self, sid):
-            reopened.append(sid)
-            return True
+        def get_messages_as_conversation(self, _sid, **_kwargs):
+            reads.append("tip")
+            return []
+
+        def get_resume_conversations(self, _sid):
+            reads.append("lineage")
+            return ([], [])
+
+        def get_ancestor_display_prefix(self, _sid):
+            reads.append("prefix")
+            return []
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
 
@@ -971,11 +979,13 @@ def test_session_resume_guard_failure_fails_open(server, monkeypatch):
         }
     )
 
-    # The guard must not block: no 4130. Reopen being attempted proves
-    # execution moved past the guard.
+    # The guard must not block: no 4130, and execution moved PAST the guard to the
+    # history read (omit_messages reads the tip segment). (#85303 made the mount
+    # read-only — resume no longer reopens the row, so the history read is what
+    # proves the guard was survived.)
     err = response.get("error") or {}
     assert err.get("code") != 4130
-    assert reopened == ["transient-guard-session"]
+    assert "tip" in reads, "history read must have run"
 
 
 def test_session_resume_active_turn_payload_matches_desktop_fixture(server, monkeypatch):
@@ -1165,6 +1175,7 @@ def test_idle_reaper_rearms_missing_ws_orphan_timer(server, monkeypatch, tmp_pat
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
     assert successor.returncode == 0, successor.stderr
     assert [entry["session_id"] for entry in active_session_registry_snapshot(home)] == [sibling_sid]
@@ -1349,8 +1360,8 @@ def test_command_dispatch_expands_stacked_skills_from_temp_home(server, tmp_path
     '/nature-figure /academic-plotting Plot the results' loads BOTH skills
     over the remaining instruction instead of leaving the second token in
     the prompt as plain text."""
-    import agent.skill_commands as skill_commands
-    import tools.skills_tool as skills_tool
+    from agent import skill_commands
+    from tools import skills_tool
 
     home = tmp_path / ".hermes"
     skills_dir = home / "skills"
@@ -1399,8 +1410,8 @@ def test_command_dispatch_expands_stacked_skills_from_temp_home(server, tmp_path
 def test_command_dispatch_stacked_split_keeps_unknown_tokens_as_instruction(server, tmp_path, monkeypatch):
     """A non-skill or repeated token stops the stack and stays instruction text —
     the split must never eat content the user meant as the prompt."""
-    import agent.skill_commands as skill_commands
-    import tools.skills_tool as skills_tool
+    from agent import skill_commands
+    from tools import skills_tool
 
     home = tmp_path / ".hermes"
     skills_dir = home / "skills"
@@ -1821,7 +1832,7 @@ def test_skin_live_switch_end_to_end(server, tmp_path, monkeypatch):
     """Real config + skin files: activating a skin (as `hermes config set` does)
     makes the per-tool reconcile broadcast skin.changed with the resolved palette.
     Exercises _load_cfg → _skin_sig → resolve_skin → _emit with no mocks in between."""
-    import hermes_cli.skin_engine as skin_engine
+    from hermes_cli import skin_engine
 
     (tmp_path / "skins").mkdir()
     (tmp_path / "skins" / "midnight.yaml").write_text(

@@ -54,7 +54,7 @@ Brave Search、DDGS 和 xAI 均为**仅搜索**——如果同时需要 `web_ext
 
 ### 当截断带来不便时
 
-如果您明确需要实时 DOM 而非提取的 markdown —— 例如提取内容很少的 JS 密集页面 —— 请改用 `browser_navigate` + `browser_snapshot`。浏览器工具返回实时无障碍树（超大页面受其自身快照上限约束）。
+如果您明确需要实时 DOM 而非提取的 markdown —— 例如提取内容很少的 JS 密集页面 —— 请改用 `browser_exec`：用 `new_tab(url)` + `wait_for_load()` 打开页面，再用 `page_info()` 或 `js()` 提取 DOM 读取内容。它操作的是实时渲染后的页面。
 
 ---
 

@@ -28,12 +28,13 @@ No admin rights required. The installer goes to `%LOCALAPPDATA%\hermes\` and add
 **Installer options** use a scriptblock:
 
 ```powershell
-& ([scriptblock]::Create((irm https://hermes-agent.nousresearch.com/install.ps1))) -NonInteractive -Branch main
+& ([scriptblock]::Create((irm https://hermes-agent.nousresearch.com/install.ps1))) -NonInteractive -Channel main
 ```
 
 | Parameter | Purpose |
 |---|---|
-| `-Branch NAME` | Select the source branch; default `main`. |
+| `-Channel stable\|main` | `stable` (default): the latest published release. `main`: every commit, saved like `hermes update --set-channel main`. `$env:HERMES_INSTALL_CHANNEL` sets it for a plain `irm \| iex`. |
+| `-Branch NAME` | Select the source branch; default `main`. Another branch is installed at its tip. |
 | `-Commit SHA` | Select a commit after the branch checkout. |
 | `-HermesHome PATH` | Select the data directory. |
 | `-InstallDir PATH` | Select the source checkout directory. |
@@ -136,7 +137,7 @@ unavailable; WSL is an alternative, not a requirement of the current design.
 
 - Matrix's native encrypted adapter is Linux-only; use a supported proxy route
   or a Linux backend on Windows.
-- Native Windows ARM64 excludes the `mem0` and `google-chat` SDK extras, and
+- Native Windows ARM64 excludes the `google-chat` SDK extra and
   the openWakeWord engine. Sherpa supports native Windows ARM64 and is the
   automatic wake-word default on that target.
 - Local Faster-Whisper STT is excluded on native Windows ARM64. Use a cloud
@@ -262,14 +263,15 @@ Windows package removal instead of deleting that root to repair an app.
 
 ## Browser tool
 
-Browser setup depends on the selected backend. PM supplies the pinned
-`agent-browser` and Chromium packages for the built-in backend. Browser Use
-has its own managed CLI installation through `hermes tools`. A self-contained
-MSIX includes supported browser tools in its payload.
+The browser tool (`browser_exec`) is part of Hermes's Python environment.
+For local browsing, Hermes launches the pinned Chromium that PM installs
+(`hermes pm install chromium` if it is missing); set `browser.executable_path`
+to use another Chromium-family binary. Cloud browsers are selected in
+`hermes tools`. A self-contained MSIX includes the browser tools in its payload.
 
-On Windows ARM64, the pinned Chromium and `agent-browser` binaries can use
+On Windows ARM64, the pinned Chromium is the x64 build and runs under
 Windows' x64 emulation. This differs from the native ARM64 Python runtime.
-See [Browser automation](./features/browser.md) for backend selection.
+See [Browser automation](./features/browser.md) for browser sources.
 
 ## Running Hermes on Windows — practical notes
 
@@ -356,13 +358,9 @@ You set it in the current process only; close and reopen the shell, or set it at
 
 **Browser tool launches but tools time out.**
 Run `hermes doctor` and `hermes pm doctor`. Use `hermes tools` to inspect the
-selected browser backend. Do not install an unrelated Playwright revision into
-a signed app payload.
-
-**`agent-browser` reports a Node version error.**
-Run `hermes pm doctor` and inspect which Hermes launcher started the process.
-PM supplies the managed Node version. Do not delete an unrelated system Node
-installation to repair Hermes.
+selected browser provider. A slow first Chromium start can be given more time
+with `browser.command_timeout` (the launch timeout floor, in seconds). Do not
+install an unrelated Playwright revision into a signed app payload.
 
 **Chinese / Japanese / Arabic characters show as `?` in the CLI.**
 The UTF-8 stdio shim didn't activate. Check that `HERMES_DISABLE_WINDOWS_UTF8` is NOT set (`Get-ChildItem env:HERMES_DISABLE_WINDOWS_UTF8`). If it's empty and you still see `?`, the console host (very old `cmd.exe`) may not support UTF-8 at all — switch to Windows Terminal.

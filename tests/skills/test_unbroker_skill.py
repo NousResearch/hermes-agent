@@ -27,23 +27,24 @@ _CANDIDATES = [
 SCRIPTS = next((c for c in _CANDIDATES if (c / "pdd.py").exists()), _CANDIDATES[0])
 sys.path.insert(0, str(SCRIPTS))
 
-import autopilot        # noqa: E402
-import contextlib as _ctx  # noqa: E402
-import io as _io          # noqa: E402
-import json as _json      # noqa: E402
-import time as _time      # noqa: E402
+import autopilot
+import contextlib as _ctx
+import io as _io
+import json as _json
+import time as _time
 
-import badbool          # noqa: E402
-import brokers          # noqa: E402
-import config           # noqa: E402
-import dossier          # noqa: E402
-import emailer          # noqa: E402
-import pdd              # noqa: E402
-import legal            # noqa: E402
-import ledger           # noqa: E402
-import report          # noqa: E402
-import storage          # noqa: E402
-import tiers            # noqa: E402
+import badbool
+import brokers
+import config
+import dossier
+import emailer
+import pdd
+import legal
+import ledger
+import paths
+import report
+import storage
+import tiers
 
 _AGE = bool(shutil.which("age") and shutil.which("age-keygen"))
 
@@ -86,9 +87,19 @@ def _consenting(full_name="Jane Q. Public"):
 
 def test_browser_clears_captcha_logic():
     assert config.browser_clears_captcha({"browser_backend": "browserbase"}) is True
-    assert config.browser_clears_captcha({"browser_backend": "agent-browser"}) is False
+    assert config.browser_clears_captcha({"browser_backend": "local"}) is False
     assert config.browser_clears_captcha({"browser_backend": "auto"}, env={}) is False
     assert config.browser_clears_captcha({"browser_backend": "auto"}, env={"BROWSERBASE_API_KEY": "x"}) is True
+
+
+def test_legacy_agent_browser_backend_loads_and_resaves_as_local():
+    """Configs saved before agent-browser was removed must keep loading and saving."""
+    with temp_env():
+        storage.write_json(paths.config_path(), {"browser_backend": "agent-browser"})
+        cfg = config.load_config()
+        assert cfg["browser_backend"] == "local"
+        config.save_config(cfg)
+        assert config.load_config()["browser_backend"] == "local"
 
 
 # --- storage ------------------------------------------------------------------
@@ -678,7 +689,7 @@ if __name__ == "__main__":
         try:
             fn()
             print(f"PASS {name}")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             failures.append((name, exc))
             print(f"FAIL {name}: {exc!r}")
     print(f"\n{len(tests) - len(failures)}/{len(tests)} passed")

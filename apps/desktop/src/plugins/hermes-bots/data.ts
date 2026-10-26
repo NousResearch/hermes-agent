@@ -847,9 +847,11 @@ async function fetchRosterSnapshot(activeConnectionId: null | string | undefined
        * snapshot rather than clearing it. */
       const previous: RosterRow[] = $lastRoster.get().filter(row => !row?.ghost)
       const merged = mergeMultiSourceRoster(local, null, activeConnectionId, previous)
+
       const profiles = (merged?.profiles || []).map(row =>
         row?.remoteSource ? { ...row, sourceReachable: false } : row
       )
+
       await reconcileBotMeta(profiles, issuedAt)
 
       return {

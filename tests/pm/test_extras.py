@@ -10,8 +10,8 @@ from types import SimpleNamespace
 import pytest
 
 import pm
-import pm.client as client
-import pm.extras as extras
+from pm import client
+from pm import extras
 
 
 # ---- per-extra platform gates ([tool.hermes.extras-platforms]) ----
@@ -72,6 +72,7 @@ def test_declared_extra_gates_match_dependency_selection():
         ("linux", "Linux", "x86_64"), ("linux", "Linux", "aarch64"),
         ("darwin", "Darwin", "x86_64"), ("darwin", "Darwin", "arm64"),
         ("win32", "Windows", "AMD64"), ("win32", "Windows", "ARM64"),
+        ("android", "Android", "aarch64"),
     ]
     for system, platform_system, machine in targets:
         for python in ("3.12", "3.13", "3.14"):

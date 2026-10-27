@@ -1,0 +1,41 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: paper
+description: >-
+  Official Paper Desktop MCP — edit the live canvas, read selections and
+  user edits, and read pinned comments on demand.
+source: https://paper.design/docs/mcp
+
+# Paper Desktop supplies this relay; Hermes installs no separate server.
+transport:
+  type: stdio
+  command: ${PAPER_CLI_PATH}
+  args: [mcp]
+
+auth:
+  type: none
+  env:
+    - name: PAPER_CLI_PATH
+      prompt: Paper CLI executable path copied from Paper Desktop's MCP panel
+      required: true
+      secret: false
+
+# Leave tool defaults unset: use the standard install-time probe/checklist.
+post_install: |
+  Install Paper Desktop, sign in, and keep it open on the same computer
+  as Hermes. Open the MCP / Connect your agent panel and copy the Paper
+  CLI executable path. Run `hermes mcp install paper` and supply that path
+  as PAPER_CLI_PATH during setup, without shell quotes or the trailing mcp
+  argument. No API key is needed;
+  the non-secret path is saved in the server configuration.
+
+  Start a new Hermes session after installation. Paper tools can edit the
+  live canvas and read selections and your subsequent edits. Ask explicitly
+  to read pinned comments; this does not provide automatic notifications.
+
+  Tools can modify designs. Establish the user's current file and page
+  before making writes. Review the install-time tool checklist; if probing
+  fails, all tools are enabled when reachable unless you configure a filter.
+  Re-run `hermes mcp configure paper` to refine the selection.

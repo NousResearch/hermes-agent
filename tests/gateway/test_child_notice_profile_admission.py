@@ -5,6 +5,7 @@ owning profile's settings, a handoff to the parent, and the stale child pin.
 """
 
 import asyncio
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -29,6 +30,9 @@ def _build_rig(monkeypatch, tmp_path, request, surface_a, mode):
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_BASE_HOME", str(tmp_path))
+    # Ownership/admission is the subject, not plugin discovery for every fresh profile.
+    monkeypatch.setattr("tools.terminal_tool_result._apply_output_transform_hook",
+                        lambda command, output, returncode, task_id, env_type: output)
     # The global fixture pins the default DB; restore call-time profile resolution
     # within these explicitly private homes instead of sharing its root handle.
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
@@ -280,7 +284,7 @@ async def test_batched_completions_follow_the_owning_profile(
     runner = rig.runner
 
     async def consume(leg):
-        runner._completion_notification_batch_window = 0.01
+        runner._completion_notification_batch_window = 0
         if owner == "live_handoff":
             _transfer_to_parent(rig, leg)
         leg.proc.output_buffer = "PROCESS_RESULT"
@@ -297,10 +301,35 @@ async def test_batched_completions_follow_the_owning_profile(
         pair = [("PROCESS_RESULT", evt), ("COMPANION_RESULT", companion)]
         if path in {"batch_foreground_first", "batch_boundary_first"}:
             pair.reverse()
-        outcomes = await asyncio.gather(*(
-            runner._enqueue_process_completion_notification(text, event)
-            for text, event in pair
-        ))
+        # Both policy preflights must finish before flushing. A 10 ms timer races the
+        # second profile-scope load on busy hosts and tests two independent batches.
+        ready = asyncio.Event()
+        arrivals = 0
+        real_scope = runner._completion_event_scope
+        real_flush = runner._flush_process_completion_batch
+
+        @asynccontextmanager
+        async def admitted_scope(event):
+            nonlocal arrivals
+            async with real_scope(event):
+                yield
+            arrivals += 1
+            if arrivals == 2:
+                ready.set()
+
+        async def flush_after_preflights(key):
+            await asyncio.wait_for(ready.wait(), timeout=10)
+            await real_flush(key)
+
+        with monkeypatch.context() as batch:
+            batch.setattr(runner, "_completion_event_scope", admitted_scope)
+            batch.setattr(runner, "_flush_process_completion_batch", flush_after_preflights)
+            # If a preflight/flush breaks, fail this case rather than strand its futures
+            # until the file-level runner timeout.
+            outcomes = await asyncio.wait_for(asyncio.gather(*(
+                runner._enqueue_process_completion_notification(text, event)
+                for text, event in pair
+            )), timeout=30)
         assert outcomes[pair.index(("PROCESS_RESULT", evt))] is (True if leg.surfaced else None)
         assert outcomes[pair.index(("COMPANION_RESULT", companion))] is (None if boundary else True)
         texts = "\n".join(event.text for event, _sid, _home in rig.admitted)

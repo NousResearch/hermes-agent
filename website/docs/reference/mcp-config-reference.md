@@ -349,7 +349,43 @@ Behavior:
 - Tokens are persisted to `~/.hermes/mcp-tokens/<server>.json` (a named profile uses `~/.hermes/profiles/<name>/mcp-tokens/`) and reused across sessions
 - Token refresh is automatic; re-authorization only happens when refresh fails
 - Only applies to HTTP/StreamableHTTP transport (`url`-based servers)
-- Under a [multiplexed gateway](../user-guide/multi-profile-gateways.md), an OAuth connection is never shared across profiles: each profile authenticates with its own token and opens its own connection, even when the `mcp_servers` entries are identical
+- Under a [multiplexed gateway](../user-guide/multi-profile-gateways.md), an OAuth connection is never shared across profiles: each profile authenticates with its own token and opens its own connection, even when the `mcp_servers` entries are identical — unless the default profile explicitly exports that server's token pool with [`share_with_profiles`](#sharing-one-oauth-grant-with-named-profiles), in which case the profiles still open their own connections but present the root's grant
+
+### Sharing one OAuth grant with named profiles
+
+Named profiles never inherit MCP configuration, and by default each holds its own OAuth grant. When several profiles on one machine need the same identity at the same server, the default profile can export one server's **token pool** — and only the pool:
+
+```yaml
+# ~/.hermes/config.yaml (default profile)
+mcp_servers:
+  linear:
+    url: "https://mcp.linear.app/mcp"
+    auth: oauth
+    oauth:
+      share_with_profiles: true
+
+# ~/.hermes/profiles/work/config.yaml — must carry its own, identical entry
+mcp_servers:
+  linear:
+    url: "https://mcp.linear.app/mcp"
+    auth: oauth
+```
+
+A named profile reads and refreshes `~/.hermes/mcp-tokens/linear.json` instead of its own `mcp-tokens/` only when **all** of these hold; anything else keeps the profile on its own pool, with a warning in the log:
+
+- the root's entry for the same server name carries `oauth.share_with_profiles: true` (boolean);
+- the profile has its own entry for that name (nothing is inherited — no entry, no server);
+- both entries have the same `url`, `transport` and `oauth` block (ignoring the flag itself and `flow`, which only chooses how a login runs), and none of those contains a `${VAR}` reference — a reference resolves per profile scope, so two profiles could read different endpoints or clients from the same text.
+
+Lifecycle follows ownership. A profile that edits or removes its own entry *leaves* the pool (its cached provider is dropped; the root's grant is untouched and its siblings keep working). The root editing the exported entry's identity, or removing it, revokes the grant for every participant. Setting `share_with_profiles` back to `false` (or deleting it) withdraws every participant but keeps the root's own grant. `hermes mcp login linear` from any participant re-authorizes the shared pool. Trust, tool filters and connections stay per profile as documented above.
+
+Withdrawal reaches profiles that are already running, including ones in other processes (a separate gateway, cron, a CLI session), without a restart. Each connection re-checks the pool's authority on disk before every request and every token refresh, so a withdrawn participant's next request fails and it reconnects on its own pool. This applies whether the change was made with `hermes mcp`, the dashboard, or by editing `config.yaml` by hand. While a sibling is re-authorizing, the token file is briefly missing; that is not a withdrawal and does not disconnect anyone. If a `config.yaml` involved cannot be read, requests fail until it can, then resume without a reconnect.
+
+Every stored grant records which endpoint and `oauth` identity it was minted for (a hash, kept in the token file; `flow` and `share_with_profiles` are not part of it). A connection whose endpoint or client differs from that record treats the pool as empty and never sends the grant, and an identity change wipes only a grant minted for the old identity, so an edit authorized in one process survives another process reconnecting. Grants written before this record existed are adopted as they are and gain the record on their next refresh.
+
+CLI and dashboard re-authorization capture and clear credentials under the same cross-process refresh lock. A failed attempt cannot restore a refresh token superseded by a peer. Connector authorization keeps its token, client registration and metadata in an isolated attempt directory; cancellation discards only that attempt, and successful authorization publishes the complete grant under the refresh lock.
+
+An owner identity change temporarily quarantines the old grant before publishing the new configuration. Fresh providers cannot use old credentials while revocation waits for an in-flight refresh. A failed configuration save releases its quarantine without deleting credentials. If revocation times out after the configuration was saved, an explicit login can finish deleting the obsolete state under the lock before starting a new authorization.
 
 ### Device-code login (RFC 8628)
 

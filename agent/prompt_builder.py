@@ -1481,16 +1481,41 @@ def _truncate_content(
         if (warnings := _truncation_warnings.get()) is None:
             _truncation_warnings.set(warnings := [])
         warnings.append(msg)
-    head_chars = int(max_chars * CONTEXT_TRUNCATE_HEAD_RATIO)
-    tail_chars = int(max_chars * CONTEXT_TRUNCATE_TAIL_RATIO)
-    omitted = _omitted_headings(content, head_chars, len(content) - tail_chars)
-    sections = f" Omitted sections: {'; '.join(omitted)}." if omitted else ""
-    marker = (
-        f"\n\n[...truncated {filename}: kept {head_chars}+{tail_chars} of {len(content)} chars. The middle is "
-        f"omitted.{sections} If you need the full instructions, read the complete file with the read_file "
-        f"tool: {read_path or filename}]\n\n"
-    )
-    return content[:head_chars] + marker + content[-tail_chars:]
+    # Preserve the head/tail preference, reserving the marker's actual size.
+    reserved = 0
+    seen_reserves = set()
+    include_sections = True
+    while True:
+        available = max_chars - reserved
+        head_chars = int(available * CONTEXT_TRUNCATE_HEAD_RATIO
+                         / (CONTEXT_TRUNCATE_HEAD_RATIO + CONTEXT_TRUNCATE_TAIL_RATIO))
+        tail_chars = available - head_chars
+        omitted = _omitted_headings(content, head_chars, len(content) - tail_chars) if include_sections else []
+        sections = f" Omitted sections: {'; '.join(omitted)}." if omitted else ""
+        marker = (
+            f"\n\n[...truncated {filename}: kept {head_chars}+{tail_chars} of {len(content)} chars. The middle is "
+            f"omitted.{sections} If you need the full instructions, read the complete file with the read_file "
+            f"tool: {read_path or filename}]\n\n"
+        )
+        if include_sections and (len(marker) > max_chars or len(marker) in seen_reserves):
+            # An oversized or oscillating section index must not strand its old
+            # reserve. Drop the optional index and recompute the content budget.
+            include_sections = False
+            reserved = 0
+            seen_reserves.clear()
+            continue
+        if len(marker) > max_chars:
+            # Tiny caps may not fit a recovery path: disclose truncation without
+            # advertising a cut path or presenting an unmarked instruction prefix.
+            compact = f"[...truncated {filename}; read_file: {read_path or filename}]"
+            if len(compact) > max_chars:
+                compact = f"[...truncated {filename}]"
+            return compact[:max(0, max_chars)]
+        # Counts/headings change at cut boundaries. A cycle uses the fitting side.
+        if len(marker) == reserved or (len(marker) < reserved and len(marker) in seen_reserves):
+            return content[:head_chars] + marker + (content[-tail_chars:] if tail_chars else "")
+        seen_reserves.add(reserved)
+        reserved = len(marker)
 
 
 def _omitted_headings(content: str, start: int, end: int, limit: int = 15) -> list:

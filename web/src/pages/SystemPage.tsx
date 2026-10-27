@@ -217,7 +217,6 @@ const MEMORY_STATUS_TONE: Record<
 
 export default function SystemPage() {
   const { toast, showToast } = useToast();
-  const { t } = useI18n();
 
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [stats, setStats] = useState<SystemStats | null>(null);
@@ -713,9 +712,6 @@ export default function SystemPage() {
 
   const gatewayRunning = status?.gateway_running;
   const canUpdateHermes = status?.can_update_hermes !== false;
-  const activeMemoryProvider = memory?.active
-    ? memory.providers.find((provider) => provider.name === memory.active)
-    : null;
   const validEvents = hooks?.valid_events?.length
     ? hooks.valid_events
     : HOOK_EVENTS_FALLBACK;
@@ -1202,65 +1198,7 @@ export default function SystemPage() {
       </section>
 
       {/* ── Memory ────────────────────────────────────────────────── */}
-      <section className="flex flex-col gap-3">
-        <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-          <Brain className="h-4 w-4" /> Memory
-        </H2>
-        <Card>
-          <CardContent className="flex flex-col gap-4 py-4">
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-              <span>
-                {t.systemMemory.activeProvider}:{" "}
-                <span className="font-mono text-foreground">
-                  {memory?.active || t.systemMemory.noProvider}
-                </span>
-              </span>
-              {activeMemoryProvider && (
-                <Badge tone={MEMORY_STATUS_TONE[activeMemoryProvider.status]}>
-                  {MEMORY_STATUS_LABEL[activeMemoryProvider.status]}
-                </Badge>
-              )}
-              <Link to="/plugins" className="underline">
-                Change in Plugins →
-              </Link>
-              <span className="ml-auto">
-                Provider setup:{" "}
-                <Link to="/plugins" className="underline">
-                  configure in Plugins
-                </Link>
-              </span>
-            </div>
-
-            {activeMemoryProvider?.status === "missing" && (
-              <p className="border border-destructive/50 px-3 py-2 text-xs text-destructive">
-                The configured provider is no longer installed. Switch to built-in memory or configure another provider in Plugins.
-              </p>
-            )}
-
-            <div className="flex flex-wrap items-center gap-3 border-t border-border pt-3">
-              <div className="flex flex-col gap-1 text-xs text-muted-foreground">
-                <span>
-                  <span className="text-foreground">{t.systemMemory.builtinLayer}</span>
-                  {" "}· MEMORY.md: {formatBytes(memory?.builtin_files.memory ?? 0)} · USER.md:{" "}
-                  {formatBytes(memory?.builtin_files.user ?? 0)}
-                </span>
-                <span>{t.systemMemory.builtinNote}</span>
-              </div>
-              <div className="flex items-center gap-2 ml-auto">
-                <Button size="sm" ghost className="text-destructive" onClick={() => memoryReset.requestDelete("memory")}>
-                  Reset MEMORY.md
-                </Button>
-                <Button size="sm" ghost className="text-destructive" onClick={() => memoryReset.requestDelete("user")}>
-                  Reset USER.md
-                </Button>
-                <Button size="sm" ghost className="text-destructive" onClick={() => memoryReset.requestDelete("all")}>
-                  Reset all
-                </Button>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      </section>
+      <MemorySection memory={memory} onReset={memoryReset.requestDelete} />
 
       {/* ── Credential pool ───────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
@@ -1656,5 +1594,81 @@ export default function SystemPage() {
         ))}
       </section>
     </div>
+  );
+}
+
+/** Memory card: which provider is active and the always-on built-in layer (#145175). */
+function MemorySection({
+  memory,
+  onReset,
+}: {
+  memory: MemoryStatus | null;
+  onReset: (target: "all" | "memory" | "user") => void;
+}) {
+  const { t } = useI18n();
+  const activeMemoryProvider = memory?.active
+    ? memory.providers.find((provider) => provider.name === memory.active)
+    : null;
+
+  return (
+      <section className="flex flex-col gap-3">
+        <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
+          <Brain className="h-4 w-4" /> Memory
+        </H2>
+        <Card>
+          <CardContent className="flex flex-col gap-4 py-4">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+              <span>
+                {t.systemMemory.activeProvider}:{" "}
+                <span className="font-mono text-foreground">
+                  {memory?.active || t.systemMemory.noProvider}
+                </span>
+              </span>
+              {activeMemoryProvider && (
+                <Badge tone={MEMORY_STATUS_TONE[activeMemoryProvider.status]}>
+                  {MEMORY_STATUS_LABEL[activeMemoryProvider.status]}
+                </Badge>
+              )}
+              <Link to="/plugins" className="underline">
+                Change in Plugins →
+              </Link>
+              <span className="ml-auto">
+                Provider setup:{" "}
+                <Link to="/plugins" className="underline">
+                  configure in Plugins
+                </Link>
+              </span>
+            </div>
+
+            {activeMemoryProvider?.status === "missing" && (
+              <p className="border border-destructive/50 px-3 py-2 text-xs text-destructive">
+                The configured provider is no longer installed. Switch to built-in memory or configure another provider in Plugins.
+              </p>
+            )}
+
+            <div className="flex flex-wrap items-center gap-3 border-t border-border pt-3">
+              <div className="flex flex-col gap-1 text-xs text-muted-foreground">
+                <span>
+                  <span className="text-foreground">{t.systemMemory.builtinLayer}</span>
+                  {" "}· MEMORY.md: {formatBytes(memory?.builtin_files.memory ?? 0)} · USER.md:{" "}
+                  {formatBytes(memory?.builtin_files.user ?? 0)}
+                </span>
+                <span>{t.systemMemory.builtinNote}</span>
+              </div>
+              <div className="flex items-center gap-2 ml-auto">
+                <Button size="sm" ghost className="text-destructive" onClick={() => onReset("memory")}>
+                  Reset MEMORY.md
+                </Button>
+                <Button size="sm" ghost className="text-destructive" onClick={() => onReset("user")}>
+                  Reset USER.md
+                </Button>
+                <Button size="sm" ghost className="text-destructive" onClick={() => onReset("all")}>
+                  Reset all
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </section>
   );
 }

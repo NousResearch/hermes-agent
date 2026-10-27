@@ -59,8 +59,24 @@ export function MemoryLayersSummary({ provider, status }: { provider?: string; s
   )
 }
 
-/** Settings > Memory & Context: `provider` is the page's live `memory.provider`
- *  draft, so the summary follows the select; readiness comes from GET /api/memory. */
+interface MemoryLayersSlotProps {
+  profile?: string
+  provider: string
+  sectionId: string
+  subpage?: string
+}
+
+/** Settings > Memory & Context > Persistent memory (or the whole section). */
+export function MemoryLayersSlot({ sectionId, subpage, ...panel }: MemoryLayersSlotProps) {
+  if (sectionId !== 'memory' || (subpage !== undefined && subpage !== 'persistent')) {
+    return null
+  }
+
+  return <MemoryLayersPanel {...panel} />
+}
+
+/** `provider` is the page's live `memory.provider` draft, so the summary
+ *  follows the select; readiness comes from GET /api/memory. */
 export function MemoryLayersPanel({ profile, provider }: { profile?: string; provider: string }) {
   const [status, setStatus] = useState<MemoryStatusResponse | null>(null)
 

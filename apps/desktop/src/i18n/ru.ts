@@ -1421,6 +1421,8 @@ export const ruOverrides = {
   skills: {
     plugins: { ...ruPluginPreviewAccess, ...ruPluginsTab },
     tabSkills: 'Навыки',
+    relatedSkills: 'Связанные навыки',
+    missingRelatedSkills: 'Отсутствующие связанные навыки',
     tabToolsets: 'Инструменты',
     configuringProfile: 'Настраивается:',
     all: 'Все',

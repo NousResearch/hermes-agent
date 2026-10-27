@@ -10,6 +10,7 @@ import { PageSearchShell } from '../../page-search-shell'
 import { CatalogBrowser } from './catalog-browser'
 import { type CatalogKind, parseCatalog } from './catalog-data'
 import { $catalogCardView } from './store'
+import { SkillDetail } from '../skills/skill-detail'
 
 beforeEach(() => {
   $catalogCardView.set(true)
@@ -61,6 +62,39 @@ function setup(kind: CatalogKind) {
 
   return { entries, onInstall, ...render(<Harness />) }
 }
+
+it.each([true, false])('navigates declared relations outside the current filter (cards=%s)', async cards => {
+  $catalogCardView.set(cards)
+  const profile = 'research'
+  const skills = ['alpha', 'beta'].map(name => ({ name, category: 'test', description: '', enabled: true }))
+  const entries = parseCatalog('skills', skills.map(skill => ({ ...skill, identifier: skill.name, source: 'official' })))
+  queryClient.setQueryData(['public-catalog', 'skills'], entries)
+  for (const skill of skills) {
+    queryClient.setQueryData(['skill-content', skill.name, profile], {
+      content: skill.name === 'alpha' ? '---\nrelated_skills: [beta]\n---\nAlpha body' : 'Beta body'
+    })
+  }
+  render(
+    <QueryClientProvider client={queryClient}>
+      <CatalogBrowser
+        kind="skills"
+        query="alpha"
+        isInstalled={() => true}
+        onInstall={vi.fn()}
+        renderInstalledDetail={(entry, select) => (
+          <SkillDetail skill={skills.find(skill => skill.name === entry.name)!} skills={skills}
+            profile={profile} onEdit={vi.fn()} onArchive={vi.fn()}
+            onSelectSkill={name => select(entries.find(row => row.name === name)!)} />
+        )}
+      />
+    </QueryClientProvider>
+  )
+  if (cards) fireEvent.click(screen.getByRole('button', { name: 'alpha' }))
+  await screen.findByText('Alpha body')
+  fireEvent.click(screen.getByRole('button', { name: 'beta' }))
+  await screen.findByText('Beta body')
+  expect(screen.queryByText('Alpha body')).toBeNull()
+})
 
 const card = (name: string) =>
   screen.getAllByRole('article').find(article => within(article).queryByRole('button', { name }))!

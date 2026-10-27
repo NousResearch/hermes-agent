@@ -266,7 +266,7 @@ function ScopedSkillsTab({
             size="xs"
           />
         )}
-        renderInstalledDetail={skill => (
+        renderInstalledDetail={(skill, onSelectSkill) => (
           <>
             {usageOf(skill) > 0 && (
               <p className="text-xs text-(--ui-text-tertiary)">{t.skills.usageCount(usageOf(skill))}</p>
@@ -280,6 +280,8 @@ function ScopedSkillsTab({
               onEdit={() => void openSkillEditor(skill.name)}
               profile={profile}
               skill={skill}
+              skills={skills}
+              onSelectSkill={onSelectSkill}
             />
             <p className="text-xs text-(--ui-text-tertiary)">{t.skills.changesApplyNewSessions}</p>
             {skillEditor?.name === skill.name && (

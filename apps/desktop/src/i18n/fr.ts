@@ -2398,6 +2398,8 @@ export const frOverrides = {
   },
   skills: {
     tabSkills: 'Skills',
+    relatedSkills: 'Compétences associées',
+    missingRelatedSkills: 'Compétences associées manquantes',
     tabToolsets: 'Outils',
     configuringProfile: 'Configuration de :',
     all: 'Tout',

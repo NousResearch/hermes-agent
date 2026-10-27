@@ -181,3 +181,62 @@ def test_scratch_export_skips_a_rejected_home(tmp_path):
     assert hermes_constants.apply_scratch_tmp_env(env) is False
     assert "TMPDIR" not in env and hermes_constants.SCRATCH_DIR_MARKER_ENV not in env
     assert not home.exists()
+
+
+def test_boot_bootstrap_writes_nothing_in_a_rejected_home(tmp_path, monkeypatch):
+    """``maybe_run_boot_bootstrap`` must not create ``installs/<key>/bootstrap/*.json``.
+
+    The writer does ``mkdir(parents=True)``; on the first-pass fix a rejected
+    ``HERMES_HOME`` still got ``<target>/installs/<sha>/bootstrap/default.json``
+    (QA probe 2026-10-27).
+    """
+    from hermes_cli.boot_bootstrap import maybe_run_boot_bootstrap
+
+    home = tmp_path / ".hidden"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    # Forget any prior refusal memo for this path.
+    from hermes_cli import config_home as _ch
+    _ch._REJECTED_HOMES_WARNED.discard(str(home))
+    project_root = tmp_path / "code"
+    project_root.mkdir()
+    # Give the project_root an identity so ``needs_bootstrap`` returns one and
+    # the writer would actually mkdir+write on pristine HEAD.
+    monkeypatch.setattr(
+        "hermes_cli.boot_bootstrap.current_install_identity",
+        lambda _root: "a" * 40,
+    )
+    # Stub the post-update steps so the test does not run real migrations.
+    import hermes_cli.post_update as _pu
+    monkeypatch.setattr(_pu, "run_steps", lambda _steps: {"step": "ok"})
+    monkeypatch.setattr(_pu, "BOOT_HOME_STEPS", [])
+
+    maybe_run_boot_bootstrap(project_root)
+
+    assert not home.exists()
+    assert not (tmp_path / "installs").exists()
+
+
+def test_gateway_spawn_writes_no_logs_in_a_rejected_home(tmp_path, monkeypatch):
+    """``spawn_unmanaged_gateway`` must not create ``logs/gateway-stdio.log``.
+
+    Incident #2 (2026-10-24): ``hermes gateway start`` captured stdout into
+    ``profiles/devops/cache/logs/gateway-stdio.log``.
+    """
+    import subprocess as _sp
+    from hermes_cli.gateway_runtime_start import spawn_unmanaged_gateway
+
+    home = tmp_path / "cache" / "hermes"
+    # Stub the heavy imports the spawn pulls in; we only need the mkdir gate.
+    monkeypatch.setattr(
+        "hermes_cli.gateway_runtime_start.subprocess.Popen",
+        lambda *a, **kw: _sp.CompletedProcess(a, 0),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.gateway_runtime_start.remaining",
+        lambda _deadline: None,
+    )
+
+    spawn_unmanaged_gateway(home, deadline=1e9, idle_exit=False)
+
+    assert not home.exists()
+    assert not (home / "logs").exists()

@@ -64,6 +64,25 @@ def spawn_unmanaged_gateway(profile_home: Path, *, deadline: float, idle_exit: b
     for key in (*DAEMON_STRIPPED_ENV, *_VAR_MAP):
         env.pop(key, None)
     remaining(deadline)
+    from hermes_constants import non_hermes_home_reason
+
+    rejection = non_hermes_home_reason(home)
+    if rejection is not None:
+        # A rejected home must not get a ``logs/`` dir or a ``gateway-stdio.log``
+        # either: on 2026-10-24 ``hermes gateway start`` captured its stdout into
+        # ``profiles/devops/cache/logs/gateway-stdio.log``. The subprocess still
+        # spawns but with stdio discarded, so the refusal is literal.
+        from hermes_cli.config_home import warn_non_hermes_home
+
+        warn_non_hermes_home(home, rejection)
+        try:
+            return subprocess.Popen(command, cwd=root, env=env, close_fds=True,
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL,
+                                    **windows_detach_popen_kwargs())
+        except OSError as exc:
+            reason = "windows_breakaway_unavailable" if sys.platform == "win32" else "spawn_failed"
+            raise RuntimeStartError(reason) from exc
     logs = home / "logs"
     logs.mkdir(parents=True, exist_ok=True)
     try:

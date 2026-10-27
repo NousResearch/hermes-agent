@@ -242,6 +242,21 @@ def maybe_run_boot_bootstrap(project_root: Path) -> None:
     """The one call boot paths use. Never raises: a bootstrap problem must
     not stop the gateway/serve/CLI from starting."""
     try:
+        from hermes_constants import get_hermes_home, non_hermes_home_reason
+
+        home = get_hermes_home()
+        rejection = non_hermes_home_reason(home)
+        if rejection is not None:
+            # Do not materialize ``installs/<key>/bootstrap/<profile>.json`` inside a
+            # path that is not a Hermes home: the writer does ``mkdir(parents=True)``
+            # and a rejected ``HERMES_HOME`` used to leave
+            # ``<target>/installs/<sha>/bootstrap/default.json`` behind (QA probe on
+            # the first-pass fix, 2026-10-27). The refusal is shared with the other
+            # writers so "creates nothing" is literal.
+            from hermes_cli.config_home import warn_non_hermes_home
+
+            warn_non_hermes_home(home, rejection)
+            return
         run_boot_bootstrap(Path(project_root))
     except Exception as exc:
         logger.warning("boot bootstrap failed (continuing boot): %s", exc)

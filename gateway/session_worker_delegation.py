@@ -69,8 +69,8 @@ def _dispatch(db, conn, session_id, payload, *, execution_id, worker_pid, worker
     import psutil
     from gateway.status import get_process_start_time
     try:
-        from hermes_cli.process_identity import process_birth
-        if process_birth(psutil.Process(worker_pid)) != worker_birth:
+        from hermes_cli import process_identity
+        if process_identity.worker_birth(psutil.Process(worker_pid)) != worker_birth:
             raise RuntimeStoreError('permission_denied')
         owner_started_at = get_process_start_time(worker_pid)
     except psutil.Error as exc:

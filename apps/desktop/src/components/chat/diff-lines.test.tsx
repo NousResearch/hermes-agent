@@ -56,8 +56,9 @@ function renderQuietly(node: Parameters<typeof render>[0]) {
 
 describe('FileDiffPanel survives a failed lazy syntax-diff chunk', () => {
   it('degrades to the plain colored diff instead of taking down the surrounding boundary', async () => {
-    // Highlighting waits until the card is on screen, and jsdom never reports an intersection:
-    // without an observer the card highlights at once, so the failing chunk really mounts.
+    // Highlighting waits until the card is on screen, and the test setup's inert IntersectionObserver
+    // (jsdom has none) never reports one: without an observer the card highlights at once, so the
+    // failing chunk really mounts.
     vi.stubGlobal('IntersectionObserver', undefined)
 
     const { container } = renderQuietly(

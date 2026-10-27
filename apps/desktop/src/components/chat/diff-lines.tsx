@@ -611,13 +611,14 @@ export function FileDiffPanel({
   // Edit-tool cards open their diff by default, so a session full of file edits
   // used to tokenize every diff in the loaded window on each switch (seconds of
   // Shiki on the click path). The compact card keeps the plain colored rows
-  // until it is first on screen; the windowed body already highlights only
-  // the rows it mounts.
+  // until it is first on screen. Windowed panels are unchanged: they mount only
+  // the visible rows but still tokenize the whole diff.
   const boxRef = React.useRef<HTMLDivElement>(null)
   const seen = useSeenOnce(boxRef, canHighlight && !windowed)
 
   // Windowed: we own fixed-height rows and render only the visible chunks, so a
-  // large diff never mounts (or Shiki-highlights) every line. Compact tool cards
+  // large diff never mounts every line (TokenizedDiffBody still tokenizes the
+  // whole diff once). Compact tool cards
   // are small/clamped, so they let Shiki own the rows (SyntaxDiff).
   const windowedBody = canHighlight ? (
     <TokenizedDiffBody

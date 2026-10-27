@@ -1315,7 +1315,7 @@ def _handle_withdraw(args: dict, **kw) -> str:
         "kanban_complete, kanban_block, or kanban_request_review for your own card."))
     with _board(args.get("board")) as (kb, conn):
         kb.withdraw_task(
-            conn, tid, actor=_persisted_identity(), reason=args.get("reason"),
+            conn, tid, actor=_persisted_identity(), reason=_redact_opt(args.get("reason")),
             creator_task_id=self_tid)
         task = kb.get_task(conn, tid)
         return _ok(task_id=tid, withdrawn=True,

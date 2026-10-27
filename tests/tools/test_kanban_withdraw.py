@@ -169,6 +169,87 @@ def test_an_already_finished_card_is_refused(worker, monkeypatch):
         assert "is done: nothing left to withdraw" in error
 
 
+def test_completion_racing_the_withdraw_is_never_overwritten(worker, monkeypatch):
+    """The done refusal holds at write time, not only at the advisory read.
+
+    The card is ``ready`` when ``withdraw_task`` reads it, then another
+    connection completes it before the archive lands. Withdraw must refuse and
+    the card must stay ``done`` with no archive/withdraw side effects.
+    """
+    _own, _parent = worker
+    with kbc.connect_closing() as conn:
+        card = _file({"title": "duplicate", "assignee": "vx-dev"})
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (card,))
+
+    real_get_task = kb.get_task
+    raced = []
+
+    def _get_then_complete(conn, tid):
+        snapshot = real_get_task(conn, tid)
+        if tid == card and not raced:
+            raced.append(snapshot.status)
+            with kbc.connect_closing() as other:
+                with kb.write_txn(other):
+                    other.execute("UPDATE tasks SET status='done' WHERE id=?", (card,))
+        return snapshot
+
+    monkeypatch.setattr(kb, "get_task", _get_then_complete)
+    error = _refusal(kt._handle_withdraw({"task_id": card, "reason": "dup"}))
+    monkeypatch.setattr(kb, "get_task", real_get_task)
+
+    assert raced == ["ready"], "the race window was never exercised"
+    assert "is done: nothing left to withdraw" in error
+    with kbc.connect_closing() as conn:
+        assert _card(conn, card).status == "done"
+        kinds = {e.kind for e in kb.list_events(conn, card)}
+        assert not kinds & {"archived", "withdrawn", "archive_worker_termination"}
+
+
+def test_withdrawing_a_running_duplicate_terminates_its_worker(worker, monkeypatch):
+    """A duplicate the dispatcher already claimed is withdrawn with its worker stopped."""
+    own, _parent = worker
+    with kbc.connect_closing() as conn:
+        card = _file({"title": "duplicate", "assignee": "vx-dev"})
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (card,))
+        host = kb._claimer_id().split(":", 1)[0]
+        assert kb.claim_task(conn, card, claimer=f"{host}:worker") is not None
+        monkeypatch.setattr(kbd, "_process_fingerprint", lambda _pid: "boot:1|777")
+        kbd._set_worker_pid(conn, card, 54321)
+        monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+
+        signalled: list[tuple[int, int]] = []
+        assert kb.withdraw_task(
+            conn, card, reason="dup", creator_task_id=own,
+            signal_fn=lambda pid, sig: signalled.append((pid, sig)),
+        ) is True
+
+        assert signalled and signalled[0][0] == 54321
+        task = _card(conn, card)
+        assert task.status == "archived"
+        assert task.worker_pid is None
+        kinds = [e.kind for e in kb.list_events(conn, card)]
+        assert "archive_worker_termination" in kinds
+        assert "withdrawn" in kinds
+
+
+def test_withdraw_reason_is_redacted_before_persistence(worker):
+    """Same redaction as the other lifecycle reasons: the event log is durable."""
+    _own, _parent = worker
+    secret = "ghp_" + "A" * 40
+    with kbc.connect_closing() as conn:
+        card = _file({"title": "duplicate", "assignee": "vx-dev"})
+        result = json.loads(kt._handle_withdraw(
+            {"task_id": card, "reason": f"dup; token was {secret}"}))
+        assert result["ok"], result
+        events = [e for e in kb.list_events(conn, card) if e.kind == "withdrawn"]
+        assert len(events) == 1
+        reason = (events[0].payload or {}).get("reason") or ""
+        assert reason.startswith("dup; token was")
+        assert secret not in reason
+
+
 def test_delegate_child_may_not_withdraw(worker, monkeypatch):
     """A delegate child inherits HERMES_KANBAN_* env but owns no run."""
     own, _parent = worker

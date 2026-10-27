@@ -3807,8 +3807,16 @@ def specify_triage_task(
     return True
 
 
-def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> bool:
+def archive_task(
+    conn: sqlite3.Connection, task_id: str, *, signal_fn=None,
+    refuse_statuses: tuple[str, ...] = (),
+) -> bool:
     """Archive a task; a *running* task's host-local worker is terminated.
+
+    ``refuse_statuses`` makes the transition conditional on the row NOT being in
+    one of those statuses at write time (compare-and-set in the archive txn), so
+    a caller that must not overwrite e.g. ``done`` cannot race a concurrent
+    completion. A refused row returns False with no side effects.
 
     Clearing ``worker_pid`` in the DB alone left the OS process running past its
     own archive — it kept executing (and pushing work) against a task nothing
@@ -3830,10 +3838,12 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
             return False
         was_running = row["status"] == "running"
         prev_pid, prev_lock, prev_started = row["worker_pid"], row["claim_lock"], row["worker_started_at"]
+        excluded = ("archived", *refuse_statuses)
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
             "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "
-            "WHERE id = ? AND status != 'archived'", (task_id,),
+            f"WHERE id = ? AND status NOT IN ({', '.join('?' * len(excluded))})",
+            (task_id, *excluded),
         )
         if cur.rowcount != 1:
             return False
@@ -3852,6 +3862,9 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
     # Reap the workspace on archive too (never-completed tasks kept it forever).
     _cleanup_workspace(conn, task_id)
     return True
+
+
+_WITHDRAW_TERMINAL = ("done", "archived")
 
 
 class WithdrawRefused(ValueError):
@@ -3889,24 +3902,30 @@ def withdraw_task(
 
     Returns True on the transition; raises ``WithdrawRefused`` otherwise.
     """
+    def _finished(status: str) -> WithdrawRefused:
+        return WithdrawRefused(
+            f"{task_id} is {status}: nothing left to withdraw (a finished card is "
+            "already out of dispatch; archive it from the CLI/dashboard if it must leave "
+            "the board)")
+
     task = get_task(conn, task_id)
     if task is None:
         raise WithdrawRefused(f"unknown task: {task_id}")
-    if task.status in ("done", "archived"):
-        raise WithdrawRefused(
-            f"{task_id} is {task.status}: nothing left to withdraw (a finished card is "
-            "already out of dispatch; archive it from the CLI/dashboard if it must leave "
-            "the board)")
+    if task.status in _WITHDRAW_TERMINAL:
+        raise _finished(task.status)
     if creator_task_id is not None and task.creator_task_id != creator_task_id:
         raise WithdrawRefused(
             f"{task_id} was not filed by {creator_task_id} "
             f"(provenance: {task.creator_task_id or 'none recorded'}). Only the run that "
             "filed a card may withdraw it: ask its filer, or archive it from the "
             "CLI/dashboard (`hermes kanban archive`)")
-    if not archive_task(conn, task_id, signal_fn=signal_fn):
-        raise WithdrawRefused(
-            f"{task_id} could not be withdrawn (it moved to a terminal state while this "
-            "call was in flight)")
+    # The read above is advisory: a concurrent completion can land before the
+    # archive, so the refusal is re-applied as a CAS inside the archive txn.
+    if not archive_task(conn, task_id, signal_fn=signal_fn, refuse_statuses=("done",)):
+        current = get_task(conn, task_id)
+        if current is None:
+            raise WithdrawRefused(f"unknown task: {task_id}")
+        raise _finished(current.status)
     # After the transition, so a losing concurrent withdrawer cannot leave a
     # `withdrawn` event on a card it never moved.
     with write_txn(conn):

@@ -193,7 +193,7 @@ class WorkerControls:
             from agent.interrupt_compat import request_hard_interrupt
             request_hard_interrupt(self.agent)  # parity with the canonical Stop (SessionAuthority.interrupt)
             if self.stop_processes_requested:
-                self.stop_processes()
+                self.retry_process_stop()
         with self.lock:
             for state in self.clarifications.values():
                 state['answer'] = _INTERRUPTED
@@ -224,6 +224,16 @@ class WorkerControls:
                    for pid in targets]
         if any(r.get('status') not in {'killed', 'already_exited', 'ownership_changed'} or 'scope_stop_failed' in r for r in results):
             raise RuntimeError('process_stop_unknown')
+
+    def retry_process_stop(self):
+        """Physical uncertainty holds the owner's Stop fence, not a known turn result."""
+        try:
+            self.stop_processes()
+        except RuntimeError as exc:
+            if str(exc) != 'process_stop_unknown':
+                raise
+            return False
+        return True
 
     def read(self):
         from tools.approval import resolve_gateway_approval
@@ -436,7 +446,7 @@ def execute(frame, channel):
                           **run_worker_turns(agent, frame, history)}
             finally:
                 if getattr(controls, 'stop_processes_requested', False):
-                    controls.stop_processes()  # a spawn may have crossed the first Stop snapshot
+                    controls.retry_process_stop()  # a spawn may have crossed the first Stop snapshot
             result['_turn_input_tokens'] = max(0, (getattr(agent, 'session_prompt_tokens', 0) or 0) - before[0])
             result['_turn_output_tokens'] = max(0, (getattr(agent, 'session_completion_tokens', 0) or 0) - before[1])
             retire_agent(agent)

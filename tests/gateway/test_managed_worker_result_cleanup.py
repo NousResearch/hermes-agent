@@ -75,7 +75,19 @@ def test_known_worker_result_survives_cleanup_unknown_and_native_retry(tmp_path,
             # Restore only the exact bytes produced by this actual original job.
             result_path.write_bytes(genuine_bytes)
             retried = await rpc(ws, 'session.interrupt', session_id=sid, execution_generation=generation)
-            assert 'result' in retried, retried
+            if 'error' in retried:
+                # A ready native completion may already have reconciled this
+                # Stop and claimed this exact follower. Never stop its newer generation.
+                assert retried['error']['data']['reason'] == 'stale_generation', retried
+                assert not query('SELECT value FROM state_meta WHERE key=?', marker)
+                assert query("SELECT status,outcome FROM session_admissions WHERE request_id='first'") == [('terminal', 'completed')]
+                assert query("SELECT status FROM session_admissions WHERE request_id='follower'")[0][0] in {'started', 'terminal'}
+                assert not alive(own) and alive(foreign)
+                ready = json.loads(result_path.read_text())
+                assert ready['id'] == own['id'] and ready['exit_code'] == 7 and ready['result_complete']
+                assert ready['output'] == genuine['output']
+            else:
+                assert 'result' in retried, retried
             await async_wait_until(lambda: query("SELECT status,outcome FROM session_admissions WHERE request_id='follower'")
                                    == [('terminal', 'completed')], timeout=30)
             assert peer.follower_alive == [False, False] and alive(foreign)

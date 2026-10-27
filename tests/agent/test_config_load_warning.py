@@ -67,7 +67,8 @@ def test_config_failure_warns_without_exposing_values_and_preserves_defaults(
 
     home = get_hermes_home()
     configured = (
-        "prompt_caching:\n  cache_ttl: 1h\n"
+        # 5m, not the auto default (which resolves this platform-less agent to 1h), so a fallback is visible.
+        "prompt_caching:\n  cache_ttl: 5m\n"
         "model:\n  reasoning_echo: true\n"
         "compression:\n  enabled: false\n"
         "skills:\n  creation_nudge_interval: 99\n"

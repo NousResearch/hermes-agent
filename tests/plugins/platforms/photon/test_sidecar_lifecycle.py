@@ -9,6 +9,8 @@ spawning Node or binding ports.
 from __future__ import annotations
 
 import subprocess
+import sys
+import types
 from typing import Any, Dict, List, Tuple
 
 import pytest
@@ -212,3 +214,165 @@ async def test_spectrum_patch_runs_off_the_event_loop(
         "dispatched via asyncio.to_thread so a 10s node spawn can't freeze "
         "every other platform on the gateway loop"
     )
+
+
+# -- Windows reaping -------------------------------------------------------------
+# Windows keeps its own path for every probe: no lsof, no ps, no SIGTERM/SIGKILL,
+# and os.kill(pid, 0) signals a console group instead of probing. A fast gateway
+# restart there still races the sidecar's port release, so the reaper must find
+# and kill the stale sidecar rather than return early.
+
+
+def _fake_psutil(monkeypatch: pytest.MonkeyPatch, **attrs: Any) -> None:
+    """Install a stand-in psutil for the function-local ``import psutil``."""
+    monkeypatch.setitem(sys.modules, "psutil", types.SimpleNamespace(**attrs))
+
+
+def test_find_listener_pids_reads_the_windows_socket_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(photon_adapter.sys, "platform", "win32")
+
+    def _conn(port: int, status: str, pid: int | None) -> types.SimpleNamespace:
+        return types.SimpleNamespace(
+            status=status, pid=pid, laddr=types.SimpleNamespace(port=port)
+        )
+
+    _fake_psutil(
+        monkeypatch,
+        CONN_LISTEN="LISTEN",
+        net_connections=lambda kind: [
+            _conn(8789, "LISTEN", 4242),
+            _conn(8789, "ESTABLISHED", 5151),  # a client, not the listener
+            _conn(9999, "LISTEN", 8181),  # another port entirely
+            _conn(8789, "LISTEN", None),  # unowned socket
+        ],
+    )
+
+    assert PhotonAdapter._find_listener_pids(8789) == [4242]
+
+
+def test_find_listener_pids_falls_back_to_netstat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A psutil that can't read the table (access denied) must not blind the reaper."""
+
+    def _denied(kind: str) -> Any:
+        raise PermissionError("access denied")
+
+    monkeypatch.setattr(photon_adapter.sys, "platform", "win32")
+    _fake_psutil(monkeypatch, net_connections=_denied)
+
+    netstat = "\r\n".join([
+        "Active Connections",
+        "  Proto  Local Address          Foreign Address        State           PID",
+        "  TCP    127.0.0.1:8789         0.0.0.0:0              LISTENING       4242",
+        "  TCP    127.0.0.1:8789         127.0.0.1:5555         ESTABLISHED     5151",
+        "  TCP    0.0.0.0:8789           0.0.0.0:0              LISTENING       4243",
+        "  TCP    127.0.0.1:9999         0.0.0.0:0              LISTENING       8181",
+    ])
+    monkeypatch.setattr(PhotonAdapter, "_quick_stdout", staticmethod(lambda cmd: netstat))
+
+    assert PhotonAdapter._find_listener_pids(8789) == [4242, 4243]
+
+
+def test_pid_is_sidecar_matches_a_windows_command_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(photon_adapter.sys, "platform", "win32")
+    cmdline = [
+        r"C:\Program Files\nodejs\node.exe",
+        r"C:\hermes\plugins\platforms\photon\sidecar\index.mjs",
+    ]
+    _fake_psutil(monkeypatch, Process=lambda pid: types.SimpleNamespace(cmdline=lambda: cmdline))
+    assert PhotonAdapter._pid_is_sidecar(4242) is True
+
+    other = [r"C:\Program Files\nodejs\node.exe", r"C:\apps\thing\server.mjs"]
+    _fake_psutil(monkeypatch, Process=lambda pid: types.SimpleNamespace(cmdline=lambda: other))
+    assert PhotonAdapter._pid_is_sidecar(4243) is False
+
+
+def test_pid_alive_never_signals_the_pid_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """os.kill(pid, 0) raises CTRL_C_EVENT at the whole console group on Windows."""
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(photon_adapter.sys, "platform", "win32")
+    monkeypatch.setattr(photon_adapter.os, "kill", lambda pid, sig: signals.append((pid, sig)))
+    monkeypatch.setattr(photon_adapter, "_sidecar_pid_alive", lambda pid: True)
+
+    assert PhotonAdapter._pid_alive(4242) is True
+    assert signals == []
+
+
+@pytest.mark.asyncio
+async def test_reap_kills_stale_sidecar_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The regression: win32 used to return before reaping, so a restart race
+    left the old sidecar on the port and the new one died on EADDRINUSE."""
+    adapter = _make_adapter(monkeypatch)
+    monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _ProbeClient)  # port held, wrong token
+    monkeypatch.setattr(photon_adapter.sys, "platform", "win32")
+    monkeypatch.setattr(PhotonAdapter, "_find_listener_pids", classmethod(lambda cls, port: [4242]))
+    monkeypatch.setattr(PhotonAdapter, "_pid_is_sidecar", classmethod(lambda cls, pid: True))
+
+    alive = {"value": True}
+    monkeypatch.setattr(PhotonAdapter, "_pid_alive", staticmethod(lambda pid: alive["value"]))
+
+    calls: list[tuple[str, int]] = []
+
+    class _Proc:
+        def __init__(self, pid: int) -> None:
+            self.pid = pid
+
+        def terminate(self) -> None:
+            calls.append(("terminate", self.pid))
+            alive["value"] = False
+
+        def kill(self) -> None:
+            calls.append(("kill", self.pid))
+
+    signals: list[tuple[int, int]] = []
+    _fake_psutil(monkeypatch, Process=_Proc)
+    monkeypatch.setattr(photon_adapter.os, "kill", lambda pid, sig: signals.append((pid, sig)))
+
+    await adapter._reap_stale_sidecar()
+
+    assert calls == [("terminate", 4242)], "the Windows reaper must terminate the stale sidecar"
+    assert signals == [], "SIGTERM/SIGKILL must never be sent on Windows"
+
+
+@pytest.mark.asyncio
+async def test_reap_escalates_to_a_hard_kill_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """signal.SIGKILL does not exist on Windows, so the escalation must not name it."""
+    adapter = _make_adapter(monkeypatch)
+    monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _ProbeClient)
+    monkeypatch.setattr(photon_adapter.sys, "platform", "win32")
+    monkeypatch.setattr(PhotonAdapter, "_find_listener_pids", classmethod(lambda cls, port: [4242]))
+    monkeypatch.setattr(PhotonAdapter, "_pid_is_sidecar", classmethod(lambda cls, pid: True))
+    monkeypatch.setattr(PhotonAdapter, "_pid_alive", staticmethod(lambda pid: True))  # ignores terminate()
+
+    calls: list[tuple[str, int]] = []
+
+    class _Proc:
+        def __init__(self, pid: int) -> None:
+            self.pid = pid
+
+        def terminate(self) -> None:
+            calls.append(("terminate", self.pid))
+
+        def kill(self) -> None:
+            calls.append(("kill", self.pid))
+
+    _fake_psutil(monkeypatch, Process=_Proc)
+    # Skip the 3s liveness wait: the deadline is already past on the first check.
+    clock = iter([0.0, 10.0])
+    monkeypatch.setattr(photon_adapter, "time", types.SimpleNamespace(time=lambda: next(clock, 10.0)))
+
+    await adapter._reap_stale_sidecar()
+
+    assert calls == [("terminate", 4242), ("kill", 4242)]
+

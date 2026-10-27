@@ -62,8 +62,11 @@ def validate_manifest(source: Path) -> dict:
 
 class PluginSelection:
     def __init__(self, selection: dict):
+        from ruamel.yaml.comments import CommentedMap
+
         from hermes_yaml import roundtrip_yaml
         from pm.plugin_eviction import settle_record
+        from utils import _rt_value, _set_rt_entry
 
         self.configs = selection_snapshot()
         self.home = Path(selection["home"]).resolve()
@@ -81,12 +84,19 @@ class PluginSelection:
             config = {}
         if not isinstance(config, dict):
             raise ValueError(f"configuration must be a mapping: {self.path}")
-        plugins = config.setdefault("plugins", {})
-        if not isinstance(plugins, dict):
+        plugins = config.get("plugins")
+        fresh = plugins is None
+        if fresh:
+            plugins = CommentedMap()
+        elif not isinstance(plugins, dict):
             raise ValueError(f"plugins must be a mapping in {self.path}")
-        plugins["enabled"] = sorted(selection["enabled"])
-        plugins["disabled"] = sorted(selection["disabled"])
+        # Through the shared comment-aware setter: a bare assignment appended `enabled:` below the
+        # next section's banner comment, which ruamel files on the section's last entry.
+        for key in ("enabled", "disabled"):
+            _set_rt_entry(plugins, key, _rt_value(sorted(selection[key])))
         settle_record(plugins, selection.get("settled", ()))
+        if fresh:
+            _set_rt_entry(config, "plugins", plugins)
         output = io.StringIO()
         yaml.dump(config, output)
         self.proposed = output.getvalue().encode("utf-8")

@@ -16,7 +16,8 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
-from hermes_cli.plugins_state import _plugin_relative_segments, _plugin_settings_entry, save_plugin_setting
+from hermes_cli.plugins_state import (
+    _nested_plugin_value, _plugin_relative_segments, _plugin_settings_entry, save_plugin_setting)
 
 logger = logging.getLogger(__name__)
 
@@ -36,18 +37,18 @@ _ENV_NAME_CLEAN_RE = re.compile(r"[^A-Z0-9]+")
 
 
 def _manifest_config_schema(plugin_dir: Optional[Path]) -> Mapping[str, Mapping[str, Any]]:
-    """``config_schema`` from ``<plugin_dir>/plugin.yaml``, or for a portable package from
-    ``plugin.json`` ``extensions.com.nousresearch.hermes.config_schema`` (Agent Plugins v1 forbids
-    unknown top-level fields, so Hermes-specific keys live in the vendor namespace); ``{}`` when
-    absent or malformed (the loader already warned about malformed entries at load time)."""
+    """``config_schema`` from ``<plugin_dir>/plugin.yaml`` (or ``plugin.yml``), or for a portable
+    package from ``plugin.json`` ``extensions.com.nousresearch.hermes.config_schema`` (Agent Plugins
+    v1 forbids unknown top-level fields, so Hermes-specific keys live in the vendor namespace); ``{}``
+    when absent or malformed (the loader already warned about malformed entries at load time)."""
     if plugin_dir is None:
         return {}
-    manifest = Path(plugin_dir) / "plugin.yaml"
+    from pm.plugin_declarations import native_manifest_file, read_native_manifest
+
     try:
-        if manifest.is_file():
-            from utils import fast_safe_load
-            data = fast_safe_load(manifest.read_text(encoding="utf-8-sig")) or {}
-            raw = data.get("config_schema") if isinstance(data, Mapping) else None
+        manifest = native_manifest_file(Path(plugin_dir))
+        if manifest is not None:
+            raw = read_native_manifest(manifest).get("config_schema")
         else:
             raw = _portable_config_schema(Path(plugin_dir))
     except Exception as exc:  # unreadable manifest: no settings surface, never a failed list
@@ -84,6 +85,30 @@ def _field_type(spec: Mapping[str, Any]) -> str:
     if kind == "string" and isinstance(choices, list) and choices:
         return "enum"
     return kind
+
+
+def declared_setting_type(segments: tuple[str, ...], user_config: Mapping[str, Any]) -> Optional[str]:
+    """Wire field type the plugin's ``config_schema`` declares for the dotted config path
+    ``plugins.entries.<id>.settings.<key>`` (*segments* already split); ``None`` for any other path,
+    an unknown plugin or an undeclared key. ``hermes config set`` reads it so ``off`` stays the
+    string a ``type: str`` field expects instead of turning into ``false``. The plugin ID is
+    resolved against *user_config* (the raw file the write navigates) with the writer's own
+    literal-key rule, so an existing ``my.plugin`` entry is found without escaping its dot."""
+    if len(segments) < 5 or segments[:2] != ("plugins", "entries"):
+        return None
+    from hermes_cli.config import _greedy_literal_match
+    from hermes_cli.plugins_cmd import _find_plugin_entry
+
+    rest = list(segments[2:])
+    entries = _nested_plugin_value(user_config, ("plugins", "entries"), None)
+    plugin_id, consumed = _greedy_literal_match(entries, rest) or (rest[0], 1)
+    if rest[consumed:consumed + 1] != ["settings"] or len(rest) < consumed + 2:
+        return None
+    found = _find_plugin_entry(plugin_id)
+    if found is None or not found[4]:
+        return None
+    spec = _manifest_config_schema(Path(str(found[4]))).get(".".join(rest[consumed + 1:]))
+    return _field_type(spec) if spec is not None else None
 
 
 def plugin_settings_fields(plugin_id: str, plugin_dir: Optional[Path]) -> list[dict[str, Any]]:

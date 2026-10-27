@@ -1,4 +1,4 @@
-"""Read-only diagnostics for saved toolsets and bundled platform selections."""
+"""Read-only diagnostics for saved toolsets, bundled platform selections and config structure."""
 
 from __future__ import annotations
 
@@ -12,9 +12,10 @@ def config_check_diagnostics(config: dict[str, Any], get_env_value: Callable[[st
     Toolset names are judged by the resolver ``hermes config migrate`` also uses, disabled platforms
     by the runtime's own ``plugins.disabled`` reader and the manifest-name gate of
     ``plugins_discovery.gate_manifest``. A configured credential is only a reason to *mention* a
-    disabled platform; disabling it may have been intentional.
+    disabled platform; disabling it may have been intentional. Structure findings are the ones
+    doctor and the startup warning print (a list setting holding one plain word, a dotted root key).
     """
-    from hermes_cli.config import _platform_manifest_env_entries, _platform_plugin_manifests
+    from hermes_cli.config import _platform_manifest_env_entries, _platform_plugin_manifests, validate_config_structure
     from hermes_cli.plugins_discovery import _get_disabled_plugins
     from hermes_cli.toolset_validation import saved_toolset_resolver, validate_platform_toolsets
 
@@ -31,4 +32,5 @@ def config_check_diagnostics(config: dict[str, Any], get_env_value: Callable[[st
                 f"platform plugin '{key}' is disabled while its required credentials are configured. "
                 f"Run `hermes plugins enable {key}` if you want it active."
             )
+    diagnostics.extend(f"{issue.message}\n      {issue.hint}" for issue in validate_config_structure())
     return diagnostics

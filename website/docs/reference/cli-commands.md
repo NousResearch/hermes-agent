@@ -997,6 +997,8 @@ Custom-endpoint config checks (both warn-only; `--fix` does not rewrite them):
 
 **Config Structure** also flags any list/mapping setting stored as one quoted string (`plugins.enabled: '["a","b"]'`, `model_catalog.excluded_providers: '["openai-api"]'` — the shape older `config set` versions wrote): every reader ignores such a string, so the plugins silently stay unmounted and the exclusion never applies. The finding names the key and the `hermes config set <key> '<literal>'` command that stores a real list; the same warning appears in the startup banner. `--fix` does not rewrite the file.
 
+It also flags a plain value or a mapping where a list belongs (`plugins.enabled: omh`, `plugins.enabled: {omh: true}`): the reader skips it, so `plugins.enabled: omh` loads no user plugin at all. A dotted path written as one root key (`plugins.enabled:` at column 0) is flagged too, since Hermes reads only nested YAML; root keys whose first segment is not a Hermes section stay silent because top-level scalars are bridged into the environment on purpose. Settings whose reader accepts one plain value (`agent.disabled_toolsets`, `skills.disabled`, `desktop.electron_flags`, …) are not flagged. `hermes config check` prints the same findings under **Saved configuration**.
+
 ## `hermes dump`
 
 ```bash

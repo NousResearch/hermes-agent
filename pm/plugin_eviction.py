@@ -80,74 +80,99 @@ def static_verdicts(entries: list[Entry], python_version: str) -> tuple[dict[Pat
     return reasons, waiting
 
 
-def _discard(names: list, spellings: set[str]) -> None:
-    """Remove *spellings* from a round-tripped list in place, so order and comments survive."""
+def _discard(plugins, key: str, spellings: set[str]) -> None:
+    """Remove *spellings* from the round-tripped list ``plugins[key]`` in place, so order and the
+    comment lines filed on its entries (the next section's banner) survive."""
+    from utils import _delete_rt_entry
+
+    names = plugins[key]
     for index in reversed(range(len(names))):
         if names[index] in spellings:
-            del names[index]
+            _delete_rt_entry(names, index, (plugins, key))
 
 
 def _list(plugins, key: str) -> list:
+    from ruamel.yaml.comments import CommentedSeq
+
+    from utils import _set_rt_entry
+
     if plugins.get(key) is None:
-        plugins[key] = []
+        _set_rt_entry(plugins, key, CommentedSeq())
     return plugins[key]
 
 
 def _disable(plugins, name: str, plugin_dir: Path, reason: str, tried: str | None = None) -> None:
-    """Park *name* in plugins.disabled, drop it from plugins.enabled and record what to undo."""
+    """Park *name* in plugins.disabled, drop it from plugins.enabled and record what to undo.
+
+    Every edit goes through the comment-aware setters: ruamel files the next section's banner on
+    the last entry of ``plugins``, so a bare append landed below it and a bare delete dropped it."""
     from pm.plugins_state import plugin_spellings
+    from utils import _rt_value, _set_rt_entry
 
     spellings = plugin_spellings(plugin_dir, name)
-    disabled, enabled = _list(plugins, "disabled"), plugins.get("enabled")
-    if not isinstance(plugins.get(RECORD), dict):
-        plugins[RECORD] = {}
-    earlier = plugins[RECORD].get(name)
+    disabled, enabled = plugins.get("disabled") or [], plugins.get("enabled")
+    record = plugins.get(RECORD) if isinstance(plugins.get(RECORD), dict) else {}
+    earlier = record.get(name)
     if name in disabled and isinstance(earlier, dict):
         was_enabled = bool(earlier.get("enabled"))  # a retry that still fails keeps the first record
     else:
         was_enabled = isinstance(enabled, list) and bool(spellings & set(enabled))
-    if name not in disabled:
-        disabled.append(name)
+    if not isinstance(plugins.get("disabled"), list):
+        _set_rt_entry(plugins, "disabled", _rt_value([name]))
+    elif name not in disabled:
+        _set_rt_entry(disabled, None, name)
     if isinstance(enabled, list):
-        _discard(enabled, spellings)
-    plugins[RECORD][name] = {"enabled": was_enabled, "reason": " ".join(reason.split())[:300]}
+        _discard(plugins, "enabled", spellings)
+    entry = {"enabled": was_enabled, "reason": " ".join(reason.split())[:300]}
     if tried:
-        plugins[RECORD][name]["tried"] = tried
+        entry["tried"] = tried
+    if isinstance(plugins.get(RECORD), dict):
+        _set_rt_entry(plugins[RECORD], name, _rt_value(entry))
+    else:
+        _set_rt_entry(plugins, RECORD, _rt_value({name: entry}))
 
 
 def _rejoin(plugins, name: str, plugin_dir: Path) -> None:
     """Undo an earlier update's _disable now that the plugin fits again."""
     from pm.plugins_state import plugin_spellings
+    from utils import _set_rt_entry
 
     record = plugins.get(RECORD) if isinstance(plugins.get(RECORD), dict) else {}
     earlier = record.get(name)
     if not isinstance(earlier, dict):
         return  # the user settled it since this update read the config: their choice stands
-    _discard(_list(plugins, "disabled"), plugin_spellings(plugin_dir, name))
+    _list(plugins, "disabled")
+    _discard(plugins, "disabled", plugin_spellings(plugin_dir, name))
     if earlier.get("enabled") and name not in _list(plugins, "enabled"):
-        plugins["enabled"].append(name)
+        _set_rt_entry(plugins["enabled"], None, name)
 
 
 def settle_record(plugins, settled=()) -> None:
     """A user's own selection takes the decision back: forget the record of every plugin they just
     enabled, disabled or removed (*settled*), so no later update turns it back on."""
+    from utils import _delete_rt_entry
+
     record = plugins.get(RECORD)
     for name in settled if isinstance(record, dict) else ():
-        record.pop(name, None)
+        if name in record:
+            _delete_rt_entry(record, name, (plugins, RECORD))
     _prune_record(plugins)
 
 
 def _prune_record(plugins) -> None:
     """Forget records whose plugin left plugins.disabled (the user re-enabled or removed it)."""
+    from utils import _delete_rt_entry
+
     record = plugins.get(RECORD)
     if not isinstance(record, dict):
-        plugins.pop(RECORD, None)
+        if RECORD in plugins:
+            _delete_rt_entry(plugins, RECORD)
         return
     disabled = set(plugins.get("disabled") or ())
     for name in [name for name in record if name not in disabled]:
-        del record[name]
+        _delete_rt_entry(record, name, (plugins, RECORD))
     if not record:
-        del plugins[RECORD]
+        _delete_rt_entry(plugins, RECORD)
 
 
 def recorded_evictions() -> dict[Entry, dict]:
@@ -191,8 +216,11 @@ class PluginEviction:
 
     def __init__(self, entries: list[Entry], reasons: dict[Path, str], rejoined: list[Entry] = (), *,
                  tried: dict[Path, str] | None = None, configs=None):
+        from ruamel.yaml.comments import CommentedMap
+
         from hermes_yaml import roundtrip_yaml
         from pm.publication import selection_snapshot
+        from utils import _set_rt_entry
 
         # The snapshot the update decided from: a user edit since then refuses publication.
         self.configs = selection_snapshot() if configs is None else configs
@@ -208,17 +236,20 @@ class PluginEviction:
             path = home / "config.yaml"
             previous = read_bytes_or_none(path)  # config-reader: ok — pm publication: byte-level compare-and-swap rewrite of the local file
             yaml = roundtrip_yaml()
-            config = (yaml.load(previous.decode("utf-8-sig")) if previous else None) or {}
+            config = (yaml.load(previous.decode("utf-8-sig")) if previous else None) or CommentedMap()
             # read_home_selection already proved plugins is a mapping and the lists are lists.
             plugins = config.get("plugins")
-            if plugins is None:
-                plugins = config["plugins"] = {}
+            fresh = plugins is None
+            if fresh:
+                plugins = CommentedMap()
             for name, plugin_dir, reason in changes:
                 if reason is None:
                     _rejoin(plugins, name, plugin_dir)
                 else:
                     _disable(plugins, name, plugin_dir, reason, tried.get(plugin_dir.resolve()))
             _prune_record(plugins)
+            if fresh:
+                _set_rt_entry(config, "plugins", plugins)
             output = io.StringIO()
             yaml.dump(config, output)
             self.edits.append((path, previous, output.getvalue().encode("utf-8")))

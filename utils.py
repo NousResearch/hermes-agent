@@ -547,6 +547,110 @@ def _roundtrip_dump(path: Path, yaml_rt, config, *, extra_content: str | None = 
     _atomic_write(path, _write, prefix=f".{path.stem}_", mode=_preserve_file_mode(path))
 
 
+def _trailing_comment_holder(container, key):
+    """``(collection, key)`` whose comment slot holds the lines after ``container[key]``: ruamel
+    files them on the entry that ends above them, so a section defers to its last nested entry."""
+    from ruamel.yaml.comments import CommentedMap, CommentedSeq
+
+    value = container[key]
+    while isinstance(value, (CommentedMap, CommentedSeq)) and len(value):
+        container, key = value, (next(reversed(value)) if isinstance(value, CommentedMap) else len(value) - 1)
+        value = container[key]
+    return container, key
+
+
+def _delete_rt_entry(container, key, parent=None) -> None:
+    """Delete ``container[key]`` from a ruamel map or list, keeping the comment lines around it.
+
+    Those lines usually introduce the NEXT entry or section, yet ruamel stores them on the deleted
+    one; a bare ``del`` took them along. They move to the entry now above them, or to ``parent``
+    (``(collection, key)`` holding ``container``) when the deletion empties it."""
+    from ruamel.yaml.comments import CommentedMap
+    from ruamel.yaml.error import CommentMark
+    from ruamel.yaml.tokens import CommentToken
+
+    keys = list(container) if isinstance(container, CommentedMap) else list(range(len(container)))
+    index = keys.index(key)
+    # Lead-in lines an earlier deletion in this collection parked on this entry.
+    lead = (container.ca.items.get(key) or [None] * 4)[1] or []
+    below = "".join(" " * t.start_mark.column + t.value for t in lead) + _take_trailing_lines(container, key)
+    del container[key]
+    if not below:
+        return
+    if index > 0:
+        _put_trailing_lines(container, keys[index - 1], below)
+    elif not len(container) and parent is not None:
+        # Emptied: the lines go below the collection's own key.
+        _put_trailing_lines(*parent, below)
+    elif len(container):
+        # Nothing above inside this collection: the lines become the new first entry's lead-in.
+        entry = container.ca.items.setdefault(next(iter(container)) if isinstance(container, CommentedMap) else 0,
+                                              [None] * 4)
+        lead = [] if entry[1] is None else entry[1]
+        for line in below.splitlines():
+            text = line.lstrip()
+            lead.append(CommentToken(text + "\n", CommentMark(len(line) - len(text) if text else 0)))
+        entry[1] = lead
+
+
+def _take_trailing_lines(container, key) -> str:
+    """Detach and return the comment lines ruamel filed below ``container[key]`` (its own
+    end-of-line comment stays). Pairs with :func:`_put_trailing_lines`."""
+    from ruamel.yaml.comments import CommentedMap
+
+    holder, holder_key = _trailing_comment_holder(container, key)
+    entry = holder.ca.items.get(holder_key)
+    token = entry[2 if isinstance(holder, CommentedMap) else 0] if entry else None
+    if token is None or "\n" not in token.value:
+        return ""
+    own, below = token.value.split("\n", 1)
+    token.value = own + "\n"
+    return below
+
+
+def _put_trailing_lines(container, key, below: str) -> None:
+    """Attach *below* (from :func:`_take_trailing_lines`) under ``container[key]``'s last line."""
+    from ruamel.yaml.comments import CommentedMap, CommentedSeq
+    from ruamel.yaml.error import CommentMark
+    from ruamel.yaml.tokens import CommentToken
+
+    if not below:
+        return
+    value = container[key]
+    if isinstance(value, (CommentedMap, CommentedSeq)) and not len(value):
+        value.fa.set_flow_style()  # a block-style empty collection after a comment is invalid YAML
+    holder, holder_key = _trailing_comment_holder(container, key)
+    slot = 2 if isinstance(holder, CommentedMap) else 0
+    entry = holder.ca.items.setdefault(holder_key, [None] * 4)
+    if entry[slot] is None:
+        entry[slot] = CommentToken("\n" + below, CommentMark(0))
+    else:
+        entry[slot].value += below
+
+
+def _set_rt_entry(container, key, value) -> None:
+    """``container[key] = value`` (``key=None`` appends to a list) keeping the comment lines that
+    introduce the NEXT section where they are. ruamel files them on the entry ending above them, so
+    a key appended to a section landed below the next section's banner, and replacing a mapping
+    with a scalar dropped the banner with it."""
+    from ruamel.yaml.comments import CommentedSeq
+
+    is_seq = isinstance(container, CommentedSeq)
+    exists = key is not None and (key < len(container) if is_seq else key in container)
+    if exists:
+        below = _take_trailing_lines(container, key)
+    elif len(container):
+        below = _take_trailing_lines(container, len(container) - 1 if is_seq else next(reversed(container)))
+    else:
+        below = ""
+    if key is None:
+        container.append(value)
+        key = len(container) - 1
+    else:
+        container[key] = value
+    _put_trailing_lines(container, key, below)
+
+
 def atomic_roundtrip_yaml_update(path: str | Path, key_path: str, value: Any) -> None:
     """Update one dotted YAML key while preserving comments, ordering, quoting and Unicode.
 
@@ -567,7 +671,7 @@ def atomic_roundtrip_yaml_update(path: str | Path, key_path: str, value: Any) ->
 
     mkdir_under_hermes_home(path.parent)
     yaml_rt, config = _roundtrip_load(path)
-    current = config
+    current, parent = config, None
     keys = _split_key_path(key_path)
     i = 0
     while True:
@@ -575,17 +679,23 @@ def atomic_roundtrip_yaml_update(path: str | Path, key_path: str, value: Any) ->
         seg, consumed = _greedy_literal_match(dict(current), remaining) or (remaining[0], 1)
         if i + consumed == len(keys):
             if value is None:
-                current.pop(seg, None)
+                if seg in current:
+                    _delete_rt_entry(current, seg, parent)
             else:
-                current[seg] = value
+                _set_rt_entry(current, seg, _rt_value(value))
             break
         next_value = current.get(seg)
         if not isinstance(next_value, CommentedMap):
             if value is None:
                 return  # nothing to remove under a missing/scalar parent
-            next_value = CommentedMap()
-            current[seg] = next_value
-        current = next_value
+            # Build the missing branch whole, then set it in one step: a null/scalar parent keeps
+            # its place in the mapping and the next section's banner stays below the new leaf.
+            subtree = value
+            for key in reversed(keys[i + consumed:]):
+                subtree = {key: subtree}
+            _set_rt_entry(current, seg, _rt_value(subtree))
+            break
+        current, parent = next_value, (current, seg)
         i += consumed
     _roundtrip_dump(path, yaml_rt, config)
 
@@ -644,33 +754,34 @@ def atomic_roundtrip_yaml_save(path: str | Path, new_state: dict, *,
         # ``True == 1`` in Python; a bool↔int flip is a real change for YAML readers.
         return current == value and isinstance(current, bool) is isinstance(value, bool)
 
-    def _merge_seq(dst: CommentedSeq, src: list) -> None:
+    def _merge_seq(dst: CommentedSeq, src: list, parent) -> None:
         # Element-wise so appending/editing one entry keeps the comments on its siblings.
         for i, value in enumerate(src):
             if i < len(dst):
                 _merge_item(dst, i, value)
             else:
-                dst.append(_rt_value(value))
-        del dst[len(src):]
+                _set_rt_entry(dst, None, _rt_value(value))
+        while len(dst) > len(src):
+            _delete_rt_entry(dst, len(dst) - 1, parent)
 
     def _merge_item(dst, key, value) -> None:
         current = dst[key]
         if isinstance(value, dict) and isinstance(current, CommentedMap):
-            _merge(current, value)
+            _merge(current, value, (dst, key))
         elif isinstance(value, list) and isinstance(current, CommentedSeq):
-            _merge_seq(current, value)
+            _merge_seq(current, value, (dst, key))
         elif not _unchanged(current, value):
-            dst[key] = _rt_value(value)
+            _set_rt_entry(dst, key, _rt_value(value))
         # else: unchanged — keep the existing node and the comments/quoting attached to it
 
-    def _merge(dst: CommentedMap, src: dict) -> None:
+    def _merge(dst: CommentedMap, src: dict, parent=None) -> None:
         for key, value in src.items():
             if key in dst:
                 _merge_item(dst, key, value)
             else:
-                dst[key] = _rt_value(value)
+                _set_rt_entry(dst, key, _rt_value(value))
         for key in [k for k in dst if k not in src]:
-            del dst[key]
+            _delete_rt_entry(dst, key, parent)
 
     _merge(existing, new_state)
     _roundtrip_dump(path, yaml_rt, existing, extra_content=extra_content_on_create if creating else None)

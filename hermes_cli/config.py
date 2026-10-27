@@ -16,7 +16,6 @@ import logging
 import os
 import platform
 import re
-import shlex
 import shutil
 import stat
 import subprocess
@@ -1046,48 +1045,6 @@ def _validate_fallback_model(fb: Any, issues: list[ConfigIssue]) -> None:
                         suffix=" — fallback will be disabled")
 
 
-def _container_slots() -> dict[str, str]:
-    """Dotted key -> ``"list"``/``"mapping"`` for every slot the schema fixes to a container:
-    ``DEFAULT_CONFIG`` (sections included) plus the known-container table for roots it omits."""
-    slots: dict[str, str] = {}
-
-    def walk(node: dict[str, Any], prefix: str) -> None:
-        for key, value in node.items():
-            path = f"{prefix}.{key}" if prefix else key
-            if isinstance(value, dict):
-                slots[path] = "mapping"
-                walk(value, path)
-            elif isinstance(value, list):
-                slots[path] = "list"
-
-    walk(DEFAULT_CONFIG, "")
-    slots.update(_KNOWN_CONTAINER_TYPES)
-    return slots
-
-
-def _validate_quoted_containers(config: dict[str, Any], issues: list[ConfigIssue]) -> None:
-    """A container slot holding ONE quoted string (``enabled: '["a","b"]'``) is skipped by every
-    isinstance-gated reader while ``config get`` echoes it back, so plugins silently unmount and
-    exclusions silently lapse (#83308, #105706). Finding only — the file is never rewritten."""
-    for key, kind in _container_slots().items():
-        # ``parse_config_string_list`` readers accept the quoted form; nothing is ignored there.
-        if key in _SCALAR_AS_ONE_ITEM_LIST_KEYS:
-            continue
-        value = cfg_get(config, *key.split("."))
-        if not isinstance(value, str) or not _looks_structured_value(value):
-            continue
-        try:
-            parsed = yaml.safe_load(value)
-        except yaml.YAMLError:
-            continue
-        if isinstance(parsed, (list, dict)):
-            _issue(issues, "warning",
-                   f"{key} is the quoted string {value!r} — Hermes expects a YAML {kind} here "
-                   "and every reader ignores the string",
-                   f"Run: hermes config set {key} {shlex.quote(value)}  (stores a real {kind}), "
-                   "or remove the quotes in config.yaml")
-
-
 def validate_config_structure(config: Optional[dict[str, Any]] = None) -> list[ConfigIssue]:
     """Validate config.yaml structure and return detected issues (accepts a pre-loaded dict).
     Catches common YAML mistakes that otherwise surface as confusing runtime errors."""
@@ -1099,6 +1056,7 @@ def validate_config_structure(config: Optional[dict[str, Any]] = None) -> list[C
             return [config_load_issue(exc)]
 
     from hermes_cli.config_value_checks import _validate_timezone, _validate_voice, _validate_web_backends
+    from hermes_cli.config_container_checks import validate_container_shapes, validate_dotted_root_keys
     issues: list[ConfigIssue] = []
     _validate_voice(config, issues)
     _validate_timezone(config, issues)
@@ -1128,7 +1086,8 @@ def validate_config_structure(config: Optional[dict[str, Any]] = None) -> list[C
                    f"Move '{key}' under the appropriate section")
 
     _validate_web_backends(config, issues)
-    _validate_quoted_containers(config, issues)
+    validate_container_shapes(config, issues)
+    validate_dotted_root_keys(config, issues)
     return issues
 
 
@@ -3124,16 +3083,21 @@ _SCALAR_WORDS = {
     'null': None, 'none': None, '~': None}
 
 
-def _coerce_config_set_value(key: str, value: str) -> Any:
+def _coerce_config_set_value(key: str, value: str, user_config: dict[str, Any]) -> Any:
     """Auto-coerce a ``hermes config set`` string to bool/None/int/float/list/dict.
     String-typed settings (per ``DEFAULT_CONFIG``) are preserved verbatim so enum members such as
     ``approvals.mode="off"`` never become booleans. List/mapping literals are parsed so
     isinstance-gated readers see real structures; the trigger is conservative.
     Bare ``model`` is the exception: its string default is the model-id shorthand, so a structured
     literal there is parsed for the section guard to gate instead of riding into model.default
-    as a bogus id (#131435)."""
+    as a bogus id (#131435). A plugin setting follows the type its manifest ``config_schema``
+    declares the same way."""
+    from hermes_cli.plugins_settings import declared_setting_type
+
     if isinstance(_default_value_for_key(key), str) and not (
             key == "model" and _looks_structured_value(value)):
+        return value
+    if declared_setting_type(tuple(_split_key_path(key)), user_config) in ("string", "enum"):
         return value
     stripped = value.strip()
     lower = stripped.lower()
@@ -3381,7 +3345,7 @@ def set_config_value(key: str, value: str, force: bool = False):
     # Read the RAW user config (not merged) so defaults are never dumped back; fail-closed.
     config_path = get_config_path()
     user_config = require_readable_config_before_write(config_path)
-    value = _coerce_config_set_value(key, value)
+    value = _coerce_config_set_value(key, value, user_config)
     # A scalar ``model`` shorthand must become a dict before writing sub-keys, or _set_nested
     # replaces it with an empty dict and the model id is lost.
     _model_val = user_config.get("model")

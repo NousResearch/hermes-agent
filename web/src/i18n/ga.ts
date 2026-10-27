@@ -92,6 +92,14 @@ export const ga: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Soláthraí cuimhne gníomhach",
+    noProvider: "dada — ionsuite amháin",
+    builtinLayer: "Ciseal ionsuite — ar siúl i gcónaí",
+    builtinNote: "Luchtaítear MEMORY.md agus USER.md i ngach seisiún. Cuireann soláthraí seachtrach leo; ní chuireann sé ina n-áit riamh.",
+  },
+
   status: {
     actionFailed: "Theip ar an ngníomh",
     actionFinished: "Críochnaithe",

@@ -11,6 +11,7 @@ import { getElevenLabsVoices, getHermesConfigSchema, saveHermesConfig } from '@/
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { isSubmitEnter } from '@/lib/ime'
+import { asText } from '@/lib/text'
 import { confirm } from '@/store/confirm'
 import { $activeConnectionId } from '@/store/connections'
 import {
@@ -53,6 +54,7 @@ import {
   voiceFieldVisible
 } from './helpers'
 import { MemoryConnect } from './memory/connect'
+import { MemoryLayersPanel } from './memory/memory-layers'
 import { ProviderConfigPanel } from './memory/provider-config-panel'
 import { ModelSettings, ModelSettingsSkeleton } from './model-settings'
 import { OnboardingSettings } from './onboarding-settings'
@@ -320,6 +322,7 @@ function ConfigSettingsInner({
   const showDesktopSettings = activeSectionId === 'advanced' && (subpage === undefined || subpage === 'desktop')
   const showAttachments = activeSectionId === 'chat' && (subpage === undefined || subpage === 'attachments')
   const showSharedMetrics = activeSectionId === 'safety' && subpage === 'privacy'
+  const showMemoryLayers = activeSectionId === 'memory' && (subpage === undefined || subpage === 'persistent')
 
   // Deep-link target from the command palette (?field=<key>): scroll the row
   // into view and flash it, then drop the param so it doesn't re-fire.
@@ -504,6 +507,9 @@ function ConfigSettingsInner({
       {/* Shared metrics are two coupled opt-ins with a consent side effect, so they
           go through their own RPC rather than the generic field autosave. */}
       {showSharedMetrics ? <SharedMetricsSettings /> : null}
+      {showMemoryLayers ? (
+        <MemoryLayersPanel profile={scopeProfile} provider={asText(getNested(config, 'memory.provider'))} />
+      ) : null}
       {/* Routing picks the strategy and owns its routes; the subagent model row below is the
           Default strategy's route and goes inert while another strategy decides. */}
       <DelegationRoutingSlot

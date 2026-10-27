@@ -16,6 +16,7 @@ import { enExternalOpenFailed } from './en_external_open'
 import { enFirstRun } from './en_first_run'
 import { enGatewayHost } from './en_gateway_host'
 import { enLocalModels } from './en_local_models'
+import { enMemoryLayers } from './en_memory_layers'
 import { enModelMenu } from './en_model_menu'
 import { enModelSettings } from './en_model_settings'
 import { enNotices } from './en_notices'
@@ -1103,6 +1104,7 @@ export const en: Translations = {
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
     uninstallSection: enUninstallSection,
+    memoryLayers: enMemoryLayers,
     customEndpoints: {
       active: 'Active',
       apiKeySet: 'API key set',
@@ -2471,9 +2473,6 @@ export const en: Translations = {
       resume: 'Resume',
       runNow: 'Run now',
       memoryData: 'Memory data',
-      memoryDataDesc: 'Built-in memory files injected into every session',
-      memoryProvider: name => `Active provider: ${name}`,
-      builtinMemory: 'built-in',
       memoryFile: 'Agent memory (MEMORY.md)',
       userFile: 'User profile (USER.md)',
       bytes: size => size,

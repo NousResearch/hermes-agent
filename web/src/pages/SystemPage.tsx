@@ -44,6 +44,7 @@ import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { HermesConsoleModal } from "@/components/HermesConsoleModal";
 import { cn, themedBody } from "@/lib/utils";
+import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import {
@@ -216,6 +217,7 @@ const MEMORY_STATUS_TONE: Record<
 
 export default function SystemPage() {
   const { toast, showToast } = useToast();
+  const { t } = useI18n();
 
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [stats, setStats] = useState<SystemStats | null>(null);
@@ -1208,9 +1210,9 @@ export default function SystemPage() {
           <CardContent className="flex flex-col gap-4 py-4">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
               <span>
-                External provider:{" "}
+                {t.systemMemory.activeProvider}:{" "}
                 <span className="font-mono text-foreground">
-                  {memory?.active || "built-in only"}
+                  {memory?.active || t.systemMemory.noProvider}
                 </span>
               </span>
               {activeMemoryProvider && (
@@ -1236,11 +1238,14 @@ export default function SystemPage() {
             )}
 
             <div className="flex flex-wrap items-center gap-3 border-t border-border pt-3">
-              <span className="text-xs text-muted-foreground">
-                Built-in files — MEMORY.md:{" "}
-                {formatBytes(memory?.builtin_files.memory ?? 0)} · USER.md:{" "}
-                {formatBytes(memory?.builtin_files.user ?? 0)}
-              </span>
+              <div className="flex flex-col gap-1 text-xs text-muted-foreground">
+                <span>
+                  <span className="text-foreground">{t.systemMemory.builtinLayer}</span>
+                  {" "}· MEMORY.md: {formatBytes(memory?.builtin_files.memory ?? 0)} · USER.md:{" "}
+                  {formatBytes(memory?.builtin_files.user ?? 0)}
+                </span>
+                <span>{t.systemMemory.builtinNote}</span>
+              </div>
               <div className="flex items-center gap-2 ml-auto">
                 <Button size="sm" ghost className="text-destructive" onClick={() => memoryReset.requestDelete("memory")}>
                   Reset MEMORY.md

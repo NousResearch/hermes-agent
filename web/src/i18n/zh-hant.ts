@@ -92,6 +92,14 @@ export const zhHant: Translations = {
     webUi: "管理面板",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "目前記憶提供者",
+    noProvider: "無 — 僅內建",
+    builtinLayer: "內建層 — 永遠啟用",
+    builtinNote: "MEMORY.md 和 USER.md 會載入每個工作階段。外部提供者是對它們的補充，絕不會取代它們。",
+  },
+
   status: {
     actionFailed: "動作失敗",
     actionFinished: "已完成",

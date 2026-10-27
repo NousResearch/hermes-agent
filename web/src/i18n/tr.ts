@@ -92,6 +92,14 @@ export const tr: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Etkin bellek sağlayıcısı",
+    noProvider: "yok — yalnızca yerleşik",
+    builtinLayer: "Yerleşik katman — her zaman açık",
+    builtinNote: "MEMORY.md ve USER.md her oturuma yüklenir. Harici bir sağlayıcı bunlara ekleme yapar; asla yerlerini almaz.",
+  },
+
   status: {
     actionFailed: "İşlem başarısız",
     actionFinished: "Tamamlandı",

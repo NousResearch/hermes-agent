@@ -92,6 +92,14 @@ export const uk: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Активний провайдер пам'яті",
+    noProvider: "немає — лише вбудована",
+    builtinLayer: "Вбудований шар — завжди ввімкнений",
+    builtinNote: "MEMORY.md і USER.md завантажуються в кожну сесію. Зовнішній провайдер доповнює їх, але ніколи не замінює.",
+  },
+
   status: {
     actionFailed: "Дія не вдалася",
     actionFinished: "Завершено",

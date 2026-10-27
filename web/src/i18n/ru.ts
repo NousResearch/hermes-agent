@@ -92,6 +92,14 @@ export const ru: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Активный провайдер памяти",
+    noProvider: "нет — только встроенная",
+    builtinLayer: "Встроенный слой — всегда включён",
+    builtinNote: "MEMORY.md и USER.md загружаются в каждую сессию. Внешний провайдер дополняет их, но никогда не заменяет.",
+  },
+
   status: {
     actionFailed: "Ошибка действия",
     actionFinished: "Завершено",

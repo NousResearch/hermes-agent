@@ -92,6 +92,14 @@ export const af: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Aktiewe geheueverskaffer",
+    noProvider: "geen — slegs ingebou",
+    builtinLayer: "Ingeboude laag — altyd aan",
+    builtinNote: "MEMORY.md en USER.md word in elke sessie gelaai. 'n Eksterne verskaffer voeg daarby; dit vervang hulle nooit.",
+  },
+
   status: {
     actionFailed: "Aksie het misluk",
     actionFinished: "Voltooi",

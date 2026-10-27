@@ -92,6 +92,14 @@ export const ko: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "활성 메모리 제공자",
+    noProvider: "없음 — 내장 메모리만",
+    builtinLayer: "내장 레이어 — 항상 켜짐",
+    builtinNote: "MEMORY.md와 USER.md는 모든 세션에 로드됩니다. 외부 제공자는 여기에 더해질 뿐, 이를 대체하지 않습니다.",
+  },
+
   status: {
     actionFailed: "작업 실패",
     actionFinished: "완료됨",

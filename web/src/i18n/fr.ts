@@ -92,6 +92,14 @@ export const fr: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Fournisseur de mémoire actif",
+    noProvider: "aucun — intégré uniquement",
+    builtinLayer: "Couche intégrée — toujours active",
+    builtinNote: "MEMORY.md et USER.md sont chargés dans chaque session. Un fournisseur externe s'y ajoute ; il ne les remplace jamais.",
+  },
+
   status: {
     actionFailed: "Action échouée",
     actionFinished: "Terminé",

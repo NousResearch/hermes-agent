@@ -11,6 +11,7 @@ import { frErrorLayers } from './fr_error_layers'
 import { frFirstRun } from './fr_first_run'
 import { frGatewayHost } from './fr_gateway_host'
 import { frLocalModels } from './fr_local_models'
+import { frMemoryLayers } from './fr_memory_layers'
 import { frModelMenu } from './fr_model_menu'
 import { frModelSettings } from './fr_model_settings'
 import { frNotices } from './fr_notices'
@@ -681,6 +682,7 @@ export const frOverrides = {
     noResults: 'Aucune langue trouvée'
   },
   settings: {
+    memoryLayers: frMemoryLayers,
     subpages: {
       appearanceTheme: 'Thème',
       appearanceTypography: 'Typographie',
@@ -2866,9 +2868,6 @@ export const frOverrides = {
       resume: 'Reprendre',
       runNow: 'Exécuter maintenant',
       memoryData: 'Données de mémoire',
-      memoryDataDesc: 'Fichiers de mémoire intégrés injectés dans chaque session',
-      memoryProvider: name => `Fournisseur actif : ${name}`,
-      builtinMemory: 'intégré',
       memoryFile: "Mémoire de l'agent (MEMORY.md)",
       userFile: 'Profil utilisateur (USER.md)',
       bytes: size => size,

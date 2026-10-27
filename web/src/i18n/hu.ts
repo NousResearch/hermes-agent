@@ -92,6 +92,14 @@ export const hu: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Aktív memóriaszolgáltató",
+    noProvider: "nincs — csak beépített",
+    builtinLayer: "Beépített réteg — mindig aktív",
+    builtinNote: "A MEMORY.md és a USER.md minden munkamenetbe betöltődik. A külső szolgáltató kiegészíti őket, de sosem helyettesíti.",
+  },
+
   status: {
     actionFailed: "Művelet sikertelen",
     actionFinished: "Befejezve",

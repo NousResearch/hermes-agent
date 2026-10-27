@@ -1,4 +1,5 @@
 import { arDelegationRouting } from './ar_delegation_routing'
+import { arMemoryLayers } from './ar_memory_layers'
 import { arUpdateChannel } from './ar_update_channel'
 import type { TranslationOverrides } from './define-locale'
 
@@ -13,6 +14,7 @@ export const arSettings = {
     noResults: 'لا توجد لغة مطابقة'
   },
   settings: {
+    memoryLayers: arMemoryLayers,
     // Window plans (Nous subscription with included usage). Other billing strings: overlay-gaps.json.
     billing: {
       keepGoingOnCredits: {

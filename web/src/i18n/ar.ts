@@ -92,6 +92,14 @@ export const ar = defineLocale({
     webUi: "واجهة الويب",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "مزوّد الذاكرة النشط",
+    noProvider: "لا يوجد — المدمجة فقط",
+    builtinLayer: "الطبقة المدمجة — مفعّلة دائمًا",
+    builtinNote: "يُحمَّل MEMORY.md وUSER.md في كل جلسة. يضيف المزوّد الخارجي إليهما ولا يستبدلهما أبدًا.",
+  },
+
   status: {
     actionFailed: "فشلت الإجراء",
     actionFinished: "انتهى",

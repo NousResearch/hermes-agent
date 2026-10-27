@@ -124,6 +124,14 @@ export const en: Translations = {
     sharedMetricsSaveFailed: "Couldn't save your choice",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Active memory provider",
+    noProvider: "none — built-in only",
+    builtinLayer: "Built-in layer — always on",
+    builtinNote: "MEMORY.md and USER.md load into every session. An external provider adds to them; it never replaces them.",
+  },
+
   status: {
     actionFailed: "Action failed",
     actionFinished: "Finished",

@@ -91,6 +91,14 @@ export const zh: Translations = {
     webUi: "管理面板",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "当前记忆提供方",
+    noProvider: "无 — 仅内置",
+    builtinLayer: "内置层 — 始终启用",
+    builtinNote: "MEMORY.md 和 USER.md 会载入每个会话。外部提供方是对它们的补充，绝不会取代它们。",
+  },
+
   status: {
     actionFailed: "操作失败",
     actionFinished: "已完成",

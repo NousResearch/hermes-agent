@@ -92,6 +92,14 @@ export const ja: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "有効なメモリプロバイダー",
+    noProvider: "なし — 組み込みのみ",
+    builtinLayer: "組み込みレイヤー — 常に有効",
+    builtinNote: "MEMORY.md と USER.md は毎セッション読み込まれます。外部プロバイダーはこれに追加されるもので、置き換えることはありません。",
+  },
+
   status: {
     actionFailed: "アクションが失敗しました",
     actionFinished: "完了",

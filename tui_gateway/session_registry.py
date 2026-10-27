@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+from hermes_cli.session_resume import stage_session_resume_note
+
 from .method_ctx import bind_module
 
 def _wait_agent(session: dict, rid: str, timeout: float = 30.0) -> dict | None:
@@ -170,6 +172,10 @@ def _attach_built_agent(sid: str, current: dict, agent) -> bool:
     with _sessions_lock:
         if _sessions.get(sid) is not current:
             return False
+        if current.get("resume_session_id"):
+            # Deferred/cold resumes own the restored history here.  Stage the
+            # note on the agent, not in its system prompt or transcript.
+            stage_session_resume_note(agent, current.get("history"))
         current["agent"] = agent
     # A workspace move can land while construction is still in flight.
     _register_session_cwd(current)

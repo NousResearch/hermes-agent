@@ -687,12 +687,12 @@ class GatewayTurnHygieneMixin:
             **_hyg_runtime, model=_hyg_model, max_iterations=4, quiet_mode=True,
             skip_memory=not _hyg_checkpoint_required, enabled_toolsets=["memory"],
             session_id=session_entry.session_id, persistence=_hyg_session_db,
+            platform=_GATEWAY_HYGIENE_PLATFORM,
         )
         _seed_hygiene_system_prompt(_hyg_agent, _hyg_session_row)
         # The stamp only marks this agent as no real surface. Since #104414 Platform is not a
         # restore-identity field, so it no longer forces the next live turn to rebuild; the seed's
         # retain flag is what keeps the reduced-toolset build out of the session row (#122822).
-        _hyg_agent.platform = _GATEWAY_HYGIENE_PLATFORM
         return _hyg_agent, _hyg_session_db
 
     async def _hmwa_hygiene_detached_attempt(

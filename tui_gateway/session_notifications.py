@@ -164,6 +164,7 @@ def _notif_claim_turn(session: dict) -> bool:
         if not admitted or session.get("running") or session.get("_turn_cancel_requested"):
             return False
         session["running"] = True
+        session["_run_turn"] = session.get("_run_turn", 0) + 1
         return True
 
 
@@ -368,7 +369,6 @@ def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
         if wakeup.lstrip().startswith("/"):
             _notif_slash_loop_tick(rid, sid, session, mgr, wakeup)
         else:
-            _emit("message.start", sid)
             _run_prompt_submit(rid, sid, session, wakeup)
     except Exception as exc:
         _notif_log_failure("loop wakeup dispatch failed", exc)

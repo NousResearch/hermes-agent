@@ -791,6 +791,7 @@ def _live_session_payload(
     sid: str, session: dict, *, cols: int | None = None, touch: bool = False,
     transport: Transport | None = None, omit_messages: bool = False, inline_images: bool = True) -> dict:
     with session["history_lock"]:
+        _reconcile_finished_run_thread(session)
         if cols is not None:
             session["cols"] = cols
         if transport is not None:

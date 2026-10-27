@@ -7875,16 +7875,13 @@ class _RecordingAgent:
         return {"final_response": "", "messages": []}
 
 
-def test_run_prompt_submit_rejects_worker_when_close_wins_publication(
-    monkeypatch, tmp_path
-):
-    """A close claimed during message.start must prevent the worker from running."""
+def test_run_prompt_submit_rejects_worker_when_close_wins_publication(monkeypatch, tmp_path):
+    """A close after admission must prevent worker publication and start emission."""
     _configure_immediate_prompt_run(monkeypatch, tmp_path, immediate_threads=False)
-    emit_entered = threading.Event()
-    release_emit = threading.Event()
-    dispatch_results = []
+    routing_entered = threading.Event()
+    release_routing = threading.Event()
+    dispatch_results, events = [], []
     turns = []
-    popped = []
     sid = "close-wins-publication"
     session = _session(
         session_key="close-wins-publication-key",
@@ -7892,12 +7889,14 @@ def test_run_prompt_submit_rejects_worker_when_close_wins_publication(
         running=True,
     )
 
-    def _blocking_emit(event, *_args, **_kwargs):
-        if event == "message.start":
-            emit_entered.set()
-            assert release_emit.wait(timeout=2.0)
+    @contextlib.contextmanager
+    def _blocking_routing(_session):
+        routing_entered.set()
+        assert release_routing.wait(timeout=2.0)
+        yield None
 
-    monkeypatch.setattr(server, "_emit", _blocking_emit)
+    monkeypatch.setattr(server, "_routing_provenance_db", _blocking_routing)
+    monkeypatch.setattr(server, "_emit", lambda event, *_args, **_kwargs: events.append(event))
     server._sessions[sid] = session
     dispatch_thread = threading.Thread(
         target=lambda: dispatch_results.append(
@@ -7907,13 +7906,12 @@ def test_run_prompt_submit_rejects_worker_when_close_wins_publication(
 
     try:
         dispatch_thread.start()
-        assert emit_entered.wait(timeout=1.0)
-        popped.append(server._pop_session_by_id(sid))
-        assert popped == [session]
-        release_emit.set()
+        assert routing_entered.wait(timeout=2.0)
+        assert server._pop_session_by_id(sid) is session
+        release_routing.set()
         dispatch_thread.join(timeout=2.0)
     finally:
-        release_emit.set()
+        release_routing.set()
         dispatch_thread.join(timeout=2.0)
         run_thread = session.get("_run_thread")
         if run_thread is not None and run_thread.is_alive():
@@ -7922,6 +7920,8 @@ def test_run_prompt_submit_rejects_worker_when_close_wins_publication(
 
     assert dispatch_results == [False]
     assert session["running"] is False
+    assert session.get("_run_thread") is None
+    assert "message.start" not in events
     assert turns == []
 
 
@@ -21748,12 +21748,12 @@ def test_prompt_submit_row_id_db_fallback_ordinal_mapping_verifies_content(
 
 
 def _join_turn_thread(sess, timeout=10.0):
-    """Join the real turn ``prompt.submit`` started, so nothing it does races the
-    assertions or leaks into the next test. The submit's dispatch thread hands off to a
-    ``prompt-turn-*`` worker that replaces ``_run_thread``: follow the handle until it
-    stops changing."""
+    """Join the real turn ``prompt.submit`` started so it can't race the assertions or leak: the
+    dispatch thread hands off to a ``prompt-turn-*`` worker, so follow ``_run_thread`` until stable."""
     deadline = time.monotonic() + timeout
     while isinstance(run_thread := sess.get("_run_thread"), threading.Thread):
+        while run_thread.ident is None and time.monotonic() < deadline:  # published just before start()
+            time.sleep(0.005)
         run_thread.join(timeout=max(0.0, deadline - time.monotonic()))
         assert not run_thread.is_alive(), "prompt.submit turn thread did not finish"
         if sess.get("_run_thread") is run_thread:

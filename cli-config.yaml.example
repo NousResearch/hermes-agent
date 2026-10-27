@@ -7,7 +7,7 @@
 # Schema version of this file. The installers copy it to seed config.yaml, and
 # `hermes update` uses it to know which one-time migrations the file already
 # has. Hermes manages it: do not copy it into another config.
-_config_version: 51
+_config_version: 52
 
 # =============================================================================
 # Database Configuration
@@ -81,7 +81,6 @@ model:
   #   "nous-api"     - Nous Portal API key (requires: NOUS_API_KEY)
   #   "anthropic"    - Direct Anthropic API (requires: ANTHROPIC_API_KEY)
   #   "openai-codex" - OpenAI Codex (requires: hermes auth)
-  #   "copilot"      - GitHub Copilot / GitHub Models (requires: GITHUB_TOKEN)
   #   "gemini"      - Use Google AI Studio direct (requires: GOOGLE_API_KEY or GEMINI_API_KEY)
   #   "zai"         - Use z.ai / ZhipuAI GLM models (requires: GLM_API_KEY)
   #   "kimi-coding"  - Kimi / Moonshot AI (requires: KIMI_API_KEY)
@@ -614,25 +613,14 @@ browser:
   # Inactivity timeout in seconds - browser sessions are automatically closed
   # after this period of no activity between agent loops (default: 120 = 2 minutes)
   inactivity_timeout: 120
-  # Let an authenticated browser extension register as the controller for an
-  # existing Hermes session. Disabled by default. Local API registration also
-  # requires the API server bearer key to be configured.
-  extension_control:
-    enabled: false
 
-  # Maximum characters of snapshot content before truncate-and-store.
-  # Increase for long pages (for example, documentation or financial reports),
-  # or decrease to reduce context usage. Minimum: 1000; default: 15000
-  # (same per-page budget as web_extract).
-  # snapshot_threshold: 15000
-
-  # JavaScript evaluation guardrails (both default false). restrict_evaluate
-  # opts into a denylist that blocks sensitive primitives (cookies, storage,
-  # clipboard, network, form values) in browser_console(expression=...) — use
-  # it when the agent drives a logged-in profile. allow_unsafe_evaluate is the
-  # legacy override that switches the denylist back off even when restrict is on.
-  # restrict_evaluate: false
-  # allow_unsafe_evaluate: false
+  # Local Chromium for browser_exec. Empty executable_path = pm's chromium
+  # (`hermes pm install chromium`), the Docker image's build, or a system
+  # chromium where pm builds none (Termux). user_data_dir keeps one persistent
+  # profile for every local session (empty = a throwaway profile per session).
+  # executable_path: ""
+  # user_data_dir: ""
+  # chromium_args: ["--lang=de"]
 
 # =============================================================================
 # Tool Loop Guardrails
@@ -1077,6 +1065,14 @@ group_sessions_per_user: true
 # of the file's pages are reclaimable — a dense database never pays for a full
 # rewrite to reclaim a few MB.
 #
+# A CLI/TUI/Desktop session left with no viewer (a killed terminal, a dropped
+# connection, a gateway restart) is ended by the gateway orphan_end_grace_s
+# seconds later, once its running turn settles. It stays resumable, and a viewer
+# that comes back within the grace keeps it open. 0 never ends it. After a
+# restart it also waits out the rest of 6h since the session's last activity.
+# It replaces dashboard.ws_orphan_reap_grace_s / startup_orphan_sweep for these
+# sessions; while it is unset, their opt-outs (0 / false) still turn it off.
+#
 # Uncomment to change the defaults shown; auto_prune: true bounds the file,
 # auto_prune: false keeps every ended session and silences the low-disk prompt.
 # sessions:
@@ -1085,6 +1081,7 @@ group_sessions_per_user: true
 #   vacuum_after_prune: true
 #   min_vacuum_interval_days: 30
 #   min_interval_hours: 24
+#   orphan_end_grace_s: 300
 
 # Optional direct endpoint for autonomous Bot Mode rooms spanning gateways.
 # Leave unset for the safe default: Desktop coordinates cross-gateway rooms and
@@ -1526,9 +1523,8 @@ platform_toolsets:
 #   search       - web_search only (no scraping)
 #   terminal     - terminal, process
 #   file         - read_file, write_file, patch, search
-#   browser      - browser_navigate, browser_snapshot, browser_click, browser_type,
-#                  browser_scroll, browser_back, browser_press,
-#                  browser_get_images, browser_vision  (requires BROWSERBASE_API_KEY)
+#   browser      - browser_exec, browser_cdp, browser_dialog, browser_vault
+#                  (local Chromium, or a cloud browser with its API key)
 #   vision       - vision_analyze  (requires OPENROUTER_API_KEY)
 #   image_gen    - image_generate  (requires FAL_KEY)
 #   skills       - skills_list, skill_view
@@ -1554,7 +1550,7 @@ platform_toolsets:
 #   search       - Web search only, no scraping (web_search)
 #   terminal     - Command execution and process management (terminal, process)
 #   file         - File operations: read, write, patch, search
-#   browser      - Full browser automation (navigate, click, type, screenshot, etc.)
+#   browser      - Browser automation over CDP (browser_exec drives a real Chromium)
 #   vision       - Image analysis (vision_analyze)
 #   image_gen    - Image generation with FLUX (image_generate)
 #   skills       - Load skill documents (skills_list, skill_view)

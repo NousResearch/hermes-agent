@@ -359,7 +359,7 @@
   },
   {
     "path": "hermes_cli/tools_config_post_setup.py",
-    "symbol": "_post_setup_agent_browser",
+    "symbol": "_post_setup_chromium",
     "kind": "bare_which"
   },
   {
@@ -446,16 +446,6 @@
   {
     "path": "tools/browser_lightpanda.py",
     "symbol": "find_lightpanda_binary",
-    "kind": "bare_which"
-  },
-  {
-    "path": "tools/browser_tool_install.py",
-    "symbol": "_chromium_installed",
-    "kind": "bare_which"
-  },
-  {
-    "path": "tools/browser_tool_install.py",
-    "symbol": "_find_agent_browser",
     "kind": "bare_which"
   },
   {

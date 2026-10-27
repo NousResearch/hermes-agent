@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Switch } from '@/components/ui/switch'
 import { Tip } from '@/components/ui/tooltip'
+import { revokeGrantsIfUninstalled } from '@/contrib/plugin-files'
 import { $pluginRecords, enablePackageDesktopHalf, type PluginRecord, setPluginEnabled } from '@/contrib/plugins-store'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { discoverRuntimePlugins, uninstallDiskPlugin } from '@/contrib/runtime-loader'
@@ -45,7 +46,9 @@ import { type CatalogEntry, parseCatalog } from '../catalog/catalog-data'
 import { CatalogSwitch } from '../catalog/catalog-switch'
 import { TOOLSETS_QUERY_KEY } from '../toolsets/toolsets-data'
 
+import { PluginFolderAccess } from './plugin-folder-access'
 import { mergePluginPackages, type PackageKind, type PluginPackage } from './plugin-packages'
+import { PluginPageAccess } from './plugin-page-access'
 import { runPluginUpdate } from './plugin-update'
 
 /** Deep-link anchor for a package row (`/capabilities?tab=plugins&plugin=<key>`).
@@ -275,7 +278,7 @@ function PackageRow({
   request: GatewayRequest
   onAgentToggle: (row: AgentPluginRow, enable: boolean) => void
   onAgentUpdate: (row: AgentPluginRow) => void
-  onAgentRemove: (row: AgentPluginRow) => void
+  onAgentRemove: (row: AgentPluginRow, desktop: null | PluginRecord) => void
   onDesktopRemove: (record: PluginRecord) => void
 }) {
   const { t } = useI18n()
@@ -400,6 +403,7 @@ function PackageRow({
                 {desktop?.status === 'error' ? desktop.error : pkg.description}
               </div>
             )}
+            <PluginPageAccess plugin={desktop} pluginName={pkg.name} />
             {unavailableServers.map(server =>
               server.sentence ? (
                 <div
@@ -434,6 +438,8 @@ function PackageRow({
             )}
           </span>
         </div>
+
+        <PluginFolderAccess name={pkg.name} plugin={desktop} />
 
         {/* The two halves. Desktop is app-level and reads the same whichever
           profile is selected; Agent follows the selector. A half the package
@@ -517,7 +523,7 @@ function PackageRow({
             disabled={busy}
             name={pkg.name}
             note={p.uninstallTip(pkg.name, scopeLabel)}
-            onUninstall={() => onAgentRemove(agent)}
+            onUninstall={() => onAgentRemove(agent, desktop)}
           />
         ) : (
           desktop &&
@@ -683,7 +689,7 @@ export const PluginsTab = memo(function PluginsTab({
   const isInstalled = (entry: CatalogEntry) => packageById.has(entry.id)
 
   const handleAgentRemove = useCallback(
-    (row: AgentPluginRow) => {
+    (row: AgentPluginRow, desktop: null | PluginRecord) => {
       void confirm({
         confirmLabel: p.uninstall,
         description: p.uninstallConfirmBody(row.name, label),
@@ -696,8 +702,13 @@ export const PluginsTab = memo(function PluginsTab({
 
         if (await removeAgentPlugin(requestGateway, row.name, p.uninstallFailed(row.name), scope)) {
           notify({ kind: 'success', message: p.uninstalled(row.name) })
-          // Prunes the app-level desktop half whose source package just went away.
+
+          // Prunes the app-level desktop half whose source package just went
+          // away; its folder grants go with it, and only then (another profile
+          // may still install the package).
           void rescanAll(requestGateway, scope)
+            .then(() => desktop && revokeGrantsIfUninstalled(desktop.id))
+            .catch(error => notifyError(error, p.folderAccess.revokeFailed(row.name)))
         }
       })
     },

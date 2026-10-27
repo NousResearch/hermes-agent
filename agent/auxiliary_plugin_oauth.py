@@ -82,13 +82,15 @@ def _resolve_standard_oauth_client(req: Any) -> tuple[Any, Any]:
 
 
 def refresh_plugin_oauth_credentials(provider: str, failed_api_key: str, credential_id: str | None) -> bool:
-    """Refresh the issuing registration, or adopt its already-rotated token without spending it again."""
+    """Keep pooled renewal bound to its grant; otherwise use the provider's runtime hook."""
     from agent.credential_pool import load_pool
     from providers import get_provider_profile
 
     profile = get_provider_profile(provider)
-    if profile is None or profile.refresh_credential is None:
+    if profile is None:
         return False
+    if profile.refresh_credential is None:
+        return bool(profile.refresh_runtime_credentials(reason="auxiliary_unauthorized"))
     pool = load_pool(provider)
     entry = next((row for row in pool.entries() if row.id == credential_id), None) if credential_id else None
     if entry is not None and entry.runtime_api_key != failed_api_key:

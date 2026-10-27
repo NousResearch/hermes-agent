@@ -760,31 +760,6 @@ class BrowserProgressPayload(Payload):
 event("browser.progress", BrowserProgressPayload, doc="Browser (CDP) connect / install progress line.")
 
 
-# ── browser controller (gateway/browser_control_broker frames re-enveloped as events) ─────────
-
-
-class BrowserControllerCommandPayload(Payload):
-    """``gateway/browser_control_broker.py`` FRAME_COMMAND params."""
-
-    command_id: str
-    action: str
-    arguments: dict[str, JsonValue]
-    controller_id: str | None = None
-    browser_profile_id: str | None = None
-    tool_call_id: str | None = None
-
-
-class BrowserControllerCancelPayload(Payload):
-    """``gateway/browser_control_broker.py::_cancel_frame``."""
-
-    command_id: str
-    tool_call_id: str | None = None
-
-
-event("browser.controller.command", BrowserControllerCommandPayload, doc="Dispatch one browser action to the attached controller.")
-event("browser.controller.cancel", BrowserControllerCancelPayload, doc="Withdraw a pending controller command.")
-
-
 # ── voice ─────────────────────────────────────────────────────────────────────────────────────
 
 
@@ -881,8 +856,7 @@ event("bot_relay.outbox.pending", ChangeSignalPayload, doc="A bot-relay outbox e
 
 
 __all__ = [
-    "BillingBlock", "BillingStepUpVerificationPayload", "BrowserControllerCancelPayload",
-    "BrowserControllerCommandPayload", "BrowserProgressPayload", "ChangeSignalPayload", "ErrorPayload",
+    "BillingBlock", "BillingStepUpVerificationPayload", "BrowserProgressPayload", "ChangeSignalPayload", "ErrorPayload",
     "ErrorSurface", "FreeTierChallengePayload", "GatewayReadyPayload",
     "MessageCompletePayload", "MessageInterimPayload", "MessageReaction", "MessageReactionPayload", "MoaAggregatingPayload",
     "MoaPhasePayload", "MoaProgressPayload", "MoaReferencePayload", "NoticePayload",

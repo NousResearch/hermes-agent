@@ -425,31 +425,47 @@ class TestCreateProfile:
     @pytest.mark.platforms("linux")
     def test_clone_all_does_not_attach_to_the_source_profiles_live_browser(self, profile_env):
         """Copied Chromium markers must not route the clone through the source profile's CDP port."""
-        from tools.bot_desktop.browser import running_instance_cdp_port
+        import http.server
+        import threading
+        from tools.browser_launcher import running_instance
 
         default_home = profile_env / ".hermes"
         (default_home / "config.yaml").write_text("model: test", encoding="utf-8")
         browser_profile = default_home / "bot-desktop" / "browser-profile"
         browser_profile.mkdir(parents=True)
 
-        with socket.socket() as listener:
-            listener.bind(("127.0.0.1", 0))
-            listener.listen()
-            port = listener.getsockname()[1]
+        class _Version(http.server.BaseHTTPRequestHandler):  # a live DevTools /json/version answer
+            def do_GET(self):
+                body = b'{"webSocketDebuggerUrl": "ws://127.0.0.1/devtools/browser/source"}'
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Version)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            port = server.server_address[1]
             (browser_profile / "DevToolsActivePort").write_text(f"{port}\n/devtools/browser/source\n", encoding="utf-8")
             (browser_profile / "SingletonLock").symlink_to(f"host-{os.getpid()}")
-            assert running_instance_cdp_port(str(browser_profile)) == port
+            assert running_instance(str(browser_profile))[0] == port
 
             profile_dir = create_profile("coder", clone_all=True, no_alias=True)
             cloned_browser = profile_dir / "bot-desktop" / "browser-profile"
 
-            assert running_instance_cdp_port(str(cloned_browser)) is None
-            assert running_instance_cdp_port(str(browser_profile)) == port
+            assert running_instance(str(cloned_browser)) is None
+            assert running_instance(str(browser_profile))[0] == port
+        finally:
+            server.shutdown()
+            server.server_close()
 
     @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="special files need a POSIX filesystem")
     def test_clone_all_skips_special_files(self, profile_env):
         # A live source profile holds special files copytree cannot copy (e.g. a suffixless
-        # agent-browser control socket); one of them must not abort the whole clone.
+        # browser control socket); one of them must not abort the whole clone.
         default_home = profile_env / ".hermes"
         (default_home / "config.yaml").write_text("model: test", encoding="utf-8")
         browser_dir = default_home / "home" / ".agent-browser"

@@ -22,7 +22,7 @@ inherits the parent's route when those are empty. It is itself a plugin, the bun
 `ctx.register_delegation_provider()` seam as yours; it is also the smallest complete example.
 A configured backend that is not installed or reports unavailable **fails closed**: `delegate_task`
 returns a tool error naming the backend and the fix, no child starts, and its schema parameters are
-absent. A session can override the backend (`agent.delegation_backends`, below).
+absent. `/delegation` switches the backend (`agent.delegation_backends`, below).
 
 ## Skeleton
 
@@ -152,7 +152,7 @@ Every result entry of a task routed by a non-default backend carries `route`: th
 `reasoning_effort` is `null` when the provider's default applies; `fallback_activated: true` is added
 when a fallback provider took over. The `default` backend's children leave the result entry unchanged.
 
-## Picker metadata and session switching
+## Picker metadata and switching backends
 
 `display_name` and `summary` (one user-facing line; never shown to the model) label your backend in
 pickers such as `/delegation`. A plugin uses `ctx.delegation_backends` (same methods; `list_backends()` returns
@@ -162,30 +162,29 @@ the plugin host. Core code calls `agent.delegation_backends` directly:
 | Call | Does |
 |---|---|
 | `list_backends() -> list[BackendInfo]` | `default` first, then every registered backend: `name`, `label`, `description`, `available`, `reason` (the fix, when unavailable). |
-| `get_session_backend(session_key) -> str \| None` | The session's override, `None` when it follows `config.yaml`. |
-| `set_session_backend(session_key, name \| None)` | Switch one session (`None` clears). Raises `ValueError` with the reason for a backend that cannot run. |
-| `set_global_backend(name, *, session_key="")` | Write `delegation.backend` to the active profile's `config.yaml` and drop that session's override. Raises `PermissionError` on a package-manager-managed install. |
+| `set_global_backend(name, *, session_key="", apply_now=False)` | Write `delegation.backend` to the active profile's `config.yaml`. `apply_now=True` also rebuilds the tool list of the session `session_key` names at its next turn. Raises `PermissionError` on a package-manager-managed install, and `ValueError` with the reason for a backend that cannot run (or `apply_now` without a `session_key`); nothing is written then. |
 
 A plugin command that edits model routes can reuse the interactive model picker under its own heading:
 `hermes_cli.auth_model_picker.prompt_model_selection(model_ids, current_model="", title="Select the model for this route:")`
 returns the chosen model id, or `None` when cancelled.
 
-`session_key` is the `session_key` a plugin command handler receives. A session switch decides routing
-from that session's next `delegate_task` call; the `delegate_task` schema (your parameters) follows
-`config.yaml`, because it is part of the cached prompt and is never rebuilt mid-conversation. After a
-switch the model can still send the previous backend's parameters, so core refuses each task carrying a
-parameter the session's backend does not declare (fail closed per task, like any other refusal) instead
-of dropping it and running the task on the new backend's default route:
+`session_key` is the `session_key` a plugin command handler receives. A session routes on the backend its
+`delegate_task` schema (your parameters) was built from: core captures it with the session's tools and pins it
+with them to the session row, so a fresh agent continuing the session (gateway, `--resume`) restores both. The
+schema is part of the cached prompt, so a save, or a hand edit of `delegation.backend`, changes nothing in a running
+session and applies from its next session (`/new`). `apply_now=True` (what `/delegation <backend> --now` passes)
+rebuilds that session's tools at its next turn instead, and routing moves with them: one prompt-cache break by the
+user's choice, the same opt-in as `/skills install --now`. Context compression rebuilds the tools anyway and picks up
+the saved backend. A task carrying a parameter its session's backend does not declare (a model inventing one) is
+refused alone, never dropped and run on the default route:
 
 ```text
-Task 0: this session's delegation backend is 'profile_routes', which does not take 'option' (declared by
-'model_map'), so this task was not started. Run `/delegation profile_routes --global` then `/new` for a
-session whose delegate_task choices match 'profile_routes', or `/delegation model_map` to switch this
-session back to the saved backend.
+Task 0: the delegation backend is 'profile_routes', which does not take 'option' (declared by 'model_map'), so
+this task was not started. This session's delegate_task was built for another backend: run
+`/delegation profile_routes --now` to rebuild this session's delegate_task for 'profile_routes', or start a new
+session with /new.
 ```
 
-`/new` starts on the saved backend (`delegation.backend`), so the fix persists the session's pick first or
-names the saved one. When the session follows `config.yaml` (it changed mid-session), the fix is just `/new`.
 A parameter no installed backend declares is refused the same way, with "Resend it without ..." first.
 
 ## Prompt caching

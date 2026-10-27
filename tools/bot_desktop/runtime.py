@@ -141,7 +141,7 @@ class DesktopStatus:
     socket: Optional[str]
     geometry: str
     install_command: Optional[str]
-    browser: Optional[str]  # headed Chromium the dock's Browser icon and agent-browser share; None = no headed browser
+    browser: Optional[str]  # headed Chromium the dock's Browser icon and the agent's browser share; None = no headed browser
     blocker: Optional[str] = None  # why start() would refuse right now (memory); None = may start
     memory_available_mb: Optional[int] = None
     memory_limit_mb: Optional[int] = None
@@ -351,8 +351,6 @@ def desktop_env(base_env: Optional[dict[str, str]] = None) -> dict[str, str]:
         touch_activity()  # a browser / cua-driver spawn is the agent using its screen
         env.update(published)
         env.pop("WAYLAND_DISPLAY", None)  # X11 desktop; a leaked Wayland socket flips GTK/Chromium backends
-        from tools.bot_desktop.browser import env_for_agent
-        env_for_agent(env)  # same binary + user-data-dir as the dock's Browser icon
     return env
 
 
@@ -789,7 +787,7 @@ def _start_in_sandbox(wait_seconds: float) -> DesktopStatus:
     sd.mkdir(parents=True, exist_ok=True)
     os.chmod(sd, 0o700)
     with _flocked(sd / "start.lock"):
-        # The dock's Browser icon runs the sandbox's own Playwright Chromium on the profile agent-browser
+        # The dock's Browser icon runs the sandbox's own Playwright Chromium on the profile the agent's browser
         # uses there: the human's browser is the bot's browser, as on the host.
         from tools.bot_desktop.browser import dock_exec_line
         exe = sandbox_host.chromium_executable(env)

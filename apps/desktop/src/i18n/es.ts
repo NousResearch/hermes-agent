@@ -6,15 +6,19 @@ import { esBoot } from './es_boot'
 import { esClarify } from './es_clarify'
 import { esConnectorAccounts } from './es_connector_accounts'
 import { esConnectorCard } from './es_connector_card'
+import { esErrorCodes } from './es_error_codes'
 import { esErrorLayers } from './es_error_layers'
 import { esFirstRun } from './es_first_run'
+import { esGatewayHost } from './es_gateway_host'
 import { esLocalModels } from './es_local_models'
 import { esModelMenu } from './es_model_menu'
 import { esModelSettings } from './es_model_settings'
 import { esNotices } from './es_notices'
 import { esNotifications } from './es_notifications'
 import { esOnboarding } from './es_onboarding'
+import { esPluginPreviewAccess } from './es_plugin_preview_access'
 import { esPluginUpdate } from './es_plugin_update'
+import { esPreviewWeb } from './es_preview_web'
 import { esProjects } from './es_projects'
 import { esSharedMetrics } from './es_shared_metrics'
 import { esThemePicker } from './es_theme_picker'
@@ -463,6 +467,7 @@ export const esOverrides = {
       microphoneConstraintsUnsupported: 'Este dispositivo no admite las restricciones del micrófono.',
       microphoneFailed: 'Falló el micrófono',
       microphoneInUse: 'El micrófono ya está en uso por otra app.',
+      microphoneNeedsHttps: 'El micrófono necesita una conexión segura. Abre la Webapp por HTTPS, o mediante un túnel SSH a 127.0.0.1, para usarlo.',
       microphonePermissionDenied: 'Se denegó el permiso del micrófono.',
       microphoneStartFailed: 'No se pudo iniciar la grabación del micrófono.',
       microphoneUnsupported: 'Este runtime no admite grabación de micrófono.',
@@ -1676,9 +1681,7 @@ export const esOverrides = {
     },
     gateway: {
       loading: 'Cargando ajustes del gateway...',
-      unavailableTitle: 'Ajustes del gateway no disponibles',
-      unavailableDesc:
-        'Los ajustes de conexión solo se pueden cambiar desde la app Hermes Desktop en el equipo que la ejecuta.',
+      ...esGatewayHost,
       title: 'Conexión del gateway',
       envOverride: 'anulación de entorno',
       intro:
@@ -2487,6 +2490,7 @@ export const esOverrides = {
         `Fijado al commit ${sha}. Las actualizaciones se rechazan hasta que se reinstale con un nuevo commit fijado.`,
       pinnedBadge: (sha: string) => `fijado @ ${sha}`,
       ...esPluginUpdate,
+      ...esPluginPreviewAccess,
       uninstall: 'Desinstalar',
       uninstallTip: (name: string, profile: string) => `Desinstalar ${name} de ${profile}`,
       uninstallConfirmTitle: (name: string) => `¿Desinstalar ${name}?`,
@@ -3190,8 +3194,10 @@ export const esOverrides = {
     exported: 'Perfil exportado',
     failedImport: 'No se pudo importar el perfil',
     failedExport: 'No se pudo exportar el perfil',
+    exportNeedsHost: name => `El navegador no puede guardar un archivo de perfil. En el host de Hermes, ejecuta: hermes profile export ${name}`,
     allProfiles: 'Todos los perfiles',
     showAllProfiles: 'Mostrar todos los perfiles',
+    notServedHere: 'No se ofrece aquí',
     switchToProfile: name => `Cambiar a ${name}`,
     switchToConnection: name => `Cambiar a ${name}`,
     switchConnectionFailed: name => `No se pudo conectar a ${name}`,
@@ -3821,7 +3827,7 @@ export const esOverrides = {
       '/init': 'Generar o actualizar las instrucciones de proyecto AGENTS.md a partir de un análisis del repositorio',
       '/suggestions': 'Revisar las automatizaciones sugeridas (aceptar/descartar)',
       '/blueprint': 'Configurar una automatización a partir de una plantilla',
-      '/browser': 'Gestionar el navegador del agente [connect|disconnect|status|use]',
+      '/browser': 'Gestionar el navegador del agente [connect|disconnect|status]',
       '/palette': 'Abrir la paleta de comandos aproximada (también Ctrl+P)',
       '/usage':
         'Mostrar el uso de tokens y los límites de frecuencia; `reset` canjea un restablecimiento de límite de Codex acumulado',
@@ -4597,6 +4603,7 @@ export const esOverrides = {
     }
   },
   rightSidebar: {
+    terminalDropUnquotable: (shell, paths) => `Estos nombres no se pueden escribir de forma segura en ${shell}: ${paths}`,
     aria: 'Barra lateral derecha',
     panelsAria: 'Paneles de la barra lateral derecha',
     files: 'Sistema de archivos',
@@ -4698,62 +4705,7 @@ export const esOverrides = {
       sentMessage: count =>
         `${count} ${count === 1 ? 'entrada de registro añadida' : 'entradas de registro añadidas'} al compositor`
     },
-    web: {
-      appFailedToBoot: 'La app de vista previa no arrancó',
-      serverNotFound: 'Servidor no encontrado',
-      remoteLoopback:
-        'Esta dirección apunta al equipo que ejecuta tu agente, no a este. El panel del navegador carga las páginas localmente, así que un servidor de desarrollo remoto necesita un reenvío de puertos o un nombre de host accesible.',
-      failedToLoad: 'No se pudo cargar la vista previa',
-      tryAgain: 'Intentar de nuevo',
-      restarting: 'Hermes se está reiniciando...',
-      askRestart: 'Pedir a Hermes que reinicie el servidor',
-      lookingRestart: taskId => `Hermes está buscando un servidor de vista previa para reiniciar (${taskId})`,
-      restartingTitle: 'Reiniciando servidor de vista previa',
-      restartingMessage:
-        'Hermes está trabajando en segundo plano. Mira la consola de vista previa para ver el progreso.',
-      startRestartFailed: message => `No se pudo iniciar el reinicio del servidor: ${message}`,
-      restartFailed: 'Falló el reinicio del servidor',
-      hideConsole: 'Ocultar consola de vista previa',
-      showConsole: 'Mostrar consola de vista previa',
-      hideDevTools: 'Ocultar DevTools de vista previa',
-      openDevTools: 'Abrir DevTools de vista previa',
-      goBack: 'Atrás',
-      goForward: 'Adelante',
-      reload: 'Recargar página',
-      address: 'Dirección',
-      addressPlaceholder: 'Introduce una dirección',
-      blankPageBody: 'Escribe una dirección arriba para navegar o pide a Hermes que abra una página.',
-      finishedRestarting: message =>
-        `Hermes terminó de reiniciar el servidor de vista previa${message ? `: ${message}` : ''}`,
-      failedRestarting: message => `Falló el reinicio del servidor: ${message}`,
-      unknownError: 'error desconocido',
-      restartedTitle: 'Servidor de vista previa reiniciado',
-      reloadingNow: 'Recargando la vista previa ahora.',
-      restartFailedTitle: 'Falló el reinicio de la vista previa',
-      restartFailedMessage: 'Hermes no pudo reiniciar el servidor.',
-      stillWorking:
-        'Hermes sigue trabajando, pero aún no llegó ningún resultado de reinicio. Puede que el comando del servidor siga en primer plano.',
-      workspaceReloading: 'El espacio de trabajo cambió, recargando vista previa',
-      fileChanged: url => `Archivo cambiado, recargando vista previa: ${url}`,
-      filesChanged: (count, url) => `${count} cambios de archivo, recargando vista previa: ${url}`,
-      watchFailed: message => `No se pudo vigilar el archivo de vista previa: ${message}`,
-      moduleMimeDescription:
-        'Los scripts de módulo se están sirviendo con el tipo MIME incorrecto. Normalmente significa que un servidor de archivos estáticos sirve una app Vite/React en lugar del dev server del proyecto.',
-      loadFailedConsole: (code, message) => `Carga fallida${code ? ` (${code})` : ''}: ${message}`,
-      unreachableDescription: 'No se pudo acceder a la página de vista previa.',
-      openTarget: url => `Abrir ${url}`,
-      fallbackTitle: 'Vista previa',
-      annotate: 'Anotar',
-      annotateOn: 'Dejar de anotar',
-      annotateNeedPage: 'Primero abre una página en el navegador integrado.',
-      annotateFailed: 'No se pudo iniciar el modo de anotación',
-      commenting: 'Comentando',
-      addComments: (count: number) => (count === 1 ? 'Añadir 1 comentario' : `Añadir ${count} comentarios`),
-      commentPlaceholder: 'Añade un comentario...',
-      commentTitle: (n: number) => `Comentario ${n}`,
-      saveComment: 'Guardar',
-      cancelComment: 'Cancelar comentario'
-    }
+    web: esPreviewWeb
   },
   interfaceMode: {
     title: 'Modo de interfaz',
@@ -4871,6 +4823,7 @@ export const esOverrides = {
       responseStopped: 'Respuesta detenida',
       ...esErrorLayers,
       errorCodes: {
+        ...esErrorCodes,
         auth: {
           title: (provider: string) => `${provider} rechazó tu inicio de sesión`,
           body: (provider: string) =>
@@ -4971,14 +4924,6 @@ export const esOverrides = {
         loop_error: {
           title: 'Hermes se quedó atascado en un bucle',
           body: 'La respuesta repetía los mismos pasos, así que Hermes la detuvo. Reinténtalo o empieza un chat nuevo si vuelve a ocurrir.'
-        },
-        cron_session_read_only: {
-          title: 'Este chat pertenece a una tarea programada',
-          body: 'Solo ejecuta esa tarea, así que tu mensaje no se ejecutó. Empieza un chat nuevo para enviarlo.'
-        },
-        workspace_unavailable: {
-          title: 'La carpeta de este chat ya no existe',
-          body: 'La carpeta en la que trabaja este chat se movió o se eliminó, así que tu mensaje no se ejecutó. Vuelve a crear la carpeta o usa «Mover a proyecto» para darle otra al chat, y vuelve a intentarlo.'
         },
         SESSION_NOT_OWNED: {
           title: 'Este chat está abierto en otro sitio',
@@ -5456,6 +5401,7 @@ export const esOverrides = {
     imageAttach: 'Adjuntar imagen',
     imageWriteFailed: 'No se pudo escribir la imagen en disco.',
     imageAttachFailed: 'No se pudo adjuntar la imagen',
+    attachFailed: 'No se pudo adjuntar',
     pastedContent: 'Contenido pegado',
     pasteAttachFailed: 'No se pudo adjuntar el texto pegado',
     attachImages: 'Adjuntar imágenes',
@@ -5463,6 +5409,7 @@ export const esOverrides = {
     noClipboardImage: 'No se encontró ninguna imagen en el portapapeles',
     clipboardPasteFailed: 'No se pudo pegar desde el portapapeles',
     dropFiles: 'Soltar archivos',
+    dropFilesMore: (count: number) => `y ${count} más`,
     handoff: {
       pickPlatform: 'Elige un destino',
       success: platform => `Transferido a ${platform}. Puedes reanudar aquí cuando quieras.`,

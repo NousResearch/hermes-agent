@@ -7,15 +7,19 @@ import { jaBoot } from './ja_boot'
 import { jaCatalog, jaSkillDeepLink } from './ja_catalog'
 import { jaClarify } from './ja_clarify'
 import { jaConnectors } from './ja_connectors'
+import { jaErrorCodes } from './ja_error_codes'
 import { jaErrorLayers } from './ja_error_layers'
 import { jaFirstRun } from './ja_first_run'
+import { jaGatewayHost } from './ja_gateway_host'
 import { jaLocalModels } from './ja_local_models'
 import { jaModelMenu } from './ja_model_menu'
 import { jaModelSettings } from './ja_model_settings'
 import { jaNotices } from './ja_notices'
 import { jaNotifications } from './ja_notifications'
 import { jaOnboarding } from './ja_onboarding'
-import { jaPluginSettings } from './ja_plugins'
+import { jaPluginPreviewAccess } from './ja_plugin_preview_access'
+import { jaPluginSettings, jaPluginsTab } from './ja_plugins'
+import { jaPreviewWeb } from './ja_preview_web'
 import { jaProjects } from './ja_projects'
 import { jaSharedMetrics } from './ja_shared_metrics'
 import { jaThemePicker } from './ja_theme_picker'
@@ -155,6 +159,7 @@ export const jaOverrides = {
       microphoneConstraintsUnsupported: 'このデバイスはマイクの制約をサポートしていません。',
       microphoneFailed: 'マイクが失敗しました',
       microphoneInUse: 'マイクは他のアプリで使用中です。',
+      microphoneNeedsHttps: 'マイクには安全な接続が必要です。使うには、Webapp を HTTPS か 127.0.0.1 への SSH トンネル経由で開いてください。',
       microphonePermissionDenied: 'マイクのアクセス許可が拒否されました。',
       microphoneStartFailed: 'マイクの録音を開始できませんでした。',
       microphoneUnsupported: 'このランタイムはマイク録音をサポートしていません。',
@@ -982,8 +987,7 @@ export const jaOverrides = {
     },
     gateway: {
       loading: 'ゲートウェイ設定を読み込み中...',
-      unavailableTitle: 'ゲートウェイ設定は利用できません',
-      unavailableDesc: 'デスクトップ IPC ブリッジはゲートウェイ設定を公開していません。',
+      ...jaGatewayHost,
       title: 'ゲートウェイ接続',
       envOverride: 'env オーバーライド',
       intro:
@@ -1312,10 +1316,7 @@ export const jaOverrides = {
 
   skillDeepLink: jaSkillDeepLink,
   skills: {
-    plugins: {
-      pageBlurb:
-        'プラグインはこのアプリ、エージェント、または両方を拡張できます。それぞれに独立したスイッチがあります。'
-    },
+    plugins: { ...jaPluginPreviewAccess, ...jaPluginsTab },
     hub: {
       search: '検索',
       searching: '検索中…',
@@ -1778,8 +1779,10 @@ export const jaOverrides = {
     exported: 'プロファイルをエクスポートしました',
     failedImport: 'プロファイルのインポートに失敗しました',
     failedExport: 'プロファイルのエクスポートに失敗しました',
+    exportNeedsHost: name => `ブラウザーではプロファイルのアーカイブを保存できません。Hermes ホストで次を実行してください: hermes profile export ${name}`,
     allProfiles: 'すべてのプロファイル',
     showAllProfiles: 'すべてのプロファイルを表示',
+    notServedHere: 'ここでは提供されていません',
     switchToProfile: name => `${name} に切り替え`,
     switchToConnection: name => `${name} に切り替え`,
     switchConnectionFailed: name => `${name} に接続できませんでした`,
@@ -2367,7 +2370,7 @@ export const jaOverrides = {
       '/init': 'リポジトリを調べて AGENTS.md の指示を作成または更新',
       '/suggestions': '提案された自動化を確認し、採用または却下',
       '/blueprint': 'ブループリントから自動化を設定',
-      '/browser': 'エージェントのブラウザーを管理 [connect|disconnect|status|use]',
+      '/browser': 'エージェントのブラウザーを管理 [connect|disconnect|status]',
       '/palette': 'コマンドパレットを開く',
       '/usage': 'このセッションのトークン使用量を表示',
       '/subscription': 'Nous のプランを確認し、ブラウザーで変更',
@@ -3028,6 +3031,7 @@ export const jaOverrides = {
   },
 
   rightSidebar: {
+    terminalDropUnquotable: (shell, paths) => `これらの名前は ${shell} に安全に入力できません: ${paths}`,
     terminalReadOnly: '読み取り専用の出力',
     terminalReadOnlyHelp:
       'プロンプトに応答するには、バックグラウンドのコマンドを停止し、新しいターミナルで実行してください。新しいターミナルは別のシェルを開き、このプロセスには接続しません。',
@@ -3136,51 +3140,7 @@ export const jaOverrides = {
       sentTitle: 'チャットに送信しました',
       sentMessage: count => `${count} 件のログエントリーがコンポーザーに追加されました`
     },
-    web: {
-      appFailedToBoot: 'プレビューアプリの起動に失敗しました',
-      serverNotFound: 'サーバーが見つかりません',
-      remoteLoopback:
-        'このアドレスはエージェントを実行しているマシンを指しており、このマシンではありません。ブラウザペインはページをローカルで読み込むため、リモートの開発サーバーにはポート転送か到達可能なホスト名が必要です。',
-      failedToLoad: 'プレビューの読み込みに失敗しました',
-      tryAgain: '再試行',
-      restarting: 'Hermes を再起動中...',
-      askRestart: 'Hermes にサーバーの再起動を依頼',
-      lookingRestart: taskId => `Hermes は再起動するプレビューサーバーを検索中です (${taskId})`,
-      restartingTitle: 'プレビューサーバーを再起動中',
-      restartingMessage: 'Hermes はバックグラウンドで作業中です。進捗はプレビューコンソールで確認してください。',
-      startRestartFailed: message => `サーバー再起動を開始できませんでした: ${message}`,
-      restartFailed: 'サーバーの再起動に失敗しました',
-      hideConsole: 'プレビューコンソールを非表示',
-      showConsole: 'プレビューコンソールを表示',
-      hideDevTools: 'プレビュー DevTools を非表示',
-      openDevTools: 'プレビュー DevTools を開く',
-      goBack: '戻る',
-      goForward: '進む',
-      reload: 'ページを再読み込み',
-      address: 'アドレス',
-      addressPlaceholder: 'アドレスを入力',
-      blankPageBody: '上のアドレス欄に入力するか、Hermes にページを開くよう頼んでください。',
-      finishedRestarting: message =>
-        `Hermes がプレビューサーバーの再起動を完了しました${message ? `: ${message}` : ''}`,
-      failedRestarting: message => `サーバーの再起動に失敗しました: ${message}`,
-      unknownError: '不明なエラー',
-      restartedTitle: 'プレビューサーバーが再起動しました',
-      reloadingNow: 'プレビューを再読み込み中です。',
-      restartFailedTitle: 'プレビューの再起動に失敗しました',
-      restartFailedMessage: 'Hermes がサーバーを再起動できませんでした。',
-      stillWorking:
-        'Hermes はまだ作業中ですが、再起動の結果がまだ届いていません。サーバーコマンドがフォアグラウンドで実行されている可能性があります。',
-      workspaceReloading: 'ワークスペースが変更され、プレビューを再読み込み中',
-      fileChanged: url => `ファイルが変更され、プレビューを再読み込み中: ${url}`,
-      filesChanged: (count, url) => `${count} 件のファイルが変更され、プレビューを再読み込み中: ${url}`,
-      watchFailed: message => `プレビューファイルを監視できませんでした: ${message}`,
-      moduleMimeDescription:
-        'モジュールスクリプトが間違った MIME タイプで提供されています。通常、静的ファイルサーバーがプロジェクトの開発サーバーの代わりに Vite/React アプリを提供していることを意味します。',
-      loadFailedConsole: (code, message) => `読み込みに失敗しました${code ? ` (${code})` : ''}: ${message}`,
-      unreachableDescription: 'プレビューページに到達できませんでした。',
-      openTarget: url => `${url} を開く`,
-      fallbackTitle: 'プレビュー'
-    }
+    web: jaPreviewWeb
   },
 
   interfaceMode: {
@@ -3317,6 +3277,7 @@ export const jaOverrides = {
       errorGenericProvider: 'AI サービス',
       ...jaErrorLayers,
       errorCodes: {
+        ...jaErrorCodes,
         provider_policy_blocked: {
           title: 'アカウント設定によりこのモデルはブロックされています',
           body: provider =>
@@ -3367,17 +3328,9 @@ export const jaOverrides = {
           body: provider =>
             `Hermes は ${provider} との安全な接続を検証できませんでした。ネットワークやプロキシの設定を確認するか、プロバイダーを切り替えて再送してください。`
         },
-        cron_session_read_only: {
-          title: 'このチャットはスケジュールされたジョブ用です',
-          body: 'このチャットはそのジョブの実行専用のため、メッセージは実行されませんでした。送信するには新しいチャットを開始してください。'
-        },
         usage_window: {
           title: '含まれる利用量を使い切りました',
           body: 'プランに含まれる利用量はリセットまで使い切りました。続けるには /topup でクレジットを追加してください。'
-        },
-        workspace_unavailable: {
-          title: 'このチャットのフォルダーが見つかりません',
-          body: 'このチャットの作業フォルダーが移動または削除されたため、メッセージは実行されませんでした。フォルダーを作り直すか、「Move to project」で別のフォルダーを割り当ててから、もう一度お試しください。'
         }
       },
       errorRetry: '再試行',
@@ -3687,6 +3640,7 @@ export const jaOverrides = {
     imageAttach: '画像を添付',
     imageWriteFailed: '画像のディスクへの書き込みに失敗しました。',
     imageAttachFailed: '画像の添付に失敗しました',
+    attachFailed: '添付に失敗しました',
     pastedContent: '貼り付けた内容',
     pasteAttachFailed: '貼り付けたテキストを添付できませんでした',
     attachImages: '画像を添付',
@@ -3694,6 +3648,7 @@ export const jaOverrides = {
     noClipboardImage: 'クリップボードに画像が見つかりません',
     clipboardPasteFailed: 'クリップボードからの貼り付けに失敗しました',
     dropFiles: 'ファイルをドロップ',
+    dropFilesMore: (count: number) => `ほか ${count} 件`,
     handoff: {
       pickPlatform: '送信先を選択',
       success: platform => `${platform} に引き継ぎました。いつでもここで再開できます。`,

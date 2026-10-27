@@ -62,7 +62,7 @@ class PromptCancelParams(Params):
 
 
 canonical_method("prompt.cancel", params=PromptCancelParams, result=AdmissionStatus,
-                 doc="Retire a still-queued admission; a started one is unaffected.")
+                 doc="Retire a queued admission; a started one is interrupted in the same call.")
 
 
 class PromptResolveUnknownParams(Params):
@@ -169,7 +169,6 @@ class SessionInventoryFields(Result):
     tool_availability: dict[str, JsonValue] | None = None
     # Classic CLI surface (``source: cli``) only: main's startup lines under the banner (Rich markup).
     tool_availability_warnings: list[str] | None = None
-    browser_backend_notice: str | None = None
     unknown_toolsets: list[str] | None = None  # main's "Unknown toolsets" warning, judged by the gateway
 
 

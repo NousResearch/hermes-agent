@@ -141,6 +141,8 @@ async def test_modes_and_the_config_option_set_the_owners_edit_policy():
     async def rpc(method, **params):
         if method == 'session.resume':
             return {'revision': 3, 'execution_generation': 7}
+        if method == 'session.info':
+            return {}
         assert method == 'session.mutate', method
         sent.append((params['operation'], params['payload'], params['expected_generation']))
         return {'session_id': 's', 'operation': 'edit_policy', 'revision': 4}

@@ -607,6 +607,8 @@ working but are **deprecated** in favor of the consent flow:
 
 A gate is open when *either* the capability is granted *or* the legacy key is
 set — existing configs keep working unchanged.
+`llm.side_question` has no legacy key: it is open only when declared and
+granted through the consent flow.
 
 :::warning Not a sandbox
 Capabilities are a **consent and audit layer**, not isolation. Plugins run as
@@ -866,8 +868,9 @@ plugins:
 
 Plugins do not change. They receive the same `ctx` and register tools, hooks, slash commands, skills and
 provider objects (image/video generation, web search, browser, TTS/STT, memory, context engines,
-model-provider profiles) exactly as before; Hermes registers matching entries on its side that call into
-the host. Dashboard plugin APIs are served by the host too. Bundled plugins keep running in-process.
+secret sources, `@` context references, model-provider profiles) exactly as before; Hermes registers
+matching entries on its side that call into the host, and values cross as the types the provider base
+class declares (a secret source's `fetch()` gets a `Path` and returns a `FetchResult`). Dashboard plugin APIs are served by the host too. Bundled plugins keep running in-process.
 In-process dashboard API handlers share the gateway's event loop, so they must not block it (see
 [Don't block the event loop](extending-the-dashboard.md#dont-block-the-event-loop)).
 

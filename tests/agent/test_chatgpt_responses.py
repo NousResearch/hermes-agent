@@ -155,6 +155,7 @@ def test_chatgpt_terminal_errors_never_retry_rotate_or_switch_billing(code, stat
     from agent.agent_runtime_helpers import recover_with_credential_pool
     from agent.error_classifier import RETRYABLE_CLIENT_REASONS, FailoverReason, classify_api_error
     from agent.turn_api_error import settle_unrecovered_error
+    from agent.turn_retry_state import TurnRetryState
     from run_agent import _StreamErrorEvent
 
     error = _StreamErrorEvent("ChatGPT plan request rejected", code=code, param="tools", status_code=status)
@@ -177,7 +178,7 @@ def test_chatgpt_terminal_errors_never_retry_rotate_or_switch_billing(code, stat
     monkeypatch.setattr("agent.turn_api_error.settle_delivered_partial", lambda *args: "")
     monkeypatch.setattr("agent.turn_api_error.nonretryable_client_error_result", lambda *args, **kwargs: {"failed": True})
     verdict = settle_unrecovered_error(
-        agent, api_error=error, classified=classified, _retry=SimpleNamespace(),
+        agent, api_error=error, classified=classified, _retry=TurnRetryState(),
         status_code=status, error_msg=str(error), is_context_length_error=False, is_rate_limited=False,
         _is_zai_coding_overload=False, _provider=agent.provider, _base=agent.base_url, _model="test",
         messages=[], api_messages=[], api_kwargs={}, active_system_prompt="", conversation_history=[],

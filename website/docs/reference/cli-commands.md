@@ -106,6 +106,7 @@ The install also ships `hermes-agent`, a minimal runner that sends one query and
 | `hermes import-agent` | Import an OpenClaw, Claude Code, Codex CLI or Cursor setup (from the [`agent-importers`](../user-guide/import-from-other-agents.md) plugin). |
 | `hermes dashboard` | Launch the web dashboard for managing config, API keys, and sessions. |
 | `hermes serve` | Start the Hermes backend server (headless; powers the desktop app and remote backends). |
+| `hermes webapp` | Open the Desktop workspace in a browser, served by the gateway. |
 | `hermes desktop` (alias `gui`) | Build and launch the native Electron desktop app. |
 | `hermes profile` | Manage profiles — multiple isolated Hermes instances. |
 | `hermes completion` | Print shell completion scripts (bash/zsh/fish). |
@@ -128,7 +129,7 @@ Common options:
 | `--oneshot` | With `-q`/`--query-file`: answer the query and exit (the pre-0.21 single-query behavior) instead of seeding an interactive session. Implied on non-TTY stdio and by `-Q`. |
 | `-m`, `--model <model>` | Override the model for this run. |
 | `-t`, `--toolsets <csv>` | Enable a comma-separated set of toolsets. |
-| `--provider <provider>` | Force a provider: `auto`, `openrouter`, `nous`, `openai-codex` (aliases `chatgpt`, `chatgpt-codex`), `copilot-acp`, `copilot`, `anthropic`, `gemini`, `huggingface`, `novita` (aliases `novita-ai`, `novitaai`), `openai-api`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `upstage` (alias `solar`), `alibaba`, `alibaba-cn`, `alibaba-coding-plan` (alias `alibaba_coding`), `alibaba-coding-plan-cn`, `alibaba-token-plan`, `alibaba-token-plan-cn`, `deepseek`, `nvidia`, `ollama-cloud`, `xai` (alias `grok`), `xai-oauth` (alias `grok-oauth`), `qwen-oauth`, `bedrock`, `opencode-zen`, `opencode-go`, `commandcode`, `commandcode-anthropic`, `ai-gateway`, `azure-foundry`, `lmstudio`, `stepfun`, `tencent-tokenhub` (alias `tencent`, `tokenhub`), `router` (aliases `ramp-router`, `ramp`), `nebius-token-factory` (aliases `nebius`, `nebius-tf`, `tokenfactory`), `tencent-tokenplan` (aliases `tokenplan`, `tencent-lkeap`). |
+| `--provider <provider>` | Force a provider: `auto`, `openrouter`, `nous`, `openai-codex` (aliases `chatgpt`, `chatgpt-codex`), `anthropic`, `gemini`, `huggingface`, `novita` (aliases `novita-ai`, `novitaai`), `openai-api`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `upstage` (alias `solar`), `alibaba`, `alibaba-cn`, `alibaba-coding-plan` (alias `alibaba_coding`), `alibaba-coding-plan-cn`, `alibaba-token-plan`, `alibaba-token-plan-cn`, `deepseek`, `nvidia`, `ollama-cloud`, `xai` (alias `grok`), `xai-oauth` (alias `grok-oauth`), `qwen-oauth`, `bedrock`, `opencode-zen`, `opencode-go`, `commandcode`, `commandcode-anthropic`, `ai-gateway`, `azure-foundry`, `lmstudio`, `stepfun`, `tencent-tokenhub` (alias `tencent`, `tokenhub`), `router` (aliases `ramp-router`, `ramp`), `nebius-token-factory` (aliases `nebius`, `nebius-tf`, `tokenfactory`), `tencent-tokenplan` (aliases `tokenplan`, `tencent-lkeap`). |
 | `-s`, `--skills <name>` | Preload one or more skills for the session (can be repeated or comma-separated). |
 | `-v`, `--verbose` | Verbose output. |
 | `-Q`, `--quiet` | Programmatic mode: suppress banner/spinner/tool previews. |
@@ -263,8 +264,8 @@ hermes model
 ```
 
 Use this when you want to:
-- **add a new provider** (OpenRouter, Anthropic, Copilot, DeepSeek, custom, etc.)
-- log into OAuth-backed providers (Anthropic, Copilot, Codex, Nous Portal)
+- **add a new provider** (OpenRouter, Anthropic, DeepSeek, custom, etc.)
+- log into OAuth-backed providers (Anthropic, Codex, Nous Portal)
 - enter or update API keys
 - pick from provider-specific model lists
 - configure a custom/self-hosted endpoint
@@ -299,7 +300,7 @@ By default, `/model` changes apply **to the current session only**. Add `--globa
 ```
 
 :::info What if I only see OpenRouter models?
-If you've only configured OpenRouter, `/model` will only show OpenRouter models. To add another provider (Anthropic, DeepSeek, Copilot, etc.), exit your session and run `hermes model` from the terminal.
+If you've only configured OpenRouter, `/model` will only show OpenRouter models. To add another provider (Anthropic, DeepSeek, etc.), exit your session and run `hermes model` from the terminal.
 :::
 
 On a `--global` switch, provider and base URL changes are persisted to `config.yaml` alongside the model. When switching away from a custom endpoint, the stale base URL is cleared to prevent it leaking into other providers.
@@ -404,7 +405,7 @@ hermes setup [model|tts|terminal|gateway|tools|agent] [--non-interactive] [--res
 
 **Returning user (already configured):** drops straight into the full reconfigure wizard — every prompt shows your current value as its default, press Enter to keep or type a new value. No menu.
 
-**Coming from another agent:** when the first run finds an OpenClaw, Claude Code, Codex CLI or Cursor setup (`~/.openclaw`, `~/.claude`, `~/.codex`, `~/.cursor`), it first asks **"Import your setup from …?"** (default yes). With more than one found, you then pick which from a checklist. Setup installs the [`agent-importers`](../user-guide/import-from-other-agents.md) plugin from the catalog, unless you already have it, and runs its import for each pick, which shows a preview and asks before changing anything (OpenClaw's allowlisted API keys and bot tokens are included, as the old built-in step did). Nothing found, a no, `--non-interactive` or a setup started by the dashboard: no question and nothing installed. On an already configured install, run `hermes import-agent` instead.
+**Coming from another agent:** when the first run finds an OpenClaw, Claude Code, Codex CLI or Cursor setup (`~/.openclaw`, `~/.claude`, `~/.codex`, `~/.cursor`), it first asks **"Import your setup from …?"** (default yes). With more than one found, you then pick which from a checklist. Setup installs the [`agent-importers`](../user-guide/import-from-other-agents.md) plugin from the catalog, unless you already have it, and runs its import for each pick, which shows a preview and asks before changing anything (OpenClaw's allowlisted API keys and bot tokens are included, as the old built-in step did). Quick Setup after an import that brought a model and its key asks **"Keep your imported model (…) or switch to Nous Portal?"** (default keep, which skips the Nous Portal login). Nothing found, a no, `--non-interactive` or a setup started by the dashboard: no question and nothing installed. On an already configured install, run `hermes import-agent` instead.
 
 Jump into one section instead of the full wizard:
 
@@ -1920,6 +1921,58 @@ hermes dashboard --port 8080 --no-open
 # From a profile alias — routes to the machine dashboard with the
 # profile preselected in the sidebar switcher (attach if running)
 worker dashboard
+```
+
+## `hermes webapp`
+
+```bash
+hermes webapp [options]
+```
+
+Open the Hermes Desktop workspace in a normal browser. The gateway serves it on its own listener when
+`webapp.enabled` is `true` in the config ([Configuration → Webapp](../user-guide/configuration.md#webapp)).
+This command builds the Webapp bundle when it is out of date, starts the gateway if it is not running,
+and opens a one-use sign-in link. Chats run on that gateway, the same one the CLI, Desktop and messaging
+use. See [Desktop App → Use the Desktop workspace from a browser](../user-guide/desktop.md#use-the-desktop-workspace-from-a-browser).
+
+The link is valid for 60 seconds and works once; the browser exchanges it for the sign-in it keeps in
+that tab. Only your own OS user can get a link: the gateway answers this command over its private
+control socket. On Linux the gateway checks that the browser's connection belongs to your OS user; on
+Windows it checks nothing, and the link travels only in the browser launcher's command line, which other
+standard users cannot read. On macOS, the BSDs and illumos neither holds, so the command never passes
+the link to a browser launcher: it writes it into a page only your OS user can read
+(`webapp/launch-*.html` in the gateway home) and opens that page. Where it cannot open a browser, and
+on WSL, it prints the link for you to open. On macOS a browser can open where you don't see it (over
+SSH, on the Mac's own screen): if none did, run `hermes webapp --no-open` for the link. Until it is
+used it signs a browser in as you, so keep it private.
+
+For a named profile served by the default gateway (`hermes -p work webapp`), the Webapp opens on that
+profile.
+
+Behind the dashboard sign-in gate (`webapp.host: 0.0.0.0` or `::`, or `webapp.public_url` set), the
+command opens the Webapp's address instead of a one-use link, where sign-in returns: with
+`webapp.public_url` set, that URL; on the LAN, the address Web Access Start registered Nous sign-in
+for (`webapp/sign-in-registration.json`), while it is still this machine's LAN address and the
+Webapp's port; otherwise the loopback address, which serves a password provider or sign-in set up by
+hand for it. You sign in there with your dashboard account. When the gateway cannot
+serve the Webapp, the command says why; the gateway reads its Webapp settings when it starts, so run
+`hermes gateway restart` after fixing the cause. A Webapp bundle that is not built yet is the
+exception: this command builds it, and the running gateway serves it at once.
+
+| Option | Description |
+|--------|-------------|
+| `--no-open` | Print the one-use link (or, behind the sign-in gate, the address) instead of opening a browser |
+| `--skip-build` | Use the existing `apps/desktop/dist-webapp` as is |
+| `--force-build` | Rebuild the bundle even when its build receipt is current |
+| `--build-only` | Build the bundle and stop |
+| `--status` | Show whether the running gateway serves the Webapp, and at which address |
+| `--sign-out` | Sign out every browser: tabs a link signed in need a new link, and behind the sign-in gate every login must sign in again; the account tokens those logins held stop working on the Webapp too. Native apps that signed in on their own stay signed in. Their connections close and the command reports how many. Waits for a gateway that is still starting; with none running, replaces the stored credential |
+
+```bash
+# Turn it on once, then open it
+hermes config set webapp.enabled true
+hermes gateway restart
+hermes webapp
 ```
 
 ## `hermes profile`

@@ -398,6 +398,21 @@ class HubLockFile(_JsonStateFile):
         return installed
 
 
+def installed_entry(installed: dict[str, dict], identifier: str,
+                    source: Optional[str] = None) -> Optional[dict]:
+    """The ``HubLockFile.by_identifier`` entry a hub result names. Search and the index list a
+    ClawHub skill by its bare slug, so a ``source="clawhub"`` result also matches through its
+    ``clawhub/<slug>`` card id. Any other source matches its exact id only."""
+    if identifier in installed:
+        return installed[identifier]
+    if source != "clawhub":
+        return None
+    from tools.skills_hub_clawhub import ClawHubSource
+
+    alias = ClawHubSource.catalog_identifier(identifier)
+    return installed.get(alias) if alias else None
+
+
 class TapsManager(_JsonStateFile):
     """skills/.hub/taps.json — custom GitHub repo sources."""
 

@@ -142,15 +142,17 @@ export interface CheckoutStrategy extends UpdaterStrategy {
  * The Windows script hand-off's environment. Its `hermes update` runs under the run the
  * close-holder consent is bound to: an id this Desktop inherited from the hand-off that
  * relaunched it names the previous run, under which that consent never matches (#101789).
+ * Async and awaiting the shared env builder, which becomes async when it resolves the system
+ * proxy (#144894): either merge order keeps this binding with no change here.
  */
-function windowsHandoffEnvironment(
+async function windowsHandoffEnvironment(
   updateRoot: string,
   hermesHome: string,
   updateStartedAt: number,
   runId: string | null
-): NodeJS.ProcessEnv {
+): Promise<NodeJS.ProcessEnv> {
   const env: NodeJS.ProcessEnv = {
-    ...sourceUpdateEnvironment(updateRoot, hermesHome),
+    ...(await sourceUpdateEnvironment(updateRoot, hermesHome)),
     HERMES_UPDATE_STARTED_AT: String(updateStartedAt)
   }
 
@@ -614,7 +616,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): CheckoutStra
 
       child = spawnUpdaterProcess(wrapped.command, wrapped.args, {
         cwd: deps.hermesHome,
-        env: windowsHandoffEnvironment(updateRoot, deps.hermesHome, updateStartedAt, plan.runId),
+        env: await windowsHandoffEnvironment(updateRoot, deps.hermesHome, updateStartedAt, plan.runId),
         // Never `true` here: DETACHED_PROCESS leaves the wrapper console-less, so
         // `start /b` hands PowerShell a new VISIBLE console whose QuickEdit
         // selection can freeze the hand-off before relaunch (#103222).

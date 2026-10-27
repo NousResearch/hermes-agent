@@ -23,12 +23,26 @@ def home(tmp_path, monkeypatch):
     methods_groups.stop_hosted_room_service(timeout=1.0)
 
 
+ENDPOINT = object()
+
+
+def _discovery(monkeypatch, *states):
+    """Gateway discovery answers the given states in turn (the last one repeats)."""
+    from hermes_cli import gateway_runtime
+    seen = list(states)
+
+    def discover(home, *, timeout=2.0):
+        state = seen.pop(0) if len(seen) > 1 else seen[0]
+        return gateway_runtime.GatewayDiscovery(state, endpoint=ENDPOINT if state == "ready" else None)
+    monkeypatch.setattr(gateway_runtime, "discover_gateway_endpoint", discover)
+
+
 @pytest.fixture
 def owner(monkeypatch):
     """A ready gateway serving the home; records what reached it."""
     calls = []
-    endpoint = object()
-    monkeypatch.setattr(owner_forward, "discover_owner", lambda home: endpoint)
+    endpoint = ENDPOINT
+    _discovery(monkeypatch, "ready")
 
     def forward_rpc(home, seen_endpoint, method, params):
         assert seen_endpoint is endpoint
@@ -60,7 +74,7 @@ def test_capabilities_advertise_only_what_this_wire_carries(home, owner):
 
 def test_owner_refusal_is_returned_not_run_locally(home, monkeypatch):
     from hermes_cli.gateway_client import GatewayRPCError
-    monkeypatch.setattr(owner_forward, "discover_owner", lambda home: object())
+    _discovery(monkeypatch, "ready")
 
     def refuse(*_args):
         raise GatewayRPCError("permission_denied", code=4030, data={"reason": "permission_denied"})
@@ -91,3 +105,29 @@ def test_gateway_less_list_hides_rooms_handed_to_the_gateway(home):
     assert srv._methods["groups.list"](2, {})["result"]["rooms"] == []
     refused = srv._methods["groups.send"](3, {"room_id": "room-desk", "event_id": "e1", "payload": {"text": "hi"}})
     assert "error" in refused  # the standalone copy is fenced: one driver per room
+
+
+def test_a_starting_gateway_is_waited_for_and_nothing_lands_locally(home, owner, monkeypatch):
+    from tui_gateway import methods_groups_forward
+    monkeypatch.setattr(methods_groups_forward, "_READY_POLL_S", 0.0, raising=False)
+    _discovery(monkeypatch, "starting", "starting", "ready")
+
+    created = srv._methods["groups.create"](1, {"room_id": "room-desk", "name": "Desk", "members": MEMBERS})
+
+    assert created["result"]["room"]["room_id"] == "room-desk"
+    assert [method for method, _ in owner] == ["groups.create"]
+    from gateway.hosted_rooms import default_db_path, list_rooms
+    assert list_rooms(default_db_path()) == []  # never a room the gateway's list would not show
+
+
+def test_a_named_profile_gateway_never_hides_the_standalone_rooms(home, owner, monkeypatch):
+    _discovery(monkeypatch, "absent")  # Desktop on its own first
+    srv._methods["groups.create"](1, {"room_id": "room-desk", "name": "Desk", "members": MEMBERS})
+    _discovery(monkeypatch, "ready")  # then `hermes -p ops gateway` serves the selected profile
+
+    listed = srv._methods["groups.list"](2, {"profile": "ops"})["result"]["rooms"]
+    state = srv._methods["groups.state"](3, {"profile": "ops", "room_id": "room-desk"})
+
+    assert [room["room_id"] for room in listed] == ["room-webapp", "room-desk"]
+    assert state["result"]["room"]["name"] == "Desk"  # served by the store that holds it
+    assert [method for method, _ in owner] == ["groups.list"]

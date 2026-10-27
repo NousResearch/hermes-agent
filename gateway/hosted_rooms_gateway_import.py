@@ -18,11 +18,19 @@ Each room moves in two crash-safe steps, so it is driven by exactly one process:
    owner, the subject native Desktop and a signed-in Webapp tab both act as.
 
 Re-running is a no-op: step 1 only takes rooms still on the local authority, step 2 only copies
-fenced rooms the target lacks. A crash between them is finished by the next start.
+fenced rooms the target has never known (neither held nor reserved in ``hosted_room_retired_ids``),
+so a room the user disbanded in the gateway never comes back once its tombstone is pruned. After
+the copy commits, each handed room is recorded in the source's :data:`HANDOFF_TABLE`, which step 2
+never reads again. A crash between the steps is finished by the next start.
 
 ``shared-state.db`` is one root file with no profile column, so only the root home's gateway (the
-default profile, whose ``state.db`` sits beside it) imports; a named profile's standalone rooms stay
-where they are for gateway-less use.
+default profile, whose ``state.db`` sits beside it) imports. A standalone room that was not imported
+stays listed and driven by the standalone backend from every profile's view, and a named profile's
+view reaches the imported ones on the root gateway (``tui_gateway/methods_groups_forward.py``), so
+no view loses a room it showed before.
+
+The import runs when the gateway builds its room service (before ``ready``) and once more right
+after ``ready`` (:func:`import_after_ready`), covering a room written in between.
 """
 
 from __future__ import annotations
@@ -33,6 +41,8 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 SOURCE_NAME = "shared-state.db"
+#: Source-side record of every room the gateway store took over: never offered again.
+HANDOFF_TABLE = "hosted_room_gateway_handoffs"
 _OWNER = "gateway.hosted.owner.v1:"
 
 
@@ -66,12 +76,34 @@ def _fence_source(source: Path, local_id: str, handoff_id: str) -> int:
 
 
 def _fenced_ids(source: Path, handoff_id: str) -> set[str]:
+    """Fenced live rooms not yet recorded as handed over."""
+    from gateway.hosted_rooms import _transaction
+    with _transaction(source, immediate=True) as conn:
+        _ensure_handoff_table(conn)
+        return {str(row[0]) for row in conn.execute(
+            f"SELECT room_id FROM hosted_rooms WHERE authority_gateway_id=? AND disbanded_at IS NULL"
+            f" AND room_id NOT IN (SELECT room_id FROM {HANDOFF_TABLE})", (handoff_id,))}
+
+
+def _ensure_handoff_table(conn) -> None:
+    conn.execute(f"CREATE TABLE IF NOT EXISTS {HANDOFF_TABLE} (room_id TEXT PRIMARY KEY, handed_at REAL NOT NULL)")
+
+
+def _record_handoff(source: Path, room_ids: set[str], now: float) -> None:
+    from gateway.hosted_rooms import _transaction
+    with _transaction(source, immediate=True) as conn:
+        _ensure_handoff_table(conn)
+        conn.executemany(f"INSERT OR IGNORE INTO {HANDOFF_TABLE} (room_id, handed_at) VALUES (?, ?)",
+                         [(room_id, now) for room_id in sorted(room_ids)])
+
+
+def handed_room_ids(source: Path) -> set[str]:
+    """Every room ``source`` handed to the gateway store (recorded or still only fenced)."""
     from contextlib import closing
     from gateway.hosted_rooms import _read_connection
     with closing(_read_connection(source)) as conn:
         return {str(row[0]) for row in conn.execute(
-            "SELECT room_id FROM hosted_rooms WHERE authority_gateway_id=? AND disbanded_at IS NULL",
-            (handoff_id,))}
+            "SELECT room_id FROM hosted_rooms WHERE authority_gateway_id=?", (handoff_gateway_id(),))}
 
 
 def _claim(conn, room_id: str, local_id: str, handoff_id: str, owner: str, now: float) -> None:
@@ -112,16 +144,41 @@ def import_standalone_rooms(target_db: Path, *, runtime_epoch: int | None = None
         with _transaction(target_db, immediate=True) as conn:
             if runtime_epoch is not None:
                 _epoch(conn, runtime_epoch)
-            held = {str(row[0]) for row in conn.execute("SELECT room_id FROM hosted_rooms")}
-            missing = frozenset(fenced - held)
-            if not missing:
-                return 0
-            copied = _copy_rows(conn, source, only=missing)
+            # Every id this store has ever known: a disbanded room's row is pruned later, its id stays.
+            known = {str(row[0]) for row in conn.execute(
+                "SELECT room_id FROM hosted_rooms UNION SELECT room_id FROM hosted_room_retired_ids")}
+            missing = frozenset(fenced - known)
+            copied = _copy_rows(conn, source, only=missing) if missing else 0
             for room_id in sorted(missing):
                 _claim(conn, room_id, local_id, handoff_id, owner, now)
+        _record_handoff(source, fenced, now)
     except (OSError, sqlite3.Error, HostedRoomError, RuntimeStoreError) as exc:
         logger.warning("hosted rooms: could not import the standalone Group Chats from %s (%s); "
                        "will retry on the next start", source, exc)
         return 0
-    logger.info("hosted rooms: imported %d standalone Group Chat(s) from %s", copied, source)
+    if copied:
+        logger.info("hosted rooms: imported %d standalone Group Chat(s) from %s", copied, source)
     return copied
+
+
+def import_after_ready(authorities) -> None:
+    """Import once more after the gateway published ``ready``, off the event loop.
+
+    The start-up import runs before readiness; a standalone backend that saw no gateway yet may
+    still write a room in between. Once ready, that backend forwards every call (or waits while
+    the gateway is starting), so this second pass leaves nothing stranded until the next restart.
+    The service's driver re-reads its bindings each tick and is woken for the claimed rooms."""
+    import threading
+    for authority in authorities:
+        service = getattr(authority, "hosted_room_service", None)
+        if service is None or getattr(service, "_ready_import_started", False):
+            continue
+        service._ready_import_started = True
+        target, epoch = Path(authority.db.db_path), authority.epoch
+
+        def run(target=target, epoch=epoch, service=service, authority=authority):
+            from gateway.session_authorities import owner_scope
+            with owner_scope(authority):  # a new thread holds the launch profile's scope otherwise
+                if import_standalone_rooms(target, runtime_epoch=epoch):
+                    service.wakeup()
+        threading.Thread(target=run, name="hosted-rooms-ready-import", daemon=True).start()

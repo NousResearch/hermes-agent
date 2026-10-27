@@ -7,8 +7,18 @@ the room calls a Desktop makes go to it instead (the owner-forward path prompts 
 ``tui_gateway/owner_forward.py``). The gateway imports the rooms this backend already hosts once
 (``gateway/hosted_rooms_gateway_import.py``) and fences them here, so each room has one driver.
 
-With no gateway running, the calls run locally exactly as before. RoomLink's gateway-to-gateway
-methods (``groups.peer.*``, replication, promote/demote) are not Desktop calls and stay local.
+Routing, so no view ever loses a room it listed before:
+
+- a room only the standalone store holds runs locally (a gateway cannot have it);
+- a room handed to the gateway goes to the ROOT home's gateway, the only one that imports;
+- anything else (``groups.create``, rooms the gateway made) goes to the selected profile's gateway;
+- ``groups.list`` is that gateway's list plus the standalone rooms not handed over, plus, for a
+  named profile, its handed rooms read from the root gateway.
+
+The call runs locally only when no gateway serves the profile (``absent``, or an ``incompatible``
+one that never imports). A ``starting``/``draining`` gateway is waited for and any other present
+one is a retryable refusal: a local write then would be hidden from the gateway's list. RoomLink's
+gateway-to-gateway methods (``groups.peer.*``, replication, promote/demote) stay local.
 """
 
 from __future__ import annotations
@@ -24,6 +34,19 @@ FORWARDED = frozenset({
     "groups.approve"})
 #: The owner was found but did not answer: a verdict for this call, never a local write instead.
 OWNER_LOST_CODE = 5124
+#: Gateway states with no owner that will import rooms written here later: run the call locally.
+#: ``incompatible`` is an older gateway without the session authority; it never imports, and the
+#: first current gateway imports what was written here on its start.
+_LOCAL_STATES = frozenset({"absent", "incompatible"})
+#: States on the way to (or back to) a ready owner: wait for it, never write locally meanwhile.
+_TRANSIENT_STATES = frozenset({"starting", "draining"})
+#: How long one call waits for a starting or restarting gateway before refusing (retryable).
+READY_WAIT_S = 20.0
+_READY_POLL_S = 0.25
+
+
+class _OwnerBusy(Exception):
+    """A gateway serves (or is about to serve) the home but cannot answer now."""
 
 
 def _home(server, params: dict):
@@ -38,20 +61,66 @@ def _home(server, params: dict):
     return Path(get_hermes_home())
 
 
-def forward(server, rid, method: str, params: dict) -> dict | None:
-    """The owning gateway's answer to ``method`` as this wire's envelope, or ``None`` when no ready
-    gateway serves the profile (the caller runs it locally)."""
-    from tui_gateway import owner_forward
-    if method not in FORWARDED:
+def _root_home():
+    from pathlib import Path
+    from gateway.hosted_rooms import default_db_path
+    return Path(default_db_path()).parent  # the home whose gateway imports the standalone rooms
+
+
+def _discover(home):
+    from hermes_cli.gateway_runtime import discover_gateway_endpoint
+    return discover_gateway_endpoint(home, timeout=5)
+
+
+def owner_endpoint(home):
+    """The ready gateway's endpoint for ``home``, or ``None`` when none serves it (run locally).
+
+    A gateway that is starting or restarting is waited for (bounded by :data:`READY_WAIT_S`); one
+    that is present but unreachable (slow identify, conflict) raises :class:`_OwnerBusy`. Either way
+    nothing is written to the standalone store while a gateway may import from it."""
+    import time
+    deadline = time.monotonic() + READY_WAIT_S
+    while True:
+        discovery = _discover(home)
+        if discovery.state == "ready" and discovery.endpoint is not None:
+            return discovery.endpoint
+        if discovery.state in _LOCAL_STATES:
+            return None
+        if discovery.state not in _TRANSIENT_STATES or time.monotonic() >= deadline:
+            raise _OwnerBusy(discovery.reason_code or discovery.state)
+        time.sleep(_READY_POLL_S)
+
+
+def _standalone_holder(room_id: str) -> str | None:
+    """Where the standalone store says ``room_id`` lives: ``"gateway"`` (handed to the root
+    gateway's store), ``"local"`` (any other room it holds: only this backend drives or mirrors
+    it) or ``None`` (not a standalone room)."""
+    from contextlib import closing
+    from gateway.hosted_rooms import _read_connection, default_db_path
+    from gateway.hosted_rooms_gateway_import import handoff_gateway_id
+    source = default_db_path()
+    if not source.is_file():
         return None
-    try:
-        home = _home(server, params)
-        endpoint = owner_forward.discover_owner(home)
-    except owner_forward.OwnerNotRunning:
+    with closing(_read_connection(source)) as conn:
+        row = conn.execute("SELECT authority_gateway_id FROM hosted_rooms WHERE room_id=?",
+                           (room_id,)).fetchone()
+    if row is None:
         return None
-    except ValueError as exc:
-        return server._err(rid, 4000, str(exc))
+    return "gateway" if str(row[0]) == handoff_gateway_id() else "local"
+
+
+def _standalone_rooms(params: dict | None = None) -> list[dict]:
+    """The standalone store's rooms that were not handed to the gateway (the gateway-less list)."""
+    from gateway.hosted_rooms import MAX_ROOM_LIST_LIMIT, default_db_path, list_rooms
+    if not default_db_path().is_file():
+        return []
+    return local_rooms(list_rooms(default_db_path(), limit=MAX_ROOM_LIST_LIMIT,
+                                  include_disbanded=bool(params and params.get("include_disbanded") is True)))
+
+
+def _call(server, rid, home, endpoint, method: str, params: dict) -> dict:
     from hermes_cli.gateway_client import GatewayRPCError
+    from tui_gateway import owner_forward
     try:
         result = owner_forward.forward_rpc(home, endpoint, method, params)
     except GatewayRPCError as exc:
@@ -64,6 +133,71 @@ def forward(server, rid, method: str, params: dict) -> dict | None:
         # Advertise only what this wire can carry (attachments and Discard have no contract here).
         result = {**result, "methods": [name for name in result["methods"] if name in FORWARDED]}
     return server._ok(rid, result)
+
+
+def _busy(server, rid, why) -> dict:
+    return server._err(rid, OWNER_LOST_CODE,
+                       f"The Hermes gateway is not ready yet ({why}). Try again in a moment.")
+
+
+def forward(server, rid, method: str, params: dict) -> dict | None:
+    """The owning gateway's answer to ``method`` as this wire's envelope, or ``None`` when the call
+    runs locally: no gateway serves the profile, or the room lives only in the standalone store."""
+    if method not in FORWARDED:
+        return None
+    try:
+        home = _home(server, params)
+        room_id = str(params.get("room_id") or "")
+        holder = _standalone_holder(room_id) if room_id else None
+        if holder == "local":
+            return None  # only this backend holds it: never ask a gateway that cannot have it
+        if holder == "gateway":
+            home = _root_home()  # the room was handed to the root gateway's store, whichever view asks
+        if method == "groups.list":
+            return _list(server, rid, home, params)
+        endpoint = owner_endpoint(home)
+    except _OwnerBusy as exc:
+        return _busy(server, rid, exc)
+    except ValueError as exc:
+        return server._err(rid, 4000, str(exc))
+    if endpoint is None:
+        return None
+    return _call(server, rid, home, endpoint, method, params)
+
+
+def _list(server, rid, home, params: dict) -> dict | None:
+    """One Group Chat list that hides no existing room: the profile's gateway rooms, plus (on the
+    first page) the rooms only the standalone store holds and, for a named profile, the standalone
+    rooms already handed to the root gateway."""
+    from gateway.hosted_rooms import MAX_ROOM_LIST_LIMIT, default_db_path
+    from gateway.hosted_rooms_gateway_import import handed_room_ids
+    endpoint = owner_endpoint(home)
+    root = _root_home()
+    handed = handed_room_ids(default_db_path()) if default_db_path().is_file() else set()
+    root_endpoint = owner_endpoint(root) if handed and home.resolve() != root.resolve() else None
+    if endpoint is None and root_endpoint is None:
+        return None  # the local listing (gateway-less) is the whole list
+    if endpoint is None:
+        reply = server._ok(rid, {"rooms": [], "next_offset": None})
+    else:
+        reply = _call(server, rid, home, endpoint, "groups.list", params)
+    if "error" in reply or int(params.get("offset") or 0) != 0:
+        return reply
+    rooms = list(reply["result"].get("rooms") or [])
+    extra = _standalone_rooms(params)
+    if root_endpoint is not None:
+        page = _call(server, rid, root, root_endpoint, "groups.list",
+                     {"include_disbanded": params.get("include_disbanded") is True,
+                      "limit": MAX_ROOM_LIST_LIMIT})
+        if "error" in page:
+            return page
+        extra += [room for room in page["result"].get("rooms") or [] if str(room.get("room_id")) in handed]
+    seen = {str(room.get("room_id")) for room in rooms}
+    for room in extra:
+        if str(room.get("room_id")) not in seen:
+            seen.add(str(room.get("room_id")))
+            rooms.append(room)
+    return server._ok(rid, {**reply["result"], "rooms": rooms})
 
 
 def forward_bound(rid, method: str, params: dict) -> dict | None:

@@ -274,6 +274,8 @@ def start_ready_hosted_services(runner):
     for service in services:
         # start() only releases its thread; preparation and disk access happened above.
         service.start()
+    from gateway.hosted_rooms_gateway_import import import_after_ready
+    import_after_ready(serving_authorities(runner))
 
 
 async def stop_hosted_service(runner, timeout=5):

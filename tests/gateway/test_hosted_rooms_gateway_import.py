@@ -65,3 +65,35 @@ def test_a_named_profile_store_imports_nothing(tmp_path):
 
     assert import_standalone_rooms(named) == 0
     assert hosted_rooms.list_rooms(source)[0]["authority_gateway_id"] == hosted_rooms.local_authority_gateway_id()
+
+
+def test_a_room_disbanded_in_the_gateway_never_comes_back(tmp_path):
+    import time
+    source, target = _stores(tmp_path)
+    _standalone_room(source, "room-desk")
+    import_standalone_rooms(target)
+    [room] = hosted_rooms.list_rooms(target)
+    hosted_rooms.disband_room(target, room_id="room-desk", expected_gateway_id=room["authority_gateway_id"],
+                              expected_epoch=room["authority_epoch"])
+    # The tombstone is pruned later (retention, count or byte cap); only the reserved id remains.
+    later = time.time() + hosted_rooms.DISBANDED_ROOM_RETENTION_SECONDS + 10
+    assert hosted_rooms.prune_disbanded_rooms(target, now=later) == 1
+
+    assert import_standalone_rooms(target) == 0  # next gateway start
+    assert hosted_rooms.list_rooms(target, include_disbanded=True) == []
+
+
+def test_the_gateway_imports_again_once_ready(tmp_path):
+    import threading
+    from types import SimpleNamespace
+    from gateway.hosted_rooms_gateway_import import import_after_ready
+    source, target = _stores(tmp_path)
+    woke = threading.Event()
+    authority = SimpleNamespace(db=SimpleNamespace(db_path=str(target)), epoch=None,
+                                hosted_room_service=SimpleNamespace(wakeup=woke.set))
+    _standalone_room(source, "room-window")  # written by a standalone backend before `ready`
+
+    import_after_ready([authority])
+
+    assert woke.wait(10)
+    assert [r["room_id"] for r in hosted_rooms.list_rooms(target)] == ["room-window"]

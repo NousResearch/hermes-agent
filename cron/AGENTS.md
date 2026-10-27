@@ -35,6 +35,16 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   untouched) instead of letting `run_canonical_job → connect_gateway → ensure_gateway_runtime`
   spawn an unmanaged daemon. Same policy as approvals (headless/cron = refuse). The in-process
   ticker and `hermes cron run` are not headless.
+- **A scoped worker waits out an update's gateway handover; nothing else does.** An update
+  installs new code before the gateway is replaced, so a `scoped` restart-safe worker the old
+  gateway spawned runs newer code than its parent and sees it as `incompatible`/`parent_outdated`
+  (`gateway_runtime_replace.py` never lets a child stop its parent), or the install as
+  `draining`/`update_paused`. `cron/scheduler_owner_handover.py` then waits, before anything is
+  submitted and for at most `OWNER_HANDOVER_WAIT_S` (900 s), for the replacement, and submits to
+  it. Interactive callers, `degraded` workers (they die with the gateway's cgroup), permanent
+  refusals and a bare `starting`/`draining` fail fast; an expired or cancelled wait fails the run
+  as before (the occurrence is already dispatched). The dispatch mode reaches the worker as
+  `_HERMES_CRON_WORKER_DISPATCH` (`scheduler_worker_env.mark_cron_worker`).
 - **The ticker binds each served profile's scope for the whole tick, including pre-loop code.**
   `scheduler_provider.py::_start_multiplex` is ONE ticker iterating `profiles_to_serve()`
   sequentially under `_profile_cron_scope(home)` (home + secret scope + terminal scope) — never N

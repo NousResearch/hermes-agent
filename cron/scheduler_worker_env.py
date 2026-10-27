@@ -83,3 +83,14 @@ def pin_hermes_tree_on_pythonpath(worker_env: dict, repo_root: Path) -> dict:
     pinned = [root, *([str(dependency)] if dependency is not None else [])]
     worker_env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys([*pinned, *existing]))
     return worker_env
+
+
+# How the worker was dispatched (``GatewayChildDispatch.mode``). Only a ``scoped`` worker outlives a
+# gateway restart, so only it may wait for the restarted gateway (``cron/scheduler_owner_handover.py``).
+DISPATCH_MARKER = "_HERMES_CRON_WORKER_DISPATCH"
+
+
+def mark_cron_worker(worker_env: dict, dispatch_mode: str) -> dict:
+    """The child's env, marked so its own entry runs the PM dependency boot and knows its dispatch."""
+    from cron.worker_bootstrap import WORKER_MARKER
+    return {**worker_env, WORKER_MARKER: "1", DISPATCH_MARKER: dispatch_mode}

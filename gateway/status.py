@@ -946,8 +946,8 @@ def _pid_exists(pid: int) -> bool:
     dead: treating one as alive makes --replace wait forever under systemd Restart=always."""
     pid = int(pid)
     if os.name == "nt":
-        # psutil's Windows liveness calls (EnumProcesses, NtQuerySystemInformation) hold the GIL, so a
-        # slow one froze every thread for minutes (#142085); ctypes releases it. No zombies on Windows.
+        # ctypes keeps psutil off this hot path (no zombies here). Not a GIL fix: pid_exists measured ~4 us; the
+        # #142085 stall is Process.status() (process_identity). PID 0 is alive to psutil, dead here.
         return pid_exists_stdlib(pid)
     try:
         import psutil  # type: ignore

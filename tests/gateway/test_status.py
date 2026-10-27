@@ -744,10 +744,9 @@ class TestPidExistsZombieProbe:
 
     @pytest.mark.platforms("windows")
     def test_windows_never_touches_psutil_at_all(self, monkeypatch):
-        """#142085: psutil's Windows liveness path does not release the GIL, so one slow
-        ``EnumProcesses``/``NtQuerySystemInformation`` call freezes every other Python thread in
-        the process (Desktop backend and gateway stall for minutes under load). The Windows
-        branch must go straight to the ctypes probe and never import psutil."""
+        """#142085: the Windows branch goes straight to the ctypes probe and never calls psutil, so
+        the liveness check carries no psutil dependency on this hot path. (The measured GIL stall is
+        ``Process.status()``, covered in test_process_identity; ``pid_exists`` itself is ~4 us.)"""
         psutil = pytest.importorskip("psutil")
         calls = []
         real_pid_exists = psutil.pid_exists

@@ -65,7 +65,7 @@ class _UnboundedThreadExecutor(concurrent.futures.Executor):
                 return fut
             self._n += 1
             worker = _Worker()
-            # health: allow HX012 -- a worker serves many items; each runs in the context its caller captured (ctx.run)
+            # health: allow HX012 -- a worker serves many items; each runs in a fresh empty Context, as a new thread would
             t = threading.Thread(target=self._work, args=(worker, item), name=f"{self._prefix}_{self._n}", daemon=True)
             worker.thread = t
             # Start BEFORE registering: at the OS thread limit start() raises, and an unstarted thread

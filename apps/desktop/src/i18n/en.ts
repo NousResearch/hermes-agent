@@ -462,6 +462,8 @@ export const en: Translations = {
       noSpeechDetected: 'No speech detected',
       playbackFailed: 'Voice playback failed',
       recordingFailed: 'Voice recording failed',
+      retryTranscription: 'Retry',
+      saveRecording: 'Save recording',
       sayStopToEnd: phrase => `Say "${phrase}" to end the voice chat.`,
       transcriptionFailed: 'Voice transcription failed',
       transcriptionUnavailable: 'Voice transcription is not available yet.',

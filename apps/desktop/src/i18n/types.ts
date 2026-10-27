@@ -489,6 +489,8 @@ catalog: CatalogTranslations
       noSpeechDetected: string
       playbackFailed: string
       recordingFailed: string
+      retryTranscription: string
+      saveRecording: string
       sayStopToEnd: (phrase: string) => string
       transcriptionFailed: string
       transcriptionUnavailable: string

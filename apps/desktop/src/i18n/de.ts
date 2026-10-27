@@ -472,6 +472,8 @@ export const deOverrides = {
       noSpeechDetected: 'Keine Sprache erkannt',
       playbackFailed: 'Sprachwiedergabe fehlgeschlagen',
       recordingFailed: 'Sprachaufnahme fehlgeschlagen',
+      retryTranscription: 'Erneut versuchen',
+      saveRecording: 'Aufnahme speichern',
       sayStopToEnd: phrase => `Sagen Sie „${phrase}“, um den Sprachchat zu beenden.`,
       transcriptionFailed: 'Sprachtranskription fehlgeschlagen',
       transcriptionUnavailable: 'Sprachtranskription ist noch nicht verfügbar.',

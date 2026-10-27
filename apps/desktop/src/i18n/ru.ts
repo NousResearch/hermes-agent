@@ -155,6 +155,8 @@ export const ruOverrides = {
       noSpeechDetected: 'Речь не обнаружена',
       playbackFailed: 'Не удалось воспроизвести голос',
       recordingFailed: 'Не удалось записать голос',
+      retryTranscription: 'Повторить',
+      saveRecording: 'Сохранить запись',
       sayStopToEnd: phrase => `Скажите «${phrase}», чтобы закончить голосовой чат.`,
       transcriptionFailed: 'Не удалось расшифровать речь',
       transcriptionUnavailable: 'Расшифровка речи пока недоступна.',

@@ -472,6 +472,8 @@ export const frOverrides = {
       noSpeechDetected: 'Aucune parole détectée',
       playbackFailed: 'Échec de la lecture vocale',
       recordingFailed: "Échec de l'enregistrement vocal",
+      retryTranscription: 'Réessayer',
+      saveRecording: "Sauvegarder l'audio",
       sayStopToEnd: phrase => `Dites « ${phrase} » pour terminer la conversation vocale.`,
       transcriptionFailed: 'Échec de la transcription vocale',
       transcriptionUnavailable: "La transcription vocale n'est pas encore disponible.",

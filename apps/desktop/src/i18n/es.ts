@@ -475,6 +475,8 @@ export const esOverrides = {
       noSpeechDetected: 'No se detectó voz',
       playbackFailed: 'Falló la reproducción de voz',
       recordingFailed: 'Falló la grabación de voz',
+      retryTranscription: 'Reintentar',
+      saveRecording: 'Guardar grabación',
       sayStopToEnd: phrase => `Di "${phrase}" para terminar el chat de voz.`,
       transcriptionFailed: 'Falló la transcripción de voz',
       transcriptionUnavailable: 'La transcripción de voz aún no está disponible.',

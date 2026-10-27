@@ -234,10 +234,13 @@ def _normalize_hostname(host: Optional[str]) -> str:
 _C0_CONTROL_OR_SPACE = "".join(chr(c) for c in range(0x21))
 
 
-def _authority_ambiguity(url: str, *, allow_userinfo: bool = False) -> Optional[str]:
+def _authority_ambiguity(url: str, *, floor: bool = False) -> Optional[str]:
     """Why another client could read a different host or port from an http(s) *url* than urlsplit
     does, else None. ``\\`` and ``@`` after the authority (path, query, fragment) are accepted: every
-    parser has fixed the host by then, and WHATWG's ``\\`` -> ``/`` rewrite only changes the path."""
+    parser has fixed the host by then, and WHATWG's ``\\`` -> ``/`` rewrite only changes the path.
+    ``floor`` keeps only what can move the host itself (controls, no ``//``, ``\\`` in the authority):
+    userinfo and an unparseable port (templated ``{port}``/``%d`` literals) leave the host as is, and
+    the floor checks a percent-encoded host after decoding it."""
     url = url.strip(_C0_CONTROL_OR_SPACE)
     parts = urlsplit(url)
     if parts.scheme.lower() not in _HTTP_SCHEMES:
@@ -248,8 +251,10 @@ def _authority_ambiguity(url: str, *, allow_userinfo: bool = False) -> Optional[
         return "authority not introduced by //"
     if "\\" in parts.netloc:
         return "backslash in authority"
+    if floor:
+        return None
     _, at, host = parts.netloc.rpartition("@")
-    if at and not allow_userinfo:
+    if at:
         return "userinfo in authority"
     if "%" in host:
         return "percent-encoding in host"
@@ -324,13 +329,14 @@ def is_always_blocked_url(url: str) -> bool:
     deliberately bypass the full check (e.g. hybrid cloud browser routing private URLs to a local
     sidecar) but must still enforce the floor. False for ordinary private/loopback URLs, DNS
     failures and parse errors (the caller's ordinary fail-closed path handles those); True for an
-    http(s) URL whose host another client could read differently, which may hide a metadata target."""
+    http(s) URL whose host another client could read differently, which may hide a metadata target.
+    A percent-encoded host is judged decoded, as WHATWG clients read it."""
     try:
-        reason = _authority_ambiguity(url, allow_userinfo=True)
+        reason = _authority_ambiguity(url, floor=True)
         if reason is not None:
             logger.warning("Blocked request — ambiguous URL authority (always-blocked floor): %s", reason)
             return True
-        hostname = _normalize_hostname(urlparse(url).hostname)
+        hostname = _normalize_hostname(unquote(urlparse(url).hostname or ""))
         if not hostname:
             return False
         if hostname in _BLOCKED_HOSTNAMES:

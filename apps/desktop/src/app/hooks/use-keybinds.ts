@@ -27,6 +27,7 @@ import {
 import { handleApprovalKey, releaseApprovalKey } from '@/lib/keybinds/approval-keys'
 import { actionAllowedInInput, comboFromEvent, IS_MAC, isEditableTarget, isFocusWithin } from '@/lib/keybinds/combo'
 import { composerFocusKeysAllowed, isComposerFocusSoftCombo, typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
+import { markKeybindHandled } from '@/lib/keybinds/handled-keys'
 import { registerBuiltinActionRunner } from '@/lib/keybinds/plugin-actions'
 import { stepReasoningEffort, writeSessionReasoningEffort } from '@/lib/reasoning-step'
 import { openWorktreeDialog } from '@/store/coding-status'
@@ -78,6 +79,7 @@ import {
   $switcherOpen,
   closeSwitcher,
   commitOnCtrlUp,
+  noteSwitcherKeyDown,
   onSwitcherTabDown,
   onSwitcherTabUp,
   openOrAdvanceSwitcher,
@@ -481,6 +483,8 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      noteSwitcherKeyDown(event.code)
+
       // An active IME composition owns the keyboard. Windows Chinese IMEs
       // (Microsoft Pinyin, Sogou) use Ctrl+, as their punctuation-mode toggle,
       // so without this guard that keystroke ALSO matched `nav.settings` and
@@ -616,6 +620,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
           continue
         }
 
+        markKeybindHandled(event)
         recordAction(actionId, 'shortcut')
 
         return
@@ -634,7 +639,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       // releasing its step key ends the hold, and releasing the last
       // non-Shift modifier commits.
       if (!SWITCHER_MODIFIER_KEYS.has(event.key)) {
-        onSwitcherTabUp()
+        onSwitcherTabUp(event.code)
       } else if (event.key !== 'Shift' && !event.ctrlKey && !event.altKey && !event.metaKey) {
         commitSwitcherRef.current()
       }

@@ -19,6 +19,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  vi.useRealTimers()
   vi.restoreAllMocks()
   window.document.body.replaceChildren()
   delete window.document.documentElement.dataset.hermesDesktopHost
@@ -122,6 +123,20 @@ it('dispatches the macOS ⌃⌘ browser defaults, including ⌃⌘W over an inte
   expect(closeTab).toHaveBeenCalledOnce()
 })
 
+it('keeps an Option remap on macOS, where Firefox reports Option as AltGraph', async () => {
+  vi.spyOn(navigator, 'platform', 'get').mockReturnValue('MacIntel')
+  const { press } = await mountKeybinds()
+  const { setBinding } = await import('@/store/keybinds')
+  const { $commandPaletteOpen } = await import('@/store/command-palette')
+  act(() => setBinding('nav.commandPalette', ['alt+.']))
+
+  const option = press({ key: '≥', code: 'Period', altKey: true, ctrlKey: false, modifierAltGraph: true })
+
+  expect(option.getModifierState('AltGraph')).toBe(true)
+  expect(option.defaultPrevented).toBe(true)
+  expect($commandPaletteOpen.get()).toBe(true)
+})
+
 it('steps the session switcher with Alt+] and commits when Alt is released', async () => {
   vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Linux x86_64')
   const { $selectedStoredSessionId, $sessions } = await import('@/store/session')
@@ -144,4 +159,62 @@ it('steps the session switcher with Alt+] and commits when Alt is released', asy
   release('Alt')
   expect($switcherOpen.get()).toBe(false)
   expect(switcherActive()).toBe(false)
+})
+
+it('keeps the switcher step held while another key is released', async () => {
+  vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Linux x86_64')
+  const { $selectedStoredSessionId, $sessions } = await import('@/store/session')
+  const { $switcherOpen, SWITCHER_REVEAL_MS } = await import('@/store/session-switcher')
+  $sessions.set(['a', 'b', 'c'].map(id => ({ id }) as never))
+  $selectedStoredSessionId.set('a')
+  const { press } = await mountKeybinds()
+  vi.useFakeTimers()
+
+  const release = (key: string, code: string, init: KeyboardEventInit = {}) =>
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, code, key, ...init }))
+    })
+
+  press({ key: ']', code: 'BracketRight', altKey: true, ctrlKey: false })
+  release('a', 'KeyA', { altKey: true })
+  act(() => vi.advanceTimersByTime(SWITCHER_REVEAL_MS))
+  expect($switcherOpen.get()).toBe(true)
+
+  release(']', 'BracketRight', { altKey: true })
+  release('Alt', 'AltLeft')
+  expect($switcherOpen.get()).toBe(false)
+
+  // A quick tap of the step key itself, Alt still down: no HUD.
+  press({ key: ']', code: 'BracketRight', altKey: true, ctrlKey: false })
+  release(']', 'BracketRight', { altKey: true })
+  act(() => vi.advanceTimersByTime(SWITCHER_REVEAL_MS))
+  expect($switcherOpen.get()).toBe(false)
+})
+
+it('marks only chords an action ran, so the terminal keeps a declined one', async () => {
+  vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Linux x86_64')
+  const { deps, press } = await mountKeybinds(true)
+  const { setBinding } = await import('@/store/keybinds')
+  const { keybindHandled } = await import('@/lib/keybinds/handled-keys')
+
+  const ran = press({ key: 't', code: 'KeyT', altKey: true, ctrlKey: false })
+  expect(deps.openNewSessionTab).toHaveBeenCalledOnce()
+  expect(keybindHandled(ran)).toBe(true)
+
+  // view.tabSlot.9 declines with no tab strip: cancelled, but no action ran.
+  act(() => setBinding('view.tabSlot.9', ['alt+9']))
+
+  const declined = new KeyboardEvent('keydown', {
+    altKey: true,
+    bubbles: true,
+    cancelable: true,
+    code: 'Digit9',
+    key: '9'
+  })
+
+  act(() => {
+    window.document.body.dispatchEvent(declined)
+  })
+  expect(declined.defaultPrevented).toBe(true)
+  expect(keybindHandled(declined)).toBe(false)
 })

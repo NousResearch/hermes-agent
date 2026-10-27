@@ -127,11 +127,11 @@ class _ErrorCallback:
 
 
 class PerChatUpdateProcessor(SimpleUpdateProcessor):
-    """Concurrent across chats, FIFO within one chat.
+    """Concurrent across chats and Telegram topics, FIFO within one topic.
 
     PTB's default processor (max_concurrent_updates=1) awaits every update inline, so one slow
     handler deafens all chats; plain concurrency fixes that but lets a chat's second update finish
-    before its first. Each update here waits for the previous update of the same chat; updates
+    before its first. Each update here waits for the previous update in the same ``(chat, thread)`` lane; updates
     without a chat (inline queries) run unchained.
     """
 
@@ -146,9 +146,12 @@ class PerChatUpdateProcessor(SimpleUpdateProcessor):
         if chat is None:
             await coroutine
             return
-        prev = self._tails.get(chat.id)
+        message = getattr(update, "effective_message", None)
+        thread_id = getattr(message, "message_thread_id", None)
+        key = (chat.id, thread_id)
+        prev = self._tails.get(key)
         done = asyncio.get_running_loop().create_future()
-        self._tails[chat.id] = done
+        self._tails[key] = done
         try:
             if prev is not None:
                 # shield: cancelling this waiter must not cancel the predecessor's tail future.
@@ -157,8 +160,8 @@ class PerChatUpdateProcessor(SimpleUpdateProcessor):
         finally:
             def release(_prev=None):
                 done.set_result(None)
-                if self._tails.get(chat.id) is done:
-                    del self._tails[chat.id]
+                if self._tails.get(key) is done:
+                    del self._tails[key]
 
             # A cancelled waiter hands its turn on only once its predecessor finishes (per-chat FIFO).
             if prev is None or prev.done():

@@ -10323,6 +10323,18 @@
             "title": "Messages",
             "type": "array"
           },
+          "messages_omitted": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Messages Omitted"
+          },
           "display_messages": {
             "anyOf": [
               {

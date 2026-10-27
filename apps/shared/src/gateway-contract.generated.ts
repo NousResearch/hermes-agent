@@ -4979,6 +4979,7 @@ export interface CanonicalSnapshot {
   session_id: string
   stored_session_id: string
   messages: TranscriptMessage[]
+  messages_omitted?: boolean | null
   display_messages?: TranscriptMessage[] | null
   message_count: number
   running: boolean

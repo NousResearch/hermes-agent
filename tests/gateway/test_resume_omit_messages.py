@@ -107,3 +107,20 @@ async def test_omitted_resume_keeps_an_undone_plan_gone_after_a_rotated_compress
     assert full['todo_state'] is None
     omitted = await _resume(authority, actor, ref, omit_messages=True)
     assert omitted['todo_state'] == full['todo_state']
+
+
+@pytest.mark.asyncio
+async def test_omitted_resume_reply_passes_the_wire_contract(tmp_path, monkeypatch):
+    """Through ``dispatch``, which checks the reply against ``CanonicalSnapshot`` (strict under tests)."""
+    from gateway.session_controls import AuthorityConnection
+    from gateway import session_local
+    authority, actor, ref, physical = await _local_session(tmp_path, monkeypatch)
+    monkeypatch.setattr(session_local, 'local_session_info', lambda *a: {'desktop_protocol': 'hermes-gateway-v1'})
+    _seed_compacted(authority.db, physical)
+    conn = AuthorityConnection(authority, object(), {'user_id': 'owner'})
+    conn.actor = actor
+    authority.events[actor.transport_id] = object()
+    reply = await conn.dispatch({'jsonrpc': '2.0', 'id': 1, 'method': 'session.resume',
+                                 'params': {'session_id': ref.session_id, 'omit_messages': True}})
+    assert 'error' not in reply, reply
+    assert reply['result']['messages'] == [] and reply['result']['messages_omitted'] is True

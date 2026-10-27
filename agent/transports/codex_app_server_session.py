@@ -199,6 +199,9 @@ class CodexThreadResumeError(CodexAppServerError):
         self.thread_id = thread_id
 
 
+_CODEX_THREAD_RESUME_TIMEOUT_S = 60
+
+
 def _extract_thread_id(result: dict) -> Optional[str]:
     """Different codex versions serialize the id under thread.id / sessionId / threadId."""
     thread_obj = result.get("thread") or {}
@@ -279,10 +282,19 @@ class CodexAppServerSession:
         if self._model:
             params["model"] = self._model
         if self._resume_thread_id:
-            wanted, self._resume_thread_id = self._resume_thread_id, None  # one attempt per stored id
-            thread_id = self._resume_thread(wanted, params)
-            # A resumed thread may carry a tier an earlier process selected (CLI ``/fast`` rebuilds the agent),
-            # so its first turn sends Hermes' tier even when that is a clearing null.
+            wanted = self._resume_thread_id
+            try:
+                thread_id = self._resume_thread(wanted, params)
+            except CodexThreadResumeError:
+                # A definitive rejection (e.g. missing rollout) keeps the established fallback
+                # behavior: the next call starts a fresh thread, seeded from Hermes history.
+                self._resume_thread_id = None
+                raise
+            # Keep the stored id across transient transport errors/timeouts so a later call retries
+            # the same native thread instead of silently starting an unrelated one.
+            self._resume_thread_id = None
+            # A resumed thread may carry a tier an earlier process selected, so its first turn
+            # sends Hermes' tier even when that is a clearing null.
             self._service_tier_sent = _TIER_UNKNOWN
             logger.info("codex app-server thread resumed: id=%s cwd=%s", thread_id[:8], self._cwd)
         else:
@@ -305,7 +317,9 @@ class CodexAppServerSession:
         carries the CURRENT prompt composition and provider (accepted by the resume schema, codex 0.147)."""
         assert self._client is not None
         try:
-            result = self._client.request("thread/resume", {"threadId": wanted, **params}, timeout=15)
+            result = self._client.request(
+                "thread/resume", {"threadId": wanted, **params}, timeout=_CODEX_THREAD_RESUME_TIMEOUT_S,
+            )
         except CodexAppServerError as exc:
             raise CodexThreadResumeError(wanted, exc.message) from exc
         thread_id = _extract_thread_id(result)

@@ -425,3 +425,49 @@ def test_adopter_scope_setup_failure_leaks_no_override_and_continues(two_profile
     assert get_hermes_home_override() is None
     assert ss.current_secret_scope() is None
     assert registered == [{"x": {"url": "https://mcp.example/x"}}]
+
+
+@pytest.mark.parametrize("trigger", ["credential_rotated", "mid_reconnect"])
+def test_discovery_never_strips_a_profiles_own_live_connection(two_profiles, trigger):
+    """A profile's OWN connection keeps its tools across discovery passes, like a single-profile
+    process. Stripping it as if it were an adopted share left the connection in ``_servers``, so
+    nothing reconnected it and the profile stayed tool-less for that server until restart while
+    cron preflight blocked every job naming it (a rotated ``${VAR}`` token, or a pass landing
+    during a reconnect, was enough)."""
+    import tools.mcp_tool as core
+    from cron.scheduler_preflight import _empty_requested_mcp_toolsets
+    from tools import mcp_tool_discovery as disc
+    from tools import mcp_tool_registration as reg
+    from tools.mcp_tool_scope import _server_key
+    from tools.registry import registry
+    import toolsets
+
+    cfg_a = {"url": "http://127.0.0.1:3131/mcp", "headers": {"Authorization": "Bearer a-old"}}
+    cfg_b = {"url": "http://127.0.0.1:3132/mcp", "headers": {"Authorization": "Bearer b"}}
+    seen_a = {**cfg_a, "headers": {"Authorization": "Bearer a-new"}} if trigger == "credential_rotated" else cfg_a
+    job = {"id": "job-a", "enabled_toolsets": ["x"]}
+
+    def discover(config, srv):
+        live = srv.session
+        if trigger == "mid_reconnect":
+            srv.session = None
+        with patch.object(disc, "_run_discovery_pass", lambda new: None), \
+                patch.object(disc._loop, "_ensure_mcp_loop", lambda: None), \
+                patch.object(disc._loop, "_signal_reconnect", lambda server: None):
+            disc.register_mcp_servers({"x": config})
+        srv.session = live
+
+    connections = {}
+    for which, cfg in (("a", cfg_a), ("b", cfg_b)):
+        two_profiles(which)
+        connections[which] = _server("x", cfg)
+        disc._adopt_server("x", connections[which])
+        connections[which]._registered_tool_names = reg._register_server_tools("x", connections[which], cfg)
+
+    for which, cfg in (("a", seen_a), ("b", cfg_b), ("a", seen_a)):
+        two_profiles(which)
+        discover(cfg, connections[which])
+        assert core._servers[_server_key("x")] is connections[which]
+        assert registry.get_tool_names_for_toolset("mcp-x") == ["mcp__x__t"]
+        assert toolsets.resolve_toolset("x") == ["mcp__x__t"]
+        assert _empty_requested_mcp_toolsets(job, {"mcp_servers": {"x": cfg}}) is None

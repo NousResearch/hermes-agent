@@ -6,7 +6,15 @@ import { refreshProjectTree } from '@/store/projects'
 
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 
-afterEach(cleanup)
+afterEach(async () => {
+  cleanup()
+  // The mocked stores are module-level atoms; reset them so a seeded tree or
+  // session list cannot leak into the next test.
+  const { $projectTree } = await import('@/store/projects')
+  const { $sessions } = await import('@/store/session')
+  $projectTree.set([])
+  $sessions.set([])
+})
 
 // Exercises the real SessionActionsMenu end-to-end (no DropdownMenu mock) so
 // a broken asChild composition on the kebab trigger fails here — the menu
@@ -96,7 +104,7 @@ vi.mock('@/store/session', () => ({
   $sessions: atom<unknown[]>([]),
   $unreadFinishedSessionIds: atom<string[]>([]),
   markSessionRead: vi.fn(),
-  sessionMatchesStoredId: vi.fn(() => false),
+  sessionMatchesStoredId: vi.fn((session: { id: string }, id: string) => session.id === id),
   sessionPinId: vi.fn((s: { id: string }) => s.id),
   setSessions: vi.fn()
 }))
@@ -405,13 +413,16 @@ describe('SessionActionsMenu', () => {
   // dialog with the session's cwd prefilled and chains back to
   // moveSessionToProject on success.
   it('offers "New project…" in the move submenu when only the Home bucket exists', async () => {
-    const { $projectTree, openProjectCreate } = vi.mocked(await import('@/store/projects'))
-    const { $sessions } = vi.mocked(await import('@/store/session'))
+    const { $projectTree, openProjectCreate } = await import('@/store/projects')
+    const { $sessions } = await import('@/store/session')
 
-    vi.mocked($projectTree).mockReturnValue([
+    // The mocked stores expose real nanostores atoms (upstream replaced the
+    // vi.fn()-shaped mocks with atoms), so seed them through .set() rather
+    // than a mock return value.
+    $projectTree.set([
       { id: '__no_project__', isNoProject: true, label: 'Home', path: null, repos: [] }
     ] as unknown as never)
-    vi.mocked($sessions).mockReturnValue([{ id: 's1', cwd: '/Users/me/proj' }] as unknown as never)
+    $sessions.set([{ id: 's1', cwd: '/Users/me/proj' }] as unknown as never)
 
     renderMenu()
 
@@ -431,8 +442,8 @@ describe('SessionActionsMenu', () => {
     fireEvent.pointerUp(newProjectItem, { button: 0, pointerType: 'mouse' })
     fireEvent.click(newProjectItem)
 
-    expect(openProjectCreate).toHaveBeenCalledTimes(1)
-    expect(openProjectCreate).toHaveBeenCalledWith(
+    expect(vi.mocked(openProjectCreate)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(openProjectCreate)).toHaveBeenCalledWith(
       expect.objectContaining({ prefillFolder: '/Users/me/proj' })
     )
   })

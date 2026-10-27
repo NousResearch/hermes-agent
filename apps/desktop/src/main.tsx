@@ -1,6 +1,5 @@
+// Loaded by src/entry.ts once the machine's shared UI preferences hydrated.
 import './styles.css'
-// Hydrate the machine's shared UI preferences before any store reads them.
-import './lib/ui-preferences/boot'
 // Install the loopback browser host before any store/App modules evaluate.
 // Electron preload remains authoritative when its bridge already exists.
 import './lib/browser-desktop-bridge-install'

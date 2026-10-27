@@ -809,6 +809,10 @@ from hermes_cli.main_platform_setup import (
     cmd_whatsapp,
     cmd_whatsapp_cloud,
 )
+from hermes_cli.main_plugin_cli import (
+    _resolve_all_deferred_platform_cli_commands,
+    _resolve_deferred_platform_cli_command,
+)
 from hermes_cli.process_identity import is_desktop_owned_backend as _is_desktop_owned_backend
 from hermes_cli.main_dashboard import (
     _attach_to_host_backend,
@@ -2800,34 +2804,8 @@ def _plugin_cli_discovery_needed() -> bool:
     discovery is needed; for a prompt its cost amortizes over the agent run.
     """
     first = _first_positional_argv()  # None = bare ``hermes`` → chat
-    return first is not None and first not in _BUILTIN_SUBCOMMANDS
-
-
-def _resolve_deferred_platform_cli_command(command_name: str | None) -> None:
-    """Materialize the deferred platform whose top-level CLI command matches.
-
-    Bundled platforms are *deferred* entries (no gateway SDK imports at
-    startup), so a platform's ``register_cli_command`` side effect only runs
-    on import; ``discover_plugins()`` alone leaves ``hermes photon`` failing
-    with ``invalid choice``. Importing just the matching platform keeps
-    startup cheap.
-
-    On the unknown-top-level-command slow path, ``discover_plugins()`` records the deferred loader but does
-    not import it, so the CLI registration never happens and ``hermes photon`` fails with argparse ``invalid
-    choice`` (issue #54678).
-    """
-    if not command_name:
-        return
-    try:
-        from gateway.platform_registry import platform_registry
-
-        platform_registry.get(command_name)
-    except Exception as exc:
-        logging.getLogger(__name__).debug(
-            "Deferred platform CLI resolution failed for %s: %s",
-            command_name,
-            exc,
-        )
+    # ``completion`` walks the whole parser tree, so it must see plugin commands (#145347).
+    return first == "completion" or (first is not None and first not in _BUILTIN_SUBCOMMANDS)
 
 
 _AGENT_COMMANDS = {None, "chat", "acp", "rl"}
@@ -3272,8 +3250,11 @@ def _register_plugin_cli_commands(subparsers) -> None:
         discover_plugins()
         # The invoked platform may still be a deferred entry; import it so its
         # register_cli_command side effect runs before we read _cli_commands.
-        # See #54678.
-        _resolve_deferred_platform_cli_command(_first_positional_argv())
+        # See #54678. A completion script names every command, so it loads them all.
+        if _first_positional_argv() == "completion":
+            _resolve_all_deferred_platform_cli_commands()
+        else:
+            _resolve_deferred_platform_cli_command(_first_positional_argv())
         for cmd_info in get_plugin_manager()._cli_commands.values():
             if cmd_info["name"] not in seen_plugin_commands:
                 _attach_plugin_cli_command(subparsers, cmd_info)

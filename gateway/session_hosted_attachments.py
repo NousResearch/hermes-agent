@@ -76,6 +76,30 @@ def append_user_event(service, *, room_id, event_id, payload, gateway_id, epoch)
         raise
 
 
+# A file the member can never take: over its media cap, not bound to it, expired or corrupt.
+_PERMANENT_FILE_REFUSALS = frozenset({'invalid_params', 'permission_denied'})
+
+
+def prepare_before_submit(prepare):
+    """Run a member turn's file preparation, which precedes its ``prompt.submit``/admission.
+
+    A failure here started no work, so neither route may let the driver book it as uncertain
+    execution: a refusal no retry can change settles the turn as failed (``refused_before_submit``)
+    and anything else is proven not admitted, so the driver requeues it with backoff."""
+    from gateway.hosted_room_attachments import AttachmentError
+    from gateway.hosted_room_driver import DriverValidationError
+    try:
+        return prepare()
+    except Exception as exc:
+        permanent = isinstance(exc, (AttachmentError, DriverValidationError)) or (
+            isinstance(exc, RuntimeStoreError) and exc.reason in _PERMANENT_FILE_REFUSALS)
+        if permanent:
+            exc.refused_before_submit = True
+        else:
+            exc.not_admitted = True
+        raise
+
+
 def submission_payload(rpc, prompt, attachments=None):
     """Resolve only event-bound, member-authorized bytes, never a caller path."""
     return bound_submission_payload(

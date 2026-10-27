@@ -80,7 +80,7 @@ class HostedRoomServerRPC:
         if not attachments:
             return self._submit(profile, session_id, prompt, source, task, execution_generation,
                                 on_terminal, member_id, images=())
-        from gateway.session_hosted_attachments import bound_submission_payload
+        from gateway.session_hosted_attachments import bound_submission_payload, prepare_before_submit
         from gateway.session_ingress_media import capture_lease
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
         home = self.server._profile_home(profile)
@@ -89,9 +89,9 @@ class HostedRoomServerRPC:
         with capture_lease():
             token = set_hermes_home_override(str(home)) if home is not None else None
             try:
-                inputs = bound_submission_payload(
+                inputs = prepare_before_submit(lambda: bound_submission_payload(
                     self.db_path, room_id=task.room_id, member_id=member_id, prompt=prompt,
-                    attachments=list(attachments))
+                    attachments=list(attachments)))
             finally:
                 if token is not None:
                     reset_hermes_home_override(token)

@@ -19,6 +19,9 @@ from gateway.hosted_rooms_common import DbPath, compact_json, fenced_update
 
 
 MAX_ACTIVE_POLICY_EVENTS = 64
+# ``turn.deferred`` receipts come from explicit user retries, not from the configured reply
+# budget, so they are bounded on their own: sizing the reply budget exactly must leave room.
+MAX_ACTIVE_RETRY_RECEIPTS = 64
 MAX_THREAD_TRANSCRIPT_EVENTS = 24
 _TRANSCRIPT_SCHEMA_VERSION = 4
 MAX_TRANSCRIPT_POLICY_EVENTS = MAX_THREAD_TRANSCRIPT_EVENTS * (MAX_ACTIVE_POLICY_EVENTS + 2)
@@ -126,7 +129,7 @@ class HostedRoomPolicyCheckpoint:
             self.max_active_events = int(conn.execute(
                 "SELECT max_active_events FROM hosted_room_policy_capacity WHERE singleton=1").fetchone()[0])
         self.max_transcript_policy_events = min(
-            2**63 - 2, MAX_THREAD_TRANSCRIPT_EVENTS * (self.max_active_events + 2))
+            2**63 - 2, MAX_THREAD_TRANSCRIPT_EVENTS * (self.max_active_events + MAX_ACTIVE_RETRY_RECEIPTS + 2))
 
     def _connect(self) -> sqlite3.Connection:
         # Late import: a gateway that outlives an on-disk upgrade has the OLD sqlite_util cached.
@@ -170,11 +173,16 @@ class HostedRoomPolicyCheckpoint:
         self, conn: sqlite3.Connection, *, room_id: str, thread_id: str, discussion_event_id: str, bound_error: str
     ) -> list[dict[str, Any]]:
         """Merge the thread transcript with the active projection, ordered by seq."""
-        active_rows = conn.execute("""SELECT event_json FROM hosted_room_policy_events
-               WHERE room_id=? AND discussion_event_id=? ORDER BY seq LIMIT ?""",
-            (room_id, discussion_event_id, self.max_active_events + 1)).fetchall()
-        if len(active_rows) > self.max_active_events:
-            raise RuntimeError(bound_error)
+        active_rows = []
+        for receipts, bound in ((0, self.max_active_events), (1, MAX_ACTIVE_RETRY_RECEIPTS)):
+            rows = conn.execute("""SELECT event_json FROM hosted_room_policy_events
+                   WHERE room_id=? AND discussion_event_id=?
+                     AND (json_extract(event_json, '$.kind') = 'turn.deferred') = ?
+                   ORDER BY seq LIMIT ?""",
+                (room_id, discussion_event_id, receipts, bound + 1)).fetchall()
+            if len(rows) > bound:
+                raise RuntimeError(bound_error)
+            active_rows.extend(rows)
         rows = conn.execute(_TRANSCRIPT_EVENTS_SQL,
                             (room_id, thread_id, room_id, thread_id, room_id,
                              self.max_transcript_policy_events + 1)).fetchall()

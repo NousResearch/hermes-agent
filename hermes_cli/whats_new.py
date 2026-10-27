@@ -65,14 +65,14 @@ _VALID_DISMISS = {DISMISS_UNDERSTOOD, DISMISS_LEARN_MORE, DISMISS_NEVER_AGAIN}
 class WhatsNewBrief:
     """Structured representation of one version's what's-new brief."""
 
-    def __init__(self, version: str, markdown: str, features: List[Dict[str, str]]):
+    def __init__(self, version: str, markdown: str, features: list[dict[str, str]]):
         self.version = version
         self.markdown = markdown
         self.features = features
 
     def render(self, max_features: int = DEFAULT_MAX_FEATURES) -> str:
         """Return the user-facing text (plain markdown, truncated to max_features)."""
-        lines: List[str] = [f"✨ What's new in Hermes {self.version}"]
+        lines: list[str] = [f"✨ What's new in Hermes {self.version}"]
         shown = 0
         for feat in self.features:
             if shown >= max_features:
@@ -100,14 +100,14 @@ class WhatsNewBrief:
 # Loading
 # ---------------------------------------------------------------------------
 
-def _parse_front_matter(text: str) -> tuple[Dict[str, str], str]:
+def _parse_front_matter(text: str) -> tuple[dict[str, str], str]:
     """Split YAML-ish front matter from body. Returns (meta, body)."""
     if not text.startswith("---"):
         return {}, text
     parts = text.split("---", 2)
     if len(parts) < 3:
         return {}, text
-    meta: Dict[str, str] = {}
+    meta: dict[str, str] = {}
     for raw in parts[1].splitlines():
         if ":" in raw:
             k, _, v = raw.partition(":")
@@ -115,7 +115,7 @@ def _parse_front_matter(text: str) -> tuple[Dict[str, str], str]:
     return meta, parts[2].strip()
 
 
-def _parse_features(body: str) -> List[Dict[str, str]]:
+def _parse_features(body: str) -> list[dict[str, str]]:
     """Parse brief body into feature entries.
 
     Format (see docs/whats-new/v0.21.0.md):
@@ -133,8 +133,8 @@ def _parse_features(body: str) -> List[Dict[str, str]]:
     ``- **label:**`` field or the next ``## `` entry. Empty/placeholder
     entries (no fields besides a name) are skipped.
     """
-    features: List[Dict[str, str]] = []
-    current: Optional[Dict[str, str]] = None
+    features: list[dict[str, str]] = []
+    current: Optional[dict[str, str]] = None
     pending_key: Optional[str] = None  # field we're collecting continuation lines for
     lines = body.splitlines()
     i = 0
@@ -229,7 +229,7 @@ def get_whats_new(repo_root: Path, version: str) -> Optional[WhatsNewBrief]:
     except UnicodeDecodeError:
         logger.warning("whats-new brief %s is not UTF-8; skipping", path)
         return None
-    meta, body = _parse_front_matter(text)
+    _meta, body = _parse_front_matter(text)
     features = _parse_features(body)
     if not features:
         return None
@@ -248,11 +248,11 @@ def get_current_version(repo_root: Path) -> Optional[str]:
     return m.group(1)
 
 
-def _versions_on_disk(repo_root: Path) -> List[str]:
+def _versions_on_disk(repo_root: Path) -> list[str]:
     d = repo_root / "docs" / WHATS_NEW_DIR_NAME
     if not d.is_dir():
         return []
-    out: List[str] = []
+    out: list[str] = []
     for p in d.glob("v*.md"):
         m = re.match(r"^v(\d+\.\d+\.\d+)\.md$", p.name)
         if m:
@@ -268,7 +268,7 @@ def _seen_path(hermes_home: Path) -> Path:
     return hermes_home / "whats_new_seen.json"
 
 
-def load_seen(hermes_home: Path) -> Dict[str, Any]:
+def load_seen(hermes_home: Path) -> dict[str, Any]:
     try:
         data = json.loads(_seen_path(hermes_home).read_text(encoding="utf-8"))
         if isinstance(data, dict):
@@ -322,7 +322,7 @@ def _tmp_counter() -> int:
     return _tmp_counter_lock
 
 
-def unseen_versions(hermes_home: Path, repo_root: Path, current: str) -> List[str]:
+def unseen_versions(hermes_home: Path, repo_root: Path, current: str) -> list[str]:
     """Versions with briefs on disk that the user has not acknowledged.
 
     A corrupt seen-file must never hide a new feature: if the file can't be

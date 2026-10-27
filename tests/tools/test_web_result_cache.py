@@ -30,7 +30,7 @@ def _isolated_cache(tmp_path, monkeypatch):
     cache_dir = tmp_path / "cache" / "web"
     cache_dir.mkdir(parents=True)
     monkeypatch.setattr(wrc, "_cache_dir", lambda: cache_dir)
-    monkeypatch.setattr(wrc, "_web_config", lambda: {})
+    monkeypatch.setattr(wrc, "_web_config", dict)
     yield cache_dir
 
 
@@ -190,7 +190,7 @@ def test_extract_cache_provider_participates_in_key(_isolated_cache):
 
 
 def test_extract_cache_oversized_page_not_indexed(_isolated_cache):
-    import tools.web_tools as wt
+    from tools import web_tools_truncate as wt
     big = "x" * (wt.MAX_STORED_TEXT_CHARS + 1)
     extract_cache_put("https://big.com", big)
     assert extract_cache_get("https://big.com") is None

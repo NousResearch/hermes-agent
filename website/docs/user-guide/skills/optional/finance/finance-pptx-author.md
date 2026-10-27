@@ -15,13 +15,13 @@ Build PowerPoint decks headless with python-pptx.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/finance/pptx-author` |
-| Path | `optional-skills/finance\pptx-author` |
+| Path | `optional-skills/finance/pptx-author` |
 | Version | `1.0.0` |
 | Author | Anthropic (adapted by Nous Research) |
 | License | Apache-2.0 |
 | Platforms | linux, macos, windows |
 | Tags | `powerpoint`, `pptx`, `python-pptx`, `presentation`, `finance` |
-| Related skills | [`excel-author`](/docs/user-guide/skills/optional/finance/finance-excel-author), [`powerpoint`](/docs/user-guide/skills/bundled/productivity/productivity-powerpoint) |
+| Related skills | [`excel-author`](../../optional/finance/finance-excel-author.md), [`powerpoint`](../../bundled/productivity/productivity-powerpoint.md) |
 
 ## Reference: full SKILL.md
 

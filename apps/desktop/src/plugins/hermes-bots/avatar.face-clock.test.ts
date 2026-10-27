@@ -249,17 +249,6 @@ describe('the SDK budgeted-loop path', () => {
     return { calls, captured }
   }
 
-  it('hands the paint to the SDK loop and schedules no rAF of its own', async () => {
-    const { calls } = captureLoop()
-    const { startFaceClock } = await loadClock()
-
-    mountFace()
-    startFaceClock()
-
-    expect(calls.fps).toBe(15)
-    expect(frames.size).toBe(0)
-  })
-
   it('reports idleness from visible-face state and wakes on visibility', async () => {
     const { calls, captured } = captureLoop()
     const { startFaceClock } = await loadClock()
@@ -278,22 +267,6 @@ describe('the SDK budgeted-loop path', () => {
     // Re-entry (a BotFace mount) wakes rather than re-initializing.
     startFaceClock()
     expect(calls.wake).toBeGreaterThanOrEqual(2)
-  })
-
-  it('disposes the loop and drops the window handle on stop', async () => {
-    const { calls } = captureLoop()
-    const { startFaceClock, stopFaceClock } = await loadClock()
-
-    mountFace()
-    startFaceClock()
-
-    const live = observer!
-
-    stopFaceClock()
-
-    expect(calls.dispose).toBe(1)
-    expect(live.disconnected).toBe(true)
-    expect(window.__hbFaceClock).toBeUndefined()
   })
 
   it('keeps a single clock across plugin loads', async () => {

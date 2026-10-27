@@ -10,7 +10,7 @@ import { type TestInfo } from '@playwright/test'
 import { expect, test, type Page } from './test'
 
 import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
-import { CORRECTION_SWITCH_TRIGGER, MOCK_REPLY } from './mock-server'
+import { CORRECTION_SWITCH_TRIGGER, MOCK_REPLY } from '../../../tests-js/scripts/mock-server'
 
 const OTHER_SESSION_PROMPT = 'E2E persisted session used for a warm resume.'
 const ORIGINAL_PROMPT = `${CORRECTION_SWITCH_TRIGGER}: original prompt must remain singular after a correction.`

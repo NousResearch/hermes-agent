@@ -17,10 +17,10 @@ Hermes 不仅仅是一个 CLI 工具。你可以直接导入 `AIAgent`，在自�
 ```bash
 git clone https://github.com/NousResearch/hermes-agent.git
 cd hermes-agent
-uv sync
+source ./activate
 ```
 
-在该检出目录中使用 `uv run python your_app.py` 运行应用。Hermes 不发布用于 `requirements.txt` 安装的受支持 wheel 或源代码发行版。
+在该检出目录中使用 `python your_app.py` 运行应用。Hermes 不发布用于 `requirements.txt` 安装的受支持 wheel 或源代码发行版。
 
 :::tip
 将 Hermes 作为库使用时，CLI 所需的环境变量同样必须设置。至少需要设置 `OPENROUTER_API_KEY`（若直接访问提供商，则设置 `OPENAI_API_KEY` 或 `ANTHROPIC_API_KEY`）。

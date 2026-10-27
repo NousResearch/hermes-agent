@@ -3,13 +3,18 @@ import { useEffect, useState } from 'react'
 
 import { AlertCircle, Clock, type IconComponent } from '@/lib/icons'
 import { $petActivity, $petState, type PetState } from '@/store/pet'
+import { $petPluginMessage, type PetMessageTone } from '@/store/pet-plugin-messages'
 
 /**
- * Speech bubble + status glyph for the popped-out pet overlay — the
- * "notification" half of the mascot. It externalizes what the agent is doing
- * (Codex-style) so a glance at the desktop pet replaces switching back to the
- * window. The in-window pet doesn't show it (the app itself is the surface);
- * only the overlay renders it.
+ * Speech bubble + status glyph for the pet — the "notification" half of the
+ * mascot. It externalizes what the agent is doing (Codex-style) so a glance at
+ * the desktop pet replaces switching back to the window. The core status lines
+ * show only in the popped-out overlay (`showStatus`); in-window the app itself
+ * is the surface, so the in-window pet renders the bubble for plugin lines only.
+ *
+ * Plugin lines (`ctx.pet.say`, see store/pet-plugin-messages) share the bubble:
+ * the newest live line shows with its plugin's name as a small label, unless
+ * the agent is in an error or waiting-on-you state — those keep the bubble.
  *
  * Text is derived purely from the same `$petState` / `$petActivity` the sprite
  * already reacts to, so it never drifts from the animation. The bubble is shown
@@ -17,7 +22,7 @@ import { $petActivity, $petState, type PetState } from '@/store/pet'
  * done/error beat / waiting on the user) and is hidden at plain idle.
  */
 
-type Tone = 'error' | 'wait'
+type Tone = PetMessageTone
 
 interface Spec {
   lines: string[]
@@ -70,8 +75,27 @@ const SPECS: Partial<Record<PetState, Spec>> = {
 
 const TONE_COLOR: Record<Tone, string> = {
   error: 'var(--ui-red)',
+  info: 'currentColor',
   wait: 'var(--ui-yellow)'
 }
+
+const TONE_GLYPH: Partial<Record<Tone, IconComponent>> = { error: AlertCircle, wait: Clock }
+
+// Core states that outrank a plugin line: the pet is flagging trouble or the
+// turn is paused on the user, and a plugin must not talk over that.
+const PRIORITY_TONES: ReadonlySet<Tone | undefined> = new Set(['error', 'wait'])
+
+const BUBBLE_SURFACE = {
+  // Solid, theme-driven surface (the prior --ui-bg-card mixes in
+  // `transparent`, so the bubble was see-through).
+  background: 'var(--ui-bg-elevated)',
+  border: '1px solid var(--ui-stroke-secondary)',
+  boxShadow: '0 4px 14px rgba(0,0,0,0.22)',
+  color: 'var(--foreground)',
+  fontSize: 11,
+  fontWeight: 500,
+  pointerEvents: 'none'
+} as const
 
 // Random pick that avoids repeating the line we're already showing.
 function pick(lines: string[], prev: string): string {
@@ -88,9 +112,16 @@ function pick(lines: string[], prev: string): string {
   return next
 }
 
-export function PetBubble() {
+export interface PetBubbleProps {
+  /** Render the core status lines (working…, your turn). The overlay passes
+   *  true; the in-window pet leaves them to the app and shows plugin lines only. */
+  showStatus?: boolean
+}
+
+export function PetBubble({ showStatus = true }: PetBubbleProps = {}) {
   const state = useStore($petState)
   const activity = useStore($petActivity)
+  const pluginLine = useStore($petPluginMessage)
   const [line, setLine] = useState('')
 
   // Finish beats are carried by the sprite/mail icon; idle only speaks up when
@@ -124,7 +155,52 @@ export function PetBubble() {
 
   const spec = specKey ? SPECS[specKey] : null
 
-  if (!spec) {
+  if (pluginLine && !PRIORITY_TONES.has(spec?.tone)) {
+    const Glyph = TONE_GLYPH[pluginLine.tone]
+
+    return (
+      <div
+        data-pet-plugin={pluginLine.pluginId}
+        data-slot="pet-plugin-bubble"
+        style={{
+          ...BUBBLE_SURFACE,
+          borderRadius: 10,
+          display: 'inline-flex',
+          flexDirection: 'column',
+          gap: 3,
+          lineHeight: 1.3,
+          maxWidth: 220,
+          padding: '5px 8px',
+          width: 'max-content'
+        }}
+      >
+        <span
+          style={{
+            color: 'var(--ui-text-secondary, var(--muted-foreground))',
+            fontSize: 9,
+            fontWeight: 600,
+            letterSpacing: 0.2,
+            lineHeight: 1,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap'
+          }}
+        >
+          {pluginLine.pluginName}
+        </span>
+        <span style={{ alignItems: 'flex-start', display: 'inline-flex', gap: 5, overflowWrap: 'anywhere' }}>
+          {Glyph && (
+            <span style={{ display: 'inline-flex', flex: 'none', paddingTop: 1 }}>
+              <Glyph style={{ color: TONE_COLOR[pluginLine.tone], height: 12, width: 12 }} />
+            </span>
+          )}
+          {pluginLine.text}
+        </span>
+      </div>
+    )
+  }
+
+  if (!spec || !showStatus) {
     return null
   }
 
@@ -135,22 +211,14 @@ export function PetBubble() {
   return (
     <div
       style={{
+        ...BUBBLE_SURFACE,
         alignItems: 'center',
-        // Solid, theme-driven surface (the prior --ui-bg-card mixes in
-        // `transparent`, so the bubble was see-through).
-        background: 'var(--ui-bg-elevated)',
-        border: '1px solid var(--ui-stroke-secondary)',
         borderRadius: hasText ? 10 : 999,
-        boxShadow: '0 4px 14px rgba(0,0,0,0.22)',
-        color: 'var(--foreground)',
         display: 'inline-flex',
-        fontSize: 11,
-        fontWeight: 500,
         gap: hasText ? 5 : 0,
         lineHeight: 1,
         // Glyph-only bubbles collapse to a tight, symmetric badge.
         padding: hasText ? '5px 8px' : 5,
-        pointerEvents: 'none',
         whiteSpace: 'nowrap'
       }}
     >

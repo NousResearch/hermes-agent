@@ -36,6 +36,9 @@ class _Mgr:
         self._result = result
         self.calls = []
 
+    def unsupported_backend_reason(self, task_id="default"):
+        return None
+
     def session_diff(self, cwd):
         self.calls.append(cwd)
         return self._result
@@ -72,7 +75,8 @@ def repo(tmp_path, monkeypatch):
     d = tmp_path / "repo"
     d.mkdir()
     _git(d, "init", "-q")
-    (d / "main.py").write_text("print('hello')\n")
+    _git(d, "config", "core.autocrlf", "false")
+    (d / "main.py").write_bytes(b"print('hello')\n")
     _git(d, "add", "-A")
     _git(d, "commit", "-q", "-m", "init")
     monkeypatch.setenv("TERMINAL_CWD", str(d))

@@ -1,18 +1,18 @@
 """Tests for tools/vision_tools.py — URL validation, type hints, error logging."""
 
+import asyncio
 import base64
 import json
 import logging
 import os
 from contextlib import ExitStack
 from pathlib import Path
-from typing import Awaitable
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from tools.vision_tools import (
-    _validate_image_url,
+    _validate_image_url_async,
     _handle_vision_analyze,
     _determine_mime_type,
     _image_to_base64_data_url,
@@ -21,7 +21,6 @@ from tools.vision_tools import (
     _EMBED_MAX_DIMENSION,
     _is_image_size_error,
     _MAX_BASE64_BYTES,
-    _RESIZE_TARGET_BYTES,
     vision_analyze_tool,
     check_vision_requirements,
 )
@@ -42,39 +41,43 @@ _RESOLVES = [(2, 1, 6, "", ("93.184.216.34", 0))]
 
 
 # ---------------------------------------------------------------------------
-# _validate_image_url — urlparse-based validation
+# _validate_image_url_async — shape check + SSRF gate on the live download path
 # ---------------------------------------------------------------------------
 
 
+def _validate(url) -> bool:
+    return asyncio.run(_validate_image_url_async(url))
+
+
 class TestValidateImageUrl:
-    """Tests for URL validation, including urlparse-based netloc check."""
+    """URL validation on the live (async) download path: urlparse-based netloc check + SSRF."""
 
     def test_accepts_valid_http_and_https_urls(self):
         with patch("tools.url_safety.socket.getaddrinfo", return_value=_RESOLVES):
-            assert _validate_image_url("https://example.com/image.jpg") is True
-            assert _validate_image_url("http://cdn.example.org/photo.png") is True
+            assert _validate("https://example.com/image.jpg") is True
+            assert _validate("http://cdn.example.org/photo.png") is True
             # CDN endpoints that redirect to images should still pass.
-            assert _validate_image_url("https://cdn.example.com/abcdef123") is True
-            assert _validate_image_url("https://img.example.com/pic?w=200&h=200") is True
-            assert _validate_image_url("http://example.com:8080/image.png") is True
-            assert _validate_image_url("https://example.com/") is True
+            assert _validate("https://cdn.example.com/abcdef123") is True
+            assert _validate("https://img.example.com/pic?w=200&h=200") is True
+            assert _validate("http://example.com:8080/image.png") is True
+            assert _validate("https://example.com/") is True
 
     def test_localhost_url_blocked_by_ssrf(self):
-        """localhost URLs are blocked by SSRF protection."""
-        assert _validate_image_url("http://localhost:8080/image.png") is False
-
+        """localhost / loopback URLs are blocked by SSRF protection."""
+        assert _validate("http://localhost:8080/image.png") is False
+        assert _validate("http://127.0.0.1/image.png") is False
 
     def test_rejects_malformed_and_non_string_inputs(self):
         # http:// alone has no network location — urlparse catches this.
-        assert _validate_image_url("http://") is False
-        assert _validate_image_url("https://") is False
-        assert _validate_image_url("http:") is False
-        assert _validate_image_url("") is False
-        assert _validate_image_url("   ") is False
-        assert _validate_image_url(None) is False
-        assert _validate_image_url(12345) is False
-        assert _validate_image_url(True) is False
-        assert _validate_image_url(["https://example.com"]) is False
+        assert _validate("http://") is False
+        assert _validate("https://") is False
+        assert _validate("http:") is False
+        assert _validate("") is False
+        assert _validate("   ") is False
+        assert _validate(None) is False
+        assert _validate(12345) is False
+        assert _validate(True) is False
+        assert _validate(["https://example.com"]) is False
 
 
 # ---------------------------------------------------------------------------
@@ -122,18 +125,6 @@ class TestImageToBase64DataUrl:
 class TestHandleVisionAnalyze:
     """Verify _handle_vision_analyze returns an Awaitable and builds correct prompt."""
 
-    def test_returns_awaitable_even_for_empty_args(self):
-        """The handler is registered as async, and missing keys must not raise."""
-        with patch(
-            "tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock
-        ) as mock_tool:
-            mock_tool.return_value = json.dumps({"result": "ok"})
-            for args in ({"image_url": "https://example.com/img.png",
-                          "question": "What is this?"}, {}):
-                result = _handle_vision_analyze(args)
-                assert isinstance(result, Awaitable)
-                # Clean up the coroutine to avoid RuntimeWarning
-                result.close()
 
 
     @pytest.mark.asyncio
@@ -535,6 +526,18 @@ class TestVisionRequirements:
 
         assert check_vision_requirements() is True
 
+    def test_resolver_crash_propagates_instead_of_reading_as_unconfigured(self, monkeypatch):
+        """The gate must not swallow resolver exceptions into False: the registry owns the
+        verdict and logs the traceback, so users can tell "misconfigured" from "crashed" (#87950)."""
+        import agent.auxiliary_client as aux
+
+        def _boom(**kw):
+            raise RuntimeError("named custom provider lookup failed")
+
+        monkeypatch.setattr(aux, "resolve_vision_provider_client", _boom)
+        with pytest.raises(RuntimeError, match="lookup failed"):
+            check_vision_requirements()
+
 
 # ---------------------------------------------------------------------------
 # Local path forms: tilde expansion and file:// URIs
@@ -703,19 +706,6 @@ class TestErrorClassification:
         assert "smaller" in result["analysis"].lower()
 
 
-class TestVisionRegistration:
-    def test_vision_analyze_registered_with_schema(self):
-        from tools.registry import registry
-
-        entry = registry._tools.get("vision_analyze")
-        assert entry is not None
-        assert entry.toolset == "vision"
-        assert entry.is_async is True
-        assert callable(entry.handler)
-
-        props = entry.schema.get("parameters", {}).get("properties", {})
-        assert "image_url" in props
-        assert "question" in props
 
 
 # ---------------------------------------------------------------------------

@@ -95,6 +95,7 @@ export const ar = defineLocale({
   status: {
     actionFailed: "فشلت الإجراء",
     actionFinished: "انتهى",
+    actionFinishedOwed: "تم التحديث، لكن لا تزال هناك خطوات معلّقة (أعد تشغيل `hermes update` لإكمالها)",
     actions: "إجراءات",
     agent: "العامل",
     activeSessions: "الجلسات النشطة",
@@ -269,6 +270,8 @@ export const ar = defineLocale({
     disableRuntime: "تعطيل",
     enableAfterInstall: "تفعيل بعد التثبيت",
     enableRuntime: "تفعيل",
+    toggleTakesEffectAfterRestart:
+      "تم الحفظ — أعد تشغيل البوابة لتطبيق التغيير.",
     forceReinstall: "إعادة تثبيت إجباري (حذف المجلد الموجود أولاً)",
     headline:
       "اكتشف وثبِّت وفعِّل وحدِّث مكوِّنات Hermes الإضافية (مطابقة `hermes plugins`).",

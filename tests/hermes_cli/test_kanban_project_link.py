@@ -261,13 +261,8 @@ def test_worker_filing_a_card_keeps_the_project_through_the_tool(
 
 
 
-def test_project_from_board_matches_windows_backslash_worktree_path(kanban_conn):
-    """_project_from_board SQL filter matches both POSIX (/) and Windows (\\) .worktrees separators."""
-    from unittest.mock import patch
-    from pathlib import PureWindowsPath
-
-    tid = kb.create_task(kanban_conn, title="Windows worktree card")
-    kanban_conn.execute(
+def _stamp_worktree_row(conn, tid: str, workspace_path: str) -> None:
+    conn.execute(
         """
         UPDATE tasks
            SET project_id = ?,
@@ -276,15 +271,48 @@ def test_project_from_board_matches_windows_backslash_worktree_path(kanban_conn)
                branch_name = ?
          WHERE id = ?
         """,
-        ("proj_win", f"C:\\repo\\.worktrees\\{tid}", f"myproj/{tid}-win", tid),
+        ("proj_x", workspace_path, f"myproj/{tid}-x", tid),
     )
-    kanban_conn.commit()
-    with patch.object(kb, "Path", PureWindowsPath):
-        proj_obj, proj_repo, recovered_from = kb._project_from_board(
-            kanban_conn, pdb, "proj_win", None
-        )
+    conn.commit()
+
+
+# Run on every host without patching the module's pathlib: a shared board is
+# read by POSIX and Windows hosts alike, whichever one wrote the row.
+@pytest.mark.parametrize(("template", "repo"), [
+    ("C:\\repo\\.worktrees\\{tid}", "C:\\repo"),
+    ("C:/repo\\.worktrees\\{tid}", "C:/repo"),
+    ("C:\\repo/.worktrees/{tid}", "C:\\repo"),
+    ("\\\\srv\\share\\repo\\.worktrees\\{tid}", "\\\\srv\\share\\repo"),
+    ("/srv/repo/.worktrees/{tid}", "/srv/repo"),
+    ("/srv/repo/.worktrees/{tid}/", "/srv/repo"),
+    ("/.worktrees/{tid}", "/"),
+    ("C:\\.worktrees\\{tid}", "C:\\"),
+])
+def test_project_from_board_recovers_worktree_paths_from_any_host(kanban_conn, template, repo):
+    tid = kb.create_task(kanban_conn, title="worktree card")
+    _stamp_worktree_row(kanban_conn, tid, template.format(tid=tid))
+
+    proj_obj, proj_repo, recovered_from = kb._project_from_board(
+        kanban_conn, pdb, "proj_x", None)
+
     assert recovered_from == tid
     assert proj_obj is not None
-    assert proj_obj.id == "proj_win"
-    assert proj_obj.slug == "myproj"
-    assert proj_repo == r"C:\repo"
+    assert (proj_obj.id, proj_obj.slug) == ("proj_x", "myproj")
+    assert proj_repo == repo
+    assert proj_obj.primary_path == repo
+
+
+@pytest.mark.parametrize("template", [
+    "repo\\.worktrees\\{tid}",            # relative
+    "repo/.worktrees/{tid}",                # relative
+    "\\repo\\.worktrees\\{tid}",          # drive-relative root, not absolute
+    "C:repo\\.worktrees\\{tid}",           # drive-relative
+    "C:\\repo\\worktrees\\{tid}",          # parent is not .worktrees
+    "C:\\repo\\.worktrees\\t_someoneelse",  # leaf is another task
+    "/srv/repo/.worktrees/{tid}/nested",    # below the worktree
+])
+def test_project_from_board_rejects_non_canonical_worktree_paths(kanban_conn, template):
+    tid = kb.create_task(kanban_conn, title="worktree card")
+    _stamp_worktree_row(kanban_conn, tid, template.format(tid=tid))
+
+    assert kb._project_from_board(kanban_conn, pdb, "proj_x", None) == (None, None, None)

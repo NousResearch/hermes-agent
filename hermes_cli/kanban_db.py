@@ -1127,7 +1127,7 @@ def _project_from_board(
     candidates: list[str] = [source_task_id] if source_task_id else []
     rows = conn.execute(
         "SELECT id FROM tasks WHERE project_id = ? AND workspace_kind = 'worktree' "
-        "AND (workspace_path LIKE '%/.worktrees/%' OR workspace_path LIKE '%\\.worktrees\\%') "
+        "AND REPLACE(workspace_path, '\\', '/') LIKE '%/.worktrees/%' "
         "ORDER BY created_at DESC, id DESC LIMIT 25",
         (project_id,),
     ).fetchall()
@@ -1139,6 +1139,29 @@ def _project_from_board(
         if project_obj is not None:
             return project_obj, project_repo, str(task_id)
     return None, None, None
+
+
+# The board is shared across hosts, so a row written on Windows may be read on
+# POSIX (and the reverse): the shape check cannot go through the host's pathlib.
+_ABSOLUTE_PATH_RE = re.compile(r"^(?:/|[A-Za-z]:[/\\]|\\\\)")
+_WORKTREE_PATH_RE = re.compile(
+    r"^(?P<repo>.*?)[/\\]+\.worktrees[/\\]+(?P<leaf>[^/\\]+)[/\\]*$"
+)
+
+
+def _worktree_repo_root(workspace_path: str, task_id: str) -> Optional[str]:
+    """The repo of an absolute ``<repo>/.worktrees/<task_id>`` path, in the
+    path's own separator style, on any host. ``None`` for any other shape."""
+    if not _ABSOLUTE_PATH_RE.match(workspace_path):
+        return None
+    match = _WORKTREE_PATH_RE.match(workspace_path)
+    if match is None or match.group("leaf") != task_id:
+        return None
+    repo = match.group("repo")
+    if repo == "" or re.fullmatch(r"[A-Za-z]:", repo):
+        # Filesystem root (``/`` or ``C:\``): keep the separator that makes it one.
+        repo = workspace_path[: match.end("repo") + 1]
+    return repo if _ABSOLUTE_PATH_RE.match(repo) else None
 
 
 def _project_from_worktree_task(
@@ -1158,12 +1181,8 @@ def _project_from_worktree_task(
         and source_task.workspace_path
     ):
         return None, None
-    source_path = Path(source_task.workspace_path)
-    if not (
-        source_path.is_absolute()
-        and source_path.name == source_task.id
-        and source_path.parent.name == ".worktrees"
-    ):
+    project_repo = _worktree_repo_root(source_task.workspace_path, source_task.id)
+    if project_repo is None:
         return None, None
     project_slug = None
     if source_task.branch_name:
@@ -1176,7 +1195,6 @@ def _project_from_worktree_task(
             project_slug = _pdb.normalize_slug(project_id)
     if not project_slug:
         return None, None
-    project_repo = str(source_path.parent.parent)
     project_obj = _pdb.Project(
         id=project_id, slug=project_slug, name=project_slug, created_at=0, primary_path=project_repo,
     )

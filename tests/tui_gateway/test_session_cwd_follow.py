@@ -21,6 +21,15 @@ def _git(cwd, *args):
     subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
 
 
+def _declare_project(folder):
+    """A named project whose declared folder IS ``folder`` — what the sidebar's move and "new session
+    in <project>" leave behind in the durable projects store."""
+    from hermes_cli import projects_db as pdb
+
+    with pdb.connect_closing() as conn:
+        return pdb.create_project(conn, name="workspace", primary_path=str(folder))
+
+
 @pytest.fixture
 def repo_with_worktree(tmp_path):
     """A real repo on ``main`` plus a linked worktree on ``feature``."""
@@ -115,6 +124,94 @@ def test_a_deleted_directory_is_not_a_move(session, repo_with_worktree, tmp_path
     terminal_tool.record_session_cwd(session["session_key"], str(tmp_path / "gone"))
 
     assert server._reconcile_session_cwd_from_terminal(session) is False
+    assert session["cwd"] == str(repo)
+
+
+def test_a_chat_parked_on_the_profile_workspace_adopts_the_repo_it_worked_in(
+    session, repo_with_worktree, tmp_path, monkeypatch
+):
+    """A bare new chat starts on the profile's own workspace (nobody picked it, so there is no
+    ``explicit_cwd``); the work turns out to live in one repo, so the chat files itself under that
+    repo — and its worktrees then cut inside it instead of the workspace root.
+    """
+    repo, _ = repo_with_worktree
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(server, "_profile_workspace_cwd", lambda _home: str(workspace))
+    session["cwd"] = str(workspace)
+    terminal_tool.record_session_cwd(session["session_key"], str(repo))
+
+    assert server._reconcile_session_cwd_from_terminal(session) is True
+    assert session["cwd"] == str(repo)
+    assert session["cwd_from_settle"] is True
+
+
+def test_a_session_started_in_a_project_keeps_that_repo(session, repo_with_worktree, tmp_path):
+    """The follow-up to the file-it-itself case: a session started in a specific project stays in that
+    project's repo. The client picked the workspace, so the other repo it visited is a visit.
+    """
+    repo, _ = repo_with_worktree
+    other = tmp_path / "other"
+    other.mkdir()
+    _git(other, "init", "-b", "main")
+    session["cwd_chosen"] = True
+    session["cwd"] = str(repo)
+    terminal_tool.record_session_cwd(session["session_key"], str(other))
+
+    assert server._reconcile_session_cwd_from_terminal(session) is False
+    assert session["cwd"] == str(repo)
+
+
+def test_a_chat_parked_on_a_project_folder_is_never_re_homed(
+    session, repo_with_worktree, tmp_path, monkeypatch
+):
+    """The pin has to outlive the process. A chat sitting ON a project's own folder was put there on
+    purpose (the sidebar's move, "new session in <project>"); after a restart the flags that recorded
+    the move are gone, so the store is what has to say the chat already has an address.
+    """
+    repo, _ = repo_with_worktree
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(server, "_profile_workspace_cwd", lambda _home: str(workspace))
+    _declare_project(workspace)
+    session["cwd"] = str(workspace)
+    terminal_tool.record_session_cwd(session["session_key"], str(repo))
+
+    assert server._reconcile_session_cwd_from_terminal(session) is False
+    assert session["cwd"] == str(workspace)
+
+
+def test_a_folder_under_a_project_folder_is_not_an_address(
+    session, repo_with_worktree, tmp_path, monkeypatch
+):
+    """Only an exact hit counts: a chat parked somewhere INSIDE a project's folder has not been placed
+    in that project, and keeps filing itself under the repo its work lands in.
+    """
+    repo, _ = repo_with_worktree
+    outer = tmp_path / "outer"
+    workspace = outer / "workspace"
+    workspace.mkdir(parents=True)
+    monkeypatch.setattr(server, "_profile_workspace_cwd", lambda _home: str(workspace))
+    _declare_project(outer)
+    session["cwd"] = str(workspace)
+    terminal_tool.record_session_cwd(session["session_key"], str(repo))
+
+    assert server._reconcile_session_cwd_from_terminal(session) is True
+    assert session["cwd"] == str(repo)
+
+
+def test_a_resumed_chat_with_no_workspace_adopts_the_repo_it_worked_in(
+    session, repo_with_worktree, monkeypatch
+):
+    """The live case: a detached desktop chat the DB has no cwd for, resumed, that then worked in a
+    repo — it must file itself under that repo instead of sitting in Home forever.
+    """
+    repo, _ = repo_with_worktree
+    monkeypatch.setattr(server, "_profile_workspace_cwd", lambda _home: None)
+    session["cwd"] = None
+    terminal_tool.record_session_cwd(session["session_key"], str(repo))
+
+    assert server._reconcile_session_cwd_from_terminal(session) is True
     assert session["cwd"] == str(repo)
 
 

@@ -92,13 +92,25 @@ def _(rid, params, pdb, conn) -> dict:
 def _(rid, params, pdb, conn) -> dict:
     pid = pdb.create_project(
         conn, name=str(params.get("name") or ""), folders=params.get("folders") or [],
-        **_pick(params, "slug", "primary_path", "description", "icon", "color", "board_slug"))
+        **_pick(params, "slug", "primary_path", "description", "icon", "color", "board_slug", "parent_id"))
     if params.get("use"):
         pdb.set_active(conn, pid)
     from hermes_cli.observability.shared_metrics_signals import record_feature_used
     record_feature_used("projects")
     proj = pdb.get_project(conn, pid)
     return _ok(rid, {"project": proj.to_dict() if proj else None})
+
+
+@_projects_method("projects.set_parent")
+def _(rid, params, pdb, conn) -> dict:
+    """Nest a project under another: ``parent_id`` names the parent, ``""`` is the top level, and an
+    omitted/None value hands the project back to folder containment. Refuses looping moves."""
+    proj = _require_project(pdb, conn, params)
+    parent_id = params.get("parent_id")
+    # Looping moves are refused by the store (`projects_db._refuse_parent_loop`), which every writer
+    # passes through — this RPC, the agent's `desktop_project move`, and a create with a parent.
+    pdb.set_project_parent(conn, proj.id, parent_id)
+    return _ok(rid, {"project": pdb.get_project(conn, proj.id).to_dict()})
 
 
 @_projects_method("projects.archive")
@@ -181,8 +193,12 @@ def _repo_discovery_policy(raw: dict | None = None) -> dict:
             return list(defaults[long])
         return [v.strip() for v in values if isinstance(v, str) and v.strip()]
     enabled = _get("enabled", "repo_scan_enabled")
+    nested = _get("nested", "repo_scan_nested")
     return {
         "enabled": enabled if isinstance(enabled, bool) else defaults["repo_scan_enabled"],
+        # Nested discovery is additive: it cannot scan anything when the scan itself is off, and
+        # reporting it as on then would promise a result the scan never produces.
+        "nested": bool(nested) if isinstance(nested, bool) else bool(defaults["repo_scan_nested"]),
         "roots": _paths("roots", "repo_scan_roots"),
         "exclude_paths": _paths("exclude_paths", "repo_scan_exclude_paths")}
 
@@ -194,7 +210,8 @@ def _repo_discovery_policy_key(policy: dict) -> str:
             os.path.normcase(os.path.abspath(os.path.join(home, os.path.expanduser(v))))
             for v in values})
     canonical = {
-        "enabled": bool(policy["enabled"]), "roots": _paths(policy["roots"]),
+        "enabled": bool(policy["enabled"]), "nested": bool(policy.get("nested", False)),
+        "roots": _paths(policy["roots"]),
         "exclude_paths": _paths(policy["exclude_paths"])}
     return json.dumps(canonical, sort_keys=True, separators=(",", ":"))
 
@@ -203,6 +220,23 @@ def _repo_discovery_policy_is_default(policy: dict) -> bool:
     from hermes_cli.config import DEFAULT_CONFIG
     return _repo_discovery_policy_key(policy) == _repo_discovery_policy_key(
         _repo_discovery_policy(DEFAULT_CONFIG["desktop"]))
+
+
+def _scan_default_root() -> str:
+    """The folder a scan with no configured roots searches: the profile's Working Directory.
+
+    ``terminal.cwd`` is where sessions start, so it is the workspace whose repositories the sidebar
+    is about. A profile that never configured one (``"."``, blank, home, ``/``) has no workspace to
+    speak of and gets no scan at all — silently expanding to the home directory is what #53328 was
+    filed against. ``repo_scan_roots`` is how a user adds folders outside the workspace.
+    """
+    cwd = str((_load_cfg().get("terminal") or {}).get("cwd") or "").strip()
+    if not cwd:
+        return ""
+    root = os.path.realpath(os.path.expanduser(cwd))
+    if os.path.normcase(root) in _non_workspace_dirs() or not os.path.isdir(root):
+        return ""
+    return root
 
 
 def _scan_discovered_repos_remote(conn, policy: dict) -> bool:
@@ -219,7 +253,14 @@ def _scan_discovered_repos_remote(conn, policy: dict) -> bool:
     """
     from hermes_cli import projects_db as pdb
     roots = policy.get("roots") or []
+    if not roots:
+        # No roots configured: the workspace stands in for them (see `_scan_default_root`).
+        default_root = _scan_default_root()
+        roots = [default_root] if default_root else []
     excludes = policy.get("exclude_paths") or []
+    # Opt-in: descend through a repo to find the repos inside it. Absent means off, so an older caller
+    # passing a policy without the key keeps the cheap, stop-at-first-repo walk.
+    nested = bool(policy.get("nested"))
     pairs: list[tuple[str, str | None]] = []
     seen: set[str] = set()
     authoritative = True
@@ -234,17 +275,30 @@ def _scan_discovered_repos_remote(conn, policy: dict) -> bool:
             logger.debug("discover_repos scan root missing, skipping: %s", root)
             continue
         try:
-            for dirpath, dirnames, _filenames in os.walk(root):
+            for dirpath, dirnames, filenames in os.walk(root):
+                # Decide this directory's verdict BEFORE pruning: `.git` is hidden, so pruning first
+                # would remove the very marker being tested.
+                #
+                # A repo's marker is normally a `.git` DIRECTORY, but a linked worktree or an older
+                # submodule leaves a `.git` FILE holding a `gitdir:` pointer. Both are repos.
+                is_repo = ".git" in dirnames or ".git" in filenames
+                # Prune hidden dirs and node_modules on EVERY branch, the repo branch included: a walk
+                # that reaches a repo and then keeps descending (nested discovery) must still cut `.git`
+                # itself, or `.git/modules/...` surfaces as projects.
+                dirnames[:] = [d for d in dirnames if not d.startswith(".") and d != "node_modules"]
                 if _is_excluded(dirpath):
                     dirnames[:] = []
-                elif ".git" in dirnames:  # check BEFORE pruning hidden dirs — `.git` is hidden
-                    if dirpath not in seen:
-                        seen.add(dirpath)
-                        pairs.append((dirpath, os.path.basename(dirpath)))
-                    dirnames[:] = []  # don't hunt nested repos inside a repo
-                else:
-                    dirnames[:] = [
-                        d for d in dirnames if not d.startswith(".") and d != "node_modules"]
+                    continue
+                if not is_repo:
+                    continue
+                if dirpath not in seen:
+                    seen.add(dirpath)
+                    pairs.append((dirpath, os.path.basename(dirpath)))
+                # Keep descending only when nested discovery is on (`repo_scan_nested`), because a repo
+                # can CONTAIN other repos and containment is what nests them in the sidebar
+                # (project_tree groups a project under the project whose folder holds it).
+                if not nested:
+                    dirnames[:] = []
                 if len(pairs) >= 500:
                     break
         except Exception:

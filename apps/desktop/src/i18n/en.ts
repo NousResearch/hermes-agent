@@ -25,9 +25,9 @@ import { enPluginPreviewAccess } from './en_plugin_preview_access'
 import { enPluginUpdate } from './en_plugin_update'
 import { enPreviewWeb } from './en_preview_web'
 import { enProjects } from './en_projects'
+import { enSettingsRepoScan } from './en_repo_scan'
 import { enSharedMetrics } from './en_shared_metrics'
 import { enThemePicker } from './en_theme_picker'
-import { enUninstallSection } from './en_uninstall_section'
 import { enUpdateChannel } from './en_update_channel'
 import type { Translations } from './types'
 
@@ -520,6 +520,7 @@ export const en: Translations = {
   },
 
   titlebar: {
+    back: 'Back',
     hideSidebar: 'Hide sidebar',
     showSidebar: 'Show sidebar',
     search: 'Search',
@@ -1102,7 +1103,7 @@ export const en: Translations = {
     },
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
-    uninstallSection: enUninstallSection,
+    ...enSettingsRepoScan,
     customEndpoints: {
       active: 'Active',
       apiKeySet: 'API key set',

@@ -3,7 +3,7 @@ import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { NO_PROJECT_ID, type SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
-import { $sidebarAgentsGrouped, setSidebarAgentsGrouped } from '@/store/layout'
+import { $dismissedAutoProjectIds, $sidebarAgentsGrouped, setSidebarAgentsGrouped } from '@/store/layout'
 import { $activeGatewayProfile, $profiles, $profileScope, ALL_PROFILES, setShowAllProfiles } from '@/store/profile'
 import { $currentCwd, $selectedStoredSessionId, $sessions, applyConfiguredDefaultProjectDir } from '@/store/session'
 import { deferred } from '@/test/deferred'
@@ -19,6 +19,7 @@ import {
   addProjectFolders,
   applyRenamedSessionTitle,
   createProject,
+  defaultRepoScanRoot,
   deleteProject,
   enterProject,
   fetchProjectSessions,
@@ -31,7 +32,9 @@ import {
   refreshProjectTree,
   resolveNewSessionCwd,
   scanAndRecordRepos,
+  setProjectParent,
   startWorkInRepo,
+  syncProfileWorkspaceCwd,
   updateProject
 } from './projects'
 import {
@@ -252,12 +255,17 @@ describe('resolveNewSessionCwd', () => {
     // $focusedSessionState needs a runtime — leave it empty via no session states.
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     applyConfiguredDefaultProjectDir(null)
     $projectScope.set(ALL_PROJECTS)
+    $projectTree.set([])
     $currentCwd.set('')
     $selectedStoredSessionId.set(null)
     $sessions.set([])
+    // The profile-workspace cache is module state that outlives a test: clear it
+    // so the next one starts from the detached default.
+    getHermesConfig.mockResolvedValue({} as never)
+    await syncProfileWorkspaceCwd('default')
   })
 
   it('starts a chat detached inside Home, ignoring the configured default dir', () => {
@@ -321,6 +329,53 @@ describe('resolveNewSessionCwd', () => {
     // Focused session has no workspace → fall through to configured default,
     // not the stale $currentCwd from an earlier chat.
     expect(resolveNewSessionCwd()).toBe('/home/user/configured')
+  })
+
+  it('anchors a bare chat to the project owning the profile workspace', async () => {
+    // With no default dir configured — what a stock install has — the project that owns the profile's
+    // own working directory, where the session will actually work, stands in for one.
+    applyConfiguredDefaultProjectDir(null)
+    getHermesConfig.mockResolvedValue({ terminal: { cwd: '/work/pasei' } } as never)
+    await syncProfileWorkspaceCwd('default')
+    $projectTree.set([
+      { id: NO_PROJECT_ID, label: 'Home', path: null, repos: [], sessionCount: 0, sessionIds: [] },
+      { id: 'p_pasei', label: 'pasei', path: '/work/pasei', repos: [], sessionCount: 0, sessionIds: [] }
+    ] as never)
+
+    expect(resolveNewSessionCwd()).toBe('/work/pasei')
+  })
+
+  it('keeps a configured default dir over the project owning the profile workspace', async () => {
+    // The setting is the user saying where new chats go, so it outranks a project the profile workspace
+    // merely happens to sit in: the workspace project only stands in for a default that is empty.
+    getHermesConfig.mockResolvedValue({ terminal: { cwd: '/work/pasei' } } as never)
+    await syncProfileWorkspaceCwd('default')
+    $projectTree.set([
+      { id: 'p_pasei', label: 'pasei', path: '/work/pasei', repos: [], sessionCount: 0, sessionIds: [] }
+    ] as never)
+
+    expect(resolveNewSessionCwd()).toBe('/home/user/configured')
+  })
+
+  it('keeps the configured default when no project covers the profile workspace', async () => {
+    getHermesConfig.mockResolvedValue({ terminal: { cwd: '/work/elsewhere' } } as never)
+    await syncProfileWorkspaceCwd('default')
+    $projectTree.set([
+      { id: 'p_pasei', label: 'pasei', path: '/work/pasei', repos: [], sessionCount: 0, sessionIds: [] }
+    ] as never)
+
+    expect(resolveNewSessionCwd()).toBe('/home/user/configured')
+  })
+
+  it('stays detached inside Home even when a project owns the profile workspace', async () => {
+    getHermesConfig.mockResolvedValue({ terminal: { cwd: '/work/pasei' } } as never)
+    await syncProfileWorkspaceCwd('default')
+    $projectTree.set([
+      { id: 'p_pasei', label: 'pasei', path: '/work/pasei', repos: [], sessionCount: 0, sessionIds: [] }
+    ] as never)
+    enterProject(NO_PROJECT_ID)
+
+    expect(resolveNewSessionCwd()).toBe('')
   })
 })
 
@@ -624,6 +679,87 @@ describe('createProject', () => {
     expect($activeProjectId.get()).toBe('p_new')
   })
 
+  it('nests the new project under the parent it was given', async () => {
+    const created = {
+      folders: [],
+      id: 'p_child',
+      name: 'Align',
+      parent_id: 'p_dev',
+      primary_path: '/srv/dev/m4l/align'
+    }
+
+    const request = vi.fn().mockResolvedValue({ project: created })
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    await createProject({ folders: ['/srv/dev/m4l/align'], name: 'Align', parentId: 'p_dev', use: true })
+
+    expect(request).toHaveBeenCalledWith('projects.create', expect.objectContaining({ parent_id: 'p_dev' }))
+  })
+
+  it('nests a dragged project through projects.set_parent, patching the row before the RPC lands', async () => {
+    const row = {
+      id: 'p_child',
+      isAuto: false,
+      label: 'Align',
+      parentId: null,
+      path: '/srv/dev/m4l/align',
+      previewSessions: [],
+      repos: [],
+      sessionCount: 0
+    } as SidebarProjectTree
+
+    const request = vi.fn(async (method: string) => {
+      if (method === 'projects.set_parent') {
+        // The sidebar groups by parentId, so the row must already sit under its new
+        // parent while the write is in flight — not one round-trip later.
+        expect($projectTree.get().find(node => node.id === 'p_child')?.parentId).toBe('p_dev')
+
+        return { project: { id: 'p_child', parent_id: 'p_dev' } }
+      }
+
+      return { active_id: 'p_child', projects: [], scoped_session_ids: [] }
+    })
+
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+    $projectTree.set([row])
+
+    await setProjectParent('p_child', 'p_dev')
+
+    expect(request).toHaveBeenCalledWith(
+      'projects.set_parent',
+      expect.objectContaining({ id: 'p_child', parent_id: 'p_dev' })
+    )
+  })
+
+  it('moves a project back out to the top level with an empty parent', async () => {
+    const request = vi.fn(async (method: string) =>
+      method === 'projects.set_parent'
+        ? { project: { id: 'p_child' } }
+        : { active_id: null, projects: [], scoped_session_ids: [] }
+    )
+
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+    $projectTree.set([
+      {
+        id: 'p_child',
+        isAuto: false,
+        label: 'Align',
+        parentId: 'p_dev',
+        path: '/srv/dev/m4l/align',
+        previewSessions: [],
+        repos: [],
+        sessionCount: 0
+      } as SidebarProjectTree
+    ])
+
+    await setProjectParent('p_child', '')
+
+    expect(request).toHaveBeenCalledWith(
+      'projects.set_parent',
+      expect.objectContaining({ id: 'p_child', parent_id: '' })
+    )
+  })
+
   it('marks the backend stale and surfaces a friendly error when projects.create is missing', async () => {
     activeGateway.mockReturnValue({
       connectionState: 'open',
@@ -745,6 +881,18 @@ describe('project writes while viewing all profiles', () => {
       expect($projects.get()).toEqual([])
     }
   )
+
+  it('hides the deleted project folder from auto-discovery, so its row does not come back', async () => {
+    const request = vi.fn().mockResolvedValue({ active_id: null, projects: [], scoped_session_ids: [] })
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+    $dismissedAutoProjectIds.set([])
+
+    await deleteProject(project.id)
+
+    // The folder is unowned now, which is exactly what the auto tiers key on (leftover sessions,
+    // and the disk scan): without the dismissal the project you just deleted returns as an auto row.
+    expect($dismissedAutoProjectIds.get()).toEqual(['/srv/ws'])
+  })
 })
 
 describe('projects RPC capability', () => {
@@ -836,14 +984,96 @@ describe('repository discovery policy', () => {
       }
     })
 
-    await scanAndRecordRepos()
+    // `accepted: false` is what the backend answers for a disabled policy too, so the outcome has to
+    // name the setting rather than report a rejection.
+    await expect(scanAndRecordRepos()).resolves.toEqual({ reason: 'disabled' })
 
     expect(scanRepos).not.toHaveBeenCalled()
     expect(request).toHaveBeenCalledWith('projects.record_repos', {
-      discovery_policy: { enabled: false, exclude_paths: [], roots: [] },
+      discovery_policy: { enabled: false, exclude_paths: [], nested: false, roots: [] },
       profile: 'default',
       repos: []
     })
+  })
+
+  it('carries the gateway error when the record call is refused', async () => {
+    // A refused `record_repos` (a contract mismatch, a stale backend) is the one failure the user can
+    // act on, so its message must survive as the outcome's detail.
+    const request = vi.fn(async (method: string) => {
+      if (method === 'projects.tree') {
+        return { active_id: null, projects: [], scoped_session_ids: [] }
+      }
+
+      throw new Error('invalid params for projects.record_repos: discovery_policy.nested: extra_forbidden')
+    })
+
+    gatewayWith(request)
+    desktopGit.mockReturnValue({ scanRepos: vi.fn().mockResolvedValue([]) } as never)
+    getHermesConfig.mockResolvedValue({
+      desktop: { repo_scan_enabled: true, repo_scan_exclude_paths: [], repo_scan_roots: [] },
+      terminal: { cwd: '~/Developer/pasei' }
+    })
+
+    await expect(scanAndRecordRepos(true)).resolves.toEqual({
+      detail: 'invalid params for projects.record_repos: discovery_policy.nested: extra_forbidden',
+      reason: 'failed'
+    })
+  })
+
+  it("scans the profile's working directory when no roots are configured", async () => {
+    const request = vi.fn(async (method: string) =>
+      method === 'projects.tree'
+        ? { active_id: null, projects: [], scoped_session_ids: [] }
+        : { accepted: true, repos: [] }
+    )
+
+    gatewayWith(request)
+    const scanRepos = vi.fn().mockResolvedValue([{ label: 'pasei', root: '/Users/dev/pasei' }])
+    desktopGit.mockReturnValue({ scanRepos } as never)
+    getHermesConfig.mockResolvedValue({
+      desktop: { repo_scan_enabled: true, repo_scan_exclude_paths: [], repo_scan_roots: [] },
+      terminal: { cwd: '~/Developer/pasei' }
+    })
+
+    await expect(scanAndRecordRepos()).resolves.toEqual({ found: 1, reason: 'ok' })
+
+    expect(scanRepos).toHaveBeenCalledWith(['~/Developer/pasei'], {
+      enabled: true,
+      excludePaths: [],
+      nested: false
+    })
+    // The workspace is where the scan LOOKS, not a configured root: the recorded policy must keep
+    // the user's own list, or the backend's cache key would drift from this one.
+    expect(request).toHaveBeenCalledWith('projects.record_repos', {
+      discovery_policy: { enabled: true, exclude_paths: [], nested: false, roots: [] },
+      profile: 'default',
+      repos: [{ label: 'pasei', root: '/Users/dev/pasei' }]
+    })
+  })
+
+  it('scans nothing when the profile has no working directory of its own', async () => {
+    const request = vi.fn(async (method: string) =>
+      method === 'projects.tree'
+        ? { active_id: null, projects: [], scoped_session_ids: [] }
+        : { accepted: true, repos: [] }
+    )
+
+    gatewayWith(request)
+    const scanRepos = vi.fn().mockResolvedValue([])
+    desktopGit.mockReturnValue({ scanRepos } as never)
+    getHermesConfig.mockResolvedValue({
+      desktop: { repo_scan_enabled: true, repo_scan_exclude_paths: [], repo_scan_roots: [] },
+      terminal: { cwd: '.' }
+    })
+
+    // Nothing to walk: the crawl is skipped (an empty root list can only ever return nothing) and the
+    // empty outcome names the reason, instead of reading as a scan that looked and found sitting there.
+    await expect(scanAndRecordRepos()).resolves.toEqual({ reason: 'no-roots' })
+
+    expect(scanRepos).not.toHaveBeenCalled()
+    // Not RECORDED either: `record_repos` replaces the cache, so the empty list would wipe the last
+    // real scan's rows out from under a sidebar that still shows them.
+    expect(request).not.toHaveBeenCalledWith('projects.record_repos', expect.anything())
   })
 
   it('passes custom roots and exclusions to Electron and records on the origin gateway', async () => {
@@ -869,17 +1099,33 @@ describe('repository discovery policy', () => {
     expect(getHermesConfig).toHaveBeenCalledWith('default')
     expect(scanRepos).toHaveBeenCalledWith(['/work'], {
       enabled: true,
-      excludePaths: ['/work/vendor']
+      excludePaths: ['/work/vendor'],
+      nested: false
     })
     expect(request).toHaveBeenCalledWith('projects.record_repos', {
       discovery_policy: {
         enabled: true,
         exclude_paths: ['/work/vendor'],
+        nested: false,
         roots: ['/work']
       },
       profile: 'default',
       repos: [{ label: 'repo', root: '/work/repo' }]
     })
+  })
+
+  it('passes nested repo discovery through to the scan only when the setting is on', async () => {
+    gatewayWith(vi.fn(async () => ({ accepted: false, repos: [] })))
+    const scanRepos = vi.fn().mockResolvedValue([])
+    desktopGit.mockReturnValue({ scanRepos } as never)
+    getHermesConfig.mockResolvedValue({
+      desktop: { repo_scan_enabled: true, repo_scan_nested: true, repo_scan_roots: ['/work'] }
+    })
+
+    await scanAndRecordRepos(true)
+
+    // Opt-in `desktop.repo_scan_nested` must reach the walker, or the setting would do nothing.
+    expect(scanRepos).toHaveBeenCalledWith(['/work'], expect.objectContaining({ nested: true }))
   })
 
   it('does not scan the local filesystem for remote connections but still refreshes the project tree', async () => {
@@ -1018,12 +1264,33 @@ describe('repository discovery policy', () => {
     await pending
 
     expect(request).toHaveBeenCalledWith('projects.record_repos', {
-      discovery_policy: { enabled: true, exclude_paths: [], roots: ['/work'] },
+      discovery_policy: { enabled: true, exclude_paths: [], nested: false, roots: ['/work'] },
       profile: 'launch',
       repos: [{ label: 'repo', root: '/work/repo' }]
     })
     expect(request).not.toHaveBeenCalledWith('projects.record_repos', expect.objectContaining({ profile: 'coder' }))
     expect($projectTree.get()).toEqual([])
+  })
+})
+
+describe('defaultRepoScanRoot', () => {
+  it.each([['.'], [''], ['~'], ['/'], ['/Users'], ['/home'], ['   ']])(
+    'refuses %j: a path that is not a workspace',
+    cwd => {
+      expect(defaultRepoScanRoot({ terminal: { cwd } })).toBeNull()
+    }
+  )
+
+  it.each([
+    ['~/Developer/pasei', '~/Developer/pasei'],
+    ['/Users/dev/pasei/', '/Users/dev/pasei']
+  ])('keeps %s as the scan root', (cwd, expected) => {
+    expect(defaultRepoScanRoot({ terminal: { cwd } })).toBe(expected)
+  })
+
+  it('has nothing to say about a config with no terminal section', () => {
+    expect(defaultRepoScanRoot({ desktop: {} })).toBeNull()
+    expect(defaultRepoScanRoot(null)).toBeNull()
   })
 })
 

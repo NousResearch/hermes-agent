@@ -23,6 +23,12 @@ function makeRepo(root: string, valid = true): void {
   }
 }
 
+/** A submodule or linked worktree: `.git` is a FILE holding a `gitdir:` pointer, not a directory. */
+function makeRepoFile(root: string): void {
+  fs.mkdirSync(root, { recursive: true })
+  fs.writeFileSync(path.join(root, '.git'), 'gitdir: ../.git/modules/thing\n')
+}
+
 function makeRepoAt(root: string, ...segments: string[]): string {
   const repo = path.join(root, ...segments)
   makeRepo(repo)
@@ -43,6 +49,56 @@ afterEach(() => {
 })
 
 describe('scanGitRepos', () => {
+  it('finds a submodule, whose .git is a file rather than a directory', async () => {
+    const root = tempDir()
+    const parent = makeRepoAt(root, 'super')
+    const sub = path.join(parent, 'packages', 'sub')
+
+    makeRepoFile(sub)
+
+    // Every submodule of a superproject carries a `.git` FILE, so a scanner that requires a
+    // directory skips all of them — exactly the nesting this is meant to surface.
+    expect(foundRoots(await scanGitRepos([root], { enabled: true, maxDepth: 3, nested: true }))).toEqual(
+      [parent, sub].sort()
+    )
+  })
+
+  it('does not find a repo nested inside another unless nested discovery is on', async () => {
+    const root = tempDir()
+    const parent = makeRepoAt(root, 'parent')
+    const child = makeRepoAt(parent, 'packages', 'child')
+
+    // Default: stop at the first `.git`. A monorepo's internal checkouts are noise for most people.
+    expect(foundRoots(await scanGitRepos([root], { enabled: true, maxDepth: 3 }))).toEqual([parent])
+
+    // Opt-in (`desktop.repo_scan_nested`): containment nests what the walk finds.
+    expect(foundRoots(await scanGitRepos([root], { enabled: true, maxDepth: 3, nested: true }))).toEqual(
+      [parent, child].sort()
+    )
+  })
+
+  it('with nested discovery on, never descends into a .git object store', async () => {
+    const root = tempDir()
+    const parent = makeRepoAt(root, 'parent')
+    // A directory inside .git that looks like a repo must never surface.
+    makeRepoAt(parent, '.git', 'modules', 'shadow')
+
+    const roots = foundRoots(await scanGitRepos([root], { enabled: true, maxDepth: 5, nested: true }))
+
+    expect(roots).toEqual([parent])
+    expect(roots.some(entry => entry.includes(`${path.sep}.git${path.sep}`))).toBe(false)
+  })
+
+  it('finds a repo nested two levels deep when nested discovery is on', async () => {
+    const root = tempDir()
+    const outer = makeRepoAt(root, 'outer')
+    const inner = makeRepoAt(outer, 'packages', 'inner')
+
+    expect(foundRoots(await scanGitRepos([root], { enabled: true, maxDepth: 3, nested: true }))).toEqual(
+      [outer, inner].sort()
+    )
+  })
+
   it('does not read the filesystem when discovery is disabled', async () => {
     const read = vi.spyOn(fs.promises, 'readdir')
 

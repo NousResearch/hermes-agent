@@ -28,17 +28,33 @@ export function packagedWorkingDirectoryTarget(facts: WorkingDirectoryFacts): st
   return facts.homedir
 }
 
-/** Keep resident children from inheriting a CWD that pins the replaceable app tree. */
-export function releasePackagedWorkingDirectory(isPackaged: boolean): void {
-  const target = packagedWorkingDirectoryTarget({
-    platform: process.platform,
-    isPackaged,
-    execPath: process.execPath,
-    cwd: process.cwd(),
-    homedir: os.homedir()
-  })
+function hostFacts(isPackaged: boolean): WorkingDirectoryFacts {
+  return { platform: process.platform, isPackaged, execPath: process.execPath, cwd: process.cwd(), homedir: os.homedir() }
+}
 
-  if (target) {
-    process.chdir(target)
+/**
+ * Keep resident children from inheriting a CWD that pins the replaceable app tree. Runs before
+ * main loads, so it never throws: a home folder that is missing or unreachable (a roaming profile
+ * offline) leaves the CWD where it is, as before this move existed. Returns the new CWD or null.
+ */
+export function releasePackagedWorkingDirectory(
+  isPackaged: boolean,
+  facts: WorkingDirectoryFacts = hostFacts(isPackaged),
+  chdir: (directory: string) => void = directory => process.chdir(directory)
+): string | null {
+  const target = packagedWorkingDirectoryTarget(facts)
+
+  if (!target) {
+    return null
+  }
+
+  try {
+    chdir(target)
+
+    return target
+  } catch (error) {
+    console.warn(`[startup] kept the working directory: could not move it to ${target}: ${(error as Error).message}`)
+
+    return null
   }
 }

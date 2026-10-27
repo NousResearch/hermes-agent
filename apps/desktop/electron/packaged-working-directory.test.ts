@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url'
 import { build } from 'esbuild'
 import { test } from 'vitest'
 
-import { packagedWorkingDirectoryTarget } from './packaged-working-directory'
+import { packagedWorkingDirectoryTarget, releasePackagedWorkingDirectory } from './packaged-working-directory'
 
 // The resident helper (an IME cloud service, a WSL/ssh helper) that the app spawns
 // WITHOUT a cwd of its own, so it inherits the app's. It outlives the app and holds
@@ -49,6 +49,24 @@ test('a packaged Windows app leaves a CWD inside its install folder and keeps on
   for (const platform of ['linux', 'darwin'] as const) {
     assert.equal(target('/opt/Hermes', { platform, execPath: '/opt/Hermes/hermes' }), null, platform)
   }
+})
+
+// Review fold 3: this runs before main loads, so a home folder that cannot be entered must not
+// crash startup; the app keeps its CWD as it did before the move existed.
+test('a home folder that cannot be entered leaves the CWD and does not crash startup', () => {
+  const facts = {
+    platform: 'win32',
+    isPackaged: true,
+    execPath: 'C:\\Hermes\\win-unpacked\\Hermes.exe',
+    cwd: 'C:\\Hermes\\win-unpacked',
+    homedir: 'H:\\offline-roaming-profile'
+  } as const
+
+  const unreachable = (directory: string) => {
+    throw Object.assign(new Error(`ENOENT: no such file or directory, chdir '${directory}'`), { code: 'ENOENT' })
+  }
+
+  assert.equal(releasePackagedWorkingDirectory(true, facts, unreachable), null)
 })
 
 // Exercise the real entry point before main loads: the main stand-in spawns the

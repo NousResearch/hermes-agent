@@ -37,7 +37,9 @@ export function mirrorWebappInputs(source, workspace) {
   }
 }
 
-export async function buildSourceWebapp({
+/** Mirror the inputs into the private workspace and install its dependencies, without compiling.
+ *  On its own it lets an image cache the install in a layer that only the manifests key. */
+export function prepareWebappWorkspace({
   source = repoRoot, workspace, install = true, prepare = prepareNodeDependencies,
 } = {}) {
   source = resolve(source)
@@ -50,14 +52,27 @@ export async function buildSourceWebapp({
     // The browser bundle never runs Electron, so its binary is not downloaded.
     electron: false,
   })
+  return { source, workspace }
+}
+
+export async function buildSourceWebapp(options = {}) {
+  const { source, workspace } = prepareWebappWorkspace(options)
   return buildWebapp({ source, workspace, out: join(source, 'apps/desktop/dist-webapp') })
 }
 
 if (isMain(import.meta.url)) {
   try {
-    const { values } = parseArgs({ options: { 'no-install': { type: 'boolean', default: false } } })
-    const result = await buildSourceWebapp({ install: !values['no-install'] })
-    console.log(`built ${result.index}`)
+    const { values } = parseArgs({ options: {
+      'no-install': { type: 'boolean', default: false },
+      'deps-only': { type: 'boolean', default: false },
+    } })
+    if (values['deps-only']) {
+      const { workspace } = prepareWebappWorkspace({ install: !values['no-install'] })
+      console.log(`prepared ${workspace}`)
+    } else {
+      const result = await buildSourceWebapp({ install: !values['no-install'] })
+      console.log(`built ${result.index}`)
+    }
   } catch (error) {
     console.error(error)
     process.exitCode = 1

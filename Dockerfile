@@ -327,9 +327,15 @@ RUN node scripts/build/tui.mjs --source /opt/hermes --out /opt/products/tui && \
 # own so Desktop changes leave the TUI and dashboard layers cached.
 FROM runtime_base AS webapp_build
 COPY package.json package-lock.json .npmrc ./
-COPY apps/ apps/
+COPY apps/desktop/package.json apps/desktop/
+COPY apps/desktop/scripts/build-webapp.mjs apps/desktop/scripts/
+COPY apps/shared/package.json apps/shared/
 COPY scripts/build/*.mjs scripts/build/
 ENV npm_config_install_links=false
+# Dependencies first, keyed only by the manifests and the recipe, so a source
+# change reuses this layer and the build below reuses its install.
+RUN node apps/desktop/scripts/build-webapp.mjs --deps-only
+COPY apps/ apps/
 RUN node apps/desktop/scripts/build-webapp.mjs
 
 FROM python_deps AS runtime

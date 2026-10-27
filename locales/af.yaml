@@ -2018,7 +2018,6 @@ cli:
     cleared_picker_cache: "Modelkieser-kasie uitgevee. Verfris..."
     moa_one_shot_queued: "MoA-eenmalige lopie in tou geplaas met voorafinstelling {preset}; die vorige model word na hierdie beurt herstel."
     normalized_model: "Model '{old}' genormaliseer na '{new}' vir {provider}."
-    normalized_copilot_model: "Copilot-model '{old}' genormaliseer na '{new}'."
     stripped_provider_prefix: "Verskaffervoorvoegsel van '{old}' verwyder; gebruik '{new}' vir {provider}."
     restored_from_session: "Model vanaf sessie herstel: {model}"
     could_not_load_config: "❌ kon nie konfigurasie laai nie: {error}"

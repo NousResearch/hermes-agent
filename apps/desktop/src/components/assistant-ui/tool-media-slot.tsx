@@ -167,10 +167,10 @@ const ToolMediaLeaf: FC<{
       // a split-view tile can belong to another connection than the foreground.
       resolveUrl: () =>
         ['audio', 'video'].includes(mediaKind(path))
-          ? resolveMediaPlaybackSrc(path)
+          ? resolveMediaPlaybackSrc(path, owner, sessionId ?? undefined)
           : resolveMediaDisplaySrc(path, owner)
     }),
-    [owner, path]
+    [owner, path, sessionId]
   )
 
   const args = useMemo(

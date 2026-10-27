@@ -48,6 +48,18 @@ def test_env_secret_with_shell_text_is_not_used(monkeypatch, caplog, value):
     assert errors and "unexpanded shell" in errors[0].getMessage()
 
 
+def test_shell_text_secret_is_reported_once_on_stderr(monkeypatch, capsys):
+    # The log files are not the console of `hermes serve` / `hermes dashboard`.
+    monkeypatch.setattr(basic, "_shell_text_secret_reported", False, raising=False)
+    monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_SECRET", "$(openssl rand -hex 32)")
+    basic._resolve_secret({})
+    basic._resolve_secret({})
+    err = capsys.readouterr().err
+    assert err.count("HERMES_DASHBOARD_BASIC_AUTH_SECRET") == 1
+    assert len(err.strip().splitlines()) == 1
+    assert "$(openssl rand -hex 32)" not in err
+
+
 def test_config_secret_with_shell_text_is_not_used():
     assert basic._resolve_secret({"secret": LITERAL}) != LITERAL.encode("utf-8")
 

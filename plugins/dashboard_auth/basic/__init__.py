@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import secrets
+import sys
 import time
 from typing import Optional
 
@@ -197,6 +198,10 @@ def _load_config_basic_auth_section() -> dict:
 # these (nor a space), and everyone who copied the same line would share the same key.
 _UNEXPANDED_SHELL_MARKERS = ("$(", "`", "openssl rand")
 
+# The error above only reaches the log files, not the console of ``hermes serve`` /
+# ``hermes dashboard``; one stderr line per process makes it visible there too.
+_shell_text_secret_reported = False
+
 
 def _resolve_secret(cfg_section: dict) -> bytes:
     """Resolve the token-signing secret (base64, hex, or raw text). When unset, generates
@@ -218,6 +223,14 @@ def _resolve_secret(cfg_section: dict) -> bytes:
             "is ignored and a random per-process signing key is used. Set "
             "HERMES_DASHBOARD_BASIC_AUTH_SECRET (or dashboard.basic_auth.secret) to the "
             "output of 'openssl rand -base64 32' to keep sessions across restarts.")
+        global _shell_text_secret_reported
+        if not _shell_text_secret_reported:
+            _shell_text_secret_reported = True
+            print(
+                "hermes: dashboard login: HERMES_DASHBOARD_BASIC_AUTH_SECRET (or "
+                "dashboard.basic_auth.secret) holds shell text instead of a random value; "
+                "using a per-process key, so sessions end on restart. Replace it with the "
+                "output of: openssl rand -base64 32", file=sys.stderr, flush=True)
         return secrets.token_bytes(32)
     for decoder in (base64.b64decode, bytes.fromhex):
         try:

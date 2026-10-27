@@ -10,6 +10,8 @@ import contextlib
 import json
 import logging
 import os
+import threading
+from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
 
 # Profile-scoped secret reader for multiplexing support (PR #50094)
@@ -166,13 +168,58 @@ def _supplied_by_operator(name: str) -> bool:
     cannot tell it from the bridge's own leftover — this is the one case it must not clobber.
     """
     try:
-        from hermes_cli.env_loader import launch_dotenv_keys
+        from hermes_cli.env_loader import launch_dotenv_keys, managed_dotenv_keys
     except ImportError:  # bridging must not fail because the loader is unavailable
         return False
-    return name in launch_dotenv_keys()
+    return name in launch_dotenv_keys() or name in managed_dotenv_keys()
 
 
-def yaml_env_setter() -> Callable[[str, Any], None]:
+@dataclass
+class _YamlEnvLoad:
+    seen: set[str] = field(default_factory=set)
+    failed: bool = False
+
+
+# Loads are synchronous; copied contexts must not inherit another thread's partial seen-set.
+_YAML_ENV_LOAD = threading.local()
+_YAML_ENV_LOCK = threading.RLock()
+
+
+def cancel_yaml_env_refresh() -> None:
+    """A swallowed discovery/hook failure is not evidence that settings were deleted."""
+    load = getattr(_YAML_ENV_LOAD, "current", None)
+    if load is not None:
+        load.failed = True
+
+
+@contextlib.contextmanager
+def yaml_env_refresh():
+    """Retract only unchanged bridge-owned leftovers after one complete, successful YAML load."""
+    if profile_scoped():
+        yield
+        return
+    with _YAML_ENV_LOCK:
+        if getattr(_YAML_ENV_LOAD, "current", None) is not None:
+            yield  # A nested load participates in the outer load, never clears its partial writes.
+            return
+        before = {key[len(BRIDGED_ENV_MARKER_PREFIX):]: value for key, value in os.environ.items()
+                  if key.startswith(BRIDGED_ENV_MARKER_PREFIX) and key != BRIDGED_ENV_MARKER_PREFIX}
+        load = _YamlEnvLoad()
+        _YAML_ENV_LOAD.current = load
+        try:
+            yield
+            if not load.failed:
+                for name, value in before.items():
+                    marker = bridged_env_marker(name)
+                    if (name not in load.seen and os.getenv(name) == value
+                            and os.getenv(marker) == value and not _supplied_by_operator(name)):
+                        os.environ.pop(name, None)
+                        os.environ.pop(marker, None)
+        finally:
+            del _YAML_ENV_LOAD.current
+
+
+def yaml_env_setter(*, fallback: bool = False) -> Callable[[str, Any], None]:
     """``set_env(name, value)`` for ``apply_yaml_config_fn`` hooks: writes ``os.environ[name]``
     unless the operator set that var themselves, and NEVER while a multiplexed secondary
     profile's scope is active — the gateway loads every secondary's config inside
@@ -190,14 +237,20 @@ def yaml_env_setter() -> Callable[[str, Any], None]:
     def set_env(name: str, value: Any) -> None:
         if value is None or skip:
             return
-        bridged = ",".join(str(v) for v in value) if isinstance(value, list) else str(value)
-        marker = bridged_env_marker(name)
-        current = os.getenv(name)
-        if current is not None and current.strip():
-            if current != os.getenv(marker) or _supplied_by_operator(name):
-                return  # the operator's value, not this bridge's leftover
-        os.environ[name] = bridged
-        os.environ[marker] = bridged
+        with _YAML_ENV_LOCK:
+            load = getattr(_YAML_ENV_LOAD, "current", None)
+            if load is not None:
+                if fallback and name in load.seen:
+                    return  # The plugin already resolved authored/managed precedence this load.
+                load.seen.add(name)
+            bridged = ",".join(str(v) for v in value) if isinstance(value, list) else str(value)
+            marker = bridged_env_marker(name)
+            current = os.getenv(name)
+            if current is not None and current.strip():
+                if current != os.getenv(marker) or _supplied_by_operator(name):
+                    return  # the operator's value, not this bridge's leftover
+            os.environ[name] = bridged
+            os.environ[marker] = bridged
 
     return set_env
 

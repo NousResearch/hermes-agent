@@ -370,7 +370,8 @@ def test_a_timed_out_child_never_waits_on_a_grandchild_holding_its_pipes(monkeyp
     # in this window (the suite's Popen guard imports gateway.status) down its Windows branch.
     monkeypatch.setattr(update_custody, "sys", _Win32Sys())
     monkeypatch.setattr(update_custody, "_held", lambda: {"fd": None})
-    monkeypatch.setattr(update_custody, "popen", lambda argv, **kw: subprocess.Popen(list(argv), **kw))
+    monkeypatch.setattr(update_custody, "popen",
+                        lambda argv, *, inherit_lock=False, **kw: subprocess.Popen(list(argv), **kw))
     started = time.monotonic()
     with pytest.raises(subprocess.TimeoutExpired):
         update_custody.run(["sh", "-c", "sleep 20 & sleep 20"], capture_output=True, timeout=0.5)
@@ -749,3 +750,140 @@ def test_the_windows_build_launcher_returns_at_once_when_nothing_was_left(monkey
     events = _run_join_launcher(monkeypatch, stray_polls=0)
     assert [e[0] for e in events if e[0] == "QueryInformationJobObject"] == ["QueryInformationJobObject"]
     assert events[-1] == ("exit", 3), events
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups; Windows binds the job")
+def test_a_timed_out_git_command_takes_its_helpers_with_it(tmp_path):
+    """macOS has no parent-death signal, so the timeout path is the only guard. It must end the
+    tree: a git helper (git-remote-https, index-pack) outlives ``proc.kill()`` and keeps writing
+    its packfile after the caller gave up (#144439)."""
+    from hermes_cli import update_custody
+
+    late = tmp_path / "late"
+    script = f"sh -c 'sleep 2; echo alive > {late}' & sleep 30"
+    with pytest.raises(subprocess.TimeoutExpired):
+        update_custody.run(["sh", "-c", script], timeout=0.5)
+    time.sleep(3)
+    assert not late.exists(), "a descendant of the timed-out command kept running"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups; Windows binds the job")
+def test_an_owner_watched_fetch_that_times_out_takes_its_helpers_with_it(tmp_path):
+    """``_run_owner_watched`` is the macOS fetch path (fd-less ref writer under a watcher). Its
+    timeout used ``proc.kill()``, which left ``git index-pack`` writing; the tree must die."""
+    from hermes_cli import update_custody
+
+    late = tmp_path / "late"
+    script = f"sh -c 'sleep 2; echo alive > {late}' & sleep 30"
+    with pytest.raises(subprocess.TimeoutExpired):
+        update_custody._run_owner_watched(["sh", "-c", script], {"timeout": 0.5})
+    time.sleep(3)
+    assert not late.exists(), "an owner-watched fetch helper kept running past its timeout"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups; Windows binds the job")
+def test_a_custodied_child_leads_its_own_process_group():
+    """Custody is over a tree, not a pid: a child that does not own its group cannot be signalled
+    as a group, and the watchdog has nothing to kill but the one pid we already know (#144439)."""
+    from hermes_cli import update_custody
+
+    proc = update_custody.popen(["sleep", "5"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        assert os.getpgid(proc.pid) == proc.pid
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups; Windows binds the job")
+def test_the_owner_death_watchdog_takes_the_whole_group_down(tmp_path):
+    """macOS has no parent-death signal; the stand-in watched one pid, so the git helper it left
+    behind kept writing. EOF on the watch pipe must kill the group, not the pid."""
+    from hermes_cli import update_custody
+
+    late = tmp_path / "late"
+    child = subprocess.Popen(["sh", "-c", f"sh -c 'sleep 2; echo alive > {late}' & sleep 30"],
+                             process_group=0)
+    try:
+        watcher = subprocess.Popen(
+            [sys.executable, "-I", "-S", "-c", update_custody._OWNER_WATCH, str(child.pid)],
+            stdin=subprocess.PIPE)
+        watcher.stdin.close()  # EOF with no byte = the owner died
+        assert watcher.wait(timeout=10) == 0
+        child.wait(timeout=10)
+    finally:
+        if child.poll() is None:
+            child.kill()
+    time.sleep(3)
+    assert not late.exists(), "the owner-death watchdog killed one pid and left the writer running"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups; Windows binds the job")
+def test_a_command_without_a_timeout_still_owns_its_group(monkeypatch):
+    """Custody cannot depend on the caller remembering ``timeout=``: every child we spawn leads its
+    own group, with or without one (#144439)."""
+    from hermes_cli import update_custody
+
+    seen = []
+    real_popen = update_custody.popen
+
+    def record(*args, **kwargs):
+        proc = real_popen(*args, **kwargs)
+        seen.append((proc, os.getpgid(proc.pid)))
+        return proc
+
+    monkeypatch.setattr(update_custody, "popen", record)
+    update_custody.run(["sleep", "0.2"])
+    assert seen, "run() did not go through popen"
+    proc, pgid = seen[0]
+    assert pgid == proc.pid, "the child did not lead its own process group"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups; Windows binds the job")
+def test_a_git_helper_that_outlives_its_parent_does_not_hold_the_caller():
+    """The accident shape: git's parent exits (or is killed) and a helper git keeps the pipes. The
+    descendant walk cannot see a reparented helper any more — the group can."""
+    token = f"hermes-custody-{os.getpid()}-{time.time_ns()}"
+    env = dict(os.environ, HERMES_CUSTODY_TOKEN=token)
+    started = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        update_custody_run(["sh", "-c", "git hash-object --stdin </dev/zero & exit 0"],
+                           capture_output=True, timeout=1, env=env)
+    assert time.monotonic() - started < 20, "run() hung on pipes a reparented helper held"
+    time.sleep(1)
+    assert not _processes_mentioning(token), "the reparented git helper survived the timeout"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups; Windows binds the job")
+def test_a_real_git_writer_cut_off_mid_pack_leaves_nothing_running(tmp_path):
+    """A real git writing a packfile through its own child: `git gc` spawns `git pack-objects`,
+    which does the writing. Killing only `gc` leaves the writer filling objects/pack."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    for i in range(600):
+        # unique bytes: identical blobs would delta away in milliseconds
+        (repo / f"f{i}.bin").write_bytes(os.urandom(65536))
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "objects to pack")
+
+    token = f"hermes-custody-{os.getpid()}-{time.time_ns()}"
+    env = dict(os.environ, HERMES_CUSTODY_TOKEN=token)
+    with pytest.raises(subprocess.TimeoutExpired):
+        update_custody_run(["git", "-C", str(repo), "gc", "--aggressive", "--prune=now"],
+                           capture_output=True, timeout=0.15, env=env)
+    time.sleep(1)
+    assert not _processes_mentioning(token), "a real git pack writer survived its timeout"
+
+def update_custody_run(argv, **kwargs):
+    """Run through the custodian (imported late so the module-level guard sees the import)."""
+    from hermes_cli import update_custody
+
+    return update_custody.run(argv, **kwargs)
+
+
+def _processes_mentioning(token: str) -> list:
+    """Any live process carrying *token* in its command line or environment (-E prints the env for
+    our own processes, so a git child that inherited it is visible too)."""
+    out = subprocess.run(["ps", "-E", "-axo", "pid=,command="], capture_output=True, text=True)
+    return [line.strip() for line in out.stdout.splitlines() if token in line and "ps -E" not in line]

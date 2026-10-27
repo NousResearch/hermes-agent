@@ -42,6 +42,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import signal
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -250,36 +251,46 @@ def popen(argv: Sequence[str], *, inherit_lock: bool = False, **kwargs) -> subpr
                 proc.kill()
             raise
         return proc
+    if sys.platform != "win32":
+        # Custody means the tree, not the pid: every child leads its own process group so the
+        # parent-death watchdog can signal the group, and a signal to our terminal does not
+        # reach a half-written packfile. The children we spawn are the ones we must outlive.
+        kwargs.setdefault("process_group", 0)
     return subprocess.Popen(list(argv), **_custody_kwargs(inherit_lock, kwargs))
 
 
 def run(argv: Sequence[str], *, inherit_lock: bool = False, **kwargs) -> subprocess.CompletedProcess:
-    """``subprocess.run`` in the update tree's custody. Off Windows (or outside an update) it IS
-    ``subprocess.run`` with the caller's kwargs untouched, plus the lock fd for mutators (or the
-    parent-death signal for the rest); on Windows inside an update it is the same contract over
-    :func:`popen`, so the child is job-bound before it runs."""
-    if not (sys.platform == "win32" and _held() is not None):
-        return subprocess.run(list(argv), **_custody_kwargs(inherit_lock, kwargs))  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
+    """``subprocess.run`` in the update tree's custody: the lock fd for local mutators, the
+    parent-death signal where the platform has one, and on Windows inside an update a child bound
+    to the kill-on-close job before it runs.
+
+    Every call goes through :func:`popen`, with or without a ``timeout``: ``subprocess.run`` ends
+    only the child it spawned on a timeout *and* on any exception (``KeyboardInterrupt`` included),
+    so a git helper that child started (``git-remote-https``, ``index-pack``) is reparented and
+    keeps writing — a packfile that grows after the caller has given up. Custody that covers only
+    the calls someone remembered to time out is not a custody contract."""
     input, timeout = kwargs.pop("input", None), kwargs.pop("timeout", None)
     check = kwargs.pop("check", False)
     if input is not None:
         kwargs["stdin"] = subprocess.PIPE
     if kwargs.pop("capture_output", False):
         kwargs["stdout"] = kwargs["stderr"] = subprocess.PIPE
-    with popen(argv, **kwargs) as proc:
+    with popen(argv, inherit_lock=inherit_lock, **kwargs) as proc:
         try:
             stdout, stderr = proc.communicate(input, timeout=timeout)
         except subprocess.TimeoutExpired as exc:
             # git.exe's git-remote-https inherits the pipes: kill the tree, not git.exe alone (and
-            # never the job: it also holds the update's other children).
+            # never the job: it also holds the update's other children). The group goes first: a
+            # helper whose parent has already exited is reparented and no longer walkable.
             from hermes_cli._subprocess_compat import kill_and_drain
 
+            _kill_tree(proc)
             drained = kill_and_drain(proc, _DRAIN_SECONDS)
             if drained is not None:
                 exc.stdout, exc.stderr = drained
             raise
         except BaseException:
-            proc.kill()
+            _kill_tree(proc)
             raise
         code = proc.poll()
     if check and code:
@@ -292,8 +303,15 @@ def popen_post_commit(argv: Sequence[str], *, label: str, **kwargs) -> subproces
     historical takeover's ``update_finish``). POSIX: the lock fd. Windows inside an update:
     created suspended and bound to the update's kill-on-close job before it runs. A refused bind
     must not fail a committed update, so the child still runs, never silently (printed and
-    receipted) and never unfenced: it joins the checkout lock holding its own lease (R5b)."""
+    receipted) and never unfenced: it joins the checkout lock holding its own lease (R5b).
+
+    POSIX also puts it in its own process group, so a cancel can reach what it starts — but this
+    child deliberately outlives the update's timeout guard: it exists to finish the checkout the
+    committed update handed it. Closing that window is a separate change, not part of the custody
+    timeout fix."""
     if not (sys.platform == "win32" and _held() is not None):
+        if sys.platform != "win32":
+            kwargs.setdefault("process_group", 0)
         return subprocess.Popen(list(argv), **_custody_kwargs(True, kwargs))
     from hermes_cli.update_lock import bind_child_to_update_tree, resume_suspended_child
 
@@ -321,6 +339,21 @@ def popen_post_commit(argv: Sequence[str], *, label: str, **kwargs) -> subproces
 _DRAIN_SECONDS = 5
 
 
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """End *proc* and everything it started, on every platform.
+
+    A descendant walk is not enough on its own: a git helper whose parent already exited is
+    reparented, so it is no longer in the tree by the time we look. Every child we spawn leads its
+    own process group (``popen``), which makes the group signal the reliable half; the walk stays
+    as the backstop for anything that left the group."""
+    if sys.platform != "win32":
+        with contextlib.suppress(OSError):
+            os.killpg(proc.pid, signal.SIGKILL)
+    from hermes_cli._subprocess_compat import kill_process_tree
+
+    kill_process_tree(proc)
+
+
 def run_git(git_cmd: Sequence[str], args: Sequence[str], **kwargs) -> subprocess.CompletedProcess:
     """THE updater git runner: custody config in argv, the lock fd only into local mutators,
     Windows job binding inside an update. ``kwargs`` are ``subprocess.run``'s."""
@@ -346,9 +379,12 @@ _OWNER_WATCH = (
     "import os, signal, sys\n"
     "if not os.read(0, 1):\n"
     "    try:\n"
-    "        os.kill(int(sys.argv[1]), signal.SIGKILL)\n"  # windows-footgun: ok -- POSIX only (run_git gates win32 out)
+    "        os.killpg(int(sys.argv[1]), signal.SIGKILL)\n"  # the child leads its own group
     "    except OSError:\n"
-    "        pass\n"
+    "        try:\n"
+    "            os.kill(int(sys.argv[1]), signal.SIGKILL)\n"
+    "        except OSError:\n"
+    "            pass\n"
 )
 
 
@@ -387,12 +423,18 @@ def _run_owner_watched(argv: Sequence[str], kwargs: dict) -> subprocess.Complete
         kwargs["stdin"] = subprocess.PIPE
     if kwargs.pop("capture_output", False):
         kwargs["stdout"] = kwargs["stderr"] = subprocess.PIPE
-    with subprocess.Popen(list(argv), **kwargs) as proc:
+    spawn = dict(kwargs)
+    if sys.platform != "win32":
+        # The watchdog can only take the tree down if the child owns its group.
+        spawn.setdefault("process_group", 0)
+    with subprocess.Popen(list(argv), **spawn) as proc:
         dismiss = _owner_watch(proc.pid)
         try:
             stdout, stderr = proc.communicate(input, timeout=timeout)
         except subprocess.TimeoutExpired as exc:
-            proc.kill()
+            # Kill the tree, not the child alone: `git fetch` leaves `git-remote-https` and
+            # `index-pack` running, and an index-pack that survives keeps writing its packfile.
+            _kill_tree(proc)
             try:
                 exc.stdout, exc.stderr = proc.communicate(timeout=_DRAIN_SECONDS)
             except subprocess.TimeoutExpired:
@@ -400,7 +442,7 @@ def _run_owner_watched(argv: Sequence[str], kwargs: dict) -> subprocess.Complete
                 proc.stdin = proc.stdout = proc.stderr = None
             raise
         except BaseException:
-            proc.kill()
+            _kill_tree(proc)
             raise
         finally:
             if dismiss is not None:

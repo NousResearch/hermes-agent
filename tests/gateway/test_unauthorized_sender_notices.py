@@ -21,6 +21,12 @@ def test_pairing_reply_pins_profile_in_approve_command():
     assert "`hermes -p work pairing approve discord ZZZZ9999`" in reply
 
 
+def test_pairing_reply_renders_configured_code_and_platform_placeholders():
+    reply = pairing_code_reply(
+        "telegram", "ABCD1234", pairing_message="Code {code}; {platform}; {other}; {code!r}; {{literal}}."
+    )
+
+    assert reply == "Code ABCD1234; telegram; {other}; {code!r}; {{literal}}."
 
 
 @pytest.mark.asyncio

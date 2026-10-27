@@ -125,6 +125,45 @@ def test_stable_resolution_uses_promoted_pointer_not_highest_tag(releases, git_c
     assert releases.requests
 
 
+def test_release_resolution_falls_back_to_github_api_on_git_timeout(releases, monkeypatch):
+    """An API-confirmed GitHub release remains usable when the redundant Git transport stalls."""
+    from hermes_cli import source_releases
+
+    git(releases.root, "remote", "set-url", "origin", "https://github.com/NousResearch/hermes-agent.git")
+    real_run = subprocess.run
+    ls_remote_calls = []
+
+    def run(cmd, *args, **kwargs):
+        if cmd[:2] == ["git", "ls-remote"]:
+            ls_remote_calls.append(cmd)
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 60))
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(source_releases.subprocess, "run", run)
+    assert resolve_source_release("stable", ["git"], releases.root) == (
+        releases.tags["stable"], releases.commits[1],
+    )
+    assert len(ls_remote_calls) == 1
+
+
+def test_release_resolution_rejects_an_answered_github_tag_mismatch(releases, monkeypatch):
+    """A successful but conflicting tag advertisement is not a transport fallback."""
+    from hermes_cli import source_releases
+
+    git(releases.root, "remote", "set-url", "origin", "https://github.com/NousResearch/hermes-agent.git")
+    real_run = subprocess.run
+
+    def run(cmd, *args, **kwargs):
+        if cmd[:2] == ["git", "ls-remote"]:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=f"{releases.commits[3]}\trefs/tags/{releases.tags['stable']}\n", stderr="",
+            )
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(source_releases.subprocess, "run", run)
+    assert resolve_source_release("stable", ["git"], releases.root) == (None, None)
+
+
 @pytest.mark.parametrize("channel", ["stable", "canary"])
 @pytest.mark.parametrize("start", ["old", "ahead", "local"])
 def test_source_check_and_apply_land_on_selected_release(releases, monkeypatch, capsys, channel, start):

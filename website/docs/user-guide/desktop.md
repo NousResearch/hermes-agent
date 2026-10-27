@@ -626,17 +626,19 @@ Set a username and password, then start the backend bound to a reachable address
 cat >> ~/.hermes/.env <<'EOF'
 HERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin
 HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=choose-a-strong-password
+EOF
 # Recommended: a stable signing secret so sessions survive restarts.
 # Without it a random key is generated per boot and you'll be logged out
-# on every restart.
-HERMES_DASHBOARD_BASIC_AUTH_SECRET=$(openssl rand -base64 32)
-EOF
+# on every restart. This runs openssl, so the secret is unique to you.
+echo "HERMES_DASHBOARD_BASIC_AUTH_SECRET=$(openssl rand -base64 32)" >> ~/.hermes/.env
 chmod 600 ~/.hermes/.env
 
 # 2. Run the backend bound to a reachable address. The non-loopback bind
 #    engages the auth gate; the username/password provider handles login.
 hermes serve --host 0.0.0.0 --port 9119
 ```
+
+An earlier version of this recipe wrote the secret line inside the quoted heredoc, which stores the text `$(openssl rand -base64 32)` instead of a random value. If `grep BASIC_AUTH_SECRET ~/.hermes/.env` shows that text, replace the line with a freshly generated secret and restart the backend.
 
 Keep that `hermes serve` process running for as long as you want the desktop app to be able to connect — if it stops, the app can no longer reach the backend. Run it under `systemd`, `tmux`, or your process manager of choice so it survives logout and reboots.
 

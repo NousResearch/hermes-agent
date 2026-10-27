@@ -1,22 +1,22 @@
 name: hermes-plexus
 repo: https://github.com/mr-september/hermes-plexus
-sha: 7a0ee944917b265892a456975ed957258a94191d
-version: "0.1.0"
+sha: 59a3a5268f060ea49c629e6c5f38b99538d6759a
+version: "0.2.0"
 title: Plexus
-description: "Your local markdown vault as a note graph, file tree and tabbed editor in one Hermes Desktop workspace tab, with Obsidian-style wikilinks, link rewriting on rename, image and note embeds, and a ::vault chat link. Disclosure — reads and writes markdown files (and images for previews) in the vault folder you choose, through the desktop app's file bridge; deletes go to the OS trash. No network calls, shell commands, background processes, telemetry, agent tools or stored credentials."
+description: "Your local markdown vault as a note graph, file tree and tabbed editor in one Hermes Desktop workspace tab, with Obsidian-style wikilinks, link rewriting on rename, image and note embeds, and a ::vault chat link. Disclosure — reads and writes markdown files (and images for previews) only inside the one folder you grant, through Hermes Desktop's folder-scoped file API (ctx.files); deletes go to the OS trash. No network calls unless you turn on loading of images that notes link from the web (off by default; the image's host then sees your IP address). No shell commands, background processes, telemetry, agent tools or stored credentials."
 maintainer: mr-september
 tier: community
 category: desktop
 docs_url: https://github.com/mr-september/hermes-plexus#readme
 readme: true
-image: https://raw.githubusercontent.com/mr-september/hermes-plexus/7a0ee944917b265892a456975ed957258a94191d/docs/banner.png
+image: https://raw.githubusercontent.com/mr-september/hermes-plexus/59a3a5268f060ea49c629e6c5f38b99538d6759a/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/mr-september/hermes-plexus/7a0ee944917b265892a456975ed957258a94191d/docs/screenshots/overview-dark.png
-  - https://raw.githubusercontent.com/mr-september/hermes-plexus/7a0ee944917b265892a456975ed957258a94191d/docs/screenshots/editor-dark.png
-  - https://raw.githubusercontent.com/mr-september/hermes-plexus/7a0ee944917b265892a456975ed957258a94191d/docs/screenshots/preview-dark.png
-  - https://raw.githubusercontent.com/mr-september/hermes-plexus/7a0ee944917b265892a456975ed957258a94191d/docs/screenshots/search-dark.png
-  - https://raw.githubusercontent.com/mr-september/hermes-plexus/7a0ee944917b265892a456975ed957258a94191d/docs/screenshots/local-graph-dark.png
-  - https://raw.githubusercontent.com/mr-september/hermes-plexus/7a0ee944917b265892a456975ed957258a94191d/docs/screenshots/overview-light.png
+  - https://raw.githubusercontent.com/mr-september/hermes-plexus/59a3a5268f060ea49c629e6c5f38b99538d6759a/docs/screenshots/overview-dark.png
+  - https://raw.githubusercontent.com/mr-september/hermes-plexus/59a3a5268f060ea49c629e6c5f38b99538d6759a/docs/screenshots/editor-dark.png
+  - https://raw.githubusercontent.com/mr-september/hermes-plexus/59a3a5268f060ea49c629e6c5f38b99538d6759a/docs/screenshots/preview-dark.png
+  - https://raw.githubusercontent.com/mr-september/hermes-plexus/59a3a5268f060ea49c629e6c5f38b99538d6759a/docs/screenshots/search-dark.png
+  - https://raw.githubusercontent.com/mr-september/hermes-plexus/59a3a5268f060ea49c629e6c5f38b99538d6759a/docs/screenshots/local-graph-dark.png
+  - https://raw.githubusercontent.com/mr-september/hermes-plexus/59a3a5268f060ea49c629e6c5f38b99538d6759a/docs/screenshots/overview-light.png
 capabilities:
   provides_tools: []
   provides_hooks: []
@@ -24,5 +24,6 @@ capabilities:
   requires_env: []
 requires_hermes: ">=0.21.5"
 known_issues:
-  - "Desktop only: it needs Hermes Desktop's local file bridge and host.openWorkspace."
+  - "Desktop only: it needs host.openWorkspace and the folder-scoped file API (ctx.files)."
   - "No live file watching; the vault rescans when the window regains focus and after saves."
+  - "Notes larger than 4 MiB (the ctx.files read limit) cannot be opened."

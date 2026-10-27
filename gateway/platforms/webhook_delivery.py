@@ -8,15 +8,26 @@ from hermes_state_runtime import RuntimeStoreError
 
 def route_digest(adapter, chat_id):
     from gateway.platforms.webhook import _WebhookDeliveryIdentity
-    adapter._reload_dynamic_routes()
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    # The route table is authored in the GATEWAY's home: ``_resolve_route`` reads it there, and the
+    # ``/p/<profile>/webhooks/<route>`` handler that serves a profile-bound route runs unscoped. A
+    # digest may be taken later, inside the routed profile's runtime scope (admission, destination
+    # readback), whose home holds no subscriptions file — reloading there would clear every dynamic
+    # route and refuse the delivery as ``not_found``. Pin the process home for the reload so the
+    # digest is over the same table the edge resolved.
+    home_token = set_hermes_home_override(None)
     try:
-        route_name = _WebhookDeliveryIdentity.route_from_chat_id(chat_id)
-    except (ValueError, TypeError, IndexError):
-        raise RuntimeStoreError('not_found') from None
-    route = adapter._routes.get(route_name)
-    if route is None:
-        raise RuntimeStoreError('not_found')
-    return hashlib.sha256(json.dumps(route, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        adapter._reload_dynamic_routes()
+        try:
+            route_name = _WebhookDeliveryIdentity.route_from_chat_id(chat_id)
+        except (ValueError, TypeError, IndexError):
+            raise RuntimeStoreError('not_found') from None
+        route = adapter._routes.get(route_name)
+        if route is None:
+            raise RuntimeStoreError('not_found')
+        return hashlib.sha256(json.dumps(route, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    finally:
+        reset_hermes_home_override(home_token)
 
 
 def validate_destination(delivery):

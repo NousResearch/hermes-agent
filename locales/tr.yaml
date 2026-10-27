@@ -811,6 +811,9 @@ gateway:
     info_model: "◆ Model: `{model}`"
     info_provider: "◆ Sağlayıcı: {provider}"
     info_context: "◆ Bağlam: {tokens} token ({source})"
+    info_source_config: "config"
+    info_source_default: "varsayılan — geçersiz kılmak için config içinde model.context_length ayarlayın"
+    info_source_detected: "algılandı"
     info_acting_model: "◆ Etkin model (çalıştırma için faturalandırılan): {provider}:{model}"
     info_endpoint: "◆ Uç nokta: {url}"
   proxy:

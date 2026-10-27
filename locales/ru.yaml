@@ -811,6 +811,9 @@ gateway:
     info_model: "◆ Модель: `{model}`"
     info_provider: "◆ Провайдер: {provider}"
     info_context: "◆ Контекст: {tokens} токенов ({source})"
+    info_source_config: "config"
+    info_source_default: "по умолчанию — задайте model.context_length в конфиге, чтобы переопределить"
+    info_source_detected: "определено"
     info_acting_model: "◆ Действующая модель (тарифицируется за запуск): {provider}:{model}"
     info_endpoint: "◆ Конечная точка: {url}"
   proxy:

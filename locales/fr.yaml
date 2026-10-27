@@ -958,6 +958,9 @@ gateway:
     info_model: "◆ Modèle : `{model}`"
     info_provider: "◆ Fournisseur : {provider}"
     info_context: "◆ Contexte : {tokens} tokens ({source})"
+    info_source_config: "config"
+    info_source_default: "par défaut — définissez model.context_length dans la config pour le remplacer"
+    info_source_detected: "détecté"
     info_acting_model: "◆ Modèle actif (facturé pour l'exécution) : {provider}:{model}"
     info_endpoint: "◆ Endpoint : {url}"
   proxy:

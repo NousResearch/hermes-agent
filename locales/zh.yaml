@@ -811,6 +811,9 @@ gateway:
     info_model: "◆ 模型：`{model}`"
     info_provider: "◆ 提供方：{provider}"
     info_context: "◆ 上下文：{tokens} tokens（{source}）"
+    info_source_config: "config"
+    info_source_default: "默认值——可在 config 中设置 model.context_length 覆盖"
+    info_source_detected: "自动检测"
     info_acting_model: "◆ 实际执行模型（本次运行计费）：{provider}:{model}"
     info_endpoint: "◆ 端点：{url}"
   proxy:

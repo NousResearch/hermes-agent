@@ -811,6 +811,9 @@ gateway:
     info_model: "◆ Samhail: `{model}`"
     info_provider: "◆ Soláthraí: {provider}"
     info_context: "◆ Comhthéacs: {tokens} comhartha ({source})"
+    info_source_config: "config"
+    info_source_default: "réamhshocrú — socraigh model.context_length sa config chun é a shárú"
+    info_source_detected: "braite"
     info_acting_model: "◆ Samhail ghníomhach (billeáilte don rith): {provider}:{model}"
     info_endpoint: "◆ Críochphointe: {url}"
   proxy:

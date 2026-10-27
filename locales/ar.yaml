@@ -811,6 +811,9 @@ gateway:
     info_model: "◆ النموذج: `{model}`"
     info_provider: "◆ المزوّد: {provider}"
     info_context: "◆ السياق: {tokens} رمزًا ({source})"
+    info_source_config: "من الإعدادات"
+    info_source_default: "افتراضي — عيّن model.context_length في الإعدادات للتجاوز"
+    info_source_detected: "مكتشف تلقائيًا"
     info_acting_model: "◆ النموذج الفعلي (المحاسَب عليه في هذا التشغيل): {provider}:{model}"
     info_endpoint: "◆ نقطة النهاية: {url}"
   proxy:

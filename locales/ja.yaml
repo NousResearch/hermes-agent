@@ -811,6 +811,9 @@ gateway:
     info_model: "◆ モデル: `{model}`"
     info_provider: "◆ プロバイダー: {provider}"
     info_context: "◆ コンテキスト: {tokens} トークン ({source})"
+    info_source_config: "config"
+    info_source_default: "デフォルト — config の model.context_length で上書きできます"
+    info_source_detected: "自動検出"
     info_acting_model: "◆ 実行モデル (この実行の請求対象): {provider}:{model}"
     info_endpoint: "◆ エンドポイント: {url}"
   proxy:

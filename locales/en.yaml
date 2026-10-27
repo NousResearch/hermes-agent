@@ -832,6 +832,9 @@ gateway:
     info_model: "◆ Model: `{model}`"
     info_provider: "◆ Provider: {provider}"
     info_context: "◆ Context: {tokens} tokens ({source})"
+    info_source_config: "config"
+    info_source_default: "default — set model.context_length in config to override"
+    info_source_detected: "detected"
     info_acting_model: "◆ Acting model (billed for the run): {provider}:{model}"
     info_endpoint: "◆ Endpoint: {url}"
 

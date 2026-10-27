@@ -811,6 +811,9 @@ gateway:
     info_model: "◆ Modell: `{model}`"
     info_provider: "◆ Anbieter: {provider}"
     info_context: "◆ Kontext: {tokens} Tokens ({source})"
+    info_source_config: "config"
+    info_source_default: "Standard — zum Überschreiben model.context_length in der Config setzen"
+    info_source_detected: "erkannt"
     info_acting_model: "◆ Aktives Modell (für den Lauf abgerechnet): {provider}:{model}"
     info_endpoint: "◆ Endpunkt: {url}"
   proxy:

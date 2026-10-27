@@ -811,6 +811,9 @@ gateway:
     info_model: "◆ Model: `{model}`"
     info_provider: "◆ Verskaffer: {provider}"
     info_context: "◆ Konteks: {tokens} tokens ({source})"
+    info_source_config: "config"
+    info_source_default: "verstek — stel model.context_length in config om te oorskryf"
+    info_source_detected: "bespeur"
     info_acting_model: "◆ Handelende model (gefaktureer vir die lopie): {provider}:{model}"
     info_endpoint: "◆ Eindpunt: {url}"
   proxy:

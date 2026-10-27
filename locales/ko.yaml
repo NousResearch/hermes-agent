@@ -811,6 +811,9 @@ gateway:
     info_model: "◆ 모델: `{model}`"
     info_provider: "◆ 제공자: {provider}"
     info_context: "◆ 컨텍스트: {tokens} 토큰 ({source})"
+    info_source_config: "config"
+    info_source_default: "기본값 — config의 model.context_length로 재정의할 수 있습니다"
+    info_source_detected: "감지됨"
     info_acting_model: "◆ 실행 모델 (이 실행의 비용이 청구되는 모델): {provider}:{model}"
     info_endpoint: "◆ 엔드포인트: {url}"
   proxy:

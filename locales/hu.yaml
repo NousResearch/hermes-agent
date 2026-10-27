@@ -823,6 +823,9 @@ gateway:
     info_model: "◆ Modell: `{model}`"
     info_provider: "◆ Szolgáltató: {provider}"
     info_context: "◆ Kontextus: {tokens} token ({source})"
+    info_source_config: "config"
+    info_source_default: "alapértelmezett — felülírható a model.context_length beállítással a configban"
+    info_source_detected: "észlelt"
     info_acting_model: "◆ Végrehajtó modell (a futást ez alapján számlázzák): {provider}:{model}"
     info_endpoint: "◆ Végpont: {url}"
   proxy:

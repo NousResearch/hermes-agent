@@ -419,9 +419,9 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         resolved = _resolve_gateway_model_context()
         context_length = resolved.context_length
         ctx_source = {
-            "config": "config",
-            "default": "default — set model.context_length in config to override",
-        }.get(resolved.context_source, "detected")
+            "config": t("gateway.session.info_source_config"),
+            "default": t("gateway.session.info_source_default"),
+        }.get(resolved.context_source, t("gateway.session.info_source_detected"))
         ctx_display = (
             f"{context_length / 1_000_000:.1f}M" if context_length >= 1_000_000
             else f"{context_length // 1_000}K" if context_length >= 1_000 else str(context_length)

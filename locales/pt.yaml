@@ -811,6 +811,9 @@ gateway:
     info_model: "◆ Modelo: `{model}`"
     info_provider: "◆ Fornecedor: {provider}"
     info_context: "◆ Contexto: {tokens} tokens ({source})"
+    info_source_config: "config"
+    info_source_default: "predefinição — define model.context_length na config para substituir"
+    info_source_detected: "detectado"
     info_acting_model: "◆ Modelo em ação (cobrado pela execução): {provider}:{model}"
     info_endpoint: "◆ Endpoint: {url}"
   proxy:

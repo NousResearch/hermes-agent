@@ -884,6 +884,18 @@ def test_defunct_brokers_excluded_from_all_planning():
         assert close and "not_found" in _json.dumps(close)
 
 
+def test_full_autonomy_note_honors_confirm_first():
+    # dnc_register always carries confirm_first; the full-mode note must not tell the agent
+    # to skip that pause.
+    with temp_env():
+        sid = _run(["intake", "--full-name", "Jane Q. Public", "--email", "jane@example.com",
+                    "--focus-phone", "+1-415-555-0137", "--consent"])["subject_id"]
+        q = autopilot.next_actions(dossier.load(sid), [], _auto_cfg(), {}, env={})
+        assert q["autonomy"] == "full"
+        assert [a["confirm_first"] for a in q["actions"] if a["type"] == "dnc_register"] == [True]
+        assert "EXCEPT on an action with confirm_first=true" in q["note"]
+
+
 def test_ledger_not_found_close_out_only_for_defunct_brokers():
     with temp_env():
         sid = _run(["intake", "--full-name", "Jane Q. Public", "--email", "jane@example.com",

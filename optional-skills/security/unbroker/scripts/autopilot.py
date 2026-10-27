@@ -11,7 +11,8 @@ concrete agent actions plus a human digest. The agent's whole run becomes a loop
 
 Policy (cfg["autonomy"]):
   full     - intake consent is standing authorization; T0-T2 agent actions are
-             executed without pausing. Humans appear only in the digest.
+             executed without pausing, except actions that set confirm_first=True
+             themselves (dnc_register). Humans appear only in the digest.
   assisted - same queue, but every submission action carries confirm_first=True.
 
 The queue is deterministic and side-effect free: it never mutates the ledger, it
@@ -519,6 +520,8 @@ def next_actions(dossier: dict, brokers_list: list[dict], cfg: dict,
         "next_wake_at": next_wake,
         "note": ("assisted mode: pause for operator confirmation on every action with confirm_first=true"
                  if confirm_first else
-                 "full autonomy: recorded intake consent authorizes these submissions; do not pause. "
+                 "full autonomy: recorded intake consent authorizes these submissions; do not pause, "
+                 "EXCEPT on an action with confirm_first=true (e.g. dnc_register), which waits for the "
+                 "operator's yes. "
                  "Present human_digest ONCE at the end of the run, not per item."),
     }

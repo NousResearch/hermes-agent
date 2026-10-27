@@ -8,7 +8,8 @@ the subject's before acting on any THIRD-PARTY / indirect record (see "Distingui
 
 **Autonomy:** `pdd.py next <subject>` sequences all of this - it decides which method applies, orders
 parents first, and routes human-only work to the digest. In `autonomy=full` (default), execute its
-actions without pausing per submission; the consent recorded at intake is the authorization. These
+actions without pausing per submission; the consent recorded at intake is the authorization (an
+action with `confirm_first: true`, such as `dnc_register`, still waits for the operator). These
 playbooks are the HOW for each action type.
 
 ## Opt-out posture: blind opt-out is the default (not a fallback)

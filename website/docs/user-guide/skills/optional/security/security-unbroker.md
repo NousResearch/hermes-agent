@@ -54,8 +54,10 @@ digest at the end of the run (`$PDD tasks`). Between those:
 - **Never ask the operator to choose configuration.** `$PDD setup --auto` detects capabilities and
   picks the most autonomous valid config itself.
 - **Never pause before individual submissions** when `autonomy=full` (the default): the consent
-  recorded at intake is standing authorization for T0-T2 opt-outs. (`autonomy=assisted` restores
-  per-submission confirmation for cautious operators - honor `confirm_first` flags in `next` output.)
+  recorded at intake is standing authorization for T0-T2 opt-outs. The one exception: an action
+  carrying `confirm_first: true` (always set on `dnc_register`, a registry signup the intake consent
+  does not cover) waits for the operator's yes in every mode. (`autonomy=assisted` sets
+  `confirm_first` on every submission for cautious operators.)
 - **Never interrupt the run for human-only work.** Record it (`record ... human_task_queued
   --reason "..."`) and keep going; it all surfaces once in the final digest.
 - **Drive the whole run as a loop over `$PDD next <subject>`** - it returns the exact ordered actions
@@ -235,8 +237,8 @@ recording `found` and before any deletion.
    crawl - see step 4), `poll_verification` (in-flight email confirmations), `verify_removal` (due
    re-checks), `optout_web_form`/`optout_email_send` (Phase 2, parents-first with playbook steps),
    `indirect_email_send`, and `stealth_rescan`. Human-only work never appears as an action - it
-   accumulates in `q.human_digest`. In `autonomy=full`, execute actions without pausing; honor
-   `confirm_first` in `assisted` mode.
+   accumulates in `q.human_digest`. In `autonomy=full`, execute actions without pausing, except any
+   action with `confirm_first: true`, which waits for the operator in every mode.
 4. **Scanning (when `next` says so).** For `fanout_scan`: run `$PDD fanout <subject>` and **spawn one
    `delegate_task` subagent per `batch`, in parallel, passing that batch's ready-made `brief`** - do
    not scan all brokers yourself sequentially. For `scan_inline`: scan the few brokers yourself.

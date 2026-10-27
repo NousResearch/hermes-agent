@@ -53,14 +53,33 @@ def model_in_transaction(db, conn, session_id, payload, prepared):
     model_config = json.loads(row[0] or '{}')
     model_config['provider'] = config['provider']
     conn.execute('UPDATE sessions SET model=?,model_config=? WHERE id=?', (model, _json(model_config), target))
-    # This selection is newer than any pick still waiting for a turn boundary: that pick is superseded.
-    conn.execute('DELETE FROM state_meta WHERE key=?', (DEFERRED_PICK_PREFIX + session_id,))
+    # This selection is newer than any model pick still waiting for a turn boundary: that pick is superseded.
+    # A level deferred beside it stays unless this selection carries its own, as defer_pick keeps it.
+    key = DEFERRED_PICK_PREFIX + session_id
+    row = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
+    level = json.loads(row[0]).get('reasoning') if row is not None and 'reasoning' not in payload else None
+    if level is None:
+        conn.execute('DELETE FROM state_meta WHERE key=?', (key,))
+    else:
+        conn.execute('UPDATE state_meta SET value=? WHERE key=?', (_json({'reasoning': level}), key))
     return {session_id, target}, {'model': model, 'provider': config['provider'], 'execution_generation': generation,
                                   **({'effort': payload['reasoning']} if 'reasoning' in payload else {})}
 
 
 def reasoning_in_transaction(db, conn, session_id, payload, prepared):
+    from hermes_state_runtime import _json
     snapshot, generation = _commit_policy(db, conn, session_id, prepared)
+    # This level is newer than any still waiting for a turn boundary, beside or inside a deferred model pick.
+    key = DEFERRED_PICK_PREFIX + session_id
+    row = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
+    if row is not None:
+        pick = json.loads(row[0])
+        pick.pop('reasoning', None)
+        pick.get('payload', {}).pop('reasoning', None)
+        if 'application_id' in pick:
+            conn.execute('UPDATE state_meta SET value=? WHERE key=?', (_json(pick), key))
+        else:
+            conn.execute('DELETE FROM state_meta WHERE key=?', (key,))
     return {session_id, snapshot['target']}, {'effort': payload['effort'], 'execution_generation': generation}
 
 
@@ -85,22 +104,32 @@ def editor_mcp_in_transaction(db, conn, session_id, payload, prepared):
                                               'mcp_servers': prepared['mcp_servers'], 'execution_generation': generation}
 
 
+def edit_policy_in_transaction(db, conn, session_id, payload, prepared):
+    snapshot, generation = _commit_policy(db, conn, session_id, prepared)
+    return {session_id, snapshot['target']}, {'edit_approval_policy': payload['policy'],
+                                              'execution_generation': generation}
+
+
 POLICY_HANDLERS = {'model': model_in_transaction, 'reasoning': reasoning_in_transaction,
-                   'workspace': workspace_in_transaction, 'editor_mcp': editor_mcp_in_transaction}
+                   'workspace': workspace_in_transaction, 'editor_mcp': editor_mcp_in_transaction,
+                   'edit_policy': edit_policy_in_transaction}
 
 
 _RECEIPTS = "FROM state_meta WHERE key GLOB 'gateway.mutation.v1.*' AND json_valid(value) "
 
 
 def picks_on(conn, session_id, before=None):
-    """The policy edits (``reasoning``, ``workspace``) a ``session.mutate`` committed for *session_id* (below
+    """The policy edits (``model``, ``reasoning``, ``workspace``) a ``session.mutate`` committed for *session_id* (below
     revision *before*): their receipts (kept for exact retries, also past deletion) are the durable record of
-    the user's pick. A branch copied its parent's policy, picks included, under its own id: its local
-    receipt's ``picks``; a branch stored before that field has its parent's as they stood at its branch."""
+    the user's pick. A deferred ``/model`` (``status: deferred``) is only a request until a turn boundary
+    applies it under a receipt of its own, so it is no pick. A branch copied its parent's policy, picks
+    included, under its own id: its local receipt's ``picks``; a branch stored before that field has its
+    parent's as they stood at its branch."""
     bound = '' if before is None else " AND json_extract(value, '$.result.revision')<?"
     picked = {row[0] for row in conn.execute(
         "SELECT DISTINCT json_extract(value, '$.result.operation') " + _RECEIPTS +
-        "AND json_extract(value, '$.result.operation') IN ('reasoning', 'workspace') "
+        "AND json_extract(value, '$.result.operation') IN ('model', 'reasoning', 'workspace') "
+        "AND COALESCE(json_extract(value, '$.result.status'), '') != 'deferred' "
         "AND json_extract(value, '$.result.session_id')=?" + bound, (session_id, *(() if before is None else (before,))))}
     saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (POLICY_PREFIX + session_id,)).fetchone()
     if saved is None:

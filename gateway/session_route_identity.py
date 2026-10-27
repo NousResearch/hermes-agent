@@ -34,6 +34,32 @@ def _canonical(name: str) -> str:
         return canonical
 
 
+def configured_entry_key(identity: str, config: dict) -> str:
+    """The bare config key of the configured entry behind a ``custom:<key>`` identity, else ``''``.
+
+    Raw provider resolution defers a bare name that is a canonical built-in to the built-in, so a
+    ``providers:`` entry keyed ``deepseek`` is reachable only through its ``custom:`` spelling. Only
+    that key names a keyed entry: its display name may be a real built-in's slug (``name: OpenRouter``
+    on ``providers.work``), and a pick of that built-in is not this endpoint (#140107). A legacy
+    ``custom_providers:`` entry has no key, so its normalized display name is its identity and its
+    key here (``custom_provider_slug``): ``name: OpenRouter`` there answers ``openrouter``, as
+    Desktop's ``customDefaultSupersedesPick`` does.
+    """
+    identity = str(identity or '').strip().lower()
+    if not identity.startswith('custom:') or not _named_entry(identity, config):
+        return ''
+    return identity.split(':', 1)[1].strip()
+
+
+def profile_route_identity(config: dict) -> str:
+    """The identity the profile's own ``model`` block resolves to — ``custom`` for an endpoint with
+    no provider named (or ``auto``), which already routes to ``custom`` at that URL."""
+    held = dict(config.get('model') or {}) if isinstance(config.get('model'), dict) else {}
+    if str(held.get('provider') or '').strip().lower() in ('', 'auto') and str(held.get('base_url') or '').strip():
+        held['provider'] = 'custom'
+    return resolved_route(held, config)[0]
+
+
 def resolved_route(model_cfg: dict, config: dict) -> tuple[str, str]:
     """``(provider_identity, effective_base_url)`` the runtime resolves ``model_cfg`` to."""
     model_cfg = model_cfg if isinstance(model_cfg, dict) else {}

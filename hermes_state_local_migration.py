@@ -44,10 +44,14 @@ def login_owned_by(row, subject):
 def validate_legacy_row(db, row, *, subject=None):
     # Unrouted old local history only. Existing identity, foreign profile,
     # API, messaging, delegate and canonical rows require their own authority.
-    # ``subject``: the adopting caller, whose own login stamp is not a foreign identity.
+    # ``subject``: the adopting caller, whose own login stamp is not a foreign identity. A ``user_id``
+    # stamp equal to ``subject`` itself names that principal: it is already its history by
+    # ``authorize_history``'s rule, so it adopts like an unstamped row.
+    user_id = row.get('user_id')
     if (row['source'] not in LEGACY_LOCAL_SOURCES
             or any(row.get(k) for k in ('session_key', 'chat_id', 'origin_json'))
-            or (row.get('user_id') and not legacy_account_label(row) and not login_owned_by(row, subject))
+            or (user_id and user_id != subject and not legacy_account_label(row)
+                and not login_owned_by(row, subject))
             or row.get('profile_name') not in (None, '', db._own_profile_name() or 'default')):
         raise RuntimeStoreError('not_found')
 

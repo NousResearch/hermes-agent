@@ -131,11 +131,39 @@ def _format_live_refine_output(sid: str, session: Optional[dict], arg: str) -> s
     )
 
 
+def _usage_account_blocks(session: dict) -> list[str]:
+    """Provider limits then Nous credits, as CLI/messaging /usage show them; neither needs an agent.
+    Both read the session profile's credentials, unreadable outside its scope when multiplexed (#132422).
+    Before the first turn the route is the session's composer pick, else the profile's provider."""
+    from agent.account_usage import fetch_account_usage, nous_credits_lines, render_account_usage_lines
+    agent = session.get("agent")
+    pick = session.get("model_override") or {}
+    lines: list[str] = []
+    with _session_profile_runtime_scope(session):
+        with contextlib.suppress(Exception):
+            if provider := getattr(agent, "provider", None) or pick.get("provider") or _config_model_target()[1]:
+                lines += render_account_usage_lines(fetch_account_usage(
+                    provider, base_url=getattr(agent, "base_url", None), api_key=getattr(agent, "api_key", None)))
+        with contextlib.suppress(Exception):
+            # Window plans: the last reply's gauges lift the portal's lagging percents (``is True``: a
+            # Mock agent's attribute is not a plan). Every other account: exactly main's call.
+            state = getattr(agent, "_credits_state", None)
+            window = getattr(state, "is_usage_window", False) is True
+            lines += nous_credits_lines(credits_state=state) if window else nous_credits_lines()
+    return lines
+
+
 def _format_live_usage_output(sid: str, session: dict, arg: str) -> str:
+    extra = _usage_account_blocks(session)
+    tokens = _format_live_usage_tokens(session)
+    return "\n\n".join(filter(None, [tokens, "\n".join(extra)])) or _NO_AGENT_USAGE
+
+
+def _format_live_usage_tokens(session: dict) -> str:
     agent = session.get("agent")
     usage = _session_usage_snapshot(session)
     if agent is None and not usage:
-        return _NO_AGENT_USAGE
+        return ""
     if session.get("_metadata_message_count") is not None:
         message_count = int(session.get("_metadata_message_count") or 0)
     else:
@@ -156,7 +184,8 @@ def _format_live_usage_output(sid: str, session: dict, arg: str) -> str:
     rows += [("Messages:", f"{message_count:,}"), ("Compressions:", n("compressions"))]
     model = usage.get("model") or _metadata_mirror(session).get("model") or getattr(agent, "model", "") or "(unknown)"
     lines = ["Session Token Usage", "────────────────────────────────────────", f"Model: {model}"]
-    return "\n".join(lines + [f"{label:<30}{value}" for label, value in rows])
+    lines += [f"{label:<30}{value}" for label, value in rows]
+    return "\n".join(lines)
 
 
 def _live_session_messages(session: dict) -> Optional[list]:

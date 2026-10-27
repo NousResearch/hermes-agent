@@ -3,6 +3,7 @@ import { atom, batch, computed } from 'nanostores'
 
 import type { HermesConnection } from '@/global'
 import { getProfiles, hermesApi, setApiRequestProfile, STARTUP_REQUEST_TIMEOUT_MS } from '@/hermes'
+import { initialGatewayProfile, isBrowserHostedDesktop } from '@/lib/platform'
 import { sortByProfileOrder as sortProfilesByOrder } from '@/lib/profile-order'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import {
@@ -287,13 +288,15 @@ export async function switchProfile(name: string): Promise<void> {
 // gateway to that profile's backend (spawned on demand by the Electron pool).
 // A single-profile user never triggers a swap, so their path is unchanged.
 
-// The profile the live gateway WebSocket is currently connected to. Initialized
-// to the primary (window) backend's profile on boot. The gateway registry
+// The profile the live gateway WebSocket is currently connected to. Starts on
+// the registry's own initial route (initialGatewayProfile: a browser host's
+// serving profile, else default) and follows the primary (window) backend's
+// profile once boot adopts it. The gateway registry
 // mirrors its own route into this atom via the onActiveRouteChanged callback
 // (wired in use-gateway-boot's configureGatewayRegistry), so registry-internal
 // eviction fallbacks (connection removal, profile delete) can never
 // leave this naming a profile the active socket no longer serves (#89206).
-export const $activeGatewayProfile = atom<string>('default')
+export const $activeGatewayProfile = atom<string>(initialGatewayProfile())
 
 // Profile for the NEXT new chat (chosen via the new-chat picker). null = primary
 // / default, so single-profile users are unaffected.
@@ -676,6 +679,12 @@ export async function ensureGatewayProfile(
 
   $gatewaySwapTarget.set(target)
   gatewaySwitch = (async () => {
+    // A Webapp tab routes on its cached served set, which predates a profile
+    // created a moment ago: bring it up to date before either lookup below, so
+    // the descriptor and the shared-primary route both see the new profile on
+    // the tab's socket. No-op elsewhere, and for a profile the set already has.
+    await window.hermesDesktop?.refreshServedProfile?.(target).catch(() => undefined)
+
     // ensureGatewayForProfile opens (or reuses) the target's socket and points
     // the active gateway at it — without closing the profile you came from.
     // The descriptor resolves concurrently so nothing awaits between the
@@ -991,13 +1000,9 @@ export function selectProfile(name: string): void {
   //
   // The profile rail is a live workspace switch, so it must not call
   // profile.set() and reload the window. Once activation succeeds, remember
-  // the selection for the next Desktop launch through the persistence-only
-  // IPC instead (#79886). Registry-source picks name ANOTHER source's
-  // profiles, so only a primary-backend activation updates the startup
-  // preference.
-  const onPrimary = activeGatewayConnectionId() == null
-
-  const shouldRememberStartupProfile = onPrimary ? isLocalDesktopProfile(target) : Promise.resolve(false)
+  // the selection for the next launch through the persistence-only bridge
+  // call instead (#79886). Decided now: the source is the one picked from.
+  const shouldRememberStartupProfile = remembersProfilePick(target)
 
   void Promise.all([activateOnCurrentSource(target), shouldRememberStartupProfile])
     .then(([, shouldRemember]) => {
@@ -1012,6 +1017,22 @@ export function selectProfile(name: string): void {
         notifyError(error, `Failed to switch to profile "${target}"`)
       }
     })
+}
+
+// Whether a pick becomes the profile this window starts in next time.
+// Electron: only a primary-backend pick of a local profile. Registry-source
+// picks name ANOTHER source's profiles, and a per-profile ssh/remote/cloud
+// override must never replace the local Desktop startup profile.
+// Webapp: every pick. A browser tab has one source, the serving origin — its
+// descriptor always reads `remote`, and a default-route boot names it `local`
+// — and its startup profile is the tab's own `?profile=`, which `remember`
+// rewrites in place. The per-origin default and other tabs are untouched.
+function remembersProfilePick(target: string): Promise<boolean> {
+  if (isBrowserHostedDesktop()) {
+    return Promise.resolve(true)
+  }
+
+  return activeGatewayConnectionId() == null ? isLocalDesktopProfile(target) : Promise.resolve(false)
 }
 
 // Resolve persistence from the saved per-profile Desktop route, rather than the

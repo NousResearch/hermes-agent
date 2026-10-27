@@ -477,7 +477,7 @@ def _copy_auth_file(src_file: str, dst_file: str, *, deadline_s: float | None = 
 
 
 def _mirror_profile_auth(src: str, dst: str, source_profile: str) -> dict[str, str]:
-    """Mirror ``source_profile``'s auth files into the copy's ``Default`` (agent-browser opens it);
+    """Mirror ``source_profile``'s auth files into the copy's ``Default`` (the launched browser opens it);
     returns ``{relative name: reason}`` for the session-cookie DBs that could NOT be copied ({} =
     the signed-in state is usable). Locked password/autofill DBs are logged and skipped."""
     failed: dict[str, str] = {}
@@ -537,10 +537,11 @@ def _profile_is_locked(src: str, source_profile: str) -> bool:
 
 
 def _browser_setting(key: str):
-    """Read ``browser.<key>`` from raw config; None when unset/unreadable."""
+    """``browser.<key>`` from the effective user config (managed overlay, ``${VAR}`` expanded); None when
+    unset/unreadable."""
     try:
-        from hermes_cli.config import read_raw_config
-        browser_cfg = read_raw_config().get("browser", {})
+        from hermes_cli.config_effective import load_user_config_effective
+        browser_cfg = load_user_config_effective().get("browser", {})
         return browser_cfg.get(key) if isinstance(browser_cfg, dict) else None
     except Exception as e:
         logger.debug("could not read %s: %s", key, e)
@@ -710,11 +711,39 @@ def _copy_profile_tree(src: str, dst: str, source_profile: str) -> None:
             len(multi.args[0]) if multi.args else 0, src, source_profile)
 
 
+def _drop_singleton_leftovers(dst: str) -> None:
+    """Never carry live-instance leftovers into the copy (they make Chrome think it's open)."""
+    for leftover in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        with contextlib.suppress(OSError):
+            os.unlink(os.path.join(dst, leftover))
+
+
+def _snapshot_source(marker: str) -> str | None:
+    """Source profile name a completed snapshot was taken from (the done marker's content)."""
+    try:
+        with open(marker, encoding="utf-8-sig") as fh:
+            return fh.read().strip() or None
+    except OSError:
+        return None
+
+
+def _reuse_snapshot(browser: str, dst: str) -> tuple[str, None]:
+    """Serve the last completed snapshot as-is when the live profile is locked. Its logins are as
+    fresh as that copy; the next launch with the browser closed re-syncs them. Refusing instead
+    would drop the session to a signed-out browser although a usable copy is on disk."""
+    _drop_singleton_leftovers(dst)
+    logger.info("real-profile: %s holds its profile lock; reusing the last snapshot in %s "
+                "(logins as of that copy)", browser, dst)
+    return dst, None
+
+
 def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | None, str | None]:
     """Snapshot ``browser``'s real ACTIVE profile into the hermes copy dir; returns ``(dst, err)``.
     Copies ``Local State`` plus the active profile's auth files into the copy's ``Default``. The
     completion marker is written only after full success, so a torn first copy (disk full, Ctrl+C)
-    never looks "already populated" — it is redone from scratch."""
+    never looks "already populated" — it is redone from scratch. A locked live profile (Windows,
+    browser running) reuses a completed snapshot of the same source profile without re-syncing;
+    only a missing or other-profile snapshot fails with the locked error."""
     src = src or real_profile_data_dir(browser)
     if not src or not os.path.isdir(src):
         return None, (
@@ -724,16 +753,21 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
     if resolve_err or not source_profile:
         return None, resolve_err
     dst = real_profile_copy_dir(browser)
-    # Fast lock probe BEFORE any copy: a blocking file op on a Windows-locked cookie DB can
-    # hang the launch for minutes. Never trips on POSIX, where a running browser only locks the
-    # password/autofill DBs, which ``_mirror_profile_auth`` skips.
-    if _profile_is_locked(src, source_profile):
-        return None, _locked_profile_error(browser)
     marker = os.path.join(dst, _SNAPSHOT_DONE_MARKER)
     # Only a copy that previously COMPLETED counts as populated; a half-written tree is
     # rebuilt — otherwise a torn first copy poisons freshness forever.
     populated = os.path.isfile(marker)
+    same_source = populated and _snapshot_source(marker) == source_profile
+    # Fast lock probe BEFORE any copy: a blocking file op on a Windows-locked cookie DB can
+    # hang the launch for minutes. Never trips on POSIX, where a running browser only locks the
+    # password/autofill DBs, which ``_mirror_profile_auth`` skips.
+    if _profile_is_locked(src, source_profile):
+        return _reuse_snapshot(browser, dst) if same_source else (None, _locked_profile_error(browser))
     try:
+        if populated and not same_source:
+            # Drop another profile's marker BEFORE re-syncing: an interrupted sync must never leave
+            # it vouching for this profile's cookies on a later locked reuse.
+            os.unlink(marker)
         os.makedirs(dst, exist_ok=True)
         # Secure the snapshot dir AND its browser-profile parent on EVERY launch so a failed
         # first attempt or an older-build dir still converges to owner-only perms.
@@ -746,10 +780,7 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
         failed_dbs = _mirror_profile_auth(src, dst, source_profile)
         if failed_dbs:  # no session cookies: a "real profile" launch would be signed out
             return None, _unavailable_auth_dbs_error(browser, failed_dbs)
-        # Never carry live-instance leftovers into the copy.
-        for leftover in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
-            with contextlib.suppress(OSError):
-                os.unlink(os.path.join(dst, leftover))
+        _drop_singleton_leftovers(dst)
         # Mark complete only after everything above succeeded.
         try:
             with open(marker, "w", encoding="utf-8") as fh:

@@ -35,10 +35,12 @@ from hermes_cli.backup_restore import (
     _default_new_file_mode,
     _detect_prefix,
     _extract_member_atomically,
+    _get_config_path_value,
     _import_db_member,
     _restore_auth_json,
     _restore_destination_epoch,
     _safe_restore_db,
+    _set_config_path_value,
     _validate_backup_zip,
 )
 
@@ -741,11 +743,8 @@ def run_import(args) -> Optional[int]:
         print(f"Error: Not a valid zip file: {zip_path}")
         sys.exit(1)
 
-    # The restore target must be the home the command operates under — the
-    # same path printed as "Target:" via display_hermes_home(). Resolving
-    # through get_default_hermes_root() instead maps a profile home
-    # (<root>/profiles/<name>) back to <root>, silently retargeting the
-    # restore at the live root while the profile directory stays empty.
+    # The home this command operates under (the "Target:" display_hermes_home() prints):
+    # get_default_hermes_root() would map a profile home back to <root> and restore the live root.
     hermes_root = get_hermes_home()
 
     with zipfile.ZipFile(zip_path, "r") as zf:
@@ -766,7 +765,7 @@ def run_import(args) -> Optional[int]:
             print(f"Detected archive prefix: {prefix!r} (will be stripped)")
 
         # Check for existing installation
-        has_config = (hermes_root / "config.yaml").exists()
+        has_config = (hermes_root / "config.yaml").exists()  # config-reader: ok — profile marker for the backup scope (file tooling)
         has_env = (hermes_root / ".env").exists()
 
         if (has_config or has_env) and not args.force:
@@ -863,7 +862,7 @@ def run_import(args) -> Optional[int]:
                         continue
                     profile_name = entry.name
                     # Only create wrappers for directories with config
-                    if not (entry / "config.yaml").exists() and not (entry / ".env").exists():
+                    if not (entry / "config.yaml").exists() and not (entry / ".env").exists():  # config-reader: ok — profile marker for the backup scope (file tooling)
                         continue
                     collision = check_alias_collision(profile_name)
                     if collision:
@@ -1217,10 +1216,10 @@ def create_pre_update_backup(
 
 def create_pre_migration_backup(
     hermes_home: Optional[Path] = None, keep: int = _PRE_MIGRATION_DEFAULT_KEEP) -> Optional[Path]:
-    """Full zip backup to ``backups/pre-migration-<timestamp>.zip`` before ``hermes claw migrate``
-    (same dir as update backups so listings/``hermes import`` find it); ``None`` if nothing was
-    found, the write failed, or it was incomplete (salvage kept as ``*.incomplete.zip``). Never
-    raises."""
+    """Full zip backup to ``backups/pre-migration-<timestamp>.zip`` before a plugin's agent import
+    (``hermes import-agent openclaw``), so its name and signature are API; same dir as update backups
+    so ``hermes import`` finds it. ``None`` if nothing was found, the write failed, or it was
+    incomplete (salvage kept as ``*.incomplete.zip``). Never raises."""
     return _create_prefixed_full_backup(
         hermes_home, _PRE_MIGRATION_PREFIX, max(keep, 0), "pre-migration", "pre-migration backup")
 
@@ -1592,34 +1591,33 @@ def _restore_snapshot_entry(rel: str, src: Path, dst: Path) -> bool:
         return False
 
 
-def _restore_quick_snapshot_exclusive(snapshot_id: str, home: Path) -> bool:
-    """Restore state from a quick snapshot while ``home`` is reserved."""
-    from gateway.runtime_ownership import exclusive_maintenance
-    root = _quick_snapshot_root(home)
-
+def quick_snapshot_dir(snapshot_id: str, hermes_home: Optional[Path] = None) -> Optional[Path]:
+    """The directory of a restorable quick snapshot, or None for an invalid or missing id."""
+    root = _quick_snapshot_root(hermes_home)
     # Security: reject snapshot_id values that contain path separators or
     # traversal sequences so that `root / snapshot_id` stays inside root.
     if not snapshot_id or "/" in snapshot_id or "\\" in snapshot_id or snapshot_id in (".", ".."):
         logger.error("Invalid snapshot_id: %s", snapshot_id)
-        return False
-
+        return None
     snap_dir = root / snapshot_id
-
     # Confirm the resolved path is still inside root (handles symlinks etc.)
     try:
         snap_dir.resolve().relative_to(root.resolve())
     except ValueError:
         logger.error("Snapshot path traversal blocked for id: %s", snapshot_id)
-        return False
+        return None
+    if not snap_dir.is_dir() or not (snap_dir / "manifest.json").exists():
+        return None
+    return snap_dir
 
-    if not snap_dir.is_dir():
-        return False
 
-    manifest_path = snap_dir / "manifest.json"
-    if not manifest_path.exists():
+def _restore_quick_snapshot_exclusive(snapshot_id: str, home: Path) -> bool:
+    """Restore state from a quick snapshot while ``home`` is reserved."""
+    from gateway.runtime_ownership import exclusive_maintenance
+    snap_dir = quick_snapshot_dir(snapshot_id, home)
+    if snap_dir is None:
         return False
-
-    with open(manifest_path, encoding="utf-8-sig") as f:
+    with open(snap_dir / "manifest.json", encoding="utf-8-sig") as f:
         meta = json.load(f)
 
     snap_res, home_res = snap_dir.resolve(), home.resolve()
@@ -1872,26 +1870,6 @@ def _read_raw_yaml_dict(path: Path) -> Optional[dict[str, Any]]:
     except Exception:
         return None
     return data if isinstance(data, dict) else None
-
-
-def _get_config_path_value(data: dict[str, Any], dotted: tuple[str, ...]) -> Any:
-    node: Any = data
-    for key in dotted:
-        if not isinstance(node, dict):
-            return None
-        node = node.get(key)
-    return node
-
-
-def _set_config_path_value(data: dict[str, Any], dotted: tuple[str, ...], value: Any) -> None:
-    node = data
-    for key in dotted[:-1]:
-        child = node.get(key)
-        if not isinstance(child, dict):
-            child = {}
-            node[key] = child
-        node = child
-    node[dotted[-1]] = value
 
 
 def restore_config_model_settings_if_rewritten(

@@ -93,6 +93,33 @@ describe('deriveUpdateStatus', () => {
     expect(derive({ supported: true, behind: 0, branch: 'main' }).line).toBe(en.updates.latestBody)
   })
 
+  it('names a stable release the updater refuses as held, never an update', () => {
+    const view = deriveUpdateStatus({
+      apply: IDLE_APPLY,
+      checking: false,
+      held: en.settings.about.channel.heldBody,
+      latestRelease: en.settings.about.channel.latestRelease,
+      status: {
+        supported: true,
+        behind: 0,
+        updateAvailable: false,
+        held: 'downgrade',
+        channel: 'stable',
+        sourceVersion: '0.22.2',
+        targetSha: 'd'.repeat(40),
+        currentSha: 'e'.repeat(40),
+        aheadOfRelease: false,
+        rollback: false
+      },
+      target: 'client',
+      u: en.updates
+    })
+
+    expect(view.updateAvailable).toBe(false)
+    expect(view.tone).toBe('idle')
+    expect(view.line).toBe(en.settings.about.channel.heldBody('v0.22.2'))
+  })
+
   it('names a stable release the checkout already contains as a rollback, never a new update', () => {
     const status = {
       supported: true,

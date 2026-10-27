@@ -39,6 +39,7 @@ test.each(CASES)('%s: the Desktop create frame is admitted by the owner contract
   server.on('connection', (socket: any) => {
     socket.on('message', (bytes: Buffer) => {
       const frame = JSON.parse(bytes.toString())
+      if (frame.method === 'client.capabilities') { socket.send(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: { server_requests: [] } })); return }
       sent.push(frame)
       const fields = Object.keys(frame.params).filter(key => !CREATE_KEYS.has(key))
 

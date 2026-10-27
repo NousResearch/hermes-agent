@@ -43,4 +43,6 @@ AUTHZ = {
     "allowed_users_env": "QQ_ALLOWED_USERS",
     "allow_all_env": "QQ_ALLOW_ALL_USERS",
     "own_policy_env": ("", ""),
+    "group_allowed_chats_env": "QQ_GROUP_ALLOWED_USERS",
+    "allowlist_suppresses_pairing": True,
 }

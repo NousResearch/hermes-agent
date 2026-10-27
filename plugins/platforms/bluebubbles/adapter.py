@@ -428,8 +428,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     async def send_image_file(self, chat_id, image_path, caption=None, reply_to=None, **kw) -> SendResult:
         return await self._send_attachment(chat_id, image_path, caption=caption)
 
-    async def send_voice(self, chat_id, audio_path, caption=None, reply_to=None, **kw) -> SendResult:
-        return await self._send_attachment(chat_id, audio_path, caption=caption, is_audio_message=True)
+    async def send_voice(self, chat_id, audio_path, caption=None, reply_to=None, is_voice=None, **kw) -> SendResult:
+        # is_voice=False is a plain audio MEDIA file (music, a sound effect): a normal attachment,
+        # never an iMessage voice memo.
+        return await self._send_attachment(chat_id, audio_path, caption=caption, is_audio_message=is_voice is not False)
 
     async def send_video(self, chat_id, video_path, caption=None, reply_to=None, **kw) -> SendResult:
         return await self._send_attachment(chat_id, video_path, caption=caption)

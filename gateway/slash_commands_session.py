@@ -36,7 +36,7 @@ _DM_CHAT_TYPES = {"dm", "direct", "private", ""}
 
 _BRANCH_COPIED_FIELDS = ("content", "tool_calls", "tool_call_id", "finish_reason", "reasoning",
                          "reasoning_content", "reasoning_details", "codex_reasoning_items",
-                         "codex_message_items", "timestamp")
+                         "codex_message_items", "timestamp", "data_use")
 
 
 def _sattr(obj, name: str) -> str:
@@ -112,6 +112,29 @@ def _strip_resume_name(parts: list[str]) -> str:
     return name
 
 
+async def discard_lost_turns(authority, session_id) -> str:
+    """Messaging ``/discard`` (#134889 GW-10): acknowledge every ``unknown`` (lost-in-restart) turn
+    of this chat's FIFO through the owner's fenced ``resolve_unknown``, the path Desktop's Discard,
+    the TUI queue and ``hermes sessions discard`` use. Never replays the input; the saved
+    followers run once it commits."""
+    from gateway.session_contract import SessionRef
+    from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+    rows = await asyncio.to_thread(list_session_admissions, authority.db, session_id=session_id)
+    lost = [row for row in rows if row['status'] == 'unknown']
+    if not lost:
+        return t("gateway.discard.nothing")
+    ref = SessionRef(authority.profile_id, session_id)
+    done = 0
+    for row in lost:
+        try:
+            await authority.resolve_unknown_as_owner(ref, row['admission_id'], row['generation'])
+        except RuntimeStoreError as exc:
+            logger.warning("/discard of %s refused: %s", row['admission_id'], exc.reason)
+            continue
+        done += 1
+    return t("gateway.discard.done", count=done) if done else t("gateway.discard.nothing")
+
+
 class GatewaySessionCommandsMixin:
     """Session-transcript slash commands (/new, /resume, /sessions, /branch, /title, /save, /undo, /retry, /topic, /compress)."""
 
@@ -153,6 +176,23 @@ class GatewaySessionCommandsMixin:
         await self.hooks.emit("session:end", dict(hook_payload))
         await self.hooks.emit("session:reset", dict(hook_payload))
 
+    async def _handle_discard_command(self, event: MessageEvent) -> str:
+        """``/discard``: drop this chat's turn lost in a gateway restart so its queue runs again."""
+        from gateway.session_authorities import active_authority
+        if not self._is_user_authorized_for_source(event.source):
+            return t("gateway.discard.nothing")
+        authority = active_authority(self)
+        session_key = self._session_key_for_source(event.source)
+        sid = authority.logical_owner(self.session_store.peek_session_id(session_key)) if authority else None
+        if not sid:
+            return t("gateway.discard.nothing")
+        if sid not in authority.sessions:
+            # A conversation /resume brought back after a restart is the chat's route but not yet
+            # live: publish the peeked conversation on its route (review #141357). Never through
+            # get-or-create: a suspended route would rotate to a new session and strand the lost turn.
+            authority._publish_route(event.source, sid, session_key)
+        return await discard_lost_turns(authority, sid)
+
     async def _handle_reset_command(self, event: MessageEvent) -> str | EphemeralReply:
         """Handle /new or /reset command."""
         source = event.source
@@ -182,10 +222,11 @@ class GatewaySessionCommandsMixin:
                                   parent_session_id=str(getattr(old_entry, "session_id", "") or ""))
         _reset_process_scoped_tool_state()
 
-        new_entry = await self.async_session_store.reset_session(session_key)
         _old_sid = old_entry.session_id if old_entry else None
-        from gateway.session_automation import move_route_wakes
-        await move_route_wakes(self, session_key, _old_sid)  # main #114456: a parked wake survives /new
+        from gateway.session_automation import move_route_wakes, route_owner_lock
+        async with route_owner_lock(self, _old_sid):
+            new_entry = await self.async_session_store.reset_session(session_key)
+            await move_route_wakes(self, session_key, _old_sid)  # main #114456: a parked wake survives /new
         await self._fire_session_reset_hooks(source, session_key, _old_sid,
                                              new_entry.session_id if new_entry else None)
         # Scoped to the profile serving this source so a multiplexed /new banner reports the
@@ -1035,6 +1076,12 @@ class GatewaySessionCommandsMixin:
         if isinstance(resolved, str):
             return resolved
         target_id, name = resolved
+        # A local conversation moves onto this lane from its current head, as /handoff carries it: a
+        # title naming its first segment (a local /new moved on) would strand the live one (#143286).
+        from gateway.session_route_recovery import conversation_head, follow_hand_off
+        authority, local_owner, head = await conversation_head(self, target_id)
+        if local_owner is not None:
+            target_id = head
         denied = await self._resume_access_denied_reply(source, target_id, name, allow_all, allow_cross_room)
         if denied is not None:
             return denied
@@ -1047,6 +1094,8 @@ class GatewaySessionCommandsMixin:
         )
         if not new_entry:
             return t("gateway.resume.switch_failed")
+        if local_owner is not None and authority is not None:  # a Desktop still viewing it follows it
+            follow_hand_off(authority, source, session_key, authority.logical_owner(target_id), local_owner)
         # Conversation boundary: all conversation-scoped state + security state in one funnel call.
         # Conversation boundary: clear ALL conversation-scoped per-session state (model/reasoning overrides
         # #10702, one-turn restores, model notes, last-resolved cache #58403, /queue overflow) + security

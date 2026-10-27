@@ -338,8 +338,6 @@ _TERMINAL_BACKENDS: list[dict[str, str]] = [
         ("local", "Local", "Run commands directly on this machine. No isolation."),
         ("docker", "Docker / Podman",
          "Run commands in an isolated Docker or Podman container with a persistent workspace."),
-        ("singularity", "Singularity / Apptainer",
-         "Run commands in a Singularity/Apptainer container (HPC-friendly, rootless)."),
         ("modal", "Modal", "Run commands in a Modal cloud sandbox."),
         ("daytona", "Daytona", "Run commands in a Daytona cloud sandbox."),
         ("ssh", "SSH", "Run commands on a remote host over SSH."))]

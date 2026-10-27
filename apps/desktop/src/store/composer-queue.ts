@@ -38,6 +38,9 @@ export interface RemoveQueuedPromptOptions {
 export interface QueuedPromptEntry {
   id: string
   serverStatus?: string
+  /** The queued-row verbs the owner serves for a server row (`steer`, `replace`); none from an
+   *  owner that predates them. Projected from the pending snapshot, never set locally. */
+  serverControls?: string[]
   text: string
   /** What the queue panel and the sent bubble show, when it differs from the
    *  text the agent receives. A queued `/skill` invocation carries the whole
@@ -337,7 +340,12 @@ export const getQueuedPrompts = (key: string | null | undefined): QueuedPromptEn
  * them submitting the same entry — and the gateway runs the second copy as its
  * own turn. Web Locks are arbitrated by the browser across windows and freed if
  * the holder closes; a waiting window then finds an entry the holder sent
- * already gone. Without Web Locks there is no other window to exclude.
+ * already gone. Web Locks exist only in secure contexts: the Webapp served over
+ * plain HTTP to a non-loopback address has none, nothing here excludes its other
+ * tabs, and two of them can submit one entry. Both copies carry the entry id as
+ * their submission id, and the Webapp always dials the canonical gateway, which
+ * answers a repeated request id carrying the same payload with the first
+ * admission, not a second turn.
  */
 export const withQueueDrainClaim = <T>(sid: string, task: (queue: QueuedPromptEntry[]) => Promise<T>): Promise<T> => {
   const run = () => task(current()[sid] ?? [])

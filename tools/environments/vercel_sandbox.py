@@ -80,6 +80,21 @@ def _extract_status_code(exc: BaseException) -> int | None:
             return value
     return None
 
+@cache
+def _transport_error_types() -> tuple[type[BaseException], ...]:
+    """Network exceptions of every HTTP stack the SDK may raise from.
+
+    vercel >= 0.12 moved the sandbox client from httpx to httpx2, a separate
+    distribution whose exceptions do not subclass httpx's.
+    """
+    types: list[type[BaseException]] = [httpx.NetworkError, httpx.ProtocolError, httpx.ReadError]
+    try:
+        import httpx2
+    except ImportError:
+        return tuple(types)
+    return (*types, httpx2.NetworkError, httpx2.ProtocolError, httpx2.ReadError)
+
+
 def _is_transient_vercel_error(exc: BaseException) -> bool:
     """True when any exception in the cause/context chain looks retryable."""
     seen: set[int] = set()
@@ -90,7 +105,7 @@ def _is_transient_vercel_error(exc: BaseException) -> bool:
         status = next((c for c in codes if isinstance(c, int)), None)
         name = type(error).__name__.lower()
         if (status in _TRANSIENT_STATUS_CODES
-                or isinstance(error, (httpx.NetworkError, httpx.ProtocolError, httpx.ReadError))
+                or isinstance(error, _transport_error_types())
                 or "ratelimit" in name or "servererror" in name):
             return True
         error = error.__cause__ or error.__context__

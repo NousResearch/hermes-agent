@@ -744,7 +744,8 @@ class WebSocketRelayTransport:
                             "a revoked credential (the token may simply have expired)"
                         )
                 elif not self._closing:
-                    logger.warning("relay ws read loop ended: %s", exc)
+                    log = logger.debug if self._is_keepalive_ping_timeout(exc) else logger.warning
+                    log("relay ws read loop ended: %s", exc)
             # Socket closed. Exactly ONE dialer may be live at a time: the reader
             # that dies while a dialer is already mid-dial (socket installed,
             # hello still in flight) must NOT start a second one — that dialer's
@@ -807,6 +808,11 @@ class WebSocketRelayTransport:
                 return reason
         reason = getattr(exc, "reason", None)
         return reason if isinstance(reason, str) else None
+
+    @classmethod
+    def _is_keepalive_ping_timeout(cls, exc: BaseException) -> bool:
+        """True for the routine 1011 close emitted by websockets' ping watchdog."""
+        return cls._close_code_of(exc) == 1011 and "keepalive ping timeout" in str(exc).lower()
 
     async def _redial_with_fresh_token(self) -> None:
         """One-shot, immediate re-dial after a provisional post-handshake 4401.

@@ -1,5 +1,5 @@
 import type * as childProcess from 'node:child_process'
-import { spawn } from 'node:child_process'
+import { type ChildProcess, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -120,4 +120,31 @@ describe('relaunchNow', () => {
       }
     }
   )
+
+  // A launch that lost APPDIR still runs from its type-2 mount, which ownAppImage
+  // reads off process.execPath; the restart drops that mount's entries all the same.
+  it('strips the mount it runs from when APPDIR was lost', () => {
+    let childEnv: NodeJS.ProcessEnv | undefined
+    vi.mocked(spawn).mockImplementationOnce(((_file: string, _args: string[], options: childProcess.SpawnOptions) => {
+      childEnv = options.env
+
+      return { on: () => undefined, unref: () => undefined } as unknown as ChildProcess
+    }) as typeof spawn)
+    const mount = '/run/user/1000/.mount_HermesQ7x2Lp'
+    const image = '/home/u/Apps/Hermes.AppImage'
+
+    relaunchNow(
+      { releaseSingleInstanceLock: () => undefined },
+      [],
+      image,
+      {
+        APPIMAGE: image,
+        LD_LIBRARY_PATH: `${mount}/usr/lib`,
+        PATH: `${mount}:${mount}/usr/bin:/tmp/.mount_IdeAbC123/usr/bin:/usr/bin`
+      },
+      `${mount}/hermes`
+    )
+
+    expect(childEnv).toEqual({ APPIMAGE: image, PATH: '/tmp/.mount_IdeAbC123/usr/bin:/usr/bin' })
+  })
 })

@@ -118,14 +118,30 @@ done
 exec "$0" "$@"`
 
 /**
+ * The root of the AppImage mount `execPath` runs from: APPDIR, or when that
+ * was lost the `.mount_<name><random>` directory on the executable's path
+ * (see ownAppImage).
+ */
+function mountRoot(execPath: string, env: NodeJS.ProcessEnv): string | undefined {
+  if (env.APPDIR) {
+    return posix.resolve(env.APPDIR)
+  }
+
+  const segments = posix.dirname(posix.resolve(execPath)).split('/')
+  const mount = segments.findIndex(segment => segment.startsWith('.mount_'))
+
+  return mount < 0 ? undefined : segments.slice(0, mount + 1).join('/')
+}
+
+/**
  * `env` without the PATH-style entries inside this mount, which the image's
  * AppRun prepended (PATH, LD_LIBRARY_PATH, XDG_DATA_DIRS, ...). The new
  * image's AppRun prepends its own, while this mount goes away as soon as the
  * child stops holding it: a lookup through it while its FUSE daemon exits
  * fails with ENOTCONN, which aborted the new AppRun's `env bash`.
  */
-function withoutMountEntries(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const appDir = env.APPDIR && posix.resolve(env.APPDIR)
+function withoutMountEntries(env: NodeJS.ProcessEnv, execPath: string): NodeJS.ProcessEnv {
+  const appDir = mountRoot(execPath, env)
 
   if (!appDir) {
     return env
@@ -166,7 +182,8 @@ export function relaunchNow(
   host: RelaunchHost,
   args: string[],
   target: string = relaunchTarget(),
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  execPath: string = process.execPath
 ): void {
   host.releaseSingleInstanceLock()
 
@@ -176,7 +193,7 @@ export function relaunchNow(
   // reached through a symlinked $TMPDIR) needs APPDIR/APPIMAGE, which no AppRun
   // restores, and another app's AppImage env is the user's, as app.relaunch kept it.
   const ownImage = env.APPIMAGE && posix.resolve(target) === posix.resolve(env.APPIMAGE)
-  const childEnv = ownImage ? withoutMountEntries(env) : env
+  const childEnv = ownImage ? withoutMountEntries(env, execPath) : env
 
   const child = spawn('/bin/sh', ['-c', EXEC_WITH_STDIO_ONLY, target, ...args], {
     detached: true,

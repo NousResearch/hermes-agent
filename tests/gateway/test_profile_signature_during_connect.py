@@ -2,7 +2,7 @@
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -42,7 +42,7 @@ async def test_config_saved_during_connect_is_rescanned(tmp_path, monkeypatch, s
     runner._restore_secondary_completion_ledgers = lambda *a: None
     runner._adapter_credential_claim = lambda *a: None
     runner._adapter_listener_claim = lambda *a: None
-    runner._create_adapter = lambda platform, config: SimpleNamespace(platform=platform)
+    runner._create_adapter = AsyncMock(side_effect=lambda platform, config: SimpleNamespace(platform=platform))
     runner._note_served_profiles([("default", home)])
     connected = []
 

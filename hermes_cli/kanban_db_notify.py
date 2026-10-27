@@ -24,6 +24,17 @@ if TYPE_CHECKING:
 # Notifier reaction to a terminal event: "notify" = passive adapter.send only
 # (default); "notify+wake" = send AND wake the destination agent; "wake" = wake only.
 _NOTIFY_DELIVERY_MODES = ("notify", "notify+wake", "wake")
+# A failure-only allowlist: the notifier then drops a crash the dispatcher is retrying.
+FAILURE_ALERT_EVENT_KINDS = ("blocked", "block_loop_detected", "gave_up", "timed_out", "crashed")
+
+
+def coalesce_failure_alert_events(events: list[Any]) -> list[Any]:
+    """Suppress retry crashes/timeouts when a terminal failure already explains them."""
+    kinds = {event.kind for event in events}
+    if kinds & {"blocked", "block_loop_detected", "gave_up"}:
+        return [event for event in events if event.kind not in {"crashed", "timed_out"}]
+    return [event for event in events if event.kind != "crashed"]
+
 
 _SCALAR_TYPES = (str, int, float, bool)
 
@@ -64,6 +75,36 @@ def _decode_notify_delivery_metadata(raw: Any) -> dict[str, Any]:
     return {str(key): value for key, value in data.items() if isinstance(value, _SCALAR_TYPES)}
 
 
+def _encode_event_kinds(event_kinds: Optional[Iterable[str]]) -> Optional[str]:
+    """Serialize an optional terminal-event allowlist; ``None`` keeps all kinds."""
+    if event_kinds is None:
+        return None
+    kinds = list(dict.fromkeys(str(kind).strip() for kind in event_kinds if str(kind).strip()))
+    return json.dumps(kinds, separators=(",", ":"))
+
+
+def _decode_event_kinds(raw: Any) -> Optional[list[str]]:
+    if raw is None or raw == "":
+        return None
+    try:
+        kinds = json.loads(str(raw))
+    except ValueError:
+        return None
+    if not isinstance(kinds, list):
+        return None
+    return list(dict.fromkeys(str(kind).strip() for kind in kinds if isinstance(kind, str) and kind.strip()))
+
+
+def auto_subscribe_event_kinds(config: Optional[Mapping[str, Any]]) -> Optional[list[str]]:
+    """``kanban.auto_subscribe_events`` for automatic subscriptions; ``None`` keeps all kinds."""
+    kanban = (config or {}).get("kanban") if isinstance(config, Mapping) else None
+    raw = kanban.get("auto_subscribe_events") if isinstance(kanban, Mapping) else None
+    if not isinstance(raw, (list, tuple)):
+        return None
+    kinds = [str(kind).strip() for kind in raw if isinstance(kind, str) and kind.strip()]
+    return list(dict.fromkeys(kinds)) or None
+
+
 def add_notify_sub(
     conn: sqlite3.Connection,
     *,
@@ -76,6 +117,7 @@ def add_notify_sub(
     chat_type: Optional[str] = None,
     notifier_profile: Optional[str] = None,
     delivery_mode: Optional[str] = None,
+    event_kinds: Optional[Iterable[str]] = None,
     delivery_metadata: Optional[Mapping[str, Any]] = None,
 ) -> None:
     """Register a gateway source wanting terminal-state notifications for
@@ -86,12 +128,14 @@ def add_notify_sub(
     omitting it would key the wake into a different session. ``None`` keeps an
     existing row's value. ``delivery_mode``: ``None`` leaves an existing row
     untouched, an explicit valid value is last-write-wins, unknown falls back
-    to ``"notify"``. ``delivery_metadata`` merges supplied routing anchors
+    "notify". ``event_kinds`` is an optional terminal-event allowlist; ``None``
+    restores the historic all-terminal-events policy. ``delivery_metadata`` merges supplied routing anchors
     into an existing row so re-subscribing never discards them. New subs start
     caught up (``last_event_id`` =
     ``MAX(task_events.id)``) so the notifier never replays history at boot.
     """
     valid_mode = delivery_mode if delivery_mode in _NOTIFY_DELIVERY_MODES else None
+    event_kinds_json = _encode_event_kinds(event_kinds)
     # api_server is stateless: the adapter has no send(), the wake self-post IS
     # the delivery. A plain 'notify' default would leave those subs with no
     # delivery mechanism at all. Explicit modes still win.
@@ -111,14 +155,14 @@ def add_notify_sub(
             """
             INSERT OR IGNORE INTO kanban_notify_subs
                 (task_id, platform, chat_id, thread_id, user_id, user_id_alt,
-                 chat_type, notifier_profile, delivery_mode, delivery_metadata,
+                 chat_type, notifier_profile, delivery_mode, event_kinds, delivery_metadata,
                  created_at, last_event_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                     COALESCE((SELECT MAX(id) FROM task_events WHERE task_id = ?), 0))
             """,
             (
                 *key, user_id, user_id_alt, chat_type or "dm", notifier_profile,
-                insert_mode, metadata_json, int(time.time()), task_id,
+                insert_mode, event_kinds_json, metadata_json, int(time.time()), task_id,
             ),
         )
         # chat_type / delivery_mode are last-write-wins; delivery metadata
@@ -130,9 +174,10 @@ def add_notify_sub(
             ("user_id_alt", user_id_alt, True),
             ("notifier_profile", notifier_profile, True),
             ("delivery_mode", valid_mode, False),
+            ("event_kinds", event_kinds_json, False),
             ("delivery_metadata", metadata_json, False),
         ):
-            if not value:
+            if not value and column != "event_kinds":
                 continue
             guard = f" AND ({column} IS NULL OR {column} = '')" if fill_only else ""
             conn.execute(
@@ -195,6 +240,7 @@ def list_notify_subs(
         item = dict(row)
         if "delivery_metadata" in item:
             item["delivery_metadata"] = _decode_notify_delivery_metadata(item.get("delivery_metadata"))
+        item["event_kinds"] = _decode_event_kinds(item.get("event_kinds"))
         out.append(item)
     return out
 

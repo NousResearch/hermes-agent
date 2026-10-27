@@ -158,10 +158,10 @@ DEFAULT_CONFIG = {
         # Responses API final-answer length (`text.verbosity`): "" = not sent (provider default),
         # or low | medium | high. Responses-family transports only; chat_completions never sends it.
         "text_verbosity": "",
-        # System-prompt guidance telling the model to call tools instead of describing actions.
-        # "auto" = gpt/codex models; true/false = force for all models; or a list of model-name
-        # substrings (e.g. ["gpt", "codex", "gemini", "qwen"]).
+        # System-prompt guidance telling the model to call tools instead of describing actions. "auto" = gpt/codex
+        # models; true/false = force for all models; or a list of model-name substrings (e.g. ["gpt", "codex", "gemini", "qwen"]).
         "tool_use_enforcement": "auto",
+        "tool_choice": "auto",  # "required": force a tool call on every chat_completions request; replies go via a `respond` tool (agent/tool_choice.py)
         # Execution-discipline prompt block (tool persistence, tools for arithmetic/system facts,
         # read-back after external writes, count reconciliation, literal identifiers,
         # verification-gated completion). Chosen once per session by model name (byte-stable).

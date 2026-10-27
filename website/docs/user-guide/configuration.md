@@ -2103,6 +2103,31 @@ agent:
   tool_use_enforcement: ["gpt", "codex", "gemini", "grok", "my-custom-model"]
 ```
 
+### Forcing tool calls on the wire
+
+Prompt guidance can be ignored. Small local models in particular will still sometimes end a turn with "I'll install that now" (or an explanation of why they can't) instead of a tool call. `tool_choice: required` makes that impossible at the API level:
+
+```yaml
+agent:
+  tool_choice: "required"   # "auto" (default) | "required"
+```
+
+With `required`, every `chat_completions` request that carries tools also sends `tool_choice: "required"` and adds a `respond(message)` tool. Calling `respond` is the model's only way to reply: Hermes turns a respond-only reply back into a normal text answer, so delivery to the CLI, the gateway platforms and the session history is unchanged. If the model calls `respond` together with other tools, the other tools run first and the model replies afterwards.
+
+Requirements and limits:
+
+- Applies to the `chat_completions` API mode only. That is where local servers (llama.cpp, vLLM, MLX, Ollama) and most OpenAI-compatible providers run. Anthropic rejects forced tool use while extended thinking is on, so the Anthropic route is left unchanged.
+- The server has to enforce `tool_choice: "required"`. Most OpenAI-compatible servers do. A server that ignores it just behaves like `auto`.
+- An explicit `tool_choice` in request overrides takes precedence.
+- Local servers cap the size of the tool schema they can force. Rapid-MLX allows 64 KiB and returns HTTP 400 above that. A large tool surface (many MCP servers) can exceed the cap. Set the option per platform to force calls only where the toolset is lean:
+
+```yaml
+agent:
+  tool_choice:
+    telegram: required
+    default: auto      # cli, cron and any platform not listed
+```
+
 ## Execution-Discipline Guidance
 
 Separately from tool-use enforcement, Hermes injects an **execution-discipline** block for model families that share a set of agentic failure modes observed in eval traces: doing arithmetic in prose instead of code, skipping read-back verification after external writes, "repairing" malformed identifiers, claiming completeness despite count mismatches, and declaring "done" without verifying every acceptance criterion.

@@ -36,6 +36,7 @@ from agent.chat_completion_headers import _chat_completion_capturing_headers
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
 from agent.fast_mode import effective_request_overrides
+from agent.tool_choice import apply_tool_choice
 from agent.turn_context import substitute_api_content
 from agent.gemini_native_adapter import is_native_gemini_base_url
 # Remote endpoints must never be fingerprinted: the probe waterfall is only valid for local/LM-Studio/Ollama
@@ -793,7 +794,6 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
     return _chat_completion_capturing_headers(agent, request_client, api_kwargs)
 
 
-
 def should_use_direct_api_call(agent) -> bool:
     """Whether an OpenAI-wire request should skip the interrupt worker.
 
@@ -1256,7 +1256,6 @@ def _codex_silent_hang_hint(agent, api_kwargs: dict) -> Optional[str]:
     return None
 
 
-
 def interruptible_api_call(agent, api_kwargs: dict):
     """Run the API call on a worker thread so the caller can detect interrupts
     without waiting for the full HTTP round-trip. Each worker gets its own
@@ -1433,7 +1432,6 @@ def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, re
         context_management=context_management, text_verbosity=getattr(agent, "text_verbosity", None))
 
 
-
 def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id):
     transport = agent._get_transport()
     tools_for_api = _alias_tool_search_bridge_for_xai(agent, transport, tools_for_api)
@@ -1528,6 +1526,7 @@ def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | 
     # The one place request_overrides are consumed: static /fast values are already pinned
     # in agent.request_overrides; auto/cold windows layer the fast override per request.
     request_overrides = effective_request_overrides(agent)
+    tools_for_api, request_overrides = apply_tool_choice(agent, tools_for_api, request_overrides)
     if agent.api_mode == "anthropic_messages":
         return _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides)
     if agent.api_mode == "bedrock_converse":

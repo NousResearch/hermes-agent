@@ -156,7 +156,7 @@ def _get_model_and_provider(config: dict) -> tuple[str, str]:
 # Sections with interesting user-facing overrides
 _INTERESTING_PATHS = (
     ("agent", "max_turns"), ("agent", "gateway_timeout"), ("agent", "session_stall_timeout"),
-    ("agent", "sanitizer_heal_escalation_threshold"), ("agent", "tool_use_enforcement"),
+    ("agent", "sanitizer_heal_escalation_threshold"), ("agent", "tool_use_enforcement"), ("agent", "tool_choice"),
     ("agent", "execution_guidance"), ("terminal", "backend"), ("terminal", "docker_image"),
     ("terminal", "persistent_shell"), ("browser", "allow_private_urls"), ("compression", "enabled"),
     ("compression", "threshold"), ("compression", "in_place"), ("display", "streaming"),

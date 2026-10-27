@@ -241,7 +241,7 @@ def test_kill_of_an_exited_session_reports_a_failed_scope_stop(monkeypatch):
 
     result = registry.kill_process(session.id)
 
-    assert result["status"] == "already_exited"
+    assert result["status"] == "error" and result["error"] == "process_stop_unknown"
     assert result["scope_stop_failed"] == "hermes-worker-proc_exited_scope_stuck.scope"
 
 
@@ -396,20 +396,19 @@ def _scoped_session(registry, monkeypatch, sid, stops, **fields) -> ProcessSessi
     return session
 
 
-def test_a_recovered_pid_that_dies_mid_kill_reports_the_failed_scope_stop(monkeypatch):
-    """``get`` sees the recovered PID alive, ``_signal_kill`` sees it gone: the scope stop it
-    then runs can still fail, and that must not be reported as a clean exit."""
+def test_recovered_identity_unproved_at_signal_keeps_the_failed_scope_fenced(monkeypatch):
+    """A conservative status read grants no permission to signal or report cleanup."""
     registry = ProcessRegistry()
     session = _scoped_session(registry, monkeypatch, "proc_recovered", [False],
                               pid=4242, detached=True, pid_scope="host")
-    fates = iter(["running", "gone"])
-    monkeypatch.setattr(registry, "_detached_host_fate", lambda *_args: next(fates))
+    monkeypatch.setattr(registry, "_detached_host_fate", lambda *_args: "running")
+    monkeypatch.setattr(registry, "_terminate_host_pid", lambda *_args: pytest.fail('unproved PID signaled'))
 
     result = registry.kill_process(session.id)
 
-    assert result["status"] == "already_exited"
+    assert result["status"] == "error" and result["error"] == "process_stop_unknown"
     assert result["scope_stop_failed"] == session.systemd_unit
-    assert session.id in registry._finished  # keeps its unit for a retry
+    assert session.id in registry._running and session._scope_stop_pending
 
 
 def test_bulk_cleanup_does_not_count_a_failed_scope_stop_and_retries_it(monkeypatch):

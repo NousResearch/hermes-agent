@@ -46,12 +46,13 @@ def reap_untracked(registry, session, proc):
     """Post-Popen failure cannot force-kill a native job's only reaper."""
     from contextlib import suppress
     from tools import process_registry as facade
+    retain_failed_start(registry, session)
     if session.native_job_scope:
         from tools.process_registry_job import request_job_stop, job_quiescent
-        retain_failed_start(registry, session)
         request_job_stop(registry, session)
         reader = registry._pty_reader_loop if session._pty is not None else registry._log_reader_loop
-        if job_quiescent(session):
+        wrapper_finished = not proc.isalive() if session._pty is not None else proc.poll() is not None
+        if job_quiescent(session) and wrapper_finished:
             reader(session)  # Collect this original job's status/output, never replay its command.
         elif session._reader_thread is None or not session._reader_thread.is_alive():
             try:
@@ -61,14 +62,9 @@ def reap_untracked(registry, session, proc):
                 logging.getLogger(__name__).exception("Native job reader recovery failed; retained checkpoint %s", session.id)
         return
     with suppress(Exception):
-        if session.systemd_unit:
-            # Scope teardown is the authoritative cleanup for the worker cgroup;
-            # the systemd-run wrapper PID is terminated below as fallback.
-            registry._stop_scope(session)
-        # _terminate_host_pid revalidates the kernel start time captured at
-        # spawn before signalling: pgid == pid would only prove the pid leads a
-        # group, and a reaped child can be recycled onto an unrelated leader.
-        registry._terminate_host_pid(proc.pid, session.host_start_time)
+        if (type(session.host_start_time) is int and session.host_start_time > 0
+                and registry._host_pid_is_ours(proc.pid, session.host_start_time)):
+            registry._terminate_host_pid(proc.pid, session.host_start_time)
     with suppress(Exception):
         proc.wait(timeout=5)
 

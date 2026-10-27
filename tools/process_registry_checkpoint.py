@@ -40,6 +40,10 @@ class ProcessCheckpointMixin:
         from tools.process_registry_job import job_quiescent, record_scope_quiescence
         if not session.systemd_unit:
             stopped = job_quiescent(session)
+            if stopped and session.exited:
+                from tools.process_registry import save_completed_result
+                stopped = ((session._reader_thread is None or session._completion_event.wait(1.0))
+                           and save_completed_result(session))
             session._scope_stop_pending = not stopped
             self._write_checkpoint()
             return stopped
@@ -74,6 +78,8 @@ class ProcessCheckpointMixin:
             result = {'status': 'error', 'error': 'process_stop_unknown',
                       'session_id': session.id, 'process_running': not session.exited,
                       **_completion_output(session)}
+            if session.systemd_unit:
+                result['scope_stop_failed'] = session.systemd_unit
         self._write_checkpoint()
         if session.exited:
             save_completed_result(session)

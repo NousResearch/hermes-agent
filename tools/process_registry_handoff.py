@@ -159,3 +159,46 @@ def check_control_ownership(registry, session, expected, consume_output):
         if consume_output:
             registry._completion_consumed.add(session.id)
     return None
+
+
+def observe_completion(registry, session_id, expected, key, observation, callback):
+    """Subscribe once per native owner/control to this original, immutable job.
+
+    The callback only schedules its existing owner; no grant or durable state is
+    reconstructed here. A cleared callback retains one bounded deduplication
+    identity per owner so an already-finished error cannot create a retry loop.
+    """
+    with registry._lock:
+        session = registry._running.get(session_id) or registry._finished.get(session_id)
+        if session is None:
+            return False
+        with session._lock:
+            if ownership_identity(session) != expected:
+                return False
+            previous = session._completion_observers.get(key)
+            if previous is not None and previous[:2] == (observation, expected):
+                return False
+            complete = session._completion_event.is_set()
+            if not complete and session._reader_thread is None:
+                return False  # No original publisher can deliver a future completion.
+            session._completion_observers[key] = (observation, expected, None if complete else callback)
+            ready = complete and session._result_persisted_generation == session.ownership_generation
+    if ready:
+        callback()
+    return ready or not complete
+
+
+def notify_completion_observers(session):
+    """The original publisher has set completion after saving its owned result."""
+    with session._lock:
+        if not session._completion_event.is_set():
+            return
+        current = ownership_identity(session)
+        ready = session._result_persisted_generation == session.ownership_generation
+        observers = list(session._completion_observers.items())
+        for key, (observation, expected, _callback) in observers:
+            session._completion_observers[key] = (observation, expected, None)
+    for _key, (_observation, expected, callback) in observers:
+        if ready and expected == current and callback is not None:
+            callback()  # Native consumers post to their loop; no locks or I/O held here.
+

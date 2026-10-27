@@ -68,11 +68,81 @@ async def retry_process_stop(authority, ref, agent=None):
         if (not token.startswith(str(authority.epoch) + ':')
                 or await asyncio.to_thread(_checkpoint_path().exists)):
             if not await asyncio.to_thread(_recover_stopped_processes, authority, ref):
+                _observe_process_stop_completion(authority, ref, agent)
                 return False
         if not await interrupt_processes(authority, ref, agent):
             return False
     await tracked_write(authority, partial(clear_process_stop, authority, ref, token))
     return True
+
+
+def _observe_process_stop_completion(authority, ref, agent=None):
+    """A real resource finish rechecks the existing fenced human FIFO once."""
+    from contextvars import copy_context
+    from hermes_constants import get_hermes_home, hermes_home_key
+    from tools.process_registry_handoff import observe_completion
+    token = process_stop_pending(authority.db, ref.session_id)
+    live = authority.sessions.get(ref.session_id)
+    if token is None or live is None:
+        return
+    try:
+        registry, scopes = _process_targets(authority, ref, agent, subagent_records(agent), select=lambda p:
+            not p.exited or p._scope_stop_pending or p.systemd_unit
+            or p._result_persisted_generation != p.ownership_generation)
+        generation = authority._handle(ref).execution_generation
+    except (RuntimeStoreError, OSError):
+        return  # The durable fence remains; a later native control can recover.
+    loop, context = asyncio.get_running_loop(), copy_context()
+    home = hermes_home_key(get_hermes_home())
+    observation = authority.epoch, generation, token, authority.instance_id
+    key = home, ref.session_id
+    for process_id, expected in scopes.items():
+        def wake(process_id=process_id, expected=expected):
+            _wake_process_stop_completion(authority, ref, live, registry, process_id, expected, observation, home)
+        def completed(wake=wake):
+            try:
+                loop.call_soon_threadsafe(wake, context=context.copy())
+            except RuntimeError:
+                return  # The owning loop retired; the durable Stop remains for recovery.
+        observe_completion(registry, process_id, expected, key, observation, completed)
+
+
+def _wake_process_stop_completion(authority, ref, live, registry, process_id, expected, observation, home):
+    """Only current native ownership may schedule; the drain still proves cleanup."""
+    import sqlite3
+    from gateway.session_authorities import owner_scope
+    from hermes_constants import get_hermes_home, hermes_home_key
+    from hermes_state_runtime import _epoch
+    from tools.process_registry_handoff import ownership_identity
+    from tools.process_registry_job import job_quiescent
+    epoch, generation, token, _instance = observation
+    try:
+        with owner_scope(authority):
+            if (authority.epoch != epoch or authority.instance_id != _instance
+                    or authority.retiring or authority.runner._draining or authority.sessions.get(ref.session_id) is not live
+                    or hermes_home_key(get_hermes_home()) != home):
+                return
+            with authority.db._read_ctx(reopen=False) as conn:
+                _epoch(conn, epoch)
+            if (process_stop_pending(authority.db, ref.session_id) != token
+                    or authority._handle(ref).execution_generation != generation
+                    or getattr(sys.modules.get('tools.process_registry'), 'process_registry', None) is not registry):
+                return
+            current, scopes = _process_targets(authority, ref, None, (), select=lambda p: p.id == process_id)
+            with current._lock:
+                process = current._running.get(process_id) or current._finished.get(process_id)
+                ready = (process is not None and scopes.get(process_id) == expected
+                         and ownership_identity(process) == expected and process._completion_event.is_set()
+                         and process._result_persisted_generation == process.ownership_generation)
+            if not ready or not job_quiescent(process):
+                return
+            if live.task is not None and not live.task.done():
+                live.task.add_done_callback(lambda _task: _wake_process_stop_completion(
+                    authority, ref, live, registry, process_id, expected, observation, home))
+            else:
+                authority._schedule(ref)
+    except (RuntimeStoreError, OSError, sqlite3.Error):
+        return  # Unknown ownership/storage cannot release the fence or execute queued work.
 
 
 def _recover_stopped_processes(authority, ref):
@@ -424,6 +494,8 @@ async def interrupt_processes(authority, ref, agent):
         killed = True
     from gateway.session_automation import withdraw_consumed_process_notices
     withdrawn = await withdraw_consumed_process_notices(authority, ref)
+    if not (killed and withdrawn):
+        _observe_process_stop_completion(authority, ref, agent)
     return killed and withdrawn
 
 

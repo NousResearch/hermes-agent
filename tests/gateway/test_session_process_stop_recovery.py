@@ -12,7 +12,7 @@ from gateway.session_authority import LiveSession, SessionAuthority
 from hermes_state_runtime import RuntimeStoreError, admit_session_input, begin_runtime_epoch, list_session_admissions, recover_session_inputs
 from tests.gateway.test_session_authority_cancel_settlement import ACTOR, REF, _authority, _submit, _wire_turn_agent
 from tests.gateway.test_session_authority_preadopt_stop import Agent
-from tests.waiting import wait_until
+from tests.waiting import async_wait_until, wait_until
 
 
 @pytest.fixture
@@ -107,7 +107,8 @@ async def test_failed_stop_fences_later_inputs_until_actual_cleanup(tmp_path, mo
         assert not process.exited and not neighbor.exited
         monkeypatch.setattr(registry, 'kill_process', kill)
         await _submit(authority, 'verified-successor')
-        await asyncio.wait_for(authority.sessions['s'].task, 20)
+        expected = (['automation-head'] if automation else []) + ['follower', 'later-input', 'verified-successor']
+        await async_wait_until(lambda: executed == expected and authority.sessions['s'].task.done(), timeout=20)
         assert process_stop_pending(db, 's') is None
         assert await asyncio.to_thread(process._completion_event.wait, 10)
         assert not neighbor.exited

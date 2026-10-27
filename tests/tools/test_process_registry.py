@@ -1367,6 +1367,7 @@ class TestKillProcess:
             saved.append(
                 (session.completion_reason, session.termination_source, session.exit_code)
             )
+            return True
 
         try:
             # This unit tests receipt ordering with explicit control doubles;

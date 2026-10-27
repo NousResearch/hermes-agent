@@ -600,13 +600,14 @@ class ProcessSession:
     _watch_strike_candidate: bool = field(default=False, repr=False)
     _watch_consecutive_strikes: int = field(default=0, repr=False)
     _completion_event: threading.Event = field(default_factory=threading.Event, repr=False)
+    _completion_observers: dict = field(default_factory=dict, init=False, repr=False)
     # Set by the _move_to_finished call that moved the session out of _running; only that call
     # publishes the completion, so a duplicate finisher must not release waiters early.
     _finish_claimed: bool = field(default=False, repr=False)
     # Output must reach the existing retained result before its resource checkpoint retires.
     _result_persisted_generation: int = field(default=-1, repr=False)
-    # The last stop of ``systemd_unit`` failed, so its descendants may still be alive; bulk
-    # cleanup retries the stop even after the session finished.
+    # Cleanup or original result durability is unresolved; keep its existing
+    # checkpoint reachable for native Stop and recovery.
     _scope_stop_pending: bool = field(default=False, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
@@ -1522,9 +1523,10 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             if was_running:
                 session._finish_claimed = True
                 session.exited_at = time.time()
-                # Keep the session tracked until its result is durable. A finite
-                # parent must not observe completion and exit during this write.
-                save_completed_result(session)
+                # Publish original output first. A failed write keeps the
+                # checkpoint pending so native Stop cannot report settlement.
+                if not save_completed_result(session):
+                    session._scope_stop_pending = True
                 self._running.pop(session.id)
             self._finished[session.id] = session
         # Release the retained Popen/PTY handles now: otherwise every
@@ -1543,6 +1545,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             # failed, so a waiter never parks forever). A duplicate leaves the event to it.
             if was_running or not session._finish_claimed:
                 session._completion_event.set()
+                from tools.process_registry_handoff import notify_completion_observers
+                notify_completion_observers(session)
         return was_running
 
     def _publish_finished(self, session: ProcessSession, was_running: bool) -> None:
@@ -2116,11 +2120,11 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             # cgroup and escalates to SIGKILL after TimeoutStopSec. This is additive — the PID-based kill
             # above already handled the main process; this catches stragglers.
             scope_stopped = self._stop_scope(session)
+            if not scope_stopped:
+                return self._refuse_backend_stop(session, consume_output)
             with session._lock:
                 result = self._exit_snapshot(session, "already_exited")
                 finalizing = self._reader_finalizing(session)
-            if not scope_stopped:
-                result["scope_stop_failed"] = session.systemd_unit
             # Only suppress the autonomous turn after its output is present in
             # the explicit kill result, matching wait/log consumption.
             if consume_output and not finalizing:
@@ -2159,6 +2163,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             # not stop leaves nothing proving they are gone, even when the root exited meanwhile.
             # The session keeps its unit, so a later kill retries the stop.
             if not scope_stopped:
+                if not session.systemd_unit:
+                    return self._refuse_backend_stop(session, consume_output)
                 with session._lock:
                     root_exited = session.exited
                 logger.warning("Kill incomplete for %s: systemd scope %s did not stop",
@@ -2186,8 +2192,9 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             # blocks in the SIGKILL grace window: its ``save_completed_result``
             # then persists this kill as a plain ``exited``. Re-write the receipt
             # so the durable record matches what the caller was told.
-            if not self._move_to_finished(session):
-                save_completed_result(session)
+            self._move_to_finished(session)
+            if not save_completed_result(session):
+                return self._refuse_backend_stop(session, consume_output)
             self._write_checkpoint()
             return {
                 "status": "killed", "session_id": session.id, "completion_reason": session.completion_reason,
@@ -2202,23 +2209,24 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         from tools.process_registry_job import job_quiescent, signal_job_stop
         if session.native_job_scope or job_quiescent(session):
             return signal_job_stop(self, session, consume_output)
+        # Supervision may retain an unreadable birth; signalling cannot use it.
+        if (type(session.host_start_time) is not int or session.host_start_time <= 0
+                or not self._host_pid_is_ours(session.pid, session.host_start_time)):
+            if not self._stop_scope(session):
+                return self._refuse_backend_stop(session, consume_output)
+            return None  # Only the captured native unit proved cleanup; no PID signal.
         if session._pty:
             try:
                 session._pty.terminate(force=True)
             except Exception:
                 if session.pid:
-                    os.kill(session.pid, signal.SIGTERM)
+                    self._terminate_host_pid(session.pid, session.host_start_time)
         elif session.process:
             # Tree kill: on Windows Popen.terminate() only kills the shell wrapper and
             # leaves Git Bash descendants behind.
             self._terminate_host_pid(session.process.pid, session.host_start_time)
         elif session.detached and session.pid_scope == "host" and session.pid:
-            # Same fate as poll/list: a gone or reused PID means our process is
-            # gone — never tree-kill the stranger — but a live PID with an
-            # unreadable start time is still ours and must really be killed.
-            # If this recovered session also carries an owned systemd scope, stop that scope before
-            # returning: a daemonized descendant may still be alive there even though the wrapper PID exited
-            # or was recycled across the gateway restart (#70716, teknium1 review).
+            # Scope teardown also covers a wrapper that exited after selection.
             if self._detached_host_fate(session.pid, session.host_start_time) != "running":
                 scope_stopped = self._stop_scope(session)
                 with session._lock:
@@ -2233,9 +2241,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 if not scope_stopped:
                     result["scope_stop_failed"] = session.systemd_unit
                 return result
-            # Identity was just proven above. Re-passing the start time would make
-            # an unreadable probe refuse the kill and leave the re-adopted child running.
-            self._terminate_host_pid(session.pid)
+            self._terminate_host_pid(session.pid, session.host_start_time)
         else:
             return {
                 # Reject non-positive timeouts — the schema declares minimum=1, but not every caller

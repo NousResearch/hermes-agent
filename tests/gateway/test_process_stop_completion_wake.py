@@ -1,0 +1,227 @@
+"""A finished native job wakes its existing human FIFO, never a producer replay."""
+import asyncio
+import shlex
+import sys
+import threading
+from types import SimpleNamespace
+
+import pytest
+import pytest_asyncio
+
+from hermes_state_runtime import RuntimeStoreError
+from tests.gateway.test_session_authority_cancel_settlement import ACTOR, REF, _authority, _submit
+from tests.waiting import async_wait_until
+
+pytestmark = pytest.mark.platforms('linux')
+
+
+def _pause_original_reader(registry, monkeypatch, entered, release):
+    ingest = registry._ingest_output
+    def paused_ingest(session, text, **kwargs):
+        if 'original pre-Stop output' in text:
+            entered.set()
+            assert release.wait(20)
+        ingest(session, text, **kwargs)
+    monkeypatch.setattr(registry, '_ingest_output', paused_ingest)
+
+
+@pytest_asyncio.fixture
+async def stopped_job(tmp_path, monkeypatch):
+    from gateway.session_ancillary import process_stop_pending
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tools import process_registry as module
+    from tools.process_registry_job import job_quiescent
+    db, authority = _authority(tmp_path, monkeypatch)
+    registry = module.ProcessRegistry()
+    monkeypatch.setattr(module, 'process_registry', registry)
+    entered, release = threading.Event(), threading.Event()
+    _pause_original_reader(registry, monkeypatch, entered, release)
+    tokens = set_session_vars(session_id='s', session_key='route')
+    try:
+        own = registry.spawn_local(shlex.join([sys.executable, '-c',
+            'import threading; print("original pre-Stop output",flush=True); threading.Event().wait(20)']),
+            cwd=str(tmp_path), task_id='worker', owner_task_id='worker', session_key='route')
+    finally:
+        clear_session_vars(tokens)
+    state = SimpleNamespace(db=db, authority=authority, registry=registry, own=own,
+                            entered=entered, release=release, executed=[])
+    async def execute(owner, ref, row):
+        assert owner is state.authority
+        assert state.own._completion_event.is_set() and job_quiescent(state.own)
+        assert state.own._result_persisted_generation == state.own.ownership_generation
+        state.executed.append(row['request_id'])
+        return 'human continued'
+    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        with pytest.raises(RuntimeStoreError, match='process_stop_unknown'):
+            await authority.interrupt(ACTOR, REF, authority._handle(REF).execution_generation)
+        assert process_stop_pending(db, 's') and not own._completion_event.is_set()
+        await _submit(authority, 'only-human')
+        await asyncio.wait_for(authority.sessions['s'].task, 10)
+        assert state.executed == [] and process_stop_pending(db, 's')
+        yield state
+    finally:
+        release.set()
+        await asyncio.to_thread(own._completion_event.wait, 5)
+        await asyncio.to_thread(registry.kill_process, own.id)
+        db.close()
+
+
+async def _finish_original_reader(state):
+    from tools.process_registry_job import job_quiescent
+    state.release.set()
+    assert await asyncio.to_thread(state.own._completion_event.wait, 5)
+    await asyncio.to_thread(state.own._reader_thread.join, 5)
+    assert job_quiescent(state.own)
+    # Wait behind the reader's posted callbacks without assuming a quiet runner.
+    barrier = asyncio.Event()
+    asyncio.get_running_loop().call_soon(barrier.set)
+    await barrier.wait()
+
+
+@pytest.mark.asyncio
+async def test_actual_original_reader_wakes_pending_human_without_another_message(stopped_job):
+    from gateway.session_ancillary import process_stop_pending
+    state = stopped_job
+    await _finish_original_reader(state)
+    await async_wait_until(lambda: state.executed == ['only-human'], timeout=5)
+    assert process_stop_pending(state.db, 's') is None
+    assert state.own.output_buffer.count('original pre-Stop output') == 1
+    assert all(value[2] is None for value in state.own._completion_observers.values())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('invalidated', ['epoch', 'token', 'parent', 'result'])
+async def test_completion_cannot_wake_after_native_scope_or_result_changes(stopped_job, monkeypatch, invalidated):
+    from gateway.session_ancillary import _PROCESS_STOP_PREFIX, process_stop_pending
+    from hermes_state_runtime import begin_runtime_epoch
+    from tools import process_registry_results as results
+    state, scheduled = stopped_job, []
+    monkeypatch.setattr(state.authority, '_schedule', lambda ref: scheduled.append(ref))
+    if invalidated == 'epoch':
+        begin_runtime_epoch(state.db, instance_id='new-native-owner')
+    if invalidated == 'token':
+        # An unrecognized/replaced durable Stop marker is uncertainty, not authority.
+        state.db.set_meta(_PROCESS_STOP_PREFIX + 's', 'replaced-native-stop')
+    if invalidated == 'parent':
+        assert state.registry.transfer_ownership(state.own.id, from_owner='worker', to_owner='parent',
+            to_task_id='parent', to_session_key='route', to_parent_session_id='another-native-owner',
+            note='continue', child_stop_event=None) is state.own
+    if invalidated == 'result':
+        def refuse_result(*args, **kwargs):
+            raise PermissionError('finite original-result refusal')
+        monkeypatch.setattr(results, 'atomic_json_write', refuse_result)
+    await _finish_original_reader(state)
+    assert scheduled == [] and state.executed == []
+    assert process_stop_pending(state.db, 's') is not None
+    assert all(value[2] is None for value in state.own._completion_observers.values())
+
+
+@pytest.mark.asyncio
+async def test_recovered_native_owner_reconstructs_the_completion_wake(stopped_job, monkeypatch, tmp_path):
+    from gateway.session_ancillary import process_stop_pending
+    from gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_state_runtime import begin_runtime_epoch, recover_session_inputs
+    from tools import process_registry as module
+    state = stopped_job
+    old = state.authority
+    epoch = begin_runtime_epoch(state.db, instance_id='recovered-native-owner')
+    recover_session_inputs(state.db, epoch=epoch)
+    authority = SessionAuthority(old.runner, profile_id='owned', instance_id='recovered-native-owner', db=state.db, epoch=epoch)
+    authority.sessions['s'] = LiveSession(old.sessions['s'].source, 'route')
+    state.authority = authority
+    registry = module.ProcessRegistry()
+    monkeypatch.setattr(module, 'process_registry', registry)
+    _pause_original_reader(registry, monkeypatch, threading.Event(), state.release)
+    assert registry.recover_from_checkpoint() == 1
+    state.own = registry.get(state.own.id)
+    authority._schedule(REF)  # Existing recovery pump, without adding another admission.
+    await asyncio.wait_for(authority.sessions['s'].task, 10)
+    assert state.executed == [] and process_stop_pending(state.db, 's')
+    await _finish_original_reader(state)
+    await async_wait_until(lambda: state.executed == ['only-human'], timeout=5)
+    assert process_stop_pending(state.db, 's') is None
+
+
+@pytest.mark.asyncio
+async def test_finish_between_failed_stop_and_subscription_is_not_a_lost_wake(stopped_job, monkeypatch):
+    from gateway.session_ancillary import _observe_process_stop_completion
+    state = stopped_job
+    # The subscriber identity is process-local only. Model a new owner-side
+    # observation after the original publisher has already set completion.
+    with state.own._lock:
+        state.own._completion_observers.clear()
+    await _finish_original_reader(state)
+    assert state.executed == []
+    _observe_process_stop_completion(state.authority, REF)
+    await async_wait_until(lambda: state.executed == ['only-human'], timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_completion_wake_keeps_its_profile_when_the_loop_serves_another(stopped_job, tmp_path):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    state = stopped_job
+    other = tmp_path / 'another-profile'
+    token = set_hermes_home_override(other)
+    try:
+        # Reader and callback retain their captured owner context; the loop's
+        # current request may meanwhile belong to a different profile.
+        state.release.set()
+        await async_wait_until(lambda: state.executed == ['only-human'], timeout=5)
+        assert not (other / 'state.db').exists()
+    finally:
+        reset_hermes_home_override(token)
+
+
+@pytest.mark.asyncio
+async def test_old_completion_cannot_wake_a_genuinely_newer_native_stop(stopped_job, monkeypatch, tmp_path):
+    from gateway.session_ancillary import process_stop_pending
+    from gateway.session_context import clear_session_vars, set_session_vars
+    state = stopped_job
+    deferred = []
+    with state.own._lock:
+        for key, (observation, expected, completed) in state.own._completion_observers.items():
+            state.own._completion_observers[key] = (observation, expected, lambda completed=completed: deferred.append(completed))
+    await _finish_original_reader(state)
+    assert deferred and state.executed == []
+    entered, finish = asyncio.Event(), asyncio.Event()
+    async def executing_human(owner, ref, row):
+        entered.set()
+        await finish.wait()
+        return 'original human settled'
+    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', executing_human)
+    monkeypatch.setattr(state.authority.runner, '_cached_agent_for', lambda _route: None, raising=False)
+    await state.authority.interrupt(ACTOR, REF, state.authority._handle(REF).execution_generation)
+    await asyncio.wait_for(entered.wait(), 5)
+    assert state.authority._handle(REF).execution_generation == 1
+    second_entered, second_release = threading.Event(), threading.Event()
+    _pause_original_reader(state.registry, monkeypatch, second_entered, second_release)
+    tokens = set_session_vars(session_id='s', session_key='route')
+    try:
+        second = state.registry.spawn_local(shlex.join([sys.executable, '-c',
+            'import threading; print("original pre-Stop output",flush=True); threading.Event().wait(20)']),
+            cwd=str(tmp_path), task_id='second-worker', session_key='route')
+    finally:
+        clear_session_vars(tokens)
+    try:
+        assert await asyncio.to_thread(second_entered.wait, 5)
+        with pytest.raises(RuntimeStoreError, match='process_stop_unknown'):
+            await state.authority.interrupt(ACTOR, REF, 1)
+        token = process_stop_pending(state.db, 's')
+        assert token.endswith(':1')
+        scheduled = []
+        schedule = state.authority._schedule
+        monkeypatch.setattr(state.authority, '_schedule', lambda ref: scheduled.append(ref))
+        for completed in deferred:
+            completed()
+        barrier = asyncio.Event()
+        asyncio.get_running_loop().call_soon(barrier.set)
+        await barrier.wait()
+        assert scheduled == [] and process_stop_pending(state.db, 's') == token
+        monkeypatch.setattr(state.authority, '_schedule', schedule)
+    finally:
+        second_release.set()
+        await asyncio.to_thread(second._completion_event.wait, 5)
+        finish.set()
+        await asyncio.wait_for(state.authority.sessions['s'].task, 10)

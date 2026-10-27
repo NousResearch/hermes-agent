@@ -3455,6 +3455,8 @@ class GatewayRunner(
         self._session_db_init_error: Optional[str] = None
         # Non-default profiles' adapters by profile then Platform; self.adapters stays the default's map.
         self._profile_adapters: dict[str, dict[Platform, BasePlatformAdapter]] = {}
+        # Own credentials whose adapter may not exist yet (factory failure/refusal).
+        self._profile_configured_platforms: dict[str, set[Platform]] = {}
         # Each SERVED profile's gateway config, as loaded once by ``_load_secondary_profile_config``.
         # ``self.config`` is only the launch profile's: anything host-wide (restart notices) needs these.
         self._profile_configs: dict[str, Any] = {}
@@ -3966,6 +3968,11 @@ class GatewayRunner(
         """Set session context variables (contextvars, not os.environ, so concurrent messages can't
         overwrite each other). Returns reset tokens for ``_clear_session_env`` in a ``finally``."""
         from gateway.session_context import set_session_vars
+        from gateway.session_identity import identity_of, transport_profile_of
+        identity = identity_of(context.source)
+        # An inferred default is not durable evidence of which bot received this conversation.
+        transport_profile = (transport_profile_of(context.source)
+                             if identity is not None and not identity.transport_inferred else "")
         # Async-delivery capability tells async tools whether this channel can wake a later turn. Default
         # True keeps CLI/unknown paths working; stateless adapters (api_server) declare False.
         _adapter = (getattr(self, "adapters", None) or {}).get(context.source.platform)
@@ -3991,6 +3998,7 @@ class GatewayRunner(
             session_id=context.session_id or "",
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
+            transport_profile=transport_profile or "",
             async_delivery=_async_delivery,
             cron_session="", session_history_delivery=_history_delivery)
 

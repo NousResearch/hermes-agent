@@ -109,6 +109,34 @@ def _ctx_header(lines: list[str], task: Task) -> None:
         lines.append("")
 
 
+def _ctx_origin(lines: list[str], task: Task) -> None:
+    """Render durable conversation provenance when this card has one."""
+    origin = task.origin
+    if not isinstance(origin, dict) or not origin:
+        return
+    lines.append("## Origin")
+    profile = origin.get("profile") or "(unknown profile)"
+    session_id = origin.get("session_id") or task.session_id
+    session_link = origin.get("session_link")
+    if session_id:
+        label = f"{profile} / {session_id}"
+        lines.append(f"Session: [{label}]({session_link})" if session_link else f"Session: {label}")
+    message_id = origin.get("message_id")
+    row_id = origin.get("message_row_id")
+    if message_id is not None:
+        suffix = f" (session row {row_id})" if row_id is not None else ""
+        lines.append(f"Message: {message_id}{suffix}")
+    elif row_id is not None:
+        lines.append(f"Message: session row {row_id}")
+    route = "/".join(str(v) for v in (
+        origin.get("platform"), origin.get("chat_id"), origin.get("thread_id")) if v)
+    if route:
+        lines.append(f"Route: {route}")
+    if origin.get("prompt_excerpt"):
+        lines.append(f"Prompt: {_ctx_cap(str(origin['prompt_excerpt']))}")
+    lines.append("")
+
+
 def _ctx_attachments(lines: list[str], attachments: list[Attachment]) -> None:
     """Absolute on-disk paths so the worker's file tools read them directly
     (remote terminal backends need the attachments dir mounted)."""

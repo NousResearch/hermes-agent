@@ -10,6 +10,29 @@ description: "Durable SQLite-backed task board for coordinating multiple Hermes 
 
 Hermes Kanban is a durable task board, shared across all your Hermes profiles, that lets multiple named agents collaborate on work without fragile in-process subagent swarms. Every task is a row in `~/.hermes/kanban.db`; every handoff is a row anyone can read and write; every worker is a full OS process with its own identity.
 
+### Conversation provenance
+
+`kanban_create` records a structured `origin` when the creating session exists in
+this profile's session store. It includes the profile, durable session link, native
+message id and available route coordinates. The transport profile identifies the
+receiving bot and may differ from the runtime profile. These anchors are evidence,
+not notification authorization: subscriptions still pass the canonical route checks.
+The real tool executor flushes the transcript before creation and binds the last
+user message's exact committed row id and a redacted excerpt (at most 2,000
+characters). Native multimodal input uses the existing durable text projection;
+images, audio bytes, tool outputs and arbitrary metadata are not copied. Clean
+persist overrides are respected without changing the API message history. If
+persistence is unavailable, no row id or prompt excerpt is claimed. Direct SDK
+calls cannot supply this internal executor context through tool arguments.
+
+`kanban_show`, the dashboard task drawer and worker context expose the origin. Creator children and decomposed
+graphs inherit it, independently of dependency edges; an explicitly different child
+session does not inherit another conversation's origin. Existing cards keep a null
+origin after the additive migration. Backup copies retain it; portable board
+export/import scrubs it alongside local session and notification targets. Known
+secrets are redacted before newly supplied origin data is persisted. This is not a
+claim that arbitrary sensitive prose can be detected automatically.
+
 ### Completion checkpoints before the iteration cap
 
 Dispatcher-owned workers get one checkpoint notice near 90% of their finite iteration

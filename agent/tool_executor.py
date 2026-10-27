@@ -1719,7 +1719,8 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
     def _execute(next_args: dict) -> Any:
         import model_tools
 
-        with model_tools.suppress_post_tool_call_hook():
+        from agent.kanban_origin import executor_conversation_origin
+        with executor_conversation_origin(agent, function_name, messages), model_tools.suppress_post_tool_call_hook():
             return model_tools.handle_function_call(
                 function_name,
                 next_args,

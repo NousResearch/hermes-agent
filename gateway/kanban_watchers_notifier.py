@@ -166,6 +166,18 @@ def _adapter_for_subscription(runner: Any, platform: Any, sub: dict, owner_profi
     if not getattr(config, "multiplex_profiles", False):
         return adapter
     primary = runner.adapters.get(platform)
+    metadata = sub.get("delivery_metadata") or {}
+    transport = metadata.get("transport_profile")
+    if transport:
+        # A persisted receiving bot is authority, not a hint to fall back from.
+        primary_profile = getattr(runner, "_primary_profile_name", None) or runner._active_profile_name()
+        transports = runner.adapters if transport == primary_profile else (
+            (getattr(runner, "_profile_adapters", {}) or {}).get(transport) or {})
+        candidate = transports.get(platform)
+        if candidate is None:
+            return None
+        return _routed_subscription_adapter(
+            runner, platform, sub, owner_profile or primary_profile, candidate, transport)
     if adapter is not None and adapter is not primary:
         return adapter
     profile = owner_profile or getattr(runner, "_kanban_notifier_profile", None)
@@ -176,8 +188,22 @@ def _adapter_for_subscription(runner: Any, platform: Any, sub: dict, owner_profi
     # on OTHER platforms do not gate this one: the primary bot is the only credential serving the
     # pinned chat, for inbound turns and for these notifications alike (#115460).
     own_adapters = (getattr(runner, "_profile_adapters", {}) or {}).get(profile) or {}
-    if getattr(platform, "value", str(platform)).lower() in _platform_names(own_adapters):
+    reconnecting = (getattr(runner, "_profile_failed_platforms", None) or {}).get(profile) or {}
+    configured = (getattr(runner, "_profile_configured_platforms", None) or {}).get(profile) or {}
+    # A parked reconnect task still owns this credential. A transient disconnect
+    # must not turn a routed subscription into permission to use the primary bot.
+    if getattr(platform, "value", str(platform)).lower() in (
+            _platform_names(own_adapters) | _platform_names(reconnecting) | _platform_names(configured)):
         return None
+    return _routed_subscription_adapter(runner, platform, sub, profile, primary, primary_profile)
+
+
+def _routed_subscription_adapter(runner: Any, platform: Any, sub: dict, profile: str,
+                                 candidate: Any, transport: str) -> Any:
+    """Authorize the runtime destination using the receiving bot's canonical route order."""
+    config = runner.config
+    primary_profile = getattr(runner, "_primary_profile_name", None) or runner._active_profile_name()
+    adapter_profile = None if transport == primary_profile else transport
     metadata = sub.get("delivery_metadata") or {}
     guild = metadata.get("scope_id") or metadata.get("guild_id")
     parent = metadata.get("parent_chat_id")
@@ -192,7 +218,8 @@ def _adapter_for_subscription(runner: Any, platform: Any, sub: dict, owner_profi
     # hand-maintained equality implementation.
     for route in getattr(config, "profile_routes", None) or []:
         if route.matches(platform.value, guild_id=guild, chat_id=chat,
-                         thread_id=thread, parent_chat_id=parent, user_id=user_id):
+                         thread_id=thread, parent_chat_id=parent, user_id=user_id,
+                         adapter_profile=adapter_profile):
             if route.profile != profile:
                 _warn_unroutable_sub_once(
                     sub, platform,
@@ -203,10 +230,14 @@ def _adapter_for_subscription(runner: Any, platform: Any, sub: dict, owner_profi
                 return None
             from gateway.run import _multiplex_profile_homes
             served = {name for name, _home in _multiplex_profile_homes(config)}
-            return primary if profile in served else None
+            return candidate if profile in served else None
+        # Only Discord uses the thread/post id as chat_id. Telegram already stores
+        # its containing group there; a synthetic parent would let an unrelated
+        # DM route shadow the actual group. Keep the missing-sender guard below.
+        probe_parent = parent or (route.chat_id if platform.value == "discord" and thread_like else None)
         if route.matches(platform.value, guild_id=guild or route.guild_id, chat_id=chat,
-                         thread_id=thread, parent_chat_id=parent or (route.chat_id if thread_like else None),
-                         user_id=user_id or route.user_id):
+                         thread_id=thread, parent_chat_id=probe_parent,
+                         user_id=user_id or route.user_id, adapter_profile=adapter_profile):
             return None
     # A stateless (api_server) subscription carries a RAW session id, not a routable chat, so no
     # profile_routes entry can anchor it — and a platform-wide api_server route would deny the
@@ -216,8 +247,8 @@ def _adapter_for_subscription(runner: Any, platform: Any, sub: dict, owner_profi
     # keeps the historical fallthrough below (no store read).
     if profile != primary_profile and getattr(platform, "value", platform) == "api_server" \
             and session_owned_by_profile(config, profile, chat):
-        return primary
-    return primary if profile == primary_profile else None
+        return candidate
+    return candidate if profile == transport else None
 
 
 # --- Collection (runs in a worker thread) ---
@@ -691,8 +722,12 @@ class _KanbanNotification:
         # "no exception == delivered" contract.
         if getattr(_send_res, "success", True) is False:
             raise RuntimeError(f"adapter send() reported failure: {getattr(_send_res, 'error', None) or 'unknown error'}")
-        logger.debug("kanban notifier: delivered %s event for %s to %s/%s on board %s",
-                     ev.kind, self.task_id, self.platform_str, sub["chat_id"], self.board_slug)
+        logger.info(
+            "kanban notifier: delivered %s event %s for %s to %s/%s thread=%s message_id=%s continuations=%s board=%s",
+            ev.kind, ev.id, self.task_id, self.platform_str, sub["chat_id"], sub.get("thread_id") or "-",
+            getattr(_send_res, "message_id", None), getattr(_send_res, "continuation_message_ids", ()) or (),
+            self.board_slug,
+        )
         # Upload artifact paths from the handoff payload / legacy result as
         # native files. Both handoff kinds stage files for exactly this: a
         # review-bound card's files exist precisely so the human sees them at

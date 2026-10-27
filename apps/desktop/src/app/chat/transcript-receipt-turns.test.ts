@@ -95,6 +95,29 @@ describe('a refreshed page that holds the live turn whole', () => {
     }
   })
 
+  it('keeps an answer the receipt does not cover when the turn ended without storing it', () => {
+    // The final answer failed to store: the partial receipt addresses only rows 17-19, and a later
+    // stored turn follows, so the page reaches past the receipt without carrying the answer.
+    const receipt: PersistedTurn = { row_ids: [17, 18, 19], complete: false, user_row_id: 17, submission_id: 'sub-lost' }
+
+    const window = [
+      ...toChatMessages(windowRows),
+      live('user-sub-lost', 'user', 'steered prompt', { rowId: 17 }),
+      live('assistant-stream-1', 'assistant', 'live look', { interim: false }),
+      live('assistant-stream-2', 'assistant', 'unstored answer', { persistedTurn: receipt })
+    ]
+
+    const page = toChatMessages([
+      ...olderTurn(1, 'old-a').slice(3),
+      ...olderTurn(9, 'old-b'),
+      ...liveRows,
+      user(20, 'later prompt'),
+      answer(21, 'later answer')
+    ])
+
+    expect(count(texts(graftRefreshedTailOntoBackfill(page, window)), 'unstored answer')).toBe(1)
+  })
+
   it('draws an older turn the page boundary cuts once', () => {
     const window = [...toChatMessages(windowRows), live('user-x', 'user', 'next prompt', { rowId: 17 })]
 

@@ -23,12 +23,9 @@
 
 import type { PersistedTurn } from '@hermes/shared'
 
-import { isTurnUserBubble, receiptUserRowIds } from '@/app/session/hooks/use-message-stream/receipt-user-rows'
+import { isRowId, isTurnUserBubble, receiptUserRowIds } from '@/app/session/hooks/use-message-stream/receipt-user-rows'
 import { transcriptRowIds } from '@/app/session/hooks/use-session-actions/pending-turn-identity'
 import { type ChatMessage, isLocalSystemNotice } from '@/lib/chat-messages'
-
-const isRowId = (value: unknown): value is number =>
-  typeof value === 'number' && Number.isSafeInteger(value) && value > 0
 
 /** Index of the turn's prompt in the window, by the receipt's own identity. */
 function receiptPromptIndex(window: ChatMessage[], receipt: PersistedTurn, before: number): number {
@@ -96,11 +93,42 @@ function windowTurnIndices(window: ChatMessage[], end: number, first: number, la
   return indices
 }
 
+/** Stored ids of the reply text rows the page paints (an answer or a stopped partial, never a tool row). */
+const pageReplyRows = (page: ChatMessage[]): Set<number> =>
+  new Set(
+    page.flatMap(message =>
+      message.role === 'assistant'
+        ? message.parts.flatMap(part => (part.type === 'text' && part.sourceRowId !== undefined ? [part.sourceRowId] : []))
+        : []
+    )
+  )
+
+/**
+ * Whether the page's copy of the turn includes its reply. A receipt that is not `complete` can
+ * address only the rows that were stored (agent/persisted_turn_receipt.py): when the final answer
+ * failed to store, the turn's last stored row is a tool row and the window's bubble is the only copy
+ * of the answer. Proven by a complete receipt, by the page painting the turn's last stored row as
+ * reply text, or by a stopped turn (everything it produced before the stop is stored).
+ */
+function pageHoldsTheReply(message: ChatMessage, last: number, replyRows: Set<number>): boolean {
+  return Boolean(message.persistedTurn?.complete || message.interrupted) || replyRows.has(last)
+}
+
 /** Window indices of the receipt turn ending at `end` that the page holds whole. */
-function receiptTurnIndices(window: ChatMessage[], end: number, pageRows: Set<number>): number[] {
+function receiptTurnIndices(
+  window: ChatMessage[],
+  end: number,
+  pageRows: Set<number>,
+  replyRows: Set<number>
+): number[] {
   const bounds = receiptBounds(window[end])
 
-  if (!bounds || !pageRows.has(bounds.first) || Math.max(...pageRows) < bounds.last) {
+  if (
+    !bounds ||
+    !pageRows.has(bounds.first) ||
+    Math.max(...pageRows) < bounds.last ||
+    !pageHoldsTheReply(window[end], bounds.last, replyRows)
+  ) {
     return []
   }
 
@@ -168,13 +196,14 @@ export function dropReceiptTurnsThePageHolds(window: ChatMessage[], page: ChatMe
   }
 
   const dropped = new Set<number>()
+  const replyRows = pageReplyRows(page)
 
   window.forEach((message, index) => {
     if (!message.persistedTurn || message.pending) {
       return
     }
 
-    const indices = receiptTurnIndices(window, index, pageRows)
+    const indices = receiptTurnIndices(window, index, pageRows, replyRows)
 
     indices.forEach(at => dropped.add(at))
 

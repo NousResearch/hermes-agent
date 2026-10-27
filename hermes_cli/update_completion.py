@@ -84,6 +84,9 @@ def run_completion(request: dict) -> dict:
         command = [sys.executable, "-I", "-S", "-u", "-X", "utf8", "-X", f"pycache_prefix={request['bytecode_cache']}",
                    str(root / "hermes_cli/update_completion.py"),
                    str(request_path), str(result_path)]
+        from hermes_cli.update_cmd_nixos import wrap_nixos_toolchain
+
+        command = wrap_nixos_toolchain(command)
         from hermes_cli.update_lock import CREATE_SUSPENDED, checkout_lock_fds
 
         # The child joins the update tree's checkout lock: it inherits the locked fd (POSIX)
@@ -361,6 +364,9 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
                "-I", "-S", "-u", "-X", "utf8", "-X", f"pycache_prefix={request['bytecode_cache']}",
                str(root / "hermes_cli/update_completion.py"),
                str(request_path), str(result_path), "--prepared"]
+    from hermes_cli.update_cmd_nixos import wrap_nixos_toolchain
+
+    command = wrap_nixos_toolchain(command)
     # A second interpreter is mandatory: PM may have selected a different Python
     # and dependency graph. No application maintenance runs in this bootstrap.
     from hermes_cli.update_lock import checkout_lock_fds

@@ -50,6 +50,51 @@ def _validate_timezone(config: dict[str, Any], issues: list[ConfigIssue]) -> Non
         _issue(issues, "error", f"timezone {name!r} is not a valid IANA zone name", hint)
 
 
+def _declared_web_backends() -> dict[str, str]:
+    """``backend_name -> plugin_name`` for every web provider declared by a plugin manifest.
+
+    Read from disk (bundled ``plugins/`` and the installed ``$HERMES_HOME/plugins``), never by
+    loading plugin code: this runs during config validation, which happens before plugins load and
+    must stay cheap. A manifest that ships a web provider declares it under
+    ``provides_web_providers`` — the same field the plugin loader uses to register it.
+    """
+    import os
+    from pathlib import Path
+
+    roots = [Path(__file__).resolve().parents[1] / "plugins"]
+    home = os.environ.get("HERMES_HOME")
+    if home:
+        roots.append(Path(home) / "plugins")
+    declared: dict[str, str] = {}
+    for root in roots:
+        try:
+            manifests = sorted(root.glob("*/plugin.yaml")) + sorted(root.glob("*/*/plugin.yaml"))
+        except OSError:
+            continue
+        for manifest in manifests:
+            try:
+                text = manifest.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if "provides_web_providers" not in text:
+                continue
+            block = False
+            for line in text.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("provides_web_providers:"):
+                    block = True
+                    continue
+                if not block:
+                    continue
+                if stripped.startswith("- "):
+                    name = stripped[2:].strip().strip("'\"")
+                    if name:
+                        declared[name.lower()] = manifest.parent.name
+                elif stripped and not stripped.startswith("#"):
+                    break
+    return declared
+
+
 def _validate_web_backends(config: dict[str, Any], issues: list[ConfigIssue]) -> None:
     """A stale web backend selection otherwise fails only at the first web_search/web_extract
     call with a generic "no registered provider" error; warn at startup instead."""
@@ -73,3 +118,31 @@ def _validate_web_backends(config: dict[str, Any], issues: list[ConfigIssue]) ->
                    f"web.{_key} is set to '{_val}', but {note} — "
                    "web_search/web_extract will fail until it is changed",
                    "Run 'hermes tools' and pick a different Web Search & Extract provider")
+            continue
+        # A name that no manifest declares is a typo or a hand-written guess: it fails at the first
+        # web_search/web_extract call with a generic "no registered provider" error. Say it here.
+        declared = _declared_web_backends()
+        if _val not in declared:
+            _issue(issues, "warning",
+                   f"web.{_key} is set to '{_val}', but no bundled or installed plugin provides "
+                   "that backend — web_search/web_extract will fail until it is changed",
+                   "Check the name against 'hermes plugins list', or run 'hermes tools'")
+            continue
+        # Declared by a plugin that this process has not registered. Plugins load after config
+        # validation, so only judge when the registry is already live (a long-running service that
+        # predates the plugin install) — otherwise this would warn on every cold start.
+        import sys
+        registry = sys.modules.get("agent.web_search_registry")
+        get_provider = getattr(registry, "get_provider", None)
+        if get_provider is None:
+            continue  # registry not live yet: plugins load after config validation
+        try:
+            registered = get_provider(_val) is not None
+        except Exception:
+            registered = True  # a registry error is not evidence the pin is broken
+        if not registered:
+            _issue(issues, "warning",
+                   f"web.{_key} is set to '{_val}', provided by plugin "
+                   f"'{declared[_val]}', but that provider is not registered in this process — "
+                   "the running service predates the plugin and must be restarted",
+                   "Restart the serving process (WebUI/gateway), then re-run 'hermes doctor'")

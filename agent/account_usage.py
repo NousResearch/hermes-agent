@@ -938,6 +938,39 @@ def _nano_gpt_balance_detail(balance: dict, *, unavailable: bool) -> Optional[st
     return f"Balance: ${value:,.2f}"
 
 
+def _nano_gpt_weekly_windows(sub: dict) -> list[AccountUsageWindow]:
+    windows: list[AccountUsageWindow] = []
+    weekly = sub.get("weeklyInputTokens")
+    if isinstance(weekly, dict):
+        used_pct = weekly.get("percentUsed")
+        reset_at = _parse_dt(weekly.get("resetAt") / 1000.0 if _is_finite_num(weekly.get("resetAt")) else weekly.get("resetAt"))
+        limits = sub.get("limits") if isinstance(sub.get("limits"), dict) else {}
+        allowance = limits.get("weeklyInputTokens")
+        if _is_finite_num(weekly.get("used")) and _is_finite_num(allowance) and float(allowance) > 0:
+            # Use the plan allowance because remaining clamps to zero during overage,
+            # and percentUsed can stall at 1.0.
+            used_percent = float(weekly["used"]) / float(allowance) * 100.0
+            if math.isfinite(used_percent):
+                windows.append(AccountUsageWindow(
+                    label="Weekly token limit", used_percent=used_percent, reset_at=reset_at,
+                ))
+        elif _is_finite_num(weekly.get("used")) and _is_finite_num(weekly.get("remaining")) and float(weekly["used"]) + float(weekly["remaining"]) > 0:
+            total = float(weekly["used"]) + float(weekly["remaining"])
+            used_percent = float(weekly["used"]) / total * 100.0
+            if math.isfinite(used_percent):
+                windows.append(AccountUsageWindow(
+                    label="Weekly token limit", used_percent=used_percent, reset_at=reset_at,
+                ))
+        elif _is_finite_num(used_pct):
+            # percentUsed is a 0–1 fraction (56.1M/60M tokens → 0.934), never a percent.
+            used_percent = min(float(used_pct) * 100.0, 100.0)
+            if math.isfinite(used_percent):
+                windows.append(AccountUsageWindow(
+                    label="Weekly token limit", used_percent=used_percent, reset_at=reset_at,
+                ))
+    return windows
+
+
 def _fetch_nano_gpt_account_usage(
     base_url: Optional[str] = None, api_key: Optional[str] = None,
 ) -> Optional[AccountUsageSnapshot]:
@@ -950,8 +983,7 @@ def _fetch_nano_gpt_account_usage(
         return None
     base = (base_url or _NANO_GPT_BASE).strip().rstrip("/")
     # base_url carries the inference host (…/api/v1); the billing API lives above it.
-    if base.endswith("/v1"):
-        base = base[:-3]
+    base = base.removesuffix("/v1")
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     # Error JSON has no active key; decoding it reports a missing subscription.
     # The pair shares the plugin-hook deadline; gateway /usage has none of its own.
@@ -995,35 +1027,7 @@ def _fetch_nano_gpt_account_usage(
         return None
 
     windows: list[AccountUsageWindow] = []
-    weekly = sub.get("weeklyInputTokens")
-    if isinstance(weekly, dict):
-        used_pct = weekly.get("percentUsed")
-        reset_at = _parse_dt(weekly.get("resetAt") / 1000.0 if _is_finite_num(weekly.get("resetAt")) else weekly.get("resetAt"))
-        limits = sub.get("limits") if isinstance(sub.get("limits"), dict) else {}
-        allowance = limits.get("weeklyInputTokens")
-        if _is_finite_num(weekly.get("used")) and _is_finite_num(allowance) and float(allowance) > 0:
-            # The plan allowance is the true denominator: past the cap (allowOverage) the server
-            # clamps remaining to 0 — used/(used+remaining) would pin at exactly 100% — and
-            # percentUsed is a 0–1 fraction that stalls at 1.0. used/allowance still reads 100.03%.
-            used_percent = float(weekly["used"]) / float(allowance) * 100.0
-            if math.isfinite(used_percent):
-                windows.append(AccountUsageWindow(
-                    label="Weekly token limit", used_percent=used_percent, reset_at=reset_at,
-                ))
-        elif _is_finite_num(weekly.get("used")) and _is_finite_num(weekly.get("remaining")) and float(weekly["used"]) + float(weekly["remaining"]) > 0:
-            total = float(weekly["used"]) + float(weekly["remaining"])
-            used_percent = float(weekly["used"]) / total * 100.0
-            if math.isfinite(used_percent):
-                windows.append(AccountUsageWindow(
-                    label="Weekly token limit", used_percent=used_percent, reset_at=reset_at,
-                ))
-        elif _is_finite_num(used_pct):
-            # percentUsed is a 0–1 fraction (56.1M/60M tokens → 0.934), never a percent.
-            used_percent = min(float(used_pct) * 100.0, 100.0)
-            if math.isfinite(used_percent):
-                windows.append(AccountUsageWindow(
-                    label="Weekly token limit", used_percent=used_percent, reset_at=reset_at,
-                ))
+    windows.extend(_nano_gpt_weekly_windows(sub))
     daily_images = sub.get("dailyImages")
     if isinstance(daily_images, dict):
         used, remaining = daily_images.get("used"), daily_images.get("remaining")

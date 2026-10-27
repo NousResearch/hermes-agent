@@ -2,7 +2,7 @@ import concurrent.futures
 import contextvars
 import threading
 import time
-from datetime import datetime, timezone, UTC
+from datetime import UTC, datetime
 
 import pytest
 
@@ -201,7 +201,7 @@ def test_fetch_account_usage_nano_gpt_scales_fraction_and_reads_balance(monkeypa
     assert len(snapshot.windows) == 2
     assert snapshot.windows[0].label == "Weekly token limit"
     assert snapshot.windows[0].used_percent > 90  # fraction scaled, NOT 0.93%
-    assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_789_948_800, tz=timezone.utc)
+    assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_789_948_800, tz=UTC)
     assert "Balance: $27.30" in snapshot.details
 
 

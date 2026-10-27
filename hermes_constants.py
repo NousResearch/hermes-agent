@@ -44,8 +44,16 @@ def get_hermes_home_override() -> str | None:
 
 
 def _expand_hermes_home(path: str) -> Path:
-    """Expand environment and user-home syntax in a Hermes home path."""
-    return Path(os.path.expanduser(os.path.expandvars(path)))
+    """Expand environment and user-home syntax in a Hermes home path.
+
+    The result is always absolute. A relative ``HERMES_HOME`` used to resolve against
+    whatever working directory the invoking process happened to have, so one wrong
+    value seeded the home skeleton into five different dot-directories under the
+    profiles root (2026-10-21, one invocation per directory). Anchoring here keeps a
+    home's identity stable across callers and lets the bootstrap's not-a-home guard
+    judge the same path every time.
+    """
+    return Path(os.path.abspath(os.path.expanduser(os.path.expandvars(path))))
 
 
 def _platform_default_hermes_home(environ: Mapping[str, str], user_home: Callable[[], Path]) -> Path:
@@ -423,6 +431,40 @@ def assert_named_profile_home_live(path: str | Path) -> None:
             f"Named profile home does not exist: {home}. "
             "Create the profile explicitly before using it."
         )
+
+
+# The default home is itself a dot-directory (``~/.hermes``, plus the
+# ``HERMES_DATA_DIR_SUFFIX`` variants), so a leading dot alone is not wrong: only a hidden
+# name outside that family is. ``cache`` is judged as any component, because a cache
+# directory is purgeable by design and can never hold an identity.
+_REAL_HIDDEN_HOME_PREFIX = ".hermes"
+_PURGEABLE_COMPONENT = "cache"
+
+
+def non_hermes_home_reason(path: str | Path) -> str | None:
+    """Why *path* is obviously not a Hermes home, or ``None`` when it may be one.
+
+    ``HERMES_HOME`` comes from the environment, and a wrong value used to turn any
+    directory it named into a home: five dot-directories under ``~/.hermes/profiles``
+    (2026-10-21, one invocation per second), ``profiles/devops/cache`` (2026-10-24, the
+    gateway's stdout captured inside it) and an archived profile (2026-10-25) each got
+    the ten-directory skeleton and a 667-byte ``SOUL.md``, which the soul-integrity
+    scanner then reported as real identities. Every writer that would materialize a home
+    consults this before creating anything.
+
+    Only the *final* component is judged hidden, so ``~/.hermes`` and
+    ``~/.hermes/profiles/<name>`` keep working and a path below a hidden parent
+    (``~/.config/hermes``) stays a real home.
+    """
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        candidate = Path(os.path.abspath(candidate))
+    if candidate.name.startswith(".") and not candidate.name.startswith(_REAL_HIDDEN_HOME_PREFIX):
+        return f"final path component {candidate.name!r} is a hidden directory"
+    for part in candidate.parts:
+        if part.lower() == _PURGEABLE_COMPONENT:
+            return f"path component {part!r} is a cache directory"
+    return None
 
 
 def mkdir_under_hermes_home(path: str | Path) -> Path:
@@ -1025,7 +1067,13 @@ def apply_scratch_tmp_env(env: MutableMapping[str, str]) -> bool:
             return False
     home = env.get("HERMES_HOME", "").strip()
     try:
-        scratch = str(get_scratch_dir(_expand_hermes_home(home) if home else get_process_hermes_home()))
+        home_path = _expand_hermes_home(home) if home else get_process_hermes_home()
+        if non_hermes_home_reason(home_path) is not None:
+            # Do not materialize ``cache/scratch`` inside a path that is not a Hermes
+            # home (``HERMES_HOME=profiles/.../cache`` used to get one); the child keeps
+            # the OS temp default instead of a temp root that no home owns.
+            return False
+        scratch = str(get_scratch_dir(home_path))
     except (RuntimeError, OSError):
         # No HERMES_HOME and no resolvable user home (a child env built from nothing on
         # Windows): there is no scratch dir to point at; the child keeps the OS default.

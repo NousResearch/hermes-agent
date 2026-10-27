@@ -1,8 +1,12 @@
 """Directory initialization and storage diagnostics for the active Hermes home."""
 
+import logging
 import os
 from pathlib import Path
 from hermes_dir_acl import make_user_dir
+from hermes_constants import non_hermes_home_reason
+
+logger = logging.getLogger(__name__)
 
 
 class HomeInitializationError(RuntimeError):
@@ -53,9 +57,33 @@ def _ensure_directory(path: Path, *, create: bool, secure: bool, home: Path) -> 
         ) from exc
 
 
+# Refused paths this process has already warned about. A refusal is deliberately not
+# recorded as an ensured home, so the check re-runs on every ``load_config`` — the
+# operator needs the line once, not once per load.
+_REJECTED_HOMES_WARNED: set[str] = set()
+
+
+def warn_non_hermes_home(home: Path, reason: str) -> None:
+    """Warn once per process that *home* will not be materialized, naming it and why."""
+    key = os.path.abspath(home)
+    if key in _REJECTED_HOMES_WARNED:
+        return
+    _REJECTED_HOMES_WARNED.add(key)
+    logger.warning(
+        "Refusing to initialize %s as a Hermes home: %s. No directory skeleton, SOUL.md "
+        "or logs were written there. Set HERMES_HOME to a real home such as ~/.hermes or "
+        "~/.hermes/profiles/<name>.",
+        home, reason,
+    )
+
+
 def initialize_home(home: Path, subdirs: tuple[str, ...], ensured: set[str]) -> None:
     from hermes_cli.config import _ensure_default_soul_md, is_managed
 
+    rejection = non_hermes_home_reason(home)
+    if rejection is not None:
+        warn_non_hermes_home(home, rejection)
+        return
     managed = is_managed()
     old_umask = os.umask(0o007) if managed else None
     try:

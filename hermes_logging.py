@@ -22,6 +22,7 @@ from typing import Optional, Sequence
 
 from hermes_constants import (
     get_config_path, get_hermes_home, mkdir_under_hermes_home, named_profile_is_deleted,
+    non_hermes_home_reason,
 )
 
 # setup_logging() is idempotent: a second call is a no-op unless ``force=True``.
@@ -366,6 +367,17 @@ def setup_logging(
     global _logging_initialized
     global _fallback_warned
     home = hermes_home or get_hermes_home()
+    rejection = non_hermes_home_reason(home)
+    if rejection is not None:
+        # A HERMES_HOME that is not a home must not get a ``logs/`` dir either: on
+        # 2026-10-24 ``hermes gateway start`` captured its stdout into
+        # ``profiles/devops/cache/logs/gateway-stdio.log``. No file handlers are
+        # installed, so warnings still reach stderr through ``logging.lastResort``.
+        from hermes_cli.config_home import warn_non_hermes_home
+
+        warn_non_hermes_home(home, rejection)
+        _line_buffer_piped_stdout()
+        return home / "logs"
     log_dir = mkdir_under_hermes_home(home / "logs")
 
     # Stdout is block-buffered when piped (no TTY); line-buffer it so a

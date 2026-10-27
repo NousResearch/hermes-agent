@@ -834,7 +834,12 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         return receipt.exists()
 
     def _publish_lost_session(self, session: ProcessSession) -> None:
-        """Receipt + queued ``reason="lost"`` completion for an unobserved exit."""
+        """Receipt + queued ``reason="lost"`` completion for an unobserved exit.
+
+        This session's publisher owns the handoff and queues on its registry;
+        consumer fixtures must bind that same registry instance (the poller
+        captures the module instance's queue at startup — bind before it starts).
+        """
         from tools.process_registry_results import save_completed_result
 
         try:

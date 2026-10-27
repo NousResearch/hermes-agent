@@ -3,19 +3,11 @@ import { atom, batch, computed } from 'nanostores'
 
 import type { HermesConnection } from '@/global'
 import { getProfiles, hermesApi, setApiRequestProfile, STARTUP_REQUEST_TIMEOUT_MS } from '@/hermes'
+import { persistStore } from '@/lib/persist-store'
 import { initialGatewayProfile, isBrowserHostedDesktop } from '@/lib/platform'
 import { sortByProfileOrder as sortProfilesByOrder } from '@/lib/profile-order'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
-import {
-  arraysEqual,
-  persistBoolean,
-  persistStore,
-  persistStringArray,
-  persistStringRecord,
-  storedBoolean,
-  storedStringArray,
-  storedStringRecord
-} from '@/lib/storage'
+import { arraysEqual, persistBoolean, persistStringArray, persistStringRecord, storedBoolean, storedStringArray, storedStringRecord } from '@/lib/storage'
 import { withTimeout } from '@/lib/with-timeout'
 import { registryConnectionKind } from '@/store/connection-registry-state'
 import {

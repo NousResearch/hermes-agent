@@ -3,7 +3,8 @@ import { atom, computed } from 'nanostores'
 import { $registryVersion } from '@/contrib/registry'
 import { allKeybindActions, defaultBindings, keybindAction, type KeybindBindings } from '@/lib/keybinds/actions'
 import { canonicalizeCombo } from '@/lib/keybinds/combo'
-import { arraysEqual, persistStore, persistString, storedString, type WriteOptions } from '@/lib/storage'
+import { persistStore } from '@/lib/persist-store'
+import { arraysEqual, persistString, storedString, type WriteOptions } from '@/lib/storage'
 
 const STORAGE_KEY = 'hermes.desktop.keybinds'
 

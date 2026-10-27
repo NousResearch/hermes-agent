@@ -1,6 +1,7 @@
 import { atom } from 'nanostores'
 
-import { persistBoolean, persistStore, storedBoolean } from '@/lib/storage'
+import { persistStore } from '@/lib/persist-store'
+import { persistBoolean, storedBoolean } from '@/lib/storage'
 
 const HAPTICS_MUTED_STORAGE_KEY = 'hermes.desktop.hapticsMuted'
 

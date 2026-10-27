@@ -1,6 +1,7 @@
 import { atom } from 'nanostores'
 
-import { persistStore, persistString, storedString } from '@/lib/storage'
+import { persistStore } from '@/lib/persist-store'
+import { persistString, storedString } from '@/lib/storage'
 
 const STORAGE_KEY = 'hermes.desktop.completionSoundVariantId'
 

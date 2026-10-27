@@ -1,11 +1,11 @@
 name: disciplined-vibe-coding
 repo: https://github.com/bmtrnavsky/disciplined-vibe-coding
-sha: 78c31df8aa59d38d5b41f48ebdec15925cc96a96
+sha: 93e47a57e2dc1742d450464bc7716035982953b8
 description: Define/Plan/Build/Verify pipeline with five folded-in practices, for non-engineer builders
 maintainer: bmtrnavsky
 tier: community
 category: general
-version: "0.1.0"
+version: "0.2.0"
 docs_url: https://github.com/bmtrnavsky/disciplined-vibe-coding#readme
 readme: true
 capabilities:

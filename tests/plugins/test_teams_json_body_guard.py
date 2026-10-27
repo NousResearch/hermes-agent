@@ -10,9 +10,9 @@ import pytest
 
 pytest.importorskip("microsoft_teams")
 web = pytest.importorskip("aiohttp.web")
-from aiohttp.test_utils import TestClient, TestServer  # noqa: E402
+from aiohttp.test_utils import TestClient, TestServer
 
-from plugins.platforms.teams.adapter import _AiohttpBridgeAdapter, check_teams_requirements  # noqa: E402
+from plugins.platforms.teams.adapter import _AiohttpBridgeAdapter, check_teams_requirements
 
 MARKER = "zz-body-marker-zz"
 

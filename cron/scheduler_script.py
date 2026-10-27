@@ -163,6 +163,32 @@ def _posix_cron_script_argv(script: Path) -> tuple[list[str], dict[str, str]]:
             {"HERMES_DISABLE_LAZY_INSTALLS": "1"})
 
 
+def _prefer_dependency_venv_python_for_shell(env: dict[str, str]) -> None:
+    """Put the dependency venv ahead of the managed store for POSIX shell scripts.
+
+    ``pm.activate()`` deliberately makes store tools win in the process-wide PATH. Its Python
+    cannot import Hermes' dependency environment when a shell script invokes it by bare name,
+    though, so give only this child process the same Python selection as a cron ``.py`` script.
+    A missing or unreadable dependency environment leaves shell scripts' existing PATH untouched:
+    they may not invoke Python at all, unlike a ``.py`` script which cannot run without it.
+    """
+    if sys.platform == "win32":
+        return
+    try:
+        from hermes_cli._launchers import resolve_store_python
+        from pm.environments import project_python
+
+        repo = Path(__file__).resolve().parents[1]
+        if resolve_store_python(repo) is None:
+            return
+        python = project_python(repo)
+    except RuntimeError:
+        return
+    if not python.is_file():
+        return
+    env["PATH"] = os.pathsep.join((str(python.parent), env.get("PATH", "")))
+
+
 def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str]]:
     """Hidden, output-capable Python invocation for Windows cron scripts. ``pythonw.exe`` loses
     captured output; uv venv launchers can re-exec the base console python and flash a window
@@ -480,6 +506,8 @@ def _run_job_script(
         # env itself — no raw copy at the spawn site (test_subprocess_env_guard).
         env = build_subprocess_env(strip_launch_profile=True)
         env.update(env_overlay)
+        if path.suffix.lower() in {".sh", ".bash"}:
+            _prefer_dependency_venv_python_for_shell(env)
         # Subprocess cwd only (default: scripts-dir parent). NEVER os.chdir() the process.
         # Use the job's workdir as the subprocess cwd when configured, otherwise default to the scripts-dir
         # parent (back-compat). NEVER mutate the Python process cwd — that would leak into concurrent

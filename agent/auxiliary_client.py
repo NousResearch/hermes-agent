@@ -36,6 +36,7 @@ from agent.error_classifier import (
 from agent.auxiliary_managed_local import _is_managed_local_endpoint
 from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
 from agent.auxiliary_structured_output import _route_key, _without_structured_output_format, remember_structured_output_rejection
+from agent.auxiliary_structured_output import apply_codex_response_format
 from agent.codex_headers import (
     CODEX_AUX_BASE_URL as _CODEX_AUX_BASE_URL,
     apply_required_codex_headers as _apply_required_codex_headers,
@@ -1415,7 +1416,6 @@ class _CodexCompletionsAdapter:
         model = kwargs.get("model", self._model)
         wire_model = _wire_model_identity(model)
         host = str(getattr(self._client, "base_url", "") or "")
-        # Same route classifier as the main transport, so the issuer stamp matches what it minted.
         route = classify_responses_route(SimpleNamespace(provider=None, base_url=host))
         is_xai = route.is_xai_responses
         tools = kwargs.get("tools")
@@ -1491,7 +1491,7 @@ class _CodexCompletionsAdapter:
         if isinstance(kwargs.get("extra_headers"), dict) and kwargs["extra_headers"]:
             resp_kwargs["extra_headers"] = dict(kwargs["extra_headers"])
         # The Codex endpoint rejects max_output_tokens/temperature (400) — omit.
-        extra_body = kwargs.get("extra_body") or {}
+        extra_body = apply_codex_response_format(kwargs, resp_kwargs)
         if isinstance(extra_body, dict):
             # service_tier (fast mode) is a top-level Responses field; xAI's endpoint rejects it.
             service_tier = extra_body.get("service_tier")

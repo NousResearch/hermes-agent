@@ -53,6 +53,30 @@ def _response_format_type(request_kwargs: dict[str, Any]) -> Optional[str]:
     return response_format.get("type") if isinstance(response_format, dict) else None
 
 
+def apply_codex_response_format(kwargs: dict[str, Any], resp_kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Map a chat JSON schema to Responses ``text.format`` without changing caller kwargs."""
+    extra_body = kwargs.get("extra_body")
+    if not isinstance(extra_body, dict):
+        extra_body = {}
+    text: dict[str, Any] = {}
+    for source in (kwargs.get("text"), extra_body.get("text")):
+        if isinstance(source, dict):
+            text.update(source)
+    response_format = extra_body.get("response_format") or kwargs.get("response_format")
+    if isinstance(response_format, dict) and response_format.get("type") == "json_schema":
+        json_schema = response_format.get("json_schema")
+        if isinstance(json_schema, dict) and "schema" in json_schema:
+            text["format"] = {
+                "type": "json_schema",
+                "name": json_schema.get("name") or "response",
+                "schema": json_schema["schema"],
+                "strict": json_schema.get("strict", True),
+            }
+    if text:
+        resp_kwargs["text"] = text
+    return extra_body
+
+
 def _profile_unsupported_formats(provider: Optional[str], base_url: Optional[str]) -> tuple:
     """The provider profile's declared unsupported types; a ``custom`` route whose base_url is a profiled
     provider's own host (``api.deepseek.com``) gets that provider's profile."""

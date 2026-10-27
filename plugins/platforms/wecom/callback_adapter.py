@@ -290,7 +290,8 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         corp_id = root.findtext("ToUserName", default=app.get("corp_id", ""))
         content = root.findtext("Content", default="").strip() or ("/start" if msg_type == "event" else "")
         msg_id = root.findtext("MsgId") or f"{user_id}:{root.findtext('CreateTime', default='0')}"
-        source = self.build_source(chat_id=self._user_app_key(corp_id, user_id), chat_name=user_id, chat_type="dm", user_id=user_id, user_name=user_id)
+        source = self.build_source(chat_id=self._user_app_key(corp_id, user_id), chat_name=user_id, chat_type="dm", user_id=user_id, user_name=user_id,
+                                   private_chat=True)  # app callbacks are one user's chat with the app
         return MessageEvent(text=content, message_type=MessageType.TEXT, source=source, raw_message=xml_text, message_id=msg_id)
 
     def _crypt_for_app(self, app: dict[str, Any]) -> WXBizMsgCrypt:

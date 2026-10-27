@@ -74,11 +74,11 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
-    SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, ssrf_redirect_guard,
+    SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, ssrf_redirect_guard, transcode_to_ogg_opus,
 )
-from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import ThreadParticipationTracker
+from gateway.private_chat import member_count_proves_private
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
 
 logger = logging.getLogger(__name__)
@@ -2126,9 +2126,9 @@ class MatrixAdapter(BasePlatformAdapter):
             self._parked_voices.release(room_id, sender, voice_gate)
         display_name = await self._get_display_name(room_id, sender)
         source = self.build_source(
-            chat_id=room_id, chat_name=identity.display_name, chat_type=chat_type, user_id=sender,
-            user_name=display_name, thread_id=thread_id, chat_topic=identity.room_topic,
-            guild_id=identity.server_name, parent_chat_id=room_id if thread_id else None, message_id=event_id)
+            chat_id=room_id, chat_name=identity.display_name, chat_type=chat_type, user_id=sender, user_name=display_name,
+            thread_id=thread_id, chat_topic=identity.room_topic, guild_id=identity.server_name, message_id=event_id,
+            parent_chat_id=room_id if thread_id else None, private_chat=member_count_proves_private(getattr(identity, "joined_member_count", None)))
         if thread_id:
             await self._threads.mark_async(thread_id)  # covers real roots and synthetic ones alike
         self._background_read_receipt(room_id, event_id)

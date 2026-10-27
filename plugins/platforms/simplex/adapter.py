@@ -378,7 +378,7 @@ class SimplexAdapter(BasePlatformAdapter):
                 media_types.append(_mime_for_ext(ext))
         source = self.build_source(
             chat_id=chat_id, chat_name=chat_name, chat_type="group" if is_group else "dm",
-            user_id=sender_id, user_name=sender_name or sender_id)
+            user_id=sender_id, user_name=sender_name or sender_id, private_chat=chat_type == "direct")
         # Non-image/non-audio files are DOCUMENT so run.py's document-context injection surfaces them.
         msg_type = MessageType.TEXT
         if media_types:

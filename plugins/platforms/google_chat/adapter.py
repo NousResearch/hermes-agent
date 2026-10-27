@@ -987,6 +987,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 self._last_inbound_thread[space_name] = thread_name
         source = self.build_source(
             chat_id=space_name, chat_name=space.get("displayName") or space.get("name") or "", chat_type=chat_type,
+            private_chat=chat_type == "dm",  # DIRECT_MESSAGE spaces have exactly two members
             # Email is the canonical id (allowlists use emails); the ``users/{id}``
             # resource name moves to user_id_alt.
             user_id=(sender_email or sender_name), user_name=sender.get("displayName") or sender_email or sender_name,

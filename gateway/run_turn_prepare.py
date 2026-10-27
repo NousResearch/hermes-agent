@@ -655,6 +655,8 @@ class GatewayTurnPrepareMixin:
         context = build_session_context(source, self.config, session_entry)
         # Session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
+        from gateway.channel_memory import bind_channel_memory
+        bind_channel_memory(self, source)
         # Self-injected turns (internal=True) persist with a DB-only display_kind: timeline notices, not user bubbles.
         from gateway.response_filters import display_kind_for_event
         persist_user_display_kind = display_kind_for_event(event)

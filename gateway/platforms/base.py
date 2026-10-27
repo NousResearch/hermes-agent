@@ -4728,7 +4728,7 @@ class BasePlatformAdapter(ABC):
         scope_id: Optional[str] = None, guild_id: Optional[str] = None,
         parent_chat_id: Optional[str] = None, message_id: Optional[str] = None,
         role_authorized: bool = False, auto_thread_created: bool = False,
-        auto_thread_initial_name: Optional[str] = None) -> SessionSource:
+        auto_thread_initial_name: Optional[str] = None, private_chat: bool = False) -> SessionSource:
         """Build a SessionSource; with ``gateway.profile_routes`` configured the matching
         profile is stamped on ``source.profile`` for per-profile HERMES_HOME isolation."""
         def _opt(value) -> Optional[str]:
@@ -4757,7 +4757,7 @@ class BasePlatformAdapter(ABC):
                                self.platform, chat_id, exc_info=True)
         source = SessionSource(**fields, profile=profile, role_authorized=role_authorized,
                                auto_thread_created=auto_thread_created,
-                               auto_thread_initial_name=auto_thread_initial_name)
+                               auto_thread_initial_name=auto_thread_initial_name, private_chat=private_chat)
         # Transport-only, kept out of to_dict(): the receiving adapter is authoritative this turn
         # even if profile_routes picks another runtime; the reject flag is consumed before auth.
         source._transport_adapter_ref = weakref.ref(self)

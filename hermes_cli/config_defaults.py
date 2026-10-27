@@ -1317,10 +1317,10 @@ DEFAULT_CONFIG = {
         "write_approval": False,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
-        # Periodic built-in memory review; 0 when an external provider auto-extracts.
-        "nudge_interval": 10,
-        # One external provider: bundled (retaindb, byterover) or catalog-installed (honcho,
-        # hindsight, supermemory, mem0, openviking, holographic). Empty = built-in only.
+        "nudge_interval": 10,  # periodic built-in memory review; 0 when an external provider auto-extracts
+        # Group chats get their own notes (memories/channels/); scope: chat | workspace (Slack team, Discord guild).
+        "channel_memory": {"enabled": True, "scope": "chat", "owner_writes_from_groups": True, "char_limit": 1500},
+        # One external provider: bundled (retaindb, byterover) or catalog (honcho, mem0, ...). Empty = built-in only.
         "provider": "",
     },
     # Subagent delegation: `backend` = task-routing strategy ("default": keys below), `backends.<name>` = its settings.

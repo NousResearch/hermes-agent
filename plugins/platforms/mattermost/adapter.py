@@ -582,6 +582,7 @@ class MattermostAdapter(BasePlatformAdapter):
             msg_type = MessageType.TEXT
         source = self.build_source(
             chat_id=channel_id, chat_type=_CHANNEL_TYPE_MAP.get(data.get("channel_type", "O"), "channel"),
+            private_chat=data.get("channel_type") == "D",
             user_id=sender_id, user_name=data.get("sender_name", "").lstrip("@") or sender_id,
             thread_id=thread_id, message_id=post_id)
         from gateway.platforms.base import resolve_channel_prompt

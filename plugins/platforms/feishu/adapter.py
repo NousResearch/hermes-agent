@@ -2514,11 +2514,11 @@ class FeishuAdapter(BasePlatformAdapter):
         sender_profile = await self._resolve_sender_profile(sender_id)
         chat_info = await self.get_chat_info(chat_id)
         source = self.build_source(
-            chat_id=chat_id,
-            chat_name=chat_info.get("name") or chat_id or "Feishu Chat",
-            chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type=event_chat_type),
-            user_id=sender_profile["user_id"],
-            user_name=sender_profile["user_name"],
+            chat_id=chat_id, chat_name=chat_info.get("name") or chat_id or "Feishu Chat",
+            chat_type=(source_chat_type := self._resolve_source_chat_type(
+                chat_info=chat_info, event_chat_type=event_chat_type)),
+            private_chat=source_chat_type == "dm",  # p2p: the user and the bot
+            user_id=sender_profile["user_id"], user_name=sender_profile["user_name"],
             thread_id=None,
             user_id_alt=sender_profile["user_id_alt"],
         )
@@ -2684,11 +2684,10 @@ class FeishuAdapter(BasePlatformAdapter):
         chat_info = await self.get_chat_info(chat_id)
         sender_profile = await self._resolve_sender_profile(sender_id, is_bot=is_bot)
         source = self.build_source(
-            chat_id=chat_id,
-            chat_name=chat_info.get("name") or chat_id or "Feishu Chat",
-            chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type=chat_type),
-            user_id=sender_profile["user_id"],
-            user_name=sender_profile["user_name"],
+            chat_id=chat_id, chat_name=chat_info.get("name") or chat_id or "Feishu Chat",
+            chat_type=(source_chat_type := self._resolve_source_chat_type(chat_info=chat_info, event_chat_type=chat_type)),
+            private_chat=source_chat_type == "dm",  # p2p: the user and the bot
+            user_id=sender_profile["user_id"], user_name=sender_profile["user_name"],
             thread_id=thread_id,
             user_id_alt=sender_profile["user_id_alt"],
             is_bot=is_bot,

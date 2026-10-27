@@ -171,6 +171,10 @@ def _validate_native(runner, event, provenance=None, fresh_roles=False):
         _refuse(event, 'invalid_params', clause)
     encoded_source = source.to_dict()
     encoded_source['is_bot'] = source.is_bot
+    if source.private_chat is True:
+        # The adapter's 1:1 proof is wire-invisible (to_dict/from_dict drop it) but owner memory
+        # needs it at execution; the admission row is gateway-written, never peer input.
+        encoded_source['private_chat'] = True
     restored_source = SessionSource.from_dict(encoded_source)
     restored_source.is_bot = source.is_bot
     if provenance is not None:
@@ -284,6 +288,7 @@ def restore_native_source(payload, runner=None):
     envelope = payload['native_text_v1']
     source = SessionSource.from_dict(envelope['source'])
     source.is_bot = envelope['source']['is_bot']
+    source.private_chat = envelope['source'].get('private_chat') is True
     # Private descriptor requests a fresh check, never supplies the verdict.
     source.role_authorized = envelope.get('reauthorize') == 'roles'
     if 'provenance' in envelope:

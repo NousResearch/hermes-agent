@@ -529,6 +529,9 @@ def _memory_parts(agent: Any) -> list[str]:
             block = agent._memory_store.format_for_system_prompt(kind) if enabled else None
             if block:
                 parts.append(block)
+        from tools.memory_tool_channel import channel_prompt_block
+        if channel_block := channel_prompt_block(agent):
+            parts.append(channel_block)
     # External memory provider system prompt block (additive to built-in). Gated on the same check
     # ``inject_memory_provider_tools`` uses so we never advertise provider tools that the agent's toolset
     # configuration has already gated off (#81014).

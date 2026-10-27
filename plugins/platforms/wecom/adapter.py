@@ -453,7 +453,7 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
             logger.info("[%s] Empty WeCom message skipped: is_group=%s chat=%s msgtype=%r", self.name, is_group, chat_id, body.get("msgtype"))
             return
         source = self.build_source(chat_id=chat_id, chat_type="group" if is_group else "dm", user_id=sender_id or None, user_name=sender_id or None,
-                                   message_id=msg_id)
+                                   message_id=msg_id, private_chat=str(body.get("chattype") or "").lower() == "single")
         event = MessageEvent(
             text=text, message_type=message_type, source=source, raw_message=payload, message_id=msg_id, media_urls=media_urls, media_types=media_types,
             reply_to_message_id=f"quote:{msg_id}" if has_reply_context else None, reply_to_text=reply_text if has_reply_context else None, timestamp=datetime.now(tz=UTC),

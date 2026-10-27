@@ -4829,7 +4829,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         source = self.build_source(
             chat_id=str(interaction.channel_id), chat_name=chat_name, chat_type=chat_type,
             user_id=str(interaction.user.id), user_name=interaction.user.display_name,
-            thread_id=thread_id, chat_topic=chat_topic,
+            thread_id=thread_id, chat_topic=chat_topic, private_chat=is_dm,  # DMChannel, never a group DM
             guild_id=self._interaction_guild_id(interaction), parent_chat_id=parent_id or None,
             role_authorized=self._slash_role_grant(interaction),
         )
@@ -6228,7 +6228,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         source = self.build_source(
             chat_id=str(effective_channel.id),
             chat_name=chat_name,
-            chat_type=chat_type,
+            chat_type=chat_type, private_chat=chat_type == "dm",  # DMChannel: bots are never in group DMs
             user_id=str(message.author.id),
             user_name=message.author.display_name,
             thread_id=thread_id,

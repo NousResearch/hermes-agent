@@ -757,7 +757,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
         await self._ingest(
             d, msg_id, content, attachments_raw, timestamp, verbose=True,
-            chat_id=user_openid, qq_chat_type="c2c", user_id=user_openid, chat_type="dm")
+            chat_id=user_openid, qq_chat_type="c2c", user_id=user_openid, chat_type="dm", private_chat=True)
 
     async def _handle_group_message(self, d, msg_id, content, author, timestamp) -> None:
         group_openid = str(d.get("group_openid", ""))
@@ -797,7 +797,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             return
         await self._ingest(
             d, msg_id, content, d.get("attachments"), timestamp,
-            chat_id=guild_id, qq_chat_type="dm", user_id=author_id, chat_type="dm")
+            chat_id=guild_id, qq_chat_type="dm", user_id=author_id, chat_type="dm", private_chat=True)
 
     _INBOUND_HANDLERS = {
         "C2C_MESSAGE_CREATE": "_handle_c2c_message",

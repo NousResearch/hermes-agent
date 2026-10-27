@@ -1045,9 +1045,9 @@ class BuildSourceMiddleware(InboundMiddleware):
     async def handle(self, ctx: InboundContext, next_fn) -> None:
         ctx.source = ctx.adapter.build_source(
             chat_id=ctx.chat_id, chat_type=ctx.chat_type, chat_name=ctx.chat_name,
+            private_chat=bool(ctx.from_account) and ctx.chat_id == f"direct:{ctx.from_account}",
             user_id=ctx.from_account or None, user_name=ctx.sender_nickname or ctx.from_account,
-            thread_id="main" if ctx.chat_type == "group" else None,
-        )
+            thread_id="main" if ctx.chat_type == "group" else None)
         await next_fn()
 
 

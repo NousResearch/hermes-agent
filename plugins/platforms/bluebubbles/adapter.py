@@ -599,7 +599,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return web.json_response({"error": "missing message fields"}, status=400)
         source = self.build_source(chat_id=session_chat_id, chat_name=chat_identifier or sender,
                                    chat_type="group" if is_group else "dm", user_id=sender, user_name=sender,
-                                   chat_id_alt=chat_identifier)
+                                   chat_id_alt=chat_identifier, private_chat=not is_group and ";-;" in (chat_guid or ""))
         event = MessageEvent(
             text=text, message_type=msg_type, source=source, raw_message=payload,
             message_id=self._value(record.get("guid"), record.get("messageGuid"), record.get("id")),

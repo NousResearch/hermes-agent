@@ -524,6 +524,7 @@ class TeamsAdapter(BasePlatformAdapter):
             chat_id=conv.id,
             chat_name=getattr(conv, "name", None) or "",
             chat_type=_CHAT_TYPES.get(getattr(conv, "conversation_type", None) or "", "dm"),
+            private_chat=getattr(conv, "conversation_type", None) == "personal",
             user_id=str(user_id),
             user_name=getattr(from_account, "name", None) or "",
             guild_id=getattr(conv, "tenant_id", None) or self._tenant_id,

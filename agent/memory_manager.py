@@ -787,6 +787,8 @@ class MemoryManager:
         if not self._memory_tool_result_succeeded(tool_result):
             return
         result = json.loads(tool_result) if isinstance(tool_result, str) else tool_result
+        if result.get("target") == "channel":
+            return  # a group chat's own notes: mirroring would carry them into the owner's provider memory
         target = str(tool_args.get("target") or "memory")
         operations = tool_args.get("operations")
         batched = isinstance(operations, list) and bool(operations)

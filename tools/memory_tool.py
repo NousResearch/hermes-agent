@@ -42,6 +42,7 @@ def get_memory_dir() -> Path:
 
 from tools.memory_tool_store import (
     ENTRY_DELIMITER, FAILURE_CLASS, MEMORY_BLOCK_HEADERS, PATCH_DROP_HINT, MemoryStore, _scan_memory_content)
+from tools.memory_tool_channel import CHANNEL_TARGET, add_routing_note, route_memory_write, store_for_pending
 
 
 def load_on_disk_store() -> MemoryStore:
@@ -81,6 +82,12 @@ def _pin_matched_entries(store: MemoryStore, payload: dict[str, Any]) -> Optiona
     return None if result.get("success") else json.dumps(result, ensure_ascii=False)
 
 
+def _with_channel_scope(store: MemoryStore, payload: dict[str, Any]) -> dict[str, Any]:
+    """A staged channel write records its chat: ``/memory approve`` replays it outside that chat."""
+    scope = getattr(store, "channel_scope", None)
+    return {**payload, "channel_scope": scope} if scope else payload
+
+
 def _gate_or_stage(store: MemoryStore, summary: str, detail: str, payload: dict[str, Any]) -> Optional[str]:
     """JSON tool-result string when the write must NOT proceed (blocked or staged
     for approval), None to proceed. Fails open if the gate module can't load."""
@@ -97,7 +104,8 @@ def _gate_or_stage(store: MemoryStore, summary: str, detail: str, payload: dict[
     if (unmatched := _pin_matched_entries(store, payload)) is not None:
         return unmatched
     FAILURE_CLASS.set("staged")
-    record = wa.stage_write(wa.MEMORY, payload, summary=f"{summary}: {detail[:120]}", origin=wa.current_origin())
+    record = wa.stage_write(wa.MEMORY, _with_channel_scope(store, payload), summary=f"{summary}: {detail[:120]}",
+                            origin=wa.current_origin())
     return json.dumps({"success": True, "staged": True, "pending_id": record["id"], "message": decision.message},
                       ensure_ascii=False)
 
@@ -131,7 +139,7 @@ def _batch_op_line(op: dict[str, Any]) -> str:
 def _apply_write_gate(store: MemoryStore, action: str, target: str, content: Optional[str],
                       old_text: Optional[str], operations: Optional[list[dict[str, Any]]] = None) -> Optional[str]:
     """Gate one mutating op, or (``operations`` set) a whole batch as a single unit."""
-    label = "user profile" if target == "user" else "memory"
+    label = {"user": "user profile", CHANNEL_TARGET: "channel memory"}.get(target, "memory")
     if operations is not None:
         return _gate_or_stage(store, f"apply {len(operations)} op(s) to {label}",
                               "\n".join(_batch_op_line(op) for op in operations),
@@ -201,7 +209,7 @@ def _background_delete_gate(store, action, operations, target="memory", content=
         from tools import write_approval as wa
         FAILURE_CLASS.set("staged")
         record = wa.stage_write(
-            wa.MEMORY, payload,
+            wa.MEMORY, _with_channel_scope(store, payload),
             summary=(f"background review consolidation ({'batch' if operations is not None else action} "
                      f"on {target}): {detail}")[:200],
             origin=wa.current_origin())
@@ -227,10 +235,12 @@ def memory_tool(action: str | None = None, target: str = "memory", content: str 
     aliases ``content``."""
     if store is None:
         return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
+    store, target, operations, routing_note = route_memory_write(store, target, operations)
     token = FAILURE_CLASS.set("other")
     try:
         outcome, result = _memory_tool(action, target, content, old_text, new_text, operations, store)
         failure_class = "none" if outcome == "success" else FAILURE_CLASS.get()
+        result = add_routing_note(result, routing_note)
     finally:
         FAILURE_CLASS.reset(token)
     from hermes_cli.observability.shared_metrics_loop import record_builtin_memory_call
@@ -328,7 +338,8 @@ def _memory_target_error(
             "Missing required target. Retry with target='memory' or target='user' at the top level. "
             "For a batch, remove target from every operation; use separate calls for different stores. "
             "Nothing was written or staged.")}
-    if not isinstance(target, str) or target not in {"memory", "user"}:
+    valid_targets = {"memory", "user"} | ({CHANNEL_TARGET} if getattr(store, "channel_scope", None) else set())
+    if not isinstance(target, str) or target not in valid_targets:
         from tools.registry import _bound_error_text
         FAILURE_CLASS.set("invalid_args")
         return {"success": False,
@@ -356,6 +367,7 @@ def apply_memory_pending(payload: dict[str, Any], store: MemoryStore) -> dict[st
     staged before pinning has no verifiable target, so it is refused rather than replayed by
     old_text (which could hit a newer entry the approver never saw)."""
     action, target = payload.get("action"), payload.get("target")
+    store = store_for_pending(payload, store)
     target_error = _memory_target_error(store, target, payload.get("operations"))
     if target_error is not None:
         return target_error

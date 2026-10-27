@@ -32,6 +32,8 @@ logger = logging.getLogger(__name__)
 
 # Owner-typed inbound text is prefixed at MessageEvent construction so transcripts stay disambiguated before silent_ingest.
 _OWNER_REPLY_PREFIX = "[owner reply] "
+# JID suffixes of a one-to-one chat (a person by phone number or by LID); groups are @g.us.
+_ONE_TO_ONE_JID_SUFFIXES = ("@s.whatsapp.net", "@c.us", "@lid")
 
 _RUN_TEXT = dict(capture_output=True, text=True, encoding='utf-8', errors='replace', stdin=subprocess.DEVNULL)
 
@@ -1036,6 +1038,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 return None
             msg_type = self._classify_bridge_message(data)
             source = self.build_source(chat_id=data.get("chatId", ""), chat_name=data.get("chatName"), chat_type="group" if data.get("isGroup", False) else "dm",
+                                       private_chat=not data.get("isGroup") and str(data.get("chatId") or "").endswith(_ONE_TO_ONE_JID_SUFFIXES),
                                        user_id=data.get("senderId"), user_name=data.get("senderName"),
                                        message_id=data.get("messageId"))
             cached_urls, media_types = await self._collect_bridge_media(data, msg_type)

@@ -47,6 +47,8 @@ export async function buildSourceWebapp({
   prepare({
     source: workspace, workspaces: ['apps/desktop'], reuse: true, install,
     env: { ...process.env, npm_config_ignore_scripts: 'true' },
+    // The browser bundle never runs Electron, so its binary is not downloaded.
+    electron: false,
   })
   return buildWebapp({ source, workspace, out: join(source, 'apps/desktop/dist-webapp') })
 }

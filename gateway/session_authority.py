@@ -1277,7 +1277,11 @@ class SessionAuthority:
                     self.executing.pop(ref.session_id, None)
                 if self.delivered_stops.get(ref.session_id) == row['generation']:
                     from gateway.session_ancillary import retry_process_stop
-                    if not await retry_process_stop(self, ref, self.adopted.get(ref.session_id, (None, None))[1]):
+                    if (not await retry_process_stop(self, ref, self.adopted.get(ref.session_id, (None, None))[1])
+                            and row['admission_id'] not in self.pending_results):
+                        # Cleanup uncertainty does not erase an already captured turn result.
+                        # Ordinary settlement persists it; the Stop fence still gates every
+                        # successor until native cleanup and the original reader have settled.
                         from gateway.session_settlement_recovery import recover_failed_settlement
                         await recover_failed_settlement(self, row)
                         self.pending_results.pop(row['admission_id'], None)

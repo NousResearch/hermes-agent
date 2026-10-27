@@ -57,6 +57,7 @@ def save_completed_result(session) -> bool:
                       native_job_scope=session.native_job_scope,
                       ownership_generation=session.ownership_generation, handoff_note=session.handoff_note)
         record["output"] = session.output_buffer[-MAX_OUTPUT_CHARS:]
+        record['result_complete'] = session._result_complete
     # Live-output opt-out must not persist raw credentials in durable receipts.
     record["output"] = redact_terminal_output(record["output"], record["command"], force=True)
     record["command"] = redact_sensitive_text(record["command"], code_file=True, force=True)
@@ -86,6 +87,15 @@ def save_completed_result(session) -> bool:
                 receipts = completed_ownership([record])
                 merge_ownership([record], receipts)
                 inherit_job_scope([record], receipts)
+                # A delayed Stop snapshot may predate the original reader's final drain.
+                # The existing receipt's explicit publisher phase is monotonic, independent
+                # of ownership transfer and completion consumption.
+                if receipts and receipts[0].get('result_complete') is True and not record['result_complete']:
+                    previous = receipts[0]
+                    if any(previous.get(key) != record.get(key) for key in ('id', 'pid', 'host_start_time', 'started_at')):
+                        raise ValueError('completed process identity mismatch')
+                    for key in ('output', 'exit_code', 'completion_reason', 'termination_source', 'result_complete'):
+                        record[key] = previous[key]
                 # A stale result writer cannot unconsume a completed Stop.
                 record['completion_consumed'] |= completed_result_consumed(session.id)
                 atomic_json_write(path, record, mode=0o600)
@@ -198,6 +208,7 @@ def load_completed_results(prefix: str = "", *, owns_entry=None, strict=False) -
                 ownership_generation=record.get('ownership_generation', 0), handoff_note=record.get('handoff_note', ''),
             )
             session._completion_event.set()
+            session._result_complete = record.get('result_complete') is True
             session._result_persisted_generation = session.ownership_generation
             results[session.id] = session
         except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):

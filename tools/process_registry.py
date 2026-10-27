@@ -606,6 +606,7 @@ class ProcessSession:
     _finish_claimed: bool = field(default=False, repr=False)
     # Output must reach the existing retained result before its resource checkpoint retires.
     _result_persisted_generation: int = field(default=-1, repr=False)
+    _result_complete: bool = field(default=False, init=False, repr=False)
     # Cleanup or original result durability is unresolved; keep its existing
     # checkpoint reachable for native Stop and recovery.
     _scope_stop_pending: bool = field(default=False, repr=False)
@@ -1511,6 +1512,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             from tools.process_registry_job import job_exit_result
             exit_code, reason, source = job_exit_result(session, exit_code, reason, source)
             session.mark_exited(exit_code, reason, source)
+            session._result_complete = True  # The original reader has collected its final output/status.
         self._move_to_finished(session)
 
     def _move_to_finished(self, session: ProcessSession) -> bool:

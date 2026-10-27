@@ -145,6 +145,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._max_fallback_flood_retry_seconds = 5.0
 
         self._queue: queue.Queue = queue.Queue()
+        self._skip_response = False
         # Every real preview id on screen this response (fresh-final deletes them all);
         # the per-segment set holds only the active segment so failure recovery never
         # deletes an earlier finalized preamble/commentary.
@@ -542,6 +543,11 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             self._queue.put((_FINAL_TEXT, final_text))
         self._queue.put(_DONE)
 
+    def finish_silently(self) -> None:
+        """Discard buffered output and close previews without synthesizing a final reply."""
+        self._skip_response = True
+        self.finish()
+
     async def run(self) -> None:
         """Async task that drains the queue and edits the platform message."""
         self._len_fn, self._safe_limit = self._resolve_length_budget()
@@ -553,6 +559,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                     await self._abandon_native_stream()
                     return
                 tick = self._drain_queue()
+                if self._skip_response:
+                    await self._suppress_silence_marker()
+                    return
 
                 # Boundary produces its own finalize and resets state, so it must
                 # run before got_done/segment_break processing.

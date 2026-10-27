@@ -197,6 +197,13 @@ def run_tool_round(
                     agent.stream_delta_callback(None)
         return _verdict("break")
 
+    if getattr(agent, "_response_skip_reason", None):
+        from agent.response_skip import receipt
+        append_message(messages, receipt(agent._response_skip_reason))
+        final_response = ""
+        _turn_exit_reason = "skip_response"
+        return _verdict("break")
+
     # Reset per-turn retry counters so one truncation can't poison the turn.
     truncated_tool_call_retries = 0
     # Defer the paragraph break: _fire_stream_delta() prepends one "\n\n" when real

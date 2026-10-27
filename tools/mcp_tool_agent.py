@@ -330,6 +330,9 @@ def _reinject_authorized_dynamic_tools(agent, tools_list: list, name_set: set) -
     rebuild drops it. Scrub any stale copy from the STAGED pair and re-add it only when the live
     gate re-authorizes, so the publisher exposes a coherent ``(tools, valid_tool_names)``."""
     from tools.bot_mode_dm import MESSAGE_AGENT_TOOL_NAME, message_agent_authorized, message_agent_tool_schema
+    from agent.response_skip import inject as inject_response_skip
+
+    inject_response_skip(agent, tools_list, name_set)
 
     tools_list[:] = [entry for entry in tools_list if _def_name(entry) != MESSAGE_AGENT_TOOL_NAME]
     name_set.discard(MESSAGE_AGENT_TOOL_NAME)

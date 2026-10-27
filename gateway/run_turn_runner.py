@@ -1033,6 +1033,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         ctx.result_holder[0] = result
         if stream_consumer is None:
             return
+        from gateway.response_filters import is_explicit_response_skip
+        if is_explicit_response_skip(result):
+            stream_consumer.finish_silently()
+            return
         # Pass final_response as the authoritative finalize payload: it includes post-stream
         # augmentation (verifier footer, explainer) the accumulator never saw. Adopt ONLY a genuinely
         # completed final: interrupt paths return {interrupted: True, completed: False} with a
@@ -1374,6 +1378,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # Usage-window limit (agent/plan_limits.py): the gateway offers the plan's model as a button.
             "usage_limit": result.get("usage_limit"),
             "partial": result.get("partial", False), "completed": result.get("completed"),
+            "turn_exit_reason": result.get("turn_exit_reason"),
             "interrupted": result.get("interrupted", False), "interrupt_message": result.get("interrupt_message"),
             "error": result.get("error"),
             **{key: result[key] for key in _FAILURE_DESCRIPTOR_KEYS if key in result},
@@ -1400,6 +1405,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 **({"billing_block": result["billing_block"]} if isinstance(result.get("billing_block"), dict) else {}),
                 **({"warning": result["warning"]} if isinstance(result.get("warning"), str) and result["warning"] else {}),
             }
+        from gateway.response_filters import is_explicit_response_skip
+        if is_explicit_response_skip(result):
+            return {"final_response": "", **common, "agent_persisted": result.get("agent_persisted", True)}
         if not final_response:
             final_response = _normalize_empty_agent_response(result, final_response or "", history_len=len(agent_history))
             final_response = _sanitize_gateway_final_response(ctx.source.platform, final_response)

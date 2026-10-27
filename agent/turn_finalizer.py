@@ -654,7 +654,8 @@ def finalize_turn(
         final_response is not None
         and not failed
         and not interrupted
-        and (api_call_count < agent.max_iterations or str(_turn_exit_reason).startswith("text_response("))
+        and (api_call_count < agent.max_iterations or str(_turn_exit_reason).startswith("text_response(")
+             or _turn_exit_reason == "skip_response")
     )
 
     _rollback_interrupted_preflight_display(agent, interrupted)
@@ -685,9 +686,12 @@ def finalize_turn(
     def _persist_step():
         nonlocal final_response
         _drop_transcript_scaffolding(agent, messages)
-        final_response, _recovered_from_stream = _recover_final_from_stream(
-            agent, final_response, interrupted, failed
-        )
+        if _turn_exit_reason == "skip_response":
+            _recovered_from_stream = False
+        else:
+            final_response, _recovered_from_stream = _recover_final_from_stream(
+                agent, final_response, interrupted, failed
+            )
         # Recovery paths (stream-recovered / prior-turn text) reach here with a response no
         # earlier seam transformed; the normal text turn already did this before its flush and
         # gets the recorded outcome back. Either way the tail close below writes the text the
@@ -713,7 +717,7 @@ def finalize_turn(
     # Response transforms apply only to real, uninterrupted responses.
     if final_response and not interrupted:
         final_response = _append_file_mutation_footer(agent, final_response, logger)
-    if not interrupted:
+    if not interrupted and _turn_exit_reason != "skip_response":
         final_response = _explain_abnormal_exit(
             agent, final_response, _turn_exit_reason, preserved_verification_fallback, logger,
         )

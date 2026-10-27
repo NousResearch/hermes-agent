@@ -156,6 +156,31 @@ Failed turns still surface as errors; Hermes does not hide failures just because
 
 On a message from a person, a bare silence token is replaced by a short notice, because a message that needed a reply must not vanish. Internal wakes such as background-process notifications may stay silent, and so may a message the platform adapter reports as not addressed to the bot. Slack reports this for messages that open by @mentioning someone else and for unmentioned top-level messages that start a new thread in a free-response channel; other platforms always get the notice.
 
+### Explicitly skipping a reply
+
+In a messaging chat session, the agent can instead call `skip_response` to end the
+current turn successfully without sending a final reply. This is intended for
+requests such as "Stop replying; I'm talking to the other bot," where even an
+"Okay, I'll be quiet" acknowledgement would be unwanted.
+
+The agent calls the tool alone, before any acknowledgement or commentary:
+
+```json
+{"reason": "The user asked me to stop replying."}
+```
+
+The short, non-sensitive reason is kept in the session transcript, not posted to
+the chat. The gateway does not replace this explicit decision with an empty-reply
+warning, recover buffered text as the final reply, or send a completion placeholder.
+Ordinary empty output, failed turns, and bare silence tokens on addressed human
+turns retain their existing safeguards.
+
+This skips **one turn**, not future messages. It does not mute the channel, change
+mention requirements, cancel background work, or universally retract messages
+already delivered. Recognizing the natural-language request and choosing the tool
+remain the model's responsibility. The tool is not exposed in ordinary CLI, API,
+webhook, cron, or delegated-agent sessions.
+
 ## Quick Setup
 
 The easiest way to configure messaging platforms is the interactive wizard:

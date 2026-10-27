@@ -830,6 +830,9 @@ class GatewayStartupMixin:
                 or (coerce_epoch(last.get("timestamp")) or 0) < started):
             return None
         prompt = next((m for m in reversed(visible) if m.get("role") == "user"), {})
+        if (last.get("content") == "" and last.get("display_kind") == "hidden"
+                and (last.get("display_metadata") or {}).get("response_disposition") == "skip_response"):
+            return ""
         if is_machinery_display_kind(prompt.get("display_kind")):
             try:  # the owning profile's display policy, as the adapter reads it at delivery
                 scope = self._media_delivery_scope_for_source(origin)

@@ -1149,6 +1149,10 @@ def build_turn_context(
     from agent.delegation_backends import apply_requested_tool_rebuild
     apply_requested_tool_rebuild(agent)
 
+    from agent.response_skip import inject as inject_response_skip
+    agent._response_skip_reason = None
+    inject_response_skip(agent, agent.tools, agent.valid_tool_names)
+
     # Bot Mode DM tool — injected ONLY into a bot's canonical "Bot Chat" session (same
     # gate as the protocol section); gate is session-stable, so cache-safe.
     try:

@@ -1018,7 +1018,7 @@ def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -
     """Run user-visible and checkpoint preflight on final tool arguments."""
     function_name, function_args, effective_task_id, tool_call_id = ref.name, ref.args, ref.task_id, ref.call_id
     display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
-    if _tool_progress_enabled(agent):
+    if function_name != "skip_response" and _tool_progress_enabled(agent):
         prefix = f"Tool {display_index}" if display_index is not None else "Tool"
         if agent.verbose_logging:
             print(f"  📞 {prefix}: {function_name}({list(display_args.keys())})")
@@ -1029,6 +1029,9 @@ def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -
     agent._current_tool = function_name
     agent._touch_activity(f"executing tool: {function_name}")
     _set_worker_activity_callback(agent)
+
+    if function_name == "skip_response":
+        return
 
     if agent.tool_progress_callback:
         try:
@@ -1056,6 +1059,8 @@ def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -
 
 def _emit_tool_complete_and_risk(agent, ref: _ToolCallRef, result, risk_metadata, blocked: bool) -> None:
     """Fire ``tool_complete_callback`` (unless blocked) then the ``tool.output_risk`` projection."""
+    if ref.name == "skip_response":
+        return
     if not blocked and agent.tool_complete_callback:
         try:
             display_args = _redact_tool_args_for_display(ref.name, ref.args) or ref.args
@@ -1174,7 +1179,7 @@ def _commit_tool_result(
     if not _flush_session_db_after_tool_progress(agent, messages, stage=f"tool result {function_name}"):
         return None
 
-    if not blocked:
+    if not blocked and function_name != "skip_response":
         # ``tool.completed`` projects AFTER the canonical append + flush so resume can
         # reconstruct the result even if the UI bridge dies mid-projection.
         _safe_callback(

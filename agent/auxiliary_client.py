@@ -3794,9 +3794,10 @@ def _retry_same_provider_sync(*, resolved_provider: str, resolved_api_mode: Opti
     retry_client, retry_kwargs = _prepare_same_provider_retry(
         task=task, resolved_provider=resolved_provider, resolved_api_mode=resolved_api_mode, async_mode=False, **prep,
     )
-    return _validate_llm_response(
-        _relay_sync_completion(retry_client, retry_kwargs, provider=resolved_provider, api_mode=resolved_api_mode), task,
-    )
+    with _plugin_oauth.attribute_failure(retry_client):
+        return _validate_llm_response(
+            _relay_sync_completion(retry_client, retry_kwargs, provider=resolved_provider, api_mode=resolved_api_mode), task,
+        )
 
 
 async def _retry_same_provider_async(*, resolved_provider: str, resolved_api_mode: Optional[str], task: Optional[str], **prep) -> Any:
@@ -3804,11 +3805,12 @@ async def _retry_same_provider_async(*, resolved_provider: str, resolved_api_mod
     retry_client, retry_kwargs = _prepare_same_provider_retry(
         task=task, resolved_provider=resolved_provider, resolved_api_mode=resolved_api_mode, async_mode=True, **prep,
     )
-    return await asyncio.to_thread(
-        _validate_llm_response,
-        await _relay_async_completion(retry_client, retry_kwargs, provider=resolved_provider, api_mode=resolved_api_mode),
-        task,
-    )
+    with _plugin_oauth.attribute_failure(retry_client):
+        return await asyncio.to_thread(
+            _validate_llm_response,
+            await _relay_async_completion(retry_client, retry_kwargs, provider=resolved_provider, api_mode=resolved_api_mode),
+            task,
+        )
 
 
 def _creds_have_api_key(creds: dict[str, Any]) -> bool:
@@ -7733,7 +7735,6 @@ def _ladder_credential_rungs(
     if (_is_auth_error(first_err) and auth_refresh_provider not in {"auto", "", None}
             and not client_is_nous):
         failed_key = getattr(client, "api_key", "")
-        refreshed_row = _plugin_oauth.pooled_row_id(auth_refresh_provider, failed_key)
         if _refresh_provider_credentials(auth_refresh_provider, failed_api_key=failed_key if isinstance(failed_key, str) else ""):
             if auth_refresh_provider != _normalize_aux_provider(resolved_provider):
                 # The stale client is cached under the route label (e.g. "auto"), not the backend.
@@ -7746,7 +7747,7 @@ def _ladder_credential_rungs(
                 step, lambda exc: _credential_rung_accepts(exc) or _is_connection_error(exc))
             if first_err is None:
                 return resp, None
-            _plugin_oauth.bench_pooled_row(auth_refresh_provider, refreshed_row, first_err)  # no-op unless a 401
+            _plugin_oauth.bench_pooled_row(auth_refresh_provider, first_err)  # no-op unless a 401
             # ``first_err`` is now the retry's own failure, not the original auth error: the
             # pool gate below and the ladder tail's eviction check both read this narrowed
             # value. An unclaimed failure (e.g. a 500) re-raised out of ``_rung`` above

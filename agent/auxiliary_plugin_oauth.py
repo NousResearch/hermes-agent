@@ -8,6 +8,7 @@ rotates an expiring row before leasing it, so compression and titling never send
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 
@@ -38,30 +39,34 @@ def refresh_pooled_row(provider: str, failed_api_key: str) -> bool:
     return pool.try_refresh_matching(api_key_hint=failed_api_key) is not None
 
 
-def pooled_row_id(provider: str, api_key: Any) -> str:
-    """Id of the plugin OAuth pool row that holds ``api_key`` (``""`` when none does or the provider is not
-    a plugin OAuth pool). Read BEFORE a refresh: the refresh replaces the key, so it can no longer find the row."""
-    if not isinstance(api_key, str) or not api_key or not is_plugin_oauth_pool(provider):
-        return ""
+@contextlib.contextmanager
+def attribute_failure(client: Any):
+    """Stamp a failed request's exception with the bearer that sent it, so recovery acts on the row and
+    token generation that actually failed rather than one looked up before a refresh or retry."""
+    try:
+        yield
+    except Exception as exc:
+        with contextlib.suppress(Exception):
+            exc.hermes_aux_api_key = getattr(client, "api_key", None)
+        raise
+
+
+def bench_pooled_row(provider: str, exc: Exception) -> None:
+    """Bench the plugin OAuth row whose freshly refreshed token was rejected too. Without this the row stays
+    "ok" and every later auxiliary call spends another refresh on it, against the broker's per-user refresh
+    limit. Only the row still holding the exact rejected bearer is benched: a different row the retry did not
+    use, or a newer token another process has since minted, stays available."""
     from agent import auxiliary_client as aux
 
-    pool = aux._load_pool_with_credentials(provider, " (row lookup)")
-    return (pool.entry_id_for_api_key(api_key) or "") if pool is not None else ""
-
-
-def bench_pooled_row(provider: str, row_id: str, exc: Exception) -> None:
-    """Bench a row whose freshly refreshed token was rejected too. Without this the row stays "ok" and every
-    later auxiliary call spends another refresh on it, against the broker's per-user refresh limit."""
-    from agent import auxiliary_client as aux
-
-    if not row_id or not aux._is_auth_error(exc):
+    key = getattr(exc, "hermes_aux_api_key", None)
+    if not isinstance(key, str) or not key or not is_plugin_oauth_pool(provider) or not aux._is_auth_error(exc):
         return
     pool = aux._load_pool_with_credentials(provider, " (bench after refresh)")
-    if pool is None:
+    if pool is None or not pool.entry_id_for_api_key(key):
         return
     status = getattr(exc, "status_code", None)
     pool.mark_exhausted_and_rotate(status_code=status if isinstance(status, int) else 401,
-                                   error_context={"message": str(exc)}, credential_id=row_id)
+                                   error_context={"message": str(exc)}, api_key_hint=key)
 
 
 def pool_superseded_key(provider: str, api_key: Any) -> bool:

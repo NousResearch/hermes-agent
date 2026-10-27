@@ -192,3 +192,56 @@ def test_a_token_rejected_again_after_refresh_is_benched_not_refreshed_on_every_
     row = _disk_row(home)
     assert row["last_status"] == "exhausted" and row["last_error_code"] == 401
     assert "rejected its sign-in (401)" in pool_cooldown_message("solstice")
+
+
+def _rows(home):
+    return {r["id"]: r for r in json.loads((home / "auth.json").read_text(encoding="utf-8-sig"))["credential_pool"]["solstice"]}
+
+
+def test_a_newer_token_minted_by_another_process_during_the_retry_is_not_benched(env, monkeypatch):
+    """The bench names the bearer the retry actually sent. If another process refreshed the row while
+    that retry was in flight, the newer token is left alone and the next call uses it."""
+    home, _grants, seen = env
+    _write(home, _row("ya29.revoked", _now_ms() + 3_000_000))
+
+    def respond(self, url, **kw):
+        bearer = (kw.get("headers") or {}).get("Authorization", "")
+        seen.append(bearer)
+        req = httpx.Request("POST", str(url))
+        if bearer == "Bearer ya29.fresh-1":  # our refreshed token: a peer re-mints while it is rejected
+            _write(home, _row("ya29.peer", _now_ms() + 3_000_000))
+        if bearer == "Bearer ya29.peer":
+            return httpx.Response(200, json=OK_BODY, request=req)
+        return httpx.Response(401, request=req, json={"error": {"code": 401, "status": "UNAUTHENTICATED"}})
+
+    monkeypatch.setattr(httpx.Client, "post", respond)
+    runtime = {"provider": "solstice", "model": "gemini-3.1-pro", "base_url": BASE_URL, "api_mode": "chat_completions"}
+
+    with pytest.raises(Exception):
+        _title(runtime)
+    assert _disk_row(home).get("last_status") != "exhausted"
+    monkeypatch.setattr(aux, "_client_cache", {})
+    assert _text(_title(runtime)) == "A Title"
+    assert seen[-1] == "Bearer ya29.peer"
+
+
+def test_only_the_row_the_retry_used_is_benched(env, monkeypatch):
+    """Session on row A; its refresh works, but the retry leases higher-priority row B, which is rejected.
+    B is benched; A, whose fresh token works, stays available."""
+    home, _grants, seen = env
+    row_a = _row("ya29.a-old", _now_ms() + 3_000_000, id="rowA", priority=1)
+    row_b = {**_row("ya29.b-bad", _now_ms() + 3_000_000, id="rowB", priority=0), "refresh_token": "1//rt-b"}
+    (home / "auth.json").write_text(json.dumps({"version": 1, "credential_pool": {"solstice": [row_b, row_a]}}),
+                                    encoding="utf-8")
+    runtime = {"provider": "solstice", "model": "gemini-3.1-pro", "api_key": "ya29.a-old",
+               "base_url": BASE_URL, "api_mode": "chat_completions"}
+
+    try:
+        _title(runtime)
+    except Exception:
+        pass
+
+    rows = _rows(home)
+    assert rows["rowA"].get("last_status") != "exhausted"
+    assert seen[1:] == ["Bearer ya29.b-bad"]  # the retry leased B
+    assert rows["rowB"].get("last_status") == "exhausted"

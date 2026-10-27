@@ -1,3 +1,5 @@
+import type { Session } from 'electron'
+
 /** Partition the preview pane's `<webview>` always carries. */
 export const PREVIEW_GUEST_PARTITION = 'persist:hermes-preview'
 
@@ -17,7 +19,8 @@ export interface PreviewGuestAttachPrefs {
 export function applyPreviewGuestAttachPrefs(
   webPreferences: PreviewGuestAttachPrefs,
   partition: string | undefined,
-  preloadPath: string
+  preloadPath: string,
+  getSession?: (partition: string) => Pick<Session, 'setPermissionCheckHandler' | 'setPermissionRequestHandler'>
 ): void {
   if (partition !== PREVIEW_GUEST_PARTITION) {
     return
@@ -25,4 +28,9 @@ export function applyPreviewGuestAttachPrefs(
 
   webPreferences.preload = preloadPath
   webPreferences.backgroundThrottling = false
+  // Remote preview content is not a host voice/plugin surface. Do not inherit
+  // implicit media permission decisions from Electron or an app-level OS grant.
+  const guestSession = getSession?.(partition)
+  guestSession?.setPermissionRequestHandler((_contents, permission, callback) => callback(permission === 'fullscreen'))
+  guestSession?.setPermissionCheckHandler((_contents, permission) => permission === 'fullscreen')
 }

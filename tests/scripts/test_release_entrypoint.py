@@ -693,7 +693,7 @@ def _abandon(repo, version, *, drafts=None, runs=None, calls=None, execute=None)
 
     def inspect(command):
         if command[1] == "run":
-            return json.dumps([{**row, "displayTitle": f"Stable release {tag}"}
+            return json.dumps([{"headBranch": "main", **row, "displayTitle": f"Stable release {tag}"}
                                for tag, rows in (runs or {}).items() for row in rows])
         draft = (drafts or {}).get(command[3])
         if draft is None:
@@ -752,7 +752,7 @@ def test_abandon_that_cannot_cancel_a_run_writes_no_marker_so_it_can_be_retried(
 
     _claim(source, "0.21.5", git(source, "rev-parse", "HEAD"))
     run = {"databaseId": 11, "url": "https://example.test/runs/11", "status": "in_progress",
-           "displayTitle": "Stable release rc.1-v0.21.5"}
+           "headBranch": "main", "displayTitle": "Stable release rc.1-v0.21.5"}
 
     def refuse(_command):
         raise ReleaseRefused("HTTP 403")

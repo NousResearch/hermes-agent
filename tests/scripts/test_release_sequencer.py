@@ -262,6 +262,24 @@ def _discover_run(tags, releases=(), workflow_runs=()):
     return run
 
 
+def test_discover_only_accepts_title_matches_from_the_controller_branch():
+    from scripts.releases.sequencer import discover
+
+    commit = "a" * 40
+    claim_tag = "rc.1-v0.21.5"
+    tags = {claim_tag: ("1" * 40, commit, _claim_message("0.21.5", 1, commit))}
+    draft = {"id": 7, "tag_name": claim_tag, "draft": True, "prerelease": False}
+    row = {"id": 42, "status": "completed", "conclusion": "success", "run_attempt": 1,
+           "head_sha": "e" * 40, "display_title": f"Stable release {claim_tag}"}
+    for branch in ("feature", "", None):
+        records = discover("example/project", _discover_run(
+            tags, releases=[draft], workflow_runs=[{**row, "head_branch": branch}]))
+        assert records[0]["state"] != "green"
+    records = discover("example/project", _discover_run(
+        tags, releases=[draft], workflow_runs=[{**row, "head_branch": "main"}]))
+    assert records[0]["state"] == "green"
+
+
 def test_discover_reads_an_attempt_ref_and_keeps_the_version():
     from scripts.releases.sequencer import discover
 

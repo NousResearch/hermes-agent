@@ -14,6 +14,12 @@ const openSessionInNewWindow = vi.fn()
 const canOpenSessionWindow = vi.fn(() => true)
 const workspaceIsPageGet = vi.fn(() => false)
 
+const clearUnreadOnOpenMock = vi.fn<(storedId: string) => Promise<void>>(() => Promise.resolve())
+
+vi.mock('@/store/session-unread-remote', () => ({
+  clearUnreadOnOpen: (storedId: string) => clearUnreadOnOpenMock(storedId)
+}))
+
 vi.mock('@/store/session-states', () => ({
   focusedSessionNeedsRoute: (focused: 'main' | 'tile' | null, workspaceIsPage: boolean) =>
     !focused || (focused === 'main' && workspaceIsPage),
@@ -83,6 +89,7 @@ describe('openSession', () => {
     $activeSessionId.set(null)
     $selectedStoredSessionId.set(null)
     $sessionResumeRequest.set(null)
+    clearUnreadOnOpenMock.mockClear()
   })
 
   it('in-place focuses an existing tile and does not navigate', () => {
@@ -97,6 +104,21 @@ describe('openSession', () => {
     focusOpenSession.mockReturnValue('main')
     openSession('s1', navigate)
     expect(navigate).not.toHaveBeenCalled()
+  })
+
+  // #145403: an in-place click on the session already on screen must clear the
+  // persisted unread marker too — setSelectedStoredSessionId, the other caller
+  // of clearUnreadOnOpen, never runs on this path.
+  it('in-place clears the persisted unread marker even when the session is already on screen', () => {
+    // The active session, already selected in main.
+    $selectedStoredSessionId.set('s1')
+    $activeSessionId.set('runtime-current')
+    focusOpenSession.mockReturnValue('main')
+
+    openSession('s1', navigate)
+
+    expect(navigate).not.toHaveBeenCalled()
+    expect(clearUnreadOnOpenMock).toHaveBeenCalledWith('s1')
   })
 
   it('in-place routes when the main session is covered by a page', () => {

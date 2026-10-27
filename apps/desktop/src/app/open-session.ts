@@ -26,6 +26,7 @@ import {
   reuseBlankDraftTile,
   setSessionTileWorkspaceScope
 } from '@/store/session-states'
+import { clearUnreadOnOpen } from '@/store/session-unread-remote'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import { $workspaceIsPage, sessionRoute } from './routes'
@@ -120,11 +121,14 @@ export function openSession(
     return
   }
 
-  // Any explicit open/focus means the user has seen the finished-turn marker.
-  // Must run BEFORE the focus short-circuits below: clicking a session that is
-  // already on screen (open tile, or the main session) would otherwise return
-  // at focusOpenSession and never clear its unread dot.
+  // Any explicit open/focus means the user has seen the finished-turn marker
+  // AND the persisted one. Both writes must run BEFORE the focus short-circuits
+  // below: clicking a session that is already on screen (open tile, or the main
+  // session) would otherwise return at focusOpenSession and never clear its
+  // unread dot, nor reach setSelectedStoredSessionId — the only other caller of
+  // clearUnreadOnOpen (#145403).
   markSessionRead(storedSessionId)
+  void clearUnreadOnOpen(storedSessionId)
   setSessionTileWorkspaceScope(storedSessionId, workspaceScope)
   const botWorkspaceScope = workspaceScope.workspaceMode === 'bots' ? workspaceScope : undefined
 

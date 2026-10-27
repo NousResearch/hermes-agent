@@ -814,7 +814,7 @@ def _wait_for_launchd_service_pid(
         time.sleep(0.5)
 
 
-def launchd_restart():
+def launchd_restart(interrupt: bool = False):
     gateway_service_owner.refuse_foreign_launchd_plist("restart")
     label = _gw().get_launchd_label()
     domain = _gw()._launchd_domain()
@@ -845,8 +845,11 @@ def launchd_restart():
             # Graceful in-band restart via SIGUSR1 (mirrors systemd); the budget covers both the idle wait
             # and the drain. A bare SIGTERM would lose the resume_pending handoff. Announce BEFORE waiting:
             # surfaces with no other feedback (desktop updater) read silence as "update stuck".
-            wait_budget = _gw()._get_restart_exit_wait_budget()
-            print(f"→ Stopping gateway (PID {pid}) — draining in-flight runs (up to {wait_budget:.0f}s)...")
+            # ``interrupt``: the operator agreed to interrupt live work, so the gateway skips the after-turn wait.
+            from hermes_cli.gateway_restart_interrupt import restart_exit_wait
+            wait_budget, interrupting = restart_exit_wait(pid, interrupt)
+            print(f"→ Stopping gateway (PID {pid}) — "
+                  f"{'interrupting live work' if interrupting else 'draining in-flight runs'} (up to {wait_budget:.0f}s)...")
             from hermes_cli.update_cmd_drain_report import drain_progress_reporter
             if _gw()._graceful_restart_via_sigusr1(pid, wait_budget, on_progress=drain_progress_reporter(budget_s=wait_budget)):
                 # KeepAlive revives a planned exit, so do NOT kickstart (-k would kill the replacement) —

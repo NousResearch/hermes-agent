@@ -73,19 +73,21 @@ def _wait_for_supervised_gateway_replacement(
         time.sleep(poll_interval)
 
 
-def restart_externally_supervised_gateway(supervised_pid: int) -> None:
+def restart_externally_supervised_gateway(supervised_pid: int, interrupt: bool = False) -> None:
     """Hand ``supervised_pid`` back to its supervisor (SIGUSR1 drain) and report the fresh PID.
 
     Never falls through to SIGTERM + foreground run on either failure branch: that would
     SIGTERM a KeepAlive-armed process and stamp this CLI's PID, recreating the competing-owner
     wedge (#110637). A broken/unloaded supervisor surfaces as exit 1, not a success printed over
     a dead gateway (the contract ``launchd_restart`` enforces via ``_wait_for_launchd_service_pid``).
+    ``interrupt``: the operator agreed to interrupt live work, so the gateway skips the after-turn wait.
     """
-    from hermes_cli.gateway import _get_restart_exit_wait_budget, _graceful_restart_via_sigusr1, _print_lines
+    from hermes_cli.gateway import _graceful_restart_via_sigusr1, _print_lines
+    from hermes_cli.gateway_restart_interrupt import restart_exit_wait
 
-    wait_budget = _get_restart_exit_wait_budget()
+    wait_budget, interrupting = restart_exit_wait(supervised_pid, interrupt)
     print(f"→ Restarting externally-supervised gateway (PID {supervised_pid}) — "
-          f"draining in-flight runs (up to {wait_budget:.0f}s)...")
+          f"{'interrupting live work' if interrupting else 'draining in-flight runs'} (up to {wait_budget:.0f}s)...")
     if _graceful_restart_via_sigusr1(supervised_pid, wait_budget):
         replacement_pid = _wait_for_supervised_gateway_replacement(supervised_pid)
         if replacement_pid is not None:

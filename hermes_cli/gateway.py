@@ -3733,7 +3733,7 @@ def systemd_stop(system: bool = False):
     print(f"✓ {_service_scope_label(system).capitalize()} service stopped")
 
 
-def systemd_restart(system: bool = False):
+def systemd_restart(system: bool = False, interrupt: bool = False):
     system = _systemd_scope_preamble("restart", system, preflight_user=True)
     gateway_service_owner.refuse_foreign_systemd_unit("restart", system)
     # HERMES_HOME sync happens in refresh's systemd_unit_is_current gate; its os.environ mutation
@@ -3744,10 +3744,6 @@ def systemd_restart(system: bool = False):
     if pid is not None and probe_gateway_loop_liveness(pid) == GATEWAY_LOOP_WEDGED:
         # Event loop provably dead: SIGUSR1 can't drain it, so bounded SIGTERM → SIGKILL and let systemd relaunch.
         print(
-            # Health probe says the event loop is provably dead (#81642): SIGUSR1 can never drain it, so the
-            # graceful wait below would burn the full budget. A busy-but-alive gateway (fresh heartbeat)
-            # never takes this path — its in-flight work, including the #86684 cron drain floor, keeps the
-            # full graceful budget.
             # Health probe says the event loop is provably dead (#81642): the gateway cannot process a
             # graceful shutdown, so waiting the full drain budget only stalls the restart (and `hermes
             # update` behind it) for 180s. Bounded escalation instead: SIGTERM grace → SIGKILL → proceed,
@@ -3763,7 +3759,7 @@ def systemd_restart(system: bool = False):
         _wait_for_systemd_service_restart(system=system, previous_pid=pid)
         return
     if pid is not None:
-        service_action = _systemd_graceful_restart_action(system, pid)
+        service_action = _systemd_graceful_restart_action(system, pid, interrupt)
         if service_action:
             _systemd_reset_and_run(service_action, system=system, previous_pid=pid)
         return
@@ -3773,7 +3769,7 @@ def systemd_restart(system: bool = False):
     _systemd_reset_and_run("restart", system=system, previous_pid=pid)
 
 
-def _systemd_graceful_restart_action(system: bool, pid: int) -> str | None:
+def _systemd_graceful_restart_action(system: bool, pid: int, interrupt: bool = False) -> str | None:
     """SIGUSR1-drain the live gateway ``pid``; return the follow-up ``systemctl`` verb (``"start"`` /
     ``"restart"``) the caller must still issue, or None when systemd already owns the relaunch."""
     scope_label = _service_scope_label(system).capitalize()
@@ -3788,11 +3784,11 @@ def _systemd_graceful_restart_action(system: bool, pid: int) -> str | None:
     # budget while the old gateway finishes in-flight agent runs, and it streams into surfaces with no other
     # feedback — the desktop updater's live output most of all, where a silent stop here reads as "update
     # stuck" (#44515).
-    wait_budget = _get_restart_exit_wait_budget()
-    print(
-        f"⏳ {scope_label} service restarting gracefully (PID {pid}) — "
-        f"waiting up to {wait_budget:.0f}s for in-flight turns + drain..."
-    )
+    # ``interrupt``: the operator agreed to interrupt live work, so the gateway skips the after-turn wait.
+    from hermes_cli.gateway_restart_interrupt import restart_exit_wait
+    wait_budget, interrupting = restart_exit_wait(pid, interrupt)
+    print(f"⏳ {scope_label} service restarting gracefully (PID {pid}) — waiting up to {wait_budget:.0f}s for "
+          f"{'live work to be interrupted' if interrupting else 'in-flight turns'} + drain...")
     from hermes_cli.update_cmd_drain_report import drain_progress_reporter
     if not _graceful_restart_via_sigusr1(pid, wait_budget, on_progress=drain_progress_reporter(budget_s=wait_budget)):
         print(f"⚠ Graceful restart did not complete within {int(wait_budget)}s; forcing a service restart...")
@@ -4814,16 +4810,18 @@ def _service_backend(*, windows: bool = True) -> str | None:
     return None
 
 
-def _service_call(backend: str, verb: str, system: bool | None = False) -> None:
+def _service_call(backend: str, verb: str, system: bool | None = False, *, interrupt: bool = False) -> None:
     """Run ``verb`` (start/stop/restart/uninstall) on ``backend``. Names resolve at call time so tests
     can monkeypatch them; only systemd takes a scope, and ``system=None`` omits it (wizard restart).
-    Each systemd/launchd verb refuses a definition pinning another HERMES_HOME itself."""
+    Each systemd/launchd verb refuses a definition pinning another HERMES_HOME itself. ``interrupt``
+    (restart): live work may be interrupted now; Windows' stop + start never waits on it anyway."""
     if backend == "windows":
         return getattr(_gw_windows(), verb)()
+    kwargs = {"interrupt": True} if interrupt else {}
     if backend == "launchd":
-        return globals()[f"launchd_{verb}"]()
+        return globals()[f"launchd_{verb}"](**kwargs)
     fn = globals()[f"systemd_{verb}"]
-    return fn() if system is None else fn(system=system)
+    return fn(**kwargs) if system is None else fn(system=system, **kwargs)
 
 
 
@@ -5465,7 +5463,7 @@ def _cmd_restart(args):
     if not restart_all:
         _guard_named_profile_under_multiplexer(force=force)
     from hermes_cli.gateway_lifecycle_guards import refuse_while_sessions_live
-    refuse_while_sessions_live("restart", args)
+    interrupt = refuse_while_sessions_live("restart", args)
     if restart_all and _dispatch_all_via_service_manager_if_s6("restart"):
         return
     if not restart_all and _dispatch_via_service_manager_if_s6("restart"):
@@ -5489,7 +5487,7 @@ def _cmd_restart(args):
     if kind is not None:
         swallow = (RuntimeError, OSError) if kind == "windows" else ()
         try:
-            _service_call(kind, "restart", system)
+            _service_call(kind, "restart", system, interrupt=interrupt)
             return
         except (subprocess.CalledProcessError, *swallow):
             pass
@@ -5527,7 +5525,7 @@ def _cmd_restart(args):
     )
     supervised_pid = get_running_pid()
     if supervised_pid and gateway_declares_external_supervisor(supervised_pid):
-        restart_externally_supervised_gateway(supervised_pid)
+        restart_externally_supervised_gateway(supervised_pid, interrupt=interrupt)
         return
     refuse_restart_of_service_managed_gateway(supervised_pid)
 

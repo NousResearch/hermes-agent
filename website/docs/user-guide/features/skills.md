@@ -47,8 +47,10 @@ By default every profile is seeded with the bundled skill catalog, and each `her
 **At install time** (applies to the default `~/.hermes` profile): the
 installer has no `--no-skills` flag. Its setup stage asks whether to seed the
 bundled catalog when you pick the Blank Slate setup; answering no writes the
-opt-out marker described below. Non-interactive installs seed the catalog, so
-run `hermes skills opt-out` afterwards if you want the profile empty.
+opt-out marker described below and removes the unmodified bundled skills the
+installer already copied in (the essential `hermes-agent` skill is kept).
+Non-interactive installs seed the catalog, so run `hermes skills opt-out --remove`
+afterwards if you want the profile empty.
 
 **At profile-create time** (named profiles):
 

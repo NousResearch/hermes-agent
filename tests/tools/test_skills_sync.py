@@ -850,6 +850,33 @@ class TestOptOutToggleAndRemove:
             # non-bundled local skill never considered
             assert (skills_dir / "mine" / "SKILL.md").exists()
 
+    def test_remove_keeps_essential_skills(self, tmp_path):
+        """Essential skills (e.g. ``hermes-agent``) are never removed, even when pristine and
+        manifest-tracked: opted-out profiles re-seed them anyway (#98027)."""
+        from agent.skill_utils import ESSENTIAL_SKILLS
+        from tools.skills_sync import sync_skills
+        from tools.skills_sync_bundled_ops import remove_pristine_bundled_skills
+        bundled = self._setup_bundled(tmp_path)
+        for n in ESSENTIAL_SKILLS:
+            (bundled / n).mkdir(parents=True)
+            (bundled / n / "SKILL.md").write_text(f"---\nname: {n}\n---\nbody {n}\n")
+        skills_dir = tmp_path / "user_skills"
+        home = tmp_path / "home"
+        home.mkdir()
+        with patch("tools.skills_sync._get_bundled_dir", return_value=bundled), \
+             patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"), \
+             patch("tools.skills_sync.SKILLS_DIR", skills_dir), \
+             patch("tools.skills_sync.MANIFEST_FILE", skills_dir / ".bundled_manifest"), \
+             patch("tools.skills_sync.HERMES_HOME", home):
+            sync_skills(quiet=True)
+            result = remove_pristine_bundled_skills(dry_run=False)
+            assert sorted(result["removed"]) == ["alpha", "beta"]
+            reasons = {s["name"]: s["reason"] for s in result["skipped"]}
+            for n in ESSENTIAL_SKILLS:
+                assert n not in result["removed"]
+                assert reasons[n] == "essential (kept)"
+                assert (skills_dir / n / "SKILL.md").exists()
+
 
 class TestUpdateBackupRecovery:
     """Regression tests for backup handling in the bundled-update path.

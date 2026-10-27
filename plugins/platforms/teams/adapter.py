@@ -520,7 +520,7 @@ class TeamsAdapter(BasePlatformAdapter):
                 return await self._on_card_action(ctx)
 
             @self._app.on_file_consent
-            async def _handle_file_consent(ctx: "ActivityContext[FileConsentInvokeActivity]") -> None:
+            async def _handle_file_consent(ctx: ActivityContext[FileConsentInvokeActivity]) -> None:
                 await self._on_file_consent(ctx)
 
             self._wire_plugin_handlers(self._app)
@@ -910,7 +910,7 @@ class TeamsAdapter(BasePlatformAdapter):
         logger.info("[teams] offered %s (%d bytes) via file consent card", name, size)
         return SendResult(success=True, message_id=getattr(result, "id", None))
 
-    async def _on_file_consent(self, ctx: "ActivityContext[FileConsentInvokeActivity]") -> None:
+    async def _on_file_consent(self, ctx: ActivityContext[FileConsentInvokeActivity]) -> None:
         """Handle the user's Allow / Decline on a FileConsentCard. The invoke must be answered
         quickly, so the upload runs as a background task; the SDK replies 200 when this returns."""
         import time
@@ -921,7 +921,7 @@ class TeamsAdapter(BasePlatformAdapter):
         token = str(context.get("hermes_file_token") or "") if isinstance(context, dict) else ""
         if not _FILE_CONSENT_TOKEN_RE.match(token):
             logger.warning("[teams] file consent invoke without a Hermes token; ignoring")
-            return None
+            return
         conv_id = getattr(activity.conversation, "id", None) or ""
         if conv_id:
             self._conv_refs[conv_id] = ctx.conversation_ref
@@ -935,10 +935,16 @@ class TeamsAdapter(BasePlatformAdapter):
             if conv_id:
                 with suppress(Exception):
                     await self.send(conv_id, "That file offer has expired or was already answered.")
-            return None
+            return
         except OSError as e:
-            logger.error("[teams] file consent %s: consent directory unusable: %s", token[:8], e)
-            return None
+            # e's message can carry the token-bearing path; log the errno only.
+            logger.error("[teams] file consent %s: consent directory unusable: %s (errno %s)",
+                         token[:8], type(e).__name__, e.errno)
+            if conv_id:
+                with suppress(Exception):
+                    await self.send(conv_id, "That file offer could not be processed right now. "
+                                             "Please ask for the file again.")
+            return
         action = str(getattr(value.action, "value", value.action) or "")
         if action != "accept":
             logger.info("[teams] file consent %s declined", token[:8])
@@ -948,36 +954,36 @@ class TeamsAdapter(BasePlatformAdapter):
                 with suppress(Exception):
                     await self.send(conv_id, f"⚠️ Could not deliver {declined}: "
                                              "the file consent card was declined.")
-            return None
+            return
         denied = self._card_action_denied(activity.from_)
         if denied:
             self._drop_file_consent(token)
             if conv_id:
                 with suppress(Exception):
                     await self.send(conv_id, denied)
-            return None
+            return
         try:
             meta = json.loads(claimed.read_text(encoding="utf-8"))
         except (OSError, ValueError) as e:
             logger.error("[teams] file consent %s metadata unreadable: %s", token[:8], e)
             self._drop_file_consent(token)
-            return None
+            return
         if meta.get("chat_id") != conv_id:
             logger.warning(
                 "[teams] file consent %s answered in %s but offered in %s; refusing",
                 token[:8], conv_id, meta.get("chat_id"))
             self._drop_file_consent(token)
-            return None
+            return
         if float(meta.get("created") or 0) + _FILE_CONSENT_TTL_SECONDS < time.time():
             self._drop_file_consent(token)
             with suppress(Exception):
                 await self.send(conv_id, "That file offer has expired; ask me to send it again.")
-            return None
+            return
         task = asyncio.create_task(self._complete_file_consent(conv_id, token, meta, value.upload_info))
         tasks = self.__dict__.setdefault("_file_consent_tasks", set())
         tasks.add(task)
         task.add_done_callback(tasks.discard)
-        return None
+        return
 
     async def _complete_file_consent(self, chat_id: str, token: str, meta: dict, upload_info: Any) -> None:
         name = str(meta.get("name") or "file")
@@ -1023,8 +1029,9 @@ class TeamsAdapter(BasePlatformAdapter):
         Content-Range. The URL carries its own auth; no bearer token is sent."""
         import httpx
         total = blob.stat().st_size
-        async with httpx.AsyncClient(timeout=120.0, follow_redirects=False) as client:
-            with open(blob, "rb") as f:
+        f = await asyncio.to_thread(open, blob, "rb")
+        with f:
+            async with httpx.AsyncClient(timeout=120.0, follow_redirects=False) as client:
                 start = 0
                 while start < total:
                     chunk = await asyncio.to_thread(f.read, _FILE_UPLOAD_CHUNK_BYTES)

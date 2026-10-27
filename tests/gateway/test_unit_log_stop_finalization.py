@@ -3,6 +3,7 @@ import asyncio
 import json
 import shlex
 import sys
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -26,7 +27,9 @@ def native_parent():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('reload_owner', [False, True], ids=['live', 'cold'])
-async def test_unit_stop_collects_final_payload_before_native_human_fifo(unit_log_job, monkeypatch, reload_owner):
+@pytest.mark.parametrize('hold_publication', [False, True], ids=['ordinary-reader', 'held-reader'])
+async def test_unit_stop_collects_final_payload_before_native_human_fifo(
+        unit_log_job, monkeypatch, reload_owner, hold_publication):
     from gateway.session_ancillary import process_stop_pending
     from gateway.session_authority import LiveSession, SessionAuthority
     from gateway.session_context import set_session_vars, clear_session_vars
@@ -69,6 +72,7 @@ async def test_unit_stop_collects_final_payload_before_native_human_fifo(unit_lo
         executed.append(row['request_id'])
         return 'continued once'
     monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    release_reader = threading.Event()
     current = registry
     try:
         with pytest.raises(RuntimeStoreError, match='process_stop_unknown'):
@@ -90,13 +94,48 @@ async def test_unit_stop_collects_final_payload_before_native_human_fifo(unit_lo
             assert not executed and process_stop_pending(db, 's')
         await asyncio.to_thread(reap_child)
         ready = True
-        await authority.interrupt(ACTOR, REF, authority._handle(REF).execution_generation)
+        entered, hold_next = threading.Event(), threading.Event()
+        refusals = []
+        move, refuse = module.ProcessRegistry._move_to_finished, module.ProcessRegistry._refuse_backend_stop
+        def publish(owner, process):
+            if process.id == own.id and hold_next.is_set():
+                hold_next.clear()
+                entered.set()
+                assert release_reader.wait(5)
+            return move(owner, process)
+        def refused(owner, process, consume_output):
+            if process.id == own.id:
+                refusals.append((process, process._completion_event.is_set(),
+                                 process._result_persisted_generation))
+            return refuse(owner, process, consume_output)
+        monkeypatch.setattr(module.ProcessRegistry, '_refuse_backend_stop', refused)
+        if hold_publication:
+            hold_next.set()
+            monkeypatch.setattr(module.ProcessRegistry, '_move_to_finished', publish)
+        try:
+            await authority.interrupt(ACTOR, REF, authority._handle(REF).execution_generation)
+            assert not hold_publication, 'A held original publisher cannot acknowledge cleanup'
+        except RuntimeStoreError as exc:
+            assert exc.reason == 'process_stop_unknown'
+            # Recovery may start a fresh original reader after the child was reaped.
+            # Only that genuine unfinished publication permits the bounded refusal.
+            assert refusals and not refusals[-1][1]
+            process, _completed, persisted = refusals[-1]
+            assert process._reader_thread is not None and persisted == -1
+            assert not executed and process_stop_pending(db, 's') and neighbor.process.poll() is None
+            if hold_publication:
+                assert entered.is_set()
+            release_reader.set()
+            assert await asyncio.to_thread(process._completion_event.wait, 5)
+        finally:
+            release_reader.set()
         await async_wait_until(lambda: executed == ['only-human'] and authority.sessions['s'].task.done(), timeout=10)
         assert process_stop_pending(db, 's') is None and neighbor.process.poll() is None
         rows = [r for r in list_session_admissions(db, session_id='s', pending_only=False)
                 if r['principal_id'] != 'native-process-stop']
         assert [(r['request_id'], r['status'], r['outcome']) for r in rows] == [('only-human', 'terminal', 'completed')]
     finally:
+        release_reader.set()
         await asyncio.to_thread(registry.kill_process, neighbor.id)
         assert await asyncio.to_thread(neighbor._completion_event.wait, 5)
         if current is not registry:

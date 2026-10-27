@@ -54,6 +54,15 @@ def inputs_fixture(tmp_path):
     }
 
 
+def with_webapp(data, tmp_path):
+    """Add a built Webapp renderer, the frontend only the Nix package passes today."""
+    webapp = tmp_path / "webapp"
+    webapp.mkdir()
+    (webapp / "index.html").write_text("built webapp", encoding="utf-8")
+    data["frontends"] = {**data["frontends"], "webapp": str(webapp)}
+    return data
+
+
 def build_cli(data, out, tmp_path):
     document = tmp_path / "inputs.json"
     document.write_text(json.dumps(data), encoding="utf-8")
@@ -71,6 +80,7 @@ def build_cli(data, out, tmp_path):
 @pytest.mark.platforms("posix")
 def test_contained_cli_assembly_runs_after_move_and_preserves_prepared_state(tmp_path):
     out, data = inputs_fixture(tmp_path)
+    with_webapp(data, tmp_path)
     (out / "provider-state").write_text("retain", encoding="utf-8")
     before = {p.relative_to(data["code"]): p.read_bytes() for p in Path(data["code"]).rglob("*") if p.is_file()}
     result = build_cli(data, out, tmp_path)
@@ -84,6 +94,7 @@ def test_contained_cli_assembly_runs_after_move_and_preserves_prepared_state(tmp
     assert (out / "app/hermes_cli/tui_dist/entry.js").is_file()
     assert json.loads((out / "app/hermes_cli/tui_dist/package.json").read_text())["type"] == "module"
     assert (out / "app/hermes_cli/web_dist/index.html").is_file()
+    assert (out / "app/apps/desktop/dist-webapp/index.html").read_text() == "built webapp"
     assert not (tmp_path / "home/.hermes").exists()
     moved = tmp_path / "relocated payload"
     out.rename(moved)
@@ -102,6 +113,7 @@ def test_contained_cli_assembly_runs_after_move_and_preserves_prepared_state(tmp
 @pytest.mark.platforms("posix")
 def test_referenced_installed_code_uses_derived_command_map_without_copying(tmp_path):
     _, data = inputs_fixture(tmp_path)
+    with_webapp(data, tmp_path)
     out = tmp_path / "nix output"
     source = Path(data["code"])
     (source / "entry.py").write_text(
@@ -123,11 +135,13 @@ def test_referenced_installed_code_uses_derived_command_map_without_copying(tmp_
         "source": str(command), "destination": "bin/probe", "entry": "entry:main"}}
     assert Path(mapping["env"]["HERMES_TUI_DIR"]).resolve() == Path(data["frontends"]["tui"])
     assert Path(mapping["env"]["HERMES_WEB_DIST"]).resolve() == Path(data["frontends"]["web"])
+    assert Path(mapping["env"]["HERMES_WEBAPP_DIST"]).resolve() == Path(data["frontends"]["webapp"])
     assert mapping["env"]["HERMES_INSTALL_ROOT"] == str(out / "share/hermes-agent")
     assert not list(out.rglob("entry.py"))
     assert (out / "share/hermes-agent/skills").is_symlink()
     assert (out / "ui-tui").is_symlink()
     assert (out / "share/hermes-agent/web_dist").is_symlink()
+    assert (out / "share/hermes-agent/webapp_dist").is_symlink()
     assert not (out / "bin/probe").exists(), "Nix owns native makeWrapper"
     run = subprocess.run([mapping["commands"]["probe"]["source"]], cwd=tmp_path,
                          env={"PATH": os.environ["PATH"], "HOME": str(tmp_path / "home"),

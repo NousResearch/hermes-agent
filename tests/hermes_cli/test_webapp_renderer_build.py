@@ -76,6 +76,32 @@ def test_a_current_bundle_is_reused_without_writing_the_install_tree(tmp_path: P
     assert sorted(tmp_path.rglob("*")) == install_tree
 
 
+def test_a_packaged_bundle_is_served_as_shipped(tmp_path: Path, monkeypatch):
+    """The Nix package points HERMES_WEBAPP_DIST at a bundle in the read-only store: it is used
+    without a freshness check or the build lock, never rebuilt and never marked stale."""
+    from hermes_cli import source_build
+
+    _workspace_tree(tmp_path)
+    packaged = tmp_path / "store" / "webapp"
+    packaged.mkdir(parents=True)
+    (packaged / "index.html").write_text("<!doctype html>", encoding="utf-8")
+    monkeypatch.setenv(webapp.DIST_ENV, str(packaged))
+    monkeypatch.setattr(source_build, "source_product_current", lambda *_a: pytest.fail("no freshness check"))
+    monkeypatch.setattr(source_build, "build_source_webapp", lambda *_a, **_k: pytest.fail("no build"))
+
+    assert webapp.webapp_dist_dir(tmp_path) == packaged
+    install_tree = sorted(tmp_path.rglob("*"))
+    assert webapp.prepare_webapp_renderer(tmp_path) == packaged
+    assert webapp.mark_webapp_stale(tmp_path) is False
+    assert sorted(tmp_path.rglob("*")) == install_tree
+    with pytest.raises(webapp.WebappBuildError, match="cannot be rebuilt"):
+        webapp.prepare_webapp_renderer(tmp_path, force=True)
+
+    (packaged / "index.html").unlink()
+    with pytest.raises(webapp.WebappBuildError, match="HERMES_WEBAPP_DIST is set"):
+        webapp.prepare_webapp_renderer(tmp_path)
+
+
 def _assert_build_lock_excludes_second_open(tmp_path: Path):
     from pm.filesystem import lock_fd, unlock_fd
 

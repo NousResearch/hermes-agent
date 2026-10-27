@@ -476,6 +476,12 @@ def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, st
     return prov_in, model_in
 
 
+def _is_explicit_custom_endpoint(provider: str, base_url: str) -> bool:
+    """A bare ``custom`` / ``local`` pick that carries its own endpoint URL defines a route; it is
+    never a reference to an already-configured provider."""
+    return provider.strip().lower() in {"custom", "local"} and bool((base_url or "").strip())
+
+
 def _validated_main_model_selection(
     cfg: dict, provider: str, model: str, base_url: str = "", api_key: str = ""
 ) -> "ModelSwitchResult":
@@ -488,13 +494,16 @@ def _validated_main_model_selection(
 
     model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
     is_bare_custom = provider.strip().lower() in {"custom", "local"}
+    # An explicit endpoint must not resolve through the named custom providers: the legacy
+    # bare-``custom`` recovery in ``resolve_custom_provider`` would bind the FIRST named entry.
+    explicit_endpoint = _is_explicit_custom_endpoint(provider, base_url)
     result = switch_model(
         raw_input=model, explicit_provider=provider, is_global=True,
         current_provider=str(model_cfg.get("provider") or ""), current_model=str(model_cfg.get("default") or ""),
         current_base_url=base_url if is_bare_custom else str(model_cfg.get("base_url") or ""),
         current_api_key=api_key if is_bare_custom else "",
         user_providers=cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {},
-        custom_providers=get_compatible_custom_providers(cfg))
+        custom_providers=[] if explicit_endpoint else get_compatible_custom_providers(cfg))
     if not result.success:
         raise HTTPException(status_code=400, detail=result.error_message or "model switch rejected")
     if is_bare_custom and base_url.strip():
@@ -767,7 +776,12 @@ def _prepare_main_assignment(cfg: dict, provider: str, model: str, base_url: str
     ``_CONFIG_MUTATION_LOCK``; it writes nothing."""
     if not provider or not model:
         raise HTTPException(status_code=400, detail="provider and model required for main")
-    provider, model = _normalize_main_model_assignment(provider, model)
+    if _is_explicit_custom_endpoint(provider, base_url):
+        # The Local / custom endpoint wizard: the submitted URL IS the route. Normalizing would
+        # recover a bare ``custom`` onto the first named custom provider and keep ITS URL (#145466).
+        provider, model = provider.strip(), model.strip()
+    else:
+        provider, model = _normalize_main_model_assignment(provider, model)
     provider_entry = _provider_entry(cfg, provider)
     if not base_url and isinstance(provider_entry, dict) and provider_entry.get("base_url"):
         base_url = str(provider_entry.get("base_url") or "").strip()

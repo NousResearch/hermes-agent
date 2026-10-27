@@ -273,7 +273,8 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     # hands out for a colliding row, and stamps on replies. Resolved locally first, a local bot whose friendly
     # name slugs to 'hermes-mini' captured it. An '@' name no connection answers to still resolves locally.
     if "@" in raw_target.strip().lstrip("@"):
-        relayed = _try_relay_delivery(root, raw_target, content, me, **delivery)
+        # The sender's own relay folder, as below: the default's would relay a named bot's DM as the default.
+        relayed = _try_relay_delivery(Path(home), raw_target, content, me, **delivery)
         if relayed is not None:
             return relayed
     # Local teammate — folder id, or a friendly name / Desktop @-slug ('Scribe', 'Dr. Foo').

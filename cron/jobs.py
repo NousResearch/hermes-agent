@@ -585,6 +585,36 @@ def _secure_file(path: Path):
     _shared_secure_file(path)
 
 
+def _jobs_file_mode(jobs_file: Path) -> int:
+    """Modo de ``jobs.json``: el del directorio compartido (0660) o 0600 en un home privado.
+
+    ``mkstemp`` crea el staging en 0600 y ``_secure_file`` no lo ensancha cuando
+    ``HERMES_SKIP_CHMOD`` está activo, así que en un home de dos UIDs el cron queda ilegible
+    para el backend del otro usuario (``GET /api/cron/jobs`` → 500). Misma regla que el
+    resto del estado compartido.
+    """
+    from hermes_constants import shared_file_mode
+    return shared_file_mode(jobs_file)
+
+
+def _heal_jobs_file_mode(jobs_file: Path) -> None:
+    """Ensancha un ``jobs.json`` que quedó owner-only dentro de un home compartido.
+
+    Solo el dueño puede cambiar los bits: el peer recibe EPERM y se ignora; el proceso que
+    sí es dueño lo cura en su siguiente lectura o salvado. Idempotente: una ``stat`` cuando
+    ya está bien.
+    """
+    mode = _jobs_file_mode(jobs_file)
+    if mode == 0o600:
+        return
+    try:
+        if os.stat(jobs_file).st_mode & 0o660 == 0o660:
+            return
+        os.chmod(jobs_file, mode)
+    except OSError:
+        pass
+
+
 def _preserve_file_ownership(path: Path, before: Optional[os.stat_result]) -> None:
     """Restore a rewritten file's previous owner (POSIX, root writer only): atomic replace makes the
     file owned by the writer's euid, so a root CLI write (e.g. ``docker exec``) against the
@@ -1360,6 +1390,7 @@ def load_jobs() -> list[dict[str, Any]]:
         _record_load_stamp(None)
         return []
 
+    _heal_jobs_file_mode(jobs_file)
     try:
         data, _strict_retry = _parse_jobs_file(jobs_file)
     except OSError as e:
@@ -1541,6 +1572,8 @@ def _stage_jobs_payload(jobs_file: Path, jobs: list[dict[str, Any]]) -> str:
     except BaseException:
         _unlink_quiet(tmp_path)
         raise
+    with contextlib.suppress(OSError):
+        os.chmod(tmp_path, _jobs_file_mode(jobs_file))
     return tmp_path
 
 
@@ -1584,6 +1617,7 @@ def _save_jobs_unlocked(
             tmp_path = None
             fsync_directory(replaced.parent)
             _secure_file(jobs_file)
+            _heal_jobs_file_mode(jobs_file)
             _preserve_file_ownership(jobs_file, _stat_before)
             # Invalidate (never refresh) the stamp: a refresh would let a nested save certify disk
             # against an OUTER caller's stale payload. Later saves take the full merge (fail-safe).

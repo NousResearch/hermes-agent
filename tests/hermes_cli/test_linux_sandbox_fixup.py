@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import stat
 import subprocess
 import sys
@@ -293,3 +294,60 @@ class TestDesktopLinuxSandboxFixupNoTty:
             assert not worker.is_alive(), \
                 "fixup hung in sudo with no TTY (icon click goes nowhere)"
             assert outcome.get("result") is False
+
+
+class TestDesktopStickyNoSandbox:
+    """The app's recorded fallback must reach argv, not only ``appendSwitch``.
+
+    Electron applies the in-app switch after the zygote has spawned; on a host whose
+    sandboxed zygote breaks shared memory the renderer dies pre-load (exit 132) and the
+    window shows the recovery page (2026-10-13 → 2026-10-24, ~24.6k dumps).
+    """
+
+    def _write_marker(self, tmp_path, monkeypatch, payload: str):
+        config_home = tmp_path / "config"
+        (config_home / "Hermes").mkdir(parents=True)
+        (config_home / "Hermes" / main_desktop._DESKTOP_SANDBOX_FALLBACK_MARKER).write_text(
+            payload, encoding="utf-8")
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+
+    def _fake_packaged_app(self, tmp_path):
+        unpacked = tmp_path / "linux-unpacked"
+        unpacked.mkdir()
+        exe = unpacked / "Hermes"
+        exe.write_text("", encoding="utf-8")
+        (unpacked / "chrome-sandbox").write_text("", encoding="utf-8")
+        return exe
+
+    def test_true_when_the_app_recorded_a_fallback(self, tmp_path, monkeypatch):
+        self._write_marker(tmp_path, monkeypatch, json.dumps({"state": "fallback", "reason": "boot-loop"}))
+        assert main_desktop._desktop_sticky_no_sandbox() is True
+
+    def test_false_when_the_app_recorded_a_healthy_boot(self, tmp_path, monkeypatch):
+        self._write_marker(tmp_path, monkeypatch, json.dumps({"state": "ok"}))
+        assert main_desktop._desktop_sticky_no_sandbox() is False
+
+    def test_false_without_a_marker(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+        assert main_desktop._desktop_sticky_no_sandbox() is False
+
+    def test_false_for_a_malformed_marker(self, tmp_path, monkeypatch):
+        self._write_marker(tmp_path, monkeypatch, "not json")
+        assert main_desktop._desktop_sticky_no_sandbox() is False
+
+    def test_launch_command_forwards_the_flag(self, tmp_path, monkeypatch):
+        exe = self._fake_packaged_app(tmp_path)
+        with patch.object(main_desktop, "_desktop_linux_sandbox_fixup", return_value=True), \
+             patch.object(main_desktop, "_desktop_linux_needs_disable_setuid_sandbox", return_value=False), \
+             patch.object(main_desktop, "_desktop_sticky_no_sandbox", return_value=True):
+            assert main_desktop._packaged_desktop_launch_command(exe) == [str(exe), "--no-sandbox"]
+
+    def test_flag_is_not_duplicated(self, tmp_path, monkeypatch):
+        """The userns fallback already appended it; the sticky marker must not add a second."""
+        exe = self._fake_packaged_app(tmp_path)
+        with patch.object(main_desktop, "_desktop_linux_sandbox_fixup", return_value=False), \
+             patch.object(main_desktop, "_desktop_linux_needs_no_sandbox", return_value=True), \
+             patch.object(main_desktop, "_desktop_linux_sandbox_helper_is_regular_file", return_value=True), \
+             patch.object(main_desktop, "_desktop_sticky_no_sandbox", return_value=True):
+            command = main_desktop._packaged_desktop_launch_command(exe)
+        assert command.count("--no-sandbox") == 1

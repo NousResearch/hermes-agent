@@ -776,7 +776,8 @@ class CheckpointManager:
     enabled : bool
         Master switch (from config / CLI flag).
     max_snapshots : int
-        Keep at most this many checkpoints per directory.
+        Show at most this many checkpoints per directory. Count pruning batches
+        rewrites with up to 20% extra physical history between trims.
     max_total_size_mb : int
         Hard ceiling on total store size.  Oldest checkpoints per project
         are dropped when the store exceeds this after a commit.

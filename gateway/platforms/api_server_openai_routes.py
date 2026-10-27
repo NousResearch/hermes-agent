@@ -575,9 +575,9 @@ class _ResponsesStream:
             self._batch_timer = None
 
     async def flush_batch(self) -> None:
-        """Emit a single delta for all buffered text."""
-        if not self._batch_buf:
-            return
+        """Emit a single delta for all buffered text. Always takes the lock, even on an empty buffer: a
+        timer flush may still be opening the message item (its keyed output index is read off the loop),
+        and a caller that closes the item next must wait for that index."""
         async with self._batch_lock:
             if self._batch_buf:
                 combined = "".join(self._batch_buf)

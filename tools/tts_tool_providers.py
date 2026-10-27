@@ -556,6 +556,50 @@ def _gemini_error_detail(response: Any) -> str:
     return message or raw_body.decode("utf-8", errors="replace")[:300]
 
 
+def _gemini_designed_voice_style(persona_prompt: str) -> str:
+    """Persona direction for a stored voice, sent as ``speech_metadata`` style beside the transcript.
+    A ``{transcript}`` template would put the spoken words inside the direction, so it is refused."""
+    if re.search(r"\{\{?\s*transcript\s*\}?\}", persona_prompt, flags=re.IGNORECASE):
+        raise ValueError(
+            "Gemini designed voices take tts.gemini.persona_prompt_file as style direction only; "
+            "remove its {transcript} placeholder and transcript section.")
+    return persona_prompt.strip()
+
+
+def _request_gemini_designed_voice(
+    text: str, model: str, voice: str, base_url: str, headers: dict[str, str], style: str = "",
+) -> bytes:
+    """Stored voice IDs use Interactions and return an encoded WAV, not raw PCM."""
+    content: dict[str, Any] = {"type": "text", "text": text}
+    if style:
+        content["annotations"] = [{"type": "speech_metadata", "style": style}]
+    payload = {
+        "model": model,
+        "input": [{"type": "user_input", "content": [content]}],
+        "response_format": {"type": "audio"},
+        "generation_config": {"speech_config": [{"voice": voice}]},
+    }
+    response = _post_json(f"{base_url}/interactions", payload, headers)
+    if response.status_code != 200:
+        raise RuntimeError(f"Gemini TTS API error (HTTP {response.status_code}): {_gemini_error_detail(response)}")
+    try:
+        data = _read_tts_response_json(response, label="Gemini TTS")
+        audio = data.get("output_audio") or next(
+            (part for step in reversed(data.get("steps") or [])
+             for part in reversed(step.get("content") or []) if part.get("type") == "audio"),
+            {},
+        )
+        encoded = audio.get("data")
+        if not encoded:
+            raise RuntimeError("Gemini TTS returned empty audio data")
+        wav = base64.b64decode(encoded, validate=True)
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise RuntimeError(f"Gemini TTS audio response was malformed: {exc}") from exc
+    if wav[:4] != b"RIFF" or wav[8:12] != b"WAVE":
+        raise RuntimeError("Gemini TTS designed voice returned non-WAV audio")
+    return wav
+
+
 def _generate_gemini_tts(text: str, output_path: str, tts_config: dict[str, Any]) -> str:
     """Generate audio via Gemini ``generateContent`` (``responseModalities=["AUDIO"]``). The reply is
     base64 24kHz mono 16-bit PCM, wrapped as WAV and ffmpeg-converted to the requested container."""
@@ -576,13 +620,16 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: dict[str, Any]
     tts_script = text
     if _gemini_audio_tags_enabled(gemini_config, model):
         tts_script = _rewrite_gemini_tts_audio_tags(text, persona_prompt=persona_prompt)
-    prompt_text = _compose_gemini_tts_prompt(
+    designed_voice = voice.startswith("voice_")
+    style = _gemini_designed_voice_style(persona_prompt) if designed_voice else ""
+    # Stored voices carry direction as metadata; composing it into the text would get it spoken.
+    prompt_text = tts_script.strip() if designed_voice else _compose_gemini_tts_prompt(
         tts_script, gemini_config, persona_prompt=persona_prompt)
     max_len = origin._resolve_max_text_length("gemini", tts_config)
-    if len(prompt_text) > max_len:
+    if len(prompt_text) + len(style) > max_len:
         raise ValueError(
             "Gemini TTS composed prompt exceeds the provider request limit "
-            f"({len(prompt_text)} > {max_len} chars). Reduce the persona/audio-tag "
+            f"({len(prompt_text) + len(style)} > {max_len} chars). Reduce the persona/audio-tag "
             "prompt or lower tts.gemini.max_text_length so long-form text is "
             "split with enough prompt headroom.")
     payload: dict[str, Any] = {
@@ -600,6 +647,9 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: dict[str, Any]
             headers["X-Goog-Api-Client"] = f"hermes-agent/{get_version_info().base_version}"
         except Exception:
             headers["X-Goog-Api-Client"] = "hermes-agent/0.0.0"
+    if designed_voice:
+        wav = _request_gemini_designed_voice(prompt_text, model, voice, base_url, headers, style)
+        return _write_wav_bytes_as(wav, output_path)
     response = _post_json(f"{base_url}/models/{model}:generateContent", payload, headers)
     if response.status_code != 200:
         raise RuntimeError(f"Gemini TTS API error (HTTP {response.status_code}): {_gemini_error_detail(response)}")

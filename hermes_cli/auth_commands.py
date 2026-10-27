@@ -80,6 +80,10 @@ def _normalize_provider(provider: str) -> str:
         return "openrouter"
     if normalized in {"grok-oauth", "xai-oauth", "x-ai-oauth", "xai-grok-oauth"}:
         return "xai-oauth"
+    # Built-in IDs take precedence over the compatibility view of config.providers.
+    # Explicit custom:<name> inputs still address a same-named custom pool.
+    if normalized in PROVIDER_REGISTRY or normalized == "openrouter":
+        return normalized
     # Check if it matches a custom provider name
     custom_key = _resolve_custom_provider_input(normalized)
     if custom_key:

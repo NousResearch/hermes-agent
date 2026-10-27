@@ -1,5 +1,6 @@
 """Updater restore must publish snapshot rows without replaying the old WAL."""
 
+import os
 import shutil
 import sqlite3
 from pathlib import Path
@@ -149,6 +150,52 @@ def test_restore_helper_propagates_copy_errors(tmp_path):
 
     with pytest.raises(OSError):
         _restore_state_db_from_snapshot(state_path, tmp_path / "does-not-exist.db")
+
+
+def test_post_update_guard_uses_newest_snapshot_file_mtime(tmp_path, monkeypatch):
+    """Snapshot directory names are not a timestamp contract for recovery."""
+    from hermes_cli import update_cmd, update_cmd_maint
+
+    home = tmp_path / "home"
+    home.mkdir()
+    state = home / "state.db"
+    state.write_bytes(b"corrupt")
+    _make_valid_snapshot(home, "z-older-name", 10)
+    _make_valid_snapshot(home, "a-newer-name", 20)
+    older = home / "state-snapshots" / "z-older-name" / "state.db"
+    newer = home / "state-snapshots" / "a-newer-name" / "state.db"
+    os.utime(older, (100, 100))
+    os.utime(newer, (200, 200))
+    restored_from = []
+    monkeypatch.setattr(update_cmd_maint, "_restore_state_db_from_snapshot", lambda _state, snapshot: restored_from.append(snapshot) or True)
+
+    update_cmd._verify_and_restore_one_state_db(home, label="test home")
+
+    assert restored_from == [newer]
+
+
+def test_restore_helper_names_replaced_snapshot_when_post_check_fails(tmp_path, monkeypatch, capsys):
+    """A failed post-restore check must not imply that no replacement happened."""
+    from hermes_cli import update_cmd
+
+    state = tmp_path / "state.db"
+    snapshot = tmp_path / "newest" / "state.db"
+    snapshot.parent.mkdir()
+    state.write_bytes(b"corrupt")
+    _make_valid_db(snapshot, 1)
+    checks = iter(({"valid": True}, {"valid": False, "message": "post-check failed"}))
+    monkeypatch.setattr(
+        "hermes_cli.backup.verify_sqlite_integrity",
+        lambda *_args, **_kwargs: next(checks),
+    )
+    monkeypatch.setattr("hermes_cli.backup_restore._safe_restore_db", lambda *_args: True)
+
+    assert update_cmd._restore_state_db_from_snapshot(state, snapshot) is False
+
+    output = capsys.readouterr().out
+    assert "replaced state.db from snapshot" in output
+    assert str(snapshot) in output
+    assert "post-restore integrity check failed" in output
 
 
 # ── Multi-profile coverage (#97994) ─────────────────────────────────────

@@ -440,7 +440,9 @@ class ACPClient:
             for line in stream or ():
                 sink(line)
 
-        threading.Thread(target=_pump, args=(proc.stdout, lambda line: inbox.put(_decode(line))), daemon=True).start()
+        stdout_pump = threading.Thread(
+            target=_pump, args=(proc.stdout, lambda line: inbox.put(_decode(line))), daemon=True)
+        stdout_pump.start()
         stderr_pump = threading.Thread(
             target=_pump, args=(proc.stderr, lambda line: stderr_tail.append(line.rstrip("\n"))), daemon=True)
         stderr_pump.start()
@@ -463,26 +465,61 @@ class ACPClient:
                 if proc.poll() is None:  # alive but deaf: fail now, not after the whole request timeout
                     raise
             deadline = session_deadline
+            # Distinct from a JSON-RPC result of None, which is a valid payload.
+            no_response = object()
+
+            def _accept(msg: dict[str, Any]) -> Any:
+                if self._handle_server_message(
+                    msg, process=proc, cwd=self._acp_cwd, text_parts=text_parts,
+                    reasoning_parts=reasoning_parts, allow_file_requests=allow_file_requests,
+                ) or msg.get("id") != request_id:
+                    return no_response
+                if "error" in msg:
+                    raise RuntimeError(self._request_error(method, msg.get("error") or {}))
+                return msg.get("result")
+
             while time.monotonic() < deadline and proc.poll() is None:
                 try:
                     msg = inbox.get(timeout=0.1)
                 except queue.Empty:
                     continue
-                if self._handle_server_message(
-                    msg, process=proc, cwd=self._acp_cwd, text_parts=text_parts,
-                    reasoning_parts=reasoning_parts, allow_file_requests=allow_file_requests,
-                ) or msg.get("id") != request_id:
+                if (accepted := _accept(msg)) is no_response:
                     continue
-                if "error" in msg:
-                    raise RuntimeError(self._request_error(method, msg.get("error") or {}))
-                return msg.get("result")
+                return accepted
             if proc.poll() is not None:
+                # The loop condition checks poll() before inbox.get(), so a session/update
+                # the stdout reader already queued — or is about to queue as the pipe hits
+                # EOF — never reaches text_parts. Some ACP servers (Claude Code's among
+                # them) stream the whole answer as notifications and exit 0 without a
+                # matching JSON-RPC response. Drain that queue before deciding it crashed.
+                stdout_pump.join(timeout=1.0)
+                queued: Any = no_response
+                while True:
+                    try:
+                        msg = inbox.get_nowait()
+                    except queue.Empty:
+                        break
+                    if (accepted := _accept(msg)) is no_response:
+                        continue
+                    queued = accepted
+                if queued is not no_response:
+                    return queued
                 # The pump can still hold the crash text when poll() first sees the exit; reading
                 # it too early turned a dead CLI into a TimeoutError, which retries differently.
                 stderr_pump.join(timeout=1.0)
                 stderr_text = "\n".join(stderr_tail).strip()
                 if (vendor_error := self.early_exit_error(stderr_text)) is not None:
                     raise RuntimeError(vendor_error)
+                # Only a clean exit counts. A crash that emitted a partial chunk must
+                # still surface as an early exit, not as a successful prompt.
+                combined = "".join(text_parts).strip() if text_parts is not None else ""
+                if method == "session/prompt" and proc.returncode == 0 and combined:
+                    logger.warning(
+                        "%s %s completed via notification stream (no JSON-RPC response). "
+                        "text=%d chars reasoning=%d parts",
+                        self.label, method, len(combined), len(reasoning_parts or []),
+                    )
+                    return {}
                 raise RuntimeError(f"{self.label} process exited early: {stderr_text or f'exit code {proc.returncode}'}")
             raise TimeoutError(f"Timed out waiting for {self.label} response to {method}.")
 
@@ -538,9 +575,19 @@ class ACPClient:
             update = (msg.get("params") or {}).get("update") or {}
             content = update.get("content") or {}
             chunk_text = str(content.get("text") or "") if isinstance(content, dict) else ""
+            kind = str(update.get("sessionUpdate") or "").strip()
             sinks = {"agent_message_chunk": text_parts, "agent_thought_chunk": reasoning_parts}
-            if chunk_text and (sink := sinks.get(str(update.get("sessionUpdate") or "").strip())) is not None:
+            if chunk_text and (sink := sinks.get(kind)) is not None:
                 sink.append(chunk_text)
+            elif kind not in sinks:
+                # user_message_chunk, usage_update, end_turn, and other non-chunk
+                # updates are safe to ignore, but a silent drop hides the protocol
+                # quirk when a server exits without a final JSON-RPC response.
+                logger.log(
+                    logging.DEBUG if not chunk_text else logging.INFO,
+                    "%s session/update type=%r text=%d chars",
+                    self.label, kind, len(chunk_text),
+                )
             return True
         if process.stdin is None:
             return True

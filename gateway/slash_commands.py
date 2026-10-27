@@ -23,7 +23,7 @@ from agent.i18n import t
 from gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_channel
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent
-from gateway.session import AsyncSessionStore
+from gateway.session import AsyncSessionStore, SessionSource
 from gateway.session_transcript import TranscriptReadError
 from gateway.slash_commands_goals import GatewayGoalCommandsMixin
 from gateway.slash_commands_model import GatewayModelCommandsMixin
@@ -109,20 +109,24 @@ def _execute(command: str, **ctx_kwargs):
     return execute_command(command, CommandContext(surface="gateway", **ctx_kwargs))
 
 
-def _restart_notify_payload(event: MessageEvent) -> dict:
+def _restart_notify_payload_for_source(source: SessionSource, message_id: Optional[str] = None) -> dict:
     """Requester routing info so the new gateway process can notify them once back online.
     ``profile`` is persisted so the notice leaves through the requester's own profile bot after the
     restart (a bare platform lookup would resolve the default profile's adapter)."""
-    source = event.source
     data = {"platform": source.platform.value if source.platform else None,
             "chat_id": source.chat_id, "chat_type": source.chat_type}
-    if source.delivered_via_upstream_relay is True:
+    if getattr(source, "delivered_via_upstream_relay", None) is True:
         data["delivered_via_upstream_relay"] = True
         data.update({k: getattr(source, k) for k in ("user_id", "scope_id") if getattr(source, k)})
-    optional = (("thread_id", source.thread_id), ("message_id", event.message_id),
+    mid = message_id or source.message_id
+    optional = (("thread_id", source.thread_id), ("message_id", mid),
                 ("profile", getattr(source, "profile", None)))
     data.update({k: v for k, v in optional if v})
     return data
+
+
+def _restart_notify_payload(event: MessageEvent) -> dict:
+    return _restart_notify_payload_for_source(event.source, str(event.message_id) if event.message_id is not None else None)
 
 
 def _spawn_detached_update(hermes_cmd, output_path, exit_code_path) -> None:
@@ -535,9 +539,73 @@ class GatewaySlashCommandsMixin(
         self._resume_paused_platform(platform)
         return t("gateway.platform.resumed", name=name)
 
+    async def dispatch_gateway_restart(
+        self,
+        source: SessionSource,
+        reason: str = "",
+        update_id: Optional[int] = None,
+        message_id: Optional[str] = None,
+        origin: str = "slash_command",
+    ) -> tuple[bool, str]:
+        """Shared async restart coordinator used by both /restart and Agent tools.
+
+        Returns (success: bool, user_message: str).
+        """
+        from gateway.run import _hermes_home
+        if self._restart_requested or self._draining:
+            count = self._running_agent_count()
+            if count:
+                return False, t("gateway.draining", count=count)
+            return False, t("gateway.restart.in_progress")
+
+        effective_msg_id = message_id or getattr(source, "message_id", None)
+        try:
+            self._restart_command_source = dataclasses.replace(
+                source,
+                message_id=str(effective_msg_id) if effective_msg_id is not None else source.message_id,
+            )
+        except Exception:
+            self._restart_command_source = source
+
+        notify_data = _restart_notify_payload_for_source(source, effective_msg_id)
+        dedup_data = {
+            "platform": source.platform.value if source.platform else None,
+            "requested_at": time.time(),
+            "origin": origin,
+        }
+        if update_id is not None:
+            dedup_data["update_id"] = update_id
+        if effective_msg_id is not None:
+            dedup_data["message_id"] = str(effective_msg_id)
+        if getattr(source, "chat_id", None):
+            dedup_data["chat_id"] = source.chat_id
+        if getattr(source, "thread_id", None):
+            dedup_data["thread_id"] = source.thread_id
+        if reason:
+            dedup_data["reason"] = reason[:200]
+
+        try:
+            await asyncio.to_thread(atomic_json_write, _hermes_home / ".restart_notify.json", notify_data, indent=None)
+        except Exception as e:
+            logger.debug("Failed to write restart notify file: %s", e)
+            return False, "Failed to persist restart notification file: Gateway remains active."
+
+        try:
+            await asyncio.to_thread(atomic_json_write, _hermes_home / ".restart_last_processed.json", dedup_data, indent=None)
+        except Exception as e:
+            logger.debug("Failed to write restart dedup marker: %s", e)
+
+        active_agents = self._running_agent_count()
+        from gateway.restart import is_container_restart_context, is_gateway_supervisor_process
+        via_service = is_gateway_supervisor_process() or is_container_restart_context()
+        self.request_restart(detached=not via_service, via_service=via_service)
+
+        if active_agents:
+            return True, t("gateway.draining", count=active_agents)
+        return True, t("gateway.restart.restarting")
+
     async def _handle_restart_command(self, event: MessageEvent) -> str | EphemeralReply:
         """Handle /restart command - drain active work, then restart the gateway."""
-        from gateway.run import _hermes_home
         # Idempotency check: if the previous gateway process recorded this same /restart (platform +
         # update_id) and we see it *again*, it's a redelivery from PTB's graceful-shutdown get_updates
         # ACK failing on the way out. Ignoring it prevents a loop where every fresh gateway re-restarts.
@@ -548,52 +616,17 @@ class GatewaySlashCommandsMixin(
                         src.platform.value if src and src.platform else "?",
                         event.platform_update_id)
             return ""
-        if self._restart_requested or self._draining:
-            count = self._running_agent_count()
-            return t("gateway.draining", count=count) if count else EphemeralReply(t("gateway.restart.in_progress"))
 
-        async def _write_marker(name: str, build, label: str) -> None:
-            try:
-                await asyncio.to_thread(atomic_json_write, _hermes_home / name, build(), indent=None)
-            except Exception as e:
-                logger.debug("Failed to write restart %s: %s", label, e)
-
-        def _notify_payload() -> dict:
-            data = _restart_notify_payload(event)
-            mid = str(event.message_id) if event.message_id is not None else event.source.message_id
-            try:
-                self._restart_command_source = dataclasses.replace(event.source, message_id=mid)
-            except Exception:
-                self._restart_command_source = event.source
-            return data
-
-        def _dedup_payload() -> dict:
-            # Platform + update_id of the triggering /restart, for redelivery detection.
-            data = {"platform": event.source.platform.value if event.source.platform else None,
-                    "requested_at": time.time()}
-            if event.platform_update_id is not None:
-                data["update_id"] = event.platform_update_id
-            return data
-
-        # Save the requester's routing info so the new gateway process can notify them once back.
-        await _write_marker(".restart_notify.json", _notify_payload, "notify file")
-        # Record the triggering platform + update_id in a dedicated dedup marker. Unlike
-        # .restart_notify.json (unlinked once the new gateway sends its notification) this persists
-        # so a delayed Telegram redelivery is still detectable. Overwritten on every /restart.
-        await _write_marker(".restart_last_processed.json", _dedup_payload, "dedup marker")
-        active_agents = self._running_agent_count()
-        # Under a service manager (systemd/launchd) or Docker/Podman, exit 75 so the supervisor /
-        # restart policy restarts us — detached setsid+bash fails there (systemd KillMode=mixed kills
-        # the cgroup; tini exits with the gateway). The explicit marker covers ``sudo env -i`` wrappers.
-        from gateway.restart import is_container_restart_context, is_gateway_supervisor_process
-        via_service = is_gateway_supervisor_process() or is_container_restart_context()
-        self.request_restart(detached=not via_service, via_service=via_service)
-        # Track sessions that were active at shutdown for stuck-loop detection (#7536). On each restart, the
-        # counter increments for sessions that were running. If a session hits the threshold (3 consecutive
-        # restarts while active), the next startup auto-suspends it — breaking the loop.
-        if active_agents:
-            return t("gateway.draining", count=active_agents)
-        return EphemeralReply(t("gateway.restart.restarting"))
+        was_busy = bool(self._running_agent_count())
+        _success, message = await self.dispatch_gateway_restart(
+            source=event.source,
+            update_id=event.platform_update_id,
+            message_id=str(event.message_id) if event.message_id is not None else None,
+            origin="slash_command",
+        )
+        if was_busy:
+            return message
+        return EphemeralReply(message)
 
     async def _handle_autoprune_command(self, event: MessageEvent) -> str:
         """Handle /autoprune — the low-disk auto-prune decision (same text as the CLI)."""

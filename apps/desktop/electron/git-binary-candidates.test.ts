@@ -3,7 +3,7 @@ import path from 'node:path'
 
 import { describe, test } from 'vitest'
 
-import { type GitCandidateFs, ugitGitBinaries, windowsGitCandidates } from './git-binary-candidates'
+import { type GitCandidateFs, managedGitBinaries, ugitGitBinaries, windowsGitCandidates } from './git-binary-candidates'
 
 const LAD = path.join('C:', 'Users', 'suceru', 'AppData', 'Local')
 
@@ -27,19 +27,19 @@ const ugitGitExe = (version: string): string =>
 
 describe('ugitGitBinaries (#61494)', () => {
   test('enumerates the UGit app-* glob and returns each bundled git.exe, newest first', () => {
-    const fs = fakeFs(
-      { [path.join(LAD, 'UGit')]: ['app-5.50.1', 'app-5.51.0', 'Update.exe', 'tools'] },
-      [ugitGitExe('5.50.1'), ugitGitExe('5.51.0')]
-    )
+    const fs = fakeFs({ [path.join(LAD, 'UGit')]: ['app-5.50.1', 'app-5.51.0', 'Update.exe', 'tools'] }, [
+      ugitGitExe('5.50.1'),
+      ugitGitExe('5.51.0')
+    ])
 
     assert.deepEqual(ugitGitBinaries(LAD, fs), [ugitGitExe('5.51.0'), ugitGitExe('5.50.1')])
   })
 
   test('sorts app dirs by version, not lexically (app-10.0.0 beats app-9.0.0)', () => {
-    const fs = fakeFs(
-      { [path.join(LAD, 'UGit')]: ['app-9.0.0', 'app-10.0.0'] },
-      [ugitGitExe('9.0.0'), ugitGitExe('10.0.0')]
-    )
+    const fs = fakeFs({ [path.join(LAD, 'UGit')]: ['app-9.0.0', 'app-10.0.0'] }, [
+      ugitGitExe('9.0.0'),
+      ugitGitExe('10.0.0')
+    ])
 
     assert.deepEqual(ugitGitBinaries(LAD, fs), [ugitGitExe('10.0.0'), ugitGitExe('9.0.0')])
   })
@@ -52,6 +52,18 @@ describe('ugitGitBinaries (#61494)', () => {
     const fs = fakeFs({ [path.join(LAD, 'UGit')]: ['app-5.50.1', 'app-6.0.0'] }, [])
 
     assert.deepEqual(ugitGitBinaries(LAD, fs), [])
+  })
+})
+
+describe('managedGitBinaries', () => {
+  test('finds the newest PM-managed Git under Hermes tools', () => {
+    const managed = path.join(LAD, 'hermes', 'tools', 'git-2.53.0+3-win32-x64', 'cmd', 'git.exe')
+    const fs = fakeFs(
+      { [path.join(LAD, 'hermes', 'tools')]: ['git-2.52.0+2-win32-x64', 'git-2.53.0+3-win32-x64'] },
+      [managed]
+    )
+
+    assert.deepEqual(managedGitBinaries(LAD, fs), [managed])
   })
 })
 
@@ -83,6 +95,19 @@ describe('windowsGitCandidates (#61494)', () => {
 
     // resolveGitBinary's selection rule: the first existing candidate wins.
     assert.equal(candidates.find(fs.existsSync), ugitGit)
+  })
+
+  test('selects PM-managed Git before the hermes-bundled portable git', () => {
+    const managed = path.join(LAD, 'hermes', 'tools', 'git-2.53.0+3-win32-x64', 'cmd', 'git.exe')
+    const portable = path.join(env.localAppData, 'hermes', 'git', 'cmd', 'git.exe')
+    const fs = fakeFs(
+      { [path.join(LAD, 'hermes', 'tools')]: ['git-2.53.0+3-win32-x64'] },
+      [managed, portable]
+    )
+
+    const candidates = windowsGitCandidates(env, fs)
+
+    assert.equal(candidates.find(fs.existsSync), managed)
   })
 
   test('still prefers the hermes-bundled portable git over UGit', () => {

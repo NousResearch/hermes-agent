@@ -1,12 +1,13 @@
 """Tests for the dashboard-managed file browser API."""
 
 import base64
+import json
 from types import SimpleNamespace
 
 import pytest
 from starlette.testclient import TestClient
 
-from hermes_cli import web_server
+from hermes_cli import web_server, web_server_files
 import hermes_cli.web_routers.files as _rt_files
 
 
@@ -153,7 +154,10 @@ def test_download_authenticates_via_query_token(forced_files_client):
     ).status_code == 401
 
 
-def test_download_resolves_paths_in_the_originating_profile_session(local_files_client, monkeypatch):
+@pytest.mark.parametrize("route", ["/api/fs/download", "/api/fs/read-data-url"])
+def test_download_resolves_paths_in_the_originating_profile_session(
+    local_files_client, monkeypatch, route,
+):
     from pathlib import Path
     from hermes_state import SessionDB
 
@@ -179,21 +183,20 @@ def test_download_resolves_paths_in_the_originating_profile_session(local_files_
             db.create_session(sid, source="gui", cwd=cwd)
         finally:
             db.close()
-    for route in ("/api/fs/download", "/api/fs/read-data-url"):
-        for path in ("./report.txt", "../project/report.txt", str(artifact), artifact.as_uri()):
-            response = client.get(route, params={
-                "path": path, "profile": "default", "session_id": "origin-session",
-            })
-            assert response.status_code == 200, response.text
-            data = (base64.b64decode(response.json()["dataUrl"].split(",", 1)[1])
-                    if route.endswith("read-data-url") else response.content)
-            assert data == artifact.read_bytes()
-        for profile, session_id in (("other", "origin-session"), ("missing", "origin-session"),
-                                    ("default", "missing-session"), ("default", "")):
-            response = client.get(route, params={
-                "path": str(artifact), "profile": profile, "session_id": session_id,
-            })
-            assert response.status_code == 404, response.text
+    for path in ("./report.txt", "../project/report.txt", str(artifact), artifact.as_uri()):
+        response = client.get(route, params={
+            "path": path, "profile": "default", "session_id": "origin-session",
+        })
+        assert response.status_code == 200, response.text
+        data = (base64.b64decode(response.json()["dataUrl"].split(",", 1)[1])
+                if route.endswith("read-data-url") else response.content)
+        assert data == artifact.read_bytes()
+    for profile, session_id in (("other", "origin-session"), ("missing", "origin-session"),
+                                ("default", "missing-session"), ("default", "")):
+        response = client.get(route, params={
+            "path": str(artifact), "profile": profile, "session_id": session_id,
+        })
+        assert response.status_code == 404, response.text
 
 
 def test_stream_requires_header_auth_and_supports_ranges(forced_files_client):
@@ -201,8 +204,8 @@ def test_stream_requires_header_auth_and_supports_ranges(forced_files_client):
     file_path = _seed_file(client, root, name="out/demo.mp4")
 
     # Electron's main-process proxy supplies the connection credential as a
-    # header. Unlike browser-visible download links, the stream endpoint must
-    # not accept credentials in its URL.
+    # header. The session token grants host shells, so browser media elements
+    # use a path-bound ticket instead: the stream URL never accepts the token.
     params = {"path": str(file_path)}
 
     full = client.get("/api/files/stream", params=params)
@@ -238,6 +241,54 @@ def test_stream_requires_header_auth_and_supports_ranges(forced_files_client):
     assert client.get("/api/files/stream", params=params).status_code == 401
 
 
+def test_browser_file_urls_authenticate_only_with_route_and_path_bound_tickets(
+    forced_files_client, monkeypatch,
+):
+    """A ticket admits exactly the URL it was minted for: reusable for media
+    Range requests, a few retries of that same download, useless for any other file."""
+    from hermes_cli import web_server_file_tickets
+
+    client, root = forced_files_client
+    # The Webapp mints file tickets: the browser's file routes exist only there.
+    monkeypatch.setattr(web_server.app.state, "ui_surface", "webapp", raising=False)
+    video = _seed_file(client, root, name="out/demo.mp4")
+    other = _seed_file(client, root, name="out/other.mp4")
+
+    def ticket(route, **query):
+        response = client.post("/api/files/ticket", json={"route": route, **query})
+        assert response.status_code == 200, response.text
+        assert response.headers["cache-control"] == "no-store"
+        return response.json()["ticket"]
+
+    stream = ticket("stream", path=str(video), profile="default")
+    download = ticket("download", path=str(video))
+    monkeypatch.setattr(web_server_file_tickets, "STREAM_TTL_SECONDS", 0)
+    expired = ticket("stream", path=str(video))
+    del client.headers[web_server._SESSION_HEADER_NAME]
+    assert client.post("/api/files/ticket", json={"route": "stream", "path": str(video)}).status_code == 401
+
+    params = {"path": str(video), "profile": "default", "ticket": stream}
+    for _ in range(2):
+        partial = client.get("/api/files/stream", params=params, headers={"Range": "bytes=1-3"})
+        assert (partial.status_code, partial.content) == (206, b"ell")
+    for foreign in (
+        {**params, "path": str(other)},
+        {**params, "profile": "other"},
+        {"path": str(video), "ticket": stream},
+        {**params, "path": [str(video), str(other)]},
+    ):
+        assert client.get("/api/files/stream", params=foreign).status_code == 401, foreign
+    download_route = web_server_file_tickets.ROUTES["download"]
+    assert client.get(download_route, params=params).status_code == 401
+    assert client.get("/api/files/stream", params={"path": str(video), "ticket": expired}).status_code == 401
+
+    once = {"path": str(video), "ticket": download}
+    assert client.get("/api/files/stream", params=once).status_code == 401
+    for _ in range(web_server_file_tickets.DOWNLOAD_MAX_REDEMPTIONS):
+        assert client.get(download_route, params=once).content == b"hello"
+    assert client.get(download_route, params=once).status_code == 401
+
+
 def test_stream_rejects_non_media_active_content(forced_files_client):
     client, root = forced_files_client
 
@@ -247,13 +298,174 @@ def test_stream_rejects_non_media_active_content(forced_files_client):
         assert response.status_code == 415
 
 
+@pytest.mark.parametrize("locked", [True, False])
+def test_stream_file_uri_uses_host_resolution_without_bypassing_policy(
+    forced_files_client, monkeypatch, locked,
+):
+    client, root = forced_files_client
+    artifact = _seed_file(client, root, name="out/a b.mp4")
+    if not locked:
+        monkeypatch.delenv("HERMES_DASHBOARD_FILES_ROOT")
+
+    params = {"path": artifact.as_uri()}
+    response = client.get("/api/files/stream", params=params, headers={"Range": "bytes=1-3"})
+    assert response.status_code == 206, response.text
+    assert response.content == b"ell"
+    assert response.headers["content-range"] == "bytes 1-3/5"
+    assert response.headers["content-disposition"].startswith("inline;")
+    assert response.headers["x-content-type-options"] == "nosniff"
+    head = client.head("/api/files/stream", params=params)
+    assert head.status_code == 200
+    assert head.content == b""
+    assert head.headers["content-length"] == "5"
+
+    outside = root.parent / "outside.mp4"
+    outside.write_bytes(b"outside")
+    assert client.get("/api/files/stream", params={"path": outside.as_uri()}).status_code == (
+        403 if locked else 200
+    )
+    sensitive = root / ".env"
+    sensitive.write_text("fixture-only")
+    assert client.get("/api/files/stream", params={"path": sensitive.as_uri()}).status_code == 403
+    non_media = root / "active.html"
+    non_media.write_text("<p>not media</p>")
+    assert client.get("/api/files/stream", params={"path": non_media.as_uri()}).status_code == 415
+    assert client.get("/api/files/stream", params={"path": (root / "missing.mp4").as_uri()}).status_code == 404
+
+    # Ordinary relative managed paths still resolve under the locked root, not cwd.
+    assert client.get("/api/files/stream", params={"path": "out/a b.mp4"}).status_code == (
+        200 if locked else 400
+    )
+    monkeypatch.setattr(web_server, "_MANAGED_FILE_MAX_BYTES", 1)
+    assert client.get("/api/files/stream", params=params).status_code == 413
+
+
+@pytest.mark.platforms("windows")
+@pytest.mark.parametrize("uri,expected", [
+    ("file:///C:/Users/Alice/video%20clip.mp4", "C:/Users/Alice/video clip.mp4"),
+    ("file://127.0.0.1/hermes-media-test/video%20clip.mp4", "//127.0.0.1/hermes-media-test/video clip.mp4"),
+])
+def test_stream_windows_file_uri_reaches_policy_with_absolute_host_path(
+    local_files_client, monkeypatch, uri, expected,
+):
+    from pathlib import Path
+    from starlette.responses import Response
+
+    client, _home = local_files_client
+    paths = []
+
+    async def capture_response(request, path, *, content_disposition_type, media_only):
+        paths.append(Path(path))
+        assert content_disposition_type == "inline"
+        assert media_only is True
+        return Response(status_code=204)
+
+    # Exercise Windows URI conversion through the route without requiring a
+    # mounted SMB share; real policy/stream I/O is covered by the test above.
+    monkeypatch.setattr(_rt_files, "_managed_file_response", capture_response)
+    response = client.get("/api/files/stream", params={"path": uri})
+    assert response.status_code == 204
+    assert paths == [Path(expected).resolve(strict=False)]
+    assert paths[0].is_absolute()
+
+
+def test_managed_reads_resolve_docker_mount_inside_locked_root(
+    forced_files_client, monkeypatch,
+):
+    """#85238: the managed read routes must translate a docker container path
+    through the volume translator when its host target sits inside the locked
+    managed root (the hosted /opt/data layout bind-mounts /workspace there)."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "report.txt").write_text("container report", encoding="utf-8")
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", json.dumps([f"{root}:/workspace"]))
+
+    read = client.get("/api/files/read", params={"path": "/workspace/report.txt"})
+    download = client.get("/api/files/download", params={"path": "/workspace/report.txt"})
+    stream = client.get("/api/files/stream", params={"path": "/workspace/report.txt"})
+
+    assert read.status_code == 200, read.text
+    assert base64.b64decode(read.json()["data_url"].split(",", 1)[1]) == b"container report"
+    assert download.status_code == 200, download.text
+    assert download.content == b"container report"
+    # media_only: non-streamable extension 415s — proves resolution reached the file
+    assert stream.status_code == 415
+
+
+def test_managed_read_still_refuses_dotdot_in_container_path(forced_files_client, monkeypatch):
+    """``..`` stays refused even when the path would translate inside the mount."""
+    client, root = forced_files_client
+    (root / "sub").mkdir(parents=True, exist_ok=True)
+    (root / "ok.txt").write_text("ok", encoding="utf-8")
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", json.dumps([f"{root}:/workspace"]))
+
+    response = client.get("/api/files/read", params={"path": "/workspace/sub/../ok.txt"})
+
+    assert response.status_code == 400, response.text
+
+
+def test_managed_reads_reject_docker_mount_outside_locked_root(
+    forced_files_client, monkeypatch, tmp_path,
+):
+    """Translation must not bypass the locked-root refusal: a container path
+    whose host target lives outside the managed root stays 403 (from #85271)."""
+    client, _root = forced_files_client
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("not managed", encoding="utf-8")
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", json.dumps([f"{outside}:/workspace"]))
+
+    for route in ("/api/files/read", "/api/files/download", "/api/files/stream"):
+        response = client.get(route, params={"path": "/workspace/secret.txt"})
+        assert response.status_code == 403, response.text
+
+
+_PNG = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\0" * 16).decode()
+
+
+def test_a_locked_root_still_reads_back_the_images_the_browser_just_uploaded(
+    forced_files_client, monkeypatch, tmp_path,
+):
+    """With ``HERMES_DASHBOARD_FILES_ROOT`` naming a folder that does not hold the profile home, a
+    pasted image (``<home>/cache/images``) and a picked file (``<home>/uploads/web-*``) still read
+    back through ``/api/fs/read-data-url`` to be sent: they are files this server wrote for the
+    browser, not part of the managed tree. Every other file in the profile home stays outside the
+    read boundary."""
+    client, _root = forced_files_client
+    # A picked file arrives through the Webapp's upload route, which exists only on the Webapp.
+    monkeypatch.setattr(web_server.app.state, "ui_surface", "webapp", raising=False)
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    (home / "uploads").mkdir()
+    (home / "uploads" / "notes.txt").write_text("not a staged upload", encoding="utf-8")
+    (home / "memories.md").write_text("profile file", encoding="utf-8")
+
+    pasted = client.post(
+        "/api/chat/image-upload", json={"data_url": f"data:image/png;base64,{_PNG}", "filename": "p.png"},
+    )
+    assert pasted.status_code == 200, pasted.text
+    picked = client.post("/api/chat/file-upload", files={"file": ("shot.png", base64.b64decode(_PNG), "image/png")})
+    assert picked.status_code == 200, picked.text
+
+    for uploaded in (pasted.json()["path"], picked.json()["path"]):
+        read_back = client.get("/api/fs/read-data-url", params={"path": uploaded})
+        assert read_back.status_code == 200, (uploaded, read_back.text)
+        assert read_back.json()["dataUrl"] == f"data:image/png;base64,{_PNG}"
+    for other in (home / "uploads" / "notes.txt", home / "memories.md"):
+        assert client.get("/api/fs/read-data-url", params={"path": str(other)}).status_code == 403
+
+
 def test_query_token_does_not_authenticate_other_endpoints(forced_files_client):
     client, root = forced_files_client
     file_path = _seed_file(client, root)
 
     del client.headers[web_server._SESSION_HEADER_NAME]
 
-    # The query-token escape hatch is scoped to downloads only; it must not
+    # The query-token escape hatch is scoped to downloads and playback; it must not
     # unlock the rest of the API surface.
     leaked = client.get(
         "/api/files/read",
@@ -273,6 +485,160 @@ def test_query_token_does_not_authenticate_other_endpoints(forced_files_client):
 
 
 
+
+
+def test_directory_listing_shows_broken_symlink_placeholder(forced_files_client, tmp_path):
+    """Dangling symlinks should appear in listings with broken_link: true."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+
+    valid = root / "valid.txt"
+    valid.write_text("hello")
+
+    broken = root / "broken_link"
+    outside_broken = root / "outside_broken_link"
+    try:
+        broken.symlink_to(root / "nonexistent_target")
+        outside_broken.symlink_to(tmp_path / "outside_nonexistent_target")
+    except OSError:
+        pytest.skip("filesystem does not allow symlinks")
+
+    resp = client.get("/api/files", params={"path": str(root)})
+    assert resp.status_code == 200
+    entries = resp.json()["entries"]
+    names = [e["name"] for e in entries]
+    assert "valid.txt" in names
+    assert "broken_link" in names
+    assert "outside_broken_link" in names
+
+    broken_entry = next(e for e in entries if e["name"] == "broken_link")
+    assert broken_entry["broken_link"] is True
+    assert broken_entry["path"] == str(broken)
+    assert broken_entry["size"] is None
+    assert broken_entry["mtime"] is None
+    assert broken_entry["mime_type"] is None
+    assert broken_entry["is_directory"] is False
+
+    outside_entry = next(e for e in entries if e["name"] == "outside_broken_link")
+    assert outside_entry["broken_link"] is True
+    assert outside_entry["path"] == str(outside_broken)
+
+
+def test_managed_file_entry_reuses_symlink_stat_snapshot(tmp_path, monkeypatch):
+    """A target disappearing after its first stat must not turn the listing into a 500."""
+    root = tmp_path.resolve()
+    target = root / "target.txt"
+    target.write_text("x")
+    link = root / "link"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("filesystem does not allow symlinks")
+
+    original_resolve = web_server.Path.resolve
+    original_stat = web_server.Path.stat
+    resolved_target = original_resolve(link)
+    target_stat_calls = 0
+
+    def stable_resolve(path, *args, **kwargs):
+        if path == link:
+            return resolved_target
+        return original_resolve(path, *args, **kwargs)
+
+    def disappearing_target_stat(path, *args, **kwargs):
+        nonlocal target_stat_calls
+        if path == resolved_target:
+            target_stat_calls += 1
+            if target_stat_calls == 2:
+                raise FileNotFoundError(str(path))
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(web_server.Path, "resolve", stable_resolve)
+    monkeypatch.setattr(web_server.Path, "stat", disappearing_target_stat)
+
+    entry = web_server_files._managed_file_entry(
+        web_server_files.ManagedFilesPolicy(
+            default_path=root,
+            locked_root=root,
+            can_change_path=False,
+        ),
+        link,
+    )
+
+    assert entry["name"] == "link"
+    assert entry["path"] == str(resolved_target)
+    assert entry["size"] == 1
+    assert target_stat_calls == 1
+
+
+@pytest.mark.parametrize("client_fixture", ["forced_files_client", "local_files_client"])
+def test_directory_listing_skips_vanished_regular_file(request, client_fixture, monkeypatch):
+    client, root = request.getfixturevalue(client_fixture)
+    root.mkdir(parents=True, exist_ok=True)
+    vanished = root / "vanished.txt"
+    vanished.write_text("gone", encoding="utf-8")
+    (root / "valid.txt").write_text("still here", encoding="utf-8")
+    (root / "folder").mkdir()
+    original_stat = web_server_files.Path.stat
+
+    def disappearing_stat(path, *args, **kwargs):
+        if path == vanished and kwargs.get("follow_symlinks", True):
+            vanished.unlink(missing_ok=True)
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(web_server_files.Path, "stat", disappearing_stat)
+    response = client.get("/api/files", params={"path": str(root)})
+
+    assert response.status_code == 200
+    entries = response.json()["entries"]
+    assert [entry["name"] for entry in entries] == ["folder", "valid.txt"]
+    assert entries[0]["is_directory"] is True
+    assert entries[1]["size"] == len("still here")
+
+
+@pytest.mark.parametrize("error", [PermissionError("denied"), OSError("I/O error")])
+def test_directory_listing_does_not_hide_stat_errors(forced_files_client, monkeypatch, error):
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    target = root / "unreadable.txt"
+    target.write_text("x", encoding="utf-8")
+    original_stat = web_server_files.Path.stat
+
+    def unreadable_stat(path, *args, **kwargs):
+        if path == target and kwargs.get("follow_symlinks", True):
+            raise error
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(web_server_files.Path, "stat", unreadable_stat)
+    response = client.get("/api/files", params={"path": str(root)})
+    assert response.status_code == 500
+    assert "Could not stat path" in response.json()["detail"]
+
+
+def test_managed_write_result_rejects_vanished_file(tmp_path):
+    from fastapi import HTTPException
+
+    policy = web_server_files.ManagedFilesPolicy(tmp_path, tmp_path, False)
+    missing = tmp_path / "missing.txt"
+    with pytest.raises(HTTPException) as exc_info:
+        _rt_files._managed_write_result(policy, missing, str(missing))
+    assert exc_info.value.status_code == 500
+
+
+def test_broken_symlink_placeholder_requires_entry_inside_root(tmp_path):
+    from fastapi import HTTPException
+
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside-link"
+    try:
+        outside.symlink_to(root / "missing.txt")
+    except OSError:
+        pytest.skip("filesystem does not allow symlinks")
+    policy = web_server_files.ManagedFilesPolicy(root, root, False)
+    with pytest.raises(HTTPException) as exc_info:
+        web_server_files._managed_file_entry(policy, outside, skip_missing=True)
+    assert exc_info.value.status_code == 403
 
 
 def test_stream_upload_cleans_temp_on_cancellation(forced_files_client):
@@ -438,8 +804,6 @@ def test_credential_dir_trees_blocked_on_subdir_descent(forced_files_client):
     assert [e["name"] for e in mcp_listing.json()["entries"]] == []
 
 
-
-
 def test_git_branch_decodes_utf8_under_a_gbk_default_codec(tmp_path, monkeypatch):
     """#83851: the Desktop polls ``/api/fs/default-cwd``; on zh-CN Windows the serve process's default
     subprocess codec is cp936, and git's UTF-8 output (branch names, localized stderr) raised
@@ -458,3 +822,44 @@ def test_git_branch_decodes_utf8_under_a_gbk_default_codec(tmp_path, monkeypatch
     monkeypatch.setattr(subprocess, "_text_encoding", lambda: "gbk")
 
     assert _rt_files._fs_git_branch(str(tmp_path)) == branch
+
+
+@pytest.mark.require_symlinks
+def test_dangling_symlink_does_not_break_directory_listing(forced_files_client):
+    """Regression: a dangling symlink in a directory must not 500 the listing.
+
+    Symlinks whose target is currently unavailable (deleted file, unmounted
+    external drive, or a Nix/Home Manager profile with /nix/store not mounted)
+    should not prevent the rest of the directory from being browsable. The
+    broken link is surfaced as an informative entry rather than crashing the
+    listing or being misreported as a root escape.
+    """
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+
+    real = root / "real.txt"
+    real.write_text("still here")
+
+    try:
+        (root / "dangling").symlink_to("/nix/store/nonexistent-broken-link-profile")
+    except OSError:
+        pytest.skip("filesystem does not allow symlinks")
+
+    listing = client.get("/api/files", params={"path": str(root)})
+    assert listing.status_code == 200
+
+    entries = {e["name"]: e for e in listing.json()["entries"]}
+    assert "real.txt" in entries
+    assert entries["real.txt"]["is_directory"] is False
+
+    assert "dangling" in entries
+    dangling = entries["dangling"]
+    assert dangling["is_directory"] is False
+    assert dangling.get("broken_link") is True
+    assert dangling["mime_type"] is None
+    assert dangling["size"] is None
+    assert dangling["mtime"] is None
+
+    # Reading or downloading the broken symlink directly is still an error.
+    assert client.get("/api/files/read", params={"path": str(root / "dangling")}).status_code == 404
+    assert client.get("/api/files/download", params={"path": str(root / "dangling")}).status_code == 404

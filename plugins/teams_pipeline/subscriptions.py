@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from os import getenv
 from typing import Any
 
@@ -18,7 +18,7 @@ def build_graph_client() -> MicrosoftGraphClient:
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def utc_timestamp(hours_from_now: int = 0, *, base: datetime | None = None) -> str:
@@ -120,32 +120,3 @@ async def maintain_graph_subscriptions(
         "threshold_hours": threshold_hours, "extend_hours": extend_hours,
         "candidates": candidates, "renewed": renewed, "skipped": skipped,
     }
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from plugins.teams_pipeline.store import resolve_teams_pipeline_store_path  # noqa: F401,E402
-
-def resolve_store_path(path: str | None) -> str:
-    return str(resolve_teams_pipeline_store_path(path))
-
-def build_store(path: str | None = None) -> TeamsPipelineStore:
-    return TeamsPipelineStore(resolve_store_path(path))
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'resolve_teams_pipeline_store_path': ('plugins.teams_pipeline.store', 'resolve_teams_pipeline_store_path'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

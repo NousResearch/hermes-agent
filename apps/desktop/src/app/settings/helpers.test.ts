@@ -2,15 +2,19 @@ import { describe, expect, it } from 'vitest'
 
 import type { HermesConfigRecord } from '@/types/hermes'
 
+import { BUILTIN_PERSONALITIES } from './constants'
 import { defineFieldCopy, fieldCopyForSchemaKey, schemaKeyToFieldCopyKey } from './field-copy'
 import {
   clearsEnabledToolsets,
+  configFieldValue,
+  credentialPreview,
   diffConfig,
   enumOptionsFor,
   getNested,
   isExternalMemoryProvider,
   providerGroup,
   sectionFieldEntries,
+  setConfigField,
   setNested,
   stripToolsetLabel
 } from './helpers'
@@ -101,6 +105,37 @@ describe('settings helpers', () => {
 
     expect(getNested(next, 'display.theme')).toBe('slate')
     expect(getNested(config, 'display.theme')).toBe('mono')
+  })
+
+  it('Reasoning Blocks shows and writes the local key a local /reasoning saved', () => {
+    // After a local `/reasoning hide`: the local key wins on every local surface.
+    const config: HermesConfigRecord = { display: { show_reasoning: true, platforms: { cli: { show_reasoning: false } } } }
+
+    expect(configFieldValue(config, 'display.show_reasoning')).toBe(false)
+    const next = setConfigField(config, 'display.show_reasoning', true)
+
+    expect(getNested(next, 'display.platforms.cli.show_reasoning')).toBe(true)
+    expect(getNested(next, 'display.show_reasoning')).toBe(true)
+    expect(configFieldValue(next, 'display.show_reasoning')).toBe(true)
+    // The autosave patch carries the local key, so PUT /api/config's deep merge replaces it.
+    expect(diffConfig(config, next)).toEqual({ display: { platforms: { cli: { show_reasoning: true } } } })
+    // Other fields are untouched.
+    expect(setConfigField({}, 'display.skin', 'ares')).toEqual({ display: { skin: 'ares' } })
+  })
+
+  it('Reasoning Blocks reads a quoted local value as the gateway does', () => {
+    const shown = (value: unknown) =>
+      configFieldValue({ display: { show_reasoning: true, platforms: { cli: { show_reasoning: value } } } } as HermesConfigRecord, 'display.show_reasoning')
+
+    for (const off of ['false', 'False', '0', 'no', 'off', ' false ']) {
+      expect(shown(off)).toBe(false)
+    }
+
+    for (const on of ['true', '1', 'yes', 'on']) {
+      expect(shown(on)).toBe(true)
+    }
+
+    expect(configFieldValue({ display: { show_reasoning: 'false' } }, 'display.show_reasoning')).toBe(false)
   })
 
   it('rejects prototype-polluting config paths', () => {
@@ -251,7 +286,7 @@ describe('settings helpers', () => {
         stt: {
           provider: 'local',
           providers: {
-            // both are built-in STT names omitted from ENUM_OPTIONS['stt.provider']
+            // built-in STT names: local_command is unlisted, deepinfra is listed
             local_command: { type: 'command', command: 'curl …' },
             deepinfra: { type: 'command', command: 'curl …' },
             myasr: { type: 'command', command: 'curl …' }
@@ -261,8 +296,77 @@ describe('settings helpers', () => {
 
       const opts = enumOptionsFor('stt.provider', 'local', shadowing)
       expect(opts).not.toContain('local_command')
-      expect(opts).not.toContain('deepinfra')
+      // deepinfra is a listed built-in: it appears once, as the native provider.
+      expect(opts!.filter(o => o === 'deepinfra')).toHaveLength(1)
       expect(opts).toContain('myasr')
+    })
+  })
+
+  describe('enumOptionsFor — display.personality dropdown', () => {
+    it('lists a root-level `personalities` block alongside the built-ins (#123297)', () => {
+      // The Python spec (`hermes_cli.personality.available_personalities`) overlays
+      // the built-ins with the root `personalities` block then `agent.personalities`;
+      // the dropdown must surface a root-registered persona the CLI/gateway resolve.
+      const config: HermesConfigRecord = { personalities: { root_persona: { prompt: 'hi' } } }
+      const opts = enumOptionsFor('display.personality', '', config)
+
+      // Derive the expected built-ins from the source of truth, per the repo's
+      // change-detector rule — adding a built-in must not silently break this.
+      for (const builtin of BUILTIN_PERSONALITIES) {
+        expect(opts).toContain(builtin)
+      }
+
+      expect(opts).toContain('') // the "unset" sentinel
+      expect(opts).toContain('root_persona')
+    })
+
+    it('merges root and agent personalities, deduping a clashing name', () => {
+      const config: HermesConfigRecord = {
+        personalities: { root_persona: {}, shared: {} },
+        agent: { personalities: { agent_persona: {}, shared: {} } }
+      }
+
+      const opts = enumOptionsFor('display.personality', '', config)!
+      expect(opts).toContain('root_persona')
+      expect(opts).toContain('agent_persona')
+      // a name in both blocks is offered exactly once
+      expect(opts.filter(o => o === 'shared')).toHaveLength(1)
+    })
+
+    it('ignores a non-object or array `personalities` block', () => {
+      for (const bad of [[], 'nope', 42, null]) {
+        const opts = enumOptionsFor('display.personality', '', { personalities: bad } as HermesConfigRecord)!
+        // still the built-ins + empty sentinel, no crash on a malformed block
+        expect(opts).toContain('')
+
+        for (const builtin of BUILTIN_PERSONALITIES) {
+          expect(opts).toContain(builtin)
+        }
+      }
+    })
+
+    it('folds custom keys like the runtime so only resolvable rows are offered', () => {
+      // The runtime folds each key (`str(name).strip().lower()`) and drops the neutral
+      // spellings; without matching that, the dropdown offers a case-variant duplicate,
+      // a whitespace-padded name, or a neutral name the runtime canonicalises away —
+      // rows the user can pick but that never load the definition shown (#123297).
+      const config: HermesConfigRecord = {
+        personalities: { Catgirl: {}, '  Spaced  ': {}, none: {}, Default: {}, NEUTRAL: {} }
+      } as HermesConfigRecord
+
+      const opts = enumOptionsFor('display.personality', '', config)!
+
+      // `Catgirl` folds to the built-in `catgirl` (offered once, not twice).
+      expect(opts.filter(o => o === 'catgirl')).toHaveLength(1)
+      expect(opts).not.toContain('Catgirl')
+      // whitespace folded to the canonical key.
+      expect(opts).toContain('spaced')
+      expect(opts).not.toContain('  Spaced  ')
+
+      // neutral spellings never surface as selectable rows (only the '' sentinel remains).
+      for (const neutral of ['none', 'Default', 'NEUTRAL', 'default', 'neutral']) {
+        expect(opts).not.toContain(neutral)
+      }
     })
   })
 
@@ -379,5 +483,15 @@ describe('settings helpers', () => {
 
       expect(diffConfig(baseline, draft)).toEqual({ toolsets: ['memory'] })
     })
+  })
+})
+
+describe('credentialPreview', () => {
+  it('unwraps the backend preview sentinel and masks label-less forms', () => {
+    expect(credentialPreview('«redacted:sk-h...JPJ8»')).toBe('sk-h...JPJ8')
+    expect(credentialPreview('«redacted-secret»')).toBe('••••••••')
+    expect(credentialPreview('«redacted-vault-secret»')).toBe('••••••••')
+    expect(credentialPreview('sk-h...JPJ8')).toBe('sk-h...JPJ8')
+    expect(credentialPreview(null)).toBeNull()
   })
 })

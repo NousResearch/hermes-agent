@@ -9,6 +9,7 @@ import {
   FileImage,
   FileText,
   FolderOpen,
+  GitFork,
   Globe,
   type IconComponent,
   Keyboard,
@@ -38,6 +39,8 @@ import type { SettingsView } from './types'
 export interface SettingsSubpage {
   id: string
   labelKey: string
+  /** Hidden when this returns false (e.g. a native-only task in the Webapp). */
+  available?: () => boolean
 }
 
 const SUBPAGE_ICONS: Record<string, IconComponent> = {
@@ -70,7 +73,7 @@ const SUBPAGE_ICONS: Record<string, IconComponent> = {
   advancedTools: Wrench,
   advancedTerminal: Terminal,
   advancedOutput: FileText,
-  advancedDelegation: Users,
+  advancedDelegation: GitFork,
   advancedDesktop: Monitor,
   gatewayConnection: Monitor,
   gatewayDevices: Network,
@@ -101,7 +104,7 @@ export function settingsSubpages(view: SettingsView): readonly SettingsSubpage[]
     return CONFIG_SUBPAGES[view.slice('config:'.length)] ?? []
   }
 
-  return OTHER_SUBPAGES[view] ?? []
+  return (OTHER_SUBPAGES[view] ?? []).filter(page => page.available?.() ?? true)
 }
 
 /** Shared by search serialization and saved links that predate subpages. */

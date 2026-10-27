@@ -19,7 +19,7 @@ from pathlib import Path
 
 _PROTOCOL_HEADING = "## Messaging other agents"
 # The legacy section through the next H2 heading (or EOF), plus the blank lines before it.
-_LEGACY_PROTOCOL_RE = re.compile(r"\n*" + re.escape(_PROTOCOL_HEADING) + r"[ \t]*\n.*?(?=\n## |\Z)", re.S)
+_LEGACY_PROTOCOL_RE = re.compile(r"\n*" + re.escape(_PROTOCOL_HEADING) + r"[ \t]*\n.*?(?=\n## |\Z)", re.DOTALL)
 
 
 def strip_legacy_protocol(text: str) -> str:
@@ -209,7 +209,9 @@ def _peers(root: Path) -> list[str]:
     """Registered peer gateway names (``hermes peer``) from config.yaml, read
     directly (no config-loader import; the section is absent on most installs). Never raises."""
     def _names() -> list[str]:
-        peers = (_read_yaml_dict(root / "config.yaml", "bot_peers") or {}).get("bot_peers")
+        from hermes_cli.config_backend import read_config_doc_readonly
+        doc = read_config_doc_readonly(root / "config.yaml")
+        peers = doc.get("bot_peers") if isinstance(doc, dict) else None
         return sorted(str(n) for n in peers if str(n).strip()) if isinstance(peers, dict) else []
 
     return _swallow(_names, [])
@@ -300,7 +302,7 @@ def _build_section(home: Path) -> str:
         f"You are `@{_handle(me)}`. Your teammates (live roster; roles from their "
         "profiles):\n"
         f"{roster_block}"
-        + _remote_paragraph(root)
+        + _remote_paragraph(home)
         + _peer_paragraph(root)
     )
 
@@ -371,6 +373,7 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
     try:
         # Canonical loader (managed overlay + env expansion + normalization),
         # scoped to the bot's home via the override the loaders already honor.
+        from agent.skill_utils import parse_config_string_list
         from hermes_cli.config import load_config_readonly
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
@@ -380,11 +383,16 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
         finally:
             reset_hermes_home_override(token)
         skills_cfg = cfg.get("skills") if isinstance(cfg.get("skills"), dict) else {}
-        tools_cfg = cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}
         model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
         surface["model_capabilities"] = _model_prompt_capability_surface(model_cfg)
         surface["disabled_skills"] = sorted(str(s).lower() for s in (skills_cfg.get("disabled") or []))
-        surface["enabled_toolsets"] = sorted(str(t) for t in (tools_cfg.get("enabled_toolsets") or []))
+        # The live selection is platform_toolsets.<platform> minus agent.disabled_toolsets;
+        # tools.enabled_toolsets is written by no surface, so watching it left Bot Chats
+        # blind to `hermes tools enable/disable` (#124211). Raw slices: an edit that leaves
+        # the effective selection unchanged costs one spurious rebuild at most.
+        agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
+        surface["platform_toolsets"] = json.dumps(cfg.get("platform_toolsets") or {}, sort_keys=True, default=str)
+        surface["disabled_toolsets"] = sorted(parse_config_string_list(agent_cfg.get("disabled_toolsets")))
         mcp = cfg.get("mcp_servers")
         surface["mcp"] = json.dumps(mcp, sort_keys=True, default=str) if isinstance(mcp, dict) else ""
     except Exception:
@@ -427,7 +435,7 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
     # surface too: registering a peer or (dis)connecting a machine must show up.
     surface["peers"] = _peers(root)
     surface["remote_roster"] = sorted(
-        f"{r['connection_id']}:{r['profile']}:{r['title']}" for r in _remote_roster(root)
+        f"{r['connection_id']}:{r['profile']}:{r['title']}" for r in _remote_roster(resolved)
     )
     return _swallow(
         lambda: hashlib.sha256(json.dumps(surface, sort_keys=True).encode("utf-8")).hexdigest()[:12],

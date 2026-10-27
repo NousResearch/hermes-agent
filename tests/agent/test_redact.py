@@ -104,6 +104,36 @@ class TestKnownPrefixes:
         ]:
             assert redact_sensitive_text(benign) == benign
 
+    def test_context7_api_key_prefix(self):
+        """Context7 keys carry a fixed vendor prefix (``ctx7sk-``) and must redact on every surface.
+
+        The generic ``sk-`` family cannot catch them: the matcher's lookbehind
+        rejects a prefix preceded by a word char, and here the ``sk-`` sits
+        INSIDE ``ctx7sk-`` - so a bare Context7 key passed through unmasked
+        (#142576).
+        """
+        # NOTE: prefix + suffix CONCATENATION so no contiguous token literal
+        # exists in this file - GitHub push protection blocks realistic
+        # vendor-token-shaped literals.
+        token = ("ctx7sk-" + "0" * 8 + "-" + "0" * 4 + "-" + "0" * 4
+                 + "-" + "0" * 4 + "-" + "0" * 12)
+        for surface in (
+            f"key is {token}\n",
+            f'["{token}"]\n',
+            f"headers:\n  CONTEXT7_API_KEY: {token}\nurl: https://mcp.context7.com/mcp\n",
+            f"CONTEXT7_API_KEY={token}\n",
+        ):
+            assert token not in redact_sensitive_text(surface, force=True), surface
+
+    def test_context7_prefix_requires_word_boundary_and_length(self):
+        """Prose and embedded identifiers must not false-positive."""
+        for benign in [
+            "the glossary explains context7 keys",
+            "ctx7sk-short",
+            "myctx7sk-" + "A" * 20,
+        ]:
+            assert redact_sensitive_text(benign) == benign
+
     def test_agentmail_prefix_needs_a_key_shaped_hex_suffix(self):
         """``am_`` is a common identifier prefix; only the documented hex key body is a secret (#10983)."""
         for benign in ["schema.am_example_identifier_123", "path/to/am_monthly_report.sql"]:
@@ -374,6 +404,21 @@ class TestJsonFields:
         text = '{"name": "John", "model": "gpt-4"}'
         result = redact_sensitive_text(text)
         assert result == text
+
+    @pytest.mark.parametrize("depth", [1, 2])
+    def test_json_field_inside_json_encoded_string_is_masked_and_stays_valid(self, depth):
+        # A tool result wrapping a config dump escapes its quotes; the plain JSON rule never saw the value.
+        import json
+        key = "AQ.Ab8RN6Jx2kq9Zs0VwT4yLm3PbQe7HcUfGdA1nX5oIr"
+        text = json.dumps({"api_key": key, "token": "CPU", "model": "gemini"})
+        for _ in range(depth):
+            text = json.dumps({"output": text})
+        result = redact_sensitive_text(text)
+        assert key not in result and '\\"token\\": \\"CPU\\"'.replace("\\", "\\" * (2 ** depth - 1)) in result
+        inner = result
+        for _ in range(depth):
+            inner = json.loads(inner)["output"]
+        assert json.loads(inner)["model"] == "gemini"
 
 
 class TestPythonReprFields:
@@ -747,7 +792,12 @@ class TestStrictUrlCredentialRedaction:
             (
                 "//user:NET_SECRET@x.test/path",
                 "NET_SECRET",
-                "//user:***@x.test/path",
+                "//***:***@x.test/path",
+            ),
+            (
+                "https://Zq8vT3kP9wLm2xR7nB4cY6fH1dJ5sA0e:@llm-proxy.example/v1",
+                "Zq8vT3kP9wLm2xR7nB4cY6fH1dJ5sA0e",
+                "https://***:***@llm-proxy.example/v1",
             ),
         ],
     )
@@ -1404,7 +1454,7 @@ class TestHermesHomePathClassification:
     ``$HERMES_HOME``, so the literal test alone classified its ``config.yaml`` as ordinary YAML."""
 
     def test_resolved_home_config_is_secret_bearing_but_project_config_is_not(self, tmp_path, monkeypatch):
-        import agent.file_safety as file_safety
+        from agent import file_safety
         from agent.redact import _is_secret_file_arg
 
         home = tmp_path / "hermes"  # no ".hermes" segment
@@ -1613,3 +1663,34 @@ class TestRedactForEgress:
         from agent import redact as R
         monkeypatch.setattr(R, "redact_sensitive_text", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
         assert R.redact_for_egress("sk-live-0123456789abcdef") == R.REDACTION_UNAVAILABLE
+
+
+class TestWebappLaunchLinks:
+    """``hermes webapp`` prints a link that signs a browser in as the user: one with the gateway's
+    browser credential after ``#hermes-session=`` (what older gateways printed on macOS), or a one-use
+    launch ticket after ``/webapp/launch#ticket=``. Either opens the user's Hermes until it is spent or
+    replaced, so when Hermes runs the command through its terminal tool neither reaches the transcript.
+    The rest of the link stays readable."""
+
+    CREDENTIAL = "Zq7_" + "k3Lm" * 9 + "x9-"  # the shape secrets.token_urlsafe(32) prints: 43 characters
+
+    def test_the_browser_credential_in_a_link_is_masked(self):
+        from agent.redact import redact_terminal_output
+
+        link = "http://127.0.0.1:9120/?profile=work#hermes-session=" + self.CREDENTIAL
+        out = redact_terminal_output(f"Open this link in your browser:\n  {link}\n", "hermes webapp")
+        assert self.CREDENTIAL not in out
+        assert "http://127.0.0.1:9120/?profile=work#hermes-session=" in out
+
+    def test_a_launch_ticket_is_masked(self):
+        from agent.redact import redact_terminal_output
+
+        link = "http://127.0.0.1:9120/webapp/launch#ticket=" + self.CREDENTIAL + "&query=%3Fprofile%3Dwork"
+        out = redact_terminal_output(f"Open this one-use link:\n  {link}\n", "hermes webapp --no-open")
+        assert self.CREDENTIAL not in out
+        assert "http://127.0.0.1:9120/webapp/launch#ticket=" in out and "&query=%3Fprofile%3Dwork" in out
+        assert self.CREDENTIAL not in redact_sensitive_text(link)
+
+    def test_code_that_builds_such_a_link_is_left_alone(self):
+        source = "target.hash = `hermes-session=${token}`\nconst FRAGMENT_KEY = 'hermes-session'\n"
+        assert redact_sensitive_text(source, code_file=True) == source

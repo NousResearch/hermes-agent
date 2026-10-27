@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArchiveSkillConfirmDialog } from '@/app/learning/archive-skill-confirm-dialog'
 import { CodeEditor } from '@/components/chat/code-editor'
 import { Button } from '@/components/ui/button'
+import { Loader } from '@/components/ui/loader'
 import { Switch } from '@/components/ui/switch'
 import {
   editLearningNode,
@@ -21,6 +22,7 @@ import type { SkillInfo } from '@/types/hermes'
 import { DetailPane, ListStripMenu, type ListStripMenuToggle } from '../../master-detail'
 import { prettyName } from '../../settings/helpers'
 import { CatalogAlert } from '../catalog/catalog-alert'
+import { CatalogSwitch } from '../catalog/catalog-switch'
 import { SkillCatalog } from '../catalog/skill-catalog'
 import { UpdateSkillsButton } from '../catalog/update-skills-button'
 import { GroupHeaderRow } from '../primitives'
@@ -88,6 +90,7 @@ function ScopedSkillsTab({
     if (mutationBusy.current || installedPending || installedError || targets.length === 0) {
       return
     }
+
     mutationBusy.current = true
     setBusy(true)
     let done = 0
@@ -99,8 +102,10 @@ function ScopedSkillsTab({
         if (!mounted.current) {
           break
         }
+
         const previous =
           queryClient.getQueryData<SkillInfo[]>(skillsQueryKey(profile))?.find(skill => skill.name === row.name) ?? row
+
         setSkills(current => current?.map(skill => (skill.name === row.name ? { ...skill, enabled } : skill)))
 
         try {
@@ -228,6 +233,7 @@ function ScopedSkillsTab({
     if (saving.current || skillEditor?.name === name) {
       return
     }
+
     const request = ++editorRequest.current
 
     try {
@@ -236,6 +242,7 @@ function ScopedSkillsTab({
       if (!mounted.current || request !== editorRequest.current) {
         return
       }
+
       setSkillEditor({ name })
       setSkillDraft(node.content)
     } catch (err) {
@@ -254,6 +261,7 @@ function ScopedSkillsTab({
     if (!skillEditor || saving.current) {
       return
     }
+
     const editor = skillEditor
     const request = editorRequest.current
     saving.current = true
@@ -265,6 +273,7 @@ function ScopedSkillsTab({
       if (!result.ok) {
         throw new Error(result.message)
       }
+
       void queryClient.invalidateQueries({ queryKey: ['skill-content', editor.name, profileScopeKey(profile)] })
       void queryClient.invalidateQueries({ queryKey: skillsQueryKey(profile), exact: true })
       invalidateSlashCompletions()
@@ -272,11 +281,13 @@ function ScopedSkillsTab({
       if (!mounted.current) {
         return
       }
+
       notify({ kind: 'success', title: t.skills.skillUpdated, message: t.skills.appliesToNewSessions(editor.name) })
 
       if (request === editorRequest.current) {
         setSkillEditor(null)
       }
+
       onRefresh()
     } catch (err) {
       if (mounted.current) {
@@ -296,9 +307,7 @@ function ScopedSkillsTab({
       {installedError instanceof Error ? installedError.message : null}
     </CatalogAlert>
   ) : installedPending ? (
-    <p className="px-3 py-2 text-xs text-(--ui-text-tertiary)" role="status">
-      {t.skills.loading}
-    </p>
+    <Loader className="mx-auto my-2 size-6 text-(--ui-text-tertiary)" label={t.skills.loading} type="rose-curve" />
   ) : null
 
   return (
@@ -334,7 +343,7 @@ function ScopedSkillsTab({
         query={query}
         renderGroupHeader={renderGroupHeader}
         renderInstalledAction={skill => (
-          <Switch
+          <CatalogSwitch
             aria-label={skill.name}
             checked={skill.enabled}
             disabled={controlsDisabled}

@@ -8,6 +8,7 @@ Contributed by @PeterFile (PR #593), reimplemented on current main.
 """
 
 import asyncio
+import contextlib
 import queue
 import threading
 from types import SimpleNamespace
@@ -17,6 +18,7 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform
 from gateway.run import GatewayRunner, _parse_session_key
+from gateway.run_notifications import INTERNAL_NOTIFICATION_FOOTER
 
 
 # ---------------------------------------------------------------------------
@@ -371,6 +373,10 @@ async def test_inject_watch_notification_drops_stale_trigger_reply_anchor(monkey
     assert _reply_anchor_for_event(synth_event) is None
     # The original id survives for debugging only.
     assert synth_event.metadata["original_trigger_message_id"] == "777"
+    # Unambiguous machine provenance: SYSTEM prefix still leads, footer appended, origin tagged.
+    assert synth_event.text.startswith("[SYSTEM: ")
+    assert synth_event.text.rstrip().endswith(INTERNAL_NOTIFICATION_FOOTER)
+    assert synth_event.metadata["notification_origin"] == "process_registry_synthetic"
 
 
 @pytest.mark.asyncio
@@ -488,6 +494,59 @@ class TestConciseFormatter:
         )
         assert "…" in text
         assert len(text) < 200
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("committed", [False, True, "recheck_fails"])
+async def test_agent_notify_refused_completion_backs_off_then_sends_plain_notice(monkeypatch, tmp_path, committed):
+    """A refused completion injection must not poll an exited process forever, and must not be
+    dropped either: bounded backoff, then the plain completion notice (#138940). A last refusal
+    whose admission actually committed (lost ACK) must not add a second notice."""
+    import tools.process_registry as pr_module
+    from gateway import session_automation
+    from gateway import run_notifications as rn
+
+    exited = SimpleNamespace(
+        output_buffer="done\n", exited=True, exit_code=0, command="echo done", started_at=1.0,
+    )
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry([exited] * 20, consumed=False))
+    sleeps = []
+
+    async def _record_sleep(delay, *_a, **_kw):
+        sleeps.append(delay)
+    monkeypatch.setattr(asyncio, "sleep", _record_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "concise")
+    runner._enqueue_process_completion_notification = AsyncMock(return_value=False)
+    runner.session_authority = object()
+    inside = []
+
+    @contextlib.asynccontextmanager
+    async def _scope(evt):
+        inside.append(evt)
+        try:
+            yield
+        finally:
+            inside.pop()
+    monkeypatch.setattr(runner, "_completion_event_scope", _scope)
+
+    def _admission(_runner, _evt):
+        assert inside and inside[-1] is _evt, "recheck ran outside the owning profile scope"
+        if committed == "recheck_fails":
+            raise RuntimeError("store closed")
+        return {"admission_id": "committed"} if committed else None
+    monkeypatch.setattr(session_automation, "completion_admission", _admission)
+
+    await runner._run_process_watcher({**_watcher_dict(), "check_interval": 5, "notify_on_complete": True})
+
+    assert runner._enqueue_process_completion_notification.await_count == rn._MAX_COMPLETION_INJECTION_ATTEMPTS
+    assert sleeps == [5, 10, 20, 40, 60, 60, 60, 60]
+    adapter = runner.adapters[Platform.TELEGRAM]
+    if committed is True:
+        adapter.send.assert_not_awaited()
+    else:
+        adapter.send.assert_awaited_once()
+        assert adapter.send.await_args.args[1].startswith("✅ Background task finished")
 
 
 @pytest.mark.asyncio
@@ -635,9 +694,12 @@ async def test_inject_watch_notification_raw_session_key_self_posts(monkeypatch,
 
     assert result is True
     api_adapter.handle_message.assert_not_awaited()
-    assert posts == [
-        {"text": "[SYSTEM: subagent finished]", "session_id": "raw-hq-session-id"}
-    ]
+    # Same presentation contract as the push path: leading SYSTEM prefix intact, machine-origin
+    # footer appended — this text becomes a role=user turn on the stateless surface too.
+    assert len(posts) == 1
+    assert posts[0]["session_id"] == "raw-hq-session-id"
+    assert posts[0]["text"].startswith("[SYSTEM: subagent finished]")
+    assert posts[0]["text"].rstrip().endswith(INTERNAL_NOTIFICATION_FOOTER)
 
 
 @pytest.mark.asyncio
@@ -718,6 +780,8 @@ async def test_async_delegation_apiserver_persists_delivery_not_self_post(
     assert len(persisted) == 1
     assert persisted[0]["session_id"] == "raw-hq-session-id"
     assert persisted[0]["evt"]["delegation_id"] == "deleg_85957"
+    # Persist-only route stays verbatim: the client reads this row, no model turn is woken.
+    assert persisted[0]["text"] == "[ASYNC DELEGATION BATCH COMPLETE — deleg_85957]"
 
 
 @pytest.mark.asyncio

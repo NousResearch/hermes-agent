@@ -3,11 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { $activeGatewayProfile } from './profile'
 import { $sessions } from './session'
 import {
+  canOpenBrowserWindow,
+  canOpenSessionInTerminal,
   isPeerInstanceWindow,
   isProfilePinnedWindow,
   openBrowserInNewWindow,
   openNewWindow,
-  openSessionInNewWindow
+  openSessionInNewWindow,
+  openSessionInTerminal
 } from './windows'
 
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
@@ -80,19 +83,27 @@ describe('openSessionInNewWindow', () => {
     expect(notifyError).not.toHaveBeenCalled()
   })
 
-  it('carries the owning profile: stamped row wins, an unstamped child inherits the viewed profile (#82768)', async () => {
+  it('carries the owner route: tagged row wins, an unlisted child rides its parent (#82768, #120213)', async () => {
     const open = vi.fn().mockResolvedValue({ ok: true })
     installBridge(open)
     $activeGatewayProfile.set('work')
-    $sessions.set([{ id: 's1', profile: 'research' } as never])
+    $sessions.set([{ id: 's1', profile: 'research', connection_id: 'remote-a' } as never])
 
     await openSessionInNewWindow('s1')
-    await openSessionInNewWindow('child-not-listed-yet', { watch: true })
+    await openSessionInNewWindow('child-not-listed-yet', { watch: true, parentSessionId: 's1' })
+    // No parent hint and not listed anywhere: falls back to the viewed profile.
+    await openSessionInNewWindow('orphan-not-listed-yet', { watch: true })
 
-    expect(open).toHaveBeenCalledWith('s1', { profile: 'research' })
-    expect(open).toHaveBeenCalledWith('child-not-listed-yet', { profile: 'work', watch: true })
+    expect(open).toHaveBeenCalledWith('s1', { profile: 'research', connectionId: 'remote-a', watch: undefined })
+    expect(open).toHaveBeenCalledWith('child-not-listed-yet', {
+      profile: 'research',
+      connectionId: 'remote-a',
+      watch: true
+    })
+    expect(open).toHaveBeenCalledWith('orphan-not-listed-yet', { profile: 'work', connectionId: null, watch: true })
     expect(notifyError).not.toHaveBeenCalled()
-  })
+    // The owner resolver's lazy import is the heavy session-actions module.
+  }, 60_000)
 
   it('notifies on an ok:false result', async () => {
     installBridge(vi.fn().mockResolvedValue({ ok: false, error: 'invalid-session-id' }))
@@ -142,6 +153,7 @@ describe('openBrowserInNewWindow', () => {
   it('returns false when the bridge is absent', async () => {
     delete desktopWindow.hermesDesktop
 
+    expect(canOpenBrowserWindow()).toBe(false)
     expect(await openBrowserInNewWindow('tab-1')).toBe(false)
     expect(notifyError).not.toHaveBeenCalled()
   })
@@ -150,6 +162,7 @@ describe('openBrowserInNewWindow', () => {
     const open = vi.fn().mockResolvedValue({ ok: true })
     installBridge(undefined, undefined, open)
 
+    expect(canOpenBrowserWindow()).toBe(true)
     expect(await openBrowserInNewWindow('tab-1')).toBe(true)
     expect(open).toHaveBeenCalledWith('tab-1')
     expect(notifyError).not.toHaveBeenCalled()
@@ -167,5 +180,25 @@ describe('openBrowserInNewWindow', () => {
 
     expect(await openBrowserInNewWindow('tab-1')).toBe(false)
     expect(notifyError).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('openSessionInTerminal', () => {
+  it('hands a session to the bridge, and is a no-op without one or without a session id', async () => {
+    const open = vi.fn().mockResolvedValue({ ok: true })
+    desktopWindow.hermesDesktop = { openSessionInTerminal: open } as unknown as Window['hermesDesktop']
+
+    expect(canOpenSessionInTerminal()).toBe(true)
+    await openSessionInTerminal('', { cwd: '/work' })
+    expect(open).not.toHaveBeenCalled()
+    await openSessionInTerminal('s1', { cwd: '/work', profile: 'work' })
+    expect(open).toHaveBeenCalledWith('s1', { cwd: '/work', profile: 'work' })
+
+    delete desktopWindow.hermesDesktop
+
+    expect(canOpenSessionInTerminal()).toBe(false)
+    await openSessionInTerminal('s1')
+    expect(open).toHaveBeenCalledTimes(1)
+    expect(notifyError).not.toHaveBeenCalled()
   })
 })

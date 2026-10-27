@@ -3,8 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $backendThemes, __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
 import { skinPref, ThemeProvider, useTheme } from './context'
-import { everforestTheme } from './presets'
-
+import { everforestTheme, midnightTheme } from './presets'
+import type { DesktopTheme } from './types'
+import { installUserTheme } from './user-themes'
 
 // The live-authoring loop: Hermes writes/edits one skin file and every surface
 // repaints. An in-place edit keeps the NAME — only the palette moves.
@@ -15,8 +16,7 @@ const bloomberg = (foreground: string) => ({
 
 const cssVar = (name: string) => window.document.documentElement.style.getPropertyValue(name)
 
-const customStyleEl = () =>
-  window.document.getElementById('hermes-desktop-custom-css') as HTMLStyleElement | null
+const customStyleEl = () => window.document.getElementById('hermes-desktop-custom-css') as HTMLStyleElement | null
 
 describe('ThemeProvider ← backend skin sync', () => {
   beforeEach(() => {
@@ -315,7 +315,11 @@ describe('ThemeProvider customCSS injection', () => {
 
     act(() =>
       ingestBackendSkin(
-        { name: 'mono', colors: { background: '#ff00ff', ui_text: '#00ff00' }, customCSS: '.status-bar { background: black; }' },
+        {
+          name: 'mono',
+          colors: { background: '#ff00ff', ui_text: '#00ff00' },
+          customCSS: '.status-bar { background: black; }'
+        },
         { apply: true }
       )
     )
@@ -337,9 +341,75 @@ describe('ThemeProvider customCSS injection', () => {
     )
 
     act(() =>
-      ingestBackendSkin({ name: 'default', colors: { background: '#123456' }, customCSS: '.chat-input { font-size: 18px; }' }, { apply: true })
+      ingestBackendSkin(
+        { name: 'default', colors: { background: '#123456' }, customCSS: '.chat-input { font-size: 18px; }' },
+        { apply: true }
+      )
     )
 
     expect(customStyleEl()?.textContent).toBe('.chat-input { font-size: 18px; }')
   })
 })
+
+describe('ThemeProvider theme typography (#41766)', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    __resetBackendSkinSync()
+    cleanup()
+  })
+
+  // The merged typography is DEFAULT ← nous ← theme, so a user theme that sets
+  // only the new knobs still inherits the font stacks.
+  const bigTypeTheme: DesktopTheme = {
+    ...midnightTheme,
+    name: 'bigtype',
+    label: 'Big Type',
+    description: 'Test theme with typography overrides',
+    typography: { baseSize: '1.125rem', lineHeight: '1.65', letterSpacing: '0.01em' }
+  }
+
+  it('paints baseSize/lineHeight/letterSpacing when the active theme provides them', () => {
+    installUserTheme(bigTypeTheme)
+
+    let ctx: ReturnType<typeof useTheme>
+    render(
+      <ThemeProvider>
+        <ThemeProbe onReady={value => (ctx = value)} />
+      </ThemeProvider>
+    )
+
+    act(() => ctx!.setTheme('bigtype'))
+
+    expect(cssVar('--dt-base-size')).toBe('1.125rem')
+    expect(cssVar('--dt-line-height')).toBe('1.65')
+    expect(cssVar('--dt-letter-spacing')).toBe('0.01em')
+  })
+
+  it('drops the inline vars when switching to a theme without them, restoring the styles.css defaults', () => {
+    installUserTheme(bigTypeTheme)
+
+    let ctx: ReturnType<typeof useTheme>
+    render(
+      <ThemeProvider>
+        <ThemeProbe onReady={value => (ctx = value)} />
+      </ThemeProvider>
+    )
+
+    act(() => ctx!.setTheme('bigtype'))
+    expect(cssVar('--dt-base-size')).toBe('1.125rem')
+
+    // Built-ins carry no size/leading/tracking opinion — the inline values must
+    // go away so :root's own declarations apply again.
+    act(() => ctx!.setTheme('mono'))
+
+    expect(cssVar('--dt-base-size')).toBe('')
+    expect(cssVar('--dt-line-height')).toBe('')
+    expect(cssVar('--dt-letter-spacing')).toBe('')
+  })
+})
+
+function ThemeProbe({ onReady }: { onReady: (ctx: ReturnType<typeof useTheme>) => void }) {
+  onReady(useTheme())
+
+  return null
+}

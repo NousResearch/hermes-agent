@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import threading
 import time
 import urllib.request
 from dataclasses import dataclass, field, fields
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Literal, Optional
 
 
@@ -20,8 +21,11 @@ NousAccountInfoSource = Literal["jwt", "account_api", "inference_key", "none", "
 TOOL_COVERAGE_CATEGORIES = ("firecrawl", "fal", "fal-video", "openai-audio", "browser-use", "modal")
 
 _ACCOUNT_INFO_CACHE_TTL = 60
-_account_info_cache: tuple[str, float, "NousPortalAccountInfo"] | None = None
+_account_info_cache: tuple[str, float, NousPortalAccountInfo] | None = None
 _ACCOUNT_INFO_CACHE_LOCK = threading.Lock()
+# Who ``_account_info_cache`` belongs to (portal + JWT user/org), for ``cached_nous_portal_account_info``:
+# that read must survive a token refresh, which changes the cache key above.
+_account_info_identity: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -56,6 +60,24 @@ class NousPaidServiceAccessInfo:
 
 
 @dataclass(frozen=True)
+class NousUsageWindowInfo:
+    """Portal ``usage_window`` block: a usage-window plan's allowances (``gauges``, the server's list in
+    display order; see agent/usage_gauges.py), auto top-up, a paused reason while the plan's renewal is
+    unpaid, and the plan's picks. Absent from the account body for every other account."""
+
+    # The server's allowance list (agent.usage_gauges.WindowGauge). None when the portal sends none.
+    gauges: Optional[tuple[Any, ...]] = None
+    # The plan's recommended picks, in order: pickers list them first, and they are the
+    # models a limit line suggests. Every model is usable on the plan.
+    featured_model_ids: Optional[tuple[str, ...]] = None
+    auto_top_up_enabled: Optional[bool] = None
+    paused_reason: Optional[str] = None
+    # The account's "Keep going on credits" setting; None from a portal
+    # that predates it (top-up is spent then, as before).
+    keep_going_on_credits: Optional[bool] = None
+
+
+@dataclass(frozen=True)
 class NousToolAccessInfo:
     """Free tool-pool entitlement (Portal ``tool_access``), decoupled from paid/billing access.
 
@@ -73,8 +95,15 @@ FREE_TIER_NEEDS_ACCOUNT = "This needs a Nous account. Run `hermes auth upgrade`.
 FREE_TIER_NEEDS_ACCOUNT_CHAT = "This needs a Nous account. Use /login to sign in."
 
 
-def _is_anonymous_tier(account_info: Optional["NousPortalAccountInfo"]) -> bool:
-    return account_info is not None and account_info.account_tier == _ANON_ACCOUNT_TIER
+def _is_anonymous_tier(account_info: Optional[NousPortalAccountInfo]) -> bool:
+    return account_info is not None and account_info.is_anonymous_tier
+
+
+def _normalize_tier(value: object) -> str:
+    """Tier claims arrive verbatim from the JWT claim or the account payload, neither of which
+    strips or casefolds. Compare them normalized so casing or padding can never turn the
+    anonymous tier into a registered one."""
+    return value.strip().lower() if isinstance(value, str) else ""
 
 
 @dataclass(frozen=True)
@@ -100,6 +129,8 @@ class NousPortalAccountInfo:
     paid_service_access: Optional[bool] = None
     paid_service_access_info: Optional[NousPaidServiceAccessInfo] = None
     tool_access: Optional[NousToolAccessInfo] = None
+    # Portal ``usage_window`` (account API only): None for every account not on a usage-window plan.
+    usage_window: Optional[NousUsageWindowInfo] = None
     raw_claims: Optional[dict[str, Any]] = None
     raw_account: Optional[dict[str, Any]] = None
     error: Optional[str] = None
@@ -115,8 +146,9 @@ class NousPortalAccountInfo:
 
     @property
     def is_anonymous_tier(self) -> bool:
-        """The free tier: no Nous account, so no billing, credits, or entitlement to speak of."""
-        return self.account_tier == _ANON_ACCOUNT_TIER
+        """The free tier: no Nous account, so no billing, credits, or entitlement to speak of.
+        Compared case- and whitespace-insensitively — the claim is wire data."""
+        return _normalize_tier(self.account_tier) == _ANON_ACCOUNT_TIER
 
     @property
     def is_free_tier(self) -> bool:
@@ -165,6 +197,36 @@ def nous_portal_topup_url(account_info: Optional[NousPortalAccountInfo] = None) 
 
         return f"{base}/orgs/{quote(slug.strip(), safe='')}/billing?topup=open"
     return f"{base}/billing?topup=open"
+
+
+def format_usage_window_block_guidance(account_info: Optional[NousPortalAccountInfo]) -> Optional[str]:
+    """Next step after a usage-window 402: the credits step from :func:`agent.plan_limits.credits_action`
+    (turn on Keep going, add credits, or both), plus the auto top-up nudge when it is off. None for every
+    account not on a usage-window plan, so the credit-grant guidance is unchanged. A paused plan points
+    at the card, not at a top-up."""
+    window = getattr(account_info, "usage_window", None) if account_info is not None else None
+    # A partial/empty block is not a window plan (same completeness rule as the credits seed).
+    from agent.credits_tracker import _window_seed_fields
+    if _window_seed_fields(window) is None:
+        return None
+    if paused := getattr(window, "paused_reason", None):
+        # A paused plan bills credits whatever the setting says: no credits is why this 402 came.
+        from agent.usage_gauges import paused_for_payment
+        fix = "Update your card to restore included usage" if paused_for_payment(paused) else "Included usage is paused"
+        return f"{fix}, or add credits to keep going now: {nous_portal_billing_url(account_info)}"
+    from agent.plan_limits import ADD_CREDITS_AND_KEEP_GOING, USE_CREDITS, credits_action
+    purchased = getattr(account_info.paid_service_access_info, "purchased_credits_remaining", None)
+    action = credits_action(getattr(window, "keep_going_on_credits", None),
+                            int(purchased * 1_000_000) if isinstance(purchased, (int, float)) else None)
+    if action == USE_CREDITS:
+        return f"Turn on Keep going in /topup to use your credits now: {nous_portal_billing_url(account_info)}"
+    if action == ADD_CREDITS_AND_KEEP_GOING:
+        # With the setting off the gateway refuses whatever the balance, so a top-up alone won't do.
+        return f"Add credits and turn on Keep going in /topup to keep going now: {nous_portal_billing_url(account_info)}"
+    lines = [f"Add credits to keep going now: {nous_portal_topup_url(account_info)}"]
+    if getattr(window, "auto_top_up_enabled", None) is False:
+        lines.append("Turn on auto top-up in the same place so this doesn't stop you next time.")
+    return "\n".join(lines)
 
 
 def format_nous_portal_entitlement_message(
@@ -285,8 +347,9 @@ def _no_paid_access_message(
 
 def reset_nous_portal_account_info_cache() -> None:
     """Clear the short-lived account-info cache used by tests."""
-    global _account_info_cache
+    global _account_info_cache, _account_info_identity
     _account_info_cache = None
+    _account_info_identity = None
 
 
 def get_nous_portal_account_info(*, force_fresh: bool = False, min_jwt_ttl_seconds: int = 60) -> NousPortalAccountInfo:
@@ -302,7 +365,11 @@ def get_nous_portal_account_info(*, force_fresh: bool = False, min_jwt_ttl_secon
     except Exception as exc:
         return _error_info(error=exc, logged_in=False)
 
-    access_token = state.get("access_token")
+    # A guest that has only used connectors holds just a connectors-only token (same claims). With
+    # the free tier off a guest is not an account login: the pool and logged-out answers apply.
+    from hermes_cli.anon_auth import guest_without_free_tier, held_connectors_token
+
+    access_token = "" if guest_without_free_tier(state) else (held_connectors_token(state) or "")
     portal_base_url = _portal_base_url(state)
     if not _nonblank(access_token):
         return (
@@ -334,6 +401,54 @@ def nous_policy_present() -> Optional[bool]:
         return None
 
 
+def cached_nous_portal_account_info(*, any_age: bool = False) -> Optional[NousPortalAccountInfo]:
+    """The account snapshot in the 60s cache, or None when empty/expired. Never a fresh fetch, never raises —
+    for UI chrome that must not add a round trip (the pickers) after a flow has already fetched the account.
+    ``any_age`` returns the last snapshot even past the TTL, for callers that read only the plan's shape
+    (window or not, featured models), which rarely changes."""
+    try:
+        with _ACCOUNT_INFO_CACHE_LOCK:
+            cached, identity = _account_info_cache, _account_info_identity
+        if cached is None:
+            return None
+        _, cached_at, info = cached
+        # Expiry first: it is free, while the identity check reads the auth store.
+        if not any_age and (time.monotonic() - cached_at) >= _ACCOUNT_INFO_CACHE_TTL:
+            return None
+        # Another login, org or portal never reads this snapshot; a refreshed token for the same one does.
+        if identity is None or identity != _current_account_identity():
+            return None
+        return info
+    except Exception:
+        logging.getLogger(__name__).debug("Cached Nous account info unreadable", exc_info=True)
+        return None
+
+
+def _account_identity(access_token: str, portal_base_url: Optional[str]) -> str:
+    """Portal + the token's user and org (stable across a refresh); an opaque token falls back to its hash."""
+    from hermes_cli.auth_constants import _decode_jwt_claims
+
+    claims = _decode_jwt_claims(access_token)
+    sub, org = claims.get("sub"), claims.get("org_id")
+    if _nonblank(sub) and _nonblank(org):
+        identity = f"jwt:{sub}:{org}"
+    else:
+        identity = hashlib.sha256(access_token.encode("utf-8")).hexdigest()
+    return f"{portal_base_url or ''}:{identity}"
+
+
+def _current_account_identity() -> Optional[str]:
+    """``_account_identity`` for the persisted Nous login, without a refresh or network call. None
+    when logged out."""
+    from hermes_cli.auth import get_provider_auth_state
+
+    state = get_provider_auth_state("nous") or {}
+    access_token = state.get("access_token")
+    if not _nonblank(access_token):
+        return None
+    return _account_identity(access_token, _portal_base_url(state))
+
+
 def nous_policy_notice(*, removed: bool) -> str:
     """One-line notice for a list the org's policy narrowed, else ``""``.
 
@@ -350,7 +465,7 @@ def nous_policy_notice(*, removed: bool) -> str:
 
 
 def _fresh_account_info(state: dict[str, Any], force_fresh: bool, portal_base_url: Optional[str]) -> NousPortalAccountInfo:
-    global _account_info_cache
+    global _account_info_cache, _account_info_identity
 
     try:
         from hermes_cli.auth import get_provider_auth_state, resolve_nous_access_token
@@ -369,11 +484,14 @@ def _fresh_account_info(state: dict[str, Any], force_fresh: bool, portal_base_ur
 
         info = _info_from_fetched_account(access_token, refreshed_state, portal_base_url)
         if info.source != "error":
+            identity = _account_identity(access_token, portal_base_url)
             with _ACCOUNT_INFO_CACHE_LOCK:
                 _account_info_cache = (cache_key, time.monotonic(), info)
+                _account_info_identity = identity
         return info
     except Exception as exc:
-        return _error_info(error=exc, logged_in=bool(state.get("access_token")), portal_base_url=portal_base_url)
+        return _error_info(error=exc, logged_in=bool(state.get("access_token")),
+                           portal_base_url=portal_base_url, account_tier=_coerce_str(state.get("account_tier")))
 
 
 def _info_from_inference_key_pool(portal_base_url: Optional[str]) -> Optional[NousPortalAccountInfo]:
@@ -420,7 +538,8 @@ def _info_from_oauth_pool(
     try:
         return _info_from_fetched_account(access_token, state, entry_portal_url)
     except Exception as exc:
-        return _error_info(error=exc, logged_in=True, portal_base_url=entry_portal_url)
+        return _error_info(error=exc, logged_in=True, portal_base_url=entry_portal_url,
+                           account_tier=_coerce_str(state.get("account_tier")))
 
 
 def _info_from_fetched_account(
@@ -428,12 +547,14 @@ def _info_from_fetched_account(
 ) -> NousPortalAccountInfo:
     """Call ``/api/oauth/account`` and normalize; empty or ``error`` payloads become error infos."""
     payload = _fetch_nous_account_info(access_token, portal_base_url)
+    tier = _coerce_str(state.get("account_tier"))
     if not payload:
-        return _error_info(error="empty_account_response", logged_in=True, portal_base_url=portal_base_url)
+        return _error_info(error="empty_account_response", logged_in=True,
+                           portal_base_url=portal_base_url, account_tier=tier)
     if isinstance(payload.get("error"), str):
         return _error_info(
             error=payload["error"] or "account_response_error", logged_in=True,
-            portal_base_url=portal_base_url, raw_account=payload,
+            portal_base_url=portal_base_url, raw_account=payload, account_tier=tier,
         )
     return _info_from_account_payload(payload, state=state, portal_base_url=portal_base_url)
 
@@ -506,7 +627,7 @@ def _info_from_valid_jwt(
         inference_base_url=_coerce_str(state.get("inference_base_url")),
         inference_credential_present=True,
         credential_source=_coerce_str(state.get("credential_source")) or "auth_store",
-        expires_at=datetime.fromtimestamp(exp, tz=timezone.utc),
+        expires_at=datetime.fromtimestamp(exp, tz=UTC),
         paid_service_access=paid_access, paid_service_access_info=access_info,
         tool_access=_tool_access_from_value(claims.get("tool_access")),
         raw_claims=dict(claims),
@@ -539,6 +660,7 @@ def _info_from_account_payload(
         subscription=_subscription_from_payload(payload.get("subscription")),
         paid_service_access=paid_access, paid_service_access_info=access,
         tool_access=_tool_access_from_value(payload.get("tool_access")),
+        usage_window=_coerced_dataclass(NousUsageWindowInfo, payload.get("usage_window")),
         raw_account=dict(payload),
         account_tier=_coerce_str(payload.get("account_tier")) or _coerce_str(user.get("account_tier"))
         or _coerce_str(state.get("account_tier")),
@@ -568,11 +690,15 @@ def _subscription_from_payload(value: Any) -> Optional[NousPortalSubscriptionInf
 
 
 def _error_info(
-    *, error: object, logged_in: bool, portal_base_url: Optional[str] = None, raw_account: Optional[dict[str, Any]] = None
+    *, error: object, logged_in: bool, portal_base_url: Optional[str] = None,
+    raw_account: Optional[dict[str, Any]] = None, account_tier: Optional[str] = None,
 ) -> NousPortalAccountInfo:
+    """A failed-lookup snapshot. ``account_tier`` is carried through when the caller still holds the
+    stored state, so a guest whose lookup failed still gets the "needs a Nous account" copy rather
+    than billing or re-login guidance."""
     return NousPortalAccountInfo(
         logged_in=logged_in, source="error", fresh=False, portal_base_url=portal_base_url,
-        raw_account=raw_account, error=str(error),
+        raw_account=raw_account, error=str(error), account_tier=account_tier,
     )
 
 
@@ -625,10 +751,24 @@ def _coerce_num(value: Any, cast):
         return None
 
 
+def _coerce_str_tuple(value: Any) -> Optional[tuple[str, ...]]:
+    """A JSON array of non-empty strings → tuple (order kept, non-strings dropped); anything else → None."""
+    if not isinstance(value, list):
+        return None
+    return tuple(v for v in value if isinstance(v, str) and v)
+
+
 # Annotations are strings (``from __future__ import annotations``).
 _COERCERS = {
     "Optional[str]": _coerce_str,
     "Optional[bool]": _coerce_bool,
     "Optional[int]": lambda v: _coerce_num(v, int),
     "Optional[float]": lambda v: _coerce_num(v, float),
+    "Optional[tuple[str, ...]]": _coerce_str_tuple,
+    "Optional[tuple[Any, ...]]": lambda v: _parse_gauges(v),
 }
+
+
+def _parse_gauges(value: Any):
+    from agent.usage_gauges import parse_gauges
+    return parse_gauges(value)

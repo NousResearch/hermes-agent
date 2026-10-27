@@ -1,18 +1,23 @@
 import { useStore } from '@nanostores/react'
 import { memo, type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 
-import { setEnvVar } from '@/api/config'
+import { getToolsets, setToolsetEnabled } from '@/api/toolsets'
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Switch } from '@/components/ui/switch'
 import { Tip } from '@/components/ui/tooltip'
-import { $pluginRecords, type PluginRecord, setPluginEnabled } from '@/contrib/plugins-store'
+import { revokeGrantsIfUninstalled } from '@/contrib/plugin-files'
+import { $pluginRecords, enablePackageDesktopHalf, type PluginRecord, setPluginEnabled } from '@/contrib/plugins-store'
+import { useContributions } from '@/contrib/react/use-contributions'
 import { discoverRuntimePlugins, uninstallDiskPlugin } from '@/contrib/runtime-loader'
+import { pluginSettingsRouteHref, SETTINGS_PLUGINS_AREA } from '@/contrib/settings-pages'
 import type { ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { DESKTOP_PLUGIN_TOOLSETS } from '@/lib/desktop-toolsets'
 import { triggerHaptic } from '@/lib/haptics'
-import { FolderOpen, Loader2, Monitor, Package, RefreshCw, Trash2 } from '@/lib/icons'
+import { CheckCircle2, FolderOpen, Loader2, Monitor, Package, RefreshCw } from '@/lib/icons'
+import { queryClient } from '@/lib/query-client'
 import { cn } from '@/lib/utils'
 import {
   $agentPluginBusy,
@@ -21,29 +26,30 @@ import {
   $agentPluginsStatus,
   type AgentPluginRow,
   type AgentPluginServerState,
-  type AgentPluginUpdateOutcome,
   type GatewayRequest,
   isDesktopRelevantPlugin,
   loadAgentPlugins,
   removeAgentPlugin,
-  saveAgentPluginSettings,
-  toggleAgentPlugin,
-  updateAgentPlugin
+  toggleAgentPlugin
 } from '@/store/agent-plugins'
 import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import { openCatalogPluginInstall } from '@/store/plugin-catalog-install'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
-import { $connection } from '@/store/session'
+import { $connection, $gatewayState } from '@/store/session'
 
 import { Pill } from '../../settings/primitives'
 import { useDeepLinkHighlight } from '../../settings/use-deep-link-highlight'
 import { CatalogAlert } from '../catalog/catalog-alert'
 import { CatalogBrowser } from '../catalog/catalog-browser'
 import { type CatalogEntry, parseCatalog } from '../catalog/catalog-data'
+import { CatalogSwitch } from '../catalog/catalog-switch'
+import { TOOLSETS_QUERY_KEY } from '../toolsets/toolsets-data'
 
+import { PluginFolderAccess } from './plugin-folder-access'
 import { mergePluginPackages, type PackageKind, type PluginPackage } from './plugin-packages'
-import { PluginSettingsForm } from './plugin-settings-form'
+import { PluginPageAccess } from './plugin-page-access'
+import { runPluginUpdate } from './plugin-update'
 
 /** Deep-link anchor for a package row (`/capabilities?tab=plugins&plugin=<key>`).
  *  Accepts the agent key, the agent name, or the desktop record id. */
@@ -103,24 +109,43 @@ function installAgentHalfHere(record: PluginRecord, profile: null | string) {
     return
   }
 
+  // The package marker carries no tier, so read it from the cached catalog
+  // (a plugin row's `source` is its tier). Not cached: the dialog keeps the
+  // generic Verified badge.
+  const tier = origin.catalogName
+    ? queryClient
+        .getQueryData<CatalogEntry[]>(['public-catalog', 'plugins'])
+        ?.find(entry => entry.name === origin.catalogName)?.source
+    : undefined
+
   openPluginInstallRequest({
     catalogName: origin.catalogName,
     legacyHint: 'agent',
     profile,
     repo: origin.repo,
-    sha: origin.sha
+    sha: origin.sha,
+    tier
   })
 }
 
 const SERVER_TONE = {
   connected: 'success',
   app_not_running: 'warn',
+  hermes_not_connected: 'warn',
   endpoint_unavailable: 'warn',
   no_interactive_session: 'warn',
   unknown: 'warn',
   version_too_old: 'destructive',
-  missing_app: 'destructive'
+  missing_app: 'destructive',
+  unsupported_gpu: 'destructive'
 } as const satisfies Record<AgentPluginServerState, 'destructive' | 'success' | 'warn'>
+
+/** What the Update button moves to: the catalog's version label or short pin, else a git install's target. */
+const updateTargetLabel = (agent: AgentPluginRow) =>
+  agent.catalog_version ?? agent.catalog_sha?.slice(0, 8) ?? shortTarget(agent.update_target)
+
+/** A full commit shortens to 8 characters; a feed version stays as it is. */
+const shortTarget = (target?: string) => (target && /^[0-9a-f]{40}$/i.test(target) ? target.slice(0, 8) : (target ?? ''))
 
 function KindBadge({ kind }: { kind: PackageKind }) {
   const { t } = useI18n()
@@ -135,16 +160,23 @@ function KindBadge({ kind }: { kind: PackageKind }) {
   )
 }
 
+// Official in the accent, verified green with a check, community stays neutral.
+const TIER_TONE: Record<string, 'muted' | 'primary' | 'success'> = { official: 'primary', verified: 'success' }
+
 /** Provenance pill: where the package came from. */
 function ProvenancePill({ pkg }: { pkg: PluginPackage }) {
   const { t } = useI18n()
   const p = t.skills.plugins
+  const tierLabel = t.assistant.catalogInstall.tier
 
   if (pkg.agent?.catalog_name) {
     return (
       <Tip label={p.catalogProvenance(pkg.agent.installed_sha?.slice(0, 8) ?? '')}>
         <span>
-          <Pill>{pkg.agent.catalog_tier === 'official' ? p.tierOfficial : p.tierCommunity}</Pill>
+          <Pill tone={TIER_TONE[pkg.agent.catalog_tier ?? ''] ?? 'muted'}>
+            {pkg.agent.catalog_tier === 'verified' && <CheckCircle2 />}
+            {tierLabel[pkg.agent.catalog_tier as keyof typeof tierLabel] ?? tierLabel.community}
+          </Pill>
         </span>
       </Tip>
     )
@@ -191,6 +223,39 @@ function Dash() {
   )
 }
 
+function UninstallRow({
+  name,
+  note,
+  disabled,
+  onUninstall
+}: {
+  name: string
+  note: string
+  disabled?: boolean
+  onUninstall: () => void
+}) {
+  const { t } = useI18n()
+  const p = t.skills.plugins
+
+  return (
+    <div className="flex items-center gap-3 border-t border-(--ui-stroke-tertiary) pt-4">
+      <div className="min-w-0 flex-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+        {note}
+      </div>
+      <Button
+        aria-label={`${p.uninstall}: ${name}`}
+        className="text-destructive hover:text-destructive"
+        disabled={disabled}
+        onClick={onUninstall}
+        size="xs"
+        variant="text"
+      >
+        {p.uninstall}
+      </Button>
+    </div>
+  )
+}
+
 function PackageRow({
   pkg,
   scope,
@@ -213,7 +278,7 @@ function PackageRow({
   request: GatewayRequest
   onAgentToggle: (row: AgentPluginRow, enable: boolean) => void
   onAgentUpdate: (row: AgentPluginRow) => void
-  onAgentRemove: (row: AgentPluginRow) => void
+  onAgentRemove: (row: AgentPluginRow, desktop: null | PluginRecord) => void
   onDesktopRemove: (record: PluginRecord) => void
 }) {
   const { t } = useI18n()
@@ -221,10 +286,25 @@ function PackageRow({
   const d = t.settings.plugins
   const desktop = pkg.desktop
   const agent = pkg.agent
-  // Manifest `config_schema` → an inline settings form under the row (#46600, #87934).
-  const settingsFields = agent?.settings_schema ?? []
-  const hasSettings = Boolean(agent?.key) && settingsFields.length > 0
-  const [settingsOpen, setSettingsOpen] = useState(false)
+  // Settings live in Settings ▸ Plugins: a manifest `config_schema` gets an
+  // automatic page there, a desktop half may register its own. The gear is
+  // the shortcut to that page (#46600, #87934).
+  const settingsPages = useContributions(SETTINGS_PLUGINS_AREA)
+  const desktopSettings = Boolean(desktop && settingsPages.some(page => page.source === `plugin:${desktop.id}`))
+  const agentSettings = Boolean(agent?.key) && Boolean(agent?.settings_schema?.length)
+  const hasSettings = desktopSettings || agentSettings
+
+  const openSettings = () => {
+    // A desktop page absorbs the package's schema form as a sub-page, so its
+    // plugin id is the one entry that covers both halves. The link carries
+    // the profile THIS page has selected: Settings keeps its own scope, and
+    // without the hand-off the page would open (and save) that one instead.
+    const route = desktopSettings ? { plugin: desktop!.id } : { agent: agent!.key! }
+
+    window.location.hash = `#${pluginSettingsRouteHref(route, scope)}`
+  }
+
+  const [desktopBusy, setDesktopBusy] = useState(false)
   const desktopOn = desktop ? desktop.status !== 'disabled' : false
   const agentOn = agent?.status === 'enabled'
   const agentToggleable = Boolean(agent?.key)
@@ -240,6 +320,55 @@ function PackageRow({
   // Electron's desktop-half reconcile only walks THIS machine's homes, so a
   // package installed on a remote backend can never materialize here (#114079).
   const remoteBackend = useStore($connection)?.mode === 'remote'
+
+  // #96969: when the feature's agent-side tools live in a toolset (the
+  // built-in Kanban board has no agent-plugin half), the Desktop switch flips
+  // that per-profile opt-in with the panel, through the same
+  // PUT /api/tools/toolsets/{name} the Toolsets tab uses. The backend write
+  // goes first and the panel follows what the backend actually holds, so a
+  // failed write can't leave the two halves disagreeing. A rejected PUT may
+  // still have committed (a timeout leaves it unknown), so re-read instead of
+  // assuming a rollback; if even that fails the panel stays put and the
+  // switch is live again for a retry.
+  const toggleDesktop = async (id: string, on: boolean) => {
+    const toolset = DESKTOP_PLUGIN_TOOLSETS[id]
+
+    if (!toolset) {
+      return setPluginEnabled(id, on)
+    }
+
+    setDesktopBusy(true)
+
+    try {
+      let toolsetOn: boolean | undefined
+
+      try {
+        await setToolsetEnabled(toolset, on, profile)
+        toolsetOn = on
+      } catch (err) {
+        toolsetOn = await getToolsets(profile).then(
+          list => list.find(row => row.name === toolset)?.enabled,
+          () => undefined
+        )
+
+        if (toolsetOn !== on) {
+          notifyError(err, p.toolsetToggleFailed(pkg.name))
+        }
+      }
+
+      void queryClient.invalidateQueries({ queryKey: TOOLSETS_QUERY_KEY })
+
+      if (toolsetOn === on) {
+        await setPluginEnabled(id, on)
+        notify({
+          kind: 'success',
+          message: on ? p.toolsetOn(pkg.name, scopeLabel) : p.toolsetOff(pkg.name, scopeLabel)
+        })
+      }
+    } finally {
+      setDesktopBusy(false)
+    }
+  }
 
   return (
     <>
@@ -274,6 +403,7 @@ function PackageRow({
                 {desktop?.status === 'error' ? desktop.error : pkg.description}
               </div>
             )}
+            <PluginPageAccess plugin={desktop} pluginName={pkg.name} />
             {unavailableServers.map(server =>
               server.sentence ? (
                 <div
@@ -296,56 +426,20 @@ function PackageRow({
               </Tip>
             )}
           </span>
-          {/* Fixed slot for the settings gear: only plugins whose manifest declares
-            a config_schema get one. */}
+          {/* Fixed slot for the settings gear: only plugins with a page in
+            Settings ▸ Plugins (config_schema or a registered page) get one. */}
           <span className="flex size-7 shrink-0 items-center justify-center">
             {hasSettings && (
               <Tip label={p.settingsToggle(pkg.name)}>
-                <Button
-                  aria-expanded={settingsOpen}
-                  aria-label={p.settingsToggle(pkg.name)}
-                  className={cn(settingsOpen && 'text-foreground')}
-                  onClick={() => setSettingsOpen(open => !open)}
-                  size="icon"
-                  variant="ghost"
-                >
+                <Button aria-label={p.settingsToggle(pkg.name)} onClick={openSettings} size="icon" variant="ghost">
                   <Codicon name="settings-gear" size="0.85rem" />
                 </Button>
               </Tip>
             )}
           </span>
-          {/* Same fixed-slot treatment for Uninstall: present on every row so the
-            halves line up, populated when the agent half is a user install or
-            the row is a standalone desktop plugin. */}
-          <span className="flex size-7 shrink-0 items-center justify-center">
-            {agent && agentRemovable ? (
-              <Tip label={p.uninstallTip(pkg.name, scopeLabel)}>
-                <Button
-                  aria-label={`${p.uninstall}: ${pkg.name}`}
-                  className="text-(--ui-text-tertiary) hover:text-(--ui-danger,#f87171)"
-                  disabled={busy}
-                  onClick={() => onAgentRemove(agent)}
-                  size="icon"
-                  variant="ghost"
-                >
-                  <Trash2 className="size-3.5" />
-                </Button>
-              </Tip>
-            ) : desktop && desktopRemovable ? (
-              <Tip label={p.uninstallDesktopTip(pkg.name)}>
-                <Button
-                  aria-label={`${p.uninstall}: ${pkg.name}`}
-                  className="text-(--ui-text-tertiary) hover:text-(--ui-danger,#f87171)"
-                  onClick={() => onDesktopRemove(desktop)}
-                  size="icon"
-                  variant="ghost"
-                >
-                  <Trash2 className="size-3.5" />
-                </Button>
-              </Tip>
-            ) : null}
-          </span>
         </div>
+
+        <PluginFolderAccess name={pkg.name} plugin={desktop} />
 
         {/* The two halves. Desktop is app-level and reads the same whichever
           profile is selected; Agent follows the selector. A half the package
@@ -356,9 +450,10 @@ function PackageRow({
             <Switch
               aria-label={`${p.halfDesktop}: ${pkg.name}`}
               checked={desktopOn}
+              disabled={desktopBusy}
               onCheckedChange={on => {
                 triggerHaptic('selection')
-                void setPluginEnabled(desktop.id, on)
+                void toggleDesktop(desktop.id, on)
               }}
             />
           ) : pkg.desktopMissing ? (
@@ -383,7 +478,7 @@ function PackageRow({
                   size="xs"
                   variant="outline"
                 >
-                  {p.updateToPin(agent.catalog_version ?? agent.catalog_sha?.slice(0, 8) ?? '')}
+                  {p.updateToPin(updateTargetLabel(agent))}
                 </Button>
               )}
               {busy && <Loader2 className="size-3.5 animate-spin text-(--ui-text-tertiary)" />}
@@ -420,32 +515,27 @@ function PackageRow({
             <Dash />
           )}
         </HalfCell>
-      </div>
-      {hasSettings && settingsOpen && agent?.key && (
-        <div className="mt-5">
-          <PluginSettingsForm
+
+        {/* Uninstall lives here, not on the card: the card only installs (+)
+          and switches. Bundled and pip plugins have no row. */}
+        {agent && agentRemovable ? (
+          <UninstallRow
             disabled={busy}
-            fields={settingsFields}
-            idPrefix={`plugin-settings-${agent.key}`}
-            onSave={async changes => {
-              const ok = await saveAgentPluginSettings(request, {
-                key: agent.key!,
-                values: changes.values,
-                secrets: changes.secrets,
-                writeSecret: (env, value) => setEnvVar(env, value, profile),
-                failMessage: p.settingsForm.saveFailed(pkg.name),
-                profile: scope
-              })
-
-              if (ok) {
-                notify({ kind: 'success', message: p.settingsForm.saved(pkg.name) })
-              }
-
-              return ok
-            }}
+            name={pkg.name}
+            note={p.uninstallTip(pkg.name, scopeLabel)}
+            onUninstall={() => onAgentRemove(agent, desktop)}
           />
-        </div>
-      )}
+        ) : (
+          desktop &&
+          desktopRemovable && (
+            <UninstallRow
+              name={pkg.name}
+              note={p.uninstallDesktopTip(pkg.name)}
+              onUninstall={() => onDesktopRemove(desktop)}
+            />
+          )
+        )}
+      </div>
     </>
   )
 }
@@ -458,12 +548,7 @@ export function PluginActions({ profile }: { profile: ProfileScope }) {
 
   return (
     <>
-      <Button
-        className="underline"
-        onClick={() => openPluginInstallRequest({ profile: scope, repo: '' })}
-        size="xs"
-        variant="text"
-      >
+      <Button onClick={() => openPluginInstallRequest({ profile: scope, repo: '' })} size="xs" variant="textStrong">
         {d.installModal.installFromGit}
       </Button>
       <Tip label={d.openFolder}>
@@ -513,14 +598,17 @@ export const PluginsTab = memo(function PluginsTab({
   const agentRows = useStore($agentPlugins)
   const status = useStore($agentPluginsStatus)
   const error = useStore($agentPluginsError)
+  const gatewayState = useStore($gatewayState)
   const busyKey = useStore($agentPluginBusy)
 
   const scope = profileParam(profile)
   const label = scopeLabel ?? scope ?? t.skills.plugins.defaultProfile
 
   useEffect(() => {
-    void loadAgentPlugins(requestGateway, scope)
-  }, [requestGateway, scope])
+    if (gatewayState === 'open') {
+      void loadAgentPlugins(requestGateway, scope)
+    }
+  }, [requestGateway, scope, gatewayState])
 
   const packages = useMemo(
     () => mergePluginPackages(Object.values(desktopRecords), agentRows.filter(isDesktopRelevantPlugin)),
@@ -597,10 +685,11 @@ export const PluginsTab = memo(function PluginsTab({
     (entry: CatalogEntry) => installedByCatalogName.get(entry.name),
     [installedByCatalogName]
   )
+
   const isInstalled = (entry: CatalogEntry) => packageById.has(entry.id)
 
   const handleAgentRemove = useCallback(
-    (row: AgentPluginRow) => {
+    (row: AgentPluginRow, desktop: null | PluginRecord) => {
       void confirm({
         confirmLabel: p.uninstall,
         description: p.uninstallConfirmBody(row.name, label),
@@ -613,8 +702,13 @@ export const PluginsTab = memo(function PluginsTab({
 
         if (await removeAgentPlugin(requestGateway, row.name, p.uninstallFailed(row.name), scope)) {
           notify({ kind: 'success', message: p.uninstalled(row.name) })
-          // Prunes the app-level desktop half whose source package just went away.
+
+          // Prunes the app-level desktop half whose source package just went
+          // away; its folder grants go with it, and only then (another profile
+          // may still install the package).
           void rescanAll(requestGateway, scope)
+            .then(() => desktop && revokeGrantsIfUninstalled(desktop.id))
+            .catch(error => notifyError(error, p.folderAccess.revokeFailed(row.name)))
         }
       })
     },
@@ -646,7 +740,7 @@ export const PluginsTab = memo(function PluginsTab({
   )
 
   // The card switch turns the whole package on or off, like a skill's; per-half
-  // switches and uninstall (trash + confirm) live in the detail's PackageRow.
+  // switches and Uninstall (with confirm) live in the detail's PackageRow.
   const packageSwitch = (pkg: PluginPackage) => {
     const { agent, desktop } = pkg
 
@@ -661,7 +755,7 @@ export const PluginsTab = memo(function PluginsTab({
     }
 
     return (
-      <Switch
+      <CatalogSwitch
         aria-label={pkg.name}
         checked={agent ? agent.status === 'enabled' : desktop?.status !== 'disabled'}
         disabled={agent ? !agent.key || agentBusy(agent) : false}
@@ -675,7 +769,7 @@ export const PluginsTab = memo(function PluginsTab({
     status === 'error' ? (
       <CatalogAlert
         onRetry={() => void loadAgentPlugins(requestGateway, scope)}
-        retryLabel={t.skills.refresh}
+        retryLabel={t.catalog.retry}
         title={p.loadFailed}
       >
         {error}
@@ -691,7 +785,9 @@ export const PluginsTab = memo(function PluginsTab({
       kind="plugins"
       matchInstalled={matchInstalled}
       notice={notice}
-      onInstall={entry => openCatalogPluginInstall(entry, scope)}
+      // A plugin row's `source` IS its catalog tier (catalog-data.ts::catalogEntry);
+      // CatalogEntry has no `tier` field, so don't "fix" this to entry.tier.
+      onInstall={entry => openCatalogPluginInstall(entry, scope, { tier: entry.source })}
       onQueryChange={onQueryChange}
       query={query}
       renderInstalledAction={entry => {
@@ -716,33 +812,22 @@ export const PluginsTab = memo(function PluginsTab({
                 return
               }
 
-              void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope)
+              void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope).then(ok => {
+                // Turning a unified package on turns its desktop half on too
+                // (unless the user switched that half off on purpose). Off
+                // stays per half: the desktop half is app-wide, and another
+                // profile may still run the agent half.
+                const half = pkg.desktop?.packageName
+
+                if (ok && enable && half) {
+                  void enablePackageDesktopHalf(half, { keepUserChoice: true })
+                }
+              })
             }}
             onAgentUpdate={row => {
-              const finish = (outcome: AgentPluginUpdateOutcome) => {
+              void runPluginUpdate(requestGateway, row, scope, p).then(outcome => {
                 if (outcome.kind === 'applied') {
-                  notify({ kind: 'success', message: p.updated(row.name) })
                   void rescanAll(requestGateway, scope)
-                }
-              }
-
-              void updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope).then(async outcome => {
-                if (outcome.kind !== 'consent') {
-                  finish(outcome)
-
-                  return
-                }
-
-                // The new pin widens the plugin (tools, hooks, deps, capabilities, a Desktop
-                // half); the backend changed nothing until the user confirms the delta.
-                const ok = await confirm({
-                  confirmLabel: p.updateConsentConfirm,
-                  description: [p.updateConsentBody(row.name, outcome.sha), ...outcome.deltaLines].join('\n'),
-                  title: p.updateConsentTitle(row.name)
-                })
-
-                if (ok) {
-                  finish(await updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope, true))
                 }
               })
             }}

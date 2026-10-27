@@ -1,41 +1,47 @@
+import { messages } from '../i18n/runtime.js'
 import { isMac, isRemoteShell } from '../lib/platform.js'
 
 const action = isMac ? 'Cmd' : 'Ctrl'
 const paste = isMac ? 'Cmd' : 'Alt'
 
-const copyHotkeys: [string, string][] = isMac
-  ? [
-      ['Cmd+C', 'copy selection'],
-      ['Ctrl+C', 'clear draft / interrupt / exit']
-    ]
-  : isRemoteShell()
-    ? [
-        ['Cmd+C', 'copy selection when forwarded by the terminal'],
-        ['Ctrl+C', 'copy selection / clear draft / interrupt / exit']
-      ]
-    : [['Ctrl+C', 'copy selection / clear draft / interrupt / exit']]
+/** Hotkey table `[chord, description]`, resolved against the active language at call time. */
+export function hotkeys(): [string, string][] {
+  const h = messages().hints
 
-export const HOTKEYS: [string, string][] = [
-  ...copyHotkeys,
-  [action + '+D', 'exit'],
-  [action + '+G / Alt+G', 'open $EDITOR (Alt+G fallback for VSCode/Cursor)'],
-  [action + '+L', 'redraw / repaint'],
-  [paste + '+V / /paste', 'paste text; /paste attaches clipboard image'],
-  ['Esc Esc', 'discard draft (recall with ↑)'],
-  ['Tab', 'apply completion'],
-  ['↑/↓', 'completions / queue edit / history'],
-  ['Ctrl+X', 'open live session switcher (deletes queued message while editing)'],
-  ['Ctrl+T', 'expand live agents (keeps your draft)'],
-  ['Ctrl+R / F7', 'collapse / restore live agent preview'],
-  ['Ctrl+O', 'open model picker (keeps your draft; applies to next turn mid-stream)'],
-  [action + '+A/E', 'home / end of line'],
-  [action + '+Z / ' + action + '+Y', 'undo / redo input edits'],
-  [action + '+W', 'delete word'],
-  [action + '+U/K', 'kill to line start / end (repeat across lines)'],
-  [action + '+←/→', 'jump word'],
-  ['Home/End', 'start / end of line'],
-  ['Shift+Enter / Alt+Enter', 'insert newline'],
-  ['\\+Enter', 'multi-line continuation (fallback)'],
-  ['!<cmd>', 'run a shell command (e.g. !ls, !git status)'],
-  ['{!<cmd>}', 'interpolate shell output inline (e.g. "branch is {!git branch --show-current}")']
-]
+  const copyHotkeys: [string, string][] = isMac
+    ? [
+        ['Cmd+C', h.copySelection],
+        ['Ctrl+C', h.ctrlCMac]
+      ]
+    : isRemoteShell()
+      ? [
+          ['Cmd+C', h.copySelectionForwarded],
+          ['Ctrl+C', h.ctrlC]
+        ]
+      : [['Ctrl+C', h.ctrlC]]
+
+  return [
+    ...copyHotkeys,
+    [action + '+D', h.exit],
+    [action + '+G / Alt+G', h.openEditor],
+    [action + '+L', h.redraw],
+    [paste + '+V / /paste', h.paste],
+    ['Esc Esc', h.discardDraft],
+    ['Tab', h.applyCompletion],
+    ['↑/↓', h.arrows],
+    ['Ctrl+X', h.sessionSwitcher],
+    ['Ctrl+T', h.expandAgents],
+    ['Ctrl+R / F7', h.collapseAgents],
+    ['Ctrl+O', h.modelPicker],
+    [action + '+A/E', h.homeEnd],
+    [action + '+Z / ' + action + '+Y', h.undoRedo],
+    [action + '+W', h.deleteWord],
+    [action + '+U/K', h.killLine],
+    [action + '+←/→', h.jumpWord],
+    ['Home/End', h.lineStartEnd],
+    ['Shift+Enter / Alt+Enter', h.newline],
+    ['\\+Enter', h.continuation],
+    ['!<cmd>', h.shell],
+    ['{!<cmd>}', h.interpolate]
+  ]
+}

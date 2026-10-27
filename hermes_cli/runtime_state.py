@@ -34,6 +34,8 @@ LOG = logging.getLogger(__name__)
 # same rule boot_bootstrap._RecordLock states for home maintenance.
 INSTALL_LOCK_TIMEOUT_SECONDS = 10.0
 
+# A lease file younger than this is never a prune candidate: its creator may still sit between
+# ``O_CREAT|O_EXCL`` and ``flock`` (two syscalls; the window is microseconds, the margin generous).
 @contextmanager
 def runtime_lock(project: Path, *, timeout: float | None = INSTALL_LOCK_TIMEOUT_SECONDS):
     """Hold the per-install dependency lock; yields True when held, False when the wait expired.
@@ -150,13 +152,22 @@ def lease_directory(generation: Path) -> Callable[[], None]:
         return lambda: None  # Generations produced before leases stay conservatively retained.
     leases = generation / ".leases"
     leases.mkdir(exist_ok=True)
-    lease = leases / uuid.uuid4().hex
-    fd = os.open(lease, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
-    try:
-        _lock(fd, wait=True)
-    except BaseException:
+    _prune_unlocked_leases(leases)
+    while True:
+        lease = leases / uuid.uuid4().hex
+        fd = os.open(lease, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+        try:
+            _lock(fd, wait=True)
+        except BaseException:
+            os.close(fd)
+            raise
+        # Create and flock are two syscalls; a peer's prune (pm workers and launch run outside
+        # ``runtime_lock``) can lock-and-unlink the file in between, and we would then hold an
+        # unlinked inode invisible to every collector. The pruner only unlinks while holding the
+        # lock, so once we hold it the path is either still ours or already gone for good.
+        if lease.exists():
+            break
         os.close(fd)
-        raise
 
     def release() -> None:
         atexit.unregister(release)
@@ -199,11 +210,70 @@ def collect_generations(project: Path, *, min_age_seconds: float = 86400) -> lis
 
 def leases_held(generation: Path) -> bool:
     """True while any process still holds a lease taken by ``lease_directory``."""
-    for lease in (generation / ".leases").glob("*"):
-        fd = os.open(lease, os.O_RDWR)
+    return _prune_unlocked_leases(generation / ".leases")
+
+
+def _open_lease_probe(lease: Path) -> int:
+    """Let a Windows pruner unlink while still holding its exclusion lock.
+
+    Creator handles deliberately keep their ordinary sharing: an open creator
+    between O_EXCL and locking must still prevent a peer from deleting its lease.
+    """
+    if os.name != "nt":
+        return os.open(lease, os.O_RDWR)
+
+    import ctypes
+    from ctypes import wintypes
+    import msvcrt
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    # GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | WRITE | DELETE, OPEN_EXISTING.
+    handle = kernel32.CreateFileW(str(lease), 0xC0000000, 0x7, None, 3, 0x80, None)
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        # The CRT owns the handle after conversion; os.close releases it and its lock.
+        return msvcrt.open_osfhandle(handle, os.O_RDWR | os.O_BINARY | os.O_NOINHERIT)
+    except BaseException:
+        kernel32.CloseHandle(handle)
+        raise
+
+
+def _prune_unlocked_leases(leases: Path) -> bool:
+    """Remove abandoned lease files and report whether any live lock remains.
+
+    Kernel locks disappear even when ``execv``, ``os._exit`` or a crash bypasses
+    ``atexit``. Cleaning those unlocked files whenever a reader arrives bounds leaks in
+    the selected generation too, which generation GC intentionally never visits.
+
+    Fail closed: a lease this user cannot open or remove is held, never a boot failure.
+    """
+    held = False
+    for lease in leases.glob("*"):
+        try:
+            fd = _open_lease_probe(lease)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            held = True
+            continue
         try:
             if not _lock(fd, wait=False):
-                return True
+                held = True
+            else:
+                try:
+                    lease.unlink()
+                except FileNotFoundError:
+                    pass  # A peer already removed it.
+                except OSError:
+                    held = True
         finally:
             os.close(fd)
-    return False
+    return held

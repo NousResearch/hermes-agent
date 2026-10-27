@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 #: Names owned by in-tree backends in tools/environments/ — never
 #: registrable by plugins. Includes internal-mode aliases (managed_modal).
 BUILTIN_BACKEND_NAMES = frozenset({
-    "local", "docker", "singularity", "modal", "managed_modal",
+    "local", "docker", "modal", "managed_modal",
     "daytona", "vercel_sandbox", "ssh",
 })
 
@@ -45,18 +45,20 @@ _registry: ProviderRegistry[TerminalEnvironmentProvider] = ProviderRegistry(
 _registry.export(globals())
 
 
-def plugin_backend_names(*, scope: Optional[str] = None) -> List[str]:
+def plugin_backend_names(*, scope: Optional[str] = None) -> list[str]:
     """Names of all registered plugin backends (sorted)."""
     return [p.name.strip().lower() for p in _registry.list_providers(scope=scope)]
 
 
-def provider_flag(name: str, attr: str, default=False):
+def provider_flag(name: str, attr: str, default=False, *, scope: Optional[str] = None):
     """Read a classification attribute off the provider for *name*.
 
     Fail-soft: unknown backend or a raising property returns *default* so a misbehaving
     plugin degrades to built-in-equivalent behavior instead of taking the terminal tool down.
+    *scope* names the profile home whose registrations to consult (default: the active home);
+    a caller deciding for a session bound to another profile passes that profile's home.
     """
-    provider = _registry.get_provider(name)
+    provider = _registry.get_provider(name, scope=scope)
     if provider is None:
         return default
     try:
@@ -81,27 +83,3 @@ def plugin_strip_env_keys() -> frozenset:
         except Exception:
             logger.debug("Terminal environment provider strip_env_keys raised", exc_info=True)
     return frozenset(keys)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Dict  # noqa: F401,E402
-import threading  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'hermes_home_key': ('hermes_constants', 'hermes_home_key'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

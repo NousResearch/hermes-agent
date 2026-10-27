@@ -69,6 +69,7 @@ def _make_runner(session_db=None):
         platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
     )
     adapter = MagicMock()
+    adapter.config = runner.config.platforms[Platform.TELEGRAM]  # the receiving bot's own extra
     adapter.send = AsyncMock()
     adapter.send_image_file = AsyncMock()
     adapter._bot = None
@@ -111,7 +112,7 @@ def _make_runner(session_db=None):
     # Default switch_session impl: returns a SessionEntry carrying the target
     # session_id. Mirrors SessionStore.switch_session semantics for tests that
     # exercise Telegram topic binding rebinds without a real store.
-    def _switch_session(session_key, target_session_id, *, expected_session_id=None):
+    def _switch_session(session_key, target_session_id, *, expected_session_id=None, preserve_prompt_pin=True):
         return SessionEntry(
             session_key=session_key,
             session_id=target_session_id,
@@ -166,6 +167,58 @@ def _make_runner(session_db=None):
     runner._set_session_reasoning_override = MagicMock()
     runner._format_session_info = MagicMock(return_value="")
     return runner
+
+
+@pytest.mark.asyncio
+async def test_root_dm_auto_transfer_creates_a_new_topic_when_opted_in(tmp_path):
+    """Regression for #139136: opt-in root-DM messages start a fresh topic lane."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    _seed_two_topic_bindings(db)
+    runner = _make_runner(session_db=db)
+    runner.config.platforms[Platform.TELEGRAM].extra["dm_topic_auto_transfer"] = True
+    runner.adapters[Platform.TELEGRAM]._create_dm_topic.return_value = 777
+
+    assert await runner._transfer_telegram_root_dm(_make_source()) == ("777", True)
+    runner.adapters[Platform.TELEGRAM]._create_dm_topic.assert_awaited_once()
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_root_dm_auto_transfer_failure_keeps_lobby_recovery(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    _seed_two_topic_bindings(db)
+    runner = _make_runner(session_db=db)
+    runner.config.platforms[Platform.TELEGRAM].extra["dm_topic_auto_transfer"] = True
+    runner.adapters[Platform.TELEGRAM]._create_dm_topic.return_value = None
+
+    assert await runner._transfer_telegram_root_dm(_make_source()) == ("222", False)
+    runner.adapters[Platform.TELEGRAM]._create_dm_topic.assert_awaited_once()
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_root_dm_auto_transfer_is_off_by_default(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    _seed_two_topic_bindings(db)
+    runner = _make_runner(session_db=db)
+
+    source = _make_source()
+    assert await runner._transfer_telegram_root_dm(source) is None
+    assert runner._recover_telegram_topic_thread_id(source) == "222"
+    runner.adapters[Platform.TELEGRAM]._create_dm_topic.assert_not_awaited()
+    db.close()
+
+
+def test_root_dm_auto_transfer_defers_lobby_recovery_until_creation_attempt(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    _seed_two_topic_bindings(db)
+    runner = _make_runner(session_db=db)
+    runner.config.platforms[Platform.TELEGRAM].extra["dm_topic_auto_transfer"] = True
+
+    source = _make_source()
+    assert runner._recover_telegram_topic_thread_id(source) is None
+    assert runner._recover_telegram_lobby_thread_id(source) == "222"
+    db.close()
 
 
 @pytest.mark.asyncio
@@ -677,7 +730,9 @@ async def test_handoff_to_telegram_dm_topic_uses_dm_lane_not_generic_thread(tmp_
 
     expected_source = _make_source(thread_id="17585")
     expected_key = build_session_key(expected_source)
-    runner.session_store.switch_session.assert_called_once_with(expected_key, "cli-session")
+    runner.session_store.switch_session.assert_called_once_with(
+        expected_key, "cli-session", preserve_prompt_pin=False,
+    )
     assert captured["source"].chat_type == "dm"
     assert captured["source"].user_id == "208214988"
     assert captured["source"].thread_id == "17585"

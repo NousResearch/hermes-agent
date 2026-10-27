@@ -1,5 +1,5 @@
 """Browser provider registry: cloud browser backends registered by plugins via
-:meth:`PluginContext.register_browser_provider`, consumed by ``tools.browser_tool_cloud._get_cloud_provider``.
+:meth:`PluginContext.register_browser_provider`, consumed by ``tools.browser_session_cloud.get_cloud_provider``.
 
 Active-provider precedence (see :func:`_resolve`): ``browser.cloud_provider`` in config.yaml wins
 regardless of ``is_available()`` (so the dispatcher surfaces a typed "X_API_KEY is not set" error
@@ -59,28 +59,3 @@ def _resolve(configured: Optional[str]) -> Optional[BrowserProvider]:
         ):
             return provider
     return None
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Dict  # noqa: F401,E402
-from typing import List  # noqa: F401,E402
-import threading  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'hermes_home_key': ('hermes_constants', 'hermes_home_key'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

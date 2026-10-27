@@ -4,11 +4,7 @@ import path from 'node:path'
 
 import { afterEach, expect, it, vi } from 'vitest'
 
-import {
-  parseUiPreferencesWrite,
-  readUiPreferences,
-  writeUiPreferences
-} from '../../../electron/ui-preferences'
+import { parseUiPreferencesWrite, readUiPreferences, writeUiPreferences } from '../../../electron/ui-preferences'
 
 import type { UiPreferencesBridge } from './sync'
 
@@ -132,4 +128,52 @@ it('a browser upgraded from a build that stored every default at load never seed
     'true'
   ])
   expect(readUiPreferences(file).values).toEqual({ [HAPTICS]: 'true', [KEYBINDS]: CUSTOM_KEYBINDS })
+})
+
+it('a tab closed with an edit still unsent hands it to the next tab, which writes it and removes the outbox', async () => {
+  const file = storeFile()
+  await writeUiPreferences(file, { values: { [MODE]: 'light' } })
+  await pageLoad(file, { stores: [] })
+  closeTabs()
+
+  // The gateway is unreachable; the user switches to dark and closes the tab.
+  await pageLoad(file, { offline: true, stores: [] })
+  const { writeKey } = await import('@/lib/storage')
+  writeKey(MODE, 'dark')
+  // Closing fires pagehide and visibilitychange, in either order.
+  window.dispatchEvent(new PageTransitionEvent('pagehide'))
+  Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' })
+  document.dispatchEvent(new Event('visibilitychange'))
+  Reflect.deleteProperty(document, 'visibilityState')
+  window.sessionStorage.clear()
+
+  // The next tab opens at once, with the gateway back; the closed tab's
+  // module (and its sync) is gone.
+  await pageLoad(file, { stores: [] })
+
+  expect([window.localStorage.getItem(MODE), readUiPreferences(file).values[MODE]]).toEqual(['dark', 'dark'])
+  expect(outboxes()).toEqual([])
+})
+
+it('a crashed tab’s outbox is adopted by the next load once its heartbeat is stale; a live sibling’s is left alone', async () => {
+  const file = storeFile()
+  await writeUiPreferences(file, { values: { [MODE]: 'light' } })
+  await pageLoad(file, { offline: true, stores: [] })
+  const { writeKey } = await import('@/lib/storage')
+  writeKey(MODE, 'dark')
+  window.sessionStorage.clear()
+
+  // A sibling opening right away: the first tab is alive, its edit is its own.
+  await pageLoad(file, { stores: [] })
+  expect(readUiPreferences(file).values[MODE]).toBe('light')
+  expect(outboxes()).toHaveLength(1)
+
+  // The first tab died without a pagehide (a crash: no teardown, no more
+  // heartbeats): its stamp ages out.
+  vi.useFakeTimers({ now: Date.now() + 120_000, toFake: ['Date'] })
+  window.sessionStorage.clear()
+  await pageLoad(file, { stores: [] })
+
+  expect(readUiPreferences(file).values[MODE]).toBe('dark')
+  expect(outboxes()).toEqual([])
 })

@@ -2,6 +2,7 @@ import type { UiPreferencesSnapshot, UiPreferencesWrite } from '../../../electro
 import { markProvisionalPreference, onPersistenceEvent, provisionalPreferenceKeys } from '../storage'
 
 import { isSharedPreferenceKey } from './keys'
+import { adoptOrphanedOutboxes, readOutbox, saveOutbox, siblingPendingKeys, watchOutbox } from './outbox'
 
 export type { UiPreferencesSnapshot, UiPreferencesWrite }
 
@@ -16,14 +17,6 @@ export interface UiPreferencesBridge {
 }
 
 const FLUSH_DELAY_MS = 150
-// Local changes not yet confirmed by the store, kept across reloads: a change
-// made right before the tab reloads or closes must still win over the older
-// store value on the next load, and be written then. One outbox PER TAB (its id
-// rides in sessionStorage, which survives a reload): same-origin tabs share
-// localStorage, and one shared outbox let each tab overwrite the others'
-// unsent changes. Not shared keys themselves.
-const OUTBOX_PREFIX = 'hermes:ui-preferences:outbox:'
-const TAB_KEY = 'hermes:ui-preferences:tab'
 // The store generation this origin has joined (imported its own values into).
 // Until then a key the store lacks is never removed here: it may be this
 // client's data the store has not received yet, not a peer's deletion.
@@ -31,7 +24,6 @@ const JOINED_KEY = 'hermes:ui-preferences:generation'
 const RETRY_DELAY_MS = 5000
 const MAX_RETRY_DELAY_MS = 60_000
 
-let outboxKey: null | string = null
 // The shared keys this window held before the app's module graph evaluated
 // (`captureOwnPreferences`, run by boot.ts): this client's own data. Stores
 // that persist their default the moment their module loads add keys after
@@ -64,37 +56,6 @@ function adopt(key: string, value: null | string, prune: boolean, live: boolean)
   if (writeRaw(key, value) && live) {
     announce(key, previous, value)
   }
-}
-
-/** This tab's outbox key, claimed once per page load. The previous load of this
- *  tab (same sessionStorage) hands its unsent changes over. */
-function claimOutboxKey(): string {
-  if (outboxKey) {
-    return outboxKey
-  }
-
-  const id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
-  let previous: null | string = null
-
-  try {
-    previous = window.sessionStorage.getItem(TAB_KEY)
-    window.sessionStorage.setItem(TAB_KEY, id)
-  } catch {
-    // No sessionStorage: this load's outbox is still its own.
-  }
-
-  outboxKey = `${OUTBOX_PREFIX}${id}`
-
-  if (previous) {
-    const carried = readRaw(`${OUTBOX_PREFIX}${previous}`)
-
-    if (carried !== null) {
-      writeRaw(outboxKey, carried)
-      writeRaw(`${OUTBOX_PREFIX}${previous}`, null)
-    }
-  }
-
-  return outboxKey
 }
 
 const generationOf = (snapshot: UiPreferencesSnapshot) => snapshot.generation ?? ''
@@ -165,7 +126,7 @@ export function hydrateFromSnapshot(snapshot: null | undefined | UiPreferencesSn
     return
   }
 
-  const outbox = readOutbox()
+  const outbox = new Set([...readOutbox().keys(), ...siblingPendingKeys()])
   const prune = hasJoined(snapshot)
 
   for (const key of new Set([...localSharedKeys(), ...Object.keys(snapshot.values)])) {
@@ -173,29 +134,6 @@ export function hydrateFromSnapshot(snapshot: null | undefined | UiPreferencesSn
       adopt(key, snapshot.values[key] ?? null, prune, true)
     }
   }
-}
-
-function readOutbox(): Map<string, null | string> {
-  try {
-    const parsed = JSON.parse(readRaw(claimOutboxKey()) ?? '{}') as unknown
-
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      return new Map()
-    }
-
-    return new Map(
-      Object.entries(parsed).filter(
-        (entry): entry is [string, null | string] =>
-          isSharedPreferenceKey(entry[0]) && (entry[1] === null || typeof entry[1] === 'string')
-      )
-    )
-  } catch {
-    return new Map()
-  }
-}
-
-function saveOutbox(pending: Map<string, null | string>) {
-  writeRaw(claimOutboxKey(), pending.size === 0 ? null : JSON.stringify(Object.fromEntries(pending)))
 }
 
 /** A write the store answered "no" to (HTTP 400 / validation), as opposed to
@@ -257,6 +195,8 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
       ownKeys = null
     }
 
+    const siblings = siblingPendingKeys()
+
     for (const key of new Set([...localSharedKeys(), ...Object.keys(snapshot.values), ...known.keys()])) {
       if (!isSharedPreferenceKey(key)) {
         continue
@@ -265,8 +205,9 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
       const value = snapshot.values[key] ?? null
       known.set(key, value)
 
-      // A change made here and not yet stored outranks an older store value.
-      if (!pending.has(key) && !(refused.has(key) && refused.get(key) === readRaw(key))) {
+      // A change made here, or in a sibling tab, and not yet stored outranks
+      // an older store value.
+      if (!pending.has(key) && !siblings.has(key) && !(refused.has(key) && refused.get(key) === readRaw(key))) {
         adopt(key, value, prune, live)
       }
     }
@@ -350,9 +291,40 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
 
     refused.delete(event.key)
     pending.set(event.key, event.value)
-    saveOutbox(pending)
-    schedule(FLUSH_DELAY_MS)
+    store()
   })
+
+  // A tab that closed with changes unsent left its outbox: take it over (its
+  // values are already this origin's cache). This tab's own outbox stays
+  // stamped as alive while it holds changes; a page going away sends at once.
+  const outbox = watchOutbox({
+    hasPending: () => pending.size > 0 && !stopped,
+    onLeave: () => {
+      saveOutbox(pending)
+
+      if (flushTimer !== null) {
+        clearTimeout(flushTimer)
+        flushTimer = null
+      }
+
+      if (ready && !writing) {
+        void flush()
+      }
+    },
+    onOrphans: () => {
+      adoptOrphanedOutboxes().forEach((value, key) => pending.has(key) || pending.set(key, value))
+      store()
+    },
+    onReturn: () => saveOutbox(pending)
+  })
+
+  function store() {
+    saveOutbox(pending)
+    outbox.touch()
+    schedule(FLUSH_DELAY_MS)
+  }
+
+  outbox.touch()
 
   // First contact with a generation: add this origin's values the store lacks.
   const join = async (snapshot: UiPreferencesSnapshot) => {
@@ -454,6 +426,9 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
     stopped = true
     stopListening()
     stopChanges()
+    outbox.stop()
+    // Nothing here sends it any more: the next tab adopts what is unsent.
+    saveOutbox(pending, { closed: true })
 
     if (flushTimer !== null) {
       clearTimeout(flushTimer)

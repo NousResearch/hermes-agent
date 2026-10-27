@@ -3594,25 +3594,22 @@ class TestCodexAdapterGithubResponsesMessageIdDrop:
             {"role": "user", "content": "continue"},
         ]
 
-    def test_drops_message_id_for_github_copilot_host(self):
-        adapter, captured = self._build_adapter(base_url="https://api.githubcopilot.com")
-        adapter.create(messages=self._replay_messages())
-        message_item = next(
-            item for item in captured["input"] if item.get("type") == "message"
-        )
+    def test_drops_message_id_for_connection_scoped_id_host(self):
+        from providers.base import ProviderProfile
+        acme = ProviderProfile(name="acme-replay", hostnames=("api.acme-replay.test",), responses_replay_item_ids=False)
+        adapter, captured = self._build_adapter(base_url="https://api.acme-replay.test")
+        with patch("providers.profile_for_host", side_effect=lambda url, **_kw: acme if "acme-replay" in str(url) else None):
+            adapter.create(messages=self._replay_messages())
+        message_item = next(item for item in captured["input"] if item.get("type") == "message")
         assert "id" not in message_item
         assert message_item["phase"] == "final_answer"
         assert message_item["status"] == "in_progress"
         assert message_item["content"] == [{"type": "output_text", "text": "pong"}]
 
     def test_keeps_message_id_for_codex_backend_host(self):
-        adapter, captured = self._build_adapter(
-            base_url="https://chatgpt.com/backend-api/codex"
-        )
+        adapter, captured = self._build_adapter(base_url="https://chatgpt.com/backend-api/codex")
         adapter.create(messages=self._replay_messages())
-        message_item = next(
-            item for item in captured["input"] if item.get("type") == "message"
-        )
+        message_item = next(item for item in captured["input"] if item.get("type") == "message")
         assert message_item["id"] == "msg_short_but_connection_scoped"
 
 

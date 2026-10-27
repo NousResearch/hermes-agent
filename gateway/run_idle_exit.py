@@ -138,6 +138,15 @@ def _ledger_busy(runner) -> str | None:
     return None
 
 
+def _profile_start_busy(runner) -> str | None:
+    """A profile hot-serve is still building has no authority to walk yet, but its queued admissions
+    are recovered once it starts; exiting now would cancel that start. A filled or failed start
+    leaves the registry's starting set, so the hold ends with it."""
+    registry = getattr(runner, "session_authorities", None)
+    starting = registry.starting_homes() if registry is not None else ()
+    return f"profile starting in {starting[0]}" if starting else None
+
+
 def _store_gates_busy(homes) -> str | None:
     from gateway.run_idle_gates import (
         profile_has_active_heartbeat, profile_has_active_loop, profile_has_pending_handoff)
@@ -186,8 +195,8 @@ def busy_reason(runner, *, window: float, count_clients: bool = True) -> str | N
         if runner._scale_to_zero_has_live_background_work():
             return "background work in flight"
         homes = _served_homes(runner)
-        return (_messaging_busy(runner) or _ledger_busy(runner) or _cron_busy(homes) or _kanban_busy()
-                or _store_gates_busy(homes))
+        return (_messaging_busy(runner) or _ledger_busy(runner) or _profile_start_busy(runner)
+                or _cron_busy(homes) or _kanban_busy() or _store_gates_busy(homes))
     except Exception as exc:
         logger.debug("idle-exit probe failed; staying up", exc_info=True)
         return f"idle probe failed ({type(exc).__name__})"

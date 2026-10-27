@@ -554,6 +554,29 @@ function Get-Uv {
     return $uvExe
 }
 
+# git.exe can be present while git-remote-https is not: a sharing violation
+# mid-extract leaves the launcher behind. --exec-path is where git looks up
+# remote helpers, so a tree that fails this is not an install.
+function Test-PinnedGitHttpsReady([string]$GitExe) {
+    if (-not (Test-Path -LiteralPath $GitExe)) { return $false }
+    $global:LASTEXITCODE = 0
+    try {
+        $exec = Invoke-Native { & $GitExe --exec-path 2>$null }
+    } catch {
+        return $false
+    }
+    if ($LASTEXITCODE -or -not $exec) { return $false }
+    return (Test-Path -LiteralPath (Join-Path ("$exec".Trim()) 'git-remote-https.exe'))
+}
+
+# PortableGit ships etc\hosts read-only. Remove-Item -Force leaves that bit
+# set, and then the broken tree cannot be replaced.
+function Remove-PinnedGitTree([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    Invoke-Native { attrib.exe -R "$Path\*" /S /D } | Out-Null
+    Remove-Item -LiteralPath $Path -Recurse -Force
+}
+
 # Provision git for this host from the pinned pm/lock.json artifact, into
 # the same store slot (<store>\git-<version>-<target>\) pm uses. Returns the
 # git.exe path, or $null when no pinned artifact exists for this target.
@@ -563,7 +586,11 @@ function Get-PinnedGit {
     if (-not $pin) { return $null }
     $entry = Join-Path (Get-PmStoreRoot) "git-$($script:GitPinVersion)-$target"
     $gitExe = Join-Path $entry "cmd\git.exe"
-    if (Test-Path $gitExe) { return $gitExe }
+    if ((Test-Path -LiteralPath $gitExe) -and (Test-PinnedGitHttpsReady $gitExe)) { return $gitExe }
+    if (Test-Path -LiteralPath $entry) {
+        Log "pinned git is incomplete; reinstalling"
+        Remove-PinnedGitTree $entry
+    }
     Log "installing git $($script:GitPinVersion) ($target)"
     $tmpDir = Join-Path ([IO.Path]::GetTempPath()) "hermes-git-bootstrap-$PID"
     try {
@@ -589,11 +616,15 @@ function Get-PinnedGit {
             Fail "pinned git self-extractor exited $($sfx.ExitCode) (it reports nothing under -y; usual causes: disk full, path-length limit, antivirus lock)" git_extract_failed
         }
         if (-not (Test-Path (Join-Path $extractDir "cmd\git.exe"))) { Fail "git.exe not found in the downloaded archive" git_extract_failed }
-        if (Test-Path $entry) { Remove-Item -Recurse -Force $entry }
+        if (Test-Path -LiteralPath $entry) { Remove-PinnedGitTree $entry }
         # Prerequisites run first, so on a fresh host the store root does not
         # exist yet; Move-Item never creates the destination's parent.
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $entry) | Out-Null
-        Move-Item $extractDir $entry
+        Move-Item -LiteralPath $extractDir -Destination $entry
+        if (-not (Test-PinnedGitHttpsReady $gitExe)) {
+            Remove-PinnedGitTree $entry
+            Fail "pinned git extracted without git-remote-https" git_extract_failed
+        }
     } finally {
         Remove-Item -Path $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
     }

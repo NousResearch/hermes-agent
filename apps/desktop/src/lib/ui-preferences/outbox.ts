@@ -6,7 +6,9 @@
 // unsent changes. A tab that closed with changes unsent (inside the debounce,
 // offline, during a lock retry) leaves its outbox behind: the next tab of this
 // origin adopts it once its owner is gone, so the change is still written and
-// the key is removed (#145536 re-review). Not shared keys themselves.
+// the key is removed (#145536 re-review). Each change keeps the value it was
+// made on (`bases`), so whoever sends it rebases it onto the store's current
+// value instead of writing it whole. Not shared keys themselves.
 import { isSharedPreferenceKey } from './keys'
 
 const OUTBOX_PREFIX = 'hermes:ui-preferences:outbox:'
@@ -18,9 +20,19 @@ export const OUTBOX_HEARTBEAT_MS = 10_000
 const OUTBOX_DEAD_MS = 90_000
 
 interface OutboxDoc {
+  /** The tab taking this outbox over: it re-reads the mark before sending,
+   *  and the owner, seeing it, stops sending (one sender per change). */
+  adopter?: string
+  bases: Record<string, null | string>
   beat: number
   closed?: boolean
   values: Record<string, null | string>
+}
+
+/** Unsent changes and, per change, the value it was made on. */
+export interface Outbox {
+  bases: Map<string, null | string>
+  values: Map<string, null | string>
 }
 
 let outboxKey: null | string = null
@@ -29,6 +41,9 @@ let outboxKey: null | string = null
 // pagehide and visibilitychange fire in either order and a send in flight may
 // still settle.
 let pageClosing = false
+// True while this tab's last save stored unsent changes: only then does a
+// missing outbox mean another tab took it (not full or blocked storage).
+let outboxHeld = false
 
 function readRaw(key: string): null | string {
   try {
@@ -59,15 +74,20 @@ function parseOutbox(raw: null | string): null | OutboxDoc {
       return null
     }
 
-    return {
-      beat: typeof doc.beat === 'number' ? doc.beat : 0,
-      closed: doc.closed === true,
-      values: Object.fromEntries(
-        Object.entries(values).filter(
+    const entries = (record: unknown) =>
+      Object.fromEntries(
+        Object.entries(record && typeof record === 'object' ? record : {}).filter(
           (entry): entry is [string, null | string] =>
             isSharedPreferenceKey(entry[0]) && (entry[1] === null || typeof entry[1] === 'string')
         )
       )
+
+    return {
+      ...(typeof doc.adopter === 'string' && { adopter: doc.adopter }),
+      bases: entries(doc.bases),
+      beat: typeof doc.beat === 'number' ? doc.beat : 0,
+      closed: doc.closed === true,
+      values: entries(values)
     }
   } catch {
     return null
@@ -92,13 +112,37 @@ function outboxKeys(): string[] {
   return keys
 }
 
+/** Claim another load's outbox and remove it: mark this tab as adopter, then
+ *  re-read. Null when it is gone or another tab (or its owner, re-saving)
+ *  wrote after the mark: that one sends it, not this tab. */
+function takeOutbox(key: string): null | OutboxDoc {
+  const doc = parseOutbox(readRaw(key))
+
+  if (!doc) {
+    writeRaw(key, null)
+
+    return null
+  }
+
+  writeRaw(key, JSON.stringify({ ...doc, adopter: outboxKey }))
+  const claimed = parseOutbox(readRaw(key))
+
+  if (claimed?.adopter !== outboxKey) {
+    return null
+  }
+
+  writeRaw(key, null)
+
+  return claimed
+}
+
 /**
  * Take over the outboxes of this origin's tabs that are gone, oldest first so
  * a later change to a key wins, and remove them. An entry is taken only while
  * this origin's cache still holds its value: anything since (an edit here, a
  * newer store value a live tab adopted) superseded it.
  */
-export function adoptOrphanedOutboxes(): Map<string, null | string> {
+export function adoptOrphanedOutboxes(): Outbox {
   const now = Date.now()
   const own = outboxKey
 
@@ -108,19 +152,42 @@ export function adoptOrphanedOutboxes(): Map<string, null | string> {
     .filter(({ doc }) => !doc || doc.closed || now - doc.beat > OUTBOX_DEAD_MS)
     .sort((left, right) => (left.doc?.beat ?? 0) - (right.doc?.beat ?? 0))
 
-  const adopted = new Map<string, null | string>()
+  const adopted: Outbox = { bases: new Map(), values: new Map() }
 
-  for (const { doc, key } of orphans) {
+  for (const { key } of orphans) {
+    const doc = takeOutbox(key)
+
     for (const [name, value] of Object.entries(doc?.values ?? {})) {
       if (readRaw(name) === value) {
-        adopted.set(name, value)
+        mergeEntry(adopted, doc as OutboxDoc, name)
       }
     }
-
-    writeRaw(key, null)
   }
 
   return adopted
+}
+
+function mergeEntry(into: Outbox, doc: OutboxDoc, name: string) {
+  into.values.set(name, doc.values[name] ?? null)
+
+  if (Object.hasOwn(doc.bases, name)) {
+    into.bases.set(name, doc.bases[name] ?? null)
+  } else {
+    into.bases.delete(name)
+  }
+}
+
+/** True when this tab's unsent changes were taken over by another tab (its
+ *  outbox is gone or carries another adopter): it must not send them. */
+export function outboxTakenOver(): boolean {
+  const doc = parseOutbox(readRaw(claimOutboxKey()))
+
+  const taken = doc ? doc.adopter !== undefined && doc.adopter !== outboxKey : outboxHeld
+
+  // Reported once: changes saved after this are this tab's again.
+  outboxHeld = outboxHeld && !taken
+
+  return taken
 }
 
 /** Keys another tab of this origin changed and has not stored yet: its edit
@@ -155,28 +222,42 @@ export function claimOutboxKey(): string {
   }
 
   outboxKey = `${OUTBOX_PREFIX}${id}`
-  const carried = previous ? parseOutbox(readRaw(`${OUTBOX_PREFIX}${previous}`)) : null
+  const carried = previous ? takeOutbox(`${OUTBOX_PREFIX}${previous}`) : null
+  const outbox = adoptOrphanedOutboxes()
 
-  if (previous) {
-    writeRaw(`${OUTBOX_PREFIX}${previous}`, null)
+  for (const name of Object.keys(carried?.values ?? {})) {
+    mergeEntry(outbox, carried as OutboxDoc, name)
   }
 
-  saveOutbox(new Map([...adoptOrphanedOutboxes(), ...Object.entries(carried?.values ?? {})]))
+  saveOutbox(outbox.values, { bases: outbox.bases })
 
   return outboxKey
 }
 
-export function readOutbox(): Map<string, null | string> {
-  return new Map(Object.entries(parseOutbox(readRaw(claimOutboxKey()))?.values ?? {}))
+export function readOutbox(): Outbox {
+  const doc = parseOutbox(readRaw(claimOutboxKey()))
+
+  return { bases: new Map(Object.entries(doc?.bases ?? {})), values: new Map(Object.entries(doc?.values ?? {})) }
 }
 
-/** Store this tab's unsent changes with a fresh liveness stamp; `closed` once
- *  the page is going away, so the next tab need not wait for the stamp to age. */
-export function saveOutbox(pending: ReadonlyMap<string, null | string>, { closed = pageClosing } = {}) {
+/** Store this tab's unsent changes (and the value each was made on) with a
+ *  fresh liveness stamp; `closed` once the page is going away, so the next
+ *  tab need not wait for the stamp to age. */
+export function saveOutbox(
+  pending: ReadonlyMap<string, null | string>,
+  { bases = new Map(), closed = pageClosing }: { bases?: ReadonlyMap<string, null | string>; closed?: boolean } = {}
+) {
   const key = claimOutboxKey()
-  const doc: OutboxDoc = { beat: Date.now(), ...(closed && { closed }), values: Object.fromEntries(pending) }
+
+  const doc: OutboxDoc = {
+    bases: Object.fromEntries([...bases].filter(([name]) => pending.has(name))),
+    beat: Date.now(),
+    ...(closed && { closed }),
+    values: Object.fromEntries(pending)
+  }
 
   writeRaw(key, pending.size === 0 ? null : JSON.stringify(doc))
+  outboxHeld = pending.size > 0 && readRaw(key) !== null
 }
 
 /** Heartbeat and page-lifecycle hooks for one running sync. `touch()` after

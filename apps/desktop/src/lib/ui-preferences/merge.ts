@@ -23,11 +23,24 @@ function parse(raw: null | string): Json | null | undefined {
 
 const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right)
 
+// A three-way merge: each side's removals and additions both apply, so an
+// entry another client removed stays removed. The order is this window's,
+// with the store's additions appended, unless only the store reordered.
 function rebaseList(base: unknown[], theirs: unknown[], mine: unknown[]): unknown[] {
   const has = (list: unknown[], item: unknown) => list.some(entry => same(entry, item))
-  const removed = base.filter(item => !has(mine, item))
 
-  return [...mine, ...theirs.filter(item => !has(mine, item) && !has(removed, item))]
+  const reordered = (list: unknown[]) =>
+    !same(
+      list.filter(item => has(base, item)),
+      base.filter(item => has(list, item))
+    )
+
+  const [first, second] = reordered(theirs) && !reordered(mine) ? [theirs, mine] : [mine, theirs]
+  const removed = base.filter(item => !has(theirs, item) || !has(mine, item))
+
+  const merged = first.filter(item => !has(removed, item))
+
+  return [...merged, ...second.filter(item => !has(merged, item) && !has(base, item))]
 }
 
 function rebaseRecord(

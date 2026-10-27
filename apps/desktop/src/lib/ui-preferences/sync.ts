@@ -3,7 +3,7 @@ import { markProvisionalPreference, onPersistenceEvent, previousValueOf, provisi
 
 import { isSharedPreferenceKey } from './keys'
 import { rebaseWrite } from './merge'
-import { adoptOrphanedOutboxes, readOutbox, saveOutbox, siblingPendingKeys, watchOutbox } from './outbox'
+import { adoptOrphanedOutboxes, outboxTakenOver, readOutbox, saveOutbox, siblingPendingKeys, watchOutbox } from './outbox'
 
 export type { UiPreferencesSnapshot, UiPreferencesWrite }
 
@@ -139,7 +139,7 @@ export function hydrateFromSnapshot(snapshot: null | undefined | UiPreferencesSn
     return
   }
 
-  const outbox = new Set([...readOutbox().keys(), ...siblingPendingKeys()])
+  const outbox = new Set([...readOutbox().values.keys(), ...siblingPendingKeys()])
   const prune = hasJoined(snapshot)
 
   for (const key of new Set([...localSharedKeys(), ...Object.keys(snapshot.values)])) {
@@ -179,13 +179,14 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
   }
 
   const known = new Map<string, null | string>()
-  const pending = readOutbox()
-  // What this window's stores last saw per key (read at load, read again, or
-  // written), and the cached value each pending change was made on: a store
-  // that never re-reads must not undo the entries a newer value brought.
+  // Unsent changes and the cached value each was made on (kept in the outbox,
+  // so a change carried over a reload or taken over from a closed tab is
+  // rebased too), and what this window's stores last saw per key (read at
+  // load, read again, or written): a store that never re-reads must not undo
+  // the entries a newer value brought.
+  const { bases: pendingBase, values: pending } = readOutbox()
   const loaded = new Map(localSharedKeys().map(key => [key, readRaw(key)]))
   const seen = new Map<string, null | string>()
-  const pendingBase = new Map<string, null | string>()
   const seenOf = (key: string) => (seen.has(key) ? (seen.get(key) ?? null) : (loaded.get(key) ?? null))
   // Values the store refused, kept in this window until changed again.
   const refused = new Map<string, null | string>()
@@ -228,10 +229,8 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
       // A change made here and not yet stored outranks an older store value,
       // rebased onto it so the store's other entries survive; so does one a
       // sibling tab has not stored yet.
-      if (pending.has(key) && pendingBase.has(key) && pendingBase.get(key) !== value) {
-        pending.set(key, rebaseLocal(key, pendingBase.get(key) ?? null, value, pending.get(key) ?? null))
-        pendingBase.set(key, value)
-        saveOutbox(pending)
+      if (rebasePending(key, value)) {
+        save()
       } else if (!pending.has(key) && !siblings.has(key) && !(refused.has(key) && refused.get(key) === readRaw(key))) {
         adopt(key, value, prune, live)
       }
@@ -239,6 +238,44 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
 
     if (!prune && ready) {
       rejoin(snapshot)
+    }
+  }
+
+  function rebasePending(key: string, current: null | string): boolean {
+    if (!pending.has(key) || !pendingBase.has(key) || pendingBase.get(key) === current) {
+      return false
+    }
+
+    pending.set(key, rebaseLocal(key, pendingBase.get(key) ?? null, current, pending.get(key) ?? null))
+    pendingBase.set(key, current)
+
+    return true
+  }
+
+  // Another tab took this tab's unsent changes over (this one was frozen past
+  // the liveness bound) and may have sent newer ones since: drop them here,
+  // never send or save them again, and follow the store instead.
+  const takenOver = (): boolean => {
+    if (pending.size === 0 || !outboxTakenOver()) {
+      return false
+    }
+
+    pending.clear()
+    pendingBase.clear()
+
+    if (ready && !stopped) {
+      void bridge.read().then(
+        snapshot => !stopped && apply(snapshot, { live: true }),
+        () => undefined
+      )
+    }
+
+    return true
+  }
+
+  const save = (options: { closed?: boolean } = {}) => {
+    if (!takenOver()) {
+      saveOutbox(pending, { bases: pendingBase, ...options })
     }
   }
 
@@ -256,7 +293,7 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
   const flush = async () => {
     flushTimer = null
 
-    if (pending.size === 0) {
+    if (takenOver() || pending.size === 0) {
       return
     }
 
@@ -298,7 +335,7 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
       }
     }
 
-    saveOutbox(pending)
+    save()
   }
 
   const stopListening = onPersistenceEvent(event => {
@@ -324,6 +361,7 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
       return
     }
 
+    takenOver()
     const current = previousValueOf(event) ?? null
     const value = rebaseLocal(event.key, base, current, event.value)
 
@@ -342,7 +380,7 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
   const outbox = watchOutbox({
     hasPending: () => pending.size > 0 && !stopped,
     onLeave: () => {
-      saveOutbox(pending)
+      save()
 
       if (flushTimer !== null) {
         clearTimeout(flushTimer)
@@ -354,14 +392,30 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
       }
     },
     onOrphans: () => {
-      adoptOrphanedOutboxes().forEach((value, key) => pending.has(key) || pending.set(key, value))
+      takenOver()
+      const adopted = adoptOrphanedOutboxes()
+
+      for (const [key, value] of adopted.values) {
+        if (!pending.has(key)) {
+          pending.set(key, value)
+
+          if (adopted.bases.has(key)) {
+            pendingBase.set(key, adopted.bases.get(key) ?? null)
+          }
+
+          if (ready && known.has(key)) {
+            rebasePending(key, known.get(key) ?? null)
+          }
+        }
+      }
+
       store()
     },
-    onReturn: () => saveOutbox(pending)
+    onReturn: () => save()
   })
 
   function store() {
-    saveOutbox(pending)
+    save()
     outbox.touch()
     schedule(FLUSH_DELAY_MS)
   }
@@ -470,7 +524,7 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
     stopChanges()
     outbox.stop()
     // Nothing here sends it any more: the next tab adopts what is unsent.
-    saveOutbox(pending, { closed: true })
+    save({ closed: true })
 
     if (flushTimer !== null) {
       clearTimeout(flushTimer)

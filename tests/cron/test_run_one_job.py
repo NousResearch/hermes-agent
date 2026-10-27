@@ -420,3 +420,125 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
     # And it was torn down after the full lifecycle returned (no leak).
     assert ss.current_secret_scope() is None
 
+
+def test_run_one_job_crash_before_save_phase_writes_failure_artifact(monkeypatch):
+    """Regression: a crash before the save/compose/deliver phase must write a redacted
+    markdown artifact via save_job_output so the failure is not silent.
+
+    Behavior contract:
+    - run_job raises before returning output
+    - save_job_output is called with a redacted markdown document
+    - The document contains job id, job name, run time, exception type + message, traceback
+    - Secrets in the exception message are redacted
+    - mark_job_run and finish_execution are still called (unchanged)
+    """
+    saved_outputs = []
+    marked = []
+    finished = []
+
+    monkeypatch.setattr(
+        s, "create_execution", lambda *_a, **_kw: {"id": "exec-crash-1"}
+    )
+    monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
+    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: {})
+    # Force run_job to raise with a message that contains a secret pattern
+    monkeypatch.setattr(
+        s,
+        "run_job",
+        lambda *_a, **_kw: (_ for _ in ()).throw(
+            RuntimeError("API call failed with key sk-1234567890abcdef")
+        ),
+    )
+    monkeypatch.setattr(
+        s,
+        "save_job_output",
+        lambda jid, output: saved_outputs.append((jid, output)) or f"/tmp/{jid}.md",
+    )
+    monkeypatch.setattr(
+        s,
+        "mark_job_run",
+        lambda *args, **kwargs: marked.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        s,
+        "finish_execution",
+        lambda *args, **kwargs: finished.append((args, kwargs)),
+    )
+    # Suppress delivery to keep the test focused on the artifact
+    monkeypatch.setattr(s, "_deliver_result", lambda *_a, **_kw: None)
+
+    ok = s.run_one_job({"id": "crash-job", "name": "nightly export", "deliver": "telegram"})
+
+    assert ok is False
+    # The failure artifact was saved
+    assert len(saved_outputs) == 1
+    job_id, output = saved_outputs[0]
+    assert job_id == "crash-job"
+    # The document is markdown with the expected structure
+    assert "# Scheduler failure artifact" in output
+    assert "**Job ID:** `crash-job`" in output
+    assert "**Job name:** nightly export" in output
+    assert "**Run time:**" in output
+    assert "**Exception type:** `RuntimeError`" in output
+    assert "**Exception message:**" in output
+    assert "## Traceback" in output
+    # The secret in the exception message is redacted (sk-1234567890abcdef should not appear)
+    assert "sk-1234567890abcdef" not in output
+    # But the exception type and job metadata are present
+    assert "RuntimeError" in output
+    assert "API call failed" in output
+    # Bookkeeping still happened
+    assert len(marked) == 1
+    assert marked[0][0][0] == "crash-job"
+    assert marked[0][0][1] is False
+    assert len(finished) == 1
+    assert finished[0][0][0] == "exec-crash-1"
+
+
+def test_run_one_job_crash_after_save_phase_does_not_write_second_artifact(monkeypatch):
+    """A crash AFTER the save phase was entered must not write a second artifact.
+
+    Behavior contract:
+    - run_job succeeds but _save_compose_deliver raises
+    - save_job_output is called exactly once (from the normal path, not the crash handler)
+    - The crash handler does NOT call save_job_output again
+    """
+    save_calls = []
+
+    def fake_save(jid, output):
+        save_calls.append((jid, output))
+        return f"/tmp/{jid}.md"
+
+    monkeypatch.setattr(
+        s, "create_execution", lambda *_a, **_kw: {"id": "exec-crash-2"}
+    )
+    monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
+    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: {})
+    # run_job succeeds
+    monkeypatch.setattr(
+        s,
+        "run_job",
+        lambda *_a, **_kw: (True, "output text", "final response", None),
+    )
+    # save_job_output is called from the normal path
+    monkeypatch.setattr(s, "save_job_output", fake_save)
+    # But _save_compose_deliver raises after the save
+    monkeypatch.setattr(
+        s,
+        "_save_compose_deliver",
+        lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("compose boom")),
+    )
+    monkeypatch.setattr(s, "mark_job_run", lambda *_a, **_kw: None)
+    monkeypatch.setattr(s, "finish_execution", lambda *_a, **_kw: None)
+    monkeypatch.setattr(s, "_deliver_result", lambda *_a, **_kw: None)
+
+    ok = s.run_one_job({"id": "crash-after-save", "name": "test", "deliver": "telegram"})
+
+    assert ok is False
+    # save_job_output was called exactly once (from the normal path before the crash)
+    # The crash handler must NOT call it again because save_phase_entered is True
+    assert len(save_calls) == 1
+    assert save_calls[0][0] == "crash-after-save"
+    assert save_calls[0][1] == "output text"
+
+

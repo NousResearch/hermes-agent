@@ -1,6 +1,6 @@
 name: word-peek
 repo: https://github.com/lEWFkRAD/word-peek
-sha: 1bcd9a6aabc6a3f2769e7194ab1a9beed1306fd9
+sha: 7416b73a
 title: Word Peek
 description: >-
   Explore and build on local HTML documents from inside Hermes Desktop: select a passage in an
@@ -15,11 +15,11 @@ description: >-
   env vars. Disclosure — writes only to the local file: HTML document being edited (a
   .word-peek-<timestamp>.bak copy is kept beside it) and plugin storage; model calls go through
   the configured Hermes model; offline WordNet dictionary data is optional and not redistributed.
-image: https://raw.githubusercontent.com/lEWFkRAD/word-peek/1bcd9a6aabc6a3f2769e7194ab1a9beed1306fd9/docs/screenshots/hero.png
+image: https://raw.githubusercontent.com/lEWFkRAD/word-peek/7416b73a/docs/screenshots/hero.png
 screenshots:
-  - https://raw.githubusercontent.com/lEWFkRAD/word-peek/1bcd9a6aabc6a3f2769e7194ab1a9beed1306fd9/docs/screenshots/card.png
-  - https://raw.githubusercontent.com/lEWFkRAD/word-peek/1bcd9a6aabc6a3f2769e7194ab1a9beed1306fd9/docs/screenshots/panel.png
-  - https://raw.githubusercontent.com/lEWFkRAD/word-peek/1bcd9a6aabc6a3f2769e7194ab1a9beed1306fd9/docs/screenshots/apply.png
+  - https://raw.githubusercontent.com/lEWFkRAD/word-peek/7416b73a/docs/screenshots/card.png
+  - https://raw.githubusercontent.com/lEWFkRAD/word-peek/7416b73a/docs/screenshots/panel.png
+  - https://raw.githubusercontent.com/lEWFkRAD/word-peek/7416b73a/docs/screenshots/apply.png
 maintainer: lEWFkRAD
 tier: community
 category: desktop

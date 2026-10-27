@@ -97,3 +97,29 @@ def test_the_gateway_imports_again_once_ready(tmp_path):
 
     assert woke.wait(10)
     assert [r["room_id"] for r in hosted_rooms.list_rooms(target)] == ["room-window"]
+
+
+def test_gateway_startup_takes_over_the_standalone_rooms(tmp_path, monkeypatch):
+    """The import is wired into the gateway's own hosted-service start, not only callable: a
+    gateway starting beside a standalone store serves and drives the rooms that store held."""
+    import asyncio
+    from types import SimpleNamespace
+    from gateway import session_hosted_service, session_hosted_transport
+    from hermes_state import SessionDB
+    from hermes_state_runtime import begin_runtime_epoch
+
+    source = tmp_path / "shared-state.db"
+    _standalone_room(source, "old-room")
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        authority = SimpleNamespace(db=db, epoch=begin_runtime_epoch(db, instance_id="first"),
+                                    profile_id=str(tmp_path), runner=None)
+        runner = SimpleNamespace(session_control_server=None)
+        monkeypatch.setattr(session_hosted_transport, "install_hosted_transport", lambda *args, **kwargs: None)
+
+        asyncio.run(session_hosted_service._ensure_hosted_service(runner, authority))
+
+        assert [r["room_id"] for r in hosted_rooms.list_rooms(db.db_path)] == ["old-room"]
+        assert [b.room_id for b in authority.hosted_room_service.bindings()] == ["old-room"]
+    finally:
+        db.close()

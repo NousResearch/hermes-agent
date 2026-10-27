@@ -208,6 +208,51 @@ on the host (`HERMES_AGENT` set by `start-gateway.sh`).
 
 ## Troubleshooting
 
+### Symptom: `git status` in the production tree shows a wiki file as modified, with the OLD content staged
+
+**Measured 2026-10-27 (t_4722df6f).** The production tree's *working copy*
+can fall behind HEAD while the branch ref and the committed tree are both
+correct:
+
+```
+$ git -C ~/.hermes/hermes-agent status --short
+M  docs/wiki/services/canonical-deploy-branch.md
+$ git -C ~/.hermes/hermes-agent rev-parse HEAD:docs/wiki/services/canonical-deploy-branch.md
+51787df963...        # HEAD: correct, 448 lines
+$ git -C ~/.hermes/hermes-agent ls-files -s docs/wiki/services/canonical-deploy-branch.md
+100644 f01096e5df... # index: stale, 361 lines
+```
+
+**Cause.** A commit created with `git commit-tree` against a blob written
+straight into `.git/objects` updates the *tree* and the *ref* but never the
+working tree or the index. Inside the isolation sandbox that is the only way
+to land a commit (the prod tree is mounted `ro` and `.git/index` is not
+carved out), so a plumbing commit silently leaves the working copy stale.
+
+**Impact.** None at runtime — nothing in the code reads `docs/wiki`. The
+risk is that a later commit made *from* the production tree would stage
+the stale content and revert the documentation.
+
+**Fix.** Run outside the isolation boundary (an ssh shell, not a
+dispatched worker and not a cron script — the `no_agent` script path is
+sandboxed too):
+
+```bash
+cd /home/serveradmin/.hermes/hermes-agent
+git checkout -- docs/wiki/services/canonical-deploy-branch.md
+```
+
+**How to tell it apart from a real content change.** Compare the blobs:
+
+```bash
+git -C ~/.hermes/hermes-agent rev-parse HEAD:<path>   # committed truth
+git -C ~/.hermes/hermes-agent ls-files -s -- <path>   # index
+git -C ~/.hermes/hermes-agent hash-object -- <path>   # working copy
+```
+
+A stale working copy has the index and the working copy equal to each
+other and different from HEAD.
+
 ### Symptom: `kanban worker isolation skipped for <task>` in the agent log
 
 The dispatcher decided it could NOT safely wrap the worker, so it spawned
@@ -397,9 +442,12 @@ worker), so by the time a worker is alive the wrapper processes no longer
 exist and are not ancestors either. Verify with the mount table instead:
 
 ```bash
-awk '$5 ~ /hermes-agent/ {print $3, $4, $5}' /proc/<worker_pid>/mountinfo
-# expect: ro,relatime on the tree root; rw,relatime on .git/objects,
-#         .git/logs, and the scratch workspace
+# mountinfo field 5 is the PATH, field 6 is the mount OPTIONS.
+awk '$5 ~ /hermes-agent/ {print $6, $5}' /proc/<worker_pid>/mountinfo
+# expect: ro,relatime   on the tree root
+#         rw,relatime   on .git/objects
+#         rw,relatime   on .git/logs
+#         rw,relatime   on the worker scratch workspace
 ```
 
 `readlink /proc/<pid>/ns/mnt` is **not** a usable isolation signal on

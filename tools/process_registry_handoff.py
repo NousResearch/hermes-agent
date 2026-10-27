@@ -215,4 +215,3 @@ def settle_persisted_scope(session, record):
         if (session.pid_scope == 'host' and not session.wsl_chain and not session.systemd_unit
                 and ownership_identity(session) == expected):
             session._scope_stop_pending = False  # Logical Stop remains in its native owner store.
-

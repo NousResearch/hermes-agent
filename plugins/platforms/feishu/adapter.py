@@ -2625,8 +2625,12 @@ class FeishuAdapter(BasePlatformAdapter):
             text = _strip_edge_self_mentions(text, mentions)
             if text.startswith("/"):
                 inbound_type = MessageType.COMMAND
+        reply_to_message_id = (
+            getattr(message, "parent_id", None) or getattr(message, "upper_message_id", None)
+            or getattr(message, "root_id", None) or None
+        )
         # Post-strip guard so a pure "@Bot" message (stripped to "") is dropped.
-        if inbound_type == MessageType.TEXT and not text and not media_urls:
+        if inbound_type == MessageType.TEXT and not text and not media_urls and not reply_to_message_id:
             logger.debug("[Feishu] Ignoring empty text message id=%s", message_id)
             return
         if inbound_type != MessageType.COMMAND:
@@ -2638,11 +2642,10 @@ class FeishuAdapter(BasePlatformAdapter):
         # too, so using it as a fallback (#19711) turned ordinary quote replies into topic
         # sessions and pushed the bot's answer into a fresh thread (#20548).
         thread_id = getattr(message, "thread_id", None) or None
-        reply_to_message_id = (
-            getattr(message, "parent_id", None) or getattr(message, "upper_message_id", None)
-            or getattr(message, "root_id", None) or None
-        )
         reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
+        if inbound_type != MessageType.COMMAND and not text and reply_to_message_id:
+            quoted_context = reply_to_text or f"message {reply_to_message_id}"
+            text = f"[Replied to: {quoted_context[:500]}]"
         sender_primary = (
             getattr(sender_id, "open_id", None) or getattr(sender_id, "user_id", None)
             or getattr(sender_id, "union_id", None) or "<unknown>"

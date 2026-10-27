@@ -7,7 +7,9 @@ interface RelaunchHost {
 }
 
 /**
- * Every self-relaunch (GPU or sandbox fallback, update swap) goes through here.
+ * Every self-relaunch through Electron's app.relaunch (GPU fallbacks, update
+ * swap) goes through here; the Linux --no-sandbox early restart spawns its
+ * target itself (relaunch-target.ts relaunchNow) and drops the fd there.
  * The launcher's ready pipe is not inherited by the relaunched process, so a
  * carried `HERMES_DESKTOP_READY_FD` names whatever file reuses that descriptor
  * number there, and the reveal byte would be written into it.

@@ -587,6 +587,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         extra = self.config.extra
         self._app: Optional[Application] = None
         self._seen_update_ids: dict = {}
+        self._latest_text_receipts: dict = {}
         self._inflight_update_ids: dict = {}
         self._update_admission = None
         # Completed update IDs survive adapter replacement and restarts (update_admission.py).
@@ -2877,6 +2878,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         claim = admission.get() if admission is not None else None
         if claim is not None:
             claim.accepted = True
+            if claim.text_receipt is not None and claim.text_task is asyncio.current_task():
+                claim.text_accepted = True
 
     def _fail_update_preparation(self) -> None:
         """A caught preparation error is not a successful no-op or an auth refusal."""
@@ -3191,7 +3194,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         try:
             if not self._acquire_platform_lock('telegram-bot-token', self.config.token, 'Telegram bot token'):
                 return False
-            from plugins.platforms.telegram.update_admission import TelegramApplication, build_update_processor
+            from .update_admission import TelegramApplication, build_update_processor
             builder = Application.builder().token(self.config.token)
             builder.application_class(TelegramApplication, {"adapter": self})
             custom_base_url = self.config.extra.get("base_url")
@@ -6501,6 +6504,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             return
         if not self._gate_or_observe(msg, update, MessageType.TEXT):
             return
+        from .update_admission import unchanged_text
+        if unchanged_text(self, update):
+            return
         await self._ensure_forum_commands(update.message)
         self._enqueue_text_event(await self._build_triggered_event(msg, update, MessageType.TEXT))
 
@@ -6513,6 +6519,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             return
         if not self._is_user_authorized_from_message(msg):
             self._log_blocked_user(msg)
+            return
+        from .update_admission import unchanged_text
+        if unchanged_text(self, update):
             return
         await self._ensure_forum_commands(msg)
         event = await self._build_triggered_event(msg, update, MessageType.COMMAND)

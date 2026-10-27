@@ -6,9 +6,15 @@ claims. Completed IDs are also written to a per-bot receipt file under the adapt
 Hermes home, so a replacement adapter or a restarted gateway still drops updates that
 Telegram redelivers because their getUpdates/webhook acknowledgement never landed.
 No cross-process coordination or exactly-once effects are promised.
+
+The same bot receipt file also stores ``message_texts``: a bounded mapping of
+``"<chat_id>:<message_id>"`` to ``[message_text_digest(message), unix_timestamp]``.
+Only addressed text/commands accepted at the built-in handoff seed this baseline;
+an unknown pre-upgrade message must be admitted once. No raw text is persisted.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
@@ -63,6 +69,70 @@ def _load_receipts(adapter, bot_id) -> None:
         key = f"{bot_id}:{uid}"
         if key not in seen:
             bounded_put(seen, key, ts, _SEEN_CAP)
+    _load_text_receipts(adapter, bot_id, payload.get("message_texts"), cutoff)
+
+
+def _valid_text_receipt(key, value, cutoff) -> bool:
+    return (isinstance(value, list) and len(value) == 2
+            and isinstance(value[0], str) and len(value[0]) == 64
+            and all(c in "0123456789abcdef" for c in value[0])
+            and isinstance(value[1], (int, float)) and cutoff < value[1] <= time.time()
+            and len(key.split(":")) == 2
+            and all(part.lstrip("-").isdigit() for part in key.split(":")))
+
+
+def _load_text_receipts(adapter, bot_id, texts, cutoff) -> None:
+    if not isinstance(texts, dict):
+        return
+    fresh = sorted((value[1], key, value[0]) for key, value in texts.items()
+                   if _valid_text_receipt(key, value, cutoff))
+    for ts, key, digest in fresh:
+        bounded_put(adapter._latest_text_receipts, f"{bot_id}:{key}", (digest, ts), _SEEN_CAP)
+
+
+def message_text_digest(message) -> str:
+    """Digest exact text and entity semantics, excluding transport/editor metadata.
+
+    Entity targets matter even when the visible text is unchanged. User display
+    names, like edit_date and update_id, do not change what the message addresses.
+    """
+    entities = [
+        [entity.type, entity.offset, entity.length, entity.url,
+         entity.user.id if entity.user is not None else None,
+         entity.language, entity.custom_emoji_id]
+        for entity in message.entities
+    ]
+    payload = json.dumps([message.text, entities], ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def unchanged_text(adapter, update) -> bool:
+    """Stage addressed text only; passive observation and plugin groups remain untouched.
+
+    Remember just the latest text, not a set of past digests: A -> B -> A is two
+    genuine edits, even when Telegram gives both edits the same edit_date second.
+    """
+    admission = getattr(adapter, "_update_admission", None)
+    claim = admission.get() if admission is not None else None
+    if claim is None:
+        return False
+    message = update.effective_message
+    key = f"{claim.key.split(':', 1)[0]}:{message.chat_id}:{message.message_id}"
+    digest = message_text_digest(message)
+    latest = adapter._latest_text_receipts.get(key)
+    # A non-blocking callback may have handed off while its observer still owns
+    # the update. Such accepted work is already irreversible for replay purposes.
+    for pending in adapter._inflight_update_ids.values():
+        if pending.text_accepted and pending.text_receipt[0] == key:
+            _, pending_digest, ts = pending.text_receipt
+            if latest is None or ts > latest[1]:
+                latest = (pending_digest, ts)
+    is_edit = update.edited_message is not None or update.edited_channel_post is not None
+    if is_edit and latest is not None and latest[0] == digest:
+        return True
+    claim.text_receipt = (key, digest, time.time())
+    claim.text_task = asyncio.current_task()
+    return False
 
 
 def _record_receipt(adapter, key: str) -> None:
@@ -84,10 +154,12 @@ async def _flush_receipts(adapter) -> None:
         # Snapshot on the loop: admission mutates this dict only from loop callbacks.
         ids = {key[len(prefix):]: ts for key, ts in adapter._seen_update_ids.items()
                if key.startswith(prefix) and isinstance(ts, float) and ts > cutoff}
+        texts = {key[len(prefix):]: value for key, value in adapter._latest_text_receipts.items()
+                 if key.startswith(prefix) and value[1] > cutoff}
         path = _receipt_path(adapter, bot_id)
         try:
             mkdir_under_hermes_home(path.parent)
-            await asyncio.to_thread(atomic_json_write, path, {"update_ids": ids}, indent=None)
+            await asyncio.to_thread(atomic_json_write, path, {"update_ids": ids, "message_texts": texts}, indent=None)
         except Exception:
             logger.warning("[Telegram] Failed to persist update receipts to %s", path, exc_info=True)
 
@@ -100,6 +172,9 @@ class _Claim:
     completed: bool = False
     failed: bool = False
     owners: int = 1
+    text_receipt: tuple[str, str, float] | None = None
+    text_accepted: bool = False
+    text_task: asyncio.Task | None = None
 
 
 class _ErrorCallback:
@@ -215,7 +290,14 @@ class TelegramApplication(Application):
             claim = admission.get() if admission is not None else None
             if claim is not None and getattr(callback, "__self__", None) is not application.adapter:
                 claim.accepted = True
-            result = await callback(update, context)
+            try:
+                result = await callback(update, context)
+            finally:
+                # A later plugin/error observer must not commit failed core
+                # preparation merely by entering its own irreversible handoff.
+                if (claim is not None and not claim.text_accepted
+                        and claim.text_task is asyncio.current_task()):
+                    claim.text_receipt = None
             if claim is not None:
                 if claim.failed and not claim.accepted:
                     # Stop subsequent groups only in blocking dispatch. PTB cannot stop
@@ -264,6 +346,11 @@ class TelegramApplication(Application):
         if claim.owners:
             return
         del self.adapter._inflight_update_ids[claim.key]
+        if claim.text_accepted:
+            key, digest, ts = claim.text_receipt
+            latest = self.adapter._latest_text_receipts.get(key)
+            if latest is None or ts >= latest[1]:
+                bounded_put(self.adapter._latest_text_receipts, key, (digest, ts), _SEEN_CAP)
         if claim.accepted or (claim.completed and not claim.failed):
             _record_receipt(self.adapter, claim.key)
 

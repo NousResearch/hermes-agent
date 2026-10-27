@@ -3913,6 +3913,14 @@ export const deOverrides = {
     pasteImage: 'Bild einfügen',
     url: 'URL…',
     promptSnippets: 'Prompt-Schnipsel…',
+    capabilityMenu: {
+      search: kind => `${kind} suchen`,
+      noSkills: 'Keine installierten Skills',
+      noPlugins: 'Keine installierten Plugins',
+      noConnectors: 'Keine verbundenen Apps oder installierten Server',
+      mcpServers: 'MCP-Server',
+      loadPluginsFailed: 'Plugins konnten nicht geladen werden'
+    },
     tipPre: 'Tipp: Geben Sie ',
     tipPost: ' ein, um Dateien inline zu referenzieren.',
     snippetsTitle: 'Prompt-Schnipsel',

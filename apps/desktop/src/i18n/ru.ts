@@ -2703,6 +2703,14 @@ export const ruOverrides = {
     pasteImage: 'Вставить изображение',
     url: 'URL…',
     promptSnippets: 'Фрагменты промптов…',
+    capabilityMenu: {
+      search: kind => `Поиск: ${kind}`,
+      noSkills: 'Нет установленных навыков',
+      noPlugins: 'Нет установленных плагинов',
+      noConnectors: 'Нет подключённых приложений или установленных серверов',
+      mcpServers: 'Серверы MCP',
+      loadPluginsFailed: 'Не удалось загрузить плагины'
+    },
     tipPre: 'Подсказка: введите ',
     tipPost: ' чтобы ссылаться на файлы inline.',
     snippetsTitle: 'Фрагменты промптов',

@@ -3902,6 +3902,14 @@ export const esOverrides = {
     pasteImage: 'Pegar imagen',
     url: 'URL…',
     promptSnippets: 'Fragmentos de prompt…',
+    capabilityMenu: {
+      search: kind => `Buscar ${kind}`,
+      noSkills: 'No hay habilidades instaladas',
+      noPlugins: 'No hay plugins instalados',
+      noConnectors: 'No hay aplicaciones conectadas ni servidores instalados',
+      mcpServers: 'Servidores MCP',
+      loadPluginsFailed: 'No se pudieron cargar los plugins'
+    },
     tipPre: 'Consejo: escribe ',
     tipPost: ' para referenciar archivos en línea.',
     snippetsTitle: 'Fragmentos de prompt',

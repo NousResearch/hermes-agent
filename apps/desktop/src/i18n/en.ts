@@ -3479,6 +3479,14 @@ export const en: Translations = {
     pasteImage: 'Paste image',
     url: 'URL…',
     promptSnippets: 'Prompt snippets…',
+    capabilityMenu: {
+      search: (kind: string) => `Search ${kind}`,
+      noSkills: 'No installed skills',
+      noPlugins: 'No installed plugins',
+      noConnectors: 'No connected apps or installed servers',
+      mcpServers: 'MCP servers',
+      loadPluginsFailed: 'Could not load plugins'
+    },
     tipPre: 'Tip: type ',
     tipPost: ' to reference files inline.',
     snippetsTitle: 'Prompt snippets',

@@ -3921,6 +3921,14 @@ export const frOverrides = {
     pasteImage: 'Coller une image',
     url: 'URL…',
     promptSnippets: "Extraits d'invite…",
+    capabilityMenu: {
+      search: kind => `Rechercher ${kind}`,
+      noSkills: 'Aucune compétence installée',
+      noPlugins: 'Aucun plugin installé',
+      noConnectors: 'Aucune application connectée ni aucun serveur installé',
+      mcpServers: 'Serveurs MCP',
+      loadPluginsFailed: 'Impossible de charger les plugins'
+    },
     tipPre: 'Conseil : tapez ',
     tipPost: ' pour référencer des fichiers en ligne.',
     snippetsTitle: "Extraits d'invite",

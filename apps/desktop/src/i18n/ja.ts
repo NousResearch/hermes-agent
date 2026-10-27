@@ -2449,6 +2449,14 @@ export const jaOverrides = {
     pasteImage: '画像を貼り付け',
     url: 'URL…',
     promptSnippets: 'プロンプトスニペット…',
+    capabilityMenu: {
+      search: kind => `${kind}を検索`,
+      noSkills: 'インストール済みのスキルはありません',
+      noPlugins: 'インストール済みのプラグインはありません',
+      noConnectors: '接続済みのアプリまたはインストール済みのサーバーはありません',
+      mcpServers: 'MCPサーバー',
+      loadPluginsFailed: 'プラグインを読み込めませんでした'
+    },
     tipPre: 'ヒント: ',
     tipPost: ' と入力してファイルをインラインで参照。',
     snippetsTitle: 'プロンプトスニペット',

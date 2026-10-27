@@ -3369,6 +3369,14 @@ export const zhOverrides = {
     pasteImage: '粘贴图片',
     url: 'URL…',
     promptSnippets: '提示词片段…',
+    capabilityMenu: {
+      search: kind => `搜索${kind}`,
+      noSkills: '没有已安装的技能',
+      noPlugins: '没有已安装的插件',
+      noConnectors: '没有已连接的应用或已安装的服务器',
+      mcpServers: 'MCP 服务器',
+      loadPluginsFailed: '无法加载插件'
+    },
     tipPre: '提示：输入 ',
     tipPost: ' 以内联引用文件。',
     snippetsTitle: '提示词片段',

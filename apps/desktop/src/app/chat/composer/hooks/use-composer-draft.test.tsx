@@ -530,6 +530,16 @@ describe('useComposerDraft — same-draft scope rekey preserves only the focused
     }
   }
 
+  it('puts a selected skill at the start of an existing draft so it invokes', () => {
+    stashSessionDraft('lineage-root', 'Review this function', [])
+    const view = renderDraft('lineage-root')
+
+    act(() => view.draft.insertSkill('review-code'))
+
+    expect(view.draft.draftRef.current).toBe('/review-code Review this function')
+    expect(composerPlainText(view.draft.editorRef.current!)).toBe('/review-code Review this function')
+  })
+
   it('keeps the caret when reconciliation rekeys an unchanged focused draft', () => {
     stashSessionDraft('lineage-root', 'alpha beta', [])
     stashSessionDraft('runtime-tip', 'alpha beta', [])

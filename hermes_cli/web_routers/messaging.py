@@ -17,6 +17,7 @@ import time
 import urllib.parse
 from datetime import datetime, timezone, UTC
 from pathlib import Path
+from collections.abc import Collection
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -52,6 +53,8 @@ _telegram_onboarding_request_sync = late("_telegram_onboarding_request_sync", "h
 _whatsapp_session_path = late("_whatsapp_session_path", "hermes_cli.web_server_messaging")
 _write_platform_enabled = late("_write_platform_enabled", "hermes_cli.web_server_messaging")
 load_env = late("load_env", "hermes_cli.config")
+get_secret_source_values = late("get_secret_source_values", "hermes_cli.env_loader")
+builtin_platform_status = late("builtin_platform_status", "gateway.config_env")
 load_config = late("load_config", "hermes_cli.config")
 read_runtime_status = late("read_runtime_status", "gateway.status")
 remove_env_value = late("remove_env_value", "hermes_cli.config")
@@ -156,37 +159,31 @@ def _require_platform(platform_id: str) -> dict[str, Any]:
     return entry
 
 
-def _scoped_secret_keys() -> frozenset[str]:
-    try:
-        config = load_config()
-        onepassword = ((config.get("secrets") or {}).get("onepassword") or {})
-        mappings = onepassword.get("env") or {}
-        return frozenset(key for key, reference in mappings.items() if key and reference)
-    except Exception:
-        return frozenset()
-
-
 def _platform_enablement(
-    platform_id: str, entry: dict[str, Any], env_on_disk: dict[str, str], scoped: bool
+    platform_id: str, entry: dict[str, Any], env_on_disk: dict[str, str], scoped: bool,
+    source_keys: Collection[str] = (),
 ) -> tuple[bool, bool, dict | None]:
-    """(enabled, configured, home_channel). Profile-scoped: derive from the profile's
-    config.yaml + .env only — load_gateway_config()'s env-override layer reads
-    os.environ and would leak the root install's tokens into the profile's state."""
+    """(enabled, configured, home_channel). Profile-scoped: the profile's config.yaml, .env and
+    enabled secret sources only, never ``load_gateway_config()`` (see ``builtin_platform_status``)."""
     required = entry["required_env"]
     if scoped:
-        secret_keys = _scoped_secret_keys()
-        configured = all(env_on_disk.get(key) or key in secret_keys for key in required) if required else False
+        # ``source_keys``: names the profile's enabled secret sources resolved (1Password, Bitwarden, a plugin).
+        configured = bool(required) and all(env_on_disk.get(key) or key in source_keys for key in required)
         try:
-            plat_cfg = (load_config().get("platforms") or {}).get(platform_id)
+            config = load_config()
+            plat_cfg = (config.get("platforms") or {}).get(platform_id)
             plat_cfg = plat_cfg if isinstance(plat_cfg, dict) else {}
-            if not required:
-                configured = bool(plat_cfg)
             hc = plat_cfg.get("home_channel")
-            # Setup writes credentials without a platforms entry; explicit disable wins.
-            raw_enabled = plat_cfg.get("enabled")
-            enabled = False if raw_enabled is False else bool(raw_enabled) or configured
+            status = None if required else builtin_platform_status(platform_id, config)
+            if status is not None:
+                enabled, configured = status  # token-free built-in: nothing to judge but the gateway's verdict
+            else:
+                # Setup writes credentials without a platforms entry; explicit disable wins.
+                raw_enabled = plat_cfg.get("enabled")
+                enabled = False if raw_enabled is False else bool(raw_enabled) or configured
             home_channel = hc if isinstance(hc, dict) else None
-        except Exception:
+        except Exception:  # health: allow BLE001 -- one platform's bad config must not blank the page
+            _log.debug("Profile-scoped status for %s failed", platform_id, exc_info=True)
             enabled, home_channel = False, None
         return enabled, configured, home_channel
     try:
@@ -206,7 +203,7 @@ def _platform_enablement(
 
 def _messaging_platform_payload(
     entry: dict[str, Any], env_on_disk: dict[str, str], runtime: dict | None,
-    scoped: bool = False, profile_home: Optional[Path] = None,
+    scoped: bool = False, profile_home: Optional[Path] = None, source_keys: Collection[str] = (),
 ) -> dict[str, Any]:
     platform_id = entry["id"]
     rt = runtime if isinstance(runtime, dict) else {}
@@ -241,12 +238,12 @@ def _messaging_platform_payload(
     for key in entry["env_vars"]:
         value, info = env_value(key), _messaging_env_info(key)
         env_vars.append({
-            "key": key, "required": key in entry["required_env"], "is_set": bool(value) or (scoped and key in _scoped_secret_keys()),
+            "key": key, "required": key in entry["required_env"], "is_set": bool(value) or key in source_keys,
             "redacted_value": redacted_credential_preview(value),
             "value": value if info["is_list"] else None, **info,
         })
 
-    enabled, configured, home_channel = _platform_enablement(platform_id, entry, env_on_disk, scoped)
+    enabled, configured, home_channel = _platform_enablement(platform_id, entry, env_on_disk, scoped, source_keys)
     if gateway_running and runtime_platform.get("mirrored_from"):
         # Served secondary: the default's shared listener already answers this platform at
         # /p/<profile>/... (enabling it locally 409s), so the secondary's own empty config
@@ -303,7 +300,12 @@ def _platform_payloads(scoped_dir: Optional[Path], entries) -> list[dict[str, An
     # ``hermes --profile X serve``).
     own_home = scoped_dir if scoped_dir is not None else get_process_hermes_home()
     runtime = served_profile_runtime(own_home, runtime) or runtime
-    return [_messaging_platform_payload(entry, env_on_disk, runtime, scoped=scoped_dir is not None, profile_home=scoped_dir)
+    # Credentials a secret manager supplies have no .env line; only values the profile's enabled
+    # sources resolved (into its secret scope, by ``_profile_scope``) count, and an empty one is unset.
+    source_values = get_secret_source_values(scoped_dir) if scoped_dir is not None else {}
+    source_keys = frozenset(key for key, value in source_values.items() if str(value).strip())
+    return [_messaging_platform_payload(entry, env_on_disk, runtime, scoped=scoped_dir is not None,
+                                        profile_home=scoped_dir, source_keys=source_keys)
             for entry in entries]
 
 

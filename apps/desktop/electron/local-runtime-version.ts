@@ -4,7 +4,7 @@ import { appVersionInfo } from './app-version'
 import { buildDesktopBackendEnv } from './backend-env'
 import { PROBE_TIMEOUT_MS } from './backend-probes'
 import type { InstallStamp } from './install-stamp'
-import { resolveInstallationLauncher } from './updater-process'
+import { resolveInstallationLauncherAsync } from './updater-process'
 import { windowsShellCommand } from './windows-child-options'
 
 export type VersionProbeRunner = (
@@ -21,8 +21,10 @@ export type VersionProbeRunner = (
 ) => Promise<string>
 
 const DEFAULT_CACHE_TTL_MS = 5_000
-let cached: { launcher: string; version: string; expiresAt: number } | null = null
-let inFlight: { launcher: string; promise: Promise<string> } | null = null
+// Keyed by installation (root + HERMES_HOME), not launcher: the cache must answer before any
+// launcher discovery, whose historical rung spawns the launcher to prove its identity.
+let cached: { key: string; version: string; expiresAt: number } | null = null
+let inFlight: { key: string; promise: Promise<string> } | null = null
 
 /** Extract the client version printed by the exact local installation launcher. */
 export function parseLocalRuntimeVersion(output: string): string {
@@ -64,12 +66,44 @@ export async function resolveLocalRuntimeVersion(
     cacheTtlMs?: number
   } = {}
 ): Promise<string> {
+  const useCache = options.run === undefined
+  const key = `${root}\0${hermesHome}`
+
+  if (useCache && cached?.key === key && cached.expiresAt > Date.now()) {
+    return cached.version
+  }
+
+  if (useCache && inFlight?.key === key) {
+    return inFlight.promise
+  }
+
+  const promise = probeLocalRuntimeVersion(root, hermesHome, options)
+
+  if (useCache) {
+    inFlight = { key, promise }
+    void promise.then(version => {
+      cached = { key, version, expiresAt: Date.now() + (options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS) }
+    }).finally(() => {
+      if (inFlight?.promise === promise) {
+        inFlight = null
+      }
+    })
+  }
+
+  return promise
+}
+
+async function probeLocalRuntimeVersion(
+  root: string,
+  hermesHome: string,
+  options: { isWindows?: boolean; launcher?: string | null; run?: VersionProbeRunner }
+): Promise<string> {
   const isWindows = options.isWindows ?? process.platform === 'win32'
   let launcher: string | null
 
   try {
     launcher = options.launcher === undefined
-      ? resolveInstallationLauncher(root, isWindows, hermesHome)
+      ? await resolveInstallationLauncherAsync(root, isWindows, hermesHome)
       : options.launcher
   } catch {
     return ''
@@ -79,22 +113,10 @@ export async function resolveLocalRuntimeVersion(
     return ''
   }
 
-  const run = options.run ?? runVersionProbe
-  const useCache = options.run === undefined
-  const now = Date.now()
-
-  if (useCache && cached?.launcher === launcher && cached.expiresAt > now) {
-    return cached.version
-  }
-
-  if (useCache && inFlight?.launcher === launcher) {
-    return inFlight.promise
-  }
-
   const shell = isWindows && /\.(cmd|bat)$/i.test(launcher)
   const command = windowsShellCommand(launcher, shell, isWindows)
 
-  const promise = run(command, ['--version'], {
+  return (options.run ?? runVersionProbe)(command, ['--version'], {
     cwd: root,
     env: { ...process.env, ...buildDesktopBackendEnv({ currentEnv: process.env }), HERMES_HOME: hermesHome },
     timeout: PROBE_TIMEOUT_MS,
@@ -104,19 +126,6 @@ export async function resolveLocalRuntimeVersion(
   })
     .then(parseLocalRuntimeVersion)
     .catch(() => '')
-
-  if (useCache) {
-    inFlight = { launcher, promise }
-    void promise.then(version => {
-      cached = { launcher, version, expiresAt: Date.now() + (options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS) }
-    }).finally(() => {
-      if (inFlight?.promise === promise) {
-        inFlight = null
-      }
-    })
-  }
-
-  return promise
 }
 
 /**

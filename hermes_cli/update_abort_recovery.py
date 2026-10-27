@@ -251,6 +251,9 @@ def _warn_stale_serve_runtimes(rows) -> None:
         print(f"    pid {row.get('pid')} is managed by systemd: {_format_restart_commands(commands)}")
     if sys.platform == "darwin" and any(row.get("supervisor") == "launchd" for row in rows):
         print("    For launchd-managed backends: `launchctl kickstart -k gui/$UID/<label>`.")
+    if any(row.get("supervisor") == "desktop" for row in rows):
+        print("    For Hermes Desktop: its backend was left running so open chats are not cut off;"
+              " quit and reopen the app to load the update.")
 
 
 def _owed_stale_serve_rows(rows) -> list[dict]:

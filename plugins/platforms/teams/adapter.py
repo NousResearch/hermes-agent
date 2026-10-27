@@ -116,11 +116,13 @@ def _validate_teams_service_url(raw: str) -> Optional[str]:
     return raw if raw.endswith("/") else raw + "/"
 
 
-def _body_decode_reason(exc: ValueError) -> tuple[str, Optional[int]]:
+def _body_decode_reason(exc: Exception) -> tuple[str, Optional[int]]:
     """``(message, position)`` of a body-decode failure, and never any of its bytes.
 
-    Covers both exceptions the parse can raise: ``JSONDecodeError`` carries
-    ``msg``/``pos``, ``UnicodeDecodeError`` carries ``reason``/``start``. Neither
+    ``JSONDecodeError`` carries ``msg``/``pos``, ``UnicodeDecodeError`` carries
+    ``reason``/``start``; ``LookupError`` (unknown charset) and ``RecursionError``
+    carry neither and are reported by type name only, so the client-declared
+    charset is not echoed either. Neither
     ``str(UnicodeDecodeError)`` (the offending byte) nor ``JSONDecodeError.doc``
     (the whole body) is read, so nothing of the request body can reach the log.
     """
@@ -163,7 +165,9 @@ class _AiohttpBridgeAdapter:
         async def _aiohttp_handler(request: web.Request) -> web.Response:
             try:
                 body = await request.json()
-            except ValueError as exc:
+            # LookupError: a client-declared charset that does not exist.
+            # RecursionError: a body nested past the interpreter's recursion limit.
+            except (ValueError, LookupError, RecursionError) as exc:
                 reason, position = _body_decode_reason(exc)
                 logger.warning(
                     "[teams] refused a request body that is not valid JSON: %s %s from %s "

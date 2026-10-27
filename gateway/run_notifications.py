@@ -1268,6 +1268,12 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         if not should_surface_notification(evt):
             return None  # Suppressed noise is terminal, not a consumed process result.
         restore_completion_route(self, str(evt.get("session_key") or ""))
+        # Task gate (ADR-0081): a background result may not re-activate a finished
+        # or cancelled task.  The check runs BEFORE the LLM call, so a refused
+        # result costs no tokens and produces no turn.  The session stays open --
+        # only THIS task is closed.
+        if not self._task_may_start_work(evt):
+            return None
         identity = self._completion_delivery_identity(evt)
         claim = self._CompletionClaim()
         accepted = identity_claimed = refused = False

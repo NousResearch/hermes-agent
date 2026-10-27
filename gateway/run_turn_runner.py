@@ -27,6 +27,7 @@ from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.base_exec_approval import ea_default_reason_text
 from gateway.turn_context import TurnContext
+from gateway.task_lifecycle import TASK_END_MARKER, strip_task_end_marker
 from hermes_cli.config import cfg_get
 from hermes_cli.plugins_dispatch import stream_held
 from utils import is_truthy_value
@@ -1357,6 +1358,11 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # returns, so early run_sync returns are also finalised.
         # See the outer finally/completion section below. See #60671.
         final_response = result.get("final_response")
+        # The task-end marker is a report to the runtime, not content for the user
+        # (ADR-0081).  Strip it here so no delivery branch can leak it -- including
+        # the empty-response and viewer paths below.
+        if isinstance(final_response, str) and TASK_END_MARKER in final_response:
+            final_response, _ = strip_task_end_marker(final_response)
         # Actual token counts from the agent instance used for this run.
         agent = ctx.agent_holder[0]
         has_comp = bool(agent) and hasattr(agent, "context_compressor")

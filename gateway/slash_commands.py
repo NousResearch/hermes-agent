@@ -444,9 +444,11 @@ class GatewaySlashCommandsMixin(
         if agent is _AGENT_PENDING_SENTINEL:  # force-clean the sentinel so the session is unlocked
             await _stop(session_key, "stop_command_pending")
             logger.info("STOP (pending) for session %s — sentinel cleared", session_key)
+            self._task_cancel(session_key, reason="user_stop")
             return EphemeralReply(t("gateway.stop.stopped_pending"))
         if agent:  # force-clean the session lock so a truly hung agent doesn't keep it forever
             await _stop(session_key, "stop_command_handler")
+            self._task_cancel(session_key, reason="user_stop")
             return EphemeralReply(t("gateway.stop.stopped"))
 
         # No run under the caller's own key: a live turn in THIS chat may still carry a differently
@@ -470,6 +472,10 @@ class GatewaySlashCommandsMixin(
                 await _stop(fallback_key, reason)
             logger.info("STOP (%s) by %s — interrupted %d run(s): %s",
                         reason, session_key, len(fallback_keys), ", ".join(fallback_keys))
+            # Task lifecycle (ADR-0081): /stop ends the TASK, not the session.  The
+            # session stays open so the user can keep writing, but late background
+            # results may no longer re-activate the stopped work.
+            self._task_cancel(session_key, reason="user_stop")
             return EphemeralReply(t("gateway.stop.stopped"))
 
         # No running agent anywhere for this scope. Background delegations the session dispatched in an

@@ -37,6 +37,7 @@ from gateway.session import (
 from gateway.session_transcript import TranscriptReadError
 from gateway.turn_context import TurnContext
 from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
+from gateway.task_lifecycle import agent_result_reports_task_end
 from hermes_constants import get_hermes_home_override
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -329,6 +330,12 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 response=response, agent_failed_early=agent_failed_early,
                 hidden_reasoning_incomplete=hidden_reasoning_incomplete,
                 is_context_overflow_failure=is_context_overflow_failure,
+            )
+            # Task lifecycle (ADR-0081): the assignment is over when the model
+            # reported it or when the turn left no work in flight.  A turn with a
+            # running background job keeps the task open, so its result still lands.
+            self._task_close_on_turn_end(
+                session_key, marker_found=agent_result_reports_task_end(agent_result),
             )
             return await self._deliver_turn_response_then_limit_offer(
                 event, source, session_entry, session_key, run_generation,

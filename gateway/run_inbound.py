@@ -1318,6 +1318,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         start_reply_clock(source, internal=is_internal)
         self._persist_active_agents()
         _run_generation = self._begin_session_run_generation(_quick_key)
+        # Task lifecycle (ADR-0081): a USER turn opens (re-arms) the task of this
+        # session.  An internal event (a background result) must never re-arm it --
+        # that is exactly the reactivation the task gate prevents.
+        self._task_begin_turn(_quick_key, is_internal=is_internal)
 
         try:
             # Fail-open plugin consume inside the claimed slot (#129958); once per message.

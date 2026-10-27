@@ -269,8 +269,9 @@ def dry_run() -> tuple[list[dict], list[dict]]:
     return auto, prompt
 
 
-def quick() -> dict[str, Any]:
-    """Safe deterministic cleanup — no prompts. Returns ``{deleted, empty_dirs, freed, errors}``."""
+def quick(own_tests: Optional[set[str]] = None) -> dict[str, Any]:
+    """Safe deterministic cleanup — no prompts. Returns ``{deleted, empty_dirs, freed, errors}``.
+    With *own_tests* (a turn end), other runs' ``test`` entries stay until older than 7 days."""
     deleted = freed = 0
     new_tracked: list[dict] = []
     errors: list[str] = []
@@ -287,7 +288,8 @@ def quick() -> dict[str, Any]:
         if _is_protected_dir(p):
             _log(f"SKIPPED: {p} (protected top-level dir)")
             continue
-        if not _is_auto_delete(cat, age):
+        live_elsewhere = cat == "test" and own_tests is not None and item["path"] not in own_tests and age <= 7
+        if live_elsewhere or not _is_auto_delete(cat, age):
             new_tracked.append(item)
             continue
         err = _delete_item(item)

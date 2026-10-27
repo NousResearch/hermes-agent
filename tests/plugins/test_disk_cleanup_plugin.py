@@ -246,7 +246,7 @@ class TestProfileUserTreesNeverCleaned:
                       create=lambda p=p: p.write_text("x"), task_id="t_ws", session_id="s_ws")
         assert dg.guess_category(keep) is None
         assert dg.guess_category(scratch) == "test"
-        pi._on_session_end(session_id="s_ws", completed=True, interrupted=False)
+        pi._on_session_end(session_id="s_ws", task_id="t_ws", completed=True, interrupted=False)
         assert keep.exists(), "session-end cleanup must not touch workspace project files"
         assert not scratch.exists(), "root-level scratch files are still cleaned up"
 
@@ -310,7 +310,7 @@ class TestProtectedDirsNeverRmtreed:
         _run_tool(pi, "write_file", {"path": str(scratch), "content": "x"},
                   create=lambda: scratch.write_text("x"), task_id="t1", session_id="s_kb")
 
-        pi._on_session_end(session_id="s_kb", completed=True, interrupted=False)
+        pi._on_session_end(session_id="s_kb", task_id="t1", completed=True, interrupted=False)
 
         assert att.exists(), "kanban attachments are task-managed, never auto-deleted"
         assert new_att.exists(), "kanban files a call created are never tracked or deleted"
@@ -618,8 +618,9 @@ class TestPostToolCallHook:
     def test_a_call_never_uses_another_sessions_snapshot(self, _isolate_env):
         """tool_call_id is not unique: llama.cpp sends one constant id for every call. Session A
         patching the user's test_user.py must not consume session B's snapshot of a new file under
-        that id, or the user's file reads as created and is deleted when the turn ends; B's own
-        created file is still tracked and cleaned up."""
+        that id, or the user's file reads as created and is deleted when the turn ends. A's turn
+        end leaves B's live file alone (a gateway chat or a subagent ending must not delete it);
+        B's own turn end cleans it up."""
         pi = _load_plugin_init()
         user_file = _isolate_env / "test_user.py"
         user_file.write_text("keep")
@@ -632,9 +633,11 @@ class TestPostToolCallHook:
         new_file.write_text("x")
         pi._on_post_tool_call(tool_name="patch", args={"path": str(user_file)}, result="OK", **a)
         pi._on_post_tool_call(tool_name="write_file", args={"path": str(new_file)}, result="OK", **b)
-        pi._on_session_end(session_id="sA", completed=True, interrupted=False)
+        pi._on_session_end(session_id="sA", task_id="sA", completed=True, interrupted=False)
 
         assert user_file.read_text() == "keep"
+        assert new_file.exists(), "A's turn end deleted B's live file"
+        pi._on_session_end(session_id="sB", task_id="sB", completed=True, interrupted=False)
         assert not new_file.exists()
 
 
@@ -647,6 +650,41 @@ class TestOnSessionEndHook:
         assert p.exists()
         pi._on_session_end(session_id="s1", completed=True, interrupted=False)
         assert not p.exists(), "test file should be auto-deleted"
+
+    def test_turn_end_keeps_a_file_another_process_tracked(self, _isolate_env):
+        """tracked.json is shared by every process on the profile (gateway + CLI): a turn end
+        deletes its own run's files, never another process's live one; orphans age out."""
+        pi = _load_plugin_init()
+        dg = _load_lib()
+        live, orphan = _isolate_env / "test_gateway.py", _isolate_env / "test_crashed.py"
+        for p in (live, orphan):
+            p.write_text("x")
+            dg.track(str(p), "test", silent=True)
+        tracked = dg.load_tracked()
+        tracked[1]["timestamp"] = (datetime.now(UTC) - timedelta(days=8)).isoformat()
+        dg.save_tracked(tracked)
+        mine = _isolate_env / "test_cli.py"
+        _run_tool(pi, "write_file", {"path": str(mine), "content": "x"},
+                  create=lambda: mine.write_text("x"), task_id="tC", session_id="sC")
+
+        pi._on_session_end(session_id="sC", task_id="tC", completed=True, interrupted=False)
+
+        assert not mine.exists()
+        assert live.exists(), "the CLI's turn end deleted the gateway's live test file"
+        assert not orphan.exists(), "a crashed process's file still ages out"
+
+    @pytest.mark.platforms("posix")
+    def test_turn_end_deletes_its_file_written_through_a_symlink(self, _isolate_env):
+        """tracked.json holds resolved paths (macOS /tmp is /private/tmp): the run's own file
+        must still match them at its turn end."""
+        pi = _load_plugin_init()
+        (_isolate_env / "real").mkdir()
+        (_isolate_env / "link").symlink_to(_isolate_env / "real", target_is_directory=True)
+        p = _isolate_env / "link" / "test_x.py"
+        _run_tool(pi, "write_file", {"path": str(p), "content": "x"},
+                  create=lambda: p.write_text("x"), task_id="t1", session_id="s1")
+        pi._on_session_end(session_id="s1", task_id="t1", completed=True, interrupted=False)
+        assert not p.exists()
 
 
 

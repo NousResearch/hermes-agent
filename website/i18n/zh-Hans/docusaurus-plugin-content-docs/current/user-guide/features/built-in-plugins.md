@@ -74,7 +74,7 @@ hermes plugins disable disk-cleanup
 | Hook | 行为 |
 |---|---|
 | `post_tool_call` | 当 `write_file` / `terminal` / `patch` 在 `HERMES_HOME` 或 `/tmp/hermes-*` 内创建匹配 `test_*`、`tmp_*` 或 `*.test.*` 的文件时，静默追踪为 `test` / `temp` / `cron-output`。 |
-| `on_session_end` | 如果本轮中有任何测试文件被自动追踪，则执行安全的 `quick` 清理并记录一行摘要。否则保持静默。 |
+| `on_session_end` | 如果本轮自动追踪了测试文件，则执行安全的 `quick` 清理，只删除本轮创建的测试文件，并记录一行摘要。其他运行追踪的测试文件会保留到超过 7 天。否则保持静默。 |
 
 **删除规则：**
 

@@ -16,6 +16,9 @@ from agent.reasoning_promotion import answer_in_reasoning_capability
 from agent.repetition_guard import STOP_PATH_MIN_CHARS, is_runaway_repetition
 from agent.stream_delivery import publish_held_final_row
 from agent.turn_failure_copy import stamp_failure
+from agent.turn_dropped_tool_call import (
+    REPROMPT, UNEXECUTED, reprompt_dropped_tool_call, unexecuted_markup_result,
+)
 from agent.turn_empty_response import recover_empty_response
 from agent.turn_stop_gates import apply_stop_gates
 from agent.turn_truncation import partial_result, repetition_copy
@@ -32,6 +35,16 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_thinking_prefill", "_empty_recovery_synthetic", "_empty_terminal_sentinel",
     "_dropped_toolcall_nudge",
 )
+
+
+def _pop_ephemeral_tail(messages: Any) -> None:
+    """Strip trailing prefill / empty-retry / re-prompt scaffolding rows."""
+    while (
+        messages
+        and isinstance(messages[-1], dict)
+        and any(messages[-1].get(flag) for flag in _EPHEMERAL_SCAFFOLDING_FLAGS)
+    ):
+        messages.pop()
 
 
 @dataclass
@@ -82,7 +95,7 @@ def finish_text_response(
     iteration-limit summarization; the final message is appended and flushed only after the
     stop gates accept it."""
     from agent.conversation_loop import (
-        _CODEX_ACK_CONTINUATION_NUDGE, _DEGENERATE_FINAL_NUDGE, _DROPPED_TOOLCALL_NUDGE_CONTENT,
+        _CODEX_ACK_CONTINUATION_NUDGE, _DEGENERATE_FINAL_NUDGE,
     )
 
     def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> FinalResponseVerdict:
@@ -294,48 +307,20 @@ def finish_text_response(
         # real reply; ``build_api_messages`` substitutes ``api_content`` on the wire.
         final_msg["api_content"] = final_response
 
-    # Dropped tool-call recovery (seen with Claude via gateways): finish_reason="tool_calls" with empty
-    # tool_calls would end the turn unstarted; re-prompt (max 3 CONSECUTIVE stalls).
-    if (
-        finish_reason == "tool_calls"
-        and not assistant_message.tool_calls
-        and getattr(agent, "_dropped_toolcall_retries", 0) < 3
-    ):
-        agent._dropped_toolcall_retries = getattr(agent, "_dropped_toolcall_retries", 0) + 1
-        logger.warning(
-            "finish_reason=tool_calls with empty tool_calls array "
-            "(narration only) — re-prompting to emit the call "
-            "(retry %d/3, model=%s provider=%s)",
-            agent._dropped_toolcall_retries, agent.model, agent.provider,
-        )
-        agent._emit_diagnostic_status(
-            "↻ Model signaled a tool call but sent none — "
-            f"re-prompting ({agent._dropped_toolcall_retries}/3)"
-        )
-        # Both halves of the re-prompt pair are ephemeral scaffolding: never persisted,
-        # and the finalization pop strips an unanswered tail pair.
-        final_msg["_dropped_toolcall_nudge"] = True
-        append_message(messages, final_msg)
-        append_message(messages, {
-            "role": "user",
-            "content": _DROPPED_TOOLCALL_NUDGE_CONTENT,
-            "_dropped_toolcall_nudge": True,
-        })
-        agent._session_messages = messages
+    # Dropped tool call (empty tool_calls on finish_reason="tool_calls", or tool-call markup left in
+    # the content): re-prompt instead of ending the turn unstarted; else the stall budget clears.
+    _dropped = reprompt_dropped_tool_call(agent, assistant_message, finish_reason, final_msg, messages)
+    if _dropped == REPROMPT:
         final_response = None
         return _verdict("continue")
 
-    # Genuine turn end (no dropped-tool-call mismatch): clear stall budget.
-    agent._dropped_toolcall_retries = 0
-
     # Pop prefill / empty-retry scaffolding before the final response or
     # verification follow-up; it must not become durable transcript.
-    while (
-        messages
-        and isinstance(messages[-1], dict)
-        and any(messages[-1].get(flag) for flag in _EPHEMERAL_SCAFFOLDING_FLAGS)
-    ):
-        messages.pop()
+    _pop_ephemeral_tail(messages)
+    if _dropped == UNEXECUTED:
+        return _verdict("return", unexecuted_markup_result(
+            agent, messages, conversation_history, api_call_count, effective_task_id,
+        ))
 
     _sg = apply_stop_gates(
         agent, final_msg, final_response=final_response, messages=messages,

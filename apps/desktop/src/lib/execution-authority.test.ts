@@ -129,4 +129,22 @@ describe('execution authority fence over real owner frames', () => {
     expect(tail).toEqual([['session.info', true], ['session.info', true], ['message.complete', false]])
     expect(authorities.get('session')).toMatchObject({ epoch: '2', generation: 2, terminal: true })
   })
+
+  it('admits an unstamped idle session.info that names its generation, and strips one that does not', () => {
+    const authorities = new Map()
+    // A completed turn installs the fence baseline (stamped owner 2, generation 5).
+    expect(acceptExecutionEvent(authorities, 's', 'message.start', { authority_epoch: 2, execution_generation: 5 })).toBe(true)
+    expect(acceptExecutionEvent(authorities, 's', 'message.complete', { authority_epoch: 2, execution_generation: 5 })).toBe(true)
+
+    // A committed model pick publishes its idle snapshot (gateway/_project_committed) with the
+    // generation in the payload, not on the params: it must repaint the viewer, not be dropped
+    // as a late straggler from a previous execution.
+    expect(acceptExecutionEvent(authorities, 's', 'session.info', {
+      payload: { execution_generation: 6, revision: 6, model: 'dogress-GLM-5.3-Flash' }
+    })).toBe(true)
+
+    // The pre-fix wire shape (unstamped, no generation) is exactly the late frame the fence
+    // rejects, which is why a model pick never repainted after the first turn.
+    expect(acceptExecutionEvent(authorities, 's', 'session.info', { payload: { model: 'dogress-GLM-5.3-Flash' } })).toBe(false)
+  })
 })

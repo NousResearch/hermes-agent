@@ -15,14 +15,20 @@ request-assembly surface proposed across #41918, #24949, #47109, and #50053.
 
 from __future__ import annotations
 
+from copy import deepcopy
+from types import SimpleNamespace
 from typing import Any, Dict, List
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from agent.context_engine import ContextEngine
 from agent.conversation_loop import (
     _apply_context_engine_selection,
     _notify_context_engine_turn_complete,
+    _redecorate_prompt_cache_for_provider,
 )
+from agent.prompt_caching import PromptCachePlan, build_prompt_cache_plan
 
 
 class _MinimalEngine(ContextEngine):
@@ -59,6 +65,105 @@ REQUEST = [
     {"role": "user", "content": "hello"},
 ]
 HISTORY = [{"role": "user", "content": "hello"}]
+
+
+@pytest.fixture
+def cache_agent():
+    return SimpleNamespace(
+        context_compressor=_MinimalEngine(),
+        session_id="test-session",
+        _use_prompt_caching=True,
+        _use_native_cache_layout=True,
+        _cache_ttl="5m",
+        _cached_system_prompt_static="sys",
+        provider="anthropic",
+        model="test",
+        tools=[{"type": "function", "function": {"name": "lookup"}}],
+    )
+
+
+def test_base_noop_cache_plan_is_short_circuited(cache_agent):
+    expected = _redecorate_prompt_cache_for_provider(cache_agent, REQUEST)
+    calls = []
+
+    def base_hook(self, messages, tools, **kwargs):
+        calls.append((messages, tools))
+        raise AssertionError("base cache_plan must not be invoked")
+
+    with patch.object(ContextEngine, "cache_plan", base_hook):
+        actual = _redecorate_prompt_cache_for_provider(cache_agent, REQUEST)
+
+    assert actual == expected
+    assert calls == []
+
+
+def test_engine_cache_plan_replaces_host_plan(cache_agent):
+    expected = _redecorate_prompt_cache_for_provider(cache_agent, REQUEST)
+    engine_plan = build_prompt_cache_plan(
+        REQUEST, cache_agent.tools, cache_ttl="1h", native_anthropic=True,
+        static_system_prefix="sys", direct_native_tool_cache=True,
+    )
+    received = []
+
+    class Engine(_MinimalEngine):
+        def cache_plan(self, messages, tools, **kwargs):
+            received.append((messages, tools))
+            return engine_plan
+
+    cache_agent.context_compressor = Engine()
+    messages, prepared, tools = _redecorate_prompt_cache_for_provider(cache_agent, REQUEST)
+
+    assert received == [(expected[0], expected[2])]
+    assert messages is engine_plan.messages
+    assert tools is engine_plan.tools
+    assert (messages, tools) != (expected[0], expected[2])
+    assert prepared is None
+
+
+def test_engine_cache_plan_failure_keeps_host_plan(cache_agent, caplog):
+    expected = deepcopy(_redecorate_prompt_cache_for_provider(cache_agent, REQUEST))
+
+    class Engine(_MinimalEngine):
+        def cache_plan(self, messages, tools, **kwargs):
+            messages[0]["content"] = "mutated"
+            tools[0]["function"]["name"] = "mutated"
+            raise RuntimeError("cache plan failed")
+
+    cache_agent.context_compressor = Engine()
+    actual = _redecorate_prompt_cache_for_provider(cache_agent, REQUEST)
+
+    assert actual == expected
+    assert "Context engine cache_plan hook failed" in caplog.text
+    assert "session=test-session" in caplog.text
+
+
+@pytest.mark.parametrize("result", [None, object(), SimpleNamespace(messages=[])])
+def test_engine_cache_plan_declined_or_invalid_keeps_host_plan(cache_agent, result):
+    expected = _redecorate_prompt_cache_for_provider(cache_agent, REQUEST)
+
+    class Engine(_MinimalEngine):
+        def cache_plan(self, messages, tools, **kwargs):
+            return result
+
+    cache_agent.context_compressor = Engine()
+    assert _redecorate_prompt_cache_for_provider(cache_agent, REQUEST) == expected
+
+
+def test_engine_cache_plan_is_skipped_when_caching_is_off(cache_agent):
+    calls = []
+
+    class Engine(_MinimalEngine):
+        def cache_plan(self, messages, tools, **kwargs):
+            calls.append((messages, tools))
+            return PromptCachePlan([], [])
+
+    cache_agent.context_compressor = Engine()
+    cache_agent._use_prompt_caching = False
+    messages, _, tools = _redecorate_prompt_cache_for_provider(cache_agent, REQUEST)
+
+    assert calls == []
+    assert messages == REQUEST
+    assert tools == cache_agent.tools
 
 
 # -- ABC default -----------------------------------------------------------
@@ -227,7 +332,6 @@ def test_on_turn_complete_called_with_snapshot_and_meta():
     assert captured["usage"] == {"total_tokens": 12}
     assert captured["kwargs"]["turn_id"] == "t1"
     assert captured["kwargs"]["api_call_count"] == 1
-
 
 
 

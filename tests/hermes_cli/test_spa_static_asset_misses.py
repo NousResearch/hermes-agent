@@ -57,6 +57,28 @@ def test_a_font_in_the_served_bundle_wins(monkeypatch, tmp_path):
     assert response.content == b"bundle copy"
 
 
+def test_sign_in_fonts_load_from_the_packaged_dashboard_without_a_source_tree(monkeypatch, tmp_path):
+    """Nix and wheel installs ship no ``web/public``; the packaged dashboard dist has the fonts."""
+    from hermes_cli import web_server as server
+    from hermes_cli import web_server_static_assets as static_assets
+
+    dashboard = tmp_path / "dashboard"
+    (dashboard / "fonts").mkdir(parents=True)
+    urls = _login_font_urls()
+    for url in urls:
+        (dashboard / url.lstrip("/")).write_bytes(b"packaged " + url.encode())
+    webapp = tmp_path / "webapp"
+    webapp.mkdir()
+    monkeypatch.setattr(static_assets, "_WEB_PUBLIC", tmp_path / "no-source-tree" / "web" / "public")
+    monkeypatch.setattr(server, "WEB_DIST", dashboard)
+    client = _spa(monkeypatch, webapp, surface="webapp")
+
+    for url in urls:
+        response = client.get(url)
+        assert response.status_code == 200, url
+        assert response.content == b"packaged " + url.encode()
+
+
 @pytest.mark.parametrize("surface", ["webapp", None], ids=["webapp", "dashboard"])
 @pytest.mark.parametrize("path", [
     "/fonts/Missing-Regular.woff2",

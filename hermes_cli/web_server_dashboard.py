@@ -288,7 +288,7 @@ def mount_spa(application: FastAPI):
         ):
             return FileResponse(file_path)
         if is_static_asset_path(full_path):
-            font = public_font_file(dist, full_path)
+            font = public_font_file(dist, WEB_DIST, full_path)
             if font is not None:
                 return FileResponse(font)
             return JSONResponse({"error": "not found"}, status_code=404)

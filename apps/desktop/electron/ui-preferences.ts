@@ -10,6 +10,7 @@
 // A write merges per key under the `<store>.lock` directory lock (mkdir is
 // atomic on every OS and in Python), bumps `revision`, and lands by temp file +
 // rename. A null value deletes; a `seed` write applies only with no store yet.
+import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -97,8 +98,34 @@ export function parseUiPreferencesWrite(payload: unknown): UiPreferencesWrite {
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
-async function withStoreLock<T>(file: string, run: () => Promise<T>): Promise<T> {
+const ownerFile = (lockDir: string) => path.join(lockDir, 'owner')
+
+async function owns(lockDir: string, token: string): Promise<boolean> {
+  return fs.promises.readFile(ownerFile(lockDir), 'utf8').then(
+    owner => owner === token,
+    () => false
+  )
+}
+
+async function breakIfStale(lockDir: string): Promise<void> {
+  const mtime = await fs.promises.stat(lockDir).then(
+    stat => stat.mtimeMs,
+    () => null
+  )
+
+  // A writer that died holding the lock must not wedge every later write.
+  // Writes hold it for milliseconds; the data file is only ever replaced whole.
+  if (mtime !== null && Date.now() - mtime > LOCK_STALE_MS) {
+    await fs.promises.rm(lockDir, { force: true, recursive: true }).catch(() => undefined)
+  }
+}
+
+/** Cross-process lock shared with the Python writer: the `<store>.lock`
+ *  directory, whose `owner` file names the holder. `run` gets a check that
+ *  the lock is still ours, for right before the file is replaced. */
+async function withStoreLock<T>(file: string, run: (stillOurs: () => Promise<boolean>) => Promise<T>): Promise<T> {
   const lockDir = `${file}.lock`
+  const token = `${process.pid}-${randomBytes(8).toString('hex')}`
   const deadline = Date.now() + LOCK_WAIT_MS
 
   for (;;) {
@@ -111,17 +138,7 @@ async function withStoreLock<T>(file: string, run: () => Promise<T>): Promise<T>
         throw error
       }
 
-      const mtime = await fs.promises.stat(lockDir).then(
-        stat => stat.mtimeMs,
-        () => null
-      )
-
-      if (mtime !== null && Date.now() - mtime > LOCK_STALE_MS) {
-        // A writer that died holding the lock must not wedge every later write.
-        await fs.promises.rmdir(lockDir).catch(() => undefined)
-
-        continue
-      }
+      await breakIfStale(lockDir)
 
       if (Date.now() > deadline) {
         throw new Error('preferences store is busy')
@@ -132,9 +149,15 @@ async function withStoreLock<T>(file: string, run: () => Promise<T>): Promise<T>
   }
 
   try {
-    return await run()
+    await fs.promises.writeFile(ownerFile(lockDir), token, 'utf8')
+
+    return await run(() => owns(lockDir, token))
   } finally {
-    await fs.promises.rmdir(lockDir).catch(() => undefined)
+    // Only while still ours: a lock broken as stale and re-taken by another
+    // writer must not be removed by the writer that lost it.
+    if (await owns(lockDir, token)) {
+      await fs.promises.rm(lockDir, { force: true, recursive: true }).catch(() => undefined)
+    }
   }
 }
 
@@ -158,7 +181,7 @@ export function writeUiPreferences(file: string, write: UiPreferencesWrite): Pro
   const next = writeChain.then(async () => {
     await fs.promises.mkdir(path.dirname(file), { recursive: true })
 
-    return withStoreLock(file, async () => {
+    return withStoreLock(file, async stillOurs => {
       const current = readUiPreferences(file)
 
       if (write.seed && current.exists) {
@@ -189,6 +212,12 @@ export function writeUiPreferences(file: string, write: UiPreferencesWrite): Pro
       }
 
       const revision = current.revision + 1
+
+      if (!(await stillOurs())) {
+        // Held past the stale limit and broken by another writer: replacing the
+        // file now could drop the keys that writer merged meanwhile.
+        throw new Error('preferences store is busy')
+      }
 
       await replaceAtomically(file, `${JSON.stringify({ version: 1, revision, values }, null, 2)}\n`)
 

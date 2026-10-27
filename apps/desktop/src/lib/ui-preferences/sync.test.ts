@@ -133,4 +133,60 @@ describe('machine UI preferences sync', () => {
     expect(window.localStorage.getItem(DENSITY)).toBe('detailed')
     expect(store.snapshot().values).toEqual({ [DENSITY]: 'detailed' })
   })
+
+  it('keeps one write in flight so a newer edit is never overwritten by an older batch', async () => {
+    const store = memoryStore({ [DENSITY]: 'compact' })
+    const write = store.bridge.write
+    let release: () => void = () => undefined
+    let held = true
+    const sent: (null | string)[] = []
+
+    store.bridge.write = payload => {
+      sent.push(payload.values[DENSITY] ?? null)
+
+      return held
+        ? new Promise(resolve => {
+            release = () => {
+              held = false
+              resolve(write(payload))
+            }
+          })
+        : write(payload)
+    }
+
+    stop = startUiPreferencesSync(store.bridge)
+    await vi.runAllTimersAsync()
+    writeKey(DENSITY, 'comfortable')
+    await vi.advanceTimersByTimeAsync(200)
+    writeKey(DENSITY, 'detailed')
+    await vi.advanceTimersByTimeAsync(2000)
+
+    expect(sent).toEqual(['comfortable'])
+
+    release()
+    await vi.runAllTimersAsync()
+
+    expect(sent).toEqual(['comfortable', 'detailed'])
+    expect(store.snapshot().values[DENSITY]).toBe('detailed')
+    expect(window.localStorage.getItem(DENSITY)).toBe('detailed')
+  })
+
+  it('does not hold later changes behind a batch the store refused', async () => {
+    const store = memoryStore({ [DENSITY]: 'compact' })
+    const write = store.bridge.write
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+    store.bridge.write = payload =>
+      MODE in payload.values ? Promise.reject(new Error('400: unsupported value for ' + MODE)) : write(payload)
+
+    stop = startUiPreferencesSync(store.bridge)
+    await vi.runAllTimersAsync()
+    writeKey(MODE, 'x'.repeat(10))
+    await vi.runAllTimersAsync()
+    writeKey(DENSITY, 'detailed')
+    await vi.runAllTimersAsync()
+
+    expect(store.snapshot().values).toEqual({ [DENSITY]: 'detailed' })
+    expect(window.localStorage.getItem(MODE)).toBe('x'.repeat(10))
+  })
 })

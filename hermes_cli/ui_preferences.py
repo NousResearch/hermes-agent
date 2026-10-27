@@ -21,11 +21,12 @@ credentials, grants and per-window state out.
 from __future__ import annotations
 
 import os
+import secrets
 import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, Mapping, Optional
+from typing import Callable, Iterator, Mapping, Optional
 
 from utils import atomic_json_write, read_json_or_empty
 
@@ -51,12 +52,15 @@ class PreferencesBusy(RuntimeError):
 
 
 def store_path(root: Optional[Path] = None) -> Path:
-    """The machine's preferences file. The root home is the same for every profile one process
-    serves, so this read is profile-independent by design (not a launch-profile leak)."""
+    """The machine's preferences file, resolved by the same rule native Desktop applies to its
+    ``HERMES_HOME`` (``resolveDesktopHermesHome``): a profile home (``<root>/profiles/<name>``)
+    names its root, any other home is its own root. Every profile one process serves maps to the
+    same root, so this read is profile-independent by design (not a launch-profile leak)."""
     if root is None:
-        from hermes_constants import get_default_hermes_root
+        from hermes_constants import get_hermes_home
 
-        root = get_default_hermes_root()
+        home = Path(get_hermes_home()).resolve()
+        root = home.parent.parent if home.parent.name.lower() == "profiles" else home
     return Path(root) / STORE_NAME
 
 
@@ -90,10 +94,51 @@ def _validate(changes: Mapping[str, Optional[str]]) -> None:
             raise PreferencesError(f"unsupported value for {key}")
 
 
+def _owner_file(lock_dir: Path) -> Path:
+    return lock_dir / "owner"
+
+
+def _release(lock_dir: Path, token: str) -> None:
+    """Remove the lock only while it is still ours: a lock broken as stale and re-taken by another
+    writer must not be removed by the writer that lost it."""
+    if not _owns(lock_dir, token):
+        return
+    try:
+        _owner_file(lock_dir).unlink()
+        os.rmdir(lock_dir)
+    except OSError:
+        pass
+
+
+def _owns(lock_dir: Path, token: str) -> bool:
+    try:
+        return _owner_file(lock_dir).read_text(encoding="utf-8-sig") == token
+    except OSError:
+        return False
+
+
+def _break_if_stale(lock_dir: Path) -> None:
+    try:
+        stale = time.time() - lock_dir.stat().st_mtime > _LOCK_STALE_S
+    except FileNotFoundError:
+        return
+    if not stale:
+        return
+    # A writer that died holding the lock must not wedge every later write. Writes hold it for
+    # milliseconds, and the data file itself is only ever replaced whole.
+    try:
+        _owner_file(lock_dir).unlink(missing_ok=True)
+        os.rmdir(lock_dir)
+    except OSError:
+        pass
+
+
 @contextmanager
-def _store_lock(path: Path) -> Iterator[None]:
-    """Cross-process lock shared with the Electron writer: the ``<store>.lock`` directory."""
+def _store_lock(path: Path) -> Iterator[Callable[[], bool]]:
+    """Cross-process lock shared with the Electron writer: the ``<store>.lock`` directory, whose
+    ``owner`` file names the holder."""
     lock_dir = path.with_name(path.name + ".lock")
+    token = f"{os.getpid()}-{secrets.token_hex(8)}"
     deadline = time.monotonic() + _LOCK_WAIT_S
     with _thread_lock:
         while True:
@@ -101,28 +146,15 @@ def _store_lock(path: Path) -> Iterator[None]:
                 os.mkdir(lock_dir)
                 break
             except FileExistsError:
-                try:
-                    stale = time.time() - lock_dir.stat().st_mtime > _LOCK_STALE_S
-                except FileNotFoundError:
-                    continue
-                if stale:
-                    # A writer that died holding the lock must not wedge every later write; the
-                    # data file itself is only ever replaced whole, so breaking it loses nothing.
-                    try:
-                        os.rmdir(lock_dir)
-                    except OSError:
-                        pass
-                    continue
+                _break_if_stale(lock_dir)
                 if time.monotonic() > deadline:
                     raise PreferencesBusy("preferences store is busy")
                 time.sleep(_LOCK_POLL_S)
         try:
-            yield
+            _owner_file(lock_dir).write_text(token, encoding="utf-8")
+            yield lambda: _owns(lock_dir, token)
         finally:
-            try:
-                os.rmdir(lock_dir)
-            except OSError:
-                pass
+            _release(lock_dir, token)
 
 
 def write_preferences(changes: Mapping[str, Optional[str]], *, seed: bool = False,
@@ -135,7 +167,7 @@ def write_preferences(changes: Mapping[str, Optional[str]], *, seed: bool = Fals
     _validate(changes)
     path = path or store_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    with _store_lock(path):
+    with _store_lock(path) as still_ours:
         current = _snapshot(path)
         if seed and current["exists"]:
             return current
@@ -150,5 +182,9 @@ def write_preferences(changes: Mapping[str, Optional[str]], *, seed: bool = Fals
         if current["exists"] and values == current["values"]:
             return current
         revision = current["revision"] + 1
+        if not still_ours():
+            # Held past the stale limit and broken by another writer: replacing the file now
+            # could drop the keys that writer merged meanwhile.
+            raise PreferencesBusy("preferences store lock was taken over")
         atomic_json_write(path, {"version": 1, "revision": revision, "values": values}, mode=0o600)
     return {"exists": True, "revision": revision, "values": values}

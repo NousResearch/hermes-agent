@@ -53,6 +53,23 @@ test('native Desktop and the Webapp server resolve the same store from a profile
   assert.equal(pythonFile, electronFile)
 })
 
+test('a custom home inside the default home resolves the same store on both sides', () => {
+  const home = scratchHome()
+  const sandbox = path.join(home, '.hermes', 'sandbox')
+  fs.mkdirSync(sandbox, { recursive: true })
+
+  const electronFile = uiPreferencesPath(resolveDesktopHermesHome({ env: { HERMES_HOME: sandbox }, home }))
+
+  const pythonFile = execFileSync(python, ['-c', PY_PATH], {
+    cwd: repo,
+    encoding: 'utf8',
+    env: pythonEnv(home, sandbox)
+  }).trim()
+
+  assert.equal(electronFile, path.join(sandbox, 'ui-preferences.json'))
+  assert.equal(fs.realpathSync(path.dirname(pythonFile)), fs.realpathSync(path.dirname(electronFile)))
+})
+
 test('concurrent native and Webapp writers keep every key the other wrote', async () => {
   const home = scratchHome()
   const root = path.join(home, 'root')

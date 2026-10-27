@@ -114,6 +114,14 @@ function saveOutbox(pending: Map<string, null | string>) {
   writeRaw(OUTBOX_KEY, pending.size === 0 ? null : JSON.stringify(Object.fromEntries(pending)))
 }
 
+/** A write the store answered "no" to (HTTP 400 / validation), as opposed to
+ *  one that could not reach it; only the latter is worth retrying. */
+function isRefusal(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+
+  return /^400:|unsupported preference|unsupported value|store is full/.test(message)
+}
+
 function announce(key: string, oldValue: null | string, newValue: null | string) {
   // Existing cross-window listeners (theme, translucency, haptics, persistent
   // atoms) already follow `storage` events; a same-window apply fires one too.
@@ -135,6 +143,8 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
 
   const known = new Map<string, null | string>()
   const pending = readOutbox()
+  // Values the store refused, kept in this window until changed again.
+  const refused = new Map<string, null | string>()
   let revision = -1
   let flushTimer: ReturnType<typeof setTimeout> | null = null
   let stopped = false
@@ -159,7 +169,7 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
       known.set(key, value)
 
       // A change made here and not yet stored outranks an older store value.
-      if (pending.has(key)) {
+      if (pending.has(key) || (refused.has(key) && refused.get(key) === readRaw(key))) {
         continue
       }
 
@@ -171,12 +181,17 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
     }
   }
 
+  let writing = false
+  let writeDelay = RETRY_DELAY_MS
+
   const schedule = (delay: number) => {
-    if (flushTimer === null && ready && !stopped) {
+    if (flushTimer === null && !writing && ready && !stopped) {
       flushTimer = setTimeout(() => void flush(), delay)
     }
   }
 
+  // One write in flight at a time: two independent requests could commit out
+  // of order, and the older batch's later revision would win.
   const flush = async () => {
     flushTimer = null
 
@@ -185,26 +200,43 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
     }
 
     const batch = new Map(pending)
+    let retryIn = FLUSH_DELAY_MS
+    writing = true
 
     try {
       const snapshot = await bridge.write({ values: Object.fromEntries(batch) })
 
-      for (const [key, value] of batch) {
-        if (pending.get(key) === value) {
-          pending.delete(key)
-        }
-      }
-
-      saveOutbox(pending)
-
+      settle(batch)
+      writeDelay = RETRY_DELAY_MS
       apply(snapshot, { live: true })
-    } catch {
-      schedule(RETRY_DELAY_MS)
+    } catch (error) {
+      if (isRefusal(error)) {
+        // The store refused this batch outright (oversized value, full store):
+        // it stays in this window only, and later changes are not held behind it.
+        console.warn('[ui-preferences] the machine store refused these preferences', [...batch.keys()], error)
+        batch.forEach((value, key) => refused.set(key, value))
+        settle(batch)
+      } else {
+        retryIn = writeDelay
+        writeDelay = Math.min(writeDelay * 2, MAX_RETRY_DELAY_MS)
+      }
+    } finally {
+      writing = false
     }
 
     if (pending.size > 0) {
-      schedule(FLUSH_DELAY_MS)
+      schedule(retryIn)
     }
+  }
+
+  const settle = (batch: Map<string, null | string>) => {
+    for (const [key, value] of batch) {
+      if (pending.get(key) === value) {
+        pending.delete(key)
+      }
+    }
+
+    saveOutbox(pending)
   }
 
   const stopListening = onPersistenceEvent(event => {
@@ -216,6 +248,7 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
       return
     }
 
+    refused.delete(event.key)
     pending.set(event.key, event.value)
     saveOutbox(pending)
     schedule(FLUSH_DELAY_MS)

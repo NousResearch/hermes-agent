@@ -109,7 +109,9 @@ export function persistentAtom<T>(key: string, fallback: T, codec: Codec<T> = Co
       adopting = true
 
       try {
-        $value.set(decodeOr(event.newValue, fallback, codec))
+        // The stored value, not the event's: events from other windows queue,
+        // and an older one must not undo a newer edit made here meanwhile.
+        $value.set(decodeOr(readKey(key), fallback, codec))
       } finally {
         adopting = false
       }

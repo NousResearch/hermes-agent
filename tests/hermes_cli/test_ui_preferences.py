@@ -29,6 +29,17 @@ def test_a_profile_home_and_the_root_home_resolve_the_same_store(monkeypatch, tm
     assert from_root == from_profile == root / "ui-preferences.json"
 
 
+def test_a_custom_home_under_the_native_home_is_its_own_root(monkeypatch, tmp_path):
+    """Native Desktop keeps an explicit ``HERMES_HOME`` that is not a profile as the root; the
+    Webapp's server must resolve the same file, not collapse it to the native home."""
+    sandbox = tmp_path / ".hermes" / "sandbox"
+    sandbox.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(sandbox))
+
+    assert ui_preferences.store_path() == sandbox.resolve() / "ui-preferences.json"
+
+
 def test_the_seed_import_never_overwrites_an_existing_store(tmp_path):
     path = tmp_path / "ui-preferences.json"
     first = ui_preferences.write_preferences({"hermes.desktop.sessionListDensity": "detailed"},

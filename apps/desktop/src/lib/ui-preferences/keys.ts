@@ -36,6 +36,7 @@ const SHARED_KEYS: ReadonlySet<string> = new Set([
   'hermes.desktop.profileRailVisible',
   'hermes.desktop.sessionListDensity',
   'hermes.desktop.sessionOrder',
+  'hermes.desktop.sessionOrder.manual',
   'hermes.desktop.showAllProfiles',
   'hermes.desktop.sidebarAgentsGrouped.allProfiles',
   'hermes.desktop.sidebarCardRows',
@@ -74,6 +75,8 @@ const SHARED_KEYS: ReadonlySet<string> = new Set([
   // Model picker.
   'hermes.desktop.collapsed-providers',
   'hermes.desktop.favorite-models',
+  // visible-models is a diff against known-models: they only make sense together.
+  'hermes.desktop.known-models',
   'hermes.desktop.model-presets',
   'hermes.desktop.visible-models'
 ])

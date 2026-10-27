@@ -5694,8 +5694,23 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                  + len(self._approval_mention_content() or "") + 1)
         return max(0, self.MAX_MESSAGE_LENGTH - fixed)
 
+    async def expire_exec_approval(self, chat_id: str, message_id: str, content: str) -> SendResult:
+        """Remove Discord's components when the backend approval expires."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        try:
+            channel = await self._resolve_channel(chat_id)
+            msg = channel.get_partial_message(int(message_id))
+            content = self.truncate_message(self.format_message(content), self.MAX_MESSAGE_LENGTH)[0]
+            await msg.edit(content=content, view=None)
+            return SendResult(success=True, message_id=message_id)
+        except Exception as exc:
+            logger.warning("[Discord] Failed to expire approval card: %s", exc, exc_info=True)
+            return SendResult(success=False, error=str(exc))
+
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Send an approval with content as its canonical payload and an embed for state."""
+        view_holder = []
         def _build(_channel):
             content = prompt.text
             mention_content = self._approval_mention_content()
@@ -5712,7 +5727,9 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 allowed_role_ids=self._allowed_role_ids, require_admin=require_admin,
                 admin_user_ids=admin_user_ids, allow_permanent="always" in choices,
                 allow_session="session" in choices, smart_denied=prompt.smart_denied,
+                request_id=(prompt.metadata or {}).get("_approval_request_id"),
             )
+            view_holder.append(view)
             send_kwargs: dict[str, Any] = {"content": content, "embed": embed, "view": view}
             if mention_content:
                 allowed_mentions_cls = getattr(discord, "AllowedMentions", None)
@@ -5721,7 +5738,18 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                         users=True, roles=False, everyone=False, replied_user=False,
                     )
             return send_kwargs, view
-        return await self._send_prompt(prompt.chat_id, prompt.metadata, _build)
+        result = await self._send_prompt(prompt.chat_id, prompt.metadata, _build)
+        if result.success and view_holder and view_holder[0].request_id:
+            from tools.approval import observe_gateway_settle
+            view = view_holder[0]
+            loop = asyncio.get_running_loop()
+
+            def retire(_reason):
+                loop.call_soon_threadsafe(lambda: loop.create_task(view.retire()))
+
+            if not observe_gateway_settle(prompt.session_key, view.request_id, retire):
+                await view.retire()
+        return result
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str,
@@ -6437,9 +6465,14 @@ def _define_discord_view_classes() -> None:
             self, session_key: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None,
             require_admin: bool = False, admin_user_ids: Optional[set] = None,
             allow_permanent: bool = True, allow_session: bool = True, smart_denied: bool = False,
+            request_id: Optional[str] = None,
         ):
-            super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
+            # The backend starts waiting only after delivery. Its settlement retires
+            # this exact card; a separate view timer could expire it prematurely.
+            timeout = None if request_id else _read_discord_prompt_timeout()
+            super().__init__(allowed_user_ids, allowed_role_ids, timeout=timeout)
             self.session_key = session_key
+            self.request_id = request_id
             self.require_admin = require_admin
             self.admin_user_ids = {str(a).strip() for a in (admin_user_ids or set()) if str(a).strip()}
             self._localize_buttons(
@@ -6475,6 +6508,19 @@ def _define_discord_view_classes() -> None:
                 )
             return False
 
+        async def retire(self):
+            """Disable a card when its particular backend request is no longer pending."""
+            if self.resolved:
+                return
+            self.resolved = True
+            self._disable_all()
+            if self._message:
+                try:
+                    await self._message.edit(view=self)
+                except Exception:
+                    logger.debug("[Discord] Could not retire approval card", exc_info=True)
+            self.stop()
+
         async def _resolve(self, interaction: discord.Interaction, choice: str, color: discord.Color, label_key: str):
             """Resolve the approval via the gateway approval queue and update the embed."""
             if not await self._gate(
@@ -6488,7 +6534,7 @@ def _define_discord_view_classes() -> None:
             # wait timed out (count == 0) must not claim "Approved".
             try:
                 from tools.approval import resolve_gateway_approval
-                count = resolve_gateway_approval(self.session_key, choice)
+                count = resolve_gateway_approval(self.session_key, choice, request_id=self.request_id)
                 logger.info(
                     "Discord button resolved %d approval(s) for session %s (choice=%s, user=%s)",
                     count, self.session_key, choice, interaction.user.display_name,

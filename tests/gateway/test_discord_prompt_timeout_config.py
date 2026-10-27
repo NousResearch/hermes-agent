@@ -1,7 +1,6 @@
 """Tests for the configurable Discord interactive-view timeout.
 
-Previously hardcoded to 300s on ExecApprovalView, SlashConfirmView,
-UpdatePromptView, and ClarifyChoiceView. Now reads
+SlashConfirmView, UpdatePromptView, and ClarifyChoiceView read
 ``approvals.discord_prompt_timeout`` with the same 300s default, clamped to
 ``[_DISCORD_PROMPT_TIMEOUT_MIN, _DISCORD_PROMPT_TIMEOUT_MAX]`` so a typo
 can't make prompts disappear (too short) or outlive Discord's 15-min

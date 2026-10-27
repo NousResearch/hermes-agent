@@ -107,6 +107,16 @@ def test_timeout_edits_the_card_to_say_the_command_did_not_run(pending_entry, tm
     assert adapter.card_metadata == [{"thread_id": "t1"}]  # no notify: A2A's turn-final marker
 
 
+def test_prompt_carries_request_identity(pending_entry):
+    adapter = _ButtonAdapter()
+    data = dict(pending_entry.data, timeout_s=3600)
+    _runner(adapter)._approval_notify_sync(data)
+
+    assert adapter.card_metadata == [{
+        "thread_id": "t1", "_approval_request_id": pending_entry.data["request_id"],
+    }]
+
+
 @pytest.mark.parametrize("text_fallback", [False, True])
 def test_timeout_falls_back_to_a_new_message_when_the_card_cannot_be_edited(pending_entry, text_fallback):
     adapter = _PlainAdapter() if text_fallback else _ButtonAdapter(editable=False)

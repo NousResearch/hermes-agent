@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -63,6 +64,97 @@ async def test_exec_approval_content_stays_within_discord_cap_for_long_reason():
     assert result.success is True
     assert len(sent["content"]) <= adapter.MAX_MESSAGE_LENGTH
     assert "xxx" in sent["content"]  # the command preview is not starved to zero
+
+
+@pytest.mark.asyncio
+async def test_exec_approval_view_uses_the_waiting_request_timeout():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    sent = _capture_channel(adapter)
+
+    result = await adapter.send_exec_approval(
+        chat_id="555", command="ls", session_key="agent:other:discord:555",
+        metadata={"_approval_request_id": "request-1"},
+    )
+
+    assert result.success
+    assert sent["view"].timeout is None
+    assert sent["view"].request_id == "request-1"
+
+
+@pytest.mark.asyncio
+async def test_expired_card_cannot_resolve_a_different_pending_request(monkeypatch):
+    from plugins.platforms.discord import adapter as discord_adapter
+    from tools import approval
+    from tools.approval_gateway_wait import _ApprovalEntry
+
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    sent = _capture_channel(adapter)
+    session = "agent:other:discord:555"
+    await adapter.send_exec_approval(
+        chat_id="555", command="ls", session_key=session,
+        metadata={"_approval_request_id": "expired"},
+    )
+    other = _ApprovalEntry({"request_id": "new", "command": "rm other"})
+    monkeypatch.setitem(approval._gateway_queues, session, [other])
+    view = sent["view"]
+    monkeypatch.setattr(view, "_gate", AsyncMock(return_value=True))
+    monkeypatch.setattr(view, "_finalize_embed", AsyncMock())
+    monkeypatch.setattr(discord_adapter.discord, "Color", SimpleNamespace(dark_grey=lambda: 0))
+    interaction = SimpleNamespace(user=SimpleNamespace(display_name="tester"))
+
+    await view._resolve(interaction, "once", 1, "gateway.exec_approval.action_once")
+
+    assert not other.event.is_set()
+    assert approval._gateway_queues[session] == [other]
+
+
+@pytest.mark.asyncio
+async def test_expired_approval_removes_discord_components():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    message = SimpleNamespace(edit=AsyncMock())
+    channel = SimpleNamespace(get_partial_message=lambda _id: message)
+    adapter._client = SimpleNamespace(get_channel=lambda _id: channel)
+
+    result = await adapter.expire_exec_approval("555", "1234", "Approval timed out")
+
+    assert result.success
+    assert message.edit.await_args.kwargs["view"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("expire_during_send", [False, True])
+async def test_card_retires_when_backend_request_ends(monkeypatch, expire_during_send):
+    from tools import approval
+    from tools.approval_gateway_wait import _ApprovalEntry
+
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    session = "agent:other:discord:555"
+    entry = _ApprovalEntry({"request_id": "request-1", "command": "ls"})
+    monkeypatch.setitem(approval._gateway_queues, session, [entry])
+    message = SimpleNamespace(id=1234, edit=AsyncMock())
+    sent = {}
+
+    async def send(**kwargs):
+        sent.update(kwargs)
+        if expire_during_send:
+            approval._gateway_queues.pop(session)
+        return message
+
+    channel = SimpleNamespace(send=send)
+    adapter._client = SimpleNamespace(get_channel=lambda _id: channel)
+    await adapter.send_exec_approval(
+        chat_id="555", command="ls", session_key=session,
+        metadata={"_approval_request_id": "request-1"},
+    )
+    view = sent["view"]
+    if not expire_during_send:
+        assert not view.resolved
+        assert len(entry.observers) == 1
+        entry.observers[0]("timeout")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+    assert view.resolved
+    message.edit.assert_awaited_once()
 
 
 

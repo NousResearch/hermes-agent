@@ -209,7 +209,7 @@ class TestOnSessionEndHook:
         )
 
     @patch("hermes_cli.plugins.invoke_hook")
-    def test_idle_close_fires_no_hook(self, mock_invoke_hook):
+    def test_idle_close_fires_no_session_end(self, mock_invoke_hook):
         """Closing between turns fires nothing: the finished run already fired its own on_session_end."""
         from tui_gateway.server import _finalize_session
 

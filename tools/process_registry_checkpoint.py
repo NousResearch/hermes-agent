@@ -37,7 +37,7 @@ class ProcessCheckpointMixin:
 
     def _stop_scope(self, session) -> bool:
         """Stop the recorded native scope and persist its verdict, even after its wrapper exits."""
-        from tools.process_registry_job import job_quiescent, record_scope_quiescence
+        from tools.process_registry_job import job_quiescent, record_scope_quiescence, unit_quiescent
         if not session.systemd_unit:
             stopped = job_quiescent(session)
             if stopped and session.exited:
@@ -48,13 +48,18 @@ class ProcessCheckpointMixin:
             self._write_checkpoint()
             return stopped
         from tools.process_registry import _stop_systemd_unit
-        stopped = _stop_systemd_unit(session.systemd_unit)
+        proven = unit_quiescent(session)
+        stopped = proven or _stop_systemd_unit(session.systemd_unit)
         session._scope_stop_pending = not stopped
         if stopped:
             try:
-                record_scope_quiescence(session)
+                if not proven:
+                    record_scope_quiescence(session)
                 self._write_checkpoint()  # Publish capability before a concurrent old result writer.
-                if session.exited and not self._reader_finalizing(session):
+                if session.output_log:
+                    if not self._collect_unit_log(session):
+                        raise OSError('original native unit output is not collected')
+                elif session.exited and not self._reader_finalizing(session):
                     from tools.process_registry_results import save_completed_result
                     if not save_completed_result(session):
                         raise OSError('native scope result is not durable')
@@ -62,7 +67,7 @@ class ProcessCheckpointMixin:
                 session._scope_stop_pending = True
                 self._write_checkpoint()
                 return False
-            session.systemd_unit = ''  # The active binding is discharged only by affirmative Stop.
+            session.systemd_unit, session._scope_stop_pending = '', False  # All native proofs committed.
         self._write_checkpoint()
         return stopped
 
@@ -78,7 +83,8 @@ class ProcessCheckpointMixin:
             result = {'status': 'error', 'error': 'process_stop_unknown',
                       'session_id': session.id, 'process_running': not session.exited,
                       **_completion_output(session)}
-            if session.systemd_unit:
+            from tools.process_registry_job import unit_quiescent
+            if session.systemd_unit and not unit_quiescent(session):
                 result['scope_stop_failed'] = session.systemd_unit
         self._write_checkpoint()
         if session.exited:
@@ -159,7 +165,13 @@ class ProcessCheckpointMixin:
                 updates = merge_ownership(entries, previous)
                 updates.update(merge_ownership(entries, receipts))
                 capabilities = inherit_job_scope(entries, [*previous, *receipts])
+                from tools.process_registry_output_log import inherit_unit_log, finalized_unit_result
+                inherit_unit_log(entries, [*previous, *receipts])
                 retained = {entry['id']: entry for entry in receipts}
+                for entry in entries:
+                    if finalized_unit_result(entry, retained.get(entry['session_id'])):
+                        entry['systemd_unit'], entry['_scope_stop_pending'] = '', False
+                        retiring.add(entry['session_id'])
                 entries = [entry for entry in entries if entry['session_id'] not in retiring
                            or not job_quiescent(entry) or not (
                                persisted.get(entry['session_id'], -1) == entry.get('ownership_generation', 0) or (

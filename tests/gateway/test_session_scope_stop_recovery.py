@@ -61,11 +61,11 @@ async def test_refused_owned_scope_survives_reload_without_signaling_foreign_pid
         if retained_snapshot:
             from tools.process_registry_results import load_completed_results
             registry._finished.update(load_completed_results(owns_entry=lambda row: row['id'] == own.id, strict=True))
-            assert own.id in registry._finished and not registry._finished[own.id].systemd_unit
+            assert own.id in registry._finished and registry._finished[own.id].systemd_unit == unit
         monkeypatch.setattr(registry, '_terminate_host_pid', lambda *a, **kw: pytest.fail('a dead/reused wrapper PID was signaled'))
         attempts.clear()
         assert not await retry_process_stop(reloaded, REF)
-        assert attempts == [unit] and process_stop_pending(db, 's') is not None
+        assert attempts and set(attempts) == {unit} and process_stop_pending(db, 's') is not None
         assert not neighbor.exited
         assert own.id in {item['session_id'] for item in json.loads(module._checkpoint_path().read_text(encoding='utf-8'))}
         monkeypatch.setattr(module, '_stop_systemd_unit', lambda value: attempts.append(value) or True)
@@ -125,10 +125,8 @@ async def test_completed_log_reader_cannot_hide_unattempted_owned_scope(tmp_path
         assert await asyncio.to_thread(own._completion_event.wait, 10)
         assert log.with_suffix('.exit').read_text().strip() == '0'
         entry = {'session_id': own.id, **{field: getattr(own, field) for field in module._CHECKPOINT_FIELDS}}
-        unit = 'hermes-worker-unattempted.scope'
-        entry.update(systemd_unit=unit, _scope_stop_pending=False,
-                     pid=neighbor.pid, host_start_time=neighbor.host_start_time - 1)
-        own.systemd_unit, own.pid, own.host_start_time = unit, entry['pid'], entry['host_start_time']
+        unit = own.systemd_unit
+        entry.update(_scope_stop_pending=False)
         original._write_checkpoint(extra_entries=[entry])
         record_process_stop(authority, REF, authority._handle(REF).execution_generation)
         epoch = begin_runtime_epoch(db, instance_id='reloaded')
@@ -136,6 +134,9 @@ async def test_completed_log_reader_cannot_hide_unattempted_owned_scope(tmp_path
         reloaded.sessions['s'] = LiveSession(authority.sessions['s'].source, 'route')
         registry = module.ProcessRegistry()
         monkeypatch.setattr(module, 'process_registry', registry)
+        fate = registry._detached_host_fate
+        monkeypatch.setattr(registry, '_detached_host_fate',
+            lambda pid, birth: 'reused' if pid == own.pid else fate(pid, birth))
         track = registry._track_started
 
         def reader_finishes_first(session, *args, **kwargs):

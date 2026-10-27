@@ -53,7 +53,7 @@ def checkpoint_retains_receipt(path):
     from tools.process_registry import _checkpoint_path
     try:
         entries = json.loads(_checkpoint_path().read_text(encoding='utf-8-sig'))
-        return any(row['session_id'] + '.scope.exit' == path.name for row in entries)
+        return any(path.name in (row['session_id'] + '.scope.exit', row['session_id'] + '.exit') for row in entries)
     except FileNotFoundError:
         return False
     except (OSError, ValueError, TypeError, KeyError):
@@ -63,6 +63,12 @@ def checkpoint_retains_receipt(path):
 def job_quiescent(session):
     row = read_job_receipt(session)
     return bool(row and row['quiescent'] and type(row['exit_code']) is int)
+
+
+def unit_quiescent(session):
+    row = read_job_receipt(session)
+    return bool(row and row.get('unit') == session.systemd_unit and session.systemd_unit
+                and row['quiescent'] and type(row['exit_code']) is int)
 
 
 def inherit_job_scope(entries, previous):
@@ -86,7 +92,7 @@ def job_exit_result(session, exit_code, reason, source):
     if not job_quiescent(session):
         session._scope_stop_pending = True
         reason, source = 'lost', 'native_job_lost'
-    elif reason == 'lost':
+    elif reason == 'lost' and not row.get('unit'):
         reason, source = 'exited', ''
     return exit_code, reason, source
 
@@ -133,12 +139,16 @@ def record_stopped_unit(registry, entry):
             with registry._lock:
                 registry._finished.setdefault(cached.id, cached)
     with registry._lock:
-        if cached is not None and cached.systemd_unit in ('', systemd_unit):
-            cached.native_job_scope = True
-            cached.systemd_unit, cached._scope_stop_pending = '', False
-            from tools.process_registry_results import save_completed_result
-            if not save_completed_result(cached):
-                raise OSError('native scope result is not durable')
+        if cached is None or cached.systemd_unit not in ('', systemd_unit):
+            raise OSError('original native unit result unavailable')
+        cached.native_job_scope, cached.systemd_unit = True, systemd_unit
+    from tools.process_registry_results import save_completed_result
+    if cached.output_log:
+        if not registry._collect_unit_log(cached):
+            raise OSError('original native unit output is not collected')
+    elif not save_completed_result(cached):
+        raise OSError('native scope result is not durable')
+    cached.systemd_unit, cached._scope_stop_pending = '', False
 
 
 def job_argv(session, argv, grace):

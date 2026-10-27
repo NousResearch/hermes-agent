@@ -22,6 +22,9 @@ def spawn_local_pipe(registry, session, safe_command, env_vars, pty_scope_attemp
     # The scope does not create a new session; preserve TTY/process-group isolation.
     output = facade.open_output_log(log) if log else facade.subprocess.PIPE
     try:
+        if log and session.systemd_unit:
+            from tools.process_registry_output_log import bind_unit_log
+            bind_unit_log(session, output)
         proc = facade.subprocess.Popen(
             argv, text=True, cwd=session.cwd, env=env, encoding="utf-8", errors="replace",
             stdout=output, stderr=facade.subprocess.STDOUT,

@@ -571,6 +571,7 @@ class ProcessSession:
     persist_on_release: bool = False           # opt out of agent-lifecycle cleanup (release()/turn-abandon kill
                                                 # sweeps), per terminal(background=true, persist_on_release=true) (#41225)
     output_log: str = ""                        # file the process writes to (worker spawns; no pipe to lose)
+    output_log_state: Optional[dict] = None     # Actual unit stdout identity and collected raw prefix.
     # Watcher/notification routing (persisted for crash recovery)
     watcher_platform: str = ""
     watcher_chat_id: str = ""
@@ -663,7 +664,7 @@ _CHECKPOINT_FIELDS = (
     "started_at", "task_id", "owner_task_id", "session_key",
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
     "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns",
-    "heartbeat_seconds", "persist_on_release", "output_log", "_scope_stop_pending",
+    "heartbeat_seconds", "persist_on_release", "output_log", "output_log_state", "_scope_stop_pending",
     "handoff_note", "ownership_generation")
 _CHECKPOINT_DEFAULTS = {
     f.name: ([] if f.name == "watch_patterns" else f.default)
@@ -1128,9 +1129,13 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
     def _track_started(self, session: ProcessSession, reader_target, reader_name: str, extra_args=()) -> None:
         """Register before the reader can publish completion, even for an exited child."""
         from contextvars import copy_context
+        from hermes_constants import set_hermes_home_override
 
-        # Reader completion must retain the producer's multiplex profile scope.
-        reader = threading.Thread(target=copy_context().run, args=(reader_target, session, *extra_args),
+        # A copied context with no override still follows mutable process ENV.
+        # Bind this producer's home before its original reader can outlive the turn.
+        reader_context = copy_context()
+        reader_context.run(set_hermes_home_override, get_hermes_home().absolute())
+        reader = threading.Thread(target=reader_context.run, args=(reader_target, session, *extra_args),
                                   daemon=True, name=reader_name)
         session._reader_thread = reader
         with self._lock:
@@ -2160,7 +2165,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             # not stop leaves nothing proving they are gone, even when the root exited meanwhile.
             # The session keeps its unit, so a later kill retries the stop.
             if not scope_stopped:
-                if not session.systemd_unit:
+                from tools.process_registry_job import unit_quiescent
+                if not session.systemd_unit or unit_quiescent(session):
                     return self._refuse_backend_stop(session, consume_output)
                 with session._lock:
                     root_exited = session.exited

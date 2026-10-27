@@ -209,7 +209,7 @@ async def test_stamped_local_route_reopens_its_own_row_instead_of_minting(tmp_pa
     SessionStore's stale-route heal (#54878) answers with a freshly minted id otherwise, and a second
     row then sits on the same route — the routing index names an id no receipt owns.
     """
-    from gateway.session_local_recovery import restore_local_session
+    from gateway.session_local_recovery import reopen_local_session, restore_local_session
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     fx = await _local_fixture(tmp_path, monkeypatch)
@@ -219,7 +219,12 @@ async def test_stamped_local_route_reopens_its_own_row_instead_of_minting(tmp_pa
         'SELECT id, end_reason FROM sessions WHERE session_key=?', (fx.route,))
     assert entry.session_id == fx.ref.session_id, 'the heal minted a fresh id for a local route'
     assert [r['id'] for r in rows] == [fx.ref.session_id], 'a second row landed on the local route'
-    assert rows[0]['end_reason'] is None, 'the reopened row kept its viewer stamp'
+    # Mounting is a read and must leave the viewer's stamp alone; the first admitted turn is what
+    # reopens the row (#85303). Clearing it on mount would revive a session nobody asked to reopen.
+    assert rows[0]['end_reason'] == 'tui_close', 'the mount cleared a stamp it must leave alone'
+    reopen_local_session(fx.authority, fx.ref)
+    assert fx.authority.db.get_session(fx.ref.session_id)['end_reason'] is None, \
+        'the first admitted turn left the row finalized'
     restore_local_session(fx.authority, fx.ref.session_id)
 
 

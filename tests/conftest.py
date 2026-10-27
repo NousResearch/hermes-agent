@@ -147,6 +147,29 @@ for _key in SCRATCH_TMP_ENV_VARS:
         if any(_path.is_relative_to(_root) for _root in _guarded_tmp_roots):
             del os.environ[_key]
 tempfile.tempdir = None  # re-resolve after stripping guarded temp directories
+
+# A sealed payload keeps its manifest beside the tree (``<payload>/manifest.json``), and every
+# entry-point module probes for it at import, before anything is activated. When the checkout itself
+# sits directly inside a guarded home — which is how this install lives, ``~/.hermes/hermes-agent`` —
+# that probe reads a real-home path and the home-IO guard fails every test that imports an entry
+# point. The probe can never be meaningful there: the real home is a state root, not a payload, so
+# answer ``None`` for it and leave every other root (and every fake payload a test builds) alone.
+from pm import environments as _pm_environments
+
+_payload_manifest_real = _pm_environments._payload_manifest
+
+
+def _payload_manifest_outside_guarded_home(root):
+    try:
+        parent = Path(root).resolve().parent
+    except OSError:
+        return _payload_manifest_real(root)
+    if any(parent.is_relative_to(guarded) for guarded in _guarded_tmp_roots):
+        return None
+    return _payload_manifest_real(root)
+
+
+_pm_environments._payload_manifest = _payload_manifest_outside_guarded_home
 os.environ.setdefault("TMPDIR", tempfile.gettempdir())
 
 if _hermes_home_points_at_production(os.environ.get("HERMES_HOME", "")):

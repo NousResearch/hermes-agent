@@ -11,7 +11,7 @@ from starlette.websockets import WebSocketDisconnect
 from hermes_cli import web_host_terminal, web_server, web_server_chat
 from hermes_cli.web_routers.webapp import router
 from hermes_cli.web_session_sockets import HOST_TERMINAL_SOCKET
-from tests.waiting import async_wait_until
+from tests.waiting import async_wait_until, wait_until
 
 
 @pytest.fixture
@@ -382,6 +382,37 @@ def test_real_profile_a_b_a_and_process_exit_never_respawns(host_app, tmp_path):
             assert error.value.code == 4410
         rejection(client, url("&profile=alpha&attach=" + token), 4410)
         assert set(host_app.state.host_terminals._sessions) <= set(tokens.values())
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize("reaped", [False, True], ids=["before-reap", "after-reap"])
+def test_a_shell_that_exits_while_detached_closes_the_redial_as_an_exit(host_app, tmp_path, monkeypatch, reaped):
+    """A tab that redials after its shell exited (``exit`` while the tab was away) is told the
+    shell exited, as an attached tab is, so it closes instead of offering a new shell. That holds
+    before the reaper takes the dead shell and after."""
+    from hermes_cli import web_host_terminal_sessions
+    if not reaped:
+        async def no_reaper(_registry, *, interval):
+            await asyncio.Event().wait()
+        monkeypatch.setattr(web_host_terminal_sessions, "run_reaper", no_reaper)
+    go = tmp_path / "go"
+    with TestClient(host_app) as client:
+        registry = host_app.state.host_terminals
+        with client.websocket_connect(url()) as ws:
+            token = metadata(ws)["terminalId"]
+            ws.send_bytes(f"printf 'WAIT%s\\n' ING; while [ ! -e '{go}' ]; do sleep 0.05; done; exit\n".encode())
+            output_until(ws, b"WAITING")
+        session = registry._sessions[token]
+        wait_until(lambda: not session.attached, what="the tab detached")
+        go.touch()
+        if reaped:
+            wait_until(lambda: token not in registry._sessions, what="the reaper took the shell")
+        else:
+            wait_until(lambda: not session.alive, what="the shell exited")
+        with pytest.raises(WebSocketDisconnect) as error:
+            with client.websocket_connect(url("&attach=" + token)) as ws:
+                ws.receive_text()
+        assert (error.value.code, error.value.reason) == (4410, "Process exited")
 
 
 @pytest.mark.platforms("linux")

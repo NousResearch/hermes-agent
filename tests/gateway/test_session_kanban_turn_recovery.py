@@ -15,14 +15,15 @@ class _Agent:
     session_id = "s1"
 
     def __init__(self, results):
-        self.results, self.calls = list(results), []
+        self.results, self.calls, self.authors = list(results), [], []
         self._session_db = self
 
     def get_messages_as_conversation(self, _sid):
         return [{"role": "user", "content": "from-store"}]
 
-    def run_conversation(self, message, conversation_history=None):
+    def run_conversation(self, message, conversation_history=None, turn_author=None):
         self.calls.append((message, conversation_history))
+        self.authors.append(turn_author)
         return self.results.pop(0)
 
 
@@ -63,6 +64,8 @@ def test_failed_turn_retries_in_place_from_frame_carrier(tmp_path, monkeypatch):
     assert context["task_id"] in nudge and "t_foreign" not in nudge
     assert history == FAILED["messages"]  # same session context, not a cold restart
     assert session_kanban.worker_exit_code(path, context) == 0
+    # Both the first turn and the in-place retry are the dispatcher's, never the operator's (#137406).
+    assert agent.authors == [{"id": "kanban:dispatcher", "name": "Kanban dispatcher", "is_bot": True}] * 2
 
 
 def test_unprovable_claim_denies_retry_and_goal_continuation(tmp_path, monkeypatch):

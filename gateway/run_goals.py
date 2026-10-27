@@ -146,8 +146,14 @@ class GatewayGoalsMixin:
             session_id = current
             watch[quick_key] = (source, session_id)
         adapter = self._delivery_adapter_for(source)
-        if adapter is None or not adapter._message_handler:
+        from gateway.session_local import LocalSessionAdapter
+        from gateway.session_viewer_automation import viewer_driven
+        local = isinstance(adapter, LocalSessionAdapter)
+        # A local chat has no message handler: its owner admits the tick (``admit_heartbeat``).
+        if adapter is None or not (adapter._message_handler or local):
             return
+        if local and viewer_driven(adapter.authority, source.chat_id, "viewer_heartbeat"):
+            return  # the classic CLI's watchdog fires it: that CLI paints only the turns it submits
         if getattr(self, 'session_authority', None) is not None:
             from gateway.run_heartbeat_acceptance import admit_heartbeat
             await admit_heartbeat(self, adapter, source, session_id, quick_key)

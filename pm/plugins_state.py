@@ -26,11 +26,21 @@ def _selection_readers(config_path: Path):
     """``(version(path), read(path))`` for a home's selection. PM's dependency runtime reads the
     LOCAL file it publishes to and compare-and-swaps (``pm.publication``): it has neither the
     remote config backend's client nor the plane credential, so a remote deployment never fails
-    PM closed there. Every other process reads through the selected config backend."""
-    from hermes_cli import config_backend
-    from pm.runtime import is_runtime
+    PM closed there. Every other process reads through the selected config backend; a file
+    deployment never asks whether this is PM's runtime (the selector is all it needs)."""
+    import os
 
-    if not is_runtime():
+    from hermes_cli import config_backend
+
+    if os.environ.get(config_backend.BACKEND_ENV, "").strip().lower() in ("", "file"):
+        return config_backend.config_version, config_backend.read_config_doc
+    from pm.package import InstallError
+    from pm.runtime import is_runtime
+    try:
+        in_runtime = is_runtime()
+    except InstallError:  # an application process whose packaged PM runtime is damaged: not PM's runtime
+        in_runtime = False
+    if not in_runtime:
         return config_backend.config_version, config_backend.read_config_doc
     backend, home = config_backend.local_file_layer(config_path)
     return (lambda _path: backend.version(home)), (lambda _path: backend.read_user_doc(home))

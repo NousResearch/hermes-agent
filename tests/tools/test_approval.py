@@ -259,6 +259,35 @@ class TestDetectDangerousGitConfig:
         "git config --future-option user.name x",
         "git config --global",
         "git config -- foo.bar --value",
+        # egilewski review (2026-08-14): option ordering must not matter — git's
+        # parse-options permutes, so action and scope flags land in either order.
+        "git config --global --add user.name foo",
+        "git config --add --global user.name foo",
+        "git config --unset --global user.name",
+        "git config --local --rename-section old.name new.name",
+        "git config --worktree --add core.editor vim",
+        "git config --system --replace-all user.email a@b.c",
+        "git config --remove-section --global user",
+        "git config --file other.cfg --unset user.name",
+        "git config --file=other.cfg --remove-section user",
+        "git config --fixed-value --unset-all user.name exact",
+        # Value operands that LOOK like options: git stops parsing options at the first
+        # operand (STOP_AT_NON_OPTION), so a trailing option-looking token is a VALUE the
+        # write stores (verified against git 2.53: `git config user.name --global` writes
+        # name = --global), never a benign scope/action flag.
+        "git config user.name --global",
+        "git config user.name --type=bool",
+        "git config user.name -e",
+        "git config user.name --file=x",
+        "git config user.name --add",
+        "git config key value2 --add",
+        "git config user.name --unset",
+        # Empty-string value literals: shlex keeps '' as a distinct operand (an empty-value
+        # write in git), but normalization deletes the literal — classification must see it.
+        "git config user.name ''",
+        'git config user.name ""',
+        "git config user.name '' --global",
+        "git config '' x",
     ])
     def test_mutating_and_ambiguous_forms_require_approval(self, command):
         dangerous, key, desc = detect_dangerous_command(command)
@@ -289,6 +318,17 @@ class TestDetectDangerousGitConfig:
         "git config list --show-scope",
         'echo "git config user.name x"',
         "echo ok; git config --get user.name",
+        # Reads stay safe when option-looking tokens follow an explicit read action or
+        # subcommand: git dispatches the subcommand first and keeps parsing its options.
+        "git config --get user.name --global",
+        "git config --get user.name --fixed-value=y",
+        "git config --get user.name ''",
+        "git config --default --add --get user.name",
+        "git config --default=--add --get user.name",
+        "git config list --no-global",
+        "git config --show-origin --name-only --get-regexp 'user\\..*'",
+        "git config --global --show-origin --name-only --list",
+        "git config --show-scope --show-origin --list -z",
     ])
     def test_read_only_forms_stay_unprompted(self, command):
         assert detect_dangerous_command(command) == (False, None, None), command

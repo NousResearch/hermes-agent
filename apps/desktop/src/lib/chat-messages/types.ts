@@ -120,6 +120,10 @@ export type GatewayEventPayload = {
   yolo?: boolean
   running?: boolean
   turn_started_at?: number | null
+  /** message.start / delta / interim: the prompt turn's wire identity (segment-identity.ts). */
+  turn_id?: string
+  segment?: number
+  offset?: number
   cwd?: string
   branch?: string
   terminal_backend?: string

@@ -14,7 +14,7 @@ import { type CSSProperties, lazy, type ReactNode, Suspense, useCallback, useEff
 import { useLocation, useNavigate } from 'react-router'
 
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
-import { BootFailureOverlay } from '@/components/boot-failure-overlay'
+import { StartupOverlay } from '@/components/boot-failure-overlay'
 import { ConfirmHost } from '@/components/confirm-host'
 import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
 import { ExternalOpenFailedDialog } from '@/components/external-open-failed-dialog'
@@ -137,6 +137,7 @@ import { useCwdActions } from '../session/hooks/use-cwd-actions'
 import { useHermesConfig } from '../session/hooks/use-hermes-config'
 import { useMessageStream } from '../session/hooks/use-message-stream'
 import { useModelControls } from '../session/hooks/use-model-controls'
+import { useOwnerQueueReconcile } from '../session/hooks/use-owner-queue-reconcile'
 import { usePreviewRouting } from '../session/hooks/use-preview-routing'
 import { usePromptActions } from '../session/hooks/use-prompt-actions'
 import { useRouteResume } from '../session/hooks/use-route-resume'
@@ -153,9 +154,11 @@ import {
   titlebarControlsPosition,
   titlebarControlsYNudge,
   titlebarToolsRightCss,
-  titlebarToolsWidthCss
+  titlebarToolsWidthCss,
+  TOUCH_TITLEBAR_HEIGHT
 } from '../shell/titlebar'
 import { TitlebarControls } from '../shell/titlebar-controls'
+import { useTouchTitlebar } from '../shell/use-touch-titlebar'
 import { WslgWindowControls } from '../shell/wslg-window-controls'
 import { UpdatesOverlay } from '../updates-overlay'
 
@@ -300,6 +303,23 @@ function useRecoveryRequestToasts(): void {
       navigate(CRON_ROUTE)
     }
   }, [cronReviewRequest, navigate])
+}
+
+// Where the fixed titlebar clusters sit (the same vars AppShell sets). Browser
+// touch chrome pins them flush in its 44px band, at touch-target size.
+function useTitlebarControlsVars(controlsPos: { left: number; top: number }): CSSProperties {
+  const touchTitlebar = useTouchTitlebar()
+
+  return {
+    '--titlebar-controls-left': `${controlsPos.left}px`,
+    '--titlebar-controls-top': `${touchTitlebar ? 0 : controlsPos.top}px`,
+    ...(touchTitlebar
+      ? {
+          '--titlebar-control-size': `${TOUCH_TITLEBAR_HEIGHT}px`,
+          '--titlebar-control-height': `${TOUCH_TITLEBAR_HEIGHT}px`
+        }
+      : {})
+  } as CSSProperties
 }
 
 export function ContribWiring({ children }: { children: ReactNode }) {
@@ -711,12 +731,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // Runs outside the selected ChatBar so queues belonging to background
   // sessions continue once those sessions are idle. The session dispatcher
   // routes each send to its owner; a disconnected foreground is not a global gate.
-  useBackgroundQueueDrain({
-    enabled: true,
-    runtimeIdByStoredSessionIdRef,
-    selectedStoredSessionId,
-    submitText
-  })
+  // Queues of chats not on screen: drain the local ones, re-read the owner-held ones on each gateway open.
+  useBackgroundQueueDrain({ enabled: true, runtimeIdByStoredSessionIdRef, selectedStoredSessionId, submitText })
+  useOwnerQueueReconcile(requestGateway)
 
   // Session-tile delegate (resume/submit/interrupt/slash + the session verbs
   // the tile TAB menu needs, without touching the primary view).
@@ -1216,6 +1233,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const rightTitlebarTools = useTitlebarToolContributions('right')
   const connection = useStore($connection)
   const controlsPos = titlebarControlsPosition(connection?.windowButtonPosition, Boolean(connection?.isFullscreen))
+  const controlsVars = useTitlebarControlsVars(controlsPos)
   // Windows/WSLg reserve native min/max/close on the right (AppShell parity:
   // prefer the live WCO measurement, fall back to the static reservation).
   const measuredOverlayWidth = useWindowControlsOverlayWidth()
@@ -1255,8 +1273,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         className="contents"
         style={
           {
-            '--titlebar-controls-left': `${controlsPos.left}px`,
-            '--titlebar-controls-top': `${controlsPos.top}px`,
+            ...controlsVars,
             '--titlebar-controls-width': leftToolsWidth,
             '--titlebar-controls-y-nudge': titlebarControlsYNudge(titlebarChrome),
             '--titlebar-tools-right': titlebarToolsRight,
@@ -1327,7 +1344,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       />
       <UpdatesOverlay />
       <GatewayConnectingOverlay />
-      <BootFailureOverlay />
+      <StartupOverlay />
       <UpdateHoldOverlay />
       <CommandPalette />
       <PluginInstallModal />

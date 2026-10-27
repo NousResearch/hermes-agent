@@ -1,4 +1,4 @@
-# health: allow FILE_LINES -- security fix for #82010: distinguish an explicitly-empty toolset allowlist (fail closed, nothing allowed) from an absent one (no restriction); the added lines are minimal fail-closed branches at this existing chokepoint
+# health: allow FILE_LINES -- security fix for #82010: distinguish an explicitly-empty toolset allowlist (fail closed, nothing allowed) from an absent one (no restriction); the added lines are minimal fail-closed branches at this existing chokepoint. Also #141468: match the `mcp-<server>` toolset spelling so a narrow job's MCP allowlist is not widened into every enabled server — a minimal branch at the same chokepoint.
 """Cron job scheduler: tick() runs due jobs (gateway calls it every 60s from a background thread).
 A file lock (~/.hermes/cron/.tick.lock) keeps overlapping processes to one tick at a time.
 """
@@ -445,7 +445,15 @@ def _merge_mcp_into_per_job_toolsets(per_job: list[str], cfg: dict) -> list[str]
     # lazy: avoid heavy hermes_cli import at module load; shares MCP-membership with gateway/CLI
     from hermes_cli.tools_config import enabled_mcp_server_names
     enabled_mcp = enabled_mcp_server_names(cfg)
-    if set(result) & enabled_mcp:
+    # A job names an MCP server by its TOOLSET name (``mcp-<server>``) or by the bare alias the
+    # registry registers for it; compare against BOTH, or a job that named one server never matched
+    # and the fallback below unioned EVERY enabled server into its allowlist (#141468).
+    # A server that is CONFIGURED but disabled still counts as named: it is the user's selection, it
+    # stays off, and it must not fall through to every enabled server either - the same rule the
+    # interactive resolver follows (hermes_cli.tools_config._merge_mcp_servers).
+    configured = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
+    known = enabled_mcp | {str(name) for name in configured}
+    if set(result) & (known | {f"mcp-{name}" for name in known}):
         return result
     for name in sorted(enabled_mcp):
         if name not in result:
@@ -1627,6 +1635,7 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
     the main agent model (config ``model:``, then HERMES_MODEL) > the claimed welcome trial's. Re-read
     every tick (no cache) so ``hermes cron edit --model`` and ``hermes model`` both apply next tick."""
     from hermes_cli.anon_auth import trial_model
+    from hermes_cli.config_backend import config_exists
     model = job.get("model") or cron_env_setting("HERMES_MODEL") or ""
     _cron_default_provider = ""
     _cfg: dict = {}
@@ -1634,7 +1643,7 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
     try:
         from hermes_cli.config_effective import load_user_config_effective
         _cfg_path = str(_get_hermes_home() / "config.yaml")
-        if os.path.exists(_cfg_path):
+        if config_exists(_cfg_path):
             _cfg = load_user_config_effective(Path(_cfg_path))
             # Coerce null to {} so a falsy default never clobbers a resolved env value.
             _model_cfg = _cfg.get("model") or {}
@@ -4072,10 +4081,9 @@ def _worktree_maintenance_repos() -> list[str]:
 def _maybe_run_worktree_maintenance() -> None:
     """Throttled worktree prune from the cron tick, on a daemon thread so the tick never waits on
     git. Same pruner as ``hermes -w`` startup (idle dirty/unpushed trees archived before removal,
-    live trees untouched). Throttled per profile home: a multiplexed tick runs once per served
-    profile, and each must sweep its own registered repos under its own config. The thread runs in
-    a copy of the caller's context so the profile-home override travels with it. Errors never
-    propagate: GC is hygiene, not scheduling."""
+    live trees untouched). Discovery is throttled per profile home, the prune once per repo across
+    served profiles, and ``cron.scheduler_worktree_maintenance`` runs one sweep at a time per
+    process. Runs in a copy of the caller's context (profile-home override); never raises."""
     global _last_worktree_maintenance_at
     import contextvars
 
@@ -4091,19 +4099,10 @@ def _maybe_run_worktree_maintenance() -> None:
         _last_worktree_maintenance_at = {**stamps, home: now}
 
     def _run() -> None:
-        try:
-            repos = _worktree_maintenance_repos()
-            if not repos:
-                return
-            from hermes_cli.worktree_ops import _prune_stale_worktrees
+        from cron.scheduler_worktree_maintenance import run_sweep
 
-            for repo in repos:
-                try:
-                    _prune_stale_worktrees(repo)
-                except Exception:
-                    logger.debug("Cron worktree maintenance failed for %s", repo, exc_info=True)
-        except Exception:
-            logger.debug("Cron worktree maintenance skipped", exc_info=True)
+        run_sweep(_worktree_maintenance_repos,
+                  interval_seconds=_WORKTREE_MAINTENANCE_INTERVAL_SECONDS)
 
     threading.Thread(target=contextvars.copy_context().run, args=(_run,), name="cron-worktree-prune",
                      daemon=True).start()

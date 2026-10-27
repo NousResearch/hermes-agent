@@ -1,4 +1,4 @@
-import { mergeUsage } from '@hermes/shared'
+import { mergeUsage, randomUuid } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import type { NavigateFunction } from 'react-router'
@@ -23,7 +23,6 @@ import { useI18n } from '@/i18n'
 import {
   type ChatMessage,
   preserveLocalAssistantErrors,
-  QUESTION_CARD_TOOLS,
   restorePendingClarifyToolCall,
   settlePendingClarifyToolCall,
   stripPendingClarifyProjectionForCache,
@@ -89,8 +88,8 @@ import {
   setIntroSeed,
   setMessages,
   setNewChatWorkspaceTarget,
-  setResumeExhaustedSessionId,
   setResumeFailedSessionId,
+  setResumeReattachSessionId,
   setSelectedStoredSessionId,
   setSessionOwnerHint,
   setSessionStartedAt,
@@ -138,7 +137,6 @@ import { dropTranscriptTail, dropTranscriptTailEverywhere, saveTranscriptTail } 
 import { isWatchWindow } from '@/store/windows'
 import type {
   SessionCreateResponse,
-  SessionMessage,
   SessionMessagesResponse,
   SessionResumeResult,
   UsageStats
@@ -163,8 +161,13 @@ import { reconcilePersistedLiveTurn } from './persisted-live-turn'
 import { provisionalTranscriptPaint, transcriptRestScope } from './provisional-transcript'
 import { rememberedOwnerForResume } from './remembered-owner'
 import { restorePendingApproval } from './restore-pending-approval'
-import { pendingClarifyToolPayload, restorePendingClarifyFromSnapshot } from './restore-pending-clarify'
+import {
+  pendingClarifyToolPayload,
+  restorePendingClarifyFromSnapshot,
+  withoutEarlyClarifyProjection
+} from './restore-pending-clarify'
 import { projectPendingConnection, restorePendingConnectionFromSnapshot } from './restore-pending-connection'
+import { clearResumeLatches, clearResumeToasts, notifyResumeFailed, type ResumeAttemptOptions } from './resume-latches'
 import {
   ambientResumeConnectionId,
   openResumeGateway,
@@ -172,7 +175,14 @@ import {
   rememberResolvedResumeOwner,
   resolveResumeOwner
 } from './resume-owner'
-import { backgroundRuntimeOptions, runtimeOwner } from './runtime-owner'
+import {
+  livePromptStreamId,
+  liveTurnSettledDuringResume,
+  reconcileAuthoritativeChatMessages,
+  reconcileAuthoritativeMessages,
+  resumedStreamTarget
+} from './resume-reconcile'
+import { backgroundRuntimeOptions, runtimeOwner, runtimeOwnerProfile } from './runtime-owner'
 import { createGatewaySession, desktopSessionCreateParams } from './session-create-request'
 import {
   createPersistedDisplayTranscriptProvenance,
@@ -195,7 +205,6 @@ import {
   patchSessionWorkspace,
   preserveEquivalentTranscript,
   preserveLocalPendingTurnMessages,
-  reconcileDurableHistory,
   removeRepresentedLocalLiveProjection,
   resolveResumedBusy,
   resolveSessionProfile,
@@ -261,86 +270,11 @@ function applyStoredUsage(stored: { input_tokens?: number | null; output_tokens?
   setCurrentUsage(current => ({ ...current, input, output, total: input + output }))
 }
 
-function reconcileAuthoritativeChatMessages(
-  authoritativeMessages: ChatMessage[],
-  previousMessages: ChatMessage[],
-  liveProjection?: Pick<SessionResumeResult, 'inflight' | 'queued' | 'session_id'>,
-  sourceRows?: SessionMessage[]
-): ChatMessage[] {
-  if (liveProjection && sourceRows) {
-    const reconciled = reconcilePersistedLiveTurn(authoritativeMessages, previousMessages, sourceRows, liveProjection)
-
-    if (reconciled) {
-      return reconciled
-    }
-  }
-
-  return reconcileDurableHistory(
-    liveProjection ? appendLiveSessionProjection(authoritativeMessages, liveProjection) : authoritativeMessages,
-    previousMessages
-  )
-}
-
-function reconcileAuthoritativeMessages(
-  authoritativeMessages: SessionResumeResult['messages'],
-  previousMessages: ChatMessage[],
-  liveProjection?: Pick<SessionResumeResult, 'inflight' | 'queued' | 'session_id'>
-): ChatMessage[] {
-  return reconcileAuthoritativeChatMessages(
-    toChatMessages(authoritativeMessages),
-    previousMessages,
-    liveProjection,
-    authoritativeMessages
-  )
-}
-
 interface FreshSessionDraftOptions {
   preserveRoute?: boolean
   replaceRoute?: boolean
   rotateFreshDraftKey?: boolean
   workspaceTarget?: NewChatWorkspaceTarget
-}
-
-/** Drop the pre-hydration request-id row without copying the other messages.
- *  A copied clarify row looks like a concurrent edit and hydration keeps both. */
-function withoutEarlyClarifyProjection(messages: ChatMessage[], requestId: string): ChatMessage[] {
-  let changed = false
-  const next: ChatMessage[] = []
-
-  for (const message of messages) {
-    const parts = message.parts.filter(
-      part =>
-        !(
-          part.type === 'tool-call' &&
-          QUESTION_CARD_TOOLS.has(part.toolName) &&
-          part.result === undefined &&
-          part.toolCallId === requestId
-        )
-    )
-
-    if (parts.length === message.parts.length) {
-      next.push(message)
-
-      continue
-    }
-
-    changed = true
-
-    if (parts.length > 0) {
-      next.push({ ...message, parts })
-    }
-  }
-
-  return changed ? next : messages
-}
-
-/** Session-state patch for a restored blocking prompt row; the first non-null projection is used. */
-function livePromptStreamId(
-  ...projections: ({ streamId: string } | null)[]
-): { awaitingResponse: false; sawAssistantPayload: true; streamId: string } | Record<string, never> {
-  const live = projections.find(Boolean)
-
-  return live ? { awaitingResponse: false, sawAssistantPayload: true, streamId: live.streamId } : {}
 }
 
 function normalizeNewChatWorkspaceTarget(target: NewChatWorkspaceTarget): NewChatWorkspaceTarget {
@@ -650,7 +584,7 @@ export function useSessionActions({
     async (preview: string | null = null, createOverrides?: SessionCreateOverrides): Promise<string | null> => {
       const startingStoredSessionId = selectedStoredSessionIdRef.current
       const startingRouteToken = getRouteToken()
-      const createIntent = (createIntentRef.current ??= crypto.randomUUID())
+      const createIntent = (createIntentRef.current ??= randomUuid())
 
       creatingSessionRef.current = true
 
@@ -1064,8 +998,15 @@ export function useSessionActions({
           ...(legacyOwnerProfile ? { ownerProfile: legacyOwnerProfile } : {})
         }
 
+        // The default folder belongs to the profile the session is created in.
+        // A dialled route names it: the Bot Mode "+" aims at the bot's profile
+        // while requestedProfile still holds the window's.
         const cwd =
-          options?.cwd === null ? '' : typeof options?.cwd === 'string' ? options.cwd.trim() : resolveNewSessionCwd()
+          options?.cwd === null
+            ? ''
+            : typeof options?.cwd === 'string'
+              ? options.cwd.trim()
+              : resolveNewSessionCwd(runtimeOwnerProfile(capturedRoute, requestedProfile))
 
         // #52589 provenance for the tile path: an explicitly-passed cwd is a
         // deliberate workspace pick; a resolved default is inherited.
@@ -1099,7 +1040,7 @@ export function useSessionActions({
             options?.route === null || defaultTarget?.route === null,
             workspaceScope.workspaceMode !== 'bots'
           )),
-          request_id: crypto.randomUUID()
+          request_id: randomUuid()
         }
 
         // Same lease chain as createBackendSessionForSend: owner socket held
@@ -1214,7 +1155,7 @@ export function useSessionActions({
       storedSessionId: string,
       replaceRoute = false,
       capturedOwner?: SessionProfileRoute,
-      options?: { authoritativeSnapshot?: boolean }
+      options?: ResumeAttemptOptions
     ) => {
       // Delete/archive tombstones the durable id before the route flips, and
       // requestSessionResume already refuses to queue for a doomed id. This is
@@ -1265,7 +1206,7 @@ export function useSessionActions({
       // ref here is also what use-route-resume's self-heal assumes ("set
       // synchronously at resume entry").
       setFreshDraftReady(false)
-      clearNotifications()
+      clearResumeToasts(options)
       resetViewSync()
       setSelectedStoredSessionId(storedSessionId)
       selectedStoredSessionIdRef.current = storedSessionId
@@ -1283,15 +1224,7 @@ export function useSessionActions({
         closeSessionTile(storedSessionId)
       }
 
-      // Optimistically clear any prior resume-failure latch for this session:
-      // we're attempting a fresh resume, so the self-heal in use-route-resume
-      // must not keep treating it as stranded. It's re-armed below only if THIS
-      // attempt fails terminally (RPC reject + REST fallback failure).
-      setResumeFailedSessionId(current => (current === storedSessionId ? null : current))
-      // Also clear the exhausted-latch: a fresh attempt (manual Retry, reconnect,
-      // reselect) gives the bounded auto-retry counter a clean cycle, so the
-      // chat view drops the error state and shows the loader again.
-      setResumeExhaustedSessionId(current => (current === storedSessionId ? null : current))
+      clearResumeLatches(storedSessionId)
 
       // A warm cache entry is only trustworthy when it still BELONGS to the
       // session being resumed. A pooled profile backend that gets idle-reaped
@@ -1513,7 +1446,7 @@ export function useSessionActions({
           }
 
           setFreshDraftReady(false)
-          clearNotifications()
+          clearResumeToasts(options)
           setSelectedStoredSessionId(storedSessionId)
           selectedStoredSessionIdRef.current = storedSessionId
           setActiveSessionId(cachedRuntimeId)
@@ -2001,7 +1934,7 @@ export function useSessionActions({
       busyRef.current = false
       setBusy(false)
       setAwaitingResponse(false)
-      clearNotifications()
+      clearResumeToasts(options)
       setSelectedStoredSessionId(storedSessionId)
       selectedStoredSessionIdRef.current = storedSessionId
       const runtimeStartedAt = Date.now()
@@ -2160,7 +2093,11 @@ export function useSessionActions({
         const hasLiveProjection = Boolean(resumed.inflight || resumed.queued)
 
         const preferredMessages = (() => {
-          if (options?.authoritativeSnapshot && resumed.messages.length === 0 && !hasLiveProjection) {
+          // A reply the live stream settled during the RPC is newer than this snapshot (resume-reconcile.ts).
+          if (
+            (options?.authoritativeSnapshot && resumed.messages.length === 0 && !hasLiveProjection) ||
+            liveTurnSettledDuringResume(resumed, resumeStartedAt, resumedSameSelectedSession)
+          ) {
             return currentMessages
           }
 
@@ -2395,7 +2332,14 @@ export function useSessionActions({
             ...livePromptStreamId(pendingConnectionProjection, pendingClarifyProjection),
             ...(clearedClarifyProjection
               ? {
-                  streamId: resumedRunning ? (clearedClarifyProjection.streamId ?? state.streamId) : null
+                  streamId: resumedRunning
+                    ? resumedStreamTarget(visibleMessagesForView, resumed.session_id, [
+                        clearedClarifyProjection.streamId,
+                        pendingConnectionProjection?.streamId,
+                        state.streamId,
+                        inFlightRecovery.streamId
+                      ])
+                    : null
                 }
               : {})
           }),
@@ -2580,9 +2524,13 @@ export function useSessionActions({
           // once retries exhaust, blank that visible transcript behind the
           // exhausted-state error overlay (a regression vs. plain fallback success).
           setResumeFailedSessionId(storedSessionId)
+        } else {
+          // Readable, but detached: a turn still running there never streams
+          // in. Re-attach quietly (use-resume-reattach), no error overlay.
+          setResumeReattachSessionId(storedSessionId)
         }
 
-        notifyError(err, copy.resumeFailed)
+        notifyResumeFailed(err, copy.resumeFailed, storedSessionId, options)
       } finally {
         displayRead.release()
 

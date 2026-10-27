@@ -159,7 +159,7 @@ A local `hermes chat` / TUI session served by the gateway resolves these referen
 
 Cursor-style SecretRef syntax is also accepted: `${env:VAR_NAME}` resolves exactly like `${VAR_NAME}` (the `env:` prefix is stripped), so MCP or provider snippets copied from Cursor / Claude configs work unchanged in both `config.yaml` and the `mcp_servers` block. Other SecretRef sources (`${file:...}`, `${vault:...}`, `${bitwarden:...}`) are **not** resolved inline — external secret backends inject their values into the environment at startup via the `secrets:` block, so reference them as `${env:NAME}` instead; unknown prefixes warn once and stay verbatim.
 
-For AI provider setup (OpenRouter, Anthropic, Copilot, custom endpoints, self-hosted LLMs, fallback models, etc.), see [AI Providers](../integrations/providers.md).
+For AI provider setup (OpenRouter, Anthropic, custom endpoints, self-hosted LLMs, fallback models, etc.), see [AI Providers](../integrations/providers.md).
 
 ### Provider Timeouts
 
@@ -258,7 +258,9 @@ backend, cron) and every child it launches gets `TMPDIR`, `TMP` and `TEMP` point
 RAM-backed system temp dir. The system prompt names this directory as the scratch
 directory. Hermes only sets these when they are not already set — a `TMPDIR` exported
 by you or by the OS (macOS `/var/folders`, Windows `%TEMP%`) is left alone. Entries are
-pruned at startup (at most once per hour) once they have been **idle for 24 hours**: an entry
+pruned by a background process started right after startup (at most once per hour; startup
+never waits for it, and the pass still finishes when the command exits at once) once they have
+been **idle for 24 hours**: an entry
 stays as long as anything anywhere inside it was written in the last day, and goes a day after
 the last write. Hardlinked files do not count as writes (a `git clone --local` shares pack files
 with its source repo, whose activity would otherwise keep the clone forever). Before an idle entry is deleted, Hermes also stops any process still running
@@ -266,8 +268,10 @@ with its working directory inside that entry (or inside a scratch path that no l
 such as a headless browser left behind by a test run) and drops any `git worktree`
 registration that pointed into it. A process Hermes itself started and still tracks (a
 background `terminal` process, the gateway, a CLI session, or anything they launched that is
-still their child) is never stopped: an idle entry one of them is working inside is kept
-instead. Each entry is re-checked right before it is deleted, so
+still their child) is never stopped, and neither is the shell that started the Hermes command
+(or its parents), even after that command exited: an idle entry one of them is working inside
+is kept instead. A pass that cannot inspect processes stops nothing and deletes no entry a
+process may be working in. Each entry is re-checked right before it is deleted, so
 one written to while the prune was stopping processes is kept. Every removal, stopped
 process and kept entry is recorded in `~/.hermes/logs/scratch-prune.log`. An entry holding
 files your user may not read or delete (typically root-owned output of a Docker container that
@@ -968,6 +972,13 @@ platform's saved config still lists it. Use this when you want a single
 switch for "turn X off everywhere" rather than editing 15+ platform rows in
 the `hermes tools` UI.
 
+Removal is per tool, so a listed toolset also takes its tools out of any
+enabled toolset that shares them: `search` (just `web_search`) strips
+`web_search` from an enabled `web`. `hermes tools list` and `hermes doctor`
+flag an enabled toolset that loses tools this way, and enabling a toolset in
+`hermes tools` (checklist, `hermes tools enable`, Desktop or dashboard) clears
+every entry here that the enabled toolsets fully cover.
+
 Leaving the list empty, or omitting the key, is a no-op.
 
 ## Git Worktree Isolation
@@ -1017,6 +1028,7 @@ compression:
   protect_first_n: 3                                # Non-system head messages pinned across compactions (0 = pin nothing)
   in_place: true                                    # Compact on the same session id (no rotation) — see below
   idle_compact_after_seconds: 0                     # Opt-in idle compaction (0 = disabled) — see below
+  prepare_ahead: false                              # Opt-in: prepare the next summary in the background — see below
   hygiene_hard_message_limit: 5000                  # Gateway safety valve — see below
   hygiene_timeout_seconds: 30                       # Max seconds of NO summary-model output before hygiene compression is cut off
   hygiene_total_ceiling_seconds: 600                # Absolute cap on the hygiene wait even while tokens are still streaming
@@ -1067,6 +1079,8 @@ The value is the **first rung** of an escalating ladder, not a fixed interval: c
 `threshold_tokens` sets an optional **absolute token cap** for the compression trigger. When set, compression fires at the lower of the ratio-based `threshold` and this absolute count, so compaction never fires later than that token count regardless of which model is active. Use it when you want a fixed cost ceiling per call, for example `threshold_tokens: 256000` to compact a 1M-window model at 256K instead of 500K. The cap is clamped to the model's context length, so a value above the window is a no-op. Default `null` (disabled — ratio-based threshold only). The cap survives model switches and fallback activations.
 
 `idle_compact_after_seconds` is an **opt-in, time-based** trigger that complements the size-based `threshold`. Default `0` (disabled). When set above 0, a session that resumes after at least that many seconds of inactivity compacts its accumulated history up front, before the first reply — so a long-lived thread (e.g. a Telegram conversation you come back to hours later) doesn't re-read its full stale context on every subsequent turn. It never fires when the context is already at or below the post-compression target (`threshold × target_ratio`), and it honors the same failure-cooldown, anti-thrash, and per-session lock guards as every automatic compaction. Example: `idle_compact_after_seconds: 1800` compacts after 30 minutes idle.
+
+`prepare_ahead` (default `false`) writes the next compaction summary in the background once the session is close to the trigger, while tools run and between turns. One summary is prepared per compaction. When automatic compaction fires and the summarized messages are still the same messages (text edits by plugins are fine; a dropped message or a rewind is not), the prepared summary is used instead of a summary call at that moment, and every message newer than it stays outside it, in the uncompressed tail. If the prepared summary is still being written when compaction fires, compaction waits for it (within the usual compression time limit) rather than writing it again. If there is no prepared summary or it no longer matches, compaction runs exactly as it does without the option. It spends an auxiliary summary call that may go unused, and it does not apply to manual `/compress`, plugin context engines, or native/app-server compaction. With a memory provider that adds context to compaction summaries it switches itself off after the first compaction, since every prepared summary would be discarded.
 
 `proactive_prune_tokens` enables a deterministic, no-LLM prune of old tool-result payloads that runs independently of `threshold`. On large-window models the `threshold` compaction (≈50% of the window) rarely fires, so bulky tool outputs (terminal dumps, file reads, web extracts) ride along in history and get re-sent on every subsequent turn. When re-sent history exceeds `proactive_prune_tokens` (default `0` = off; try `48000` to enable), the prune dedupes identical results and summarizes older oversized tool results, protecting the most recent `protect_last_n` messages and never calling the model. Tool-call arguments are execution records and are never rewritten by pruning; the summary model has a separate bounded serializer for copies included in its prompt. The pressure pass likewise demotes tool-result bodies only. During full semantic compaction the carried head/tail rows keep those tool-result demotions (so an oversized tail can still compress), while tool-call arguments stay byte-exact. The opt-in proactive prune still commits eligible tool-result-body demotions, so `proactive_prune_min_reclaim_tokens` (default `4096`) keeps those cache-breaking commits episodic; `proactive_prune_min_result_chars` (default `8000`, clamped to ≥ 200) sets the size below which a tool result is left untouched. This runs only under the built-in `compressor` engine; other context engines inherit a no-op.
 
@@ -1561,7 +1575,7 @@ auxiliary:
 
 When `base_url` is set, Hermes ignores the provider and calls that endpoint directly (using `api_key` or `OPENAI_API_KEY` for auth). When only `provider` is set, Hermes uses that provider's built-in auth and base URL.
 
-Available providers for auxiliary tasks: `auto`, `main`, plus any provider in the [provider registry](../reference/environment-variables.md) — `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `alibaba`, `bedrock`, `huggingface`, `arcee`, `xiaomi`, `kilocode`, `opencode-zen`, `opencode-go`, `commandcode`, `commandcode-anthropic`, `ai-gateway`, `azure-foundry` — or any named custom provider from your `providers:` dict (e.g. `provider: "beans"`).
+Available providers for auxiliary tasks: `auto`, `main`, plus any provider in the [provider registry](../reference/environment-variables.md) — `openrouter`, `nous`, `openai-codex`, `anthropic`, `gemini`, `qwen-oauth`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `alibaba`, `bedrock`, `huggingface`, `arcee`, `xiaomi`, `kilocode`, `opencode-zen`, `opencode-go`, `commandcode`, `commandcode-anthropic`, `ai-gateway`, `azure-foundry` — or any named custom provider from your `providers:` dict (e.g. `provider: "beans"`).
 
 Local OpenAI-compatible servers work under their own names too: `provider: ollama` (also `vllm`, `llamacpp`, `llama.cpp`) with a `base_url` such as `http://127.0.0.1:11434` and an empty `api_key` routes through the custom endpoint with a placeholder key, and a bare `host:port` base_url gets the `/v1` suffix automatically.
 
@@ -2030,7 +2044,7 @@ agent:
 
 `/fast normal|fast|ultrafast|auto|cold` switches the mode for the session (`/fast ultra` is shorthand for `ultrafast`). On a ChatGPT/Codex subscription, Ultrafast is offered only when your account's Codex model catalog lists it for the current model; the backend otherwise accepts the request and serves standard speed. Add `--global` to persist to `config.yaml`. `/fast` alone shows the current mode.
 
-**Cost note:** both providers bill fast requests at a multiplier on standard rates (Anthropic: $8 / $40 per MTok in/out on Opus 5.5, $10 / $50 on Opus 5 and Opus 4.8), stacking with prompt-cache pricing. Hermes prices each Anthropic response from the speed the API reports in `usage.speed`. `auto`/`cold` bound that premium to the window only. Fast params are only sent to the first-party endpoint that supports them (`api.openai.com` / Codex subscription, `api.anthropic.com`, `api.x.ai`); OpenRouter, Nous Portal, Copilot, Azure, Bedrock, and custom `base_url` routes never receive them in any mode.
+**Cost note:** both providers bill fast requests at a multiplier on standard rates (Anthropic: $8 / $40 per MTok in/out on Opus 5.5, $10 / $50 on Opus 5 and Opus 4.8), stacking with prompt-cache pricing. Hermes prices each Anthropic response from the speed the API reports in `usage.speed`. `auto`/`cold` bound that premium to the window only. Fast params are only sent to the first-party endpoint that supports them (`api.openai.com` / Codex subscription, `api.anthropic.com`, `api.x.ai`); OpenRouter, Nous Portal, Azure, Bedrock, and custom `base_url` routes never receive them in any mode.
 
 **Prompt cache:** only the per-request parameter changes between requests; the system prompt, tools, and messages stay byte-identical. Anthropic keeps a separate prompt cache for each speed, so on Anthropic every `auto`/`cold` window boundary re-writes the conversation prefix at the new speed. For long Anthropic sessions, `fast` or `normal` keeps a single warm cache.
 
@@ -2145,7 +2159,7 @@ tool_loop_guardrails:
 Hard stops are designed to catch **replays** — the same call, unchanged, with nothing happening in between — not legitimate iteration:
 
 - **Edit → re-run is never a loop.** Any successful mutating call (`write_file`, `patch`, a green `terminal`/`execute_code`, a browser action, a job/message/cron mutation) marks progress for every failing call still being counted. The next identical retry (re-running a red test after a fix, re-snapshotting after a click) starts a fresh streak instead of accumulating toward a block.
-- **Distinct red commands are diagnosis, not a loop.** For tools whose non-zero exit is ordinary output (`terminal`, `execute_code`, process pollers, `browser_navigate`, `web_extract`) the `same_tool_failure` threshold only warns and never halts. Only an exact-args replay with no intervening change, or an identical-result streak, can stop them.
+- **Distinct red commands are diagnosis, not a loop.** For tools whose non-zero exit is ordinary output (`terminal`, `execute_code`, process pollers, `browser_exec`, `web_extract`) the `same_tool_failure` threshold only warns and never halts. Only an exact-args replay with no intervening change, or an identical-result streak, can stop them.
 - **A halt ends the turn, not the session.** The agent replies with which guardrail fired and why; replying "continue" resumes with fresh per-turn counters.
 
 ### Per-turn runaway-loop caps
@@ -2815,37 +2829,68 @@ web:
 
 ## Browser
 
-Configure browser automation behavior:
+Configure browser automation behavior. Every browser key lives under `browser:`;
+see the [Browser feature page](./features/browser.md) for how the browser sources
+(local Chromium, cloud providers, Lightpanda, `/browser connect`, real profile) fit together.
 
 ```yaml
 browser:
-  inactivity_timeout: 120        # Seconds before auto-closing idle sessions
-  command_timeout: 30             # Timeout in seconds for browser commands (screenshot, navigate, etc.)
-  record_sessions: false         # Auto-record browser sessions as WebM videos to ~/.hermes/browser_recordings/
-  # Optional CDP override — when set, Hermes attaches directly to your own
-  # Chromium-family browser (via /browser connect) rather than starting a headless browser.
+  inactivity_timeout: 120        # Seconds before an idle browser is closed
+  command_timeout: 30            # Chromium launch timeout floor (seconds)
+  headed: false                  # true = visible Chromium window (local); keeps the browser open between turns
+  engine: auto                   # auto (Chromium) | lightpanda ("chrome" is accepted as auto)
+  # Local Chromium launched by Hermes
+  executable_path: ""            # Chromium binary override; "" = the packaged Chromium
+  user_data_dir: ""              # Persistent profile shared by every session; "" = fresh profile per session
+  chromium_args: []              # Extra Chromium command-line flags, e.g. ["--lang=de-DE"]
+  # Cloud browser selection (written by `hermes tools` → Browser Automation)
+  cloud_provider: local          # local | browserbase | browser-use | firecrawl | nous | <provider plugin>; unset = autodetect from credentials
+  auto_local_for_private_urls: true  # With a cloud provider, open LAN/localhost URLs in a local Chromium
+  allow_private_urls: false      # Allow private/internal addresses (localhost, 192.168.x.x, ...)
+  # Optional CDP override — when set, the browser tools attach to your own
+  # Chromium-family browser (as /browser connect does) instead of launching one.
   cdp_url: ""
-  # Dialog supervisor — controls how native JS dialogs (alert / confirm / prompt)
-  # are handled when a CDP backend is attached (Browserbase, local Chromium-family
-  # browser via /browser connect). Ignored on Camofox and default local agent-browser mode.
+  use_real_profile: false        # Browse on a managed copy of your real browser profile (opt-in)
+  # Dialog supervisor — how native JS dialogs (alert / confirm / prompt / beforeunload) are handled
   dialog_policy: must_respond    # must_respond | auto_dismiss | auto_accept
   dialog_timeout_s: 300          # Safety auto-dismiss under must_respond (seconds)
-  camofox:
-    managed_persistence: false   # When true, Camofox sessions persist cookies/logins across restarts
-    user_id: ""                  # Optional externally managed Camofox userId
-    session_key: ""              # Optional session key sent when Hermes creates a tab
-    adopt_existing_tab: false    # Reuse an existing tab for this identity before creating one
 ```
+
+**Executable resolution.** Hermes launches the first Chromium it finds:
+`browser.executable_path` → the Chromium installed by Hermes's package manager
+(`hermes pm install chromium`) → `/etc/hermes/chromium-executable-path` (official
+Docker image) → a system `chromium` / `chromium-browser` on `PATH` (Termux and
+platforms without a packaged build). With none, the browser tool reports a hint
+instead of failing silently.
+
+**Turning browsing off.** There is no browser config switch: disable the `browser`
+toolset with `hermes tools` (or `hermes tools disable browser [--platform NAME]`).
 
 **Dialog policies:**
 
-- `must_respond` (default) — capture the dialog, surface it in `browser_snapshot.pending_dialogs`, and wait for the agent to call `browser_dialog(action=...)`. After `dialog_timeout_s` seconds with no response, the dialog is auto-dismissed to prevent the page's JS thread from stalling forever.
-- `auto_dismiss` — capture, dismiss immediately. The agent still sees the dialog record in `browser_snapshot.recent_dialogs` with `closed_by="auto_policy"` after the fact.
+- `must_respond` (default) — capture the dialog and wait for the agent to call `browser_dialog(action=...)`. After `dialog_timeout_s` seconds with no response, the dialog is auto-dismissed to prevent the page's JS thread from stalling forever.
+- `auto_dismiss` — capture, dismiss immediately.
 - `auto_accept` — capture, accept immediately. Useful for pages with aggressive `beforeunload` prompts.
 
 See the [browser feature page](./features/browser.md#browser_dialog) for the full dialog workflow.
 
-The browser toolset supports multiple providers. See the [Browser feature page](./features/browser.md) for details on Browserbase, Browser Use, and local Chromium-family CDP setup.
+**Removed keys (migrated automatically).** `browser.backend` is gone — `browser_exec` is the
+only browser path. An old `backend: off` (quoted or not) is removed with a one-time notice to
+disable the `browser` toolset instead, shown by `hermes update` or, when Hermes migrated the config as it
+started, as a warning at the start of the first session. Any other value is removed with a note naming it
+and what replaced it (`camofox`: the Camofox plugin, `local`: the packaged Chromium browser_exec launches,
+a cloud name: `browser.cloud_provider`).
+`snapshot_threshold`, `record_sessions`, `allow_unsafe_evaluate` and `restrict_evaluate`
+belonged to the removed built-in browser tools and no longer have an effect. The
+`browser.camofox.*` keys are read by the Camofox plugin (`hermes plugins install camofox`), not by core.
+The old `AGENT_BROWSER_*` environment variables are no longer read; on update their values
+are copied from the profile's `.env` into the matching keys when those keys are unset
+(`AGENT_BROWSER_EXECUTABLE_PATH` → `executable_path`, `AGENT_BROWSER_PROFILE` → `user_data_dir`,
+`AGENT_BROWSER_ARGS` → `chromium_args`, `AGENT_BROWSER_HEADED` → `headed`, `AGENT_BROWSER_ENGINE` → `engine`).
+`engine: auto` and `headed: false` count as unset, because the environment variable overrode them
+before. A relative `AGENT_BROWSER_PROFILE` was resolved against the working directory, so it is
+written as that absolute path (the working directory of the process that migrated the config), with a
+notice, shown the same way, naming the path it pinned so you can check your browser logins are there.
 
 ## Timezone
 
@@ -2911,7 +2956,7 @@ security:
       - "/etc/hermes/blocked-sites.txt"
 ```
 
-When enabled, any URL matching a blocked domain pattern is rejected before the web or browser tool executes. This applies to `web_search`, `web_extract`, `browser_navigate`, and any tool that accesses URLs.
+When enabled, any URL matching a blocked domain pattern is rejected before the web or browser tool executes. This applies to `web_search`, `web_extract`, browser navigation, and any tool that accesses URLs.
 
 Domain rules support:
 - Exact domains: `admin.example.com`
@@ -3037,11 +3082,11 @@ delegation:
 ```
 **Wire protocol (`api_mode`):** Hermes auto-detects the wire protocol from `delegation.base_url` (e.g. paths ending in `/anthropic` → `anthropic_messages`; Codex / native Anthropic / Kimi-coding hostnames keep their existing detection). For endpoints the heuristic can't classify — for example Azure AI Foundry, MiniMax, Zhipu GLM, or LiteLLM proxies fronting an Anthropic-shaped backend — set `delegation.api_mode` explicitly to one of `chat_completions`, `codex_responses`, or `anthropic_messages`. Leave it empty (the default) to keep auto-detection.
 
-The delegation provider uses the same credential resolution as CLI/gateway startup. All configured providers are supported: `openrouter`, `nous`, `copilot`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`. When a provider is set, the system automatically resolves the correct base URL, API key, and API mode — no manual credential wiring needed.
+The delegation provider uses the same credential resolution as CLI/gateway startup. All configured providers are supported: `openrouter`, `nous`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`. When a provider is set, the system automatically resolves the correct base URL, API key, and API mode — no manual credential wiring needed.
 
 **Precedence:** `delegation.base_url` in config → `delegation.provider` in config → parent provider (inherited). `delegation.model` in config → parent model (inherited). Setting just `model` without `provider` changes only the model name while keeping the parent's credentials (useful for switching models within the same provider like OpenRouter).
 
-**One-shot runs:** a finite `hermes chat -q` / `--oneshot` session has no later turn to consume delegated results and no later session to learn for, so it runs a smaller footprint: `skill_manage` is not offered (skills are still listed and loadable with `skill_view`), the skills prompt asks for domain skills only rather than process skills, and `oneshot_max_children` caps the total subagents the run may spawn (default `2`, `0` = unlimited). Past the cap `delegate_task` returns a tool error telling the agent to finish inline.
+**One-shot runs:** a finite `hermes chat -q` / `--oneshot` session has no later turn to consume delegated results and no later session to learn for, so it runs a smaller footprint: the skills prompt asks for domain skills only rather than process skills (`skill_manage` stays available, so the run can still author skills), and `oneshot_max_children` caps the total subagents the run may spawn (default `2`, `0` = unlimited). Past the cap `delegate_task` returns a tool error telling the agent to finish inline. Nobody can answer or steer a one-shot either, so it also runs without the `clarify` tool, without the system prompt's mid-turn steering note, and with a `delegate_task` schema that omits the live-control parameters (`action` list/steer/stop, `subagent_id`, `message`): its children are joined inside the call, so there is never a running child to control.
 
 **Width and depth:** `max_concurrent_children` caps how many subagents run in parallel per batch (default `3`, floor of 1, no ceiling). Can also be set via the `DELEGATION_MAX_CONCURRENT_CHILDREN` env var. When the model submits a `tasks` array longer than the cap, `delegate_task` returns a tool error explaining the limit rather than silently truncating. `max_spawn_depth` controls the delegation tree depth (clamped to 1-3). At the default `1`, delegation is flat: children cannot spawn grandchildren, and passing `role="orchestrator"` silently degrades to `leaf`. Raise to `2` so orchestrator children can spawn leaf grandchildren; `3` for three-level trees. The agent opts into orchestration per call via `role="orchestrator"`; `orchestrator_enabled: false` forces every child back to leaf regardless. Cost scales multiplicatively — at `max_spawn_depth: 3` with `max_concurrent_children: 3`, the tree can reach 3×3×3 = 27 concurrent leaf agents. See [Subagent Delegation → Depth Limit and Nested Orchestration](features/delegation.md#depth-limit-and-nested-orchestration) for usage patterns.
 
@@ -3124,6 +3169,27 @@ onboarding:
 - `profile_build` — controls the offer on the first message ever, in the TUI, the desktop app and messaging direct messages (never in a group chat). `"ask"` (default) offers to build a user profile; the offer is **opt-in and consent-gated** — the agent asks before any lookup, never reads connected accounts silently, and saves confirmed facts to user memory. `"off"` stops only the offer; the agent still gives a plain intro. The offer fires at most once per profile.
 - `seen` — internal state. Hermes latches each shown hint here so it never fires again; the first-message offer is also recorded here once shown. Don't hand-edit it — wipe the whole `onboarding` section if you want to re-see all hints.
 - `run` — whether the desktop app opens its first-run onboarding chat on the next launch. Unset means only on a fresh install (no sessions and no profiles yet). Hermes writes `true` when onboarding starts and `false` when it is finished or skipped. It always lives in the default profile's `config.yaml`, whichever profile the app runs. Set `false` to never show it; managed installs can pin it in the managed config.
+
+## Webapp
+
+The gateway can serve the [Desktop workspace in a browser](./desktop.md#use-the-desktop-workspace-from-a-browser) on its own listener. It is off until you turn it on.
+
+```yaml
+webapp:
+  enabled: false     # true: the gateway serves the Webapp
+  host: 127.0.0.1    # 127.0.0.1, ::1 or localhost; or 0.0.0.0 / :: for other machines (dashboard sign-in required)
+  port: 9120         # fixed, so the browser's address stays the same across gateway restarts
+  public_url: ""     # the https:// address a reverse proxy or tunnel serves the Webapp at (sign-in required)
+```
+
+- `enabled` — the gateway reads it at start; restart the gateway after changing it (`hermes gateway restart`).
+- `host` — `127.0.0.1`, `::1` or `localhost` keeps the Webapp on this machine. `0.0.0.0` or `::` makes it reachable from other machines and requires a [dashboard sign-in provider](./features/web-dashboard.md#authentication-gated-mode); without one the gateway serves native clients only and `hermes webapp --status` says why. Restart the gateway after adding the provider. Any other value, another loopback address such as `127.0.0.2` included, keeps the Webapp off.
+- `port` — a standalone profile's gateway needs a port other than the default gateway's. **Settings → Web Access → Start** picks one for a standalone profile that sets none (the first free port above 9120 no other profile uses) and saves it here; it never replaces a port you set. When the port is taken, the gateway likewise serves native clients only and `hermes webapp --status` reports why. It also replaces the Webapp's browser sign-in, since another program may have received it, so open tabs need `hermes webapp` again once the port is free.
+- `public_url` — set it when a reverse proxy or tunnel you run serves the Webapp at its own address (forwarding to `host:port`). It turns on dashboard sign-in even on a loopback `host`, it is the one outside hostname the Webapp accepts requests for, and sign-in callbacks are built on it. Without a sign-in provider the gateway serves native clients only, as for `0.0.0.0`. It must be an `http://` or `https://` address with no credentials, query or fragment; anything else keeps the Webapp off. `dashboard.public_url` is for `hermes dashboard` and never applies to the Webapp.
+
+Sign-in turns on when `host` is `0.0.0.0` or `::`, or when `public_url` is set, whatever the host. `hermes webapp` then opens the Webapp's address (`public_url` when set, where sign-in returns) for you to sign in with your dashboard account: its one-use links only open a Webapp that needs no sign-in. Native clients (the CLI, TUI and Desktop app) never sign in: the gateway's listener for them never asks for it, whatever the config says.
+
+The Webapp settings are read from the config of the gateway that serves the profile: the default profile's config for named profiles it serves, a standalone profile's own config otherwise.
 
 ## Dashboard
 

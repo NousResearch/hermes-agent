@@ -13,7 +13,6 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
-from utils import file_signature
 
 logger = logging.getLogger(__name__)
 
@@ -76,10 +75,10 @@ def _warn_config_parse_failure(
     in ``hermes_cli.config._load_config_impl``).
     """
     try:
-        st = config_path.stat()
-        sig = file_signature(st)
+        from hermes_cli.config_backend import config_version
+        sig = config_version(config_path)
         key = (str(config_path), *sig)
-        _CONFIG_PARSE_FAILURES[str(config_path)] = (*sig, str(exc))
+        _CONFIG_PARSE_FAILURES[str(config_path)] = (*_failure_version(config_path), str(exc))
     except OSError:
         key = (str(config_path), 0, 0, 0, 0)
     if key in _CONFIG_PARSE_WARNED:
@@ -99,14 +98,26 @@ def _warn_config_parse_failure(
         pass
 
 
+def _failure_version(path: Path) -> tuple:
+    """What a parse-failure record is matched on: ``file_cache_version`` hashed even once settled,
+    because the record is compared long after it was taken and a same-tick same-size fix must clear
+    it. An unreadable file (the OSError failures) gets its stat signature and the error's name."""
+    from utils import file_cache_version
+    try:
+        return file_cache_version(path, always_digest=True)
+    except OSError:
+        from hermes_cli.config_backend import config_version
+        return (*config_version(path), None)
+
+
 def get_active_config_parse_failure() -> Optional[str]:
     """Return the recorded parse error while the ACTIVE config.yaml is still byte-identical
-    (mtime_ns + size + ino + ctime_ns) to the file that failed to parse; else None."""
+    (``file_cache_version`` with its content digest) to the file that failed to parse; else None."""
     from hermes_cli.config import get_config_path
     try:
         record = _CONFIG_PARSE_FAILURES[str(path := get_config_path())]
-        st = path.stat()
-        return record[4] if file_signature(st) == record[:4] else None
+        sig = _failure_version(path)
+        return record[len(sig)] if sig == record[:len(sig)] else None
     except Exception:
         return None
 

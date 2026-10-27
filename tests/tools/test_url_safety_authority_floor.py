@@ -51,6 +51,9 @@ TEMPLATED_CODE = [
     'js("fetch(`http://localhost:${port}/api`)")',
 ]
 
+# Trailing C0 controls (and DEL) that urlsplit keeps in the host and WHATWG clients drop.
+TRAILING_CONTROLS = ["\x00", "\x01", "\x08", "\x1b", "\x1f", "\x7f"]
+
 class TestFloorAcceptsTemplatedUrlLiterals:
     @pytest.mark.parametrize("code", TEMPLATED_CODE)
     def test_local_browser_runs_templated_dev_server_urls(self, local_browser, code):
@@ -84,3 +87,22 @@ class TestFloorJudgesPercentEncodedHostDecoded:
     @pytest.mark.parametrize("url", ["http://%6c%6f%63%61%6c%68%6f%73%74/", "http://exa%20mple.com/"])
     def test_decoded_ordinary_host_not_blocked(self, url):
         assert is_always_blocked_url(url) is False
+
+
+class TestTrailingControlCannotHideMetadataHost:
+    @pytest.mark.parametrize("control", TRAILING_CONTROLS)
+    def test_floor_blocks_despite_dns_failure(self, control):
+        assert is_always_blocked_url("http://169.254.169.254" + control) is True
+
+    @pytest.mark.parametrize("control", TRAILING_CONTROLS)
+    def test_is_safe_url_refuses_with_proxy_configured(self, proxy, control):
+        assert is_safe_url("http://169.254.169.254" + control) is False
+
+    def test_browser_scan_blocks_raw_control_literal(self, local_browser):
+        verdict = browser_use_cli._code_url_verdict('new_tab("http://169.254.169.254\x01")')
+        assert verdict.blocked is not None
+
+    @pytest.mark.parametrize("url", ["  https://example.com/  ", "https://example.com/\n", "\thttps://example.com/\r\n"])
+    def test_surrounding_whitespace_still_accepted(self, proxy, url):
+        assert is_always_blocked_url(url) is False
+        assert is_safe_url(url) is True

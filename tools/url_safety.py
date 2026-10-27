@@ -230,8 +230,18 @@ def _normalize_hostname(host: Optional[str]) -> str:
 # different host from one string: WHATWG ends the authority at ``\``, percent-decodes the host and
 # accepts ``http:\\host`` or ``http:///host``; urlsplit does none of these. So
 # ``http://127.0.0.1:8080\@1.1.1.1`` is 1.1.1.1 here and 127.0.0.1:8080 in a browser. Such
-# URLs are refused rather than guessed at. Both parsers strip C0 controls and space from the ends.
-_C0_CONTROL_OR_SPACE = "".join(chr(c) for c in range(0x21))
+# URLs are refused rather than guessed at. WHATWG strips every C0 control from the ends, but urlsplit
+# keeps a trailing one in the host, so only ordinary whitespace is stripped before looking for controls.
+_URL_EDGE_WHITESPACE = " \t\n\r\x0b\x0c"
+
+
+def _url_hostname(url: str, *, percent_decode: bool = False) -> str:
+    """The host of *url* as every check compares it: the same edge stripping as the ambiguity check,
+    lowercased, trailing dot dropped, optionally percent-decoded first."""
+    host = urlsplit(url.strip(_URL_EDGE_WHITESPACE)).hostname or ""
+    if percent_decode:
+        host = unquote(host)
+    return _normalize_hostname(host)
 
 
 def _authority_ambiguity(url: str, *, floor: bool = False) -> Optional[str]:
@@ -241,7 +251,7 @@ def _authority_ambiguity(url: str, *, floor: bool = False) -> Optional[str]:
     ``floor`` keeps only what can move the host itself (controls, no ``//``, ``\\`` in the authority):
     userinfo and an unparseable port (templated ``{port}``/``%d`` literals) leave the host as is, and
     the floor checks a percent-encoded host after decoding it."""
-    url = url.strip(_C0_CONTROL_OR_SPACE)
+    url = url.strip(_URL_EDGE_WHITESPACE)
     parts = urlsplit(url)
     if parts.scheme.lower() not in _HTTP_SCHEMES:
         return None
@@ -336,7 +346,7 @@ def is_always_blocked_url(url: str) -> bool:
         if reason is not None:
             logger.warning("Blocked request — ambiguous URL authority (always-blocked floor): %s", reason)
             return True
-        hostname = _normalize_hostname(unquote(urlparse(url).hostname or ""))
+        hostname = _url_hostname(url, percent_decode=True)
         if not hostname:
             return False
         if hostname in _BLOCKED_HOSTNAMES:
@@ -389,9 +399,7 @@ def is_safe_url(url: str) -> bool:
     clients could parse differently (userinfo included). ``allow_private_urls`` skips private-IP
     blocking, but cloud metadata endpoints remain blocked regardless."""
     try:
-        parsed = urlparse(url)
-        hostname = _normalize_hostname(parsed.hostname)
-        scheme = (parsed.scheme or "").strip().lower()
+        scheme = (urlparse(url).scheme or "").strip().lower()
         if scheme not in _HTTP_SCHEMES:
             logger.warning("Blocked request — unsupported URL scheme: %s", scheme or "<empty>")
             return False
@@ -400,6 +408,7 @@ def is_safe_url(url: str) -> bool:
             # The reason only: the URL may carry userinfo credentials.
             logger.warning("Blocked request — ambiguous URL authority: %s", reason)
             return False
+        hostname = _url_hostname(url)
         if not hostname:
             return False
 

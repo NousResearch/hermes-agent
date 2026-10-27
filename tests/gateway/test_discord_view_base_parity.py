@@ -88,7 +88,12 @@ async def test_on_timeout_disables_and_greys_embed(name):
     assert view.resolved is True
     assert all(child.disabled for child in view.children)
     assert embed.footer
-    msg.edit.assert_awaited_once_with(embed=embed, view=view)
+    assert embed.color is not None
+    # Exec cards remove controls entirely so competing timeout edits cannot
+    # reattach a retired approval view.
+    msg.edit.assert_awaited_once_with(embed=embed, view=None if name == "exec" else view)
+    if name == "exec":
+        assert view.is_finished()
 
 
 @pytest.mark.asyncio

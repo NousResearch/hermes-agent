@@ -88,3 +88,40 @@ async def test_store_false_keeps_no_snapshot_and_no_conversation_pointer(api, ow
         assert fetched.status == 404, 'store:false response was retained'
     assert api._response_store.get_conversation('ephemeral') is None
 
+
+@pytest.mark.asyncio
+async def test_keyed_admission_and_retry_never_take_the_store_lock_on_the_loop(api, owner):
+    """The store lock is held by workers for a whole persistence unit; a loop-side wait on it
+    freezes every other session for as long as that write takes."""
+    from gateway.session_results import execution_result
+
+    async def handle(event):
+        execution_result.get()['result'] = {'final_response': 'ok', 'messages': []}
+        return 'ok'
+
+    owner.runner._handle_message = handle
+    api._api_key = _API_KEY
+    store = api._current_response_store()
+    lock_threads = []
+
+    class _SpyLock:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __enter__(self):
+            lock_threads.append(threading.get_ident())
+            return self._inner.__enter__()
+
+        def __exit__(self, *exc):
+            return self._inner.__exit__(*exc)
+
+    store._lock = _SpyLock(store._lock)
+    app = web.Application()
+    app.router.add_post('/v1/responses', api._handle_responses)
+    async with TestClient(TestServer(app)) as client:
+        for _ in range(2):  # a fresh keyed admission, then its exact retry
+            posted = await client.post('/v1/responses', json={'input': 'hi'},
+                                       headers={**_AUTH, 'Idempotency-Key': 'lock-probe'})
+            assert posted.status == 200, await posted.text()
+    assert lock_threads, 'the store was never used'
+    assert threading.get_ident() not in lock_threads, 'the event loop waited on the ResponseStore lock'

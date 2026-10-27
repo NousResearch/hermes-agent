@@ -420,7 +420,7 @@ class TestStrictReopenFailureIsNotReusable:
         assert db.get_meta("must_not_commit") == "recovered-write"
         assert db._conn is not None
 
-    def test_strict_reopen_failure_oserror_also_retires(self, db, monkeypatch):
+    def test_strict_reopen_failure_oserror_also_retires(self, db, monkeypatch, caplog):
         """The OSError variant of the arming fault retires the candidate too."""
         if not (db._wal_active and lg.supported()):
             pytest.skip("requires WAL + OFD guard support (CI lane covers it)")
@@ -433,6 +433,12 @@ class TestStrictReopenFailureIsNotReusable:
             return real_ofd_lock(fd, lock_type, start, length, cmd=cmd)
 
         monkeypatch.setattr(lg, "_ofd_lock", exploding)
-        with pytest.raises(lg.WalGuardArmedIncompleteError):
-            db.set_meta("must_not_commit", "unguarded-write")
+        with caplog.at_level(logging.WARNING, logger="hermes_state"):
+            with pytest.raises(lg.WalGuardArmedIncompleteError):
+                db.set_meta("must_not_commit", "unguarded-write")
+        assert "failed to arm" in caplog.text
+        assert "guard arming exploded" in caplog.text
         assert db._conn is None, "a failed arming must not leave the writer installed"
+        monkeypatch.setattr(lg, "_ofd_lock", real_ofd_lock)
+        db.set_meta("must_not_commit", "recovered-write")
+        assert db.get_meta("must_not_commit") == "recovered-write"

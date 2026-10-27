@@ -22,6 +22,7 @@ from hermes_cli.timefmt import coerce_epoch
 from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
     _json_or, _legacy_reset_child_sql, _placeholders, _sql_json_extract)
+from hermes_state_content import SessionContentCodecMixin
 from hermes_state_detached_results import SessionDetachedResultsMixin
 from hermes_state_todo import SessionTodoResultMixin
 from hermes_state_identity import (
@@ -119,8 +120,9 @@ def _stale_holder(row, now: float) -> bool:
     return float(row["expires_at"]) <= now or _compression_lock_holder_process_is_dead(row["holder"])
 
 
-class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
+class SessionMessagesMixin(SessionContentCodecMixin, SessionDetachedResultsMixin, SessionTodoResultMixin):
     """Message append/replace/rewind, reactions, resume conversations, replay dedupe (detached results: the base)."""
+
 
     def _bump_conversation_generation(self, conn, session_id: str, end_reason: str) -> None:
         """Advance the peer's conversation generation past a boundary, in the txn that writes it. Only
@@ -135,37 +137,6 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         if source and session_key:
             conn.execute(_BUMP_GENERATION_SQL, (source, session_key))
 
-    @classmethod
-    def _encode_content(cls, content: Any) -> Any:
-        """Serialize list/dict content (multimodal parts) as a sentinel-prefixed JSON string (sqlite3 binds
-        only scalars). Lone UTF-16 surrogates (unsanitized web-scraped tool results) are scrubbed here: left
-        raw, sqlite3 raises UnicodeEncodeError and the session silently stops persisting. Pairs with
-        :meth:`_decode_content`.
-
-        A literal string carrying the reserved ``\\x00json:`` prefix is indistinguishable from
-        stored structured content, so it is JSON-string-wrapped (decoded back verbatim on read)
-        instead of written raw — a crafted import can't smuggle the marker in and have the read
-        path decode attacker-chosen structure."""
-        if isinstance(content, str):
-            content = _sanitize_surrogates(content)
-            if not content.startswith(cls._CONTENT_JSON_PREFIX):
-                return content
-            # Fall through: escape the reserved prefix by double-encoding the literal.
-        elif content is None or isinstance(content, (bytes, int, float)):
-            return content
-        try:
-            return cls._CONTENT_JSON_PREFIX + json.dumps(content)  # ensure_ascii escapes surrogates: bindable
-        except (TypeError, ValueError):
-            return _sanitize_surrogates(str(content))
-
-    @classmethod
-    def _decode_content(cls, content: Any) -> Any:
-        """Reverse :meth:`_encode_content`; returns scalars unchanged. Fail closed: a reserved-prefix
-        string that isn't valid JSON (a legacy/malformed marker row) returns the raw string."""
-        if isinstance(content, str) and content.startswith(cls._CONTENT_JSON_PREFIX):
-            return _json_or(content[len(cls._CONTENT_JSON_PREFIX):], content,
-                "Failed to decode JSON-encoded message content; returning raw string")
-        return content
 
     @staticmethod
     def _encode_display_metadata(display_metadata: Any) -> Optional[str]:

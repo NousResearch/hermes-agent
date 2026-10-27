@@ -1,5 +1,5 @@
 import {
-  atom, Button, createBudgetedLoop, GlyphSpinner, icons, Popover, PopoverContent, PopoverTrigger,
+  atom, Button, createBudgetedLoop, GlyphSpinner, icons, Popover, PopoverContent, PopoverTrigger, randomUuid,
   RowButton, SearchField, STATUSBAR_AREAS, Tip, usePluginI18n,
   useQuery, useValue
 } from '@hermes/plugin-sdk'
@@ -177,7 +177,7 @@ function createPlayer(ctx) {
   let disposed = false
   let lastVolume = volume.get() || 25
   const bus = new BroadcastChannel('hermes:radio:playback')
-  const windowId = crypto.randomUUID()
+  const windowId = randomUuid()
 
   function stop(nextStatus = 'paused') {
     generation++

@@ -294,7 +294,7 @@ def finish_text_response(
         # real reply; ``build_api_messages`` substitutes ``api_content`` on the wire.
         final_msg["api_content"] = final_response
 
-    # Dropped tool-call recovery (copilot/Claude): finish_reason="tool_calls" with empty
+    # Dropped tool-call recovery (seen with Claude via gateways): finish_reason="tool_calls" with empty
     # tool_calls would end the turn unstarted; re-prompt (max 3 CONSECUTIVE stalls).
     if (
         finish_reason == "tool_calls"

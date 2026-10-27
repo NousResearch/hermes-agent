@@ -118,6 +118,20 @@ SKILL_SAFETY_RULE = (
 )
 
 
+def tail_cut_pricer(compressor: Any, messages: list[dict[str, Any]], head_end: int):
+    """Tail-cut walk price ``index -> tokens`` in which rows at or before the newest handoff cost nothing.
+
+    The handoff scan folds every row up to the newest in-transcript handoff into the summary window (the tail starts
+    past it), so none of them can stay in the protected tail. Charging them let the handoff row alone break the soft
+    ceiling: the walk stopped on it, the window held only that handoff, and compress() returned the
+    ``empty_post_handoff_window`` no-op at every trigger while the session grew past its window."""
+    price = compressor._tail_row_pricer(messages)
+    newest = next(
+        (i for i in range(len(messages) - 1, head_end - 1, -1) if compressor._is_context_summary_message(messages[i])), -1,
+    )
+    return price if newest < 0 else (lambda i: 0 if i <= newest else price(i))
+
+
 def with_skill_safety_rule(
     summary: str, head: list[dict[str, Any]], tail: list[dict[str, Any]],
 ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:

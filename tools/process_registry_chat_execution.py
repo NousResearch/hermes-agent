@@ -107,13 +107,16 @@ class _ForegroundOutput:
             stream.seek(self.offset)
             while not self.closed.is_set() and not self.finished:
                 chunk = stream.read(65536)
+                if not chunk and self.handle.poll() is not None:
+                    # Original bytes may arrive between the EOF read and exit observation.
+                    chunk = stream.read(65536)
+                    if not chunk:
+                        self.finished = True
+                        yield self.decoder.decode(b'', final=True)
+                        return
                 if chunk:
                     self.offset = stream.tell()
                     yield self.decoder.decode(chunk)
-                elif self.handle.poll() is not None:
-                    self.finished = True
-                    yield self.decoder.decode(b'', final=True)
-                    return
                 else:
                     # Yield permits the shared drain's stop event to transfer
                     # this cursor promptly even while the command is silent.

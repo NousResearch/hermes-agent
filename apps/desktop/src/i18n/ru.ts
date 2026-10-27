@@ -147,7 +147,8 @@ export const ruOverrides = {
       microphoneConstraintsUnsupported: 'Ограничения микрофона не поддерживаются этим устройством.',
       microphoneFailed: 'Ошибка микрофона',
       microphoneInUse: 'Микрофон уже используется другим приложением.',
-      microphoneNeedsHttps: 'Микрофону нужно защищённое соединение. Откройте Webapp по HTTPS или через SSH-туннель к 127.0.0.1, чтобы им пользоваться.',
+      microphoneNeedsHttps:
+        'Микрофону нужно защищённое соединение. Откройте Webapp по HTTPS или через SSH-туннель к 127.0.0.1, чтобы им пользоваться.',
       microphonePermissionDenied: 'Доступ к микрофону запрещён.',
       microphoneStartFailed: 'Не удалось начать запись с микрофона.',
       microphoneUnsupported: 'Это окружение не поддерживает запись с микрофона.',
@@ -2071,7 +2072,8 @@ export const ruOverrides = {
     exported: 'Профиль экспортирован',
     failedImport: 'Не удалось импортировать профиль',
     failedExport: 'Не удалось экспортировать профиль',
-    exportNeedsHost: name => `Браузер не может сохранить архив профиля. На хосте Hermes выполните: hermes profile export ${name}`,
+    exportNeedsHost: name =>
+      `Браузер не может сохранить архив профиля. На хосте Hermes выполните: hermes profile export ${name}`,
     allProfiles: 'Все профили',
     showAllProfiles: 'Показать все профили',
     notServedHere: 'Здесь не обслуживается',

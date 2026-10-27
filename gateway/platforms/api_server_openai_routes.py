@@ -384,6 +384,9 @@ class _ResponsesStream:
         conversation pointer can not interleave with another observer's."""
         if self.durable_key and _settled(self.response_store.get(self.durable_key[0])):
             return  # A concurrent observer already committed the exact terminal envelope.
+        if response_env.get('status') == 'incomplete' and self.terminal_snapshot_persisted:
+            # A cancel that interrupted the await of a terminal commit: its worker still finished it.
+            return
         advance_conversation = self.conversation and (not self.terminal_replay
             or self.response_store.get_conversation(self.conversation) in (None, self.response_id))
         self.response_store.put(self.response_id, {
@@ -393,6 +396,9 @@ class _ResponsesStream:
             "session_id": session_id or self.session_id})
         if advance_conversation:
             self.response_store.set_conversation(self.conversation, self.response_id)
+        if response_env.get('status') != 'in_progress':
+            # Set by the worker, under the store lock: a cancel of the awaiting handler cannot lose it.
+            self.terminal_snapshot_persisted = True
 
     async def persist_incomplete_if_needed(self) -> None:
         """Persist an ``incomplete`` snapshot when no terminal one was written (disconnect /
@@ -647,7 +653,6 @@ class _ResponsesStream:
         history.append(
             {"role": "assistant", "content": self.final_response_text or redact(self.agent_error)})
         await self.persist_snapshot(env, history=history)
-        self.terminal_snapshot_persisted = True
         await self.write_event("response.failed", {"type": "response.failed", "response": env})
 
     async def emit_completed(self) -> dict[str, Any]:
@@ -678,7 +683,6 @@ class _ResponsesStream:
                       'events': [*self.recorded_events, ('response.' + status, terminal_event)]}
         stored = await self.response_store.off_loop(
             self._commit_terminal, env, full_history, sid if isinstance(sid, str) and sid else None, record)
-        self.terminal_snapshot_persisted = True
         if self.durable_key:
             if _settled(stored):
                 env = stored['response']
@@ -1284,11 +1288,12 @@ class OpenAICompatRoutesMixin:
             await _abandon_agent_task(agent_ref, agent_task, "SSE client disconnected")
             logger.info("SSE client disconnected; interrupted agent task %s", response_id)
         except asyncio.CancelledError:
-            # Server-side cancellation (shutdown, timeout): persist incomplete, then re-raise.
-            await st.persist_incomplete_if_needed()
+            # Server-side cancellation (shutdown, timeout): abandon the agent first (a second cancel
+            # landing in the persist await must not skip it), persist incomplete, then re-raise.
             await _abandon_agent_task(
                 agent_ref, agent_task, "SSE task cancelled",
                 reap_source="api_server_sse_cancelled", await_cancel=False)
+            await st.persist_incomplete_if_needed()
             logger.info("SSE task cancelled; persisted incomplete snapshot for %s", response_id)
             raise
         except Exception as exc:

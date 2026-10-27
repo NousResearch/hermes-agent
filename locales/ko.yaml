@@ -2018,7 +2018,6 @@ cli:
     cleared_picker_cache: "모델 선택기 캐시를 지웠어요. 새로 고치는 중..."
     moa_one_shot_queued: "프리셋 {preset}(으)로 MoA 일회성 실행이 대기열에 추가됐어요. 이 턴이 끝나면 이전 모델로 복원돼요."
     normalized_model: "{provider}용 모델 '{old}'을(를) '{new}'(으)로 정규화했어요."
-    normalized_copilot_model: "Copilot 모델 '{old}'을(를) '{new}'(으)로 정규화했어요."
     stripped_provider_prefix: "'{old}'에서 제공자 접두사를 제거했어요. {provider}에는 '{new}'을(를) 사용해요."
     restored_from_session: "세션에서 모델 복원됨: {model}"
     could_not_load_config: "❌ 설정을 불러올 수 없어요: {error}"

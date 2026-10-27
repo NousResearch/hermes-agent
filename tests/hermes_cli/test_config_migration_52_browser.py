@@ -85,7 +85,6 @@ def test_boot_migration_shows_the_off_notice_at_the_first_agent_start_once(tmp_p
     agent's startup warnings once, and neither a second agent nor the next boot repeats it."""
     import hermes_cli.left_core_migration as lcm
 
-    monkeypatch.setattr(lcm, "_undelivered", {})
     monkeypatch.delenv("CAMOFOX_URL", raising=False)
     home = _home(tmp_path / "a", {"_config_version": 51, "browser": {"backend": "off"}})
     said = _boot_agents(home, monkeypatch, starts=2)
@@ -194,7 +193,6 @@ def test_a_pinned_relative_profile_names_the_absolute_path_on_update_and_boot(tm
     in: `hermes update` and the first agent after a boot migration both name the absolute path pinned."""
     import hermes_cli.left_core_migration as lcm
 
-    monkeypatch.setattr(lcm, "_undelivered", {})
     monkeypatch.delenv("CAMOFOX_URL", raising=False)
     cwd = tmp_path / "work"
     cwd.mkdir()

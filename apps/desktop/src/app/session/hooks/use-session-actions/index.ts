@@ -2100,7 +2100,7 @@ export function useSessionActions({
         const hasLiveProjection = Boolean(resumed.inflight || resumed.queued)
 
         const preferredMessages = (() => {
-          // A reply the live stream settled during the RPC is newer than this snapshot (resume-settled-turn.ts).
+          // A reply the live stream settled during the RPC is newer than this snapshot (resume-reconcile.ts).
           if (
             (options?.authoritativeSnapshot && resumed.messages.length === 0 && !hasLiveProjection) ||
             liveTurnSettledDuringResume(resumed, resumeStartedAt, resumedSameSelectedSession)

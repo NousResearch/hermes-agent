@@ -3,7 +3,8 @@ import type { PersistedTurn } from '@hermes/shared'
 import { transcriptRowIds } from '@/app/session/hooks/use-session-actions/pending-turn-identity'
 import type { ChatMessage } from '@/lib/chat-messages'
 
-const isRowId = (value: unknown): value is number =>
+/** A stored transcript row id (SQLite rowid: a positive safe integer). */
+export const isRowId = (value: unknown): value is number =>
   typeof value === 'number' && Number.isSafeInteger(value) && value > 0
 
 /** The receipt's stored user rows in turn order (prompt first, then each steer/redirect row). */

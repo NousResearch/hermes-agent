@@ -10,7 +10,7 @@ import {
 } from '@/lib/chat-messages'
 import { generatedImageEchoSources, stripGeneratedImageEchoes } from '@/lib/generated-images'
 
-import { bindReceiptUserRows } from './receipt-user-rows'
+import { bindReceiptUserRows, isRowId } from './receipt-user-rows'
 
 const flat = (text: string) => text.replace(/\s+/g, ' ').trim()
 
@@ -69,9 +69,6 @@ export function extendInterruptedReply(messages: ChatMessage[], rawText: string,
     }
   ]
 }
-
-const isRowId = (value: unknown): value is number =>
-  typeof value === 'number' && Number.isSafeInteger(value) && value > 0
 
 /**
  * Stop settles the turn on screen before the backend's interrupted completion

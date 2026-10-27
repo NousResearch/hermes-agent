@@ -27,10 +27,16 @@ export const $toolDisclosureStates = atom<ToolDisclosureStates>(loadToolDisclosu
 const disclosureOpenCache = new Map<string, ReadableAtom<boolean | undefined>>()
 const anyDisclosureOpenCache = new Map<string, ReadableAtom<boolean>>()
 
-persistStore($toolViewModePref, (mode, options) =>
-  persistBoolean(TOOL_VIEW_TECHNICAL_STORAGE_KEY, mode === 'technical', options)
+persistStore(
+  $toolViewModePref,
+  (mode, options) => persistBoolean(TOOL_VIEW_TECHNICAL_STORAGE_KEY, mode === 'technical', options),
+  'product'
 )
-persistStore($hideCodeDiffsPref, (hidden, options) => persistBoolean(HIDE_CODE_DIFFS_STORAGE_KEY, hidden, options))
+persistStore(
+  $hideCodeDiffsPref,
+  (hidden, options) => persistBoolean(HIDE_CODE_DIFFS_STORAGE_KEY, hidden, options),
+  false
+)
 $toolDisclosureStates.subscribe(persistToolDisclosureStates)
 
 export function setToolViewMode(mode: ToolViewMode) {

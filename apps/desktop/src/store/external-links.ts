@@ -25,7 +25,7 @@ export function setAlwaysExternalLinks(on: boolean): void {
 }
 
 if (typeof window !== 'undefined') {
-  persistStore($alwaysExternalLinks, (on, options) => persistBoolean(KEY, on, options))
+  persistStore($alwaysExternalLinks, (on, options) => persistBoolean(KEY, on, options), false)
 
   window.addEventListener('storage', event => {
     if (event.key === KEY) {

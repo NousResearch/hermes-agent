@@ -11,8 +11,10 @@ const REASONING_COLLAPSED_BY_DEFAULT_STORAGE_KEY = 'hermes.desktop.reasoning.col
  *  Simple mode rests reasoning collapsed without touching this preference. */
 const $reasoningCollapsedByDefaultPref = atom(storedBoolean(REASONING_COLLAPSED_BY_DEFAULT_STORAGE_KEY, false))
 
-persistStore($reasoningCollapsedByDefaultPref, (value, options) =>
-  persistBoolean(REASONING_COLLAPSED_BY_DEFAULT_STORAGE_KEY, value, options)
+persistStore(
+  $reasoningCollapsedByDefaultPref,
+  (value, options) => persistBoolean(REASONING_COLLAPSED_BY_DEFAULT_STORAGE_KEY, value, options),
+  false
 )
 
 export const $reasoningCollapsedByDefault = modeBound(

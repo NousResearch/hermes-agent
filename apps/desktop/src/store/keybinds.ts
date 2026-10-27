@@ -85,7 +85,7 @@ function persistBindings(bindings: KeybindBindings, options: WriteOptions): void
 
 export const $bindings = atom<KeybindBindings>(loadBindings())
 
-persistStore($bindings, persistBindings)
+persistStore($bindings, persistBindings, defaultBindings())
 
 /** Live combos for an action: explicit binding → stored override → default. */
 export function bindingsFor(id: string, bindings: KeybindBindings = $bindings.get()): string[] {

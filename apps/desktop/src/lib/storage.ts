@@ -47,6 +47,9 @@ export function readKey(key: string): null | string {
 }
 
 export interface WriteOptions {
+  /** With `provisional`: the value is the store's default, so it stays
+   *  provisional even when it is already stored (an older build wrote it). */
+  isDefault?: boolean
   /** A value this client derives for itself (a default, a heal, a migration
    *  that only fills a default), not a choice the user made. */
   provisional?: boolean
@@ -109,17 +112,25 @@ export function markProvisionalPreference(key: string, provisional: boolean) {
 /** Raw write. A null value removes the key. Best-effort. A provisional write
  *  that changes nothing is skipped, and one that rewrites the user's own value
  *  (a heal, a migration from a real value) keeps it theirs. */
-export function writeKey(key: string, value: null | string, { provisional = false }: WriteOptions = {}) {
+export function writeKey(
+  key: string,
+  value: null | string,
+  { isDefault = false, provisional = false }: WriteOptions = {}
+) {
   const shared = isSharedPreferenceKey(key)
 
   if (provisional) {
     const previous = rawRead(key)
 
     if (previous === value) {
+      if (shared && isDefault && value !== null) {
+        markProvisionalPreference(key, true)
+      }
+
       return
     }
 
-    provisional = value !== null && (!shared || previous === null || provisionalPreferenceKeys().has(key))
+    provisional = value !== null && (isDefault || !shared || previous === null || provisionalPreferenceKeys().has(key))
   }
 
   rawWrite(key, value)
@@ -191,8 +202,8 @@ export function storedStringArray(key: string): string[] {
   }
 }
 
-export function persistStringArray(key: string, value: string[]) {
-  writeKey(key, value.length === 0 ? null : JSON.stringify(value))
+export function persistStringArray(key: string, value: string[], options?: WriteOptions) {
+  writeKey(key, value.length === 0 ? null : JSON.stringify(value), options)
 }
 
 export function storedStringRecord(key: string): Record<string, string> {

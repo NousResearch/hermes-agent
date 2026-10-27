@@ -46,7 +46,7 @@ import {
 import { atom, computed } from 'nanostores'
 
 import { isBrowserHostedDesktop, isMacPlatform, isWindowsPlatform } from '@/lib/platform'
-import { readJson, writeJson } from '@/lib/storage'
+import { readJson, readKey, writeJson, writeKey } from '@/lib/storage'
 
 export {
   defaultTranslucencyValues,
@@ -95,6 +95,19 @@ export const GLASS_IS_WINDOWS = GLASS_SUPPORTED && !isMacPlatform()
 // inherit until one of them is edited.
 const KEY = 'hermes.desktop.translucency.v2'
 const LEGACY_KEY = 'hermes.desktop.translucency.v1'
+
+// An older build persisted the book at every load, so a stored default is no
+// choice: keep it provisional, or a browser upgraded from that build would
+// seed it into the machine's shared store over native's tuned glass (#145536).
+if (typeof window !== 'undefined') {
+  const stored = readKey(KEY)
+
+  const book = JSON.stringify(normalizeBook(readJson<unknown>(KEY), true))
+
+  if (stored !== null && [true, false].some(glass => book === JSON.stringify(normalizeBook(null, glass)))) {
+    writeKey(KEY, stored, { isDefault: true, provisional: true })
+  }
+}
 
 const read = (): TranslucencyBook =>
   normalizeBook(readJson<unknown>(KEY) ?? readJson<unknown>(LEGACY_KEY), GLASS_SUPPORTED)

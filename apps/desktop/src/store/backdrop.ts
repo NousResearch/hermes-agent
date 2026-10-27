@@ -10,7 +10,7 @@ const KEY = 'hermes.desktop.backdrop.v1'
 /** Whether the faint statue image renders behind the chat transcript. */
 export const $backdrop = atom(storedBoolean(KEY, false))
 
-persistStore($backdrop, (on, options) => persistBoolean(KEY, on, options))
+persistStore($backdrop, (on, options) => persistBoolean(KEY, on, options), false)
 
 export function setBackdrop(on: boolean) {
   recordFeatureToggle('backdrop', $backdrop.get(), on)

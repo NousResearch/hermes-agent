@@ -193,7 +193,7 @@ const PROFILE_ORDER_STORAGE_KEY = 'hermes.desktop.profileOrder'
 
 export const $profileOrder = atom<string[]>(storedStringArray(PROFILE_ORDER_STORAGE_KEY))
 
-$profileOrder.subscribe(value => persistStringArray(PROFILE_ORDER_STORAGE_KEY, [...value]))
+persistStore($profileOrder, (value, options) => persistStringArray(PROFILE_ORDER_STORAGE_KEY, [...value], options), [])
 
 export function setProfileOrder(names: string[]): void {
   if (!arraysEqual($profileOrder.get(), names)) {
@@ -214,7 +214,7 @@ const PROFILE_COLORS_STORAGE_KEY = 'hermes.desktop.profileColors'
 
 export const $profileColors = atom<Record<string, string>>(storedStringRecord(PROFILE_COLORS_STORAGE_KEY))
 
-persistStore($profileColors, (value, options) => persistStringRecord(PROFILE_COLORS_STORAGE_KEY, value, options))
+persistStore($profileColors, (value, options) => persistStringRecord(PROFILE_COLORS_STORAGE_KEY, value, options), {})
 
 // Set (or, with null, clear) a profile's color override.
 export function setProfileColor(name: string, color: null | string): void {
@@ -951,7 +951,7 @@ const SHOW_ALL_PROFILES_STORAGE_KEY = 'hermes.desktop.showAllProfiles'
 // single-profile users (who never see the switcher) are completely unaffected.
 export const $showAllProfiles = atom<boolean>(storedBoolean(SHOW_ALL_PROFILES_STORAGE_KEY, false))
 
-persistStore($showAllProfiles, (value, options) => persistBoolean(SHOW_ALL_PROFILES_STORAGE_KEY, value, options))
+persistStore($showAllProfiles, (value, options) => persistBoolean(SHOW_ALL_PROFILES_STORAGE_KEY, value, options), false)
 
 // The profile context the sidebar is currently showing: a concrete profile key,
 // or ALL_PROFILES for the unified grouped view. Concrete scope is tied to the

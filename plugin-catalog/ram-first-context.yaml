@@ -8,6 +8,9 @@ tier: community
 category: memory
 requires_hermes: ">=0.19"
 version: "0.1.2"
+known_issues:
+  - "DB location is fixed at ~/.hermes/mnemosyne/data/mnemosyne.db (no profile-path override yet); moving Mnemosyne disables the tool"
+  - "Reads the Mnemosyne SQLite schema directly (mode=ro); a Mnemosyne schema change degrades recall to the safe fallback"
 capabilities:
   provides_tools:
     - mnemosyne_fts_recall

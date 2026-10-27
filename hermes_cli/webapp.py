@@ -10,6 +10,7 @@ receipt inside ``dist-webapp`` decides freshness.
 from __future__ import annotations
 
 from contextlib import contextmanager
+import os
 from pathlib import Path
 import subprocess
 
@@ -21,21 +22,31 @@ _LOCK_WAIT_SECONDS = 30 * 60
 # replaces the whole folder, and the receipt's output hash covers this file, so a marked bundle is
 # never reused as current.
 STALE_MARKER = ".hermes-stale"
+# A packaged bundle (the Nix package), like HERMES_WEB_DIST for the dashboard: the packager
+# builds it, so Hermes serves it as it is and never builds or marks it.
+DIST_ENV = "HERMES_WEBAPP_DIST"
 
 
 class WebappBuildError(RuntimeError):
     """The browser-hosted Desktop renderer could not be prepared."""
 
 
+def packaged_webapp_dist() -> Path | None:
+    """The bundle :data:`DIST_ENV` names, or None when Hermes builds its own."""
+    value = os.environ.get(DIST_ENV)
+    return Path(value).expanduser() if value else None
+
+
 def webapp_dist_dir(project_root: Path) -> Path:
-    return project_root / "apps" / "desktop" / "dist-webapp"
+    return packaged_webapp_dist() or project_root / "apps" / "desktop" / "dist-webapp"
 
 
 def mark_webapp_stale(project_root: Path) -> bool:
     """Mark the built bundle in *project_root* out of date, after a rebuild that failed. False when
-    no bundle is built: nothing serves one, and the build output folder stays the builder's."""
+    no bundle is built: nothing serves one, and the build output folder stays the builder's. Also
+    False for a packaged bundle, which is the packager's."""
     dist = webapp_dist_dir(project_root)
-    if not (dist / "index.html").is_file():
+    if packaged_webapp_dist() is not None or not (dist / "index.html").is_file():
         return False
     (dist / STALE_MARKER).write_text("hermes update could not rebuild this bundle\n", encoding="utf-8")
     return True
@@ -94,6 +105,14 @@ def prepare_webapp_renderer(
 
     project_root = project_root.resolve()
     dist = webapp_dist_dir(project_root)
+    if packaged_webapp_dist() is not None:
+        # The packager built it into a read-only store; there is nothing here to rebuild.
+        if not (dist / "index.html").is_file():
+            raise WebappBuildError(f"{DIST_ENV} is set but no Webapp renderer exists at {dist}")
+        if force:
+            raise WebappBuildError(f"The Webapp renderer at {dist} comes from {DIST_ENV} and cannot be rebuilt here")
+        print(f"→ Using Hermes Webapp renderer from {DIST_ENV}: {dist}")
+        return dist
     if skip_build:
         # Reuse takes no build lock, like `hermes dashboard --skip-build`: the
         # lock lives in the install root, which a read-only install cannot write.

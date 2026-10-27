@@ -192,7 +192,8 @@ def _load_config_cache_key(path_key: str) -> tuple[str, bool, Optional[str]]:
     """
     try:
         from agent.secret_scope import current_secret_scope, current_secret_scope_home
-    except Exception:
+    except ImportError:
+        # No secret-scope support in this install: every caller is unscoped.
         return path_key, False, None
     if current_secret_scope() is None:
         return path_key, False, None

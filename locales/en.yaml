@@ -1070,6 +1070,8 @@ platform:
       clarify_title: "Hermes needs your input"
       clarify_hint_buttons: "Pick one below, or click ✏️ Other to type a custom answer."
       clarify_hint_text: "Reply in this channel with your answer."
+      clarify_hint_multi: "Pick one or more from the menu below (close it to submit), or click ✏️ Other to type a custom answer."
+      clarify_multi_placeholder: "Select one or more…"
       default_hint: " (default: {default})"
       update_title: "Update Needs Your Input"
       expired_footer: "⏱ Prompt expired — no action taken"

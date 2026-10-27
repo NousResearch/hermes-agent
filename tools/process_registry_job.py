@@ -180,11 +180,12 @@ def request_job_stop(registry, session):
 
 
 def signal_job_stop(registry, session, consume_output):
-    if job_quiescent(session):
-        return None
-    if not request_job_stop(registry, session):
+    if not job_quiescent(session) and not request_job_stop(registry, session):
         return registry._refuse_backend_stop(session, consume_output)
-    session._completion_event.wait(1.0)  # Existing reader retains its final output.
+    # Kernel quiescence does not publish the original reader's output. A slow
+    # reader keeps its checkpoint and native Stop fence until it really finishes.
+    if session._reader_thread is not None and not session._completion_event.wait(1.0):
+        return registry._refuse_backend_stop(session, consume_output)
     return None
 
 

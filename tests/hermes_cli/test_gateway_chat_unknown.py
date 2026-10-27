@@ -55,8 +55,8 @@ async def test_resume_displays_unknown_and_queue_then_discards_with_refreshed_ge
             # from the session ID or inspect the gateway's storage.
             commands = [line.strip() for line in output.err.splitlines() if line.strip().startswith("/discard ")]
             assert commands == [f"/discard {unknown_id}"]
-            assert "unknown" in output.err.lower()
-            assert any(queued_id in line and "queued" in line.lower() for line in output.err.splitlines())
+            assert "This chat is paused" in output.err
+            assert f"    (queued message {queued_id})" in output.err.splitlines()
             assert "waiting" in output.err.lower()
             assert "won't re-run" in output.err.lower()
             # stdout holds the REPL banner only: no transcript or replay is rendered before

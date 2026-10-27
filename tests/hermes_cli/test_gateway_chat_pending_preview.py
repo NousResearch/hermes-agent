@@ -25,10 +25,9 @@ def test_resume_lists_pending_admission_text_capped_and_terminal_safe(capsys):
 
     err = capsys.readouterr().err
     lines = err.splitlines()
-    assert "/discard adm-unknown" in lines
-    assert any("summarise the logs" in line for line in lines)
+    assert lines.index('    "summarise the logs"') < lines.index("/discard adm-unknown")
     queued = next(line for line in lines if "deploy hidden" in line)
     assert "now xxx" in queued
-    preview = queued.strip().strip('"')
-    assert len(preview) <= 80 and preview.endswith("…")
+    assert queued.startswith('    "') and queued.endswith('…"')
+    assert len(queued[5:-1]) <= 80
     assert not [ch for ch in err if ch != "\n" and not ch.isprintable()], repr(err)

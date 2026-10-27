@@ -23,7 +23,14 @@ def _pending_preview(text):
     line = " ".join("".join(ch if ch.isprintable() else " " for ch in strip_ansi(text)).split())
     if len(line) > _PREVIEW_CHARS:
         line = line[:_PREVIEW_CHARS - 1] + "…"
-    return f'    "{line}"' if line else ""
+    return line
+
+
+def _quoted(row, fallback):
+    """A pending row's own line: its quoted, indented prompt (so it can never start with
+    ``/discard``), or ``fallback`` naming its id when it carries no text."""
+    preview = _pending_preview(row.get("text"))
+    return f'    "{preview}"' if preview else f"    ({fallback} {row['admission_id']})"
 
 
 _UNKNOWN_OUTCOME = ("Hermes couldn't confirm how this turn ended (usually because it restarted mid-turn). "
@@ -36,36 +43,38 @@ _BLOCKING_CONTROL_EVENTS = frozenset({
 })
 
 
-def pending_lines(pending):
+def pending_lines(pending, *, interactive=True):
     """The owner's pending admissions as shown on attach (the classic CLI shows them before a turn).
     A lost turn is never replayed, so the person must be told what it was and the exact command
-    that drops it; a queued prompt is not in the transcript yet, so it is quoted too."""
+    that drops it; a queued prompt is not in the transcript yet, so it is quoted too. A one-shot
+    (``interactive=False``) cannot take ``/discard``, so its caller names the remedy instead."""
     lost = [row for row in pending if row["status"] == "unknown"]
     queued = [row for row in pending if row["status"] == "queued"]
     lines = []
-    if lost:
-        one = len(lost) == 1
-        lines.append("⏸ This chat is paused. Hermes couldn't confirm how "
-                     + ("the last turn ended" if one else f"{len(lost)} turns ended")
-                     + " (usually because it restarted mid-turn):")
-        why = (f"  Hermes won't re-run {'it' if one else 'them'} by itself, since {'it' if one else 'they'} "
-               "may already have done part of the work.")
-        if one:
-            lines.extend(line for line in (_pending_preview(lost[0].get("text")), why,
-                                           "  To drop it and continue, type:",
-                                           f"/discard {lost[0]['admission_id']}") if line)
-        else:
-            lines.append(f"{why} To continue, drop each one with the /discard line under it:")
-            for row in lost:
-                preview = _pending_preview(row.get("text"))
-                lines.append(f"{preview}\n/discard {row['admission_id']}" if preview
-                             else f"/discard {row['admission_id']}")
+    if len(lost) == 1:
+        lines.append("⏸ This chat is paused. Hermes couldn't confirm how the last turn ended "
+                     "(usually because it restarted mid-turn):")
+        if _pending_preview(lost[0].get("text")):
+            lines.append(_quoted(lost[0], "lost turn"))
+        lines.append("  Hermes won't re-run it by itself, since it may already have done part of the work.")
+        if interactive:
+            lines += ["  To drop it and continue, type:", f"/discard {lost[0]['admission_id']}"]
+    elif lost:
+        lines.append(f"⏸ This chat is paused. Hermes couldn't confirm how {len(lost)} turns ended "
+                     "(usually because it restarted mid-turn):")
+        lines.append("  Hermes won't re-run them by itself, since they may already have done part of the work.")
+        if interactive:
+            lines.append("  To continue, drop each one with the /discard line under it:")
+        for row in lost:
+            lines.append(_quoted(row, "lost turn"))
+            if interactive:
+                lines.append(f"/discard {row['admission_id']}")
     if queued:
         count = "1 message is" if len(queued) == 1 else f"{len(queued)} messages are"
-        lines.append(f"  {count} waiting and will run after that:" if lost
-                     else f"  {count} waiting to run:")
-        lines.extend(_pending_preview(row.get("text")) or f"    (queued message {row['admission_id']})"
-                     for row in queued)
+        after = {0: "to run", 1: "and will run once that turn is dropped"}.get(
+            len(lost), "and will run once those turns are dropped")
+        lines.append(f"  {count} waiting {after}:")
+        lines.extend(_quoted(row, "queued message") for row in queued)
     return lines
 
 
@@ -119,7 +128,7 @@ class GatewayChatView:
         return [row["admission_id"] for row in self.pending if row["status"] == "unknown"]
 
     def show_pending(self):
-        for line in pending_lines(self.pending):
+        for line in pending_lines(self.pending, interactive=not self.finite):
             print(line, file=sys.stderr)
 
     def show_prompt(self, prompt):
@@ -531,10 +540,9 @@ class GatewayChatView:
         if oneshot and self.unknown_admissions():
             # A new admission would queue behind the unknown row and never run; refuse BEFORE
             # submitting so nothing is left queued for the next interactive resume to find.
-            lost = " ".join(self.unknown_admissions())
-            return self._detach("Unknown execution blocks this session; nothing was submitted. Resolve it "
-                                f"with `hermes sessions discard {self.session_id} --yes` (or /discard {lost} "
-                                "interactively; both are prompt.resolve_unknown), then retry.")
+            return self._detach(f"Your message was not sent. To continue, run `hermes sessions discard "
+                                f"{self.session_id} --yes`, or resume this session in an interactive chat "
+                                "and /discard the paused turn there; then send it again.")
         renderer = asyncio.create_task(self.render())
         try:
             receipt = await self.submit(query) if query else None

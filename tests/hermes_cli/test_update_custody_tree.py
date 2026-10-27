@@ -109,3 +109,22 @@ def test_a_killed_owner_takes_the_fetch_helpers_with_it(fetch_rig, tmp_path):
     finally:
         if owner.poll() is None:
             owner.kill()
+
+
+@pytest.mark.platforms("posix")
+def test_a_reaped_git_never_signals_the_group_its_pid_now_names():
+    """``communicate`` reaps git on a Ctrl-C inside its wait window, and the cleanup then reaches
+    ``_kill_tree``. A reaped pid may already lead another session; signalling it as a group would
+    SIGKILL that unrelated process. The decoy stands in for the session that reused the id."""
+    from hermes_cli.update_custody import _kill_tree
+
+    git = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
+    git.wait()
+    decoy = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
+    try:
+        git.pid = decoy.pid  # the reused id
+        _kill_tree(git)
+        assert not _gone_within(decoy.pid, 0.5), "a reaped handle signalled another session's group"
+    finally:
+        decoy.kill()
+        decoy.wait()

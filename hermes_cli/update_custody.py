@@ -381,11 +381,16 @@ def _owner_watch(pid: int):
 
 
 def _kill_tree(proc: subprocess.Popen) -> None:
-    """SIGKILL ``proc``'s process group: the child leads it (``start_new_session``) and is not
-    reaped yet, so the group id cannot have been reused."""
+    """SIGKILL ``proc``'s process group: the child leads it (``start_new_session``), and while it
+    is unreaped its pid, hence the group id, cannot be reused. Once reaped (``communicate`` reaps
+    on a Ctrl-C inside its wait window) the id may already name another session, so it is never
+    signalled; ``returncode`` is read, not ``poll()``ed, since polling would reap a live zombie
+    and skip the helpers a timed-out git leaves running."""
     import os
     import signal
 
+    if proc.returncode is not None:
+        return
     with contextlib.suppress(OSError):  # already gone
         os.killpg(proc.pid, signal.SIGKILL)  # windows-footgun: ok -- POSIX only (run_git gates win32 out)
 

@@ -67,6 +67,69 @@ def test_partially_valid_platform_toolsets_no_runtime_warning(caplog):
     assert not any("#38798" in r.getMessage() for r in caplog.records)
 
 
+def test_mcp_server_name_is_not_reported_as_an_unknown_toolset(caplog):
+    """#142931: a platform list that names only a configured MCP server is valid.
+
+    The server's toolset is not registered until MCP discovery runs, so the toolset
+    registry alone called the name unknown - and the operator was told the tools were
+    unavailable while they are enabled and reach the agent."""
+    import hermes_cli.tools_config as _tc
+
+    _tc._warned_invalid_platform_toolsets.discard("cli")
+    config = {
+        "mcp_servers": {
+            "ec": {"command": "/path/to/python", "args": ["/path/to/server.py"],
+                   "tools": {"include": ["tool_a", "tool_b"]}},
+        },
+        "platform_toolsets": {"cli": ["ec"], "gui": ["ec"]},
+    }
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        enabled = _get_platform_tools(config, "cli")
+
+    # The tools ARE enabled: the warning claimed the opposite.
+    assert "ec" in enabled
+    assert not any("#38798" in r.getMessage() for r in caplog.records), [
+        r.getMessage() for r in caplog.records
+    ]
+
+
+def test_mcp_server_name_spelled_with_the_mcp_prefix_is_valid(caplog):
+    """The same server under its ``mcp-<name>`` toolset name is valid too."""
+    import hermes_cli.tools_config as _tc
+
+    _tc._warned_invalid_platform_toolsets.discard("cli")
+    config = {
+        "mcp_servers": {"ec": {"command": "/path/to/python", "args": ["/path/to/server.py"]}},
+        "platform_toolsets": {"cli": ["mcp-ec"]},
+    }
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        _get_platform_tools(config, "cli")
+
+    assert not any("#38798" in r.getMessage() for r in caplog.records), [
+        r.getMessage() for r in caplog.records
+    ]
+
+
+def test_an_unknown_name_beside_an_mcp_server_does_not_trigger_the_zero_tools_warning(caplog):
+    """The control: the MCP server's name resolves, so the zero-tools warning stays silent.
+
+    The migration-time check still flags the individual bad name."""
+    import hermes_cli.tools_config as _tc
+
+    _tc._warned_invalid_platform_toolsets.discard("cli")
+    config = {
+        "mcp_servers": {"ec": {"command": "/path/to/python", "args": ["/path/to/server.py"]}},
+        "platform_toolsets": {"cli": ["ec", "not-a-real-toolset"]},
+    }
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        _get_platform_tools(config, "cli")
+
+    assert not any("#38798" in r.getMessage() for r in caplog.records)
+
+
 def test_null_platform_toolsets_fall_back_to_platform_default():
     """A YAML ``platform:`` value is absent, not an explicit empty list."""
     config = {"platform_toolsets": {"cli": None}}

@@ -1,6 +1,7 @@
 """Task graph initialization and atomic decomposition persistence."""
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from typing import Any, Optional
@@ -255,6 +256,72 @@ def _insert_decomposed_child(
     return new_id
 
 
+def _event_payload(raw: object) -> dict:
+    """Parse a stored event payload into a dict (empty on anything unexpected)."""
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def latest_decomposed_payload(conn: sqlite3.Connection, task_id: str) -> Optional[dict]:
+    """Newest ``decomposed`` event payload for ``task_id``, or None when absent.
+
+    A corrupted payload yields ``{}`` rather than raising: the audit row must
+    never be able to crash a caller or strand the card it describes.
+    """
+    row = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'decomposed' "
+        "ORDER BY id DESC LIMIT 1", (task_id,),
+    ).fetchone()
+    return None if row is None else _event_payload(row["payload"])
+
+
+def decomposed_child_ids(payload: Optional[dict]) -> list[str]:
+    """The ``child_ids`` a ``decomposed`` event recorded, defensively.
+
+    Lineage comes from this payload, never from ``task_links``: a decomposed
+    child and an ordinary parent are both stored as ``parent_id -> root_id``,
+    so the link table cannot tell them apart. Missing or malformed entries are
+    dropped instead of raising — an unreadable payload must not crash the
+    caller (the card then lands conservatively on ``todo``).
+    """
+    raw = (payload or {}).get("child_ids")
+    if not isinstance(raw, list):
+        return []
+    return [cid for cid in raw if isinstance(cid, str) and cid]
+
+
+def triage_park_cause(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    """Kind of the newest event that parked ``task_id`` in ``triage``.
+
+    Two surfaces park a card there and the newest marker names which one:
+
+    - ``size_estimate`` — the size gate measured the card and recorded
+      ``decision=triage`` (creation of an oversized ``ready`` card, or
+      ``divert_promotion_to_triage`` on a promotion). This is the dead-end
+      :func:`repair_stuck_decomposed_root` exists to undo.
+    - ``block_loop_detected`` — ``block_task``'s loop brake fired at
+      ``BLOCK_RECURRENCE_LIMIT`` and routed the card to ``triage`` for a human.
+      Promoting that trip back to ``ready`` respawns the card every tick, which
+      is exactly what ``kanban_db``'s ``recompute_ready`` docs forbid.
+
+    Newest wins, so a card the brake parked earlier and the size gate diverted
+    later is repairable again. ``None`` when neither record exists.
+    """
+    row = conn.execute(
+        "SELECT kind FROM task_events WHERE task_id = ? "
+        "AND kind IN ('block_loop_detected', 'size_estimate') "
+        "ORDER BY id DESC LIMIT 1", (task_id,),
+    ).fetchone()
+    return None if row is None else row["kind"]
+
+
 def repair_stuck_decomposed_root(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
     """Repair a triage card that already has a ``decomposed`` event.
 
@@ -266,13 +333,30 @@ def repair_stuck_decomposed_root(conn: sqlite3.Connection, task_id: str) -> Opti
     - If every child is ``done`` or ``archived``, move the root to ``ready``.
     - Otherwise, move it to ``todo`` so it waits on its children.
 
-    Returns the new status (``"ready"`` or ``"todo"``), or ``None`` if the card
-    is not a stuck decomposed root (not in triage, or no decomposed event).
-    Does NOT create new children or duplicate the ``decomposed`` event.
+    Two properties keep the repair from becoming worse than the dead-end:
 
-    Edge case: a root that also carries a non-decomposition parent would be
-    released early by the ``ready`` write; the divert path only ever sees cards
-    whose parents were all done, so this is not a practical concern.
+    1. Cause. Only a size-gate park is repairable. When
+       :func:`triage_park_cause` reports ``block_loop_detected`` the card was
+       parked by the block-loop brake FOR A HUMAN: writing ``ready`` would
+       bypass ``recompute_ready``'s sticky-block check and failure breaker and
+       respawn the card on every dispatcher tick, forever
+       (``kanban_db.BLOCK_RECURRENCE_LIMIT`` / ``recompute_ready`` document the
+       same hazard for the bare promotion). Such a card is left in ``triage``.
+    2. Lineage. The child set comes from the ``decomposed`` event payload's
+       ``child_ids``, not ``task_links``: links do not imply lineage, so the
+       link table also matches an unrelated open parent of the root and would
+       land the root on ``todo`` even when its only child is done. A missing or
+       malformed payload lands the root on ``todo`` — never ``ready``, and never
+       stranded in ``triage``.
+
+    The status write is a compare-and-set evaluated inside the write txn
+    (``AND status = 'triage'`` + ``rowcount``): a concurrent archive or move
+    between the read above and the txn loses nothing and is never resurrected.
+
+    Returns the new status (``"ready"`` or ``"todo"``), or ``None`` when the card
+    is not a repairable stuck decomposed root (not in triage, no decomposed
+    event, brake-parked, or a concurrent writer moved it first). Does NOT create
+    new children or duplicate the ``decomposed`` event.
     """
     from hermes_cli.kanban_db import write_txn, _append_event
 
@@ -281,24 +365,33 @@ def repair_stuck_decomposed_root(conn: sqlite3.Connection, task_id: str) -> Opti
     ).fetchone()
     if row is None or row["status"] != "triage":
         return None
-    if not conn.execute(
-        "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'decomposed' LIMIT 1",
-        (task_id,),
-    ).fetchone():
+    payload = latest_decomposed_payload(conn, task_id)
+    if payload is None:
         return None
-    # The decomposed children are linked AS PARENTS of the root (see decompose_triage_task line 182-183).
-    # So we find all tasks that appear as parent_id where child_id = task_id.
-    children = conn.execute(
-        "SELECT t.id, t.status FROM tasks t "
-        "JOIN task_links l ON l.parent_id = t.id "
-        "WHERE l.child_id = ?", (task_id,),
-    ).fetchall()
-    all_done = all(c["status"] in ("done", "archived") for c in children)
-    new_status = "ready" if all_done and children else "todo"
+    if triage_park_cause(conn, task_id) == "block_loop_detected":
+        # The loop brake parked this card for a human; repairing it would
+        # respawn it every tick with no human in the loop.
+        return None
+    child_ids = decomposed_child_ids(payload)
+    children = []
+    if child_ids:
+        children = conn.execute(
+            "SELECT id, status FROM tasks WHERE id IN "
+            "(" + ",".join("?" * len(child_ids)) + ")", tuple(child_ids),
+        ).fetchall()
+    all_done = bool(children) and all(
+        c["status"] in ("done", "archived") for c in children
+    )
+    new_status = "ready" if all_done else "todo"
     with write_txn(conn):
-        conn.execute(
-            "UPDATE tasks SET status = ? WHERE id = ?", (new_status, task_id),
+        cur = conn.execute(
+            "UPDATE tasks SET status = ? WHERE id = ? AND status = 'triage'",
+            (new_status, task_id),
         )
+        if cur.rowcount != 1:
+            # A concurrent writer (archive_task accepts triage) won the race.
+            # Never overwrite a status this call did not verify in the txn.
+            return None
         _append_event(conn, task_id, "repaired", {
             "reason": "stuck_decomposed_root",
             "new_status": new_status,

@@ -213,7 +213,11 @@ class TestCheckpointReadopt:
             assert proc.poll() is None
             assert registry.get("proc_recover_reused") is None
             assert stopped == ["hermes-worker-proc_recover_reused.scope"]
-            assert json.loads(checkpoint.read_text()) == []
+            retained, = json.loads(checkpoint.read_text())
+            assert retained['session_id'] == 'proc_recover_reused'
+            assert retained['systemd_unit'] == stopped[0]
+            # Scope emptiness cannot invent this old job's absent original result.
+            assert not registry._finished and not registry._running
             assert _completions(registry) == []
         finally:
             if proc.poll() is None:

@@ -9,7 +9,8 @@ import pytest
 
 from gateway.session_authority import LiveSession, SessionAuthority
 from hermes_state_runtime import RuntimeStoreError, begin_runtime_epoch
-from tests.gateway.test_session_authority_cancel_settlement import ACTOR, REF, _authority
+from tests.gateway.test_session_authority_cancel_settlement import ACTOR, REF, _authority, _submit
+from tests.waiting import async_wait_until
 
 
 @pytest.mark.asyncio
@@ -82,7 +83,9 @@ async def test_completed_scope_survives_normal_finish_and_cold_stop(tmp_path, mo
         assert entry['systemd_unit'] == unit and not entry['_scope_stop_pending']
         if expired_result:
             from hermes_constants import get_hermes_home
-            (get_hermes_home() / 'logs' / 'process-results' / (own.id + '.json')).unlink()
+            result_path = get_hermes_home() / 'logs' / 'process-results' / (own.id + '.json')
+            original_result = result_path.read_bytes()
+            result_path.unlink()
 
         def alive():
             try:
@@ -120,19 +123,46 @@ async def test_completed_scope_survives_normal_finish_and_cold_stop(tmp_path, mo
             assert process_stop_pending(db, 's') is not None and alive()
             assert own.id in {row['session_id'] for row in json.loads(module._checkpoint_path().read_text())}
             refuse = False
+        if expired_result:
+            from tools.process_registry_job import job_quiescent
+            # Unit emptiness cannot reconstruct the deleted original PIPE payload/status.
+            with pytest.raises(RuntimeStoreError, match='process_stop_unknown'):
+                await authority.interrupt(ACTOR, REF, authority._handle(REF).execution_generation)
+            marker = process_stop_pending(db, 's')
+            assert marker is not None and not alive()
+            pending_entry = next(row for row in json.loads(module._checkpoint_path().read_text())
+                                 if row['session_id'] == own.id)
+            assert job_quiescent(pending_entry) and pending_entry['systemd_unit'] == unit
+            executed = []
+            async def execute(owner, ref, row):
+                retained = load_completed_results(owns_entry=lambda item: item['id'] == own.id,
+                                                  strict=True)[own.id]
+                assert history == (retained.exit_code, retained.completion_reason, retained.output_buffer)
+                assert not alive() and all(not item.exited for item in neighbors)
+                executed.append(row['request_id'])
+                return 'continued once'
+            monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+            await _submit(authority, 'after-original-source-restored')
+            await asyncio.wait_for(authority.sessions['s'].task, 10)
+            assert executed == [] and process_stop_pending(db, 's') == marker
+            assert all(not item.exited and psutil.Process(item.pid).is_running() for item in neighbors)
+            # Restore the actual original receipt, never inferred output or an invented status.
+            result_path.write_bytes(original_result)
         await authority.interrupt(ACTOR, REF, authority._handle(REF).execution_generation)
+        if expired_result:
+            await async_wait_until(lambda: executed == ['after-original-source-restored']
+                                   and authority.sessions['s'].task.done(), timeout=10)
         assert attempts and set(attempts) == {unit}
         assert process_stop_pending(db, 's') is None and not alive()
         assert all(not neighbor.exited and psutil.Process(neighbor.pid).is_running() for neighbor in neighbors)
         assert own.id not in {row['session_id'] for row in json.loads(module._checkpoint_path().read_text())}
         assert history == (own.exit_code, own.completion_reason, own.output_buffer)
-        if not expired_result:
-            restored = load_completed_results(owns_entry=lambda row: row['id'] == own.id, strict=True)[own.id]
-            assert history == (restored.exit_code, restored.completion_reason, restored.output_buffer)
-            # A late ordinary reader keeps its actual primary status; a unit
-            # cleanup receipt proves quiescence, not that primary's exit code.
-            registry._finish_exited(restored, history[0])
-            assert history == (restored.exit_code, restored.completion_reason, restored.output_buffer)
+        restored = load_completed_results(owns_entry=lambda row: row['id'] == own.id, strict=True)[own.id]
+        assert history == (restored.exit_code, restored.completion_reason, restored.output_buffer)
+        # A late ordinary reader keeps its actual primary status; a unit
+        # cleanup receipt proves quiescence, not that primary's exit code.
+        registry._finish_exited(restored, history[0])
+        assert history == (restored.exit_code, restored.completion_reason, restored.output_buffer)
         release.touch()
         assert not effects.exists()
     finally:

@@ -1236,7 +1236,7 @@ class TestCheckpoint:
         stop_unit.assert_called_once_with(entry["systemd_unit"])
         assert json.loads(checkpoint.read_text()) == [entry]
 
-    def test_recover_dead_wrapper_drops_reaped_systemd_scope(
+    def test_recover_dead_wrapper_retains_reaped_scope_without_original_result(
         self, registry, tmp_path, monkeypatch
     ):
         checkpoint = tmp_path / "procs.json"
@@ -1258,7 +1258,8 @@ class TestCheckpoint:
             assert registry.recover_from_checkpoint() == 0
 
         stop_unit.assert_called_once_with(entry["systemd_unit"])
-        assert json.loads(checkpoint.read_text()) == []
+        assert json.loads(checkpoint.read_text()) == [{**entry, 'native_job_scope': True}]
+        assert not registry._finished and not registry._running
 
 
     def test_recovery_skips_explicit_sandbox_backed_entries(self, registry, tmp_path):

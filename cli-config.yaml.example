@@ -409,6 +409,9 @@ model:
 # Disable this only when every review is performed manually from the dashboard.
 kanban:
   review_dispatch: true
+  # Installed profiles omitted from generic auto-decomposition. Explicitly assigned cards
+  # remain dispatchable when allowed by dispatch_profiles.
+  auto_decompose_excluded_profiles: []
 
 # =============================================================================
 # Terminal Tool Configuration

@@ -114,6 +114,238 @@ def test_decompose_with_fanout_creates_children(kanban_home):
     assert c1.assignee == "engineer"
 
 
+def test_decomposer_roster_uses_dispatch_allowlist_and_exclusions(monkeypatch):
+    patches = _patch_list_profiles(["orchestrator", "default", "homelabadmin", "reviewer"])
+    for p in patches:
+        p.start()
+    try:
+        roster, valid_names = decomp._build_roster(
+            allowed_profiles=frozenset({"orchestrator", "default", "homelabadmin", "reviewer"}),
+            excluded_profiles=frozenset({"reviewer"}),
+        )
+        dispatch_roster, dispatch_names = decomp._build_roster(
+            allowed_profiles=frozenset({"orchestrator", "homelabadmin"}),
+        )
+    finally:
+        for p in patches:
+            p.stop()
+    assert [entry["name"] for entry in roster] == ["orchestrator", "default", "homelabadmin"]
+    assert valid_names == {"orchestrator", "default", "homelabadmin"}
+    assert [entry["name"] for entry in dispatch_roster] == ["orchestrator", "homelabadmin"]
+    assert dispatch_names == {"orchestrator", "homelabadmin"}
+
+
+def test_excluded_decomposer_choice_falls_back_to_eligible_profile(kanban_home):
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n"
+        "  dispatch_profiles: [orchestrator, homelabadmin, reviewer]\n"
+        "  auto_decompose_excluded_profiles: [Reviewer]\n"
+        "  orchestrator_profile: orchestrator\n"
+        "  default_assignee: orchestrator\n",
+        encoding="utf-8",
+    )
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="route eligible work", assignee="orchestrator", triage=True)
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "Route work only to profiles this home can run.",
+        "tasks": [{
+            "title": "review the handoff", "body": "Review the supplied handoff.",
+            "assignee": "reviewer", "parents": [],
+        }, {
+            "title": "inspect the homelab", "body": "Document the remote service endpoints.",
+            "assignee": "homelabadmin", "parents": [],
+        }],
+    })
+    patches = _patch_list_profiles(["default", "orchestrator", "homelabadmin", "reviewer"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    with kbc.connect() as conn:
+        children = [kb.get_task(conn, child_id) for child_id in outcome.child_ids]
+    assert [child.assignee for child in children] == ["orchestrator", "homelabadmin"]
+
+
+@pytest.mark.parametrize(("ineligible_key", "expected_reason"), [
+    ("default_assignee", "default_assignee profile 'reviewer' is not eligible"),
+    ("orchestrator_profile", "orchestrator profile 'reviewer' is not eligible"),
+])
+def test_ineligible_route_owner_fails_closed_and_records_one_config_event(
+    kanban_home, ineligible_key, expected_reason,
+):
+    configured = {"orchestrator_profile": "orchestrator", "default_assignee": "orchestrator"}
+    configured[ineligible_key] = "reviewer"
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n"
+        "  dispatch_profiles: [orchestrator, reviewer]\n"
+        "  auto_decompose_excluded_profiles: [reviewer]\n"
+        f"  orchestrator_profile: {configured['orchestrator_profile']}\n"
+        f"  default_assignee: {configured['default_assignee']}\n",
+        encoding="utf-8",
+    )
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="leave in triage", assignee="orchestrator", triage=True)
+    patches = _patch_list_profiles(["default", "orchestrator", "reviewer"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client("should not be called") as aux_call, _patch_extra_body():
+            first = decomp.decompose_task(tid, author="me")
+            second = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert not first.ok and expected_reason in first.reason
+    assert second.reason == first.reason
+    aux_call.assert_not_called()
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+        events = [e for e in kb.list_events(conn, tid) if e.kind == "decompose_config_error"]
+    assert task.status == "triage"
+    assert task.assignee == "orchestrator"
+    assert len(events) == 1
+    assert events[0].payload == {"reason": first.reason}
+
+
+def test_empty_eligible_roster_fails_closed(kanban_home):
+    (kanban_home / "config.yaml").write_text("kanban:\n  dispatch_profiles: []\n", encoding="utf-8")
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="no eligible profile", triage=True)
+    patches = _patch_list_profiles(["default", "orchestrator"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client("should not be called") as aux_call, _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert not outcome.ok and "no eligible profiles remain" in outcome.reason
+    aux_call.assert_not_called()
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+        events = [e for e in kb.list_events(conn, tid) if e.kind == "decompose_config_error"]
+    assert task.status == "triage"
+    assert len(events) == 1
+
+
+@pytest.mark.parametrize(("exclusion_value", "expected_reason"), [
+    ("not-a-list", "must be a list of profile names"),
+    ("[bad/name]", "contains an invalid profile name"),
+    ("[17]", "contains an invalid profile name"),
+    ("[ghost]", "references an uninstalled profile 'ghost'"),
+])
+def test_invalid_exclusion_config_fails_closed_once(
+    kanban_home, exclusion_value, expected_reason,
+):
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n"
+        "  dispatch_profiles: [orchestrator]\n"
+        f"  auto_decompose_excluded_profiles: {exclusion_value}\n"
+        "  orchestrator_profile: orchestrator\n"
+        "  default_assignee: orchestrator\n",
+        encoding="utf-8",
+    )
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="invalid exclusion", assignee="orchestrator", triage=True)
+    patches = _patch_list_profiles(["default", "orchestrator"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client("should not be called") as aux_call, _patch_extra_body():
+            first = decomp.decompose_task(tid, author="me")
+            second = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert not first.ok and expected_reason in first.reason
+    assert second.reason == first.reason
+    aux_call.assert_not_called()
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+        events = [e for e in kb.list_events(conn, tid) if e.kind == "decompose_config_error"]
+    assert task.status == "triage"
+    assert task.assignee == "orchestrator"
+    assert len(events) == 1
+    assert events[0].payload == {"reason": first.reason}
+
+
+def test_coordinator_root_can_handoff_to_eligible_orchestrator(kanban_home):
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n"
+        "  dispatch_profiles: [orchestrator, homelabadmin]\n"
+        "  orchestrator_profile: orchestrator\n"
+        "  default_assignee: orchestrator\n",
+        encoding="utf-8",
+    )
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="coordinator handoff", assignee="default", triage=True)
+    payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "The coordinator root hands work to eligible profiles.",
+        "tasks": [{
+            "title": "inspect the homelab", "body": "Inventory remote services.",
+            "assignee": "homelabadmin", "parents": [],
+        }],
+    })
+    patches = _patch_list_profiles(["default", "orchestrator", "homelabadmin"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(payload), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+        child = kb.get_task(conn, outcome.child_ids[0])
+    assert task.assignee == "orchestrator"
+    assert child.assignee == "homelabadmin"
+
+
+def test_uninstalled_root_assignee_stays_in_triage(kanban_home):
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n"
+        "  dispatch_profiles: [orchestrator]\n"
+        "  orchestrator_profile: orchestrator\n"
+        "  default_assignee: orchestrator\n",
+        encoding="utf-8",
+    )
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="parked root", assignee="human-review", triage=True)
+    patches = _patch_list_profiles(["default", "orchestrator"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client("should not be called") as aux_call, _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert not outcome.ok and "root assignee profile 'human-review' is not installed" in outcome.reason
+    aux_call.assert_not_called()
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+        events = [e for e in kb.list_events(conn, tid) if e.kind == "decompose_config_error"]
+    assert task.status == "triage"
+    assert task.assignee == "human-review"
+    assert len(events) == 1
+
+
 def test_decompose_fanout_children_inherit_root_assignee_when_unrouted(kanban_home):
     """Unrouted children fall back to the ROOT task's assignee, not
     the decomposer's active profile (#114294). The active profile here is ``private``

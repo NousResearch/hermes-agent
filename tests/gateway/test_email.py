@@ -826,11 +826,14 @@ class TestPollLoop(unittest.TestCase):
         # Once the poll's loop is closed (stop race) the gate fails closed instead of raising.
         self.assertFalse(gates[0](dispatched[0]))
 
-    def test_check_inbox_notifies_fatal_error_on_fetch_failure(self):
-        """A failed IMAP check must surface through the fatal-error hook so
-        the gateway's reconnect/backoff machinery learns email is unhealthy
-        instead of silently treating the failed check as an empty inbox
-        (#80016)."""
+    def test_check_inbox_reports_failure_without_escalating(self):
+        """A failed IMAP check must be reported to the poll loop, not escalated.
+
+        The loop paces the next attempt with exponential backoff and keeps polling; pushing the adapter into
+        the gateway's reconnect queue on a single slow operation stalled delivery for every other platform
+        sharing the connection (#80016, review #91746 item 1/2). A mailbox that stays broken surfaces via the
+        DEGRADED log after N consecutive failures instead.
+        """
         import asyncio
         adapter = self._make_adapter()
         notified = []
@@ -844,14 +847,15 @@ class TestPollLoop(unittest.TestCase):
         mock_imap.login.side_effect = Exception("read operation timed out")
 
         with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
-            asyncio.run(adapter._check_inbox())
+            healthy = asyncio.run(adapter._check_inbox())
 
-        self.assertEqual(len(notified), 1)
-        self.assertEqual(adapter.fatal_error_code, "email_imap_fetch_failed")
-        self.assertTrue(adapter.fatal_error_retryable)
-        self.assertIn("read operation timed out", adapter.fatal_error_message)
+        self.assertFalse(healthy)
+        self.assertEqual(notified, [])
+        self.assertIsNone(getattr(adapter, "fatal_error_code", None))
+        # The status field is reset so the next successful check is not misread as a failure.
+        self.assertFalse(adapter._last_fetch_failed)
 
-    def test_partial_batch_dispatched_before_escalation(self):
+    def test_partial_batch_dispatched_before_backoff(self):
         """A mid-batch IMAP failure must dispatch the messages already
         fetched BEFORE escalating — dropping them would lose mail, since
         their UIDs are marked seen (#80032 review)."""
@@ -889,14 +893,14 @@ class TestPollLoop(unittest.TestCase):
         mock_imap.uid.side_effect = uid_handler
 
         with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
-            asyncio.run(adapter._check_inbox())
+            healthy = asyncio.run(adapter._check_inbox())
 
         # The successfully fetched message was dispatched, not dropped.
         self.assertEqual(len(dispatched), 1)
         self.assertEqual(dispatched[0]["subject"], "First of batch")
-        # The failure still escalated through the fatal-error hook.
-        self.assertEqual(len(notified), 1)
-        self.assertEqual(adapter.fatal_error_code, "email_imap_fetch_failed")
+        # The failure is reported to the poll loop for backoff, not escalated to the gateway.
+        self.assertFalse(healthy)
+        self.assertEqual(notified, [])
 
     def test_mid_batch_failure_leaves_unfetched_uids_eligible(self):
         """UIDs are marked seen only after their fetch returns — a
@@ -1079,7 +1083,10 @@ class TestSendEmailStandalone(unittest.TestCase):
             self.assertEqual(send_call["Subject"], t("platform.email.standalone_subject"))
             self.assertIn("Date", send_call)
             self.assertEqual(send_call["To"], "user@test.com")
-            self.assertEqual(send_call["From"], "hermes@test.com")
+            # The standalone sender carries the same display name as the in-process path (review #91746, item 3).
+            from email.utils import formataddr
+            from plugins.platforms.email.adapter import _EMAIL_DISPLAY_NAME
+            self.assertEqual(send_call["From"], formataddr((_EMAIL_DISPLAY_NAME, "hermes@test.com")))
 
 
 class TestSmtpConnectionCleanup(unittest.TestCase):
@@ -1463,3 +1470,129 @@ def test_oversized_cron_output_is_delivered_as_one_whole_email():
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestMailboxPacing(unittest.TestCase):
+    """Poll pacing: exponential backoff and one DEGRADED warning instead of a gateway reconnect.
+
+    Review #91746, items 1, 2 and 4 on the email adapter.
+    """
+
+    def _make_adapter(self, *, imap_host: str = "imap.test.com", default_interval=15):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": imap_host,
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }):
+            with patch("plugins.platforms.email.adapter._esecret_int",
+                       side_effect=lambda key, fallback: fallback):
+                from plugins.platforms.email.adapter import EmailAdapter
+                return EmailAdapter(PlatformConfig(enabled=True))
+
+    def test_backoff_grows_exponentially_and_resets(self):
+        """A failing mailbox must be retried at 30, 60, 120, 240, capped at 300 — and reset on success."""
+        adapter = self._make_adapter()
+        delays = [adapter._record_poll_result(False) for _ in range(6)]
+        self.assertEqual(delays, [30.0, 60.0, 120.0, 240.0, 300.0, 300.0])
+        self.assertEqual(adapter._poll_backoff, 300.0)
+        # One successful check resets both the delay and the streak.
+        self.assertEqual(adapter._record_poll_result(True), float(adapter._poll_interval))
+        self.assertEqual(adapter._poll_backoff, 0.0)
+        self.assertEqual(adapter._consecutive_failures, 0)
+
+    def test_degraded_is_logged_once_per_outage(self):
+        """A permanently broken mailbox surfaces exactly one DEGRADED error per outage, and polling continues."""
+        from plugins.platforms.email.adapter import _DEGRADED_AFTER_FAILURES
+
+        adapter = self._make_adapter()
+        with self.assertLogs("plugins.platforms.email.adapter", level="ERROR") as logs:
+            for _ in range(_DEGRADED_AFTER_FAILURES * 2):
+                adapter._record_poll_result(False)
+        degraded = [line for line in logs.output if "DEGRADED" in line]
+        self.assertEqual(len(degraded), 2)  # one per completed streak, not one per failed poll
+        # The backoff keeps growing across streaks: a broken mailbox is never hammered at the poll interval.
+        self.assertEqual(adapter._poll_backoff, 300.0)
+
+    def test_gmail_host_gets_the_slower_default_interval(self):
+        """Only Gmail documents the per-op security delay, so only Gmail gets the slower default cadence."""
+        gmail = self._make_adapter(imap_host="imap.gmail.com")
+        other = self._make_adapter(imap_host="imap.fastmail.com")
+        self.assertEqual(gmail._poll_interval, 60)
+        self.assertEqual(other._poll_interval, 15)
+
+    def test_connect_probes_run_off_the_event_loop(self):
+        """IMAP and SMTP probes block on real network I/O; a slow Gmail login must not stall the event loop."""
+        import asyncio
+        import threading
+
+        adapter = self._make_adapter()
+        threads = []
+
+        def probe_imap(is_reconnect=False):
+            threads.append(threading.current_thread().name)
+            return True
+
+        def probe_smtp():
+            threads.append(threading.current_thread().name)
+            return True
+
+        adapter._probe_imap = probe_imap
+        adapter._probe_smtp = probe_smtp
+        adapter._require_authenticated_sender = False
+        adapter._wire_plugin_handlers = lambda *_a, **_k: None
+
+        async def run():
+            return await adapter.connect()
+
+        with patch("builtins.print"):
+            self.assertTrue(asyncio.run(run()))
+        self.assertEqual(len(threads), 2)
+        main_thread = threading.main_thread().name
+        self.assertTrue(all(name != main_thread for name in threads), threads)
+        if adapter._poll_task:
+            adapter._poll_task.cancel()
+
+    def test_explicit_interval_wins_over_the_gmail_default(self):
+        """EMAIL_POLL_INTERVAL still overrides either default."""
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.gmail.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+            "EMAIL_POLL_INTERVAL": "5",
+        }):
+            from plugins.platforms.email.adapter import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+        self.assertEqual(adapter._poll_interval, 5)
+
+
+class TestSenderIdentity(unittest.TestCase):
+    """One display-name constant, emitted through formataddr (review #91746, item 3)."""
+
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }):
+            from plugins.platforms.email.adapter import EmailAdapter
+            return EmailAdapter(PlatformConfig(enabled=True))
+
+    def test_reply_from_header_carries_the_display_name(self):
+        from email.utils import formataddr
+
+        from plugins.platforms.email.adapter import _EMAIL_DISPLAY_NAME
+        adapter = self._make_adapter()
+        msg, _, _ = adapter._new_reply("user@test.com", "body")
+        self.assertEqual(msg["From"], formataddr((_EMAIL_DISPLAY_NAME, "hermes@test.com")))
+        self.assertIn(_EMAIL_DISPLAY_NAME, msg["From"])
+
+    def test_reply_subject_defaults_to_the_display_name(self):
+        from plugins.platforms.email.adapter import _EMAIL_DISPLAY_NAME
+        adapter = self._make_adapter()
+        _, _, subject = adapter._new_reply("user@test.com", "body")
+        self.assertEqual(subject, f"Re: {_EMAIL_DISPLAY_NAME}")

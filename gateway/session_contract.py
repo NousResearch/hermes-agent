@@ -80,6 +80,8 @@ class SubscriptionSnapshot:
     history: tuple[JsonObject, ...]
     pending: tuple[PendingAdmission, ...]
     prompts: tuple[JsonObject, ...]
+    # The physical transcript a history-less attach resolved under the stream lock (``history=False``).
+    transcript_target: str | None = None
 
 
 class SessionAuthority(Protocol):

@@ -124,3 +124,25 @@ async def test_omitted_resume_reply_passes_the_wire_contract(tmp_path, monkeypat
                                  'params': {'session_id': ref.session_id, 'omit_messages': True}})
     assert 'error' not in reply, reply
     assert reply['result']['messages'] == [] and reply['result']['messages_omitted'] is True
+
+
+@pytest.mark.asyncio
+async def test_omitted_resume_racing_a_delete_answers_not_found(tmp_path, monkeypatch):
+    """A delete committing after the attach, before the omitted reply's count/plan read, is ``not_found``."""
+    from gateway.session_controls import AuthorityConnection
+    authority, actor, ref, physical = await _local_session(tmp_path, monkeypatch)
+    _seed_compacted(authority.db, physical)
+    attach = authority.attach
+
+    async def attach_then_delete(*args, **kwargs):
+        snapshot = await attach(*args, **kwargs)
+        for sid in (physical, ref.session_id):
+            authority.db.delete_session(sid)
+        return snapshot
+    monkeypatch.setattr(authority, 'attach', attach_then_delete)
+    conn = AuthorityConnection(authority, object(), {'user_id': 'owner'})
+    conn.actor = actor
+    authority.events[actor.transport_id] = object()
+    reply = await conn.dispatch({'jsonrpc': '2.0', 'id': 1, 'method': 'session.resume',
+                                 'params': {'session_id': ref.session_id, 'omit_messages': True}})
+    assert reply['error']['data']['reason'] == 'not_found', reply

@@ -110,18 +110,20 @@ def model_only(row):
     return isinstance(metadata, dict) and bool(metadata.get(MODEL_ONLY_DISPLAY_METADATA_KEY))
 
 
-async def _resume_transcript(authority, ref, history, omit):
+async def _resume_transcript(authority, ref, snapshot, history, omit):
     """A resume reply's transcript fields. *omit* (``omit_messages``): no rows and ``messages_omitted``, the
-    count and the todo plan from bounded reads of the physical tip, as the stdio resume answers it."""
+    stored count and the todo plan of the physical target the attach resolved, as the stdio resume answers
+    it; the display-row lineage read is skipped (the todo lookup still walks the lineage's todo rows)."""
     # Its home module, not tui_gateway.server: importing the stdio sidecar points sys.stdout at stderr.
     from tui_gateway.tool_progress import _todo_state_from_history
     if not omit:
         # The newest todo result in the transcript, the snapshot the session's agent hydrates
         # from and its ``todo.updated`` frames carried: a viewer attaching shows the plan now.
         return {'messages': history, 'message_count': len(history), 'todo_state': _todo_state_from_history(history)}
-    from gateway.session_local_recovery import omitted_history_state, transcript_target
-    todo_state, count = await asyncio.to_thread(
-        omitted_history_state, authority.db, transcript_target(authority, ref))
+    from gateway.session_local_recovery import omitted_history_state
+    # A delete committed since the attach is ``not_found``, as one during the attach is.
+    todo_state, count = await asyncio.to_thread(authority.unless_deleted, ref, partial(
+        omitted_history_state, authority.db, snapshot.transcript_target))
     return {'messages': [], 'messages_omitted': True, 'message_count': count, 'todo_state': todo_state}
 
 
@@ -675,7 +677,7 @@ class AuthorityConnection:
             display['display_messages'] = display_projection(
                 [row for row in history if not model_only(row)], self.authority.profile_id)
         return {'session_id': ref.session_id, 'stored_session_id': ref.session_id,
-                **await _resume_transcript(self.authority, ref, history, omit), **display,
+                **await _resume_transcript(self.authority, ref, snapshot, history, omit), **display,
                 'running': snapshot.handle.execution_state == 'running',
                 'authority_epoch': snapshot.handle.authority_epoch,
                 'replay_epoch': snapshot.replay_epoch, 'last_sequence': snapshot.last_sequence,

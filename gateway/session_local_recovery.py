@@ -266,10 +266,13 @@ async def prepare_history(authority, ref):
 
 
 def omitted_history_state(db, target):
-    """``(todo_state, message_count)`` of a resume that omits its transcript: bounded, indexed reads of the
-    physical *target* (the newest todo result, the stored count), never the compression lineage."""
+    """``(todo_state, message_count)`` of a resume that omits its transcript: the physical *target*'s stored
+    count and its todo plan. Skips the display-row lineage read; the todo lookup still walks the lineage's
+    todo rows (removed ones included, so an undone plan stays gone)."""
     from tui_gateway.tool_progress import _todo_state_from_db
-    row = db.get_session(target) or {}
+    row = db.get_session(target)
+    if row is None:  # deleted since the attach resolved it
+        raise RuntimeStoreError('not_found')
     return _todo_state_from_db(db, target), int(row.get('message_count') or 0)
 
 

@@ -213,8 +213,17 @@ def probe(tmp_path):
                     seen = await rpc(other, method, room_id=room)
                     assert 'result' in seen, seen
                     shared += 1
+                # The single-owner contract still refuses what would rewrite a room or replay input:
+                # creating over another tab's existing room id, and reusing a sent event id.
+                hijack = await rpc(other, 'groups.create', room_id=room, name='hijack', members=members)
+                assert 'error' in hijack, hijack
+                replay = await rpc(other, 'groups.send', room_id=room, event_id='own-input',
+                                   payload={'text': 'FORBIDDEN', 'thread_id': 'thread'})
+                assert 'error' in replay, replay
                 after = await rpc(other, 'groups.log', room_id=room)
                 assert after == before, (before, after)
+                named = await rpc(other, 'groups.state', room_id=room)
+                assert named['result']['room']['name'] == tab, named
                 state = await rpc(ws, 'groups.state', room_id=room)
                 assert state['result']['driver_status']['counts'].get('running') == 1, state
             for tab, ws, _ in tabs:
@@ -256,6 +265,7 @@ def probe(tmp_path):
             await async_wait_until(lambda: not removal.exists(), timeout=90,
                                    what='the approved removal to run')
 
+            assert 'FORBIDDEN' not in json.dumps(model.requests)
             return {'actors': oidc.logins, 'rooms': rooms, 'shared_views': shared, 'owner_stops': 2}
 
     try:

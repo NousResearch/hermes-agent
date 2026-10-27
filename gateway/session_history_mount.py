@@ -9,7 +9,6 @@ is keyed by no lane's route, so nothing route-keyed acts through it, and every c
 (gateway/session_mutations.py), but only a leaf row deletes. Old local CLI/TUI/Desktop rows are not mounted
 here: resume adopts them as writable conversations (gateway/session_local_migration.py).
 """
-import json
 
 from hermes_state_runtime import RuntimeStoreError
 
@@ -20,11 +19,11 @@ _ROUTE_PREFIX = 'history:'
 def _reader(authority, actor, sid):
     """The importer an import binding names, else the profile's owner: its native peer (the evidence
     legacy adoption takes) or an operator. Knowing an old id is not ownership."""
-    from hermes_state_mutation_binding import history_binding
+    from hermes_state_mutation_binding import binding_names, history_binding
     with authority.db._read_ctx() as conn:
         binding = history_binding(conn, sid)
     if binding is not None:
-        return binding == json.dumps([actor.profile_id, actor.subject], separators=(',', ':'))
+        return binding_names(binding, actor.profile_id, actor.subject)
     return ('session:operator' in actor.capabilities
             or getattr(authority, '_native_legacy_transports', {}).get(actor.transport_id) == actor)
 

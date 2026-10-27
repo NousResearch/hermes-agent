@@ -215,8 +215,9 @@ class SessionAuthority:
             require_history_access(self, actor, ref.session_id, capability)
         from gateway.config import Platform
         source = self.sessions[ref.session_id].source
+        from gateway.owner_identity import same_owner
         if (source is not None and source.platform == Platform.LOCAL
-                and source.user_id != actor.subject and 'session:operator' not in actor.capabilities):
+                and not same_owner(source.user_id, actor.subject) and 'session:operator' not in actor.capabilities):
             raise RuntimeStoreError('permission_denied')
 
     def _require_admission_open(self, *, queue_only=False):
@@ -709,7 +710,8 @@ class SessionAuthority:
         if _kanban_card is not None:
             payload['kanban_card_v1'] = _kanban_card
         source = self.sessions[request.ref.session_id].source
-        if source is not None and source.user_id != actor.subject:
+        from gateway.owner_identity import same_owner
+        if source is not None and not same_owner(source.user_id, actor.subject):
             # Durable server authorization, not a client payload field. The original
             # principal remains the admission/retry identity across owner restarts.
             # Operator provenance is about who was authorized at this boundary, not
@@ -754,7 +756,8 @@ class SessionAuthority:
         row = get_session_admission(self.db, admission_id=admission_id)
         if row is None or row['target_session_id'] != ref.session_id:
             raise RuntimeStoreError('not_found')
-        if row['principal_id'] != actor.subject and 'session:control' not in actor.capabilities:
+        from gateway.owner_identity import same_owner
+        if not same_owner(row['principal_id'], actor.subject) and 'session:control' not in actor.capabilities:
             raise RuntimeStoreError('permission_denied')
         live = self.sessions[ref.session_id]
         with live.event_stream.lock:

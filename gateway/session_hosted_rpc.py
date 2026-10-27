@@ -12,6 +12,7 @@ import hashlib
 import json
 
 from gateway.hosted_room_driver import TaskIdentity
+from gateway.owner_identity import same_owner
 from gateway.session_contract import SessionRef, Submission
 from hermes_state_runtime import RuntimeStoreError, list_session_admissions
 
@@ -121,7 +122,7 @@ class HostedRoomAuthorityRPC:
         rows = list_session_admissions(self.authority.db, session_id=self.ref.session_id, pending_only=False)
         result = []
         for row in rows:
-            if row['principal_id'] != self.principal.subject or not row['request_id'].startswith('hosted:'):
+            if not same_owner(row['principal_id'], self.principal.subject) or not row['request_id'].startswith('hosted:'):
                 continue
             try:
                 task, generation = json.loads(row['request_id'][7:])

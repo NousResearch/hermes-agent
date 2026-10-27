@@ -7,6 +7,7 @@ from pathlib import Path
 from gateway.session_contract import Principal
 from gateway.session_authorities import active_authority, all_authorities, owner_scope, serving_authorities
 from gateway.session_hosted_controls import HostedControls
+from gateway.owner_identity import same_owner
 from hermes_state_runtime import RuntimeStoreError, _epoch
 from tui_gateway.hosted_room_service import HostedRoomService
 
@@ -113,7 +114,6 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
                 if historical is None:
                     conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)', (key, actor_subject))
                     return True
-            from gateway.owner_identity import same_owner
             if row is None or not same_owner(row[0], actor_subject):
                 raise RuntimeStoreError('permission_denied')
             return True
@@ -214,7 +214,7 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
             if type(generation) is not int or generation < 1:
                 raise ValueError('invalid generation')
             owner = self._owner(identity.room_id)
-            if owner != row['principal_id']:
+            if not same_owner(owner, row['principal_id']):
                 raise ValueError('foreign owner')
             room = self._room(identity.room_id)
             task = next(t for t in list_tasks(self.db_path, room_id=identity.room_id)

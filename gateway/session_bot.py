@@ -773,7 +773,8 @@ async def deliver(connection, params):
 def _require_same_delivery(record, actor, message, author, category):
     """A delivery id names one delivery: the same message, principal, author and category (the
     mailbox writer's identity), whether its receipt is admission-backed or refused."""
-    if (record['message'] != message or record['principal_id'] != actor.subject
+    from gateway.owner_identity import same_owner
+    if (record['message'] != message or not same_owner(record['principal_id'], actor.subject)
             or record.get('author') != author
             or record.get('notification_category', 'result') != category):
         raise RuntimeStoreError('admission_conflict')

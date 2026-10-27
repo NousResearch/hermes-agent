@@ -5,11 +5,13 @@ second owner. So a Webapp tab's Group Chats are native Desktop's (and the revers
 older build stored under the tab's ``auth:v1`` login subject are still the owner's, while another OS
 user's subject or a messaging identity stays foreign (gateway.owner_identity).
 """
+import json
 from types import SimpleNamespace
 
 import pytest
 
-from gateway.owner_identity import host_owner_subject, owns_row_stamp
+
+from gateway.owner_identity import host_owner_subject, same_owner
 from hermes_state import SessionDB
 from hermes_state_runtime import begin_runtime_epoch
 
@@ -69,10 +71,62 @@ async def test_a_room_an_older_build_stored_under_the_login_stays_the_owners(aut
     assert (await _call(stranger, 'groups.list'))['rooms'] == []
 
 
+OWNER = host_owner_subject()
+WEBAPP_LOGIN = 'auth:v1:["basic","","admin"]'
+
+
 @pytest.mark.parametrize('stamp, owned', [
-    ('basic:admin', True), ('local:uid:1000', True), ('auth:v1:["self-hosted","https://idp","sub"]', True),
+    ('basic:admin', True), (f'local:{OWNER}', True), ('auth:v1:["self-hosted","https://idp","sub"]', True),
+    ('auth:v1:["local","","' + OWNER + '"]', True),
+    ('local:uid:999999', False), ('auth:v1:["local","","uid:999999"]', False),
     ('telegram:42', False), ('uid:999999', False), ('nous:account', False), ('auth:v1:["","","x"]', False),
 ])
-def test_only_sign_in_stamps_read_as_the_owners(stamp, owned):
-    assert owns_row_stamp(stamp, host_owner_subject()) is owned
-    assert owns_row_stamp(stamp, 'uid:999999') is (stamp == 'uid:999999')
+def test_only_sign_in_stamps_and_this_machines_account_read_as_the_owners(stamp, owned):
+    assert same_owner(stamp, OWNER) is owned
+    assert same_owner(stamp, 'uid:999999') is (stamp == 'uid:999999')
+
+
+@pytest.fixture
+def store(tmp_path, monkeypatch):
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    with SessionDB(tmp_path / 'state.db') as db:
+        yield SimpleNamespace(db=db, profile_id=str(tmp_path), sessions={}, _require_admission_open=lambda: None)
+
+
+def _bind(store, sid, subject, **row):
+    from hermes_state_mutation_binding import BINDING_PREFIX
+    store.db.create_session(sid, **row)
+    binding = json.dumps([store.profile_id, subject], separators=(',', ':'))
+    store.db._execute_write(lambda conn: conn.execute(
+        'INSERT INTO state_meta(key,value) VALUES(?,?)', (BINDING_PREFIX + sid, binding)))
+
+
+def test_a_chat_a_webapp_tab_imported_before_the_upgrade_still_opens(store):
+    """The sidebar (authorize_history) and the open (mount_history) read a binding by one rule."""
+    from gateway.session_contract import Principal
+    from gateway.session_history_mount import mount_history
+    from hermes_state_mutation_binding import authorize_history
+    caps = frozenset({'session:create', 'session:read'})
+    owner, stranger = (Principal(s, store.profile_id, caps, 't') for s in (OWNER, 'uid:999999'))
+    _bind(store, 'imported-web', WEBAPP_LOGIN, source='webui')
+    with store.db._read_ctx() as conn:
+        assert authorize_history(conn, owner, 'imported-web') is True
+    assert mount_history(store, owner, 'imported-web') is True
+    store.sessions.clear()
+    assert mount_history(store, stranger, 'imported-web') is False
+
+
+def test_an_old_chat_a_webapp_tab_edited_is_adopted_by_the_owner(store):
+    from hermes_state_local_migration import bind_legacy_target
+    from hermes_state_runtime import RuntimeStoreError
+    _bind(store, 'legacy-web', WEBAPP_LOGIN, source='cli')
+
+    def adopt(subject):
+        receipt = {'legacy_session_id': 'legacy-web', 'session_id': 'legacy-web', 'principal_id': subject,
+                   'profile_id': store.profile_id, 'route': 'agent:main:local:dm:legacy-web',
+                   'entry': {'origin': {'platform': 'local', 'chat_id': 'legacy-web', 'user_id': subject}}}
+        store.db._execute_write(lambda conn: bind_legacy_target(store.db, conn, receipt))
+    with pytest.raises(RuntimeStoreError, match='permission_denied'):
+        adopt('uid:999999')
+    adopt(OWNER)
+    assert store.db.get_session('legacy-web')['user_id'] == OWNER

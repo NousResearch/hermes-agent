@@ -175,7 +175,8 @@ async def operation(authority, name, params, actor=None):
         sid = local_identity(authority.profile_id, actor.subject, request_id)
         from hermes_state_runtime import list_session_admissions
         rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
-        row = next((r for r in rows if r['request_id'] == request_id and r['principal_id'] == actor.subject), None)
+        from gateway.owner_identity import same_owner
+        row = next((r for r in rows if r['request_id'] == request_id and same_owner(r['principal_id'], actor.subject)), None)
         if row is None:
             return {'status': 'missing', 'result': None}
         state = await operation(authority, 'status', {'session_id': sid, 'admission_id': row['admission_id']}, actor)
@@ -216,7 +217,8 @@ async def operation(authority, name, params, actor=None):
     ref = SessionRef(authority.profile_id, params['session_id'])
     authority.authorize(actor, ref, 'session:submit')
     row = get_session_admission(authority.db, admission_id=params['admission_id'])
-    if row is None or row['target_session_id'] != ref.session_id or row['principal_id'] != actor.subject:
+    from gateway.owner_identity import same_owner
+    if row is None or row['target_session_id'] != ref.session_id or not same_owner(row['principal_id'], actor.subject):
         raise RuntimeStoreError('permission_denied')
     if name == 'cancel':
         if row['status'] == 'queued':

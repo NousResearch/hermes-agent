@@ -504,7 +504,7 @@ def cmd_dnc(args) -> None:
             "Sales calls stop within 31 days; registration never expires (personal numbers "
             "only -- business/fax lines are not covered).",
             f"After submitting, run `dnc {args.subject} --filed` so the loop stops "
-            "re-surfacing it (or `dnc {args.subject} --declined` if the subject opts out).",
+            f"re-surfacing it (or `dnc {args.subject} --declined` if the subject opts out).",
         ] if eligible else [
             "The National Do Not Call Registry covers US (NANP) personal numbers only; this "
             "subject has no US residency or no eligible US number on file.",

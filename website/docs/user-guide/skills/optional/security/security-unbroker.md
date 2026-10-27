@@ -269,8 +269,9 @@ recording `found` and before any deletion.
       exists - the **rescue lane** (verified Whitepages pattern). Draft-only falls back to
       `render-email` + a digest entry.
    - **captcha** → soft/managed challenges clear automatically on the default cloud browser (proceed
-     as normal); only a hard interactive/behavioral challenge it can't pass is recorded `blocked`
-     (requeued for the stealth/operator-browser pass). Never a solver service.
+     as normal); a hard interactive/behavioral challenge it can't pass is recorded
+     `human_task_queued` with the reason (a `blocked` case re-scans, re-finds the listing and
+     re-queues the opt-out). Never a solver service.
    - **phone_callback / account / gov_id / fax / mail / voice (T3)** *without a deletion email* →
      never an agent action; `next` already routed these to the digest. Record them:
      `$PDD record <subject> <broker> human_task_queued --reason "..."`.

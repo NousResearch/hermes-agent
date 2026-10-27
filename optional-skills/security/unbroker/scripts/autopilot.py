@@ -485,7 +485,7 @@ def next_actions(dossier: dict, brokers_list: list[dict], cfg: dict,
 
     # 7) anything already parked as a human task
     for bid, case in sorted(ledger.items()):
-        if case.get("state") == "human_task_queued":
+        if case.get("state") == "human_task_queued" and bid not in defunct_ids:  # 3b closes those
             broker = by_id.get(bid) or {}
             digest.append(_digest({"broker_id": bid, "broker_name": broker.get("name") or bid},
                                   case.get("human_task_reason") or "queued manual step",

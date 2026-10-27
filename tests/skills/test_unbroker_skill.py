@@ -725,6 +725,7 @@ def test_dnc_one_shot_surfaced_once_then_filed():
         assert out["eligible"] is True
         assert out["dnc_url"] == "https://www.donotcall.gov/register.html"
         assert "72 hours" in " ".join(out["steps"])
+        assert f"dnc {sid} --declined" in " ".join(out["steps"])
         q = autopilot.next_actions(dossier.load(sid), [], _auto_cfg(), {}, env={})
         act = next(a for a in q["actions"] if a["type"] == "dnc_register")
         assert act["confirm_first"] is True   # a new registry disclosure always asks
@@ -882,6 +883,12 @@ def test_defunct_brokers_excluded_from_all_planning():
         assert ("verify_removal", "livebroker") in kinds     # live brokers still recheck
         close = [t for t in q["human_digest"] if "deadbroker" in _json.dumps(t)]
         assert close and "not_found" in _json.dumps(close)
+        # a dead broker parked as a human task gets the close-out only, not a manual step too
+        led["deadbroker"] = {"broker_id": "deadbroker", "state": "human_task_queued",
+                             "human_task_reason": "needs fax"}
+        q2 = autopilot.next_actions(d, bl, _auto_cfg(), led, env={})
+        parked = [t for t in q2["human_digest"] if "deadbroker" in _json.dumps(t)]
+        assert len(parked) == 1 and "not_found" in _json.dumps(parked)
 
 
 def test_full_autonomy_note_honors_confirm_first():

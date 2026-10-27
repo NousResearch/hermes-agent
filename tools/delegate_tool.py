@@ -241,8 +241,21 @@ def _build_child_agent(
     # Role is depth-derived: a child may delegate iff the kill switch is on and
     # depth budget remains below max_spawn_depth. The `role` arg is ignored.
     child_depth = getattr(parent_agent, "_delegate_depth", 0) + 1
-    max_spawn = _get_max_spawn_depth()
-    effective_role = "orchestrator" if _get_orchestrator_enabled() and child_depth < max_spawn else "leaf"
+    ceiling_max_spawn = getattr(parent_agent, "_delegate_max_spawn_depth", None)
+    target_max_spawn = _get_max_spawn_depth()
+    effective_max_spawn = (
+        min(ceiling_max_spawn, target_max_spawn)
+        if isinstance(ceiling_max_spawn, int)
+        else target_max_spawn
+    )
+    ceiling_orch = getattr(parent_agent, "_delegate_orchestrator_enabled", None)
+    target_orch = _get_orchestrator_enabled()
+    effective_orch = (
+        bool(ceiling_orch and target_orch)
+        if isinstance(ceiling_orch, bool)
+        else target_orch
+    )
+    effective_role = "orchestrator" if effective_orch and child_depth < effective_max_spawn else "leaf"
 
     # One subagent_id shared by the progress callback, spawn_requested event and
     # the live registry; parent_id is set when THIS parent is itself a subagent.
@@ -256,7 +269,7 @@ def _build_child_agent(
     child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(parent_agent, toolsets, effective_role)
     child_prompt = _build_child_system_prompt(
         goal, context, workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
-        max_spawn_depth=max_spawn, child_depth=child_depth,
+        max_spawn_depth=effective_max_spawn, child_depth=child_depth,
     )
     parent_api_key = getattr(parent_agent, "api_key", None)
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
@@ -295,7 +308,9 @@ def _build_child_agent(
                     enabled_toolsets=child_toolsets, disabled_toolsets=child_disabled_toolsets, quiet_mode=True,
                     ephemeral_system_prompt=child_prompt, log_prefix=f"[subagent-{task_index}]", platform="subagent",
                     side_agent=True,
-                    skip_context_files=True, skip_memory=True, clarify_callback=None,
+                    skip_context_files=False if profile_home is not None else True,
+                    skip_memory=False if profile_home is not None else True,
+                    clarify_callback=None,
                     thinking_callback=(
                         (lambda text: _safe_progress(child_progress_cb, "_thinking", text) if text else None)
                         if child_progress_cb else None
@@ -329,6 +344,8 @@ def _build_child_agent(
     child_session_ref["session_id"] = getattr(child, "session_id", "") or ""
     child._progress_identity_ref = child_session_ref
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
+    child._delegate_max_spawn_depth = effective_max_spawn
+    child._delegate_orchestrator_enabled = effective_orch
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
     _apply_child_compression_cap(child, delegation_cfg)
     # Ownership chain for action=list/steer/stop; weakref so a finished parent
@@ -339,8 +356,15 @@ def _build_child_agent(
         child._delegate_parent_ref = None  # non-weakref-able test doubles
     # Sidebar marker: subagent sessions stay out of session pickers even when a
     # parent delete orphans them (mirrors /branch's ``_branched_from``).
-    if parent_sid and getattr(child, "_session_init_model_config", None) is not None:
-        child._session_init_model_config["_delegate_from"] = parent_sid
+    if getattr(child, "_session_init_model_config", None) is not None:
+        if parent_sid:
+            child._session_init_model_config["_delegate_from"] = parent_sid
+        if profile_home is not None:
+            child._session_init_model_config["delegated_profile"] = profile_home.name
+            child._session_init_model_config["delegate_identity"] = f"profile:{profile_home.name}"
+    if profile_home is not None:
+        child._delegated_profile = profile_home.name
+        child._delegate_identity = f"profile:{profile_home.name}"
     child._delegate_profile_home = profile_home  # _ChildRun.await_child runs the conversation in this scope
     if child_pool is not None:
         child._credential_pool = child_pool
@@ -582,6 +606,9 @@ def delegate_task(
 
     depth = getattr(parent_agent, "_delegate_depth", 0)
     max_spawn = _get_max_spawn_depth()
+    ceiling_spawn = getattr(parent_agent, "_delegate_max_spawn_depth", None)
+    if isinstance(ceiling_spawn, int):
+        max_spawn = min(max_spawn, ceiling_spawn)
     if depth >= max_spawn:
         return tool_error(
             f"Delegation depth limit reached (depth={depth}, max_spawn_depth={max_spawn}). Raise "

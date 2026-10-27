@@ -578,6 +578,7 @@ import {
   defaultTranslucencyState,
   glassActive,
   glassSupportedOn,
+  nativeOpacityFor,
   normalizeState as normalizeTranslucency,
   opacityNeedsSetting,
   translucencySupportedOn,
@@ -737,8 +738,7 @@ const DARWIN_MAJOR = IS_MAC ? Number.parseInt(os.release(), 10) || 0 : 0
 // Glass: macOS vibrancy, or Windows 11 22H2+ system backdrop. Computed once
 // so the renderer, the persisted default, and every chat window agree.
 const GLASS_SUPPORTED = glassSupportedOn(process.platform, os.release())
-// Clear rides setOpacity, a documented no-op on Linux, so neither mode works
-// there and Settings drops the row entirely.
+// Settings drops the row on Linux, so nativeOpacityFor keeps the fade off there.
 const TRANSLUCENCY_SUPPORTED = translucencySupportedOn(process.platform)
 const APP_ROOT = app.getAppPath()
 
@@ -1498,7 +1498,7 @@ nativeTheme.themeSource = readPersistedThemeSource()
 // — a matte blur with full-contrast text. macOS uses vibrancy; Windows 11
 // uses DWM acrylic/mica/tabbed. Persisted so a cold launch applies it at
 // window creation, before the renderer reports its value.
-// macOS + Windows only; `setOpacity` is a no-op on Linux.
+// macOS + Windows only, gated at the value itself (see nativeOpacityFor).
 const TRANSLUCENCY_CONFIG_PATH = path.join(app.getPath('userData'), 'translucency.json')
 
 function readPersistedTranslucency() {
@@ -1536,7 +1536,7 @@ const translucencyBackedWindows = new WeakSet()
 // window's own opacity is the record of whether that door was ever opened; see
 // opacityNeedsSetting for why it matters that it stays shut.
 function applyWindowOpacity(win) {
-  const opacity = windowOpacityFor(translucencyState)
+  const opacity = nativeOpacityFor(translucencyState, TRANSLUCENCY_SUPPORTED)
 
   if (typeof win.setOpacity === 'function' && opacityNeedsSetting(opacity, win.getOpacity?.() ?? 1)) {
     win.setOpacity(opacity)
@@ -1636,7 +1636,7 @@ function chatWindowSurfaceOptions() {
     // RESIZABLE transparent window is unsupported and breaks (electron#48421).
     // Every chat window is resizable.
     ...windowBackgroundMaterialOptions(translucencyState, IS_WINDOWS, GLASS_SUPPORTED),
-    ...windowOpacityOptions(translucencyState),
+    ...windowOpacityOptions(translucencyState, TRANSLUCENCY_SUPPORTED),
     ...windowBackingOptions(translucencyState, getWindowBackgroundColor())
   }
 }

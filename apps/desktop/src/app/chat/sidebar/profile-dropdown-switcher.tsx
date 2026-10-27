@@ -54,6 +54,7 @@ import { FleetGatewayMenuGroup } from './fleet-gateway-menu-group'
 import { buildRestGroups, type FleetAgent, fleetRouteKey } from './fleet-rail'
 import { useLocalDeviceSwitch } from './local-device-switch'
 import { ProfileLaunchContextMenu } from './profile-launch-menu'
+import { ProfileRowGlyph, UnservedProfileNote, useUnservedProfiles } from './unserved-profiles'
 import { useFleetRoster } from './use-fleet-roster'
 import { useProfilePrewarm } from './use-profile-prewarm'
 import { useProfileRailRefreshOnActive } from './use-profile-rail-refresh-on-active'
@@ -85,6 +86,7 @@ export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
   const { dialog: localDeviceDialog, request: requestLocalDevice } = useLocalDeviceSwitch()
 
   useFleetRoster(multipleConnections)
+  const unserved = useUnservedProfiles(profiles)
   // The Webapp always takes this dropdown in place of the rail's squares
   // (profile-switcher.tsx), so there it keeps the list fresh the same way and
   // carries the rail's right-click launch menu. Native Desktop's picker is main's.
@@ -225,6 +227,7 @@ export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
                 label={profileLabel(profile)}
                 launchMenu={browserHost}
                 name={profile.name}
+                unserved={unserved.has(normalizeProfileKey(profile.name))}
               />
             ))}
             {/* Nothing to widen to with one profile: the ALL view only exists
@@ -298,23 +301,27 @@ interface ProfileItemProps {
   /** Wrap the row in the rail's right-click launch menu (the Webapp's picker). */
   launchMenu: boolean
   name: string
+  /** Listed by its gateway but not served (the Webapp): shown, never picked, since the pick is refused. */
+  unserved: boolean
 }
 
-function ProfileItem({ color, connectionId, isDefault, label, launchMenu, name }: ProfileItemProps) {
+function ProfileItem({ color, connectionId, isDefault, label, launchMenu, name, unserved }: ProfileItemProps) {
   const { cancelPrewarm, notePointerMove, startPrewarm } = useProfilePrewarm(name, prewarmProfilePick)
 
   const row = (
     <DropdownMenuRadioItem
       className="min-w-0"
+      disabled={unserved}
       onPointerEnter={startPrewarm}
       onPointerLeave={cancelPrewarm}
       onPointerMove={notePointerMove}
       value={name}
     >
       <span className="flex min-w-0 items-center gap-1.5">
-        <ProfileGlyph aria-hidden="true" color={color} isDefault={isDefault} name={name} />
+        <ProfileRowGlyph color={color} isDefault={isDefault} name={name} unserved={unserved} />
         <span className="truncate">{label}</span>
       </span>
+      {unserved && <UnservedProfileNote />}
     </DropdownMenuRadioItem>
   )
 

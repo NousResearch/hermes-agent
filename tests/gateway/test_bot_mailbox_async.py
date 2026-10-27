@@ -81,6 +81,36 @@ async def test_paused_receipt_rearms_on_resume_without_polling_rpc(bot, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_receipt_read_straddling_the_settlement_commit_projects_the_reply(bot, monkeypatch):
+    """The drain settles from a worker thread while a receipt refresh reads the admission on the
+    loop: a commit landing between the row read and the result read is still a settled reply,
+    never a terminal ``failed`` receipt that no later wake re-reads."""
+    from gateway import session_bot, session_results
+    from gateway.session_contract import SessionRef
+    from hermes_state_runtime import claim_session_input, settle_session_input
+    from tools.bot_live_delivery import read_delivery_result
+    monkeypatch.setattr(bot.authority, '_schedule', lambda ref: None)
+    key = 'f' * 32
+    receipt = await session_bot.deliver(bot.connection, dict(id=key, profile='default', message='straddle'))
+    bot.authority._pause(SessionRef(bot.authority.profile_id, receipt['session_id']), 'unknown_execution')
+    await asyncio.wait_for(asyncio.gather(*list(bot.authority._bot_receipt_tasks)), 5)
+    row = claim_session_input(bot.authority.db, epoch=bot.authority.epoch, session_id=receipt['session_id'])
+    read, settled = session_results.admission_result, []
+
+    def commit_then_read(db, admission_id):
+        if admission_id == row['admission_id'] and not settled:
+            settled.append(settle_session_input(db, epoch=bot.authority.epoch, admission_id=admission_id,
+                generation=row['generation'], outcome='completed',
+                result={'result': {'final_response': 'pong'}, 'usage': {}}))
+        return read(db, admission_id)
+    monkeypatch.setattr(session_results, 'admission_result', commit_then_read)
+    await session_bot.refresh_receipt(bot.authority, bot.home, key)
+    record = await asyncio.to_thread(read_delivery_result, bot.home, key)
+    assert settled, 'the refresh never read the admission result'
+    assert (record['status'], record['reply']) == ('settled', 'pong'), record
+
+
+@pytest.mark.asyncio
 async def test_adopted_result_during_unknown_projection_is_not_lost(bot, monkeypatch):
     from gateway import session_bot
     from gateway.session_contract import SessionRef

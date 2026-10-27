@@ -128,6 +128,54 @@ class TestSnapshotEndToEnd:
     """Spin up a real LocalEnvironment and confirm the snapshot sources
     extra init files."""
 
+    @pytest.mark.platforms("posix")
+    @pytest.mark.parametrize("helper", ["snapshot_helper", "snapshot_alias"])
+    def test_shell_helpers_survive_snapshot_refresh(self, tmp_path, monkeypatch, helper):
+        """Refreshing exports must not erase configured functions or aliases."""
+        home = tmp_path / "home"
+        home.mkdir()
+        hermes_home = home / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "runtime"))
+        init_file = home / "helpers.sh"
+        init_file.write_text(
+            "snapshot_helper() { printf 'helper-ok\\n'; }\n"
+            "alias snapshot_alias=\"printf 'helper-ok\\n'\"\n"
+            "_snapshot_private() { printf 'private-body-must-not-run\\n'; }\n"
+            "export SNAPSHOT_STICKY=bootstrap\n",
+            encoding="utf-8",
+        )
+        (hermes_home / "config.yaml").write_text(
+            "terminal:\n  auto_source_bashrc: false\n"
+            f"  shell_init_files:\n    - '{init_file}'\n",
+            encoding="utf-8",
+        )
+        env = LocalEnvironment(cwd=str(tmp_path), timeout=15)
+        try:
+            assert env._snapshot_ready
+            # Re-sourcing the init file is not a substitute for preserving state.
+            init_file.unlink()
+            previous = "bootstrap"
+            for turn in range(3):
+                result = env.execute(
+                    'printf "sticky=%s\\n" "$SNAPSHOT_STICKY"; '
+                    'printf "excluded=%s\\n" "${HERMES_RPC_SNAPSHOT_PROBE-unset}"; '
+                    'declare -F _snapshot_private; '
+                    'shopt -q expand_aliases && printf "aliases-enabled\\n"; '
+                    f'export SNAPSHOT_STICKY=turn-{turn}; '
+                    'export HERMES_RPC_SNAPSHOT_PROBE=must-not-persist; '
+                    f'{helper}'
+                )
+                assert result["returncode"] == 0, (turn, result)
+                assert result["output"].splitlines() == [
+                    f"sticky={previous}", "excluded=unset", "aliases-enabled", "helper-ok",
+                ]
+                previous = f"turn-{turn}"
+        finally:
+            env.cleanup()
+
     def test_exported_env_changes_persist_between_commands(self, tmp_path):
         env = LocalEnvironment(cwd=str(tmp_path), timeout=15)
         try:

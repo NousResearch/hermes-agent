@@ -313,6 +313,10 @@ Discord 行为通过两个文件控制：**`~/.hermes/.env`** 用于凭据和环
 | `DISCORD_ALLOW_MENTION_ROLES` | 否 | `false` | 为 `false`（默认）时，机器人无法 ping `@role` 提及。设置为 `true` 可允许。 |
 | `DISCORD_ALLOW_MENTION_USERS` | 否 | `true` | 为 `true`（默认）时，机器人可以通过 ID ping 单个用户。 |
 | `DISCORD_ALLOW_MENTION_REPLIED_USER` | 否 | `true` | 为 `true`（默认）时，回复消息会 ping 原始作者。 |
+| `DISCORD_APPROVAL_MENTIONS` | 否 | `false` | 为 `true` 时，命令审批卡片会 `@mention` 所有允许的用户（`DISCORD_ALLOWED_USERS` 中的数字 ID），以便 Discord 应用弹出通知。 |
+| `DISCORD_CLARIFY_MENTIONS` | 否 | `false` | 为 `true` 时，`clarify` 决策提示（按钮问题）会 `@mention` 所有允许的用户，以便 Discord 应用在 agent 需要决策时弹出通知。 |
+| `DISCORD_SLASH_CONFIRM_MENTIONS` | 否 | `false` | 为 `true` 时，斜杠命令确认提示会 `@mention` 所有允许的用户。 |
+| `DISCORD_UPDATE_PROMPT_MENTIONS` | 否 | `false` | 为 `true` 时，网关更新的"是/否"提示会 `@mention` 所有允许的用户。 |
 | `DISCORD_PROXY` | 否 | — | Discord 连接的代理 URL（HTTP、WebSocket、REST）。覆盖 `HTTPS_PROXY`/`ALL_PROXY`。支持 `http://`、`https://` 和 `socks5://` 协议。 |
 | `DISCORD_ALLOW_ANY_ATTACHMENT` | 否 | `false` | 为 `true` 时，机器人接受任何文件类型的附件（不仅限于内置的 PDF/文本/zip/office 允许列表）。未知类型会被缓存到磁盘，并以 `application/octet-stream` MIME 类型作为本地路径提供给 agent，以便它可以使用 `terminal` / `read_file` / `ffprobe` 等工具检查。 |
 | `DISCORD_MAX_ATTACHMENT_BYTES` | 否 | `33554432` | 网关将下载并缓存的每个附件的最大字节数。默认 32 MiB。设置为 `0` 表示无上限（附件在写入时保存在内存中，因此无限制会带来真实的内存成本）。 |

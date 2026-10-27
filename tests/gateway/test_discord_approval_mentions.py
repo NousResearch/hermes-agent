@@ -1,4 +1,9 @@
-"""Discord approval prompts can opt into owner mentions."""
+"""Discord approval prompts can opt into owner mentions.
+
+Also covers the sibling opt-in mention knobs for the other interactive Discord
+prompts (clarify, slash confirm, update prompt) — each gated behind its own
+``discord.*_mentions`` config key / ``DISCORD_*_MENTIONS`` env var, default off.
+"""
 
 import os
 from types import SimpleNamespace
@@ -50,6 +55,102 @@ async def test_exec_approval_mentions_allowed_users_when_enabled(monkeypatch):
     assert channel.sent_kwargs["content"].startswith("<@111> <@222>\n")
     assert "make check" in channel.sent_kwargs["content"]
     assert "allowed_mentions" in channel.sent_kwargs
+
+
+def _mention_adapter(monkeypatch, env_key: str | None) -> DiscordAdapter:
+    if env_key is None:
+        monkeypatch.delenv("DISCORD_CLARIFY_MENTIONS", raising=False)
+        monkeypatch.delenv("DISCORD_SLASH_CONFIRM_MENTIONS", raising=False)
+        monkeypatch.delenv("DISCORD_UPDATE_PROMPT_MENTIONS", raising=False)
+    else:
+        monkeypatch.setenv(env_key, "true")
+    channel = _FakeChannel()
+    adapter = object.__new__(DiscordAdapter)
+    adapter._client = _FakeClient(channel)
+    adapter._allowed_user_ids = {"222", "111", "alice"}
+    adapter._allowed_role_ids = set()
+    adapter.config = SimpleNamespace(extra=None)
+    return adapter
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("send", "env_key"),
+    [
+        (lambda a: a.send_clarify(chat_id="99", question="Which one?", choices=["A", "B"],
+                                  clarify_id="c1", session_key="session-1"),
+         "DISCORD_CLARIFY_MENTIONS"),
+        (lambda a: a.send_slash_confirm(chat_id="99", title="Reload MCP", message="Proceed?",
+                                        session_key="session-1", confirm_id="s1"),
+         "DISCORD_SLASH_CONFIRM_MENTIONS"),
+        (lambda a: a.send_update_prompt(chat_id="99", prompt="Update available.", default="1.2.3",
+                                        session_key="session-1"),
+         "DISCORD_UPDATE_PROMPT_MENTIONS"),
+    ],
+)
+async def test_prompt_mentions_allowed_users_when_enabled(monkeypatch, send, env_key):
+    adapter = _mention_adapter(monkeypatch, env_key)
+    result = await send(adapter)
+
+    assert result.success is True
+    sent = adapter._client.channel.sent_kwargs
+    # Mentions are prepended to the (always present) content mirror.
+    assert sent["content"].startswith("<@111> <@222>\n")
+    assert "allowed_mentions" in sent
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("send",),
+    [
+        (lambda a: a.send_clarify(chat_id="99", question="Which one?", choices=["A", "B"],
+                                  clarify_id="c1", session_key="session-1"),),
+        (lambda a: a.send_slash_confirm(chat_id="99", title="Reload MCP", message="Proceed?",
+                                        session_key="session-1", confirm_id="s1"),),
+        (lambda a: a.send_update_prompt(chat_id="99", prompt="Update available.", default="1.2.3",
+                                        session_key="session-1"),),
+    ],
+)
+async def test_prompt_mentions_default_off(monkeypatch, send):
+    adapter = _mention_adapter(monkeypatch, None)
+    result = await send(adapter)
+
+    assert result.success is True
+    sent = adapter._client.channel.sent_kwargs
+    assert not sent["content"].startswith("<@")
+    assert "allowed_mentions" not in sent
+
+
+def test_yaml_config_seeds_prompt_mention_keys(monkeypatch):
+    for key in (
+        "DISCORD_APPROVAL_MENTIONS",
+        "DISCORD_CLARIFY_MENTIONS",
+        "DISCORD_SLASH_CONFIRM_MENTIONS",
+        "DISCORD_UPDATE_PROMPT_MENTIONS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    seeded = _apply_yaml_config(
+        {},
+        {
+            "approval_mentions": True,
+            "clarify_mentions": True,
+            "slash_confirm_mentions": True,
+            "update_prompt_mentions": True,
+        },
+    )
+
+    for key in (
+        "DISCORD_APPROVAL_MENTIONS",
+        "DISCORD_CLARIFY_MENTIONS",
+        "DISCORD_SLASH_CONFIRM_MENTIONS",
+        "DISCORD_UPDATE_PROMPT_MENTIONS",
+    ):
+        assert os.environ[key] == "true"
+    assert seeded["approval_mentions"] is True
+    assert seeded["clarify_mentions"] is True
+    assert seeded["slash_confirm_mentions"] is True
+    assert seeded["update_prompt_mentions"] is True
 
 
 def test_yaml_config_seeds_websocket_health_with_primary_precedence(monkeypatch):

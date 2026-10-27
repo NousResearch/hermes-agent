@@ -330,6 +330,10 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_ALLOW_MENTION_ROLES` | No | `false` | When `false` (default), the bot cannot ping `@role` mentions. Set to `true` to allow. |
 | `DISCORD_ALLOW_MENTION_USERS` | No | `true` | When `true` (default), the bot can ping individual users by ID. |
 | `DISCORD_ALLOW_MENTION_REPLIED_USER` | No | `true` | When `true` (default), replying to a message pings the original author. |
+| `DISCORD_APPROVAL_MENTIONS` | No | `false` | When `true`, command-approval cards `@mention` every allowed user (numeric IDs from `DISCORD_ALLOWED_USERS`), so the Discord app surfaces a notification when a command needs approval. |
+| `DISCORD_CLARIFY_MENTIONS` | No | `false` | When `true`, `clarify` decision prompts (button questions) `@mention` every allowed user, so the Discord app surfaces a notification when the agent needs a decision. |
+| `DISCORD_SLASH_CONFIRM_MENTIONS` | No | `false` | When `true`, slash-command confirmation prompts `@mention` every allowed user. |
+| `DISCORD_UPDATE_PROMPT_MENTIONS` | No | `false` | When `true`, gateway update Yes/No prompts `@mention` every allowed user. |
 | `DISCORD_PROXY` | No | — | Proxy URL for Discord connections (HTTP, WebSocket, REST). Overrides `HTTPS_PROXY`/`ALL_PROXY`. Supports `http://`, `https://`, and `socks5://` schemes. |
 | `DISCORD_ALLOW_ANY_ATTACHMENT` | No | `false` | When `true`, the bot accepts attachments of any file type (not just the built-in PDF/text/zip/office allowlist). Unknown types are cached to disk and surfaced to the agent as a local path with `application/octet-stream` MIME so it can inspect them with `terminal` / `read_file` / `ffprobe` / etc. |
 | `DISCORD_MAX_ATTACHMENT_BYTES` | No | `33554432` | Maximum bytes per attachment the gateway will download and cache. Default 32 MiB. Set to `0` for no cap (attachments are held in memory while being written, so unlimited carries a real memory cost). |
@@ -783,6 +787,8 @@ The buttons disable themselves once a choice is made so duplicate clicks don't d
 ### Prompt layout
 
 Interactive prompts (command approvals, `clarify` questions, and slash-command confirmations) share one layout: the **plain message** carries the full payload — the command and why it was flagged plus the approval deadline, or the question and reply hint — the **embed card** underneath is a header only, and the buttons sit below the card. Everything you need to decide is in the plain text, so the prompt reads correctly on clients that hide or detach embeds, and nothing is shown twice on clients that render them.
+
+By default these prompts do **not** `@mention` you, so your Discord app may not raise a notification and an unanswered prompt can time out. Each prompt family has its own opt-in ping — `DISCORD_APPROVAL_MENTIONS`, `DISCORD_CLARIFY_MENTIONS`, `DISCORD_SLASH_CONFIRM_MENTIONS`, and `DISCORD_UPDATE_PROMPT_MENTIONS` (or the equivalent `discord.*_mentions` keys in `config.yaml`). When enabled, the prompt `@mentions` every allowed user (numeric IDs from `DISCORD_ALLOWED_USERS`), so the Discord app surfaces a notification. Set all of them to `true` if you want to be pinged whenever the agent needs your input.
 
 ## Home Channel
 

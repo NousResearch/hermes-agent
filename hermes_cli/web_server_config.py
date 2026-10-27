@@ -497,9 +497,13 @@ def _validated_main_model_selection(
     # An explicit endpoint must not resolve through the named custom providers: the legacy
     # bare-``custom`` recovery in ``resolve_custom_provider`` would bind the FIRST named entry.
     explicit_endpoint = _is_explicit_custom_endpoint(provider, base_url)
+    # The submitted endpoint is seeded as a current bare-``custom`` route so the credential step
+    # keeps it: arriving from another provider it re-resolves ``custom`` from config and would
+    # validate the saved ``model.base_url`` (and its key) instead of the endpoint being saved.
     result = switch_model(
         raw_input=model, explicit_provider=provider, is_global=True,
-        current_provider=str(model_cfg.get("provider") or ""), current_model=str(model_cfg.get("default") or ""),
+        current_provider="custom" if explicit_endpoint else str(model_cfg.get("provider") or ""),
+        current_model=str(model_cfg.get("default") or ""),
         current_base_url=base_url if is_bare_custom else str(model_cfg.get("base_url") or ""),
         current_api_key=api_key if is_bare_custom else "",
         user_providers=cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {},

@@ -575,10 +575,12 @@ def hermes_managed_node_tree_present(home: Path | None = None) -> bool:
 def find_node_executable(command: str) -> str | None:
     """Read PM's selected Node/npm/npx; ``None`` when PM has not installed it.
 
-    Never falls back to the user's PATH copy (callers ``pm.ensure`` on ``None``):
-    mixing toolchains breaks native-addon ABIs and npm caches. Explicit
-    executable paths remain caller-owned. Discovery never installs, probes,
-    repairs, or activates the retired ``HERMES_HOME/node`` layout.
+    A managed npm entry whose npx sibling is missing counts as not installed,
+    so callers that ``pm.ensure`` heal that pair. Never falls back to the
+    user's PATH copy: mixing toolchains breaks native-addon ABIs and npm
+    caches. Explicit executable paths remain caller-owned. Discovery never
+    installs, probes, repairs, or activates the retired ``HERMES_HOME/node``
+    layout, and it never deletes a healthy install.
     """
     command = str(command)
     if any(sep in command for sep in ("/", "\\")):

@@ -19,6 +19,7 @@ from pm.package import (
     Package,
     StatePackage,
     _entry_listing,
+    _missing_reason,
     _probe_reason,
     unpack_deb,
 )
@@ -597,6 +598,22 @@ class Npm(BinaryPackage):
     flatten = False
     probe_version = False
     url = "https://registry.npmjs.org/npm/-/npm-{version}.tgz"
+
+    def companion(self, entry: Path, target: str) -> Optional[Path]:
+        """npx is installed beside npm. A missing sibling is a partial tree."""
+        binary = self.binary(entry, target)
+        if binary is None:
+            return None
+        return binary.with_name(f"npx{binary.suffix}")
+
+    def verify(self, entry: Path, target: str) -> str:
+        reason = super().verify(entry, target)
+        if reason:
+            return reason
+        sibling = self.companion(entry, target)
+        if sibling is not None and not sibling.is_file():
+            return _missing_reason(sibling, entry)
+        return ""
 
     def unpack(self, archive: Path, staged: Path, target: str) -> None:
         """npm installs itself using the node it extends: a plain unpack

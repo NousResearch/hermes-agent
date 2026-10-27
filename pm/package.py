@@ -146,6 +146,14 @@ class Package:
     def binary(self, entry: Path, target: str) -> Optional[Path]:
         return None
 
+    def companion(self, entry: Path, target: str) -> Optional[Path]:
+        """A paired launcher that must exist beside ``binary()``, or None.
+
+        npm's npx is the case that matters: deleting that sibling used to
+        leave the managed install looking healthy.
+        """
+        return None
+
     def verify(self, entry: Path, target: str) -> str:
         """Return '' when the entry is usable on target, else why not.
         Every subclass check (probe, marker) must keep this shape: '' is

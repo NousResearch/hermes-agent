@@ -181,8 +181,14 @@ def lease_directory(generation: Path) -> Callable[[], None]:
     return release
 
 
-def collect_generations(project: Path, *, min_age_seconds: float = 86400) -> list[Path]:
-    """Remove unselected lease-managed generations after their readers exit."""
+def collect_generations(
+    project: Path, *, min_age_seconds: float = 86400, leased_generations: list[Path] | None = None
+) -> list[Path]:
+    """Remove unselected lease-managed generations after their readers exit.
+
+    Generations skipped because a live lease still pins them are appended to
+    ``leased_generations`` when given, so a caller like ``pm gc`` can report them
+    instead of printing a bare zero that reads as "nothing to reclaim"."""
     from pm.environments import selected_venv
     removed = []
     root = install_state_dir(project)
@@ -205,6 +211,8 @@ def collect_generations(project: Path, *, min_age_seconds: float = 86400) -> lis
             if not leases_held(generation):
                 shutil.rmtree(generation)
                 removed.append(generation)
+            elif leased_generations is not None:
+                leased_generations.append(generation)
     return removed
 
 

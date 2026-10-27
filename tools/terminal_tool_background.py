@@ -67,6 +67,11 @@ _ROUTING_FIELDS = (
     ("watcher_user_name", "HERMES_SESSION_USER_NAME"),
     ("watcher_thread_id", "HERMES_SESSION_THREAD_ID"),
     ("watcher_message_id", "HERMES_SESSION_MESSAGE_ID"),
+    # Route anchors the session-key fallback rebuild reads off the completion event: a Discord
+    # thread's parent channel and its guild scope (#144006). Must stay ABOVE parent_session_id,
+    # which the watcher dict adds explicitly rather than through this table.
+    ("watcher_parent_chat_id", "HERMES_SESSION_PARENT_CHAT_ID"),
+    ("watcher_scope_id", "HERMES_SESSION_SCOPE_ID"),
     # The spawning conversation's session-db id lets the gateway's completion
     # pre-flight drop the notification if the user closed this session (/new)
     # before the process finished, instead of injecting it into the NEW one.

@@ -209,3 +209,150 @@ async def test_relay_wake_row_reverifies_the_source_it_stores(tmp_path, monkeypa
         assert restore_native(row['payload'], runner).source.message_id is None
     finally:
         authority.db.close()
+
+
+# ── A Discord-thread wake rebuilt from the session-key fallback (#144006) ──────────────────
+# Every committed human envelope in a Discord thread carries ``parent_chat_id`` (the parent
+# channel) and ``scope_id`` (the guild). When the route has no stored origin to restore and no
+# cached source, the wake is rebuilt from the session key and the completion event alone, so the
+# rebuild only keeps the anchors the event carries: a producer that omits them rebuilds a
+# degraded copy of the route the wake is admitted on.
+
+_THREAD = dict(chat_id='900', chat_type='thread', thread_id='900', user_id='42',
+               user_name='human', parent_chat_id='800', guild_id='700')
+# Display labels a platform may change at any time (#143282); everything else identifies a route.
+_ROUTE_LABELS = frozenset({'message_id', 'user_name', 'chat_name', 'chat_topic',
+                           'auto_thread_initial_name', 'auto_thread_created'})
+
+
+def _route_identity(source):
+    """The fields that identify a route: what the wake rebuild must reproduce, never invent."""
+    return {key: value for key, value in source.to_dict().items() if key not in _ROUTE_LABELS}
+
+
+async def _thread_owner(tmp_path, monkeypatch):
+    from gateway.session_ingress_context import native_callback, register_transport_home
+    from plugins.platforms.discord.adapter import DiscordAdapter
+    runner, authority = await _authority(tmp_path, monkeypatch)
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token='***', typing_indicator=False))
+    runner.adapters = {Platform.DISCORD: adapter}
+    runner._wire_adapter_handlers(adapter)
+    register_transport_home(runner, None, tmp_path)
+    monkeypatch.setenv('DISCORD_ALLOWED_USERS', '42')
+    await _admit_human(runner, authority, MessageEvent(
+        text='human', source=adapter.build_source(**_THREAD, message_id='human-1'),
+        message_id='human-1'))
+    return runner, authority, adapter
+
+
+def _thread_completion_event(route, session_id, **anchors):
+    event = {'type': 'completion', 'session_id': 'proc_x', 'session_key': route, 'platform': 'discord',
+             'chat_type': 'thread', 'chat_id': '900', 'thread_id': '900', 'user_id': '42',
+             'user_name': 'human', 'parent_chat_id': '800', 'scope_id': '700', 'exit_code': 0,
+             'output': 'done', 'started_at': 1.0, 'parent_session_id': session_id}
+    event.update(anchors)
+    return event
+
+
+def _drop_the_stored_origin(runner, route):
+    """Leave the wake only the session-key fallback: no persisted origin to restore (the routing
+    entry lost it) and no cached live source, so it is rebuilt from the key and the event alone."""
+    entry = runner.session_store._entries[route]
+    entry.origin = None
+    entry.transport_profile = None  # ``_route_owner`` reads the origin only for a mounted LOCAL route
+    runner._session_sources = {}
+
+
+@pytest.mark.asyncio
+async def test_thread_wake_rebuilt_from_the_session_key_is_the_committed_route(tmp_path, monkeypatch):
+    """No stored origin and no cached source: the wake is rebuilt from the session key and the
+    completion event. That rebuild must carry the thread's parent channel and guild scope, so it
+    names the same route the session's last committed human turn does instead of a degraded copy."""
+    from gateway.session_automation import committed_route_envelope
+    runner, authority, adapter = await _thread_owner(tmp_path, monkeypatch)
+    try:
+        route = runner.session_store._generate_session_key(adapter.build_source(**_THREAD))
+        sid = runner.session_store.peek_session_id(route)
+        committed = SessionSource.from_dict(committed_route_envelope(
+            authority, runner.session_store.lookup_by_session_key(route))['source'])
+        _drop_the_stored_origin(runner, route)
+        rebuilt = runner._build_process_event_source(_thread_completion_event(route, sid))
+        assert rebuilt is not None
+        assert _route_identity(rebuilt) == _route_identity(committed)
+        assert runner.session_store._generate_session_key(rebuilt) == route
+        assert await runner._inject_watch_notification('[done]', _thread_completion_event(route, sid)) is True
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_thread_wake_rebuild_reports_the_parent_the_event_carries(tmp_path, monkeypatch):
+    """The rebuild copies the anchors, it never derives them: a parent the event names is reported
+    verbatim, so a route whose parent really drifted stays visibly drifted rather than silently
+    corrected into agreement with the committed envelope."""
+    runner, authority, adapter = await _thread_owner(tmp_path, monkeypatch)
+    try:
+        route = runner.session_store._generate_session_key(adapter.build_source(**_THREAD))
+        _drop_the_stored_origin(runner, route)
+        rebuilt = runner._build_process_event_source(_thread_completion_event(
+            route, runner.session_store.peek_session_id(route), parent_chat_id='other-parent'))
+        assert rebuilt is not None
+        assert rebuilt.parent_chat_id == 'other-parent'
+        assert rebuilt.scope_id == '700'
+    finally:
+        authority.db.close()
+
+
+def test_completion_watcher_carries_the_thread_route_anchors(tmp_path, monkeypatch):
+    """The producer chain: a Discord-thread turn's session context is stamped onto the process
+    session, armed as a watcher, and the completion event that watcher produces still rebuilds the
+    thread's parent channel and guild scope."""
+    from types import SimpleNamespace
+    import gateway.run as gateway_run
+    from gateway.config import GatewayConfig
+    from gateway.run import GatewayRunner
+    from gateway.run_notifications import GatewayNotificationsMixin
+    from gateway.session_authority import SessionAuthority
+    from gateway.session_context import get_session_env
+    from hermes_state import SessionDB
+    from tools.process_registry import ProcessRegistry
+    from tools.terminal_tool_background import _register_completion_watcher, _stamp_gateway_routing
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)
+    for name, value in (('HERMES_SESSION_PLATFORM', 'discord'), ('HERMES_SESSION_CHAT_ID', '900'),
+                        ('HERMES_SESSION_THREAD_ID', '900'), ('HERMES_SESSION_USER_ID', '42'),
+                        ('HERMES_SESSION_USER_NAME', 'human'),
+                        ('HERMES_SESSION_PARENT_CHAT_ID', '800'), ('HERMES_SESSION_SCOPE_ID', '700'),
+                        ('HERMES_SESSION_ID', 'session-1')):
+        monkeypatch.setenv(name, value)
+    runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / 'sessions'))
+    db = SessionDB(tmp_path / 'state.db')
+    runner.session_store._db = db
+    runner._session_db = db
+    proc_session = SimpleNamespace(id='proc_thread', parent_session_id='')
+    _stamp_gateway_routing(proc_session, get_session_env)
+    armed = []
+    monkeypatch.setattr(gateway_run, '_gateway_runner_ref',
+                        lambda: SimpleNamespace(arm_process_watcher=lambda w: armed.append(w) or True))
+    _register_completion_watcher(ProcessRegistry(), proc_session, 'agent:main:discord:thread:900:900')
+    event = GatewayNotificationsMixin._build_process_completion_event(
+        armed[0], SimpleNamespace(command='sleep', output_buffer='done', exit_code=0,
+                                  completion_reason='exited', termination_source='', started_at=1.0,
+                                  owner_task_id='', task_id='', parent_session_id='session-1'),
+        'proc_thread')
+    rebuilt = runner._build_process_event_source(event)
+    assert rebuilt is not None
+    assert (rebuilt.parent_chat_id, rebuilt.scope_id) == ('800', '700')
+    assert runner.session_store._generate_session_key(rebuilt) == 'agent:main:discord:thread:900:900'
+
+
+def test_async_delegation_dispatch_snapshots_the_thread_parent(monkeypatch):
+    """The durable delegation ledger persists the parent channel of the thread that dispatched the
+    child, so a restart-recovered completion event still rebuilds the route it belongs to."""
+    from tools import async_delegation as delegation
+    for name, value in (('HERMES_SESSION_SCOPE_ID', '700'), ('HERMES_SESSION_PARENT_CHAT_ID', '800'),
+                        ('HERMES_SESSION_USER_ID', '42'), ('HERMES_SESSION_USER_NAME', 'human')):
+        monkeypatch.setenv(name, value)
+    assert delegation._capture_routing_origin() == {
+        'scope_id': '700', 'parent_chat_id': '800', 'user_id': '42', 'user_name': 'human'}

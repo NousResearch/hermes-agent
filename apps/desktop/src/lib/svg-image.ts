@@ -2,6 +2,8 @@
 // SVGs only (inline styles) — mermaid output qualifies. Falls back to copying
 // the SVG markup as text where image clipboard writes aren't permitted.
 
+import { writeClipboardText } from '@/lib/clipboard'
+
 // Mermaid emits width="100%" plus a viewBox. That percentage is not an
 // intrinsic size: the zoom overlay's shrink-to-fit grid can collapse it, and
 // parseFloat("100%") makes a 100px PNG. Replace percentage attrs with the
@@ -140,11 +142,16 @@ export function svgToPngBlob(svg: string, scale = 2): Promise<Blob> {
 }
 
 export async function copySvgAsPng(svg: string): Promise<void> {
+  // An insecure origin has no image clipboard: copy the markup while the click still counts.
+  if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+    return writeClipboardText(svg)
+  }
+
   try {
     const blob = await svgToPngBlob(svg)
 
     await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
   } catch {
-    await navigator.clipboard.writeText(svg)
+    await writeClipboardText(svg)
   }
 }

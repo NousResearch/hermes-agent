@@ -80,7 +80,9 @@ async def resolve_image_source(
     if _is_local_terminal_backend():
         # Any path was host-readable, so a miss means the file doesn't exist.
         raise SourceNotFound(f"media file not found: '{p}'", src=s, origin="file")
-    return await _resolve_container_fallback(p, ctx, s, permitted)
+    # The sandbox is POSIX: on a Windows host str(p) would turn /workspace/x.png into
+    # \workspace\x.png, which the container cannot open.
+    return await _resolve_container_fallback(p.as_posix(), ctx, s, permitted)
 
 
 def _guard_credential_read(host_target: Path, src: str) -> None:
@@ -213,7 +215,7 @@ def _ensure_container_env(task_id: Optional[str]) -> None:
 
 
 async def _resolve_container_fallback(
-    p: Path, ctx: ResolveContext, src: str, permitted: tuple = ("image",)) -> ResolvedImage:
+    p: str, ctx: ResolveContext, src: str, permitted: tuple = ("image",)) -> ResolvedImage:
     """Read the bytes inside the sandbox; fail-closed when no env exists (a non-cache host
     path under a sandbox must never leak via a host fallback).
 
@@ -236,16 +238,19 @@ async def _resolve_container_fallback(
             src=src, origin="container")
     from tools.terminal_tool_config import translate_mounted_host_path
     translated = translate_mounted_host_path(
-        str(p),
+        p,
         getattr(env, "host_cwd", None) or "",
         getattr(env, "host_cwd_mount", None) or "/workspace",
     )
     if translated:
-        p = Path(translated)
+        p = translated  # already POSIX; Path() would re-backslash it on a Windows host
     # Bound the read INSIDE the sandbox: head -c caps at ingest-limit+1 (+1 distinguishes "at the
     # cap" from "over") so /dev/zero can't stream unbounded base64 into host memory. The input
     # redirect avoids argv (leading-dash paths); tr -d instead of GNU-only base64 -w0 (BusyBox).
-    cmd = f"head -c {_MAX_INGEST_BYTES + 1} < {shlex.quote(str(p))} | base64 | tr -d '\\n'"
+    # pipefail: otherwise a failed read exits with tr's 0 and its error text is decoded as base64;
+    # the subshell keeps the option out of the wrapper script execute() embeds this in.
+    cmd = (f"(set -o pipefail; head -c {_MAX_INGEST_BYTES + 1} < {shlex.quote(p)}"
+           f" | base64 | tr -d '\\n')")
     last_res: dict = {"returncode": 1, "output": ""}
     for attempt in range(2):
         last_res = await asyncio.to_thread(env.execute, cmd)

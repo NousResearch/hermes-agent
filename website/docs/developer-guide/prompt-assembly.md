@@ -35,7 +35,7 @@ The cached system prompt is assembled as three ordered tiers (see `agent/system_
 The final system prompt is then joined as: `stable` → `context` → `volatile`.
 
 This ordering matters for precedence discussions:
-- skills are part of the **stable** tier
+- the skills index is part of the **volatile** tier (only the standing skills guidance text lives in the **stable** tier)
 - memory/profile snapshots are part of the **volatile** tier
 - both are still in the cached system prompt (they are not injected as ad-hoc mid-turn overlays)
 

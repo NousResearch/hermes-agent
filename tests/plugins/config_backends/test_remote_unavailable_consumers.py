@@ -108,8 +108,9 @@ def test_tui_raw_config_read_is_a_failed_read_that_refuses_to_save(monkeypatch, 
     from hermes_cli.config_read_errors import FailedConfigRead, _refuse_failed_read
     from tui_gateway import server
     server._drop_cfg_cache()
-    monkeypatch.setattr(server, "config_version", _outage)
-    monkeypatch.setattr(server, "config_exists", lambda _p: True)
+    # _load_cfg_raw looks both up on hermes_cli.config_backend, as main's seam test expects.
+    monkeypatch.setattr("hermes_cli.config_backend.config_version", _outage)
+    monkeypatch.setattr("hermes_cli.config_backend.config_exists", lambda _p: True)
     data = server._load_cfg_raw()
     assert isinstance(data, FailedConfigRead) and data == {}
     assert isinstance(data.read_error, ConfigBackendUnavailable)

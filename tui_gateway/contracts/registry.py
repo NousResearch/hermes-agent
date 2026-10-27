@@ -12,7 +12,7 @@ import logging
 import os
 from dataclasses import dataclass
 
-from pydantic import ValidationError
+from pydantic import RootModel, ValidationError
 
 from .base import Params, Payload, Result
 
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class MethodContract:
     name: str
-    params: type[Params]
+    params: type[Params | RootModel]
     result: type[Result]
     doc: str = ""
 
@@ -66,7 +66,7 @@ def method(name: str, *, params: type[Params], result: type[Result], doc: str = 
     return entry
 
 
-def canonical_method(name: str, *, params: type[Params], result: type[Result], doc: str = "") -> MethodContract:
+def canonical_method(name: str, *, params: type[Params | RootModel], result: type[Result], doc: str = "") -> MethodContract:
     entry = MethodContract(name, params, result, doc)
     _declare(CANONICAL_METHODS, entry)
     return entry

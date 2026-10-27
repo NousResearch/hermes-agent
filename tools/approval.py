@@ -131,12 +131,17 @@ def register_gateway_notify(session_key: str, cb) -> None:
 
 
 def unregister_gateway_notify(session_key: str) -> None:
-    """Unregister the callback and wake ALL blocked threads for this session so
-    they don't hang forever (agent run finished or interrupted)."""
+    """Withdraw foreground waits when the turn ends. Dispatch-owned background
+    waits survive until their worker ends or the session is cleared."""
     with _lock:
         _gateway_notify_cbs.pop(session_key, None)
-        for entry in _gateway_queues.pop(session_key, []):
-            entry.event.set()
+        queue = _gateway_queues.get(session_key, [])
+        for entry in list(queue):
+            if entry.owner is None:
+                queue.remove(entry)
+                entry.event.set()
+        if not queue:
+            _gateway_queues.pop(session_key, None)
 
 
 def resolve_gateway_approval(session_key: str, choice: str,
@@ -155,14 +160,18 @@ def resolve_gateway_approval(session_key: str, choice: str,
             return 0
         if request_id:
             targets = [entry for entry in queue if entry.data.get("request_id") == request_id]
-            if not targets:
-                return 0
-            queue[:] = [entry for entry in queue if entry not in targets]
         elif resolve_all:
             targets = list(queue)
-            queue.clear()
         else:
-            targets = [queue.pop(0)]
+            targets = queue[:1]
+        # A dispatch may be revoked or reset after sending. Never let a native
+        # route command bypass its canonical owner, even while publication waits.
+        targets = [entry for entry in targets
+                   if (not entry.requires_exact_request or bool(request_id))
+                   and (entry.owner is None or
+                        (entry.owner.permits(entry.data["request_id"]) and
+                         (entry.owner.canonical_owner is None or bool(request_id))))]
+        queue[:] = [entry for entry in queue if entry not in targets]
         if not queue:
             _gateway_queues.pop(session_key, None)
         # Popping the entry and committing its outcome are ONE critical section: the waiter's
@@ -295,6 +304,8 @@ def clear_session(session_key: str) -> None:
         _session_yolo.discard(session_key)
         _launch_yolo_applied.discard(session_key)
         _pending.pop(session_key, None)
+        from tools.approval_notify_lease import revoke_session_locked
+        revoke_session_locked(session_key)
         for entry in _gateway_queues.pop(session_key, []):
             # Cancel blocked waits now so the old run unwinds instead of idling until timeout;
             # the prompt was withdrawn, nobody denied it.
@@ -560,6 +571,10 @@ def _user_approved(session_key: str, description: str) -> dict:
 
 
 def _gateway_notify_cb(session_key: str):
+    from tools.approval_notify_lease import current
+    lease = current(session_key)
+    if lease is not None:
+        return lease.notify
     with _lock:
         return _gateway_notify_cbs.get(session_key)
 

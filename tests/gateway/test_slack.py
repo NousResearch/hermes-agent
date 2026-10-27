@@ -2847,6 +2847,15 @@ class TestThreadReplyHandling:
         adapter.handle_message.assert_not_called()
         assert adapter._workspace_message_marker("T_TEAM", "555.556") not in adapter._reacting_message_ids
 
+    def test_thread_reply_reactions_yaml_bridge(self, monkeypatch):
+        """``slack.thread_reply_reactions`` in config.yaml reaches ``extra`` and the env bridge."""
+        monkeypatch.delenv("SLACK_THREAD_REPLY_REACTIONS", raising=False)
+        assert not (_slack_mod._apply_yaml_config({}, {}) or {}).get("thread_reply_reactions")
+        seeded = _slack_mod._apply_yaml_config({}, {"thread_reply_reactions": True})
+        assert seeded is not None and seeded["thread_reply_reactions"] is True
+        assert os.environ["SLACK_THREAD_REPLY_REACTIONS"] == "true"
+        assert SlackAdapter(PlatformConfig(extra={}))._slack_thread_reply_reactions() is True
+
     @pytest.mark.asyncio
     async def test_thread_reply_without_mention_with_session_processed(
         self, adapter_with_session_store, mock_session_store

@@ -53,6 +53,9 @@ from hermes_cli.config_read_errors import (
     _CONFIG_PARSE_FAILURES, _FIX_PERMS, _FIX_YAML, FailedConfigRead, _backups_dir_display,
     _refuse_failed_read, _refuse_overwrite, _warn_config_parse_failure, _yaml_error_details,
     _yaml_error_location)
+from hermes_cli.config_cache import (
+    load_config_cache_key as _load_config_cache_key,
+    load_config_cache_sig as _load_config_cache_sig)
 
 logger = logging.getLogger(__name__)
 
@@ -178,9 +181,10 @@ _LAST_EXPANDED_CONFIG_BY_PATH: dict[str, Any] = {}
 # _normalize_* + _expand_env_vars (~13 ms/call). save_config() + migrate_config() write via
 # the config writer seam, which produces a fresh inode, so stat() sees a new signature and the next load
 # repopulates automatically — no explicit invalidation hook. See #58514.
-_LOAD_CONFIG_CACHE: dict[str, tuple[int, ...]] = {}
+_LOAD_CONFIG_CACHE: dict[tuple[str, bool, Optional[str]], tuple[int, ...]] = {}
 # path -> (mtime_ns, size, ino, ctime_ns, raw yaml dict) for read_raw_config() (no defaults merged in).
 _RAW_CONFIG_CACHE: dict[str, tuple[int, ...]] = {}
+
 
 # Env var names written to .env that aren't in OPTIONAL_ENV_VARS (managed by setup/provider
 # flows directly). Also the set reload_env() may remove from os.environ.
@@ -2139,25 +2143,6 @@ def apply_terminal_config_to_env(
     return target
 
 
-def _load_config_cache_sig(config_path: Path) -> tuple[Optional[tuple[int, int, int, int]], Optional[tuple[int, ...]]]:
-    """Return ``(user_sig, cache_sig)`` for ``_LOAD_CONFIG_CACHE``.
-    The managed config file's signature is folded in ((0, 0, 0, 0) = none) so editing it invalidates
-    the merged result. ``cache_sig`` is None only when neither file exists (nothing to cache on)."""
-    try:
-        user_sig: Optional[tuple[Any, ...]] = config_version(config_path)
-    except FileNotFoundError:
-        user_sig = None
-    managed_dir = managed_scope.get_managed_dir()
-    try:
-        mst = (managed_dir / "config.yaml").stat() if managed_dir else None  # config-reader: ok — managed overlay, not a user layer
-        managed_sig = file_signature(mst) if mst else (0, 0, 0, 0)
-    except OSError:
-        managed_sig = (0, 0, 0, 0)
-    if user_sig is None and managed_sig == (0, 0, 0, 0):
-        return None, None
-    return user_sig, (*(user_sig or (0, 0, 0, 0)), *managed_sig)
-
-
 def _last_known_good_fallback(config_path: Path, path_key: str, cache_sig, exc: Exception) -> Optional[dict[str, Any]]:
     """Warn about a parse failure and return the last-known-good config, or None (-> defaults).
     A parse failure must not silently replace the effective config with defaults — that drops
@@ -2195,7 +2180,7 @@ def _last_known_good_fallback(config_path: Path, path_key: str, cache_sig, exc: 
         # Cache under the failed file's signature (empty env snapshot: always valid) so repeated
         # loads don't re-parse the fallback; fixing the file changes the signature and reloads
         # normally, and a read error is re-probed on every hit (_load_config_cache_hit).
-        _LOAD_CONFIG_CACHE[path_key] = (*cache_sig, lkg_copy, {})
+        _LOAD_CONFIG_CACHE[_load_config_cache_key(path_key)] = (*cache_sig, lkg_copy, {})
     return lkg_copy
 
 
@@ -2217,13 +2202,13 @@ def _merge_managed_overlay(expanded: dict[str, Any]) -> tuple[dict[str, Any], An
     return _deep_merge(expanded, _expand_env_vars(managed_normalized)), managed_config
 
 
-def _load_config_cache_hit(path_key: str, cache_sig: Any) -> Optional[dict[str, Any]]:
-    """Lookup: the cached expanded config for ``path_key`` if its signature equals
+def _load_config_cache_hit(cache_key: tuple[str, bool, Optional[str]], cache_sig: Any) -> Optional[dict[str, Any]]:
+    """Lookup: the cached expanded config for ``cache_key`` if its signature equals
     ``cache_sig`` AND every ``${VAR}`` it was expanded against still has the same value, else
     ``None``. Signatures matching is not enough: a load before load_hermes_dotenv() would otherwise
     pin unexpanded literals (e.g. auxiliary.<task>.api_key) for the process lifetime (#58514).
     Shared by the lock-free fast path and the locked re-check of ``_load_config_impl``."""
-    cached = _LOAD_CONFIG_CACHE.get(path_key)
+    cached = _LOAD_CONFIG_CACHE.get(cache_key)
     if cached is None or cache_sig is None:
         return None
     n = len(cache_sig)  # the backend's version tuple + the managed file's signature
@@ -2234,7 +2219,7 @@ def _load_config_cache_hit(path_key: str, cache_sig: Any) -> Optional[dict[str, 
         # A read error (EMFILE/EIO/sharing violation) can clear without touching the file's
         # signature: serve the fallback only while the file still cannot be read.
         try:
-            probe_config_readable(path_key)
+            probe_config_readable(cache_key[0])
         except OSError:
             return hit
         return None
@@ -2256,9 +2241,10 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
     try:
         config_path = get_config_path()
         path_key = str(config_path)
-        if path_key in _LOAD_CONFIG_CACHE:
+        cache_key = _load_config_cache_key(path_key)
+        if cache_key in _LOAD_CONFIG_CACHE:
             _, fast_sig = _load_config_cache_sig(config_path)
-            hit = _load_config_cache_hit(path_key, fast_sig)
+            hit = _load_config_cache_hit(cache_key, fast_sig)
             if hit is not None:
                 return copy.deepcopy(hit) if want_deepcopy else hit
     except Exception:
@@ -2270,10 +2256,11 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
         ensure_hermes_home()
         config_path = get_config_path()
         path_key = str(config_path)
+        cache_key = _load_config_cache_key(path_key)
 
         user_sig, cache_sig = _load_config_cache_sig(config_path)
 
-        hit = _load_config_cache_hit(path_key, cache_sig)
+        hit = _load_config_cache_hit(cache_key, cache_sig)
         if hit is not None:
             return copy.deepcopy(hit) if want_deepcopy else hit
 
@@ -2308,7 +2295,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
                 fallback = FailedConfigRead(
                     _merge_managed_overlay(_expand_env_vars(_canonicalize_config(config)))[0], error=e)
                 if cache_sig is not None:
-                    _LOAD_CONFIG_CACHE[path_key] = (*cache_sig, fallback, {})
+                    _LOAD_CONFIG_CACHE[cache_key] = (*cache_sig, fallback, {})
                 return copy.deepcopy(fallback) if want_deepcopy else fallback
 
         normalized = _canonicalize_config(config)
@@ -2322,12 +2309,12 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
             env_snapshot = _env_ref_snapshot(normalized)
             if managed_config:
                 _env_ref_snapshot(managed_config, env_snapshot)
-            _LOAD_CONFIG_CACHE[path_key] = (*cache_sig, cached_copy, env_snapshot)
+            _LOAD_CONFIG_CACHE[cache_key] = (*cache_sig, cached_copy, env_snapshot)
             # Readonly path returns the same object later calls will see (identity invariant).
             if not want_deepcopy:
                 return cached_copy
         else:
-            _LOAD_CONFIG_CACHE.pop(path_key, None)
+            _LOAD_CONFIG_CACHE.pop(cache_key, None)
         # First-load result is a fresh dict (not aliased to the cache); safe to return directly.
         return expanded
 

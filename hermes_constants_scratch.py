@@ -21,6 +21,8 @@ import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+import hermes_constants_scratch_stuck as stuck
+
 logger = logging.getLogger(__name__)
 
 # How long a TERMed process gets before KILL; browsers exit well within this.
@@ -106,29 +108,39 @@ def subtree_touch_state(path: Path, cutoff: float) -> str:
     """Tri-state form of :func:`subtree_touched_since`: ``touched`` (recent write seen),
     ``scan-failed`` (unreadable — idle cannot be established, so the entry is kept, but
     a failed scan is not activity and is never reported as such), or ``idle``.
-    Same walk, same stop-at-first-recent shortcut, same symlink rules."""
+    Same walk, same stop-at-first-recent shortcut, same symlink rules. A hardlinked file
+    (``st_nlink > 1``) does not count either: its mtime is the inode's, and
+    ``git clone --local`` hardlinks packs that git freshens from the source repo."""
+    return _scan_subtree(path, cutoff)[0]
+
+
+def _scan_subtree(path: Path, cutoff: float) -> tuple[str, str | None]:
+    """``(state, denied_dir)``: *denied_dir* is the directory below *path* that refused
+    listing with EACCES/EPERM when that is why the scan failed (else None)."""
     try:
         if os.lstat(path).st_mtime >= cutoff:
-            return _TOUCHED
+            return _TOUCHED, None
         if not path.is_dir() or path.is_symlink():
-            return _IDLE
+            return _IDLE, None
     except OSError:
-        return _SCAN_FAILED
+        return _SCAN_FAILED, None
     stack = [str(path)]
     while stack:
+        current = stack.pop()
         try:
-            with os.scandir(stack.pop()) as it:
+            with os.scandir(current) as it:
                 for child in it:
                     try:
-                        if child.stat(follow_symlinks=False).st_mtime >= cutoff:
-                            return _TOUCHED
-                    except OSError:
-                        return _SCAN_FAILED
+                        st = child.stat(follow_symlinks=False)
+                    except OSError as exc:
+                        return _SCAN_FAILED, current if stuck.is_permission_error(exc) else None
+                    if st.st_mtime >= cutoff and not (st.st_nlink > 1 and child.is_file(follow_symlinks=False)):
+                        return _TOUCHED, None
                     if child.is_dir(follow_symlinks=False):
                         stack.append(child.path)
-        except OSError:
-            return _SCAN_FAILED
-    return _IDLE
+        except OSError as exc:
+            return _SCAN_FAILED, current if stuck.is_permission_error(exc) else None
+    return _IDLE, None
 
 
 def subtree_touched_since(path: Path, cutoff: float) -> bool:
@@ -148,10 +160,65 @@ def _under(path: str, root: str) -> bool:
     return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
 
 
-def _own_lineage() -> set[int]:
-    """This process and its ancestors: never reap the shell that is running the prune."""
+# The ancestry of the Hermes command that launched a detached pass (hermes_constants_scratch_detach),
+# as ``(pid, create_time)`` pairs the launcher computed before it spawned the pass: the pass is
+# reparented once that command exits, so its own ancestry no longer reaches the user's shell.
+# ``None``: the launcher could not compute it, so the pass signals nothing and keeps every entry
+# a live process works in.
+_launcher_lineage: frozenset[tuple[int, float]] | None = frozenset()
+_HAS_PROC = os.path.isdir("/proc/self")
+
+
+def _birth_stamp(proc) -> float:
+    """A start stamp for *proc* that a clock step cannot move. Linux: ``starttime`` from
+    ``/proc/<pid>/stat`` (clock ticks since boot; psutil's ``create_time()`` adds a wall-clock
+    boot time, so an NTP/VM/resume step shifts it by whole seconds). Elsewhere:
+    :func:`hermes_cli.process_identity.process_birth` (the unadjusted kernel start on macOS).
+    On a ``/proc`` host a failed read raises: falling back to a wall-clock value would compare
+    an epoch against recorded ticks and disown a live process."""
+    if _HAS_PROC:
+        # Bytes, not text: comm is cut at 15 bytes and can end mid-UTF-8 sequence. After the
+        # last ")" (comm may hold spaces or ")") fields start at #3, so #22 is index 19.
+        stat = Path(f"/proc/{proc.pid}/stat").read_bytes()
+        return float(int(stat.rsplit(b")", 1)[1].split()[19]))
+    from hermes_cli.process_identity import process_birth
+
+    return process_birth(proc)
+
+
+def _same_birth(proc, started: float) -> bool:
+    """Exact on Linux (integer ticks); a 2 s tolerance where the stamp is a float epoch."""
+    now = _birth_stamp(proc)
+    return now == started if _HAS_PROC else abs(now - started) < 2.0
+
+
+def lineage_with_start_times() -> list[tuple[int, float]] | None:
+    """This process and its ancestors with their create times, the set :func:`_own_lineage`
+    computes in-process, in a form that stays checkable after they exit. ``None`` when it
+    cannot be computed completely (no psutil, a process that refuses inspection)."""
+    try:
+        import psutil
+    except ImportError:
+        return None
+    chain: dict[int, float] = {}
+    try:
+        proc = psutil.Process()
+        while proc is not None and proc.pid not in chain:
+            chain[proc.pid] = _birth_stamp(proc)
+            proc = proc.parent()
+    except (psutil.Error, OSError, IndexError, ValueError):
+        return None
+    return list(chain.items())
+
+
+def _own_lineage() -> set[int] | None:
+    """This process and its ancestors: never reap the shell that is running the prune. A
+    detached pass adds its launcher's ancestors that still run under the same create time (a
+    reused pid is not spared), and returns ``None`` (spare every process) without them."""
     import psutil
 
+    if _launcher_lineage is None:
+        return None
     pids: set[int] = set()
     try:
         proc = psutil.Process()
@@ -160,6 +227,14 @@ def _own_lineage() -> set[int]:
             proc = proc.parent()
     except (psutil.Error, OSError):
         pass
+    for pid, started in _launcher_lineage:
+        try:
+            if _same_birth(psutil.Process(pid), started):
+                pids.add(pid)
+        except psutil.NoSuchProcess:
+            continue
+        except (psutil.Error, OSError, IndexError, ValueError):
+            pids.add(pid)  # unreadable is not proof of a reused pid: spare it
     return pids
 
 
@@ -170,7 +245,7 @@ def _registered_live_pids(home: Path) -> set[int]:
     matches is a reused pid, not ownership."""
     import psutil
 
-    from hermes_cli.process_identity import spawner_is_dead
+    from hermes_cli.process_identity import entry_still_running, spawner_is_dead
     from hermes_constants import get_default_hermes_root
 
     root = get_default_hermes_root(home=home)
@@ -192,10 +267,10 @@ def _registered_live_pids(home: Path) -> set[int]:
             if entry.get("purpose") == "mcp-helper" and spawner_is_dead(entry) is True:
                 continue
             try:
-                if stamp is None:
+                if stamp_key == "create_time":
+                    alive = entry_still_running(entry)  # boot ticks survive a clock step
+                elif stamp is None:
                     alive = psutil.pid_exists(pid)
-                elif stamp_key == "create_time":
-                    alive = abs(psutil.Process(pid).create_time() - float(stamp)) < 2.0
                 else:
                     from gateway.status import get_process_start_time
 
@@ -255,7 +330,7 @@ def reap_processes_rooted_in(scratch_root: Path, doomed: list[Path], audit: logg
         if not _under(cwd_path, root):
             continue
         if deleted or not os.path.exists(cwd_path) or any(_under(cwd_path, t) for t in targets):
-            (lineage if proc.pid in skip else victims).append((proc, cwd_path))
+            (lineage if skip is None or proc.pid in skip else victims).append((proc, cwd_path))
     # The owning home comes from the scratch path as configured, not its resolved target:
     # a cache/scratch symlinked onto another disk still belongs to <home>.
     registered = _registered_live_pids(Path(scratch_root).absolute().parent.parent) if victims else set()
@@ -359,17 +434,31 @@ def _prune_idle_entries(
     root: Path, max_idle_hours: float, skip_names: frozenset[str], audit: logging.Logger,
 ) -> int:
     cutoff = time.time() - max_idle_hours * 3600
+    # Entries already known to hold files this user cannot read or delete are skipped before
+    # any walk, until that is fixed (hermes_constants_scratch_stuck).
+    skip_names = skip_names | stuck.load_skips(root) | {stuck.STUCK_STATE_NAME, stuck.STUCK_LOCK_NAME}
     try:
         entries = [e for e in root.iterdir() if e.name not in skip_names]
     except OSError:
         return 0
-    doomed = [e for e in entries if not subtree_touched_since(e, cutoff)]
+    doomed = []
+    for e in entries:
+        state, denied_dir = _scan_subtree(e, cutoff)
+        if state == _IDLE:
+            doomed.append(e)
+        elif denied_dir is not None and stuck.tracking_supported():
+            # A dir this user may not list (root-owned 0700) fails every idle scan: kept
+            # (fail-closed) as before, but reported once and no longer re-scanned hourly.
+            stuck.record(root, e, [denied_dir], audit)
     # Runs even with nothing to delete: orphans whose cwd was removed by an earlier pass
     # (or by hand) are found by the deleted-cwd rule, not by membership in ``doomed``.
     try:
         reap_processes_rooted_in(root, doomed, audit)
-    except Exception as exc:  # psutil missing or restricted host: the deletion still proceeds
-        logger.debug("scratch prune: process reap skipped: %s", exc, exc_info=True)
+    # health: allow BLE001 -- fail-closed boundary: any failure leaves who works inside unknown; audited below
+    except Exception as exc:  # psutil missing or restricted host
+        audit.info("scratch prune: process check failed (%s: %r), nothing deleted this pass",
+                   type(exc).__name__, str(exc))
+        return 0
     if not doomed:
         return 0
     repos: set[str] = set()
@@ -418,9 +507,10 @@ def _prune_idle_entries(
                     os.fspath(entry),
                 )
             continue
+        denied: list[str] = []
         try:
             if entry.is_dir() and not entry.is_symlink():
-                shutil.rmtree(entry, ignore_errors=True)
+                denied = stuck.rmtree_collecting_permission_errors(entry)
             else:
                 entry.unlink()
         except OSError as exc:
@@ -433,7 +523,10 @@ def _prune_idle_entries(
         # above refuses to invent (P2 on #134173).
         try:
             os.lstat(entry)
-            audit.info("scratch prune: could not fully remove %r", os.fspath(entry))
+            if denied and stuck.tracking_supported():
+                stuck.record(root, entry, denied, audit)
+            else:
+                audit.info("scratch prune: could not fully remove %r", os.fspath(entry))
             continue
         except FileNotFoundError:
             pass

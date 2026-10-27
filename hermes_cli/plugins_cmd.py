@@ -490,7 +490,7 @@ def _plugin_selection_version() -> str:
 
 def _admit_and_save_plugin_sets(
     enabled: set, disabled: set, *, extra_dirs=(), console=None, action: str = "enable", expected_config=None,
-    plugin: Optional[str] = None,
+    plugin: Optional[str] = None, settled=(),
 ) -> None:
     """ONE admission authority for proposed enabled/disabled sets (C13):
     the candidate union is resolved against the ACTIVE environment and
@@ -506,7 +506,7 @@ def _admit_and_save_plugin_sets(
     try:
         admit_plugin_set_change(
             enabled, disabled, active_plugins_dir=_plugins_dir(), extra_dirs=extra_dirs, expected_config=expected_config,
-            plugin=plugin,
+            plugin=plugin, settled=settled,
         )
     except DependencyConflict as exc:
         # `hermes pm install` cannot fix a conflict, so the retry hint below would mislead here.
@@ -570,10 +570,20 @@ def _activate_key(key: str, *, enable: bool, console=None) -> bool:
     enabled, disabled = _get_enabled_set(), _get_disabled_set()
     aliases = _plugin_aliases(key)
     target, other = (enabled, disabled) if enable else (disabled, enabled)
-    if key in target and not (aliases & other):
+    # A plugin an update disabled is retried by later updates; disabling it yourself stops that.
+    if key in target and not (aliases & other) and not (not enable and _disabled_by_update(key, aliases)):
         return False
     _set_plugin_enabled(key, enable=enable, aliases=aliases, console=console)
     return True
+
+
+def _disabled_by_update(key: str, aliases) -> bool:
+    """Whether an update disabled this plugin and will retry it (``pm.plugin_eviction`` records it)."""
+    from pm.plugins_state import RECORD
+    from pm.plugins_state import read_home_selection
+
+    record = ((read_home_selection(get_hermes_home()) or {}).get("plugins") or {}).get(RECORD)
+    return isinstance(record, dict) and bool({key, *aliases} & set(record))
 
 
 def _forget_plugin_config(aliases: set) -> dict[str, Any]:
@@ -633,7 +643,8 @@ def _set_plugin_enabled(name: str, *, enable: bool, aliases=(), console=None) ->
         _apply_activation(enabled, disabled, name, aliases, enable=enable)
         _admit_and_save_plugin_sets(enabled, disabled, console=console,
                                    action=f"{'Enable' if enable else 'Disable'} '{name}'",
-                                   expected_config=expected_config, plugin=name if enable else None)
+                                   expected_config=expected_config, plugin=name if enable else None,
+                                   settled=(name, *aliases))
 
 
 def _apply_activation(enabled: set, disabled: set, key: str, aliases, *, enable: bool) -> None:
@@ -725,9 +736,9 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
 
     changed = _activate_key(key, enable=True, console=console)
     if changed:
-        from hermes_cli.plugins_activation import activate_plugin_now, activation_hint
+        from hermes_cli.plugins_activation import report_activation
         console.print(f"[green]✓[/green] Plugin [bold]{key}[/bold] enabled.")  # the hint says when it applies
-        console.print(f"[dim]{activation_hint(activate_plugin_now(key, in_process=False))}[/dim]")
+        report_activation(console, key)
     else:
         console.print(f"[dim]Plugin '{key}' is already enabled.[/dim]")
     if source != "bundled":
@@ -1063,6 +1074,18 @@ def _catalog():
     return plugins_cmd_catalog
 
 
+def _action_update(args):
+    if args.name:
+        if getattr(args, "yes", False):
+            _fail(_console(), "[red]Error:[/red] --yes only applies to `hermes plugins update` with no name.")
+        cmd_update(args.name, force=getattr(args, "force", False))
+        return
+    if getattr(args, "force", False):
+        _fail(_console(), "[red]Error:[/red] --force applies to one named plugin: `hermes plugins update <name> --force`.")
+    from hermes_cli.plugins_cmd_update_all import cmd_update_all
+    cmd_update_all(yes=getattr(args, "yes", False))
+
+
 def _action_pack(args):
     from hermes_cli.plugin_packs import pack_command
     pack_command(args)
@@ -1083,7 +1106,7 @@ _PLUGIN_ACTIONS = {
     "browse": lambda args: _catalog().cmd_search(""),
     "validate": lambda args: _catalog().cmd_validate(
         args.path, as_json=getattr(args, "json", False), install_deps=getattr(args, "install_deps", False)),
-    "update": lambda args: cmd_update(args.name),
+    "update": _action_update,
     "adopt": lambda args: cmd_adopt(args.name),
     "trust-update-url": lambda args: cmd_trust_update_url(args.name),
     "check-updates": lambda args: cmd_check_updates(args),

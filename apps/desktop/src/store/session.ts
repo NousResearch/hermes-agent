@@ -5,12 +5,14 @@ import { setApiRequestLocalMode } from '@/api/client'
 import { lastVisibleMessageIsUser } from '@/app/chat/thread-loading'
 import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
+import { browserPageBasePath, readBrowserDefaultProjectDir } from '@/lib/browser-settings'
 import type { ChatMessage } from '@/lib/chat-messages'
 import {
   activeConnectionScopeSuffix,
   connectionScopeSuffix,
   rescopeConnectionScopedStores
 } from '@/lib/connection-scoped'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { isMessagingSource } from '@/lib/session-source'
 import type { TileSessionFocusStamp } from '@/lib/session-timer-since'
 import { persistBoolean, persistString, readJson, storedBoolean, storedString, writeJson } from '@/lib/storage'
@@ -1583,8 +1585,14 @@ export const markSessionRead = (storedSessionId: string | null | undefined) => {
     return
   }
 
-  const sessions = $sessions.get()
-  const familyIds = new Set<string>(lineageAliases(storedSessionId, sessions))
+  // The family is the opened session's own profile's rows: another profile's same-id session is a
+  // different conversation. Its owner is the first matching row, recents first as selection reads them.
+  // (Local normalize: importing @/store/profile here would be circular.)
+  const profileOf = (row: SessionInfo) => (row.profile ?? '').trim() || 'default'
+  const rows = [...$sessions.get(), ...$messagingSessions.get(), ...$cronSessions.get()]
+  const opened = rows.find(row => sessionMatchesStoredId(row, storedSessionId))
+  const own = opened ? rows.filter(row => profileOf(row) === profileOf(opened)) : rows
+  const familyIds = new Set<string>(lineageAliases(storedSessionId, own))
 
   const lastReadAt = Date.now()
   const nextReadMap = { ...$lastReadAtBySessionId.get() }
@@ -1845,7 +1853,7 @@ export const $currentCwdExplicit = atom(false)
 
 export const setCurrentCwdExplicit = (next: Updater<boolean>) => updateAtom($currentCwdExplicit, next)
 
-export const workspaceCwdForNewSession = (): string => {
+export const workspaceCwdForNewSession = (profile?: string): string => {
   // A bare new chat starts DETACHED — no inherited cwd, so the composer's coding
   // rail (which keys off $currentCwd) shows no branch and the first message runs
   // in the gateway's default rather than silently in the last repo you touched.
@@ -1859,6 +1867,17 @@ export const workspaceCwdForNewSession = (): string => {
   // the wrong workspace was the #57911 symptom. Resume/restore still reads
   // the remembered cwd via ensureDefaultWorkspaceCwd (where it remains
   // remote-keyed and intentionally sticky).
+  //
+  // A browser host stores that default folder per profile. The process cache
+  // holds the folder of the profile the window last synced (boot, a connection
+  // apply, Settings), and a rail switch does not refill it, so a browser new
+  // chat reads its own profile's key and stays detached when it never chose one.
+  const owner = profile?.trim()
+
+  if (owner && isBrowserHostedDesktop()) {
+    return readBrowserDefaultProjectDir(browserPageBasePath(), owner)
+  }
+
   return getConfiguredDefaultProjectDir()
 }
 

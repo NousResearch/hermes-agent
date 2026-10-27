@@ -47,9 +47,29 @@ def _creation_time(pid: int) -> str:
     return f'{int(out) / 1000:.3f}'
 
 
-def _alive(pid: int) -> bool:
-    return str(pid) in subprocess.run(['tasklist', '/FI', f'PID eq {pid}', '/NH'],
-                                      capture_output=True, text=True, check=False).stdout
+class _ProcessWatch:
+    """A SYNCHRONIZE handle on a process, opened while it lives. The handle pins the pid (Windows
+    cannot hand it to a new process while it is open) and is signalled exactly when the process
+    has exited, so a death that lands asynchronously (a job's kill-on-close) is awaited, not
+    guessed at with a sleep and a pid probe that a recycled pid or a lingering entry fools."""
+
+    def __init__(self, pid: int) -> None:
+        import ctypes
+        from ctypes import wintypes
+        self._k = ctypes.WinDLL('kernel32', use_last_error=True)
+        self._k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        self._k.OpenProcess.restype = wintypes.HANDLE
+        self._k.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        self._k.WaitForSingleObject.restype = wintypes.DWORD
+        self._k.CloseHandle.argtypes = [wintypes.HANDLE]
+        self._handle = self._k.OpenProcess(0x00100000 | 0x1000, False, pid)   # SYNCHRONIZE | QUERY_LIMITED
+        assert self._handle, f'could not open pid {pid} (winerror={ctypes.get_last_error()})'
+
+    def exited_within(self, seconds: float) -> bool:
+        return self._k.WaitForSingleObject(self._handle, int(seconds * 1000)) == 0   # WAIT_OBJECT_0
+
+    def close(self) -> None:
+        self._k.CloseHandle(self._handle)
 
 
 def _dead_pid() -> int:

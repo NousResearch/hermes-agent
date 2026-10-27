@@ -1,0 +1,49 @@
+# Community catalog entry, bot-activity
+#
+# Owner-submitted: the repository is maintained by risyadul, and this entry is opened by its owner.
+#
+# Exact-SHA pin (40-hex). No self-updating code: the desktop half ships as a static
+# `desktop/plugin.js`, and nothing is fetched outside `hermes plugins install`.
+#
+# Disclosure. No network calls, no telemetry, no credential reads. Observer hooks record Bot
+# turns, tool calls (arguments/result/duration), approvals and hosted-room streams, redacted
+# with agent.redact and capped per field, into one local SQLite file shared by all profiles
+# (<root>/plugin-data/bot-activity/activity.db; 3-day / 20k-row retention). Read-only reads
+# outside its own data: each Bot profile's state.db (session title, parent id, first user
+# message) and profile.yaml ui_meta (Group Chat names, Bot titles) to attribute activity to
+# Group Chats, and each profile's config.yaml to see whether the plugin is enabled. One
+# background writer thread per process. Shell commands run only on an explicit click of
+# Track now / Update: `hermes -p <bot> plugins install <same source> --ref <same sha> --enable`
+# (or, for a manual install, a file copy plus `hermes -p <bot> plugins enable bot-activity`);
+# profiles where the user disabled the plugin are never re-enabled.
+name: bot-activity
+title: Bot Activity
+repo: https://github.com/risyadul/hermes-bot-activity
+sha: da1c9d10eb228cd6f0a93e255ee92c8c3a6717f2
+version: "0.1.0"
+description: "Live per-Bot activity timeline for Hermes Desktop: turns, tool calls (arguments, result, duration), approvals and Group Chat streams, grouped by Bot or by Group Chat, with one-click tracking for new Bots. Disclosure — local only, no network or telemetry; records every Bot profile's turns, assistant replies, tool arguments and results, approval commands and Group Chat streams (redacted with agent.redact, capped per field, 3-day / 20k-row retention) into one SQLite file shared by all profiles under plugin-data/bot-activity; reads each Bot profile's state.db, profile.yaml and config.yaml read-only; Track now / Update runs `hermes -p <bot> plugins install <same source> --ref <same sha> --enable --yes-deps` (or copies the plugin and runs `plugins enable`) in the Bot profiles you track, never re-enabling one you disabled."
+maintainer: risyadul
+tier: community
+category: desktop
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/risyadul/hermes-bot-activity
+screenshots:
+  - https://raw.githubusercontent.com/risyadul/hermes-bot-activity/da1c9d10eb228cd6f0a93e255ee92c8c3a6717f2/docs/screenshots/by-bot.png
+  - https://raw.githubusercontent.com/risyadul/hermes-bot-activity/da1c9d10eb228cd6f0a93e255ee92c8c3a6717f2/docs/screenshots/by-group-chat.png
+readme: true
+platforms: []
+known_issues:
+  - Group Chat attribution relies on Desktop's member-session title and room prompt header, which are not public APIs.
+  - A Bot's first turn in a new Group Chat thread, or a re-titled session, can show its room without a thread label.
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - post_llm_call
+    - pre_tool_call
+    - post_tool_call
+    - pre_approval_request
+    - post_approval_response
+    - on_room_member_activity
+  provides_middleware: []
+  requires_env: []

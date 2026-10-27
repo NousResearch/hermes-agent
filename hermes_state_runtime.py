@@ -5,12 +5,19 @@ SessionDB transaction owner, including its inode guard and SQLite retry policy.
 """
 import json
 import uuid
+from typing import NamedTuple, Optional
 
 from agent.conversation_compression_archive import ABSORBED_ROW_IDS
 from agent.message_metadata import (
-    CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, PERSISTENCE_ONLY_MESSAGE_FIELDS, TOOL_CALL_UID, TOOL_CALL_UIDS,
+    CANONICAL_ROW, DATA_USE, DB_ROW_SNAPSHOT, MESSAGE_UID, PERSISTENCE_ONLY_MESSAGE_FIELDS, TOOL_CALL_UID, TOOL_CALL_UIDS,
 )
 from hermes_state_keys import admission_fingerprint
+
+
+class SessionGoneEvent(NamedTuple):
+    """The ``on_session_delete`` event a committed runtime mutation owes its plugins."""
+    session_ids: tuple
+    reason: str
 
 
 class RuntimeStoreError(ValueError):
@@ -220,12 +227,20 @@ def claim_session_input(db, *, epoch: int, session_id: str, _guard=None, head=_A
         changed = conn.execute("UPDATE session_admissions SET status='started',owner_epoch=?,generation=? WHERE admission_id=? AND status='queued'", (epoch, generation, row['admission_id']))
         if changed.rowcount != 1:
             raise RuntimeStoreError('stale_generation')
-        return _row(_admission(conn, row['admission_id']))
+        claimed = _row(_admission(conn, row['admission_id']))
+        # The transcript high-water mark at the claim (``messages.id`` is AUTOINCREMENT across every
+        # session): a row above it on this conversation was written by this turn, so settlement can
+        # tell this turn's own failed-turn boundary from an earlier turn's (#134889 GW-21).
+        claimed['transcript_mark'] = conn.execute('SELECT COALESCE(MAX(id), 0) FROM messages').fetchone()[0]
+        return claimed
     return db._execute_write(write)
 
 
 def settle_session_input(db, *, epoch: int, admission_id: str, generation: int, outcome: str,
-                         result: dict | None = None, _transfers=None) -> dict:
+                         result: dict | None = None, _transfers=None, _terminal_write=None) -> dict:
+    """``_terminal_write(conn, row)`` is the owner's same-transaction effect (a transcript notice,
+    ``gateway.session_results.finish_result``); like ``resolve_unknown_session_input``'s it must
+    not commit, may run again on SQLite retry, and raising rolls the settlement back."""
     if outcome not in ('completed', 'interrupted', 'rejected', 'failed'):
         raise RuntimeStoreError('invalid_params')
     from hermes_state_terminal import compact_result, encode_result
@@ -238,6 +253,8 @@ def settle_session_input(db, *, epoch: int, admission_id: str, generation: int, 
                 or session['runtime_generation'] != generation):
             raise RuntimeStoreError('stale_generation')
         _retire_admission_workers(conn, row, epoch)
+        if _terminal_write is not None:
+            _terminal_write(conn, row)
         if result is not None:
             from hermes_state_terminal import RESULT_PREFIX
             encoded = _json(encode_result(compact_result(result, user_message=json.loads(row['payload_json']).get('text'))))
@@ -390,10 +407,49 @@ def rehome_queued_inputs(db, *, epoch: int, old_session_id: str, new_session_id:
     return db._execute_write(write)
 
 
+def retarget_local_automation(db, *, epoch: int, session_id: str, principal_id: str,
+                               old_targets, new_target: str) -> list[str]:
+    """Point a LOCAL owner's still-queued ``principal_id`` automation rows (a Bot Chat's queued
+    ``hermes peer dm`` turns, plugin and completion notices) that name a pre-reset transcript in
+    ``old_targets`` at ``new_target``, in one transaction (the compression-exhaustion auto-reset).
+    A LOCAL FIFO's owner is its receipt id and survives the reset; only the descriptor's ``target``
+    goes stale, and the drain refuses a stale one (``admission_conflict``), pausing the FIFO for
+    good. Admission id, request id and seq are kept; the digest is re-keyed to the new payload.
+    Nothing moves behind an ``unknown`` head. Returns the retargeted admission ids in FIFO order."""
+    for value in (session_id, principal_id, new_target, *old_targets):
+        _text(value)
+    old_targets = set(old_targets)
+
+    def write(conn):
+        _epoch(conn, epoch)
+        _session(conn, new_target)
+        if conn.execute("SELECT 1 FROM session_admissions WHERE target_session_id=? AND status='unknown'",
+                        (session_id,)).fetchone():
+            return []
+        moved = []
+        for row in conn.execute("SELECT * FROM session_admissions WHERE target_session_id=? AND status='queued' "
+                                "AND principal_id=? ORDER BY seq", (session_id, principal_id)).fetchall():
+            payload = json.loads(row['payload_json'])
+            descriptor = payload.get('local_automation_v1') if isinstance(payload, dict) else None
+            if not isinstance(descriptor, dict) or descriptor.get('target') not in old_targets:
+                continue
+            descriptor['target'] = new_target
+            digest = admission_fingerprint(canonical_target=session_id, payload={'input': payload, 'intent': row['intent']})
+            conn.execute("UPDATE session_admissions SET payload_json=?,payload_digest=? WHERE admission_id=? AND status='queued'",
+                         (_json(payload), digest, row['admission_id']))
+            moved.append(row['admission_id'])
+        if moved:
+            conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (session_id,))
+        return moved
+    return db._execute_write(write)
+
+
 def recover_session_inputs(db, *, epoch: int) -> int:
     """Never replay started work. Live worker adoption is a separate explicit operation."""
     def write(conn):
         _epoch(conn, epoch)
+        from hermes_state_runtime_workers import retire_stale_children
+        retire_stale_children(conn, epoch)
         conn.execute("UPDATE worker_executions SET status='unknown' WHERE status IN ('registered','running') AND owner_epoch!=?", (epoch,))
         # A steer handed to a lost claim may or may not have reached its agent: never replayed.
         conn.execute("UPDATE session_admissions SET outcome='interrupted' WHERE status='terminal' AND outcome=? "
@@ -449,11 +505,12 @@ def mutate_runtime_session(db, *, epoch: int, principal_id: str, session_id: str
     key, digest = mutation_receipt_key(principal_id, session_id, request_id, operation=operation, payload=payload,
                                        expected_revision=expected_revision, expected_generation=expected_generation)
 
-    def write(conn):
+    def write(conn) -> tuple[dict, Optional[SessionGoneEvent]]:
+        """The receipt result plus the on_session_delete event this commit owes (None on replay)."""
         _epoch(conn, epoch)
         replay = replay_mutation_receipt(conn, key, digest)
         if replay is not None:
-            return replay
+            return replay, None
         session = conn.execute('SELECT * FROM sessions WHERE id=?', (session_id,)).fetchone()
         if session is None and operation != 'import':
             raise RuntimeStoreError('not_found')
@@ -475,8 +532,13 @@ def mutate_runtime_session(db, *, epoch: int, principal_id: str, session_id: str
                 # The branch commit's own idle rule (queued input too), before the owner starts servers.
                 from hermes_state_mutation_guards import require_idle
                 require_idle(db, conn, list({session_id, snapshot['target']}))
-            return {'snapshot': snapshot}
+            return {'snapshot': snapshot}, None
         affected, projection = apply_action(db, conn, session_id, operation, payload, prepared=_prepared)
+        event = None
+        if operation == 'delete':
+            event = SessionGoneEvent(tuple(projection.get('deleted_ids') or (session_id,)), 'delete')
+        elif payload.get('archived') is True and session is not None and not session['archived']:
+            event = SessionGoneEvent(tuple(affected) or (session_id,), 'archive')
         conn.executemany('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?',
                          [(target,) for target in affected])
         updated = conn.execute('SELECT * FROM sessions WHERE id=?', (session_id,)).fetchone()
@@ -485,8 +547,12 @@ def mutate_runtime_session(db, *, epoch: int, principal_id: str, session_id: str
                   'operation': operation, **projection}
         conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
                      (key, _json({'digest': digest, 'result': result})))
-        return result
-    return db._execute_write(write)
+        return result, event
+    result, event = db._execute_write(write)
+    if event is not None:
+        from hermes_state_common import emit_session_deleted
+        emit_session_deleted(db, event.session_ids, reason=event.reason, primary=session_id)
+    return result
 
 
 _IMPORT_KEY = 'gateway.prompt_admissions_import.v1'
@@ -731,7 +797,7 @@ _MESSAGE_FIELDS = frozenset({
     'finish_reason', 'reasoning', 'reasoning_content', 'reasoning_details',
     'codex_reasoning_items', 'codex_message_items', 'platform_message_id', 'message_id',
     'observed', 'effect_disposition', '_compressed_summary', 'timestamp', 'api_content',
-    'display_kind', 'display_metadata', '_row_id', '_canonical_content', DB_ROW_SNAPSHOT, CANONICAL_ROW,
+    'display_kind', 'display_metadata', '_row_id', '_canonical_content', DB_ROW_SNAPSHOT, CANONICAL_ROW, DATA_USE,
     # Main's durable message identity (message_uid / merge witness / tool-call uids) and the alternation
     # repair's row counts ride every persisted dict; the owner's insert and coverage read them.
 }) | PERSISTENCE_ONLY_MESSAGE_FIELDS | {ABSORBED_ROW_IDS}
@@ -800,9 +866,15 @@ def _worker_turn(db, conn, session_id, payload, operation):
 
 def _worker_usage(db, conn, session_id, payload, *, auxiliary=False):
     from hermes_state_usage import _MODEL_USAGE_FIELDS, _TOKEN_COUNTERS
+    source = None
     if not auxiliary:
-        # ``source`` feeds the legacy path's row-existence guard (#111999); an authority-owned
-        # session row was minted with its real surface at admission, so nothing to repair here.
+        # ``source`` is the worker platform (turn_usage._agent_session_source). A Desktop
+        # managed worker passes ``gui``; created_surface maps that to ``desktop``. The row
+        # is usually stamped at admission. A compression child can still be NULL (or an
+        # auxiliary-usage ``unknown``), and this worker never create_session's it, so fill
+        # only an unset column, as the creator upsert does.
+        raw = payload.get('source')
+        source = raw if isinstance(raw, str) else None
         payload = {k: v for k, v in payload.items() if k != 'source'}
     allowed = (_MODEL_USAGE_FIELDS - {'billing_mode', 'actual_cost_usd', 'cost_status', 'cost_source'} | {'task'}) if auxiliary else (_MODEL_USAGE_FIELDS | {'pricing_version', 'absolute', 'task'})
     if set(payload) - allowed:
@@ -824,6 +896,17 @@ def _worker_usage(db, conn, session_id, payload, *, auxiliary=False):
         db._record_model_usage(conn, session_id, **({'api_call_count': 1} | payload))
     else:
         db._update_token_counts_in_transaction(conn, session_id, **payload)
+        # The managed worker's platform is the policy label (gui), not the in-process
+        # agent surface (desktop). Stamp the same created_surface the insert uses.
+        from gateway.session_policy import created_surface
+        from hermes_state_compression import _UNSET_CREATED_SQL, stamp_compression_ancestors
+        surfaced = created_surface(source)
+        if surfaced:
+            conn.execute(
+                "UPDATE sessions SET created_source=? WHERE id=? AND "
+                + _UNSET_CREATED_SQL.format(col="created_source"),
+                (surfaced, session_id))
+            stamp_compression_ancestors(conn, session_id)
     return {'value': None}
 
 

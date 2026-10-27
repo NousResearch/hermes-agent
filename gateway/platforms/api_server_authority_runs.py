@@ -13,8 +13,10 @@ def _authority(adapter):
 
 
 # Malformed input is 400 and a retryable refusal 503; every other reason (ownership, generation,
-# identity) keeps the documented 409, as /v1/runs clients already branch on it.
-_STORE_ERROR_STATUS = {'invalid_params': 400, 'runtime_draining': 503, 'storage_unavailable': 503}
+# identity) keeps the documented 409, as /v1/runs clients already branch on it. ``chain_moved``: a
+# chain's lookup went stale before its bind (``bind_api_steps``); a retry looks it up again.
+_STORE_ERROR_STATUS = {'invalid_params': 400, 'runtime_draining': 503, 'storage_unavailable': 503,
+                       'chain_moved': 503}
 
 
 def store_error_response(_openai_error, exc):

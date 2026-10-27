@@ -19,15 +19,16 @@ import {
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { sessionListFingerprint, sessionMessagesSignature } from '@/lib/session-signatures'
 import { latestSessionTodos, latestSessionTodoSnapshot } from '@/lib/todos'
-import { pendingSessionReplay } from '@/store/gateway'
+import { pendingSessionReplay, sharedPrimaryRoute } from '@/store/gateway'
 import { $sidebarShowArchived } from '@/store/layout'
 import { $changeEventsAvailable, $cronChangeTick, $projectsChangeTick, $sessionsChangeTick } from '@/store/live-sync'
 import { $onBattery, batteryPollInterval } from '@/store/power'
-import { refreshActiveProfile } from '@/store/profile'
+import { normalizeProfileKey, refreshActiveProfile } from '@/store/profile'
 import { refreshProjects, refreshProjectTree } from '@/store/projects'
 import {
   $activeSessionId,
   $busy,
+  $connection,
   $currentCwd,
   $messagingSessions,
   $selectedStoredSessionId,
@@ -37,6 +38,7 @@ import {
   sessionMatchesStoredId,
   setCurrentCwd
 } from '@/store/session'
+import { $focusedStoredSessionId } from '@/store/session-focus'
 import type { SessionOwnerRoute } from '@/store/session-request-router'
 import {
   $sessionStates,
@@ -48,6 +50,7 @@ import {
   setLiveTurnBackend,
   setSessionStalled
 } from '@/store/session-states'
+import { noteLiveSessionSource } from '@/store/session-unread'
 import { loadArchivedSessions } from '@/store/sidebar-archive'
 import {
   clearActiveSessionTodos,
@@ -716,6 +719,7 @@ interface LiveSessionStatusItem {
   id?: string
   last_active?: number
   session_key?: string
+  source?: null | string
   status?: 'idle' | 'starting' | 'waiting' | 'working'
 }
 
@@ -788,6 +792,7 @@ export function rehydrateLiveSessionStatuses(
     }
 
     seen.add(runtimeSessionId)
+    noteLiveSessionSource(storedSessionId, session.source, profileKey)
 
     if (working) {
       workingStoredIds.add(storedSessionId)
@@ -902,6 +907,38 @@ export function rehydrateLiveSessionStatuses(
   // over, whether or not an earlier poll ever saw its runtime (a turn that
   // started just before the drop was never polled).
   confirmReconnectSettlesExcept(workingStoredIds)
+}
+
+/** Params for the live-status poll. With a session open the session RPC
+ *  dispatcher routes it to that session's owner, so it names nothing. With none
+ *  open it rides the active socket, and a profile that shares the primary socket
+ *  (a Webapp tab's live pick, a native local profile, a global remote) is only
+ *  reached by naming it: the socket answers an unnamed request for its own
+ *  profile, and the sidebar would paint that profile's turns instead of the
+ *  selected one's.
+ *
+ *  The published descriptor is not enough on its own: a reconnect republishes
+ *  the primary's own descriptor (sharedPrimary false, local or remote) while the
+ *  picked profile stays selected. So a descriptor that isn't the selected
+ *  profile's own asks main for the selected profile's route, the check
+ *  requestGatewayForProfile routes by. The selected profile's own descriptor
+ *  asks nothing. */
+async function liveStatusParams(activeGatewayProfile: string): Promise<Record<string, unknown>> {
+  const connection = $connection.get()
+
+  if ($focusedStoredSessionId.get() || !connection) {
+    return {}
+  }
+
+  if (connection.sharedPrimary === true) {
+    return { profile: activeGatewayProfile }
+  }
+
+  const ownSocket =
+    Boolean(connection.profile?.trim()) &&
+    normalizeProfileKey(connection.profile) === normalizeProfileKey(activeGatewayProfile)
+
+  return !ownSocket && (await sharedPrimaryRoute(activeGatewayProfile)) ? { profile: activeGatewayProfile } : {}
 }
 
 /** Forget every profile's live-runtime bookkeeping. A gateway wipe already
@@ -1275,7 +1312,10 @@ export function useBackgroundSync({
       const stateAtRequest = $sessionStates.get()
 
       try {
-        const response = await requestGateway<LiveSessionStatusResponse>('session.active_list', {})
+        const response = await requestGateway<LiveSessionStatusResponse>(
+          'session.active_list',
+          await liveStatusParams(activeGatewayProfile)
+        )
 
         if (!cancelled) {
           rehydrateLiveSessionStatuses(response, Date.now(), activeGatewayProfile, stateAtRequest)

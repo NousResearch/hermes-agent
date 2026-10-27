@@ -112,8 +112,10 @@ class ActivityTrackingMixin:
         if last_mono and (now_mono - last_mono) < SESSION_ACTIVITY_HEARTBEAT_MIN_INTERVAL_SECONDS:
             return
         self._session_activity_last_persist_mono = now_mono
+        from agent.runtime_session_store import call_off_event_loop  # Relay callbacks run on a loop (#139029)
         try:
-            touch(
+            call_off_event_loop(
+                touch,
                 session_id,
                 getattr(self, "_last_activity_ts", None),
                 description=getattr(self, "_last_activity_desc", None),
@@ -142,5 +144,6 @@ class ActivityTrackingMixin:
         clear = getattr(session_db, "clear_session_activity_labels", None)
         if not callable(clear):
             return
+        from agent.runtime_session_store import call_off_event_loop
         with suppress(Exception):  # never let durable cleanup I/O break turn teardown
-            clear(session_id)
+            call_off_event_loop(clear, session_id)

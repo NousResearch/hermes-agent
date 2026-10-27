@@ -1465,6 +1465,9 @@ def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, en
     try:
         run_in_custody(desktop_dir.parents[1], build_cmd, f"Building desktop {build_label}", cwd=desktop_dir, env=build_env)
         if staging_dir is not None:
+            from hermes_cli.update_stage import publish_stage
+
+            publish_stage("Packaging the desktop app")
             run_in_custody(desktop_dir.parents[1], [npm, "run", "builder", "--", "--dir", "--publish", "never",
                            f"-c.directories.output={staging_dir}"], "Packaging the desktop app",
                            cwd=desktop_dir, env=build_env)
@@ -1769,6 +1772,7 @@ def cmd_gui(args: argparse.Namespace):
                 raise FileNotFoundError(executable)
         except OSError as exc:
             print(f"✗ Prepared Electron runtime is missing: {exc}")
+            print("  From the project root, run: node scripts/build/electron-runtime.mjs --source .")
             raise SystemExit(1) from exc
         launch_command = [str(executable), "."]
     else:

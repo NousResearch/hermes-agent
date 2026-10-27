@@ -1,10 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { announceMcpReload, reloadMcp, reloadMcpFor } from './mcp-reload'
+import { announceMcpReload, reloadMcp } from './mcp-reload'
 
-const mocks = vi.hoisted(() => ({ gateway: null as unknown, notify: vi.fn() }))
+const mocks = vi.hoisted(() => ({ notify: vi.fn() }))
 
-vi.mock('@/store/gateway', () => ({ $gateway: { get: () => mocks.gateway } }))
 vi.mock('@/store/notifications', () => ({ notify: mocks.notify }))
 
 // The Capabilities save path: reload, then tell the user what did not take effect.
@@ -53,27 +52,5 @@ describe('a saved MCP change reports what the chat got', () => {
 
     await expect(reloadMcp({ request } as never, null)).rejects.toThrow('mcp_servers_unavailable')
     expect(request).toHaveBeenCalledWith('reload.mcp', { confirm: true, session_id: undefined })
-  })
-})
-
-describe('a flow that claims a server is live in the chat', () => {
-  const claim = (result: unknown) => {
-    mocks.gateway = { request: vi.fn().mockResolvedValue(result) }
-
-    return reloadMcpFor('fixt', 's1')
-  }
-
-  beforeEach(() => mocks.notify.mockReset())
-
-  it('resolves once the chat runs the server', async () => {
-    await expect(claim({ session: 'applied', session_servers: ['fixt'], status: 'reloaded' })).resolves.toBeUndefined()
-  })
-
-  it('refuses when the chat does not run that server (no_mcp, an explicit pick, an allowlist)', async () => {
-    await expect(claim({ session: 'unchanged', session_servers: [], status: 'reloaded' })).rejects.toThrow(/fixt/)
-  })
-
-  it('keeps the earlier answer from a gateway that does not report the selection', async () => {
-    await expect(claim({ session: 'applied', status: 'reloaded' })).resolves.toBeUndefined()
   })
 })

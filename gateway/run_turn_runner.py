@@ -635,6 +635,14 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # on platforms that disable input while typing (Slack Assistant).
         with suppress(Exception):
             ctx._status_adapter.pause_typing_for_chat(ctx._status_chat_id)
+        # Pausing only stops refreshes: Telegram/Discord typing expires on its own, but Slack's
+        # assistant status is durable and freezes above the question until cleared (#102704).
+        # Clear BEFORE the post: a clear after it can land behind the answer-time resume (#92201).
+        # _stop_typing_with_metadata forwards thread metadata only to adapters that accept it.
+        clear = getattr(ctx._status_adapter, "_stop_typing_with_metadata", None)
+        if callable(clear):
+            self._schedule(
+                clear(ctx._status_chat_id, ctx._status_thread_metadata), "Clarify status clear failed to schedule")
         # Ordering barrier: flush buffered assistant prose BEFORE the poll, which goes out on a
         # separate agent-thread-blocking path and would otherwise render ABOVE its own explanation.
         # Best-effort + short timeout so the agent thread never hangs if the consumer isn't running.

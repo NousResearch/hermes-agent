@@ -1065,7 +1065,10 @@ def _configure_callback_port(cfg: dict, storage: HermesTokenStorage | None = Non
     pinned_loopback = bool(cfg.get("client_id") and cfg.get("redirect_port"))
     if dashboard_flow is not None and not pinned_loopback:
         cfg["_resolved_port"] = 0
-        cfg["redirect_uri"] = cfg.get("redirect_uri") or dashboard_flow.redirect_uri
+        # The live flow's callback URL wins: a saved ``oauth.redirect_uri`` (e.g. an HTTPS reverse-proxy
+        # callback pinned for an earlier CLI login) is not where THIS flow is listening, so preferring it
+        # sent the user to a URL nobody was serving and the Desktop/dashboard login never completed.
+        cfg["redirect_uri"] = dashboard_flow.redirect_uri
         return 0
     cached_uri, cached_port = _cached_redirect(storage)
     if cached_uri and not cfg.get("redirect_uri") and not pinned_loopback:

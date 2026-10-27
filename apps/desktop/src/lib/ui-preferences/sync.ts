@@ -18,10 +18,58 @@ export interface UiPreferencesBridge {
 const FLUSH_DELAY_MS = 150
 // Local changes not yet confirmed by the store, kept across reloads: a change
 // made right before the tab reloads or closes must still win over the older
-// store value on the next load, and be written then. Not a shared key itself.
-const OUTBOX_KEY = 'hermes:ui-preferences:outbox'
+// store value on the next load, and be written then. One outbox PER TAB (its id
+// rides in sessionStorage, which survives a reload): same-origin tabs share
+// localStorage, and one shared outbox let each tab overwrite the others'
+// unsent changes. Not shared keys themselves.
+const OUTBOX_PREFIX = 'hermes:ui-preferences:outbox:'
+const TAB_KEY = 'hermes:ui-preferences:tab'
+// The store generation this origin has joined (imported its own values into).
+// Until then a key the store lacks is never removed here: it may be this
+// client's data the store has not received yet, not a peer's deletion.
+const JOINED_KEY = 'hermes:ui-preferences:generation'
 const RETRY_DELAY_MS = 5000
 const MAX_RETRY_DELAY_MS = 60_000
+
+let outboxKey: null | string = null
+
+/** This tab's outbox key, claimed once per page load. The previous load of this
+ *  tab (same sessionStorage) hands its unsent changes over. */
+function claimOutboxKey(): string {
+  if (outboxKey) {
+    return outboxKey
+  }
+
+  const id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
+  let previous: null | string = null
+
+  try {
+    previous = window.sessionStorage.getItem(TAB_KEY)
+    window.sessionStorage.setItem(TAB_KEY, id)
+  } catch {
+    // No sessionStorage: this load's outbox is still its own.
+  }
+
+  outboxKey = `${OUTBOX_PREFIX}${id}`
+
+  if (previous) {
+    const carried = readRaw(`${OUTBOX_PREFIX}${previous}`)
+
+    if (carried !== null) {
+      writeRaw(outboxKey, carried)
+      writeRaw(`${OUTBOX_PREFIX}${previous}`, null)
+    }
+  }
+
+  return outboxKey
+}
+
+const generationOf = (snapshot: UiPreferencesSnapshot) => snapshot.generation ?? ''
+
+/** True once this origin imported its values into the snapshot's generation. */
+function hasJoined(snapshot: UiPreferencesSnapshot): boolean {
+  return snapshot.exists && readRaw(JOINED_KEY) === generationOf(snapshot)
+}
 
 function localSharedKeys(): string[] {
   const keys: string[] = []
@@ -72,10 +120,12 @@ function writeRaw(key: string, value: null | string): boolean {
 }
 
 /**
- * Make this window's localStorage cache match the store, before anything has
- * read it: the first-paint path for native Desktop, whose preload hands over
- * a snapshot synchronously. A store that does not exist yet changes nothing
- * (the sync seeds it from this cache instead).
+ * Make this window's localStorage cache match the store, before any store
+ * module has read it (`boot.ts` runs this ahead of the app's module graph).
+ * A store that does not exist yet changes nothing (the sync seeds it from this
+ * cache instead), and until this origin joined the store's generation a key
+ * the store lacks is kept: the store may simply not have it yet. Every change
+ * is announced, so anything already listening follows it.
  */
 export function hydrateFromSnapshot(snapshot: null | undefined | UiPreferencesSnapshot): void {
   if (!snapshot?.exists) {
@@ -83,17 +133,26 @@ export function hydrateFromSnapshot(snapshot: null | undefined | UiPreferencesSn
   }
 
   const outbox = readOutbox()
+  const prune = hasJoined(snapshot)
 
   for (const key of new Set([...localSharedKeys(), ...Object.keys(snapshot.values)])) {
-    if (isSharedPreferenceKey(key) && !outbox.has(key)) {
-      writeRaw(key, snapshot.values[key] ?? null)
+    const value = snapshot.values[key] ?? null
+
+    if (!isSharedPreferenceKey(key) || outbox.has(key) || (value === null && !prune)) {
+      continue
+    }
+
+    const previous = readRaw(key)
+
+    if (writeRaw(key, value)) {
+      announce(key, previous, value)
     }
   }
 }
 
 function readOutbox(): Map<string, null | string> {
   try {
-    const parsed = JSON.parse(readRaw(OUTBOX_KEY) ?? '{}') as unknown
+    const parsed = JSON.parse(readRaw(claimOutboxKey()) ?? '{}') as unknown
 
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       return new Map()
@@ -111,7 +170,7 @@ function readOutbox(): Map<string, null | string> {
 }
 
 function saveOutbox(pending: Map<string, null | string>) {
-  writeRaw(OUTBOX_KEY, pending.size === 0 ? null : JSON.stringify(Object.fromEntries(pending)))
+  writeRaw(claimOutboxKey(), pending.size === 0 ? null : JSON.stringify(Object.fromEntries(pending)))
 }
 
 /** A write the store answered "no" to (HTTP 400 / validation), as opposed to
@@ -130,8 +189,9 @@ function announce(key: string, oldValue: null | string, newValue: null | string)
 
 /**
  * Keep this window's shared preferences and the machine store in step:
- * - first contact with no store imports this window's existing values once
- *   (`seed`), and never overwrites a store that exists;
+ * - first contact with a store generation (or with no store) imports this
+ *   origin's existing values (`seed`: only keys the store lacks, so nothing is
+ *   overwritten); until then no local key is removed for being absent there;
  * - a local change to a shared key is merged into the store per key, last
  *   write wins, debounced and retried while the store is unreachable;
  * - a change another window, tab or device made lands here live.
@@ -146,6 +206,7 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
   // Values the store refused, kept in this window until changed again.
   const refused = new Map<string, null | string>()
   let revision = -1
+  let generation: null | string = null
   let flushTimer: ReturnType<typeof setTimeout> | null = null
   let stopped = false
   // Nothing is written until first contact: a write that created the store
@@ -154,11 +215,15 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
   let ready = false
 
   const apply = (snapshot: UiPreferencesSnapshot, { live }: { live: boolean }) => {
-    if (!snapshot.exists || snapshot.revision < revision) {
+    // A replaced store (deleted, or corrupt and kept aside) starts a new
+    // generation at a low revision: follow it rather than wait for the count.
+    if (!snapshot.exists || (generationOf(snapshot) === generation && snapshot.revision < revision)) {
       return
     }
 
     revision = snapshot.revision
+    generation = generationOf(snapshot)
+    const prune = hasJoined(snapshot)
 
     for (const key of new Set([...localSharedKeys(), ...Object.keys(snapshot.values), ...known.keys()])) {
       if (!isSharedPreferenceKey(key)) {
@@ -169,7 +234,7 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
       known.set(key, value)
 
       // A change made here and not yet stored outranks an older store value.
-      if (pending.has(key) || (refused.has(key) && refused.get(key) === readRaw(key))) {
+      if (pending.has(key) || (refused.has(key) && refused.get(key) === readRaw(key)) || (value === null && !prune)) {
         continue
       }
 
@@ -178,6 +243,10 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
       if (writeRaw(key, value) && live) {
         announce(key, previous, value)
       }
+    }
+
+    if (!prune && ready) {
+      rejoin(snapshot)
     }
   }
 
@@ -254,14 +323,48 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
     schedule(FLUSH_DELAY_MS)
   })
 
-  const seed = async (snapshot: UiPreferencesSnapshot) => {
-    if (snapshot.exists) {
+  // First contact with a generation: add this origin's values the store lacks.
+  const join = async (snapshot: UiPreferencesSnapshot) => {
+    if (hasJoined(snapshot)) {
       return snapshot
     }
 
     const values = Object.fromEntries(localSharedKeys().map(key => [key, readRaw(key)]))
+    // Nothing to import: an existing store is joined as it is, and no store is
+    // created from nothing.
+    const joinedSnapshot = Object.keys(values).length > 0 ? await bridge.write({ seed: true, values }) : snapshot
 
-    return bridge.write({ seed: true, values })
+    if (joinedSnapshot.exists) {
+      writeRaw(JOINED_KEY, generationOf(joinedSnapshot))
+    }
+
+    return joinedSnapshot
+  }
+
+  let joining = false
+  let joinRefused = false
+
+  // A live snapshot from a generation this origin has not joined (the store
+  // was replaced while this window was open): import, then follow it.
+  function rejoin(snapshot: UiPreferencesSnapshot) {
+    if (joining || joinRefused || stopped) {
+      return
+    }
+
+    joining = true
+    join(snapshot).then(
+      joinedSnapshot => {
+        joining = false
+
+        if (!stopped) {
+          apply(joinedSnapshot, { live: true })
+        }
+      },
+      error => {
+        joining = false
+        joinRefused = isRefusal(error)
+      }
+    )
   }
 
   let connectTimer: ReturnType<typeof setTimeout> | null = null
@@ -271,20 +374,34 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
     connectTimer = null
 
     void (initial ? Promise.resolve(initial) : bridge.read())
-      .then(seed)
+      .then(join)
       .then(snapshot => {
         if (stopped) {
           return
         }
 
-        apply(snapshot, { live: true })
         ready = true
+        apply(snapshot, { live: true })
         schedule(FLUSH_DELAY_MS)
       })
-      .catch(() => {
-        // Unreachable store: this window keeps its cached values and local
-        // changes stay pending until first contact succeeds.
-        if (!stopped) {
+      .catch(error => {
+        if (stopped) {
+          return
+        }
+
+        if (isRefusal(error)) {
+          // The store cannot take this origin's import (full): follow it
+          // without removing anything here, and try the import on next load.
+          joinRefused = true
+          ready = true
+          void bridge.read().then(
+            snapshot => apply(snapshot, { live: true }),
+            () => undefined
+          )
+          schedule(FLUSH_DELAY_MS)
+        } else {
+          // Unreachable store: this window keeps its cached values and local
+          // changes stay pending until first contact succeeds.
           connectTimer = setTimeout(() => connect(null), connectDelay)
           connectDelay = Math.min(connectDelay * 2, MAX_RETRY_DELAY_MS)
         }

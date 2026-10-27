@@ -6,9 +6,12 @@ import { writeKey } from '../storage'
 import { startUiPreferencesSync, type UiPreferencesBridge, type UiPreferencesSnapshot } from './sync'
 
 // A bridge over an in-memory document with the store's semantics: per-key
-// merge, null deletes, `seed` applies only while no document exists.
+// merge, null deletes, `seed` only adds the keys the store lacks.
 function memoryStore(initial: null | Record<string, string>) {
-  let doc: null | UiPreferencesSnapshot = initial ? { exists: true, revision: 1, values: { ...initial } } : null
+  let doc: null | UiPreferencesSnapshot = initial
+    ? { exists: true, generation: 'g1', revision: 1, values: { ...initial } }
+    : null
+
   const writes: { seed?: boolean; values: Record<string, null | string> }[] = []
   const listeners = new Set<(snapshot: UiPreferencesSnapshot) => void>()
   const snapshot = (): UiPreferencesSnapshot => doc ?? { exists: false, revision: 0, values: {} }
@@ -18,21 +21,21 @@ function memoryStore(initial: null | Record<string, string>) {
     write: async payload => {
       writes.push(payload)
 
-      if (payload.seed && doc) {
-        return snapshot()
-      }
-
       const values = { ...(doc?.values ?? {}) }
 
       for (const [key, value] of Object.entries(payload.values)) {
-        if (value === null) {
+        if (payload.seed) {
+          if (value !== null && !(key in values)) {
+            values[key] = value
+          }
+        } else if (value === null) {
           delete values[key]
         } else {
           values[key] = value
         }
       }
 
-      doc = { exists: true, revision: (doc?.revision ?? 0) + 1, values }
+      doc = { exists: true, generation: doc?.generation ?? 'g1', revision: (doc?.revision ?? 0) + 1, values }
 
       return snapshot()
     },
@@ -44,7 +47,7 @@ function memoryStore(initial: null | Record<string, string>) {
   }
 
   const external = (values: Record<string, string>) => {
-    doc = { exists: true, revision: (doc?.revision ?? 0) + 1, values }
+    doc = { exists: true, generation: doc?.generation ?? 'g1', revision: (doc?.revision ?? 0) + 1, values }
     listeners.forEach(listener => listener(snapshot()))
   }
 
@@ -80,20 +83,18 @@ describe('machine UI preferences sync', () => {
     expect(store.snapshot().values).toEqual({ [DENSITY]: 'detailed' })
   })
 
-  it('adopts an existing store over this window’s cache instead of overwriting it', async () => {
+  it('adopts an existing store’s values and imports only the keys it lacks', async () => {
     window.localStorage.setItem(DENSITY, 'detailed')
     window.localStorage.setItem(MODE, 'light')
-    const $density = persistentAtom(DENSITY, 'compact')
     const store = memoryStore({ [MODE]: 'dark' })
 
     stop = startUiPreferencesSync(store.bridge)
     await vi.runAllTimersAsync()
 
-    expect(store.writes).toEqual([])
-    expect(store.snapshot().values).toEqual({ [MODE]: 'dark' })
+    expect(store.writes).toEqual([{ seed: true, values: { [DENSITY]: 'detailed', [MODE]: 'light' } }])
+    expect(store.snapshot().values).toEqual({ [DENSITY]: 'detailed', [MODE]: 'dark' })
     expect(window.localStorage.getItem(MODE)).toBe('dark')
-    expect(window.localStorage.getItem(DENSITY)).toBeNull()
-    expect($density.get()).toBe('compact')
+    expect(window.localStorage.getItem(DENSITY)).toBe('detailed')
   })
 
   it('merges local changes per key and follows changes made elsewhere live', async () => {

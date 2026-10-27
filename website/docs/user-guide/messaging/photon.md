@@ -100,7 +100,7 @@ existing DM or group from its chat GUID. That means cold cron delivery works
 with `PHOTON_HOME_CHANNEL=+1555...` for DMs. Creating a new group from a list
 of recipients still requires managed Photon mode.
 
-With the pinned Spectrum 12.7 local provider, text/markdown, inbound and
+With the pinned Spectrum 12.10.1 local provider, text/markdown, inbound and
 outbound attachments, DMs, incoming reply context, and existing groups work.
 Local mode does not provide visible typing indicators, native outbound
 replies, editing/unsending, tapbacks, native polls or effects, read receipts,
@@ -295,7 +295,7 @@ Common issues:
   `Read` without waiting for a model/tool turn. Inbound receipts for Hermes-sent
   messages are consumed as presence telemetry and never create an agent turn. Set
   `PHOTON_READ_RECEIPTS=false` to keep messages at `Delivered`. The Spectrum
-  12.7 local provider does not implement this operation, so Hermes skips it.
+  12.10.1 local provider does not implement this operation, so Hermes skips it.
 - **Message effects are supported in managed cloud mode.** Hermes sends text
   with native iMessage bubble/screen effects through spectrum-ts' iMessage
   `effect()` builder via the sidecar's `/send-effect` endpoint.

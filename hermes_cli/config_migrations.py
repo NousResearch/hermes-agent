@@ -1,7 +1,8 @@
 """Table-driven config migration registry.
 
-Each step is ``_migrate_to_N(results, quiet)``; the version gate and strict ascending order live
-in :func:`run_migrations`. Every write goes through ``hermes_cli.config._persist_migration`` so a
+Each step is ``_migrate_to_N(results, quiet)`` (a large topical step lives in a
+``config_migrations_<topic>.py`` sibling, registered here); the version gate and strict ascending
+order live in :func:`run_migrations`. Every write goes through ``hermes_cli.config._persist_migration`` so a
 step may only persist values that differ from the schema default (plus removals/renames).
 """
 
@@ -13,6 +14,8 @@ import logging
 import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
+
+from hermes_cli.config_migrations_browser import migrate_to_52
 
 logger = logging.getLogger(__name__)
 
@@ -847,6 +850,9 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
             "admitted to the target profile's running gateway and tracked by receipt, so cron no "
             "longer runs (or times out) a Bot Chat turn of its own."),
         extra_guard=lambda raw: "bot_chat_delivery_timeout_seconds" in raw)),
+    # 51 -> 52: browser.backend + browser.extension_control dropped, AGENT_BROWSER_* .env settings ->
+    # browser.* (see config_migrations_browser.migrate_to_52).
+    (52, migrate_to_52),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or
@@ -858,7 +864,7 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
 #: out: it clears OPENAI_MODEL from .env, a generic name Hermes never reads but the user's tools may.
 #: v41 is left out too: it rewrites profile SOUL.md on a heading match, an artifact whose
 #: provenance the config stamp says nothing about.
-LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46, 50, 51})
+LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46, 50, 51, 52})
 
 #: Legacy-key steps that run on every migration pass whatever the stamp says, because a stamp at
 #: or past their version does not prove they ran: unreleased builds of the gateway-runtime branch

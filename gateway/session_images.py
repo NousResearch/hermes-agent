@@ -24,8 +24,12 @@ def _stage(directory, params):
     from tui_gateway.prompt_attachments import (
         _ATTACH_BYTES_MAX_BYTES, _decode_attach_base64, _sniff_image_ext, stage_image_bytes,
     )
-    data = _decode_attach_base64(params.get('content_base64') or params.get('data') or '', mime_prefix='image/')
-    if not data or len(data) > _ATTACH_BYTES_MAX_BYTES:
+    try:
+        data = _decode_attach_base64(params.get('content_base64') or params.get('data') or '',
+                                     mime_prefix='image/', max_bytes=_ATTACH_BYTES_MAX_BYTES)
+    except OverflowError as exc:
+        raise RuntimeStoreError('invalid_params') from exc
+    if not data:
         raise RuntimeStoreError('invalid_params')
     hint = params.get('ext', '').strip().lower().lstrip('.')
     ext = _sniff_image_ext(data, params.get('filename') or (f'x.{hint}' if hint else ''))

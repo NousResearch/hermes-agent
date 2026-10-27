@@ -1386,7 +1386,7 @@ class PhotonAdapter(BasePlatformAdapter):
         """Use a native cloud poll, or the numbered-text fallback in local mode."""
         if not choices:  # open-ended: base plain-text behaviour is right
             return await super().send_clarify(chat_id, question, choices, clarify_id, session_key, metadata)
-        # Spectrum 12.7 exports the generic poll builder in both runtimes, but
+        # Spectrum 12.10.1 exports the generic poll builder in both runtimes, but
         # @spectrum-ts/imessage-local rejects poll content when it is sent.
         if self._imessage_mode == "local":
             return await super().send_clarify(chat_id, question, choices, clarify_id, session_key, metadata)
@@ -1444,7 +1444,7 @@ class PhotonAdapter(BasePlatformAdapter):
             return False
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        # The 12.7 local provider accepts typing content only as a no-op.
+        # The 12.10.1 local provider accepts typing content only as a no-op.
         if self._imessage_mode == "local":
             return
         now = time.time()

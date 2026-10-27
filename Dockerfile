@@ -195,10 +195,11 @@ WORKDIR /opt/hermes
 # here rather than by `npx playwright install`,
 # which fetched whatever revision the npm-resolved playwright wanted,
 # unverified, and recorded no fact. The resolved browser binary path is
-# baked to /etc/hermes/agent-browser-executable-path for stage2-hook.sh:
-# the layout differs per arch (chrome-linux64/chrome on amd64,
-# chromium-linux-arm64/chromium on arm64), so it is resolved at build time
-# and never hunted at boot.
+# baked to /etc/hermes/chromium-executable-path: the layout differs per
+# arch (chrome-linux64/chrome on amd64, chromium-linux-arm64/chromium on
+# arm64), so it is resolved at build time and never hunted at boot.
+# hermes_cli/browser_runtime.py reads it when a volume over the runtime dir
+# hides pm's facts; stage2-hook.sh checks it still names a binary.
 ENV HERMES_RUNTIME_DIR=/opt/hermes/tools
 COPY pm/ pm/
 # pm's lazy imports resolve get_default_hermes_root()/project_venv_dir()
@@ -219,7 +220,7 @@ RUN set -eu; \
     test -n "$browser_bin"; \
     "$browser_bin" --version; \
     mkdir -p /etc/hermes; \
-    printf '%s' "$browser_bin" > /etc/hermes/agent-browser-executable-path
+    printf '%s' "$browser_bin" > /etc/hermes/chromium-executable-path
 
 # PM is resident too: never borrow application libraries or create its worker
 # environment under /root (unreachable to the runtime UID).

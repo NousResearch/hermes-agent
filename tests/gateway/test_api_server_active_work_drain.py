@@ -24,7 +24,7 @@ from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 from gateway.run import _INTERRUPT_REASON_GATEWAY_SHUTDOWN
 from hermes_state import SessionDB
 from tests.gateway.restart_test_helpers import make_restart_runner
-from tools import browser_tool_lifecycle as bt_lifecycle
+from tools import browser_session_lifecycle as bt_lifecycle
 
 # Safety net so a regression parks the executor thread forever instead of
 # hanging CI.  No assertion below depends on elapsed time.

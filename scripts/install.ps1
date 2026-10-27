@@ -7,10 +7,9 @@
 #   -SkipSetup            deprecated alias for -NonInteractive
 #   -IncludeDesktop       add the desktop build stage
 #   -ProtocolVersion      print the stage protocol version
-#   -SkipBrowser          do not install the browser tools (agent-browser +
-#                         Chromium); remembered by later
-#                         installs and `hermes update`, undone by
-#                         `hermes pm install agent-browser`
+#   -SkipBrowser          do not install the browser (Chromium); remembered by
+#                         later installs and `hermes update`, undone by
+#                         `hermes pm install chromium`
 #   -SkipComputerUse      do not install the computer-use driver (cua-driver);
 #                         remembered the same way, undone by
 #                         `hermes pm install cua-driver`
@@ -38,8 +37,8 @@ param(
     [switch]$Json,
     [switch]$IncludeDesktop,
     # Same opt-out as install.sh --skip-browser: PM records it, so later
-    # installs and `hermes update` keep the browser tools off until
-    # `hermes pm install agent-browser` opts back in.
+    # installs and `hermes update` keep the browser off until
+    # `hermes pm install chromium` opts back in.
     [switch]$SkipBrowser,
     [switch]$SkipComputerUse,
     # Print the paths this install would use, as JSON on stdout, and exit
@@ -1287,6 +1286,8 @@ function Invoke-BootstrapPm {
         # Bare $SkipBrowser, like $InstallDir: under iex/scriptblock entry the
         # param() binding is not in $script: scope (see Initialize-ResolvedPaths).
         $pmArgs = @('install')
+        # Legacy spelling on purpose: the stable PM this script installs by
+        # default rejects 'chromium', and newer PMs read 'agent-browser' as 'chromium'.
         if ($SkipBrowser) { $pmArgs += @('--without', 'agent-browser') }
         if ($SkipComputerUse) { $pmArgs += @('--without', 'cua-driver') }
         Invoke-Logged "Installing dependencies (hash-verified via uv.lock)" { & $bootPy -m pm.cli @pmArgs }

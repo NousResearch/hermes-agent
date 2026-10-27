@@ -14,22 +14,22 @@
     "node": ">=20.0.0"
   },
   "dependencies": {
-    "@spectrum-ts/core": "12.7.0",
-    "@spectrum-ts/imessage-local": "12.7.0",
-    "spectrum-ts": "12.7.0"
+    "@spectrum-ts/core": "12.10.1",
+    "@spectrum-ts/imessage-local": "12.10.1",
+    "spectrum-ts": "12.10.1"
   },
   "overrides": {
     "undici": "7.30.0",
-    "protobufjs": "8.7.1",
-    "@opentelemetry/core": "2.10.0",
-    "@opentelemetry/resources": "2.10.0",
-    "@opentelemetry/sdk-metrics": "2.10.0",
-    "@opentelemetry/sdk-trace-base": "2.10.0",
-    "@opentelemetry/sdk-logs": "0.221.0",
-    "@opentelemetry/otlp-transformer": "0.221.0",
-    "@opentelemetry/otlp-exporter-base": "0.221.0",
-    "@opentelemetry/exporter-metrics-otlp-http": "0.221.0",
-    "@opentelemetry/exporter-trace-otlp-http": "0.221.0",
-    "@opentelemetry/exporter-logs-otlp-http": "0.221.0"
+    "protobufjs": "8.8.0",
+    "@opentelemetry/resources": "2.12.0",
+    "@opentelemetry/sdk-metrics": "2.12.0",
+    "@opentelemetry/sdk-trace-base": "2.12.0",
+    "@opentelemetry/sdk-logs": "0.223.0",
+    "@opentelemetry/exporter-metrics-otlp-http": "0.223.0",
+    "@opentelemetry/otlp-transformer": "0.223.0",
+    "@opentelemetry/otlp-exporter-base": "0.223.0",
+    "@opentelemetry/exporter-trace-otlp-http": "0.223.0",
+    "@opentelemetry/exporter-logs-otlp-http": "0.223.0",
+    "@opentelemetry/core": "2.12.0"
   }
 }

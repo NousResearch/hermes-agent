@@ -179,7 +179,7 @@ grant; a successful check in a terminal does not prove service access.
   restart is best-effort — the live reaction handle is lost, so a stale
   tapback heals when the next reaction replaces it. Group spaces stay
   reachable across restarts via spectrum-ts' `space.get(id)`. Hermes disables
-  reactions in local mode because Spectrum 12.7 does not implement them there.
+  reactions in local mode because Spectrum 12.10.1 does not implement them there.
 - **Local cold sends support DMs and existing groups.** Use a bare E.164 number
   to start a DM, or an existing chat GUID to rehydrate a group. Local mode
   cannot create a new group from a list of recipients.
@@ -187,7 +187,7 @@ grant; a successful check in a terminal does not prove service access.
   inbound iMessage read after forwarding it to Hermes, so the sender sees
   `Read` without waiting for a model/tool turn. Inbound receipts for Hermes-sent
   messages are consumed as presence telemetry and never create an agent turn. Set
-  `PHOTON_READ_RECEIPTS=false` to keep messages at `Delivered`. Spectrum 12.7
+  `PHOTON_READ_RECEIPTS=false` to keep messages at `Delivered`. Spectrum 12.10.1
   does not implement marking messages read in local mode, so Hermes skips it.
 - **Native polls are supported in managed cloud mode.** Hermes posts poll
   content through `spectrum-ts`' `poll(...)` builder via the sidecar's
@@ -196,7 +196,7 @@ grant; a successful check in a terminal does not prove service access.
 - **Message effects are supported in managed cloud mode.** Text can be sent
   with native iMessage bubble/screen effects through `spectrum-ts`' iMessage
   `effect(...)` builder via the sidecar's `/send-effect` endpoint.
-- **Local-mode capability limits (Spectrum 12.7).** Text/markdown, inbound and
+- **Local-mode capability limits (Spectrum 12.10.1).** Text/markdown, inbound and
   outbound attachments, DMs, incoming reply context, and existing groups work.
   Visible typing indicators, native outbound replies, editing/unsending,
   tapbacks, polls, effects, read receipts, new-group creation, and group member/

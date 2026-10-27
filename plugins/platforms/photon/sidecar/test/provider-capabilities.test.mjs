@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { supportsProviderCapability } from "../provider-capabilities.mjs";
 
-test("Spectrum 12.7 local mode rejects unavailable native operations", () => {
+test("Spectrum 12.10.1 local mode rejects unavailable native operations", () => {
   for (const capability of ["effect", "poll", "reaction", "read"]) {
     assert.equal(supportsProviderCapability(true, capability), false);
   }

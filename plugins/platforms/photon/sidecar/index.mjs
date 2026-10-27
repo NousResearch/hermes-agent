@@ -605,7 +605,7 @@ const readReceiptsEnabled =
   "false";
 
 async function acknowledgeInboundRead(message) {
-  // @spectrum-ts/imessage-local 12.7 exposes Message.read() through the
+  // @spectrum-ts/imessage-local 12.10.1 exposes Message.read() through the
   // shared type but rejects it at runtime. Do not turn every local inbound
   // message into a warning for a capability the provider does not implement.
   if (

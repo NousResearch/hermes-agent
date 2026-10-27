@@ -377,7 +377,7 @@ import {
 } from './managed-ssh-update'
 import { registerMcpOauthCallbackIpc } from './mcp-oauth-callback-ipc'
 import { isMediaCapturePermission } from './media-capture-permission'
-import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
+import { createMediaProtocolHandler, MEDIA_PROTOCOL, mediaProtocolDownloadName } from './media-protocol'
 import { fetchLocalMedia } from './media-range'
 import { createMinimizeToTray } from './minimize-to-tray'
 import {
@@ -562,6 +562,7 @@ import { ensureLoginShellPath } from './shell-path'
 import { removeStaleSingletonLock } from './singleton-lock'
 import { createSourcePythonBackend, resolveSourceInstallationBackend, type SourceBackend } from './source-backend'
 import { resolveSourcePython } from './source-python'
+import { registerSpellcheckDictionaryIpc } from './spellcheck-dictionary-ipc'
 import { resolveSshBinary } from './ssh-binary'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
@@ -577,6 +578,7 @@ import {
   defaultTranslucencyState,
   glassActive,
   glassSupportedOn,
+  nativeOpacityFor,
   normalizeState as normalizeTranslucency,
   opacityNeedsSetting,
   translucencySupportedOn,
@@ -681,7 +683,7 @@ import { buildPathExtCandidates, chooseUpdaterArgs, resolveVenvHermesCommand } f
 import {
   connectWindowsRemote,
   detectRemotePlatform,
-  helper,
+  inspectWindowsSupport,
   probeWindowsRemote,
   terminateOwnedWindowsDashboardForUpdate
 } from './windows-remote-lifecycle'
@@ -736,8 +738,7 @@ const DARWIN_MAJOR = IS_MAC ? Number.parseInt(os.release(), 10) || 0 : 0
 // Glass: macOS vibrancy, or Windows 11 22H2+ system backdrop. Computed once
 // so the renderer, the persisted default, and every chat window agree.
 const GLASS_SUPPORTED = glassSupportedOn(process.platform, os.release())
-// Clear rides setOpacity, a documented no-op on Linux, so neither mode works
-// there and Settings drops the row entirely.
+// Settings drops the row on Linux, so nativeOpacityFor keeps the fade off there.
 const TRANSLUCENCY_SUPPORTED = translucencySupportedOn(process.platform)
 const APP_ROOT = app.getAppPath()
 
@@ -1497,7 +1498,7 @@ nativeTheme.themeSource = readPersistedThemeSource()
 // — a matte blur with full-contrast text. macOS uses vibrancy; Windows 11
 // uses DWM acrylic/mica/tabbed. Persisted so a cold launch applies it at
 // window creation, before the renderer reports its value.
-// macOS + Windows only; `setOpacity` is a no-op on Linux.
+// macOS + Windows only, gated at the value itself (see nativeOpacityFor).
 const TRANSLUCENCY_CONFIG_PATH = path.join(app.getPath('userData'), 'translucency.json')
 
 function readPersistedTranslucency() {
@@ -1535,7 +1536,7 @@ const translucencyBackedWindows = new WeakSet()
 // window's own opacity is the record of whether that door was ever opened; see
 // opacityNeedsSetting for why it matters that it stays shut.
 function applyWindowOpacity(win) {
-  const opacity = windowOpacityFor(translucencyState)
+  const opacity = nativeOpacityFor(translucencyState, TRANSLUCENCY_SUPPORTED)
 
   if (typeof win.setOpacity === 'function' && opacityNeedsSetting(opacity, win.getOpacity?.() ?? 1)) {
     win.setOpacity(opacity)
@@ -1635,7 +1636,7 @@ function chatWindowSurfaceOptions() {
     // RESIZABLE transparent window is unsupported and breaks (electron#48421).
     // Every chat window is resizable.
     ...windowBackgroundMaterialOptions(translucencyState, IS_WINDOWS, GLASS_SUPPORTED),
-    ...windowOpacityOptions(translucencyState),
+    ...windowOpacityOptions(translucencyState, TRANSLUCENCY_SUPPORTED),
     ...windowBackingOptions(translucencyState, getWindowBackgroundColor())
   }
 }
@@ -6792,14 +6793,14 @@ function installContextMenuBridge(window: BrowserWindow) {
   })
 }
 
-// Chromium-initiated downloads (renderer anchor/blob downloads, drag-outs)
-// land here. Without a handler the OS save dialog opens with the process cwd
-// as the default directory (win-unpacked in packaged installs) and whatever
-// extensionless name the anchor carried. Route every download to the user's
-// Downloads directory and guarantee a MIME-derived extension.
+// Chromium-initiated downloads (renderer anchor/blob downloads, drag-outs, a
+// media player's ⋮ Download) land here. Without a handler the OS save dialog
+// opens in the process cwd (win-unpacked in packaged installs) with whatever name
+// the URL carried. Route every download to Downloads, name hermes-media:// saves
+// after the file, and guarantee a MIME-derived extension.
 function installDownloadHandling() {
   session.defaultSession.on('will-download', (_event, item) => {
-    const suggested = item.getFilename() || 'download'
+    const suggested = mediaProtocolDownloadName(item.getURL()) || item.getFilename() || 'download'
     const hasExtension = Boolean(path.extname(suggested))
     const extension = hasExtension ? '' : extensionForMimeType(item.getMimeType())
     const filename = `${suggested}${extension}`
@@ -10300,7 +10301,7 @@ async function testDesktopConnectionConfig(input: any = {}) {
           if (platform.os === 'Windows') {
             const runtime = platform
             hermesPath = runtime.hermesPath
-            const inspection = await helper(ssh, runtime, 'inspect', [runtime.hermesPath])
+            const inspection = await inspectWindowsSupport(ssh, runtime)
             hermesVersion = inspection.version
             supported = inspection.supported
           } else {
@@ -10338,7 +10339,7 @@ async function testDesktopConnectionConfig(input: any = {}) {
         }
       }
     } catch (error: any) {
-      return { reachable: false, sshError: error.kind || 'unknown', error: error.message }
+      return { reachable: false, sshError: error.kind || 'unknown', error: redactSecrets(String(error.message)) }
     } finally {
       try {
         await ssh.close()
@@ -14907,8 +14908,8 @@ async function probeSshProfileInventory(connection) {
   )
 
   try {
-    await ssh.open()
-    const profiles = await remoteLifecycle.listRemoteHermesProfiles(ssh)
+    const platform = await ssh.open().then(() => detectRemotePlatform(ssh, sshConfig.remoteHermesPath || ''))
+    const profiles = await remoteLifecycle.listRemoteHermesProfiles(ssh, platform)
 
     if (profiles.length > 0) {
       sshRosterCache.set(connection.id, profiles)
@@ -14918,7 +14919,7 @@ async function probeSshProfileInventory(connection) {
     // install id at all, so two addresses for one machine never collapse into one roster row
     // (#88828 wired this for remote/local only, through /api/status).
     connectionInstallIds.set(connection.id, {
-      id: await remoteLifecycle.readRemoteInstallId(ssh),
+      id: await remoteLifecycle.readRemoteInstallId(ssh, platform),
       ts: Date.now()
     })
   } catch (error: any) {
@@ -16552,31 +16553,7 @@ ipcMain.handle('hermes:context-menu:copy-image', event => {
   }
 })
 
-ipcMain.handle('hermes:context-menu:spellcheck', (event, action) => {
-  const kind = action?.kind
-  const word = String(action?.word || '')
-
-  if (!word) {
-    return
-  }
-
-  if (kind === 'replace') {
-    event.sender.replaceMisspelling(word)
-  } else if (kind === 'add') {
-    event.sender.session.addWordToSpellCheckerDictionary(word)
-  }
-})
-
-// Guest dictionary add: the webview TAG exposes replaceMisspelling but no
-// session API, so the renderer names the guest by webContents id.
-ipcMain.handle('hermes:context-menu:guest-add-word', (_event, payload) => {
-  const word = String(payload?.word || '')
-  const guest = electronWebContents.fromId(Number(payload?.webContentsId))
-
-  if (word && guest && !guest.isDestroyed()) {
-    guest.session.addWordToSpellCheckerDictionary(word)
-  }
-})
+registerSpellcheckDictionaryIpc(ipcMain, electronWebContents)
 
 ipcMain.handle('hermes:capturePreview', async (_event, payload) => {
   const guest = electronWebContents.fromId(Number(payload?.webContentsId))

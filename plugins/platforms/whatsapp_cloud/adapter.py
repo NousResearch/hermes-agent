@@ -612,11 +612,16 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             chat_id, file_path, "document", caption=caption, filename=file_name or os.path.basename(file_path), reply_to=reply_to,
         )
 
-    async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None, **kwargs) -> SendResult:
+    async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
+                         is_voice: Optional[bool] = None, **kwargs) -> SendResult:
         """Voice message: ``audio/ogg; codecs=opus`` renders as a voice bubble, so a
-        local MP3 (Hermes TTS output) is converted via ffmpeg first; other audio is sent as-is."""
+        local MP3 (Hermes TTS output) is converted via ffmpeg first; other audio is sent as-is.
+        A plain audio MEDIA file (``is_voice=False``) is never converted into a voice bubble."""
         mime_type: Optional[str] = None
-        if not audio_path.startswith(_HTTP_PREFIXES) and audio_path.lower().endswith(".mp3") and os.path.exists(audio_path):
+        if is_voice is False and audio_path.lower().endswith(".mp3"):
+            mime_type = "audio/mpeg"
+        elif (not audio_path.startswith(_HTTP_PREFIXES) and audio_path.lower().endswith(".mp3")
+              and await asyncio.to_thread(os.path.exists, audio_path)):
             opus_path = await self._convert_to_opus(audio_path)
             if opus_path:
                 try:

@@ -259,80 +259,8 @@
       }
     },
     {
-      "name": "browser.controller.detach",
-      "summary": "Hard-detach only the controller owned by this authenticated transport.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/BrowserControllerParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/BrowserControllerDetachResult"
-        }
-      }
-    },
-    {
-      "name": "browser.controller.heartbeat",
-      "summary": "Acknowledge a heartbeat only for this transport's own attached controller.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/BrowserControllerParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/OkResult"
-        }
-      }
-    },
-    {
-      "name": "browser.controller.register",
-      "summary": "Attach this connection as the browser controller for one session; fails closed (4403).",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/BrowserControllerRegisterParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/BrowserControllerRegisterResult"
-        }
-      }
-    },
-    {
-      "name": "browser.controller.result",
-      "summary": "Deliver one command result to the broker; accepted is false for unknown or settled command ids.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/BrowserControllerResultParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/BrowserControllerResultResult"
-        }
-      }
-    },
-    {
       "name": "browser.manage",
-      "summary": "Inspect, attach to, or drop the CDP browser the tools use, or switch Browser Use mode (``use``, applies to new sessions); ``messages`` narrate a connect.",
+      "summary": "Inspect, attach to, or drop the CDP browser the tools use; ``messages`` narrate a connect.",
       "params": [
         {
           "name": "params",
@@ -5148,6 +5076,13 @@
             ],
             "default": null,
             "title": "Settings Schema"
+          },
+          "tools": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tools",
+            "type": "array"
           }
         },
         "required": [
@@ -7501,264 +7436,10 @@
         "enum": [
           "status",
           "connect",
-          "disconnect",
-          "use"
+          "disconnect"
         ],
         "title": "BrowserAction",
         "type": "string"
-      },
-      "BrowserControllerCancelPayload": {
-        "additionalProperties": false,
-        "description": "``gateway/browser_control_broker.py::_cancel_frame``.",
-        "properties": {
-          "command_id": {
-            "title": "Command Id",
-            "type": "string"
-          },
-          "tool_call_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Tool Call Id"
-          }
-        },
-        "required": [
-          "command_id"
-        ],
-        "title": "BrowserControllerCancelPayload",
-        "type": "object"
-      },
-      "BrowserControllerCommandPayload": {
-        "additionalProperties": false,
-        "description": "``gateway/browser_control_broker.py`` FRAME_COMMAND params.",
-        "properties": {
-          "command_id": {
-            "title": "Command Id",
-            "type": "string"
-          },
-          "action": {
-            "title": "Action",
-            "type": "string"
-          },
-          "arguments": {
-            "additionalProperties": true,
-            "title": "Arguments",
-            "type": "object"
-          },
-          "controller_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Controller Id"
-          },
-          "browser_profile_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Browser Profile Id"
-          },
-          "tool_call_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Tool Call Id"
-          }
-        },
-        "required": [
-          "command_id",
-          "action",
-          "arguments"
-        ],
-        "title": "BrowserControllerCommandPayload",
-        "type": "object"
-      },
-      "BrowserControllerDetachResult": {
-        "additionalProperties": false,
-        "properties": {
-          "detached": {
-            "default": true,
-            "title": "Detached",
-            "type": "boolean"
-          }
-        },
-        "title": "BrowserControllerDetachResult",
-        "type": "object"
-      },
-      "BrowserControllerParams": {
-        "additionalProperties": false,
-        "description": "Every controller call names the session the controller is attached to.",
-        "properties": {
-          "session_id": {
-            "title": "Session Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "session_id"
-        ],
-        "title": "BrowserControllerParams",
-        "type": "object"
-      },
-      "BrowserControllerRegisterParams": {
-        "additionalProperties": false,
-        "properties": {
-          "session_id": {
-            "title": "Session Id",
-            "type": "string"
-          },
-          "controller_id": {
-            "title": "Controller Id",
-            "type": "string"
-          },
-          "browser_profile_id": {
-            "title": "Browser Profile Id",
-            "type": "string"
-          },
-          "capabilities": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Capabilities"
-          },
-          "protocol_version": {
-            "anyOf": [
-              {},
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Protocol Version"
-          },
-          "principal_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Principal Id"
-          }
-        },
-        "required": [
-          "session_id",
-          "controller_id",
-          "browser_profile_id"
-        ],
-        "title": "BrowserControllerRegisterParams",
-        "type": "object"
-      },
-      "BrowserControllerRegisterResult": {
-        "additionalProperties": false,
-        "properties": {
-          "scope": {
-            "$ref": "#/components/schemas/ControllerScope"
-          }
-        },
-        "required": [
-          "scope"
-        ],
-        "title": "BrowserControllerRegisterResult",
-        "type": "object"
-      },
-      "BrowserControllerResultParams": {
-        "additionalProperties": false,
-        "properties": {
-          "session_id": {
-            "title": "Session Id",
-            "type": "string"
-          },
-          "command_id": {
-            "title": "Command Id",
-            "type": "string"
-          },
-          "ok": {
-            "anyOf": [
-              {},
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Ok"
-          },
-          "result": {
-            "anyOf": [
-              {},
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Result"
-          },
-          "error": {
-            "anyOf": [
-              {},
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Error"
-          }
-        },
-        "required": [
-          "session_id",
-          "command_id"
-        ],
-        "title": "BrowserControllerResultParams",
-        "type": "object"
-      },
-      "BrowserControllerResultResult": {
-        "additionalProperties": false,
-        "properties": {
-          "accepted": {
-            "title": "Accepted",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "accepted"
-        ],
-        "title": "BrowserControllerResultResult",
-        "type": "object"
       },
       "BrowserManageParams": {
         "additionalProperties": false,
@@ -7778,18 +7459,6 @@
             ],
             "default": null,
             "title": "Url"
-          },
-          "enabled": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Enabled"
           },
           "session_id": {
             "anyOf": [
@@ -7852,18 +7521,6 @@
             ],
             "default": null,
             "title": "Messages"
-          },
-          "browser_use": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Browser Use"
           }
         },
         "required": [
@@ -9046,6 +8703,21 @@
           "count": {
             "title": "Count",
             "type": "integer"
+          },
+          "open_requests": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/OpenRequestEntry"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Open Requests"
           }
         },
         "required": [
@@ -10231,18 +9903,6 @@
             "default": null,
             "title": "Tool Availability Warnings"
           },
-          "browser_backend_notice": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Browser Backend Notice"
-          },
           "unknown_toolsets": {
             "anyOf": [
               {
@@ -10748,6 +10408,21 @@
               }
             ],
             "default": null
+          },
+          "open_requests": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/OpenRequestEntry"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Open Requests"
           }
         },
         "required": [
@@ -10970,18 +10645,6 @@
             ],
             "default": null,
             "title": "Tool Availability Warnings"
-          },
-          "browser_backend_notice": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Browser Backend Notice"
           },
           "unknown_toolsets": {
             "anyOf": [
@@ -15612,53 +15275,6 @@
         "title": "ContextFileSource",
         "type": "object"
       },
-      "ControllerScope": {
-        "additionalProperties": false,
-        "properties": {
-          "principal_id": {
-            "title": "Principal Id",
-            "type": "string"
-          },
-          "profile_id": {
-            "title": "Profile Id",
-            "type": "string"
-          },
-          "session_id": {
-            "title": "Session Id",
-            "type": "string"
-          },
-          "controller_id": {
-            "title": "Controller Id",
-            "type": "string"
-          },
-          "browser_profile_id": {
-            "title": "Browser Profile Id",
-            "type": "string"
-          },
-          "transport_family": {
-            "title": "Transport Family",
-            "type": "string"
-          },
-          "capabilities": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Capabilities",
-            "type": "array"
-          }
-        },
-        "required": [
-          "principal_id",
-          "profile_id",
-          "session_id",
-          "controller_id",
-          "browser_profile_id",
-          "transport_family",
-          "capabilities"
-        ],
-        "title": "ControllerScope",
-        "type": "object"
-      },
       "CorrectionStatus": {
         "enum": [
           "queued",
@@ -18392,6 +18008,17 @@
             ],
             "default": null,
             "title": "Name"
+          },
+          "staged_upload": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StagedFileUpload"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -20412,6 +20039,30 @@
           "task_id": {
             "title": "Task Id",
             "type": "string"
+          },
+          "member_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Member Id"
+          },
+          "execution_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Execution Generation"
           }
         },
         "required": [
@@ -27453,7 +27104,7 @@
       },
       "PluginActivation": {
         "additionalProperties": false,
-        "description": "What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now``\nkinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>``\nlanguage-pack layers), ``gateway_transforms`` / ``hooks`` (hook\nnames), ``callbacks`` (platforms / ``slack:<action_id>``) \u2014 live in the running gateway once it reloaded\n(``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the\nerror) and skills, usable in every open chat of the profile from its next turn \u2014 the chats also get a\nnote listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids)\napply from the next session.",
+        "description": "What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now``\nkinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>``\nlanguage-pack layers), ``gateway_transforms`` / ``hooks`` (hook\nnames), ``callbacks`` (platforms / ``slack:<action_id>``) \u2014 live in the running gateway once it reloaded\n(``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the\nerror) and skills, usable in every open chat of the profile from its next turn \u2014 the chats also get a\nnote listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids)\napply from the next session. ``missing_dependencies``: the plugin's declared Python requirements a\nrunning process cannot import (installed after it booted, or never); ``missing_in`` names which\nprocesses (``gateway``, ``backend`` = the Desktop / dashboard process) \u2014 only restarting them loads them.",
         "properties": {
           "name": {
             "title": "Name",
@@ -27493,6 +27144,20 @@
             },
             "title": "Deferred",
             "type": "object"
+          },
+          "missing_dependencies": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing Dependencies",
+            "type": "array"
+          },
+          "missing_in": {
+            "items": {
+              "$ref": "#/components/schemas/PluginRestartTarget"
+            },
+            "title": "Missing In",
+            "type": "array"
           }
         },
         "required": [
@@ -27677,6 +27342,14 @@
         ],
         "title": "PluginLiveSkill",
         "type": "object"
+      },
+      "PluginRestartTarget": {
+        "enum": [
+          "gateway",
+          "backend"
+        ],
+        "title": "PluginRestartTarget",
+        "type": "string"
       },
       "PluginScanFinding": {
         "additionalProperties": false,
@@ -28114,7 +27787,7 @@
       },
       "PluginsManageResult": {
         "additionalProperties": false,
-        "description": "``list`` \u2192 ``plugins`` + counts; ``toggle`` \u2192 ``ok``/``unchanged``/``restart_required``/``name``\n(the canonical key written)/``plugin``; ``install`` \u2192 ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s\nok payload; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the\nrunning gateway picked it up and re-wired its handlers) and ``activation`` \u2014 the honest split of what is\nlive now vs deferred, so ``restart_required`` is True only when no gateway answered; ``update`` \u2192 ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the\n``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds \u2014 nothing changed until the\nclient retries with ``accept_capabilities`` \u2014 or ``ok=false`` + ``scan_blocked`` with ``scan_verdict`` /\n``scan_findings`` (retry a caution verdict with ``force``); ``remove`` \u2192 ``ok``/``name`` plus\n``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``.",
+        "description": "``list`` \u2192 ``plugins`` + counts; ``toggle`` \u2192 ``ok``/``unchanged``/``restart_required``/``name``\n(the canonical key written)/``plugin``; ``install`` \u2192 ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s\nok payload; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the\nrunning gateway picked it up and re-wired its handlers) and ``activation`` \u2014 the honest split of what is\nlive now vs deferred, so ``restart_required`` is True only when no gateway answered or the running\ngateway/backend cannot import the plugin's Python dependencies (``activation.missing_dependencies``); ``update`` \u2192 ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the\n``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds \u2014 nothing changed until the\nclient retries with ``accept_capabilities`` \u2014 or ``ok=false`` + ``scan_blocked`` with ``scan_verdict`` /\n``scan_findings`` (retry a caution verdict with ``force``); ``remove`` \u2192 ``ok``/``name`` plus\n``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``.",
         "properties": {
           "plugins": {
             "anyOf": [
@@ -33942,6 +33615,7 @@
       },
       "RoomActor": {
         "additionalProperties": false,
+        "description": "``hosted_rooms._ACTOR_FIELDS``; member replies carry ``profile`` plus, when known,\n``display_name`` and the peer ``connection_id`` (``hosted_room_discussion._member_actor``).",
         "properties": {
           "kind": {
             "title": "Kind",
@@ -33950,6 +33624,42 @@
           "id": {
             "title": "Id",
             "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display Name"
+          },
+          "connection_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Connection Id"
           }
         },
         "required": [
@@ -34117,7 +33827,7 @@
       },
       "RoomDriverStatus": {
         "additionalProperties": false,
-        "description": "``HostedRoomService.status(room_id)``; ``pending_actions`` rows are ``{kind: retry, task_id}``\nor the driver's approval action (``kind: approval`` + run/session/approval context).\n``member_activity`` lists live tasks in admission order (absent from older gateways).",
+        "description": "``HostedRoomService.status(room_id)``; ``pending_actions`` rows are the exact attempt\n(``hosted_room_service.attempt_action``: ``kind`` + ``member_id``/``task_id``/``execution_generation``)\nor the driver's approval action (``kind: approval`` + run/session/approval context).\n``member_activity`` lists live tasks in admission order (absent from older gateways).",
         "properties": {
           "running": {
             "title": "Running",
@@ -42111,6 +41821,31 @@
         "title": "SpawnTreeSaveResult",
         "type": "object"
       },
+      "StagedFileUpload": {
+        "additionalProperties": false,
+        "description": "Source identity returned by the browser upload route, checked against the live profile.",
+        "properties": {
+          "install_id": {
+            "title": "Install Id",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "profile_home": {
+            "title": "Profile Home",
+            "type": "string"
+          }
+        },
+        "required": [
+          "install_id",
+          "path",
+          "profile_home"
+        ],
+        "title": "StagedFileUpload",
+        "type": "object"
+      },
       "StatusUpdatePayload": {
         "additionalProperties": false,
         "description": "``server._status_update`` and the direct emitters (goal / loop / heartbeat / process).",
@@ -48131,7 +47866,7 @@
     },
     {
       "name": "prompt.cancel",
-      "summary": "Retire a still-queued admission; a started one is unaffected.",
+      "summary": "Retire a queued admission; a started one is interrupted in the same call.",
       "params": [
         {
           "name": "params",
@@ -48957,30 +48692,6 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/ChangeSignalPayload"
-          }
-        }
-      ]
-    },
-    {
-      "name": "browser.controller.cancel",
-      "summary": "Withdraw a pending controller command.",
-      "params": [
-        {
-          "name": "payload",
-          "schema": {
-            "$ref": "#/components/schemas/BrowserControllerCancelPayload"
-          }
-        }
-      ]
-    },
-    {
-      "name": "browser.controller.command",
-      "summary": "Dispatch one browser action to the attached controller.",
-      "params": [
-        {
-          "name": "payload",
-          "schema": {
-            "$ref": "#/components/schemas/BrowserControllerCommandPayload"
           }
         }
       ]

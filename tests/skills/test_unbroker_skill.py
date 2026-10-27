@@ -889,6 +889,11 @@ def test_defunct_brokers_excluded_from_all_planning():
         q2 = autopilot.next_actions(d, bl, _auto_cfg(), led, env={})
         parked = [t for t in q2["human_digest"] if "deadbroker" in _json.dumps(t)]
         assert len(parked) == 1 and "not_found" in _json.dumps(parked)
+        # blocked / indirect_exposure dead cases are hidden from planning, so they close out too
+        for st in ("blocked", "indirect_exposure"):
+            led["deadbroker"] = {"broker_id": "deadbroker", "state": st}
+            q3 = autopilot.next_actions(d, bl, _auto_cfg(), led, env={})
+            assert [t for t in q3["human_digest"] if "deadbroker" in _json.dumps(t)], st
 
 
 def test_full_autonomy_note_honors_confirm_first():
@@ -901,6 +906,24 @@ def test_full_autonomy_note_honors_confirm_first():
         assert q["autonomy"] == "full"
         assert [a["confirm_first"] for a in q["actions"] if a["type"] == "dnc_register"] == [True]
         assert "EXCEPT on an action with confirm_first=true" in q["note"]
+
+
+def test_defunct_cases_never_recheck_or_wake_even_on_priority_runs():
+    # radaris is curated, crucial and defunct; a --priority high run filters it out of the
+    # broker list, but its ledger case must still be treated as dead.
+    with temp_env():
+        d = _consenting()
+        bl = brokers.by_priority("high")
+        assert "radaris" not in {b["id"] for b in bl} and brokers.get("radaris").get("defunct")
+        led = {"radaris": {"broker_id": "radaris", "state": "confirmed_removed",
+                           "next_recheck_at": "2020-01-01T00:00:00Z"}}
+        q = autopilot.next_actions(d, bl, _auto_cfg(), led, env={})
+        assert not [a for a in q["actions"] if a.get("broker_id") == "radaris"]
+        led["radaris"]["next_recheck_at"] = "2099-01-01T00:00:00Z"
+        assert autopilot.next_actions(d, bl, _auto_cfg(), led, env={})["next_wake_at"] is None
+        led["radaris"] = {"broker_id": "radaris", "state": "awaiting_processing"}
+        q2 = autopilot.next_actions(d, bl, _auto_cfg(), led, env={})
+        assert [t for t in q2["human_digest"] if "radaris" in _json.dumps(t)]
 
 
 def test_ledger_not_found_close_out_only_for_defunct_brokers():
@@ -921,6 +944,9 @@ def test_ledger_not_found_close_out_only_for_defunct_brokers():
         # ... a defunct one can, and the closed case schedules no further wake
         out = _run(["record", sid, "radaris", "not_found", "--reason", "broker defunct"])
         assert out["state"] == "not_found" and out["next_recheck_at"] is None
+    # the defunct flag widens only in-flight -> not_found
+    assert not ledger.can_transition("confirmed_removed", "not_found", broker_defunct=True)
+    assert not ledger.can_transition("submitted", "found", broker_defunct=True)
 
 
 def test_focus_phone_edge_cases():

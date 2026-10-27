@@ -54,7 +54,7 @@ TRANSITIONS: dict[str, set[str]] = {
 
 # A defunct broker (structured `defunct` field in its record: domain seized / NXDOMAIN) cannot
 # hold a listing, so its open case may close as not_found from an in-flight state. Gated on the
-# broker record in `transition(..., broker_defunct=True)`: a LIVE broker's in-flight request
+# broker record via `can_transition(..., broker_defunct=True)`: a LIVE broker's in-flight request
 # waits out its processing window and is confirmed by a verifying re-scan instead.
 DEFUNCT_CLOSEOUT_FROM = frozenset({"action_selected", "submitted", "verification_pending",
                                    "awaiting_processing", "human_task_queued"})
@@ -89,8 +89,10 @@ def get_case(subject_id: str, broker_id: str) -> dict:
     return load(subject_id).get(broker_id) or new_case(subject_id, broker_id)
 
 
-def can_transition(old: str, new: str) -> bool:
-    return new == old or new in TRANSITIONS.get(old, set())
+def can_transition(old: str, new: str, *, broker_defunct: bool = False) -> bool:
+    if new == old or new in TRANSITIONS.get(old, set()):
+        return True
+    return broker_defunct and new == "not_found" and old in DEFUNCT_CLOSEOUT_FROM
 
 
 def transition(subject_id: str, broker_id: str, new_state: str, *, broker_defunct: bool = False,
@@ -103,8 +105,7 @@ def transition(subject_id: str, broker_id: str, new_state: str, *, broker_defunc
         ledger = load(subject_id)
         case = ledger.get(broker_id) or new_case(subject_id, broker_id)
         old = case.get("state", "new")
-        defunct_closeout = broker_defunct and new_state == "not_found" and old in DEFUNCT_CLOSEOUT_FROM
-        if not (can_transition(old, new_state) or defunct_closeout):
+        if not can_transition(old, new_state, broker_defunct=broker_defunct):
             raise ValueError(f"illegal transition {old!r} -> {new_state!r} for broker {broker_id!r}")
         case["state"] = new_state
         if new_state == "not_found":

@@ -53,9 +53,9 @@ def _now_iso() -> str:
     return _dt.datetime.now(_dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _min_future_recheck(ledger: dict, at: str) -> str | None:
-    future = [c.get("next_recheck_at") for c in ledger.values()
-              if c.get("next_recheck_at") and c["next_recheck_at"] > at]
+def _min_future_recheck(ledger: dict, at: str, skip: set | frozenset = frozenset()) -> str | None:
+    future = [c.get("next_recheck_at") for bid, c in ledger.items()
+              if bid not in skip and c.get("next_recheck_at") and c["next_recheck_at"] > at]
     return min(future) if future else None
 
 
@@ -122,9 +122,11 @@ def _email_identity_ready(dossier: dict) -> bool:
                 and dossier_mod.contact_email(dossier))
 
 
-# Open defunct cases worth closing: the states with an ordinary not_found edge plus the
-# in-flight states the ledger lets a defunct broker close from.
-_DEFUNCT_OPEN_STATES = {"found", "blocked", "indirect_exposure"} | ledger_mod.DEFUNCT_CLOSEOUT_FROM
+# Open defunct cases worth closing: every state the ledger lets a defunct broker leave for
+# not_found, minus the pre-verdict ones (new/searching) that never hold a listing.
+_DEFUNCT_OPEN_STATES = {s for s in ledger_mod.STATES
+                        if s not in {"new", "searching", "not_found"}
+                        and ledger_mod.can_transition(s, "not_found", broker_defunct=True)}
 
 
 def _defunct_closeout_digest(ledger: dict, defunct_ids: set, by_id: dict, subject_id: str) -> list[dict]:
@@ -355,7 +357,9 @@ def next_actions(dossier: dict, brokers_list: list[dict], cfg: dict,
     groups = batch["groups"]
     playbook = {p["broker_id"]: p for p in batch.get("parent_playbook") or []}
     by_id = {b.get("id"): b for b in brokers_list}
-    defunct_ids = {b.get("id") for b in brokers_list if b.get("defunct")}
+    # From the whole catalog, not just brokers_list: `next --priority` passes a filtered list
+    # but the ledger loops below walk every case.
+    defunct_ids = {b.get("id") for b in [*brokers_list, *brokers_mod.load_all()] if b.get("defunct")}
 
     actions: list[dict] = []
     digest: list[dict] = []
@@ -506,7 +510,7 @@ def next_actions(dossier: dict, brokers_list: list[dict], cfg: dict,
         elif drop_filed:
             coverage["note"] = "DROP already filed; registry deletions are in the brokers' hands."
 
-    next_wake = _min_future_recheck(ledger, at)
+    next_wake = _min_future_recheck(ledger, at, skip=defunct_ids)  # a dead case never wakes us
     return {
         "subject": subject_id,
         "autonomy": autonomy,

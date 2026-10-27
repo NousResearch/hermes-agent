@@ -150,8 +150,8 @@ class AuthorityConnection:
         if (not identity.get('user_id')
                 or identity.get('instance_id', authority.instance_id) != authority.instance_id):
             capabilities = frozenset()
-        from gateway.session_identity import authenticated_subject
-        self.actor = Principal(authenticated_subject(identity),
+        from gateway.owner_identity import principal_subject
+        self.actor = Principal(principal_subject(identity),
                                identity.get('profile_id', authority.profile_id),
                                capabilities, uuid.uuid4().hex)
         from gateway.session_local_migration import bind_native_transport

@@ -25,20 +25,18 @@ def legacy_account_label(row):
 
 
 def login_owned_by(row, subject):
-    """Whether *subject* is the login a served remote backend stamped on this Desktop row.
+    """Whether *subject* owns the login stamp a served dashboard put on this row.
 
-    ``hermes serve`` stamps the WS-upgrade login as ``<provider>:<user id>``
-    (tui_gateway/session_transports.py). Unlike the Nous label that stamp IS an owner: once a
-    login's dashboard writes reach the gateway as that login, reading it as no-owner let login bob
-    rename, claim and delete alice's chats (#140183 review F1). So it adopts only for the caller
-    whose authenticated subject spells exactly that label (``_login_label``: issuer-less logins
-    only); every other caller, the host's own native peer included, still meets a foreign owner.
+    Older ``hermes serve`` builds stamped the WS-upgrade login as ``<provider>:<user id>``
+    (tui_gateway/session_transports.py), and the gateway stored a Webapp login as its
+    ``auth:v1:[...]`` subject. Hermes is single-user and sign-in is owner-only, so both name the
+    machine owner: the host owner's subject adopts them (gateway.owner_identity.owns_row_stamp).
     """
     user_id = row.get('user_id')
-    if row['source'] != 'desktop' or not isinstance(user_id, str) or not subject:
+    if not isinstance(user_id, str) or not subject:
         return False
-    from hermes_state_mutation_binding import _login_label
-    return _login_label(subject) == user_id
+    from gateway.owner_identity import owns_row_stamp
+    return owns_row_stamp(user_id, subject)
 
 
 def validate_legacy_row(db, row, *, subject=None):

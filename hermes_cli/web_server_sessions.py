@@ -95,12 +95,12 @@ def _session_mutation_context(request, profile):
     if native is not None:
         subject = native['subject']
     elif session is not None:
-        from gateway.session_identity import authenticated_subject
-        subject = authenticated_subject({"user_id": session.user_id,
+        from gateway.owner_identity import principal_subject
+        subject = principal_subject({"user_id": session.user_id,
             "provider": session.provider, "issuer": session.issuer})
     elif not getattr(request.app.state, 'auth_required', False) and _has_valid_session_token(request):
-        from gateway.session_identity import authenticated_subject
-        subject = authenticated_subject({'user_id': 'legacy-token-owner', 'provider': 'session-token'})
+        from gateway.owner_identity import host_owner_subject
+        subject = host_owner_subject()
     else:
         raise HTTPException(status_code=401, detail='Unauthorized')
     authority = getattr(request.app.state, 'session_authority', None)

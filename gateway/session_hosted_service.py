@@ -113,7 +113,8 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
                 if historical is None:
                     conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)', (key, actor_subject))
                     return True
-            if row is None or row[0] != actor_subject:
+            from gateway.owner_identity import same_owner
+            if row is None or not same_owner(row[0], actor_subject):
                 raise RuntimeStoreError('permission_denied')
             return True
         return write(conn) if conn is not None else self.authority.db._execute_write(write)

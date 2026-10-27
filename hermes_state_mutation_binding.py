@@ -35,6 +35,17 @@ def _login_label(subject):
     return None if label.startswith('auth:') else label
 
 
+def _bound_to(saved, actor):
+    """Whether a stored ``[profile_id, subject]`` binding names *actor*: same profile, and the same
+    owner (a binding a Webapp login stored belongs to the machine owner, gateway.owner_identity)."""
+    try:
+        profile_id, subject = json.loads(saved)
+    except (TypeError, ValueError):
+        return False
+    from gateway.owner_identity import same_owner
+    return profile_id == actor.profile_id and same_owner(subject, actor.subject)
+
+
 def import_history_control(conn, actor, session_ids):
     binding = json.dumps([actor.profile_id, actor.subject], separators=(',', ':'))
     for sid in session_ids:
@@ -54,12 +65,13 @@ def authorize_history(conn, actor, session_id, *, claim=False):
     binding = json.dumps([actor.profile_id, actor.subject], separators=(',', ':'))
     saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
     if saved is not None:
-        if saved[0] != binding:
+        if not _bound_to(saved[0], actor):
             raise RuntimeStoreError('permission_denied')
         return True
     if row['source'] not in _history_sources():
         return False
-    if _owner_user(row) and row['user_id'] not in (actor.subject, _login_label(actor.subject)):
+    from gateway.owner_identity import owns_row_stamp
+    if _owner_user(row) and not owns_row_stamp(row['user_id'], actor.subject):
         raise RuntimeStoreError('permission_denied')
     if 'session:create' not in actor.capabilities:
         raise RuntimeStoreError('permission_denied')

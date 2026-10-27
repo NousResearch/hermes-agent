@@ -883,6 +883,7 @@ dashboard:
       client_id: hermes-dashboard                              # required
       scopes: "openid profile email"                           # optional (this is the default)
       id_token_leeway: 60                                      # optional; seconds of clock-skew tolerance
+      owner: "<your sub claim>"                              # optional; the one account that may sign in
 ```
 
 **Environment variables** — operator overrides (env wins over `config.yaml` when set non-empty; an empty value is treated as unset):
@@ -896,6 +897,8 @@ dashboard:
 In your IDP, register a **public** application/client with the authorization-code + PKCE (S256) grant and add the dashboard's callback as an allowed redirect URI. The callback is `<dashboard public URL>/auth/callback` (see [Public URL override](#public-url-override) for how the dashboard derives its public URL behind a proxy).
 
 #### What it verifies
+
+Hermes is single-user, so this sign-in admits exactly one IdP account: the machine owner's. Name it with `dashboard.oauth.self_hosted.owner` (the account's `sub` claim). Unset, the first account that signs in is pinned as the owner in `dashboard-auth/self-hosted-owner.json` under your Hermes home (delete that file to choose again), and every other account of the IdP gets a failed sign-in. A signed-in browser acts as you on this machine: it sees and resumes the same chats and Group Chats as native Desktop.
 
 The provider verifies the OpenID Connect **ID token** (RS256/ES256) against the discovered `jwks_uri`, with the `iss` and `aud` claims pinned to your configured `issuer` and `client_id`. The time claims (`exp`/`nbf`/`iat`) are verified with a 60-second clock-skew leeway (RFC 7519 §4.1.4-4.1.6), so a dashboard host whose clock lags the IDP's doesn't fail login; tune it with `dashboard.oauth.self_hosted.id_token_leeway` in `config.yaml` (any value below `60` tightens it, `0` restores strict verification, and an invalid value fails closed to `0`). Standard OIDC claims map onto the dashboard session:
 

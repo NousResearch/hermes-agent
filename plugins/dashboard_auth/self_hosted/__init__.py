@@ -21,7 +21,7 @@ from typing import Any, Dict, Optional
 
 import httpx
 
-from hermes_cli.dashboard_auth import LoginStart, ProviderError, Session
+from hermes_cli.dashboard_auth import InvalidCodeError, LoginStart, ProviderError, Session
 from plugins.dashboard_auth._shared import (
     DEFAULT_TOKEN_LEEWAY_SECONDS,
     JSON_HEADERS,
@@ -89,7 +89,7 @@ class SelfHostedOIDCProvider(JwtOAuthProvider):
 
     def __init__(
         self, *, issuer: str, client_id: str, scopes: str = _DEFAULT_SCOPES, client_secret: str = "",
-        id_token_leeway: float = DEFAULT_TOKEN_LEEWAY_SECONDS,
+        id_token_leeway: float = DEFAULT_TOKEN_LEEWAY_SECONDS, owner: str = "",
     ) -> None:
         if not issuer:
             raise ValueError("issuer is required")
@@ -107,6 +107,7 @@ class SelfHostedOIDCProvider(JwtOAuthProvider):
         # Empty/whitespace secret ⇒ public client, so a provisioned-but-blank secret
         # can't flip us into a broken confidential mode.
         self._client_secret = (client_secret or "").strip()
+        self._owner = (owner or "").strip()
         # Discovery + JWKS resolve lazily so registration never hits the network
         # (the IDP may be down at boot; fail per-request instead).
         self._discovery: dict[str, Any] | None = None
@@ -183,7 +184,12 @@ class SelfHostedOIDCProvider(JwtOAuthProvider):
                 "OIDC token response missing id_token — ensure the 'openid' "
                 "scope is configured and the client is allowed to receive an "
                 "ID token."))
-        claims = self._verify_id_token(id_token)
+        try:
+            claims = self._owner_claims(id_token)
+        except InvalidCodeError as exc:
+            if bad_request_exc is InvalidCodeError:
+                raise
+            raise bad_request_exc(str(exc)) from exc  # a refresh for another account just ends
         # Prefer a freshly-issued RT, else keep the previous (some IDPs don't rotate).
         return self._session(id_token, refresh_token_from(payload, previous_refresh_token), claims)
 
@@ -267,7 +273,17 @@ class SelfHostedOIDCProvider(JwtOAuthProvider):
             id_token, self._get_jwks_client(), algorithms=list(_ALLOWED_ID_TOKEN_ALGS),
             audience=self._client_id, issuer=issuer, label="ID token", leeway=self._id_token_leeway)
 
-    _claims_for = _verify_id_token
+    def _owner_claims(self, id_token: str) -> dict[str, Any]:
+        """Verified claims of the machine owner's IdP account only. Hermes is single-user: a signed-in
+        Webapp tab acts as the owner (gateway.owner_identity), so any other account of the same IdP
+        must not sign in at all. ``dashboard.oauth.self_hosted.owner`` names the owner's ``sub``;
+        unset, the first account that signs in is pinned as the owner (``owner_pin``)."""
+        claims = self._verify_id_token(id_token)
+        from plugins.dashboard_auth.self_hosted.owner_pin import require_owner
+        require_owner(self._issuer, str(claims.get("sub", "")), self._owner)
+        return claims
+
+    _claims_for = _owner_claims
 
     def _session(self, id_token: str, refresh_token: str, claims: dict[str, Any]) -> Session:
         """Map verified OIDC claims onto a Session. The verified ID token is stored in
@@ -314,7 +330,9 @@ def _settings() -> dict:
         # Credential: canonical home is the env var / ~/.hermes/.env. Empty ⇒ public client.
         "client_secret": setting("HERMES_DASHBOARD_OIDC_CLIENT_SECRET", "client_secret"),
         # Clock-skew tolerance for ID-token exp/nbf/iat (config.yaml only; default 60s, 0 = strict).
-        "id_token_leeway": parse_leeway(oidc_cfg.get("id_token_leeway"))}
+        "id_token_leeway": parse_leeway(oidc_cfg.get("id_token_leeway")),
+        # The owner's ``sub`` (config.yaml only): the one IdP account that may sign in.
+        "owner": str(oidc_cfg.get("owner") or "")}
 
 
 def register(ctx) -> None:

@@ -13,9 +13,11 @@
  *    time, and again at launch ONLY when the marker shows a prior aborted
  *    boot — never on healthy launches (icacls /T recursion is not free).
  * 2. `--no-sandbox` (second line): enabled only on strong evidence —
- *    a signature-confirmed GPU/renderer breakpoint death, or TWO consecutive
+ *    a signature-confirmed GPU/renderer breakpoint death, or repeated
  *    mid-boot aborts (a single abort can be a task-manager kill or power
  *    loss; the reported failure mode is a deterministic 100% crash loop).
+ *    Two consecutive aborts are the threshold, except after an update, where
+ *    the one-shot re-probe only needs to abort once.
  *    On Linux (#121954) the evidence signal is the GPU child dying with
  *    SIGTERM — Chromium's own "GPU process isn't usable. Goodbye." shutdown
  *    for a GPU process that never came up — which the host matrix pinned to
@@ -59,7 +61,7 @@ export const WINDOWS_SANDBOX_BREAKPOINT_EXIT = -2147483645
 /** Consecutive mid-boot aborts required before enabling --no-sandbox. */
 export const BOOT_ABORTS_BEFORE_FALLBACK = 2
 
-export type SandboxMarkerState = 'booting' | 'fallback' | 'ok'
+export type SandboxMarkerState = 'booting' | 'fallback' | 'ok' | 'running'
 
 export type SandboxFallbackReason = 'gpu-breakpoint' | 'renderer-crash-loop' | 'boot-loop'
 
@@ -69,7 +71,10 @@ export interface SandboxMarker {
   reason?: SandboxFallbackReason
   /** App version that entered fallback — a version change triggers a re-probe. */
   version?: string
-  /** Consecutive aborted boots observed so far (state === 'booting'). */
+  /** Consecutive aborted boots observed so far (state === 'booting'). Absent
+   *  means zero: `parseSandboxMarker` drops a non-positive count, so an explicit
+   *  `0` written by decideWindowsSandboxLaunch does not survive a round trip
+   *  through disk — every read already normalizes with `?? 0`. */
   bootAborts?: number
   /** This boot is a sandbox re-probe after an app update; an abort returns
    *  straight to fallback instead of restarting the two-strike count. */
@@ -113,7 +118,7 @@ export function parseSandboxMarker(raw: unknown): SandboxMarker | null {
   const record = raw as Record<string, unknown>
   const state = record.state
 
-  if (state !== 'booting' && state !== 'fallback' && state !== 'ok') {
+  if (state !== 'booting' && state !== 'fallback' && state !== 'ok' && state !== 'running') {
     return null
   }
 
@@ -176,6 +181,28 @@ export interface SandboxLaunchDecision {
   reason: string | null
   /** Marker to persist immediately, before GPU/sandbox children start. */
   nextMarker: SandboxMarker
+  /** A `running` leftover: the prior run reached a usable window, then died
+   *  without a clean quit (main-process abort, task-manager kill, power
+   *  loss). Steady-state evidence, never boot evidence. */
+  priorSteadyAbort?: boolean
+}
+
+/**
+ * Does this launch still OWE the sandbox its one allowed post-update retry?
+ *
+ * Both halves are required. The version-change arm arms `reprobe` for the
+ * sandboxed re-probe launch itself (`enable: false`, sandbox ON) — and that
+ * launch spending the retry by reaching a window is the entire point of arming
+ * it. So the retry only survives when this launch owed it AND could not spend
+ * it, i.e. when we also ran with the sandbox off.
+ *
+ * The caller owns this answer today, which is how an earlier version of this
+ * branch ended up keying the reveal on "did we run without the sandbox" alone:
+ * a manual `hermes --no-sandbox` satisfies that too, fabricating a retry on a
+ * healthy host and latching it into `--no-sandbox` after one ordinary abort.
+ */
+export function launchStillOwesReprobe(decision: SandboxLaunchDecision): boolean {
+  return decision.nextMarker.reprobe === true && decision.enable === true
 }
 
 /**
@@ -219,14 +246,34 @@ export function decideWindowsSandboxLaunch(
   if (alreadyHasNoSandbox(argv, env)) {
     // Honor the explicit flag; keep the marker lifecycle unchanged. When the
     // relaunch path set the flag, the fallback marker it wrote is preserved.
-    const nextMarker: SandboxMarker = marker?.state === 'fallback' ? marker : { state: 'booting' }
+    //
+    // A pending post-update `reprobe` also survives: this launch runs with the
+    // sandbox already off, so it is not the process that gets to use the retry.
+    // The process that actually exercises the sandbox comes later, and it must
+    // still find the retry armed or a still-broken sandbox gets a free extra
+    // attempt (two aborts to reach fallback instead of one). Carried from the
+    // same two states recordDirectCleanExit accepts, so the three sites that
+    // preserve a pending retry cannot drift apart.
+    let nextMarker: SandboxMarker
+    if (marker?.state === 'fallback') {
+      nextMarker = marker
+    } else if (
+      (marker?.state === 'booting' || marker?.state === 'running') &&
+      marker.reprobe === true
+    ) {
+      nextMarker = { state: 'booting', reprobe: true }
+    } else {
+      nextMarker = { state: 'booting' }
+    }
 
     return { enable: true, reason: 'already-enabled', nextMarker }
   }
 
   if (marker?.state === 'fallback') {
     if (marker.version && appVersion && marker.version !== appVersion) {
-      // App updated since the fallback engaged — re-probe the sandbox once.
+      // App updated since the fallback engaged — re-probe the sandbox once. The
+      // explicit zero restates the fresh budget this launch starts from; it is
+      // dropped on the next disk round trip by parseSandboxMarker either way.
       return {
         enable: false,
         reason: null,
@@ -268,6 +315,26 @@ export function decideWindowsSandboxLaunch(
     }
   }
 
+  if (marker?.state === 'running') {
+    // The prior run reached a usable window and then died without before-quit
+    // (#112961 main-process abort, task-manager kill, power loss). This is
+    // steady-state evidence, not boot evidence: it must not count toward the
+    // boot-loop fallback and must not trigger ACL repair.
+    //
+    // A `reprobe` here means the window came up on a launch that owed a retry
+    // but could not exercise the sandbox (see markerAfterSuccessfulBoot's
+    // `pendingReprobe`), so the retry is still owed and moves to this launch.
+    // Whether that launch really was owed one is the caller's decision; this
+    // arm only carries the flag forward.
+    const nextMarker: SandboxMarker = { state: 'booting' }
+
+    if (marker.reprobe === true) {
+      nextMarker.reprobe = true
+    }
+
+    return { enable: false, reason: null, nextMarker, priorSteadyAbort: true }
+  }
+
   // No marker, or a clean `ok` from the previous run.
   return { enable: false, reason: null, nextMarker: { state: 'booting' } }
 }
@@ -286,13 +353,40 @@ export function fallbackMarker(reason: SandboxFallbackReason, appVersion?: strin
  * After the main window reaches ready-to-show: keep the sticky fallback when
  * we launched with `--no-sandbox`, otherwise mark a clean boot so future
  * launches trust the sandbox again.
+ *
+ * `steady` (window-reveal path) records `running` instead of `ok`: a later
+ * main-process abort then leaves a `running` leftover behind, so the next
+ * launch can tell a mid-session death (#112961) from a clean quit. Both
+ * clean-exit handlers now go through `recordDirectCleanExit()` instead, which
+ * decides between `ok` and a preserved `reprobe`.
  */
 export function markerAfterSuccessfulBoot(options: {
   fallbackActive: boolean
   reason?: SandboxFallbackReason
   appVersion?: string
+  steady?: boolean
+  pendingReprobe?: boolean
 }): SandboxMarker {
   if (!options.fallbackActive) {
+    if (options.steady) {
+      const marker: SandboxMarker = { state: 'running' }
+
+      if (options.appVersion) {
+        marker.version = options.appVersion
+      }
+
+      // A post-update `reprobe` survives only on a reveal that could not spend
+      // it. A reveal that DID run sandboxed is the re-probe succeeding, which
+      // legitimately consumes the retry, so `running` is written plain there.
+      // The caller owns that distinction: pass `pendingReprobe` only when this
+      // launch owed a retry AND ran with the sandbox off.
+      if (options.pendingReprobe) {
+        marker.reprobe = true
+      }
+
+      return marker
+    }
+
     return { state: 'ok' }
   }
 
@@ -418,6 +512,64 @@ export function shouldRelaunchForRendererSandboxCrashLoop(options: {
   }
 
   return isWindowsSandboxBreakpointExit(options.exitCode)
+}
+
+/**
+ * Record a direct clean exit into the sandbox marker file.
+ *
+ * `app.exit()` never emits `before-quit`, so the clean `ok` write in that
+ * handler does not run for an in-app relaunch or a GPU/renderer fallback
+ * relaunch — the `running` marker window reveal wrote would stay behind and the
+ * next launch would read it as a steady abort (#112961 instrumentation).
+ *
+ * This owns BOTH the decision and the write, so the seam is exercisable: a test
+ * of a pure decision alone cannot see whether main.ts routes its clean exits
+ * here. `writeSandboxMarker` injects its own fs calls.
+ *
+ * Keyed on sticky (not active) to match the before-quit handler: an engaged
+ * fallback keeps its sticky marker. The platform gate belongs to the callers,
+ * exactly as the reveal and startup writes gate theirs — the marker itself is
+ * not platform-specific (both #38216 and #121954 write and read it).
+ *
+ * A clean `app.exit()` is a deliberate relaunch, so it spends no evidence: the
+ * startup `booting` marker is written before any window exists, so this run may
+ * never have revealed one, and a clean exit must not advance the two-strike
+ * `bootAborts` budget, so no strike is recorded at all.
+ *
+ * The one thing that IS carried forward is a pending post-update `reprobe`.
+ * That flag does not describe THIS process — it describes the NEXT one: it is
+ * the sandbox's one allowed retry after an app update, and if a clean relaunch
+ * happened between arming it and the process that actually exercises the
+ * sandbox, then discarding it would silently hand a still-broken sandbox an
+ * extra free attempt (it would need a second abort to reach fallback instead of
+ * one). So a `booting`+`reprobe` leftover stays armed and just stops counting
+ * aborts; every other prior state becomes plain `ok`.
+ */
+export function recordDirectCleanExit(
+  userDataDir: string,
+  options: {
+    stickyFallback: boolean
+  }
+): void {
+  if (options.stickyFallback) {
+    return
+  }
+
+  // Only `reprobe` describes the next process rather than this one, so it is
+  // the single field a clean exit carries forward. It can be pending on either
+  // `booting` (relaunch before a window ever appeared) or `running` (a window
+  // appeared, but on a boot that ran with the sandbox already off, so it
+  // proves nothing). See the docstring.
+  const prior = readSandboxMarker(userDataDir)
+  const pendingReprobe =
+    (prior?.state === 'booting' || prior?.state === 'running') && prior.reprobe === true
+
+  writeSandboxMarker(
+    userDataDir,
+    pendingReprobe
+      ? { state: 'booting', reprobe: true }
+      : { state: 'ok' }
+  )
 }
 
 export function buildNoSandboxRelaunchArgs(argv: readonly string[]): string[] {

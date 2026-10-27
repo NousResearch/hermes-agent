@@ -11,12 +11,14 @@ import tempfile
 from pathlib import Path
 from typing import Iterable
 
+from hermes_constants import socket_safe_tmpdir
 from tools.environments.base import BaseEnvironment, EnvironmentConnectionError
 from tools.environments.base_output import _popen_bash
 from tools.environments.file_sync import (
     FileSyncManager, iter_sync_files, quoted_mkdir_command, quoted_rm_command, unique_parent_dirs)
 from tools.environments.remote_common import (
     bash_argv, client_env_with, load_hermes_env_vars, prepend_unset, resolve_passthrough_env, run_capture)
+from tools.spill_safety import ensure_owned_private_dir
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +44,39 @@ def _sync_error(reason: str, subject: str, what: str = "the SSH connection") -> 
         reason, retry_hint=f"{subject} failed — verify {what} is healthy, then retry.")
 
 
+# A control dir must leave room for ``/<16 hex>.sock`` plus the 17-byte suffix OpenSSH appends to
+# its temporary ControlMaster listener, inside macOS's 103 usable ``sun_path`` bytes (Linux: 107).
+_CONTROL_DIR_MAX_BYTES = 103 - len("/0123456789abcdef.sock") - 17
+_SHORT_TMP_ROOT = "/tmp"  # no-tmp: ok — AF_UNIX sun_path budget; every dir under it is ownership-checked
+
+
+def _open_control_dir() -> tuple[Path, bool]:
+    """Per-user ControlMaster socket dir that fits ``sun_path`` (#133436) and is proven ours (#80284).
+
+    Candidates, best first: ``$XDG_RUNTIME_DIR`` (per-user 0700), then a per-uid name under the
+    socket-safe temp root and under ``/tmp`` (a deep profile scratch TMPDIR does not fit). Those
+    names are predictable and the roots may be shared, so a candidate that is not a real directory
+    we own (pre-created by another user, or a planted symlink) is refused rather than adopted;
+    when every one is squatted, a fresh ``mkdtemp`` dir keeps the backend up. The flag is True
+    only for that fallback: it belongs to this instance alone, so its ``cleanup()`` removes it."""
+    if not _SSH_MULTIPLEX:  # no Unix-socket ControlMaster; %TEMP% is per-user
+        return Path(ensure_owned_private_dir(Path(tempfile.gettempdir()) / "hermes-ssh")), False
+    per_user = f"hermes-ssh-{os.getuid()}"  # windows-footgun: ok — POSIX only (_SSH_MULTIPLEX)
+    roots = list(dict.fromkeys(r for r in (socket_safe_tmpdir(), _SHORT_TMP_ROOT) if os.path.isdir(r)))
+    candidates = [Path(root) / per_user for root in roots]
+    xdg = os.environ.get("XDG_RUNTIME_DIR", "")
+    if os.path.isabs(xdg) and os.path.isdir(xdg):
+        candidates.insert(0, Path(xdg) / "hermes-ssh")
+    for candidate in candidates:
+        if len(os.fsencode(candidate)) > _CONTROL_DIR_MAX_BYTES:
+            continue
+        try:
+            return Path(ensure_owned_private_dir(candidate)), False
+        except OSError as exc:
+            logger.warning("SSH: not using control-socket dir %s: %s", candidate, exc)
+    return Path(tempfile.mkdtemp(prefix="hssh-", dir=min(roots, key=len))), True
+
+
 class SSHEnvironment(BaseEnvironment):
     """Run commands on a remote machine over SSH.
 
@@ -61,8 +96,7 @@ class SSHEnvironment(BaseEnvironment):
                  probe_only: bool = False, sync_files: bool = True, persistent: bool = True):
         super().__init__(cwd=cwd, timeout=timeout, persist_env=persistent)
         self.host, self.user, self.port, self.key_path = host, user, port, key_path
-        self.control_dir = Path(tempfile.gettempdir()) / "hermes-ssh"
-        self.control_dir.mkdir(parents=True, exist_ok=True)
+        self.control_dir, self._owns_control_dir = _open_control_dir()
         # Short, deterministic socket name: the path must stay under macOS's 104-byte sun_path
         # limit (raw user@host:port + SSH's 16-byte suffix under a deep $TMPDIR exceeds it), and
         # stability across reconnects keeps ControlMaster reuse working. A probe gets its own
@@ -300,3 +334,5 @@ class SSHEnvironment(BaseEnvironment):
                 subprocess.run(cmd, capture_output=True, timeout=5, stdin=subprocess.DEVNULL, check=False)
             with contextlib.suppress(OSError):
                 socket.unlink()
+        if self._owns_control_dir:
+            shutil.rmtree(self.control_dir, ignore_errors=True)

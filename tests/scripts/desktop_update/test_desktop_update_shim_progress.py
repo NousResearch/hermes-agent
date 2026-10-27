@@ -122,10 +122,7 @@ FAKE_HERMES = """#!/usr/bin/env bash
 case "$*" in *--help*) echo "--keep-stash"; exit 0 ;; esac
 n="$(cat "$HERMES_TEST_CALLS" 2>/dev/null || echo 0)"; n=$((n + 1))
 printf '%s' "$n" > "$HERMES_TEST_CALLS"
-for f in "$TMPDIR"/hermes-update-status.[0-9]*; do
-  case "$f" in *.tmp) continue ;; esac
-  cp "$f" "$HERMES_TEST_CAPTURE.$n" 2>/dev/null
-done
+cp "$HERMES_UPDATE_STATUS_FILE" "$HERMES_TEST_CAPTURE.$n" 2>/dev/null
 exit "$(cat "$HERMES_TEST_EXITS.$n" 2>/dev/null || echo 0)"
 """
 
@@ -174,7 +171,7 @@ def _run_handoff(tmp_path, exits: dict[int, int]) -> list[dict]:
 
     seen = sorted(tmp_path.glob("seen.*"), key=lambda p: int(p.suffix[1:]))
 
-    return [json.loads(p.read_text()) for p in seen]
+    return [json.loads(p.read_text(encoding="utf-8-sig")) for p in seen]
 
 
 @requires_posix_handoff

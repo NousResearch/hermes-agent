@@ -102,7 +102,7 @@ MARKER="$HERMES_HOME/.hermes-update-in-progress"
 LOG_DIR="$HERMES_HOME/logs"; mkdir -p "$LOG_DIR" 2>/dev/null || true
 LOG="$LOG_DIR/desktop-update-handoff.log"
 RESULT="$HERMES_HOME/.hermes-update-result.json"
-STATUS="${TMPDIR:-/tmp}/hermes-update-status.$$"
+RUN_DIR="" STATUS=""  # set by open_run_dir once this process owns the run
 STARTED_AT="$(date +%s)"  # the shim's elapsed clock; see serve-ui.py
 # Separate identity from both heartbeat time and adopt-only HANDOFF_RUN.
 # Old Desktop / direct launches need an ID too, without changing claim rules.
@@ -349,7 +349,21 @@ notify_fallback() { # status message — renderer-free recovery surface.
   log "NOTICE: no notification surface accepted; outcome reaches the user via the result dialog on next launch: $2"
 }
 
+open_run_dir() {
+  # The status JSON the progress window renders and its .tmp/.port siblings live in a fresh
+  # mktemp -d (0700, unpredictable name), never at fixed names in a shared /tmp that another
+  # local user could pre-create or symlink. Children find it via HERMES_UPDATE_STATUS_FILE; the
+  # start-of-run sweep reaps a killed run's dir by the pid in its name. No dir means no UI,
+  # never a failed update.
+  if RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hermes-update-run-$$-XXXXXXXX" 2>/dev/null)"; then
+    STATUS="$RUN_DIR/status.json"
+  else
+    RUN_DIR="" STATUS=""; log "shim: could not allocate a private status dir; continuing without UI"
+  fi
+}
+
 write_status() { # status message -- atomic replace; the server reads per poll
+  [ -n "$STATUS" ] || return 0  # no private dir: no UI
   printf '{"status":"%s","message":"%s"}' "$(json_escape "$1")" "$(json_escape "$2")" > "$STATUS.tmp" \
     && mv -f "$STATUS.tmp" "$STATUS" 2>/dev/null || true
 }
@@ -425,7 +439,7 @@ start_status_panel() { # the macOS no-browser shim: osascript (JXA) panel.
 }
 
 start_ui() {
-  [ "$NO_UI" -eq 1 ] && return
+  { [ "$NO_UI" -eq 1 ] || [ -z "$STATUS" ]; } && return
   local html="$SCRIPT_DIR/ui.html" py browser port="" i
   py="${INSTALL_ROOT:+$INSTALL_ROOT/venv/bin/python3}"
   [ -x "${py:-/nonexistent}" ] || py="$(command -v python3 2>/dev/null)"
@@ -693,13 +707,15 @@ launch_app() { # attempted BEFORE the terminal event (launch acceptance is
     # spawn, then confirm the child is still alive shortly after — an
     # immediate exec failure (ENOENT, ELF mismatch, dead sandbox) dies
     # within the window and downgrades to manual instead of lying.
-    (cd "${RELAUNCH_CWD:-/}" 2>/dev/null || cd /
-     # The relaunched app must not inherit the hand-off's update env.
+    # $(...) carries the pid back without a file; the app's stdio is /dev/null, so the
+    # substitution returns as soon as the wrapper subshell exits. The relaunched app must not
+    # inherit the hand-off's update env. Keep comments OUT of the $(...) body: bash 3.2
+    # (macOS /bin/bash) mis-parses an apostrophe in a comment there as an open quote.
+    local lp
+    lp="$(cd "${RELAUNCH_CWD:-/}" 2>/dev/null || cd /
      env -u HERMES_UPDATE_STATUS_FILE -u HERMES_UPDATE_STARTED_AT -u HERMES_UPDATE_HANDOFF_PID -u PYTHONUNBUFFERED \
        setsid "$RELAUNCH_TARGET" ${RELAUNCH_ARGS[@]+"${RELAUNCH_ARGS[@]}"} >/dev/null 2>&1 &
-     echo $! > "$STATUS.launchpid") || { log "WARNING: relaunch spawn failed"; return 1; }
-    local lp
-    lp="$(cat "$STATUS.launchpid" 2>/dev/null)"; rm -f "$STATUS.launchpid" 2>/dev/null
+     echo $!)" || { log "WARNING: relaunch spawn failed"; return 1; }
     [ -n "$lp" ] || { log "WARNING: relaunch pid unknown"; return 1; }
     sleep 1.5
     kill -0 "$lp" 2>/dev/null || { log "WARNING: relaunched app exited immediately"; return 1; }
@@ -751,7 +767,7 @@ finish() {
   if [ "$FINAL_CODE" -ne 0 ]; then
     publish "error" "$FINAL_MSG"; stop_ui leave-window
     launch_app || true   # error path still tries to bring the app back
-    rm -f "$STATUS" "$STATUS.tmp" "$STATUS.port" 2>/dev/null || true
+    rm -rf "$RUN_DIR" 2>/dev/null || true
     return
   fi
 
@@ -778,7 +794,7 @@ finish() {
     write_result
     publish "manual" "$FINAL_MSG"; stop_ui leave-window
   fi
-  rm -f "$STATUS" "$STATUS.tmp" "$STATUS.port" 2>/dev/null || true
+  rm -rf "$RUN_DIR" 2>/dev/null || true
 }
 trap finish EXIT
 
@@ -949,6 +965,7 @@ if [ "$SELF_TEST_GATE" -eq 1 ]; then
 fi
 
 if [ "$SELF_TEST_UI" -eq 1 ]; then
+  open_run_dir
   start_ui
   log "SELF-TEST: shim simulation (no update will run)"
   sleep "${HERMES_SELFTEST_HOLD_SECONDS:-6}"
@@ -1053,6 +1070,7 @@ if [ "$SELF_TEST_MARKER" -eq 1 ]; then
   trap - EXIT
   exit 0
 fi
+open_run_dir
 marker_refresher_start
 
 # Start-of-run recovery of litter only a dead hand-off can leave (we hold the
@@ -1061,7 +1079,8 @@ marker_refresher_start
 case "$RELAUNCH_TARGET" in *.app) mac_bundle_recover "$RELAUNCH_TARGET" ;; esac
 for _stale in "$INSTALL_ROOT"/venv/bin/*.tcc-heal-old.* "$INSTALL_ROOT"/venv/bin/*.tcc-heal-new.* \
     "${TMPDIR:-/tmp}"/hermes-update-status.[0-9]* "${TMPDIR:-/tmp}"/hermes-update-probe.[0-9]* \
-    "${TMPDIR:-/tmp}"/hermes-update-go.[0-9]* \
+    "${TMPDIR:-/tmp}"/hermes-update-go.[0-9]* "$HERMES_HOME"/.hermes-update-go.[0-9]* \
+    "${TMPDIR:-/tmp}"/hermes-update-run-[0-9]*-* \
     "${TMPDIR:-/tmp}"/hermes-update-ui-[0-9]*-*; do
   [ -e "$_stale" ] || [ -L "$_stale" ] || continue
   case "$_stale" in
@@ -1202,7 +1221,7 @@ run_update() { # streams straight into the log (a killed run keeps its output);
   # but the marker names neither a live owner nor a live delegate. A
   # HUP/INT/QUIT that lands meanwhile is handled once it exits, exactly like a
   # foreground child.
-  local offset pid sig go="${TMPDIR:-/tmp}/hermes-update-go.$$"
+  local offset pid sig go="$HERMES_HOME/.hermes-update-go.$$"  # beside the marker it gates
   offset="$(wc -c < "$LOG" 2>/dev/null | tr -d '[:space:]')"
   PENDING_SIGNAL=""
   for sig in HUP INT QUIT; do trap "PENDING_SIGNAL=\${PENDING_SIGNAL:-$sig}" "$sig"; done

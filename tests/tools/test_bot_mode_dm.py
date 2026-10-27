@@ -1311,3 +1311,19 @@ def test_poll_reply_is_persisted_as_a_delivery_row_when_the_runner_exits(tmp_pat
     assert kw["display_kind"] == "process_complete"
     assert "PAYLOAD_SENTINEL_42" in kw["content"]
     assert procs[0].id in kw["content"]
+
+
+@pytest.mark.parametrize("target", ["@lucky", "Lucky Charm", "lucky-charm"],
+                         ids=["folder-id", "friendly-name", "friendly-slug"])
+def test_a_private_teammate_is_neither_addressable_nor_listed(tmp_path, target):
+    """message_agent answers a private target the way it answers a name that does not exist, by
+    whichever form names it. The friendly-name rows guard the alias map, which covers every profile
+    on disk: a hit on a private agent there must not resolve."""
+    home = _managed_home(tmp_path, teammates=("researcher", "lucky"))
+    with open(home / "profiles" / "lucky" / "profile.yaml", "a", encoding="utf-8") as fh:
+        fh.write("    private: true\ndisplay_name: Lucky Charm\n")
+
+    result = json.loads(bot_mode_dm.message_agent_tool(target=target, message="hi", agent=_FakeAgent(home)))
+
+    assert "error" in result
+    assert result["teammates"] == ["researcher"]

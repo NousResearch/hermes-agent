@@ -499,14 +499,18 @@ def test_run_one_job_crash_after_save_phase_does_not_write_second_artifact(monke
     """A crash AFTER the save phase was entered must not write a second artifact.
 
     Behavior contract:
-    - run_job succeeds but _save_compose_deliver raises
-    - save_job_output is called exactly once (from the normal path, not the crash handler)
-    - The crash handler does NOT call save_job_output again
+    - run_job succeeds and save_job_output is called from the normal path
+    - Then _save_compose_deliver raises (after the save)
+    - The crash handler does NOT call save_job_output again because save_phase_entered is True
     """
     save_calls = []
+    call_count = [0]
 
     def fake_save(jid, output):
-        save_calls.append((jid, output))
+        call_count[0] += 1
+        save_calls.append((jid, output, call_count[0]))
+        # First call is from the normal path, second would be from crash handler
+        # We'll detect if there's a second call
         return f"/tmp/{jid}.md"
 
     monkeypatch.setattr(
@@ -520,25 +524,24 @@ def test_run_one_job_crash_after_save_phase_does_not_write_second_artifact(monke
         "run_job",
         lambda *_a, **_kw: (True, "output text", "final response", None),
     )
-    # save_job_output is called from the normal path
+    # save_job_output is called from the normal path inside _save_compose_deliver
     monkeypatch.setattr(s, "save_job_output", fake_save)
-    # But _save_compose_deliver raises after the save
-    monkeypatch.setattr(
-        s,
-        "_save_compose_deliver",
-        lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("compose boom")),
-    )
+    # Patch _compose_run_delivery to raise after the save phase completes
+    # This simulates a crash during compose (after save_job_output was called)
+    def fake_compose_that_raises(*args, **kwargs):
+        raise RuntimeError("compose boom")
+    monkeypatch.setattr(s, "_compose_run_delivery", fake_compose_that_raises)
     monkeypatch.setattr(s, "mark_job_run", lambda *_a, **_kw: None)
     monkeypatch.setattr(s, "finish_execution", lambda *_a, **_kw: None)
-    monkeypatch.setattr(s, "_deliver_result", lambda *_a, **_kw: None)
 
     ok = s.run_one_job({"id": "crash-after-save", "name": "test", "deliver": "telegram"})
 
     assert ok is False
-    # save_job_output was called exactly once (from the normal path before the crash)
+    # save_job_output was called exactly once (from the normal path)
     # The crash handler must NOT call it again because save_phase_entered is True
     assert len(save_calls) == 1
     assert save_calls[0][0] == "crash-after-save"
     assert save_calls[0][1] == "output text"
+    assert save_calls[0][2] == 1  # First (and only) call
 
 

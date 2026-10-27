@@ -56,7 +56,9 @@ via `tasks/get`.
 ## Security
 
 - **No token ⇒ localhost only.** The server binds `127.0.0.1` and refuses to
-  widen unless you configure a token *and* set `A2A_HOST`.
+  widen unless you configure a token *and* set `A2A_HOST`. In this mode it refuses
+  requests carrying reverse-proxy headers (`X-Forwarded-For`, `Forwarded`, `X-Real-IP`),
+  since a proxy on the same host would make every caller look local.
 - **Per-peer tokens**: `A2A_PEER_TOKENS="alice:tok1,bob:tok2"` gives each
   remote agent its own credential; that authenticated name (never anything
   in the request body) drives rate limiting, trust, and audit.

@@ -353,6 +353,44 @@ describe('Settings ▸ Plugins ownership (review of #133182)', () => {
     expect(gatewayA).not.toHaveBeenCalled()
   })
 
+  it('routes custom-home plugin reads and writes through the captured owner, never the ambient gateway', async () => {
+    const ambientGateway = vi.fn(async () => ({ plugins: [row('WRONG-AMBIENT')] }))
+
+    const customGateway = vi.fn(async (method: string, params?: Record<string, unknown>) =>
+      method === 'plugins.manage' && params?.action === 'list'
+        ? { plugins: [row('CUSTOM-ready')] }
+        : { ok: true, plugin: null }
+    )
+
+    requestGateway.mockImplementation(ambientGateway)
+    requestGatewayForAgent.mockImplementation(async (_connectionId, _profile, method, params) =>
+      customGateway(method, params)
+    )
+    ;(window.hermesDesktop!.getConnectionFor as ReturnType<typeof vi.fn>).mockResolvedValue({
+      baseUrl: 'https://custom-home.example',
+      connectionId: 'gateway-a',
+      mode: 'remote',
+      profile: 'custom',
+      token: 'synthetic-custom'
+    })
+
+    $settingsScopeOverride.set('custom')
+    renderSettings(pluginSettingsHref())
+    fireEvent.click(await screen.findByTestId('plugin-settings-row-agent:review-notes'))
+    await waitFor(() => expect((screen.getByLabelText(/Destination/) as HTMLInputElement).value).toBe('CUSTOM-ready'))
+    fireEvent.change(screen.getByLabelText(/Destination/), { target: { value: 'CUSTOM-EDIT' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }))
+
+    await waitFor(() =>
+      expect(customGateway).toHaveBeenCalledWith(
+        'plugins.manage',
+        expect.objectContaining({ action: 'settings', values: { destination: 'CUSTOM-EDIT' } })
+      )
+    )
+    expect(requestGatewayForAgent.mock.calls.every(([, targetProfile]) => targetProfile === 'custom')).toBe(true)
+    expect(ambientGateway).not.toHaveBeenCalled()
+  })
+
   it('never continues an in-flight save on a replacement gateway with the same profile name', async () => {
     const secretWrite = deferred()
 

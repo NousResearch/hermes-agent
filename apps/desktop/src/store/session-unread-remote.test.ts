@@ -15,7 +15,13 @@ vi.mock('@/hermes', () => ({
 
 import { $sessions } from '@/store/session'
 
-import { $unreadWriteGuard, clearUnreadOnOpen, markSessionUnread, watchUnreadWriteGuard } from './session-unread-remote'
+import {
+  $unreadWriteGuard,
+  clearUnreadOnOpen,
+  markSessionUnread,
+  unreadWriteKey,
+  watchUnreadWriteGuard
+} from './session-unread-remote'
 
 const row = (id: string, extra: Partial<SessionInfo> = {}): SessionInfo =>
   ({ id, message_count: 1, source: 'cli', started_at: 0, title: id, ...extra }) as SessionInfo
@@ -77,7 +83,7 @@ describe('markSessionUnread', () => {
     // The backend kept the old value, so the optimistic flip is undone and
     // the guard is released (nothing to fence a page about).
     expect($sessions.get().find(s => s.id === 'a')?.unread).toBe(false)
-    expect($unreadWriteGuard.get().has('a')).toBe(false)
+    expect($unreadWriteGuard.get().has(unreadWriteKey(row('a')))).toBe(false)
   })
 
   it('does not let an older failure roll back a newer successful toggle', async () => {
@@ -129,6 +135,46 @@ describe('markSessionUnread', () => {
     expect(await newerResult).toEqual(expect.objectContaining({ message: 'offline' }))
     expect($sessions.get().find(s => s.id === 'a')?.unread).toBe(true)
   })
+
+  it('keeps same-id writes and rollback state isolated by gateway owner', async () => {
+    let resolveOwnerA!: (value: { ok: boolean }) => void
+
+    patch
+      .mockImplementationOnce(
+        () =>
+          new Promise(resolve => {
+            resolveOwnerA = resolve
+          })
+      )
+      .mockRejectedValueOnce(new Error('owner B offline'))
+
+    const ownerA = row('same', {
+      _desktop_route_binding: 'binding-a',
+      connection_id: 'gateway-a',
+      profile: 'work',
+      unread: false
+    })
+
+    const ownerB = row('same', {
+      _desktop_route_binding: 'binding-b',
+      connection_id: 'gateway-b',
+      profile: 'work',
+      unread: false
+    })
+
+    $sessions.set([ownerA])
+    const writeA = markSessionUnread('same', true)
+
+    $sessions.set([ownerB])
+    const writeB = markSessionUnread('same', true)
+    const resultB = writeB.catch(error => error)
+
+    await vi.waitFor(() => expect(patch).toHaveBeenCalledTimes(2))
+    resolveOwnerA({ ok: true })
+    await writeA
+    expect(await resultB).toEqual(expect.objectContaining({ message: 'owner B offline' }))
+    expect($sessions.get()[0]).toMatchObject({ connection_id: 'gateway-b', unread: false })
+  })
 })
 
 describe('clearUnreadOnOpen', () => {
@@ -161,25 +207,29 @@ describe('watchUnreadWriteGuard', () => {
   it('drops a guard entry once a list page confirms the value we wrote', () => {
     watchUnreadWriteGuard()
     const guard = new Map<string, { at: number; value: boolean }>()
-    guard.set('a', { at: Date.now(), value: true })
+    const guarded = row('a', { unread: true })
+
+    guard.set(unreadWriteKey(guarded), { at: Date.now(), value: true })
     $unreadWriteGuard.set(guard)
 
     // The server caught up and echoes our value back.
-    $sessions.set([row('a', { unread: true })])
+    $sessions.set([guarded])
 
-    expect($unreadWriteGuard.get().has('a')).toBe(false)
+    expect($unreadWriteGuard.get().has(unreadWriteKey(guarded))).toBe(false)
   })
 
   it('keeps the guard while a page contradicts a write still in flight', () => {
     watchUnreadWriteGuard()
     const guard = new Map<string, { at: number; value: boolean }>()
-    guard.set('a', { at: Date.now(), value: true })
+    const guarded = row('a', { unread: false })
+
+    guard.set(unreadWriteKey(guarded), { at: Date.now(), value: true })
     $unreadWriteGuard.set(guard)
 
     // A list request issued before the PATCH still says read. Honouring it
     // would silently undo the mark the user just made.
-    $sessions.set([row('a', { unread: false })])
+    $sessions.set([guarded])
 
-    expect($unreadWriteGuard.get().has('a')).toBe(true)
+    expect($unreadWriteGuard.get().has(unreadWriteKey(guarded))).toBe(true)
   })
 })

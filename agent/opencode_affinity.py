@@ -10,13 +10,15 @@ Two sources, one merge point:
   self-hosted Claude/OpenAI gateways) otherwise classify an agent-loop request whose last message is
   a ``tool_result`` as a new conversation and replay the whole history upstream (#86241, #104449).
 
-The value only has to be opaque and consistent per conversation, so it is derived the same way as
-the other affinity hints Hermes already sends (OpenRouter's sticky ``session_id``, xAI's
-``x-grok-conv-id``): the host-declared routing scope first (a host that names its own conversation,
-#96811), then the ambient conversation ROOT (stable across compaction rotation and delegate trees),
-then the physical session id — normalized through ``_cache_scope_from_session_id`` so cron fires of
-one job share a scope. Auxiliary calls (compression, titles, vision, MoA) have no session handle and
-resolve the ambient value, so they stay on the conversation's backend too (#70820).
+OpenCode keeps the shared routing identity: host-declared affinity, then the ambient
+conversation root, then the normalized physical session id. Delegate trees and cron runs
+may intentionally share that backend.
+
+Custom history identity is separate: a host declaration for ordinary conversations, but
+the compression-lineage root for explicit branch/delegate children. A continuation must
+retain its fork boundary even when its current row has no fork marker. Detached cache-parity
+forks get per-instance keys; independent auxiliary prompts get one-shot keys. None of these
+history boundaries change Portal attribution, prompt-cache scopes, or OpenCode routing.
 
 Every request — main turn on any transport, auxiliary calls — goes through
 :func:`merge_session_affinity_headers` so the headers cannot drift per code path.
@@ -111,11 +113,44 @@ def opencode_session_headers(
     return {OPENCODE_SESSION_HEADER: key}
 
 
+def resolve_custom_provider_history_scope(agent: Any) -> str:
+    """History identity, preserving explicit fork boundaries across compression/resume."""
+    if getattr(agent, "_persist_disabled", False):
+        # Detached cache-parity forks reuse both the parent's physical id and
+        # cache scope; neither identifies their independent request stream.
+        scope = getattr(agent, "_custom_provider_history_scope", None)
+        if not scope:
+            scope = vars(agent).setdefault("_custom_provider_history_scope", f"fork-{uuid.uuid4().hex}")
+        return scope
+    sid = str(getattr(agent, "session_id", None) or "")
+    if not sid:
+        return ""
+    db = getattr(agent, "_session_db", None)
+    root = sid
+    if db is not None:
+        try:
+            lineage = db.get_compression_lineage(sid)
+            if lineage:
+                root = lineage[0]
+            # The tip can have no marker (or a copied marker naming the original
+            # parent). The lineage root still owns the durable fork verdict.
+            if db.is_explicit_fork_child(root):
+                return root
+        except Exception:
+            # Unknown ancestry must not attach a possible fork to a host key.
+            return sid
+    from agent.prompt_cache_scope import declared_conversation_scope_safe
+
+    return declared_conversation_scope_safe(agent) or root
+
+
 def custom_provider_session_affinity_headers(
     base_url: Optional[str],
     session_id: Optional[str] = None,
+    *,
+    history_scope: Optional[str] = None,
 ) -> dict[str, str]:
-    """Return ``{<session_affinity_header>: <key>}`` when the route's provider entry declares one, else ``{}``."""
+    """Opt-in history identity, independent of Portal/OpenCode's delegate-tree routing key."""
     try:
         from hermes_cli.config import get_custom_provider_session_affinity_header
 
@@ -124,7 +159,9 @@ def custom_provider_session_affinity_headers(
         return {}
     if not header:
         return {}
-    key = resolve_affinity_key(session_id)
+    # Attribution roots include delegate/branch siblings; cron routing normalization also
+    # merges independent runs. Neither is a safe identity for a stateful history.
+    key = history_scope or session_id
     return {header: key} if key else {}
 
 
@@ -133,6 +170,8 @@ def merge_session_affinity_headers(
     provider: Optional[str],
     base_url: Optional[str],
     session_id: Optional[str] = None,
+    *,
+    history_scope: Optional[str] = None,
 ) -> dict[str, Any]:
     """Merge the affinity header(s) into ``kwargs["extra_headers"]`` (in place).
 
@@ -140,11 +179,13 @@ def merge_session_affinity_headers(
     Targets with neither source configured are left untouched.
     """
     headers = opencode_session_headers(provider, base_url, session_id)
-    headers.update(custom_provider_session_affinity_headers(base_url, session_id))
+    headers.update(custom_provider_session_affinity_headers(base_url, session_id, history_scope=history_scope))
     if headers:
         existing = kwargs.get("extra_headers")
         merged = dict(existing) if isinstance(existing, dict) else {}
+        pinned = {key.lower() for key in merged}
         for key, value in headers.items():
-            merged.setdefault(key, value)
+            if key.lower() not in pinned:
+                merged[key] = value
         kwargs["extra_headers"] = merged
     return kwargs

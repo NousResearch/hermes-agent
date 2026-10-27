@@ -47,10 +47,15 @@ The eight canonical collaboration patterns are catalogued in [Collaboration patt
 
 ## PR completion contracts
 
-Declare PR work at creation with `--completion-contract OWNER/REPO` (or an exact
-`https://github.com/OWNER/REPO/pull/123` URL for existing work). `kanban_create`
-accepts the same `completion_contract`. Use `local-only` for intentionally local
-work; existing and undeclared cards retain that default. Prose URLs are not policy.
+Declare GitHub PR work at creation with `--completion-contract OWNER/REPO` (or an
+exact `https://github.com/OWNER/REPO/pull/123` URL for existing work). Gitea and
+Forgejo use either an exact `https://forge.example/OWNER/REPO/pulls/123` URL
+(`http://` is accepted for explicitly declared LAN instances), or the repository
+form `gitea:https://forge.example/OWNER/REPO` and a matching
+`metadata.published_pr` at completion. `kanban_create` accepts the same
+`completion_contract`. Use `local-only` for intentionally local work; existing
+and undeclared cards retain that default. Only exact forge URL shapes are policy;
+prose and arbitrary URLs are not.
 
 After publishing, pass `metadata.published_pr` to completion. The first matching
 URL binds the card permanently; retries cannot substitute a green sibling PR.
@@ -60,11 +65,15 @@ The shared `complete_task` boundary covers worker tools, CLI, review approval an
 dashboard completion. It reads classic branch protection and active ruleset
 required contexts, paginates exact-head check runs and legacy statuses, then
 re-reads the PR head/base. Optional failed/skipped telemetry does not veto accepted
-required checks. Missing, pending, failed, cancelled, timed-out, stale, skipped or
-neutral **required** evidence cannot complete the card. Neither can zero-run
-acceptance, unreadable policy or GitHub API failures. A repository without required
-checks needs a local-only contract. `gh` must be authenticated with read access to
-the repository's checks and rules; no remote writes are performed by this gate.
+required checks. For Gitea, the gate reads the pull request, protected branch
+`status_check_contexts`, and the exact-head combined commit status through the
+official read-only REST API, then re-reads the pull request. Open and merged pull
+requests follow the existing GitHub contract; a closed, unmerged pull request is
+rejected. Missing, pending, failed, cancelled, timed-out, stale, skipped or neutral
+**required** evidence cannot complete the card. Neither can zero-run acceptance,
+unreadable policy or forge API failures. A repository without required checks needs
+a local-only contract. `gh` must be authenticated with read access to GitHub checks
+and rules; no remote writes are performed by either gate.
 Acceptance reads run as the **assignee profile's** `gh` login — its `GH_TOKEN` /
 `GH_CONFIG_DIR` from the profile's own `.env`, never the ambient login of the
 process completing the card. On multi-profile hosts (one GitHub identity per
@@ -78,11 +87,19 @@ login. A login that cannot see the repository is rejected with
 `classification=auth`, naming the profile and repository, instead of a
 retryable infra failure.
 
+Gitea authentication is optional for public repositories. Private instances must
+set `GITEA_TOKEN` in the **assignee profile's** `.env` (or configured secret
+source), with read access to the repository, pull request, branch protection and
+commit statuses. Tokens are sent only to the exact PR origin, are stripped on
+cross-origin redirects, and are never persisted in receipts or error details.
+The instance URL comes from the exact completion contract; no token or host is
+hard-coded.
+
 Rejection retains the active card and workspace. Durable `pr_acceptance` events
 store PR URL, SHA, required contexts, check IDs/URLs, classifications and recovery
 instructions; `last_failure_error` surfaces the next step. Fix failures, rerun
 infrastructure checks or wait, then retry completion. Use `kanban_block` when
-human action is needed. Generic GitHub `failure` cannot establish whether a test
+human action is needed. Generic forge `failure` cannot establish whether a test
 or artifact upload failed; inspect its retained URL. Explicit infrastructure
 conclusions and API failures are classified separately. No extra worker is spawned.
 
@@ -91,7 +108,8 @@ under one SQLite lock: a reclaimed worker cannot complete or attach acceptance t
 the new run. The final GitHub read is a completion-time snapshot, not a distributed
 transaction or a continuous post-completion monitor. This is a single-user lifecycle
 guard, not OS isolation against arbitrary direct database writes. GitHub Enterprise
-is not covered. Related publication/lifecycle work: #91230, #84254, #52311; local
+is not covered; Gitea-compatible Forgejo REST APIs are supported. Related
+publication/lifecycle work: #91230, #84254, #52311; local
 verification and publication alone are not remote acceptance.
 
 ## Kanban vs. `delegate_task`

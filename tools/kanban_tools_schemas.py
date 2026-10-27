@@ -503,7 +503,8 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "work. Defaults to false (classic single-shot worker)."
         )),
         "completion_contract": _prop("string", (
-            "Declare at creation: local-only (default), OWNER/REPO for PR publication, or an exact GitHub PR URL. "
+            "Declare at creation: local-only (default), GitHub OWNER/REPO, an exact GitHub/Gitea PR URL, or "
+            "gitea:SCHEME://HOST/OWNER/REPO for later binding. "
             "PR tasks cannot complete until repository-required exact-head CI passes. On publication pass metadata.published_pr."
         )),
         "goal_max_turns": _prop("integer", (

@@ -18,8 +18,8 @@ import {
 import { useI18n } from '@/i18n'
 import type { WebAccessTranslations } from '@/i18n/types_gateway_host'
 import { ExternalLink } from '@/lib/external-link'
+import { hostHas } from '@/lib/host-capabilities'
 import { Globe, Loader2, Network } from '@/lib/icons'
-import { isBrowserHostedDesktop } from '@/lib/platform'
 import { notify, notifyError } from '@/store/notifications'
 import { $connection } from '@/store/session'
 
@@ -93,7 +93,7 @@ async function waitForRestart(): Promise<WebAccessStatus> {
 export function useWebAccessAvailable(): boolean {
   const connection = useStore($connection)
 
-  return !isBrowserHostedDesktop() && connection?.mode !== 'remote'
+  return hostHas('webAccessHost') && connection?.mode !== 'remote'
 }
 
 export function WebAccessSettings(): ReactElement | null {

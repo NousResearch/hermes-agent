@@ -14,22 +14,22 @@ from hermes_cli.auth_constants import AuthError
 from hermes_cli.runtime_provider import resolve_runtime_provider
 
 
-CONTINUUM_CONFIG = {
+PROVIDER_CONFIG = {
     "model": {"default": "zai-org/GLM-5.3-Flash", "provider": "custom"},
     "providers": {
-        "continuum": {
-            "name": "Continuum",
+        "my-provider": {
+            "name": "MyProvider",
             "base_url": "https://api.console.example.test/v1",
             "model": "zai-org/GLM-5.3-Flash",
-            "key_env": "HERMES_TEST_CONTINUUM_KEY",
+            "key_env": "HERMES_TEST_MYPROVIDER_KEY",
         }
     },
 }
 
 
 def test_bare_custom_rides_the_serving_named_entry(monkeypatch):
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: CONTINUUM_CONFIG)
-    monkeypatch.setenv("HERMES_TEST_CONTINUUM_KEY", "test-key-123")
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: PROVIDER_CONFIG)
+    monkeypatch.setenv("HERMES_TEST_MYPROVIDER_KEY", "test-key-123")
 
     runtime = resolve_runtime_provider(requested="custom", target_model="zai-org/GLM-5.3-Flash")
 

@@ -367,7 +367,7 @@ function wrapWithSoftWrap(
   plainText: string,
   maxWidth: number,
   textWrap: Parameters<typeof wrapText>[2]
-): { wrapped: string; softWrap: boolean[] | undefined } {
+): { wrapped: string; softWrap: Array<boolean | 'trimmed'> | undefined } {
   if (textWrap !== 'wrap' && textWrap !== 'wrap-char' && textWrap !== 'wrap-trim') {
     return {
       wrapped: wrapText(plainText, maxWidth, textWrap),
@@ -377,14 +377,19 @@ function wrapWithSoftWrap(
 
   const origLines = plainText.split('\n')
   const outLines: string[] = []
-  const softWrap: boolean[] = []
+  const softWrap: Array<boolean | 'trimmed'> = []
 
   for (const orig of origLines) {
     const pieces = wrapText(orig, maxWidth, textWrap).split('\n')
+    const untrimmedPieces = textWrap === 'wrap-trim' ? wrapText(orig, maxWidth, 'wrap').split('\n') : undefined
 
     for (let i = 0; i < pieces.length; i++) {
       outLines.push(pieces[i]!)
-      softWrap.push(i > 0)
+      const separatorTrimmed =
+        i > 0 &&
+        untrimmedPieces !== undefined &&
+        (untrimmedPieces[i - 1] !== pieces[i - 1] || untrimmedPieces[i] !== pieces[i])
+      softWrap.push(i === 0 ? false : separatorTrimmed ? 'trimmed' : true)
     }
   }
 
@@ -400,7 +405,7 @@ function wrapWithSoftWrap(
 function applyPaddingToText(
   node: DOMElement,
   text: string,
-  softWrap: boolean[] | undefined,
+  softWrap: Array<boolean | 'trimmed'> | undefined,
   maxOffsetX: number,
   maxOffsetY: number
 ): string {
@@ -671,7 +676,7 @@ function renderNodeToOutput(
         const needsWrapping = widestLine(plainText) > maxWidth
 
         let text: string
-        let softWrap: boolean[] | undefined
+        let softWrap: Array<boolean | 'trimmed'> | undefined
 
         if (needsWrapping && segments.length === 1) {
           // Single segment: wrap plain text first, then apply styles to each line

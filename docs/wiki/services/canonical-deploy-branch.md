@@ -56,7 +56,9 @@ This was the root cause of two confirmed silent-fix-loss incidents:
 Three pieces, all in the canonical-deploy branch:
 
 1. **Canonical ref.** `canonical-deploy-t_7161d9a9` is the durable
-   tip that the deployed tree tracks. Today its tip is `4f914e1d23`,
+   tip that the deployed tree tracks. Its tip moves as the branch lands
+   new work — check `git rev-parse canonical-deploy-t_7161d9a9` for the
+   current value.
    branched from `fork/fix/kanban-recompute-ready-blocker-gate` (the
    prior de-facto canonical lineage) and merged with:
    - the gate-fix lineage (`4a18baa139` + `6067b5a712`),
@@ -319,6 +321,91 @@ This is not currently a live flow (no worker uses lxd today), but if
 a future flow needs to invoke lxd as a *lesser* identity, it must
 either map the gid via `newgidmap`/subgid, or run that one op outside
 the sandbox by setting `HERMES_WORKER_ISOLATION=off` for the task.
+
+## Worker-Isolation Lineage (t_4722df6f)
+
+The isolation code and the stdout-redaction code are both ancestors of
+this branch's tip. The ORIGINALS are too — the disconnected-lineage
+problem was closed by a lineage merge, not by a rebase:
+
+| Commit | What | In this branch's history |
+|---|---|---|
+| `a48798188d` | original isolation merge (t_bc6bbb7c) | ancestor |
+| `1e9a1d8297` | redact worker stdout + chmod logs 0600 | ancestor |
+| `7ce66b270f` | isolation + redaction + deploy-guard landing | ancestor |
+| `cbcad6ca46` | scratch-workspace workers get wrapped too | ancestor |
+| `509a3ec161` | sandbox the production CODE tree, not the config repo | ancestor |
+| `de6b3fb75f` | bind staging dir OUTSIDE the agent home | ancestor |
+
+The lineage merge commit itself has a **tree byte-identical** to the
+pre-merge tip — moving the branch changed the recorded lineage and
+nothing else (no file content changed, no working-tree file changed).
+`git diff <pre-merge-tip> <lineage-merge>` is empty.
+
+Verify:
+
+```bash
+cd ~/.hermes/hermes-agent
+git merge-base --is-ancestor a48798188d canonical-deploy-t_7161d9a9 && echo ANCESTOR
+git merge-base --is-ancestor 1e9a1d8297 canonical-deploy-t_7161d9a9 && echo ANCESTOR
+```
+
+### Moving the live branch ref from inside a worker (why it is blocked)
+
+A kanban worker CANNOT move `refs/heads/canonical-deploy-t_7161d9a9`, and
+that is by design, not a bug:
+
+- The worker's sandbox makes the production tree `EROFS` and carves out
+  only `.git/objects`, `.git/logs`, the worker's own worktree/branch-ref
+  directory, and (for scratch tasks) the scratch directory. `.git/refs`
+  is deliberately **not** carved out, because a worker that can update
+  arbitrary refs can move `canonical-deploy` to a different commit.
+- `_worker_branch_ref_dir` returns `None` for a top-level branch
+  (`canonical-deploy-t_7161d9a9` has no branch *directory*), so the
+  narrow carve-out skips it.
+- A nested `unshare -Urm` cannot remount the tree rw either — the kernel
+  refuses `remount,bind,rw` over the ro bind (see the `mount` hang
+  described under Troubleshooting).
+
+The sanctioned route for fleet maintenance that legitimately needs the
+live branch ref is the **cron spawn path**: `no_agent` script cron jobs
+run as the gateway's own child, and
+`hermes_cli.worker_isolate._agent_home_branch_ref_dir` carves out the
+branch ref **FILE** read-write for cron workers.
+
+Measured caveat (2026-10-27, t_4722df6f): the cron carve-out is
+FILE-level, so the branch ref file is writable but its parent directory
+stays read-only. Consequences:
+
+- `open(ref_file, os.O_WRONLY)` -> OK
+- `create(refs/heads/<name>.lock)` -> EROFS
+- `git update-ref refs/heads/<x> HEAD` -> **rc=128** (cannot create the
+  lock file) — `git update-ref` does NOT work from the cron path
+- `git branch -f <x>` -> rc=128, same reason
+
+To move the ref from the cron path, write the loose ref file directly:
+40 hex chars + newline, one `write()` on the existing inode (temp+rename
+is impossible — the directory is read-only), then `fsync` + read-back
+verification + rollback on mismatch, and append a reflog line to
+`.git/logs/refs/heads/<branch>` (that path IS writable).
+
+### Verifying isolation from outside
+
+The `unshare -Urm` wrapper is **not** visible in `ps`: the chain is
+exec-on-exec (`unshare` execs the launcher, the launcher execs the
+worker), so by the time a worker is alive the wrapper processes no longer
+exist and are not ancestors either. Verify with the mount table instead:
+
+```bash
+awk '$5 ~ /hermes-agent/ {print $3, $4, $5}' /proc/<worker_pid>/mountinfo
+# expect: ro,relatime on the tree root; rw,relatime on .git/objects,
+#         .git/logs, and the scratch workspace
+```
+
+`readlink /proc/<pid>/ns/mnt` is **not** a usable isolation signal on
+this host — the isolated worker reports the same `mnt:` inode as the
+host. Use `mountinfo` plus a write probe
+(`touch <prod tree>/.probe` must fail with EROFS) instead.
 
 ## Dependencies
 

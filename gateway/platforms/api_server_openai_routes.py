@@ -1419,19 +1419,42 @@ class OpenAICompatRoutesMixin:
             if _settled(replay):
                 return web.json_response(replay['response'], headers=replay.get('headers') or {})
         result, usage = outcome
-        final_response = _resolve_media_to_data_urls(result.get("final_response", ""))
-        if not final_response:
+        from gateway.platforms.api_server import _openai_error
+        final_response = _resolve_media_to_data_urls(result.get("final_response") or "")
+        completed, is_partial, is_failed, err_msg = _result_flags(result)
+        if err_msg:
+            err_msg = _redact_api_error_text(err_msg)
+        presentation_muted = (
+            isinstance(result, dict) and result.get("_notification_presentation_suppressed") is True
+        )
+        # Output items = current turn only (AIAgent returns a full transcript; mocked paths
+        # only the current-turn suffix). Session id is resolved before the hard-fail return so
+        # the 502 carries the same X-Hermes-Session-Id as a stored response.
+        _result_sid = result.get("session_id") if isinstance(result, dict) else None
+        _effective_session_id = (
+            _result_sid if isinstance(_result_sid, str) and _result_sid else session_id)
+        response_headers = {"X-Hermes-Session-Id": _effective_session_id}
+        if gateway_session_key:
+            response_headers["X-Hermes-Session-Key"] = gateway_session_key
+        # Same hard-fail contract as /v1/chat/completions (#22496 / #102921): no usable text
+        # AND failed/partial -> 502, never a 200 whose body looks like a finished turn.
+        # Interrupted-only turns stay on the status mapping below (cancelled), not this path.
+        if not final_response and (is_failed or is_partial):
+            err_body = _openai_error(
+                "" if presentation_muted else (err_msg or "Agent run did not produce a response."),
+                err_type="server_error", code="agent_incomplete")
+            err_body["error"]["hermes"] = {
+                "completed": completed, "partial": is_partial, "failed": is_failed}
+            response_headers["X-Hermes-Completed"] = "false"
+            response_headers["X-Hermes-Partial"] = "true" if is_partial else "false"
+            return web.json_response(err_body, status=502, headers=response_headers)
+        if not final_response and not presentation_muted:
             final_response = _redact_api_error_text(result.get("error", "(No response generated)"))
         full_history = self._build_response_conversation_history(
             conversation_history, user_message, result, final_response,
             tool_output_max_chars=self._history_tool_output_max_chars)
         # _run_agent's effective session id carries compression rotations; storing it keeps
         # previous_response_id chaining off the pre-rotation session (else compression re-fires).
-        _result_sid = result.get("session_id") if isinstance(result, dict) else None
-        _effective_session_id = (
-            _result_sid if isinstance(_result_sid, str) and _result_sid else session_id)
-        # Output items = current turn only (AIAgent returns a full transcript; mocked paths
-        # only the current-turn suffix).
         output_start_index = self._response_messages_turn_start_index(
             conversation_history, user_message, result)
         response_data = {
@@ -1444,7 +1467,19 @@ class OpenAICompatRoutesMixin:
             response_data['output'] = self._current_response_store().order_output(durable_key[0], response_data['output'])
         if response_data['status'] == 'failed':
             response_data['error'] = {'code': 'agent_error', 'message': _redact_api_error_text(
-                result.get('error') or 'The admitted turn failed.')}
+                "" if presentation_muted else (result.get('error') or 'The admitted turn failed.'))}
+        if response_data['status'] != 'completed':
+            budget_exhausted = _budget_exhausted(result)
+            finish_reason = _finish_reason(
+                completed, is_partial, is_failed, err_msg, budget_exhausted=budget_exhausted)
+            response_data['hermes'] = _hermes_extras(
+                completed, is_partial, is_failed,
+                "" if presentation_muted else err_msg, finish_reason,
+                budget_exhausted=budget_exhausted)
+            response_headers["X-Hermes-Completed"] = "false"
+            response_headers["X-Hermes-Partial"] = "true" if is_partial else "false"
+            if err_msg and not presentation_muted:
+                response_headers["X-Hermes-Error"] = _redact_api_error_text(err_msg, limit=200)
         if store:
             response_store = self._current_response_store()
             advance_conversation = conversation and (not context.get('terminal_replay')
@@ -1454,9 +1489,6 @@ class OpenAICompatRoutesMixin:
                 "instructions": instructions, "session_id": _effective_session_id})
             if advance_conversation:
                 response_store.set_conversation(conversation, response_id)
-        response_headers = {"X-Hermes-Session-Id": _effective_session_id}
-        if gateway_session_key:
-            response_headers["X-Hermes-Session-Key"] = gateway_session_key
         if durable_key is not None:
             self._current_response_store().put(durable_key[0], {
                 'fingerprint': durable_key[1], 'response': response_data, 'headers': response_headers})

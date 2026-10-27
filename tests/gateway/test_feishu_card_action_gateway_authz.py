@@ -80,10 +80,10 @@ class _GatewayCheck:
 _gateway_check = _GatewayCheck
 
 
-def _approval_click(open_id, *, user_id=None, chat_id="oc_group"):
+def _approval_click(open_id, *, user_id=None, union_id=None, chat_id="oc_group"):
     return SimpleNamespace(event=SimpleNamespace(
         token="tok", context=SimpleNamespace(open_chat_id=chat_id),
-        operator=SimpleNamespace(open_id=open_id, user_id=user_id),
+        operator=SimpleNamespace(open_id=open_id, user_id=user_id, union_id=union_id),
         action=SimpleNamespace(tag="button", value={"hermes_action": "approve_once", "approval_id": 1}),
     ))
 
@@ -216,3 +216,57 @@ class TestFeishuAllowlistUnchanged:
 
         assert response.card is None
         submit.assert_not_called()
+
+
+class TestFeishuAllowlistMatchesEveryOperatorId:
+    """A Feishu list may name a user by any id intake accepts (open_id / user_id / union_id)."""
+
+    @pytest.mark.parametrize("click_ids", [{"user_id": "u_tenant"}, {"union_id": "on_union"}])
+    def test_allowed_users_listed_by_other_id_can_approve(self, click_ids):
+        adapter = _make_adapter(allowed={"u_tenant", "on_union"})
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro) as submit:
+            response = adapter._on_card_action_trigger(_approval_click("ou_x", **click_ids))
+
+        assert response.card is not None
+        submit.assert_called_once()
+
+    def test_admin_listed_by_tenant_user_id_can_approve(self):
+        adapter = _make_adapter(admins={"u_admin"})
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro) as submit:
+            response = adapter._on_card_action_trigger(_approval_click("ou_y", user_id="u_admin"))
+
+        assert response.card is not None
+        submit.assert_called_once()
+
+    def test_unlisted_ids_still_refused(self):
+        adapter = _make_adapter(allowed={"u_tenant"}, admins={"u_admin"})
+
+        with patch("asyncio.run_coroutine_threadsafe") as submit:
+            response = adapter._on_card_action_trigger(
+                _approval_click("ou_z", user_id="u_other", union_id="on_other"),
+            )
+
+        assert response.card is None
+        submit.assert_not_called()
+        assert 1 in adapter._approval_state
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("click_ids", [{"user_id": "u_tenant"}, {"union_id": "on_union"}])
+    async def test_loop_side_recheck_matches_other_ids(self, click_ids):
+        adapter = _make_adapter(allowed={"u_tenant", "on_union"})
+
+        with patch("tools.approval.resolve_gateway_approval", return_value=1) as resolve:
+            await adapter._resolve_approval(1, "once", "Alice", open_id="ou_x", chat_id="oc_group", **click_ids)
+
+        resolve.assert_called_once_with("sess-1", "once")
+
+    @pytest.mark.asyncio
+    async def test_update_prompt_recheck_matches_tenant_user_id(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        adapter = _make_adapter(allowed={"u_tenant"})
+
+        await adapter._resolve_update_prompt(2, "y", "Alice", open_id="ou_x", chat_id="oc_group", user_id="u_tenant")
+
+        assert 2 not in adapter._update_prompt_state

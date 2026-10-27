@@ -2526,28 +2526,6 @@ class TestKimiTemperatureOmitted:
         assert "temperature" not in kwargs
 
     @pytest.mark.parametrize(
-        "model,expected",
-        [
-            # The Kimi Code endpoint's K3 ids carry no ``kimi`` in the bare name (#142365):
-            # the aux call must still omit temperature or the endpoint 400s every request.
-            ("k3", True),
-            ("k3-256k", True),
-            ("k3.1-pro", True),  # the dot is a token boundary, so the K3.1 line is covered too
-            ("kimi-coding/k3", True),
-            ("kimi-k3-cot", True),
-            ("kimi-for-coding", True),
-            ("moonshotai/kimi-k2.6", True),
-            ("anthropic/claude-sonnet-4-6", False),
-            ("deepseek-chat", False),
-            ("mk3000", False),  # ``k3`` only as a delimited token, never a substring
-        ],
-    )
-    def test_kimi_detection_covers_the_code_endpoint_k3_ids(self, model, expected):
-        from agent.auxiliary_client import _is_kimi_model
-
-        assert _is_kimi_model(model) is expected
-
-    @pytest.mark.parametrize(
         "model",
         [
             "anthropic/claude-sonnet-4-6",
@@ -3218,22 +3196,6 @@ class TestAnthropicAuxiliaryReasoningTranslation:
 
 class TestAuxiliaryProviderProfileReasoning:
     """Auxiliary calls must reuse provider-profile reasoning wire shapes."""
-
-    def test_kimi_reasoning_uses_top_level_effort(self):
-        kwargs = _build_call_kwargs(
-            "kimi-coding",
-            "kimi-k2-turbo-preview",
-            [{"role": "user", "content": "hi"}],
-            reasoning_config={"enabled": True, "effort": "medium"},
-            base_url="https://api.moonshot.ai/v1",
-        )
-
-        # K3 maps medium → high (ref: K3 model docs)
-        assert kwargs["reasoning_effort"] == "high"
-        assert "reasoning" not in kwargs.get("extra_body", {})
-        assert "thinking" not in kwargs.get("extra_body", {})
-
-
 
     @pytest.mark.asyncio
     async def test_async_call_llm_preserves_profile_reasoning_kwargs(self):

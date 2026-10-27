@@ -58,7 +58,7 @@ class KimiProfile(ProviderProfile):
 
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context
-    ) -> tuple[dict, dict]:
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         """The Kimi Code endpoints accept ``thinking`` and ``reasoning_effort`` together and
         serve ``medium`` directly, so the effort is sent as requested (endpoint evidence
         2026-10-21, #142365); K2.x keeps replayed prior-turn reasoning_content only with

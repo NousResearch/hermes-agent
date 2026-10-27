@@ -125,11 +125,17 @@ def is_kimi_k3_slug(model: Optional[str]) -> bool:
     return bool(_KIMI_K3_SLUG_RE.search(m))
 
 
+def is_kimi_model(model: Optional[str]) -> bool:
+    """Recognize Kimi aliases and bare K3 ids that omit server-managed temperature."""
+    bare = (model or "").strip().lower().rsplit("/", 1)[-1]
+    return bare.startswith("kimi-") or bare == "kimi" or is_kimi_k3_slug(bare)
+
+
 def kimi_supported_efforts(model: Optional[str]) -> tuple[str, ...]:
     """Supported effort set for a Moonshot/Kimi slug (bare ``k3``, ``k3-256k``, ``kimi-k3*`` → K3).
 
     K3 is served as the bare slug ``k3``, plan variants like ``k3-256k``, and the ``kimi-k3*`` aliases; its
-    documented set is low/high/max. Everything earlier speaks low/medium/high. Boundary-matched so K2-era
+    supported set is low/medium/high/max. Everything earlier speaks low/medium/high. Boundary-matched so K2-era
     names (``kimi-k2.6``) never match (detection regex from #76427 by @ruizanthony).
     """
     return KIMI_K3_EFFORTS if is_kimi_k3_slug(model) else KIMI_K2_EFFORTS
@@ -140,7 +146,7 @@ def clamp_effort(
 ) -> Optional[str]:
     """Clamp a requested reasoning effort onto a wire's supported levels.
 
-    ``overrides`` (a declared vendor mapping, e.g. Kimi K3 ``medium → high``) is consulted
+    ``overrides`` (a declared vendor mapping, e.g. Kimi K3 ``xhigh → max``) is consulted
     first. Otherwise the request passes through unchanged when it is supported, when the
     supported set is unknown/empty, or when it isn't a recognized ladder level (custom
     providers may use bespoke names). Else the **nearest weaker** supported level is returned

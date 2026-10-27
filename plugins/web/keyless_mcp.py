@@ -362,12 +362,35 @@ def _vendor_pinned(name: str) -> bool:
         return False
 
 
+def _ring_rotation_enabled() -> bool:
+    """True when the ring should rotate even though a vendor is pinned.
+
+    ``web.keyless_ring_pin: false`` opts out of the pin's effect on the WALK
+    ORDER (not on provider resolution): the configured backend stays the active
+    provider — so keyed and managed routing are untouched — but the ring picks
+    the serving vendor round-robin, so every rung actually receives traffic
+    instead of only acting as a rate-limit fallback.
+
+    Default (``true`` / absent) keeps upstream's pinned-vendor-first behaviour.
+    """
+    try:
+        import tools.web_tools as _wt
+
+        web_cfg = _wt._load_web_config()
+    except Exception as exc:
+        logger.debug("ring rotation config read failed: %s", exc)
+        return False
+    value = web_cfg.get("keyless_ring_pin")
+    # Absent => upstream behaviour (pinned wins). Only an explicit false rotates.
+    return value is False
+
+
 def _ring_order(name: str) -> list[str]:
     """Vendor walk order: pinned → start at *name* (its ring position fixes the failover
     succession); else round-robin from the cursor, advancing it per request. Vendors
     pinned ``paid`` are excluded (explicit paid opts their free endpoint out)."""
     global _ring_cursor
-    if _vendor_pinned(name):
+    if _vendor_pinned(name) and not _ring_rotation_enabled():
         start = _KEYLESS_RING.index(name) if name in _KEYLESS_RING else 0
     else:
         with _ring_lock:

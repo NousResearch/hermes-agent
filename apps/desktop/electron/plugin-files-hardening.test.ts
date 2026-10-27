@@ -114,9 +114,10 @@ describe('only plain files', () => {
     ])
 
     expect(result).toMatchObject({ ok: false, error: 'not-a-file' })
-    expect(
-      await files.run('plexus', { op: 'writeText', folder: id, path: 'pipe', text: 'x' })
-    ).toMatchObject({ ok: false, error: 'not-a-file' })
+    expect(await files.run('plexus', { op: 'writeText', folder: id, path: 'pipe', text: 'x' })).toMatchObject({
+      ok: false,
+      error: 'not-a-file'
+    })
   })
 
   it.runIf(posix)('refuses a hard link, which may be a second name for Hermes data', async () => {
@@ -127,9 +128,9 @@ describe('only plain files', () => {
       ok: false,
       error: 'protected'
     })
-    expect(
-      await files.run('plexus', { op: 'writeText', folder: id, path: 'notes/c.md', text: 'pwned' })
-    ).toMatchObject({ ok: false, error: 'protected' })
+    expect(await files.run('plexus', { op: 'writeText', folder: id, path: 'notes/c.md', text: 'pwned' })).toMatchObject(
+      { ok: false, error: 'protected' }
+    )
     expect(fs.readFileSync(path.join(hermesHome, 'config.yaml'), 'utf8')).toBe('model: secret-config\n')
   })
 })
@@ -166,8 +167,11 @@ describe('a swap between the check and the open is refused', () => {
     // Refused either as outside the folder or, when the swap lands before the
     // identity check, as Hermes data.
     expect(
-      ((await files.run('plexus', { op: 'writeText', folder: id, path: 'sub/pwn.txt', text: 'pwned' })) as { error?: string })
-        .error
+      (
+        (await files.run('plexus', { op: 'writeText', folder: id, path: 'sub/pwn.txt', text: 'pwned' })) as {
+          error?: string
+        }
+      ).error
     ).toMatch(/^(outside-folder|protected)$/)
     expect(fs.existsSync(path.join(hermesHome, 'pwn.txt'))).toBe(false)
   })
@@ -192,9 +196,9 @@ describe('a swap between the check and the open is refused', () => {
     fs.writeFileSync(note, '# A\n')
     swapAfterCheck('stat', note, swap)
 
-    expect(
-      await files.run('plexus', { op: 'writeText', folder: id, path: 'notes/a.md', text: 'pwned' })
-    ).toMatchObject({ ok: false })
+    expect(await files.run('plexus', { op: 'writeText', folder: id, path: 'notes/a.md', text: 'pwned' })).toMatchObject(
+      { ok: false }
+    )
     expect(fs.readFileSync(path.join(hermesHome, 'config.yaml'), 'utf8')).toBe('model: secret-config\n')
   })
 })
@@ -238,9 +242,11 @@ describe('a swap before the final look is refused too', () => {
     fs.writeFileSync(note, '# A\n')
     afterRealpath(note, swap)
 
-    expect(await files.run('plexus', { op: 'writeText', folder: id, path: 'notes/a.md', text: 'pwned' })).toMatchObject({
-      ok: false
-    })
+    expect(await files.run('plexus', { op: 'writeText', folder: id, path: 'notes/a.md', text: 'pwned' })).toMatchObject(
+      {
+        ok: false
+      }
+    )
     expect(fs.readFileSync(path.join(hermesHome, 'config.yaml'), 'utf8')).toBe('model: secret-config\n')
   })
 
@@ -266,9 +272,11 @@ describe('a swap before the final look is refused too', () => {
     fs.renameSync(path.join(vault, 'notes-old'), notes)
     afterRealpath(note, swap)
 
-    expect(await files.run('plexus', { op: 'writeText', folder: id, path: 'notes/a.md', text: 'pwned' })).toMatchObject({
-      ok: false
-    })
+    expect(await files.run('plexus', { op: 'writeText', folder: id, path: 'notes/a.md', text: 'pwned' })).toMatchObject(
+      {
+        ok: false
+      }
+    )
     expect(fs.readFileSync(path.join(hermesHome, 'a.md'), 'utf8')).toBe('hermes-secret\n')
   })
 })
@@ -399,7 +407,9 @@ describe('Hermes data mounted inside a granted folder', () => {
     vi.spyOn(fs.promises, 'stat').mockImplementation((async (target: fs.PathLike, options?: never) => {
       const real = await original(target, options)
 
-      return String(target) === mounted ? Object.assign(Object.create(Object.getPrototypeOf(real)), real, { dev: home.dev, ino: home.ino }) : real
+      return String(target) === mounted
+        ? Object.assign(Object.create(Object.getPrototypeOf(real)), real, { dev: home.dev, ino: home.ino })
+        : real
     }) as never)
 
     for (const request of [
@@ -408,7 +418,10 @@ describe('Hermes data mounted inside a granted folder', () => {
       { op: 'stat', path: 'mounted/config.yaml' },
       { op: 'writeText', path: 'mounted/new.md', text: 'x' }
     ] as const) {
-      expect(await files.run('plexus', { ...request, folder: id } as never)).toMatchObject({ ok: false, error: 'protected' })
+      expect(await files.run('plexus', { ...request, folder: id } as never)).toMatchObject({
+        ok: false,
+        error: 'protected'
+      })
     }
 
     expect(fs.existsSync(path.join(mounted, 'new.md'))).toBe(false)

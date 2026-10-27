@@ -140,6 +140,25 @@ def test_acp_switch_model_carries_the_live_agent_toolsets_into_the_rebuild(monke
     assert made["disabled_toolsets"] == ["browser"]
 
 
+def test_acp_switch_model_carries_an_acp_set_reasoning_effort_into_the_rebuild(monkeypatch):
+    """An effort set through ACP ``thought_level`` must outlive a model switch: ``_make_agent``
+    falls back to config.yaml, which would silently revert the editor's choice."""
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.switch_model",
+        lambda **_kw: ModelSwitchResult(success=True, target_provider="anthropic", new_model="claude-sonnet-5"))
+
+    agent, made = _acp_agent()
+    state = _state()
+    state.reasoning_effort = ("high", {"enabled": True, "effort": "high"})
+    agent._switch_model(state, "claude-sonnet-5")  # type: ignore[arg-type]
+
+    assert made["reasoning_config"] == {"enabled": True, "effort": "high"}
+    # Without an ACP-set effort nothing is forced: the rebuild falls back to config-derived.
+    agent2, made2 = _acp_agent()
+    agent2._switch_model(_state(), "claude-sonnet-5")  # type: ignore[arg-type]
+    assert "reasoning_config" not in made2 or made2["reasoning_config"] is None
+
+
 def test_acp_set_session_model_rejection_is_invalid_params_and_leaves_session_untouched(monkeypatch):
     """#72439: a ``modelId`` no provider can serve is a bad param (-32602 with the switch_model
     reason), not a -32603 internal error; and a rebuild that blows up after switch_model accepted

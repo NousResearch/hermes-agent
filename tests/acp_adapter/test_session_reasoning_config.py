@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 import hermes_yaml as yaml
 
-from acp_adapter.session import SessionManager
+from acp_adapter.session import SessionManager, SessionState
 
 
 class _CapturingAgent:
@@ -71,3 +71,50 @@ def test_acp_agent_receives_custom_provider_request_body(acp_env, monkeypatch):
     assert same.kwargs["request_overrides"] == {"extra_body": {"user": "proxy-user"}}
     other = sm._make_agent(session_id="s3", cwd=".", base_url="https://elsewhere.example/v1")
     assert "request_overrides" not in other.kwargs
+
+
+def test_acp_agent_rebuild_honours_an_acp_set_reasoning_effort(acp_env):
+    """An effort set through ACP ``thought_level`` (``session/set_config_option``) must reach the
+    rebuilt agent verbatim — an explicit effort outranks config.yaml's ``agent.reasoning_effort``.
+    Without the carry, a model switch silently reverted the editor's choice."""
+    acp_env({"model": {"default": "gpt-4o-mini", "provider": "openai-api"}, "agent": {"reasoning_effort": "none"}})
+    sm = SessionManager(db=None)
+    sm._get_db = lambda: None
+    agent = sm._make_agent(session_id="s1", cwd=".", reasoning_config={"enabled": True, "effort": "high"})
+    assert agent.kwargs["reasoning_config"] == {"enabled": True, "effort": "high"}  # type: ignore[attr-defined]
+    # No explicit effort: the config-derived default still applies (here: disabled).
+    agent2 = sm._make_agent(session_id="s2", cwd=".")
+    assert agent2.kwargs["reasoning_config"] == {"enabled": False}  # type: ignore[attr-defined]
+
+
+def test_acp_fork_carries_an_acp_set_reasoning_effort(acp_env, monkeypatch):
+    """A fork is a rebuild: an effort set through ACP ``thought_level`` must reach the forked
+    agent and state, not silently fall back to config.yaml's effort."""
+    import threading
+
+    made: dict = {}
+    acp_env({"model": {"default": "gpt-4o-mini", "provider": "openai-api"}, "agent": {"reasoning_effort": "none"}})
+    sm = SessionManager(db=None)
+    sm._get_db = lambda: None
+
+    def _fake_make_agent(**kwargs):
+        made.update(kwargs)
+        made.setdefault("calls", 0)
+        made["calls"] += 1
+        return _CapturingAgent(**kwargs)
+
+    monkeypatch.setattr(sm, "_make_agent", _fake_make_agent)
+    monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
+
+    original = SessionState(
+        session_id="s1", agent=_CapturingAgent(), cwd=".", model="gpt-4o-mini",
+        history=[{"role": "user", "content": "hi"}], cancel_event=threading.Event())
+    original.reasoning_effort = ("high", {"enabled": True, "effort": "high"})
+    monkeypatch.setattr(sm, "get_session", lambda _sid: original)
+
+    forked = sm.fork_session("s1", cwd=".")
+    assert forked is not None
+    assert forked.reasoning_effort == ("high", {"enabled": True, "effort": "high"})
+    # The fork's agent was built with the carried effort, not the config.yaml default.
+    assert made["reasoning_config"] == {"enabled": True, "effort": "high"}
+    assert made["calls"] == 1

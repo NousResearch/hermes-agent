@@ -6,7 +6,14 @@ import path from 'node:path'
 
 import { describe, expect, it, vi } from 'vitest'
 
-import { createLinuxGpuBootWindow } from './linux-gpu-fallback'
+import {
+  clearLinuxGpuBootMarker,
+  createLinuxGpuBootWindow,
+  decideLinuxGpuLaunch,
+  linuxGpuFallbackMarker,
+  readLinuxGpuMarker,
+  writeLinuxGpuMarker
+} from './linux-gpu-fallback'
 import { createNvidiaEglRecovery } from './linux-nvidia-egl-recovery'
 import { linuxNoSandboxRelaunch } from './linux-sandbox-relaunch'
 
@@ -176,6 +183,66 @@ describe('Linux runtime --no-sandbox relaunch', () => {
       fs.rmSync(userData, { recursive: true, force: true })
     }
   })
+
+  // main.ts wires the generic ladder's cleanup in too: its `booting` witness was
+  // written before the restart, and a re-probe after an update or one earlier
+  // interrupted boot would otherwise turn the deliberate exit into sticky
+  // software rendering on any Linux GPU.
+  it.skipIf(process.platform !== 'linux')(
+    'restarts without leaving the generic GPU ladder a boot-abort witness',
+    async () => {
+      const saved = { ...process.env }
+      const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-sandbox-relaunch-linux-gpu-'))
+
+      const launch = () => {
+        const decision = decideLinuxGpuLaunch({
+          argv: ['/opt/Hermes/hermes'],
+          env: {},
+          marker: readLinuxGpuMarker(userData),
+          appVersion: '2.0.0',
+          remoteDisplayReason: null,
+          nvidiaFallbackActive: false
+        })
+
+        writeLinuxGpuMarker(userData, decision.nextMarker)
+
+        return decision
+      }
+
+      try {
+        delete process.env.ELECTRON_DISABLE_SANDBOX
+        delete process.env.APPIMAGE
+        vi.resetModules()
+        const { relaunchIfNoSandboxCameTooLate } = await import('./linux-sandbox-relaunch')
+
+        // An update re-probing an older version's fallback; one boot interrupted earlier;
+        // and a genuine fallback of this version, which must stay sticky.
+        for (const [prior, engagedAfter] of [
+          [linuxGpuFallbackMarker('gpu-crash', '1.0.0'), false],
+          [{ state: 'booting' as const }, false],
+          [linuxGpuFallbackMarker('gpu-crash', '2.0.0'), true]
+        ] as const) {
+          writeLinuxGpuMarker(userData, prior)
+          const decision = launch()
+          recordNextSpawn()
+
+          relaunchIfNoSandboxCameTooLate(
+            {
+              commandLine: { hasSwitch: name => name === 'no-sandbox' },
+              releaseSingleInstanceLock: () => undefined,
+              exit: () => undefined
+            },
+            () => clearLinuxGpuBootMarker(userData, decision.nextMarker.state === 'fallback')
+          )
+
+          expect(launch().enable).toBe(engagedAfter)
+        }
+      } finally {
+        restoreEnv(saved)
+        fs.rmSync(userData, { recursive: true, force: true })
+      }
+    }
+  )
 
   // Electron's relauncher execs with PR_SET_NO_NEW_PRIVS, inherited by the
   // backend and the agent's terminal: sudo and pkexec would stop working for

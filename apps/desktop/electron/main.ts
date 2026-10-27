@@ -329,6 +329,7 @@ import { applyLaunchProfileOverride } from './launch-profile'
 import { fetchLinkTitle, resolveFaviconCached } from './link-metadata'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
 import {
+  clearLinuxGpuBootMarker,
   createLinuxGpuBootWindow,
   decideLinuxGpuLaunch,
   disableGpuSwitchNeededForReason,
@@ -1284,7 +1285,11 @@ let desktopSshPathOverride = ''
 
 // Linux: a runtime `--no-sandbox` kills renderers on /dev/shm (linux-sandbox-relaunch.ts).
 if (isPrimaryInstance) {
-  relaunchIfNoSandboxCameTooLate(app, () => nvidiaEglRecovery.cleanExit())
+  // A deliberate restart is no GPU failure: settle both ladders' boot witnesses before it.
+  relaunchIfNoSandboxCameTooLate(app, () => {
+    nvidiaEglRecovery.cleanExit()
+    clearLinuxGpuBootMarker(app.getPath('userData'), linuxGpuFallbackSticky)
+  })
 }
 
 // ACTIVE_HERMES_ROOT — the canonical mutable Hermes install. Same path
@@ -18197,13 +18202,8 @@ app.on('before-quit', event => {
   }
 
   // #124843: a clean quit mid-boot must not trip next-launch --disable-gpu.
-  // Keyed on sticky (not active) so an engaged fallback keeps its marker.
-  if (process.platform === 'linux' && !linuxGpuFallbackSticky) {
-    try {
-      writeLinuxGpuMarker(app.getPath('userData'), linuxGpuMarkerAfterSuccessfulBoot({ fallbackActive: false }))
-    } catch {
-      void 0
-    }
+  if (process.platform === 'linux') {
+    clearLinuxGpuBootMarker(app.getPath('userData'), linuxGpuFallbackSticky)
   }
 
   // The always-on-top overlay isn't a "real" app window; close it so a stray

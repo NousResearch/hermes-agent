@@ -365,6 +365,12 @@ from hermes_cli.web_server_boundary import (  # re-exported: web_server.<name> s
     should_require_auth,
 )
 
+from hermes_cli.web_serve_bind import (  # multi-host bind helpers: pure, app-free, unit-tested here
+    all_hosts_loopback,
+    close_server_sockets,
+    create_server_sockets,
+)
+
 
 def should_require_dashboard_auth(
     host: str,
@@ -383,10 +389,14 @@ def should_require_dashboard_auth(
 @app.middleware("http")
 async def host_header_middleware(request: Request, call_next):
     """Reject requests whose Host header doesn't match the bound interface (DNS rebinding, GHSA-ppp5-vxwm-4cf7)."""
-    # app.state.bound_host is set by start_server() at listen time.
-    bound_host = getattr(app.state, "bound_host", None)
-    if bound_host and not _is_accepted_host(
-        request.headers.get("host", ""), bound_host, getattr(app.state, "trusted_public_hosts", frozenset())
+    # app.state.bound_hosts (frozenset, dual-stack aware) is set by
+    # start_server() at listen time; fall back to the legacy singular
+    # bound_host for callers/tests that only set that.
+    bound = getattr(app.state, "bound_hosts", None) or getattr(
+        app.state, "bound_host", None
+    )
+    if bound and not _is_accepted_host(
+        request.headers.get("host", ""), bound, getattr(app.state, "trusted_public_hosts", frozenset())
     ):
         return JSONResponse(
             status_code=400,
@@ -944,16 +954,26 @@ def _no_auth_provider_message(host: str) -> str:
 
 
 def _configure_auth_gate(
-    host: str,
+    hosts: "str | list[str]",
     allow_public: bool,
     ssh_session_token: Optional[str],
     ssh_owner_nonce: Optional[str],
 ) -> None:
     """Resolve the trusted public hosts + auth-gate flag onto ``app.state``.
 
+    ``hosts`` is a single address or the full bind list (dual-stack). The gate
+    engages when ANY bound host is non-loopback; the Desktop loopback exemption
+    applies only when ALL bound hosts are loopback.
+
     Fails closed (``SystemExit`` with an actionable message) when the gate
     engages but no dashboard auth provider is registered.
     """
+    if isinstance(hosts, str):
+        hosts = [hosts]
+    # A dual-stack bind is an explicit opt-in to whatever the widest member
+    # implies: one non-loopback address puts the whole listener behind the gate.
+    any_non_loopback = any(h not in _LOOPBACK_HOST_VALUES for h in hosts)
+    all_loopback = not any_non_loopback
     # dashboard.public_url is also the exact Host/Origin trust declaration for
     # reverse-proxy deployments; resolved once so middleware never reloads
     # config. A non-loopback public hostname engages the gate even on a loopback
@@ -965,43 +985,50 @@ def _configure_auth_gate(
         _dashboard_public_hosts() if own_url is None else public_url_hosts(own_url))
     # auth_required drives middleware, SPA-token injection, WS auth, the
     # startup refusal, the gate-on banner and uvicorn proxy_headers.
-    if own_url is None and _desktop_loopback_auth_exempt(host, ssh_session_token, ssh_owner_nonce):
+    if (own_url is None and all_loopback
+            and _desktop_loopback_auth_exempt(hosts[0], ssh_session_token, ssh_owner_nonce)):
         # public_url describes the operator's PUBLIC deployment, not this
         # Desktop-owned loopback backend (#96490), which authenticates with the
         # per-spawn session token the ticket-only gate would refuse.
-        app.state.auth_required = should_require_auth(host)
+        app.state.auth_required = should_require_auth(hosts[0])
         _log.info(
             "Desktop-owned loopback backend: dashboard.public_url does not "
             "engage the ticket gate for this process; the public deployment "
             "keeps its own gate.",
         )
     else:
-        app.state.auth_required = should_require_dashboard_auth(host, app.state.trusted_public_hosts)
+        app.state.auth_required = any(
+            should_require_dashboard_auth(h, app.state.trusted_public_hosts)
+            for h in hosts
+        )
 
     # ``--insecure`` no longer disables the gate (June 2026 hermes-0day
     # hardening); warn that it is a no-op rather than silently ignore it.
-    if allow_public and host not in _LOOPBACK_HOST_VALUES:
+    if allow_public and any_non_loopback:
         _log.warning(
             "--insecure no longer bypasses dashboard authentication. A "
             "non-loopback bind (%s) now ALWAYS requires an auth provider "
             "(OAuth or the bundled password provider). Configure one — see "
             "below — or bind to 127.0.0.1 and reach it over an SSH tunnel / "
-            "Tailscale.", host,
+            "Tailscale.", ", ".join(hosts),
         )
 
     if app.state.auth_required:
-        # No escape hatch serves a gated dashboard without a provider.
+        # No provider means no safely-served bind: fail closed rather than open.
         from hermes_cli.dashboard_auth import list_providers
         if not list_providers():
-            raise SystemExit(_no_auth_provider_message(host))
+            raise SystemExit(_no_auth_provider_message(", ".join(hosts)))
         _log.info(
             "Dashboard binding to %s with auth gate enabled. Providers: %s",
-            host,
+            ", ".join(hosts),
             ", ".join(p.name for p in list_providers()),
         )
 
 
-def _build_uvicorn_server(host: str, port: int, *, ssh_isolated: bool = False):
+def _build_uvicorn_server(
+    host: str, port: int, *, ssh_isolated: bool = False,
+    hosts: "list[str] | None" = None,
+):
     """Build the uvicorn ``Config`` + ``Server`` for this bind (reads ``app.state.auth_required``).
 
     uvicorn.Server is driven directly (not uvicorn.run) so startup is split from
@@ -1009,6 +1036,11 @@ def _build_uvicorn_server(host: str, port: int, *, ssh_isolated: bool = False):
     OS-assigned port can be read with no pre-bind-then-close TOCTOU. Explicit
     taken ports are caught by the #93608 preflight probe; uvicorn's own bind
     error stays the fallback for races.
+
+    ``hosts`` drives the loopback decision across every bound address (dual-stack
+    binds disable the WS ping only when EVERY member is loopback). The actual
+    per-address listeners are handed to ``server.startup(sockets=...)`` by the
+    caller, not via Config (uvicorn 0.41 has no ``Config.sockets``).
     """
     import uvicorn
 
@@ -1019,8 +1051,12 @@ def _build_uvicorn_server(host: str, port: int, *, ssh_isolated: bool = False):
     # dead client sends a real FIN/RST -> WebSocketDisconnect. So: no ping on
     # loopback; non-loopback sits behind a Cloudflare Tunnel (~100s idle) and
     # keeps a config-driven cadence (dashboard.ws_ping_interval/_timeout,
-    # #79635) defaulting to 20/20.
-    _is_loopback = host in _LOOPBACK_HOST_VALUES
+    # #79635) defaulting to 20/20. A multi-host bind disables the ping only when
+    # EVERY member is loopback — any public member needs tunnel detection.
+    _bind_hosts = hosts if hosts else [host]
+    # Delegated to web_serve_bind so the multi-host rule ("disable the ping only
+    # when EVERY member is loopback") has one definition and one test surface.
+    _is_loopback = all_hosts_loopback(_bind_hosts)
     try:
         _dash_cfg = load_config().get("dashboard") or {}
     except Exception:
@@ -1382,7 +1418,7 @@ def _run_serve(serve, config, host: str, port: int) -> None:
 
 
 def start_server(
-    host: str = "127.0.0.1",
+    hosts: "list[str] | None" = None,
     port: int = 9119,
     open_browser: bool = True,
     allow_public: bool = False,
@@ -1393,8 +1429,15 @@ def start_server(
     ssh_owner_nonce: Optional[str] = None,
     start_mcp_discovery_after_bind: bool = False,
     ssh_lock_path: Optional[Path] = None,
+    host: "str | None" = None,
 ):
     """Start the web UI server.
+
+    ``hosts`` is the list of interfaces to bind — repeat it for a dual-stack
+    bind (e.g. ``["0.0.0.0", "::"]``), each getting its own listener on the same
+    port. A single address may be passed via the legacy ``host=`` keyword (kept
+    for Desktop spawn / existing callers); ``hosts`` takes precedence when both
+    are given. Defaults to loopback only.
 
     ``initial_profile`` is appended to the auto-opened URL as ``?profile=<name>``
     (profile alias ``<profile> dashboard``). ``headless`` is the ``serve`` path:
@@ -1408,6 +1451,16 @@ def start_server(
     until the ready sentinel is written so its SDK import can't hold the GIL
     against the pre-bind path.
     """
+    # Normalise bind targets to a list; ``host`` below stays the PRIMARY address
+    # (what uvicorn reports and the browser opens; every listener shares it).
+    if hosts is None:
+        hosts = [host] if host else ["127.0.0.1"]
+    elif isinstance(hosts, str):
+        hosts = [hosts]
+    else:
+        hosts = list(hosts)
+    host = hosts[0]
+
     _apply_ssh_session_token(ssh_session_token or "")
     _apply_ssh_owner_nonce(ssh_owner_nonce)
 
@@ -1426,16 +1479,45 @@ def start_server(
     except Exception as exc:
         _log.debug("Nous auth keepalive did not start: %s", exc)
 
-    _configure_auth_gate(host, allow_public, ssh_session_token, ssh_owner_nonce)
+    _configure_auth_gate(hosts, allow_public, ssh_session_token, ssh_owner_nonce)
 
-    # host_header_middleware validates Host against this (DNS rebinding,
-    # GHSA-ppp5-vxwm-4cf7).
+    # host_header_middleware validates Host against these (DNS rebinding,
+    # GHSA-ppp5-vxwm-4cf7). bound_hosts is the full set (dual-stack aware);
+    # bound_host remains the primary for single-address consumers.
+    app.state.bound_hosts = frozenset(hosts)
     app.state.bound_host = host
     # The SPA bootstrap reads this so profile-less deep links (/chat?resume=<id>) inherit the
     # launcher's preselected profile instead of silently running in the launch scope (#73085).
     app.state.initial_profile = str(initial_profile or "")
 
-    config, server = _build_uvicorn_server(host, port, ssh_isolated=bool(ssh_session_token))
+    # Pre-bind one listener per requested address. Probe first for the common
+    # single-host conflict (#93608), then bind every host — an EADDRINUSE raised
+    # by any later member (dual-stack) is translated to the same sentinel + exit
+    # code so a conflict never surfaces as a bare uvicorn ERROR line. Reuses one
+    # OS-assigned port across families when ``port == 0``.
+    if _port_bind_conflict(host, port):
+        _report_port_in_use(host, port)
+        raise SystemExit(PORT_IN_USE_EXIT_CODE)
+    try:
+        _pre_bound_sockets = create_server_sockets(hosts, port)
+    except OSError as exc:
+        # A non-primary member collided (e.g. :: already taken while 127.0.0.1
+        # was free). Attribute to the offending host and emit the sentinel.
+        _offending = next(
+            (h for h in hosts if _port_bind_conflict(h, port)), host,
+        )
+        _log.debug("socket pre-bind failed: %s", exc)
+        _report_port_in_use(_offending, port)
+        raise SystemExit(PORT_IN_USE_EXIT_CODE) from None
+    # ``port`` stays exactly what the caller asked for: ephemeral discovery is
+    # already handled after startup by ``_read_bound_port(server, fallback=port)``,
+    # which reads the live socket — including our pre-bound ones, so uvicorn's
+    # Config keeps receiving the requested value (0 means 0) and the launcher-
+    # side port bookkeeping stays consistent with single-host serve.
+
+    config, server = _build_uvicorn_server(
+        host, port, ssh_isolated=bool(ssh_session_token), hosts=hosts,
+    )
 
     # Flush-on-kill guard (#94724): chaining SIGTERM/SIGINT handlers persist
     # in-memory transcripts to state.db before shutdown. Installed BEFORE
@@ -1448,13 +1530,8 @@ def start_server(
     except Exception as exc:
         _log.debug("exit-flush signal handlers not installed: %s", exc)
 
-    # #93608: uvicorn's bind_socket() would exit 1 with a bare ERROR line,
-    # indistinguishable from "backend broken". Probe first so a conflict
-    # surfaces as the BACKEND_PORT_IN_USE sentinel + distinct exit code.
-    # ``--port 0`` is skipped by the probe.
-    if _port_bind_conflict(host, port):
-        _report_port_in_use(host, port)
-        raise SystemExit(PORT_IN_USE_EXIT_CODE)
+    # #93608 conflict detection already ran above (before pre-binding), so the
+    # listeners are held by us here; uvicorn reuses config.sockets on startup().
 
     # LAST boot step, deliberately. One host process serves every profile and this one can be asked
     # for any of them via ``?profile=``, so the decision is made here instead of on the first such
@@ -1478,7 +1555,9 @@ def start_server(
             config.load()
         server.lifespan = config.lifespan_class(config)
         with server.capture_signals():
-            await server.startup()
+            # Pass our pre-bound listeners so uvicorn serves every requested
+            # address (dual-stack); None lets it bind ``host`` itself (single).
+            await server.startup(sockets=_pre_bound_sockets or None)
             if server.should_exit:
                 return
 
@@ -1501,4 +1580,11 @@ def start_server(
             if server.started:
                 await server.shutdown()
 
-    _run_serve(_serve, config, host, port)
+    try:
+        _run_serve(_serve, config, host, port)
+    finally:
+        # uvicorn's transports own the fds while serving; this best-effort pass
+        # releases the listeners we created if the serve loop exits before or
+        # during startup (config error, boot-time exception) — otherwise they
+        # would linger until the process does.
+        close_server_sockets(_pre_bound_sockets)

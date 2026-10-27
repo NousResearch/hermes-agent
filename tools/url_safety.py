@@ -226,6 +226,42 @@ def _normalize_hostname(host: Optional[str]) -> str:
     return (host or "").strip().lower().rstrip(".")
 
 
+# urllib.parse and WHATWG parsers (browsers, Node-based fetch backends, also urllib3) can take a
+# different host from one string: WHATWG ends the authority at ``\``, percent-decodes the host and
+# accepts ``http:\\host`` or ``http:///host``; urlsplit does none of these. So
+# ``http://127.0.0.1:8080\@1.1.1.1`` is 1.1.1.1 here and 127.0.0.1:8080 in a browser. Such
+# URLs are refused rather than guessed at. Both parsers strip C0 controls and space from the ends.
+_C0_CONTROL_OR_SPACE = "".join(chr(c) for c in range(0x21))
+
+
+def _authority_ambiguity(url: str, *, allow_userinfo: bool = False) -> Optional[str]:
+    """Why another client could read a different host or port from an http(s) *url* than urlsplit
+    does, else None. ``\\`` and ``@`` after the authority (path, query, fragment) are accepted: every
+    parser has fixed the host by then, and WHATWG's ``\\`` -> ``/`` rewrite only changes the path."""
+    url = url.strip(_C0_CONTROL_OR_SPACE)
+    parts = urlsplit(url)
+    if parts.scheme.lower() not in _HTTP_SCHEMES:
+        return None
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in url):
+        return "control character in URL"  # urlsplit silently drops tab/CR/LF anywhere
+    if not parts.netloc:
+        return "authority not introduced by //"
+    if "\\" in parts.netloc:
+        return "backslash in authority"
+    _, at, host = parts.netloc.rpartition("@")
+    if at and not allow_userinfo:
+        return "userinfo in authority"
+    if "%" in host:
+        return "percent-encoding in host"
+    if any(c.isspace() for c in host):
+        return "whitespace in host"
+    try:
+        parts.port
+    except ValueError:
+        return "invalid port"
+    return None
+
+
 def _parse_ip(hostname: str) -> Optional[_IPAddress]:
     """IP object for a literal-IP hostname, else None."""
     try:
@@ -287,8 +323,13 @@ def is_always_blocked_url(url: str) -> bool:
     hostnames/IPs, regardless of backend, routing, or ``allow_private_urls``. For callers that
     deliberately bypass the full check (e.g. hybrid cloud browser routing private URLs to a local
     sidecar) but must still enforce the floor. False for ordinary private/loopback URLs, DNS
-    failures and parse errors (the caller's ordinary fail-closed path handles those)."""
+    failures and parse errors (the caller's ordinary fail-closed path handles those); True for an
+    http(s) URL whose host another client could read differently, which may hide a metadata target."""
     try:
+        reason = _authority_ambiguity(url, allow_userinfo=True)
+        if reason is not None:
+            logger.warning("Blocked request — ambiguous URL authority (always-blocked floor): %s", reason)
+            return True
         hostname = _normalize_hostname(urlparse(url).hostname)
         if not hostname:
             return False
@@ -338,14 +379,20 @@ def _resolved_ip_block_reason(ip: _IPAddress, allow_private: bool) -> Optional[s
 
 def is_safe_url(url: str) -> bool:
     """True if the URL target is not a private/internal address. Resolves the hostname and checks
-    every answer; fails closed on DNS errors and unexpected exceptions. ``allow_private_urls``
-    skips private-IP blocking, but cloud metadata endpoints remain blocked regardless."""
+    every answer; fails closed on DNS errors, unexpected exceptions and URLs whose authority other
+    clients could parse differently (userinfo included). ``allow_private_urls`` skips private-IP
+    blocking, but cloud metadata endpoints remain blocked regardless."""
     try:
         parsed = urlparse(url)
         hostname = _normalize_hostname(parsed.hostname)
         scheme = (parsed.scheme or "").strip().lower()
         if scheme not in _HTTP_SCHEMES:
             logger.warning("Blocked request — unsupported URL scheme: %s", scheme or "<empty>")
+            return False
+        reason = _authority_ambiguity(url)
+        if reason is not None:
+            # The reason only: the URL may carry userinfo credentials.
+            logger.warning("Blocked request — ambiguous URL authority: %s", reason)
             return False
         if not hostname:
             return False

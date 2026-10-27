@@ -158,7 +158,6 @@ def verified_tools(names: Sequence[str], *, source_store: Path, target: str,
     from pm.lock import Facts
     from pm.package import StatePackage
     from pm.registry import walk
-    from pm.store import tree_digest
 
     if isinstance(names, str):
         raise TypeError("names must be a sequence, not a string")
@@ -186,7 +185,7 @@ def verified_tools(names: Sequence[str], *, source_store: Path, target: str,
         if (not fact or fact.get("entry") != expected
                 or not entry.is_dir() or not entry.resolve().is_relative_to(source_store)
                 or not facts.installed(package.name, version, source_store, identity)
-                or tree_digest(entry) != fact.get("digest")):
+                or package.digest(entry, target) != fact.get("digest")):
             raise InstallError(package.name, "tool source failed verification", "run preparation again")
         _copy_links(package, entry)
         binary = package.binary(entry, target)

@@ -988,6 +988,9 @@ class Chromium(Package):
         **{target: "Playwright/Chrome-for-Testing publishes no musl build" for target in MUSL_TARGETS},
     }
     emulated_arch_targets = frozenset({"win32-arm64"})
+    # Crashpad can log before Chrome's logging switches take effect (#140042).
+    runtime_files = dict.fromkeys(("win32-x64", "win32-arm64"),
+                                 frozenset({"chrome-win64/debug.log"}))
     _CDN = "https://cdn.playwright.dev"
 
     # Chrome-for-Testing platform names; targets absent here fall back to

@@ -35,8 +35,9 @@ class LocalSessionAdapter(BasePlatformAdapter):
         if saved is None:
             return False
         original, identity = saved
+        live = self.authority.sessions.get(source.chat_id)
         return (source is original and self._identity(source) == identity
-                and any(live.source is source for live in self.authority.sessions.values()))
+                and live is not None and live.source is source)
 
     @staticmethod
     def _identity(source):

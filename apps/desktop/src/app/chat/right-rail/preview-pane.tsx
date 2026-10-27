@@ -3,7 +3,7 @@
 import './preview-mind'
 
 import { useStore } from '@nanostores/react'
-import type { PointerEvent as ReactPointerEvent } from 'react'
+import type { ComponentProps, PointerEvent as ReactPointerEvent } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { requestComposerAttachImages, requestComposerFocus, requestComposerInsert } from '@/app/chat/composer/focus'
@@ -154,6 +154,8 @@ interface PreviewPaneProps {
   onClose?: () => void
   onRestartServer?: (url: string, context?: string) => Promise<string>
   reloadRequest?: number
+  /** The session that owns the tab; a file it names resolves in that session's workspace. */
+  sessionId?: string
   /** The preview tab this pane renders. Keys the per-tab console store the
    *  browser bar's console toggle and the console panel both read. */
   tabId?: string
@@ -268,11 +270,21 @@ function PreviewLoadError({
   )
 }
 
+/** The body of a tab that is not a web page: a generated artifact or a file. */
+function PreviewDocumentBody(props: ComponentProps<typeof LocalFilePreview>) {
+  return props.target.kind === 'artifact' ? (
+    <ArtifactPreview onClose={props.onClose} target={props.target} />
+  ) : (
+    <LocalFilePreview {...props} />
+  )
+}
+
 export function PreviewPane({
   embedded = false,
   onClose,
   onRestartServer,
   reloadRequest = 0,
+  sessionId,
   tabId,
   target
 }: PreviewPaneProps) {
@@ -1538,17 +1550,15 @@ export function PreviewPane({
               title={target.label || copy.fallbackTitle}
             />
           )}
-          {!isWebPreview &&
-            (target.kind === 'artifact' ? (
-              <ArtifactPreview onClose={onClose} target={target} />
-            ) : (
-              <LocalFilePreview
-                onClose={onClose}
-                onSelectRendered={canRenderHtmlFile ? () => selectRenderMode('preview') : undefined}
-                reloadKey={localReloadKey}
-                target={target}
-              />
-            ))}
+          {!isWebPreview && (
+            <PreviewDocumentBody
+              onClose={onClose}
+              onSelectRendered={canRenderHtmlFile ? () => selectRenderMode('preview') : undefined}
+              reloadKey={localReloadKey}
+              sessionId={sessionId}
+              target={target}
+            />
+          )}
           {isBlankPage && (
             <div className="absolute inset-0 grid bg-background">
               <PanelEmpty description={copy.blankPageBody} icon="globe" />

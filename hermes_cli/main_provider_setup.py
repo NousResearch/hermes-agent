@@ -546,19 +546,35 @@ def _save_custom_provider(base_url, api_key="", model="", context_length=None, n
     print(f'  💾 Saved to custom providers as "{name}" (edit in config.yaml)')
 
 
+def _removable_custom_providers(config) -> list[dict]:
+    """Saved providers the removal row can act on, from BOTH config schemas.
+
+    The row used to be gated on the legacy ``custom_providers`` list alone, so a provider
+    saved in the v12+ ``providers`` map could not be reached from the menu at all.
+    """
+    try:
+        from hermes_cli.config import get_compatible_custom_providers
+        entries = get_compatible_custom_providers(config) or []
+    except Exception:
+        entries = []
+    return [entry for entry in entries if isinstance(entry, dict)]
+
+
 def _remove_custom_provider(config):
-    """Let the user remove a saved custom provider from config.yaml."""
+    """Let the user remove a saved custom provider, across both config schemas."""
     from hermes_cli.config import load_config, save_config
+    from hermes_cli.provider_removal import build_removal_plan, execute_removal
     cfg = load_config()
-    providers = cfg.get("custom_providers") or []
-    if not isinstance(providers, list) or not providers:
+    entries = _removable_custom_providers(cfg)
+    if not entries:
         print("No custom providers configured.")
         return
 
     print("Remove a custom provider:\n")
     choices = [
-        f"{entry.get('name', 'unnamed')} ({_short_url(entry.get('base_url', ''))})" if isinstance(entry, dict) else str(entry)
-        for entry in providers]
+        f"{entry.get('name') or entry.get('provider_key') or 'unnamed'} "
+        f"({_short_url(entry.get('base_url', ''))})"
+        for entry in entries]
     choices.append("Cancel")
 
     idx = _radiolist("Select provider to remove:", list(choices))
@@ -576,15 +592,28 @@ def _remove_custom_provider(config):
         except (ValueError, KeyboardInterrupt, EOFError):
             idx = None
 
-    if idx is None or idx >= len(providers):
+    if idx is None or idx >= len(entries):
         print("No change.")
         return
 
-    removed = providers.pop(idx)
-    cfg["custom_providers"] = providers
-    save_config(cfg)
-    removed_name = removed.get("name", "unnamed") if isinstance(removed, dict) else str(removed)
-    print(f'✅ Removed "{removed_name}" from custom providers.')
+    target = str(entries[idx].get("provider_key") or entries[idx].get("name") or "").strip()
+    if not target:
+        print("No change.")
+        return
+
+    # Removal leaves references and credentials behind when it only pops a list entry, so
+    # reuse the shared plan/execute path and clear the references this provider owned.
+    plan = build_removal_plan(cfg, target)
+    clear = [ref.path for ref in plan.references]
+    for ref in plan.references:
+        print(f"  also clearing {ref.path} (was {ref.provider})")
+    result = execute_removal(cfg, plan, clear=clear)
+
+    if result["stores"]:
+        save_config(cfg)
+    print(f'✅ Removed "{entries[idx].get("name") or target}" from custom providers.')
+    if result.get("credentials_removed"):
+        print(f"   {result['credentials_removed']} stored credential(s) removed.")
 
 
 def _prompt_reasoning_effort_selection(efforts, current_effort="", *, default_label=""):
@@ -973,7 +1002,7 @@ def _build_provider_picker_rows(config: dict, active: str, provider_labels: dict
         _add("llamacpp", "Local models (run open models on this machine — no account or API key)", [],
              active == "llamacpp")
     ordered.append(("custom", "Custom endpoint (enter URL manually)", []))
-    if isinstance(config.get("custom_providers"), list) and config.get("custom_providers"):
+    if _removable_custom_providers(config):
         ordered.append(("remove-custom", "Remove a saved custom provider", []))
     ordered.append(("reasoning", "Reasoning effort for the current model...", []))
     ordered.append(("aux-config", "Configure auxiliary models...", []))

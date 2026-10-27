@@ -335,10 +335,10 @@ def test_zero_grace_preserves_no_escalation_and_reports_unknown(jobs, monkeypatc
         late = job.fixture_identity('late')
         assert not job_quiescent(job.session) and _same_process(primary)
     finally:
-        for name in ('primary', 'stubborn', 'late'):
-            identity = _read_json(job.root / (name + '.json'))
-            if identity and _same_process(identity):
-                os.kill(identity['pid'], signal.SIGKILL)
+        # Zero grace intentionally leaves this job running. Its finite payloads
+        # already end within the fixture's existing teardown bound; do not turn
+        # cleanup into an unproved PID signal after their ancestry changes.
+        job.proc.wait(timeout=15)
         job.evidence(lambda row: row['quiescent'])
     assert not _same_process(stubborn) and not _same_process(late)
 

@@ -412,7 +412,8 @@ def _complete_selected(request: dict) -> bool:
             pre_update_version=request["pre_update_version"],
             completion_message=request.get("completion_message"),
             announce=None if request.get("completion_message") else "\n✓ Code updated!",
-            followups=followups, before_build=lambda: _resume_paused_before_build(request))
+            followups=followups, before_build=lambda: _resume_paused_before_build(request),
+            release_tag=request.get("release_tag"))
     except (Exception, SystemExit) as exc:  # health: allow BLE001 -- e.g. the shared update lock refused the tail
         reason = str(exc) or type(exc).__name__
         # The tail's steps catch their own failures, so a raise here means the build never ran.

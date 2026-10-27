@@ -50,6 +50,10 @@ class SourceTarget:
     branch: str | None = None
     version: str | None = None
     build_id: str | None = None
+    # The published release tag (``vX.Y.Z``) when the target is a release. Update
+    # fetches use --no-tags, so the tag itself can be absent from the checkout even
+    # when its commit is present; carrying it lets the update refresh that one tag.
+    tag: str | None = None
 
     @property
     def retired(self) -> bool:
@@ -198,7 +202,8 @@ def _resolve_stable(repository: str, git_cmd=None, cwd=None) -> SourceTarget:
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         logger.warning("Could not resolve the stable source release: %s", exc)
         raise ValueError(_describe_release_failure(exc)) from exc
-    return SourceTarget("stable", "stable", repository, commit=commit, version=str(tag).removeprefix("v"))
+    return SourceTarget("stable", "stable", repository, commit=commit, version=str(tag).removeprefix("v"),
+                        tag=str(tag))
 
 
 def _refuse_retirement_downgrade(request: dict, terminal: dict, git_cmd, cwd) -> None:

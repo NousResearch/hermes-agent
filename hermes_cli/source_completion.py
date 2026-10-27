@@ -38,6 +38,7 @@ def complete_source_checkout(
     announce: str | None = None,
     followups: list[tuple[str, str]] | None = None,
     before_build=None,
+    release_tag: str | None = None,
 ) -> bool:
     """Publish commands, build the products, then run post-build maintenance.
 
@@ -74,7 +75,7 @@ def complete_source_checkout(
             pre_update_snapshot_id=pre_update_snapshot_id,
             pre_update_version=pre_update_version,
             completion_message=completion_message, announce=announce, followups=followups,
-            before_build=before_build,
+            before_build=before_build, release_tag=release_tag,
         )
     finally:
         lock.release()
@@ -92,6 +93,7 @@ def _complete_locked(
     announce: str | None,
     followups: list[tuple[str, str]] | None = None,
     before_build=None,
+    release_tag: str | None = None,
 ) -> bool:
     """The completion body; callers hold the update lock already."""
     from hermes_cli.source_build import build_update_products
@@ -135,6 +137,7 @@ def _complete_locked(
         pre_update_version=pre_update_version,
         completion_message=completion_message,
         followups=owed,
+        release_tag=release_tag,
     )))
     tail_done = not owed
     if tail_done:

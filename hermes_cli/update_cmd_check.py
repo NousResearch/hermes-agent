@@ -263,6 +263,11 @@ def select_apply_target(args, branch: str, request: dict, *, git_cmd, stop) -> t
     if target.commit:
         print(f"→ {'Release' if target.ahead else 'Latest release'}: {target.label}")
         request["expected_sha"] = target.commit
+        # Update fetches use --no-tags. When HEAD already contains the release the tag
+        # itself can still be missing locally, which makes version_info() report the
+        # previous release; carry the tag so the fetch can refresh that one ref.
+        if target.tag:
+            request["release_tag"] = target.tag
         return target.commit, target.commit, target.ahead, target.repository
     assert target.branch is not None  # a SourceTarget without a commit names its branch
     request["branch"] = target.branch

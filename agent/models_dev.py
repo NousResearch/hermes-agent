@@ -114,7 +114,7 @@ PROVIDER_TO_MODELS_DEV: dict[str, str] = {
     "moonshot": "kimi-for-coding", "stepfun": "stepfun",
     "kimi-coding-cn": "kimi-for-coding", "minimax": "minimax",
     "minimax-oauth": "minimax", "minimax-cn": "minimax-cn", "deepseek": "deepseek",
-    "alibaba": "alibaba", "qwen-oauth": "alibaba", "copilot": "github-copilot",
+    "alibaba": "alibaba", "qwen-oauth": "alibaba",
     "ai-gateway": "vercel", "opencode-zen": "opencode",
     "opencode-go": "opencode-go",
     "kilocode": "kilo", "fireworks": "fireworks-ai",
@@ -133,6 +133,27 @@ PROVIDER_TO_MODELS_DEV: dict[str, str] = {
 _MODELS_DEV_TO_PROVIDER: Optional[dict[str, list[str]]] = None
 
 
+def _profile_models_dev_ids() -> dict[str, str]:
+    """``{name: models_dev_id}`` declared by registered provider profiles the static map lacks.
+    Read at lookup time (never merged into ``PROVIDER_TO_MODELS_DEV``)."""
+    from providers import list_providers
+    return {p.name: p.models_dev_id for p in list_providers()
+            if p.models_dev_id and p.name not in PROVIDER_TO_MODELS_DEV}
+
+
+def models_dev_provider_map() -> dict[str, str]:
+    """Hermes provider id → models.dev id: ``PROVIDER_TO_MODELS_DEV``, then profile ``models_dev_id``s."""
+    return {**PROVIDER_TO_MODELS_DEV, **_profile_models_dev_ids()}
+
+
+def models_dev_id_for(provider: str) -> Optional[str]:
+    """models.dev id for an exact Hermes provider id (static map first, then its profile), or None."""
+    key = (provider or "").strip()
+    if not key or key in PROVIDER_TO_MODELS_DEV:
+        return PROVIDER_TO_MODELS_DEV.get(key)
+    return _profile_models_dev_ids().get(key)
+
+
 def _models_dev_to_hermes_ids(mdev_id: str) -> list[str]:
     """Return the Hermes provider ids that map to *mdev_id* (may be [])."""
     global _MODELS_DEV_TO_PROVIDER
@@ -140,7 +161,8 @@ def _models_dev_to_hermes_ids(mdev_id: str) -> list[str]:
         _MODELS_DEV_TO_PROVIDER = {}
         for hermes_id, mapped in PROVIDER_TO_MODELS_DEV.items():
             _MODELS_DEV_TO_PROVIDER.setdefault(mapped, []).append(hermes_id)
-    return _MODELS_DEV_TO_PROVIDER.get(mdev_id, [])
+    profile_ids = [name for name, mapped in _profile_models_dev_ids().items() if mapped == mdev_id]
+    return [*_MODELS_DEV_TO_PROVIDER.get(mdev_id, []), *profile_ids]
 
 
 def _dict_or_empty(value: Any) -> dict[str, Any]:
@@ -155,7 +177,7 @@ def _configured_catalog_provider(
     name = (provider or "").strip()
     if name.lower().startswith("custom:"):
         name = name[len("custom:"):]
-    if not name or name in PROVIDER_TO_MODELS_DEV:
+    if not name or models_dev_id_for(name) is not None:
         return None
     provider_config = (
         _cfg_get("providers", name, default=None, config=config)
@@ -181,11 +203,11 @@ def _models_dev_id(
     """models.dev provider id for a Hermes provider id, or None. A custom provider reaches the
     catalog only through its configured ``catalog_provider`` alias (#112649)."""
     key = (provider or "").strip()
-    mdev_id = PROVIDER_TO_MODELS_DEV.get(key)
+    mdev_id = models_dev_id_for(key)
     if mdev_id is None:
         alias = _configured_catalog_provider(key, config=config)
-        mdev_id = PROVIDER_TO_MODELS_DEV.get(alias, alias) if alias else None
-        if mdev_id is not None and mdev_id not in PROVIDER_TO_MODELS_DEV.values() \
+        mdev_id = (models_dev_id_for(alias) or alias) if alias else None
+        if mdev_id is not None and mdev_id not in models_dev_provider_map().values() \
                 and mdev_id not in fetch_models_dev(allow_network=False):
             # A mistyped alias must not leak into ModelInfo.provider_id; the row stays on its own slug.
             if (key, alias) not in _UNKNOWN_CATALOG_PROVIDER_WARNED:
@@ -676,7 +698,7 @@ def _provider_override_section(provider: str, *, config: Optional[dict[str, Any]
     if not overrides or not provider_key:
         return None
     # Forward (Hermes → models.dev id) and reverse (caller passed a models.dev id, config keyed by Hermes id) aliases.
-    candidates = [provider_key, PROVIDER_TO_MODELS_DEV.get(provider_key), *_models_dev_to_hermes_ids(provider_key)]
+    candidates = [provider_key, models_dev_id_for(provider_key), *_models_dev_to_hermes_ids(provider_key)]
     return next((section for section in (overrides.get(key) if key else None for key in candidates) if isinstance(section, dict)), None)
 
 

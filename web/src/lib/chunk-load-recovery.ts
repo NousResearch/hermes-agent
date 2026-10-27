@@ -54,8 +54,11 @@ export function reloadForChunkLoadError(
 /** Vite dispatches `vite:preloadError` for every failed lazy import and chunk
  *  CSS preload, including imports nobody awaits. The event is not cancelled,
  *  so the import still rejects as before when no reload happens. */
-export function startChunkLoadRecovery(target: Pick<Window, "addEventListener"> = window): void {
+export function startChunkLoadRecovery(
+  target: Pick<Window, "addEventListener"> = window,
+  { storage, reload }: { storage?: ReloadStorage | null; reload?: () => void } = {},
+): void {
   target.addEventListener("vite:preloadError", (event) => {
-    reloadForChunkLoadError((event as Event & { payload?: unknown }).payload);
+    reloadForChunkLoadError((event as Event & { payload?: unknown }).payload, storage, reload);
   });
 }

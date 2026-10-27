@@ -538,8 +538,9 @@ Full-text search across message content. Query parameter: `q`. Returns matching 
 
 Deletes a session and its message history. The request must carry the mutation identity
 the client read from `GET /api/sessions/{id}/mutation-snapshot` (`request_id`,
-`expected_revision`, and `expected_generation`); without it the route answers `409
-mutation_identity_required`. The delete is executed by the profile's gateway, so a
+`expected_revision`, and `expected_generation`); a partial identity is answered `409
+mutation_identity_required`, and a request with none of it (Desktop 0.22.2 and older) `409
+client_upgrade_required` — the backend never applies an edit without the revision fence. The delete is executed by the profile's gateway, so a
 session with a running or queued turn is refused with `409 session_busy` and one whose
 last turn was lost across a gateway restart with `409 unknown_execution` — nothing is
 removed in either case. Deleting a session that has executed turns leaves small

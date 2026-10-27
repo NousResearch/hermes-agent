@@ -659,15 +659,28 @@ function relayDeliverParams(sender: RelayConnection, envelope: RelayEnvelope, en
   }
 }
 
+type RelayDeliverResult = {
+  status?: string
+  delivery_id?: string
+  admission_id?: string | null
+  refused?: true | null
+  reply?: string
+  error?: string
+  reason?: string
+}
+
 /** Act on a `bot_relay.deliver` answer: only a settled/failed receipt for THIS
- *  envelope posts back; anything else stays retained for recovery. */
+ *  envelope posts back; anything else stays retained for recovery. A receipt
+ *  names its admission, or is `refused` (terminal `failed`, nothing admitted). */
 async function settleRelayDelivery(
-  res: { status?: string; delivery_id?: string; admission_id?: string; reply?: string; error?: string; reason?: string },
+  res: RelayDeliverResult,
   envelopeId: string,
   attentionKey: string,
   postReply: (payload: { error?: string; reason?: string; reply?: string }) => Promise<void>
 ) {
-  if (res.delivery_id !== envelopeId || !res.admission_id) {
+  const refused = res.refused === true && res.status === 'failed'
+
+  if (res.delivery_id !== envelopeId || !(res.admission_id || refused)) {
     noteBotAttention(attentionKey, 'Delivery identity unavailable; retained for recovery')
 
     return
@@ -734,7 +747,7 @@ async function deliverRelayEnvelope(
   const attentionKey = `${target.id}::${String(envelope?.target_profile || '')}`
 
   try {
-    const res = await host.requestProfile<{ status?: string; delivery_id?: string; admission_id?: string; reply?: string; error?: string; reason?: string }>(
+    const res = await host.requestProfile<RelayDeliverResult>(
       { ...target.route, profile: String(envelope.target_profile), targetProfile: String(envelope.target_profile) },
       'bot_relay.deliver',
       relayDeliverParams(sender, envelope, envelopeId),

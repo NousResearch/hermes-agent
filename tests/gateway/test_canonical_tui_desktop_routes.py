@@ -20,7 +20,7 @@ def probe(tmp_path, mode):
     result = subprocess.run([sys.executable, str(root / 'tests/gateway/fixtures/tui_desktop_routes_peer.py'), mode],
                             cwd=root, env=env, capture_output=True, text=True, timeout=120, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
-    receipt = json.loads((home / 'receipt.json').read_text())
+    receipt = json.loads((home / 'receipt.json').read_text(encoding='utf-8'))
     assert receipt['mode'] == mode and receipt['authenticated_ws']
     return receipt
 
@@ -31,6 +31,14 @@ def test_message_react_writes_the_owned_transcript_row(tmp_path):
 
 def test_session_control_buttons_run_the_typed_command_handlers(tmp_path):
     assert probe(tmp_path, 'control')['controlled']
+
+
+def test_a_criterion_button_that_cannot_act_is_refused(tmp_path):
+    assert probe(tmp_path, 'control_refusals')['refused']
+
+
+def test_the_connection_card_drives_the_sessions_open_operation(tmp_path):
+    assert probe(tmp_path, 'connection_card')['card']
 
 
 @pytest.mark.platforms("posix")

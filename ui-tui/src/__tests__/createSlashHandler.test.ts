@@ -689,8 +689,6 @@ describe('createSlashHandler', () => {
   it.each([
     ['/browser status', 'browser.manage', { action: 'status', session_id: null }],
     ['/browser connect', 'browser.manage', { action: 'connect', session_id: null, url: 'http://127.0.0.1:9222' }],
-    ['/browser use', 'browser.manage', { action: 'use', enabled: true, session_id: null }],
-    ['/browser use off', 'browser.manage', { action: 'use', enabled: false, session_id: null }],
     ['/reload-mcp', 'reload.mcp', { session_id: null }],
     ['/reload', 'reload.env', {}],
     ['/stop', 'process.stop', {}],
@@ -704,6 +702,15 @@ describe('createSlashHandler', () => {
     expect(createSlashHandler(ctx)(command)).toBe(true)
     expect(rpc).toHaveBeenCalledWith(method, params)
     expect(gatewayWork(ctx)).toEqual([])
+  })
+
+  it('answers the removed /browser use with usage instead of an RPC', () => {
+    const rpc = vi.fn(() => Promise.resolve({}))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/browser use off')).toBe(true)
+    expect(rpc).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringContaining('/browser [connect|disconnect|status]'))
   })
 
   it('renders browser connect progress messages from the gateway', async () => {

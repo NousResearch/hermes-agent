@@ -5,6 +5,7 @@ may import a dependency or another PM module.
 """
 from __future__ import annotations
 
+from contextlib import suppress
 import errno
 import hashlib
 import ntpath
@@ -92,6 +93,18 @@ def lock_fd(fd: int, *, wait: bool, timeout: float | None = None) -> bool:
             if not wait or (deadline is not None and time.monotonic() >= deadline):
                 return False
             time.sleep(_LOCK_POLL_SECONDS)
+
+
+def unlock_fd(fd: int) -> None:
+    """Release :func:`lock_fd`'s byte lock; best effort, since closing the descriptor releases it too."""
+    with suppress(OSError):
+        if os.name == "nt":
+            import msvcrt
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_UN)
 
 
 def read_bytes_or_none(path: Path) -> bytes | None:

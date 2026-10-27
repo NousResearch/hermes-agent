@@ -38,7 +38,7 @@ jobs:
     # that can read it.
     permissions:
       contents: write
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       claim-tag: ${{ steps.admit.outputs.claim-tag }}
       claim-object: ${{ steps.admit.outputs.claim-object }}
@@ -53,10 +53,11 @@ jobs:
       lanes: ${{ steps.admit.outputs.lanes }}
       jobs: ${{ steps.admit.outputs.jobs }}
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+          filter: blob:none
       - uses: ./.github/actions/setup-pm
         with:
           cache-python: false
@@ -216,6 +217,7 @@ jobs:
       skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes).smoke }}
       skip-signed: ${{ !fromJSON(needs.admit.outputs.lanes).windows }}
       skip-store: ${{ !fromJSON(needs.admit.outputs.lanes)['windows-store'] }}
+      windows-smokes-with-bundle: true
 
   candidates-win32-x64:
     name: Build signed release candidates (win32-x64)
@@ -239,6 +241,7 @@ jobs:
       skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes).smoke }}
       skip-signed: ${{ !fromJSON(needs.admit.outputs.lanes).windows }}
       skip-store: ${{ !fromJSON(needs.admit.outputs.lanes)['windows-store'] }}
+      windows-smokes-with-bundle: true
 
   candidates-win32-bundle:
     name: Build signed release candidates (win32-bundle)
@@ -264,6 +267,7 @@ jobs:
       skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes).smoke }}
       skip-signed: ${{ !fromJSON(needs.admit.outputs.lanes).windows }}
       skip-store: ${{ !fromJSON(needs.admit.outputs.lanes)['windows-store'] }}
+      windows-smokes-with-bundle: true
 
   candidates-termux:
     name: Build signed release candidates (termux)
@@ -291,17 +295,18 @@ jobs:
     name: Pin actual OLD and NEW signed packages (darwin-arm64)
     needs: [admit, candidates-darwin-arm64]
     if: fromJSON(needs.admit.outputs.jobs)['transitions-darwin-arm64']
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     environment: release-signing
     outputs:
       windows: ${{ steps.plan.outputs.windows }}
       macos: ${{ steps.plan.outputs.macos }}
       baseline: ${{ steps.plan.outputs.baseline }}
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+          filter: blob:none
       - uses: ./.github/actions/setup-pm
         with:
           cache-python: false
@@ -326,17 +331,18 @@ jobs:
     name: Pin actual OLD and NEW signed packages (darwin-x64)
     needs: [admit, candidates-darwin-x64]
     if: fromJSON(needs.admit.outputs.jobs)['transitions-darwin-x64']
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     environment: release-signing
     outputs:
       windows: ${{ steps.plan.outputs.windows }}
       macos: ${{ steps.plan.outputs.macos }}
       baseline: ${{ steps.plan.outputs.baseline }}
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+          filter: blob:none
       - uses: ./.github/actions/setup-pm
         with:
           cache-python: false
@@ -361,17 +367,18 @@ jobs:
     name: Pin actual OLD and NEW signed packages (win32)
     needs: [admit, candidates-win32-bundle]
     if: fromJSON(needs.admit.outputs.jobs)['transitions-win32']
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     environment: release-signing
     outputs:
       windows: ${{ steps.plan.outputs.windows }}
       macos: ${{ steps.plan.outputs.macos }}
       baseline: ${{ steps.plan.outputs.baseline }}
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+          filter: blob:none
       - uses: ./.github/actions/setup-pm
         with:
           cache-python: false
@@ -401,7 +408,7 @@ jobs:
     if: always() && fromJSON(needs.admit.outputs.jobs)['candidate-manifest']
     needs: [admit, candidates-darwin-arm64, candidates-darwin-x64, candidates-win32-arm64,
             candidates-win32-x64, candidates-win32-bundle, candidates-termux]
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     environment: release-signing
     timeout-minutes: 90
     outputs:
@@ -418,10 +425,11 @@ jobs:
       CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
       CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+          filter: blob:none
           fetch-tags: true
       - uses: ./.github/actions/setup-pm
         with:
@@ -490,9 +498,9 @@ jobs:
     name: Bootstrap installer release identity
     needs: admit
     if: fromJSON(needs.admit.outputs.jobs)['bootstrap-version']
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ needs.admit.outputs.commit }}
       - name: Stamp and verify the Cargo and Tauri release identity
@@ -529,9 +537,9 @@ jobs:
             candidate-manifest, transitions-darwin-arm64, transitions-darwin-x64,
             transitions-win32, windows-packaged, macos-packaged-arm64, macos-packaged-x64,
             bootstrap-version]
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ github.sha }}
       - uses: ./.github/actions/setup-pm
@@ -584,9 +592,9 @@ jobs:
     name: All artifact publication succeeded
     if: always()
     needs: [admit, acceptance, publish-docker, publish-bundles]
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ github.sha }}
       - uses: ./.github/actions/setup-pm
@@ -602,7 +610,10 @@ jobs:
     if: always()
     needs: [admit, ci, docker, acceptance, candidate-manifest, publication, publish-docker,
             windows-packaged, macos-packaged-arm64, macos-packaged-x64]
-    runs-on: ubuntu-24.04
+    # GitHub-hosted with docker/setup-buildx-action, as before the runner migration: on
+    # Blacksmith `imagetools create` cannot commit a manifest list to Docker Hub (404 on the
+    # index commit, any buildx version): v0.22.3 rc.1-rc.4 died on it in the versioned manifest.
+    runs-on: ubuntu-latest
     environment: release-signing
     permissions:
       contents: write
@@ -612,6 +623,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+          filter: blob:none
       - uses: ./.github/actions/setup-pm
         with:
           cache-python: false
@@ -682,3 +694,8 @@ jobs:
           CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
           CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
           CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
+          # The pass commits this release's Store draft (scripts/releases/store.py).
+          MS_STORE_TENANT_ID: ${{ secrets.MS_STORE_TENANT_ID }}
+          MS_STORE_CLIENT_ID: ${{ secrets.MS_STORE_CLIENT_ID }}
+          MS_STORE_CLIENT_SECRET: ${{ secrets.MS_STORE_CLIENT_SECRET }}
+          MS_STORE_PRODUCT_ID: ${{ vars.MS_STORE_PRODUCT_ID }}

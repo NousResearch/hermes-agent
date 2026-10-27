@@ -156,6 +156,11 @@ def collect_superseded_generations(project_root: Path) -> None:
 _METADATA_FLAGS = frozenset({"-h", "--help", "-V", "--version"})
 
 
+def _is_read_only_gateway_status(command: list[str]) -> bool:
+    """Whether *command* is the recovery diagnostic that must not run an update tail."""
+    return command[:2] == ["gateway", "status"]
+
+
 def completion_pending_path(project_root: Path) -> Path:
     """Marker for a source update whose dependency sync committed but whose tail
     (launchers, products, maintenance) has not finished.
@@ -359,8 +364,13 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     from hermes_cli._parser import command_argv
     from hermes_cli.steward import read_install_stamp
 
-    if (command_argv(argv)[:1] == ["pm"]
+    command = command_argv(argv)
+    if (command[:1] == ["pm"]
             or _METADATA_FLAGS & set(argv)
+            # This is the recovery path shown by the Desktop when a pending update has
+            # fenced the gateway. Completing that same tail first can take minutes and
+            # leaves the user without the fence diagnosis or a usable restart remedy.
+            or _is_read_only_gateway_status(command)
             or os.environ.get("HERMES_DISABLE_LAZY_INSTALLS", "").lower() in ("1", "true", "yes")
             or not (root / ".git").exists()
             or not (root / "pyproject.toml").is_file()):

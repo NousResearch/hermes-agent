@@ -37,6 +37,7 @@ import {
   setMessagingSessions,
   setSessions
 } from '@/store/session'
+import { isSessionRemovalPending } from '@/store/session-removal'
 import type { SessionInfo } from '@/types/hermes'
 
 // pin ids we've successfully PATCHed pinned=true this session.
@@ -332,7 +333,12 @@ function reconcileInner(): void {
     if (!current.has(id)) {
       mirrored.delete(id)
       pending.delete(id)
-      void writePin(id, false, profileFor(id)).catch(() => {})
+
+      // Removal owns the durable write; a separate unpin would race its
+      // revision snapshot. Archive clears the pin in the same PATCH.
+      if (!isSessionRemovalPending(id)) {
+        void writePin(id, false, profileFor(id)).catch(() => {})
+      }
     }
   }
 

@@ -61,11 +61,11 @@ def probe(tmp_path):
                 assert loop.time() < deadline, ('admission never settled', receipt)
                 await asyncio.sleep(.03)
             events = await rpc(ws, 'session.events.since', session_id=sid, last_sequence=0, replay_epoch=epoch)
-            if phase == 'denied':
-                # This baseline's pre-agent display failure has generic public
-                # delivery; the worker lane owns settlement/error projection.
+            if phase == 'denied' and side == 'left':
+                # The refused turn names the credential its own route lost, never the model.
                 failure = json.dumps(events) + (home / 'restart.log').read_text()
                 assert 'launch_credentials_unavailable' in failure, failure
+                assert 'launch_credentials_unavailable (providers.left.api_key' in json.dumps(events), events
             else:
                 assert 'LAUNCH_POLICY_OK' in json.dumps(events), events
             assert not any(k in json.dumps([created, resumed, events]) for k in keys.values())
@@ -91,13 +91,16 @@ def probe(tmp_path):
             requests = [r for r in peer.requests if r['body']['model'] == 'gpt-5-' + side]
             assert len(requests) == 2
             assert all(r['auth'] == 'Bearer ' + key and r['path'] == '/' + side + '/v1/chat/completions' for r in requests), requests
+        # Rotating one provider's key refuses only the session routed through it, by name (CFG-1):
+        # the other session's route does not need that secret and keeps its own frozen key.
         cfg['providers']['left']['api_key'] = 'changed-wrong-credential'
         config.write_text(json.dumps(cfg))
         with daemon(root, home, env, barrier=False) as (proc, desc):
             pids.append(proc.pid)
             asyncio.run(pair(desc, 'denied'))
             assert policies() == snapshots
-        assert len(peer.requests) == 4
+        assert len(peer.requests) == 5, peer.requests
+        assert peer.requests[-1]['auth'] == 'Bearer ' + keys['right'], peer.requests[-1]
         # backups/config/ holds byte-exact copies of config.yaml itself (last-known-good recovery,
         # #109463); the invariant here is that the DAEMON never persists credentials elsewhere.
         backups = home / 'backups' / 'config'

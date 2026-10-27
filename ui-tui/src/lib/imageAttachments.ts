@@ -11,6 +11,8 @@ import { sessionCwd } from '../app/uiStore.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import { t } from '../i18n/runtime.js'
 
+import { pythonHelperPath } from './pythonHelpers.js'
+
 export interface ImageAttachment { path: string; mime: string }
 export interface StagedImage extends ImageAttachment { name: string; remainder?: string }
 
@@ -76,8 +78,8 @@ async function extractClipboardImage(path: string): Promise<boolean> {
   const python = process.env.HERMES_PYTHON?.trim() || process.env.PYTHON?.trim() ||
     (process.platform === 'win32' ? 'python' : 'python3')
 
-  const { stdout } = await promisify(execFile)(python, [join(root, 'ui-tui/scripts/clipboard_image.py'), path],
-    { cwd: root, env: { ...process.env, PYTHONPATH: root }, timeout: 15_000, windowsHide: true })
+  const { stdout } = await promisify(execFile)(python, [pythonHelperPath('clipboard_image.py', root), path],
+    { cwd: root, env: { ...process.env, PYTHONPATH: root, HERMES_PYTHON_SRC_ROOT: root }, timeout: 15_000, windowsHide: true })
 
   return stdout.trim() === 'true'
 }

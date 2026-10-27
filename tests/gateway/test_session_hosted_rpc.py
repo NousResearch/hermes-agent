@@ -332,3 +332,51 @@ def test_room_member_turns_cannot_block_on_an_unanswerable_clarify(hosted_owner,
         enabled_toolsets=list(policy.toolsets), disabled_toolsets=disabled or None, quiet_mode=True)}
     assert 'terminal' in tools
     assert 'clarify' not in tools
+
+
+def test_history_read_during_a_room_session_delete_is_not_found(hosted_owner, monkeypatch):
+    """A delete whose commit lands while the history read is off the loop, before its retirement runs,
+    answers ``not_found``: the read waits for the delete's mutation lock before it uses the entry."""
+    from gateway import session_local_recovery, session_mutations
+    from gateway.session_contract import SessionRef
+    from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+    from gateway.session_mutations import mutate_session
+    from hermes_state_runtime import RuntimeStoreError
+    authority, loop, principal, _ = hosted_owner
+    rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='member', profile='default',
+                                 principal=principal, authorize=lambda *args: True)
+    coords = dict(profile='default', source='bot_room')
+    sid = rpc.create(**coords, title='Group: room')['session_id']
+    ref = SessionRef(authority.profile_id, sid)
+    prepare, write, deletes = session_local_recovery.prepare_history, session_mutations.mutate_runtime_session, []
+    committed, release = threading.Event(), threading.Event()
+
+    def write_then_hold(*args, **kwargs):
+        result = write(*args, **kwargs)
+        if kwargs.get('operation') == 'delete':
+            committed.set()
+            assert release.wait(10), 'the delete was never released'
+        return result
+
+    async def prepare_then_delete(authority_, ref_):
+        prepared = await prepare(authority_, ref_)
+        handle = authority._handle(ref)
+        deletes.append(asyncio.ensure_future(mutate_session(authority, principal, ref, {
+            'session_id': sid, 'request_id': 'delete', 'operation': 'delete', 'payload': {},
+            'expected_revision': handle.revision, 'expected_generation': handle.execution_generation})))
+        assert await asyncio.to_thread(committed.wait, 10)
+        assert authority.db.get_session(sid) is None and sid in authority.sessions
+        release.set()  # the commit has landed; the retirement runs once the loop gets to it
+        return prepared
+    monkeypatch.setattr(session_mutations, 'mutate_runtime_session', write_then_hold)
+    monkeypatch.setattr(session_local_recovery, 'prepare_history', prepare_then_delete)
+    try:
+        with pytest.raises(RuntimeStoreError, match='not_found'):
+            rpc.history(**coords, session_id=sid)
+    finally:
+        release.set()
+
+    async def deleted():
+        return await deletes[0]
+    asyncio.run_coroutine_threadsafe(deleted(), loop).result(10)
+    assert sid not in authority.sessions

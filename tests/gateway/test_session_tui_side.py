@@ -89,3 +89,49 @@ def test_btw_answers_over_a_snapshot_without_touching_the_conversation(tmp_path)
                 assert [r[0] for r in admissions(home)] == ['warm']
                 assert (await rpc(ws, 'session.resume', session_id=sid))['result']['messages'] == before
         asyncio.run(probe())
+
+
+@pytest.mark.platforms("linux")
+def test_preview_restart_runs_a_hidden_terminal_agent_and_reports_on_the_session(tmp_path):
+    """TUI-12: Desktop's preview-pane "restart dev server" (``preview.restart``) had no owner
+    handler, so it always errored on the shared gateway."""
+    with owner(tmp_path) as (home, peer, desc):
+        async def probe():
+            async with websocket(home, desc) as ws:
+                sid = (await rpc(ws, 'session.create', request_id='pv', source='tui', toolsets=[]))['result']['session_id']
+                await rpc(ws, 'prompt.submit', session_id=sid, input_id='warm', text='DEV_SERVER_TURN')
+                await settled(home)
+                before = (await rpc(ws, 'session.resume', session_id=sid))['result']['messages']
+                reply, event = await call_and_await_event(
+                    ws, 'preview.restart', 'preview.restart.complete', session_id=sid,
+                    url='http://127.0.0.1:5173/', cwd=str(tmp_path), context='PREVIEW_CONSOLE')
+                task = reply.get('result', {}).get('task_id', '')
+                assert task.startswith('preview_'), reply
+                assert event['session_id'] == sid
+                assert event['payload'] == {'task_id': task, 'text': 'CONTROL_ACK'}, event
+                sent = json.dumps(peer.requests[-1])
+                assert 'http://127.0.0.1:5173/' in sent and 'PREVIEW_CONSOLE' in sent
+                # The stored transcript is the restart agent's context (the trimmed history list).
+                assert 'DEV_SERVER_TURN' in sent, sent
+                tools = {t['function']['name'] for t in peer.requests[-1].get('tools') or []}
+                assert 'terminal' in tools and 'delegate_task' not in tools, tools
+                for params, reason in [({'session_id': sid, 'url': ' '}, 'invalid_params'),
+                                       ({'session_id': sid, 'url': 'http://x', 'cwd': 3}, 'invalid_params'),
+                                       ({'session_id': sid, 'url': 'http://x', 'profile': 'foreign'}, 'profile_mismatch')]:
+                    denied = await rpc(ws, 'preview.restart', **params)
+                    assert denied.get('error', {}).get('message') == reason, denied
+                assert [r[0] for r in admissions(home)] == ['warm']
+                assert (await rpc(ws, 'session.resume', session_id=sid))['result']['messages'] == before
+        asyncio.run(probe())
+
+
+def test_preview_restart_history_trims_a_plain_message_list():
+    """TUI-12: the trimming helper takes a message snapshot, not a session-shaped dict, so the
+    owner passes its stored transcript directly (the legacy sidecar snapshots under its lock)."""
+    from tui_gateway.agent_callbacks import _preview_restart_history
+    messages = [{'role': 'user', 'content': 'run vite'}, {'role': 'assistant', 'content': 'ok', 'reasoning': 'r'},
+                {'role': 'tool', 'content': 'x' * 50, 'tool_call_id': 't'}]
+    trimmed = _preview_restart_history(messages, max_tool_chars=10)
+    assert [m['role'] for m in trimmed] == ['user', 'assistant', 'tool']
+    assert 'reasoning' not in trimmed[1] and trimmed[2]['content'].startswith('x' * 10 + '\n... (truncated')
+    assert _preview_restart_history([]) == [] and _preview_restart_history(None) == []

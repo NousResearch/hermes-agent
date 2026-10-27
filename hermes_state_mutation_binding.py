@@ -19,6 +19,22 @@ def _owner_user(row):
     return None if legacy_account_label(dict(row)) else row['user_id']
 
 
+def _login_label(subject):
+    """The ``<provider>:<user>`` label Desktop stamps on its rows (tui_gateway/session_transports.py) when it
+    names exactly the dashboard subject ``auth:v1:[provider, "", user]`` (gateway/session_identity.py).
+    Only an issuer-less login maps: the label drops the issuer, so an issuer-bearing subject must not claim it."""
+    from gateway.session_identity import parse_authenticated_subject
+    parts = parse_authenticated_subject(subject)
+    if parts is None:
+        return None
+    provider, issuer, user = parts
+    if issuer or ':' in provider or not provider.strip() or not user.strip():
+        return None
+    label = f'{provider.strip()}:{user.strip()}'
+    # Never yield something that reads as a subject itself (a provider named ``auth`` + user ``v1:[...]``).
+    return None if label.startswith('auth:') else label
+
+
 def import_history_control(conn, actor, session_ids):
     binding = json.dumps([actor.profile_id, actor.subject], separators=(',', ':'))
     for sid in session_ids:
@@ -43,7 +59,7 @@ def authorize_history(conn, actor, session_id, *, claim=False):
         return True
     if row['source'] not in _history_sources():
         return False
-    if _owner_user(row) and row['user_id'] != actor.subject:
+    if _owner_user(row) and row['user_id'] not in (actor.subject, _login_label(actor.subject)):
         raise RuntimeStoreError('permission_denied')
     if 'session:create' not in actor.capabilities:
         raise RuntimeStoreError('permission_denied')
@@ -64,7 +80,9 @@ def same_history_owner(conn, anchor_id, session_id):
     carry the anchor's exact (user_id, session_key, chat_id). A routeless member needs the
     anchor's exact import binding; unbound, it must also pass :func:`authorize_history`'s local
     rule (local source, no foreign user_id) — e.g. the pre-adoption ancestors of an adopted
-    legacy CLI conversation. A bound (imported) anchor therefore never reaches unbound rows.
+    legacy CLI conversation — or share an unbound routeless anchor's source (an old cron run's or
+    subagent's own compression chain, mounted as one chat). A bound (imported) anchor therefore
+    never reaches unbound rows.
     """
     columns = 'SELECT source,user_id,session_key,chat_id,origin_json FROM sessions WHERE id=?'
     anchor, row = (conn.execute(columns, (sid,)).fetchone() for sid in (anchor_id, session_id))
@@ -75,5 +93,6 @@ def same_history_owner(conn, anchor_id, session_id):
     binding = history_binding(conn, session_id)
     if binding != history_binding(conn, anchor_id):
         return False
+    routeless_peer = row['source'] == anchor['source'] and not any(tuple(anchor)[2:5])
     return binding is not None or (
-        row['source'] in _history_sources() and _owner_user(row) in (None, '', anchor['user_id']))
+        (row['source'] in _history_sources() or routeless_peer) and _owner_user(row) in (None, '', anchor['user_id']))

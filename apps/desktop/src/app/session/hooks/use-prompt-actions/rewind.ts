@@ -19,6 +19,7 @@ import {
   type ChatMessagePart,
   chatMessageText,
   finalizeInterruptedMessages,
+  hasUnresolvedToolCall,
   textPart
 } from '@/lib/chat-messages'
 import type { ConfirmRequest } from '@/store/confirm'
@@ -460,30 +461,75 @@ export function finalizeStoppedMessages(
  * user row, which made the post-correction reply a sibling of the sealed
  * partial and dropped the partial and the correction from view (#119015).
  */
-export function appendMidTurnUserMessage<
-  State extends {
-    interimBoundaryPending: boolean
-    messages: ChatMessage[]
-    pendingBranchGroup?: null | string
-    streamId: null | string
-  }
->(state: State, message: ChatMessage): State {
-  const liveId = state.streamId
-  const sealed = finalizeUserInterruptedMessages(state.messages, liveId)
-  const sealedLiveKept = liveId !== null && sealed.some(row => row.id === liveId)
+export function appendMidTurnUserMessage<State extends LiveStreamState>(state: State, message: ChatMessage): State {
+  const sealed = sealLiveStream(state)
 
-  const messages = [
-    ...(sealedLiveKept ? sealed.map(row => (row.id === liveId ? { ...row, interim: true } : row)) : sealed),
-    message
-  ]
+  return { ...sealed, messages: [...sealed.messages, message] }
+}
+
+interface LiveStreamState {
+  interimBoundaryPending: boolean
+  messages: ChatMessage[]
+  pendingBranchGroup?: null | string
+  streamId: null | string
+}
+
+/**
+ * The seal half of `appendMidTurnUserMessage`, for a mid-turn arrival that is
+ * rendered separately (a typed /steer's notice row).
+ *
+ * A steer interrupts nothing (`keepRunningTools`): the tool it waits on keeps
+ * its live row in the sealed bubble, where its result still lands by call id.
+ */
+export function sealLiveStream<State extends LiveStreamState>(state: State, { keepRunningTools = false } = {}): State {
+  const liveId = state.streamId
+
+  const sealed = keepRunningTools
+    ? sealKeepingRunningTools(state.messages, liveId)
+    : finalizeUserInterruptedMessages(state.messages, liveId)
+
+  const sealedLiveKept = liveId !== null && sealed.some(row => row.id === liveId)
 
   return {
     ...state,
-    messages,
+    messages: sealedLiveKept ? sealed.map(row => (row.id === liveId ? { ...row, interim: true } : row)) : sealed,
     ...(state.pendingBranchGroup ? { pendingBranchGroup: null } : {}),
     streamId: null,
     interimBoundaryPending: state.interimBoundaryPending || sealedLiveKept
   }
+}
+
+/** `finalizeInterruptedMessages` minus the seal on tool calls still waiting for a result:
+ *  their bubble stays pending (a tool row only renders running inside a running message)
+ *  until the result lands by call id, or the turn's completion settles it. */
+function sealKeepingRunningTools(messages: ChatMessage[], streamId: null | string): ChatMessage[] {
+  return messages.flatMap(message =>
+    (message.pending || message.id === streamId) && hasUnresolvedToolCall(message)
+      ? [{ ...message, interim: true }]
+      : finalizeInterruptedMessages([message], streamId)
+  )
+}
+
+/** An accepted correction's reserved bubble becomes the arrival boundary: the
+ *  output already on screen stays above it, everything after streams below. */
+export function sealAcceptedCorrection<State extends LiveStreamState>(
+  state: State,
+  messageId: string | undefined,
+  { keepRunningTools = false } = {}
+): State {
+  const index = state.messages.findIndex(candidate => candidate.id === messageId)
+
+  // A newer reply may precede this ACK; it already owns its boundary.
+  if (index < 0 || !state.streamId || state.messages.slice(index + 1).some(row => row.role === 'assistant')) {
+    return state
+  }
+
+  const sealed = sealLiveStream(
+    { ...state, messages: state.messages.filter(candidate => candidate.id !== messageId) },
+    { keepRunningTools }
+  )
+
+  return { ...sealed, messages: [...sealed.messages, state.messages[index]] }
 }
 
 // ---------------------------------------------------------------------------

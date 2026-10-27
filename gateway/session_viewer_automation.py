@@ -28,15 +28,19 @@ _CALLS = {
                        "goal_blocks_tick"}),
     "heartbeat": frozenset({"state", "set", "pause", "resume", "clear", "due_prompt", "abandon_fire"}),
 }
+_READS = frozenset({"state", "is_waiting", "goal_blocks_tick"})
+# /heartbeat set and resume start the CLI's watchdog when they return a state (cli_commands_mixin);
+# only it calls due_prompt.
+_WATCHDOG_CALLS = frozenset({"set", "resume", "due_prompt"})
 _FIELDS = frozenset({"session_id", "profile", "kind", "call", "args", "kwargs"})
 _ERRORS = (RuntimeError, ValueError, IndexError)
 
 
-def viewer_driven(authority, session_id) -> bool:
-    """Whether a local viewer drives this session's goal/loop judging (see the module doc): only while
-    that viewer's connection still holds its subscription, so a TUI or Desktop attached after it left
-    gets the gateway's own post-turn hooks again."""
-    connection = getattr(authority, "viewer_automation", {}).get(session_id) if authority is not None else None
+def viewer_driven(authority, session_id, registry="viewer_automation") -> bool:
+    """Whether a local viewer drives this session's goal/loop judging (see the module doc), or with
+    ``viewer_heartbeat`` its heartbeat ticks: only while that viewer's connection still holds its
+    subscription, so a TUI or Desktop attached after it left gets the gateway's own drivers again."""
+    connection = getattr(authority, registry, {}).get(session_id) if authority is not None else None
     return bool(connection is not None and connection.subscriptions.get(session_id))
 
 
@@ -157,5 +161,18 @@ async def automation(connection, ref, params):
         from gateway.session_commands import _session_workspace
         with _profile_runtime_scope(home), _session_workspace(runner, live.source):
             return invoke(runner, kind, target, call, args, kwargs)
+    rows = lambda: tuple(authority.db.get_meta(f"{k}:{target}") for k in ("goal", "loop", "heartbeat"))
+    # A "read" can still write: is_waiting / goal_blocks_tick clear a satisfied goal barrier.
+    before = rows() if call in _READS else None
     # The judge and gates block for seconds: off the loop, with the caller's context (profile scope).
-    return await asyncio.to_thread(run)
+    result = await asyncio.to_thread(run)
+    if kind == "heartbeat" and call in _WATCHDOG_CALLS and (call == "due_prompt" or result.get("value") is not None):
+        # The CLI's watchdog runs from these on: from then on the gateway poller leaves the ticks to it.
+        if not hasattr(authority, "viewer_heartbeat"):
+            authority.viewer_heartbeat = {}
+        authority.viewer_heartbeat[ref.session_id] = connection
+    if before is None or rows() != before:
+        # The classic CLI drives this session's automation: other viewers (Ink, Desktop) repaint from the event.
+        from gateway.session_control_actions import publish
+        publish(authority, ref.session_id)
+    return result

@@ -169,12 +169,15 @@ class BasicAuthProvider(NonInteractiveMixin, DashboardAuthProvider):
     # ---- internals ---------------------------------------------------------
 
     def _mint_session(self, user_id: str) -> Session:
+        # ``jti`` gives every session its own tokens, even two minted in one second: a listener that
+        # drops a session's tokens (the Webapp's sign-out) must not get them back from a later login.
         now = int(time.time())
         exp = now + self._ttl
+        jti = secrets.token_urlsafe(16)
         return self._session(
             user_id, exp,
-            _sign({"sub": user_id, "kind": "access", "exp": exp}, self._secret),
-            _sign({"sub": user_id, "kind": "refresh", "exp": now + _REFRESH_TTL_SECONDS}, self._secret))
+            _sign({"sub": user_id, "kind": "access", "exp": exp, "jti": jti}, self._secret),
+            _sign({"sub": user_id, "kind": "refresh", "exp": now + _REFRESH_TTL_SECONDS, "jti": jti}, self._secret))
 
     def _session(self, user_id: str, exp: int, access_token: str, refresh_token: str) -> Session:
         return Session(

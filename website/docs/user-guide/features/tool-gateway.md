@@ -20,9 +20,9 @@ The Tool Gateway is included with every paid [Nous Portal](https://portal.nousre
 | | Tool | What you get |
 |---|---|---|
 | 🔍 | **Web search & extract** | Agent-grade web search and full-page extraction, managed by Nous. No rate limits to worry about — the gateway handles scaling. |
-| 🎨 | **Image generation** | One **Nous Subscription** row spanning the FAL catalog, the native Krea 2 models, and Nous Portal image models: **FLUX 2**, **GPT Image**, **Nano Banana**, **Seedream**, **Ideogram**, **Recraft**, **Qwen**, **Krea 2**, and more. Pick the model once in `hermes tools`, which shows the live list. |
+| 🎨 | **Image generation** | One **Nous Subscription** row spanning the FAL catalog, the native Krea models, and Nous Portal image models: **Krea 3**, **FLUX 2**, **GPT Image**, **Nano Banana**, **Seedream**, **Ideogram**, **Recraft**, **Qwen**, **Krea 2**, and more. Pick the model once in `hermes tools`, which shows the live list. |
 | 🔊 | **Text-to-speech** | OpenAI TTS voices wired into the `text_to_speech` tool. Drop voice notes into Telegram, generate audio for pipelines, narrate anything. |
-| 🌐 | **Cloud browser automation** | Headless Chromium sessions via Browser Use. `browser_navigate`, `browser_click`, `browser_type`, `browser_vision` — all the agent-driving primitives, no Browserbase account required. |
+| 🌐 | **Cloud browser automation** | Headless cloud Chromium sessions via Browser Use, driven by `browser_exec` over CDP — no Browserbase account required. |
 
 All four are pay-as-you-use billed against your Nous subscription. Use any combination — run the gateway for web and images while keeping your own ElevenLabs key for TTS, or route everything through Nous.
 
@@ -88,8 +88,8 @@ Some accounts are also entitled to a **free tool pool** — a small managed-tool
 
 Picking a Nous model (`hermes model`) offers a per-tool checklist of gateway backends. Its behavior respects your existing setup:
 
-- Tools you've explicitly pointed at another backend (e.g. `web.backend: searxng`, `browser.cloud_provider: camofox`) are **never offered** — your selection can't be accidentally overwritten.
-- Tools configured via environment variables alone (e.g. `SEARXNG_URL`, `CAMOFOX_URL`) are offered **unchecked**, labeled to keep your own backend.
+- Tools you've explicitly pointed at another backend (e.g. `web.backend: searxng`, `browser.cloud_provider: browserbase`) are **never offered** — your selection can't be accidentally overwritten.
+- Tools configured via environment variables alone (e.g. `SEARXNG_URL`, `BROWSER_USE_API_KEY`) are offered **unchecked**, labeled to keep your own backend.
 - Only genuinely unconfigured tools come pre-checked.
 - Declines stick: if you submit the checklist with a tool unchecked, it won't be pre-checked on future Nous model swaps (stored in `tool_gateway_declined_tools` in `config.yaml`; checking it later clears the decline).
 
@@ -111,11 +111,11 @@ Select the tool, pick **Nous Subscription** as the provider (or any direct provi
 
 ## Using individual image models
 
-The model is chosen once, in `hermes tools` → Image Generation, and stored in `config.yaml` as `image_gen.model`. Every `image_generate` call uses that stored model — the tool has no model parameter, so there is no per-call override. Leave it unset and a paid subscription gets Krea 2 Medium Turbo; the free tool pool gets FLUX 2 Klein 9B.
+The model is chosen once, in `hermes tools` → Image Generation, and stored in `config.yaml` as `image_gen.model`. Every `image_generate` call uses that stored model — the tool has no model parameter, so there is no per-call override. Leave it unset and a paid subscription gets Krea 3; the free tool pool gets FLUX 2 Klein 9B.
 
-The **Nous Subscription** row has one model picker that lists every model once. The stored id decides which gateway serves the request: a native Krea id (`krea-2-medium`, `krea-2-large`, `krea-2-medium-turbo`) goes to the Krea gateway, a FAL catalog id goes to FAL, and any other id goes to Nous Portal. The selection is still just `image_gen.provider: nous` plus the model id.
+The **Nous Subscription** row has one model picker that lists every model once. The stored id decides which gateway serves the request: a native Krea id (`krea-3`, `krea-2-medium`, `krea-2-large`, `krea-2-medium-turbo`) goes to the Krea gateway, a FAL catalog id goes to FAL, and any other id goes to Nous Portal. The selection is still just `image_gen.provider: nous` plus the model id.
 
-**Krea 2** (Medium, Large, Medium Turbo — up to 10 style-reference images, optional Enhance upscale) and the Nous Portal image models sit in that same picker rather than behind rows of their own. They need a paid subscription — the free tool pool funds the FAL models only. The Krea-via-FAL ids (`fal-ai/krea/v2/...`) stay on the direct FAL.ai row. If the Krea gateway refuses a request before starting a job (unreachable, or 429 after the gateway's own retries), Hermes reruns it on the FAL default model and the result says so in `fallback_from`; set `image_gen.krea.fallback_to_fal: false` to turn that off. Requests with source images never fall back.
+**Krea 3** (generates and edits existing images — up to 4 reference images, `thinking` and `resolution` controls), **Krea 2** (Medium, Large, Medium Turbo — up to 10 style-reference images, optional Enhance upscale) and the Nous Portal image models sit in that same picker rather than behind rows of their own. They need a paid subscription — the free tool pool funds the FAL models only. The Krea-via-FAL ids (`fal-ai/krea/v2/...`) stay on the direct FAL.ai row. If the Krea gateway refuses a request before starting a job (unreachable, or 429 after the gateway's own retries), Hermes reruns it on the FAL default model and the result says so in `fallback_from`; set `image_gen.krea.fallback_to_fal: false` to turn that off. Requests with source images never fall back.
 
 Model ids, speeds, and prices live on the [Image Generation](./image-generation.md#supported-models) page. The set evolves — `hermes tools` → Image Generation shows the current live list.
 

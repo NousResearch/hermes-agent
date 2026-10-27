@@ -79,9 +79,9 @@ def _skill_resolver() -> Callable[[str], str | None]:
     """A written first-task skill name -> the name skill_view loads it with here, or None. A plugin skill
     (``blender:blender``) resolves through the installed catalog plugin to its registered name."""
     from hermes_cli.plugins_activation_live import catalog_plugin_skill
-    from tools.skills_tool import _find_all_skills
+    from tools.skills_tool import find_all_skills
 
-    bundled = {skill["name"] for skill in _find_all_skills()}
+    bundled = {skill["name"] for skill in find_all_skills()}
     return lambda name: catalog_plugin_skill(name) if ":" in name else (name if name in bundled else None)
 
 

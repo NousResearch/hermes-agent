@@ -12,6 +12,7 @@ from pathlib import Path
 import threading
 
 from gateway.session_contract import Principal, SessionRef
+from hermes_state_keys import CRON_PRINCIPAL_ID, cron_request_id
 from hermes_state_runtime import RuntimeStoreError, admit_session_input, get_session_admission
 
 _execution: ContextVar[tuple | None] = ContextVar('cron_owner_execution', default=None)
@@ -37,13 +38,49 @@ def owner_for_home(home):
     return None
 
 
+async def _admit_local_delivery(authority, chat_id, text, metadata):
+    from gateway.config import Platform
+    from gateway.session_authorities import owner_scope
+    from gateway.session_automation import admit_route_wake
+    from gateway.session_local_recovery import local_adapter_map, restore_local_session
+    with owner_scope(authority):
+        restore_local_session(authority, chat_id)  # a chat closed before this fire, as for completions
+        source = authority.sessions[chat_id].source
+        return await admit_route_wake(authority.runner, local_adapter_map(authority)[Platform.LOCAL], source,
+                                      text, 'cron', metadata)
+
+
+def deliver_to_local_chat(home, chat_id, text, *, diagnostic=False):
+    """Admit a cron result into local chat *chat_id*'s FIFO; at the head it is written into the chat's
+    history as a note, never a turn (``session_completion_notes``). A local chat has no push transport
+    (``LocalSessionAdapter.send`` only acknowledges a turn's own output), so only the owner in this
+    process can deliver. Called off the owner loop; None once admitted, else the error."""
+    owner = owner_for_home(home)
+    if owner is None:
+        return f"local chat {chat_id}: no gateway in this process owns its session"
+    authority, loop = owner
+    metadata = {'notification_category': 'diagnostic'} if diagnostic else {}
+    try:
+        admitted = asyncio.run_coroutine_threadsafe(
+            _admit_local_delivery(authority, chat_id, text, metadata), loop).result(timeout=60)
+    except (RuntimeStoreError, KeyError, TimeoutError) as exc:  # unknown chat, refused admission, stalled owner
+        return f"local chat {chat_id}: delivery not confirmed: {exc!r}"
+    return None if admitted else f"local chat {chat_id}: delivery refused: the chat has no committed route"
+
+
 def current_execution():
     return _execution.get()
 
 
+def bind_execution(authority, session_id, job_id, execution_id):
+    """Bind this context's cron admission ``(authority, session_id, job_id, execution_id)``, the
+    layout ``current_execution()`` readers index; returns the ``ContextVar`` reset token."""
+    return _execution.set((authority, session_id, job_id, execution_id))
+
+
 def _actor(authority, actor):
     if actor is None:
-        return Principal('cron-owner', authority.profile_id,
+        return Principal(CRON_PRINCIPAL_ID, authority.profile_id,
                          frozenset({'session:create', 'session:submit', 'session:read', 'session:control'}), 'cron-ticker')
     if actor.profile_id != authority.profile_id:
         raise RuntimeStoreError('profile_mismatch')
@@ -51,7 +88,7 @@ def _actor(authority, actor):
         raise RuntimeStoreError('permission_denied')
     # Cron fires belong to the profile scheduler, not the transport that observes
     # them. The same execution ID from ticker and CLI must dedupe together.
-    return Principal('cron-owner', authority.profile_id, actor.capabilities, actor.transport_id)
+    return Principal(CRON_PRINCIPAL_ID, authority.profile_id, actor.capabilities, actor.transport_id)
 
 
 def _create(authority, actor, params):
@@ -70,10 +107,15 @@ def _create(authority, actor, params):
     if (not isinstance(jid, str) or not jid or not isinstance(request_id, str)
             or not request_id or len(request_id) > 256 or (extra is not None and not isinstance(extra, str))):
         raise RuntimeStoreError('invalid_params')
-    request_id = 'cron:' + jid + ':' + request_id
+    execution_id, request_id = request_id, cron_request_id(jid, request_id)
     sid = local_identity(authority.profile_id, actor.subject, request_id)
     if authority.db.get_session(sid) is not None:
         return restore_local_session(authority, sid), request_id
+    if ':' in execution_id:
+        # Fresh admissions only: ``cron:<job>:<execution>`` then splits at its one ``:`` after the
+        # job. Ledger ids are hex, so only a hand-made id has one; an identity admitted before this
+        # guard keeps its exact retry above, and run history files it by its stored policy.
+        raise RuntimeStoreError('invalid_params')
     job = get_job(jid)
     if job is None or job.get('no_agent'):
         raise RuntimeStoreError('not_found')
@@ -96,6 +138,10 @@ def _create(authority, actor, params):
             'session_id': sid, 'route': route, 'entry': entry.to_dict(), 'policy': asdict(policy)}, request_id
 
 
+# What a message typed into a scheduled job's session settles with (see ``execute``); its text is
+# ``gateway.errors.cron_session_read_only``, rendered in the owning profile's language.
+CRON_SESSION_READ_ONLY_SURFACE = {'layer': 'gateway', 'code': 'cron_session_read_only', 'retryable': False}
+
 # Run-side verdicts run_job stamps on the job dict for the firing scheduler's bookkeeping tail
 # (cron/quota_hold.py parks past a closed usage window; cron/unreachable_retry.py re-runs a
 # never-reached model). They cross the authority boundary inside the cron result.
@@ -115,7 +161,7 @@ async def operation(authority, name, params, actor=None):
                 or any(not isinstance(params[k], str) or not params[k] for k in ('job_id', 'request_id'))
                 or (params['extra_prompt'] is not None and not isinstance(params['extra_prompt'], str))):
             raise RuntimeStoreError('invalid_params')
-        request_id = 'cron:' + params['job_id'] + ':' + params['request_id']
+        request_id = cron_request_id(params['job_id'], params['request_id'])
         sid = local_identity(authority.profile_id, actor.subject, request_id)
         from hermes_state_runtime import list_session_admissions
         rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
@@ -197,8 +243,7 @@ async def rpc(connection, name, params):
 def scheduler_execution_id(job_id, request_id):
     """The scheduler's execution id this admission carries: ``_create`` admits under
     ``cron:<job>:<request_id>`` and the ticker's ``request_id`` IS its ``cron/executions`` row id."""
-    prefix = 'cron:' + job_id + ':'
-    return request_id.removeprefix(prefix)
+    return request_id.removeprefix(cron_request_id(job_id, ''))
 
 
 def _run_identified(run_job, job, execution_id, **kwargs):
@@ -223,13 +268,21 @@ async def execute(authority, ref, row, policy):
     if (row['payload'] != {'text': data['extra_prompt'] or ''}
             or row['request_id'] != data['request_id']
             or row['principal_id'] != authority.sessions[ref.session_id].source.user_id):
-        raise RuntimeStoreError('admission_conflict')
+        # A cron session only runs its own frozen fire; anything else typed into it fails with a
+        # descriptor the viewer can render (and offer a new chat for), never a generic failure.
+        from agent.i18n import t
+        text = t('gateway.errors.cron_session_read_only')
+        authority.pending_results[row['admission_id']] = {'result': {
+            'final_response': '', 'messages': [], 'failed': True, 'completed': False,
+            'error': text, 'error_surface': dict(CRON_SESSION_READ_ONLY_SURFACE)},
+            'usage': {}}
+        return text
     cancellations = _cancellations(authority)
     cancel = cancellations.setdefault(row['admission_id'], threading.Event())
     execution_id = scheduler_execution_id(data['cron_job']['id'], row['request_id'])
     # The frozen snapshot predates the fire's ledger row; the run's progress stamps need its id.
     job = dict(data['cron_job'], execution_id=execution_id)
-    token = _execution.set((authority, ref.session_id, job['id'], execution_id))
+    token = bind_execution(authority, ref.session_id, job['id'], execution_id)
     try:
         db_path = await asyncio.to_thread(Path(authority.db.db_path).resolve)
         with _profile_runtime_scope(db_path.parent):

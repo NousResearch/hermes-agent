@@ -319,6 +319,12 @@ def patch_auto_top_up(
     return _request("PATCH", "/api/billing/auto-top-up", body=body, timeout=timeout)
 
 
+def patch_keep_going_on_credits(*, enabled: bool, timeout: float = DEFAULT_TIMEOUT) -> dict[str, Any]:
+    """``PATCH /api/billing/keep-going-on-credits``: the window plan's "Keep going on credits" setting (scope
+    required; strict ``{enabled}`` body). Turning it off skips the spending gates."""
+    return _request("PATCH", "/api/billing/keep-going-on-credits", body={"enabled": bool(enabled)}, timeout=timeout)
+
+
 def post_charge(*, amount_usd: float | str, idempotency_key: str, timeout: float = DEFAULT_TIMEOUT) -> dict[str, Any]:
     """``POST /api/billing/charge`` — buy credits (scope required). Reuse the UUID ``idempotency_key`` on retry.
 

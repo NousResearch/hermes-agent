@@ -29,6 +29,7 @@ import { $sidebarShowAllSessions, dismissAutoProject, setSidebarAgentsGrouped } 
 import { notify } from '@/store/notifications'
 import {
   $activeGatewayProfile,
+  $newChatProfile,
   $profiles,
   $profileScope,
   ALL_PROFILES,
@@ -176,7 +177,7 @@ export async function syncProfileWorkspaceCwd(profile?: string): Promise<string>
   return profileWorkspaceCwd
 }
 
-export function resolveNewSessionCwd(): string {
+export function resolveNewSessionCwd(profile?: string): string {
   const scope = $projectScope.get()
 
   // Inside Home, "no folder" is the point: a new chat must stay detached rather
@@ -197,8 +198,10 @@ export function resolveNewSessionCwd(): string {
   // every time. A configured default dir is the user saying where new chats go, so it still wins; only
   // when there is none does the project owning the profile workspace — where this session will actually
   // work — stand in for it (still config, never the focused session's remembered cwd, which stays
-  // deliberately ignored).
-  const configured = workspaceCwdForNewSession()
+  // deliberately ignored). A tile names its profile before $newChatProfile catches up, so the folder
+  // read is that profile's own stored default.
+  const owner = (profile?.trim() || $newChatProfile.get() || $activeGatewayProfile.get()).trim()
+  const configured = workspaceCwdForNewSession(owner)
 
   if (configured) {
     return configured

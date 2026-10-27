@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextvars
 import inspect
+import copy
 import json
 import logging
 import re
@@ -440,12 +441,15 @@ class MemoryManager:
 
     def sync_all(self, user_content: str, assistant_content: str, *, session_id: str = "",
                  messages: Optional[list[dict[str, Any]]] = None,
-                 turn_author: Optional[dict[str, Any]] = None) -> None:
+                 turn_author: Optional[dict[str, Any]] = None,
+                 metadata: Optional[dict[str, Any]] = None) -> None:
         """Sync a completed turn to all providers on the background worker.
 
         Never inline: a provider's ``sync_turn`` may block for minutes, which kept ``run_conversation``
         open after the user saw the response. The single worker also serializes writes (turn N before N+1).
-        ``turn_author`` reaches only providers whose ``sync_turn`` accepts it.
+        ``turn_author`` and ``metadata`` (completed-turn provenance) reach only providers whose
+        ``sync_turn`` accepts them. Optional context is deep-copied at submission so the worker sees
+        exactly this turn even if the caller mutates its buffers afterwards.
 
         Everything forwarded is provider egress: turn strings AND the ``messages`` transcript slice
         (tool outputs included) go through ``_redact_for_provider`` so secrets are never archived
@@ -457,7 +461,11 @@ class MemoryManager:
             return
         clean_user_content, assistant_content, redacted_messages = _redact_for_provider(
             clean_user_content, assistant_content, messages)
-        optional_kwargs = {"messages": redacted_messages, "turn_author": turn_author}
+        optional_kwargs = {
+            "messages": copy.deepcopy(redacted_messages),
+            "turn_author": copy.deepcopy(turn_author),
+            "metadata": copy.deepcopy(_redact_for_provider(metadata)) if metadata is not None else None,
+        }
 
         def _sync(provider: MemoryProvider) -> None:
             kwargs: dict[str, Any] = {"session_id": session_id}

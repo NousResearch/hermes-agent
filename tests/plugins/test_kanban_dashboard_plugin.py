@@ -203,6 +203,27 @@ def test_task_detail_includes_links_and_events(client):
 # PATCH /tasks/:id — status transitions
 # ---------------------------------------------------------------------------
 
+def test_manual_todo_hold_uses_latest_explicit_dashboard_instruction(client):
+    """Repeated ready/todo toggles preserve only the latest explicit instruction."""
+    task = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "park me", "assignee": "builder"},
+    ).json()["task"]
+    task_id = task["id"]
+
+    for status in ("todo", "ready", "todo", "ready", "todo"):
+        response = client.patch(
+            f"/api/plugins/kanban/tasks/{task_id}", json={"status": status}
+        )
+        assert response.status_code == 200, response.text
+        with kbc.connect_closing() as conn:
+            assert kb.recompute_ready(conn) == 0
+            row = conn.execute(
+                "SELECT status, todo_hold FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            assert row["status"] == status
+            assert row["todo_hold"] == (1 if status == "todo" else 0)
+
+
 def test_patch_review_lifecycle_preserves_handoff_and_reopens(client):
     secret = "ghp_" + "D" * 40
     task = client.post(

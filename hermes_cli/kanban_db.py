@@ -874,7 +874,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Explicit operator/dashboard backlog hold. Automatic dependency and retry
+    -- todo states leave this false so recompute_ready can release them.
+    todo_hold            INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -2037,7 +2040,8 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
     """Promote ``todo``/``blocked`` tasks whose parents are all done/archived;
     returns the count. Opens its own IMMEDIATE txn — call OUTSIDE any write txn.
 
-    ``blocked`` is skipped when sticky (explicit ``kanban_block``) or when
+    Explicitly held ``todo`` is skipped. ``blocked`` is skipped when sticky
+    (explicit ``kanban_block``) or when
     ``consecutive_failures`` reached the limit (else the breaker could never
     trip). Limit order matches ``_record_task_failure``: ``max_retries`` >
     ``failure_limit`` > ``DEFAULT_FAILURE_LIMIT``.
@@ -2050,12 +2054,14 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
     promoted = 0
     with write_txn(conn):
         todo_rows = conn.execute(
-            "SELECT id, status, consecutive_failures, max_retries "
+            "SELECT id, status, consecutive_failures, max_retries, todo_hold "
             "FROM tasks WHERE status IN ('todo', 'blocked')"
         ).fetchall()
         for row in todo_rows:
             task_id = row["id"]
             cur_status = row["status"]
+            if cur_status == "todo" and bool(row["todo_hold"]):
+                continue
             if cur_status == "blocked" and _has_sticky_block(conn, task_id):
                 # Explicit human-intervention block; only ``unblock_task`` may exit it.
                 continue
@@ -3518,7 +3524,7 @@ def promote_task(
 
     with write_txn(conn):
         upd = conn.execute(
-            "UPDATE tasks SET status = 'ready' "
+            "UPDATE tasks SET status = 'ready', todo_hold = 0 "
             "WHERE id = ? AND status IN ('todo', 'blocked')", (task_id,),
         )
         if upd.rowcount != 1:

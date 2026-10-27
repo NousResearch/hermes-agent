@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
+import { InlineNotice } from '@/components/notifications'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
@@ -14,7 +15,7 @@ import {
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { Check, Globe, Loader2, Plus, Save, Trash2, Zap } from '@/lib/icons'
+import { AlertCircle, Check, Globe, Loader2, Plus, Save, Trash2, Zap } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
@@ -133,6 +134,9 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
   // Alias metadata from the last Test; the backend resolves a picked alias to its
   // canonical model + reasoning effort on Save (#93622).
   const [discoveredDetails, setDiscoveredDetails] = useState<CustomEndpointModelDetail[]>([])
+  // The last Test result, rendered inline at the button for both outcomes —
+  // toasts alone split one button's result across two corners (#145349).
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null)
 
   async function refresh() {
     const data = await getCustomEndpoints(scopeProfile)
@@ -151,6 +155,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
     setDiscoveredModels([])
     setDiscoveredDetails([])
     setEndpoints([])
+    setTestResult(null)
 
     async function load() {
       try {
@@ -249,20 +254,25 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
         // auto-detected mode is visible before Save (#93622).
         const transport = apiModeOptions.find(option => option.id === response.transport_checked)?.label
         const reachable = transport ? ce.endpointReachableTransport(transport) : ce.endpointReachable
+        const message = response.models.length ? ce.endpointReachableModels(reachable, response.models.length) : reachable
+        setTestResult({ ok: true, message })
         notify({
           id: TEST_TOAST_ID,
           kind: 'success',
-          message: response.models.length ? ce.endpointReachableModels(reachable, response.models.length) : reachable
+          message
         })
       } else {
+        const message = response.message || ce.endpointValidationFailed
+        setTestResult({ ok: false, message })
         notify({
           id: TEST_TOAST_ID,
           kind: response.reachable ? 'warning' : 'error',
-          message: response.message || ce.endpointValidationFailed
+          message
         })
       }
     } catch (err) {
       if (mounted.current) {
+        setTestResult({ ok: false, message: ce.validationFailed })
         notifyError(err, ce.validationFailed, { id: TEST_TOAST_ID })
       }
     } finally {
@@ -363,6 +373,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                       setForm(formFromEndpoint(endpoint))
                       setDiscoveredModels(endpoint.models)
                       setDiscoveredDetails([])
+                      setTestResult(null)
                     }}
                     type="button"
                   >
@@ -442,7 +453,10 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
             <label className="grid gap-1.5 text-xs text-muted-foreground">
               {ce.fields.endpointUrl}
               <Input
-                onChange={event => setForm(current => ({ ...current, baseUrl: event.target.value }))}
+                onChange={event => {
+                  setForm(current => ({ ...current, baseUrl: event.target.value }))
+                  setTestResult(null)
+                }}
                 placeholder="http://127.0.0.1:8081/v1"
                 value={form.baseUrl}
               />
@@ -451,7 +465,10 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
               <legend className="mb-1.5">{ce.apiMode}</legend>
               <SegmentedControl
                 className="w-full max-w-full"
-                onChange={apiMode => setForm(current => ({ ...current, apiMode }))}
+                onChange={apiMode => {
+                  setForm(current => ({ ...current, apiMode }))
+                  setTestResult(null)
+                }}
                 options={apiModeOptions}
                 value={form.apiMode}
               />
@@ -479,7 +496,10 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
             <label className="grid gap-1.5 text-xs text-muted-foreground">
               {ce.fields.apiKey}
               <Input
-                onChange={event => setForm(current => ({ ...current, apiKey: event.target.value }))}
+                onChange={event => {
+                  setForm(current => ({ ...current, apiKey: event.target.value }))
+                  setTestResult(null)
+                }}
                 placeholder={form.id ? ce.fields.apiKeyNewPlaceholder : ce.fields.apiKeyPlaceholder}
                 type="password"
                 value={form.apiKey}
@@ -501,13 +521,26 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                 {ce.fields.discoverModels}
               </label>
             </div>
+            {testResult && (
+              <InlineNotice className="text-xs" kind={testResult.ok ? 'success' : 'error'}>
+                {testResult.message}
+              </InlineNotice>
+            )}
             <div className="flex flex-wrap gap-2">
               <Button
                 disabled={testing || !form.baseUrl.trim()}
                 onClick={() => void handleValidate()}
                 variant="outline"
               >
-                {testing ? <Loader2 className="animate-spin" /> : <Zap />}
+                {testing ? (
+                  <Loader2 className="animate-spin" />
+                ) : testResult?.ok ? (
+                  <Check className="text-primary" />
+                ) : testResult ? (
+                  <AlertCircle className="text-destructive" />
+                ) : (
+                  <Zap />
+                )}
                 {ce.test}
               </Button>
               <Button disabled={saving || !canSave} onClick={() => void handleSave()}>
@@ -520,6 +553,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                   setForm(EMPTY_FORM)
                   setDiscoveredModels([])
                   setDiscoveredDetails([])
+                  setTestResult(null)
                 }}
                 type="button"
                 variant="ghost"

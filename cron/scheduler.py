@@ -1632,7 +1632,8 @@ class _CronJobConfig:
 
 def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConfig:
     """Load config.yaml and resolve the run's model: per-job pin > cron.model (fleet default) >
-    the main agent model (config ``model:``, then HERMES_MODEL) > the claimed welcome trial's. Re-read
+    the main agent model (config ``model:``, then HERMES_MODEL) > a NAMED profile's host root
+    default > the claimed welcome trial's. Re-read
     every tick (no cache) so ``hermes cron edit --model`` and ``hermes model`` both apply next tick."""
     from hermes_cli.anon_auth import trial_model
     from hermes_cli.config_backend import config_exists
@@ -1663,14 +1664,38 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
                     model = str(_main or "").strip() or model
     except Exception as e:
         logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
+
+    # Host fallback (card t_92b4a684): a NAMED profile with no ``model:`` of its own still runs
+    # unpinned jobs on the HOST root config's default model + provider, as the root profile does,
+    # instead of dying at the raise below.
+    if not (isinstance(model, str) and model.strip()):
+        try:
+            from cron.jobs import host_default_model
+            _host_model, _host_provider, _host_model_cfg = host_default_model(_get_hermes_home())
+        except Exception as e:
+            logger.debug("Job '%s': host model fallback failed: %s", job_id, e)
+            _host_model = _host_provider = ""
+            _host_model_cfg = {}
+        if _host_model:
+            model = _host_model
+            if not _cron_default_provider and _host_provider:
+                _cron_default_provider = _host_provider
+            if not _model_cfg:
+                _model_cfg = _host_model_cfg
+
+    # The host root default outranks the welcome trial: it is a real configured model + provider,
+    # so ``trial_model()`` stays the last rung (the order in the docstring above).
     model = (model if isinstance(model, str) else "").strip() or trial_model()
     # Fail fast: an empty model otherwise reaches the provider as an opaque 400 (#23979).
     if not model:
+        _active_home = _get_hermes_home()
+        _store = _active_home.name if _active_home.parent.name == "profiles" else "default"
         raise RuntimeError(
-            f"Cron job '{job_name}' has no model configured "
+            f"Cron job '{job_name}' has no model configured in the '{_store}' profile's store "
             f"(job.model={job.get('model')!r}, "
             f"HERMES_MODEL={cron_env_setting('HERMES_MODEL')!r}, "
-            "config.yaml model.default missing or empty). "
+            "that profile's config.yaml model.default missing or empty, and the host config carries "
+            "no model.default either). "
             f"Set a per-job model via "
             f"`hermes cron edit {job_id} --model <name>` or set a "
             "default with `hermes model <name>`."

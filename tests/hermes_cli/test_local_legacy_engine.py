@@ -69,6 +69,58 @@ def test_matching_legacy_engine_moves_into_the_store_as_current(legacy_env):
     assert fact["version"] == "10964" and fact["artifacts"] == pinned
 
 
+@pytest.mark.parametrize("candidate_count", [0, 1, 2])
+def test_nested_legacy_adoption_requires_one_binary_directory(legacy_env, monkeypatch, candidate_count):
+    from hermes_cli.local_runtime import binaries
+
+    home, store, package, target, backend, pinned = legacy_env
+    install = legacy_install(home, package, target, backend, "b10964", pinned)
+    # Retain the real legacy manifest but put the payload inside archive folders.
+    # With no candidate, retain a folder that does not contain the executable.
+    nested = install / "llama-b10964"
+    nested.mkdir()
+    binary = package.binary(install, target)
+    binary.rename(nested / binary.name if candidate_count else nested / "not-the-engine")
+    (install / "ggml-base.dll").rename(nested / "ggml-base.dll")
+    second = install / "another-archive"
+    if candidate_count == 2:
+        second.mkdir()
+        (second / binary.name).write_bytes(b"other engine")
+    manifest_bytes = (install / "manifest.json").read_bytes()
+    probes = []
+
+    def verify_layout(self, directory, selected_target):
+        probes.append(directory)
+        executable = self.binary(directory, selected_target)
+        return "llama-server missing" if executable is None or not executable.is_file() else ""
+
+    monkeypatch.setattr(type(package), "verify", verify_layout)
+    engine = binaries.installed_engine(backend, allow_outdated=False)
+    entry = store / package.store_entry("10964", target)
+    fact = Facts(store / "facts.json").get(package.name)
+
+    if candidate_count == 1:
+        assert engine is not None and fact is not None
+        assert engine == binaries.Engine(backend, "b10964", package.binary(entry, target))
+        assert engine.binary.read_bytes() == b"engine b10964"
+        assert (entry / "ggml-base.dll").read_bytes() == b"dll"
+        assert probes == [nested]
+        assert not nested.exists()
+        assert fact["version"] == "10964" and fact["artifacts"] == pinned
+        # The manifest is a sibling of the moved payload, so keep it in place.
+        assert (install / "manifest.json").read_bytes() == manifest_bytes
+        assert binaries.installed_engine(backend, allow_outdated=False) == engine
+        assert probes == [nested]  # the recorded PM installation is reused
+    else:
+        assert engine is None
+        assert probes == [install]
+        assert nested.is_dir() and not entry.exists() and fact is None
+        assert (install / "manifest.json").read_bytes() == manifest_bytes
+        if candidate_count == 2:
+            assert (nested / binary.name).read_bytes() == b"engine b10964"
+            assert (second / binary.name).read_bytes() == b"other engine"
+
+
 def test_older_legacy_engine_counts_as_installed_but_outdated(legacy_env):
     from hermes_cli.local_runtime import binaries
 

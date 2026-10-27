@@ -26,6 +26,7 @@ const ORDER_STORAGE_KEY = `${ID}:provider-order`
 const EXPECTED_BACKEND_VERSION = '0.2.0'
 const MAX_RESTART_WAIT_MS = 20_000
 const POLL_REQUEST_TIMEOUT_MS = 4_000
+const AUTO_CHECK_INTERVAL_MS = 30_000
 
 const COMPACT_FORMATTER = new Intl.NumberFormat(undefined, {
   notation: 'compact',
@@ -86,6 +87,10 @@ const palette = {
     @keyframes spin {
       from { transform: rotate(0deg); }
       to { transform: rotate(360deg); }
+    }
+    @keyframes pulseDot {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.45; transform: scale(0.92); }
     }
   `,
   limeCyan: 'linear-gradient(90deg, #bef264 0%, #4ade80 52%, #2dd4bf 100%)',
@@ -165,7 +170,33 @@ function getProviderId(provider) {
   if (raw !== undefined && raw !== null && String(raw).trim() !== '') {
     return String(raw).trim()
   }
-  return `provider:${toDisplayString(provider?.source || 'unknown')}:${toDisplayString(provider?.plan || 'default')}`
+  const source = toDisplayString(provider?.source || 'unknown')
+  const plan = toDisplayString(provider?.plan || 'default')
+  const modelCount = toArray(provider?.models).length
+  return `provider:${source}:${plan}:${modelCount}`
+}
+
+function getWindowUsedPercent(window) {
+  if (!window) return null
+  const used = toFiniteNumber(window.used_percent)
+  if (used !== null) return Math.max(0, Math.min(100, used))
+  const remaining = toFiniteNumber(window.remaining_percent)
+  if (remaining !== null) return Math.max(0, Math.min(100, 100 - remaining))
+  return null
+}
+
+function getWindowRemainingPercent(window) {
+  if (!window) return null
+  const remaining = toFiniteNumber(window.remaining_percent)
+  if (remaining !== null) return Math.max(0, Math.min(100, remaining))
+  const used = toFiniteNumber(window.used_percent)
+  if (used !== null) return Math.max(0, Math.min(100, 100 - used))
+  return null
+}
+
+function hasUsageBar(provider) {
+  if (!provider) return false
+  return toArray(provider.windows).some(window => getWindowUsedPercent(window) !== null)
 }
 
 function loadSavedOrder() {
@@ -208,13 +239,37 @@ const styles = {
   },
   header: {
     display: 'flex',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     justifyContent: 'space-between',
     gap: '10px',
     flexWrap: 'wrap',
     flexShrink: 0
   },
+  headerLeft: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+    flexWrap: 'wrap'
+  },
   title: { margin: 0, fontSize: '20px', lineHeight: 1.2, fontWeight: 700, letterSpacing: '-0.02em' },
+  autoCheckBadge: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '6px',
+    fontSize: '11px',
+    color: palette.muted,
+    background: palette.panel,
+    border: `1px solid ${palette.border}`,
+    padding: '3px 10px',
+    borderRadius: '999px'
+  },
+  pulseDot: {
+    width: '7px',
+    height: '7px',
+    borderRadius: '50%',
+    background: '#34d399',
+    animation: 'pulseDot 2s ease-in-out infinite'
+  },
   controls: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' },
   statusPanel: {
     padding: '10px 14px',
@@ -222,6 +277,14 @@ const styles = {
     background: palette.panel,
     border: `1px solid ${palette.border}`,
     flexShrink: 0
+  },
+  statusHeaderRow: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: '8px',
+    flexWrap: 'wrap',
+    marginBottom: '8px'
   },
   card: {
     border: `1px solid ${palette.border}`,
@@ -395,13 +458,8 @@ function SourceBadge({ value }) {
 function UsageWindow({ window, scheme }) {
   if (!window) return null
   const label = truncateText(window.label, 80) || 'Quota'
-  const used = toFiniteNumber(window.used_percent)
-  const rawRemaining = toFiniteNumber(window.remaining_percent)
-  const remaining = rawRemaining !== null
-    ? rawRemaining
-    : used !== null
-      ? Math.max(0, Math.min(100, 100 - used))
-      : null
+  const displayUsed = getWindowUsedPercent(window)
+  const remaining = getWindowRemainingPercent(window)
 
   return jsxs('div', {
     style: styles.window,
@@ -416,11 +474,11 @@ function UsageWindow({ window, scheme }) {
           }),
           jsx('span', {
             style: { ...styles.muted, flexShrink: 0, whiteSpace: 'nowrap' },
-            children: used !== null ? `${used.toFixed(1)}% used` : 'Usage unavailable'
+            children: displayUsed !== null ? `${displayUsed.toFixed(1)}% used` : 'Usage unavailable'
           })
         ]
       }),
-      jsx(Gauge, { percent: used, scheme }),
+      jsx(Gauge, { percent: displayUsed, scheme }),
       jsx('div', {
         style: { ...styles.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
         title: [
@@ -491,7 +549,7 @@ function ProviderCard({ provider, onMoveLeft, onMoveRight, isFirst, isLast }) {
     )
     .slice(0, 3)
 
-  const windows = toArray(provider.windows).filter(Boolean)
+  const windows = toArray(provider.windows).filter(window => getWindowUsedPercent(window) !== null)
   const details = toArray(provider.details).map(item => truncateText(item, 160)).filter(Boolean)
   const providerName = truncateText(provider.name || provider.id, 80) || 'Unknown Provider'
 
@@ -551,25 +609,13 @@ function ProviderCard({ provider, onMoveLeft, onMoveRight, isFirst, isLast }) {
       jsxs('div', {
         style: styles.quotaSection,
         children: [
-          windows.length
-            ? windows.map((window, index) =>
-                jsx(UsageWindow, {
-                  window,
-                  scheme,
-                  key: `${toDisplayString(window.label) || 'window'}-${index}`
-                })
-              )
-            : jsx('div', {
-                style: provider.available
-                  ? {
-                      ...styles.unavailable,
-                      color: '#d4d4d8',
-                      background: 'rgba(45, 212, 191, 0.055)',
-                      border: '1px solid rgba(45, 212, 191, 0.22)'
-                    }
-                  : styles.unavailable,
-                children: truncateText(provider.unavailable_reason, 200) || 'No account limit was returned by this provider.'
-              }),
+          windows.map((window, index) =>
+            jsx(UsageWindow, {
+              window,
+              scheme,
+              key: `${toDisplayString(window.label) || 'window'}-${index}`
+            })
+          ),
           details.length
             ? jsx('div', {
                 style: { ...styles.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
@@ -610,10 +656,12 @@ function UsagePage() {
   const [refreshRevision, setRefreshRevision] = useState(() => sharedRefreshRevision)
   const [providerOrder, setProviderOrder] = useState(() => loadSavedOrder())
   const [isRestarting, setIsRestarting] = useState(false)
+  const [isManualRefreshing, setIsManualRefreshing] = useState(false)
   const [restartWarningOpen, setRestartWarningOpen] = useState(false)
   const sharedCache = useCachedUsageData()
   const pollRef = useRef(null)
   const mountedRef = useRef(true)
+  const forceRefreshRef = useRef(false)
 
   const stopPolling = () => {
     if (pollRef.current !== null) {
@@ -633,10 +681,19 @@ function UsagePage() {
   const query = useQuery({
     queryKey: [ID, 'usage', 30, refreshRevision],
     queryFn: async () => {
-      const result = await safeRest(`/usage?days=30&refresh=${refreshRevision > 0 ? 'true' : 'false'}`)
-      publishUsageData(result)
-      return result
-    }
+      const shouldForceRefresh = forceRefreshRef.current
+      forceRefreshRef.current = false
+      try {
+        const result = await safeRest(`/usage?days=30&refresh=${shouldForceRefresh ? 'true' : 'false'}`)
+        publishUsageData(result)
+        return result
+      } finally {
+        if (mountedRef.current) {
+          setIsManualRefreshing(false)
+        }
+      }
+    },
+    refetchInterval: AUTO_CHECK_INTERVAL_MS
   })
 
   useEffect(() => {
@@ -645,7 +702,7 @@ function UsagePage() {
     }
   }, [query.data])
 
-  const activeCache = query.data || sharedCache
+  const activeCache = sharedCache || query.data
   const data = activeCache || { providers: [], errors: [], windows: [] }
   const rawProviders = useMemo(
     () => toArray(data.providers).filter(Boolean),
@@ -668,11 +725,27 @@ function UsagePage() {
     })
   }, [rawProviders, providerOrder])
 
-  useEffect(() => {
-    if (isRestarting && query.data && !query.isLoading) {
-      setIsRestarting(false)
-    }
-  }, [isRestarting, query.data, query.isLoading])
+  const quotaProviders = useMemo(
+    () => sortedProviders.filter(hasUsageBar),
+    [sortedProviders]
+  )
+
+  const noQuotaProviders = useMemo(
+    () => sortedProviders.filter(provider => !hasUsageBar(provider)),
+    [sortedProviders]
+  )
+
+  const connectedNoQuotaCount = useMemo(
+    () => noQuotaProviders.filter(provider => Boolean(provider.available)).length,
+    [noQuotaProviders]
+  )
+
+  const offlineCount = noQuotaProviders.length - connectedNoQuotaCount
+
+  const statusOrderedProviders = useMemo(
+    () => [...quotaProviders, ...noQuotaProviders],
+    [quotaProviders, noQuotaProviders]
+  )
 
   if (query.isLoading && !activeCache) {
     return jsx('div', { style: styles.page, children: jsx(EmptyState, { title: 'Loading usage data' }) })
@@ -688,6 +761,8 @@ function UsagePage() {
   }
 
   const bumpRefreshRevision = () => {
+    forceRefreshRef.current = true
+    setIsManualRefreshing(true)
     sharedRefreshRevision += 1
     setRefreshRevision(sharedRefreshRevision)
   }
@@ -698,12 +773,13 @@ function UsagePage() {
     saveOrderToStorage(cleanOrder)
   }
 
-  const moveByIndex = (fromIndex, delta) => {
-    const order = sortedProviders.map(p => getProviderId(p))
+  const moveQuotaProviderByIndex = (fromIndex, delta) => {
+    const visibleIds = quotaProviders.map(p => getProviderId(p))
+    const hiddenIds = noQuotaProviders.map(p => getProviderId(p))
     const toIndex = fromIndex + delta
-    if (fromIndex < 0 || toIndex < 0 || toIndex >= order.length) return
-    ;[order[fromIndex], order[toIndex]] = [order[toIndex], order[fromIndex]]
-    updateOrder(order)
+    if (fromIndex < 0 || toIndex < 0 || toIndex >= visibleIds.length) return
+    ;[visibleIds[fromIndex], visibleIds[toIndex]] = [visibleIds[toIndex], visibleIds[fromIndex]]
+    updateOrder([...visibleIds, ...hiddenIds])
   }
 
   const refreshProviders = () => {
@@ -773,7 +849,14 @@ function UsagePage() {
   }
 
   const errorList = toArray(data.errors).map(item => truncateText(item, 300)).filter(Boolean)
-  const isScanning = query.isFetching || query.isLoading || isRestarting
+  const isScanning = isManualRefreshing || (query.isLoading && !activeCache) || isRestarting
+  const statusSummaryParts = [
+    `${quotaProviders.length} with quota bars`,
+    `${connectedNoQuotaCount} connected without quota (cards hidden)`
+  ]
+  if (offlineCount > 0) {
+    statusSummaryParts.push(`${offlineCount} offline`)
+  }
 
   return jsxs('div', {
     style: styles.page,
@@ -785,7 +868,19 @@ function UsagePage() {
           jsxs('header', {
             style: styles.header,
             children: [
-              jsx('h1', { style: styles.title, children: 'AI Usage Meter' }),
+              jsxs('div', {
+                style: styles.headerLeft,
+                children: [
+                  jsx('h1', { style: styles.title, children: 'AI Usage Meter' }),
+                  jsxs('span', {
+                    style: styles.autoCheckBadge,
+                    children: [
+                      jsx('span', { style: styles.pulseDot }),
+                      jsx('span', { children: 'Auto-checking connections (30s)' })
+                    ]
+                  })
+                ]
+              }),
               jsx('div', {
                 style: styles.controls,
                 children: jsx(Button, {
@@ -808,40 +903,58 @@ function UsagePage() {
           jsxs('div', {
             style: styles.statusPanel,
             children: [
-              jsx('div', {
-                style: {
-                  fontSize: '10px',
-                  fontWeight: 700,
-                  color: '#d4d4d8',
-                  letterSpacing: '0.04em',
-                  marginBottom: '8px',
-                  whiteSpace: 'nowrap'
-                },
-                children: 'PROVIDER CONNECTION STATUS'
+              jsxs('div', {
+                style: styles.statusHeaderRow,
+                children: [
+                  jsx('div', {
+                    style: {
+                      fontSize: '10px',
+                      fontWeight: 700,
+                      color: '#d4d4d8',
+                      letterSpacing: '0.04em',
+                      whiteSpace: 'nowrap'
+                    },
+                    children: 'PROVIDER CONNECTION STATUS'
+                  }),
+                  jsx('div', {
+                    style: styles.muted,
+                    children: statusSummaryParts.join(' · ')
+                  })
+                ]
               }),
               jsx('div', {
                 style: { display: 'flex', flexWrap: 'wrap', gap: '6px' },
-                children: sortedProviders.map((provider, index) => {
+                children: statusOrderedProviders.map((provider, index) => {
                   const providerId = getProviderId(provider)
                   const providerName = truncateText(provider.name || provider.id, 80) || providerId
+                  const hasBar = hasUsageBar(provider)
+                  const isAvailable = Boolean(provider.available)
                   return jsx('span', {
                     key: `status-${providerId}-${index}`,
-                    title: providerName,
+                    title: hasBar
+                      ? `${providerName} — Active usage bar`
+                      : isAvailable
+                        ? `${providerName} — Connected, but no usage bar exposed (card hidden)`
+                        : `${providerName} — Offline / unavailable (card hidden)`,
                     style: {
                       padding: '4px 9px',
                       borderRadius: '999px',
                       fontSize: '10px',
                       fontWeight: 600,
-                      maxWidth: '260px',
+                      maxWidth: '280px',
                       overflow: 'hidden',
                       textOverflow: 'ellipsis',
                       whiteSpace: 'nowrap',
                       display: 'inline-block',
-                      border: '1px solid ' + (provider.available ? 'rgba(45, 212, 191, 0.35)' : palette.border),
-                      background: provider.available ? 'rgba(45, 212, 191, 0.08)' : palette.panel,
-                      color: provider.available ? '#34d399' : '#a1a1aa'
+                      border: '1px solid ' + (hasBar ? 'rgba(45, 212, 191, 0.35)' : palette.border),
+                      background: hasBar ? 'rgba(45, 212, 191, 0.08)' : palette.panel,
+                      color: hasBar ? '#34d399' : '#71717a'
                     },
-                    children: `${provider.available ? '●' : '○'} ${providerName}`
+                    children: hasBar
+                      ? `● ${providerName}`
+                      : isAvailable
+                        ? `◌ ${providerName} (no quota)`
+                        : `○ ${providerName} (offline)`
                   })
                 })
               })
@@ -882,20 +995,25 @@ function UsagePage() {
                   })
                 ]
               })
-            : jsx('div', {
-                style: styles.grid,
-                children: sortedProviders.map((provider, index) => {
-                  const providerId = getProviderId(provider)
-                  return jsx(ProviderCard, {
-                    provider,
-                    key: `card-${providerId}-${index}`,
-                    isFirst: index === 0,
-                    isLast: index === sortedProviders.length - 1,
-                    onMoveLeft: () => moveByIndex(index, -1),
-                    onMoveRight: () => moveByIndex(index, 1)
+            : quotaProviders.length
+              ? jsx('div', {
+                  style: styles.grid,
+                  children: quotaProviders.map((provider, index) => {
+                    const providerId = getProviderId(provider)
+                    return jsx(ProviderCard, {
+                      provider,
+                      key: `card-${providerId}-${index}`,
+                      isFirst: index === 0,
+                      isLast: index === quotaProviders.length - 1,
+                      onMoveLeft: () => moveQuotaProviderByIndex(index, -1),
+                      onMoveRight: () => moveQuotaProviderByIndex(index, 1)
+                    })
                   })
                 })
-              })
+              : jsx('div', {
+                  style: styles.unavailable,
+                  children: 'No connected providers are currently exposing an account usage bar. Auto-checking for new quota connections…'
+                })
         ]
       }),
       jsx(ConfirmDialog, {
@@ -925,7 +1043,7 @@ function UsageChip() {
       publishUsageData(result)
       return result
     },
-    refetchInterval: 60_000
+    refetchInterval: AUTO_CHECK_INTERVAL_MS
   })
 
   useEffect(() => {
@@ -941,13 +1059,20 @@ function UsageChip() {
   )
 
   const highest = useMemo(() => {
-    const values = providers.flatMap(provider =>
+    const accountValues = providers.flatMap(provider =>
       toArray(provider.windows)
-        .filter(window => window && window.scope === 'account')
-        .map(window => toFiniteNumber(window.used_percent))
+        .filter(window => window && (!window.scope || window.scope === 'account'))
+        .map(getWindowUsedPercent)
         .filter(val => val !== null)
     )
-    return values.length ? Math.max(...values) : null
+    if (accountValues.length) return Math.max(...accountValues)
+
+    const fallbackValues = providers.flatMap(provider =>
+      toArray(provider.windows)
+        .map(getWindowUsedPercent)
+        .filter(val => val !== null)
+    )
+    return fallbackValues.length ? Math.max(...fallbackValues) : null
   }, [providers])
 
   const providerAlerts = useMemo(() => {
@@ -955,9 +1080,9 @@ function UsageChip() {
       const providerId = truncateText(getProviderId(provider), 64)
       const providerName = truncateText(provider.name || provider.id, 64) || providerId
       return toArray(provider.windows)
-        .filter(window => window && window.scope === 'account')
+        .filter(window => window && (!window.scope || window.scope === 'account'))
         .map(window => {
-          const used = toFiniteNumber(window.used_percent)
+          const used = getWindowUsedPercent(window)
           if (used === null || used < ALERT_THRESHOLD) return null
           const label = truncateText(window.label, 64) || 'Quota'
           return {

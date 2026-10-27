@@ -253,16 +253,16 @@ reCAPTCHA checkbox - as normal operation, so those brokers stay T1 and you just 
 **not** CAPTCHA solving: no solver service, no fingerprint spoofing.
 
 Only a **hard** challenge the browser genuinely can't pass (interactive image grids, behavioral
-scoring that flags the session) becomes a fallback: `record ... blocked` and requeue it for the
-stealth/operator-browser pass (`methods.md` → scan ladder 3b - the operator's own residential
-browser is the reliable unblock). Without a cloud browser configured, soft-CAPTCHA brokers drop to
-T2 and become human tasks. **Never use a third-party CAPTCHA-defeating service.**
+scoring that flags the session) becomes a fallback: `record ... human_task_queued --reason "..."`
+so it reaches the operator once in the digest (the operator's own residential browser is the
+reliable unblock; a `blocked` case would re-scan, re-find the listing and re-queue the opt-out).
+Without a cloud browser configured, soft-CAPTCHA brokers drop to T2 and become human tasks. **Never use a third-party CAPTCHA-defeating service.**
 
 ### CAPTCHA policy, clarified (on a consenting first-party opt-out)
 
 - **Do NOT defeat** behavioral / token challenges: a Cloudflare Turnstile that will not auto-clear,
   **DataDome**, and **"slide-to-verify" gesture-entropy sliders** (the InfoPay lane). These are hard
-  stops -> take the email lane (rule above) or record `blocked`.
+  stops -> take the email lane (rule above) or record `human_task_queued` with the reason.
 - **A visible Google reCAPTCHA v2 / Enterprise checkbox is in this class** (verified live 2026-10-26 across two sites): synthetic CDP clicks on a debug-profile Chrome do NOT toggle it -
   no token, no challenge appears, no error surfaces, `grecaptcha.getResponse()` stays empty -
   so it is a silent hard stop for the automation browser. By contrast a managed Cloudflare

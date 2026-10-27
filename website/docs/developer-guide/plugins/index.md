@@ -930,7 +930,7 @@ def register(ctx):
 - `ctx.register_hook()` subscribes to lifecycle events
 - `ctx.register_cli_command()` registers a CLI subcommand (e.g. `hermes my-plugin <subcommand>`)
 - `ctx.register_command()` registers an in-session slash command (e.g. `/myplugin <args>` inside CLI / gateway chat) — see [Register slash commands](#register-slash-commands) below
-- `ctx.dispatch_tool(name, arguments)` — call any other tool (built-in or from another plugin) with the parent agent's context (approvals, credentials, task_id) wired up automatically. Useful from slash-command handlers that need to invoke `terminal`, `read_file`, or any other tool as if the model had called it directly.
+- `ctx.dispatch_tool(tool_name, args)` — call any other tool (built-in or from another plugin) with the parent agent's context (approvals, credentials, task_id) wired up automatically. Useful from slash-command handlers that need to invoke `terminal`, `read_file`, or any other tool as if the model had called it directly.
 - `ctx.get_config()` / `ctx.set_config()` access only this plugin's settings namespace; `ctx.state` stores plugin-owned runtime data under the active profile.
 - If this function crashes, the plugin is disabled but Hermes continues fine
 
@@ -1852,7 +1852,7 @@ def register(ctx):
 
 ### Dispatch tools from slash commands
 
-Slash command handlers that need to orchestrate tools (spawn a subagent via `delegate_task`, call `file_edit`, etc.) should use `ctx.dispatch_tool()` instead of reaching into framework internals. The parent-agent context (workspace hints, spinner, model inheritance) is wired up automatically.
+Slash command handlers that need to orchestrate tools (spawn a subagent via `delegate_task`, call `write_file`, etc.) should use `ctx.dispatch_tool()` instead of reaching into framework internals. The parent-agent context (workspace hints, spinner, model inheritance) is wired up automatically.
 
 ```python
 def register(ctx):
@@ -1873,13 +1873,13 @@ def register(ctx):
     )
 ```
 
-**Signature:** `ctx.dispatch_tool(name: str, args: dict, *, parent_agent=None) -> str`
+**Signature:** `ctx.dispatch_tool(tool_name: str, args: dict, **kwargs) -> str`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `name` | `str` | Tool name as registered in the tool registry (e.g. `"delegate_task"`, `"file_edit"`) |
+| `tool_name` | `str` | Tool name as registered in the tool registry (e.g. `"delegate_task"`, `"write_file"`) |
 | `args` | `dict` | Tool arguments, same shape the model would send |
-| `parent_agent` | `Agent \| None` | Optional override. When omitted, resolves from the current CLI agent (or degrades gracefully in gateway mode) |
+| `parent_agent=` | `Agent \| None` | Optional keyword override (passed through `**kwargs`). When omitted, resolves from the current CLI agent (or degrades gracefully in gateway mode) |
 
 **Runtime behavior:**
 

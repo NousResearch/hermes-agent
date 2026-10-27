@@ -104,7 +104,13 @@ def _checked_entry(authority, receipt, source, route):
             or entry.origin.to_dict() != source.to_dict()):
         raise ValueError('entry mismatch')
     row = authority.db.get_session(entry.session_id)
-    if row is None or (row['session_key'], row['chat_id'], row['user_id']) != (route, source.chat_id, source.user_id):
+    if row is None:
+        # Benign and expected once the session's rows are gone (an unfenced delete, a profile
+        # move); a conflicting identity is an integrity signal. Boot drops the first
+        # (``release_orphaned_receipts``), so this reason only reaches a log for a receipt whose
+        # id still holds history — never fold the two back into one message (#145499).
+        raise ValueError('session_missing')
+    if (row['session_key'], row['chat_id'], row['user_id']) != (route, source.chat_id, source.user_id):
         raise ValueError('stored identity mismatch')
     return entry
 
@@ -443,6 +449,41 @@ def release_handed_off_receipts(db, *, epoch):
     for owner, (target, source) in db._execute_write(write).items():
         logging.getLogger(__name__).info(
             'Local session %s was handed off to %s (row %s); released its local receipt', owner, source, target)
+
+
+# Receipts whose current physical target row is gone. Parsed in Python (``policy_target``): a
+# malformed receipt stays, as it does for the delete fence — ``json_extract`` would abort the scan.
+_ORPHANED_RECEIPT_SQL = "SELECT key, value FROM state_meta WHERE key GLOB ?"
+
+
+def release_orphaned_receipts(db, *, epoch):
+    """Boot heal for #145499: retire a local receipt whose session row is gone and which holds
+    nothing, so recovery stops refusing it on every pass.
+
+    ``_checked_entry`` refuses such a receipt (``session_missing``), and ``local_receipt_ids``
+    selects it again and again — a missing row reads as an open one (the ``LEFT JOIN`` leaves
+    ``ended_at`` NULL), so one WARNING per orphan per recovery pass accumulated thousands of lines
+    in ``gateway.log`` for receipts a delete path left behind. Every live delete path fences
+    receipts (``retire_local_receipts``); this is the backstop for the ones an older build or a
+    cross-store move stranded. Only an id that holds nothing is retired: no transcript, ledger row
+    or child (``unused_session``), so no history loses its policy. A missing row that still holds
+    something keeps its receipt and now logs ``session_missing``, apart from a real mismatch."""
+    from hermes_state_local import policy_target
+    from hermes_state_runtime import _epoch
+
+    def write(conn):
+        _epoch(conn, epoch)
+        dropped = []
+        for key, value in conn.execute(_ORPHANED_RECEIPT_SQL, (POLICY_PREFIX + '*',)):
+            target = policy_target(value)
+            if (target and conn.execute('SELECT 1 FROM sessions WHERE id=?', (target,)).fetchone() is None
+                    and unused_session(conn, target)):
+                dropped.append(key)
+        conn.executemany('DELETE FROM state_meta WHERE key=?', [(key,) for key in dropped])
+        return [key[len(POLICY_PREFIX):] for key in dropped]
+    for sid in db._execute_write(write):
+        logging.getLogger(__name__).info(
+            'Local session %s receipt dropped: its session row is gone and it holds nothing', sid)
 
 
 def local_receipt_ids(authority):

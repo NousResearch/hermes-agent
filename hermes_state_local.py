@@ -138,10 +138,11 @@ def _row_cwd(policy):
     return policy['cwd'] if not isinstance(value, str) else (value or None)
 
 
-def _policy_target(raw):
+def policy_target(raw):
     """Current physical target a creation receipt routes to; None for a malformed receipt, which
     then stays (its own reads already refuse it as ``storage_unavailable``) and cannot abort
-    the delete of an unrelated session."""
+    the delete of an unrelated session. Shared with the boot heal that retires an orphaned
+    receipt (``gateway.session_local_recovery.release_orphaned_receipts``)."""
     try:
         value = json.loads(raw)
     except (TypeError, ValueError):
@@ -162,7 +163,7 @@ def retire_local_receipts(conn, session_ids):
     # Prefix scans (GLOB uses the key index), not one LIKE per id: a prune retires thousands.
     gone = [key for key, value in conn.execute('SELECT key,value FROM state_meta WHERE key GLOB ?',
                                                (POLICY_PREFIX + '*',))
-            if _policy_target(value) in targets]
+            if policy_target(value) in targets]
     gone += [key for key, value in conn.execute('SELECT key,value FROM state_meta WHERE key GLOB ?',
                                                 (API_DECLARED_PREFIX + '*',)) if value in targets]
     gone += [API_BINDING_PREFIX + sid for sid in targets]
@@ -203,7 +204,7 @@ def handoff_head(db, session_id):
     with db._read_ctx() as conn:
         owner = local_lineage_owner(conn, session_id)
         saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (POLICY_PREFIX + owner,)).fetchone()
-    target = _policy_target(saved[0]) if saved else None
+    target = policy_target(saved[0]) if saved else None
     start = target or session_id
     return (owner if target else None), db.get_compression_tip(start) or start
 

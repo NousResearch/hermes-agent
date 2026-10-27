@@ -121,7 +121,8 @@ class DecomposeOutcome:
     fanout: bool = False
     child_ids: list[str] | None = None
     new_title: Optional[str] = None
-    mode: str = "auto"  # "auto", "forced_fanout", "forced_tighten"
+    mode: str = "auto"  # "auto", "forced_fanout", "forced_tighten", "repair"
+    new_status: Optional[str] = None  # set by the repair path only
 
 
 def _profile_author() -> str:
@@ -403,10 +404,43 @@ def decompose_task(
       - ``False``: force tighten — produces a single tightened card, never
         children. If the model reply disagrees (returned fanout=true), this is
         a typed failure, not a silent override.
+
+    Repair: a triage card that already has a ``decomposed`` event is a stuck
+    root (the size gate re-triaged it). Instead of calling the LLM and failing,
+    repair it: move to ``ready`` if all children are done, else ``todo``. When
+    the repair declines because the block-loop brake parked the card for a
+    human, the card is left alone and this returns a typed failure — never the
+    LLM, which cannot fan out a second time and runs on every sweep tick.
     """
     task, reason = _load_triage_task(task_id)
     if task is None:
         return DecomposeOutcome(task_id, False, reason)
+
+    # Repair path: a stuck decomposed root in triage.
+    from hermes_cli.kanban_db_graph import (
+        latest_decomposed_payload, repair_stuck_decomposed_root, triage_park_cause,
+    )
+    with kbc.connect_closing() as conn:
+        new_status = repair_stuck_decomposed_root(conn, task_id)
+        already_decomposed = (
+            new_status is None and latest_decomposed_payload(conn, task_id) is not None
+        )
+        parked_by = triage_park_cause(conn, task_id) if already_decomposed else None
+    if new_status is not None:
+        return DecomposeOutcome(
+            task_id, True,
+            f"repaired stuck decomposed root: moved to {new_status}",
+            fanout=False, mode="repair", new_status=new_status,
+        )
+    if already_decomposed:
+        # Parked deliberately (``block_loop_detected``) or moved by a
+        # concurrent writer: a decomposed root can never fan out again, so the
+        # LLM call would burn a tick and fail. Leave it where it is.
+        return DecomposeOutcome(
+            task_id, False,
+            "already decomposed and parked for a human"
+            f" ({parked_by or 'not a size-gate divert'}); not fanning out again",
+        )
 
     routing = _load_routing(root_assignee=task.assignee)
     raw, reason = _call_aux(

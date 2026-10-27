@@ -256,3 +256,19 @@ def test_decompose_returns_false_when_task_not_triage(kanban_home):
     assert outcome.ok is False
 
 
+def test_decompose_ok_line_reports_the_repair_destination():
+    """A repair outcome must name the real destination, not ``todo (no fanout)``."""
+    from hermes_cli.kanban import _decompose_ok_line
+
+    outcome = decomp.DecomposeOutcome(
+        "t_repair", True, "repaired stuck decomposed root: moved to ready",
+        fanout=False, mode="repair", new_status="ready",
+    )
+
+    line = _decompose_ok_line(outcome)
+
+    assert line.startswith("Repaired t_repair → ready"), line
+    assert "todo" not in line, f"repair line must not claim todo: {line}"
+    assert "[repair]" in line, line
+
+

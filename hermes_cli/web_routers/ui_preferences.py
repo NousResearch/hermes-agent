@@ -22,14 +22,17 @@ router = APIRouter()
 class PreferencesPatch(BaseModel):
     #: Per-key changes; ``null`` deletes the key (the renderer's "back to default").
     values: dict[str, Optional[str]] = Field(default_factory=dict)
-    #: The one-time import of this browser's existing localStorage: applies only while no store
-    #: exists, and otherwise answers the existing store untouched.
+    #: This browser's first contact with the store generation: adds only the keys the store
+    #: lacks, never overwriting or deleting one.
     seed: bool = False
 
 
 @router.get("/api/ui-preferences")
 def get_ui_preferences() -> dict:
-    return ui_preferences.read_preferences()
+    try:
+        return ui_preferences.read_preferences()
+    except ui_preferences.PreferencesBusy as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.patch("/api/ui-preferences")

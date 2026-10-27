@@ -6,10 +6,14 @@
 // still reads and writes ITS OWN machine's file.
 //
 // On-disk contract, kept in lockstep with the Python writer:
-//   { "version": 1, "revision": <int>, "values": { <key>: <string> } }
+//   { "version": 1, "generation": <str>, "revision": <int>, "values": { <key>: <string> } }
 // A write merges per key under the `<store>.lock` directory lock (mkdir is
 // atomic on every OS and in Python), bumps `revision`, and lands by temp file +
-// rename. A null value deletes; a `seed` write applies only with no store yet.
+// rename. A null value deletes. A `seed` write (a client's first contact with a
+// generation) only adds the keys the store lacks. A write that finds no
+// readable store (missing, or corrupt and kept aside as `<store>.corrupt-<ms>`)
+// starts a new generation, which every window rejoins. Only a missing file
+// reads as no store: any other read failure refuses the write.
 import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -27,6 +31,8 @@ const WATCH_INTERVAL_MS = 1500
 
 export interface UiPreferencesSnapshot {
   exists: boolean
+  /** One store's lifetime; a replaced (deleted or corrupt) store gets a new one. */
+  generation?: string
   revision: number
   values: Record<string, string>
 }
@@ -38,6 +44,17 @@ export interface UiPreferencesWrite {
 
 export const uiPreferencesPath = (hermesHome: string) => path.join(hermesHome, UI_PREFERENCES_FILE)
 
+/** The store's directory for main's root home, through symlinks, as the Python
+ *  writer's `store_path()` resolves it: a symlinked root or profile directory
+ *  must not split the machine into two stores. */
+export function uiPreferencesRoot(hermesHome: string): string {
+  try {
+    return fs.realpathSync.native(hermesHome)
+  } catch {
+    return path.resolve(hermesHome)
+  }
+}
+
 const sanitize = (values: unknown): Record<string, string> =>
   values && typeof values === 'object' && !Array.isArray(values)
     ? Object.fromEntries(
@@ -45,31 +62,84 @@ const sanitize = (values: unknown): Record<string, string> =>
       )
     : {}
 
-/** Synchronous so the preload can hand the first paint a hydrated snapshot. */
-export function readUiPreferences(file: string): UiPreferencesSnapshot {
+interface StoreRead {
+  corrupt: boolean
+  snapshot: UiPreferencesSnapshot
+}
+
+function readStore(file: string): StoreRead {
   let raw: string
 
   try {
     raw = fs.readFileSync(file, 'utf8')
-  } catch {
-    return { exists: false, revision: 0, values: {} }
+  } catch (error) {
+    // Only a missing file is no store. EACCES, EBUSY, EMFILE… say nothing about
+    // the content, and a write merging over them would drop every key.
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { corrupt: false, snapshot: { exists: false, revision: 0, values: {} } }
+    }
+
+    throw new Error(`preferences store is unreadable: ${(error as Error).message}`)
   }
 
-  let doc: { revision?: unknown; values?: unknown } = {}
+  let doc: unknown = null
 
   try {
-    const parsed = JSON.parse(raw.replace(/^\uFEFF/, '')) as unknown
-
-    doc = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+    doc = JSON.parse(raw.replace(/^\uFEFF/, '')) as unknown
   } catch {
-    // A corrupt file reads as an empty existing store; the next write replaces it whole.
+    // Corrupt: no store, so clients re-import into a fresh generation.
   }
+
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) {
+    return { corrupt: true, snapshot: { exists: false, revision: 0, values: {} } }
+  }
+
+  const { generation, revision, values } = doc as { generation?: unknown; revision?: unknown; values?: unknown }
 
   return {
-    exists: true,
-    revision: Number.isInteger(doc.revision) ? (doc.revision as number) : 0,
-    values: sanitize(doc.values)
+    corrupt: false,
+    snapshot: {
+      exists: true,
+      generation: typeof generation === 'string' ? generation : '',
+      revision: Number.isInteger(revision) ? (revision as number) : 0,
+      values: sanitize(values)
+    }
   }
+}
+
+/** Synchronous so the preload can hand the first paint a hydrated snapshot.
+ *  Throws when the file exists but cannot be read. */
+export function readUiPreferences(file: string): UiPreferencesSnapshot {
+  return readStore(file).snapshot
+}
+
+/** For the paths that must never throw (the preload's first paint, the
+ *  watcher): an unreadable store is simply not known yet. */
+function tryReadUiPreferences(file: string): null | UiPreferencesSnapshot {
+  try {
+    return readUiPreferences(file)
+  } catch {
+    return null
+  }
+}
+
+function mergeValues(current: Record<string, string>, write: UiPreferencesWrite): Record<string, string> {
+  const values = { ...current }
+
+  for (const [key, value] of Object.entries(write.values)) {
+    if (write.seed) {
+      // A client's first contact: fill what the store lacks, never overwrite or delete.
+      if (value !== null && !(key in values)) {
+        values[key] = value
+      }
+    } else if (value === null) {
+      delete values[key]
+    } else {
+      values[key] = value
+    }
+  }
+
+  return values
 }
 
 /** The IPC payload, validated: anything else from a renderer is refused whole. */
@@ -182,21 +252,8 @@ export function writeUiPreferences(file: string, write: UiPreferencesWrite): Pro
     await fs.promises.mkdir(path.dirname(file), { recursive: true })
 
     return withStoreLock(file, async stillOurs => {
-      const current = readUiPreferences(file)
-
-      if (write.seed && current.exists) {
-        return current
-      }
-
-      const values = { ...current.values }
-
-      for (const [key, value] of Object.entries(write.values)) {
-        if (value === null) {
-          delete values[key]
-        } else {
-          values[key] = value
-        }
-      }
+      const { corrupt, snapshot: current } = readStore(file)
+      const values = mergeValues(current.values, write)
 
       const entries = Object.entries(values)
 
@@ -207,11 +264,12 @@ export function writeUiPreferences(file: string, write: UiPreferencesWrite): Pro
         throw new Error('preferences store is full')
       }
 
-      if (current.exists && JSON.stringify(values) === JSON.stringify(current.values)) {
+      if (JSON.stringify(values) === JSON.stringify(current.values) && (current.exists || entries.length === 0)) {
         return current
       }
 
       const revision = current.revision + 1
+      const generation = current.generation || randomBytes(8).toString('hex')
 
       if (!(await stillOurs())) {
         // Held past the stale limit and broken by another writer: replacing the
@@ -219,9 +277,14 @@ export function writeUiPreferences(file: string, write: UiPreferencesWrite): Pro
         throw new Error('preferences store is busy')
       }
 
-      await replaceAtomically(file, `${JSON.stringify({ version: 1, revision, values }, null, 2)}\n`)
+      if (corrupt) {
+        // Kept aside, never silently replaced: it may hold preferences worth recovering.
+        await fs.promises.copyFile(file, `${file}.corrupt-${Date.now()}`)
+      }
 
-      return { exists: true, revision, values }
+      await replaceAtomically(file, `${JSON.stringify({ version: 1, generation, revision, values }, null, 2)}\n`)
+
+      return { exists: true, generation, revision, values }
     })
   })
 
@@ -249,18 +312,24 @@ export interface UiPreferencesIpcDeps {
  * a cheap stat poll), is pushed to every window so open ones follow live.
  */
 export function registerUiPreferencesIpc({ ipcMain, hermesHome, broadcast }: UiPreferencesIpcDeps): () => void {
-  const file = uiPreferencesPath(hermesHome)
-  let lastRevision = readUiPreferences(file).revision
+  const file = uiPreferencesPath(uiPreferencesRoot(hermesHome))
 
-  const publish = (snapshot: UiPreferencesSnapshot) => {
-    if (snapshot.revision !== lastRevision) {
-      lastRevision = snapshot.revision
+  const stamp = (snapshot: null | UiPreferencesSnapshot) =>
+    snapshot ? `${snapshot.generation ?? ''}:${snapshot.revision}:${snapshot.exists}` : null
+
+  let last = stamp(tryReadUiPreferences(file))
+
+  const publish = (snapshot: null | UiPreferencesSnapshot) => {
+    const next = stamp(snapshot)
+
+    if (snapshot && next !== last) {
+      last = next
       broadcast(snapshot)
     }
   }
 
   ipcMain.on('hermes:ui-preferences:snapshot', event => {
-    event.returnValue = readUiPreferences(file)
+    event.returnValue = tryReadUiPreferences(file)
   })
   ipcMain.handle('hermes:ui-preferences:read', () => readUiPreferences(file))
   ipcMain.handle('hermes:ui-preferences:write', async (_event, payload) => {
@@ -271,7 +340,7 @@ export function registerUiPreferencesIpc({ ipcMain, hermesHome, broadcast }: UiP
     return snapshot
   })
 
-  const onStat = () => publish(readUiPreferences(file))
+  const onStat = () => publish(tryReadUiPreferences(file))
 
   fs.watchFile(file, { interval: WATCH_INTERVAL_MS, persistent: false }, onStat)
 

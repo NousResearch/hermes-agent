@@ -8,7 +8,7 @@ import { promisify } from 'node:util'
 import { afterEach, test } from 'vitest'
 
 import { resolveDesktopHermesHome } from './data-paths'
-import { readUiPreferences, uiPreferencesPath, writeUiPreferences } from './ui-preferences'
+import { readUiPreferences, uiPreferencesPath, uiPreferencesRoot, writeUiPreferences } from './ui-preferences'
 
 // Native Desktop (this module) and the Webapp's Python server must land on ONE
 // file and merge into it without losing each other's keys (#145213).
@@ -35,13 +35,17 @@ function pythonEnv(home: string, hermesHome: string): NodeJS.ProcessEnv {
 
 const PY_PATH = 'from hermes_cli.ui_preferences import store_path; print(store_path())'
 
+/** The file main's IPC registers for this HERMES_HOME (registerUiPreferencesIpc). */
+const electronStorePath = (home: string, hermesHome: string) =>
+  uiPreferencesPath(uiPreferencesRoot(resolveDesktopHermesHome({ env: { HERMES_HOME: hermesHome }, home })))
+
 test('native Desktop and the Webapp server resolve the same store from a profile home', () => {
   const home = scratchHome()
   const root = path.join(home, 'custom-root')
   const profileHome = path.join(root, 'profiles', 'coder')
   fs.mkdirSync(profileHome, { recursive: true })
 
-  const electronFile = uiPreferencesPath(resolveDesktopHermesHome({ env: { HERMES_HOME: profileHome }, home }))
+  const electronFile = electronStorePath(home, profileHome)
 
   const pythonFile = execFileSync(python, ['-c', PY_PATH], {
     cwd: repo,
@@ -49,16 +53,38 @@ test('native Desktop and the Webapp server resolve the same store from a profile
     env: pythonEnv(home, profileHome)
   }).trim()
 
-  assert.equal(electronFile, path.join(root, 'ui-preferences.json'))
+  assert.equal(electronFile, path.join(fs.realpathSync(root), 'ui-preferences.json'))
   assert.equal(pythonFile, electronFile)
 })
+
+test.skipIf(process.platform === 'win32')(
+  'a symlinked profile directory still resolves its root, the same store on both sides',
+  () => {
+    const home = scratchHome()
+    const root = path.join(home, '.hermes')
+    const elsewhere = path.join(home, 'elsewhere', 'coder')
+    fs.mkdirSync(path.join(root, 'profiles'), { recursive: true })
+    fs.mkdirSync(elsewhere, { recursive: true })
+    fs.symlinkSync(elsewhere, path.join(root, 'profiles', 'coder'))
+    const profileHome = path.join(root, 'profiles', 'coder')
+
+    const pythonFile = execFileSync(python, ['-c', PY_PATH], {
+      cwd: repo,
+      encoding: 'utf8',
+      env: pythonEnv(home, profileHome)
+    }).trim()
+
+    assert.equal(electronStorePath(home, profileHome), path.join(fs.realpathSync(root), 'ui-preferences.json'))
+    assert.equal(pythonFile, electronStorePath(home, profileHome))
+  }
+)
 
 test('a custom home inside the default home resolves the same store on both sides', () => {
   const home = scratchHome()
   const sandbox = path.join(home, '.hermes', 'sandbox')
   fs.mkdirSync(sandbox, { recursive: true })
 
-  const electronFile = uiPreferencesPath(resolveDesktopHermesHome({ env: { HERMES_HOME: sandbox }, home }))
+  const electronFile = electronStorePath(home, sandbox)
 
   const pythonFile = execFileSync(python, ['-c', PY_PATH], {
     cwd: repo,
@@ -66,7 +92,7 @@ test('a custom home inside the default home resolves the same store on both side
     env: pythonEnv(home, sandbox)
   }).trim()
 
-  assert.equal(electronFile, path.join(sandbox, 'ui-preferences.json'))
+  assert.equal(electronFile, path.join(fs.realpathSync(sandbox), 'ui-preferences.json'))
   assert.equal(fs.realpathSync(path.dirname(pythonFile)), fs.realpathSync(path.dirname(electronFile)))
 })
 
@@ -103,13 +129,46 @@ for n in range(25):
   assert.equal(fs.existsSync(`${file}.lock`), false)
 })
 
-test('the one-time localStorage import never overwrites a store that exists', async () => {
+test('a client’s localStorage import only adds the keys a store lacks', async () => {
   const root = scratchHome()
   const file = uiPreferencesPath(root)
 
   await writeUiPreferences(file, { values: { 'hermes-desktop-mode-v1': 'dark' } })
-  const seeded = await writeUiPreferences(file, { seed: true, values: { 'hermes-desktop-mode-v1': 'light' } })
 
-  assert.deepEqual(seeded, { exists: true, revision: 1, values: { 'hermes-desktop-mode-v1': 'dark' } })
-  assert.deepEqual(readUiPreferences(file).values, { 'hermes-desktop-mode-v1': 'dark' })
+  const seeded = await writeUiPreferences(file, {
+    seed: true,
+    values: { 'hermes-desktop-mode-v1': 'light', 'hermes-desktop-theme-v2': 'nous' }
+  })
+
+  assert.deepEqual(seeded.values, { 'hermes-desktop-mode-v1': 'dark', 'hermes-desktop-theme-v2': 'nous' })
+  assert.deepEqual(readUiPreferences(file).values, seeded.values)
 })
+
+// Only a missing file is "no store": merging over a store that exists but
+// cannot be read (EACCES, a Windows AV lock, EMFILE) dropped every other key.
+test.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+  'neither writer merges over a store it cannot read',
+  async () => {
+    const home = scratchHome()
+    const file = uiPreferencesPath(home)
+    await writeUiPreferences(file, { values: { 'hermes-desktop-theme-v2': 'nous', 'hermes.desktop.keybinds': '{}' } })
+    const before = fs.readFileSync(file, 'utf8')
+    fs.chmodSync(file, 0)
+
+    try {
+      await assert.rejects(writeUiPreferences(file, { values: { 'hermes-desktop-mode-v1': 'dark' } }), /unreadable/)
+
+      const pythonWrite = promisify(execFile)(
+        python,
+        ['-c', 'from hermes_cli.ui_preferences import write_preferences as w; w({"hermes-desktop-mode-v1": "dark"})'],
+        { cwd: repo, env: pythonEnv(home, home) }
+      )
+
+      await assert.rejects(pythonWrite, /PreferencesBusy: preferences store is unreadable/)
+    } finally {
+      fs.chmodSync(file, 0o600)
+    }
+
+    assert.equal(fs.readFileSync(file, 'utf8'), before)
+  }
+)

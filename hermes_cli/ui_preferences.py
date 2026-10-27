@@ -11,7 +11,13 @@ Both writers share the on-disk contract, so keep the two in lockstep:
 * document ``{"version": 1, "revision": <int>, "values": {<key>: <string>}}``;
 * a write merges per key under the ``<store>.lock`` directory lock (``mkdir`` is atomic on every
   OS and in Node), bumps ``revision`` and lands by temp file + rename; a ``None`` value deletes;
-* a ``seed`` write (the one-time localStorage import) applies only when no document exists.
+* ``generation`` names one store's lifetime: a write that finds no readable store (missing, or
+  corrupt and kept aside as ``<store>.corrupt-<ms>``) starts a new one, and every window rejoins it
+  (re-imports its own values, then follows it) whatever its revision high-water mark was;
+* a ``seed`` write (a client's first contact with a generation) only ADDS the keys the store lacks,
+  so the client that has data fills a store an empty client created, and nothing is overwritten;
+* only a missing file reads as "no store": any other read failure refuses the write
+  (:class:`PreferencesBusy`) instead of merging over nothing.
 
 Values are opaque strings the renderer already kept in localStorage. Only keys under the Desktop
 prefixes are accepted; the renderer's allowlist decides which of those are preferences and keeps
@@ -20,15 +26,17 @@ credentials, grants and per-window state out.
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
+import shutil
 import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Iterator, Mapping, Optional
 
-from utils import atomic_json_write, read_json_or_empty
+from utils import atomic_json_write
 
 STORE_NAME = "ui-preferences.json"
 KEY_PREFIXES = ("hermes.desktop.", "hermes-desktop-")
@@ -53,14 +61,16 @@ class PreferencesBusy(RuntimeError):
 
 def store_path(root: Optional[Path] = None) -> Path:
     """The machine's preferences file, resolved by the same rule native Desktop applies to its
-    ``HERMES_HOME`` (``resolveDesktopHermesHome``): a profile home (``<root>/profiles/<name>``)
-    names its root, any other home is its own root. Every profile one process serves maps to the
-    same root, so this read is profile-independent by design (not a launch-profile leak)."""
+    ``HERMES_HOME`` (``resolveDesktopHermesHome`` + ``uiPreferencesRoot``): a profile home
+    (``<root>/profiles/<name>``, judged on the path as given, so a symlinked profile directory
+    still names its root) names its root, any other home is its own root, and that root is then
+    resolved through symlinks on both sides. Every profile one process serves maps to the same
+    root, so this read is profile-independent by design (not a launch-profile leak)."""
     if root is None:
         from hermes_constants import get_hermes_home
 
-        home = Path(get_hermes_home()).resolve()
-        root = home.parent.parent if home.parent.name.lower() == "profiles" else home
+        home = Path(os.path.abspath(get_hermes_home()))
+        root = (home.parent.parent if home.parent.name.lower() == "profiles" else home).resolve()
     return Path(root) / STORE_NAME
 
 
@@ -70,20 +80,40 @@ def _sanitize(values: object) -> dict[str, str]:
     return {k: v for k, v in values.items() if isinstance(k, str) and isinstance(v, str)}
 
 
-def _snapshot(path: Path) -> dict:
-    exists = path.is_file()
-    doc = read_json_or_empty(path) if exists else {}
+_MISSING = {"exists": False, "revision": 0, "values": {}}
+
+
+def _read(path: Path) -> tuple[dict, bool]:
+    """``(snapshot, corrupt)``. A missing file is no store; an unparseable one is no store too
+    (``corrupt``), so clients re-import into a fresh generation. Any other read failure (EACCES,
+    EBUSY, EMFILE…) raises :class:`PreferencesBusy`: it says nothing about the content, and
+    merging over it would drop every key."""
+    try:
+        raw = path.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        return dict(_MISSING, values={}), False
+    except OSError as exc:
+        raise PreferencesBusy(f"preferences store is unreadable: {exc}") from exc
+    try:
+        doc = json.loads(raw)
+    except ValueError:
+        doc = None
+    if not isinstance(doc, dict):
+        return dict(_MISSING, values={}), True
     revision = doc.get("revision")
+    generation = doc.get("generation")
     return {
-        "exists": exists,
+        "exists": True,
         "revision": revision if isinstance(revision, int) else 0,
         "values": _sanitize(doc.get("values")),
-    }
+        "generation": generation if isinstance(generation, str) else "",
+    }, False
 
 
 def read_preferences(path: Optional[Path] = None) -> dict:
-    """``{"exists", "revision", "values"}`` for the store at *path* (the machine's by default)."""
-    return _snapshot(path or store_path())
+    """``{"exists", "revision", "values"[, "generation"]}`` for the store at *path* (the
+    machine's by default). Raises :class:`PreferencesBusy` when the file exists but cannot be read."""
+    return _read(path or store_path())[0]
 
 
 def _validate(changes: Mapping[str, Optional[str]]) -> None:
@@ -157,34 +187,47 @@ def _store_lock(path: Path) -> Iterator[Callable[[], bool]]:
             _release(lock_dir, token)
 
 
+def _merge(current: Mapping[str, str], changes: Mapping[str, Optional[str]], seed: bool) -> dict[str, str]:
+    values = dict(current)
+    for key, value in changes.items():
+        if seed:
+            # A client's first contact: fill what the store lacks, never overwrite or delete.
+            if value is not None:
+                values.setdefault(key, value)
+        elif value is None:
+            values.pop(key, None)
+        else:
+            values[key] = value
+    return values
+
+
 def write_preferences(changes: Mapping[str, Optional[str]], *, seed: bool = False,
                       path: Optional[Path] = None) -> dict:
     """Merge *changes* per key (``None`` deletes) and return the resulting snapshot.
 
-    ``seed=True`` is the one-time import of a window's existing localStorage: it writes only when
-    the store does not exist yet and otherwise returns the existing store untouched.
+    ``seed=True`` is a client's first contact with this store generation: it only adds the keys
+    the store lacks (and creates no store from nothing), so a client that has data fills a store
+    an empty client created and no client's values are overwritten or deleted.
     """
     _validate(changes)
     path = path or store_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     with _store_lock(path) as still_ours:
-        current = _snapshot(path)
-        if seed and current["exists"]:
-            return current
-        values = dict(current["values"])
-        for key, value in changes.items():
-            if value is None:
-                values.pop(key, None)
-            else:
-                values[key] = value
+        current, corrupt = _read(path)
+        values = _merge(current["values"], changes, seed)
         if len(values) > MAX_KEYS or sum(len(k) + len(v) for k, v in values.items()) > MAX_TOTAL_CHARS:
             raise PreferencesError("preferences store is full")
-        if current["exists"] and values == current["values"]:
+        if values == current["values"] and (current["exists"] or not values):
             return current
         revision = current["revision"] + 1
+        generation = current.get("generation") or secrets.token_hex(8)
         if not still_ours():
             # Held past the stale limit and broken by another writer: replacing the file now
             # could drop the keys that writer merged meanwhile.
             raise PreferencesBusy("preferences store lock was taken over")
-        atomic_json_write(path, {"version": 1, "revision": revision, "values": values}, mode=0o600)
-    return {"exists": True, "revision": revision, "values": values}
+        if corrupt:
+            # Kept aside, never silently replaced: it may hold preferences worth recovering.
+            shutil.copy2(path, path.with_name(f"{path.name}.corrupt-{int(time.time() * 1000)}"))
+        atomic_json_write(path, {"version": 1, "generation": generation, "revision": revision,
+                                 "values": values}, mode=0o600)
+    return {"exists": True, "revision": revision, "values": values, "generation": generation}

@@ -82,6 +82,10 @@ declare global {
       // remote cache was dropped.
       revalidateConnection: () => Promise<{ ok: boolean; rebuilt: boolean }>
       getGatewayWsUrl: (profile?: null | string) => Promise<GatewayWsUrlResult>
+      // Browser host only: before a pick routes `profile`, re-read the served
+      // set when its cached answer does not serve that profile. Bounded, and
+      // never rejects: on a timeout or failure the cached set stands.
+      refreshServedProfile?: (profile: string) => Promise<void>
       // Open (or focus) a standalone OS window for a single chat session so
       // the user can work with multiple chats side by side. Returns ok:false
       // with an error code when the sessionId is empty/invalid. `watch` opens
@@ -350,6 +354,8 @@ declare global {
         connectionId?: null | string
         path: string
         profile?: null | string
+        /** The chat the clip belongs to: its `/workspace` is that session's sandbox. */
+        sessionId?: string
       }) => Promise<string>
       saveImageFromUrl: (url: string) => Promise<boolean>
       /** Edit verb against the window's focused element (the custom context
@@ -1293,6 +1299,9 @@ export interface DesktopRosterAgent {
   profile: string
   targetProfile?: string
   handle: string
+  // False when this source lists the profile but does not serve it.
+  // Absent means the source's own reachable flag.
+  reachable?: boolean
 }
 
 export interface DesktopAgentRoster {

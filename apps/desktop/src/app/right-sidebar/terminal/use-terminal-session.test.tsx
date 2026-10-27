@@ -94,6 +94,8 @@ class Socket {
   static OPEN = 1
   static instances: Socket[] = []
   static persistent = false
+  // Set: every new socket is closed with this instead of answering.
+  static refusal: [number, string] | null = null
   url: URL
   sent: string[] = []
   readyState = 1
@@ -103,6 +105,12 @@ class Socket {
     this.url = new URL(url)
     Socket.instances.push(this)
     queueMicrotask(() => {
+      if (Socket.refusal) {
+        this.close(...Socket.refusal)
+
+        return
+      }
+
       const metadata = Socket.persistent
         ? { shell: 'fish', cwd: '/work', terminalId: this.url.searchParams.get('attach') || `shell-${Socket.instances.length}`, closed: this.url.searchParams.get('action') === 'close' }
         : { shell: 'fish' }
@@ -169,6 +177,7 @@ afterEach(() => {
   $terminals.set([])
   Socket.instances = []
   Socket.persistent = false
+  Socket.refusal = null
   emulator.output = ''
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
@@ -297,6 +306,38 @@ it('replays server history once, suppresses parser replies, and detaches on remo
   act(() => emulator.input('\r'))
   await waitFor(() => expect(screen.getByText('open')).toBeTruthy())
   expect(Socket.instances[2].url.searchParams.has('attach')).toBe(false)
+})
+
+// Typing `exit` ends the host shell: the tab closes as it does in native Desktop, instead of
+// staying open as an expired terminal.
+it('closes a persistent browser tab when its host shell exits', async () => {
+  seedWebappSession('test-token')
+  Socket.persistent = true
+  vi.stubGlobal('WebSocket', Socket)
+  installBrowserDesktopBridge()
+  const id = createTerminal('/work')
+  render(<Harness id={id} />)
+  await waitFor(() => expect(screen.getByText('open')).toBeTruthy())
+  act(() => Socket.instances[0].close(4410, 'Process exited'))
+  expect($terminals.get().some(tab => tab.id === id)).toBe(false)
+  expect(emulator.output).not.toContain('Press Enter to create a new shell')
+})
+
+// The shell exited while no view was attached (`exit`, then the tab was hidden or the page reloaded).
+it('closes a persistent browser tab whose shell exited while it was detached', async () => {
+  seedWebappSession('test-token')
+  Socket.persistent = true
+  vi.stubGlobal('WebSocket', Socket)
+  installBrowserDesktopBridge()
+  const id = createTerminal('/work')
+  const firstView = render(<Harness id={id} />)
+  await waitFor(() => expect(screen.getByText('open')).toBeTruthy())
+  firstView.unmount()
+  Socket.refusal = [4410, 'Process exited']
+  render(<Harness id={id} />)
+  await waitFor(() => expect($terminals.get().some(tab => tab.id === id)).toBe(false))
+  expect(Socket.instances[1].url.searchParams.get('attach')).toBe('shell-1')
+  expect(emulator.output).not.toContain('Press Enter to create a new shell')
 })
 
 it('close others and close all terminate mounted and unmounted persisted shells', async () => {

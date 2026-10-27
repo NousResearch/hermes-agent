@@ -8,6 +8,7 @@ from datetime import datetime
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
 
+from agent.i18n import t
 from hermes_cli.config import get_hermes_home
 
 from .config import Platform, GatewayConfig, PlatformConfig
@@ -253,7 +254,7 @@ class DeliveryRouter:
         # The footer needs a valid path: if the best-effort save failed, retry
         # (a failure now is a real delivery problem and propagates).
         saved_path = saved_path or self._save_full_output(content, job_id)
-        footer = f"\n\n... [truncated, full output saved to {saved_path}]"
+        footer = t("gateway.cron.output_truncated", path=saved_path)
         logger.info("Cron output truncated (%d chars) — full output: %s", len(content), saved_path)
         return content[:max(0, MAX_PLATFORM_OUTPUT - len(footer))] + footer
 

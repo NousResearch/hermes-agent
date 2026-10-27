@@ -530,6 +530,28 @@ class TestNormalizeConverseStreamEvents:
         assert tc[0].function.name == "read_file"
         assert json.loads(tc[0].function.arguments) == {"path": "/tmp/f"}
 
+    def test_unparseable_streamed_tool_input_does_not_become_empty_arguments(self):
+        """Streamed toolUse input that is not valid JSON (cut off, or stopReason malformed_tool_use) must
+        reach the loop as invalid arguments; decoded to ``{}`` it passed validation and the tool ran with
+        no arguments. The replay sidecar still carries a JSON object, which Converse requires."""
+        from agent.bedrock_adapter import normalize_converse_stream_events
+        events = {"stream": [
+            {"messageStart": {"role": "assistant"}},
+            {"contentBlockStart": {"contentBlockIndex": 0, "start": {
+                "toolUse": {"toolUseId": "call_1", "name": "write_file"},
+            }}},
+            {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {
+                "toolUse": {"input": '{"path": "/tmp/f", "content": "abc'},
+            }}},
+            {"contentBlockStop": {"contentBlockIndex": 0}},
+            {"messageStop": {"stopReason": "malformed_tool_use"}},
+            {"metadata": {"usage": {"inputTokens": 10, "outputTokens": 8}}},
+        ]}
+        msg = normalize_converse_stream_events(events).choices[0].message
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(msg.tool_calls[0].function.arguments)
+        assert isinstance(msg.bedrock_content_blocks[0]["toolUse"]["input"], dict)
+
     # Real ConverseStream wire shape (captured from global.anthropic.claude-opus-5): a text block gets NO
     # contentBlockStart, only deltas stamped contentBlockIndex=0; the toolUse block then starts at index 1.
     _LIVE_TEXT_THEN_TOOL_EVENTS = [

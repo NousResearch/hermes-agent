@@ -105,6 +105,16 @@ def _cmd_status(args) -> int:
     from agent import curator
     from tools import skill_usage
     _print_curator_config(curator)
+    state = curator.load_state()
+    llm_failure = state.get("last_run_llm_failure_reason")
+    if llm_failure:
+        # A pass whose review turn was cut off still advances last_run_at, so this flag is
+        # the only durable signal that the skills were left unprocessed (#137967).
+        report = state.get("last_report_path") or "the latest logs/curator REPORT.md"
+        print(
+            f"\n⚠ last review pass ended early ({llm_failure}) — the skill candidates "
+            f"were not fully reviewed; see {report}"
+        )
     rows = skill_usage.curated_report()
     if not rows:
         print("\nno curator-managed skills")

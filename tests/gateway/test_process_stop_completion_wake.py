@@ -115,7 +115,10 @@ async def test_completion_cannot_wake_after_native_scope_or_result_changes(stopp
     await _finish_original_reader(state)
     assert scheduled == [] and state.executed == []
     assert process_stop_pending(state.db, 's') is not None
-    assert all(value[2] is None for value in state.own._completion_observers.values())
+    if invalidated == 'result':
+        assert state.own._result_persisted_generation == -1
+    else:
+        assert all(value[2] is None for value in state.own._completion_observers.values())
 
 
 @pytest.mark.asyncio
@@ -172,6 +175,33 @@ async def test_completion_wake_keeps_its_profile_when_the_loop_serves_another(st
         assert not (other / 'state.db').exists()
     finally:
         reset_hermes_home_override(token)
+
+
+@pytest.mark.asyncio
+async def test_result_success_posts_wake_while_caller_holds_registry_lock(stopped_job, monkeypatch):
+    import signal
+    from tools import process_registry_results as results
+    state = stopped_job
+    write = results.atomic_json_write
+    def refused(*args, **kwargs):
+        raise PermissionError('finite final-result refusal')
+    monkeypatch.setattr(results, 'atomic_json_write', refused)
+    await _finish_original_reader(state)
+    assert state.executed == [] and state.own._result_persisted_generation == -1
+    monkeypatch.setattr(results, 'atomic_json_write', write)
+    original = signal.getsignal(signal.SIGALRM)
+    def lock_timeout(*args):
+        raise RuntimeError('result success reacquired its caller registry lock')
+    signal.signal(signal.SIGALRM, lock_timeout)
+    signal.alarm(5)
+    try:
+        with state.registry._lock:  # Real non-reentrant native lock, not a fake RLock.
+            assert results.save_completed_result(state.own)
+            assert state.executed == []  # The concrete observer only posts to the loop.
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, original)
+    await async_wait_until(lambda: state.executed == ['only-human'], timeout=5)
 
 
 @pytest.mark.asyncio

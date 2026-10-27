@@ -97,6 +97,9 @@ def save_completed_result(session) -> bool:
                     setattr(session, field, record[field])
             session.completion_consumed |= record['completion_consumed']
             session._result_persisted_generation = record['ownership_generation']
+        from tools.process_registry_handoff import settle_persisted_scope, notify_completion_observers
+        settle_persisted_scope(session, record)
+        notify_completion_observers(session)  # Post-only observers; a caller may hold its registry lock.
         return True
     except (OSError, ValueError, TypeError):
         # Preserve live delivery on disk failure, but never silently claim durability.

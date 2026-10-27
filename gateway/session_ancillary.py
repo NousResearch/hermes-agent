@@ -86,9 +86,10 @@ def _observe_process_stop_completion(authority, ref, agent=None):
     if token is None or live is None:
         return
     try:
-        registry, scopes = _process_targets(authority, ref, agent, subagent_records(agent), select=lambda p:
+        registry, scopes = _process_targets(authority, ref, agent, (), select=lambda p:
             not p.exited or p._scope_stop_pending or p.systemd_unit
-            or p._result_persisted_generation != p.ownership_generation)
+            or p._result_persisted_generation != p.ownership_generation
+            or (p._reader_thread is not None and not p._completion_event.is_set()))
         generation = authority._handle(ref).execution_generation
     except (RuntimeStoreError, OSError):
         return  # The durable fence remains; a later native control can recover.
@@ -462,7 +463,8 @@ async def interrupt_processes(authority, ref, agent):
     # Turn Stop leaves detached delegations running; their raw owners are not this agent's.
     registry, targets = _process_targets(authority, ref, agent, (),
         select=lambda p: not p.exited or p._scope_stop_pending or p.systemd_unit
-        or (p.notify_on_complete and not p.completion_consumed))
+        or (p.notify_on_complete and not p.completion_consumed)
+        or (p._reader_thread is not None and not p._completion_event.is_set()))
     if targets:
         # Stop cancels these autonomous notices even if termination is refused or a reader
         # is still publishing its exit. Output remains in the native process result.

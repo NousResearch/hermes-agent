@@ -181,8 +181,8 @@ def observe_completion(registry, session_id, expected, key, observation, callbac
             complete = session._completion_event.is_set()
             if not complete and session._reader_thread is None:
                 return False  # No original publisher can deliver a future completion.
-            session._completion_observers[key] = (observation, expected, None if complete else callback)
             ready = complete and session._result_persisted_generation == session.ownership_generation
+            session._completion_observers[key] = (observation, expected, None if ready else callback)
     if ready:
         callback()
     return ready or not complete
@@ -195,10 +195,24 @@ def notify_completion_observers(session):
             return
         current = ownership_identity(session)
         ready = session._result_persisted_generation == session.ownership_generation
+        if not ready:
+            return  # An existing result-write retry supplies the remaining durable evidence.
         observers = list(session._completion_observers.items())
         for key, (observation, expected, _callback) in observers:
             session._completion_observers[key] = (observation, expected, None)
     for _key, (_observation, expected, callback) in observers:
         if ready and expected == current and callback is not None:
-            callback()  # Native consumers post to their loop; no locks or I/O held here.
+            callback()  # Post only: the caller may still hold its registry lock.
+
+
+def settle_persisted_scope(session, record):
+    """A same-owner durable original result may retire already-quiescent native evidence."""
+    from tools.process_registry_job import job_quiescent
+    if not session._completion_event.is_set() or not job_quiescent(session):
+        return
+    expected = tuple(record.get(field) for field in (*OWNERSHIP_FIELDS, 'pid', 'host_start_time'))
+    with session._lock:
+        if (session.pid_scope == 'host' and not session.wsl_chain and not session.systemd_unit
+                and ownership_identity(session) == expected):
+            session._scope_stop_pending = False  # Logical Stop remains in its native owner store.
 

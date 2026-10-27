@@ -103,3 +103,64 @@ async def test_result_write_refusal_preserves_stop_output_and_retry(tmp_path, mo
         refusing = False
         await asyncio.to_thread(original.kill_process, neighbor.id)
         db.close()
+
+
+@pytest.mark.asyncio
+async def test_a_saved_partial_snapshot_cannot_stand_in_for_the_failed_final_result(tmp_path, monkeypatch):
+    import threading
+    from gateway.session_ancillary import process_stop_pending
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_state_runtime import RuntimeStoreError
+    from tools import process_registry as module
+    from tools import process_registry_results as results
+    from tests.waiting import async_wait_until
+    db, authority = _authority(tmp_path, monkeypatch)
+    registry = module.ProcessRegistry()
+    monkeypatch.setattr(module, 'process_registry', registry)
+    entered, release = threading.Event(), threading.Event()
+    ingest = registry._ingest_output
+    def pause(session, text, **kwargs):
+        if 'final original output' in text:
+            entered.set()
+            assert release.wait(20)
+        ingest(session, text, **kwargs)
+    monkeypatch.setattr(registry, '_ingest_output', pause)
+    tokens = set_session_vars(session_id='s', session_key='route')
+    try:
+        own = registry.spawn_local('exec ' + shlex.join([sys.executable, '-c',
+            'print("final original output", flush=True)']), cwd=str(tmp_path), task_id='worker', session_key='route')
+    finally:
+        clear_session_vars(tokens)
+    executed = []
+    async def execute(owner, ref, row):
+        assert own.output_buffer.count('final original output') == 1
+        executed.append(row['request_id'])
+        return 'continued'
+    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    write = results.atomic_json_write
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        await asyncio.to_thread(own.process.wait, 5)
+        registry.poll(own.id)  # Actual exit reconciliation while its original reader is held.
+        assert own.exited and not own._completion_event.is_set()
+        with pytest.raises(RuntimeStoreError, match='process_stop_unknown'):
+            await authority.interrupt(ACTOR, REF, 0)
+        await _submit(authority, 'pending-human')
+        await asyncio.wait_for(authority.sessions['s'].task, 10)
+        assert own._result_persisted_generation == 0  # An earlier partial snapshot really persisted.
+        def refuse_final(*args, **kwargs):
+            raise PermissionError('finite final original-result refusal')
+        monkeypatch.setattr(results, 'atomic_json_write', refuse_final)
+        release.set()
+        assert await asyncio.to_thread(own._completion_event.wait, 5)
+        assert own._result_persisted_generation == -1
+        assert executed == [] and process_stop_pending(db, 's')
+        monkeypatch.setattr(results, 'atomic_json_write', write)
+        assert results.save_completed_result(own)
+        await async_wait_until(lambda: executed == ['pending-human'] and authority.sessions['s'].task.done(), timeout=5)
+        assert process_stop_pending(db, 's') is None
+    finally:
+        release.set()
+        monkeypatch.setattr(results, 'atomic_json_write', write)
+        await asyncio.to_thread(own._completion_event.wait, 5)
+        db.close()

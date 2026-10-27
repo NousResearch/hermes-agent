@@ -9,6 +9,7 @@ from gateway.session_ancillary import process_stop_pending, record_process_stop
 from gateway.session_controls import AuthorityConnection
 from hermes_state_runtime import begin_runtime_epoch, list_session_admissions
 from tests.gateway.test_session_authority_cancel_settlement import ACTOR, REF, _authority, _submit
+from tests.waiting import async_wait_until
 
 
 def caller(authority, actor=ACTOR):
@@ -63,8 +64,13 @@ async def test_native_refusal_is_visible_and_successful_retry_runs_saved_followe
         assert process_stop_pending(db, 's') is not None
         monkeypatch.setattr(session_automation, 'withdraw_consumed_process_notices', withdraw)
         response = await stop(caller(authority))
-        assert 'result' in response and process_stop_pending(db, 's') is None
-        await asyncio.wait_for(authority.sessions['s'].task, 10)
+        if 'error' in response:
+            # The actual completion may already have resumed the saved human
+            # between this control's generation snapshot and its native CAS.
+            assert response['error']['data']['reason'] == 'stale_generation'
+            assert authority._handle(REF).execution_generation == 1
+        await async_wait_until(lambda: executed == ['saved-follower'] and authority.sessions['s'].task.done(), timeout=10)
+        assert process_stop_pending(db, 's') is None
         assert executed == ['saved-follower']
     finally:
         monkeypatch.setattr(registry, 'kill_process', kill)

@@ -1527,6 +1527,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 # checkpoint pending so native Stop cannot report settlement.
                 if not save_completed_result(session):
                     session._scope_stop_pending = True
+                    session._result_persisted_generation = -1
                 self._running.pop(session.id)
             self._finished[session.id] = session
         # Release the retained Popen/PTY handles now: otherwise every

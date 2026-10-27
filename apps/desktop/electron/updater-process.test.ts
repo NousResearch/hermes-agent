@@ -132,6 +132,34 @@ test('spawnUpdaterProcess preserves updater options off Windows', () => {
   assert.deepEqual(capturedOptions, { detached: true, stdio: 'ignore' })
 })
 
+test('spawnUpdaterProcess starts a POSIX updater inside its own user scope, setsid alone without one (#129366)', () => {
+  const calls: Array<{ args: string[]; command: string }> = []
+
+  const spawnProcess = (command: string, args: string[]) => {
+    calls.push({ args, command })
+
+    return { pid: 7, unref: () => {} }
+  }
+
+  const scope = ['/usr/bin/systemd-run', '--user', '--scope', '--quiet', '--collect', '--unit', 'u.scope', '--']
+
+  spawnUpdaterProcess('/bin/bash', ['posix.sh', '--desktop-pid', '1'], { detached: true, stdio: 'ignore' }, {
+    isWindows: false,
+    spawnProcess,
+    userScopePrefix: () => scope
+  })
+  spawnUpdaterProcess('/bin/bash', ['posix.sh'], { detached: true, stdio: 'ignore' }, {
+    isWindows: false,
+    spawnProcess,
+    userScopePrefix: () => null
+  })
+
+  assert.deepEqual(calls, [
+    { command: '/usr/bin/systemd-run', args: [...scope.slice(1), '/bin/bash', 'posix.sh', '--desktop-pid', '1'] },
+    { command: '/bin/bash', args: ['posix.sh'] }
+  ])
+})
+
 test('resolveStagedUpdaterBinary hands Windows the staged installer it finds', () => {
   const home = 'C:\\Users\\hermes\\AppData\\Local\\hermes'
   const staged = path.join(home, 'hermes-setup.exe')

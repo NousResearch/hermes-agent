@@ -601,6 +601,61 @@ export function repairMacUpdaterHelper(
 export interface SpawnUpdaterProcessDeps {
   isWindows?: boolean
   spawnProcess?: (command: string, args: string[], options: SpawnOptions) => UpdaterChild
+  /** `systemd-run --user --scope` argv prefix for a detached Linux spawn, or null (setsid only). */
+  userScopePrefix?: (options: SpawnOptions) => string[] | null
+}
+
+const SYSTEMD_RUN_CANDIDATES = ['/usr/bin/systemd-run', '/bin/systemd-run', '/run/current-system/sw/bin/systemd-run']
+
+let userScopeFlags: string[] | null | undefined
+
+/**
+ * Leave the Desktop's own cgroup, not just its process group. `detached` gives
+ * the hand-off its own session, but a Linux Desktop runs in a systemd scope
+ * (app-*.scope, a terminal's scope, or a `systemd-run --user --scope` launch),
+ * and stopping that scope signals every member however it was detached: a
+ * second Desktop instance's teardown or a session manager killed the updater
+ * mid-build with exit 143 (#129366). A transient user scope of its own makes
+ * the updater a sibling of the app under the user manager. The probe runs once
+ * per process; no reachable user manager (containers, no D-Bus) keeps setsid.
+ * `--expand-environment=no` keeps argv byte-identical where systemd supports it.
+ */
+export function systemdUserScopePrefix(options: SpawnOptions): string[] | null {
+  if (process.platform !== 'linux' || !options.detached) {
+    return null
+  }
+
+  const binary = SYSTEMD_RUN_CANDIDATES.find(candidate => existsSync(candidate))
+
+  if (!binary) {
+    return null
+  }
+
+  if (userScopeFlags === undefined) {
+    userScopeFlags = null
+
+    for (const flags of [['--expand-environment=no'], []]) {
+      const probe = spawnSync(binary, ['--user', '--scope', '--quiet', '--collect', ...flags, '--', '/bin/sh', '-c', 'exit 0'], {
+        env: options.env ?? process.env,
+        stdio: 'ignore',
+        timeout: 3000
+      })
+
+      if (probe.status === 0) {
+        userScopeFlags = flags
+
+        break
+      }
+    }
+  }
+
+  if (userScopeFlags === null) {
+    return null
+  }
+
+  const unit = `hermes-desktop-update-${process.pid}-${Date.now()}.scope`
+
+  return [binary, '--user', '--scope', '--quiet', '--collect', ...userScopeFlags, '--unit', unit, '--']
 }
 
 /**
@@ -616,10 +671,12 @@ export function spawnUpdaterProcess(
 ): UpdaterChild {
   const isWindows = deps.isWindows ?? process.platform === 'win32'
   const spawnOptions = hiddenWindowsChildOptions(options, isWindows) as SpawnOptions
+  // systemd-run --scope execs the command in place: same pid and process group,
+  // so killHandoffTree and the claim watch see the updater itself.
+  const scope = isWindows ? null : (deps.userScopePrefix ?? systemdUserScopePrefix)(spawnOptions)
+  const [command, ...args] = scope ? [...scope, updater, ...updaterArgs] : [updater, ...updaterArgs]
 
-  const child = deps.spawnProcess
-    ? deps.spawnProcess(updater, updaterArgs, spawnOptions)
-    : spawn(updater, updaterArgs, spawnOptions)
+  const child = deps.spawnProcess ? deps.spawnProcess(command, args, spawnOptions) : spawn(command, args, spawnOptions)
 
   child.unref()
 

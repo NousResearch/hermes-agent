@@ -125,6 +125,8 @@ apps/desktop/release/
 # stage-and-swap Desktop rebuild output (#86443); removed after the swap, but
 # a killed build must not leave the checkout dirty
 apps/desktop/.staging-*/
+# a verified rebuild parked until the running Desktop quits (main_desktop_pending)
+apps/desktop/.pending-release/
 *.tsbuildinfo
 
 # Web UI assets — synced from @nous-research/ui at build time via

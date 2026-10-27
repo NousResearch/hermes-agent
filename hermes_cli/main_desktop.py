@@ -147,6 +147,15 @@ def _packaged_desktop_current_for_head(desktop_dir: Path, project_root: Path) ->
     return not _desktop_build_needed(desktop_dir, project_root, source_mode=False)
 
 
+def _desktop_build_needed_unless_parked(desktop_dir: Path, project_root: Path, *, source_mode: bool) -> bool:
+    """``_desktop_build_needed`` for a launch holding the build lock, after first installing (or,
+    while the app still runs, keeping) an update parked for a running Desktop."""
+    from hermes_cli.main_desktop_pending import settle_pending_desktop_update
+    if not source_mode and settle_pending_desktop_update(desktop_dir, project_root):
+        return False
+    return _desktop_build_needed(desktop_dir, project_root, source_mode=source_mode)
+
+
 def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
     """Return the current platform's unpacked Electron app executable."""
     return _desktop_packaged_executable_in(desktop_dir / "release")
@@ -474,20 +483,13 @@ def _desktop_ancestor_in(desktop_dir: Path) -> Optional[int]:
     return None
 
 
-def _stop_desktop_processes_locking_build(desktop_dir: Path, *, also_posix: bool = False) -> list[int]:
-    """Terminate a running desktop app whose exe lives INSIDE this build's ``release`` tree.
-
-    Windows needs it everywhere: the exe lock makes the pack die with ``Access is denied``.
-    POSIX can rename a running app's files away, so the pack itself needs no stop — but a
-    renderer left alive through the stage-and-swap promotion keeps fetching its OLD hashed
-    chunks by path after the swap and dies on the next lazy import (#109643), so the swap
-    point passes ``also_posix=True``. Never raises; returns the PIDs asked to stop."""
-    if sys.platform != "win32" and not also_posix:
-        return []
+def _desktop_processes_from_build(desktop_dir: Path) -> list:
+    """Running processes whose exe lives INSIDE this build's ``release`` tree, sparing the
+    Desktop that drives this process and its helpers (see below). Never raises."""
     try:
         import psutil
         release_dir = (desktop_dir / "release").resolve()
-    except Exception:
+    except Exception:  # health: allow BLE001 -- moved from _stop_desktop_processes_locking_build: a scan never fails an update
         return []
     if not release_dir.is_dir():
         return []
@@ -514,7 +516,7 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path, *, also_posix: bool
     spared: set[int] = set()
     try:
         ancestors = list(psutil.Process(me).parents())
-    except Exception:
+    except Exception:  # health: allow BLE001 -- moved from _stop_desktop_processes_locking_build: a scan never fails an update
         ancestors = []
     for parent in ancestors:
         spared.add(parent.pid)
@@ -527,7 +529,7 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path, *, also_posix: bool
     victims = []
     try:
         proc_iter = psutil.process_iter(["pid", "exe"])
-    except Exception:
+    except Exception:  # health: allow BLE001 -- moved from _stop_desktop_processes_locking_build: a scan never fails an update
         return []
     for proc in proc_iter:
         try:
@@ -537,11 +539,25 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path, *, also_posix: bool
             if not exe or pid is None or pid == me or pid in spared:
                 continue
             exe_path = Path(exe).resolve()
-        except Exception:
+        except Exception:  # health: allow BLE001 -- moved from _stop_desktop_processes_locking_build: a scan never fails an update
             continue
         if release_dir in exe_path.parents:
             victims.append(proc)
+    return victims
 
+
+def _stop_desktop_processes_locking_build(desktop_dir: Path, *, also_posix: bool = False) -> list[int]:
+    """Terminate a running desktop app whose exe lives INSIDE this build's ``release`` tree.
+
+    Windows needs it everywhere: the exe lock makes the pack die with ``Access is denied``.
+    POSIX can rename a running app's files away, so the pack itself needs no stop — but a
+    renderer left alive through the stage-and-swap promotion keeps fetching its OLD hashed
+    chunks by path after the swap and dies on the next lazy import (#109643), so the swap
+    point passes ``also_posix=True``; a POSIX update parks its build instead of reaching it
+    while a Desktop runs (main_desktop_pending). Never raises; returns the PIDs asked to stop."""
+    if sys.platform != "win32" and not also_posix:
+        return []
+    victims = _desktop_processes_from_build(desktop_dir)
     stopped: list[int] = []
     for proc in victims:
         try:
@@ -552,6 +568,7 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path, *, also_posix: bool
     if stopped:
         # Wait for the handles (and thus the file locks) to actually release.
         with contextlib.suppress(Exception):
+            import psutil
             _, alive = psutil.wait_procs(victims, timeout=5)
             killed = []
             for proc in alive:
@@ -1371,8 +1388,9 @@ def _register_linux_desktop_entry(defer: bool = False):
 def _promote_staged_desktop_app(
     desktop_dir: Path, staging_dir: Path, *,
     integrity_check: Optional[Callable[[Path], Optional[str]]] = None,
-) -> Path:
-    """Sign and verify before swapping; the default integrity check is Windows PE validation."""
+) -> Optional[Path]:
+    """Sign and verify before swapping; the default integrity check is Windows PE validation.
+    None when a running POSIX Desktop made the swap wait for its quit (main_desktop_pending)."""
     staged_executable = _desktop_packaged_executable_in(staging_dir)
     # Locally-built apps are ad-hoc signed; make them relaunchable after an
     # in-place self-update. Signs the STAGED bundle so the live app is never
@@ -1403,6 +1421,9 @@ def _promote_staged_desktop_app(
             print(f"✗ The built {staged_executable.name} failed its integrity check: {error}\n"
                   f"    at: {staged_executable}")
         raise RuntimeError(f"Desktop build produced no launchable app. {_PREVIOUS_APP_KEPT}")
+    from hermes_cli.main_desktop_pending import defer_promotion_while_desktop_runs
+    if defer_promotion_while_desktop_runs(desktop_dir, staging_dir):
+        return None
     packaged_executable = _swap_staged_desktop_app(desktop_dir, staging_dir)
     if packaged_executable is None:
         print(f"✗ Could not install the rebuilt desktop app into {desktop_dir / 'release'}")
@@ -1701,7 +1722,7 @@ def cmd_gui(args: argparse.Namespace):
             sys.exit(2)
 
     needs_build = not skip_build and (
-        force_build or _desktop_build_needed(desktop_dir, PROJECT_ROOT, source_mode=source_mode)
+        force_build or _desktop_build_needed_unless_parked(desktop_dir, PROJECT_ROOT, source_mode=source_mode)
     )
     npm = None
     try:

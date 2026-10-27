@@ -63,7 +63,7 @@ function skipInput(product) {
     const parts = name.split('/')
     return (!name.startsWith('scripts/') && parts.some(part => generated.has(part)))
       || (product === 'tui' && (parts.includes('__tests__') || /\.(test|spec)(-d)?\.[cm]?[jt]sx?$/.test(name)))
-      || parts.some(part => part.startsWith('.dist-') || part.startsWith('.staging-') || part === '__pycache__')
+      || parts.some(part => part.startsWith('.dist-') || part.startsWith('.staging-') || part === '.pending-release' || part === '__pycache__')
       || name.endsWith('.tsbuildinfo') || name.endsWith('.pyc')
   }
 }

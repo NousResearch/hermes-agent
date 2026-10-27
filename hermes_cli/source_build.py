@@ -291,10 +291,13 @@ def _build_desktop_product(project_root: Path, env: dict, publish_stage) -> None
         build_lock = DesktopBuildLock(project_root)
         build_lock.acquire(wait=True)
         try:
-            build_prepared_desktop(
-                desktop_dir, source_mode=False,
-                npm=shutil.which("npm", path=env["PATH"]), env=env, icons=project_root,
-            )
+            from hermes_cli.main_desktop_pending import settle_pending_desktop_update
+
+            if not settle_pending_desktop_update(desktop_dir, project_root):
+                build_prepared_desktop(
+                    desktop_dir, source_mode=False,
+                    npm=shutil.which("npm", path=env["PATH"]), env=env, icons=project_root,
+                )
         finally:
             build_lock.release()
     # A current release/ can still sit beside a stale installed copy (an earlier

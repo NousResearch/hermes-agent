@@ -460,6 +460,9 @@ class SubagentLifecycleService:
             raise SubagentLifecycleError("metadata must be JSON-serializable.") from exc
         if metadata_bytes > _MAX_METADATA_BYTES:
             raise SubagentLifecycleError("metadata exceeds 8192 bytes.")
+        from tools.delegate_tool_toolsets import _parent_allows_delegation
+        if not _parent_allows_delegation(parent):
+            raise SubagentLifecycleError("delegate_task is not available in the parent agent's resolved toolset.")
         if not request.allowed_toolsets:
             return
         # Plugin and registry-alias toolsets count as known, as they do for delegate_task.

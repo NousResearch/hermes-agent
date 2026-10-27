@@ -34,6 +34,9 @@ def test_profile_serve_signature_follows_the_config_backend_version(tmp_path, mo
         def version(self, home):
             return self.version_now
 
+        def supports_file_tooling(self):
+            return False
+
     backend = _Backend()
     monkeypatch.setattr(config_backend, "get_config_backend", lambda: backend)
     before = profile_serve_signature(tmp_path)

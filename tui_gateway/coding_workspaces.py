@@ -293,8 +293,15 @@ def register_folder(pdb, conn, path: str):
     path = info["repoRoot"] or info["path"]
     project = pdb.project_for_path(conn, path)
     if project is None:
-        pid = pdb.create_project(conn, name=Path(path).name, folders=[path], primary_path=path)
-        project = pdb.get_project(conn, pid)
+        try:
+            pid = pdb.create_project(conn, name=Path(path).name, folders=[path], primary_path=path)
+        except ValueError:
+            # A concurrent registration of this folder committed first: use its project.
+            project = pdb.project_for_path(conn, path)
+            if project is None:
+                raise
+        else:
+            project = pdb.get_project(conn, pid)
     return project
 
 
@@ -302,8 +309,9 @@ def recent_projects(pdb, conn, db) -> list:
     """Projects the checkout picker can open, most recently used first.
 
     Read-only: a project whose folder is gone stays stored (an unmounted volume comes back) but
-    is not offered, since choosing it can only fail. Rows sharing one primary path collapse to
-    the oldest, the one ``project_for_path`` resolves. Projects with sessions (cwd in the folder,
+    is not offered, since choosing it can only fail. A project is offered only when it is the one
+    ``project_for_path`` resolves for its own folder, the same check ``prepare`` applies, so rows
+    sharing a folder collapse to the one Send accepts. Projects with sessions (cwd in the folder,
     worktrees under it included) come first, newest session first; the rest follow, newest first.
     Registration time never outranks use: a folder is often registered after its first chats.
     """
@@ -313,7 +321,9 @@ def recent_projects(pdb, conn, db) -> list:
     usable: dict = {}
     for project in pdb.list_projects(conn):
         if project.primary_path and key(project) not in usable and os.path.isdir(project.primary_path):
-            usable[key(project)] = project
+            owner = pdb.project_for_path(conn, project.primary_path)
+            if owner is not None and owner.id == project.id:
+                usable[key(project)] = project
     last_session: dict[str, float] = {}
     for row in db.distinct_session_cwds() if db is not None and usable else ():
         owner = pdb.project_for_path(conn, str(row.get("cwd") or ""))

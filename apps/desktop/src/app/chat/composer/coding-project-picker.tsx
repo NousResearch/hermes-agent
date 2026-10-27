@@ -51,11 +51,11 @@ export function CodingProjectPicker({ owner, path, disabled, onSelect, onBrowse 
   const needle = search.trim().toLocaleLowerCase()
   const selected = projects.find(p => p.primary_path === path)
 
-  // Unfiltered, the menu offers only the most recent few (plus the current choice);
-  // search reaches every project, and Browse anything else on disk.
-  const matches = needle
-    ? projects.filter(p => `${p.name} ${p.primary_path}`.toLocaleLowerCase().includes(needle))
-    : projects.filter((p, index) => index < RECENT_PROJECT_LIMIT || p === selected)
+  // The menu never grows with history: the few most recent matches (plus the current choice).
+  // Search narrows over every project, and Browse reaches anything else on disk.
+  const matches = (
+    needle ? projects.filter(p => `${p.name} ${p.primary_path}`.toLocaleLowerCase().includes(needle)) : projects
+  ).filter((p, index) => index < RECENT_PROJECT_LIMIT || p === selected)
 
   const label =
     selected?.name ??

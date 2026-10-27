@@ -251,13 +251,15 @@ def create_project(
         folder_paths.insert(0, primary)
     if primary is None and folder_paths:
         primary = folder_paths[0]
-    existing = find_by_primary_path(conn, primary) if primary and not allow_duplicate_path else None
-    if existing is not None:
-        raise ValueError(
-            f"folder already belongs to project '{existing.slug}' ({existing.id}); "
-            "switch to it instead of creating a duplicate"
-        )
+    # Check inside the write transaction: a check before it lets two concurrent creators (the
+    # Desktop picker and a Send, or two backends on one profile) both pass and both insert.
     with write_txn(conn):
+        existing = find_by_primary_path(conn, primary) if primary and not allow_duplicate_path else None
+        if existing is not None:
+            raise ValueError(
+                f"folder already belongs to project '{existing.slug}' ({existing.id}); "
+                "switch to it instead of creating a duplicate"
+            )
         conn.execute(
             "INSERT INTO projects (id, slug, name, description, icon, color, board_slug,  primary_path, created_at, archived) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
@@ -272,7 +274,9 @@ def create_project(
 
 
 def list_projects(conn: sqlite3.Connection, *, include_archived: bool = False) -> list[Project]:
-    sql = "SELECT * FROM projects" + ("" if include_archived else " WHERE archived = 0") + " ORDER BY created_at ASC"
+    # Insertion order breaks creation-second ties, so "the oldest" is one answer everywhere
+    # (``project_for_path`` uses the same order).
+    sql = "SELECT * FROM projects" + ("" if include_archived else " WHERE archived = 0") + " ORDER BY created_at ASC, rowid ASC"
     return [_load_project(conn, r) for r in conn.execute(sql).fetchall()]
 
 
@@ -476,11 +480,13 @@ def list_discovered_repos(conn: sqlite3.Connection) -> list[dict]:
 
 def project_for_path(conn: sqlite3.Connection, path: str, *, include_archived: bool = False) -> Optional[Project]:
     """Return the project owning ``path``: a folder owns it when equal or an ancestor, and the longest
-    folder wins so nested projects resolve to the innermost one."""
+    folder wins so nested projects resolve to the innermost one. Projects sharing that folder resolve
+    to the oldest, in ``list_projects`` order."""
     if not str(path or "").strip():
         return None
     target = _normalize_path(path)
-    sql = "SELECT pf.project_id AS pid, pf.path AS folder FROM project_folders pf JOIN projects p ON p.id = pf.project_id"
+    sql = ("SELECT pf.project_id AS pid, pf.path AS folder, p.created_at AS created_at, p.rowid AS seq "
+           "FROM project_folders pf JOIN projects p ON p.id = pf.project_id")
     if not include_archived:
         sql += " WHERE p.archived = 0"
 
@@ -489,7 +495,8 @@ def project_for_path(conn: sqlite3.Connection, path: str, *, include_archived: b
         return target == folder or target.startswith(stem + os.sep) or target.startswith(stem + "/")
 
     owners = [row for row in conn.execute(sql).fetchall() if owns(row["folder"])]
-    return get_project(conn, max(owners, key=lambda r: len(r["folder"]))["pid"]) if owners else None
+    innermost = min(owners, key=lambda r: (-len(r["folder"]), r["created_at"], r["seq"]), default=None)
+    return get_project(conn, innermost["pid"]) if innermost else None
 
 
 def branch_name_for(project: Project, task_id: str, *, title: str = "") -> str:

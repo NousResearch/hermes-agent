@@ -65,3 +65,23 @@ def test_recent_projects_skip_missing_folders_and_duplicates_and_follow_last_use
         assert conn.execute("SELECT * FROM projects ORDER BY id").fetchall() == before
     gone.mkdir()
     assert str(gone) in {p["primary_path"] for p in rpc("projects.workspace.recent")["projects"]}
+
+
+def test_the_offered_duplicate_is_the_one_prepare_accepts(tmp_path, db):
+    """Two rows registered for one folder in the same second (a lost registration race) must not
+    make the picker offer a project that Send then refuses as not owning the workspace."""
+    from hermes_cli import projects_db as pdb
+    repo = _repo(tmp_path, "repo")
+    with pdb.connect_closing() as conn:
+        for pid, slug in (("p_bbbb", "repo-2"), ("p_aaaa", "repo-3")):
+            conn.execute("INSERT INTO projects (id, slug, name, primary_path, created_at) VALUES (?, ?, 'repo', ?, 7)",
+                         (pid, slug, str(repo)))
+            conn.execute("INSERT INTO project_folders (project_id, path, is_primary, added_at) VALUES (?, ?, 1, 7)",
+                         (pid, str(repo)))
+        conn.commit()
+
+    offered = [p for p in rpc("projects.workspace.recent")["projects"] if p["primary_path"] == str(repo)]
+
+    assert len(offered) == 1
+    prepared = rpc("projects.workspace.prepare", path=str(repo), projectId=offered[0]["id"], mode="current")
+    assert prepared["projectId"] == offered[0]["id"]

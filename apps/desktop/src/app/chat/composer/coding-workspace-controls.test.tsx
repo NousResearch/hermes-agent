@@ -470,6 +470,9 @@ describe('coding workspace controls', () => {
     expect(offered()).toEqual([...head, current].map(p => `${p.name}${p.primary_path}`))
     fireEvent.change(screen.getByRole('textbox', { name: 'Search projects' }), { target: { value: 'Project 6' } })
     expect(offered()).toEqual([`Project 6/repos/p6`])
+    // A query every project matches (a shared parent folder) stays as short as the recent list.
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search projects' }), { target: { value: '/repos/' } })
+    expect(offered()).toEqual([...head, current].map(p => `${p.name}${p.primary_path}`))
     expect(screen.getByRole('menuitem', { name: 'Browse…' })).toBeTruthy()
   })
 

@@ -6,12 +6,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PageHeaderProvider } from "./PageHeaderProvider";
 import { usePageHeader } from "./usePageHeader";
 import ChannelsPage from "@/pages/ChannelsPage";
+import FilesPage from "@/pages/FilesPage";
 
-vi.mock("@/i18n", () => ({ useI18n: () => ({ t: {} }) }));
+vi.mock("@/i18n", () => ({ useI18n: () => ({ t: { common: { cancel: "Cancel", delete: "Delete" } } }) }));
 vi.mock("@/lib/resolve-page-title", () => ({ resolvePageTitle: (path: string) => path }));
 vi.mock("@/lib/api", () => ({
-  api: { getMessagingPlatforms: vi.fn(async () => ({ platforms: [] })) },
+  api: {
+    getMessagingPlatforms: vi.fn(async () => ({ platforms: [] })),
+    listFiles: vi.fn(async () => ({
+      root: "/srv/files", path: "/srv/files", parent: null, locked_root: null, can_change_path: false, entries: [],
+    })),
+  },
 }));
+vi.mock("@/plugins", () => ({ PluginSlot: () => null }));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let container: HTMLDivElement;
@@ -24,6 +31,7 @@ function Navigate() {
     <button onClick={() => navigate("/other")}>Other</button>
     <button onClick={() => navigate("/empty")}>Empty</button>
     <button onClick={() => navigate("/delayed")}>Delayed</button>
+    <button onClick={() => navigate("/files")}>Files</button>
   </nav>;
 }
 
@@ -53,6 +61,7 @@ async function renderAt(path: string) {
           <Route path="/other" element={<OtherPage />} />
           <Route path="/empty" element={<div>Empty page</div>} />
           <Route path="/delayed" element={<DelayedPage />} />
+          <Route path="/files" element={<FilesPage />} />
         </Routes>
       </PageHeaderProvider>
     </MemoryRouter>,
@@ -94,6 +103,14 @@ describe("page header ownership", () => {
     await click("Channels");
     expect(header().textContent).toContain("Restart gateway");
     expect(header().textContent).not.toContain("Other action");
+  });
+
+  it("keeps the incoming page's actions when the outgoing page clears its slots", async () => {
+    await renderAt("/files");
+    expect(header().textContent).toContain("/srv/files");
+    await click("Channels");
+    expect(header().textContent).toContain("Restart gateway");
+    expect(header().textContent).not.toContain("/srv/files");
   });
 
   it("accepts a page that mounts after the route changes", async () => {

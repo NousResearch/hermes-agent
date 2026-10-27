@@ -2248,6 +2248,7 @@
   "tips.items.right-pane.title": ["ru"],
   "tips.items.skills.text": ["ru"],
   "tips.items.skills.title": ["ru"],
+  "titlebar.back": ["ar","de","es","fr","ja","ru","zh","zh-hant"],
   "titlebar.enterHud": ["ja","zh-hant"],
   "titlebar.exitHud": ["ja","zh-hant"],
   "titlebar.layoutEditor": ["ja","zh-hant"],

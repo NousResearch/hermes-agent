@@ -31,7 +31,11 @@ def _clear_basic_env(monkeypatch):
         monkeypatch.delenv(var, raising=False)
 
 
-@pytest.mark.parametrize("value", [LITERAL, "`openssl rand -base64 32`", "prefix-$(head -c 32 /dev/urandom)"])
+@pytest.mark.parametrize("value", [
+    LITERAL, "`openssl rand -base64 32`", "prefix-$(head -c 32 /dev/urandom)",
+    # The web-dashboard.md placeholder pasted as-is, a spaced "$ (", and a bare command.
+    "<32+ random bytes; openssl rand -base64 32>", "$ (openssl rand -base64 32)", "openssl rand -hex 32",
+])
 def test_env_secret_with_shell_text_is_not_used(monkeypatch, caplog, value):
     monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_SECRET", value)
     with caplog.at_level(logging.ERROR, logger=basic.logger.name):

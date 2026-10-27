@@ -192,9 +192,10 @@ def _load_config_basic_auth_section() -> dict:
 
 
 # Shell syntax that was written to .env/config without being run, e.g. a
-# ``$(openssl rand -base64 32)`` line inside a quoted heredoc. Base64 and hex never
-# contain these, and everyone who copied the same line would share the same key.
-_UNEXPANDED_SHELL_MARKERS = ("$(", "`")
+# ``$(openssl rand -base64 32)`` line inside a quoted heredoc, or the command (or a doc
+# placeholder naming it) pasted in place of its output. Base64 and hex never contain
+# these (nor a space), and everyone who copied the same line would share the same key.
+_UNEXPANDED_SHELL_MARKERS = ("$(", "`", "openssl rand")
 
 
 def _resolve_secret(cfg_section: dict) -> bytes:

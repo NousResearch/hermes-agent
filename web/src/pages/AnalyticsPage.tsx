@@ -17,6 +17,13 @@ import type {
   AnalyticsSkillEntry,
 } from "@/lib/api";
 import { timeAgo } from "@/lib/utils";
+import {
+  ANALYTICS_ALL,
+  ANALYTICS_PERIODS,
+  analyticsAvgDivisor,
+  isAllRange,
+  type AnalyticsRange,
+} from "@/lib/analytics-range";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Stats } from "@nous-research/ui/ui/components/stats";
@@ -25,12 +32,6 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { PluginSlot } from "@/plugins";
 import { errorMessage } from "@/lib/api-error";
-
-const PERIODS = [
-  { label: "7d", days: 7 },
-  { label: "30d", days: 30 },
-  { label: "90d", days: 90 },
-] as const;
 
 const CHART_HEIGHT_PX = 160;
 
@@ -405,7 +406,7 @@ function SkillTable({ skills }: { skills: AnalyticsSkillEntry[] }) {
 }
 
 export default function AnalyticsPage() {
-  const [days, setDays] = useState(30);
+  const [range, setRange] = useState<AnalyticsRange>(30);
   const [data, setData] = useState<AnalyticsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -432,11 +433,11 @@ export default function AnalyticsPage() {
     setLoading(true);
     setError(null);
     api
-      .getAnalytics(days)
+      .getAnalytics(range)
       .then(setData)
       .catch((err) => setError(errorMessage(err)))
       .finally(() => setLoading(false));
-  }, [days, showTokens]);
+  }, [range, showTokens]);
 
   useLayoutEffect(() => {
     // Period selector + refresh both live in afterTitle so the controls
@@ -446,17 +447,25 @@ export default function AnalyticsPage() {
     setAfterTitle(
       showTokens === false ? null : (
         <div className="flex flex-wrap items-center gap-1.5">
-          {PERIODS.map((p) => (
+          {ANALYTICS_PERIODS.map((p) => (
             <Button
               key={p.label}
               type="button"
               size="sm"
-              outlined={days !== p.days}
-              onClick={() => setDays(p.days)}
+              outlined={range !== p.days}
+              onClick={() => setRange(p.days)}
             >
               {p.label}
             </Button>
           ))}
+          <Button
+            type="button"
+            size="sm"
+            outlined={!isAllRange(range)}
+            onClick={() => setRange(ANALYTICS_ALL)}
+          >
+            {t.analytics.all ?? "All"}
+          </Button>
           <Button
             type="button"
             ghost
@@ -476,7 +485,7 @@ export default function AnalyticsPage() {
       setAfterTitle(null);
       setEnd(null);
     };
-  }, [days, loading, load, setAfterTitle, setEnd, t.common.refresh, showTokens]);
+  }, [range, loading, load, setAfterTitle, setEnd, t.common.refresh, showTokens]);
 
   useEffect(() => {
     load();
@@ -560,7 +569,7 @@ export default function AnalyticsPage() {
                     },
                     {
                       label: t.analytics.totalSessions,
-                      value: `${data.totals.total_sessions} (~${(data.totals.total_sessions / days).toFixed(1)}${t.analytics.perDayAvg})`,
+                      value: `${data.totals.total_sessions} (~${(data.totals.total_sessions / analyticsAvgDivisor(range, data.daily.length)).toFixed(1)}${t.analytics.perDayAvg})`,
                     },
                     {
                       label: t.analytics.apiCalls,

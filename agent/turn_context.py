@@ -759,10 +759,11 @@ def _hydrate_from_history(agent: Any, conversation_history: Optional[list[Any]])
 
 
 def _tick_memory_nudge(agent: Any) -> bool:
-    """Advance the turn-based memory nudge counter; ``True`` when the review should fire."""
+    """Advance the turn-based memory nudge counter on user-originated turns; ``True`` when the review should fire."""
     if (agent._memory_nudge_interval > 0
             and "memory" in agent.valid_tool_names
-            and agent._memory_store):
+            and agent._memory_store
+            and getattr(agent, "_turn_user_originated", True)):
         agent._turns_since_memory += 1
         if agent._turns_since_memory >= agent._memory_nudge_interval:
             agent._turns_since_memory = 0
@@ -913,9 +914,10 @@ def _memory_turn_start_and_prefetch(
     agent: Any, original_user_message: Any, turn_author: Optional[dict[str, Any]] = None,
 ) -> str:
     """Notify memory providers of the new turn, then prefetch external memory once
-    before the tool loop (skipped on trivial prompts with no semantic signal).
+    before the tool loop (prefetch skipped on trivial prompts with no semantic signal).
+    A turn that is not user-originated (a typed notice) does neither.
     Returns the prefetch text (``""`` when nothing was injected)."""
-    if not agent._memory_manager:
+    if not agent._memory_manager or not getattr(agent, "_turn_user_originated", True):
         return ""
     _query = _memory_query_text(original_user_message)
     # The author rides along so a provider can attribute THIS turn, not whoever opened the session.
@@ -1117,6 +1119,9 @@ def build_turn_context(
         agent, user_message, persist_user_message, persist_user_timestamp,
         persist_user_platform_id, persist_user_display_kind, persist_user_display_metadata,
     )
+    # Memory reads this turn's display kind through the canonical rule: a typed notice is not user-originated.
+    from agent.context_compressor import is_user_originated_turn
+    agent._turn_user_originated = is_user_originated_turn(user_msg)
     _hydrate_from_history(agent, conversation_history)
     # Every estimator this turn prices images at the cost learned from this model's real usage.
     bind_image_token_cost(agent)

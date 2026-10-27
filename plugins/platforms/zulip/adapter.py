@@ -1600,19 +1600,26 @@ class ZulipAdapter(BasePlatformAdapter):
             )
 
         from tools.clarify_gateway import mark_awaiting_text
+        from tools.clarify_tool import strip_recommended
 
         mark_awaiting_text(clarify_id)
+        # "(Recommended)" is a text-UI affordance appended upstream to the first
+        # choice.  On a button surface it is noise in the label and in the visible
+        # click reply, so strip it at the presentation boundary.  Matching still
+        # resolves either form: clarify_gateway._match_label() strips both sides
+        # before comparing, and _clean_answer strips the locked answer.
+        labels = [strip_recommended(str(choice)) for choice in choices]
         choice_rows = [
             {
                 "short_name": str(index),
-                "long_name": str(choice),
-                "reply": str(choice),
+                "long_name": label,
+                "reply": label,
             }
-            for index, choice in enumerate(choices, start=1)
+            for index, label in enumerate(labels, start=1)
         ]
         option_lines = "\n".join(
-            f"  {index}. {choice}"
-            for index, choice in enumerate(choices, start=1)
+            f"  {index}. {label}"
+            for index, label in enumerate(labels, start=1)
         )
         body = (
             f"❓ {question}\n\n"

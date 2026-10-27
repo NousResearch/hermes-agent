@@ -5503,6 +5503,39 @@ class TestZulipZformPrompts:
         finally:
             clarify_gateway.clear_session("zulip:42:ops:alice@example.com")
 
+    @pytest.mark.asyncio
+    async def test_send_clarify_strips_recommended_marker_from_buttons(self):
+        """The text-UI '(Recommended)' marker must not reach button labels, click
+        replies, or the numbered body: on a button surface it is presentation
+        noise, and _match_label strips both sides so matching still resolves."""
+        from tools import clarify_gateway
+
+        choices = ["small (Recommended)", "large"]
+        clarify_gateway.register(
+            clarify_id="clarify-zulip-rec",
+            session_key="zulip:42:ops:alice@example.com",
+            question="Pick a plan",
+            choices=choices,
+        )
+        try:
+            result = await self.adapter.send_clarify(
+                chat_id="42:ops",
+                question="Pick a plan",
+                choices=choices,
+                clarify_id="clarify-zulip-rec",
+                session_key="zulip:42:ops:alice@example.com",
+            )
+
+            assert result.success is True
+            request = self.adapter._client.send_message.call_args[0][0]
+            widget = json.loads(request["widget_content"])
+            rows = widget["extra_data"]["choices"]
+            assert [row["long_name"] for row in rows] == ["small", "large"]
+            assert [row["reply"] for row in rows] == ["small", "large"]
+            assert "(Recommended)" not in request["content"]
+        finally:
+            clarify_gateway.clear_session("zulip:42:ops:alice@example.com")
+
 
 
 class TestZulipModelPicker:

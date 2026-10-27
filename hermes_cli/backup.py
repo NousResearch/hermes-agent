@@ -27,11 +27,12 @@ from hermes_state_holders import read_only_db_uri
 from agent.provider_media import GENERATED_SUBDIR
 from hermes_cli.archive_safe import normalize_archive_parts
 from hermes_cli.backup_sqlite import _close_quietly, _safe_copy_db
-from hermes_cli.config_backend import require_file_tooling
+from hermes_cli.config_backend import require_file_tooling, supports_file_tooling
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, profile_root_entry
 from hermes_cli.sizefmt import format_bytes as _format_size
 
 from hermes_cli.backup_restore import (
+    _count_cron_jobs,
     _count_session_rows,
     _default_new_file_mode,
     _detect_prefix,
@@ -1675,37 +1676,6 @@ def _restore_quick_snapshot_exclusive(snapshot_id: str, home: Path) -> bool:
     return restored > 0 and not auth_restore_failed
 
 
-def _count_cron_jobs(path: Path) -> Optional[int]:
-    """Return the number of cron jobs stored in ``path``.
-
-    The canonical on-disk shape is ``{"jobs": [...]}`` (see ``cron/jobs.py``).
-    A legacy bare-list shape (``[...]``) is also honoured.
-
-    Returns:
-        The job count for any *valid, readable* JSON document, or ``None`` if
-        the file is missing or cannot be parsed. ``None`` means "unknown" —
-        callers must not treat it as "zero jobs", because acting on an
-        unreadable file could mask a real corruption the user needs to see.
-    """
-    if not path.is_file():
-        return None
-    try:
-        # utf-8-sig: same dialect as cron/jobs.load_jobs — Windows editors
-        # may leave a UTF-8 BOM that plain utf-8 json.load rejects. Without
-        # it a BOM'd jobs.json counts as "unreadable" (None) and the
-        # post-update cron-loss auto-restore safety net silently disables.
-        with open(path, "r", encoding="utf-8-sig") as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return None
-    if isinstance(data, dict):
-        jobs = data.get("jobs", [])
-        return len(jobs) if isinstance(jobs, list) else None
-    if isinstance(data, list):
-        return len(data)
-    return None
-
-
 def restore_cron_jobs_if_emptied(
     snapshot_id: str,
     hermes_home: Optional[Path] = None,
@@ -1906,6 +1876,8 @@ def restore_config_model_settings_if_rewritten(
         "snapshot_id": ...}`` so the caller can warn the user.
     """
     if not snapshot_id:
+        return None
+    if not supports_file_tooling():  # Remote Config: never write a LOCAL snapshot's values to the plane
         return None
 
     home = hermes_home or get_hermes_home()

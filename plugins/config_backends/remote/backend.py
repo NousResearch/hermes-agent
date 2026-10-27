@@ -436,6 +436,14 @@ class RemoteBackend:
         return UserLayer(doc=doc, version=version, locks=locks,
                          provenance=f"remote:{client.base_url()} profile={st.profile}")
 
+    def read_user_doc(self, home: Path) -> Any:
+        return self.read_user_layer(home).doc
+
+    def probe_readable(self, home: Path) -> None:
+        # Readable once this home's layer is fetched; an unreachable plane raises
+        # ConfigBackendUnavailable (never an OSError: there is no local file to retry).
+        self._state(home)
+
     def read_user_doc_readonly(self, home: Path) -> Any:
         st = self._state(home)
 

@@ -366,7 +366,7 @@ def _check_config_backend(backend, home, f: Finding) -> bool:
     """Remote mode (§4.7): report where config comes from instead of the file checks, and flag a
     managed /etc/hermes/config.yaml, which remote mode ignores (D18)."""
     try:
-        backend.read_user_layer(home)
+        backend.read_user_doc(home)
         check_ok(f"Config backend: {backend.describe(home)}")
     except SystemExit as exc:  # ConfigBackendUnavailable: the plane cannot serve this profile
         check_fail(f"Config backend {backend.name!r} unavailable", str(exc.code or ""))

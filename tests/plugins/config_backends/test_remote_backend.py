@@ -1296,7 +1296,7 @@ def _absent_section_race(plane, monkeypatch):
     between our read and our first PATCH (so that PATCH gets a 409)."""
     from plugins.config_backends.remote import client
     plane.profile("default").update(values={"display": {"personality": "concise"}}, version=1)
-    get_config_backend().read_user_layer(plane.home)
+    get_config_backend().read_user_doc(plane.home)
     real_request = client.request
     raced = []
 

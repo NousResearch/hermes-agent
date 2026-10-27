@@ -1047,48 +1047,6 @@ def _validate_fallback_model(fb: Any, issues: list[ConfigIssue]) -> None:
                         suffix=" — fallback will be disabled")
 
 
-def _container_slots() -> dict[str, str]:
-    """Dotted key -> ``"list"``/``"mapping"`` for every slot the schema fixes to a container:
-    ``DEFAULT_CONFIG`` (sections included) plus the known-container table for roots it omits."""
-    slots: dict[str, str] = {}
-
-    def walk(node: dict[str, Any], prefix: str) -> None:
-        for key, value in node.items():
-            path = f"{prefix}.{key}" if prefix else key
-            if isinstance(value, dict):
-                slots[path] = "mapping"
-                walk(value, path)
-            elif isinstance(value, list):
-                slots[path] = "list"
-
-    walk(DEFAULT_CONFIG, "")
-    slots.update(_KNOWN_CONTAINER_TYPES)
-    return slots
-
-
-def _validate_quoted_containers(config: dict[str, Any], issues: list[ConfigIssue]) -> None:
-    """A container slot holding ONE quoted string (``enabled: '["a","b"]'``) is skipped by every
-    isinstance-gated reader while ``config get`` echoes it back, so plugins silently unmount and
-    exclusions silently lapse (#83308, #105706). Finding only — the file is never rewritten."""
-    for key, kind in _container_slots().items():
-        # ``parse_config_string_list`` readers accept the quoted form; nothing is ignored there.
-        if key in _SCALAR_AS_ONE_ITEM_LIST_KEYS:
-            continue
-        value = cfg_get(config, *key.split("."))
-        if not isinstance(value, str) or not _looks_structured_value(value):
-            continue
-        try:
-            parsed = yaml.safe_load(value)
-        except yaml.YAMLError:
-            continue
-        if isinstance(parsed, (list, dict)):
-            _issue(issues, "warning",
-                   f"{key} is the quoted string {value!r} — Hermes expects a YAML {kind} here "
-                   "and every reader ignores the string",
-                   f"Run: hermes config set {key} {shlex.quote(value)}  (stores a real {kind}), "
-                   "or remove the quotes in config.yaml")
-
-
 def validate_config_structure(config: Optional[dict[str, Any]] = None) -> list[ConfigIssue]:
     """Validate config.yaml structure and return detected issues (accepts a pre-loaded dict).
     Catches common YAML mistakes that otherwise surface as confusing runtime errors."""
@@ -1099,7 +1057,8 @@ def validate_config_structure(config: Optional[dict[str, Any]] = None) -> list[C
             from hermes_cli.config_home import config_load_issue
             return [config_load_issue(exc)]
 
-    from hermes_cli.config_value_checks import _validate_timezone, _validate_voice, _validate_web_backends
+    from hermes_cli.config_value_checks import (
+        _validate_quoted_containers, _validate_timezone, _validate_voice, _validate_web_backends)
     issues: list[ConfigIssue] = []
     _validate_voice(config, issues)
     _validate_timezone(config, issues)
@@ -1181,7 +1140,8 @@ def _persist_migration(config: dict[str, Any]) -> None:
     persist values that DIFFER from the schema default, plus explicit removals/renames of user
     data. Every migration step MUST write through here (``save_config`` with default-stripping
     ON, no ``merge_existing``) so the invariant cannot regress one migration at a time. A migration
-    is Hermes' own write, never a user turning a feature off."""
+    is Hermes' own write, never a user turning a feature off. A backend without file tooling
+    migrates in memory on read and never writes back (D12)."""
     from hermes_cli.observability.shared_metrics_disabled import hermes_applied_write
 
     if not supports_file_tooling():
@@ -2923,8 +2883,12 @@ def edit_config():
     if is_managed():
         managed_error("edit configuration")
         return
+    if not supports_file_tooling():
+        print("`hermes config edit` opens the local config file, and this config backend has none. "
+              "Use `hermes config set <key> <value>` instead.", file=sys.stderr)
+        return
     config_path = get_config_path()
-    if not config_path.exists():  # config-reader: ok — file tooling (edits the local file)
+    if not config_path.exists():  # config-reader: ok — file tooling, gated on supports_file_tooling()
         seed_config_file(config_path)
         print(f"Created {config_path}")
 

@@ -44,7 +44,6 @@ from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, copy_iden
 from agent.turn_context import compression_made_progress
 from agent.session_activity import ActivityProvenance, AwakeIdleMeter
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get, config_exists
-from hermes_cli.config_backend import require_file_tooling
 from gateway.run_common import _csv_or_list_to_set
 from hermes_cli.fallback_config import pre_agent_fallback_notice
 from gateway.turn_executor import _UnboundedThreadExecutor
@@ -5155,10 +5154,8 @@ def main():
 
     config = None
     if args.config:
-        require_file_tooling("gateway --config <file>")
-        import hermes_yaml as yaml
-        with open(args.config, encoding="utf-8-sig") as f:
-            config = GatewayConfig.from_dict(yaml.safe_load(f) or {})
+        from gateway.config_loader import load_gateway_config_file
+        config = load_gateway_config_file(args.config)
         # Same boot-time verdict the loaded config gets when the file leaves the flag unset.
         from hermes_cli.gateway_multiplex_mode import log_multiplex_decision, resolve_multiplex_mode
         log_multiplex_decision(resolve_multiplex_mode(config))

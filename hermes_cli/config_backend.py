@@ -1,4 +1,4 @@
-"""Where the user config layer lives: the ``ConfigBackend`` seam (config-config design §4.1, D10).
+"""Where the user config layer lives: the ``ConfigBackend`` seam (config-config design §4.1, D10/D11).
 
 Every read and write of a profile's user ``config.yaml`` goes through the backend returned by
 :func:`get_config_backend` (``scripts/check_config_yaml_readers.py`` and
@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Protocol, Union, runtime_checkable
 
 CONFIG_FILENAME = "config.yaml"
+BACKEND_ENV = "HERMES_CONFIG_BACKEND"
 
 PathLike = Union[str, "os.PathLike[str]"]
 
@@ -336,6 +337,16 @@ def _route(config_path: PathLike) -> tuple[ConfigBackend, Path]:
     return _ExplicitFile(path), path.parent
 
 
+def local_file_layer(config_path: PathLike) -> tuple[ConfigBackend, Path]:
+    """``(backend, home)`` for the LOCAL file at *config_path*, whichever backend is selected.
+
+    Only for PM's dependency runtime: it publishes plugin selections to the local file and
+    compare-and-swaps those bytes, and it carries neither the remote backend's client nor the
+    plane credential. Everything else goes through :func:`_route`."""
+    path = Path(config_path)
+    return _ExplicitFile(path), path.parent
+
+
 def read_config_doc(config_path: PathLike) -> Any:
     """Parsed root of a config file (None when empty); raises like ``open`` + ``fast_safe_load``."""
     backend, home = _route(config_path)
@@ -471,8 +482,8 @@ def write_changes(config_path: PathLike, changes: Changes) -> None:
     """One :class:`Changes` write. Unlike :func:`write_config_keys`, a ``None`` in ``set`` stores
     an explicit null (Remote Config: "no value", masking an inherited scalar); the file backend
     writes it as YAML null."""
-    backend, target, is_layer = _route(config_path)
-    backend.write_changes(target, changes) if is_layer else backend.write_path(target, changes)
+    backend, home = _route(config_path)
+    backend.write_changes(home, changes)
 
 
 def deployment_env_names() -> frozenset:

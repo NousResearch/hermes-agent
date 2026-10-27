@@ -33,7 +33,7 @@ from utils import file_cache_version
 logger = logging.getLogger(__name__)
 
 _PROFILE_RESCAN_INTERVAL_SECS = 30.0
-_PROFILE_SIGNATURE_FILES = ("config.yaml", ".env")
+_PROFILE_SIGNATURE_FILES = (".env",)  # config.yaml: the config backend's version, below
 # Bound for one own-gateway liveness probe (``live_gateway_pid_for_home``): the control-socket
 # read it can end in has no timeout of its own — on Windows the named pipe stalls there until
 # its peer answers — so the await needs one. A healthy identify answers in milliseconds.
@@ -48,10 +48,15 @@ def _stat_signature(path: Path) -> Optional[tuple]:
 
 
 def profile_serve_signature(home: Path) -> tuple:
-    """Change detector for a served profile's credentials/config: ``file_cache_version`` per file,
-    hashed every time (``always_digest``): it is compared long after it was taken, and a racy digest
-    going empty would read as a change and reconnect the profile's adapters."""
-    sig = []
+    """Change detector for a served profile's credentials/config: the config backend's signature
+    of its config layer, then ``file_cache_version`` of ``.env``. Each is hashed every time
+    (``always_digest``) where it is a file: it is compared long after it was taken, and a racy
+    digest going empty would read as a change and reconnect the profile's adapters. A remote layer
+    changes with no local file change, so its signature is the backend's version. A config backend
+    outage raises ``ConfigBackendUnavailable``; the reconcile cycle contains it and retries."""
+    from hermes_cli.config_backend import config_version_or_none, supports_file_tooling
+    cfg = Path(home) / "config.yaml"
+    sig = [_stat_signature(cfg) if supports_file_tooling() else config_version_or_none(cfg)]
     for name in _PROFILE_SIGNATURE_FILES:
         try:
             sig.append(file_cache_version(Path(home) / name, always_digest=True))

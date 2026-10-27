@@ -68,46 +68,36 @@ class SessionCoverageMixin:
         clones it after the compacted set. A row the compressor ALSO held (flushed after the watermark
         was read, or left unnamed so coverage fell back to the watermark) is already in the compacted
         set as a carried copy; cloning it too stores the message twice, with a fresh id and timestamp
-        each (#137197). A claim never drops a different message, and a claim never leaves the model on an
-        older copy, so claims run in two passes. The first settles every claim whose dict holds the row's
-        stored content: ``_row_id``, then ``message_uid``, then identity plus timestamp, or identity alone
-        for a dict carrying no stamps at all (never a row whose uid differs from the dict's). The second
-        lets a still-unclaimed dict that names the row by ``_row_id`` or uid, with other content, claim it
-        only when the compressor's own rewrite explains the difference (see ``_rewrite_explains``), exactly
-        one tail row carries that uid and no active row outside *tail_ids* does (there the dict's original
-        is that row, so the tail row is another version). Anything else is cloned: a duplicate, never a
-        stale model view. Each dict claims at most one row and each row is claimed once.
+        each (#137197). A claim must prove the occurrence AND the version, so the next request sees exactly
+        what it would have seen with the clone minus the second copy: only a dict that names the row
+        (``_row_id``, else ``message_uid``) may claim it, never matching text, which another surface can
+        append independently. The first pass claims a named dict holding the row's stored content and its
+        replayed sidecars (``_replays_as``). The second lets a still-unclaimed named dict with other content
+        claim the row only when the compressor's own rewrite of the row's CURRENT version explains the
+        difference (see ``_rewrite_explains``), exactly one tail row carries that uid and no active row
+        outside *tail_ids* does (there the dict's original is that row, so the tail row is another version).
+        Anything else is cloned: a duplicate, never a stale or missing model input. Each dict claims at most
+        one row and each row is claimed once.
 
-        ``weak`` holds the rows claimed by identity alone (with or without a timestamp) or by a rewritten
-        carry: two surfaces can store the same text, and a rewritten carry is not the stored text, so the
-        caller archives those as compacted history, never rewinds them out of display, and a wrong claim stays
-        visible.
+        ``weak`` holds the rows claimed by a rewritten carry: it is not the stored text, so the caller archives
+        those as compacted history, never rewinds them out of display.
         """
         if not tail_ids or not compacted_messages:
             return {}, set()
-        by_row, by_uid, by_key, bare = self._index_held_dicts(compacted_messages)
+        by_row, by_uid = self._index_held_dicts(compacted_messages)
         rows = conn.execute(
-            # Every column: the rewritten-carry pass compares the row's version digest (DB_ROW_SNAPSHOT).
+            # Every column: the claims compare replayed sidecars and the row's version digest (DB_ROW_SNAPSHOT).
             f"SELECT * FROM messages WHERE id IN ({_placeholders(tail_ids)}) ORDER BY id", tail_ids,
         ).fetchall()
-        identities = {
-            int(row["id"]): self._row_identity(
-                row["role"], self._decode_content(row["content"]), row["tool_call_id"],
-                _parse_tool_calls(row["tool_calls"]))
-            for row in rows}
         carried: dict[int, int] = {}
-        weak: set[int] = set()
         for row in rows:
-            row_id = int(row["id"])
-            index, strong = self._claim_stored_copy(
-                row, identities[row_id], by_row, by_uid, by_key, bare, set(carried.values()))
+            index = self._claim_stored_copy(row, compacted_messages, by_row, by_uid, set(carried.values()))
             if index is not None:
-                carried[row_id] = index
-                if not strong:
-                    weak.add(row_id)
+                carried[int(row["id"])] = index
         named_uids = {*by_uid, *(named[2] for named in by_row.values() if named[2] is not None)}
         held_elsewhere = self._uids_active_outside(conn, rows, tail_ids, named_uids)
         tail_uids = Counter(row[MESSAGE_UID] for row in rows if row[MESSAGE_UID])
+        weak: set[int] = set()
         for row in rows:
             row_id, row_uid = int(row["id"]), row[MESSAGE_UID] or None
             if row_id in carried or row_uid is None or tail_uids[row_uid] != 1 or row_uid in held_elsewhere:
@@ -118,13 +108,11 @@ class SessionCoverageMixin:
                 weak.add(row_id)
         return carried, weak
 
-    def _index_held_dicts(self, compacted_messages: list[dict[str, Any]]) -> tuple[dict, dict, dict, dict]:
-        """Held dicts by the proof they carry: ``_row_id`` -> (index, identity, uid); uid -> [(index, identity)];
-        (identity, timestamp) -> (index, uid); identity -> [index] for dicts with no stamp at all."""
+    def _index_held_dicts(self, compacted_messages: list[dict[str, Any]]) -> tuple[dict, dict]:
+        """Held dicts by the name they carry: ``_row_id`` -> (index, identity, uid); uid -> [(index, identity)].
+        A dict naming neither is never a claim: equal text is not the same occurrence."""
         by_row: dict[int, tuple[int, tuple[Any, ...], Optional[str]]] = {}
         by_uid: dict[str, list[tuple[int, tuple[Any, ...]]]] = {}
-        by_key: dict[tuple[Any, ...], tuple[int, Optional[str]]] = {}
-        bare: dict[tuple[Any, ...], list[int]] = {}
         for index, message in enumerate(compacted_messages):
             if not isinstance(message, dict):
                 continue
@@ -136,76 +124,77 @@ class SessionCoverageMixin:
             if isinstance(row_id, int) and not isinstance(row_id, bool) and row_id > 0:
                 # Authoritative only while the stored identity still matches (a stale stamp names another row).
                 by_row.setdefault(row_id, (index, identity, uid))
-                continue
-            if uid is not None:
+            elif uid is not None:
                 by_uid.setdefault(uid, []).append((index, identity))
-            timestamp = coerce_epoch(message.get("timestamp"), field="message timestamp")
-            if timestamp is not None:
-                by_key.setdefault((*identity, timestamp), (index, uid))
-            elif uid is None:
-                bare.setdefault(identity, []).append(index)
-        return by_row, by_uid, by_key, bare
+        return by_row, by_uid
 
-    @staticmethod
-    def _claim_stored_copy(row, identity, by_row, by_uid, by_key, bare, claimed) -> tuple[Optional[int], bool]:
-        """First pass: the unclaimed dict holding *row*'s stored content, and whether it names that row
-        (``_row_id`` / uid) rather than matching its text alone."""
+    def _claim_stored_copy(self, row, compacted_messages, by_row, by_uid, claimed) -> Optional[int]:
+        """First pass: the unclaimed dict naming *row* (``_row_id``, else uid) that replays exactly as it does."""
+        identity = self._row_identity(
+            row["role"], self._decode_content(row["content"]), row["tool_call_id"], _parse_tool_calls(row["tool_calls"]))
         named = by_row.get(int(row["id"]))
-        if named is not None and named[1] == identity and named[0] not in claimed:
-            return named[0], True
+        candidates = [named[0]] if named is not None and named[1] == identity else []
         row_uid = row[MESSAGE_UID] or None
-        for index, held in by_uid.get(row_uid, ()) if row_uid is not None else ():
-            if held == identity and index not in claimed:
-                return index, True
-        timestamp = coerce_epoch(row["timestamp"], field="message timestamp")
-        keyed = by_key.get((*identity, timestamp)) if timestamp is not None else None
-        # A keyed dict with a uid matches only through the uid above.
-        if keyed is not None and keyed[1] is None and keyed[0] not in claimed:
-            return keyed[0], False
-        if queue := bare.get(identity):
-            return queue.pop(0), False
-        return None, False
+        candidates += [index for index, held in by_uid.get(row_uid, ()) if held == identity] if row_uid else []
+        return next((index for index in candidates
+                     if index not in claimed and self._replays_as(row, compacted_messages[index], True)), None)
 
     def _rewritten_carry(self, row, row_uid, compacted_messages, by_row, by_uid, claimed) -> Optional[int]:
         """Second pass: the one unclaimed dict naming *row* (``_row_id`` with the row's uid, else its uid alone)
         whose different content the compressor's rewrite of that row explains; None means clone."""
         named = by_row.get(int(row["id"]))
-        addressed = named is not None and named[2] == row_uid
-        if addressed:
+        if named is not None and named[2] == row_uid:
             candidates = [named[0]]
         else:
             candidates = [index for index, _identity in by_uid.get(row_uid, ())]
         candidates = [index for index in candidates if index not in claimed]
         if len(candidates) != 1:
             return None
-        held = compacted_messages[candidates[0]]
-        if self._rewrite_explains(row, held, addressed):
+        if self._rewrite_explains(row, compacted_messages[candidates[0]]):
             return candidates[0]
         return None
 
+    def _replays_as(self, row, held: dict[str, Any], same_content: bool) -> bool:
+        """Whether *held* replays the sidecars the next request would read from *row* (``api_content`` and the
+        reasoning carriers in ``REPLAY_SIDECARS``), compared through the writer's own serializer.
+
+        A sidecar the copy carries must equal the row's: a different one is an older version (a later
+        ``set_message_api_content``, a re-stamped reasoning item). A copy WITHOUT the row's ``api_content``
+        stands for it only when its own content is those bytes (the flush stores sanitize-changed text as the
+        sidecar), or when the compressor rewrote the content, which drops the stale sidecar by design."""
+        from agent.transcript_repair import REPLAY_SIDECARS
+
+        serialized = self._serialized_message_row(row["session_id"], held, float(row["timestamp"] or 0))
+        content = self._decode_content(row["content"])
+        row_api, held_api = (None if api == text else api for api, text in (
+            (row["api_content"], content), (serialized["api_content"], held.get("content"))))
+        if any(serialized[column] is not None and serialized[column] != row[column] for column in REPLAY_SIDECARS):
+            return False
+        if held_api is not None or row_api is None:
+            return held_api == row_api
+        return not same_content or held.get("content") == row_api
+
     @staticmethod
-    def _copy_of_current_row(row, held: dict[str, Any], addressed: bool) -> bool:
+    def _copy_of_current_row(row, held: dict[str, Any]) -> bool:
         """Whether *held* was copied from *row*'s current version, so extra text in it is the compressor's.
 
         Containment alone cannot tell "the compressor added text" from "the row lost text after the copy"
-        (an in-place edit that shortens it). The stored-row digest a flushed dict carries settles it: a
-        mismatch means the row was rewritten after the copy. Without a digest only a ``_row_id`` carry
-        qualifies (row-addressed loaders, e.g. a Desktop resume, omit the digest by design); a bare uid
-        copy may predate any number of rewrites, so it is cloned."""
+        (an in-place edit that shortens it). Only the stored-row digest a flushed dict carries settles it: a
+        mismatch means the row was rewritten after the copy. A copy without one (a bare uid copy, or a
+        row-addressed load, which omits the digest by design) may predate any number of rewrites, so the row
+        is cloned: a duplicate, never an older instruction in place of the current one."""
+        # Runtime import avoids the transcript_repair -> hermes_state_messages module cycle.
+        from agent.transcript_repair import transcript_row_snapshot
+
         snapshot = held.get(DB_ROW_SNAPSHOT)
-        if isinstance(snapshot, str):
-            # Runtime import avoids the transcript_repair -> hermes_state_messages module cycle.
-            from agent.transcript_repair import transcript_row_snapshot
+        return isinstance(snapshot, str) and snapshot == transcript_row_snapshot(row)
 
-            return snapshot == transcript_row_snapshot(row)
-        return addressed
-
-    def _rewrite_explains(self, row, held: dict[str, Any], addressed: bool) -> bool:
+    def _rewrite_explains(self, row, held: dict[str, Any]) -> bool:
         """True when *held* differs from stored *row* only the way the compressor rewrites a carry it keeps:
         image parts replaced by text placeholders, or, for a copy of the row's current version, the row's
         text kept verbatim as whole lines inside a longer text (a summary merged in, prior-context header and
-        markers around it). The summary flag alone is not enough: a flagged copy taken before an in-place
-        rewrite of the row would put the older text back."""
+        markers around it); and its sidecars still replay the row's. The summary flag alone is not enough: a
+        flagged copy taken before an in-place rewrite of the row would put the older text back."""
         role = row["role"]
         if (held.get("role"), held.get("tool_call_id") or None) != (role, row["tool_call_id"] or None):
             return False
@@ -213,9 +202,11 @@ class SessionCoverageMixin:
             return False
         stored = self._loaded_view_content(role, self._decode_content(row["content"]))
         content = self._loaded_view_content(role, held.get("content"))
+        if not self._replays_as(row, held, stored == content):
+            return False
         if _images_replaced(stored, content):
             return True
-        if not self._copy_of_current_row(row, held, addressed):
+        if not self._copy_of_current_row(row, held):
             return False
         stored_text = _text_of(stored)
         return bool(stored_text.strip()) and _holds_as_block(stored_text, _text_of(content))

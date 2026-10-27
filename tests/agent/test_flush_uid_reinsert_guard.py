@@ -187,3 +187,24 @@ def test_restore_normalised_rows_are_not_reinserted_but_edits_land(tmp_path, tur
     edited["content"] += " (edited)"
     agent._flush_messages_to_session_db(live + restored + [edited])
     assert edited["content"] in [m["content"] for m in db.get_messages_as_conversation(sid)]
+
+
+@pytest.mark.parametrize("field, before, after", [
+    ("api_content", "wire bytes v1", "wire bytes v2"),
+    ("codex_reasoning_items", [{"type": "reasoning", "encrypted_content": "enc-v1"}],
+     [{"type": "reasoning", "encrypted_content": "enc-v2"}]),
+], ids=["api_content", "codex_reasoning_items"])
+def test_restored_row_with_a_new_replay_sidecar_is_stored(tmp_path, field, before, after):
+    """The re-insert guard skips only a copy that replays exactly like its row: a restored dict whose wire
+    sidecar or encrypted reasoning changed carries a new model input, so the flush stores it."""
+    agent, db = _make_agent_with_db(tmp_path)
+    sid = agent.session_id
+    agent._flush_messages_to_session_db([{"role": "user", "content": "q", "timestamp": 1.0},
+                                         {"role": "assistant", "content": "answer", "timestamp": 2.0, field: before}])
+    restored = [{k: v for k, v in m.items() if not k.startswith("_")} for m in db.get_messages_as_conversation(sid)]
+    assert restored[-1].get(field) == before
+
+    restored[-1][field] = after
+    agent._flush_messages_to_session_db(restored)
+
+    assert after in [m.get(field) for m in db.get_messages_as_conversation(sid)]

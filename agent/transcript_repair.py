@@ -33,6 +33,13 @@ _METADATA_COLUMNS = frozenset(
 )
 # The ownership version: what we last committed for the payload the sanitizer / live edits change.
 _OWNED_COLUMNS = tuple(c for c in _REPAIR_COLUMNS if c not in _METADATA_COLUMNS)
+# What a replay of the row sends: the owned payload plus the two metadata columns the provider request reads back
+# (``api_content`` replaces the content bytes, ``codex_reasoning_items`` is replayed reasoning). A copy that equals
+# the row on these carries no new information; a metadata write stays outside the ownership version above.
+_REPLAY_COLUMNS = _OWNED_COLUMNS + ("api_content", "codex_reasoning_items")
+# The replayed reasoning carriers among them; a compaction claim checks these plus ``api_content`` (it compares
+# the content itself, and the compressor may rewrite the rest of a carry's columns).
+REPLAY_SIDECARS = ("reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items", "codex_message_items")
 # Presentation-only metadata a matched (ours) row may hand to a live dict that lacks it.
 _LIVE_MISSING_METADATA = ("display_kind", "display_metadata")
 # ``message_id`` is identity the flush derived from the live dict (int there, TEXT in SQLite): never synced.
@@ -157,7 +164,7 @@ def _same_as_stored(
     serialize_message_fn: Callable[[dict[str, Any], float], Mapping[str, Any]],
     encode_content_fn: Callable[[Any], Any], decode_content_fn: Callable[[Any], Any],
 ) -> bool:
-    """*msg* serializes to the owned columns of one of its uid's active *rows*: the re-handed copy, not an edit.
+    """*msg* serializes to the replayed columns of one of its uid's active *rows*: the re-handed copy, not an edit.
 
     The row is seen through the restore lens (``_loaded_view_content``: user/assistant text sanitized and
     stripped on load), because that is what the dict was rebuilt from; the dict's own content is never
@@ -172,7 +179,7 @@ def _same_as_stored(
             SessionMessagesMixin._loaded_view_content(row["role"], decode_content_fn(row["content"]))
         ):
             serialized["content"] = row["content"]
-        if all(row[column] == serialized[column] for column in _OWNED_COLUMNS):
+        if all(row[column] == serialized[column] for column in _REPLAY_COLUMNS):
             return True
     return False
 

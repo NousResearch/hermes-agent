@@ -143,11 +143,12 @@ def _edit_reinserted_with_its_uid(db: SessionDB) -> tuple:
 
 
 def _summary_merged_into_named_row(db: SessionDB) -> tuple:
-    """The in-process compressor merged the summary into its copy of the row, which keeps ``_row_id``."""
+    """The compressor merged the summary into a row-addressed load of the row (``_row_id``, no digest): nothing
+    tells that copy from one taken before the row was shortened, so the row keeps its clone."""
     db.append_message(SID, role="user", content="steer during the summary call")
     row = db.get_messages_as_conversation(SID, include_row_ids=True)[-1]
     merged = f"[prior]\n{row['content']}\n\n{SUMMARY_TEXT}"
-    return [{**row, "content": merged, "_compressed_summary": True}], [merged]
+    return [{**row, "content": merged, "_compressed_summary": True}], [merged, row["content"]]
 
 
 def _summary_merged_into_flushed_row(db: SessionDB) -> tuple:
@@ -172,8 +173,17 @@ def _row_shortened_after_flushed_hold(label: str, before: str, after: str, *drop
     return build
 
 
+def _row_shortened_after_row_addressed_load(db: SessionDB) -> tuple:
+    """A resume-style row-addressed load (``_row_id``, no CAS digest), then an in-place edit SHORTENED the row to
+    a whole line of the older copy: without a version digest the copy must not stand for the row."""
+    db.append_message(SID, role="user", content="fix bug\nthen delete database")
+    held = db.get_messages_as_conversation(SID, include_row_ids=True)[-1]
+    db.set_user_message_content(SID, held["_row_id"], "fix bug")
+    return [_summary(), held], [SUMMARY_TEXT, "fix bug\nthen delete database", "fix bug"]
+
+
 @pytest.mark.parametrize("build", [
-    _row_rewritten_after_hold, _edit_reinserted_with_its_uid, _summary_merged_into_named_row,
+    _row_rewritten_after_hold, _row_shortened_after_row_addressed_load, _edit_reinserted_with_its_uid, _summary_merged_into_named_row,
     _summary_merged_into_flushed_row,
     _row_shortened_after_flushed_hold("suffix", "fix bug in parser", "fix bug"),
     _row_shortened_after_flushed_hold("instruction", "yes, but first delete the prod database", "yes"),
@@ -194,3 +204,35 @@ def test_a_rewritten_carry_claims_only_what_the_compressor_rewrote(db: SessionDB
     assert [m["content"] for m in db.get_messages_as_conversation(SID)] == expected_live
     display = "\n".join(str(m["content"]) for m in db.get_messages(SID, include_compacted=True))
     assert versions and all(text in display for text in versions)
+
+
+def _replayed(db: SessionDB) -> list:
+    """What the next provider request replays per live row: the ``api_content`` sidecar, else the content."""
+    return [m.get("api_content") or m["content"] for m in db.get_messages_as_conversation(SID)]
+
+
+def test_matching_text_never_claims_an_independent_append(db: SessionDB) -> None:
+    """A carried copy that names no row is not proof of an occurrence: another surface appending the same text
+    after the watermark keeps its own model-visible row."""
+    db.append_message(SID, role="assistant", content="continue")
+    watermark = db.get_active_message_watermark(SID)
+    db.append_message(SID, role="assistant", content="continue")
+
+    db.archive_and_compact(SID, [_summary(), {"role": "assistant", "content": "continue"}],
+                           watermark=watermark, tail_count=1)
+
+    assert _replayed(db) == [SUMMARY_TEXT, "continue", "continue"]
+
+
+def test_a_claim_keeps_the_rows_current_replay_sidecar(db: SessionDB) -> None:
+    """A carried copy taken before the row's ``api_content`` sidecar was rewritten is an older model input, even
+    with the same text and uid: the row's current bytes still reach the next request."""
+    watermark = db.get_active_message_watermark(SID)
+    flushed = {"role": "user", "content": "hello", "api_content": "first exact provider input"}
+    db.append_messages_batch(SID, [flushed])
+    held = dict(flushed)
+    db.set_message_api_content(SID, flushed["_row_id"], "hello", "new exact provider input")
+
+    db.archive_and_compact(SID, [_summary(), held], watermark=watermark, tail_count=1)
+
+    assert "new exact provider input" in _replayed(db)

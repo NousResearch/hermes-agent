@@ -457,7 +457,11 @@ export const cs = defineLocale({
     hideFromSidebar: 'Skrýt z postranního panelu',
     toggleTakesEffectAfterRestart: 'Uloženo — změnu použijete restartem brány.',
     updateConsentBody: (name, sha) =>
-      `Nová připnutá verze pluginu ${name} (${sha}) přidává rozhraní, která v instalované verzi nejsou. Použijte ji jen tehdy, pokud jim důvěřujete:`
+      `Nová připnutá verze pluginu ${name} (${sha}) přidává rozhraní, která v instalované verzi nejsou. Použijte ji jen tehdy, pokud jim důvěřujete:`,
+    updateScanBody: (name, count) =>
+      `Bezpečnostní kontrola našla v novém kódu pluginu ${name} ${count} ${count === 1 ? 'nález' : count >= 2 && count <= 4 ? 'nálezy' : 'nálezů'}. Aktualizujte jen tehdy, pokud zdroji důvěřujete:`,
+    updateScanBlocked: name =>
+      `Bezpečnostní kontrola označila nový kód pluginu ${name} jako nebezpečný. Aktualizace nebyla použita.`
   },
 
   skills: {

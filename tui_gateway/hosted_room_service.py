@@ -52,11 +52,14 @@ def attempt_action(kind: str, task: Mapping[str, Any]) -> dict[str, Any]:
 def _discussion_limits(root: Path) -> discussion.DiscussionLimits:
     """Read the room owner's config, never the current member's profile scope. A malformed value
     keeps today's defaults (logged) rather than taking every room on this store offline."""
-    from gateway.run import _profile_runtime_scope
     from hermes_cli.config_effective import load_user_config_effective
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
-    with _profile_runtime_scope(root, hydrate_secrets=False):
-        config = load_user_config_effective()
+    token = set_hermes_home_override(str(root))
+    try:
+        config = load_user_config_effective(root / "config.yaml")
+    finally:
+        reset_hermes_home_override(token)
     try:
         rooms = config.get("hosted_rooms", {})
         if not isinstance(rooms, Mapping):

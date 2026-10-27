@@ -216,6 +216,14 @@ class _Relay:
                 self.emit("message.complete", self.sid, {"text": ""})
 
 
+def forward_rpc(home: Path, endpoint, method: str, params: dict) -> Any:
+    """One request/answer RPC on the owner serving ``home`` (Group Chat calls, WA-19)."""
+    async def call():
+        async with connect_owner(home, endpoint) as client:
+            return await client.rpc(method, **params)
+    return asyncio.run(call())
+
+
 def forward_prompt(sid: str, session: dict, text: str, *, emit=None, home: Path | None = None) -> dict:
     """Admit ``text`` into the owner's FIFO for this session; the owner's receipt.
 

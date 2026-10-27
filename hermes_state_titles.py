@@ -173,7 +173,10 @@ class SessionTitlesMixin:
         Equal-authority refreshes and ``derived`` to ``llm`` upgrades are allowed;
         user/legacy titles and higher-authority automatic titles are left untouched.
         The read and write share one exact-value compare-and-swap transaction, so a
-        concurrent user rename wins.
+        concurrent user rename wins. The duplicate-title check runs inside that same
+        write transaction (``BEGIN IMMEDIATE`` serializes refreshes against every
+        other title writer), so two concurrent refreshes can never both pass the
+        check and double-write one title.
         """
         title = self.sanitize_title(title)
         if title is None:
@@ -224,7 +227,12 @@ class SessionTitlesMixin:
                     if cleared != 1:
                         return 0
                 else:
-                    raise ValueError(f"Title '{title}' is already in use by session {conflict_id}")
+                    # A non-lineage holder is a transient condition for an automatic
+                    # refresh (the other session may be renamed or re-titled later,
+                    # or a concurrent refresh just landed this very title): skip
+                    # this refresh (keep the current title) instead of raising —
+                    # the caller already treats False as "nothing changed".
+                    return 0
             return conn.execute(
                 "UPDATE sessions SET title = ?, title_source = ? WHERE id = ? AND title IS ? AND title_source IS ?",
                 (title, source, session_id, current["title"], current["title_source"]),

@@ -29,6 +29,8 @@ def _handle_admitted_request(req: dict) -> dict | None:
         params, problem = _contracts.validate_params(contract, params)
         if problem is not None:
             return _err(rid, 4000, problem)
+    if (refusal := _bound_legacy_refusal(current_transport(), method, rid)) is not None:
+        return refusal
     token = _current_rpc_method.set(method)
     try:
         response = fn(rid, params)
@@ -52,6 +54,8 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
     try:
         from tui_gateway import server_requests
         if server_requests.is_response_frame(req):
+            if getattr(t, "_conditional_session_mode", False):
+                return None  # bound answers use invoke_bound; no raw-response bypass
             # The renderer answering one of OUR requests (clarify, approval, …): no response frame goes back.
             if not server_requests.resolve_response(req, t) and not _relay_compute_host_response(req):
                 logger.debug("dropping response for unknown server request id=%r", req.get("id"))

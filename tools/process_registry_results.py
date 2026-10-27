@@ -46,7 +46,24 @@ def _result_paths():
     return [path for _, path in retained[:MAX_RETAINED_RESULTS]]
 
 
+def _refresh_complete_payload(session, record):
+    """Retry actual final data collected while this snapshot waited for file locks."""
+    from agent.redact import redact_terminal_output
+    from tools.process_registry import MAX_OUTPUT_CHARS
+    if record['result_complete']:
+        return
+    with session._lock:
+        if not session._result_complete:
+            return
+        for key in ('exit_code', 'completion_reason', 'termination_source'):
+            record[key] = getattr(session, key)
+        record['output'] = session.output_buffer[-MAX_OUTPUT_CHARS:]
+        record['result_complete'] = True
+    record['output'] = redact_terminal_output(record['output'], record['command'], force=True)
+
+
 def save_completed_result(session) -> bool:
+    """Retain the snapshot; return true only for a complete original result."""
     from agent.redact import redact_sensitive_text, redact_terminal_output
     from tools.process_registry import MAX_OUTPUT_CHARS
 
@@ -84,6 +101,10 @@ def save_completed_result(session) -> bool:
             inherit_job_scope([record], previous)
             with _FileLock(directory / '.lock'):
                 path = directory / f"{session.id}.json"
+                # This writer may have waited behind the original reader. Retry its
+                # actual complete payload, never turn the old partial snapshot into
+                # durability evidence merely because writing that snapshot succeeded.
+                _refresh_complete_payload(session, record)
                 receipts = completed_ownership([record])
                 merge_ownership([record], receipts)
                 inherit_job_scope([record], receipts)
@@ -106,7 +127,11 @@ def save_completed_result(session) -> bool:
                 for field in OWNERSHIP_FIELDS:
                     setattr(session, field, record[field])
             session.completion_consumed |= record['completion_consumed']
-            session._result_persisted_generation = record['ownership_generation']
+            session._result_persisted_generation = record['ownership_generation'] if record['result_complete'] else -1
+            if not record['result_complete']:
+                session._scope_stop_pending = True
+        if not record['result_complete']:
+            return False
         from tools.process_registry_handoff import settle_persisted_scope, notify_completion_observers
         settle_persisted_scope(session, record)
         notify_completion_observers(session)  # Post-only observers; a caller may hold its registry lock.
@@ -209,7 +234,8 @@ def load_completed_results(prefix: str = "", *, owns_entry=None, strict=False) -
             )
             session._completion_event.set()
             session._result_complete = record.get('result_complete') is True
-            session._result_persisted_generation = session.ownership_generation
+            session._result_persisted_generation = session.ownership_generation if session._result_complete else -1
+            session._scope_stop_pending |= not session._result_complete
             results[session.id] = session
         except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
             if strict:

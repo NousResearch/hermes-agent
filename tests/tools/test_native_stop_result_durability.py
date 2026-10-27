@@ -147,7 +147,8 @@ async def test_a_saved_partial_snapshot_cannot_stand_in_for_the_failed_final_res
             await authority.interrupt(ACTOR, REF, 0)
         await _submit(authority, 'pending-human')
         await asyncio.wait_for(authority.sessions['s'].task, 10)
-        assert own._result_persisted_generation == 0  # An earlier partial snapshot really persisted.
+        assert own._result_persisted_generation == -1  # A partial write never certifies the original final result.
+        assert json.loads((tmp_path / 'logs' / 'process-results' / (own.id + '.json')).read_text())['result_complete'] is False
         def refuse_final(*args, **kwargs):
             raise PermissionError('finite final original-result refusal')
         monkeypatch.setattr(results, 'atomic_json_write', refuse_final)

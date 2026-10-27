@@ -1,5 +1,6 @@
 """Known turn results settle independently of native resource cleanup uncertainty."""
 import asyncio
+import json
 import shlex
 import sys
 import threading
@@ -124,6 +125,104 @@ async def test_active_stop_result_then_cleanup_wakes_human(tmp_path, monkeypatch
         assert process_stop_pending(db,'s') is None
     finally:
         finish_turn.set(); release_reader.set()
+        await asyncio.to_thread(own._completion_event.wait,5)
+        await asyncio.to_thread(registry.kill_process,own.id)
+        db.close()
+
+
+@pytest.mark.platforms('linux')
+@pytest.mark.asyncio
+@pytest.mark.parametrize('cached_writer', [False, True], ids=['actual-full-refresh', 'still-partial-cached-writer'])
+async def test_partial_writer_cannot_wake_human_before_complete_result_is_durable(tmp_path, monkeypatch, cached_writer):
+    from gateway.session_ancillary import process_stop_pending
+    from gateway.session_context import set_session_vars, clear_session_vars
+    from hermes_state_runtime import RuntimeStoreError
+    from tools import process_registry as module
+    from tools import process_registry_results as results
+    from tools import process_registry_handoff as handoff
+    from agent import redact
+    from tests.waiting import async_wait_until
+    db, authority = _authority(tmp_path, monkeypatch)
+    registry = module.ProcessRegistry()
+    monkeypatch.setattr(module, 'process_registry', registry)
+    entered, release_reader, captured, release_writer = [threading.Event() for _ in range(4)]
+    ingest, original_redact = registry._ingest_output, redact.redact_terminal_output
+    atomic_write, notify = results.atomic_json_write, handoff.notify_completion_observers
+    def pause_reader(session, text, **kwargs):
+        if 'original final output' in text:
+            entered.set()
+            assert release_reader.wait(30)
+        ingest(session, text, **kwargs)
+    def pause_writer(text, *args, **kwargs):
+        if threading.current_thread().name == 'delayed-partial-result':
+            captured.set()
+            assert release_writer.wait(30)
+        return original_redact(text, *args, **kwargs)
+    def fail_final(path, *args, **kwargs):
+        if threading.current_thread() is own._reader_thread:
+            raise PermissionError('finite original final-result refusal')
+        return atomic_write(path, *args, **kwargs)
+    def checkpoint_before_notification(session):
+        if threading.current_thread().name == 'delayed-partial-result':
+            registry._write_checkpoint()
+        notify(session)
+    monkeypatch.setattr(registry, '_ingest_output', pause_reader)
+    monkeypatch.setattr(redact, 'redact_terminal_output', pause_writer)
+    monkeypatch.setattr(handoff, 'notify_completion_observers', checkpoint_before_notification)
+    tokens = set_session_vars(session_id='s', session_key='route')
+    try:
+        own = registry.spawn_local(shlex.join([sys.executable, '-c', 'print("original final output",flush=True); raise SystemExit(7)']),cwd=str(tmp_path),task_id='worker',session_key='route')
+    finally:
+        clear_session_vars(tokens)
+    executed=[]
+    async def execute(owner, ref, row):
+        path=tmp_path/'logs'/'process-results'/(own.id+'.json')
+        executed.append({'request': row['request_id'], 'retained': json.loads(path.read_text())})
+        return 'continued'
+    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    writer=None
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        await asyncio.to_thread(own.process.wait, 5)
+        registry.poll(own.id)
+        with pytest.raises(RuntimeStoreError, match='process_stop_unknown'):
+            await authority.interrupt(ACTOR, REF, 0)
+        await _submit(authority, 'queued-human')
+        await asyncio.wait_for(authority.sessions['s'].task,10)
+        assert not executed and process_stop_pending(db,'s')
+        cached = results.load_completed_results(owns_entry=lambda row: row['id'] == own.id)[own.id] if cached_writer else own
+        writer=threading.Thread(target=lambda:results.save_completed_result(cached),name='delayed-partial-result')
+        writer.start()
+        assert await asyncio.to_thread(captured.wait,5)
+        monkeypatch.setattr(results,'atomic_json_write',fail_final)
+        release_reader.set()
+        assert await asyncio.to_thread(own._completion_event.wait,5)
+        assert own._result_persisted_generation == -1
+        release_writer.set()
+        await asyncio.to_thread(writer.join,5)
+        if cached_writer:
+            barrier = asyncio.Event()
+            asyncio.get_running_loop().call_soon(barrier.set)
+            await barrier.wait()
+            assert not executed and process_stop_pending(db, 's')
+            assert cached._result_persisted_generation == own._result_persisted_generation == -1
+            assert cached._scope_stop_pending and own._scope_stop_pending
+            registry._write_checkpoint()
+            assert any(row['session_id'] == own.id for row in json.loads(module._checkpoint_path().read_text()))
+            restored = results.load_completed_results(owns_entry=lambda row: row['id'] == own.id)[own.id]
+            assert not restored._result_complete and restored._result_persisted_generation == -1
+            assert restored._scope_stop_pending
+            monkeypatch.setattr(results, 'atomic_json_write', atomic_write)
+            assert results.save_completed_result(own)  # Actual complete retry; no new input or grant.
+        await async_wait_until(lambda: len(executed) == 1 and authority.sessions['s'].task.done(), timeout=5)
+        print('NATIVE_REVIEW_EVIDENCE', {'executed': executed, 'stop_marker': process_stop_pending(db,'s'), 'checkpoint': json.loads(module._checkpoint_path().read_text())})
+        assert executed[0]['retained']['result_complete'] is True
+        assert 'original final output' in executed[0]['retained']['output']
+        assert process_stop_pending(db, 's') is None
+    finally:
+        release_reader.set(); release_writer.set()
+        if writer: await asyncio.to_thread(writer.join,5)
+        monkeypatch.setattr(results,'atomic_json_write',atomic_write)
         await asyncio.to_thread(own._completion_event.wait,5)
         await asyncio.to_thread(registry.kill_process,own.id)
         db.close()

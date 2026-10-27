@@ -208,7 +208,7 @@ def notify_completion_observers(session):
 def settle_persisted_scope(session, record):
     """A same-owner durable original result may retire already-quiescent native evidence."""
     from tools.process_registry_job import job_quiescent
-    if not session._completion_event.is_set() or not job_quiescent(session):
+    if record.get('result_complete') is not True or not session._completion_event.is_set() or not job_quiescent(session):
         return
     expected = tuple(record.get(field) for field in (*OWNERSHIP_FIELDS, 'pid', 'host_start_time'))
     with session._lock:

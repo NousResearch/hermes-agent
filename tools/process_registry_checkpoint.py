@@ -164,6 +164,7 @@ class ProcessCheckpointMixin:
                            or not job_quiescent(entry) or not (
                                persisted.get(entry['session_id'], -1) == entry.get('ownership_generation', 0) or (
                                (receipt := retained.get(entry['session_id']))
+                               and receipt.get('result_complete') is True
                                and all(entry.get(field) == receipt.get(field)
                                        for field in (*OWNERSHIP_FIELDS, 'pid', 'host_start_time'))))]
                 # Completed output history cannot discharge an opaque backend

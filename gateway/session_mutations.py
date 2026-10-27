@@ -347,8 +347,22 @@ def _project_committed(authority, ref, operation, result):
         # Every viewer repaints its model, reasoning pill or workspace from the published policy,
         # as main's _emit_session_info did after the live change.
         from gateway.session_local import local_session_info
-        authority.sessions[ref.session_id].event_stream.publish(
-            ref.session_id, local_session_info(authority, ref), event_type='session.info')
+        live = authority.sessions[ref.session_id]
+        info = local_session_info(authority, ref)
+        # This is an IDLE snapshot, so it must name the generation it belongs to: a desktop viewer
+        # fences lifecycle frames against the execution it has already seen and drops an unstamped
+        # `session.info` as a late straggler once a turn has run
+        # (apps/desktop/src/lib/execution-authority.ts, acceptUnstampedLifecycle). Without the
+        # stamp the committed pick lands on the agent but never repaints, so the pill keeps the
+        # old model until the next turn.
+        handle = authority._handle(ref)
+        info['execution_generation'] = handle.execution_generation
+        info['revision'] = handle.revision
+        if operation == 'model' and result.get('provider'):
+            # The pill's provider line reads payload.provider; local_session_info reports only
+            # the model (the turn-time publication adds the provider separately).
+            info['provider'] = result['provider']
+        live.event_stream.publish(ref.session_id, info, event_type='session.info')
     if operation == 'branch':
         from gateway.session_local_recovery import restore_local_session
         restore_local_session(authority, result['branched_session_id'])

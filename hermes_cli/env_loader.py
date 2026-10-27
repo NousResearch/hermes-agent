@@ -524,8 +524,8 @@ def selected_config_backend_name(home: Path | None = None) -> str:
     return (_bootstrap_env(home).get(BACKEND_ENV) or "").strip().lower() or "file"
 
 
-def apply_config_bootstrap_env(remote_names, home: Path | None = None, project_env: Path | None = None) -> None:
-    """Publish ``remote_names()`` (the remote backend's deployment and plane credential, D26/D32) from the
+def apply_config_bootstrap_env(backend_names, home: Path | None = None, project_env: Path | None = None) -> None:
+    """Publish ``backend_names(kind)`` (the selected backend's deployment and credential, D26/D32) from the
     launch home's ``.env`` and the managed ``.env``, with the values ``load_hermes_dotenv`` gives
     them. Called before the first config read of a process, which can come before
     ``load_hermes_dotenv`` (``hermes_cli.config`` reads config at import time): the backend is
@@ -540,10 +540,8 @@ def apply_config_bootstrap_env(remote_names, home: Path | None = None, project_e
     if worker_config_snapshot() is not None:
         return
     env = _bootstrap_env(home, project_env)
-    if (env.get(BACKEND_ENV) or "").strip().lower() == "remote":
-        names = remote_names()
-    else:
-        names = {BACKEND_ENV}  # the selector itself, so a file deployment is not read as remote meanwhile
+    # The selector itself always, so a file deployment is not read as another kind meanwhile.
+    names = {BACKEND_ENV} | set(backend_names((env.get(BACKEND_ENV) or "").strip().lower() or "file"))
     for name in names:
         value = env.get(name)
         if value is not None and os.environ.get(name) != value:

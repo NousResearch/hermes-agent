@@ -21,6 +21,11 @@ def get_remote_backend() -> RemoteBackend:
     return _BACKEND
 
 
+def get_backend() -> RemoteBackend:
+    """The entry point ``hermes_cli.config_backend`` resolves ``HERMES_CONFIG_BACKEND=remote`` to."""
+    return get_remote_backend()
+
+
 def _reset_for_tests() -> None:
     global _BACKEND
     with _LOCK:
@@ -29,4 +34,4 @@ def _reset_for_tests() -> None:
         _BACKEND = None
 
 
-__all__ = ["RemoteBackend", "get_remote_backend"]
+__all__ = ["RemoteBackend", "get_backend", "get_remote_backend"]

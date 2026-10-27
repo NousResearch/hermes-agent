@@ -7,6 +7,7 @@ level with CAS (D10). Nothing is read from or written to a local ``config.yaml``
 """
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import copy
 import itertools
@@ -736,6 +737,25 @@ class RemoteBackend:
     def deployment_env_names(self) -> frozenset:
         from hermes_cli.config_backend import BACKEND_ENV
         return frozenset({BACKEND_ENV, client.URL_ENV, client.INSTANCE_ENV, POLL_ENV})
+
+    def bootstrap_env_names(self) -> frozenset:
+        return PLANE_CREDENTIAL_ENV_NAMES | {POLL_ENV}  # the deployment (selector, plane, instance) and the credential
+
+    @contextlib.contextmanager
+    def preserve_read_base(self):
+        held = _READ_BASE.get()
+        try:
+            yield
+        finally:
+            if held is not None:
+                _READ_BASE.set(held)
+
+    def doctor_warnings(self, home: Path) -> tuple:
+        managed = managed_config_file()
+        if managed is None:
+            return ()
+        return ((f"{managed} exists but is ignored in remote config mode", "(remove it)",
+                 f"Remove {managed}: remote config mode takes config and locks only from Remote Config"),)
 
     def boot(self, home: Path) -> None:
         """Design §4.4 steps 2-4: fetch this home's layer (fail closed) and flag a managed file."""

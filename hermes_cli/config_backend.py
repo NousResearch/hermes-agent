@@ -10,8 +10,9 @@ already keys on the config path, so a backend keeps per-home state.
 the version is the ``file_signature`` stat tuple, reads are ``open`` + ``fast_safe_load`` and raise
 exactly what those raise (``FileNotFoundError`` for an absent file, ``OSError``, YAML errors), and
 writes are the ruamel round-trip writers in ``utils``. Callers keep their own error handling, so a
-backend whose layer always exists simply never takes the "no file" branches. The remote backend
-(``HERMES_CONFIG_BACKEND=remote``) lives in ``plugins/config_backends/remote/``.
+backend whose layer always exists simply never takes the "no file" branches. Every other kind
+(``HERMES_CONFIG_BACKEND=<kind>``, e.g. ``remote``) is the package ``plugins/config_backends/<kind>/``,
+whose ``get_backend()`` returns the instance; this module names no backend beyond that.
 
 The managed scope (``/etc/hermes``) is NOT a backend concern: it stays an overlay applied on top of
 whatever user layer the backend returns.
@@ -20,7 +21,9 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import importlib
 import os
+import re
 import sys
 import threading
 from dataclasses import dataclass, field
@@ -108,6 +111,21 @@ class ConfigBackend(Protocol):
 
     def deployment_env_names(self) -> frozenset:
         """Non-secret env names that select and address this backend (see :func:`deployment_env_names`)."""
+        ...
+
+    def bootstrap_env_names(self) -> frozenset:
+        """Env names published from the launch home's and the managed ``.env`` before the first
+        config read (design §4.4 steps 1-2): what this backend needs to select, address and
+        authenticate itself before any config exists."""
+        ...
+
+    def preserve_read_base(self) -> contextlib.AbstractContextManager:
+        """A context in which a read does not become the base a later document save is diffed
+        against (see :func:`keeping_read_base`)."""
+        ...
+
+    def doctor_warnings(self, home: Path) -> tuple:
+        """``(warning, hint, issue)`` triples ``hermes doctor`` reports after a successful read."""
         ...
 
     def apply_in_memory(self, home: Path, doc: dict) -> None:
@@ -236,6 +254,15 @@ class FileBackend:
     def deployment_env_names(self) -> frozenset:
         return frozenset()
 
+    def bootstrap_env_names(self) -> frozenset:
+        return frozenset()
+
+    def preserve_read_base(self) -> contextlib.AbstractContextManager:
+        return contextlib.nullcontext()
+
+    def doctor_warnings(self, home: Path) -> tuple:
+        return ()
+
     def apply_in_memory(self, home: Path, doc: dict) -> None:
         raise NotImplementedError("the file backend persists migrations to config.yaml")
 
@@ -254,10 +281,13 @@ _BOOTSTRAPPED = False
 _BOOTSTRAP_OWNER: Optional[int] = None
 
 
-def _bootstrap_names() -> frozenset:
-    from plugins.config_backends.remote.backend import POLL_ENV
-    from plugins.config_backends.remote.credentials import PLANE_CREDENTIAL_ENV_NAMES
-    return PLANE_CREDENTIAL_ENV_NAMES | {POLL_ENV}
+def _bootstrap_names(kind: str) -> frozenset:
+    """The env names backend *kind* (as the ``.env`` layers select it) needs before the first read;
+    none for a kind this build lacks (selection refuses it afterwards)."""
+    try:
+        return _backend_for(kind).bootstrap_env_names()
+    except ConfigBackendUnavailable:
+        return frozenset()
 
 
 def _ensure_bootstrap_env() -> None:
@@ -285,7 +315,7 @@ def _bootstrap(home: Optional[Path], project_env: Optional[Path], *, once: bool)
         _BOOTSTRAP_OWNER = threading.get_ident()
         try:
             from hermes_cli.env_loader import apply_config_bootstrap_env
-            # names resolved only for a remote deployment
+            # names resolved only for the kind the .env layers select
             apply_config_bootstrap_env(_bootstrap_names, home, project_env)
         except ImportError:  # no usable python-dotenv (a bare installer interpreter): no .env loads either
             pass
@@ -303,15 +333,35 @@ def get_config_backend() -> ConfigBackend:
     select it (D11). Raises :class:`ConfigBackendUnavailable` for a backend this build lacks.
     """
     _ensure_bootstrap_env()
-    kind = os.environ.get(BACKEND_ENV, "").strip().lower() or "file"
+    return _backend_for(os.environ.get(BACKEND_ENV, "").strip().lower() or "file")
+
+
+# A kind is one package name under plugins/config_backends/: never a dotted or relative path.
+_KIND_RE = re.compile(r"[a-z][a-z0-9_]{0,63}")
+_BACKENDS_PACKAGE = "plugins.config_backends"
+
+
+def _backend_for(kind: str) -> ConfigBackend:
+    """``file``, or the instance ``plugins.config_backends.<kind>.get_backend()`` returns. The
+    package is imported directly, never through the general plugin loader (which reads config, D11)."""
     if kind == "file":
         return _FILE_BACKEND
-    if kind == "remote":
-        # Imported directly, never through the general plugin loader (which reads config, D11).
-        from plugins.config_backends.remote import get_remote_backend
-        return get_remote_backend()
-    raise ConfigBackendUnavailable(
-        f"{BACKEND_ENV}={kind!r} is not a config backend (expected 'file' or 'remote').")
+    unknown = f"{BACKEND_ENV}={kind!r} is not a config backend this build provides (expected 'file' or 'remote')."
+    if not _KIND_RE.fullmatch(kind):
+        raise ConfigBackendUnavailable(unknown)
+    name = f"{_BACKENDS_PACKAGE}.{kind}"
+    module = sys.modules.get(name)
+    if module is None:
+        try:
+            module = importlib.import_module(name)
+        except ImportError as exc:
+            if exc.name not in (name, _BACKENDS_PACKAGE, "plugins"):
+                raise  # the backend exists but is broken: show that, not "unknown"
+            raise ConfigBackendUnavailable(unknown) from exc
+    get_backend = getattr(module, "get_backend", None)
+    if not callable(get_backend):
+        raise ConfigBackendUnavailable(unknown)
+    return get_backend()
 
 
 class _ExplicitFile(FileBackend):
@@ -444,14 +494,9 @@ def write_config_keys(config_path: PathLike, updates: Mapping[str, Any]) -> None
 def keeping_read_base(read):
     """Run ``read()`` (a pre-write guard read) without making it the read a later document save
     is diffed against: the caller's document came from ITS earlier read (Remote Config). A
-    context that never read keeps the guard read. No-op unless the remote backend is loaded."""
-    mod = sys.modules.get("plugins.config_backends.remote.backend")
-    held = mod._READ_BASE.get() if mod is not None else None
-    try:
+    context that never read keeps the guard read. No-op for the file backend."""
+    with get_config_backend().preserve_read_base():
         return read()
-    finally:
-        if held is not None:
-            mod._READ_BASE.set(held)
 
 
 # Dotted prefixes a document save in this context must write whole: a lock on a changed key under

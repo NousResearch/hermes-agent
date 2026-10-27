@@ -363,8 +363,8 @@ def _check_config_file(should_fix: bool, f: Finding) -> None:
 
 
 def _check_config_backend(backend, home, f: Finding) -> bool:
-    """Remote mode (§4.7): report where config comes from instead of the file checks, and flag a
-    managed /etc/hermes/config.yaml, which remote mode ignores (D18)."""
+    """A backend without a config file (§4.7): report where config comes from instead of the file
+    checks, plus the backend's own warnings (remote mode flags an ignored managed config.yaml, D18)."""
     try:
         backend.read_user_doc(home)
         check_ok(f"Config backend: {backend.describe(home)}")
@@ -372,11 +372,9 @@ def _check_config_backend(backend, home, f: Finding) -> bool:
         check_fail(f"Config backend {backend.name!r} unavailable", str(exc.code or ""))
         f.issues.append(f"Config backend {backend.name!r} cannot serve config for {home}")
         return False
-    from plugins.config_backends.remote.backend import managed_config_file
-    managed = managed_config_file() if backend.name == "remote" else None
-    if managed is not None:
-        check_warn(f"{managed} exists but is ignored in remote config mode", "(remove it)")
-        f.issues.append(f"Remove {managed}: remote config mode takes config and locks only from Remote Config")
+    for warning, hint, issue in backend.doctor_warnings(home):
+        check_warn(warning, hint)
+        f.issues.append(issue)
     return True
 
 

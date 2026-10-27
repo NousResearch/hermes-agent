@@ -523,6 +523,27 @@ def refused_locked_omission_prefixes() -> tuple[str, ...]:
     return _REFUSE_LOCKED_OMISSIONS.get()
 
 
+# Dotted keys a document save in this context stores at the user layer even when the value equals
+# what an upper level already supplies (an explicit `config set`): the file backend always writes
+# them, and a backend with levels must not drop them as "no change".
+_PINNED_KEYS: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar("config_pinned_keys", default=())
+
+
+@contextlib.contextmanager
+def pinning_keys(*keys: str):
+    """Within the block, a document save stores *keys* (dotted) at the user layer even when
+    unchanged from the inherited value. No-op for the file backend (it writes the whole file)."""
+    token = _PINNED_KEYS.set(_PINNED_KEYS.get() + tuple(keys))
+    try:
+        yield
+    finally:
+        _PINNED_KEYS.reset(token)
+
+
+def pinned_keys() -> tuple[str, ...]:
+    return _PINNED_KEYS.get()
+
+
 def write_changes(config_path: PathLike, changes: Changes) -> None:
     """One :class:`Changes` write. Unlike :func:`write_config_keys`, a ``None`` in ``set`` stores
     an explicit null (Remote Config: "no value", masking an inherited scalar); the file backend

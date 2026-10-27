@@ -3403,7 +3403,9 @@ def set_config_value(key: str, value: str, force: bool = False):
         user_config = _normalize_root_model_keys(user_config)
         key = "model.base_url"
         print("  (note: 'api_base' is an alias — saved as model.base_url)")
-    _write_user_config(config_path, user_config)
+    from hermes_cli.config_backend import pinning_keys
+    with pinning_keys(key):  # an explicit set is stored even when it equals the inherited value
+        _write_user_config(config_path, user_config)
 
     # Keep .env in sync: terminal_tool reads TERMINAL_ENV etc. directly from env vars.
     env_var = terminal_config_env_var_for_key(key)

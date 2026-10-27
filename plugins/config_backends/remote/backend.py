@@ -23,14 +23,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli.config_backend import (
     Changes, ConfigBackendUnavailable, ConfigLockedError, ConfigValueError, ConfigWriteError, UserLayer,
-    refused_locked_omission_prefixes)
+    pinned_keys, refused_locked_omission_prefixes)
 
 from . import client
 from .credentials import PLANE_CREDENTIAL_ENV_NAMES, PlaneCredentialError
 from .diff import (_get_path, _pop_path, _set_path, apply_intent, diff, encode_changes, intent_diff, json_equal,
                    strip_locked, write_check)
 from .paths import Path as KeyPath
-from .paths import PathError, covers, decode, encode, from_dotted
+from .paths import PathError, covering_lock, covers, decode, encode, from_dotted
 from .values import secret_literal_path, to_wire
 
 logger = logging.getLogger(__name__)
@@ -501,7 +501,7 @@ class RemoteBackend:
         re-read doc, with the re-read locks; it never replays the caller's whole document, which
         would turn every key another writer changed meanwhile into an edit of ours."""
         st = self._state(home)
-        intent: Optional[tuple[dict[KeyPath, Any], list[KeyPath]]] = None
+        intent: Optional[tuple[dict[KeyPath, Any], list[KeyPath], frozenset]] = None
         for attempt in (1, 2):
             for _ in range(self._MAX_PREPARE):
                 # Diff against the doc readers get, i.e. migrated in memory (D12) — also after the
@@ -550,13 +550,20 @@ class RemoteBackend:
         base.pop("_config_version", None)
         return base
 
-    def _intent(self, st: _ProfileState, changes: Changes) -> tuple[dict[KeyPath, Any], list[KeyPath]]:
+    def _intent(self, st: _ProfileState, changes: Changes
+                ) -> tuple[dict[KeyPath, Any], list[KeyPath], frozenset]:
         """The key-level edit ``changes`` makes to the last read doc (§15.2 steps 1-5).
 
         A document is diffed against the base THIS context read it from (``_READ_BASE``): a poll
         landing between the caller's read and its save must not turn every key the poll changed
         into an edit of ours, sent with the already-current expectedVersion (no 409 to catch it).
-        A keyed set/unset names its own keys, so it applies to the current base."""
+        A keyed set/unset names its own keys, so it applies to the current base.
+
+        The third item is the leaf paths a keyed ``set`` (or, for a document save, a
+        :func:`~hermes_cli.config_backend.pinning_keys` block) names: they are stored at the profile
+        level even when the value equals the inherited one, as the file backend writes them into
+        ``config.yaml``. Otherwise ``config set k v`` with ``v`` equal to the upper level's value
+        would report success, store nothing, and follow the next upper-level change."""
         base = self._diff_base(st)
         if changes.document is not None:
             read = _read_base_for(st) if _private_for(st) is None else None
@@ -588,15 +595,37 @@ class RemoteBackend:
                       f"{', '.join(sorted(encode(p) for p in dropped))}", file=sys.stderr)
         # Leaf-level: a key added under a section the doc lacked stays a key-level edit, so a
         # retry after 409 keeps the siblings another writer put in that section meanwhile.
-        return intent_diff(base, new)
+        sets, unsets = intent_diff(base, new)
+        pinned: set[KeyPath] = set()
+        named = list(changes.set) + (list(pinned_keys()) if changes.document is not None else [])
+        for key in named:
+            path = from_dotted(key)
+            found, wire = _get_path(new, path)
+            if not found:  # a locked key a document save dropped
+                continue
+            leaves = intent_diff({}, wire, path)[0] if isinstance(wire, dict) and wire else {path: wire}
+            for leaf, leaf_value in leaves.items():
+                sets.setdefault(leaf, leaf_value)
+                pinned.add(leaf)
+        return sets, unsets, frozenset(pinned)
 
-    def _patch_body(self, st: _ProfileState, sets: dict[KeyPath, Any], unsets: list[KeyPath]
+    def _patch_body(self, st: _ProfileState, intent_sets: dict[KeyPath, Any], unsets: list[KeyPath],
+                    pinned: frozenset = frozenset()
                     ) -> Optional[tuple[dict[str, Any], dict[KeyPath, Any], list[KeyPath]]]:
-        """The PATCH body applying the intent to the current doc, or None when that is no change."""
+        """The PATCH body applying the intent to the current doc, or None when that is no change.
+        A *pinned* key equal to the inherited value is still sent, unless a lock already freezes
+        it (nothing to store, and refusing a no-op pick of the locked value helps nobody)."""
         base = self._diff_base(st)
         new = copy.deepcopy(base)
-        apply_intent(new, sets, unsets)
+        apply_intent(new, intent_sets, unsets)
         sets, unsets = diff(base, new)
+        for path in pinned:
+            value = intent_sets[path]
+            if isinstance(value, dict) and not value:
+                continue  # "make this a mapping" (apply_intent): sent above when absent, kept when present
+            if path not in sets and covering_lock(st.locks, path) is None \
+                    and not any(covers(p, path) for p in sets):
+                sets[path] = copy.deepcopy(value)
         refused = write_check(sets, unsets, st.locks)
         if refused is not None:
             raise ConfigLockedError(encode(refused[0]), refused[1],

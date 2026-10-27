@@ -170,7 +170,7 @@ def adaptive_rate_limit_backoff(
 def zai_coding_overload_retry_ceiling(short_attempts: int = _ZAI_CODING_OVERLOAD_SHORT_ATTEMPTS) -> int:
     """Retry-loop ceiling for the full Z.AI overload schedule: one past the last long entry,
     because the loop gives up when ``retry_count >= ceiling`` BEFORE computing the attempt's
-    backoff (the default ``api_max_retries`` of 3 equals ``short_attempts``)."""
+    backoff. The application default must cover this ceiling."""
     return short_attempts + len(_ZAI_CODING_OVERLOAD_LONG_BACKOFF) + 1
 
 

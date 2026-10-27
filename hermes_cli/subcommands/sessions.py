@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Callable
 
 from hermes_cli.subcommands._shared import add_json_flag, add_yes_flag
+from hermes_cli.subcommands.sessions_list import add_sessions_list_parser
 
 
 def _flag(parser, *names, help, **kw):
@@ -37,12 +38,7 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
         description="View and manage the SQLite session store")
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")
 
-    sessions_list = sessions_subparsers.add_parser("list", help="List recent sessions")
-    sessions_list.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")
-    sessions_list.add_argument("--limit", type=int, default=20, help="Max sessions to show")
-    sessions_list.add_argument("--workspace", metavar="NEEDLE",
-        help="Only sessions in one workspace: a git repo root or project dir "
-        "(matched by path substring or basename).")
+    add_sessions_list_parser(sessions_subparsers)
 
     _filter_args = (
         ("--newer-than", dict(metavar="AGE", help="Only match sessions active within the last AGE "

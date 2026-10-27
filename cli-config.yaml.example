@@ -1076,6 +1076,9 @@ group_sessions_per_user: true
 # Uncomment to change the defaults shown; auto_prune: true bounds the file,
 # auto_prune: false keeps every ended session and silences the low-disk prompt.
 # sessions:
+#   # Sort `hermes sessions list` by most recent activity (default) or creation time.
+#   # Accepted values: "last-active", "started". The CLI --sort flag overrides this.
+#   list_sort: "last-active"
 #   auto_prune: false
 #   retention_days: 90
 #   vacuum_after_prune: true

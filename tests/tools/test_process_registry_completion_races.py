@@ -135,8 +135,7 @@ class _ReleaseHookLock:
 @pytest.mark.parametrize("read", [
     lambda registry, sid: registry.poll(sid),
     lambda registry, sid: registry.read_log(sid),
-    lambda registry, sid: registry.kill_process(sid),
-], ids=["poll", "read_log", "kill_exited"])
+], ids=["poll", "read_log"])
 def test_a_snapshot_taken_before_the_reader_finishes_does_not_consume_it(read, monkeypatch):
     """The reader finishes between the snapshot and the consume decision: the decision must
     describe the snapshot returned, so the completion still delivers the whole output."""
@@ -157,6 +156,30 @@ def test_a_snapshot_taken_before_the_reader_finishes_does_not_consume_it(read, m
     assert session.id not in registry._poll_observed
     assert not registry.is_completion_consumed(session.id)
     assert registry.completion_queue.get_nowait()["output"].endswith("FINAL")
+
+
+def test_incomplete_kill_cancels_completion_and_preserves_the_final_output(monkeypatch):
+    """Explicit cancellation suppresses continuation even while cleanup is unknown."""
+    registry = ProcessRegistry()
+    monkeypatch.setattr(registry, "_write_checkpoint", lambda *_a, **_k: None)
+    session = _finalizing_session(registry)
+    session.systemd_unit = 'hermes-worker-proc_finalizing.scope'
+
+    def reader_finishes():
+        session.append_output("FINAL")
+        registry._finish_exited(session, 0)
+
+    session._lock = cast(Any, _ReleaseHookLock(reader_finishes))
+    result = registry.kill_process(session.id)
+    assert result['status'] == 'error' and result['error'] == 'process_stop_unknown'
+    assert session._scope_stop_pending and session.systemd_unit
+    assert session._completion_event.is_set() and session.output_buffer.endswith('FINAL')
+    assert registry.is_completion_consumed(session.id)
+    completion = registry.completion_queue.get_nowait()
+    assert completion['output'].endswith('FINAL')
+    registry.completion_queue.put(completion)
+    registry._completions_restored = True
+    assert registry.drain_notifications(skip_poll_observed=False) == []
 
 
 @pytest.mark.platforms("posix")

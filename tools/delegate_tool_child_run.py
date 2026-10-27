@@ -941,8 +941,14 @@ class _ChildRun:
         worker_thread_holder: dict[str, Optional[threading.Thread]] = {"t": None}
         # Resolved after seed_workspace so a multimodal goal's text part carries the worktree note too.
         _images = list(getattr(child, "_delegate_images", None) or [])
+        # action='continue': the child's saved transcript, so ``self.goal`` (the follow-up) is its next turn,
+        # sent bare. Building the brief still registers its context prefix: the saved first turn starts with
+        # it, so the rebuilt child keeps the cache breakpoint its first run wrote.
+        _history = getattr(child, "_delegate_continue_history", None)
+        resume = {"conversation_history": _history} if isinstance(_history, list) else {}
         from tools.delegate_tool_progress import child_task_message
-        task_text = child_task_message(self.goal, getattr(child, "_delegate_context", None))
+        _brief = child_task_message(self.goal, getattr(child, "_delegate_context", None))
+        task_text = self.goal if resume else _brief
         user_message: Any = _build_child_goal_message(task_text, _images, child) if _images else task_text
 
         def _run_with_thread_capture():
@@ -952,7 +958,7 @@ class _ChildRun:
             # A profile-routed child converses as that profile (config, secrets, skills, terminal policy).
             with child_profile_scope(child), delegated_child_context(str(getattr(child, "session_id", "") or "")):
                 return child.run_conversation(
-                    user_message=user_message, task_id=self.child_task_id, stream_callback=self.relay_text,
+                    user_message=user_message, task_id=self.child_task_id, stream_callback=self.relay_text, **resume,
                 )
 
         future = executor.submit(contextvars.copy_context().run, _run_with_thread_capture)

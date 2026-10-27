@@ -134,6 +134,7 @@ Each `hermes auth add openai-codex` login becomes its own pool entry, but only *
 | `hermes auth remove <provider> <index>` | Remove credential by 1-based index |
 | `hermes auth reset <provider>` | Clear all cooldowns/exhaustion status (applies to running sessions too: a live gateway or chat picks the reset up on its next request instead of writing its stale cooldown back) |
 | `hermes auth reset <provider> <target>` | Clear the cooldown on one credential by index, id, or label |
+| `hermes auth reset <provider> [target] --all-profiles` / `--current-profile-only` | Profile scope. By default a named profile also resets the root `auth.json` it falls back to (never copying root rows into the profile), and a reset from the root reaches every named profile; `--all-profiles` extends that to every profile from anywhere, `--current-profile-only` limits it to the active store |
 | `hermes auth refresh <provider> [target]` | Refresh one OAuth credential's tokens and return it to rotation (proves the grant is alive; the next request re-checks quota) |
 
 For Nous, `auth refresh` supports only the login's `device_code` singleton.

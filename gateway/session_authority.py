@@ -80,6 +80,11 @@ class LiveSession:
     # Mounted by that cold path (not published by its lane): the lane publishing ANOTHER conversation
     # on the same route later supersedes it too.
     history_mount: bool = False
+    # A local conversation a messaging lane took over (``/handoff``, a platform ``/resume``): its
+    # viewers follow it onto the lane, and once that lane publishes another conversation (``/new``,
+    # another handoff) it is superseded like a history mount, whatever the lane published since.
+    # Set from the row (``moved_local``) on every mount of it, however constructed (#143286).
+    handed_off: bool = False
     # The background-review guard of a cold ``/refine`` (gateway/session_refine.py): its side agent is
     # per call, so the run token lives here; a second /refine joins it and the next turn cancels it.
     review: SimpleNamespace = field(default_factory=SimpleNamespace)
@@ -268,14 +273,30 @@ class SessionAuthority:
         return sid, entry.session_key
 
     def _publish_route(self, source, sid, route):
+        from gateway.config import Platform
         self._require_admission_open()
         live = self.sessions.get(sid)
+        # *sid* takes the route over: new here, moved onto it, or back after another conversation had it.
+        took_over = live is None or live.route != route or live.superseded
         if live is None:
-            live = self.sessions[sid] = LiveSession(source, route)
-            # The lane moved on to *sid*: a cold history mount still on its route is now another
-            # conversation's, so it goes read-only (gateway/session_route_recovery.py).
+            from gateway.session_route_recovery import mount
+            live = self.sessions[sid] = mount(self, sid, source, route)
+        elif live.route != route:
+            # *sid* moved lanes: ``/handoff`` or a platform ``/resume`` took a local conversation over
+            # (its repoint retired the local receipt), or a ``/resume`` moved it on to another chat.
+            # Its open viewers follow it, so a turn or a Stop through this mount reaches the lane that
+            # holds it now, never the conversation that replaced it on the old one (#143286).
+            from gateway.session_route_recovery import moved_local
+            left_local = live.source is not None and live.source.platform == Platform.LOCAL
+            live.handed_off = (live.handed_off or (left_local and source.platform != Platform.LOCAL)
+                               or moved_local(self, sid, source))
+            live.source, live.route = source, route
+        if took_over:
+            # The lane moved on to *sid*: a cold history mount or a chat handed off earlier that is
+            # still on its route is now another conversation's, so it goes read-only
+            # (gateway/session_route_recovery.py): a Stop or turn through it would act on *sid*.
             for other in self.sessions.values():
-                if other.history_mount and other.route == route and other is not live:
+                if (other.history_mount or other.handed_off) and other.route == route and other is not live:
                     other.superseded = True
         # The lane itself names *sid* (again): a historic mount becomes its live session.
         live.superseded = live.history_mount = False
@@ -635,7 +656,9 @@ class SessionAuthority:
                         check_local_input(
                             self, SessionRef(self.profile_id, sid), row, source=source)
                 self._require_admission_open()
-                self.sessions.setdefault(sid, LiveSession(source, route))
+                if sid not in self.sessions:  # ``mount``: a moved local chat keeps ``handed_off`` here too
+                    from gateway.session_route_recovery import mount
+                    self.sessions[sid] = mount(self, sid, source, route)
                 if any(row['status'] == 'unknown' for row in rows):
                     raise RuntimeStoreError('unknown_execution')
                 self._schedule(SessionRef(self.profile_id, sid))
@@ -896,14 +919,11 @@ class SessionAuthority:
                         self.pending_stops[ref.session_id] = generation
                 if agent is not None:
                     self.delivered_stops[ref.session_id] = generation
-        # Main's Stop: hard-cancel (aborts compression too) and end the session's own background
-        # delegations (spawned by this session only: a viewer must not kill other gateway work).
+        # Stop hard-cancels this turn (aborts compression too). Background delegations are not the
+        # turn: they keep running and report back; `/stop` and session close/reset end them.
         from agent.interrupt_compat import request_hard_interrupt
-        from tools.async_delegation import interrupt_for_session
         if agent is not None:
             request_hard_interrupt(agent)
-        for parent in dict.fromkeys((ref.session_id, self.physical_target(ref))):
-            interrupt_for_session(session_key=live.route, parent_session_id=parent, reason='user_stop')
         return self._handle(ref)
 
     def _classic_turn_holds(self, route):
@@ -1457,6 +1477,10 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     await asyncio.to_thread(settle_recovered_unattended, db, epoch)
     await asyncio.to_thread(backfill_legacy_session_owners, db)
     await asyncio.to_thread(backfill_compression_created_sources, db)
+    from gateway.session_local_recovery import release_handed_off_receipts
+    await asyncio.to_thread(release_handed_off_receipts, db, epoch=epoch)
+    from gateway.session_bot import release_superseded_bot_chat_at_boot
+    await asyncio.to_thread(release_superseded_bot_chat_at_boot, db, runner.session_store)
     authority = SessionAuthority(runner, profile_id=profile_id, instance_id=instance_id, db=db, epoch=epoch)
     # A receipt's compression catch-up (#140060) writes: it commits off the loop too, before the
     # authority is published, so the recovery below only reads.

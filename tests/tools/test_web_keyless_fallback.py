@@ -646,7 +646,9 @@ class TestKeylessFailover:
             keyless_mcp._KEYLESS_SEARCHERS, "exa",
             lambda q, l: called.append(1) or self._ok("exa"),
         )
-        for vendor in ("parallel", "firecrawl", "keenable"):
+        # Every free vendor in the ring, so the walk cannot depend on a rung
+        # that happens to be unavailable in this environment.
+        for vendor in (v for v in keyless_mcp._KEYLESS_RING if v != "exa"):
             monkeypatch.setitem(
                 keyless_mcp._KEYLESS_SEARCHERS, vendor,
                 lambda q, l, v=vendor: self._throttled(v),

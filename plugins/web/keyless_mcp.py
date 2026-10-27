@@ -336,8 +336,31 @@ def keenable_extract_keyless(urls: list[str]) -> list[dict[str, Any]]:
     return _per_url(urls, _fetch, "keenable")
 
 
+# --- Scrapling keyless (local rung: no API key, no vendor rate limit) ------
+def scrapling_search_keyless(query: str, limit: int = 5) -> dict[str, Any]:
+    """Local search via DDG Lite, scraped by the Scrapling sidecar.
+
+    Lives in the ring through a thin wrapper (like the Firecrawl entry) so the
+    late-bound ``globals()`` lookup in :data:`_KEYLESS_SEARCHERS` resolves.
+    """
+    from plugins.web.scrapling.provider import scrapling_search_keyless as _impl
+
+    return _impl(query, limit)
+
+
+def scrapling_extract_keyless(urls: list[str]) -> list[dict[str, Any]]:
+    """Local extraction via the Scrapling sidecar (direct fetch, JS escalation
+    only for thin bodies)."""
+    from plugins.web.scrapling.provider import scrapling_extract_keyless as _impl
+
+    return _impl(urls)
+
+
 # --- Round-robin ring + next-in-line failover (rate-limited free tiers) -------
-_KEYLESS_RING = ("exa", "parallel", "firecrawl", "keenable")
+# Scrapling is the local rung: no API key, no vendor rate limit, no network
+# bill. It sits first so a fresh install can serve locally, and the cloud
+# vendors follow as fallbacks (and as the target of the rotation).
+_KEYLESS_RING = ("scrapling", "exa", "parallel", "firecrawl", "keenable")
 
 # Late-bound lookups (not bare references) so ``patch.object(keyless_mcp, "<vendor>_search_keyless")``
 # is honored at call time. Tests also ``setitem`` these dicts directly.

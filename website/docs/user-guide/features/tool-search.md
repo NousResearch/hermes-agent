@@ -79,7 +79,9 @@ dispatches the underlying tool exactly as if the model had called it
 directly. Pre-tool-call hooks, guardrails, approval prompts, and
 post-tool-call hooks all run against the real tool name — not against
 `tool_call`. The activity feed in the CLI and gateway also unwraps so you
-see the underlying tool, not the bridge.
+see the underlying tool, not the bridge. A deferred tool the model calls by
+its real name is rewritten into a `tool_call` first, so it runs through the
+same checks instead of failing as an unknown tool.
 
 ## When does it activate?
 

@@ -299,20 +299,30 @@ def codex_model_provider_id(requested_provider: str) -> Optional[str]:
 
 
 def _find_custom_identity(matches: Callable[[dict[str, Any]], bool],
-                          config: Optional[dict[str, Any]] = None) -> Optional[str]:
+                          config: Optional[dict[str, Any]] = None, prefer: Optional[str] = None) -> Optional[str]:
     """First enabled entry in ``providers:`` then legacy ``custom_providers:`` where ``matches(entry)``
-    holds, as its canonical ``custom:<name>`` slug. *config* defaults to the active profile's."""
+    holds (*prefer* when it is one of them), as its canonical ``custom:<name>`` slug. A legacy entry
+    whose slug a ``providers:`` entry with an endpoint owns never matches: runtime resolution runs that one.
+    *config* defaults to the active profile's."""
     from hermes_cli.config import is_provider_enabled
     rp = _rp()
     try:
         config = rp.load_config() if config is None else config
     except Exception:
         return None
+    first, owned = None, set()
     providers = config.get("providers")
     if isinstance(providers, dict):
         for ep_name, entry in providers.items():
-            if isinstance(entry, dict) and is_provider_enabled(entry) and matches(entry):
-                return custom_provider_slug(str(ep_name), str(ep_name))
+            if not (isinstance(entry, dict) and is_provider_enabled(entry)):
+                continue
+            slug = custom_provider_slug(str(ep_name), str(ep_name))
+            if _entry_url(entry):
+                owned.add(slug)
+            if matches(entry):
+                if prefer is None or slug == prefer:
+                    return slug
+                first = first or slug
     try:
         custom_providers = rp.get_compatible_custom_providers(config)
     except Exception:
@@ -320,8 +330,13 @@ def _find_custom_identity(matches: Callable[[dict[str, Any]], bool],
     for entry in custom_providers or []:
         name = entry.get("name") if isinstance(entry, dict) else None
         if isinstance(name, str) and name.strip() and matches(entry):
-            return custom_provider_slug(name, str(entry.get("provider_key", "") or ""))
-    return None
+            slug = custom_provider_slug(name, str(entry.get("provider_key", "") or ""))
+            if slug in owned and not entry.get("provider_key"):
+                continue
+            if prefer is None or slug == prefer:
+                return slug
+            first = first or slug
+    return first
 
 
 def find_custom_provider_identity(base_url: str) -> Optional[str]:
@@ -359,16 +374,17 @@ def _entry_serves_model(entry: dict[str, Any], target: str) -> bool:
 
 
 def routed_custom_identity(base_url: Optional[str], model: Optional[str],
-                           config: Optional[dict[str, Any]] = None) -> Optional[str]:
+                           config: Optional[dict[str, Any]] = None, held: Optional[str] = None) -> Optional[str]:
     """The configured ``custom:<name>`` entry a bare ``custom`` pick (the billing class every named
     endpoint reports) names: on *base_url*, the entry also serving *model* beats the first one there;
-    without a URL the model alone names it."""
+    without a URL the model alone names it. Among entries serving *model*, the *held* one (the
+    profile's own) wins over config order."""
     url = _route_key(base_url)
     target = str(model or "").strip().lower()
 
     def on_url(entry: dict[str, Any]) -> bool:
         return not url or _route_key(_entry_url(entry)) == url
-    return ((target and _find_custom_identity(lambda e: on_url(e) and _entry_serves_model(e, target), config))
+    return ((target and _find_custom_identity(lambda e: on_url(e) and _entry_serves_model(e, target), config, held))
             or (url and _find_custom_identity(on_url, config)) or None)
 
 

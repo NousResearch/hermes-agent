@@ -113,6 +113,9 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             "rate_limited": res.rate_limited,
             "skipped_locked": res.skipped_locked,
             "memory_pressure": res.memory_pressure,
+            "skipped_self_review": [
+                {"task_id": tid, "implementer": who} for (tid, who) in res.skipped_self_review
+            ],
         }, ascii=True)
         return 0
     print(f"Reclaimed:    {res.reclaimed}")
@@ -139,6 +142,12 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         )
     if res.skipped_unassigned:
         print(f"Skipped (unassigned): {', '.join(res.skipped_unassigned)}")
+    for tid, implementer in res.skipped_self_review:
+        print(
+            f"Not dispatched ({tid}): no independent reviewer — the card is "
+            f"still owned by its implementer {implementer!r}. Reassign it to a "
+            f"reviewer that did not write the artifact."
+        )
     for tid, who, current in res.skipped_per_profile_capped:
         print(f"Deferred ({who} at per-profile cap, {current} running): {tid}")
     if res.skipped_nonspawnable:

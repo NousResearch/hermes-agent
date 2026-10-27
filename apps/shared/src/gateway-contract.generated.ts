@@ -108,6 +108,7 @@ export interface PlanUsage {
   plan?: string | null
   gauges?: PlanUsageGauge[]
   top_tier_model_ids?: string[]
+  subscription_model_ids?: string[]
   featured_model_ids?: string[]
   paused_reason?: string | null
   credits_pay?: boolean | null
@@ -1616,9 +1617,13 @@ export interface RoomEvent {
   created_at: number
   idempotent?: boolean
 }
+/** ``hosted_rooms._ACTOR_FIELDS``; member replies carry ``profile`` plus, when known, ``display_name`` and the peer ``connection_id`` (``hosted_room_discussion._member_actor``). */
 export interface RoomActor {
   kind: string
   id: string
+  profile?: string | null
+  display_name?: string | null
+  connection_id?: string | null
 }
 export interface GroupsCreateParams {
   profile?: string | null
@@ -1648,7 +1653,7 @@ export interface GroupsStateResult {
   room: Room
   driver_status?: RoomDriverStatus | null
 }
-/** ``HostedRoomService.status(room_id)``; ``pending_actions`` rows are ``{kind: retry, task_id}`` or the driver's approval action (``kind: approval`` + run/session/approval context). ``member_activity`` lists live tasks in admission order (absent from older gateways). */
+/** ``HostedRoomService.status(room_id)``; ``pending_actions`` rows are the exact attempt (``hosted_room_service.attempt_action``: ``kind`` + ``member_id``/``task_id``/``execution_generation``) or the driver's approval action (``kind: approval`` + run/session/approval context). ``member_activity`` lists live tasks in admission order (absent from older gateways). */
 export interface RoomDriverStatus {
   running: boolean
   working: boolean
@@ -1750,6 +1755,8 @@ export interface GroupsRetryParams {
   profile?: string | null
   room_id: string
   task_id: string
+  member_id?: string | null
+  execution_generation?: number | null
 }
 export interface GroupsRetryResult {
   retried?: boolean
@@ -5061,6 +5068,7 @@ export interface CanonicalSnapshot {
   session_id: string
   stored_session_id: string
   messages: TranscriptMessage[]
+  messages_omitted?: boolean | null
   display_messages?: TranscriptMessage[] | null
   message_count: number
   running: boolean
@@ -5721,12 +5729,16 @@ export interface MessageStartPayload {
   display_text?: string | null
   notification_category?: string | null
   text?: string | null
+  turn_id?: string | null
 }
-/** ``message.delta``. A session-authority local-viewer turn also publishes ``text: null``: the reply segment boundary (the agent's ``stream_delta_callback(None)``, before tool lines) that closes the classic CLI's reply box. Every other viewer ignores an empty chunk. */
+/** ``message.delta``. A session-authority local-viewer turn also publishes ``text: null``: the reply segment boundary (the agent's ``stream_delta_callback(None)``, before tool lines) that closes the classic CLI's reply box. Every other viewer ignores an empty chunk. A prompt turn stamps ``turn_id`` + ``segment`` (interim seals before it) + ``offset`` (UTF-16 code units of that segment already sent): a client drops a re-sent chunk it already applied. */
 export interface MessageDeltaPayload {
   text: string | null
   rendered?: string | null
   verbose?: boolean | null
+  turn_id?: string | null
+  segment?: number | null
+  offset?: number | null
 }
 /** ``prompt_turn._invoke_agent._stream`` (message.delta: ``text`` + optional ``rendered``), ``agent_callbacks._agent_cbs`` (reasoning.delta / thinking.delta), ``tool_progress._progress_reasoning`` (reasoning.available). ``verbose`` rides only when the session's verbose reasoning mode is on. */
 export interface StreamDeltaPayload {
@@ -5738,6 +5750,8 @@ export interface StreamDeltaPayload {
 export interface MessageInterimPayload {
   text: string
   already_streamed: boolean
+  turn_id?: string | null
+  segment?: number | null
 }
 /** ``prompt_turn._complete_turn_payload`` / ``session_auto_continue._emit_terminal_turn_error`` / ``agent_callbacks._mirror_subagent_to_child`` (child watch mirror: ``text`` only) / ``compute_host_bridge`` (``text`` + ``status``). */
 export interface MessageCompletePayload {
@@ -6938,7 +6952,7 @@ export interface CanonicalRpcMethods {
   /** Native-owner only: admit the dispatcher's current claim on a kanban task. */
   'kanban.run': { params: KanbanRunParams; result: KanbanRunResult }
   'profiles.list': { params: CanonicalProfilesParams; result: CanonicalProfilesResult }
-  /** Retire a still-queued admission; a started one is unaffected. */
+  /** Retire a queued admission; a started one is interrupted in the same call. */
   'prompt.cancel': { params: PromptCancelParams; result: AdmissionStatus }
   /** Current receipt of one admission the caller submitted (or controls). */
   'prompt.receipt': { params: PromptReceiptParams; result: PromptReceiptResult }

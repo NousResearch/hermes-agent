@@ -32,7 +32,7 @@ from urllib.parse import urlparse
 
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
-from utils import atomic_json_write, env_float, file_signature, is_truthy_value
+from utils import atomic_json_write, env_float, file_cache_version, is_truthy_value
 from hermes_cli.auth_zai_kimi import (
     KIMI_CODE_BASE_URL, ZAI_ENDPOINTS, _normalize_lmstudio_runtime_base_url, _resolve_kimi_base_url,
     _resolve_zai_base_url, detect_zai_endpoint)
@@ -84,7 +84,7 @@ from hermes_cli.auth_codex import (
 from hermes_cli.auth_openrouter import _openrouter_pkce_login
 from hermes_cli.guest_handoff import note_store_write
 from hermes_cli.auth_qwen import (
-    _qwen_access_token_is_expiring, _qwen_cli_auth_path, _read_qwen_cli_tokens,
+    _qwen_access_token_is_expiring, _qwen_base_url, _qwen_cli_auth_path, _read_qwen_cli_tokens,
     _refresh_qwen_cli_tokens, _save_qwen_cli_tokens, get_qwen_auth_status,
     resolve_qwen_runtime_credentials)
 from hermes_cli.auth_constants import (
@@ -95,8 +95,7 @@ from hermes_cli.auth_constants import (
     DEFAULT_XAI_OAUTH_BASE_URL, MINIMAX_OAUTH_CLIENT_ID, MINIMAX_OAUTH_SCOPE,
     MINIMAX_OAUTH_GLOBAL_BASE, MINIMAX_OAUTH_CN_BASE, MINIMAX_OAUTH_GLOBAL_INFERENCE,
     MINIMAX_OAUTH_CN_INFERENCE, MINIMAX_OAUTH_REFRESH_SKEW_SECONDS, DEFAULT_QWEN_BASE_URL,
-    DEFAULT_GITHUB_MODELS_BASE_URL, DEFAULT_COPILOT_ACP_BASE_URL, DEFAULT_OLLAMA_CLOUD_BASE_URL,
-    DEFAULT_ACTUAL_BASE_URL, DEFAULT_ACTUAL_LOCAL_BASE_URL, STEPFUN_STEP_PLAN_INTL_BASE_URL,
+    DEFAULT_OLLAMA_CLOUD_BASE_URL, DEFAULT_ACTUAL_BASE_URL, DEFAULT_ACTUAL_LOCAL_BASE_URL, STEPFUN_STEP_PLAN_INTL_BASE_URL,
     STEPFUN_STEP_PLAN_CN_BASE_URL, CODEX_OAUTH_CLIENT_ID, CODEX_OAUTH_TOKEN_URL,
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, XAI_OAUTH_CLIENT_ID, XAI_OAUTH_SCOPE,
     XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
@@ -181,11 +180,6 @@ _REGISTRY_ROWS: tuple[Any, ...] = (
         inference_base_url=DEFAULT_XAI_OAUTH_BASE_URL),
     ProviderConfig("qwen-oauth", "Qwen OAuth", "oauth_external", inference_base_url=DEFAULT_QWEN_BASE_URL),
     ("lmstudio", "LM Studio", "http://127.0.0.1:1234/v1", ("LM_API_KEY",), "LM_BASE_URL"),
-    ("copilot", "GitHub Copilot", DEFAULT_GITHUB_MODELS_BASE_URL,
-     ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"), "COPILOT_API_BASE_URL"),
-    ProviderConfig(
-        "copilot-acp", "GitHub Copilot ACP", "external_process",
-        inference_base_url=DEFAULT_COPILOT_ACP_BASE_URL, base_url_env_var="COPILOT_ACP_BASE_URL"),
     ("gemini", "Google AI Studio", "https://generativelanguage.googleapis.com/v1beta",
      ("GOOGLE_API_KEY", "GEMINI_API_KEY"), "GEMINI_BASE_URL"),
     ("zai", "Z.AI / GLM", "https://api.z.ai/api/paas/v4",
@@ -244,23 +238,24 @@ _REGISTRY_ROWS: tuple[Any, ...] = (
     # region (agent/vertex_adapter.py build_vertex_base_url), not a fixed host.
     ("vertex", "Google Vertex AI", "", (), "", "vertex"),
     ("azure-foundry", "Azure Foundry", "", ("AZURE_FOUNDRY_API_KEY",), "AZURE_FOUNDRY_BASE_URL"))
-PROVIDER_REGISTRY: dict[str, ProviderConfig] = {
-    p.id: p for p in (r if isinstance(r, ProviderConfig) else _api_key_provider(*r) for r in _REGISTRY_ROWS)
-}
+from hermes_cli.auth_plugin_providers import HomeScopedRegistry  # mirrored rows are read per home
+PROVIDER_REGISTRY: dict[str, ProviderConfig] = HomeScopedRegistry(
+    (p.id, p) for p in (r if isinstance(r, ProviderConfig) else _api_key_provider(*r) for r in _REGISTRY_ROWS))
 # The rows above, before any plugin touches the dict (a user plugin may override these; #48450).
-BUILTIN_PROVIDER_IDS = frozenset(PROVIDER_REGISTRY)
+BUILTIN_PROVIDER_IDS = frozenset(dict.keys(PROVIDER_REGISTRY))
 
 # ``hermes_cli.config`` discovers model-provider plugins while importing, and a plugin may read this
 # module's registry during that discovery. Keep the import below ProviderConfig / PROVIDER_REGISTRY so
 # a plugin never observes a partially initialized auth module (CONTRACT: during discovery a plugin may
 # rely only on ``ProviderConfig`` and ``PROVIDER_REGISTRY`` from here — nothing defined below).
 from hermes_cli.config import (
-    atomic_config_replace, get_hermes_home, get_config_path, read_raw_config, require_readable_config_before_write)
+    atomic_config_replace, config_exists, get_hermes_home, get_config_path, read_raw_config, require_readable_config_before_write)
 
 # Plugin profiles (plugins/model-providers/<name>/) are mirrored into PROVIDER_REGISTRY with the
 # auth_type they declare; the mirror lives in the sibling so it can be re-run after discovery.
 from hermes_cli.auth_plugin_providers import (
-    get_plugin_oauth_auth_status, registry_lookup as _registry_lookup, sync_plugin_provider_registry)
+    canonical_registry_rows as _canonical_registry_rows, get_plugin_oauth_auth_status,
+    registry_lookup as _registry_lookup, sync_plugin_provider_registry)
 
 sync_plugin_provider_registry()
 
@@ -376,19 +371,10 @@ def _model_level_key_env(provider_id: str) -> str:
 
 def _resolve_api_key_provider_secret(provider_id: str, pconfig: ProviderConfig) -> tuple[str, str]:
     """Resolve an API-key provider's token and indicate where it came from."""
-    if provider_id == "copilot":
-        # The dedicated copilot auth module does proper token validation/exchange.
-        try:
-            from hermes_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token
-            token, source = resolve_copilot_token()
-            if token:
-                api_token, _base_url = get_copilot_api_token(token)
-                return api_token, source
-        except ValueError as exc:
-            logger.warning("Copilot token validation failed: %s", exc)
-        except Exception:
-            pass
-        return "", ""
+    profile = _credential_profile(provider_id)
+    owned = profile.resolve_api_key_secret() if profile else None
+    if owned is not None:  # provider-owned resolution (token validation / exchange) is final
+        return owned
 
     # Prefer ~/.hermes/.env over os.environ so a deliberate key rotation in .env isn't shadowed by
     # a stale shell export inherited from a parent process (Codex CLI, test runners, etc.).
@@ -524,8 +510,8 @@ def _load_global_auth_store() -> dict[str, Any]:
         _global_auth_store_cache = None
         return {}
     try:
-        cache_key: Optional[tuple[str, tuple[int, int, int, int]]] = (
-            str(global_path.resolve(strict=False)), file_signature(global_path.stat()))
+        cache_key: Optional[tuple[str, tuple[Any, ...]]] = (
+            str(global_path.resolve(strict=False)), file_cache_version(global_path))
     except Exception:
         cache_key = None
     cached = _global_auth_store_cache
@@ -1169,6 +1155,16 @@ def is_source_suppressed(provider_id: str, source: str) -> bool:
         return False
 
 
+def suppressed_credential_sources(provider_id: str) -> frozenset[str]:
+    """Every credential source the user suppressed for *provider_id* (unreadable store = none)."""
+    try:
+        section = _load_auth_store().get("suppressed_sources")
+    except OSError:  # unreadable store (logged by the loader): nothing to honour, as before
+        return frozenset()
+    listed = section.get(provider_id) if isinstance(section, dict) else None
+    return frozenset(map(str, listed)) if isinstance(listed, (list, dict)) else frozenset()
+
+
 def unsuppress_credential_source(provider_id: str, source: str) -> bool:
     """Clear a suppression marker so the source will be re-seeded on the next load."""
     with _auth_store_lock():
@@ -1236,7 +1232,7 @@ def _config_selects_provider(normalized: str) -> bool:
     cfg = load_config()
     if _slot_selects(cfg.get("model"), normalized):
         return True
-    # ``auxiliary.<task>.provider: copilot`` selects the provider for that task the same way a MoA
+    # ``auxiliary.<task>.provider: <id>`` selects the provider for that task the same way a MoA
     # slot does — without this the seeder treats the credential as merely discovered (#114740).
     aux_cfg = cfg.get("auxiliary")
     if isinstance(aux_cfg, dict) and any(_slot_selects(s, normalized) for s in aux_cfg.values()):
@@ -1394,28 +1390,6 @@ def deactivate_provider() -> None:
 # ── Provider Resolution — picks which provider to use ───────────────────────────────────────────────
 
 
-def _get_config_hint_for_unknown_provider(provider_name: str) -> str:
-    """Return a helpful hint string when provider resolution fails."""
-    if str(provider_name or "").strip().lower() in {"opencode-free", "free", "opencode_free"}:
-        return ("OpenCode discontinued anonymous free-tier access outside its own client "
-                "(relay 403s FreeTierError), so the keyless 'opencode-free' provider was removed. "
-                "Switch to 'opencode-zen' (pay-as-you-go, OPENCODE_ZEN_API_KEY) or 'opencode-go' "
-                "($10/mo subscription, OPENCODE_GO_API_KEY) via 'hermes model'.")
-    try:
-        from hermes_cli.config import validate_config_structure
-        issues = validate_config_structure()
-        if not issues:
-            return ""
-        lines = ["Config issue detected — run 'hermes doctor' for full diagnostics:"]
-        for ci in issues:
-            lines.append(f"  [{'ERROR' if ci.severity == 'error' else 'WARNING'}] {ci.message}")
-            if ci.hint and ci.hint.splitlines()[0]:
-                lines.append(f"    → {ci.hint.splitlines()[0]}")
-        return "\n".join(lines)
-    except Exception:
-        return ""
-
-
 def _refuse_env_adoption_if_config_corrupt() -> None:
     """Refuse env-key/pool auto-adoption of openrouter while config.yaml is corrupt.
 
@@ -1458,9 +1432,6 @@ _PROVIDER_ALIASES: dict[str, str] = {
     "alibaba_coding": "alibaba-coding-plan", "alibaba-coding": "alibaba-coding-plan",
     "alibaba_coding_plan": "alibaba-coding-plan",
     "claude": "anthropic", "claude-code": "anthropic",
-    "github": "copilot", "github-copilot": "copilot",
-    "github-models": "copilot", "github-model": "copilot",
-    "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
     "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
     "opencode": "opencode-zen", "zen": "opencode-zen",
     "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
@@ -1596,19 +1567,28 @@ def _config_model_provider() -> tuple[Any, Optional[str]]:
         return None, None
 
 
-# API-key providers never auto-selected from env: GitHub tokens are commonly present for repo/tool
-# access and must not hijack inference; LM Studio is a local server whose availability isn't
-# implied by LM_API_KEY (may be offline; no-auth setup uses a placeholder). Both need an explicit
-# choice.
-_NO_AUTO_DETECT_PROVIDERS = frozenset({"copilot", "lmstudio"})
+# API-key providers never auto-selected from env: LM Studio is a local server whose availability
+# isn't implied by LM_API_KEY (may be offline; no-auth setup uses a placeholder), and a profile with
+# ``ambient_credentials`` reads tokens commonly present for other purposes (repo/tool access) that
+# must not hijack inference. Both need an explicit choice.
+_NO_AUTO_DETECT_PROVIDERS = frozenset({"lmstudio"})
+
+
+def _credential_profile(provider_id: str) -> Any:
+    """The provider's registered profile (credential seams), or None."""
+    from providers import get_provider_profile
+    return get_provider_profile(provider_id)
 
 
 def _env_key_auto_detected(
     scoped_key_env: Callable[[str], str], oauth_active: Optional[str]) -> Optional[str]:
     """First registry api_key provider (registry order) with a usable env key, warning when it
     preempts a logged-in OAuth provider so a stale key in ~/.hermes/.env never switches silently."""
-    for pid, pconfig in PROVIDER_REGISTRY.items():
-        if pconfig.auth_type != "api_key" or pid in _NO_AUTO_DETECT_PROVIDERS:
+    from providers import list_providers
+
+    ambient = {p.name for p in list_providers() if p.ambient_credentials}  # never per-pid lookups: a miss walks the ladder
+    for pid, pconfig in _canonical_registry_rows():
+        if pconfig.auth_type != "api_key" or pid in _NO_AUTO_DETECT_PROVIDERS or pid in ambient:
             continue
         for env_var in pconfig.api_key_env_vars:
             if has_usable_secret(scoped_key_env(env_var)):
@@ -1653,7 +1633,8 @@ def resolve_provider(
     if normalized in ("openrouter", "custom") or _registry_lookup(normalized) is not None:
         return normalized
     if normalized != "auto":
-        hint = _get_config_hint_for_unknown_provider(normalized)
+        from hermes_cli.auth_error_copy import unknown_provider_hint
+        hint = unknown_provider_hint(normalized)
         tail = (f"\n\n{hint}" if hint else " Check 'hermes model' for available providers, "
                 "or run 'hermes doctor' to diagnose config issues.")
         raise AuthError(f"Unknown provider '{normalized}'." + tail, code="invalid_provider")
@@ -1901,19 +1882,19 @@ def _resolve_nous_access_token(
 
 # Process-level memo for get_nous_auth_status(): it validates via a synchronous refresh POST
 # (~350ms) and read-only UI surfaces call it many times per render (~31x per menu paint), burning
-# single-use refresh tokens. Keyed on auth.json path + mtime so profile switches don't share a memo
+# single-use refresh tokens. Keyed on auth.json path + file_cache_version so profile switches don't share a memo
 # and login/logout/add/remove invalidate naturally.
 _NOUS_AUTH_STATUS_CACHE_TTL = 15.0  # seconds
-_nous_auth_status_cache: Optional[tuple[float, str, Optional[float], dict[str, Any]]] = None
+_nous_auth_status_cache: Optional[tuple[float, str, Optional[tuple[Any, ...]], dict[str, Any]]] = None
 
-# mtime-keyed memo for _load_global_auth_store(): (path, mtime_ns, store); same invalidation rule.
-_global_auth_store_cache: Optional[tuple[str, int, dict[str, Any]]] = None
+# Memo for _load_global_auth_store(): (path, file_cache_version, store); same invalidation rule.
+_global_auth_store_cache: Optional[tuple[str, tuple[Any, ...], dict[str, Any]]] = None
 
 
-def _auth_file_cache_key() -> tuple[str, Optional[float]]:
+def _auth_file_cache_key() -> tuple[str, Optional[tuple[Any, ...]]]:
     auth_file = _auth_file_path()
     try:
-        return _resolved_key(auth_file), auth_file.stat().st_mtime
+        return _resolved_key(auth_file), file_cache_version(auth_file)
     except Exception:  # missing file included: key without an mtime
         return _resolved_key(auth_file), None
 
@@ -2080,57 +2061,24 @@ def _external_process_auth_evidence(provider_id: str, resolved_command: Optional
     """Best-effort POSITIVE evidence ``(verified, source)`` that an external-process CLI is authed.
 
     False means "not verifiable from here", NOT "signed out". Subprocess-free (spawning the CLI from
-    status endpoints/pickers re-creates the cold-start stall copilot_auth.py avoids). Generic evidence
+    status endpoints/pickers re-creates a cold-start stall). Generic evidence
     for any external-process profile is its binary resolving: the subprocess owns real auth and Hermes
     has nothing else to inspect, so out-of-tree ACP rows pass credential-gated surfaces (Desktop
-    ``explicit_only`` picker) like the bundled one, whose CLI additionally exposes readable token stores."""
-    if provider_id == "copilot-acp":
-        return _copilot_acp_auth_evidence()
+    ``explicit_only`` picker); a profile whose CLI exposes readable token stores answers
+    ``external_auth_evidence()`` instead."""
+    evidence = _credential_profile(provider_id)
+    evidence = evidence.external_auth_evidence() if evidence else None
+    if evidence is not None:
+        return evidence
     return (True, f"command: {resolved_command}") if resolved_command else (False, None)
-
-
-def _copilot_acp_auth_evidence() -> tuple[bool, Optional[str]]:
-    """Copilot CLI token stores readable without spawning it (env tokens, plaintext config, hosts.json)."""
-    # 1. Supported env tokens — the same vars the Copilot CLI itself honors.
-    try:
-        from hermes_cli.copilot_auth import COPILOT_ENV_VARS, validate_copilot_token
-        for env_var in COPILOT_ENV_VARS:
-            val = os.getenv(env_var, "").strip()
-            if val and validate_copilot_token(val)[0]:
-                return True, f"env: {env_var}"
-    except Exception as exc:
-        logger.debug("copilot-acp env token evidence check failed: %s", exc)
-    # 2. The Copilot CLI's own plaintext token store (written by `copilot login` when no OS keychain
-    #    is available). The file is JSONC — strip //-comment lines before parsing.
-    try:
-        cli_config = os.path.expanduser("~/.copilot/config.json")
-        if os.path.isfile(cli_config):
-            with open(cli_config, "r", encoding="utf-8-sig", errors="ignore") as fh:
-                raw = "\n".join(
-                    line for line in fh.read().splitlines() if not line.lstrip().startswith("//"))
-            tokens = (json.loads(raw) if raw.strip() else {}).get("copilotTokens")
-            if isinstance(tokens, dict) and any(
-                isinstance(v, str) and v.strip() for v in tokens.values()):
-                return True, "~/.copilot/config.json"
-    except Exception as exc:
-        logger.debug("copilot-acp CLI config evidence check failed: %s", exc)
-    # 3. Known on-disk GitHub Copilot credential stores (the same files models.py fingerprints).
-    for cred_path in ("~/.config/github-copilot/hosts.json", "~/.config/github-copilot/apps.json"):
-        try:
-            expanded = os.path.expanduser(cred_path)
-            if os.path.isfile(expanded) and os.path.getsize(expanded) > 2:
-                return True, cred_path
-        except OSError:
-            continue
-    return False, None
 
 
 def _external_process_spec(
     pconfig: ProviderConfig) -> tuple[str, list[str], str, Optional[str], tuple[str, ...]]:
     """``(command, args, base_url, resolved_command, command_env_vars)`` for an ACP provider.
 
-    Launch details come from the provider's own profile (copilot-acp: HERMES_COPILOT_ACP_COMMAND /
-    COPILOT_CLI_PATH / HERMES_COPILOT_ACP_ARGS), so out-of-tree providers describe their binary."""
+    Launch details come from the provider's own profile (``process_command`` and its env overrides),
+    so out-of-tree providers describe their binary."""
     base_url = _provider_env_base_url(pconfig) or pconfig.inference_base_url
     try:
         from providers import get_provider_profile as _get_provider_profile
@@ -2257,29 +2205,12 @@ def _default_api_key_base_url(api_key: str, default: str, env_url: str) -> str:
     return env_url.rstrip("/") if env_url else default
 
 
-def _copilot_runtime_base_url(api_key: str, default: str, env_url: str) -> str:
-    """Copilot's API base comes from the token-exchange response (endpoints.api, proxy-ep fallback),
-    authoritative for Enterprise / proxied accounts; falls back to the registry default."""
-    base_url = _default_api_key_base_url(api_key, default, env_url)
-    try:
-        from hermes_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token
-        raw_token, _ = resolve_copilot_token()
-        if raw_token:
-            resolved = (get_copilot_api_token(raw_token)[1] or "").strip()
-            if resolved:
-                base_url = resolved
-    except Exception as exc:
-        logger.debug("Copilot base URL resolution fell back to default: %s", exc)
-    return base_url
-
-
 # Providers whose runtime base URL is not simply env-override-or-registry-default:
 # ``(api_key, registry_default, env_override) -> base_url``.
 _API_KEY_BASE_URL_RESOLVERS: dict[str, Callable[[str, str, str], str]] = {
     "kimi-coding": _resolve_kimi_base_url,
     "kimi-coding-cn": _resolve_kimi_base_url,
     "zai": _resolve_zai_base_url,
-    "copilot": _copilot_runtime_base_url,
     "lmstudio": lambda *a: _normalize_lmstudio_runtime_base_url(_default_api_key_base_url(*a)),
     "actual": lambda *a: normalize_actual_base_url(_default_api_key_base_url(*a))}
 
@@ -2301,9 +2232,12 @@ def resolve_api_key_provider_credentials(provider_id: str) -> dict[str, Any]:
 
     env_url = _provider_env_base_url(pconfig)
     resolve_url = _API_KEY_BASE_URL_RESOLVERS.get(provider_id, _default_api_key_base_url)
-    base_url = resolve_url(api_key, pconfig.inference_base_url, env_url)
+    profile = _credential_profile(provider_id)
+    base_url = (profile.runtime_base_url(api_key=api_key, default=pconfig.inference_base_url, env_url=env_url)
+                if profile else None)
+    base_url = resolve_url(api_key, pconfig.inference_base_url, env_url) if base_url is None else base_url
     # An API-key provider must never hand back an empty base URL (a set-but-empty
-    # COPILOT_API_BASE_URL or similar env override otherwise wedges chat inference).
+    # <PROVIDER>_BASE_URL env override otherwise wedges chat inference).
     if not _nonempty_str(base_url):
         base_url = pconfig.inference_base_url
 
@@ -2418,7 +2352,7 @@ def _logout_default_provider_from_config() -> Optional[str]:
 def _reset_config_provider() -> Path:
     """Reset config.yaml provider back to auto after logout."""
     config_path = get_config_path()
-    if not config_path.exists():
+    if not config_exists(config_path):
         return config_path
     require_readable_config_before_write(config_path)
     config = read_raw_config()

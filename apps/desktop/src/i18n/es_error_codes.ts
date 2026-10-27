@@ -8,6 +8,10 @@ export const esErrorCodes: Partial<ThreadCopy['errorCodes']> = {
     title: 'Este chat pertenece a una tarea programada',
     body: 'Solo ejecuta esa tarea, así que tu mensaje no se ejecutó. Empieza un chat nuevo para enviarlo.'
   },
+  session_read_only: {
+    title: 'Este chat es de solo lectura',
+    body: 'Es historial guardado que Hermes puede mostrar pero no continuar, así que tu mensaje no se ejecutó. Empieza un chat nuevo para enviarlo.'
+  },
   workspace_unavailable: {
     title: 'La carpeta de este chat ya no existe',
     body: 'La carpeta en la que trabaja este chat se movió o se eliminó, así que tu mensaje no se ejecutó. Vuelve a crear la carpeta o usa «Mover a proyecto» para darle otra al chat, y vuelve a intentarlo.'

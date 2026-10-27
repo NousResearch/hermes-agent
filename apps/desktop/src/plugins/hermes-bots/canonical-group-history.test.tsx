@@ -9,12 +9,18 @@ vi.mock('@hermes/plugin-sdk', async () => {
   const { en } = await import('@/i18n/en')
   const { Textarea } = await import('@/components/ui/textarea')
 
-  return { Textarea, host: { requestProfile: request }, useI18n: () => ({ locale: 'en', t: en }),
+  return { Textarea, atom: (await import('nanostores')).atom, host: { requestProfile: request }, randomUuid: (await import('@hermes/shared')).randomUuid,
+    useI18n: () => ({ locale: 'en', t: en }),
     Button: (props: ComponentProps<'button'>) => <button {...props} />,
     MessageTextContent: ({ text }: { text: string }) => <div data-testid="markdown">{text}</div>,
     Streamdown: ({ children }: { children: ReactNode }) => <div data-testid="markdown">{children}</div>,
     Codicon: () => <span />, Tip: ({ children }: { children: ReactNode }) => <>{children}</> }
 })
+// The @ picker reads Bot Mode stores this hosted-room fixture does not mock.
+vi.mock('./group-chat-parts', () => ({
+  GroupMentionInput: ({ onChange, ...props }: Omit<ComponentProps<'textarea'>, 'onChange'> & { onChange: (value: string) => void }) =>
+    <textarea aria-label={props['aria-label']} disabled={props.disabled} onChange={event => onChange(event.target.value)} value={props.value} />
+}))
 vi.mock('./canonical-group-labels', async () => {
   const { CANONICAL_GROUP_LOCALES } = await import('./canonical-group-locales')
 

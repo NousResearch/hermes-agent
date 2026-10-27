@@ -22,13 +22,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from functools import partial
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from gateway.run_shutdown import _log_suppressed
-from utils import file_signature
+from utils import file_cache_version
 
 logger = logging.getLogger(__name__)
 
@@ -42,18 +41,19 @@ _OWN_GATEWAY_PROBE_TIMEOUT_SECS = 5.0
 
 def _stat_signature(path: Path) -> Optional[tuple]:
     try:
-        return file_signature(os.stat(path))
+        return file_cache_version(path, always_digest=True)  # stored, compared on a later tick
     except OSError:
         return None
 
 
 def profile_serve_signature(home: Path) -> tuple:
-    """Cheap change detector for a served profile's credentials/config: file signature per file."""
+    """Change detector for a served profile's credentials/config: ``file_cache_version`` per file,
+    hashed every time (``always_digest``): it is compared long after it was taken, and a racy digest
+    going empty would read as a change and reconnect the profile's adapters."""
     sig = []
     for name in _PROFILE_SIGNATURE_FILES:
         try:
-            st = os.stat(Path(home) / name)
-            sig.append(file_signature(st))
+            sig.append(file_cache_version(Path(home) / name, always_digest=True))
         except OSError:
             sig.append(None)
     return tuple(sig)
@@ -483,7 +483,8 @@ class GatewayProfileReconcileMixin:
             # Its ``<name>:<platform>`` runtime entries describe a profile that no longer exists.
             _write_runtime_status_quiet(drop_profile_platforms=name)
             for attr in ("pairing_stores", "_busy_text_modes_by_profile", "_busy_input_modes_by_profile",
-                         "_busy_text_timing_by_profile", "_human_delay_by_profile", "_profile_configs"):
+                         "_busy_text_timing_by_profile", "_human_delay_by_profile", "_profile_configs",
+                         "_profile_bot_platforms"):
                 store = getattr(self, attr, None)
                 if isinstance(store, dict):
                     store.pop(name, None)

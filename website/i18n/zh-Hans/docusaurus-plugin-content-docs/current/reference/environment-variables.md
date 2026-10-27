@@ -22,13 +22,8 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `AI_GATEWAY_BASE_URL` | 覆盖 AI Gateway base URL（默认：`https://ai-gateway.vercel.sh/v1`） |
 | `OPENAI_API_KEY` | 自定义 OpenAI 兼容端点的 API 密钥（与 `OPENAI_BASE_URL` 配合使用）。设置 `OPENAI_BASE_URL` 后，它只会发送到该 URL 完全相同的源（scheme、主机和端口），绝不会发送到同一主机的其他端口或 `http://` |
 | `OPENAI_BASE_URL` | 自定义端点的 base URL（VLLM、SGLang 等） |
-| `COPILOT_GITHUB_TOKEN` | 用于 Copilot API 的 GitHub token——最高优先级（OAuth `gho_*` 或细粒度 PAT `github_pat_*`；经典 PAT `ghp_*` **不支持**） |
-| `GH_TOKEN` | GitHub token——Copilot 第二优先级（也供 `gh` CLI 使用） |
-| `GITHUB_TOKEN` | GitHub token——Copilot 第三优先级 |
-| `HERMES_COPILOT_ACP_COMMAND` | 覆盖 Copilot ACP CLI 二进制路径（默认：`copilot`） |
-| `COPILOT_CLI_PATH` | `HERMES_COPILOT_ACP_COMMAND` 的别名 |
-| `HERMES_COPILOT_ACP_ARGS` | 覆盖 Copilot ACP 参数（默认：`--acp --stdio`） |
-| `COPILOT_ACP_BASE_URL` | 覆盖 Copilot ACP base URL |
+| `GH_TOKEN` | GitHub token（也供 `gh` CLI 使用）；凡 Hermes 读取 `GITHUB_TOKEN` 之处均可作为其替代 |
+| `GITHUB_TOKEN` | 用于访问 GitHub API 的 GitHub token（Skills Hub、git 凭据、更新检查；另见下方 Skills Hub 一行） |
 | `GLM_API_KEY` | z.ai / ZhipuAI GLM API 密钥（[z.ai](https://z.ai)） |
 | `ZAI_API_KEY` | `GLM_API_KEY` 的别名 |
 | `Z_AI_API_KEY` | `GLM_API_KEY` 的别名 |

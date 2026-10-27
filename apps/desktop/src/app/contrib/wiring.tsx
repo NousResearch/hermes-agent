@@ -137,6 +137,7 @@ import { useCwdActions } from '../session/hooks/use-cwd-actions'
 import { useHermesConfig } from '../session/hooks/use-hermes-config'
 import { useMessageStream } from '../session/hooks/use-message-stream'
 import { useModelControls } from '../session/hooks/use-model-controls'
+import { useOwnerQueueReconcile } from '../session/hooks/use-owner-queue-reconcile'
 import { usePreviewRouting } from '../session/hooks/use-preview-routing'
 import { usePromptActions } from '../session/hooks/use-prompt-actions'
 import { useRouteResume } from '../session/hooks/use-route-resume'
@@ -730,12 +731,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // Runs outside the selected ChatBar so queues belonging to background
   // sessions continue once those sessions are idle. The session dispatcher
   // routes each send to its owner; a disconnected foreground is not a global gate.
-  useBackgroundQueueDrain({
-    enabled: true,
-    runtimeIdByStoredSessionIdRef,
-    selectedStoredSessionId,
-    submitText
-  })
+  // Queues of chats not on screen: drain the local ones, re-read the owner-held ones on each gateway open.
+  useBackgroundQueueDrain({ enabled: true, runtimeIdByStoredSessionIdRef, selectedStoredSessionId, submitText })
+  useOwnerQueueReconcile(requestGateway)
 
   // Session-tile delegate (resume/submit/interrupt/slash + the session verbs
   // the tile TAB menu needs, without touching the primary view).

@@ -41,8 +41,8 @@ async def _build_profile_authority(runner, name, home, *, register):
     instance_id = runner.session_runtime_descriptor['instance_id']
     # Each home's store resolves through the runner's scope-following handle cache, exactly
     # the handle every later scoped read of that profile uses (one writer per state.db).
+    db = await asyncio.to_thread(open_profile_store, runner, home)
     with _profile_runtime_scope(home, hydrate_secrets=False):
-        db = getattr(runner._session_db, '_db', runner._session_db)
         if db is None:
             raise RuntimeError(_store_open_failure(runner, home))
         if (await asyncio.to_thread(Path(db.db_path).resolve)).parent != home:
@@ -56,6 +56,46 @@ async def _build_profile_authority(runner, name, home, *, register):
             raise
     registry.replace(home, authority)
     return authority
+
+
+def open_profile_store(runner, home):
+    """*home*'s SessionDB through the runner's scoped handle cache, opened in the CALLING thread
+    under that profile's scope (bound here: a worker thread inherits no scope it was not given).
+
+    Callers run it in a worker: a first open runs the schema / FTS setup, about a second per store
+    on a loaded host, and run on the loop it froze every connected client for the whole
+    multi-profile boot. Later opens of the same path are cache hits."""
+    from gateway.run import _profile_runtime_scope
+    with _profile_runtime_scope(home, hydrate_secrets=False):
+        db = runner._session_db
+        return getattr(db, '_db', db)
+
+
+async def _prewarm_profile_stores(runner, homes):
+    """Open every secondary's store concurrently off the loop before the authorities are built in
+    order. A failed open is not reported here: the cache records it and the authority build that
+    follows parks that profile with the recorded reason."""
+    await asyncio.gather(*(asyncio.to_thread(open_profile_store, runner, home) for _name, home in homes),
+                         return_exceptions=True)
+
+
+def pin_launch_store():
+    """Open the launch profile's state.db in the calling (worker) thread and hold one registry
+    reference, so the synchronous ``SessionStore`` open inside ``GatewayRunner()`` on the loop is a
+    registry hit instead of the schema setup. None when the open fails: the store's own open then
+    reports and backs off exactly as before."""
+    from hermes_state_registry import acquire
+    try:
+        return acquire()
+    except Exception:
+        logger.debug('launch state.db prewarm failed; the store open reports it', exc_info=True)
+        return None
+
+
+def unpin_launch_store(db):
+    if db is not None:
+        from hermes_state_registry import release
+        release(db)
 
 
 def _store_open_failure(runner, home):
@@ -150,6 +190,7 @@ async def initialize_gateway_runtime(runner):
     runner.session_runtime_descriptor = descriptor
     registry = SessionAuthorities(homes[0][1], multiplexed=getattr(runner.config, 'multiplex_profiles', False))
     runner.session_authorities = registry
+    await _prewarm_profile_stores(runner, homes[1:])
     for index, (name, home) in enumerate(homes):
         try:
             await _build_profile_authority(runner, name, home, register=index == 0)

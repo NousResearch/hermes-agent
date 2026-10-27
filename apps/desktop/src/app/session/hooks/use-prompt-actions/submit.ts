@@ -1,4 +1,4 @@
-import type { PromptSubmitResult } from '@hermes/shared'
+import { type PromptSubmitResult, randomUuid } from '@hermes/shared'
 import { type MutableRefObject, useCallback } from 'react'
 
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
@@ -68,6 +68,7 @@ import {
   acquireSubmitInFlight,
   type GatewayRequest,
   inlineErrorMessage,
+  isAdmittedSubmissionConflict,
   isForwardedReceipt,
   isProviderSetupError,
   isSessionBusyError,
@@ -523,7 +524,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         : captured
 
       let requestGateway = destination.requestGateway
-      const submissionId = retained?.id ?? options?.submission_id ?? crypto.randomUUID()
+      const submissionId = retained?.id ?? options?.submission_id ?? randomUuid()
 
       let startingStoredSessionId = routedSessionNeedsResume
         ? routedStoredSessionId
@@ -1312,6 +1313,12 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                 try {
                   return await requestGateway<SubmitReceipt>('prompt.submit', params, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
                 } catch (error) {
+                  // A retry whose payload no longer matches its admitted original (an attachment send
+                  // offered back as text) is that original: settled as the dedupe it is, no new turn.
+                  if (isAdmittedSubmissionConflict(error)) {
+                    return { status: 'terminal', submission_id: submissionId }
+                  }
+
                   // 4094 is an explicit PRE-admission capability refusal; 4000 is the
                   // legacy `hermes serve` contract refusing `submission_id` as an unknown
                   // key (version skew) before any handler ran. Both are pre-admission and

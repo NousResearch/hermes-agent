@@ -10497,6 +10497,18 @@
             "title": "Messages",
             "type": "array"
           },
+          "messages_omitted": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Messages Omitted"
+          },
           "display_messages": {
             "anyOf": [
               {
@@ -20460,6 +20472,30 @@
           "task_id": {
             "title": "Task Id",
             "type": "string"
+          },
+          "member_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Member Id"
+          },
+          "execution_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Execution Generation"
           }
         },
         "required": [
@@ -23842,7 +23878,7 @@
       },
       "MessageDeltaPayload": {
         "additionalProperties": false,
-        "description": "``message.delta``. A session-authority local-viewer turn also publishes ``text: null``: the\nreply segment boundary (the agent's ``stream_delta_callback(None)``, before tool lines) that\ncloses the classic CLI's reply box. Every other viewer ignores an empty chunk.",
+        "description": "``message.delta``. A session-authority local-viewer turn also publishes ``text: null``: the\nreply segment boundary (the agent's ``stream_delta_callback(None)``, before tool lines) that\ncloses the classic CLI's reply box. Every other viewer ignores an empty chunk.\n\nA prompt turn stamps ``turn_id`` + ``segment`` (interim seals before it) + ``offset`` (UTF-16 code\nunits of that segment already sent): a client drops a re-sent chunk it already applied.",
         "properties": {
           "text": {
             "anyOf": [
@@ -23878,6 +23914,42 @@
             ],
             "default": null,
             "title": "Verbose"
+          },
+          "turn_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Turn Id"
+          },
+          "segment": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Segment"
+          },
+          "offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Offset"
           }
         },
         "required": [
@@ -23897,6 +23969,30 @@
           "already_streamed": {
             "title": "Already Streamed",
             "type": "boolean"
+          },
+          "turn_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Turn Id"
+          },
+          "segment": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Segment"
           }
         },
         "required": [
@@ -24125,6 +24221,18 @@
             ],
             "default": null,
             "title": "Text"
+          },
+          "turn_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Turn Id"
           }
         },
         "title": "MessageStartPayload",
@@ -27412,6 +27520,13 @@
               "type": "string"
             },
             "title": "Top Tier Model Ids",
+            "type": "array"
+          },
+          "subscription_model_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Subscription Model Ids",
             "type": "array"
           },
           "featured_model_ids": {
@@ -34108,6 +34223,7 @@
       },
       "RoomActor": {
         "additionalProperties": false,
+        "description": "``hosted_rooms._ACTOR_FIELDS``; member replies carry ``profile`` plus, when known,\n``display_name`` and the peer ``connection_id`` (``hosted_room_discussion._member_actor``).",
         "properties": {
           "kind": {
             "title": "Kind",
@@ -34116,6 +34232,42 @@
           "id": {
             "title": "Id",
             "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display Name"
+          },
+          "connection_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Connection Id"
           }
         },
         "required": [
@@ -34283,7 +34435,7 @@
       },
       "RoomDriverStatus": {
         "additionalProperties": false,
-        "description": "``HostedRoomService.status(room_id)``; ``pending_actions`` rows are ``{kind: retry, task_id}``\nor the driver's approval action (``kind: approval`` + run/session/approval context).\n``member_activity`` lists live tasks in admission order (absent from older gateways).",
+        "description": "``HostedRoomService.status(room_id)``; ``pending_actions`` rows are the exact attempt\n(``hosted_room_service.attempt_action``: ``kind`` + ``member_id``/``task_id``/``execution_generation``)\nor the driver's approval action (``kind: approval`` + run/session/approval context).\n``member_activity`` lists live tasks in admission order (absent from older gateways).",
         "properties": {
           "running": {
             "title": "Running",
@@ -48667,7 +48819,7 @@
     },
     {
       "name": "prompt.cancel",
-      "summary": "Retire a still-queued admission; a started one is unaffected.",
+      "summary": "Retire a queued admission; a started one is interrupted in the same call.",
       "params": [
         {
           "name": "params",

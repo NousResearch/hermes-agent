@@ -1,0 +1,21 @@
+name: hermes-github-mentions
+title: GitHub Mentions
+repo: https://github.com/luantak/hermes-github-mentions
+sha: d8a88220a547180663fcec76a069c8fbbf63bff9
+description: >-
+  Run approved GitHub mentions as Hermes tasks and reply in the original thread.
+  Polls GitHub's API in a gateway worker and sends signed local webhooks granting
+  terminal, file, web, skills and todo tools. Optional Discord copies and
+  read-only Hermes session progress tracking.
+maintainer: luantak
+tier: community
+category: platform
+requires_hermes: ">=0.22.5"
+version: "0.4.3"
+platforms: [linux, macos]
+docs_url: https://github.com/luantak/hermes-github-mentions/blob/d8a88220a547180663fcec76a069c8fbbf63bff9/README.md
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -8,6 +8,7 @@ use <command>" instead of a silent non-update), and exits 2 on CLI surfaces.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -19,6 +20,24 @@ logger = logging.getLogger(__name__)
 COMMIT_BUILD_UPDATE_MESSAGE = (
     "This build doesn't get updates. Ask the developer who gave it to you for a new build."
 )
+
+ROOT_UPDATE_MESSAGE = (
+    "✗ Refusing to update a user-owned install as root.\n"
+    "  Run the update as the install owner (without sudo) so generated files keep the "
+    "correct ownership."
+)
+
+
+def _root_update_refusal(project_root: Path) -> Optional[UpdateRefusal]:
+    """Refuse privileged updates that would create root-owned files in a user install."""
+    if os.name == "nt" or not hasattr(os, "geteuid"):
+        return None
+    try:
+        if os.geteuid() != 0 or project_root.stat().st_uid == 0:
+            return None
+    except OSError:
+        return None
+    return UpdateRefusal("root-owned-install", ROOT_UPDATE_MESSAGE, "run as the install owner")
 
 
 def is_commit_build(project_root: Path) -> bool:
@@ -85,6 +104,9 @@ def evaluate_update_admission(project_root: Path) -> Optional[UpdateRefusal]:
     ``None`` means the install is eligible for in-place update (git checkout or unknown-but-
     mutable). Never raises; on any internal error it falls back to the heuristic layer only.
     """
+    root_refusal = _root_update_refusal(project_root)
+    if root_refusal is not None:
+        return root_refusal
     if is_commit_build(project_root):
         return UpdateRefusal("commit-build", COMMIT_BUILD_UPDATE_MESSAGE, "")
 

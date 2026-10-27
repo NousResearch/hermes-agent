@@ -85,7 +85,7 @@ def _idp_token() -> str:
             f"{IDP_ENV_PREFIX}TOKEN_URL is set but {IDP_ENV_PREFIX}CLIENT_ID / {IDP_ENV_PREFIX}CLIENT_SECRET "
             "are not: Remote Config needs the OAuth2 client-credentials grant (both values in .env).",
             retryable=False)
-    from .destination import CredentialDestinationError, checked_url, open_credentialed
+    from .destination import CredentialDestinationError, checked_url, display_url, open_credentialed
     checked_url(token_url, env_name=f"{IDP_ENV_PREFIX}TOKEN_URL")  # before the secret leaves the process
     key = (token_url, client_id, scope)
     now = time.monotonic()
@@ -105,7 +105,7 @@ def _idp_token() -> str:
     except CredentialDestinationError:
         raise
     except Exception as exc:  # HTTP and network errors alike; the message has no secret
-        raise PlaneCredentialError(f"IdP token request to {token_url} failed: {exc}", retryable=True) from exc
+        raise PlaneCredentialError(f"IdP token request to {display_url(token_url)} failed: {exc}", retryable=True) from exc
     access_token = payload.get("access_token") if isinstance(payload, dict) else None
     if not isinstance(access_token, str) or not access_token:
         raise PlaneCredentialError("IdP client-credentials response had no access_token", retryable=True)

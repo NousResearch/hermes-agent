@@ -36,6 +36,23 @@ def _is_loopback(host: str) -> bool:
         return False
 
 
+def display_url(url: str) -> str:
+    """*url* for messages: any user info (``user:password@``) dropped, so a misconfigured URL
+    never echoes a credential back (an unparsable one is cut at the last ``@``)."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+        if parts.username is None and parts.password is None:
+            return url
+        host = parts.hostname or ""
+        if ":" in host:
+            host = f"[{host}]"
+        port = parts.port
+    except ValueError:
+        head, sep, tail = url.partition("//")
+        return f"{head}{sep}{tail.rpartition('@')[2]}" if sep else url.rpartition("@")[2]
+    return urllib.parse.urlunsplit(parts._replace(netloc=f"{host}:{port}" if port is not None else host))
+
+
 def checked_url(url: str, *, env_name: str) -> str:
     """``url`` when a credential may be sent to it, else :class:`CredentialDestinationError`."""
     try:
@@ -43,9 +60,9 @@ def checked_url(url: str, *, env_name: str) -> str:
         host = (parts.hostname or "").lower()
         _ = parts.port  # raises ValueError on a malformed port
     except ValueError as exc:
-        raise CredentialDestinationError(f"{env_name}={url!r} is not a valid URL: {exc}") from exc
+        raise CredentialDestinationError(f"{env_name}={display_url(url)!r} is not a valid URL: {exc}") from exc
     if not host:
-        raise CredentialDestinationError(f"{env_name}={url!r} has no host.")
+        raise CredentialDestinationError(f"{env_name}={display_url(url)!r} has no host.")
     if parts.username is not None or parts.password is not None or parts.query or parts.fragment:
         raise CredentialDestinationError(
             f"{env_name} must be a plain origin and path (no user info, query or fragment); "
@@ -64,7 +81,7 @@ class _RefuseRedirect(urllib.request.BaseHandler):
     def _refuse(self, req, fp, code, msg, headers):
         fp.close()
         raise CredentialDestinationError(
-            f"{req.get_full_url()} answered HTTP {code} redirecting to {headers.get('Location')!r}; "
+            f"{req.get_full_url()} answered HTTP {code} redirecting to {display_url(headers.get('Location') or '')!r}; "
             "Remote Config never follows a redirect with credentials. Point the URL at the final "
             "destination.")
 

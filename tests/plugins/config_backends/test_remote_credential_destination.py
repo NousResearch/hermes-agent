@@ -231,3 +231,73 @@ def test_idp_redirect_is_not_followed_with_the_secret(monkeypatch, listeners, co
     assert exc.value.retryable is False
     assert len(idp.seen) == 1 and CLIENT_SECRET in idp.seen[0]["body"]
     assert target.seen == []
+
+
+# --- user info is never echoed (teknium1 P3) ----------------------------------------------------
+
+USERINFO_URL = "https://u:p@example.com"
+
+
+@pytest.mark.parametrize("url, shown", [
+    ("https://u:p@example.com", "https://example.com"),
+    ("https://u:p@example.com:8443/plane", "https://example.com:8443/plane"),
+    ("http://u@[::1]:9/x", "http://[::1]:9/x"),
+    ("https://u:p@example.com:bad", "https://example.com:bad"),   # unparsable port: cut at the @
+    ("https://example.com/plane", "https://example.com/plane"),
+])
+def test_display_url_drops_user_info(url, shown):
+    assert destination.display_url(url) == shown
+
+
+def test_refused_url_never_echoes_user_info(monkeypatch, tmp_path):
+    """The boot error, describe() and the destination errors show the URL without its user info."""
+    from hermes_cli.config_backend import ConfigBackendUnavailable
+    from plugins.config_backends import remote as remote_pkg
+    from plugins.config_backends.remote import backend as backend_mod
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv(client.URL_ENV, USERINFO_URL)
+    monkeypatch.setenv(client.INSTANCE_ENV, INSTANCE)
+    monkeypatch.setattr(backend_mod.time, "sleep", lambda s: None)
+    remote_pkg._reset_for_tests()
+    try:
+        backend = remote_pkg.get_remote_backend()
+        with pytest.raises(ConfigBackendUnavailable) as exc:
+            backend.boot(home)
+        out = [str(exc.value), backend.describe(home), client.shown_url()]
+        for bad in (USERINFO_URL + ":bad", "https://u:p@"):
+            monkeypatch.setenv(client.URL_ENV, bad)
+            with pytest.raises(destination.CredentialDestinationError) as derr:
+                client.request("GET", home, "default")
+            out.append(str(derr.value))
+    finally:
+        remote_pkg._reset_for_tests()
+    assert "example.com" in out[0] and "example.com" in out[1]
+    for text in out:
+        assert "u:p" not in text and "u:p@" not in text, text
+
+
+def test_provenance_never_echoes_user_info(monkeypatch, tmp_path):
+    from plugins.config_backends import remote as remote_pkg
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    with StubPlane() as plane:
+        for k, v in remote_env(plane).items():
+            monkeypatch.setenv(k, v)
+        remote_pkg._reset_for_tests()
+        cred_mod._IDP_CACHE.clear()
+        try:
+            backend = remote_pkg.get_remote_backend()
+            backend.boot(home)
+            monkeypatch.setenv(client.URL_ENV, plane.url.replace("http://", "http://u:p@"))
+            layer = backend.read_user_layer(home)
+            described = backend.describe(home)
+        finally:
+            remote_pkg._reset_for_tests()
+            cred_mod._IDP_CACHE.clear()
+    assert layer.provenance.startswith("remote:http://127.0.0.1:")
+    assert "u:p" not in layer.provenance and "u:p" not in described

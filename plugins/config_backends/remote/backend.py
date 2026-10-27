@@ -232,7 +232,7 @@ class RemoteBackend:
                     continue
                 raise ConfigBackendUnavailable(
                     f"Remote Config: cannot load the config for profile {profile!r} from "
-                    f"{client.base_url()}: {exc}. Hermes does not start without its remote config "
+                    f"{client.shown_url()}: {exc}. Hermes does not start without its remote config "
                     "(HERMES_CONFIG_BACKEND=remote has no local fallback).") from exc
 
     def _fetch_into(self, st: _ProfileState, *, conditional: bool) -> bool:
@@ -431,7 +431,7 @@ class RemoteBackend:
 
         doc, version, locks = self._snapshot(st, take)
         return UserLayer(doc=doc, version=version, locks=locks,
-                         provenance=f"remote:{client.base_url()} profile={st.profile}")
+                         provenance=f"remote:{client.shown_url()} profile={st.profile}")
 
     def read_user_doc(self, home: Path) -> Any:
         return self.read_user_layer(home).doc
@@ -770,7 +770,7 @@ class RemoteBackend:
 
     def describe(self, home: Path) -> str:
         st = self._states.get(self._key(home))
-        head = f"Remote Config {client.base_url()} (instance {client.instance_id() or '<unset>'})"
+        head = f"Remote Config {client.shown_url()} (instance {client.instance_id() or '<unset>'})"
         if st is None:
             return f"{head}: profile not fetched yet"
         age = int(time.time() - st.fetched_at) if st.fetched_at else -1

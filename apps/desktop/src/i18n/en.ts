@@ -1,3 +1,4 @@
+// health: allow FILE_LINES -- locale data: translated copy for the usage-window plan UI (allowance gauges, Large/Free tags, the limit card), one key per string
 import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 
 import { enAppTour } from './en_app_tour'
@@ -13,12 +14,16 @@ import { enErrorCodes } from './en_error_codes'
 import { enErrorLayers } from './en_error_layers'
 import { enExternalOpenFailed } from './en_external_open'
 import { enFirstRun } from './en_first_run'
+import { enGatewayHost } from './en_gateway_host'
 import { enLocalModels } from './en_local_models'
 import { enModelMenu } from './en_model_menu'
 import { enModelSettings } from './en_model_settings'
 import { enNotices } from './en_notices'
+import { enNotifications } from './en_notifications'
 import { enOnboarding } from './en_onboarding'
+import { enPluginPreviewAccess } from './en_plugin_preview_access'
 import { enPluginUpdate } from './en_plugin_update'
+import { enPreviewWeb } from './en_preview_web'
 import { enProjects } from './en_projects'
 import { enSharedMetrics } from './en_shared_metrics'
 import { enThemePicker } from './en_theme_picker'
@@ -449,6 +454,7 @@ export const en: Translations = {
       microphoneConstraintsUnsupported: 'Microphone constraints are not supported by this device.',
       microphoneFailed: 'Microphone failed',
       microphoneInUse: 'Microphone is already in use by another app.',
+      microphoneNeedsHttps: 'The microphone needs a secure connection. Open the Webapp over HTTPS, or through an SSH tunnel to 127.0.0.1, to use it.',
       microphonePermissionDenied: 'Microphone permission was denied.',
       microphoneStartFailed: 'Could not start microphone recording.',
       microphoneUnsupported: 'This runtime does not support microphone recording.',
@@ -908,51 +914,7 @@ export const en: Translations = {
         masterPasswordPlaceholder: 'Master password'
       }
     },
-    notifications: {
-      title: 'Notifications',
-      intro: 'OS notifications (not in-app toasts). Per device.',
-      enableAll: 'Enable notifications',
-      enableAllDesc: 'Off silences every notification below.',
-      focusedHint: 'Completion alerts only fire while Hermes is in the background.',
-      kinds: {
-        approval: {
-          label: 'Approval needed',
-          description: 'A command is waiting for you to approve or reject it.'
-        },
-        input: {
-          label: 'Input needed',
-          description: 'Hermes asked a question or needs a password or secret.'
-        },
-        turnDone: {
-          label: 'Response ready',
-          description: 'A turn finished while Hermes was in the background.'
-        },
-        turnError: {
-          label: 'Turn failed',
-          description: 'Background turn errors.'
-        },
-        backgroundDone: {
-          label: 'Background task finished',
-          description: 'A backgrounded terminal command completed.'
-        },
-        credits: {
-          label: 'Credit alerts',
-          description: 'Credit access is paused or restored.'
-        },
-        plugin: {
-          label: 'Plugin notifications',
-          description: 'A desktop plugin sent a notification while Hermes was in the background.'
-        }
-      },
-      test: 'Send test notification',
-      testTitle: 'Hermes',
-      testBody: 'Notifications are working.',
-      testSent: 'Test sent. If nothing appears, check your OS notification permissions and Focus/Do Not Disturb.',
-      testUnsupported: 'This system does not support native notifications.',
-      completionSoundTitle: 'Completion Sound',
-      completionSoundDesc: 'Plays when an agent turn finishes. Pick a preset and preview it here.',
-      completionSoundPreview: 'Preview'
-    },
+    notifications: enNotifications,
     sections: {
       model: 'Model',
       chat: 'Chat',
@@ -1381,9 +1343,7 @@ export const en: Translations = {
     },
     gateway: {
       loading: 'Loading gateway settings...',
-      unavailableTitle: 'Gateway settings unavailable',
-      unavailableDesc:
-        'Connection settings can only be changed from the Hermes Desktop app on the computer running it.',
+      ...enGatewayHost,
       title: 'Gateway Connection',
       envOverride: 'env override',
       intro:
@@ -1691,6 +1651,16 @@ export const en: Translations = {
         effectScheduled: (targetName, effectiveAt, creditsDelta) =>
           `Change to ${targetName} — takes effect ${effectiveAt}. No charge now; you keep your current plan until then.${creditsDelta ? ` Monthly credits change: ${creditsDelta}.` : ''}`
       },
+      keepGoingOnCredits: {
+        title: 'Keep going on credits',
+        description:
+          'Use your credits when included usage runs out. Off: Hermes waits for the reset.',
+        approveInBrowser: 'Approve Remote Spending in your browser to change this. It applies as soon as you approve.',
+        openAgain: 'Open again',
+        cancel: 'Cancel',
+        approvedRetry: 'Remote Spending is approved, but the change didn\'t save.',
+        tryAgain: 'Try again'
+      },
       autoReload: {
         threshold: 'Threshold',
         thresholdAria: 'Auto-refill threshold',
@@ -1768,7 +1738,21 @@ export const en: Translations = {
             captionDefault: 'Default ceiling',
             captionSpending: 'Monthly remote spending',
             valueUsed: (spent, limit) => `${spent} of ${limit} used`
-          }
+          },
+          window: {
+            today: 'Today',
+            week: 'This week',
+            month: 'This month',
+            topTier: 'Large models (monthly)',
+            barLabel: title => `${title} included usage used`,
+            captionPaused: 'Paused: subscription payment failed',
+            captionPausedOther: 'Paused: see Billing in the Portal',
+            captionTopTierUsedUp: 'Monthly allowance used up, credits cover the rest',
+            captionTopTierUsedUpKeepGoingOff: 'Monthly allowance used up, other included models still work',
+            captionResetsIn: duration => `Resets in ${duration}`,
+            captionIncluded: 'Included usage',
+            valueUsed: percent => `${percent} used`
+          },
         },
         planCard: {
           freeTier: 'Free',
@@ -2153,6 +2137,7 @@ export const en: Translations = {
         `Pinned to commit ${sha}. Updates are refused until it is reinstalled with a new pin.`,
       pinnedBadge: (sha: string) => `pinned @ ${sha}`,
       ...enPluginUpdate,
+      ...enPluginPreviewAccess,
       uninstall: 'Uninstall',
       uninstallTip: (name: string, profile: string) => `Uninstall ${name} from ${profile}`,
       uninstallConfirmTitle: (name: string) => `Uninstall ${name}?`,
@@ -2785,8 +2770,10 @@ export const en: Translations = {
     exported: 'Profile exported',
     failedImport: 'Failed to import profile',
     failedExport: 'Failed to export profile',
+    exportNeedsHost: name => `The browser can't save a profile archive. On the Hermes host, run: hermes profile export ${name}`,
     allProfiles: 'All profiles',
     showAllProfiles: 'Show all profiles',
+    notServedHere: 'Not served here',
     switchToProfile: name => `Switch to ${name}`,
     switchToConnection: name => `Switch to ${name}`,
     switchConnectionFailed: name => `Could not connect to ${name}`,
@@ -3413,7 +3400,7 @@ export const en: Translations = {
       '/init': 'Generate or update AGENTS.md project instructions from a repo scan',
       '/suggestions': 'Review suggested automations (accept/dismiss)',
       '/blueprint': 'Set up an automation from a blueprint template',
-      '/browser': 'Manage the agent browser [connect|disconnect|status|use]',
+      '/browser': 'Manage the agent browser [connect|disconnect|status]',
       '/palette': 'Open the fuzzy command palette (also Ctrl+P)',
       '/usage': 'Show token usage and rate limits; `reset` redeems a banked Codex limit reset',
       '/subscription': 'View your Nous plan and change it in the browser',
@@ -3929,28 +3916,25 @@ export const en: Translations = {
     signIn: 'Sign in',
     signInHeading: 'Sign in with a Nous account to unlock more models and tools.',
     settingUp: 'Setting up free inference…',
-    codeBody: 'Enter this code in your browser to finish signing in.',
-    copyLink: 'Copy link',
-    doNotShare: 'Do not share this code.',
+    finishInBrowser: 'Finish in your browser',
+    doNotShare: 'Do not share it.',
+    openPageAgain: 'Open page again',
     waiting: 'Waiting for sign-in…',
     finishingHeading: 'Finishing sign-in…',
     finishingBody: 'Approved in the browser. Collecting your account tokens.',
-    signedInAs: email => `Signed in as ${email}`,
+    signedInAsLabel: 'Signed in as',
     signedIn: 'Signed in.',
     completedBody: 'Your account now carries inference and tools.',
+    reconnect: 'Reconnect',
+    openConnectors: 'Open Connectors',
     defaultModel: 'Default model',
     change: 'Change',
     done: 'Done',
     notNow: 'Not now',
     tryAgain: 'Try again',
-    startAgain: 'Start again',
     didNotComplete: "Sign-in didn't finish",
-    rejectedBody: "No problem, you're still on the free Nous service. Sign in whenever you're ready.",
-    supersededBody: 'A newer sign-in code replaced this one. Use the newest one, or start again.',
     timedOutHeading: 'That sign-in link has expired',
     timedOutBody: "Start again whenever you're ready. You're still on the free Nous service.",
-    retiredBody:
-      "Your session ended before the sign-in finished. Hermes will start a new one; then sign in again whenever you're ready.",
     errorBody: "Sign-in didn't finish. Try again whenever you're ready.",
     busyHeading: 'Almost there',
     busyBody: wait =>
@@ -4006,7 +3990,27 @@ export const en: Translations = {
     wasPrice: 'was',
     customModel: 'Custom model',
     addCustomModelAction: 'Add custom model…',
-    customModelPlaceholder: 'Type a model id, e.g. openai/gpt-5'
+    customModelPlaceholder: 'Type a model id, e.g. openai/gpt-5',
+    today: 'Today',
+    week: 'Week',
+    month: 'Month',
+    topTier: 'Large models (monthly)',
+    included: 'Every model below is included',
+    pausedRenewal: 'paused: renewal unpaid',
+    pausedOther: 'paused',
+    includedUsedUp: 'Included usage used up',
+    limitReached: name => `${name.charAt(0).toUpperCase()}${name.slice(1)} limit reached`,
+    limitNames: { day: 'daily', month: 'monthly', top_tier: 'monthly large-model', week: 'weekly' },
+    limitThenCredits: 'paid models now use your credits (pay as you go)',
+    limitThenCreditsLarge: 'Large models now use your credits (pay as you go)',
+    limitThenWait: 'only Free models until then',
+    limitThenWaitLarge: 'Large models paused until then',
+    percentUsed: percent => `${percent} used`,
+    resetsIn: duration => `resets in ${duration}`,
+    usageLevels: { free: 'Free', top_tier: 'Large' },
+    sectionRecommended: 'Recommended',
+    sectionOther: 'Other models',
+    largeFootnote: 'Large models also use your monthly large-model limit.'
   },
 
   modelVisibility: {
@@ -4125,6 +4129,9 @@ export const en: Translations = {
       toggleWorkspace: 'Workspace',
       cacheHitRateTitle: 'Prompt cache hit rate this session — cached tokens cost less, so higher is cheaper',
       tokensPerSecondTitle: 'Output tokens per second, averaged over the last 10 model calls',
+      togglePlanUsage: 'Plan usage',
+      planUsageTitle: (used, resetsIn) =>
+        `${used} of your plan's usage used${resetsIn ? ` · resets in ${resetsIn}` : ''} · open Billing`,
       agents: 'Agents',
       closeAgents: 'Close agents',
       openAgents: 'Open agents',
@@ -4225,6 +4232,12 @@ export const en: Translations = {
     terminalNew: 'New terminal',
     terminalCloseOthers: 'Close others',
     terminalCloseAll: 'Close all',
+    terminalDropUploadFailed: name => `Could not upload ${name}`,
+    terminalDropTooLargeTitle: 'Too large to upload',
+    terminalDropTooLarge: (names, limit) => `Each file can be up to ${limit}. Not uploaded: ${names}`,
+    terminalDropControlTitle: 'Not typed into the terminal',
+    terminalDropControl: paths => `These names hold control characters the shell would act on as keys: ${paths}`,
+    terminalDropUnquotable: (shell, paths) => `No safe way to type these names in ${shell}: ${paths}`,
     addToChat: 'Add to chat'
   },
 
@@ -4290,60 +4303,7 @@ export const en: Translations = {
       sentTitle: 'Sent to chat',
       sentMessage: count => `${count} log entr${count === 1 ? 'y' : 'ies'} added to composer`
     },
-    web: {
-      appFailedToBoot: 'Preview app failed to boot',
-      serverNotFound: 'Server not found',
-      remoteLoopback:
-        'This address points at the machine running your agent, not this one. The browser pane loads pages locally, so a remote dev server needs a port forward or a reachable hostname.',
-      failedToLoad: 'Preview failed to load',
-      tryAgain: 'Try again',
-      restarting: 'Hermes is restarting...',
-      askRestart: 'Ask Hermes to restart the server',
-      lookingRestart: taskId => `Hermes is looking for a preview server to restart (${taskId})`,
-      restartingTitle: 'Restarting preview server',
-      restartingMessage: 'Hermes is working in the background. Watch the preview console for progress.',
-      startRestartFailed: message => `Could not start server restart: ${message}`,
-      restartFailed: 'Server restart failed',
-      hideConsole: 'Hide preview console',
-      showConsole: 'Show preview console',
-      hideDevTools: 'Hide preview DevTools',
-      openDevTools: 'Open preview DevTools',
-      goBack: 'Back',
-      goForward: 'Forward',
-      reload: 'Reload page',
-      address: 'Address',
-      addressPlaceholder: 'Enter address',
-      blankPageBody: 'Type an address above to browse, or ask Hermes to open a page.',
-      finishedRestarting: message => `Hermes finished restarting the preview server${message ? `: ${message}` : ''}`,
-      failedRestarting: message => `Server restart failed: ${message}`,
-      unknownError: 'unknown error',
-      restartedTitle: 'Preview server restarted',
-      reloadingNow: 'Reloading the preview now.',
-      restartFailedTitle: 'Preview restart failed',
-      restartFailedMessage: 'Hermes could not restart the server.',
-      stillWorking:
-        'Hermes is still working, but no restart result has arrived yet. The server command may be running in the foreground.',
-      workspaceReloading: 'Workspace changed, reloading preview',
-      fileChanged: url => `File changed, reloading preview: ${url}`,
-      filesChanged: (count, url) => `${count} file changes, reloading preview: ${url}`,
-      watchFailed: message => `Could not watch preview file: ${message}`,
-      moduleMimeDescription:
-        'Module scripts are being served with the wrong MIME type. This usually means a static file server is serving a Vite/React app instead of the project dev server.',
-      loadFailedConsole: (code, message) => `Load failed${code ? ` (${code})` : ''}: ${message}`,
-      unreachableDescription: 'The preview page could not be reached.',
-      openTarget: url => `Open ${url}`,
-      fallbackTitle: 'Preview',
-      annotate: 'Annotate',
-      annotateOn: 'Stop annotating',
-      annotateNeedPage: 'Open a page in the in-app browser first.',
-      annotateFailed: 'Could not start annotation mode',
-      commenting: 'Commenting',
-      addComments: count => (count === 1 ? 'Add 1 comment' : `Add ${count} comments`),
-      commentPlaceholder: 'Add a comment...',
-      commentTitle: n => `Comment ${n}`,
-      saveComment: 'Save',
-      cancelComment: 'Cancel comment'
-    }
+    web: enPreviewWeb
   },
 
   interfaceMode: {
@@ -4407,7 +4367,7 @@ export const en: Translations = {
     saveApply: 'Save & apply',
     notExpressible: 'this arrangement interlocks (pinwheel) — not expressible as nested splits yet',
     zoneCount: count => `${count} zones`,
-    tabCount: count => `${count} tabs`
+    tabCount: count => `${count} tab${count === 1 ? '' : 's'}`
   },
 
   contextMenu: {
@@ -4481,6 +4441,12 @@ export const en: Translations = {
       errorStartNewSession: 'Start new session',
       errorSwitchProvider: 'Switch provider',
       errorChooseModel: 'Choose a model',
+      errorSwitchToModel: (model, note) => (note ? `Switch to ${model} (${note})` : `Switch to ${model}`),
+      errorSwitchModelFailed: 'Could not switch model',
+      errorUseCredits: 'Turn on Keep going on credits',
+      errorUseCreditsFailed: 'Could not turn on Keep going on credits',
+      errorAddCredits: 'Add credits',
+      errorOpenBillingSettings: 'Open billing settings',
       errorCompressConversation: 'Compress conversation',
       errorCompressFailed: 'Could not compress the conversation',
       errorOpenHermesFolder: 'Open Hermes folder',
@@ -4788,6 +4754,7 @@ export const en: Translations = {
     imageAttach: 'Image attach',
     imageWriteFailed: 'Failed to write image to disk.',
     imageAttachFailed: 'Image attach failed',
+    attachFailed: 'Attach failed',
     pastedContent: 'Pasted content',
     pasteAttachFailed: 'Could not attach pasted text',
     attachImages: 'Attach images',
@@ -4795,6 +4762,7 @@ export const en: Translations = {
     noClipboardImage: 'No image found in clipboard',
     clipboardPasteFailed: 'Clipboard paste failed',
     dropFiles: 'Drop files',
+    dropFilesMore: (count: number) => `and ${count} more`,
     handoff: {
       pickPlatform: 'Choose a destination',
       success: platform => `Handed off to ${platform}. Resume here anytime.`,

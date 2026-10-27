@@ -19,7 +19,7 @@ from hermes_cli.providers import (
 from hermes_cli.model_normalize import normalize_model_for_provider
 from agent.models_dev import (
     ModelCapabilities, ModelInfo, get_model_capabilities, get_model_info, list_provider_models)
-from utils import base_url_host_matches, base_url_hostname, base_url_origin, file_signature
+from utils import base_url_host_matches, base_url_hostname, base_url_origin
 # Re-exported: callers/tests patch hermes_cli.model_switch.<name>.
 from hermes_cli.model_switch_providers import list_authenticated_providers
 
@@ -270,14 +270,15 @@ def _direct_alias_source_identity() -> Optional[tuple]:
         path = get_config_path()
     except Exception:
         return None
+    from hermes_cli.config_backend import config_version
     try:
-        stat = path.stat()
+        version = config_version(path)
     except OSError:
         # A missing config is still a definite identity for this profile.
         return (str(path), None)
     except Exception:
         return None
-    return (str(path), file_signature(stat))
+    return (str(path), version)
 
 
 def _ensure_direct_aliases() -> None:
@@ -456,6 +457,9 @@ class ModelSwitchResult:
     request_overrides: Optional[dict] = None
     error_message: str = ""
     warning_message: str = ""
+    # Window plans only: the Large-model warning (display only, never a confirm). Empty for every other
+    # account and model, so their switch output is unchanged.
+    usage_notice: str = ""
     provider_label: str = ""
     resolved_via_alias: str = ""
     capabilities: Optional[ModelCapabilities] = None
@@ -798,9 +802,9 @@ def resolve_alias(raw_input: str, current_provider: str, user_providers: Optiona
     # models.dev catalog merged with static _PROVIDER_MODELS entries it may be missing.
     catalog = list_provider_models(current_provider)
     try:
-        from hermes_cli.models import _PROVIDER_MODELS
+        from hermes_cli.models import static_catalog
         seen = {m.lower() for m in catalog}
-        catalog.extend(m for m in _PROVIDER_MODELS.get(current_provider, []) if m.lower() not in seen)
+        catalog.extend(m for m in static_catalog(current_provider) if m.lower() not in seen)
     except Exception:
         pass
 
@@ -1049,6 +1053,9 @@ def _ollama_configured_base() -> tuple[dict, str]:
 
 
 def _unknown_provider_message(explicit_provider: str) -> str:
+    from hermes_cli.left_core_migration import provider_install_hint
+    if moved := provider_install_hint(explicit_provider):
+        return f"Unknown provider '{explicit_provider}'. {moved}"
     msg = (
         f"Unknown provider '{explicit_provider}'. Check 'hermes model' for available "
         f"providers, or define it in config.yaml under 'providers:'.")
@@ -1659,11 +1666,6 @@ def _validate_switch(st: _Switch) -> Optional[ModelSwitchResult]:
     return None
 
 
-def _copilot_api_mode(provider: str, model: str, api_key: str) -> str:
-    from hermes_cli.models import copilot_model_api_mode
-    return copilot_model_api_mode(model, api_key=api_key)
-
-
 def _opencode_api_mode(provider: str, model: str, api_key: str) -> str:
     # Re-derive api_mode from the effective model rather than the persisted api_mode: the opencode providers
     # serve both anthropic_messages and chat_completions models, so the previous session's mode must not
@@ -1688,19 +1690,25 @@ def _nous_api_mode(provider: str, model: str, api_key: str) -> str:
 # Per-provider api_mode overrides applied after validation, keyed on the final target provider
 # (the key sets are disjoint, so exactly one — or none — fires).
 _PROVIDER_API_MODE_OVERRIDES: dict[str, Any] = {
-    **dict.fromkeys(("copilot", "github-copilot"), _copilot_api_mode),
     **dict.fromkeys(("opencode-zen", "opencode-go", "opencode"), _opencode_api_mode),
     **dict.fromkeys(("nous", "nous-portal", "nousresearch"), _nous_api_mode)}
 
 
 def model_derived_api_mode(provider: str, model: str, api_key: str = "") -> Optional[str]:
     """api_mode re-derived from the FINAL model for providers that serve several wire formats behind one
-    endpoint (OpenCode Zen/Go and custom providers extending a family slug, Copilot, Nous); None when the
-    provider's wire is fixed by its endpoint. A persisted api_mode from an earlier model of such a provider
-    is never authoritative — resume paths must call this instead of honoring the row (#96066)."""
+    endpoint (OpenCode Zen/Go and custom providers extending a family slug, Nous, and any provider profile
+    declaring ``api_mode_for_model``); None when the provider's wire is fixed by its endpoint. A persisted
+    api_mode from an earlier model of such a provider is never authoritative — resume paths must call this
+    instead of honoring the row (#96066)."""
     from hermes_cli.models import opencode_provider_family
     key = str(provider or "").strip().lower()
     override = _PROVIDER_API_MODE_OVERRIDES.get(opencode_provider_family(key) or key)
+    if override is None and key:
+        from providers import get_provider_profile
+        profile = get_provider_profile(key)
+        if profile is not None:
+            from agent.provider_route_hooks import model_api_mode
+            return model_api_mode(profile, model, api_key=api_key or "")
     return override(key, model, api_key) if override is not None else None
 
 
@@ -1727,6 +1735,8 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
     model_info = get_model_info(st.target_provider, st.new_model, allow_network=True)
 
     warnings = [w for w in (st.validation.get("message"), _check_hermes_model_warning(st.new_model)) if w]
+    from hermes_cli.model_picker_usage import large_model_notice
+    usage_notice = large_model_notice(st.new_model, st.target_provider, fetch=True) or ""
 
     # Carry the switched provider's request_overrides (custom_providers ``extra_body`` such as
     # chat_template_kwargs) so the gateway applies them like the default-provider path does.
@@ -1741,7 +1751,7 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
         success=True, new_model=st.new_model, target_provider=st.target_provider,
         provider_changed=st.provider_changed, api_key=st.api_key, base_url=st.base_url, api_mode=st.api_mode,
         request_overrides=dict(request_overrides or {}), warning_message=" | ".join(warnings) if warnings else "",
-        provider_label=st.provider_label, resolved_via_alias=st.resolved_alias, capabilities=capabilities,
+        usage_notice=usage_notice, provider_label=st.provider_label, resolved_via_alias=st.resolved_alias, capabilities=capabilities,
         runtime_capabilities={
             k: v for k, v in runtime_capabilities.items() if isinstance(k, str) and isinstance(v, bool)},
         model_info=model_info, is_global=st.is_global, alias_endpoint_applied=st.alias_endpoint_applied)

@@ -263,14 +263,15 @@ Windows package removal instead of deleting that root to repair an app.
 
 ## Browser tool
 
-Browser setup depends on the selected backend. PM supplies the pinned
-`agent-browser` and Chromium packages for the built-in backend. Browser Use
-has its own managed CLI installation through `hermes tools`. A self-contained
-MSIX includes supported browser tools in its payload.
+The browser tool (`browser_exec`) is part of Hermes's Python environment.
+For local browsing, Hermes launches the pinned Chromium that PM installs
+(`hermes pm install chromium` if it is missing); set `browser.executable_path`
+to use another Chromium-family binary. Cloud browsers are selected in
+`hermes tools`. A self-contained MSIX includes the browser tools in its payload.
 
-On Windows ARM64, the pinned Chromium and `agent-browser` binaries can use
+On Windows ARM64, the pinned Chromium is the x64 build and runs under
 Windows' x64 emulation. This differs from the native ARM64 Python runtime.
-See [Browser automation](./features/browser.md) for backend selection.
+See [Browser automation](./features/browser.md) for browser sources.
 
 ## Running Hermes on Windows — practical notes
 
@@ -357,13 +358,9 @@ You set it in the current process only; close and reopen the shell, or set it at
 
 **Browser tool launches but tools time out.**
 Run `hermes doctor` and `hermes pm doctor`. Use `hermes tools` to inspect the
-selected browser backend. Do not install an unrelated Playwright revision into
-a signed app payload.
-
-**`agent-browser` reports a Node version error.**
-Run `hermes pm doctor` and inspect which Hermes launcher started the process.
-PM supplies the managed Node version. Do not delete an unrelated system Node
-installation to repair Hermes.
+selected browser provider. A slow first Chromium start can be given more time
+with `browser.command_timeout` (the launch timeout floor, in seconds). Do not
+install an unrelated Playwright revision into a signed app payload.
 
 **Chinese / Japanese / Arabic characters show as `?` in the CLI.**
 The UTF-8 stdio shim didn't activate. Check that `HERMES_DISABLE_WINDOWS_UTF8` is NOT set (`Get-ChildItem env:HERMES_DISABLE_WINDOWS_UTF8`). If it's empty and you still see `?`, the console host (very old `cmd.exe`) may not support UTF-8 at all — switch to Windows Terminal.

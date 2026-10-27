@@ -8,7 +8,7 @@ description: "Authoritative reference for Hermes built-in tools, grouped by tool
 
 This page documents Hermes' built-in tools, grouped by toolset. Availability varies by platform, credentials, and enabled toolsets.
 
-**Quick counts (current registry):** ~100 tools — 10 browser tools (core) + 2 CDP-gated browser tools + 5 browser-vault tools + `browser_exec`, 4 file tools, 2 terminal tools (`terminal`, `process_manage`), 11 desktop-GUI tools (`read_terminal`, `close_terminal`, `desktop_preview`, `drive_preview`, `annotate_preview`, `read_window_below`, `focus_pane`, `react_to_message`, `gui_tour`, `show_tip`, `set_theme` — desktop-app sessions only), 2 web tools, 5 Feishu tools, 5 Yuanbao tools, 14 kanban tools (registered when the kanban dispatcher spawns the agent), 1 project tool (`desktop_project`; desktop/GUI sessions), 2 Discord tools, 3 video tools (`video_generate`, `xai_video_edit`, `xai_video_extend`), and a handful of standalone tools (`memory`, `clarify`, `delegate_task`, `execute_code`, `cronjob_manage`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `vision_analyze`, `video_analyze`, `todo_list`, `computer_use`, `x_search`).
+**Quick counts (current registry):** ~85 tools — 4 browser tools (`browser_exec`, `browser_cdp`, `browser_dialog`, `browser_vault`), 4 file tools, 2 terminal tools (`terminal`, `process_manage`), 11 desktop-GUI tools (`read_terminal`, `close_terminal`, `desktop_preview`, `drive_preview`, `annotate_preview`, `read_window_below`, `focus_pane`, `react_to_message`, `gui_tour`, `show_tip`, `set_theme` — desktop-app sessions only), 2 web tools, 5 Feishu tools, 5 Yuanbao tools, 14 kanban tools (registered when the kanban dispatcher spawns the agent), 1 project tool (`desktop_project`; desktop/GUI sessions), 2 Discord tools, 3 video tools (`video_generate`, `xai_video_edit`, `xai_video_extend`), and a handful of standalone tools (`memory`, `clarify`, `delegate_task`, `execute_code`, `cronjob_manage`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `vision_analyze`, `video_analyze`, `todo_list`, `computer_use`, `x_search`).
 
 :::tip MCP Tools
 In addition to built-in tools, Hermes can load tools dynamically from MCP servers. MCP tools appear with the prefix `mcp__<server>__` (e.g., `mcp__github__create_issue` for the `github` MCP server). See [MCP Integration](../user-guide/features/mcp.md) for configuration.
@@ -16,27 +16,14 @@ In addition to built-in tools, Hermes can load tools dynamically from MCP server
 
 ## `browser` toolset
 
-| Tool | Description | Requires environment |
-|------|-------------|----------------------|
-| `browser_back` | Navigate back to the previous page in browser history. Requires browser_navigate to be called first. | — |
-| `browser_click` | Click on an element identified by its ref ID from the snapshot (e.g., '@e5'). The ref IDs are shown in square brackets in the snapshot output. Requires browser_navigate and browser_snapshot to be called first. | — |
-| `browser_console` | Get browser console output and JavaScript errors from the current page. Returns console.log/warn/error/info messages and uncaught JS exceptions. Use this to detect silent JavaScript errors, failed API calls, and application warnings. Requi… | — |
-| `browser_get_images` | Get a list of all images on the current page with their URLs and alt text. Useful for finding images to analyze with the vision tool. Requires browser_navigate to be called first. | — |
-| `browser_navigate` | Navigate to a URL in the browser. Initializes the session and loads the page. Must be called before other browser tools. For simple information retrieval, prefer a lightweight retrieval tool when one is available (faster, cheaper). Use browser tools when you need… | — |
-| `browser_press` | Press a keyboard key. Useful for submitting forms (Enter), navigating (Tab), or keyboard shortcuts. Requires browser_navigate to be called first. | — |
-| `browser_scroll` | Scroll the page in a direction. Use this to reveal more content that may be below or above the current viewport. Requires browser_navigate to be called first. | — |
-| `browser_snapshot` | Get a text-based snapshot of the current page's accessibility tree. Returns interactive elements with ref IDs (like @e1, @e2) for browser_click and browser_type. full=false (default): compact view with interactive elements. full=true: comp… | — |
-| `browser_type` | Type text into an input field identified by its ref ID. Clears the field first, then types the new text. Requires browser_navigate and browser_snapshot to be called first. | — |
-| `browser_vision` | Take a screenshot of the current page so you can inspect it visually. Use this when you need to understand what the page looks like — especially for CAPTCHAs, visual verification challenges, complex layouts, or cases where the text snapshot misses important visual information. On native-vision models the screenshot is attached directly; otherwise falls back to an auxiliary vision mo… | — |
-
-## `browser` toolset (CDP-gated tools)
-
-These two tools live in the `browser` toolset but only register when a Chrome DevTools Protocol endpoint is reachable at session start — via `/browser connect`, `browser.cdp_url` config, a Browserbase session, or Camofox.
+`browser_exec` and `browser_vault` drive the browser session — the Chromium Hermes launches, a cloud browser, or the browser attached with `/browser connect`. `browser_cdp` and `browser_dialog` are offered only while a CDP endpoint is configured (`/browser connect`, `BROWSER_CDP_URL` or `browser.cdp_url`) and act on that browser; they are absent for launched and cloud sessions. See [Browser Automation](../user-guide/features/browser.md).
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `browser_cdp` | Send a raw Chrome DevTools Protocol command. Escape hatch for browser operations not covered by the higher-level `browser_*` tools. See https://chromedevtools.github.io/devtools-protocol/ | CDP endpoint |
-| `browser_dialog` | Respond to a native JavaScript dialog (alert / confirm / prompt / beforeunload). Call `browser_snapshot` first — pending dialogs appear in its `pending_dialogs` field. Then call `browser_dialog(action='accept'\|'dismiss')`. | CDP endpoint |
+| `browser_exec` | Drive a real web browser by running Python with pre-imported helpers (`new_tab`, `goto_url`, `wait_for_load`, `page_info`, `js`, `fill_input`, `click_at_xy`, `capture_screenshot`, `cdp`, `ensure_real_tab`). Browser state persists across calls; Python variables do not. `session` isolates concurrent work; `timeout_s` defaults to 300 (max 1800). | `terminal` toolset |
+| `browser_cdp` | Send a raw Chrome DevTools Protocol command. Escape hatch for browser operations the `browser_exec` helpers don't cover. See https://chromedevtools.github.io/devtools-protocol/ | CDP endpoint |
+| `browser_dialog` | Respond to a native JavaScript dialog (alert / confirm / prompt / beforeunload) blocking the page: `browser_dialog(action='accept'\|'dismiss')`, with `prompt_text` for `prompt()` and `dialog_id` when several are queued. | CDP endpoint |
+| `browser_vault` | Use saved logins, passwords, cards, addresses and one-time codes on the current page without secrets entering the conversation. Actions: `list`, `fill`, `save_login`, `enter_code`, `unlock`. | — |
 
 ## `clarify` toolset
 

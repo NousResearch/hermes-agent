@@ -1,3 +1,4 @@
+// health: allow FILE_LINES -- the copy contract for the usage-window plan keys every locale adds (allowance gauges, Large/Free tags, the limit card)
 // Desktop i18n type contract.
 //
 // `Translations` is the single source of truth for every translatable string
@@ -18,12 +19,16 @@ import type { ConnectorAccountsTranslations, ConnectorCardTranslations } from '.
 import type { GatewayGroupOpenCopy, SkillDeepLinkCopy } from './types_deep_links'
 import type { ExternalOpenFailedCopy } from './types_external_open'
 import type { FirstRunCopy } from './types_first_run'
+import type { GatewayHostTranslations } from './types_gateway_host'
 import type { ModelMenuTranslations } from './types_model_menu'
 import type { ModelSettingsTranslations } from './types_model_settings'
 import type { NoticeTranslations } from './types_notices'
+import type { NotificationSettingsTranslations } from './types_notifications'
 import type { OnboardingTranslations } from './types_onboarding'
+import type { PluginPreviewAccessTranslations } from './types_plugin_preview_access'
 import type { PluginUpdateTranslations } from './types_plugin_update'
 import type { SidebarProjectsTranslations } from './types_projects'
+import type { RightSidebarTranslations } from './types_right_sidebar'
 import type { SharedMetricsTranslations } from './types_shared_metrics'
 import type { ThemePickerCopy } from './types_theme_picker'
 import type { UninstallSectionTranslations } from './types_uninstall_section'
@@ -476,6 +481,7 @@ catalog: CatalogTranslations
       microphoneConstraintsUnsupported: string
       microphoneFailed: string
       microphoneInUse: string
+      microphoneNeedsHttps: string
       microphonePermissionDenied: string
       microphoneStartFailed: string
       microphoneUnsupported: string
@@ -756,25 +762,7 @@ catalog: CatalogTranslations
         masterPasswordPlaceholder: string
       }
     }
-    notifications: {
-      title: string
-      intro: string
-      enableAll: string
-      enableAllDesc: string
-      focusedHint: string
-      kinds: Record<
-        'approval' | 'backgroundDone' | 'credits' | 'input' | 'plugin' | 'turnDone' | 'turnError',
-        { label: string; description: string }
-      >
-      test: string
-      testTitle: string
-      testBody: string
-      testSent: string
-      testUnsupported: string
-      completionSoundTitle: string
-      completionSoundDesc: string
-      completionSoundPreview: string
-    }
+    notifications: NotificationSettingsTranslations
     sections: Record<string, string>
     searchPlaceholder: Record<'about' | 'config' | 'gateway' | 'keys' | 'mcp' | 'sessions', string>
     modeOptions: Record<'light' | 'dark' | 'system', ModeOptionCopy>
@@ -1144,10 +1132,8 @@ catalog: CatalogTranslations
       scopesRestored: (profiles: string) => string
       scopeNotRestored: (profile: string, error: string) => string
     }
-    gateway: {
+    gateway: GatewayHostTranslations & {
       loading: string
-      unavailableTitle: string
-      unavailableDesc: string
       title: string
       envOverride: string
       intro: string
@@ -1545,6 +1531,17 @@ catalog: CatalogTranslations
         cancel: string
         effectScheduled: (targetName: string, effectiveAt: string, creditsDelta: string) => string
       }
+      keepGoingOnCredits: {
+        title: string
+        description: string
+        /** Shown under the switch while the Remote Spending approval is open in the browser. */
+        approveInBrowser: string
+        openAgain: string
+        cancel: string
+        /** Approved, but the change was still refused: shown with a Try again button. */
+        approvedRetry: string
+        tryAgain: string
+      }
       autoReload: {
         threshold: string
         thresholdAria: string
@@ -1612,6 +1609,20 @@ catalog: CatalogTranslations
             captionDefault: string
             captionSpending: string
             valueUsed: (spent: string, limit: string) => string
+          }
+          window: {
+            today: string
+            week: string
+            month: string
+            topTier: string
+            barLabel: (title: string) => string
+            captionPaused: string
+            captionPausedOther: string
+            captionTopTierUsedUp: string
+            captionTopTierUsedUpKeepGoingOff: string
+            captionResetsIn: (duration: string) => string
+            captionIncluded: string
+            valueUsed: (percent: string) => string
           }
         }
         planCard: {
@@ -1879,7 +1890,8 @@ catalog: CatalogTranslations
     skillArchivedTitle: string
     skillArchivedMessage: string
     tabPlugins: string
-    plugins: PluginUpdateTranslations & {
+    plugins: PluginUpdateTranslations &
+      PluginPreviewAccessTranslations & {
       agentTitle: string
       agentBlurb: string
       pageBlurb: string
@@ -2427,8 +2439,10 @@ catalog: CatalogTranslations
     exported: string
     failedImport: string
     failedExport: string
+    exportNeedsHost: (name: string) => string
     allProfiles: string
     showAllProfiles: string
+    notServedHere: string
     switchToProfile: (name: string) => string
     switchToConnection: (name: string) => string
     switchConnectionFailed: (name: string) => string
@@ -3369,27 +3383,27 @@ catalog: CatalogTranslations
     signIn: string
     signInHeading: string
     settingUp: string
-    codeBody: string
-    copyLink: string
+    finishInBrowser: string
     doNotShare: string
+    openPageAgain: string
     waiting: string
     finishingHeading: string
     finishingBody: string
-    signedInAs: (email: string) => string
+    /** Over the account email on the completed screen. */
+    signedInAsLabel: string
     signedIn: string
     completedBody: string
+    /** The free tier's apps: reconnect the ones that did not move; open Connectors to check. */
+    reconnect: string
+    openConnectors: string
     defaultModel: string
     change: string
     done: string
     notNow: string
     tryAgain: string
-    startAgain: string
     didNotComplete: string
-    rejectedBody: string
-    supersededBody: string
     timedOutHeading: string
     timedOutBody: string
-    retiredBody: string
     errorBody: string
     /** The account service asked for a short wait mid sign-in (a busy account, a rate limit, the ops pause). */
     busyHeading: string
@@ -3445,6 +3459,29 @@ catalog: CatalogTranslations
     customModel: string
     addCustomModelAction: string
     customModelPlaceholder: string
+    today: string
+    week: string
+    month: string
+    topTier: string
+    included: string
+    pausedRenewal: string
+    pausedOther: string
+    includedUsedUp: string
+    /** Row note: past its included usage, this model bills top-up credits (pay as you go). */
+    /** "Weekly limit reached" from a limit name ("weekly"). */
+    limitReached: (name: string) => string
+    limitNames: { day: string; month: string; top_tier: string; week: string }
+    limitThenCredits: string
+    limitThenCreditsLarge: string
+    limitThenWait: string
+    limitThenWaitLarge: string
+    percentUsed: (percent: string) => string
+    resetsIn: (duration: string) => string
+    /** Window plans: the gateway's per-model word (free / low / medium / top_tier). */
+    usageLevels: { free: string; top_tier: string }
+    sectionRecommended: string
+    sectionOther: string
+    largeFootnote: string
   }
 
   modelVisibility: {
@@ -3563,6 +3600,8 @@ catalog: CatalogTranslations
       toggleWorkspace: string
       cacheHitRateTitle: string
       tokensPerSecondTitle: string
+      togglePlanUsage: string
+      planUsageTitle: (used: string, resetsIn: string) => string
       agents: string
       closeAgents: string
       openAgents: string
@@ -3618,52 +3657,7 @@ catalog: CatalogTranslations
     }
   }
 
-  rightSidebar: {
-    aria: string
-    panelsAria: string
-    files: string
-    terminal: string
-    noFolderSelected: string
-    changeCwdTitle: string
-    remotePickerTitle: string
-    remotePickerDescription: string
-    remotePickerSelect: string
-    remotePickerNewFolder: string
-    remotePickerFolderName: string
-    remotePickerCreateFolder: string
-    remotePickerInvalidFolderName: string
-    remotePickerCreateFolderFailed: (error: string) => string
-    folderTip: (cwd: string) => string
-    openFolder: string
-    refreshTree: string
-    collapseAll: string
-    showIgnored: string
-    hideIgnored: string
-    previewUnavailable: string
-    couldNotPreview: (path: string) => string
-    noProjectTitle: string
-    noProjectBody: string
-    noProjectOpen: string
-    noDiffs: string
-    unreadableTitle: string
-    unreadableBody: (error: string) => string
-    emptyTitle: string
-    emptyBody: string
-    treeErrorTitle: string
-    treeErrorBody: string
-    tryAgain: string
-    loadingTree: string
-    loadingFiles: string
-    terminalHide: string
-    terminalsAria: string
-    terminalNew: string
-    terminalReadOnly: string
-    terminalReadOnlyHelp: string
-    terminalOpenInteractive: string
-    terminalCloseOthers: string
-    terminalCloseAll: string
-    addToChat: string
-  }
+  rightSidebar: RightSidebarTranslations
 
   preview: {
     tab: string
@@ -3726,6 +3720,7 @@ catalog: CatalogTranslations
       sentMessage: (count: number) => string
     }
     web: {
+      embeddedPreviewHint: string
       appFailedToBoot: string
       serverNotFound: string
       remoteLoopback: string
@@ -3931,6 +3926,17 @@ catalog: CatalogTranslations
       errorStartNewSession: string
       errorSwitchProvider: string
       errorChooseModel: string
+      /** usage_window: one click to the plan's recommended model; `note` is "free" / "included". */
+      errorSwitchToModel: (model: string, note: string) => string
+      errorSwitchModelFailed: string
+      /** usage_window: turn on Keep going on credits, then re-run the turn. */
+      errorUseCredits: string
+      errorUseCreditsFailed: string
+      /** usage_window with no balance: opens Settings → Billing to add credits. */
+      errorAddCredits: string
+      /** Error card button: opens Settings → Billing in-app (Keep going, buy credits). */
+      errorOpenBillingSettings: string
+      /** Error card body when a Nous account is out of credits (its button opens Settings → Billing). */
       errorCompressConversation: string
       errorCompressFailed: string
       errorOpenHermesFolder: string
@@ -4191,6 +4197,7 @@ catalog: CatalogTranslations
     imageAttach: string
     imageWriteFailed: string
     imageAttachFailed: string
+    attachFailed: string,
     pastedContent: string
     pasteAttachFailed: string
     attachImages: string
@@ -4198,6 +4205,7 @@ catalog: CatalogTranslations
     noClipboardImage: string
     clipboardPasteFailed: string
     dropFiles: string
+    dropFilesMore: (count: number) => string
     handoff: {
       pickPlatform: string
       success: (platform: string) => string

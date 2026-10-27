@@ -308,7 +308,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 persist_user_display_kind=prepared.persist_user_display_kind,
                 reply_expected=event.reply_expected,
             )
-            response = self._hmwa_prepend_reasoning(agent_result, response, source, _intentional_silence)
+            response = self._usage_window_chat_wording(agent_result, self._hmwa_prepend_reasoning(agent_result, response, source, _intentional_silence))
             _footer_line = self._hmwa_runtime_footer_line(agent_result, source, _turn_seconds)
             # Streaming already delivered the body: the footer goes out as a trailing send instead.
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
@@ -330,7 +330,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 hidden_reasoning_incomplete=hidden_reasoning_incomplete,
                 is_context_overflow_failure=is_context_overflow_failure,
             )
-            return await self._hmwa_deliver_turn_response(
+            return await self._deliver_turn_response_then_limit_offer(
                 event, source, session_entry, session_key, run_generation,
                 agent_result, agent_messages, response, _footer_line, _intentional_silence,
             )
@@ -1750,13 +1750,12 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                         pending_event = None
                         pending = None
 
-        if self._draining and (pending_event or pending):
-            logger.info(
-                "Discarding pending follow-up for session %s during gateway %s",
-                session_key or "?", self._status_action_label(),
-            )
-            pending_event = None
-            pending = None
+        if self._draining and getattr(pending_event, "_admitted_before_drain", False) is not True:
+            if pending_event or pending:
+                logger.info("Discarding pending follow-up for session %s during gateway %s", session_key or "?", self._status_action_label())
+            # Without a result the caller runs nothing next: leave the queue to the adapter.
+            pending_event = self._take_wake_admitted_before_drain(session_key, adapter) if result and adapter and session_key else None
+            pending = (pending_event.text or _build_media_placeholder(pending_event)) if pending_event is not None else None
         return pending_event, pending
 
     async def _run_agent_deliver_first_response(

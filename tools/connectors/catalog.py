@@ -85,10 +85,10 @@ class HostInstaller:
 
     def refuse(self, entry: Any) -> None:
         """Raise with the installer's own text when the catalog would refuse this entry here."""
-        from hermes_cli.plugins_cmd_catalog import _refuse_unsupported_catalog_platform, raise_if_removed
+        from hermes_cli.plugins_cmd_catalog import raise_if_removed, refuse_incompatible_catalog_entry
 
         raise_if_removed(entry.name, entry.repo)
-        _refuse_unsupported_catalog_platform(entry)
+        refuse_incompatible_catalog_entry(entry)
 
     def install_plugin(self, name: str, *, force: bool, enable: bool, ref: Optional[str],
                        on_step: Callable[[InstallPhase], None]) -> dict[str, Any]:

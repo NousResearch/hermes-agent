@@ -339,7 +339,7 @@ _BASE_SECURITY_ARGS = [
 # Fork-bomb guard, applied only when the pids cgroup controller is available. The pids cgroup counts
 # THREADS, and a sandbox that hosts the Bot Screen runs a desktop in here: measured on
 # hermes-sandbox:desktop, the idle container is 2 tasks, Xvnc + Xfce + dbus 44, one Chromium with one
-# tab 212, plus the agent's own agent-browser Chromium with two tabs 488. The old 256 was hit in normal
+# tab 212, plus the agent's own Chromium with two tabs 488. The old 256 was hit in normal
 # use and every further `docker exec` (browser command, cua-driver, thumbnail, CDP forward) died with
 # runc's "procReady not received". 2048 leaves room for a working browser and is still three orders of
 # magnitude under the host's pid_max.

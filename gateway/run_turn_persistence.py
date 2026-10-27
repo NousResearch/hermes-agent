@@ -527,6 +527,31 @@ class GatewayTurnPersistenceMixin:
         # trigger a rebuild next turn (destroying prompt caching).
         await self._refresh_agent_cache_message_count(session_key, sid)
 
+    @staticmethod
+    def _usage_window_chat_wording(agent_result: dict, response: str) -> str:
+        """A usage-window refusal sent to a chat: credits steps point at the Portal (a chat's /topup has no
+        Keep going control) and the reset reads as a duration (the gateway's clock is not the reader's).
+        Every other reply is returned unchanged."""
+        if not (agent_result.get("usage_window_message") and response):
+            return response
+        from agent.plan_limits import chat_refusal_wording
+        return chat_refusal_wording(response, agent_result.get("failure_resets_at"))
+
+    async def _deliver_turn_response_then_limit_offer(
+        self, event, source, session_entry, session_key, run_generation,
+        agent_result, agent_messages, response, footer_line, intentional_silence,
+    ):
+        """``_hmwa_deliver_turn_response``, then, for a usage-window refusal, the limit offer: the limit
+        sentence is the reply, and the button follows it once it lands."""
+        delivered = await self._hmwa_deliver_turn_response(
+            event, source, session_entry, session_key, run_generation,
+            agent_result, agent_messages, response, footer_line, intentional_silence,
+        )
+        if isinstance(agent_result.get("usage_limit"), dict):
+            self._schedule_usage_limit_offer(event, agent_result["usage_limit"], session_key=session_key,
+                                             generation=run_generation)
+        return delivered
+
     async def _hmwa_deliver_turn_response(
         self, event, source, session_entry, session_key, run_generation,
         agent_result, agent_messages, response, _footer_line, _intentional_silence,
@@ -632,13 +657,17 @@ class GatewayTurnPersistenceMixin:
                 status_hint = t("gateway.errors.hint_usage_limit")
         elif status_code == 400:
             status_hint = t("gateway.errors.hint_rejected")
-        elif getattr(e, "reason", None) == "launch_credentials_unavailable" and getattr(e, "field", None):
-            # The session's own frozen route credential is gone or changed: name it, not the model.
-            status_hint = f" {e.reason} ({e.field}: {e.detail or 'unavailable'})."
         from gateway.session_results import record_unexecuted_failure
+        if getattr(e, "reason", None) == "launch_credentials_unavailable":
+            # The session's own route key is gone or changed: /retry repeats it, /new is the way out.
+            from agent.turn_failure_copy import launch_credentials_copy
+            return record_unexecuted_failure(launch_credentials_copy(e), 'launch_credentials_unavailable')
+        # A local client (CLI, TUI, Desktop) is the operator at this host: its result carries the
+        # real cause, so its details line is not the chat apology with the log pointer cut off.
+        local_error = f"{type(e).__name__}: {e}"[:500] if source.platform == Platform.LOCAL else None
         return record_unexecuted_failure(self._hmwa_add_failed_turn_notice(
             t("gateway.errors.generic_failed_with_hint", hint=status_hint), PARTIAL_FAILED_TURN_NOTICE,
-        ))
+        ), error=local_error)
 
     def _hmwa_discard_stale_result(self, source, _quick_key, run_generation):
         """A newer run generation superseded this turn: drop its deferred post-delivery callback."""

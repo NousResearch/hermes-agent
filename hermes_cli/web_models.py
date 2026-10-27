@@ -103,6 +103,13 @@ class ManagedFileDelete(BaseModel):
     path: str
     recursive: bool = False
 
+class FileTicketRequest(BaseModel):
+    """POST /api/files/ticket — the exact query the ticketed download/stream URL carries."""
+    route: Literal["download", "stream"]
+    path: str
+    profile: Optional[str] = None
+    session_id: Optional[str] = None
+
 class ModelAssignment(BaseModel):
     """POST /api/model/set — assign a provider/model to a slot.
 
@@ -177,6 +184,8 @@ class MoaConfigPayload(_MoaReferenceControls):
 class FsWriteText(BaseModel):
     path: str
     content: str
+    #: The session the file was read for: its /workspace is that session's sandbox.
+    session_id: Optional[str] = None
 
 class GitPathBody(BaseModel):
     path: str
@@ -525,6 +534,20 @@ class ToolsetPostSetup(BaseModel):
 
 class TerminalBackendSelect(BaseModel):
     backend: str
+    profile: Optional[str] = None
+
+class DelegationBackendSelect(BaseModel):
+    backend: str
+    profile: Optional[str] = None
+
+class DelegationModelMapUpdate(BaseModel):
+    options: list[dict[str, Any]]
+    default: Optional[str] = None
+    profile: Optional[str] = None
+
+class DelegationProfileRoutesUpdate(BaseModel):
+    profiles: list[dict[str, Any]]
+    default: Optional[str] = None
     profile: Optional[str] = None
 
 class RawConfigUpdate(BaseModel):

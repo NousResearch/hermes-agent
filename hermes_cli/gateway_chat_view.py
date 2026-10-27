@@ -35,6 +35,33 @@ _BLOCKING_CONTROL_EVENTS = frozenset({
 })
 
 
+def pending_lines(pending):
+    """The owner's pending admissions as shown on attach (the classic CLI shows them before a turn)."""
+    unknown = any(row["status"] == "unknown" for row in pending)
+    lines = ["Execution outcome unknown after restart. Discard acknowledges the lost turn "
+             "without replaying it; queued work may then continue."] if unknown else []
+    for row in pending:
+        admission = row["admission_id"]
+        # A queued prompt is not in the transcript yet: show what is about to run (or was lost).
+        preview = _pending_preview(row.get("text"))
+        if row["status"] == "unknown":
+            lines.append(f"Unknown admission: {admission}{preview}\n/discard {admission}")
+        elif row["status"] == "queued":
+            context = "waiting behind unknown work" if unknown else "waiting to run"
+            lines.append(f"Queued admission: {admission} ({context}){preview}")
+    return lines
+
+
+def lost_admission(snapshot, admission_id):
+    """``/discard``'s row: the resume snapshot is the only source of the generation the authority
+    stamped on a turn lost across an owner restart."""
+    lost = next((row for row in snapshot.get("pending", [])
+                 if row["admission_id"] == admission_id and row["status"] == "unknown"), None)
+    if lost is None:
+        raise GatewayClientError("No unknown (lost) admission with that id; resume to refresh")
+    return lost
+
+
 class GatewayChatView:
     def __init__(self, client, snapshot, *, quiet=False, emitter=None, usage_file=None):
         self.usage_file = usage_file
@@ -75,19 +102,8 @@ class GatewayChatView:
         return [row["admission_id"] for row in self.pending if row["status"] == "unknown"]
 
     def show_pending(self):
-        unknown = bool(self.unknown_admissions())
-        if unknown:
-            print("Execution outcome unknown after restart. Discard acknowledges the lost turn "
-                  "without replaying it; queued work may then continue.", file=sys.stderr)
-        for row in self.pending:
-            admission = row["admission_id"]
-            # A queued prompt is not in the transcript yet: show what is about to run (or was lost).
-            preview = _pending_preview(row.get("text"))
-            if row["status"] == "unknown":
-                print(f"Unknown admission: {admission}{preview}\n/discard {admission}", file=sys.stderr)
-            elif row["status"] == "queued":
-                context = "waiting behind unknown work" if unknown else "waiting to run"
-                print(f"Queued admission: {admission} ({context}){preview}", file=sys.stderr)
+        for line in pending_lines(self.pending):
+            print(line, file=sys.stderr)
 
     def show_prompt(self, prompt):
         print(f"\n{prompt.get('description') or prompt.get('question') or 'Approval required'}", file=sys.stderr)
@@ -340,13 +356,8 @@ class GatewayChatView:
                 **({"choice": answer} if expected == "approval" else {"answer": answer}))
             return True
         if command == "/discard":
-            # Acknowledge a turn lost across an owner restart; the resume snapshot
-            # is the only source of the generation the authority stamped on it.
             snapshot = await self.client.rpc("session.resume", session_id=self.session_id)
-            lost = next((row for row in snapshot.get("pending", [])
-                         if row["admission_id"] == rest.strip() and row["status"] == "unknown"), None)
-            if lost is None:
-                raise GatewayClientError("No unknown (lost) admission with that id; resume to refresh")
+            lost = lost_admission(snapshot, rest.strip())
             await self.client.rpc("prompt.resolve_unknown", session_id=self.session_id,
                                   admission_id=lost["admission_id"], execution_generation=lost["execution_generation"])
             return True

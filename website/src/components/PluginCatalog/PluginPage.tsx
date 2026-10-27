@@ -155,11 +155,6 @@ export default function PluginPage({ data }: { data: PluginPageData }) {
               )}
             </p>
             {prose && <p className={styles.lede}>{prose}</p>}
-            {disclosures.map((text) => (
-              <aside key={text} className={styles.disclosure} role="note">
-                <strong>Disclosure</strong> — {text}
-              </aside>
-            ))}
 
             <div className={styles.actions}>
               <a
@@ -275,6 +270,17 @@ export default function PluginPage({ data }: { data: PluginPageData }) {
               </p>
             </aside>
           </div>
+
+          {disclosures.length > 0 && (
+            <section className={styles.section} aria-labelledby="disclosure">
+              <h2 id="disclosure" className={styles.sectionTitle}>Disclosure</h2>
+              {disclosures.map((text) => (
+                <aside key={text} className={styles.disclosure} role="note">
+                  {text}
+                </aside>
+              ))}
+            </section>
+          )}
 
           {author && moreByAuthor.length > 0 && (
             <section className={styles.section} aria-labelledby="more-by">

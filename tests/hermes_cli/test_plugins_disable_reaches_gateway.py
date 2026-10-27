@@ -154,6 +154,8 @@ def test_enable_prints_only_the_outcome_that_applies(home, monkeypatch, capsys, 
     outcome = {"gateway_reloaded": reloaded, "restart_required": not reloaded,
                "activation": {"activated_now": {"hooks": 1}} if reloaded else None}
     monkeypatch.setattr(plugins_activation, "activate_plugin_now", lambda *_a, **_k: outcome)
+    # Not reloaded: a gateway runs but did not answer the reload (an older one), so it needs a restart.
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda *_a, **_k: 4242)
 
     plugins_cmd.cmd_enable("probe", allow_tool_override=False)
 

@@ -6,7 +6,7 @@ import contextlib
 import pytest
 
 from hermes_cli import anon_auth, install_state, welcome_trial
-from tests.hermes_cli.anon_portal import as_local_desktop_backend, claimed_trial, install_portal
+from tests.hermes_cli.anon_portal import as_local_desktop_backend, claimed_trial, install_portal, off_local_desktop
 
 
 @pytest.fixture
@@ -68,12 +68,12 @@ def test_a_connector_guest_neither_claims_nor_carries_inference(portal, monkeypa
     assert [r["body"]["purpose"] for r in portal.token_requests] == ["connectors"]
 
 
-def test_a_claimed_guest_carries_inference_only_on_the_local_desktop_backend(portal, monkeypatch):
+def test_a_claimed_trial_carries_inference_outside_the_desktop_too(portal, monkeypatch):
     state = claimed_trial(monkeypatch)
-    monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN")  # the same home, read by a CLI process
+    off_local_desktop(monkeypatch)  # the same home, read by a CLI process
 
-    assert not anon_auth.free_inference_active()
-    assert anon_auth.guest_without_free_tier(state)
+    assert anon_auth.free_inference_active()
+    assert not anon_auth.guest_without_free_tier(state)
 
 
 def _chat(db_path, model: str) -> None:
@@ -85,48 +85,6 @@ def _chat(db_path, model: str) -> None:
     db.close()
 
 
-def _legacy_guest() -> None:
-    """A guest minted before the claim existed: no welcome_claim key at all, in either store."""
-    from hermes_cli.auth import _load_auth_store, _load_provider_state, _save_auth_store, _store_provider_state
-    from hermes_cli.auth_nous import _write_shared_nous_state
-
-    anon_auth.ensure_portal_identity(explicit=True)
-    store = _load_auth_store()
-    state = dict(_load_provider_state(store, "nous"))
-    state.pop(anon_auth.WELCOME_CLAIM_FLAG, None)
-    _store_provider_state(store, "nous", state, set_active=False)
-    _save_auth_store(store)
-    _write_shared_nous_state(state)
-
-
-@pytest.mark.parametrize(("model", "kept"), [(anon_auth.GUEST_MODEL, True), ("anthropic/claude", False)])
-def test_a_guest_that_chatted_on_the_free_model_keeps_it(portal, monkeypatch, model, kept):
-    from hermes_constants import get_hermes_home
-
-    as_local_desktop_backend(monkeypatch)
-    _legacy_guest()  # grandfathering is only for guests minted before the key existed
-    _chat(get_hermes_home() / "state.db", model)
-
-    assert welcome_trial.grandfather_existing_guest() is kept
-    assert anon_auth.free_inference_active() is kept
-
-
-def test_grandfathering_never_overwrites_a_sign_in_from_another_profile(portal, monkeypatch):
-    from hermes_cli.auth_nous import _read_shared_nous_state, _write_shared_nous_state
-    from hermes_constants import get_hermes_home
-    from tests.hermes_cli.anon_portal import PORTAL
-
-    as_local_desktop_backend(monkeypatch)
-    _legacy_guest()                                    # this profile still holds the old guest
-    _chat(get_hermes_home() / "state.db", anon_auth.GUEST_MODEL)
-    _write_shared_nous_state({"auth_method": "oauth_device_code", "portal_base_url": PORTAL,
-                              "access_token": "at-signed-in", "refresh_token": "rt-signed-in"})
-
-    assert welcome_trial.grandfather_existing_guest() is False
-    assert _read_shared_nous_state()["refresh_token"] == "rt-signed-in"
-    assert anon_auth.WELCOME_CLAIM_FLAG not in anon_auth.current_nous_state()
-
-
 def test_a_lost_claim_is_not_replaced(portal, monkeypatch):
     claimed_trial(monkeypatch)
     anon_auth.clear_dead_guest("anon_credential_dead")
@@ -135,33 +93,19 @@ def test_a_lost_claim_is_not_replaced(portal, monkeypatch):
     assert portal.creates() == 1
 
 
-def test_a_reaped_claimant_replaced_by_a_connector_guest_is_not_grandfathered(portal, monkeypatch):
-    from hermes_constants import get_hermes_home
-
-    claimed_trial(monkeypatch)
-    _chat(get_hermes_home() / "state.db", anon_auth.GUEST_MODEL)
-    anon_auth.clear_dead_guest("anon_credential_dead")
-    anon_auth.ensure_portal_identity(explicit=True)  # a connector action mints the replacement
-
-    assert welcome_trial.grandfather_existing_guest() is False
-    assert not anon_auth.free_inference_active()
-
-
-def test_a_connector_guest_adopted_from_the_shared_store_is_not_grandfathered(portal, monkeypatch):
+def test_a_connector_guest_adopted_from_the_shared_store_carries_no_trial(portal, monkeypatch):
     from hermes_cli.auth import _load_auth_store, _save_auth_store
-    from hermes_constants import get_hermes_home
 
     as_local_desktop_backend(monkeypatch)
     anon_auth.ensure_portal_identity(explicit=True)  # connector mint: welcome_claim False, mirrored
     store = _load_auth_store()
     store["providers"].pop("nous")  # a profile whose own identity differs adopts the shared one
     _save_auth_store(store)
-    _chat(get_hermes_home() / "state.db", anon_auth.GUEST_MODEL)
 
     adopted = anon_auth.ensure_portal_identity(explicit=True)
 
     assert adopted[anon_auth.WELCOME_CLAIM_FLAG] is False
-    assert welcome_trial.grandfather_existing_guest() is False
+    assert not anon_auth.free_inference_active()
     assert portal.creates() == 1
 
 
@@ -189,7 +133,6 @@ def test_a_lost_trial_is_never_claimed_again_after_a_relaunch(portal, monkeypatc
 
     assert welcome_trial.claim_desktop_free_tier() is None
     assert portal.creates() == creates
-    assert welcome_trial.grandfather_existing_guest() is False
     assert not anon_auth.free_inference_active()
     with pytest.raises(AuthError):
         resolve_provider("auto")
@@ -357,3 +300,72 @@ def test_one_due_answer_walks_the_provider_ladder_once(portal, monkeypatch):
 
     assert welcome_trial.inference_available() is True  # fresh: the trial is claimable
     assert len(calls) == 1
+
+
+def _cron_model() -> str:
+    from cron.scheduler import _load_cron_job_config
+
+    return _load_cron_job_config({"id": "j", "name": "j", "prompt": "x"}, "j", "j").model
+
+
+def _kanban_worker_model(monkeypatch, tmp_path) -> str:
+    from dataclasses import asdict
+    from types import SimpleNamespace
+    from contextlib import closing
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.config import load_config
+    from hermes_cli.kanban_db_connect import connect
+    from hermes_constants import get_hermes_home
+    from gateway.session_contract import Principal
+    from gateway.session_kanban import build_kanban_policy
+    from gateway.session_policy import restore_policy
+
+    home = str(get_hermes_home())
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path / "kanban"))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.setattr("hermes_cli.profiles.resolve_profile_env", lambda name: home)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    kb.create_board("trial")
+    with closing(connect(board="trial")) as conn:
+        task_id = kb.create_task(conn, title="t", assignee="default", workspace_kind="dir", workspace_path=str(workspace))
+        kb.recompute_ready(conn)
+        task = kb.claim_task(conn, task_id)
+    connection = SimpleNamespace(authority=SimpleNamespace(profile_id=home), native_owner=True,
+                                 actor=Principal("owner", home, frozenset({"session:create"}), "transport"))
+    params = dict(board="trial", task_id=task.id, run_id=task.current_run_id, claim_lock=task.claim_lock)
+    policy, _ = build_kanban_policy(connection, params, load_config())
+    return restore_policy(asdict(policy)).model
+
+
+@pytest.fixture
+def unconfigured_trial(portal, monkeypatch):
+    """A fresh install whose Desktop claimed the trial, read by the scheduler or the Kanban
+    dispatcher (not Desktop work), with no model configured anywhere."""
+    monkeypatch.delenv("HERMES_MODEL", raising=False)
+    claimed_trial(monkeypatch)
+    off_local_desktop(monkeypatch)
+    yield
+    from hermes_cli.config import load_config
+    assert not (load_config().get("model") or {}).get("default")  # never persisted: a later provider wins
+
+
+def test_a_claimed_trial_runs_a_default_cron_job_when_no_model_is_configured(unconfigured_trial):
+    assert _cron_model() == anon_auth.GUEST_MODEL
+
+
+def test_a_claimed_trial_runs_a_kanban_worker_when_no_model_is_configured(unconfigured_trial, monkeypatch, tmp_path):
+    assert _kanban_worker_model(monkeypatch, tmp_path) == anon_auth.GUEST_MODEL
+
+
+def test_a_configured_model_beats_the_trial_for_cron_jobs_and_kanban_workers(portal, monkeypatch, tmp_path):
+    from hermes_constants import get_hermes_home
+
+    monkeypatch.delenv("HERMES_MODEL", raising=False)
+    claimed_trial(monkeypatch)
+    off_local_desktop(monkeypatch)
+    (get_hermes_home() / "config.yaml").write_text(
+        "model:\n  provider: openrouter\n  default: anthropic/claude-sonnet-4\n", encoding="utf-8")
+
+    assert _cron_model() == "anthropic/claude-sonnet-4"
+    assert _kanban_worker_model(monkeypatch, tmp_path) == "anthropic/claude-sonnet-4"

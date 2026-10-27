@@ -105,7 +105,7 @@ def _voice_reasoning(agent: Any, effort: Optional[dict[str, Any]]) -> Optional[d
 
 
 def _capture(agent: Any) -> dict[str, Any]:
-    from agent.agent_runtime_helpers import _build_primary_runtime_snapshot
+    from agent.primary_runtime_snapshot import _build_primary_runtime_snapshot
     return {
         "snapshot": _build_primary_runtime_snapshot(agent, agent.api_mode),
         **{name: getattr(agent, name, None) for name in _EXTRA_FIELDS},
@@ -177,7 +177,8 @@ class _SessionRuntimeView:
 
     def __init__(self, agent: Any, state: dict[str, Any]) -> None:
         snapshot = state.get("snapshot") or {}
-        own = {name: snapshot[name] for name in ("model", "provider", "base_url", "api_mode") if name in snapshot}
+        own = {name: snapshot[name] for name in
+               ("model", "provider", "requested_provider", "base_url", "api_mode") if name in snapshot}
         if "anthropic_base_url" in snapshot:
             own["_anthropic_base_url"] = snapshot["anthropic_base_url"]
         own["reasoning_config"] = state.get("reasoning_config")

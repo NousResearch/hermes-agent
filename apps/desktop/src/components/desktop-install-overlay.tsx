@@ -15,6 +15,7 @@ import type {
   DesktopBootstrapState
 } from '@/global'
 import { useI18n } from '@/i18n'
+import { writeClipboardText } from '@/lib/clipboard'
 import { AlertCircle, ChevronDown, ChevronRight, Globe, iconSize, Loader2, Monitor } from '@/lib/icons'
 import { capitalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
@@ -542,7 +543,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
             <div className="mt-2 flex items-center gap-2">
               <Button
                 onClick={() => {
-                  void navigator.clipboard?.writeText(ups.installCommand).catch(() => {})
+                  void writeClipboardText(ups.installCommand).catch(() => {})
                 }}
                 size="sm"
                 variant="secondary"
@@ -751,7 +752,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
                     const fullText = state.error ? `Error: ${state.error}\n\n${text}` : text
 
                     try {
-                      await navigator.clipboard.writeText(fullText)
+                      await writeClipboardText(fullText)
                       setCopied(true)
                       window.setTimeout(() => setCopied(false), 1500)
                     } catch {

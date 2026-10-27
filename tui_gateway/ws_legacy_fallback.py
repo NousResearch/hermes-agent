@@ -44,14 +44,10 @@ _SESSION_FALLBACK_ALLOWED = frozenset({
 # (``gateway/session_tui_ops.py``); listing them here keeps the sidecar handler unreachable.
 # ``process.kill`` stays: its handler is already session-scoped.
 _PROCESS_GLOBAL = frozenset({"process.stop", "delegation.pause", "reload.mcp", "reload.env", "agents.list"})
-# Process-global ACTIONS of a verb whose other actions are fine on the shared owner (the gate above is
-# method-level, and refusing the whole verb turns its safe actions into the client's -32601 version-skew
-# notice). ``browser.manage`` connect/disconnect reap every task's browser and rewrite the process-wide
-# ``BROWSER_CDP_URL`` that every chat's and served profile's browser tools read first (dokterdok N25);
-# ``status`` and ``use`` (the profile's ``browser.backend``) stay. A missing action means ``status``.
-_PROCESS_GLOBAL_ACTIONS = {"browser.manage": ({"connect", "disconnect"}, (
-    "/browser connect and /browser disconnect would switch the browser for every chat on this shared "
-    "gateway. Set browser.cdp_url in config.yaml instead, or use the classic CLI (hermes --cli)."))}
+# ``browser.manage`` is NOT here: connect/disconnect run in the requesting profile's scope (the
+# ticket's home, or the session's ``profile_home`` via ``_profile_scoped``) and the live endpoint, the
+# reap and the CDP supervisors are keyed by that profile home (CLI-9, #134889), so a multiplexed
+# owner serves them without reaching another profile's browser.
 
 
 def legacy_fallback_allowed(actor: Any, method: str) -> bool:
@@ -141,9 +137,6 @@ def _own_profile_read(server: Any, req: dict, home: str) -> dict:
 def dispatch_legacy(server: Any, req: dict, transport: Any, actor: Any) -> dict | None:
     """Run ``server.dispatch`` with the ticket's profile home bound (call from a worker thread;
     the pool path copies this context, so long handlers see it too)."""
-    actions, refusal = _PROCESS_GLOBAL_ACTIONS.get(req.get("method"), ((), ""))
-    if (req.get("params") or {}).get("action", "status") in actions:
-        return {"jsonrpc": "2.0", "id": req.get("id"), "error": {"code": 4030, "message": refusal}}
     try:
         home = _foreign_profile_home(server, getattr(actor, "profile_id", None))
     except OSError:

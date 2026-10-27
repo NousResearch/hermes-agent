@@ -41,6 +41,9 @@ export const canonicalEn = {
       unconfirmedPrefix: '[unconfirmed · Alt+K retry] ',
       // {0}=admission status identifier (unknown; queued rows render plain), {1}=input text
       serverRow: (status: string, text: string) => `[${status}] ${text}`,
+      // {0}=input text of a turn lost when the gateway restarted (status unknown): it pauses the queue
+      // until the person drops it (select it with ↑, then Ctrl+X → prompt.resolve_unknown).
+      lostRow: (text: string) => `[paused: lost in restart · ↑ select, Ctrl+X discard] ${text}`,
       discardFailed: (message: string) => `discard failed: ${message}`,
       journalCleanupFailed: (message: string) => `input delivered; journal cleanup failed: ${message}`,
       notSavedQueueKept: (message: string) => `input not saved: ${message} — queue kept`,

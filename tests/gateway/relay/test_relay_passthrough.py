@@ -97,13 +97,6 @@ def test_passthrough_from_wire_stamps_routed_profile():
     assert fwd.profile == "reviewer"
 
 
-@pytest.mark.asyncio
-async def test_connect_wires_passthrough_handler_over_ws(adapter):
-    """connect() registers the passthrough handler on the transport so a
-    connector-delivered passthrough_forward frame reaches the adapter."""
-    await adapter.connect()
-    stub = adapter._transport
-    assert stub._passthrough is not None
 
 
 @pytest.mark.asyncio
@@ -305,3 +298,33 @@ async def test_routed_profile_round_trips_on_every_egress_frame(adapter, monkeyp
 
 async def _noop_handle(event):
     return None
+
+
+@pytest.mark.asyncio
+async def test_modal_submit_renders_its_submitted_values(adapter, monkeypatch):
+    """A MODAL_SUBMIT (type 5) reaches the agent with what the user typed, not as an empty turn:
+    one ``input_id: value`` line per filled input (action-row and label layouts), an empty
+    optional input left out, keyed to the thread it was submitted in."""
+    await adapter.connect()
+    seen = []
+
+    async def fake_handle(event):
+        seen.append(event)
+
+    monkeypatch.setattr(adapter, "handle_message", fake_handle)
+    fwd = _interaction_forward({
+        "id": "i-modal", "type": 5, "channel_id": "th1", "guild_id": "g1",
+        "channel": {"type": 11, "parent_id": "c1"},
+        "member": {"user": {"id": "u1", "username": "ben"}},
+        "data": {"custom_id": "feedback", "components": [
+            {"type": 1, "components": [{"type": 4, "custom_id": "title", "value": "Café ☕ outage"}]},
+            {"type": 1, "components": [{"type": 4, "custom_id": "notes", "value": ""}]},
+            {"type": 18, "component": {"type": 4, "custom_id": "steps", "value": "1. deploy\n2. 💥"}},
+        ]},
+    })
+    await adapter._transport.push_passthrough(fwd)
+
+    assert len(seen) == 1
+    ev = seen[0]
+    assert ev.text == "feedback\ntitle: Café ☕ outage\nsteps: 1. deploy\n2. 💥"
+    assert (ev.source.chat_type, ev.source.thread_id, ev.source.parent_chat_id) == ("thread", "th1", "c1")

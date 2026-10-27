@@ -1,12 +1,13 @@
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 
+import { HandoffResult } from '@/components/free-tier/sign-in-dialog'
 import { ModelPickerDialog } from '@/components/model-picker'
 import { Button } from '@/components/ui/button'
 import { ErrorIcon } from '@/components/ui/error-state'
 import { Input } from '@/components/ui/input'
 import { Loader } from '@/components/ui/loader'
-import { getGlobalModelOptions } from '@/hermes'
+import { getGlobalModelOptions, profileScopeKey } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { ExternalLink, Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -16,6 +17,7 @@ import {
   copyExternalCommand,
   type OnboardingContext,
   type OnboardingFlow,
+  type OnboardingSignedIn,
   recheckExternalSignin,
   setOnboardingCode,
   setOnboardingModel,
@@ -54,7 +56,7 @@ export function FlowPanel({
   }
 
   if (flow.status === 'confirming_model') {
-    return <ConfirmingModelPanel flow={flow} leaving={leaving} onBegin={onBegin} profile={ctx.profile} />
+    return <ConfirmingModelPanel ctx={ctx} flow={flow} leaving={leaving} onBegin={onBegin} />
   }
 
   if (flow.status === 'error') {
@@ -79,7 +81,7 @@ export function FlowPanel({
           <Button onClick={cancelOnboardingFlow} variant="text">
             {t.onboarding.pickDifferentProvider}
           </Button>
-          <Button onClick={() => startManualOnboarding(null, ctx.profile)} variant="outline">
+          <Button onClick={() => startManualOnboarding(null, ctx.scope ?? ctx.profile)} variant="outline">
             {t.onboarding.useApiKeyInstead}
           </Button>
           {failedProvider ? (
@@ -237,12 +239,12 @@ function ConfirmingModelPanel({
   flow,
   leaving,
   onBegin,
-  profile
+  ctx
 }: {
   flow: Extract<OnboardingFlow, { status: 'confirming_model' }>
   leaving: boolean
   onBegin: () => void
-  profile?: string
+  ctx: OnboardingContext
 }) {
   const { t } = useI18n()
   const scrambledModel = useScramble(flow.currentModel, leaving)
@@ -257,8 +259,8 @@ function ConfirmingModelPanel({
   // Pull pricing + tier for the just-picked default so the confirm card
   // shows the same $/Mtok + Free/Pro info the picker and CLI do.
   const options = useQuery({
-    queryKey: ['onboarding-model-options', flow.providerSlug],
-    queryFn: () => getGlobalModelOptions({ includeUnconfigured: true, explicitOnly: false })
+    queryKey: ['onboarding-model-options', profileScopeKey(ctx.scope ?? ctx.profile), flow.providerSlug],
+    queryFn: () => getGlobalModelOptions({ includeUnconfigured: true, explicitOnly: false }, ctx.scope ?? ctx.profile)
   })
 
   const providerRow = options.data?.providers?.find(
@@ -271,6 +273,8 @@ function ConfirmingModelPanel({
   return (
     <div className="grid place-items-center gap-7 py-6 text-center">
       <DecodedLabel leaving={leaving} text={t.onboarding.connectedProvider(flow.label)} />
+
+      {flow.signedIn ? <SignedInLines leaving={leaving} signedIn={flow.signedIn} /> : null}
 
       <div
         className={cn(
@@ -352,8 +356,31 @@ function ConfirmingModelPanel({
           setPickerOpen(false)
         }}
         open={pickerOpen}
-        profile={profile}
+        ownerConnectionId={ctx.scope ? (ctx.scope.connectionId ?? null) : undefined}
+        profile={ctx.profile}
+        request={ctx.requestGateway}
       />
+    </div>
+  )
+}
+
+/** Which account the sign-in landed on and what moved: the free-tier result's own lines. */
+function SignedInLines({ leaving, signedIn: { email, handoff } }: { leaving: boolean; signedIn: OnboardingSignedIn }) {
+  const { t } = useI18n()
+
+  return (
+    <div
+      className={cn(
+        'grid justify-items-center gap-1.5 transition duration-[360ms] ease-out',
+        leaving ? 'opacity-0 saturate-0' : 'opacity-100 saturate-100'
+      )}
+    >
+      {email ? (
+        <p className="text-sm text-muted-foreground">
+          {t.freeTier.signedInAsLabel} <span className="font-medium text-foreground">{email}</span>
+        </p>
+      ) : null}
+      {handoff ? <HandoffResult handoff={handoff} /> : null}
     </div>
   )
 }

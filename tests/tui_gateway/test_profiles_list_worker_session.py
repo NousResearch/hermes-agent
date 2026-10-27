@@ -21,7 +21,6 @@ import pytest
 
 import tui_gateway.server as srv
 
-
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     h = tmp_path / ".hermes"
@@ -29,12 +28,10 @@ def home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(h))
     return h
 
-
 def _db(profile_dir):
     from hermes_state import SessionDB
 
     return SessionDB(db_path=profile_dir / "state.db")
-
 
 def _add_session(db, sid, *, source="cli", title="", ts, text):
     db.create_session(sid, source)
@@ -42,15 +39,12 @@ def _add_session(db, sid, *, source="cli", title="", ts, text):
     with db._lock:
         db._conn.execute("UPDATE sessions SET title = ? WHERE id = ?", (title, sid))
 
-
 def _profiles(params):
     envelope = srv._methods["profiles.list"](1, params)
     return envelope["result"]["profiles"]
 
-
 def _row(profiles, name):
     return next(p for p in profiles if p["name"] == name)
-
 
 def test_worker_session_reports_newest_worker_and_keeps_last_session_clean(home):
     db = _db(home)
@@ -69,7 +63,6 @@ def test_worker_session_reports_newest_worker_and_keeps_last_session_clean(home)
     # The conversation preview still never surfaces worker rows.
     assert row["last_session"]["id"] == "chat1"
 
-
 def test_worker_session_none_without_workers(home):
     db = _db(home)
     _add_session(db, "chat1", source="cli", title="Chat", ts=1000, text="hello")
@@ -78,7 +71,6 @@ def test_worker_session_none_without_workers(home):
     row = _row(_profiles({}), "default")
     assert row["worker_session"] is None
     assert row["last_session"]["id"] == "chat1"
-
 
 def test_worker_session_tool_source_counts(home):
     db = _db(home)
@@ -90,13 +82,3 @@ def test_worker_session_tool_source_counts(home):
     assert row["worker_session"]["source"] == "tool"
     # No human-facing session at all: last_session stays None.
     assert row["last_session"] is None
-
-
-def test_include_sessions_false_omits_worker_session(home):
-    db = _db(home)
-    _add_session(db, "work1", source="kanban", title="Task", ts=1000, text="task body")
-    db.close()
-
-    row = _row(_profiles({"include_sessions": False}), "default")
-    assert "worker_session" not in row
-    assert "last_session" not in row

@@ -1,0 +1,14 @@
+name: monid
+repo: https://github.com/monid-ai/hermes-plugin
+sha: cdf26de6da51a04c5ffccaa48bee0a2d51f7c35c
+description: "Connect your agent to third-party tools and APIs (web search and scraping, people and company data, social media, media generation, email and phone) through one integration. The agent discovers, compares and runs tools at runtime, paid per call from one Monid balance. Disclosure — Monid (monid.ai, by Monid / monid-ai) is a paid third-party marketplace: the agent installs the @monid-ai/cli npm package or connects to mcp.monid.ai, sends your requests and any uploaded files to Monid and on to its providers, and each run spends your prepaid Monid workspace balance. The \"confirm the price first\" step is an instruction to the model in the bundled skill, not a Hermes approval prompt, unless you add `trust: untrusted` to `mcp_servers.monid`."
+maintainer: monid-ai
+tier: community
+category: tools
+docs_url: https://github.com/monid-ai/hermes-plugin#readme
+version: "0.2.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

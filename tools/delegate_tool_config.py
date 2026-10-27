@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NamedTuple, Optional
 from utils import base_url_hostname, is_truthy_value
-from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.fallback_config import scoped_fallback_chain
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
@@ -137,10 +137,12 @@ def _parse_timeout(raw: Any) -> Optional[float]:
     return None if parsed <= 0 else max(30.0, parsed)
 
 def _get_child_timeout() -> Optional[float]:
-    """Hard wall-clock cap for one child, or None (default: no timeout). Failures should come from what the child does
-    (API/tool errors, iteration budget), not a stopwatch; stuck children are caught by the heartbeat staleness
-    monitor. delegation.child_timeout_seconds > 0 opts in (floor 30 s); 0 or negative disables. Env fallback:
-    DELEGATION_CHILD_TIMEOUT_SECONDS."""
+    """Inactivity cap for one child (seconds of NO progress), or None (default: no cap). Failures should come from
+    what the child does (API/tool errors, iteration budget), not a stopwatch: the cap restarts on every sign of
+    progress — a completed call, a tool change, an activity-clock tick — so a slow provider serving multi-minute
+    completions never loses a live child, and a child frozen for the whole window is still caught. A configured
+    value pre-empts nothing the heartbeat staleness monitor would not also catch. delegation.child_timeout_seconds
+    > 0 opts in (floor 30 s); 0 or negative disables. Env fallback: DELEGATION_CHILD_TIMEOUT_SECONDS."""
     return _knob(
         "child_timeout_seconds", "DELEGATION_CHILD_TIMEOUT_SECONDS", _parse_timeout, DEFAULT_CHILD_TIMEOUT,
         "delegation.child_timeout_seconds=%r is not a valid number; using default (no timeout)",
@@ -232,6 +234,7 @@ def _pool_serves_endpoint(pool: Any, provider: Optional[str], base_url: Optional
 
 def _resolve_child_credential_pool(
     effective_provider: Optional[str], parent_agent, effective_base_url: Optional[str] = None,
+    effective_requested_provider: Optional[str] = None,
 ):
     """Credential pool for the child: parent's pool (same provider), that provider's own pool, or None (child keeps
     its fixed credential). Custom endpoints all collapse to ``provider="custom"``, so they are matched by endpoint
@@ -244,6 +247,10 @@ def _resolve_child_credential_pool(
     interchangeable and let the child inherit the parent's pool. We therefore resolve custom runtimes by
     endpoint identity (the ``custom:<name>`` pool key derived from the base_url) and only share the parent's
     pool when both resolve to the *same* custom endpoint. See #7833.
+
+    Named custom providers may share one gateway URL with different credentials, so the inherited
+    ``requested_provider`` identity takes precedence over URL-only matching (#45763): the child must not
+    lease the first pool registered for the shared endpoint.
     """
     parent_pool = getattr(parent_agent, "_credential_pool", None)
     if not effective_provider:
@@ -252,14 +259,25 @@ def _resolve_child_credential_pool(
     try:
         if effective_provider == "custom":
             from agent.credential_pool import get_custom_provider_pool_key
-            child_key = get_custom_provider_pool_key(effective_base_url)
+            child_key = get_custom_provider_pool_key(effective_base_url, provider_name=effective_requested_provider)
             if child_key is None:
                 return None
-            parent_key = get_custom_provider_pool_key(getattr(parent_agent, "base_url", None))
+            parent_key = get_custom_provider_pool_key(
+                getattr(parent_agent, "base_url", None), provider_name=getattr(parent_agent, "requested_provider", None),
+            )
             if parent_pool is not None and parent_provider == "custom" and parent_key is not None and parent_key == child_key:
                 return parent_pool
-            return _loaded_pool(child_key)
-        if parent_pool is not None and effective_provider == parent_provider:
+            # The entry's slug may also be a same-named built-in's pool: lease only the rows the entry
+            # owns, or a fixed entry credential becomes the built-in's account on a shared endpoint.
+            from agent.custom_entry_pool import custom_entry_for_endpoint, entry_scoped_pool
+            owner = custom_entry_for_endpoint(effective_base_url, effective_requested_provider)
+            return entry_scoped_pool(_loaded_pool(child_key), child_key, owner[1] if owner else None)
+        if effective_provider == parent_provider:
+            # A same-provider parent with no pool is using a fixed credential.
+            # Loading a separate provider pool here can replace the inherited
+            # endpoint and key when the child acquires its startup lease (#71424).
+            if parent_pool is None:
+                return None
             if not effective_base_url or _pool_serves_endpoint(parent_pool, effective_provider, effective_base_url):
                 return parent_pool
             logger.debug("Parent %s pool has no entry for child endpoint %s; not sharing it",
@@ -333,8 +351,10 @@ def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
         provider, api_mode = "anthropic", "anthropic_messages"
     elif "api.kimi.com/coding" in base_lower:
         api_mode = "anthropic_messages"
-    # Explicit delegation.api_mode always wins over the URL heuristic.
-    if v["api_mode"] in _EXPLICIT_API_MODES:
+    # Explicit delegation.api_mode always wins over the URL heuristic; a provider plugin's
+    # registered dialect counts as explicit.
+    from agent.transports import registered_api_modes
+    if v["api_mode"] in _EXPLICIT_API_MODES or (v["api_mode"] and v["api_mode"] in registered_api_modes()):
         api_mode = v["api_mode"]
 
     # Preserve the configured provider's request personality on an explicit endpoint.
@@ -454,32 +474,54 @@ _ROUTING_FILTER_DEFAULTS = (
 _NOUS_PROVIDERS = frozenset({"nous", "nous-portal", "nousresearch"})
 
 
-def _resolve_child_fallback_chain(parent_agent, routing_cfg: Any, pinned: bool) -> Optional[List[Dict[str, Any]]]:
+def _resolve_child_fallback_chain(parent_agent, routing_cfg: Any, pinned: bool) -> Optional[list[dict[str, Any]]]:
     """Fallback chain for a child, owned by the same config block as its route.
 
     Pinned children (provider, endpoint or model override) never borrow the parent chain;
     unpinned children inherit it when ``fallback_providers`` is absent/null. An explicit ``[]``
     disables fallback either way. Malformed entries are dropped by the canonical normalizer.
+    Same rule as a pinned cron job (``cron/scheduler.py::_job_fallback_chain``).
     """
-    default = None if pinned else (getattr(parent_agent, "_fallback_chain", None) or None)
-    declared = routing_cfg.get("fallback_providers") if isinstance(routing_cfg, dict) else None
-    if declared is None:
-        return default
-    if declared == []:
-        return None
-    normalized = get_fallback_chain({"fallback_providers": declared})
-    if not normalized:
-        logger.warning("delegation fallback_providers has no usable routes; using the %s default",
-                       "pinned" if pinned else "inherited")
-    return normalized or default
+    return scoped_fallback_chain(
+        getattr(parent_agent, "_fallback_chain", None),
+        routing_cfg.get("fallback_providers") if isinstance(routing_cfg, dict) else None,
+        pinned=pinned, owner="delegation")
+
+
+class ResolvedReasoning(NamedTuple):
+    """A route's FINAL reasoning config, used as-is (``None`` included = the route's own default): a profile route
+    resolves its profile's ``agent.reasoning_effort`` / ``reasoning_overrides``, so neither the launching profile's
+    ``delegation.reasoning_effort`` nor the parent's level may fill it in."""
+
+    config: Optional[dict]
+
+
+def _child_reasoning(parent_agent, delegation_cfg: dict, route_effort: Any) -> Any:
+    """Child reasoning config: a :class:`ResolvedReasoning` route value as-is, else the route's raw effort >
+    ``delegation.reasoning_effort`` > the parent's level. Keep the raw value — a YAML ``false`` must disable
+    thinking, not coerce to "" and inherit."""
+    if isinstance(route_effort, ResolvedReasoning):
+        return route_effort.config
+    child_reasoning = getattr(parent_agent, "reasoning_config", None)
+    delegation_effort = route_effort
+    if not (delegation_effort or delegation_effort is False):
+        delegation_effort = (delegation_cfg or {}).get("reasoning_effort")
+    if delegation_effort or delegation_effort is False:
+        from hermes_constants import parse_reasoning_effort
+        parsed = parse_reasoning_effort(delegation_effort)
+        if parsed is None:
+            logger.warning("Unknown delegation.reasoning_effort '%s', inheriting parent level", delegation_effort)
+        else:
+            child_reasoning = parsed
+    return child_reasoning
 
 
 def _resolve_child_runtime(
     parent_agent, delegation_cfg: dict, parent_api_key: Any, *, model: Optional[str], override_provider: Optional[str],
     override_base_url: Optional[str], override_api_key: Optional[str], override_api_mode: Optional[str],
-    override_acp_command: Optional[str], override_acp_args: Optional[List[str]],
-    routing_cfg: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    override_acp_command: Optional[str], override_acp_args: Optional[list[str]],
+    routing_cfg: Optional[dict[str, Any]] = None, override_reasoning_effort: Any = None,
+) -> dict[str, Any]:
     """Child credentials, transport and routing (config override > parent inherit) as ``AIAgent`` kwargs. Rules that
     are easy to break: api_mode is re-derived (not inherited) when the child's provider differs from the parent's
     or is Nous Portal (dual-wire); a pinned ``delegation.command`` must exist on PATH or the spawn fails loudly;
@@ -487,7 +529,7 @@ def _resolve_child_runtime(
     pinned provider is actually honoured."""
     effective_model = model or parent_agent.model
     # provider/base_url are one bundle: all from the override, or all from the parent. Per-field fallback built
-    # children like an override provider pointed at the PARENT's endpoint (e.g. copilot credentials on the
+    # children like an override provider pointed at the PARENT's endpoint (e.g. one provider's credentials on the
     # parent's Codex URL), which 404s on every request and can't be rescued by the fallback chain, whose dedup
     # matches provider+model and so skips the entry as a self-loop. _inherit_parent_endpoint recovers the
     # parent's live endpoint (with its key), which is meaningless for a different provider.
@@ -529,38 +571,27 @@ def _resolve_child_runtime(
     effective_acp_args = list(
         override_acp_args if override_acp_args is not None else (getattr(parent_agent, "acp_args", []) or [])
     )
-    # A pinned provider must use direct API calls; inheriting the parent's ACP
-    # transport would bypass the override credentials entirely.
-    # Inheriting acp_command unconditionally causes run_agent.py to initialize CopilotACPClient, bypassing
-    # override credentials entirely (issue #16816).
+    # A pinned provider must use direct API calls; inheriting the parent's ACP transport would build the
+    # ACP client and bypass the override credentials entirely (issue #16816).
     if override_provider and not override_acp_command:
         effective_acp_command, effective_acp_args = None, []
-    # Defensive: validate trusted delegation.command exists on PATH before honoring it. An explicitly pinned
-    # transport that cannot run must fail the spawn loudly (#80450) — silently falling back to the default
-    # transport would run the child somewhere the user explicitly routed it away from. Normally unreachable
-    # via delegate_task, which pre-validates the command in _resolve_delegation_credentials.
-    if override_acp_command:
-        # Forced ACP transport requires provider copilot-acp for run_agent to init the client.
-        effective_provider, effective_api_mode = "copilot-acp", "chat_completions"
+    # A pinned command arrives only with the runtime of the provider that resolved it, so the selected
+    # provider (and its api_mode) is kept as is.
 
-    # Reasoning: delegation.reasoning_effort > parent. Keep the raw value — a
-    # YAML ``false`` must disable thinking, not coerce to "" and inherit.
-    child_reasoning = getattr(parent_agent, "reasoning_config", None)
-    try:
-        delegation_effort = delegation_cfg.get("reasoning_effort")
-        if delegation_effort or delegation_effort is False:
-            from hermes_constants import parse_reasoning_effort
-            parsed = parse_reasoning_effort(delegation_effort)
-            if parsed is None:
-                logger.warning("Unknown delegation.reasoning_effort '%s', inheriting parent level", delegation_effort)
-            else:
-                child_reasoning = parsed
-    except Exception as exc:
-        logger.debug("Could not load delegation reasoning_effort: %s", exc)
+    # A named provider identity is endpoint-scoped. Preserve it only when the
+    # child inherits the exact parent route; an override owns its final identity.
+    effective_requested_provider = effective_provider
+    if not override_provider and not override_base_url and not override_acp_command:
+        effective_requested_provider = (
+            getattr(parent_agent, "requested_provider", None) or effective_provider
+        )
 
-    kwargs: Dict[str, Any] = {
+    # Reasoning: the task route's effort (delegation provider) > delegation.reasoning_effort > parent.
+    child_reasoning = _child_reasoning(parent_agent, delegation_cfg, override_reasoning_effort)
+
+    kwargs: dict[str, Any] = {
         "base_url": effective_base_url, "api_key": override_api_key or parent_api_key, "model": effective_model,
-        "provider": effective_provider,
+        "provider": effective_provider, "requested_provider": effective_requested_provider,
         "capabilities": _inherit_parent_capabilities(parent_agent, override_provider, override_base_url),
         "api_mode": effective_api_mode, "acp_command": effective_acp_command, "acp_args": effective_acp_args,
         "reasoning_config": child_reasoning,

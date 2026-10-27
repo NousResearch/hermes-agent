@@ -92,7 +92,14 @@ Don't add per-overlay `shadow-[…]` or `border-(--ui-stroke-secondary)`
 one-offs; if elevation needs to change, change the token.
 
 Menus and popovers use their own shared `shadow-md` +
-`--ui-stroke-secondary` primitive treatment. Drag affordances may use tokenized
+`--ui-stroke-secondary` primitive treatment. Every floating list —
+`DropdownMenu`, `Select`, and Popover + cmdk pickers
+(`<PopoverContent variant="menu">` + `<Command variant="menu">`) — paints
+through `src/components/ui/menu.ts`, so a list reads the same wherever it
+opens. Typed fields with suggestions use `ComboboxInput`, never
+`<input list>` + `<datalist>` (Chromium paints that as its own OS popup).
+
+Drag affordances may use tokenized
 dashed targets and local blur. These are semantic surface classes, not licenses
 for call-site shadow or border inventions.
 
@@ -118,6 +125,17 @@ rows must not insert their full height before the outgoing stack can settle.
 No completion callback may clear the measurement of a newly arrived card.
 Reduced motion settles immediately without retaining empty clearance.
 
+## Window background behavior
+
+Settings → Appearance → Window layout offers **Minimize to tray**, off by default and
+local to this desktop installation. When enabled, minimizing ordinary windows
+hides them without stopping their work. Close, Alt+F4, and Cmd+Q keep their
+normal behavior. The tray's **Show Hermes** restores hidden windows;
+**Quit Hermes** keeps the ordinary active-work confirmation and teardown.
+On macOS the tray lives in the menu bar; the Dock icon hides only when no normal
+window remains visible and returns on restore. If the tray is unavailable,
+ordinary minimize/close behavior is retained rather than hiding an unreachable app.
+
 ## Window glass
 
 Glass defaults to **29% Tint, Sidebar only** in both light and dark appearances.
@@ -140,8 +158,9 @@ renderer and Electron's first window paint.
 | `--chrome-action-hover` | hover fill for quiet controls |
 | `--theme-primary`, `--ui-accent` | brand/accent |
 
-Never hardcode `border-gray-*`, `bg-white`, `text-black`, etc. The white tile in
-`BrandMark` is the one sanctioned literal (the mark needs a fixed backdrop).
+Never hardcode `border-gray-*`, `bg-white`, `text-black`, etc. The two tiles in
+`BrandMark` (white in light mode, `#0d1117` in dark) are the sanctioned literals
+(the mark needs a fixed backdrop).
 
 ## Buttons — one component
 
@@ -154,11 +173,14 @@ fill/shadow), `ghost`, `floating` (a control loose from any surface — opaque
 popover fill + `shadow-md`, hover lifts the glyph only), `link`, `text`
 (boxless quiet inline — "Cancel", "Clear"), `textStrong` (bold underlined
 inline affordance — "Change", "Open logs").
+`grip` is the quiet, fill-free drawer handle; pair it with size `grip` for a
+48×16 hit area around a small horizontal ridge.
 
 **Sizes:** `default`, `xs`, `sm`, `lg`, `inline` (flush, zero box — for buttons
 that sit inside a heading/sentence; replaces `h-auto px-0 py-0`), `micro`
 (status-stack/table-footers), and the icon family `icon` / `icon-xs` /
 `icon-sm` / `icon-lg` / `icon-titlebar`.
+`touch` provides a 44px minimum target for compact mobile navigation.
 
 **Tooltips only when hover teaches something new.** `<Tip>` is for discovery,
 not a tax on every icon. Ask: does hover reveal something the user cannot
@@ -214,6 +236,13 @@ Notes:
 `warn`, `destructive`, `outline`, `solid` (primary fill — icon-corner counts).
 Sizes: `default`, `xs`, `overlay` (titlebar glyph counts).
 
+## Profile rail
+
+The profile rail keeps its create/import actions outside the scrolling squares.
+Clipped horizontal edges reuse `edgeMask(edges, 'x')` from `fade-scroll.tsx`;
+the default axis remains vertical for `FadeScroll`. Fitting content is unmasked,
+and profile drag gestures temporarily remove the mask so the dragged square stays legible.
+
 ## Context-sensitive dialogs
 
 Sudo password dialogs keep the backdrop unblurred (`DialogContent`'s
@@ -240,6 +269,20 @@ blurred backdrop.
   touched toggles is costing input width (the composer's voice controls).
 
 ## Layout
+
+In the browser-hosted Desktop, composer controls retain 44px targets on
+coarse-pointer surfaces. Its collapse stages budget the actual control-size
+token; below the two-target width budget, the context menu and Send occupy
+separate rows rather than clipping or shrinking. Native Desktop keeps the
+compact stages sized for 24px controls.
+The voice engine split-button uses `--composer-voice-menu-size`: compact on
+desktop, matching `--composer-control-size` on touch surfaces.
+Narrow browser touch layouts show the current session tab with an open-tab
+count. Its menu exposes every tab, while the new-tab action remains beside it.
+In the browser-hosted Desktop, outside taps dismiss narrow sidebar overlays;
+cancelled or scrolling gestures do not. Native Desktop keeps its overlay until
+Escape, the toggle or hover-out. Touch transcript gestures select a pane without
+focusing its composer.
 
 - **Gutters:** `PAGE_INSET_X` (`src/app/layout-constants.ts`) for page side
   padding; `PAGE_INSET_NEG_X` to bleed a child to the edge. Don't hardcode
@@ -277,6 +320,9 @@ existing traffic-light and Window Controls Overlay measurements.
 
 The left cluster shows sidebar, settings, layout editor, and HUD controls. Flip
 and the right-sidebar toggle sit on the right; haptics remain in settings.
+In Simple interface mode only sidebar, settings and the layout editor render,
+and the reserved cluster width shrinks with them (`TITLEBAR_FIXED_TOOLS` is the
+one table both the buttons and the width reservation read).
 Holding Cmd (Ctrl off macOS) reveals small slot numbers over the target strip's
 status dots after 400ms, without changing tab widths. Hints follow the same
 binding and hovered/focused-zone resolver as the number shortcuts.
@@ -313,6 +359,16 @@ so glass and message-bubble transparency do not reveal scrolling text.
   from `src/store/confirm.ts`, which renders this same primitive through the
   single `ConfirmHost` at the shell — the way `notify()` backs notifications.
 
+## Chat typography
+
+Appearance → Typography keeps **UI Scale** as whole-window zoom (100% by
+default). **Chat Text Size** is a separate desktop-local multiplier (110% by
+default) on conversation text and the composer editor, including floating and
+inline-edit composers.
+It does not resize the sidebar, settings, toolbars, media, or pane geometry.
+Conversation size and line-height tokens are derived inside the transcript/editor
+from their root base tokens; do not multiply the global tokens or nest CSS zoom.
+
 ## Chat, tools & boot surfaces
 
 - The transcript and composer are built on `@assistant-ui/react`. Extend the
@@ -346,6 +402,10 @@ so glass and message-bubble transparency do not reveal scrolling text.
   pause/resume preserve the user's disclosure choice. Error banners meet the
   stack's top edge without a blank padding strip. File and preview links remain
   visible at the bottom of the stack, below the queue and all status groups.
+  A centered ridge on the composer's top edge hides/reveals the entire stack,
+  including the git row, with a short downward/upward drawer slide. Its choice
+  persists per conversation and owner, not globally. Hidden sections stay
+  mounted but inert so their disclosure choices survive; reduced motion is instant.
 - Popping out a composer makes it the window's only visible composer. It keeps
   its viewport placement while hover or keyboard focus selects a chat pane;
   moving back into the editor retains that recipient. Drafts, attachments and
@@ -377,6 +437,13 @@ so glass and message-bubble transparency do not reveal scrolling text.
 - Install, onboarding, connecting, boot failure, and reauthentication are
   distinct states with shared visual primitives. Preserve their recovery
   semantics when unifying appearance.
+- Guide startup has a dedicated landing screen with the shared long-operation
+  Loader and a localized startup label. It remains active until the guide's
+  saved conversation is loaded. No greeting, composer, Skip setup, or statusbar
+  appears early. Reduced motion uses a static BrandMark and the same label.
+  On readiness, reveal the real conversation and fade controls in over 100ms.
+  Never fabricate progress, delay readiness for motion, or replace a resumed
+  conversation with a new greeting.
 - Respect `AppShell` overlay ownership. Persistent terminal/content layers,
   route overlays, dialogs, and boot surfaces must not compete through ad-hoc
   z-index literals. Pick a rung of the ladder in `styles.css` instead —
@@ -398,7 +465,11 @@ so glass and message-bubble transparency do not reveal scrolling text.
   action. Do not introduce a third icon set or mix styles within one control
   group.
 - **`BrandMark`** (`src/components/brand-mark.tsx`) is the brand glyph — the
-  `nous-girl` mark on a white tile, softly rounded, identical in light/dark.
+  `nous-girl` mark on a fixed tile, theme-aware: black girl on white in light
+  mode, white girl on the `#0d1117` dark tile in dark mode (keyed off
+  `renderedMode` so bright surfaces in dark skins stay on the light mark).
+  The marks are generated by `scripts/generate_icons.py` from the girl SVGs
+  + squircle backgrounds (`assets/nous-girl-*.svg` × `assets/backgrounds/`).
   It replaced scattered Sparkles glyphs in updates / onboarding / about. Use it
   for hero/brand moments; don't reintroduce decorative star/sparkle icons.
 
@@ -410,6 +481,11 @@ so glass and message-bubble transparency do not reveal scrolling text.
   Its spring updates the DOM directly without per-frame React renders.
 - Quick, functional transitions (~100ms on controls). Respect
   `prefers-reduced-motion` for anything beyond a fade.
+- Hover paints instantly; only the return eases. Put the transition on the
+  resting state and drop it while hovered (`transition-colors duration-100
+  hover:transition-none`, or the CSS equivalent on `:hover`). A group that
+  dims siblings goes instant too. Exceptions are named, e.g. the catalog
+  card's arc border fades in and out.
 - Choreographed exits (e.g. onboarding's "matrix" fade-down) stagger per-element
   then settle the surface — the outer container's fade is *delayed* so it
   doesn't swallow the inner animation. Don't let a global fade race the detail.
@@ -460,9 +536,15 @@ long transcript or a busy terminal.
 
 - Every user-facing string goes through `useI18n()` (`src/i18n/context.tsx`).
   No literals in JSX.
-- **Update all locales together** — `en`, `ja`, `zh`, `zh-hant`. A string change
-  in `en.ts` that skips the others is a regression (drifted punctuation,
-  stale labels). Keep trailing-punctuation and tone consistent across all four.
+- **Update all locales together** — every catalog registered in
+  `src/i18n/catalog.ts`. A string change in `en.ts` that skips the others is a
+  regression (drifted punctuation, stale labels). Keep trailing-punctuation and
+  tone consistent across all of them. `fr`, `de`, and `es` are complete
+  `Translations` objects, so a key missing there fails the type check; the
+  `defineLocale()` overlays fall back to English instead.
+- **Sparse locales** (`ar`, `ru`) override the English base through
+  `defineLocale()`. Large catalogs are split by topic: the Arabic source lives
+  in `src/i18n/ar_<topic>.ts`, recomposed by `src/i18n/ar.ts`.
 
 ## State (TypeScript)
 
@@ -508,7 +590,7 @@ The detailed state contract lives in the scoped
 - [ ] Hot interactions avoid broad subscriptions, layout thrash, and
       `transition-all`?
 - [ ] Keyboard ownership and single-action `Esc` behavior are correct?
-- [ ] All four locales updated for any new/changed string?
+- [ ] All registered locales updated for any new/changed string?
 - [ ] `cursor-pointer`, focus ring, and `Esc`-to-close behave?
 - [ ] Touched a primitive, token, or variant? Its named-contract entry in this
       file is updated in the same change.

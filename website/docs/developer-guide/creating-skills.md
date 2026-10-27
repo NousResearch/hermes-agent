@@ -60,7 +60,7 @@ metadata:
     requires_toolsets: [web]            # Optional — only show when these toolsets are active
     requires_tools: [web_search]        # Optional — only show when these tools are available
     fallback_for_toolsets: [browser]    # Optional — hide when these toolsets are active
-    fallback_for_tools: [browser_navigate]  # Optional — hide when these tools exist
+    fallback_for_tools: [browser_exec]  # Optional — hide when these tools exist
     config:                              # Optional — config.yaml settings the skill needs
       - key: my.setting
         description: "What this setting controls"
@@ -120,7 +120,7 @@ metadata:
     requires_toolsets: [web]           # Hide if the web toolset is NOT active
     requires_tools: [web_search]       # Hide if web_search tool is NOT available
     fallback_for_toolsets: [browser]   # Hide if the browser toolset IS active
-    fallback_for_tools: [browser_navigate]  # Hide if browser_navigate IS available
+    fallback_for_tools: [browser_exec]  # Hide if browser_exec IS available
 ```
 
 | Field | Behavior |
@@ -320,6 +320,8 @@ skills:
 
 Snippets run with the skill directory as their working directory, and output is capped at 4000 characters. Failures (timeouts, non-zero exits) show up as a short `[inline-shell error: ...]` marker instead of breaking the whole skill.
 
+Trust scoping: community hub installs never auto-execute snippets, even with the flag on — the hub's install scan blocks a community skill carrying this DSL on a caution/dangerous verdict, and a `--force` install (or one from before the scanner caught the pattern) must not re-arm what the gate refused. That covers every `SKILL.md` nested inside a community install and another profile's install reached through `skills.external_dirs`; if a skills tree's hub lock (`.hub/lock.json`) is unreadable, nothing in that tree expands until it is repaired. Bundled, trusted, and your own skills expand as before.
+
 ### Test It
 
 Run the skill and verify the agent follows the instructions correctly:
@@ -393,7 +395,7 @@ Hermes can *propose* automations and let you accept them with one tap, instead o
 /suggestions catalog     # add the curated starter automations
 ```
 
-Accepting a suggestion calls the same `cron.jobs.create_job` the `cronjob` tool uses — there is no second job engine. Suggestions **never** auto-create jobs; acceptance is always explicit. Dismissed suggestions latch by a stable key so the same proposal is never re-offered. The pending list is capped so it never becomes a nag wall.
+Accepting a suggestion calls the same `cron.jobs.create_job` the `cronjob_manage` tool uses — there is no second job engine. Suggestions **never** auto-create jobs; acceptance is always explicit. Dismissed suggestions latch by a stable key so the same proposal is never re-offered. The pending list is capped so it never becomes a nag wall.
 
 The **important-mail monitor** catalog entry is the poll→classify→surface pattern: it scores inbox items with a cheap classifier model (`auxiliary.monitor` in `config.yaml`) and delivers only the ones above an urgency threshold, staying silent otherwise.
 

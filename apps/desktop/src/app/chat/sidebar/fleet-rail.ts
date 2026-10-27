@@ -22,6 +22,8 @@ export interface FleetGroup {
   kind: DesktopConnectionKind
   label: string
   reachable: boolean
+  error?: string
+  needsSignIn?: boolean
   /** The gateway's default profile — every Hermes home has one, so a group
    *  always carries it even before the roster has been enumerated. */
   defaultAgent: FleetAgent
@@ -94,6 +96,8 @@ export function buildRestGroups({
       kind: connection.kind,
       label: connection.label,
       reachable: source?.reachable ?? true,
+      ...(source?.error && source.error !== 'connect-on-demand' ? { error: source.error } : {}),
+      ...(source?.needsSignIn ? { needsSignIn: true } : {}),
       defaultAgent: toAgent(DEFAULT_PROFILE, defaultRow?.handle),
       named
     })

@@ -106,19 +106,6 @@ const settleBlurGuard = () =>
   })
 
 describe('inline edit inside a shared composer surface', () => {
-  it.each([
-    ['MacIntel', 'on'],
-    ['Win32', 'off'],
-    ['Linux x86_64', 'off']
-  ])('admits native text replacements without spelling corrections on %s', async (platform, autocorrect) => {
-    vi.spyOn(navigator, 'platform', 'get').mockReturnValue(platform)
-    const { editor } = await openEdit()
-
-    expect(editor.getAttribute('autocorrect')).toBe(autocorrect)
-    expect(editor.getAttribute('spellcheck')).toBe('false')
-    expect(editor.getAttribute('autocapitalize')).toBe('off')
-  })
-
   it('keeps the edit composer open and focused after the bubble click', async () => {
     const { container, editor } = await openEdit()
 

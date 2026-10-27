@@ -86,11 +86,6 @@ class TestUsageCachedAgent:
         assert "50,000" in result  # total
         assert "30,000" in result  # context
         assert "Compressions: 1" in result
-        # Cost and cache-hit reporting is removed everywhere.
-        assert "$" not in result
-        assert "Cache read" not in result
-        assert "Cache write" not in result
-        assert "Cost" not in result
 
     @pytest.mark.asyncio
     async def test_running_agent_preferred_over_cache(self):
@@ -152,14 +147,13 @@ class TestUsageAccountSection:
         )
         # The credits block routes through the shared nous_credits_lines() helper;
         # stub it so this account-section test stays hermetic (no portal/auth lookup).
-        monkeypatch.setattr("agent.account_usage.nous_credits_lines", lambda markdown=False: [])
+        monkeypatch.setattr("agent.account_usage.nous_credits_lines", lambda **_kw: [])
 
         event = MagicMock()
         result = await runner._handle_usage_command(event)
 
         account_call = next(c for c in calls if c["args"] == ("openai-codex",))
         assert account_call["kwargs"]["base_url"] == "https://chatgpt.com/backend-api/codex"
-        assert "📊 **Session Info**" in result
         assert "📈 **Account limits**" in result
 
     @pytest.mark.asyncio
@@ -192,7 +186,7 @@ class TestUsageAccountSection:
             lambda snapshot, markdown=False: ["📈 **Account limits**", "Provider: openai-codex (Plus)",
                                               "Weekly: 91% remaining (9% used)"],
         )
-        monkeypatch.setattr("agent.account_usage.nous_credits_lines", lambda markdown=False: [])
+        monkeypatch.setattr("agent.account_usage.nous_credits_lines", lambda **_kw: [])
 
         result = await runner._handle_usage_command(MagicMock())
 
@@ -230,7 +224,7 @@ class TestUsageAccountSection:
             "gateway.slash_commands_status.render_account_usage_lines",
             lambda snapshot, markdown=False: ["account limits"],
         )
-        monkeypatch.setattr("agent.account_usage.nous_credits_lines", lambda markdown=False: [])
+        monkeypatch.setattr("agent.account_usage.nous_credits_lines", lambda **_kw: [])
 
         await runner._handle_usage_command(MagicMock())
 

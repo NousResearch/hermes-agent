@@ -21,6 +21,13 @@ class TestBunDenoInlineScriptExecution:
             # Command-position wrappers must not shield the interpreter.
             ('sudo bun -e "console.log(1)"', "script execution via -e/-c flag"),
             ('sudo deno eval "console.log(1)"', "script execution via -e/-c flag"),
+            # Deno global options precede the subcommand (`deno [OPTIONS] [COMMAND]`); `-L`
+            # takes a separate value. Verified against deno 2.9.6: each of these runs the script.
+            ('deno -q eval "console.log(1)"', "script execution via -e/-c flag"),
+            ('deno --quiet eval "console.log(1)"', "script execution via -e/-c flag"),
+            ('deno -L debug eval "console.log(1)"', "script execution via -e/-c flag"),
+            ('deno -Ldebug eval "console.log(1)"', "script execution via -e/-c flag"),
+            ('deno --log-level=debug eval "console.log(1)"', "script execution via -e/-c flag"),
             # Windows resolves executable names case-insensitively; `_interpreter_family`
             # lowercases the basename, so BUN.EXE / Deno.exe must be classified too.
             ('BUN.EXE -e "console.log(1)"', "script execution via -e/-c flag"),
@@ -46,6 +53,10 @@ class TestBunDenoInlineScriptExecution:
             "deno lint",
             # A file literally named eval.ts is a `run` operand, not the eval subcommand.
             "deno run eval.ts",
+            "deno -q run eval.ts",
+            "deno -L debug run eval.ts",
+            # `deno -- eval` opens the REPL (the subcommand parser stops at `--`); nothing runs.
+            'deno -- eval "console.log(1)"',
             # `deno eval` inside quotes is data for echo, not a command position.
             "echo 'use deno eval for that'",
         ],

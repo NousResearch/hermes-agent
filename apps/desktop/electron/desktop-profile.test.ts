@@ -17,6 +17,7 @@ test('failed authoritative writes leave the previous default and listeners untou
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-profile-write-'))
   const target = path.join(root, 'active-profile.json')
   const changes: unknown[] = []
+
   const preferences = createDesktopProfilePreferences(target, {
     onDefaultChanged: route => changes.push(route),
     validateRoute: route => {
@@ -29,6 +30,7 @@ test('failed authoritative writes leave the previous default and listeners untou
   try {
     const original = { connectionId: null, profile: 'work' }
     preferences.setDefault(original)
+
     for (const invalid of [
       null,
       {},
@@ -38,6 +40,7 @@ test('failed authoritative writes leave the previous default and listeners untou
       assert.throws(() => preferences.setDefault(invalid))
       assert.deepEqual(preferences.getDefault(), original)
     }
+
     fs.mkdirSync(`${target}.tmp`)
     assert.throws(() => preferences.setDefault({ connectionId: 'remote', profile: 'personal' }))
     assert.deepEqual(preferences.getDefault(), original)
@@ -96,6 +99,7 @@ test('boot and reconnect retain the window route rather than a later global defa
       profile: route.profile
     })
   }
+
   assert.deepEqual(resolveDesktopConnectionRequest('other', routeA, 'last-used'), {
     connectionId: null,
     profile: 'other'

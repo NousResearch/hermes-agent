@@ -169,12 +169,15 @@ class BasicAuthProvider(NonInteractiveMixin, DashboardAuthProvider):
     # ---- internals ---------------------------------------------------------
 
     def _mint_session(self, user_id: str) -> Session:
+        # ``jti`` gives every session its own tokens, even two minted in one second: a listener that
+        # drops a session's tokens (the Webapp's sign-out) must not get them back from a later login.
         now = int(time.time())
         exp = now + self._ttl
+        jti = secrets.token_urlsafe(16)
         return self._session(
             user_id, exp,
-            _sign({"sub": user_id, "kind": "access", "exp": exp}, self._secret),
-            _sign({"sub": user_id, "kind": "refresh", "exp": now + _REFRESH_TTL_SECONDS}, self._secret))
+            _sign({"sub": user_id, "kind": "access", "exp": exp, "jti": jti}, self._secret),
+            _sign({"sub": user_id, "kind": "refresh", "exp": now + _REFRESH_TTL_SECONDS, "jti": jti}, self._secret))
 
     def _session(self, user_id: str, exp: int, access_token: str, refresh_token: str) -> Session:
         return Session(
@@ -261,26 +264,3 @@ def register(ctx) -> None:
     kwargs, LAST_SKIP_REASON = register_provider(ctx, logger, _TAG, BasicAuthProvider, _settings)
     if kwargs is not None:
         logger.info("dashboard-auth-basic: registered password provider (username=%s)", kwargs["username"])
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Any  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'LoginStart': ('hermes_cli.dashboard_auth', 'LoginStart'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

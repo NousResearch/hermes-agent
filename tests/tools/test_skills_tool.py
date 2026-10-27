@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,7 +14,7 @@ from tools.skills_tool import (
     _parse_frontmatter,
     _parse_tags,
     _get_category_from_path,
-    _find_all_skills,
+    find_all_skills,
     skill_matches_platform,
     skills_list,
     skill_view,
@@ -200,7 +201,7 @@ class TestGetCategoryFromPath:
 
 
 # ---------------------------------------------------------------------------
-# _find_all_skills
+# find_all_skills
 # ---------------------------------------------------------------------------
 
 
@@ -237,7 +238,7 @@ class TestFindAllSkills:
                 encoding="utf-8",
             )
 
-            skills = _find_all_skills()
+            skills = find_all_skills()
 
         assert {s["name"] for s in skills} == {"skill-a", "skill-b", "axolotl"}
         assert [s["category"] for s in skills if s["name"] == "axolotl"] == ["mlops"]
@@ -256,7 +257,7 @@ class TestFindAllSkills:
         )
 
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            skills = {s["name"]: s for s in _find_all_skills()}
+            skills = {s["name"]: s for s in find_all_skills()}
 
         # If no description in frontmatter, the first non-header line is used.
         assert skills["no-desc"]["description"] == "First paragraph."
@@ -271,7 +272,7 @@ class TestFindAllSkills:
         _make_skill(external_category.parent, "knowledge-brain", category="linked")
 
         with patch("tools.skills_tool.SKILLS_DIR", skills_root):
-            skills = _find_all_skills()
+            skills = find_all_skills()
 
         assert [s["name"] for s in skills] == ["knowledge-brain"]
         assert skills[0]["category"] == "linked"
@@ -568,67 +569,39 @@ class TestSkillMatchesPlatform:
 
 
     def test_string_form_case_insensitive_and_unknown_platforms(self):
-        with patch("agent.skill_utils.sys") as mock_sys:
-            mock_sys.platform = "darwin"
-            # A single string value is treated as a one-element list.
-            assert skill_matches_platform({"platforms": "macos"}) is True
-            assert skill_matches_platform({"platforms": ["MacOS"]}) is True
-            assert skill_matches_platform({"platforms": ["MACOS"]}) is True
-
-            mock_sys.platform = "linux"
-            assert skill_matches_platform({"platforms": "macos"}) is False
-            assert skill_matches_platform({"platforms": ["freebsd"]}) is False
+        # Host-native: tag with the running platform (no sys.platform faking).
+        host = sys.platform
+        # A single string value is treated as a one-element list; case-insensitive.
+        assert skill_matches_platform({"platforms": host.upper()}) is True
+        assert skill_matches_platform({"platforms": [host.title()]}) is True
+        assert skill_matches_platform({"platforms": "plan9"}) is False
+        assert skill_matches_platform({"platforms": ["plan9"]}) is False
 
 
 # ---------------------------------------------------------------------------
-# _find_all_skills — platform filtering integration
+# find_all_skills — platform filtering integration
 # ---------------------------------------------------------------------------
 
 
 class TestFindAllSkillsPlatformFiltering:
-    """Test that _find_all_skills respects the platforms field."""
+    """Test that find_all_skills respects the platforms field."""
 
     def test_discovery_filters_on_platform(self, tmp_path):
-        with (
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch("agent.skill_utils.sys") as mock_sys,
-        ):
+        # Host-native: a skill tagged only for a platform that is never the
+        # host is hidden; untagged and host-including skills are listed.
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(tmp_path, "universal-skill")
-            _make_skill(tmp_path, "mac-only", frontmatter_extra="platforms: [macos]\n")
-
-            mock_sys.platform = "linux"
-            linux = {s["name"] for s in _find_all_skills()}
-            mock_sys.platform = "darwin"
-            darwin = {s["name"] for s in _find_all_skills()}
-            mock_sys.platform = "win32"
-            win = {s["name"] for s in _find_all_skills()}
-
-        assert linux == {"universal-skill"}
-        assert darwin == {"universal-skill", "mac-only"}
-        # Skills without a platforms field appear on every platform.
-        assert win == {"universal-skill"}
-
-    def test_multi_platform_skill(self, tmp_path):
-        with (
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch("agent.skill_utils.sys") as mock_sys,
-        ):
+            _make_skill(tmp_path, "other-only", frontmatter_extra="platforms: [plan9]\n")
             _make_skill(
-                tmp_path, "cross-plat", frontmatter_extra="platforms: [macos, linux]\n"
+                tmp_path, "cross-plat", frontmatter_extra=f"platforms: [plan9, {sys.platform}]\n"
             )
-            mock_sys.platform = "darwin"
-            skills_darwin = _find_all_skills()
-            mock_sys.platform = "linux"
-            skills_linux = _find_all_skills()
-            mock_sys.platform = "win32"
-            skills_win = _find_all_skills()
-        assert len(skills_darwin) == 1
-        assert len(skills_linux) == 1
-        assert len(skills_win) == 0
+            names = {s["name"] for s in find_all_skills()}
+
+        assert names == {"universal-skill", "cross-plat"}
 
 
 # ---------------------------------------------------------------------------
-# _find_all_skills — env-var prerequisites must not change the listing
+# find_all_skills — env-var prerequisites must not change the listing
 # ---------------------------------------------------------------------------
 
 
@@ -651,7 +624,7 @@ class TestFindAllSkillsSecureSetup:
                 frontmatter_extra="prerequisites:\n  env_vars: [MY_PRESENT_KEY]\n",
             )
             _make_skill(tmp_path, "simple-skill")
-            skills = _find_all_skills()
+            skills = find_all_skills()
 
         assert {s["name"] for s in skills} == {"needs-key", "has-key", "simple-skill"}
         for skill in skills:
@@ -752,7 +725,7 @@ class TestSkillViewPrerequisites:
 
     @pytest.mark.parametrize(
         "backend",
-        ["ssh", "daytona", "docker", "singularity", "modal", "vercel_sandbox"],
+        ["ssh", "daytona", "docker", "modal", "vercel_sandbox"],
     )
     def test_remote_backend_becomes_available_after_local_secret_capture(
         self, tmp_path, monkeypatch, backend
@@ -906,36 +879,47 @@ class TestSkillViewCollisionDetection:
             ),
         )
 
-    def test_nested_local_collides_with_top_level_external(self, tmp_path):
-        """The original bug scenario: nested local + top-level external,
-        same name. Now refuses with both paths surfaced."""
-        local_dir = tmp_path / "local"
-        external_dir = tmp_path / "external"
-        local_dir.mkdir()
-        external_dir.mkdir()
+    @pytest.mark.parametrize("winner_tier, loser_tier, winner_rel, loser_rel, lookup", [
+        # The original 59da8ec4e scenario (nested local + top-level external) used to refuse; the
+        # documented precedence now picks local, matching skills_list / the prompt index / slash.
+        ("local", "external", "foundations/runtime/explore-codebase", "explore-codebase", "explore-codebase"),
+        # Same relative path in both roots: on main no identifier could load either copy.
+        ("local", "external", "productivity/xdup", "productivity/xdup", "productivity/xdup"),
+        ("local", "external", "productivity/xdup", "productivity/xdup", "xdup"),
+        ("create_dir", "external", "brain/note", "note", "note"),
+        ("local", "create_dir", "note", "brain/note", "note"),
+        ("project", "local", "deploy", "ops/deploy", "deploy"),
+    ])
+    def test_higher_tier_wins_cross_directory_collision(
+            self, tmp_path, caplog, winner_tier, loser_tier, winner_rel, loser_rel, lookup):
+        """project > local > create_dir > external: the higher tier loads, the shadowed copy is
+        reported by skills_list neither as a row nor as a guess, and a warning names it."""
+        from agent import skill_utils
+        tiers = {t: tmp_path / t for t in ("project", "local", "create_dir", "external")}
+        for root in tiers.values():
+            root.mkdir()
+        for tier, rel in ((winner_tier, winner_rel), (loser_tier, loser_rel)):
+            *cat, leaf = rel.split("/")
+            _make_skill(tiers[tier], leaf, category="/".join(cat) or None,
+                        frontmatter_extra=f"x-tier: {tier}\n", body=f"{tier.upper()} VERSION")
+        p1, p2 = self._patch_dirs(tiers["local"], [tiers["external"]])
+        with p1, p2, caplog.at_level("WARNING"), \
+                patch.object(skill_utils, "get_skill_create_dir", return_value=tiers["create_dir"]), \
+                patch.object(skill_utils, "get_project_skills_dirs", return_value=[tiers["project"]]), \
+                patch.object(skill_utils, "iter_project_skill_files",
+                             lambda d: skill_utils.iter_skill_index_files(d, "SKILL.md")):
+            skills_tool_module._SKILLS_CACHE.clear()
+            skill_utils._SHADOW_CHECKED.clear()
+            result = json.loads(skill_view(lookup))
+            listed = json.loads(skills_list())["skills"]
 
-        _make_skill(
-            local_dir,
-            "explore-codebase",
-            category="foundations/runtime",
-            body="LOCAL VERSION",
-        )
-        _make_skill(external_dir, "explore-codebase", body="EXTERNAL VERSION")
-
-        p1, p2 = self._patch_dirs(local_dir, [external_dir])
-        with p1, p2:
-            raw = skill_view("explore-codebase")
-
-        result = json.loads(raw)
-        assert result["success"] is False
-        assert "Ambiguous skill name 'explore-codebase'" in result["error"]
-        assert "matches" in result
-        assert len(result["matches"]) == 2
-        # Both paths surfaced
-        assert any("foundations/runtime" in p for p in result["matches"])
-        assert any("external" in p for p in result["matches"])
-        assert "hint" in result
-
+        assert result["success"] is True, result
+        assert f"{winner_tier.upper()} VERSION" in result["content"]
+        assert f"{loser_tier.upper()} VERSION" not in result["content"]
+        leaf = winner_rel.rsplit("/", 1)[-1]
+        assert [s["name"] for s in listed if s["name"].endswith(leaf)] == [leaf]
+        assert any("shadowed" in r.getMessage() and str(tiers[loser_tier]) in r.getMessage()
+                   for r in caplog.records)
 
     def test_support_markdown_does_not_collide_with_real_skill(self, tmp_path):
         """Supporting reference docs named <skill>.md are not skills.
@@ -969,7 +953,7 @@ class TestSkillViewCollisionDetection:
 
         result = json.loads(raw)
         assert result["success"] is True
-        assert result["path"] == "creative/sketch/SKILL.md"
+        assert result["path"] == os.path.join("creative", "sketch", "SKILL.md")
         assert "REAL SKETCH SKILL" in result["content"]
 
 
@@ -1103,7 +1087,8 @@ class TestSameRootDuplicationResolves:
             result = json.loads(skill_view("dup"))
 
         assert result["success"] is False, result
-        assert "Ambiguous" in result["error"]
+        assert "Ambiguous skill name 'dup': use one of cat-a/dup, cat-b/dup" in result["error"]
+        assert result["load_names"] == ["cat-a/dup", "cat-b/dup"]
         assert len(result["matches"]) == 2
 
 

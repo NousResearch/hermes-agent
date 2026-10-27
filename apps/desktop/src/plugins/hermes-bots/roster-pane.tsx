@@ -15,6 +15,7 @@ import {
   parseRosterKey,
   saveSelectedRosterBot
 } from './bot-state'
+import { CanonicalGroupList } from './canonical-group-registry'
 /**
  * The Bots pane itself: the roster's selection reconciliation, the
  * workspace-ownership reads its lifecycle keys off, and the pane that lists
@@ -35,7 +36,7 @@ import {
 import { $groupChats, $groupChatWorkspace, $groupClarify, $groupNeedsYou } from './group-chat'
 import { GroupChatWorkspace, openGroupChat } from './group-chat-view'
 import { groupChatMemberBots } from './group-membership'
-import { $groupMainTabsRev, shouldRenderGroupChatInPane } from './group-panes'
+import { $groupMainTabsRev, groupOpenOrigin, shouldRenderGroupChatInPane } from './group-panes'
 import { $activeGroupMemberKeys } from './group-presence'
 import { $showHiddenBots, isBotHidden } from './hidden-bots'
 import { useBots } from './i18n'
@@ -51,7 +52,13 @@ import { botNeedsHandleLabel, rosterGatewayOptions } from './roster-sections'
 import { botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
 import { activeBots, useTurnBusy } from './row-helpers'
 import type { BotMeta, GatewaySource, GroupMember, RosterActivityFilter, RosterKindFilter, RosterRow } from './types'
-import { $botSections, $draggingBot, adoptBotSectionsFromMeta, backfillBotSectionNames, type SectionDialogState } from './user-sections'
+import {
+  $botSections,
+  $draggingBot,
+  adoptBotSectionsFromMeta,
+  backfillBotSectionNames,
+  type SectionDialogState
+} from './user-sections'
 import { useEscapeCancelsBotDrag } from './user-sections-ui'
 
 // ── roster pane ──────────────────────────────────────────────────────────────
@@ -414,7 +421,7 @@ export function BotsPane() {
   const groupChatMembers = groupChatName ? groupChatMemberBots(groupChatName, roster, allMeta) : []
 
   if (shouldRenderGroupChatInPane(groupChatName) && groupChatMembers.length) {
-    return <GroupChatWorkspace group={groupChatName} members={groupChatMembers} />
+    return <GroupChatWorkspace group={groupChatName} members={groupChatMembers} origin={groupOpenOrigin(groupChatName)} />
   }
 
   const renderBotRow = (bot: RosterRow, keyPrefix = '') => (
@@ -441,7 +448,7 @@ export function BotsPane() {
       members={row.members}
       onDisband={setDeletingGroup}
       onNewSection={target => setSectionDialog({ group: target, mode: 'create' })}
-      onOpen={openGroupChat}
+      onOpen={group => openGroupChat(group, 'name')}
       sortedGroupRows={sortedGroupRows}
     />
   )
@@ -464,6 +471,7 @@ export function BotsPane() {
 
   return (
     <div className="flex h-full flex-col">
+      <CanonicalGroupList onOpen={openGroupChat} />
       {renderRosterToolbar({
         b,
         activityToasts,

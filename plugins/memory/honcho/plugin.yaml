@@ -1,7 +1,0 @@
-name: honcho
-version: 1.0.0
-description: "Honcho AI-native memory — cross-session user modeling with dialectic Q&A, semantic search, and persistent conclusions."
-pip_dependencies:
-  - honcho-ai
-hooks:
-  - on_session_end

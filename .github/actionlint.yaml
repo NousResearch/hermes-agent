@@ -3,7 +3,15 @@
 # the real findings, unless this file declares it.
 self-hosted-runner:
   labels:
-    - ubuntu-latest-96-core
-    - ubuntu-latest-32-core
-    - ubuntu-latest-32-arm-core
-    - windows-latest-32-core
+    - blacksmith-2vcpu-ubuntu-2404
+    - blacksmith-4vcpu-ubuntu-2404
+    - blacksmith-4vcpu-ubuntu-2404-arm
+    - blacksmith-2vcpu-windows-2025
+    - blacksmith-4vcpu-windows-2025
+    - blacksmith-6vcpu-macos-latest
+    - blacksmith-12vcpu-macos-latest
+    - blacksmith-32vcpu-ubuntu-2404
+    - blacksmith-32vcpu-ubuntu-2404-arm
+    - blacksmith-32vcpu-windows-2025
+    # GitHub larger runners still used by matrices not yet migrated.
+    - windows-latest-32-arm-core

@@ -39,6 +39,22 @@ describe('hermesDirectiveFormatter.parse', () => {
     ])
   })
 
+  it('preserves punctuation inside quoted values but trims bare sentence punctuation', () => {
+    const quoted = hermesDirectiveFormatter.parse('see @file:`report!` now')
+    const bare = hermesDirectiveFormatter.parse('see @file:report! now')
+
+    expect(quoted).toEqual([
+      { kind: 'text', text: 'see ' },
+      { kind: 'mention', type: 'file', label: 'report!', id: 'report!' },
+      { kind: 'text', text: ' now' }
+    ])
+    expect(bare).toEqual([
+      { kind: 'text', text: 'see ' },
+      { kind: 'mention', type: 'file', label: 'report', id: 'report' },
+      { kind: 'text', text: ' now' }
+    ])
+  })
+
   it('parses session links with profile/id values', () => {
     const segments = hermesDirectiveFormatter.parse('see @session:work/20260101_abc123 next')
 

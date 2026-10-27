@@ -90,6 +90,7 @@ FLAT_INSTALL_RUNTIME_STATE = (
     "profiles/work/config.yaml",
     "credentials/github_token",
     "mcp-tokens/server.json",
+    "webapp/session-token",
     "pairing/telegram.json",
     "platforms/pairing/x.json",
     "backups/2026-09-14T06-00-00-pre-update/state.db",
@@ -188,7 +189,7 @@ def test_untracked_autostash_leaves_open_wal_database_readable(flat_install_repo
         conn.close()
 
 
-@pytest.mark.skipif(os.name == "nt", reason="fcntl is POSIX-only")
+@pytest.mark.platforms("posix")  # fcntl is POSIX-only
 def test_untracked_autostash_cannot_split_live_database_lock_inode(flat_install_repo):
     """The updater's real stash step must leave a held ``state.db.quarantine.lock``
     on its original inode (#112974). Unlinking a flocked path does not release the

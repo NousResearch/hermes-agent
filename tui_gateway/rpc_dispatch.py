@@ -53,7 +53,7 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
         from tui_gateway import server_requests
         if server_requests.is_response_frame(req):
             # The renderer answering one of OUR requests (clarify, approval, …): no response frame goes back.
-            if not server_requests.resolve_response(req) and not _relay_compute_host_response(req):
+            if not server_requests.resolve_response(req, t) and not _relay_compute_host_response(req):
                 logger.debug("dropping response for unknown server request id=%r", req.get("id"))
             return None
         normalized = _normalize_request(req)
@@ -68,7 +68,8 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
             return _err(req.get("id"), 5035, "backend is retiring; reconnect to continue")
         try:
             ctx = contextvars.copy_context()  # the pool worker must see the bound transport
-            if normalized[1] in _CONNECTOR_RPC_METHODS:
+            owner = normalized[2].get("owner")
+            if normalized[1] in _CONNECTOR_RPC_METHODS and isinstance(owner, dict) and owner.get("type") == "session":
                 ctx.run(_capture_connector_rpc_owner, normalized[2])
 
             def run():

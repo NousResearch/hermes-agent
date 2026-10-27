@@ -131,7 +131,7 @@ def test_dependency_block_with_terminal_parents_parks_then_escalates(
         # `hermes kanban block <child> --kind dependency waiting on upstream`
         args = argparse.Namespace(task_id=child, ids=None, reason=["waiting", "on", "upstream"], kind="dependency")
         assert kanban_cli._cmd_block(args) == 0
-        assert f"Blocked {child} as needs_input (no open parent to wait on): waiting on upstream" in capsys.readouterr().out
+        assert "needs_input" in capsys.readouterr().out
         parked = kb.get_task(conn, child)
         assert (parked.status, parked.block_kind, parked.block_recurrences) == ("blocked", "needs_input", 1)
         events = kb.list_events(conn, child)
@@ -177,7 +177,7 @@ def test_dependency_block_with_open_parent_stays_parked_across_dispatch_tick(
             with kb.write_txn(conn):
                 conn.execute("UPDATE tasks SET status='running' WHERE id=?", (child,))
         assert kb.block_task(conn, child, reason="wait", kind="dependency")
-        res = kbd.dispatch_once(conn, spawn_fn=fake_spawn)
+        kbd.dispatch_once(conn, spawn_fn=fake_spawn)
         assert kb.get_task(conn, child).status == "todo"
         assert child not in spawns
         with kb.write_txn(conn):

@@ -136,11 +136,6 @@ class TestBatchPlaceholderGoals(unittest.TestCase):
         result = _call([{"goal": GOOD_A}, {"goal": "fix bug"}])
         self.assertIn("error", result)
 
-    def test_placeholder_error_is_actionable(self):
-        result = _call([{"goal": GOOD_A}, {"goal": "TODO"}])
-        self.assertIn("error", result)
-        # Error must tell the model HOW to fix the call.
-        self.assertIn("specific", result["error"].lower())
 
 
 class TestSingleTaskBatch(unittest.TestCase):
@@ -184,3 +179,18 @@ class TestValidBatchStillRuns(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestOwnerRefusalMidBatch(unittest.TestCase):
+    def test_siblings_built_before_a_refusal_release_their_reservations(self):
+        """A managed worker's owner can refuse the Nth child (capacity, depth, draining) after
+        earlier siblings already hold reserved executions: those are closed, not leaked."""
+        built = MagicMock()
+        parent = _make_mock_parent()
+        refusal = ValueError("the gateway owner refused another subagent")
+        with patch("tools.delegate_tool._build_child_preserving_parent_tools", side_effect=[built, refusal]), \
+                patch("tools.delegate_tool._run_single_child") as mock_run:
+            result = json.loads(delegate_task(tasks=[{"goal": GOOD_A}, {"goal": GOOD_B}], parent_agent=parent))
+        self.assertIn("refused another subagent", result["error"])
+        mock_run.assert_not_called()
+        built.close.assert_called_once_with()

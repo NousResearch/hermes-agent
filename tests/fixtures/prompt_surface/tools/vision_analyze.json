@@ -1,0 +1,30 @@
+{
+  "description": "Load an image into the conversation so you can see it. Call it any time the user references an image — then answer from what you see.",
+  "name": "vision_analyze",
+  "parameters": {
+    "properties": {
+      "image_url": {
+        "description": "Image URL (http/https), local file path, or data: URL to load.",
+        "type": "string"
+      },
+      "question": {
+        "description": "Your question or request about the image.",
+        "type": "string"
+      },
+      "region": {
+        "description": "Optional [x1, y1, x2, y2] crop in ORIGINAL-image pixel coordinates, applied before any downscaling — the crop keeps full resolution. Load the full image first, then re-call with a region to zoom into small text or fine detail.",
+        "items": {
+          "type": "integer"
+        },
+        "maxItems": 4,
+        "minItems": 4,
+        "type": "array"
+      }
+    },
+    "required": [
+      "image_url",
+      "question"
+    ],
+    "type": "object"
+  }
+}

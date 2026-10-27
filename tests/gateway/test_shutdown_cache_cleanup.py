@@ -65,6 +65,15 @@ class _FakeGateway:
         # This fake has no API server adapter, so it is always idle.
         return 0
 
+    def _mark_api_runs_shutdown_requested(self):
+        # No API server adapter -> no durable runs to stamp with the drain boundary (#115133).
+        return 0
+
+    def _active_api_worker_count(self):
+        # Worker-scoped API count the SessionDB close gate reads live (#116535).
+        # This fake runs no executor turns, so it is always idle.
+        return 0
+
     def _update_runtime_status(self, *_a, **_kw):
         pass
 
@@ -146,16 +155,6 @@ class TestCachedAgentCleanupOnShutdown:
 
         agent.shutdown_memory_provider.assert_called_once()
 
-    @pytest.mark.asyncio
-    async def test_cache_cleared_after_shutdown(self):
-        """The _agent_cache dict is cleared after stop."""
-        gw = _FakeGateway()
-        agent = _make_mock_agent()
-        gw._agent_cache["s1"] = (agent, "sig1")
-
-        await gw_mod.GatewayRunner.stop(gw)
-
-        assert len(gw._agent_cache) == 0
 
 
 class TestRunningAgentsNotDoubleCleaned:

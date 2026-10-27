@@ -16,6 +16,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
+from hermes_cli.timefmt import EPOCH_MAX, EPOCH_MIN
 from hermes_state import SessionDB
 from hermes_state_common import FTS_STORAGE_VERSION, SCHEMA_VERSION
 from hermes_state_repair import _db_opens_cleanly
@@ -42,7 +43,14 @@ _AUXILIARY_TABLE_SCHEMAS: dict[str, Callable[[sqlite3.Connection], None]] = {
     "delivery_obligations": _init_delivery_ledger_schema,
 }
 _AUXILIARY_TABLES = tuple(_AUXILIARY_TABLE_SCHEMAS)
-_INVENTORY_TABLES = (*_CANONICAL_TABLES, "state_meta", *_TOPIC_TABLES, *_AUXILIARY_TABLES)
+# Salvage is a transcript output, not a runnable clone of accepted work. Copying
+# only part of this ledger could replay already-started effects or adopt workers
+# from another owner. Inventory and report the exclusions rather than losing them
+# silently. Activation under exclusive ownership creates a fresh runtime epoch;
+# ordinary full backup/restore instead preserves the complete ledger for startup
+# reconciliation (started -> unknown; never blindly replay started work).
+_RUNTIME_TABLES = ("runtime_epoch", "session_admissions", "worker_executions", "worker_receipts")
+_INVENTORY_TABLES = (*_CANONICAL_TABLES, "state_meta", *_TOPIC_TABLES, *_AUXILIARY_TABLES, *_RUNTIME_TABLES)
 
 # Derived-index / optional-schema markers: a fresh destination regenerates these, never copies them.
 _GENERATED_META_KEYS = frozenset({
@@ -742,6 +750,8 @@ def _reconcile(destination: sqlite3.Connection, table: str, where: str, mutation
 
 
 _DEPENDENT_TABLES = ("messages", "session_model_usage", "compression_locks", "telegram_dm_topic_bindings")
+_DANGLING_TOOL_PIN = (
+    "length(tool_names) = 64 AND NOT EXISTS (SELECT 1 FROM system_prompts WHERE system_prompts.hash = sessions.tool_names)")
 _RELINK_COUNTERS = ("session_prompt_refs_cleared", "sessions_parent_cleared")
 
 
@@ -768,9 +778,17 @@ def _cleanup_partial_orphans(destination: sqlite3.Connection) -> dict[str, Any]:
             "SELECT 1 FROM system_prompts WHERE system_prompts.hash = sessions.system_prompt_hash)",
             "UPDATE sessions SET system_prompt_hash = NULL",
         )
+        # A tools[] pin is a system_prompts row too, referenced by hash from sessions.tool_names
+        # (legacy rows hold an inline JSON list, never 64 chars of hex).
+        result["session_prompt_refs_cleared"] += _reconcile(
+            destination, "sessions",
+            _DANGLING_TOOL_PIN,
+            "UPDATE sessions SET tool_names = NULL",
+        )
         result["system_prompts_removed"] = _reconcile(
             destination, "system_prompts",
-            "NOT EXISTS (SELECT 1 FROM sessions WHERE sessions.system_prompt_hash = system_prompts.hash)",
+            "NOT EXISTS (SELECT 1 FROM sessions WHERE sessions.system_prompt_hash = system_prompts.hash) "
+            "AND NOT EXISTS (SELECT 1 FROM sessions WHERE sessions.tool_names = system_prompts.hash)",
             "DELETE FROM system_prompts",
         )
         for table in _DEPENDENT_TABLES:
@@ -908,15 +926,79 @@ def _verify_recovered_database(
     return verification
 
 
+def _sanitize_session_model_config(destination: sqlite3.Connection) -> int:
+    """Rewrite unparseable ``sessions.model_config`` blobs to ``'{}'``; returns the row count.
+
+    ``integrity_check`` validates b-tree structure, never column *contents*: a row whose
+    JSON was truncated by the damage verifies clean, and the recovered store then raises
+    ``OperationalError: malformed JSON`` the first time ``reopen_session`` rewrites the
+    reset-child markers with ``json_set`` (``hermes_state_sessions.py::reopen_session``) —
+    i.e. on the first resume of a parent session. Read paths are already guarded
+    (``_sql_json_extract`` wraps every extract in ``CASE WHEN json_valid``), so this is
+    about the write path. The blob is unrecoverable either way, so neutralise it at the
+    copy boundary both lanes pass through rather than shipping a store that breaks on
+    the first resume.
+    """
+    if "model_config" not in _table_columns(destination, "sessions"):
+        return 0
+    with _immediate_transaction(destination):
+        return _reconcile(
+            destination, "sessions",
+            "model_config IS NOT NULL AND json_valid(model_config) = 0",
+            "UPDATE sessions SET model_config = '{}'",
+        )
+
+
+def _repair_out_of_window_timestamps(destination: sqlite3.Connection) -> int:
+    """Rewrite ``messages``/``sessions`` timestamp cells outside the ``coerce_epoch`` window; returns the count.
+
+    A damaged cell can decode as a valid-looking garbage double (``5.49e+246``) that the salvage copies
+    verbatim, and one such row pins the session's recency and breaks every renderer that turns it into
+    a date (#91536). A message takes its nearest valid neighbour's time in the same session (keeps the
+    order), then its session's start, then now; ``started_at`` takes the earliest valid message; the
+    nullable ``ended_at``/``last_activity_at`` become NULL.
+    """
+    message_columns, session_columns = _table_columns(destination, "messages"), _table_columns(destination, "sessions")
+    ok = f"BETWEEN {EPOCH_MIN!r} AND {EPOCH_MAX!r}"
+    now = "CAST(strftime('%s', 'now') AS REAL)"
+    repaired = 0
+    with _immediate_transaction(destination):
+        if "timestamp" in message_columns:
+            repaired += _reconcile(
+                destination, "messages", f"NOT (timestamp {ok})",
+                "UPDATE messages SET timestamp = COALESCE("
+                f"(SELECT p.timestamp FROM messages p WHERE p.session_id = messages.session_id AND p.id < messages.id"
+                f" AND p.timestamp {ok} ORDER BY p.id DESC LIMIT 1),"
+                f"(SELECT n.timestamp FROM messages n WHERE n.session_id = messages.session_id AND n.id > messages.id"
+                f" AND n.timestamp {ok} ORDER BY n.id LIMIT 1),"
+                f"(SELECT s.started_at FROM sessions s WHERE s.id = messages.session_id AND s.started_at {ok}), {now})",
+            )
+        if "started_at" in session_columns:
+            repaired += _reconcile(
+                destination, "sessions", f"NOT (started_at {ok})",
+                "UPDATE sessions SET started_at = COALESCE((SELECT MIN(m.timestamp) FROM messages m"
+                f" WHERE m.session_id = sessions.id AND m.timestamp {ok}), {now})",
+            )
+        for column in ("ended_at", "last_activity_at"):
+            if column in session_columns:
+                repaired += _reconcile(
+                    destination, "sessions", f"NOT ({column} {ok})", f"UPDATE sessions SET {column} = NULL")
+    return repaired
+
+
 def _finalize_derived_metadata(destination: sqlite3.Connection) -> dict[str, Any]:
-    """Stamp only metadata that the newly created destination actually owns."""
+    """Sanitize copied JSON columns and timestamps, and stamp metadata the new destination actually owns."""
+    model_config_reset = _sanitize_session_model_config(destination)
+    timestamps_repaired = _repair_out_of_window_timestamps(destination)
     fts_tables = {
         str(row[0])
         for row in destination.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('messages_fts', 'messages_fts_trigram')"
         ).fetchall()
     }
-    result: dict[str, Any] = {"fts_tables": sorted(fts_tables), "finalized": False}
+    result: dict[str, Any] = {
+        "fts_tables": sorted(fts_tables), "finalized": False, "model_config_reset": model_config_reset,
+        "timestamps_repaired": timestamps_repaired}
     if fts_tables != {"messages_fts", "messages_fts_trigram"}:
         result["error"] = "fresh destination is missing required FTS tables"
         return result
@@ -1107,10 +1189,38 @@ def _recovery_report(
         "partial": bool(verification.get("loss_detected")),
         "verified": bool(verification.get("healthy") and source_unchanged),
         "installed": False,
+        "runtime_state": {
+            "policy": "transcript-only; runtime ledger excluded; fresh epoch on activation",
+            "excluded_tables": {table: inspection["tables"].get(table, {}) for table in _RUNTIME_TABLES},
+        },
     }
 
 
 def recover_session_database(
+    source_path: Path, output_path: Path, *, work_dir: Optional[Path] = None, chunk_size: int = 1_000,
+    progress_cb: Optional[ProgressCallback] = None, allow_partial: bool = False,
+) -> dict[str, Any]:
+    """Separate-output salvage is allowed; a canonical output requires offline ownership."""
+    from gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
+    from contextlib import nullcontext
+    # Validate before creating any lock or output. Reserve only a canonical
+    # destination, not the live source or an unrelated requested output file.
+    _, output, _ = _validate_paths(source_path, output_path=output_path, work_dir=work_dir)
+    assert output is not None
+    guard = exclusive_maintenance([output.parent]) if output.name == 'state.db' else nullcontext()
+    try:
+        with guard:
+            # Repeat the no-overwrite validation under the reservation: startup
+            # may have created state.db between the first check and lock claim.
+            return _recover_session_database_output(
+                source_path, output_path, work_dir=work_dir, chunk_size=chunk_size,
+                progress_cb=progress_cb, allow_partial=allow_partial,
+            )
+    except OwnershipConflict as exc:
+        raise SessionRecoverySafetyError(str(exc)) from exc
+
+
+def _recover_session_database_output(
     source_path: Path, output_path: Path, *, work_dir: Optional[Path] = None, chunk_size: int = 1_000,
     progress_cb: Optional[ProgressCallback] = None, allow_partial: bool = False,
 ) -> dict[str, Any]:

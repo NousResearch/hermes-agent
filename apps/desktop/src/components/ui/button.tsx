@@ -25,7 +25,11 @@ const buttonVariants = cva(
         // Soft-fill action (the default "non-primary button" look).
         secondary:
           'bg-(--ui-bg-quaternary) text-(--ui-text-primary) hover:bg-(--chrome-action-hover) hover:text-(--ui-text-primary)',
+        // Clickable tag/filter chip — the soft fill plus a hairline inset ring on
+        // hover (shadow, not border, so nothing reflows).
+        chip: 'bg-(--ui-bg-quaternary) text-(--ui-text-primary) hover:bg-(--chrome-action-hover) hover:shadow-[inset_0_0_0_0.5px_var(--ui-stroke-secondary)]',
         ghost: 'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-(--ui-text-primary)',
+        grip: 'bg-transparent text-(--ui-text-tertiary) transition-colors hover:text-(--ui-text-secondary) focus-visible:text-(--ui-text-primary)',
         // A control floating free of any surface (fan-menu discs, detached
         // chips): the menu/popover treatment — opaque popover fill + the
         // shared `shadow-md` ring-and-drop. Hover only lifts the glyph; a fill
@@ -44,6 +48,7 @@ const buttonVariants = cva(
         xs: "gap-1 px-2 py-0.5 text-[0.6875rem] leading-4 has-[>svg]:px-1.5 [&_svg:not([class*='size-'])]:size-3",
         sm: 'px-2.5 py-1 has-[>svg]:px-2',
         lg: 'px-5 py-2 text-sm leading-5 has-[>svg]:px-4',
+        touch: 'min-h-11 min-w-11 px-3 py-2 text-sm',
         // Flush inline text action — no box padding/height. Pair with text/link
         // variants when the button must sit inline in a heading or sentence
         // (replaces ad-hoc `h-auto px-0 py-0` overrides).
@@ -55,6 +60,7 @@ const buttonVariants = cva(
         'icon-xs': "size-6 rounded-[4px] [&_svg:not([class*='size-'])]:size-3",
         'icon-sm': 'size-8 rounded-[4px]',
         'icon-lg': 'size-10 rounded-[4px]',
+        grip: 'h-4 w-12 rounded-full p-0',
         'icon-titlebar':
           'titlebar-icon-button h-(--titlebar-control-height) w-(--titlebar-control-size) rounded-[4px] [&_svg:not([class*="size-"])]:size-(--titlebar-icon-size)'
       }

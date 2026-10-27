@@ -7,6 +7,15 @@ exposed over stdio MCP; codex registers it via ``~/.codex/config.toml
 
 from __future__ import annotations
 
+# First, like every entry point: stdio, import-path and environ-lifetime fixes (hermes_bootstrap).
+# Only as ``python -m``: codex_runtime & co. import this module for a constant, and the
+# bootstrap's scratch/TMPDIR exports must not fire in those library importers.
+if __name__ == "__main__":
+    try:
+        import hermes_bootstrap
+    except ModuleNotFoundError:
+        pass  # a partial ``hermes update`` can leave the bootstrap unregistered
+
 import inspect
 import json
 import logging
@@ -43,15 +52,15 @@ def _signature_from_schema(schema: dict | None) -> tuple[inspect.Signature, dict
 
 # Each name MUST match a registered Hermes tool ``model_tools.handle_function_call()`` can dispatch.
 # NOT exposed: terminal/file/search/process/clarify (codex built-ins + its own approval UI);
-# delegate_task/memory/session_search/todo (need the running AIAgent context).
+# delegate_task/memory/session_search/todo (need the running AIAgent context); browser_exec (runs
+# model-written Python on the Hermes host, outside codex's sandbox and approval UI).
 EXPOSED_TOOLS: tuple[str, ...] = (
     "web_search", "web_extract",
-    "browser_navigate", "browser_click", "browser_type", "browser_press", "browser_snapshot", "browser_scroll",
-    "browser_back", "browser_get_images", "browser_console", "browser_vision",
     "vision_analyze", "image_generate", "skill_view", "skills_list", "text_to_speech",
     # Kanban handoff tools: stateless (read HERMES_KANBAN_TASK, write kanban.db).
     # Without them a codex-runtime worker can't report completion and hangs.
-    "kanban_complete", "kanban_block", "kanban_request_review", "kanban_request_changes", "kanban_comment",
+    "kanban_complete", "kanban_block", "kanban_schedule", "kanban_request_review",
+    "kanban_request_changes", "kanban_comment",
     "kanban_heartbeat", "kanban_show", "kanban_list",
     # Orchestrator-only (the kanban tool gates them on HERMES_KANBAN_TASK unset).
     "kanban_create", "kanban_unblock", "kanban_link",
@@ -73,7 +82,7 @@ def _build_server() -> Any:
         instructions=(
             "Hermes Agent's tool surface, exposed for use inside a Codex "
             "session. Use these for capabilities Codex's built-in toolset "
-            "doesn't cover: web search/extract, browser automation, "
+            "doesn't cover: web search/extract, "
             "subagent delegation, vision, image generation, persistent "
             "memory, skills, and cross-session search."
         ),

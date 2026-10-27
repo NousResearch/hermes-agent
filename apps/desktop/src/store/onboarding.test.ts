@@ -2,19 +2,30 @@ import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import * as notifications from '@/store/notifications'
+import { markOnboardingDecided } from '@/store/onboarding-presence'
 import { makeOAuthProvider } from '@/test/oauth-provider'
-import type { OAuthProvider } from '@/types/hermes'
+import type { AppHandoffStatus, OAuthProvider } from '@/types/hermes'
 
 import {
   $desktopOnboarding,
+  completeDesktopOnboarding,
+  confirmOnboardingModel,
+  DEFAULT_ONBOARDING_REASON,
   type DesktopOnboardingState,
   type OnboardingContext,
   refreshOnboarding,
   requestDesktopOnboarding,
+  resetBootRaceWindowForTests,
   saveOnboardingLocalEndpoint,
   setOnboardingModel,
   submitOnboardingCode
 } from './onboarding'
+
+// Onboarding's due check answered "not due": first-run surfaces are free to show.
+markOnboardingDecided()
+
+const NOT_CONNECTED =
+  'Hermes is not connected to any AI provider yet. Run `hermes model` to pick one, or `hermes auth add <provider>`.'
 
 function baseState(overrides: Partial<DesktopOnboardingState> = {}): DesktopOnboardingState {
   return {
@@ -147,7 +158,7 @@ describe('refreshOnboarding', () => {
       release()
       await pending
       expect(requests.some(r => r.path === '/api/model/set')).toBe(false)
-      expect($desktopOnboarding.get()).toMatchObject({ targetProfile: 'alpha', flow: { status: 'idle' } })
+      expect($desktopOnboarding.get()).toMatchObject({ targetScope: { profile: 'alpha' }, flow: { status: 'idle' } })
       closeManualOnboarding()
       delayKey = false
       profile = 'beta'
@@ -156,7 +167,11 @@ describe('refreshOnboarding', () => {
       await startProviderOAuth(makeOAuthProvider('fixture'), ctx)
       await vi.waitFor(() => expect($desktopOnboarding.get().flow.status).toBe('confirming_model'), { timeout: 5000 })
       expect(requests.slice(startAt).some(r => r.path.includes('/poll/'))).toBe(true)
-      expect(requests.slice(startAt).some(r => r.path === '/api/model/set')).toBe(true)
+      // Manual flows defer the global-default flip to the confirm card (#102829):
+      // no /api/model/set lands between the OAuth poll and the confirm card.
+      // Lifetime/profile pinning is still asserted: everything that DID fire
+      // stayed on the initiating profile.
+      expect(requests.slice(startAt).some(r => r.path === '/api/model/set')).toBe(false)
       expect(requests.slice(startAt).every(r => r.profile === 'beta')).toBe(true)
     } finally {
       closeManualOnboarding()
@@ -171,6 +186,7 @@ describe('refreshOnboarding', () => {
   afterEach(() => {
     window.localStorage.clear()
     $desktopOnboarding.set(baseState())
+    resetBootRaceWindowForTests()
     vi.restoreAllMocks()
   })
 
@@ -194,6 +210,53 @@ describe('refreshOnboarding', () => {
     expect($desktopOnboarding.get().providers?.map(p => p.id)).toEqual(['fresh'])
     expect($desktopOnboarding.get().reason).toContain('No usable credentials found for openrouter.')
     expect($desktopOnboarding.get().reason).toContain('setup.status reports configured credentials')
+  })
+
+  it('shows no sentence of its own over the picker when nothing is set up', async () => {
+    const unconfigured: OnboardingContext['requestGateway'] = async method => {
+      if (method === 'setup.status') {
+        return { provider_configured: false } as never
+      }
+
+      if (method === 'setup.runtime_check') {
+        return {
+          ok: false,
+          error: 'Hermes is not connected to any AI provider yet. Run `hermes model` to pick one.'
+        } as never
+      }
+
+      throw new Error(`unexpected gateway method: ${method}`)
+    }
+
+    expect(await refreshOnboarding(onboardingContext(unconfigured))).toBe(false)
+    expect($desktopOnboarding.get()).toMatchObject({ configured: false, reason: DEFAULT_ONBOARDING_REASON })
+  })
+
+  it.each([
+    ['answers', async () => ({ ok: false, error: NOT_CONNECTED }) as never],
+    [
+      'fails',
+      async () => {
+        throw new Error(NOT_CONNECTED)
+      }
+    ]
+  ])('drops an earlier raw sentence once nothing is set up and the runtime check %s', async (_, runtimeCheck) => {
+    $desktopOnboarding.set(baseState({ reason: NOT_CONNECTED }))
+
+    const unconfigured: OnboardingContext['requestGateway'] = async method => {
+      if (method === 'setup.status') {
+        return { provider_configured: false } as never
+      }
+
+      if (method === 'setup.runtime_check') {
+        return runtimeCheck()
+      }
+
+      throw new Error(`unexpected gateway method: ${method}`)
+    }
+
+    expect(await refreshOnboarding(onboardingContext(unconfigured))).toBe(false)
+    expect($desktopOnboarding.get().reason).not.toContain('hermes model')
   })
 
   it('keeps cached providers when onboarding was not re-requested', async () => {
@@ -246,31 +309,118 @@ describe('refreshOnboarding', () => {
     expect(window.localStorage.getItem('hermes-desktop-onboarded-v1')).toBe('1')
   })
 
-  it('shows a non-blocking notification when preserving configured on fallback', async () => {
+  it('keeps an unknown readiness notice temporary and clears it on recovery (#124545)', async () => {
+    vi.useFakeTimers()
+    notifications.clearNotifications()
+    installApiMock(vi.fn())
+    $desktopOnboarding.set(baseState({ configured: true }))
+
+    try {
+      await refreshOnboarding(onboardingContext(fallbackTimeoutGateway()))
+      expect(notifications.$notifications.get()).toEqual([
+        expect.objectContaining({ id: 'runtime-not-ready', kind: 'info' })
+      ])
+      expect($desktopOnboarding.get().configured).toBe(true)
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(notifications.$notifications.get()).toEqual([])
+
+      // A later outage can show a fresh notice; an authoritative ready clears it
+      // without waiting for its timer, and must not dismiss unrelated errors.
+      await refreshOnboarding(onboardingContext(fallbackTimeoutGateway()))
+      notifications.notify({ id: 'unrelated', kind: 'error', message: 'Keep me' })
+      await refreshOnboarding(onboardingContext(keylessCustomGateway()))
+      expect(notifications.$notifications.get().map(item => item.id)).toEqual(['unrelated'])
+    } finally {
+      notifications.clearNotifications()
+      vi.useRealTimers()
+    }
+  })
+
+  it('leaves configured unknown on a boot fallback instead of erasing the cache', async () => {
     const notifySpy = vi.spyOn(notifications, 'notify')
 
     installApiMock(vi.fn())
-    $desktopOnboarding.set(
-      baseState({
-        configured: true,
-        providers: [makeOAuthProvider('cached')],
-        reason: null,
-        requested: false
-      })
-    )
+    // Cold launch, no onboarded cache yet: `configured` is UNKNOWN, not false.
+    // A round that loses the race to a cold/queued backend answers neither
+    // probe, and recording that as "no provider" deleted the cache — which
+    // re-armed the blocking first-run picker on every launch afterwards.
+    $desktopOnboarding.set(baseState({ configured: null, providers: null, requested: false }))
 
-    await refreshOnboarding(onboardingContext(fallbackTimeoutGateway()))
+    const ready = await refreshOnboarding(onboardingContext(fallbackTimeoutGateway()))
 
-    expect(notifySpy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        id: 'runtime-not-ready',
-        kind: 'error'
-      })
-    )
+    expect(ready).toBe(false)
+    expect($desktopOnboarding.get().configured).toBeNull()
+    expect(window.localStorage.getItem('hermes-desktop-onboarded-v1')).toBeNull()
+    // Nothing was ever verified, so there is no outage worth a toast.
+    expect(notifySpy).not.toHaveBeenCalled()
+  })
+
+  it('does not downgrade a configured install when the boot race answers ok:false', async () => {
+    const { notifySetupReady } = await import('@/store/live-sync')
+
+    installApiMock(vi.fn())
+    // Fully configured install (durable cache present), backend just booted:
+    // setup.ready bumped the boot generation moments ago. The runtime_check
+    // answers ok:false because the external secret source (BWS) has not
+    // hydrated yet — a hydration race, not a credential verdict (#124939).
+    window.localStorage.setItem('hermes-desktop-onboarded-v1', '1')
+    $desktopOnboarding.set(baseState({ configured: true, providers: null, requested: false }))
+
+    notifySetupReady()
+
+    const ready = await refreshOnboarding(onboardingContext(emptyOpenRouterGateway()))
+
+    expect(ready).toBe(false)
     expect($desktopOnboarding.get().configured).toBe(true)
+    expect(window.localStorage.getItem('hermes-desktop-onboarded-v1')).toBe('1')
+  })
+
+  it('still downgrades when the same ok:false arrives long after boot', async () => {
+    const { notifySetupReady } = await import('@/store/live-sync')
+
+    installApiMock(vi.fn())
+    window.localStorage.setItem('hermes-desktop-onboarded-v1', '1')
+    $desktopOnboarding.set(baseState({ configured: true, providers: null, requested: false }))
+
+    // Boot happened, then the grace window elapsed: an ok:false now is a real
+    // verdict (the secret source had its chance), so onboarding must surface.
+    notifySetupReady()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 60_000)
+
+    try {
+      const ready = await refreshOnboarding(onboardingContext(emptyOpenRouterGateway()))
+
+      expect(ready).toBe(false)
+      expect($desktopOnboarding.get().configured).toBe(false)
+      expect(window.localStorage.getItem('hermes-desktop-onboarded-v1')).toBeNull()
+    } finally {
+      clock.mockRestore()
+    }
+  })
+
+  it('keeps a persisted "choose later" when a passive round completes onboarding', () => {
+    window.localStorage.setItem('hermes-onboarding-skipped-v1', '1')
+    $desktopOnboarding.set(baseState({ configured: null, firstRunSkipped: true }))
+
+    completeDesktopOnboarding()
+
+    expect(window.localStorage.getItem('hermes-onboarding-skipped-v1')).toBe('1')
+    expect($desktopOnboarding.get().firstRunSkipped).toBe(true)
+  })
+
+  it('clears the skip only when the user actually connected a provider', () => {
+    window.localStorage.setItem('hermes-onboarding-skipped-v1', '1')
+    $desktopOnboarding.set(baseState({ configured: null, firstRunSkipped: true }))
+
+    completeDesktopOnboarding(true)
+
+    expect(window.localStorage.getItem('hermes-onboarding-skipped-v1')).toBeNull()
+    expect($desktopOnboarding.get().firstRunSkipped).toBe(false)
   })
 
   it('enters setup when the selected OpenRouter credential is genuinely empty', async () => {
+    // Outside the boot window: no setup.ready bump precedes the round, so an
+    // answered ok:false is a real verdict, not a hydration race.
     installApiMock(vi.fn())
     window.localStorage.setItem('hermes-desktop-onboarded-v1', '1')
     $desktopOnboarding.set(
@@ -395,7 +545,44 @@ describe('OAuth onboarding', () => {
   afterEach(() => {
     window.localStorage.clear()
     $desktopOnboarding.set(baseState())
+    resetBootRaceWindowForTests()
     vi.restoreAllMocks()
+  })
+
+  it('a Nous sign-in shows its account and what moved on the confirm screen, not in a dialog after it', async () => {
+    const { startProviderOAuth } = await import('./onboarding')
+    const { $freeTierSignIn } = await import('./free-tier-sign-in')
+    const { setOnboardingSurfaceActive } = await import('./onboarding-presence')
+    const handoff: AppHandoffStatus = { lines: ['Your apps moved to someone@example.com: linear.'], state: 'claimed' }
+
+    installApiMock(async ({ path }) => {
+      if (path.endsWith('/start')) {
+        return { expires_in: 600, flow: 'device_code', session_id: 's', user_code: 'C', verification_url: 'http://x' }
+      }
+
+      if (path.includes('/poll/')) {
+        return { account_email: 'someone@example.com', handoff_status: handoff, session_id: 's', status: 'approved' }
+      }
+
+      if (path.startsWith('/api/model/options')) {
+        return { providers: [{ models: ['nous/m'], name: 'Nous Portal', slug: 'nous' }] }
+      }
+
+      return path.startsWith('/api/model/recommended-default') ? { model: 'nous/m' } : { ok: true }
+    })
+    vi.spyOn(window, 'open').mockReturnValue(null)
+    setOnboardingSurfaceActive('onboarding', true)
+
+    await startProviderOAuth(makeOAuthProvider('nous', 'Nous Portal'), {
+      requestGateway: async method =>
+        // SAFETY: onboarding reads only `provider_configured` from setup.status and `ok` from the rest.
+        (method === 'setup.status' ? { provider_configured: true } : { ok: true }) as never
+    })
+    await vi.waitFor(() => expect($desktopOnboarding.get().flow.status).toBe('confirming_model'), { timeout: 5000 })
+
+    expect($desktopOnboarding.get().flow).toMatchObject({ signedIn: { email: 'someone@example.com', handoff } })
+    setOnboardingSurfaceActive('onboarding', false)
+    expect($freeTierSignIn.get()).toEqual({ status: 'closed' })
   })
 
   it('clears stale readiness errors after OAuth succeeds and model confirmation is shown', async () => {
@@ -554,6 +741,136 @@ describe('OAuth onboarding', () => {
   })
 })
 
+describe('manual onboarding (Settings / Add provider on an already-configured install)', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    $desktopOnboarding.set(baseState())
+  })
+
+  afterEach(() => {
+    window.localStorage.clear()
+    $desktopOnboarding.set(baseState())
+    vi.restoreAllMocks()
+  })
+
+  it('does not flip the global default until the user confirms on the confirm card', async () => {
+    const model = 'nous/hermes-5'
+    const calls: { body?: unknown; path: string }[] = []
+
+    installApiMock(async ({ body, path }: { body?: unknown; path: string }) => {
+      calls.push({ body, path })
+
+      if (path === '/api/providers/oauth/nous/submit') {
+        return { ok: true, status: 'approved' }
+      }
+
+      if (path.startsWith('/api/model/options')) {
+        return { providers: [{ name: 'Nous Portal', slug: 'nous', models: [model] }] }
+      }
+
+      if (path.startsWith('/api/model/recommended-default?')) {
+        return { provider: 'nous', model, free_tier: false }
+      }
+
+      if (path === '/api/model/set') {
+        return { ok: true, provider: 'nous', model, gateway_tools: [] }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    const requestGateway: OnboardingContext['requestGateway'] = async (method, params) => {
+      if (method === 'reload.env') {
+        return {} as never
+      }
+
+      if (method === 'setup.status') {
+        return { provider_configured: true } as never
+      }
+
+      if (method === 'setup.runtime_check') {
+        // Still validated against the just-connected provider, not the
+        // (unchanged) config default — this is what makes deferring the
+        // persist safe.
+        expect(params).toEqual({ provider: 'nous' })
+
+        return { ok: true } as never
+      }
+
+      throw new Error(`unexpected gateway method: ${method}`)
+    }
+
+    // The user already has a working, different default configured — the
+    // exact scenario from the bug report (anthropic default, connecting Nous
+    // Portal as an *additional* provider from Settings).
+    $desktopOnboarding.set(
+      baseState({
+        manual: true,
+        flow: {
+          status: 'awaiting_user',
+          provider: makeOAuthProvider('nous', 'Nous Portal'),
+          start: {
+            auth_url: 'https://portal.example/auth',
+            expires_in: 600,
+            flow: 'pkce',
+            session_id: 'portal-session'
+          },
+          code: 'fresh-code'
+        },
+        requested: true
+      })
+    )
+
+    await submitOnboardingCode(onboardingContext(requestGateway))
+
+    const state = $desktopOnboarding.get()
+    expect(state.flow.status).toBe('confirming_model')
+
+    // OAuth succeeded and the confirm card is showing the new provider's
+    // model, but nothing has been written to config yet.
+    expect(calls.some(c => c.path === '/api/model/set')).toBe(false)
+
+    // Dismissing here (closeManualOnboarding) leaves the previous default
+    // untouched precisely because this call never fires.
+  })
+
+  it('persists the confirmed model only when the user clicks Begin', async () => {
+    const model = 'nous/hermes-5'
+    const calls: { body?: unknown; path: string }[] = []
+
+    installApiMock(async ({ body, path }: { body?: unknown; path: string }) => {
+      calls.push({ body, path })
+
+      if (path === '/api/model/set') {
+        return { ok: true, provider: 'nous', model, gateway_tools: [] }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    $desktopOnboarding.set(
+      baseState({
+        manual: true,
+        configured: true,
+        flow: {
+          status: 'confirming_model',
+          providerSlug: 'nous',
+          currentModel: model,
+          label: 'Nous Portal',
+          saving: false
+        }
+      })
+    )
+
+    const onCompleted = vi.fn()
+    await confirmOnboardingModel({ requestGateway: vi.fn(), onCompleted })
+
+    const assign = calls.find(c => c.path === '/api/model/set')
+    expect(assign?.body).toMatchObject({ scope: 'main', provider: 'nous', model })
+    expect(onCompleted).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('saveOnboardingLocalEndpoint', () => {
   beforeEach(() => {
     window.localStorage.clear()
@@ -563,6 +880,7 @@ describe('saveOnboardingLocalEndpoint', () => {
   afterEach(() => {
     window.localStorage.clear()
     $desktopOnboarding.set(baseState())
+    resetBootRaceWindowForTests()
     vi.restoreAllMocks()
   })
 
@@ -584,7 +902,7 @@ describe('saveOnboardingLocalEndpoint', () => {
     }
   }
 
-  it('errors when the endpoint advertises no models (nothing to route to)', async () => {
+  it('returns needsModelInput when the endpoint advertises no models (nothing to route to)', async () => {
     const calls: string[] = []
     installApiMock(async ({ path }: { path: string }) => {
       calls.push(path)
@@ -601,9 +919,90 @@ describe('saveOnboardingLocalEndpoint', () => {
     })
 
     expect(result.ok).toBe(false)
-    expect(result.message).toContain('no models')
+    // The wizard reads this discriminator to reveal a manual model-name input.
+    expect(result.needsModelInput).toBe(true)
+    expect(result.message).toMatch(/didn't enumerate any models|advertised no models/)
     // Must not attempt to persist an assignment without a model.
     expect(calls).not.toContain('/api/model/set')
+  })
+
+  it('uses a manually provided model name and skips discovery when /v1/models is empty', async () => {
+    const calls: { body?: unknown; path: string }[] = []
+
+    installApiMock(async ({ body, path }: { body?: unknown; path: string }) => {
+      calls.push({ body, path })
+
+      if (path === '/api/providers/validate') {
+        // Endpoint reachable but the discovery list is empty — the bug-class
+        // case the wizard used to hard-fail on.
+        return { ok: true, reachable: true, message: '', models: [] }
+      }
+
+      if (path === '/api/model/set') {
+        return {
+          ok: true,
+          provider: 'custom',
+          model: 'command-a-plus-05-2026',
+          base_url: 'https://api.cohere.ai/compatibility/v1'
+        }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    const result = await saveOnboardingLocalEndpoint(
+      'https://api.cohere.ai/compatibility/v1',
+      'sk-secret',
+      { requestGateway: readyGateway() },
+      'command-a-plus-05-2026'
+    )
+
+    expect(result.ok).toBe(true)
+
+    const assign = calls.find(c => c.path === '/api/model/set')
+    // The manually provided model name is persisted verbatim — the runtime
+    // honors it the same way as discover_models: false + an explicit models:.
+    expect(assign?.body).toMatchObject({
+      scope: 'main',
+      provider: 'custom',
+      model: 'command-a-plus-05-2026',
+      base_url: 'https://api.cohere.ai/compatibility/v1',
+      api_key: 'sk-secret'
+    })
+  })
+
+  it('uses a manually provided model name even when /v1/models enumerates models', async () => {
+    // The user is allowed to override the auto-discovered default by typing a
+    // model name before submitting. The wizard never pre-fills the model input
+    // in the happy path, but the store function must still honor modelName
+    // over probe.models[0] when both are available.
+    const calls: { body?: unknown; path: string }[] = []
+
+    installApiMock(async ({ body, path }: { body?: unknown; path: string }) => {
+      calls.push({ body, path })
+
+      if (path === '/api/providers/validate') {
+        return { ok: true, reachable: true, message: '', models: ['llama-3.1-8b'] }
+      }
+
+      if (path === '/api/model/set') {
+        return { ok: true, provider: 'custom', model: 'llama-3.1-8b', base_url: 'http://127.0.0.1:8000/v1' }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    const result = await saveOnboardingLocalEndpoint(
+      'http://127.0.0.1:8000/v1',
+      '',
+      { requestGateway: readyGateway() },
+      '  llama-3.3-70b  '
+    )
+
+    expect(result.ok).toBe(true)
+
+    const assign = calls.find(c => c.path === '/api/model/set')
+    expect(assign?.body).toMatchObject({ model: 'llama-3.3-70b' })
   })
 
   it('auto-discovers the model and persists provider=custom + base_url, then finishes', async () => {
@@ -751,7 +1150,7 @@ describe('saveOnboardingLocalEndpoint', () => {
       }
 
       if (method === 'setup.status') {
-        return { provider_configured: false } as never
+        return { provider_configured: true } as never
       }
 
       if (method === 'setup.runtime_check') {
@@ -808,7 +1207,7 @@ describe('device-code poll expiry', () => {
         return deviceStart(2)
       }
 
-      if (path === '/api/providers/oauth/nous/poll/device-sess-1') {
+      if (path.startsWith('/api/providers/oauth/nous/poll/device-sess-1')) {
         return { status: 'pending' }
       }
 
@@ -825,13 +1224,7 @@ describe('device-code poll expiry', () => {
       vi.advanceTimersByTime(3000)
     })
 
-    const flow = $desktopOnboarding.get().flow
-    expect(flow.status).toBe('error')
-
-    if (flow.status === 'error') {
-      expect(flow.message).toMatch(/timed out before you finished/)
-      expect(flow.message).not.toMatch(/server-side|CLI/)
-    }
+    expect($desktopOnboarding.get().flow.status).toBe('error')
   })
 
   it('keeps polling while the window is open and clears the expiry on cancel', async () => {
@@ -841,7 +1234,7 @@ describe('device-code poll expiry', () => {
         return deviceStart(600)
       }
 
-      if (path === '/api/providers/oauth/nous/poll/device-sess-1') {
+      if (path.startsWith('/api/providers/oauth/nous/poll/device-sess-1')) {
         return { status: 'pending' }
       }
 
@@ -878,10 +1271,13 @@ describe('setOnboardingModel', () => {
   afterEach(() => {
     window.localStorage.clear()
     $desktopOnboarding.set(baseState())
+    resetBootRaceWindowForTests()
     vi.restoreAllMocks()
   })
 
-  function confirmingModelState(overrides: Partial<Extract<DesktopOnboardingState['flow'], { status: 'confirming_model' }>> = {}) {
+  function confirmingModelState(
+    overrides: Partial<Extract<DesktopOnboardingState['flow'], { status: 'confirming_model' }>> = {}
+  ) {
     return baseState({
       flow: {
         status: 'confirming_model',

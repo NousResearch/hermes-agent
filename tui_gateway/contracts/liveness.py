@@ -31,11 +31,21 @@ class ClientCapabilitiesParams(Params):
     #: error for methods it has no handler for. A WebSocket client that never says so is treated as a
     #: build older than server→client requests and every such request fails fast for it.
     server_requests: bool = False
+    #: The client is the Desktop app connected to a backend on its own machine (its connection mode is
+    #: local). Counted only on a connection that redeemed a native ticket minted over this machine's
+    #: private control socket; it is what makes the welcome trial and first-run onboarding available
+    #: in a gateway that also serves the CLI, the TUI and bots.
+    desktop_local: bool = False
 
 
 class ClientCapabilitiesResult(Result):
     #: Server→client request methods this backend may send.
     server_requests: list[str]
+    #: This backend counts a ``4404`` "no window here shows this session" error from a window-owned
+    #: bridge (preview/terminal/window read, preview act, tour) as that client declining, not as the
+    #: answer: the request settles only once every attached client declined (server_requests.py).
+    #: An older backend settles on the first error, so a client sends the decline only when this is true.
+    declines_not_shown: bool = False
 
 
 method("client.capabilities", params=ClientCapabilitiesParams, result=ClientCapabilitiesResult,

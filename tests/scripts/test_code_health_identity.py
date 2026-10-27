@@ -9,10 +9,13 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
 
+from scripts.code_health.compare import _line_survival
+from scripts.code_health.model import FileMeasure
 from scripts.code_health.ts_measure import pinned_typescript, resolve_typescript
 from tests.scripts.test_code_health import _LEGACY, _SWALLOW, REPO, _commit, _git, _repo, _verdict
 
@@ -266,3 +269,21 @@ def test_typescript_install_uses_repo_npmrc_and_fails_cleanly(tmp_path, monkeypa
     got = subprocess.run([npm, "config", "get", "min-release-age", "--prefix", str(prefix)],
                          cwd=prefix, capture_output=True, text=True, timeout=60, check=True).stdout.strip()
     assert got == "14"
+
+
+# --- line survival stays near-linear on huge files ---------------------------------------------
+
+
+def test_line_survival_on_a_large_file_with_scattered_edits_is_fast():
+    """Blank lines repeat thousands of times; matched with autojunk off they made this
+    quadratic (a 23k-line test file with an edit every 50 lines ran past the CI timeout)."""
+    base = [line for i in range(6000) for line in (f"def f{i}():", f"    return {i}", "")]
+    head = [line + "  ;pass" if n % 50 == 0 and line else line for n, line in enumerate(base)]
+    bf, hf = FileMeasure("a.py", lines=base), FileMeasure("a.py", lines=head)
+    hf.add_hit("BLE001", "<module>", 1)  # any hit enables the matcher
+    started = time.monotonic()
+    kept, survived = _line_survival(hf, bf)
+    assert time.monotonic() - started < 20  # ~0.1 s now; minutes when blank lines were matched
+    edited = {n + 1 for n, line in enumerate(base) if n % 50 == 0 and line}
+    assert kept == {n + 1 for n, line in enumerate(head) if line} - edited
+    assert survived == {n + 1 for n, line in enumerate(base) if line} - edited

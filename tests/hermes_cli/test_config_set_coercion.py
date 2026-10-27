@@ -15,7 +15,7 @@ from hermes_cli import config as cfg
 
 def _read(tmp_path, *path):
     """Read a nested value straight from the on-disk config.yaml."""
-    import yaml
+    import hermes_yaml as yaml
     data = yaml.safe_load((tmp_path / "config.yaml").read_text()) or {}
     node = data
     for seg in path:
@@ -41,6 +41,18 @@ class TestNumericCoercion:
         cfg.set_config_value("agent.max_turns", "-2.5")
         v = _read(tmp_path, "agent", "max_turns")
         assert v == -2.5 and isinstance(v, float)
+
+    def test_lossy_decimal_identifier_stays_string(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        client_id = "123456789012.98765432109876"
+
+        cfg.set_config_value("mcp_servers.example.oauth.client_id", client_id)
+
+        saved = _read(
+            tmp_path, "mcp_servers", "example", "oauth", "client_id"
+        )
+        assert saved == client_id
+        assert isinstance(saved, str)
 
 
 class TestNullCoercion:

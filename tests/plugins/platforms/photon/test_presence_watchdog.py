@@ -13,7 +13,10 @@ spawning Node, binding ports, or hitting the network.
 from __future__ import annotations
 
 import time
-from typing import Any, List
+from typing import Any
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -28,10 +31,20 @@ def _make_adapter(monkeypatch: pytest.MonkeyPatch, **extra: Any) -> PhotonAdapte
     return PhotonAdapter(cfg)
 
 
-def test_probe_config_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
-    a = _make_adapter(monkeypatch)
-    # Conservative by default: probe only after 10+ minutes of stream silence
-    # so quiet shared lines never trigger restart storms.
+
+
+def test_probe_config_explicit_zero_disables_watchdog(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Explicit 0 in extra must NOT fall through to the default (``or`` bug):
+    # a non-positive interval is the documented escape hatch that disables the watchdog.
+    a = _make_adapter(monkeypatch, probe_interval_seconds=0)
+    assert a._probe_interval == 0
+    assert a._probe_enabled is False
+
+
+def test_probe_config_invalid_values_fall_back_to_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Unparseable values degrade to defaults instead of aborting construction.
+    a = _make_adapter(monkeypatch, probe_interval_seconds="soon", probe_timeout_seconds=None,
+                      probe_max_failures="lots")
     assert a._probe_interval == 600.0
     assert a._probe_timeout == 10.0
     assert a._probe_max_failures == 3
@@ -49,60 +62,38 @@ def test_note_activity_resets_failures(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_respawn_after_max_failures(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The core fix: N consecutive dead probes -> exactly one respawn."""
-    a = _make_adapter(monkeypatch, probe_max_failures=3)
+@pytest.mark.parametrize("sequence,respawns,failures", [
+    (["hung", "hung", "hung"], 1, 3),
+    (["hung", "hung", "alive", "hung", "hung"], 0, 2),
+    (["hung", "inconclusive", "hung"], 0, 2),
+    (["recent", "hung"], 0, 1),
+])
+async def test_watchdog_decisions(monkeypatch, sequence, respawns, failures):
+    import plugins.platforms.photon.adapter as module
 
-    respawns: List[str] = []
+    adapter = _make_adapter(monkeypatch, probe_max_failures=3)
+    adapter._watchdog_running = True
+    steps = iter(sequence)
+    verdicts = iter([step for step in sequence if step != "recent"])
+    probe = AsyncMock(side_effect=lambda: next(verdicts))
+    respawn = AsyncMock()
 
-    async def _fake_respawn(reason: str) -> None:
-        respawns.append(reason)
-        a._note_upstream_activity()  # mirror real respawn (clears failures)
+    async def tick(_delay):
+        step = next(steps, None)
+        if step is None:
+            raise asyncio.CancelledError
+        adapter._last_upstream_activity = time.monotonic() - (0 if step == "recent" else 999)
 
-    async def _hung_probe() -> str:
-        return "hung"
-
-    monkeypatch.setattr(a, "_respawn_sidecar", _fake_respawn)
-    monkeypatch.setattr(a, "_probe_once", _hung_probe)
-
-    # Simulate the watchdog's per-iteration decision logic directly (no sleeps).
-    a._last_upstream_activity = time.monotonic() - 999  # force a probe each time
-    for _ in range(3):
-        verdict = await a._probe_once()
-        assert verdict == "hung"
-        a._probe_failures += 1
-        if a._probe_failures >= a._probe_max_failures:
-            await a._respawn_sidecar("test")
-
-    assert respawns == ["test"]
-    assert a._probe_failures == 0  # reset by the (faked) respawn
-
-
-@pytest.mark.asyncio
-async def test_success_resets_failure_count(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A live probe between dead ones prevents a respawn (failures reset)."""
-    a = _make_adapter(monkeypatch, probe_max_failures=3)
-
-    respawns: List[str] = []
-
-    async def _fake_respawn(reason: str) -> None:
-        respawns.append(reason)
-
-    monkeypatch.setattr(a, "_respawn_sidecar", _fake_respawn)
-
-    # Two failures, then a success, then two more failures: never hits 3 in a row.
-    sequence = [False, False, True, False, False]
-    for alive in sequence:
-        if alive:
-            a._note_upstream_activity()
-        else:
-            a._probe_failures += 1
-            if a._probe_failures >= a._probe_max_failures:
-                await a._respawn_sidecar("should-not-fire")
-
-    assert respawns == []
-    assert a._probe_failures == 2
-
-
+    monkeypatch.setattr(module, "asyncio", SimpleNamespace(sleep=tick, CancelledError=asyncio.CancelledError))
+    monkeypatch.setattr(adapter, "_probe_once", probe)
+    monkeypatch.setattr(adapter, "_respawn_sidecar", respawn)
+    task = asyncio.create_task(adapter._presence_watchdog())
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert respawn.await_count == respawns
+        assert probe.await_count == len(sequence) - sequence.count("recent")
+        assert adapter._probe_failures == failures
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

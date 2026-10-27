@@ -11,6 +11,10 @@ prerequisites:
 metadata:
   hermes:
     tags: [Teams, Microsoft Graph, Meetings, Productivity, Operations]
+    # Channel-gated: this pipeline only makes sense on the Teams gateway
+    # channel (and in cron jobs, where its scheduled summary/replay work
+    # actually runs). Hidden from every other session's skills index.
+    session_platforms: [teams, cron]
     related_docs:
       - /docs/guides/microsoft-graph-app-registration
       - /docs/user-guide/messaging/teams-meetings

@@ -124,7 +124,7 @@ You optimize for truth, clarity, and usefulness over politeness theater.
 - 提示词注入扫描
 - 内容过大时进行截断
 
-如果文件为空、仅含空白字符或无法读取，Hermes 将回退到内置默认身份（"You are Hermes Agent, an intelligent AI assistant created by Nous Research..."）。当 `skip_context_files` 被设置时（例如在子 Agent/委托上下文中），同样适用此回退。
+如果文件为空、仅含空白字符或无法读取，Hermes 将回退到内置默认身份（"You are Hermes Agent, built by Nous Research. Be direct: match the length of your reply to the weight of the ask..."）。当 `skip_context_files` 被设置时（例如在子 Agent/委托上下文中），同样适用此回退。
 
 ## 安全扫描
 
@@ -256,10 +256,10 @@ agent:
 
 ## 相关文档
 
-- [上下文文件](/user-guide/features/context-files)
-- [配置](/user-guide/configuration)
-- [技巧与最佳实践](/guides/tips)
-- [SOUL.md 指南](/guides/use-soul-with-hermes)
+- [上下文文件](./context-files.md)
+- [配置](../configuration.md)
+- [技巧与最佳实践](../../guides/tips.md)
+- [SOUL.md 指南](../../guides/use-soul-with-hermes.md)
 
 ## CLI 外观与对话个性
 

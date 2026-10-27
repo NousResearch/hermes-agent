@@ -11,11 +11,8 @@ ride on the media bubble as a native caption. This test pins that contract so
 the platforms can't diverge.
 """
 
-from tools.send_message_tool import (
-    _DEFAULT_CAPTION_LIMIT,
-    _TELEGRAM_CAPTION_LIMIT,
-    _media_caption_split,
-)
+from tools.send_message_tool import _DEFAULT_CAPTION_LIMIT, _media_caption_split
+from tools.send_message_senders import _TELEGRAM_CAPTION_LIMIT
 
 
 def test_single_image_short_text_becomes_caption():

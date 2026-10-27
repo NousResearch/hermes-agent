@@ -21,7 +21,7 @@ Agent payments via Stripe Link — cards, SPT, approvals.
 | License | MIT |
 | Platforms | linux, macos |
 | Tags | `Payments`, `Stripe`, `Link`, `Checkout`, `MPP` |
-| Related skills | [`mpp-agent`](/docs/user-guide/skills/optional/payments/payments-mpp-agent), [`stripe-projects`](/docs/user-guide/skills/optional/payments/payments-stripe-projects) |
+| Related skills | [`mpp-agent`](../../optional/payments/payments-mpp-agent.md), [`stripe-projects`](../../optional/payments/payments-stripe-projects.md) |
 
 ## Reference: full SKILL.md
 
@@ -148,7 +148,7 @@ For MPP merchants add `--credential-type shared_payment_token`.
 ```
 link-cli spend-request retrieve <lsrq_id> \
   --include card \
-  --output-file /tmp/link-card.json \
+  --output-file ~/.hermes/cache/scratch/link-card.json \
   --format json
 ```
 
@@ -171,7 +171,7 @@ The file is written with `0600` perms; stdout shows only redacted fields (brand,
 Delete the card file as soon as the purchase is done:
 
 ```
-rm -f /tmp/link-card.json
+rm -f ~/.hermes/cache/scratch/link-card.json
 ```
 
 ## Optional: run as an MCP server instead

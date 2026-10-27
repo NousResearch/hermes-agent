@@ -47,4 +47,4 @@ Startup is never blocked. Errors print one line plus a `→` remediation hint:
 
 ## When to use this vs a plugin
 
-The command source is the escape hatch for vaults without a bundled integration. If you find yourself wrapping a complex CLI dance in a long script, consider a proper [secret-source plugin](/developer-guide/secret-source-plugin) instead — plugins get caching, provenance labels, and typed config.
+The command source is the escape hatch for vaults without a bundled integration. If you find yourself wrapping a complex CLI dance in a long script, consider a proper [secret-source plugin](../../developer-guide/secret-source-plugin.md) instead — plugins get caching, provenance labels, and typed config.

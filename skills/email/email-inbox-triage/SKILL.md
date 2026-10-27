@@ -1,7 +1,7 @@
 ---
 name: email-inbox-triage
 description: "Triage an inbox: prioritize threads, draft replies safely."
-version: 0.1.0
+version: 0.2.0
 author: Ben Barclay (benbarclay), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -50,9 +50,16 @@ Use these dispositions:
 
 Extract sender request, deadline, commitments already made, attachments, and missing information. Done when every surfaced thread has a disposition and a stated reason.
 
-### 4. Draft replies in thread context
+### 4. Calibrate the user's voice, then draft replies in thread context
 
-Answer every material question, preserve the user's tone, avoid invented commitments, and state uncertainty. Resolve attachment/link facts before referencing them. Done when each sentence can be checked against the thread or an explicit user preference.
+Before drafting the first reply of a run, calibrate on evidence instead of guessing tone — study the user's own past replies before writing:
+
+- Sample: pull a bounded set of the user's recent sent replies via the connector skill — 20-50 where available, preferring replies to the same recipients or thread types being drafted. Truncated excerpts (roughly the first 40 lines of each message) carry the style facts; do not load full threads and let calibration crowd out inbox coverage.
+- Extract: greeting and sign-off habits (and per-audience differences), typical reply length, formality and warmth, sentence rhythm, emoji/exclamation use, and how the user says no or pushes back.
+- Record: keep the calibration as working notes for this run.
+- Fallback: if the Sent folder is empty or inaccessible, say so and fall back to matching the incoming thread's register.
+
+Then draft: answer every material question, match the calibrated voice (not a generic-professional one), avoid invented commitments, and state uncertainty. Resolve attachment/link facts before referencing them. Done when each sentence can be checked against the thread or an explicit user preference, and each draft's tone can be traced to the calibration notes.
 
 ### 5. Present an approval batch
 
@@ -75,6 +82,8 @@ Send, label, archive, or create follow-ups only within approval. For ambiguous s
 
 - Treating unread as synonymous with important.
 - Missing earlier unanswered questions in a long thread.
+- Drafting in a generic-professional voice instead of calibrating against the user's own sent replies.
+- Treating a missing `Sent` folder as inaccessible: providers name it `Sent`, `Sent Messages`, `[Gmail]/Sent Mail`, or a localized name — list folders before declaring the fallback.
 - Retrying after SMTP succeeded but save-to-Sent failed, causing duplicate mail.
 - Claiming inbox zero when pagination or another folder was omitted.
 
@@ -82,6 +91,7 @@ Send, label, archive, or create follow-ups only within approval. For ambiguous s
 
 - [ ] The requested folders and time window were fully covered, or gaps are stated.
 - [ ] Every disposition has a reason traceable to thread content.
+- [ ] Drafts were calibrated against the user's sent replies, or the fallback was stated.
 - [ ] No send/delete/archive happened outside the approved batch.
 - [ ] Every approved mutation was read back from the provider.
 - [ ] The final response separates completed actions, drafts awaiting approval, and blockers.

@@ -1,0 +1,27 @@
+name: weather
+repo: https://github.com/FahrenheitResearch/hermes-weather-plugin
+sha: d474493ef4ffeefabad9dbf0188f72bce3b47b67
+description: Weather data, radar/model imagery, and verified meteorological calculations. Built on metrust,
+  rusbie, wrf-rust, rustdar, and ecape-rs.
+maintainer: FahrenheitResearch
+tier: community
+category: tools
+docs_url: https://github.com/FahrenheitResearch/hermes-weather-plugin#readme
+capabilities:
+  provides_tools:
+  - wx_alerts
+  - wx_brief
+  - wx_calc
+  - wx_conditions
+  - wx_ecape
+  - wx_forecast
+  - wx_global
+  - wx_metar
+  - wx_model_image
+  - wx_radar_image
+  - wx_severe
+  - wx_sounding
+  - wx_storm_image
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

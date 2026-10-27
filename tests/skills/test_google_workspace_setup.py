@@ -1,11 +1,12 @@
-"""Security-floor tests for the Google Workspace runtime installer."""
+"""Google Workspace setup delegates dependency ownership to PM."""
 
 from __future__ import annotations
 
 import importlib.util
-from importlib.metadata import PackageNotFoundError
 from pathlib import Path
+from unittest.mock import Mock
 
+import pm
 import pytest
 
 
@@ -16,75 +17,39 @@ SETUP_PATH = (
 
 
 @pytest.fixture()
-def setup_module():
-    spec = importlib.util.spec_from_file_location(
-        "test_google_workspace_setup_module",
-        SETUP_PATH,
-    )
+def setup_module(monkeypatch):
+    # setup.py exposes sibling imports for direct script execution.
+    monkeypatch.syspath_prepend(str(SETUP_PATH.parent))
+    spec = importlib.util.spec_from_file_location("google_workspace_setup", SETUP_PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-def test_stale_google_transitives_are_reported_missing(setup_module, monkeypatch):
-    installed = {
-        "google-api-python-client": "2.194.0",
-        "google-auth": "2.55.0",
-        "google-auth-oauthlib": "1.3.1",
-        "google-auth-httplib2": "0.3.1",
-        "httplib2": "0.31.2",
-        "pyasn1": "0.6.3",
-    }
+@pytest.mark.parametrize("error", [None, pm.InstallError("venv", "sync refused")])
+def test_explicit_install_uses_pm_and_reports_restart(setup_module, monkeypatch, capsys, error):
+    sync = Mock(side_effect=error)
+    monkeypatch.setattr(pm, "sync_venv", sync)
+    # Even a successful old-interpreter probe must not bypass explicit sync.
+    monkeypatch.setattr(pm, "ensure_import", Mock(side_effect=AssertionError("not a sync")))
+    monkeypatch.setattr("subprocess.check_call", Mock(side_effect=AssertionError("ambient install")))
 
-    def fake_version(name):
-        try:
-            return installed[name]
-        except KeyError:
-            raise PackageNotFoundError(name) from None
-
-    monkeypatch.setattr(setup_module, "_distribution_version", fake_version)
-
-    assert setup_module._missing_required_packages() == [
-        "google-auth==2.55.1",
-        "httplib2==0.32.0",
-        "pyasn1==0.6.4",
-    ]
+    assert setup_module.install_deps() is (error is None)
+    sync.assert_called_once_with(["google"], explicit=True)
+    output = capsys.readouterr().out
+    if error is None:
+        assert "restart" in output.lower()
+    else:
+        assert "sync refused" in output
 
 
-def test_installer_repairs_stale_transitives(setup_module, monkeypatch):
-    states = iter(
-        [
-            [
-                "google-auth==2.55.1",
-                "httplib2==0.32.0",
-                "pyasn1==0.6.4",
-            ],
-            [],
-        ]
-    )
-    monkeypatch.setattr(
-        setup_module,
-        "_missing_required_packages",
-        lambda: next(states),
-    )
-    calls = []
-    monkeypatch.setattr(
-        setup_module.subprocess,
-        "check_call",
-        lambda argv, **kwargs: calls.append(argv),
-    )
+def test_auth_uses_pm_import_check(setup_module, monkeypatch):
+    ensure = Mock()
+    monkeypatch.setattr(pm, "ensure_import", ensure)
+    monkeypatch.setattr(pm, "sync_venv", Mock(side_effect=AssertionError("explicit sync during auth")))
+    monkeypatch.setattr("subprocess.check_call", Mock(side_effect=AssertionError("ambient install")))
 
-    assert setup_module.install_deps() is True
-    assert calls == [
-        [
-            setup_module.sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--quiet",
-            "google-auth==2.55.1",
-            "httplib2==0.32.0",
-            "pyasn1==0.6.4",
-        ]
-    ]
+    setup_module._ensure_deps()
+
+    ensure.assert_called_once_with("google")

@@ -2523,12 +2523,11 @@ class TestSystemdCgroupIsolation:
 
         assert pr._worker_memory_max_bytes() == pr._DEFAULT_WORKER_MEMORY_MAX_BYTES
 
-    def test_kill_recovered_detached_already_exited_stops_persisted_scope(
+    def test_recovered_scope_stops_without_inventing_uncollected_result(
         self, registry, monkeypatch
     ):
-        """Recovered detached sessions whose wrapper PID is gone/recycled must
-        still stop their persisted systemd scope before the already_exited
-        return, while retaining the PID-reuse guard (no PID tree kill)."""
+        """Scope cleanup cannot invent the dead wrapper's uncollected result;
+        keep that uncertainty while preserving the PID-reuse signal guard."""
         session = _make_session(sid="proc_recovered_scope", command="daemonize")
         session.detached = True
         session.pid_scope = "host"
@@ -2546,7 +2545,8 @@ class TestSystemdCgroupIsolation:
         with patch.object(registry, "_write_checkpoint"):
             result = registry.kill_process(session.id)
 
-        assert result["status"] == "already_exited"
+        assert result["status"] == "error" and result["error"] == "process_stop_unknown"
+        assert session._scope_stop_pending and session._result_persisted_generation == -1
         assert stopped == ["hermes-worker-proc_recovered_scope.scope"]
         assert terminated == []
         assert session.exited is True

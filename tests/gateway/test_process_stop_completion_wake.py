@@ -255,3 +255,27 @@ async def test_old_completion_cannot_wake_a_genuinely_newer_native_stop(stopped_
         await asyncio.to_thread(second._completion_event.wait, 5)
         finish.set()
         await asyncio.wait_for(state.authority.sessions['s'].task, 10)
+
+
+@pytest.mark.asyncio
+async def test_native_retry_keeps_the_original_complete_reader_instead_of_replacing_it(stopped_job, monkeypatch):
+    state = stopped_job
+    cold_started, release_cold = threading.Event(), threading.Event()
+    cold_readers = []
+    reader = state.registry._log_reader_loop
+    def held_cold_reader(session, *args, **kwargs):
+        cold_readers.append(session)
+        cold_started.set()
+        assert release_cold.wait(10)
+        return reader(session, *args, **kwargs)
+    monkeypatch.setattr(state.registry, '_log_reader_loop', held_cold_reader)
+    try:
+        await _finish_original_reader(state)
+        await async_wait_until(lambda: bool(state.executed) or cold_started.is_set(), timeout=5)
+        assert state.executed == ['only-human'], 'Recovery discarded the original complete durable reader'
+        assert not cold_started.is_set()
+        assert state.registry.get(state.own.id) is state.own
+    finally:
+        release_cold.set()
+        for process in cold_readers:
+            await asyncio.to_thread(process._completion_event.wait, 5)

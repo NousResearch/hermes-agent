@@ -236,7 +236,10 @@ def test_explicit_kill_returns_output_before_consuming_notification(monkeypatch)
     # kernel job cleanup is exercised by the actual native job integration tests.
     session.systemd_unit = 'hermes-worker-proc_kill_consumed.scope'
     monkeypatch.setattr(registry, '_signal_kill', lambda *_a, **_kw: None)
-    monkeypatch.setattr(registry, '_stop_scope', lambda *_a, **_kw: True)
+    def finish_original_result(*_a, **_kw):
+        registry._finish_exited(session, -15)  # The component's original output publisher.
+        return True
+    monkeypatch.setattr(registry, '_stop_scope', finish_original_result)
     monkeypatch.setattr(registry, "_write_checkpoint", lambda: None)
     monkeypatch.setattr(pr_module, "process_registry", registry)
 

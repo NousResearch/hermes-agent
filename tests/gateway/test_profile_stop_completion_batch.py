@@ -16,7 +16,7 @@ async def test_consumed_result_is_removed_from_secondary_profile_batch(monkeypat
         # This is the durable result left by an earlier explicit Stop. A fresh
         # interpreter has no matching process-local _completion_consumed entry.
         with _profile_runtime_scope(rig.homes[leg.name]):
-            assert save_completed_result(replace(leg.proc, exited=True, completion_consumed=True))
+            assert not save_completed_result(replace(leg.proc, exited=True, completion_consumed=True))
             assert rig.registry.is_completion_consumed(leg.proc.id)
         assert leg.proc.id not in rig.registry._completion_consumed
         event = runner._build_process_completion_event(leg.watcher, leg.proc, leg.proc.id)
@@ -24,7 +24,7 @@ async def test_consumed_result_is_removed_from_secondary_profile_batch(monkeypat
         companion = {**event, 'session_id': 'proc_companion' + leg.name + str(leg.index), 'output': 'LIVE_RESULT'}
         foreign = rig.homes['b' if leg.name == 'a' else 'a']
         with _profile_runtime_scope(foreign):
-            assert save_completed_result(replace(leg.proc, id=companion['session_id'], exited=True, completion_consumed=True))
+            assert not save_completed_result(replace(leg.proc, id=companion['session_id'], exited=True, completion_consumed=True))
         monkeypatch.setattr(module, 'process_registry', module.ProcessRegistry())
         assert not module.process_registry._completion_consumed
         async def enqueue():
@@ -146,7 +146,7 @@ async def test_native_profile_batch_filters_before_fifo_and_preserves_human(tmp_
                 before = list_session_admissions(authority.db, session_id=seed.ref.session_id, pending_only=False)
             foreign = rig.homes['b' if name == 'a' else 'a']
             with _profile_runtime_scope(foreign):
-                assert save_completed_result(replace(live, completion_consumed=True))
+                assert not save_completed_result(replace(live, completion_consumed=True))
             monkeypatch.setattr(module, 'process_registry', module.ProcessRegistry())
             assert not module.process_registry._completion_consumed
             batch_ready.clear()

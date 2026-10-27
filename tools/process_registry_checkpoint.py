@@ -216,6 +216,7 @@ class ProcessCheckpointMixin:
         )
         from tools.process_registry_output_log import adoptable_log
         from tools.process_registry_job import job_quiescent
+        from tools.process_registry_handoff import OWNERSHIP_FIELDS
 
         checkpoint_path = _checkpoint_path()
         if not checkpoint_path.exists():
@@ -243,7 +244,19 @@ class ProcessCheckpointMixin:
             # process; a multiplexer recovering several homes must adopt each session once.
             with self._lock:
                 already_tracked = entry.get("session_id") in self._running
-            if already_tracked:
+                finished = self._finished.get(entry.get('session_id'))
+                complete = (finished is not None and finished.pid_scope == 'host' and not finished.wsl_chain
+                            and finished.native_job_scope and not finished.systemd_unit
+                            and finished._result_complete and finished._completion_event.is_set()
+                            and finished._result_persisted_generation == finished.ownership_generation
+                            and entry.get('native_job_scope') and not entry.get('systemd_unit')
+                            and all(getattr(finished, field) == entry.get(field)
+                                    for field in (*OWNERSHIP_FIELDS, 'pid', 'host_start_time', 'started_at')))
+            # Keep the actual original reader/result. Re-adopting this same completed
+            # job would replace it with an unfinished cold reader at every Stop retry.
+            # This is not a cleanup verdict: the existing native Stop still revalidates
+            # current ownership and persists the complete result before clearing its fence.
+            if already_tracked or (complete and job_quiescent(entry)):
                 continue
             if not entry.get('native_job_scope') and not entry.get('systemd_unit'):
                 unresolved_scope_entries.append(entry)

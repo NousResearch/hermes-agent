@@ -90,6 +90,15 @@ async def test_ready_completion_stays_consumed_after_owner_reload(tmp_path, monk
             instance_id='reloaded-ready-completion', db=authority.db)
         assert authority.epoch != previous_epoch
         await authority.resolve(actor, ref)
+        # Recovery can still be collecting the original output after the old
+        # owner's result write failed. This fixture disables scheduling; let
+        # the actual reader supply complete durability before its manual retry.
+        if refuse_result_write and not await retry_process_stop(authority, ref):
+            restored = module.process_registry.get(own.id)
+            assert restored is not None
+            assert await asyncio.to_thread(restored._completion_event.wait, 10)
+            assert restored._result_complete
+            assert restored._result_persisted_generation == restored.ownership_generation
         assert await retry_process_stop(authority, ref)
         assert process_stop_pending(authority.db, ref.session_id) is None
         assert module.process_registry.is_completion_consumed(own.id)

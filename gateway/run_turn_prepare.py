@@ -116,18 +116,29 @@ class GatewayTurnPrepareMixin:
             return _resolve_policy_agent_runtime(self, policy, fallback=fallback)
         skey = self._resolve_session_key_or_none(source, session_key)
         model = _resolve_gateway_model(user_config)
-        # Gateway-created agents receive an explicit model, bypassing the CLI
-        # startup resolver. Expand a configured direct alias before selecting
-        # the default runtime so its short name never reaches the provider.
-        direct_alias_runtime = _resolve_direct_alias_agent_runtime(model)
-        if direct_alias_runtime is not None:
-            model, default_runtime_kwargs = direct_alias_runtime
-        else:
-            default_runtime_kwargs = None
         if skey:
             self._rehydrate_session_model_override(skey)
         _override_state = self._peek_session_state(skey) if skey else None
         override = _override_state.conversation.model_override if _override_state else None
+        # Choose the final model *before* resolving any provider. A session alias
+        # outranks a channel alias, which outranks the profile default; the entire
+        # selected route must replace default/channel/session credentials together.
+        selected_model = model
+        cfg = getattr(self, "config", None)
+        if cfg and source is not None:
+            ch = _get_channel_override(
+                cfg, source.platform, str(source.chat_id) if source.chat_id else "",
+                thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
+                parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
+            )
+            if ch and ch.model:
+                selected_model = ch.model
+        if override and override.get("model"):
+            selected_model = override["model"]
+        direct_alias_runtime = _resolve_direct_alias_agent_runtime(selected_model)
+        if direct_alias_runtime is not None:
+            alias_model, alias_runtime = direct_alias_runtime
+            return _recover_or_remember_model(self, skey, alias_model), alias_runtime
         if override:
             override_model = override.get("model", model)
             override_runtime = {
@@ -175,7 +186,7 @@ class GatewayTurnPrepareMixin:
                                exc_info=True)
                 unavailable_override, override = override, None
         if runtime_kwargs is None:
-            runtime_kwargs = default_runtime_kwargs or _resolve_runtime_agent_kwargs()
+            runtime_kwargs = _resolve_runtime_agent_kwargs()
         # Private notice metadata must never reach an ``AIAgent(**runtime_kwargs)`` spread; the turn
         # runner surfaces it through the agent's one-shot fallback notice (#74349).
         self._pre_agent_fallback_notice = runtime_kwargs.pop("_fallback_notice", None)

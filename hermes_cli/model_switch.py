@@ -327,7 +327,14 @@ def direct_alias_runtime_request(alias: DirectAlias) -> tuple[str, Optional[str]
 
     See #28660.
     """
-    return ("custom" if alias.base_url else (alias.provider or "custom")), direct_alias_api_key(alias) or None
+    provider = alias.provider or "custom"
+    if alias.base_url:
+        from providers import get_provider_profile
+        profile = get_provider_profile(provider)
+        canonical = str(profile.base_url or "").strip().rstrip("/") if profile else ""
+        if not canonical or canonical != str(alias.base_url).strip().rstrip("/"):
+            provider = "custom"
+    return provider, direct_alias_api_key(alias) or None
 
 
 # Hosts where plaintext HTTP is not a downgrade — no network hop to intercept.

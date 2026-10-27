@@ -215,6 +215,7 @@ def _build_child_agent(
     override_api_key: Optional[str] = None,
     override_api_mode: Optional[str] = None,
     override_request_overrides: Optional[dict[str, Any]] = None,
+    override_capabilities: Optional[dict] = None, override_alias_route: bool = False,
 
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
@@ -277,6 +278,7 @@ def _build_child_agent(
             override_acp_command=override_acp_command,
             override_acp_args=override_acp_args,
             routing_cfg=routing_cfg, override_reasoning_effort=override_reasoning_effort,
+            override_capabilities=override_capabilities, override_alias_route=override_alias_route,
         )
         if override_service_tier:
             rt["service_tier"] = override_service_tier
@@ -317,7 +319,7 @@ def _build_child_agent(
         # Shared pool lets children rotate credentials on rate limits. A profile child loads ITS profile's pool
         # (inside the scope) and never shares the launching parent's.
         child_pool = _resolve_child_credential_pool(
-            rt["provider"], None if profile_home is not None else parent_agent, rt["base_url"],
+            rt["provider"], None if profile_home is not None or override_alias_route else parent_agent, rt["base_url"],
             effective_requested_provider=rt.get("requested_provider"),
         )
     child._print_fn = getattr(parent_agent, "_print_fn", None)
@@ -431,6 +433,8 @@ def _credential_overrides(creds: dict[str, Any], routing_cfg: dict[str, Any]) ->
         "override_provider": creds["provider"], "override_base_url": creds["base_url"],
         "override_api_key": creds["api_key"], "override_api_mode": creds["api_mode"],
         "override_request_overrides": creds.get("request_overrides"),
+        "override_capabilities": creds.get("capabilities"),
+        "override_alias_route": bool(creds.get("alias_route")),
         "override_acp_command": creds.get("command"),
         "override_acp_args": creds.get("args"),
         "override_service_tier": creds.get("service_tier"),

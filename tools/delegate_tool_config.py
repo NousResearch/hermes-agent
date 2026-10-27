@@ -422,6 +422,40 @@ def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
         command=pinned_command, args=list(runtime.get("args") or []),
     )
 
+def _configured_delegation_alias(cfg: dict, model: str, explicit_request_overrides):
+    """Return an alias-owned credential bundle, or None for a raw model pin."""
+    from hermes_cli.config import load_config_readonly
+    from hermes_cli.model_switch import resolve_startup_model_route
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    owner = load_config_readonly()
+    aliases = (owner.get("model_aliases") or {})
+    simple = (owner.get("model") or {}).get("aliases") or {}
+    if model.lower() not in {str(k).lower() for k in (*aliases, *simple)}:
+        return None
+    route = resolve_startup_model_route(model, alias_config=owner)
+    if route is None or not route.model or not route.provider:
+        raise ValueError(f"Incomplete delegation model alias {model!r}")
+    provider = str(cfg.get("provider") or "").strip()
+    base_url = str(cfg.get("base_url") or "").strip()
+    if provider and provider != route.provider:
+        raise ValueError(f"Delegation model alias {model!r} conflicts with an explicit provider")
+    if base_url and base_url.rstrip("/") != (route.base_url or "").rstrip("/"):
+        raise ValueError(f"Delegation model alias {model!r} conflicts with an explicit endpoint")
+    runtime = resolve_runtime_provider(
+        requested=route.provider, target_model=route.model,
+        explicit_base_url=route.base_url or None,
+        explicit_api_key=str(cfg.get("api_key") or "").strip() or route.api_key or None,
+    )
+    return _credential_bundle(
+        route.model, runtime.get("provider"), runtime.get("base_url"),
+        runtime.get("api_key") or "no-key-required", runtime.get("api_mode"),
+        _merge_request_overrides(runtime.get("request_overrides"), explicit_request_overrides),
+        command=runtime.get("command"), args=list(runtime.get("args") or []),
+        capabilities=dict(runtime.get("capabilities") or {}), alias_route=True,
+    )
+
+
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Child credential bundle from the ``delegation`` config section. Three branches: ``base_url`` set → direct
     endpoint (``api_key`` None means inherit the parent's key, so providers keyed outside OPENAI_API_KEY work);
@@ -429,8 +463,12 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     None values, child inherits everything. ``request_overrides`` is honored on every branch. Raises ValueError
     with a user-facing message."""
     values = {k: str(cfg.get(k) or "").strip() or None for k in ("model", "provider", "base_url", "api_key")}
-    values["api_mode"] = str(cfg.get("api_mode") or "").strip().lower() or None
     explicit_request_overrides = cfg.get("request_overrides") if isinstance(cfg.get("request_overrides"), dict) else None
+    if values["model"]:
+        alias = _configured_delegation_alias(cfg, values["model"], explicit_request_overrides)
+        if alias is not None:
+            return alias
+    values["api_mode"] = str(cfg.get("api_mode") or "").strip().lower() or None
     is_native_sdk_provider = (values["provider"] or "").strip().lower() in _NATIVE_SDK_PROVIDERS
 
     if values["base_url"] and not is_native_sdk_provider:
@@ -521,6 +559,7 @@ def _resolve_child_runtime(
     override_base_url: Optional[str], override_api_key: Optional[str], override_api_mode: Optional[str],
     override_acp_command: Optional[str], override_acp_args: Optional[list[str]],
     routing_cfg: Optional[dict[str, Any]] = None, override_reasoning_effort: Any = None,
+    override_capabilities: Optional[dict] = None, override_alias_route: bool = False,
 ) -> dict[str, Any]:
     """Child credentials, transport and routing (config override > parent inherit) as ``AIAgent`` kwargs. Rules that
     are easy to break: api_mode is re-derived (not inherited) when the child's provider differs from the parent's
@@ -592,7 +631,8 @@ def _resolve_child_runtime(
     kwargs: dict[str, Any] = {
         "base_url": effective_base_url, "api_key": override_api_key or parent_api_key, "model": effective_model,
         "provider": effective_provider, "requested_provider": effective_requested_provider,
-        "capabilities": _inherit_parent_capabilities(parent_agent, override_provider, override_base_url),
+        "capabilities": (dict(override_capabilities or {}) if override_alias_route else
+                         _inherit_parent_capabilities(parent_agent, override_provider, override_base_url)),
         "api_mode": effective_api_mode, "acp_command": effective_acp_command, "acp_args": effective_acp_args,
         "reasoning_config": child_reasoning,
         # Resolve routing and recovery policy from the same configuration owner. A pinned provider, endpoint, or

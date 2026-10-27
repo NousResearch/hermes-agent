@@ -2884,9 +2884,10 @@ def edit_config():
         managed_error("edit configuration")
         return
     if not supports_file_tooling():
-        print("`hermes config edit` opens the local config file, and this config backend has none. "
-              "Use `hermes config set <key> <value>` instead.", file=sys.stderr)
-        return
+        # Exits 1 (unlike the managed refusal above, which every managed_error caller shares):
+        # a script must not read this refusal as a successful edit.
+        _exit_invalid("`hermes config edit` opens the local config file, and this config backend has none. "
+                      "Use `hermes config set <key> <value>` instead.")
     config_path = get_config_path()
     if not config_path.exists():  # config-reader: ok — file tooling, gated on supports_file_tooling()
         seed_config_file(config_path)

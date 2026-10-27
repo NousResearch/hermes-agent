@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Optional
 from hermes_cli.config import OPTIONAL_ENV_VARS, write_platform_config_field
 from hermes_cli.setup_hidden_env import is_setup_hidden_env as _is_setup_hidden_env
-from hermes_cli.version_info import get_version_info
+from hermes_cli.version_info import hermes_user_agent
 
 # Same logger the code used before extraction (record parity).
 _log = logging.getLogger("hermes_cli.web_server")
@@ -199,6 +199,9 @@ class _WhatsAppOnboardingSession:
     account_name: str | None = None
     account_phone: str | None = None
     error: str | None = None
+    starting_process: bool = False
+    session_reserved: bool = False
+    expiry_timer: threading.Timer | None = None
 
 
 _whatsapp_onboarding_sessions: dict[str, _WhatsAppOnboardingSession] = {}
@@ -225,7 +228,6 @@ def _restart_gateway_after_whatsapp_onboarding(profile: Optional[str] = None) ->
 
 
 _TELEGRAM_ONBOARDING_DEFAULT_URL = "https://setup.hermes-agent.nousresearch.com"
-_TELEGRAM_ONBOARDING_USER_AGENT = f"HermesDashboard/{get_version_info().base_version}"
 
 
 @dataclass
@@ -265,7 +267,7 @@ def _telegram_onboarding_request_sync(
     method: str, path: str, *, body: dict[str, Any] | None = None, bearer_token: str | None = None
 ) -> dict[str, Any]:
     import httpx
-    headers = {"Accept": "application/json", "User-Agent": _TELEGRAM_ONBOARDING_USER_AGENT}
+    headers = {"Accept": "application/json", "User-Agent": hermes_user_agent("HermesDashboard")}
     request_kwargs: dict[str, Any] = {}
     if body is not None:
         headers["Content-Type"] = "application/json"

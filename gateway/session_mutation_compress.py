@@ -86,7 +86,8 @@ async def prepare_compress(authority, live, payload, prepared):
     if compressed is None:
         # Nothing removable (a short session keeps every message): main's read-only
         # "No changes from compression" report, estimated like main's (system prompt + tools).
-        tokens = _request_tokens(resident, messages)
+        row = None if resident is not None else authority.db.get_session(snapshot['target'])  # resident: row unused
+        tokens = _request_tokens(resident, messages, row)
         return {'status': 'noop', 'summary': summarize_manual_compression(
             messages, messages, tokens, tokens, compression_state=compressor)}
     summary = summarize_manual_compression(messages, compressed, estimate_request_tokens_rough(messages),
@@ -114,8 +115,19 @@ async def fire_post_compaction_hook(authority, prepared, result):
         logger.warning('post_compaction hook delivery failed', exc_info=True)
 
 
-def _request_tokens(agent, messages):
-    """Main's /compress request estimate: the agent's system prompt and tool schemas plus the messages."""
+def _request_tokens(agent, messages, row=None):
+    """Main's /compress request estimate: the agent's system prompt and tool schemas plus the messages.
+    No resident agent (a cold session): the prompt and tools[] pin the session row stores, which the
+    next agent restores and sends, so the figure matches what main's resident agent reported."""
     from agent.model_metadata import estimate_request_tokens_rough
-    return estimate_request_tokens_rough(messages, system_prompt=getattr(agent, '_cached_system_prompt', '') or '',
-                                         tools=getattr(agent, 'tools', None) or None)
+    prompt = getattr(agent, '_cached_system_prompt', '') or ''
+    tools = getattr(agent, 'tools', None) or None
+    if agent is None and isinstance(row, dict):
+        prompt = row.get('system_prompt') or ''
+        try:
+            pin = json.loads(row.get('tool_names') or 'null')
+        except (TypeError, ValueError):
+            pin = None  # a pin hash whose row was swept resolves to itself
+        from tools.mcp_tool_agent import pinned_tool_defs
+        tools = pinned_tool_defs(pin) or None
+    return estimate_request_tokens_rough(messages, system_prompt=prompt, tools=tools)

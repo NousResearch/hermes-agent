@@ -1162,15 +1162,18 @@ The recipe below uses the username/password path because it's the quickest to st
 cat >> ~/.hermes/.env <<'EOF'
 HERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin
 HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=choose-a-strong-password
-# Recommended: a stable signing secret so sessions survive restarts.
-HERMES_DASHBOARD_BASIC_AUTH_SECRET=$(openssl rand -base64 32)
 EOF
+# Recommended: a stable signing secret so sessions survive restarts.
+# This runs openssl, so the secret is unique to you.
+echo "HERMES_DASHBOARD_BASIC_AUTH_SECRET=$(openssl rand -base64 32)" >> ~/.hermes/.env
 chmod 600 ~/.hermes/.env
 
 # 2. Run the dashboard bound to a reachable address. The non-loopback bind
 #    engages the auth gate; the username/password provider handles login.
 hermes dashboard --no-open --host 0.0.0.0 --port 9119
 ```
+
+An earlier version of this recipe wrote the secret line inside the quoted heredoc, which stores the text `$(openssl rand -base64 32)` instead of a random value. If `grep BASIC_AUTH_SECRET ~/.hermes/.env` shows that text, replace the line with a freshly generated secret and restart the dashboard.
 
 Prefer no plaintext at rest? Use `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH` with a scrypt hash instead — see [Username/password provider](#usernamepassword-provider-no-oauth-idp) for the full surface.
 

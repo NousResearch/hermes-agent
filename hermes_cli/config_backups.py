@@ -48,7 +48,7 @@ def backup_config(config_path: Path, reason: str, *, keep: int = DEFAULT_KEEP) -
     identical bytes. Never raises: a failed backup must not block the write it precedes.
     """
     try:
-        if not config_path.is_file() or config_path.stat().st_size == 0:
+        if not config_path.is_file() or config_path.stat().st_size == 0:  # config-reader: ok — file tooling (copies the local file)
             return None
         root = backups_dir(config_path)
         root.mkdir(parents=True, exist_ok=True)
@@ -56,12 +56,12 @@ def backup_config(config_path: Path, reason: str, *, keep: int = DEFAULT_KEEP) -
         existing = list_config_backups(config_path, reason)
         # Not filecmp.cmp: its process-wide cache keys on (size, mtime), so an equal-size edit
         # within one mtime tick of an earlier comparison is reported identical and never backed up.
-        if existing and config_path.read_bytes() == existing[0].read_bytes():
+        if existing and config_path.read_bytes() == existing[0].read_bytes():  # config-reader: ok — file tooling (copies the local file)
             return None
         dest = root / f"{config_path.name}.{reason}.{time.strftime('%Y%m%d-%H%M%S')}"
         if dest.is_symlink() or dest.exists():  # never write through a planted link
             return None
-        shutil.copy2(config_path, dest)
+        shutil.copy2(config_path, dest)  # config-reader: ok — file tooling (copies the local file)
         for stale in [dest, *existing][keep:]:
             stale.unlink(missing_ok=True)
         return dest

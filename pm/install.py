@@ -69,7 +69,7 @@ def _store() -> Store:
 
 
 def _heal_exec_bit(binary: Path) -> bool:
-    """agent-browser entries staged before stage() set the exec bit sit at 0644 and fail every
+    """Store entries staged from archives that drop the exec bit sit at 0644 and fail every
     launch with PermissionError. Modes are not part of the pinned digest, so restore it in place;
     an entry we cannot chmod (sealed store) is treated as not installed."""
     if os.name == "nt" or os.access(binary, os.X_OK):
@@ -322,10 +322,24 @@ def _restore_previous_entry(store: Store, entry, previous) -> None:
 @contextmanager
 def _publish_entry(package, store, staged, entry, previous_entry, target):
     """Keep rollback live through the caller's native facts commit, if any."""
+    kept_live = False
     if entry.exists() or entry.is_symlink():
-        retry_held(lambda: entry.rename(previous_entry))
+        try:
+            retry_held(lambda: entry.rename(previous_entry))
+        except OSError as rename_error:
+            try:
+                matches_staged = (not package.verify(entry, target)
+                                  and tree_digest(entry) == tree_digest(staged))
+            except OSError:
+                raise rename_error
+            if not matches_staged:
+                raise
+            LOG.warning("%s entry is in use but already matches the staged bytes; keeping it live",
+                        package.name)
+            kept_live = True
     try:
-        store.publish(staged, entry.name)
+        if not kept_live:
+            store.publish(staged, entry.name)
         reason = package.verify(entry, target)
         if reason:
             raise InstallError(package.name, f"published entry failed verification: {reason}")
@@ -361,6 +375,33 @@ def _entry_current(package, lockfile, facts, store, entry, previous, version, pi
     except OSError:
         recorded = None
     return recorded == pin and not package.verify(entry, target)
+
+
+def _refresh_recorded_env(package, facts, store, entry, previous, target) -> None:
+    """An entry's env is derived from the package code, not its bytes: when the code changes it (a
+    variable renamed or retired), re-record it so stores installed earlier match what admission
+    compares against. The recorded digest still vouches for the bytes, so nothing is re-fetched."""
+    env = package.env(entry, target)
+    if facts.env_for(package.name, store.root) != env:
+        facts.record(package.name, previous["version"], previous["entry"], env, store.root,
+                     target=previous.get("target"), artifacts=previous.get("artifacts"),
+                     digest=previous.get("digest"))
+
+
+def _refresh_found_env(package, location, target, operation) -> None:
+    """:func:`_refresh_recorded_env` for an entry ``ensure`` found installed: `hermes update` skips
+    installed defaults, so no install would re-record it. Only the writable store is re-recorded, under
+    its install lock (a sealed store's facts ship with the artifact)."""
+    facts, store = location
+    entry = store.entry(facts.get(package.name)["entry"])
+    if (facts.env_for(package.name, store.root) == package.env(entry, target)
+            or store.root != Store(paths.writable_store_root()).root):
+        return
+    with nullcontext() if operation is not None else store.install_lock():
+        facts.reload()
+        previous = facts.get(package.name)
+        if previous and previous.get("entry") == entry.name:
+            _refresh_recorded_env(package, facts, store, entry, previous, target)
 
 
 def _copy_verified_source(package, lockfile, copy_from, staged, version, target) -> None:
@@ -429,6 +470,8 @@ def _install(
         _reclaim_set_aside(store)
         if (_entry_current(package, lockfile, facts, store, entry, previous, version, pin, target)
                 and not _fresh_copy):
+            if facts is not None:
+                _refresh_recorded_env(package, facts, store, entry, previous, target)
             _remove_downloads(store, artifacts)
             return entry
         if not artifacts:
@@ -557,9 +600,11 @@ def ensure(
                     json.dumps(_identity(lockfile, package.name, target), sort_keys=True))
         if identity in checked:
             continue
-        if _installed_location(package, lockfile, target, verify=explicit and verify) is None:
+        location = _installed_location(package, lockfile, target, verify=explicit and verify)
+        if location is None:
             missing.append(package)
         else:
+            _refresh_found_env(package, location, target, _operation)
             checked.add(identity)
     if missing and not explicit and not lazy_installs_allowed():
         raise _refuse_lazy(name, ", ".join(p.name for p in missing))

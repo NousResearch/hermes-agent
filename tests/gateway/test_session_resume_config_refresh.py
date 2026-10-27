@@ -510,6 +510,10 @@ class _Backend:
         pass
 
 
+def _raise(*_):
+    raise RuntimeError('teardown failed')
+
+
 def _terminal(authority, sid, command):
     """One terminal call as the session's turn makes it: its route's session context, its policy's scope."""
     from gateway.session_context import clear_session_vars, set_session_vars
@@ -556,6 +560,53 @@ async def test_the_next_command_after_a_terminal_refresh_runs_on_the_new_backend
     finally:
         for connection in (owner, later, last):
             await connection.close()
+        store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_the_next_command_after_a_workspace_move_runs_in_the_new_folder(tmp_path, monkeypatch):
+    """Move to project and the CLI's /worktree new (CLI-15): once the session's terminal has run, its cached
+    environment and the directory its commands recorded would win over the moved binding, so the move drops
+    both and the next command runs in the new folder. The teardown (seconds on a remote backend) runs off the
+    owner's loop, so other clients never stall behind it."""
+    import threading
+    from tools import terminal_tool
+
+    class _Torn(_Backend):
+        def cleanup(self):
+            torn_on.append(threading.get_ident())
+    built, torn_on = [], []
+    monkeypatch.setattr(terminal_tool, '_active_environments', {})
+    monkeypatch.setattr(terminal_tool, '_session_cwd', {})
+    monkeypatch.setattr(terminal_tool, '_pre_exec_block', lambda *a, **k: None)
+    monkeypatch.setattr(terminal_tool, '_create_configured_env',
+                        lambda config, env_type, **k: built.append(_Torn(env_type, k['cwd'])) or built[-1])
+
+    home = _home(monkeypatch)
+    moved = tmp_path / 'tree'
+    moved.mkdir()
+    store, authority = await _owner_authority(home)
+    owner = _connect(authority)
+    try:
+        sid = (await _call(owner, 'session.create', request_id='t', source='cli', cwd=str(tmp_path)))['session_id']
+        _terminal(authority, sid, 'pwd')
+        await _mutate(owner, store, sid, 'move', 'workspace', {'cwd': str(moved)})
+        assert torn_on and threading.get_ident() not in torn_on, 'the teardown ran on the owner loop'
+        _terminal(authority, sid, 'pwd')
+        assert built[-1].ran[-1] == str(moved), [(backend.cwd, backend.ran) for backend in built]
+
+        # A teardown that fails must not leave the committed move unpublished (the queue would stall).
+        from gateway import session_policy_refresh
+        from gateway.session_policy import restore_policy
+        from hermes_state_local import local_receipt
+        monkeypatch.setattr(session_policy_refresh, 'drop_session_terminal', _raise)
+        again = tmp_path / 'again'
+        again.mkdir()
+        await _mutate(owner, store, sid, 'again', 'workspace', {'cwd': str(again)})
+        stored = restore_policy(local_receipt(authority.db, sid)['policy']).cwd
+        assert (stored, _policy(authority, sid).cwd) == (str(again), str(again))
+    finally:
+        await owner.close()
         store.close_all_db_handles()
 
 

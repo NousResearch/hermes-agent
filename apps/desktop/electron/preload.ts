@@ -353,6 +353,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   readPluginSource: (filePath: string) => ipcRenderer.invoke('hermes:readPluginSource', filePath),
   selectPaths: options => ipcRenderer.invoke('hermes:selectPaths', options),
   selectSavePath: options => ipcRenderer.invoke('hermes:selectSavePath', options),
+  saveTextFileAs: request => ipcRenderer.invoke('hermes:saveTextFileAs', request),
   writeClipboard: text => ipcRenderer.invoke('hermes:writeClipboard', text),
   readClipboard: () => ipcRenderer.invoke('hermes:readClipboard'),
   saveGatewayFile: payload => ipcRenderer.invoke('hermes:saveGatewayFile', payload),
@@ -361,6 +362,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   contextMenuCopyImage: () => ipcRenderer.invoke('hermes:context-menu:copy-image'),
   contextMenuSpellcheck: action => ipcRenderer.invoke('hermes:context-menu:spellcheck', action),
   contextMenuGuestAddWord: payload => ipcRenderer.invoke('hermes:context-menu:guest-add-word', payload),
+  spellcheckDictionary: (op, word) => ipcRenderer.invoke('hermes:spellcheck:dictionary', { op, word }),
   onContextMenuSpellcheck: callback => {
     const listener = (_event, payload) => callback(payload)
     ipcRenderer.on('hermes:context-menu-spellcheck', listener)
@@ -478,6 +480,18 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   renamePath: (targetPath, newName) => ipcRenderer.invoke('hermes:fs:rename', targetPath, newName),
   writeTextFile: (filePath, content) => ipcRenderer.invoke('hermes:fs:writeText', filePath, content),
   trashPath: targetPath => ipcRenderer.invoke('hermes:fs:trash', targetPath),
+  pluginFiles: {
+    request: (pluginId, labels) => ipcRenderer.invoke('hermes:pluginFiles:request', pluginId, labels),
+    grants: pluginId => ipcRenderer.invoke('hermes:pluginFiles:grants', pluginId),
+    revoke: (pluginId, folderId) => ipcRenderer.invoke('hermes:pluginFiles:revoke', pluginId, folderId),
+    op: (pluginId, request) => ipcRenderer.invoke('hermes:pluginFiles:op', pluginId, request),
+    onChanged: callback => {
+      const listener = (_event, change) => callback(change)
+      ipcRenderer.on('hermes:pluginFiles:changed', listener)
+
+      return () => ipcRenderer.removeListener('hermes:pluginFiles:changed', listener)
+    }
+  },
   git: {
     worktreeList: repoPath => ipcRenderer.invoke('hermes:git:worktreeList', repoPath),
     worktreeAdd: (repoPath, options) => ipcRenderer.invoke('hermes:git:worktreeAdd', repoPath, options),
@@ -656,7 +670,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
 
     return () => ipcRenderer.removeListener('hermes:bootstrap:event', listener)
   },
-  getVersion: () => ipcRenderer.invoke('hermes:version'),
+  getVersion: (scope?: { connectionId?: string; profile?: string }) => ipcRenderer.invoke('hermes:version', scope),
   relaunchApp: () => ipcRenderer.invoke('hermes:app:relaunch'),
   getMachineProfile: () => ipcRenderer.invoke('hermes:machine:profile'),
   getRemoteDisplayReason: () => ipcRenderer.invoke('hermes:get-remote-display-reason'),

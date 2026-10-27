@@ -4,16 +4,18 @@
 // result (`prompt.receipt include_result`) and the frozen launch policy (`session.info`).
 
 import type { SessionStats } from '@hermes/shared/gateway-events'
+import { JsonRpcGatewayError } from '@hermes/shared/json-rpc-channel'
 
 import { CANONICAL_REASONING_EFFORTS } from '../../domain/slash.js'
 import { usageFromTick } from '../../domain/usage.js'
+import type { BillingStateResponse } from '../../gatewayTypes.js'
 import { t } from '../../i18n/runtime.js'
 import { asRpcResult } from '../../lib/rpc.js'
 import { patchUiState } from '../uiStore.js'
 
 import { mutateCanonical, type MutationSnapshot } from './canonicalSessionControls.js'
 import type { SlashRunCtx } from './types.js'
-import { usageTotalsSections } from './usagePanel.js'
+import { planUsageLines, usageTotalsSections } from './usagePanel.js'
 
 const COMPACTION_MARKERS = ['[CONTEXT COMPACTION', '[CONTEXT SUMMARY]:', '[END OF PRIOR CONTEXT']
 
@@ -174,7 +176,32 @@ export function canonicalRewind(intent: 'retry' | 'undo', ctx: SlashRunCtx) {
 
       return text ? ctx.transcript.send(text) : ctx.transcript.sys(t('slashCmd.core.retry.nothing'))
     })
-    .catch(ctx.guardedErr)
+    .catch(error => {
+      const busy = rewindBusyText(error, intent)
+
+      if (!busy) {
+        return ctx.guardedErr(error)
+      }
+
+      if (!ctx.stale()) {
+        ctx.transcript.sys(busy)
+      }
+    })
+}
+
+/** Main's busy text for a refused rewind: wait for a running /compress, else stop the reply; null otherwise. */
+function rewindBusyText(error: unknown, intent: 'retry' | 'undo'): null | string {
+  if (!(error instanceof JsonRpcGatewayError)) {
+    return null
+  }
+
+  const data = asRpcResult(error.data)
+
+  if (data?.reason !== 'session_busy') {
+    return null
+  }
+
+  return t(data.field === 'compression' ? 'slashCmd.core.busy.compressing' : 'slashCmd.core.busy.replying', intent)
 }
 
 interface CommittedResult {
@@ -205,13 +232,21 @@ export function canonicalUsage(ctx: SlashRunCtx) {
       if (!usage?.calls) {
         ctx.transcript.sys(t('slashCmd.session.usage.noCalls'))
         ctx.transcript.sys(t('slashCmd.session.usage.cta'))
-
-        return
+      } else {
+        patchUiState(state => ({ ...state, usage: { ...state.usage, ...usage } }))
+        ctx.transcript.panel(t('slashCmd.session.usage.usageTitle'), usageTotalsSections(usage))
+        ctx.transcript.sys(t('slashCmd.session.usage.cta'))
       }
 
-      patchUiState(state => ({ ...state, usage: { ...state.usage, ...usage } }))
-      ctx.transcript.panel(t('slashCmd.session.usage.usageTitle'), usageTotalsSections(usage))
-      ctx.transcript.sys(t('slashCmd.session.usage.cta'))
+      // Usage-window plans: the allowance bars, after the lines above (every other account: nothing).
+      void ctx.gateway
+        .rpc<BillingStateResponse>('billing.state', {})
+        .then(r => {
+          if (!ctx.stale()) {
+            planUsageLines(r?.plan_usage).forEach(line => ctx.transcript.sys(line))
+          }
+        })
+        .catch(() => undefined)
     })
     .catch(ctx.guardedErr)
 }

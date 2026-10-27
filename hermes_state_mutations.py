@@ -31,6 +31,10 @@ def validate_action(operation, payload):
     # hands the store only its fingerprint, so no transport credential reaches a receipt.
     if operation == 'editor_mcp' and set(payload) == {'mcp_servers'} and _valid_editor_fingerprint(payload):
         return
+    # An ACP session's edit approval policy (gateway/session_mutation_policy.py prepare_edit_policy).
+    if (operation == 'edit_policy' and set(payload) == {'policy'} and isinstance(payload['policy'], str)
+            and payload['policy'] in {'ask', 'workspace_session', 'session'}):
+        return
     if operation == 'compress' and _valid_compress_payload(payload):
         return
     if operation in {'delete', 'reset'} and not payload:
@@ -86,7 +90,7 @@ def apply_action(db, conn, session_id, operation, payload, *, prepared=None):
     if operation == 'compress':
         from hermes_state_mutation_compress import compress_in_transaction
         return compress_in_transaction(db, conn, session_id, payload, prepared)
-    if operation in {'model', 'reasoning', 'workspace', 'editor_mcp'}:
+    if operation in {'model', 'reasoning', 'workspace', 'editor_mcp', 'edit_policy'}:
         from hermes_state_mutation_prepared import POLICY_HANDLERS
         return POLICY_HANDLERS[operation](db, conn, session_id, payload, prepared)
     if operation == 'branch':

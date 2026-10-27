@@ -35,6 +35,33 @@ _BLOCKING_CONTROL_EVENTS = frozenset({
 })
 
 
+def pending_lines(pending):
+    """The owner's pending admissions as shown on attach (the classic CLI shows them before a turn)."""
+    unknown = any(row["status"] == "unknown" for row in pending)
+    lines = ["Execution outcome unknown after restart. Discard acknowledges the lost turn "
+             "without replaying it; queued work may then continue."] if unknown else []
+    for row in pending:
+        admission = row["admission_id"]
+        # A queued prompt is not in the transcript yet: show what is about to run (or was lost).
+        preview = _pending_preview(row.get("text"))
+        if row["status"] == "unknown":
+            lines.append(f"Unknown admission: {admission}{preview}\n/discard {admission}")
+        elif row["status"] == "queued":
+            context = "waiting behind unknown work" if unknown else "waiting to run"
+            lines.append(f"Queued admission: {admission} ({context}){preview}")
+    return lines
+
+
+def lost_admission(snapshot, admission_id):
+    """``/discard``'s row: the resume snapshot is the only source of the generation the authority
+    stamped on a turn lost across an owner restart."""
+    lost = next((row for row in snapshot.get("pending", [])
+                 if row["admission_id"] == admission_id and row["status"] == "unknown"), None)
+    if lost is None:
+        raise GatewayClientError("No unknown (lost) admission with that id; resume to refresh")
+    return lost
+
+
 class GatewayChatView:
     def __init__(self, client, snapshot, *, quiet=False, emitter=None, usage_file=None):
         self.usage_file = usage_file
@@ -75,19 +102,8 @@ class GatewayChatView:
         return [row["admission_id"] for row in self.pending if row["status"] == "unknown"]
 
     def show_pending(self):
-        unknown = bool(self.unknown_admissions())
-        if unknown:
-            print("Execution outcome unknown after restart. Discard acknowledges the lost turn "
-                  "without replaying it; queued work may then continue.", file=sys.stderr)
-        for row in self.pending:
-            admission = row["admission_id"]
-            # A queued prompt is not in the transcript yet: show what is about to run (or was lost).
-            preview = _pending_preview(row.get("text"))
-            if row["status"] == "unknown":
-                print(f"Unknown admission: {admission}{preview}\n/discard {admission}", file=sys.stderr)
-            elif row["status"] == "queued":
-                context = "waiting behind unknown work" if unknown else "waiting to run"
-                print(f"Queued admission: {admission} ({context}){preview}", file=sys.stderr)
+        for line in pending_lines(self.pending):
+            print(line, file=sys.stderr)
 
     def show_prompt(self, prompt):
         print(f"\n{prompt.get('description') or prompt.get('question') or 'Approval required'}", file=sys.stderr)
@@ -281,6 +297,11 @@ class GatewayChatView:
                 print(flush=True)
             else:
                 print("\n" + text, flush=True)
+        # A turn the owner's restart/stop interrupted names that cause (#134889 F1); other
+        # message.complete warnings stay Ink/Desktop-only as before.
+        warning = payload.get("warning")
+        if payload.get("status") == "interrupted" and isinstance(warning, str) and warning.strip():
+            print(warning.strip(), file=sys.stderr, flush=True)
         self.completions[admission] = payload
 
     def _request(self, admission, payload):
@@ -300,6 +321,13 @@ class GatewayChatView:
                                         input_id=uuid.uuid4().hex, text=text,
                                         **({"finite": True} if self.finite else {}),
                                         **({"unattended": True} if self.finite and self.unattended else {}))
+        if (receipt or {}).get("voice_stopped") is True:
+            # TUI-26: a bare stop phrase typed into this LOCAL session's voice chat (another viewer
+            # turned it on) ended the chat on the owner; nothing was admitted and no turn follows.
+            if not self.quiet:
+                from agent.i18n import t
+                print(t("cli.voice.stop_phrase_typed"), flush=True)
+            return receipt
         admission = (receipt or {}).get("admission_id")
         if admission and admission not in self.completions and self.session_id == sid:
             self.mine[admission] = None
@@ -328,13 +356,8 @@ class GatewayChatView:
                 **({"choice": answer} if expected == "approval" else {"answer": answer}))
             return True
         if command == "/discard":
-            # Acknowledge a turn lost across an owner restart; the resume snapshot
-            # is the only source of the generation the authority stamped on it.
             snapshot = await self.client.rpc("session.resume", session_id=self.session_id)
-            lost = next((row for row in snapshot.get("pending", [])
-                         if row["admission_id"] == rest.strip() and row["status"] == "unknown"), None)
-            if lost is None:
-                raise GatewayClientError("No unknown (lost) admission with that id; resume to refresh")
+            lost = lost_admission(snapshot, rest.strip())
             await self.client.rpc("prompt.resolve_unknown", session_id=self.session_id,
                                   admission_id=lost["admission_id"], execution_generation=lost["execution_generation"])
             return True
@@ -498,9 +521,9 @@ class GatewayChatView:
         try:
             receipt = await self.submit(query) if query else None
             if oneshot:
-                if receipt is None:
-                    raise GatewayClientError("One-shot requires a query")
-                admission = receipt["admission_id"]
+                admission = _oneshot_admission(receipt)
+                if admission is None:
+                    return 0  # the voice chat ended; no turn was admitted, so none is awaited
                 self.finite_admission = admission
                 for kind, event_admission, payload in self._finite_events:
                     if event_admission == admission and admission not in self.completions:
@@ -580,6 +603,14 @@ class GatewayChatView:
             renderer.cancel()
             with suppress(asyncio.CancelledError):
                 await renderer
+
+
+def _oneshot_admission(receipt):
+    """The one-shot query's admission id; None when the owner admitted nothing because the query was a
+    bare stop phrase that ended the session's LOCAL voice chat (TUI-26 ``{voice_stopped: true}``)."""
+    if receipt is None:
+        raise GatewayClientError("One-shot requires a query")
+    return None if receipt.get("voice_stopped") is True else receipt["admission_id"]
 
 
 def resume_footer(session_id):

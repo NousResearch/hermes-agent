@@ -1,21 +1,21 @@
 name: deepseek-search-fetch
 repo: https://github.com/JasonSwindle/hermes-deepseek-search-fetch
-sha: c01f1702ced3ac59e2038fabd254d725553d27c4
+sha: b17ae50d243beacfd6ee9171e42f2af29b3c6d65
 description: "DeepSeek Search & Fetch as a backend for the built-in web_search and web_extract. Disclosure — sends web_search queries and web_extract URLs to api.deepseek.com with your DEEPSEEK_API_KEY and DeepSeek fetches the pages server-side; billed to your DeepSeek balance per successful request; no other endpoint, no telemetry, no file or shell access."
 maintainer: JasonSwindle
 tier: community
 category: web
 docs_url: https://github.com/JasonSwindle/hermes-deepseek-search-fetch#readme
-version: "1.0.6"
+version: "1.0.8"
 title: "DeepSeek Search & Fetch"
-image: https://raw.githubusercontent.com/JasonSwindle/hermes-deepseek-search-fetch/c01f1702ced3ac59e2038fabd254d725553d27c4/docs/banner.png
+image: https://raw.githubusercontent.com/JasonSwindle/hermes-deepseek-search-fetch/b17ae50d243beacfd6ee9171e42f2af29b3c6d65/docs/banner.png
 platforms: []
 known_issues:
-  - "Billed by DeepSeek per successful request (list price $0.75 per 1,000; failed calls are free); web_extract calls Fetch one URL at a time, so multi-URL extracts run sequentially; and the documented Search API fields ori_question and localization are not forwarded, because Hermes hands the provider only the query and a result limit."
+  - "Billed by DeepSeek per successful request (list price $0.75 per 1,000; failed calls are free); web_extract calls Fetch one URL at a time, so multi-URL extracts run sequentially to the effective deadline (min(extract_deadline, web.extract_timeout - 1.5s), with bodies aborted at that deadline) and return the pages already fetched; and ori_question is not forwarded, because Hermes hands the provider only the query and a result limit."
 capabilities:
   provides_tools: []
   provides_hooks: []
   provides_middleware: []
   requires_env:
     - DEEPSEEK_API_KEY
-requires_hermes: ">=0.18.1"
+requires_hermes: ">=0.22.0"

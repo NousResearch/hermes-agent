@@ -87,6 +87,8 @@ export type GatewayEventPayload = {
   name?: string
   tool_id?: string
   tool_call_id?: string
+  /** tool.progress: 0-100 when the MCP server sent a total. */
+  percent?: number | null
   args?: unknown
   arguments?: unknown
   context?: string
@@ -118,6 +120,10 @@ export type GatewayEventPayload = {
   yolo?: boolean
   running?: boolean
   turn_started_at?: number | null
+  /** message.start / delta / interim: the prompt turn's wire identity (segment-identity.ts). */
+  turn_id?: string
+  segment?: number
+  offset?: number
   cwd?: string
   branch?: string
   terminal_backend?: string

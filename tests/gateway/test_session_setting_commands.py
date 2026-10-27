@@ -141,7 +141,8 @@ def test_local_session_settings_run_the_messaging_handlers_and_read_back_through
     assert 'OFF' in out['yolo off'] and out['get yolo off']['value'] == '0', out
     # /footer: `status` reports without toggling (the handler parsed its argument from a missing field).
     assert 'OFF' in out['footer status'] and 'ON' in out['footer on'] and 'ON' in out['footer status 2'], out
-    assert saved['display']['runtime_footer']['enabled'] is True
+    # The per-platform key (T7): every local surface reads display.platforms.cli.
+    assert saved['display']['platforms']['cli']['runtime_footer']['enabled'] is True
     # /voice: the LOCAL chat's voice state (playback stays in the client).
     assert 'On' in out['voice status'] and out['voice off'], out
     # /approvals and /personality: profile settings, saved to config.yaml as on every surface.

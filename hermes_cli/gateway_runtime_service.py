@@ -42,9 +42,9 @@ def service_suffix(home: Path) -> str:
     profile name; any other root (Docker, a temp harness) yields a path hash so a
     custom root can never resolve to the production ``hermes-gateway`` unit.
     """
-    from hermes_constants import _get_platform_default_hermes_home
+    from hermes_constants import account_default_hermes_home
     from hermes_cli.gateway import _profile_name_from_home
-    default = _get_platform_default_hermes_home().resolve()
+    default = account_default_hermes_home().resolve()
     home = home.resolve()
     if home == default:
         return ""
@@ -231,10 +231,10 @@ def _windows(home: Path, deadline: float) -> ExistingService | None:
             raise RuntimeStartError(refusal)
         return _decode_schtasks_output(result.stdout or b"")
 
-    rows = list(csv.reader(io.StringIO(query("service_manager_unavailable", "schtasks.exe", "/Query", "/FO", "CSV", "/NH"))))
-    if any(len(row) != 3 for row in rows if row):
-        raise RuntimeStartError("service_state_unknown")
-    if any(row and row[0].lstrip("\\") == name for row in rows):
+    rows = csv.reader(io.StringIO(query("service_manager_unavailable", "schtasks.exe", "/Query", "/FO", "CSV", "/NH")))
+    # Orphaned TaskCache entries print localized one-field diagnostics among the rows (#142140). Only a
+    # well-formed row can name our task, so skipping the rest can only fall through to the unmanaged path.
+    if any(len(row) == 3 and row[0].lstrip("\\") == name for row in rows):
         from hermes_cli.gateway_runtime_service_identity import verify_windows_task
         unverified = "service_identity_unverified"
         definition = query(unverified, "schtasks.exe", "/Query", "/TN", name, "/XML")

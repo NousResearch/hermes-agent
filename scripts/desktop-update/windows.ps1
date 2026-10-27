@@ -216,6 +216,13 @@ $script:UiState = [hashtable]::Synchronized(@{
     acknowledged_receipt = $null
 })
 $script:UiServer = $null     # @{ Listener; Runspace; PowerShell; Port; BrowserProc; Profile }
+# `hermes update` publishes its own stages (hermes_cli/update_stage.py: downloading, dependencies,
+# each app build, packaging) into this file, as it does under posix.sh. The step loop relays them
+# to the window, which otherwise read "Updating code and dependencies" for a whole 20-60 minute
+# run (#139952, #135363), and to the hand-off log, whose timestamps then name the slow stage.
+$script:ChildStageFile = Join-Path ([IO.Path]::GetTempPath()) ("hermes-update-status.{0}" -f $PID)
+$env:HERMES_UPDATE_STATUS_FILE = $script:ChildStageFile
+$script:ChildStageSeen = $null
 
 function Get-UiHtmlPath {
     # Lives next to this script in the checkout. Missing file = fall back to
@@ -699,8 +706,9 @@ function Write-Result([bool]$Ok, [int]$Code, [string]$Message, [bool]$ManualActi
             run_id     = $script:ResultRunId
             started_at = $script:StartedAt
             warnings   = @($script:Warnings)
+            release_holders = @($script:ReleaseHolders)
             finished_at = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-        } | ConvertTo-Json -Compress
+        } | ConvertTo-Json -Compress -Depth 4
         [System.IO.File]::WriteAllText($tmp, $obj, (New-Object System.Text.UTF8Encoding $false))
         if ([System.IO.File]::Exists($ResultPath)) {
             [System.IO.File]::Replace($tmp, $ResultPath, [NullString]::Value)
@@ -717,6 +725,9 @@ function Write-Result([bool]$Ok, [int]$Code, [string]$Message, [bool]$ManualActi
 # Post-commit follow-ups (contract C3): each failed step after `hermes update`
 # exited 0 becomes a warning, never a failed update.
 $script:Warnings = New-Object System.Collections.Generic.List[string]
+# A plain array: Windows PowerShell 5.1's @() over a non-empty List[object] throws
+# "Argument types do not match".
+$script:ReleaseHolders = @()
 $script:FollowupText = New-Object System.Collections.Generic.List[string]
 $script:ManualFollowup = $false
 $script:Committed = $false
@@ -740,6 +751,30 @@ function Wait-DesktopExit([int]$Seconds) {
         if ($script:Ui) { [System.Windows.Forms.Application]::DoEvents() }
     }
     return -not (Test-DesktopAlive)
+}
+
+function Get-DesktopWorkingDirectory {
+    # The relaunched Desktop and everything it spawns (WSL/ssh helpers, IME
+    # cloud helpers that outlive it) inherit this directory. Never the exe's
+    # folder: Windows refuses to rename a directory that is a live process's
+    # cwd, so one such helper blocks every later swap of release\win-unpacked (#101789).
+    if ($env:USERPROFILE) { return $env:USERPROFILE }
+    return [Environment]::GetFolderPath('UserProfile')
+}
+
+function Restore-UserProxyEnv {
+    # Port of restoreUserProxyEnv (electron/updater/system-proxy-env.ts): the Desktop handed its
+    # system proxy to the update only. HERMES_UPDATE_SYSTEM_PROXY names the variables it added and
+    # HERMES_UPDATE_USER_NO_PROXY holds the user's own NO_PROXY it extended.
+    foreach ($key in ("$env:HERMES_UPDATE_SYSTEM_PROXY" -split ',')) {
+        if (@('HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY') -contains $key) { Remove-Item "Env:$key" -ErrorAction SilentlyContinue }
+    }
+    $saved = [Environment]::GetEnvironmentVariable('HERMES_UPDATE_USER_NO_PROXY', 'Process')
+    if ($null -ne $saved) {
+        [Environment]::SetEnvironmentVariable('NO_PROXY', $saved, 'Process')
+        Remove-Item Env:HERMES_UPDATE_USER_NO_PROXY -ErrorAction SilentlyContinue
+    }
+    Remove-Item Env:HERMES_UPDATE_SYSTEM_PROXY -ErrorAction SilentlyContinue
 }
 
 function Start-DesktopRelaunch {
@@ -771,7 +806,7 @@ function Start-DesktopRelaunch {
     # attach -- same detachment explorer.exe gives a normal launch.
     $spawned = $false
     try {
-        $workDir = Split-Path -Parent $RelaunchExe
+        $workDir = Get-DesktopWorkingDirectory
         $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
             CommandLine      = ('"{0}"' -f $RelaunchExe)
             CurrentDirectory = $workDir
@@ -872,11 +907,15 @@ function Start-DesktopRelaunch {
             Write-HandoffLog "WARNING: explorer relaunch failed: $($_.Exception.Message); falling back"
         }
     }
+    # Only the tethered rung below inherits this script's env; the relaunched app gets the user's own.
+    Restore-UserProxyEnv
     if (-not $spawned) {
         try {
             # Fallback keeps the old behavior (console tie-in and all) --
-            # a tethered Desktop beats no Desktop.
-            $p = Start-Process -FilePath $RelaunchExe -WorkingDirectory (Split-Path -Parent $RelaunchExe) -PassThru
+            # a tethered Desktop beats no Desktop. Unlike the WMI and explorer rungs it inherits
+            # this script's environment: the stage relay is the update's, never the app's.
+            Remove-Item Env:HERMES_UPDATE_STATUS_FILE -ErrorAction SilentlyContinue
+            $p = Start-Process -FilePath $RelaunchExe -WorkingDirectory (Get-DesktopWorkingDirectory) -PassThru
             Start-Sleep -Milliseconds 1500
             if ($p -and -not $p.HasExited) { $spawned = $true }
             elseif ($p) { Write-HandoffLog "WARNING: fallback relaunch exited immediately" }
@@ -995,7 +1034,23 @@ function Step-PipeDrain($Reader, [ref]$Task, $Buffer, $Sink, [ref]$Moved) {
     return $false
 }
 
+function Sync-ChildStage {
+    # Best-effort: an unreadable or half-replaced file leaves the current stage on screen.
+    try {
+        $stream = [IO.File]::Open($script:ChildStageFile, 'Open', 'Read', 'ReadWrite, Delete')
+        try { $text = (New-Object IO.StreamReader($stream)).ReadToEnd() } finally { $stream.Dispose() }
+        $message = [string](ConvertFrom-Json $text).message
+    } catch { return }
+    if (-not $message -or $message -ceq $script:ChildStageSeen) { return }
+    $script:ChildStageSeen = $message
+    Write-HandoffLog ("stage: {0}" -f $message)
+    Publish-UiProgress $message
+}
+
 function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
+    # A stage left by the previous step must not replace the one the orchestrator just published.
+    Remove-Item -LiteralPath $script:ChildStageFile -Force -ErrorAction SilentlyContinue
+    $script:ChildStageSeen = $null
     # The window does not stream child output, so no line-pump: both pipes
     # drain asynchronously (no deadlock however chatty the child) while a small
     # DoEvents loop keeps the marquee animating through long silent
@@ -1075,6 +1130,7 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     $progressLogStamp = Get-StepProgressLogStamp
     $jobActivity = [HermesUpdateJob]::Activity($job)
     $stalled = $false
+    $nextStageCheck = Get-Date
     while ($true) {
         $moved = $false
         $outDone = Step-PipeDrain $stdoutReader ([ref]$outTask) $outBuffer $outSink ([ref]$moved)
@@ -1156,6 +1212,10 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
         }
         if ($script:Ui) { [System.Windows.Forms.Application]::DoEvents() }
         Update-MarkerHeartbeat
+        if ((Get-Date) -ge $nextStageCheck) {
+            Sync-ChildStage
+            $nextStageCheck = (Get-Date).AddSeconds(1)
+        }
     }
     # Bounded overload deliberately: the argument-less overload also waits on
     # redirected streams, which is the very wait we just bounded. HasExited is
@@ -1599,8 +1659,11 @@ try {
         Write-HandoffLog "could not probe update --help; running without --keep-stash"
     }
     # The update's receipt carries this id (update_receipt._launcher_correlation_id):
-    # Get-CommittedReceiptOutcome finds THIS run's receipt by it.
-    $script:UpdateCorrelation = if ($env:HERMES_UPDATE_CORRELATION_ID) { $env:HERMES_UPDATE_CORRELATION_ID } else { $script:ResultRunId }
+    # Get-CommittedReceiptOutcome finds THIS run's receipt by it, and the Desktop's
+    # close-holder consent is bound to -HandoffRun. That run id beats an inherited
+    # one: a Desktop the Start-Process rung relaunched carried the previous run's
+    # id, under which its next retry's consent could never match (#101789).
+    $script:UpdateCorrelation = if ($HandoffRun) { $HandoffRun } elseif ($env:HERMES_UPDATE_CORRELATION_ID) { $env:HERMES_UPDATE_CORRELATION_ID } else { $script:ResultRunId }
     $env:HERMES_UPDATE_CORRELATION_ID = $script:UpdateCorrelation
     Write-HandoffLog ("running: python " + ($updateArgs -join " "))
     Publish-UiProgress "Updating code and dependencies"
@@ -1676,7 +1739,25 @@ try {
     # (exit 0); the CLI prints one whole "Desktop app build owed:" line for it. The user is on
     # the new Hermes but this app was not rebuilt: a manual outcome, never plain success.
     if (-not $desktopBuildFailed -and $res.Output -match '(?m)^\s*Desktop app build owed: ') {
-        Add-Followup "build: the Desktop app build is owed by the committed update" "the Desktop app could not be rebuilt, so it still runs its old build. Run 'hermes desktop --force-build' in a terminal to rebuild it; the update log has the build error." -Manual
+        # #101789: a program that is not part of Hermes (an IME cloud helper, an AV
+        # component) has its working folder inside release\ and Windows refuses the swap.
+        # hermes_cli/desktop_release_holders.py names each one on its own line; the
+        # relaunched Desktop offers to close exactly those and retry, never silently.
+        # pid + start time identify the exact process the user is asked about; the start time
+        # stays the CLI's invariant text (no locale-dependent number parsing here). An exe of
+        # 'path unreadable' (a protected process) becomes empty: the Desktop offers no Close for it.
+        foreach ($m in [regex]::Matches(($res.Output -join "`n"), '(?m)^\s*Desktop app folder held by: (.+?) \(pid (\d+), started ([0-9.]+), (.+)\)\s*$')) {
+            $holderExe = if ($m.Groups[4].Value -eq 'path unreadable') { '' } else { $m.Groups[4].Value }
+            $script:ReleaseHolders += [pscustomobject]@{ name = $m.Groups[1].Value; pid = [int]$m.Groups[2].Value; start_time = $m.Groups[3].Value; exe = $holderExe }
+        }
+        if ($script:ReleaseHolders.Count -gt 0) {
+            $holderNames = (@($script:ReleaseHolders) | ForEach-Object { "$($_.name) (pid $($_.pid))" }) -join ', '
+            # A holder with no readable program path cannot be closed from the Desktop dialog.
+            $closeOffer = if (@($script:ReleaseHolders | Where-Object { $_.exe }).Count -gt 0) { 'Close it and update again, or choose to close it below.' } else { 'Close it yourself (Task Manager) and update again.' }
+            Add-Followup "build: the Desktop app folder is in use by $holderNames" "the Desktop app could not be replaced because $holderNames is using its folder. It is not part of Hermes, so it was left running. $closeOffer" -Manual
+        } else {
+            Add-Followup "build: the Desktop app build is owed by the committed update" "the Desktop app could not be rebuilt, so it still runs its old build. Run 'hermes desktop --force-build' in a terminal to rebuild it; the update log has the build error." -Manual
+        }
     }
 
     # Every other owed follow-up of the committed update (a gateway still on the old code, a
@@ -1747,6 +1828,14 @@ try {
         $finalCode = 0
     }
 } finally {
+    # This run's id is ours, not the relaunched Desktop's: the Start-Process rung
+    # would hand it on to every update that Desktop starts.
+    Remove-Item -LiteralPath Env:HERMES_UPDATE_CORRELATION_ID -ErrorAction SilentlyContinue
+    if (@('claimed', 'adopted') -contains $script:MarkerClaim -and $InstallRoot) {
+        # #101789: a Desktop "close and retry" consent belongs to this run alone. One its swap
+        # never reached (a failed build) must not let a later update close the program unasked.
+        Remove-Item -LiteralPath (Join-Path $InstallRoot 'apps\desktop\release\.close-holders-consent.json') -Force -ErrorAction SilentlyContinue
+    }
     # Truth ordering (sibling contract to posix.sh finish()):
     #   1. durable result + marker removal (the relaunched Desktop consumes
     #      the result on boot and must not park on our marker);

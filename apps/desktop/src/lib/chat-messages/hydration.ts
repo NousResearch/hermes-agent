@@ -244,6 +244,22 @@ function messageInterrupted(metadata: SessionMessage['display_metadata']): boole
   return parseDisplayMetadata(metadata)?.interrupted === true
 }
 
+/** An assistant row read into the tool bubble before it. A reply stopped after a
+ *  tool round folds in here, and its row still says the reply was stopped. */
+function foldIntoToolBubble(
+  bubble: ChatMessage,
+  message: SessionMessage,
+  parts: ChatMessagePart[],
+  durableComplete: boolean | undefined
+): void {
+  bubble.parts = [...bubble.parts, ...parts]
+  bubble.durableComplete = durableComplete
+
+  if (messageInterrupted(message.display_metadata)) {
+    bubble.interrupted = true
+  }
+}
+
 function messageReactions(metadata: SessionMessage['display_metadata']): MessageReaction[] {
   const reactions = parseDisplayMetadata(metadata)?.reactions
 
@@ -423,6 +439,22 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     clearPendingTools()
   }
 
+  // The empty row closing a turn stopped during its tool run draws nothing, but it is
+  // the turn's last stored row and the one that says it was stopped: the mark goes on
+  // the bubble that row closes, as a folded reply's does (foldIntoToolBubble).
+  const lendStoppedMark = (message: SessionMessage, index: number) => {
+    if (!messageInterrupted(message.display_metadata)) {
+      return
+    }
+
+    flushPendingTools(index)
+    const bubble = activeAssistantIndex === null ? undefined : result[activeAssistantIndex]
+
+    if (bubble?.role === 'assistant') {
+      bubble.interrupted = true
+    }
+  }
+
   // `index` stays the stored row position (it keys tool-part and message ids), so skipped merges shift nothing.
   const painted = messages.flatMap((message, index) => (isPainted(message) ? [{ index, message }] : []))
 
@@ -545,7 +577,9 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     }
 
     if (!parts.length && !extractedAttachmentRefs?.length) {
-      if (message.role !== 'assistant') {
+      if (message.role === 'assistant') {
+        lendStoppedMark(message, index)
+      } else {
         flushPendingTools(index)
         activeAssistantIndex = null
       }
@@ -566,7 +600,9 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
     let pendingAbsorbedRows = 0
 
-    if (message.role === 'assistant') {
+    // A machine notice stored as an assistant row (the failed-turn boundary) is
+    // Hermes speaking: it must not join the tool-call reply it follows.
+    if (displayRole === 'assistant') {
       if (pendingToolParts.length) {
         if (!appendPartsToActiveAssistant(pendingToolParts, message.timestamp ?? pendingToolTimestamp)) {
           parts.unshift(...pendingToolParts)
@@ -585,8 +621,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       const activeHasToolCall = Boolean(activeAssistant?.parts.some(part => part.type === 'tool-call'))
 
       if (activeAssistant && (currentHasToolCall || activeHasToolCall)) {
-        activeAssistant.parts = [...activeAssistant.parts, ...parts]
-        activeAssistant.durableComplete = durableComplete
+        foldIntoToolBubble(activeAssistant, message, parts, durableComplete)
         activeAssistant.timestamp = earliestTimestamp(
           activeAssistant.timestamp,
           message.timestamp,

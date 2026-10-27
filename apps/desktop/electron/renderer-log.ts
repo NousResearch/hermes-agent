@@ -60,7 +60,7 @@ function isConsoleMessageDetails(value: unknown): value is ConsoleMessageDetails
 }
 
 /** Format Electron's canonical console-message event object into one line, or
- *  null for non-error or malformed events. Hermes's pinned Electron 40.x line
+ *  null for non-error or malformed events. Hermes's pinned Electron line
  *  puts severity and source metadata on the event object itself; accepting one
  *  listener argument also avoids Electron's deprecated positional
  *  `(event, level, message, line, sourceId)` path. */

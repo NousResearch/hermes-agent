@@ -117,7 +117,7 @@ def cwd_follows_host_mount(cwd: str, mount: str) -> bool:
         return True
     return cwd == "/workspace" and mount != "/workspace"
 
-_CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona", "vercel_sandbox"})
+_CONTAINER_BACKENDS = frozenset({"docker", "modal", "daytona", "vercel_sandbox"})
 _BUILTIN_BACKENDS = _CONTAINER_BACKENDS | {"local", "ssh", "managed_modal"}
 
 
@@ -149,6 +149,23 @@ def _is_container_backend(env_type: str) -> bool:
 def _get_plugin_env_provider(env_type: str):
     """Return the registered plugin provider for *env_type*, or None."""
     return _plugin_registry_lookup(env_type, "get_provider", None)
+
+
+def plugin_sandbox_home(env: Any) -> str | None:
+    """The home a plugin environment started in (``_build_plugin_env`` stamps it per environment, so two
+    sandboxes of one backend never share it), or None."""
+    home = getattr(env, "_hermes_sandbox_home", None)
+    return home if isinstance(home, str) and posixpath.isabs(home) and home != "/" else None
+
+
+def _in_sandbox_home(cwd: Any, env: Any) -> bool:
+    """True for *cwd* at or under *env*'s sandbox home: a ``cd`` inside that sandbox, not a host workspace,
+    even when it looks like one (``/home/...``)."""
+    home = plugin_sandbox_home(env)
+    if not home or not isinstance(cwd, str) or not posixpath.isabs(cwd):
+        return False
+    home, cwd = posixpath.normpath(home), posixpath.normpath(cwd)
+    return cwd == home or cwd.startswith(home + "/")
 
 
 @overload

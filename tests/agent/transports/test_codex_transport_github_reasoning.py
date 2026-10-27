@@ -19,7 +19,7 @@ def transport():
 def test_github_responses_requests_reasoning_summary(transport):
     kw = transport.build_kwargs(
         model="gpt-5.4", messages=[{"role": "user", "content": "Hi"}], tools=[],
-        is_github_responses=True,
-        github_reasoning_extra={"effort": "medium"},
+        base_url="https://api.githubcopilot.com",
+        profile_reasoning={"effort": "medium"},
     )
     assert kw.get("reasoning") == {"effort": "medium", "summary": "auto"}

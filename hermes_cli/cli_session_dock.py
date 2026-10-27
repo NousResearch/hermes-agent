@@ -14,6 +14,18 @@ import time
 QUEUE_ROWS = 3
 
 
+def sync_automation(cli) -> None:
+    """Re-read the goal/loop managers' mirrored state once after the gateway flagged it changed mid-turn
+    (``_mark_automation_stale``): one ``state`` round trip per change, none while nothing moves."""
+    if not getattr(cli, "_automation_stale", False):
+        return
+    cli._automation_stale = False
+    for attr in ("_goal_manager", "_loop_manager"):
+        mgr = getattr(cli, attr, None)
+        if mgr is not None and mgr.session_id == getattr(cli, "session_id", None):
+            mgr.refresh()
+
+
 def goal_line(cli) -> str:
     """``GoalManager.status_line()`` for an active or paused goal, else ``''``.
 
@@ -74,9 +86,16 @@ def _prompt_text(item) -> str:
 
 def queued_prompts(cli) -> list[str]:
     """One-line previews of the turns waiting in ``_pending_input``, oldest first."""
+    from hermes_cli.gateway_tools_notify import gateway_store
+    owned: list = []
+    store = gateway_store(cli) if getattr(cli, "session_id", None) else None
+    if store is not None:
+        # The gateway's FIFO runs first (#134889 N5): its queued admissions as the owner last published them.
+        from hermes_cli.gateway_queue import published_queue
+        owned = published_queue(cli, store)
     pending = getattr(cli, "_pending_input", None)
     if pending is None:
-        return []
+        return [text for text in map(_prompt_text, owned) if text]
     with pending.mutex:
         items = list(pending.queue)
-    return [text for text in map(_prompt_text, items) if text]
+    return [text for text in map(_prompt_text, owned + items) if text]

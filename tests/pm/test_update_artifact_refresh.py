@@ -66,7 +66,7 @@ def test_same_minor_refresh_updates_real_bytes_and_preserves_unresolved_targets(
     engine = importlib.import_module("pm.install")
     monkeypatch.setattr(engine, "sync_venv", lambda **kwargs: syncs.append(kwargs))
     before = lock.path.read_bytes()
-    args = Namespace(names=["rolling-tool"], target=None, check=True, uv=False, npm=False, termux=False)
+    args = Namespace(names=["rolling-tool"], target=None, skip_target=[], check=True, uv=False, npm=False, termux=False)
     assert cli.cmd_update(args) == 1
     assert lock.path.read_bytes() == before and not requests and not syncs
     assert not store.exists()

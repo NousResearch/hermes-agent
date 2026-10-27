@@ -1,0 +1,40 @@
+name: hermes-windows-ports
+repo: https://github.com/Yicheng-Mark/hermes-windows-plugins
+sha: b26b92760b2bfc36a91c280af96b0171c4d00267
+subdir: windows-ports
+description: >-
+  Answer "who holds this port" on Windows. win_port_owners reads the TCP and UDP owner
+  tables through iphlpapi (the same rows netstat -ano prints, with the owning PID attached)
+  and resolves each PID to its image name and path, returning one structured record per
+  endpoint. Filters cover one port, several ports, a process substring, the protocol (tcp,
+  udp or both), the TCP state (listen, established, any state name, or all; UDP rows report
+  bound) and IPv6 inclusion, with a record cap and a per-process summary of the rows
+  returned. Built for the failure mode that stalls agents on Windows: a gateway, backend or
+  bridge that cannot bind, where the error names a port but not the process holding it.
+  netstat -ano prints columns, not fields, and its PID still needs a second command
+  (tasklist, or a PowerShell round-trip) to become an image name; this tool is one
+  in-process call instead of a shell parse plus a join, with no child process and no
+  dependency on PowerShell being installed or allowed by execution policy. A protected
+  process whose image cannot be queried keeps its PID and reports
+  a null process name instead of failing the call. Disclosure - the tool reports the local
+  and remote addresses, ports, PIDs and process image paths that netstat -ano and Task
+  Manager already show, and those values reach the model; treat the output like any other
+  local diagnostic listing. Read-only: no socket is opened, bound or connected, the only
+  process access is QueryFullProcessImageName with PROCESS_QUERY_LIMITED_INFORMATION to read
+  an image name, and there is no memory reading, no handle inheritance and no injection.
+  Stdlib-only (ctypes): no Python dependencies, no child processes, no network calls, no file
+  writes, no self-update. Windows only.
+maintainer: Yicheng-Mark
+tier: community
+category: tools
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/Yicheng-Mark/hermes-windows-plugins/tree/main/windows-ports
+version: "0.1.0"
+platforms:
+- windows
+capabilities:
+  provides_tools:
+  - win_port_owners
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

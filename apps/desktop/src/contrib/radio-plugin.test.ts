@@ -39,6 +39,8 @@ describe('bundled Radio plugin', () => {
     const audio = vi.fn()
     vi.stubGlobal('fetch', fetch)
     vi.stubGlobal('Audio', audio)
+    // A plain-HTTP origin from another machine: browsers expose no crypto.randomUUID there.
+    vi.stubGlobal('crypto', { getRandomValues: crypto.getRandomValues.bind(crypto) })
     const initialStyles = document.head.querySelectorAll('style').length
 
     discoverBundledPlugins()

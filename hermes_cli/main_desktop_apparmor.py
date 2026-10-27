@@ -174,6 +174,9 @@ def _write_and_load(sudo: str, parser: str, target: Path, text: str) -> bool:
 
 def install_profile(packaged_executable: Path) -> bool:
     """Write and load the profile through sudo (prompting on a terminal). Prints the outcome."""
+    if sys.platform != "linux":
+        print("✗ --install-apparmor-profile is Linux only: AppArmor profiles do not exist on this OS.")
+        return False
     target = profile_path(packaged_executable)
     unsafe = unsafe_path_characters(packaged_executable)
     if unsafe:
@@ -209,8 +212,15 @@ def install_profile(packaged_executable: Path) -> bool:
     return True
 
 
-def print_blocked_remedies(packaged_executable: Path) -> None:
-    """The actionable lines for a restricted host where the setuid helper could not be set up."""
+def print_no_sandbox_fallback(packaged_executable: Path) -> None:
+    """Why the launch falls back to ``--no-sandbox``; the AppArmor fix-it lines only on a host whose
+    userns restriction is the reason (``ELECTRON_DISABLE_SANDBOX=1`` alone is the user's choice)."""
+    if not apparmor_restricts_userns():
+        print("⚠ Falling back to --no-sandbox because ELECTRON_DISABLE_SANDBOX=1 is set and the Electron"
+              " sandbox helper could not be configured.")
+        return
+    print("⚠ Falling back to --no-sandbox because this Linux host restricts unprivileged user namespaces"
+          " and the Electron sandbox helper could not be configured.")
     helper = shlex.quote(str(packaged_executable.parent / "chrome-sandbox"))
     print("  Ubuntu's AppArmor policy (kernel.apparmor_restrict_unprivileged_userns=1) blocks Chromium's")
     print("  user-namespace sandbox for Hermes Desktop. To keep the sandbox on, run ONE of these:")

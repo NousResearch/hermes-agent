@@ -8,6 +8,7 @@ real Electron build does: exit 0 when its sandbox starts, Chromium's FATAL when 
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -51,6 +52,21 @@ def restricted_host(tmp_path, monkeypatch):
     monkeypatch.setattr(main_desktop.shutil, "which", lambda name: None)
 
 
+@pytest.mark.parametrize("restricted", [False, True])
+def test_no_sandbox_fallback_names_apparmor_only_when_apparmor_is_the_reason(
+        tmp_path, monkeypatch, capsys, restricted_host, restricted):
+    """``ELECTRON_DISABLE_SANDBOX=1`` on an unrestricted host gets no AppArmor fix-it lines."""
+    main_desktop_apparmor.RESTRICT_SYSCTL.write_text("1\n" if restricted else "0\n", encoding="utf-8")
+    monkeypatch.setenv("ELECTRON_DISABLE_SANDBOX", "1")
+    monkeypatch.setattr(main_desktop, "_desktop_linux_userns_sandbox_available", lambda: False)
+    exe = _packaged_app(tmp_path, _BLOCKED)
+
+    assert main_desktop._packaged_desktop_launch_command(exe) == [str(exe), "--no-sandbox"]
+    out = capsys.readouterr().out
+    assert ("--install-apparmor-profile" in out) is restricted
+    assert ("AppArmor" in out) is restricted
+
+
 def test_generic_unshare_success_does_not_override_a_blocked_binary(tmp_path, monkeypatch, restricted_host):
     """The reporter's host: unshare passes, Chromium cannot sandbox -> never the userns path."""
     exe = _packaged_app(tmp_path, _BLOCKED)
@@ -78,7 +94,7 @@ def _fake_root_tools(tmp_path, monkeypatch, *, parser_fails_on: str = ""):
         f'#!/bin/sh\nfor a; do [ "$a" = "{parser_fails_on}" ] && exit 1; done\nexit 0\n', encoding="utf-8")
     for tool in bin_dir.iterdir():
         tool.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin:/bin")
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
     profile_dir = tmp_path / "apparmor.d"
     profile_dir.mkdir()
     monkeypatch.setattr(main_desktop_apparmor, "_PROFILE_DIR", profile_dir)
@@ -124,3 +140,24 @@ def test_a_failed_profile_write_keeps_the_installed_profile(tmp_path, monkeypatc
     assert main_desktop_apparmor.install_profile(exe) is False
     assert installed.read_bytes() == before
     assert list(profile_dir.iterdir()) == [installed]
+
+
+def test_install_stages_loads_then_replaces_the_old_profile(tmp_path, monkeypatch):
+    """The privileged steps run write-staged, load-staged, move-into-place; the old profile is
+    replaced, the staged file is gone, and the binary's own probe confirms the sandbox."""
+    profile_dir, sudo_log = _fake_root_tools(tmp_path, monkeypatch)
+    sysctl = tmp_path / "apparmor_restrict_unprivileged_userns"
+    sysctl.write_text("1\n", encoding="utf-8")
+    monkeypatch.setattr(main_desktop_apparmor, "RESTRICT_SYSCTL", sysctl)
+    exe = _packaged_app(tmp_path, _ALLOWED)
+    target = main_desktop_apparmor.profile_path(exe)
+    target.write_text("# an older Hermes profile\n", encoding="utf-8")
+
+    assert main_desktop_apparmor.install_profile(exe) is True
+    calls = [call.split() for call in sudo_log.read_text(encoding="utf-8").splitlines()]
+    staged = calls[0][1]
+    assert [Path(call[0]).name for call in calls] == ["tee", "apparmor_parser", "mv"]
+    assert calls[1][1:] == ["-r", staged]
+    assert calls[2][1:] == ["-f", staged, str(target)]
+    assert list(profile_dir.iterdir()) == [target]
+    assert target.read_text(encoding="utf-8") == main_desktop_apparmor.profile_text(exe)

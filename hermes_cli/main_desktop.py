@@ -1625,13 +1625,12 @@ def _check_desktop_skip_build(
 
 def _packaged_desktop_launch_command(packaged_executable: Path) -> list[str]:
     """``[exe, *sandbox flags]`` after the Linux sandbox fixup; exits when the sandbox can't be configured."""
-    from hermes_cli.main_desktop_apparmor import print_blocked_remedies
+    from hermes_cli.main_desktop_apparmor import print_no_sandbox_fallback
 
     launch_command = [str(packaged_executable)]
     if not _desktop_linux_sandbox_fixup(packaged_executable):
         if _desktop_linux_needs_no_sandbox() and _desktop_linux_sandbox_helper_is_regular_file(packaged_executable):
-            print("⚠ Falling back to --no-sandbox because this Linux host restricts unprivileged user namespaces and the Electron sandbox helper could not be configured.")
-            print_blocked_remedies(packaged_executable)
+            print_no_sandbox_fallback(packaged_executable)
             launch_command.append("--no-sandbox")
         else:
             sys.exit(1)

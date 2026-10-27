@@ -49,3 +49,59 @@ def test_api_server_asks_only_when_a_client_bridge_is_registered(unattended_sess
     # /v1/runs and streaming chat completions register a notifier: the approval bridge keeps the card.
     approval_mod.register_gateway_notify(SESSION, lambda data: None)
     assert approval_mod._presence()[3] is True
+
+
+@pytest.fixture
+def notifier_session(monkeypatch):
+    """Same ask-lane setup as ``unattended_session`` but with the real human-decision gate
+    left in place, so a session whose client CAN answer can be seen answering it."""
+    monkeypatch.setattr(approval_mod, "_YOLO_MODE_FROZEN", False)
+    monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "manual")
+    for var in ("HERMES_CRON_SESSION", "HERMES_GATEWAY_SESSION", "HERMES_INTERACTIVE"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+    monkeypatch.setenv("HERMES_SESSION_KEY", SESSION)
+    approval_mod._session_approved.pop(SESSION, None)
+    yield lambda platform: monkeypatch.setenv("HERMES_SESSION_PLATFORM", platform)
+    approval_mod.unregister_gateway_notify(SESSION)
+
+
+def _resolve_newest_entry(session_key: str):
+    """A notify callback that answers the queued approval immediately (the client's
+    ``POST /v1/runs/{id}/approval`` stand-in)."""
+    def cb(_approval_data):
+        with approval_mod._lock:
+            entries = approval_mod._gateway_queues.get(session_key, [])
+            if entries:
+                entries[-1].result = "once"
+                entries[-1].event.set()
+    return cb
+
+
+def test_execute_code_asks_the_api_server_bridge_instead_of_denying(notifier_session, monkeypatch):
+    # No notifier: execute_code resolves from unattended_mode like before — fail closed.
+    notifier_session("api_server")
+    monkeypatch.setattr(approval_context, "_get_unattended_approval_mode", lambda: "deny")
+    result = approval_mod.check_execute_code_guard("import os", "local")
+    assert result["approved"] is False and "approvals.unattended_mode" in result["message"]
+
+    # With the client bridge registered the script reaches the SAME one-shot card
+    # terminal() shows — answered here by the client, not resolved from config (#137712).
+    approval_mod.register_gateway_notify(SESSION, _resolve_newest_entry(SESSION))
+    result = approval_mod.check_execute_code_guard("import os", "local")
+    assert result["approved"] is True and result.get("user_approved") is True
+    assert approval_mod.is_approved(SESSION, "execute_code") is False  # one-shot
+
+
+@pytest.mark.parametrize("unattended_mode", ["deny", "approve"])
+def test_execute_code_on_notifier_blind_platforms_still_resolves_from_unattended_mode(
+        notifier_session, monkeypatch, unattended_mode):
+    # The generic TurnRunner lane registers a notifier on every webhook turn; those
+    # adapters still cannot answer it, so execute_code must keep resolving from config.
+    notifier_session("webhook")
+    monkeypatch.setattr(approval_context, "_get_unattended_approval_mode", lambda: unattended_mode)
+    approval_mod.register_gateway_notify(SESSION, lambda data: pytest.fail("card sent to a platform nobody answers"))
+    result = approval_mod.check_execute_code_guard("import os", "local")
+    assert result["approved"] is (unattended_mode == "approve")
+    if unattended_mode == "deny":
+        assert "approvals.unattended_mode" in result["message"]

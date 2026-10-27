@@ -67,7 +67,7 @@ export async function sourceUpdateEnvironment(
 ): Promise<NodeJS.ProcessEnv> {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
-    ...(await updateProxyEnv(process.env, note)),
+    ...(await updateProxyEnv(process.env, note, updateRoot)),
     ...buildDesktopBackendEnv(),
     HERMES_HOME: hermesHome,
     HERMES_INSTALL_ROOT: updateRoot

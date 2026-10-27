@@ -1,5 +1,7 @@
 import { session } from 'electron'
 
+import { configuredUpdateHosts } from './update-hosts'
+
 /**
  * The OS proxy for the update's child processes (#123387).
  *
@@ -152,6 +154,12 @@ export async function systemProxyEnv(
     return {}
   }
 
+  // A user NO_PROXY of `*` bypasses every proxy, but `*,localhost,…` bypasses none in curl or
+  // urllib: inject nothing, as agent/proxy_bypass.py honours it (review S4).
+  if (valuesAnyCase(userEnv, 'no_proxy').some(value => value.split(/[\s,]+/).includes('*'))) {
+    return {}
+  }
+
   // Each host is asked on its own: a PAC can send each one a different way.
   const answers = await Promise.all(
     hosts.map(async (host: string) => {
@@ -190,12 +198,18 @@ export async function systemProxyEnv(
   }
 }
 
-/** The system proxy env for an update child; empty outside Electron (unit tests, scripts). */
+/**
+ * The system proxy env for an update child; empty outside Electron (unit tests, scripts).
+ * Besides the public UPDATE_HOSTS, the checkout's origin and the user's configured package
+ * indexes are asked too, so one the system sends direct stays direct.
+ */
 export async function updateProxyEnv(
   env: NodeJS.ProcessEnv = process.env,
-  note?: (message: string) => void
+  note?: (message: string) => void,
+  updateRoot?: string
 ): Promise<NodeJS.ProcessEnv> {
   const defaultSession = session?.defaultSession
+  const hosts = [...new Set([...UPDATE_HOSTS, ...(updateRoot ? configuredUpdateHosts(updateRoot, env) : [])])]
 
-  return defaultSession ? systemProxyEnv(env, url => defaultSession.resolveProxy(url), UPDATE_HOSTS, note) : {}
+  return defaultSession ? systemProxyEnv(env, url => defaultSession.resolveProxy(url), hosts, note) : {}
 }

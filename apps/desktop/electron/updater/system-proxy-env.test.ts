@@ -1,6 +1,19 @@
-import { describe, expect, it } from 'vitest'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 
-import { LOCAL_BYPASS, restoreUserProxyEnv, systemProxyEnv } from './system-proxy-env'
+import { describe, expect, it, vi } from 'vitest'
+
+import { LOCAL_BYPASS, restoreUserProxyEnv, systemProxyEnv, updateProxyEnv } from './system-proxy-env'
+
+// Chromium's answer for the system proxy: only github.com goes through it, every other host direct.
+vi.mock('electron', () => ({
+  session: {
+    defaultSession: {
+      resolveProxy: async (url: string) => (new URL(url).hostname === 'github.com' ? 'PROXY 10.0.0.7:7890' : 'DIRECT')
+    }
+  }
+}))
 
 const pac = (answers: Record<string, string>) => async (url: string) => answers[new URL(url).hostname] ?? 'DIRECT'
 const proxied = (value: string) => ({ HTTPS_PROXY: value, https_proxy: value, HTTP_PROXY: value, http_proxy: value })
@@ -100,5 +113,33 @@ describe('update child proxy env from the system proxy (#123387)', () => {
     expect(env.HERMES_UPDATE_SYSTEM_PROXY?.split(',')).not.toContain('NO_PROXY')
     expect(new Set(Object.entries(restored).filter(([key]) => key.toLowerCase() === 'no_proxy').map(([, v]) => v)))
       .toEqual(new Set(['corp.internal']))
+  })
+
+  it("keeps a fork origin and the user's package mirrors direct when the system sends them direct (S2)", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-update-hosts-'))
+
+    try {
+      fs.mkdirSync(path.join(root, '.git'))
+      fs.writeFileSync(
+        path.join(root, '.git', 'config'),
+        '[core]\n\tbare = false\n[remote "origin"]\n\turl = https://git.corp.example/me/hermes-agent.git\n'
+      )
+      fs.writeFileSync(path.join(root, 'npmrc'), 'registry=https://npm.corp.example/\n')
+      const user = { UV_INDEX_URL: 'https://pypi.corp.example/simple', npm_config_userconfig: path.join(root, 'npmrc') }
+
+      const env = await updateProxyEnv(user, undefined, root)
+
+      for (const mirror of ['git.corp.example', 'pypi.corp.example', 'npm.corp.example']) {
+        expect(env.NO_PROXY?.split(',')).toContain(mirror)
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('injects nothing over a user NO_PROXY of *, which curl and urllib read as bypass-all only alone (S4)', async () => {
+    const github = pac({ 'github.com': 'PROXY 10.0.0.7:7890' })
+
+    expect(await systemProxyEnv({ no_proxy: '*' }, github, ['github.com'])).toEqual({})
   })
 })

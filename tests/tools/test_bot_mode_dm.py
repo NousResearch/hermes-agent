@@ -832,8 +832,6 @@ def test_peer_delivery_runner_keeps_file_for_child_then_unlinks(tmp_path, encodi
     assert not dm_file.exists()
 
 
-
-
 def test_peer_delivery_runner_preserves_child_failure_and_unlinks(tmp_path):
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("secret", encoding="utf-8")

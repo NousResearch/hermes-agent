@@ -7748,6 +7748,74 @@
         "title": "CanonicalAttachment",
         "type": "object"
       },
+      "CanonicalBotCancelParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "author_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Author Id"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "CanonicalBotCancelParams",
+        "type": "object"
+      },
+      "CanonicalBotCancelResult": {
+        "additionalProperties": false,
+        "description": "``gateway/session_bot_cancel.py``: ``cancelled`` (withdrawn before it ran, or its pending\nautomatic retry withdrawn), ``stopping`` (its running turn was told to stop), or ``finished``\n(nothing left to cancel); ``receipt_status`` is the delivery receipt's status after it.",
+        "properties": {
+          "delivery_id": {
+            "title": "Delivery Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "cancelled",
+              "stopping",
+              "finished"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "receipt_status": {
+            "title": "Receipt Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "delivery_id",
+          "status",
+          "receipt_status"
+        ],
+        "title": "CanonicalBotCancelResult",
+        "type": "object"
+      },
       "CanonicalBotDeliverParams": {
         "additionalProperties": false,
         "properties": {
@@ -7912,6 +7980,25 @@
             ],
             "default": null,
             "title": "Reason"
+          },
+          "target_state": {
+            "anyOf": [
+              {
+                "enum": [
+                  "idle",
+                  "working",
+                  "waiting_approval",
+                  "waiting_clarify",
+                  "paused"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target State"
           }
         },
         "required": [
@@ -47501,6 +47588,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/PromptResponseResult"
+        }
+      }
+    },
+    {
+      "name": "bot_relay.cancel",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalBotCancelParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CanonicalBotCancelResult"
         }
       }
     },

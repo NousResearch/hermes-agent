@@ -5326,6 +5326,18 @@ export interface CanonicalBotDeliverResult {
   retry_admission_id?: string | null
   error?: string | null
   reason?: string | null
+  target_state?: 'idle' | 'working' | 'waiting_approval' | 'waiting_clarify' | 'paused' | null
+}
+export interface CanonicalBotCancelParams {
+  profile?: string | null
+  id: string
+  author_id?: string | null
+}
+/** ``gateway/session_bot_cancel.py``: ``cancelled`` (withdrawn before it ran, or its pending automatic retry withdrawn), ``stopping`` (its running turn was told to stop), or ``finished`` (nothing left to cancel); ``receipt_status`` is the delivery receipt's status after it. */
+export interface CanonicalBotCancelResult {
+  delivery_id: string
+  status: 'cancelled' | 'stopping' | 'finished'
+  receipt_status: string
 }
 /** ``answers`` rides only on a reconnect replay (locks the server already accepted; null = skipped). */
 export interface ClarifyRequestParams {
@@ -6791,6 +6803,7 @@ export interface CanonicalRpcMethods {
   /** Forward one A2A input into the conversation its identity tuple names. */
   'a2a.forward': { params: A2aForwardParams; result: A2aForwardResult }
   'approval.respond': { params: CanonicalApprovalParams; result: PromptResponseResult }
+  'bot_relay.cancel': { params: CanonicalBotCancelParams; result: CanonicalBotCancelResult }
   'bot_relay.deliver': { params: CanonicalBotDeliverParams; result: CanonicalBotDeliverResult }
   'bot_relay.settle': { params: CanonicalBotDeliverParams; result: CanonicalBotDeliverResult }
   /** Lock one answer of the owner's batch clarify request (editable until every question is locked); only a viewer attached to that session with session:respond may lock. */
@@ -6871,6 +6884,7 @@ export type CanonicalRpcMethod = keyof CanonicalRpcMethods
 export const CANONICAL_RPC_METHODS = [
   'a2a.forward',
   'approval.respond',
+  'bot_relay.cancel',
   'bot_relay.deliver',
   'bot_relay.settle',
   'clarify.lock',

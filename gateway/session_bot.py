@@ -406,7 +406,9 @@ def _admission_outcome(authority, admission_id, fallback=None):
     reply = (fallback or {}).get('reply', '')
     if saved is not None:
         reply = saved['result'].get('final_response', '')
-        status = 'settled' if row['outcome'] == 'completed' else 'failed'
+        # A turn stopped mid-run (the sender's message_agent cancel, or a Stop on the target) did
+        # not fail: the sender hears ``cancelled``, never a failure to retry or report as broken.
+        status = {'completed': 'settled', 'interrupted': 'cancelled'}.get(row['outcome'], 'failed')
         # A successful bare silence marker is a delivery decision (same rule as the gateway and
         # the live Bot Chat completion): the turn stays in the target's transcript, the sender
         # never sees the marker as prose.
@@ -466,6 +468,8 @@ def _result(authority, record):
         status, reply = _admission_outcome(authority, retry_id)
     else:
         status, reply = _admission_outcome(authority, record['admission_id'], record)
+        if status == 'failed' and (record.get('retry') or {}).get('refused') == 'cancelled':
+            status = 'cancelled'  # its sender withdrew it (``session_bot_cancel``); its retry never ran
     error = reason = None
     if status == 'failed':
         try:
@@ -753,8 +757,11 @@ def _watch_reply(authority, home, key, admission_id):
 
 async def deliver(connection, params):
     from gateway.session_runtime_workers import track_mutation
+    from gateway.session_bot_state import bot_chat_state
     connection.authority._require_admission_open()
-    return await asyncio.shield(track_mutation(connection.authority, _deliver(connection, params)))
+    answer = await asyncio.shield(track_mutation(connection.authority, _deliver(connection, params)))
+    # Not part of the receipt (it is stale a second later): the sender's ack and its runner's replays.
+    return {**answer, 'target_state': bot_chat_state(connection.authority, answer['session_id'])}
 
 
 def _require_same_delivery(record, actor, message, author, category):

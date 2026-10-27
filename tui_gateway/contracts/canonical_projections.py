@@ -90,12 +90,30 @@ class CanonicalBotDeliverResult(Result):
     retry_admission_id: str | None = None
     error: str | None = None
     reason: str | None = None
+    # The target Bot Chat's live state at answer time (``gateway/session_bot_state.py``); never stored.
+    target_state: Literal['idle', 'working', 'waiting_approval', 'waiting_clarify', 'paused'] | None = None
 
     @model_validator(mode='after')
     def _admitted_or_refused(self):
         if (self.admission_id is None) != (self.refused is True) or (self.refused and self.status != 'failed'):
             raise ValueError('a deliver result names its admission, or is a refused failed receipt without one')
         return self
+
+
+class CanonicalBotCancelParams(Params):
+    profile: str | None = None
+    id: str
+    author_id: str | None = None
+
+
+class CanonicalBotCancelResult(Result):
+    """``gateway/session_bot_cancel.py``: ``cancelled`` (withdrawn before it ran, or its pending
+    automatic retry withdrawn), ``stopping`` (its running turn was told to stop), or ``finished``
+    (nothing left to cancel); ``receipt_status`` is the delivery receipt's status after it."""
+
+    delivery_id: str
+    status: Literal['cancelled', 'stopping', 'finished']
+    receipt_status: str
 
 
 for _name, _params, _result in (
@@ -110,5 +128,7 @@ for _name, _params, _result in (
     # The sender's finalize of a refusal marked ``admitted: false``: the same identity, answered
     # with the id's terminal not-sent receipt or its existing admission (``gateway/session_bot.py``).
     ('bot_relay.settle', CanonicalBotDeliverParams, CanonicalBotDeliverResult),
+    # The sender's own cancel by delivery id, decided on the owner beside its one retry.
+    ('bot_relay.cancel', CanonicalBotCancelParams, CanonicalBotCancelResult),
 ):
     canonical_method(_name, params=_params, result=_result)

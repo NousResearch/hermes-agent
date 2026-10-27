@@ -41,21 +41,28 @@ class SurfacePolicy:
     #: ``/api/files/ticket`` mints the path-bound tickets for downloads and media links, and chat
     #: upload bodies are capped before they are parsed (``web_upload_limit``).
     browser_files: bool
+    #: ``/api/desktop-plugins/*`` serves this host's desktop plugins to the browser's plugin loader;
+    #: native Desktop reads its own disk.
+    desktop_plugins: bool
 
 
 POLICIES: dict[str, SurfacePolicy] = {
     "serve": SurfacePolicy(
         serves_spa=False, html_token=True, host_terminal=False, launch_link=False, gateway_ticket=False,
-        own_origin_cookie_writes=False, web_access=False, browser_files=False),
+        own_origin_cookie_writes=False, web_access=False, browser_files=False,
+        desktop_plugins=False),
     "dashboard": SurfacePolicy(
         serves_spa=True, html_token=True, host_terminal=False, launch_link=False, gateway_ticket=False,
-        own_origin_cookie_writes=False, web_access=False, browser_files=False),
+        own_origin_cookie_writes=False, web_access=False, browser_files=False,
+        desktop_plugins=False),
     "gateway": SurfacePolicy(
         serves_spa=True, html_token=True, host_terminal=False, launch_link=False, gateway_ticket=False,
-        own_origin_cookie_writes=False, web_access=True, browser_files=False),
+        own_origin_cookie_writes=False, web_access=True, browser_files=False,
+        desktop_plugins=False),
     "webapp": SurfacePolicy(
         serves_spa=True, html_token=False, host_terminal=True, launch_link=True, gateway_ticket=True,
-        own_origin_cookie_writes=True, web_access=True, browser_files=True),
+        own_origin_cookie_writes=True, web_access=True, browser_files=True,
+        desktop_plugins=True),
 }
 
 

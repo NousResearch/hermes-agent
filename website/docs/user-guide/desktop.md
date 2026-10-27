@@ -706,6 +706,14 @@ SHA-pinned) plus an import allowlist — not isolation. A plugin whose
 row; **⌘K → Reload desktop plugins** re-reads every installed `plugin.js`,
 including one an installer replaced in place.
 
+The [Webapp](#use-the-desktop-workspace-from-a-browser) loads the desktop plugins installed on the
+host that serves it, from the `desktop-plugins` folder of that host's Hermes root, whichever profile
+the tab is on. A new or removed plugin folder shows up within seconds, and an edited `plugin.js`
+reloads within a second while the tab is visible, as it does in native Desktop. The desktop half of
+an agent+desktop package appears once native Desktop on that host has copied it into the folder.
+Install and remove desktop plugins from native Desktop or in the folder itself; a plugin's folder
+access (`ctx.files`) is not available in a browser.
+
 **Capabilities → Plugins** is the one place for everything that extends
 Hermes: **one row per plugin**, with two switch columns.
 

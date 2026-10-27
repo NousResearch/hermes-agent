@@ -1693,7 +1693,7 @@ def _count_cron_jobs(path: Path) -> Optional[int]:
         # post-update cron-loss auto-restore safety net silently disables.
         with open(path, "r", encoding="utf-8-sig") as f:
             data = json.load(f)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
     if isinstance(data, dict):
         jobs = data.get("jobs", [])

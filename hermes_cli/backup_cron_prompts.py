@@ -28,7 +28,7 @@ def _load_cron_jobs_doc(path: Path) -> Optional[Any]:
     try:
         with open(path, "r", encoding="utf-8-sig") as f:
             data = json.load(f)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
     if isinstance(data, dict):
         jobs = data.get("jobs", [])

@@ -1547,8 +1547,10 @@ class SessionDB(
         return None
 
     def _try_wal_checkpoint(self) -> None:
-        """Best-effort PASSIVE WAL checkpoint; never raises. PASSIVE never blocks writers;
-        TRUNCATE corrupted B-trees on 65K+ page databases under exclusive-lock I/O pressure.
+        """Best-effort PASSIVE checkpoint; strict guard failures retire the writer and raise.
+        PASSIVE never blocks writers; TRUNCATE corrupted B-trees on 65K+ page databases
+        under exclusive-lock I/O pressure. A refused re-arm forces the next write through
+        the complete open+guard pair; it must not reuse a partially protected writer.
 
         Previous TRUNCATE strategy caused B-tree corruption on large databases (65K+ pages) due to the
         exclusive-lock I/O pressure from checkpointing thousands of frames at once (issue #45383).
@@ -1559,8 +1561,18 @@ class SessionDB(
             with self._lock:
                 if self._conn is None:
                     return  # closed underneath the timer: nothing to checkpoint, nothing to re-guard
-                if self._wal_lock_guard:
-                    _lockguard.hold(self.db_path, self._wal_lock_guard)  # a -shm minted after open
+                if self._wal_active and not self.read_only:
+                    try:
+                        _lockguard.hold(
+                            self.db_path, self._wal_lock_guard,
+                            strict=not self._wal_guard_degraded,
+                        )  # include a -shm minted after open, even with an empty record
+                    except _lockguard.WalGuardArmedIncompleteError:
+                        # Retire under the writer lock BEFORE another write can
+                        # reuse this connection. hold() unwinds only new claims;
+                        # retirement also releases this handle's earlier claims.
+                        self._retire_connection_locked()
+                        raise
                 result = self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
                 if result and result[1] > 0:
                     logger.debug("WAL checkpoint: %d/%d pages checkpointed", result[2], result[1])

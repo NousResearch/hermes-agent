@@ -235,12 +235,11 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
         return slug, owner
 
     @classmethod
-    def catalog_identifiers(cls, identifier: str) -> tuple[str, ...]:
-        """Owner-less forms of an installed ``identifier``: ``clawhub/<slug>`` (what a catalog
-        card installs) and ``<slug>`` (what the hermes-index and hub search list). ``fetch``
-        records ``@owner/slug``. Empty when ``identifier`` is not a ClawHub id."""
+    def catalog_identifier(cls, identifier: str) -> Optional[str]:
+        """``clawhub/<slug>``, the owner-less id a catalog card installs, for any ClawHub
+        ``identifier`` (``fetch`` records ``@owner/slug``). None when it is not a ClawHub id."""
         parsed = cls._parse_identifier(identifier)
-        return (f"clawhub/{parsed[0]}", parsed[0]) if parsed else ()
+        return f"clawhub/{parsed[0]}" if parsed else None
 
     def fetch(self, identifier: str) -> Optional[SkillBundle]:
         detail = self._skill_detail(identifier)

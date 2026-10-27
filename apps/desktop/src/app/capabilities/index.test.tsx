@@ -567,7 +567,7 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
       [
         ['@tmstudio667-commits/agent-git-oracle', 'agent-git-oracle'],
         ['@liujiang817/my-pdf', 'my-pdf']
-      ].flatMap(([id, name]) => [id, `clawhub/${name}`, name].map(key => [key, record(name)]))
+      ].flatMap(([id, name]) => [id, `clawhub/${name}`].map(key => [key, record(name)]))
     )
 
     const api = vi.fn(async ({ path }: { path: string }) => {

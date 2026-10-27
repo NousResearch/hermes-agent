@@ -1,9 +1,9 @@
 """Installed state for hub skills: the ``installed`` map that ``/api/skills/hub/sources``,
-``/search`` and ``/official`` return, which Desktop catalog cards and the dashboard's hub
-search check with ``installed[identifier]``.
+``/search`` and ``/official`` return. Desktop catalog cards look themselves up by the id
+they install; the dashboard looks a hub hit up by its id and, for ClawHub, its card id.
 
-ClawHub records ``@owner/slug`` in the lock, while a catalog card installs
-``clawhub/<slug>`` and the hermes-index / hub search list the bare slug."""
+ClawHub records ``@owner/slug`` in the lock, a catalog card installs ``clawhub/<slug>``,
+and the hermes-index / hub search list the bare slug."""
 
 import asyncio
 
@@ -21,7 +21,7 @@ def _lock(*rows):
         for source, identifier, name in rows}})
 
 
-def test_clawhub_install_answers_to_the_card_and_search_ids():
+def test_clawhub_install_answers_to_the_card_id():
     _lock(("clawhub", "@tmstudio667-commits/agent-git-oracle", "agent-git-oracle"),
           ("clawhub", "legacy-slug", "legacy-slug"))
 
@@ -30,9 +30,16 @@ def test_clawhub_install_answers_to_the_card_and_search_ids():
     record = installed["@tmstudio667-commits/agent-git-oracle"]
     assert record["name"] == "agent-git-oracle"
     assert installed["clawhub/agent-git-oracle"] == record
-    assert installed["agent-git-oracle"] == record
     # A lock row from before owners were recorded keeps its bare id and gains the card id.
     assert installed["clawhub/legacy-slug"] == installed["legacy-slug"]
+
+
+def test_a_clawhub_install_never_answers_for_another_sources_bare_id():
+    # Only the source-qualified card id is added: a bare `foo` from any other source
+    # must not read installed because @alice/foo is.
+    _lock(("clawhub", "@alice/foo", "foo-fork"))
+
+    assert set(_installed_hub_identifiers()) == {"@alice/foo", "clawhub/foo"}
 
 
 def test_other_sources_keep_their_exact_ids_only():
@@ -46,16 +53,14 @@ def test_other_sources_keep_their_exact_ids_only():
 
 
 def test_an_exact_lock_id_beats_a_clawhub_alias():
-    _lock(("hermes-index", "foo", "foo"), ("clawhub", "@alice/foo", "foo-fork"))
+    _lock(("clawhub", "@alice/foo", "foo-fork"), ("clawhub", "clawhub/foo", "foo"))
 
-    installed = _installed_hub_identifiers()
-
-    assert installed["foo"]["name"] == "foo"
-    assert installed["clawhub/foo"]["name"] == "foo-fork"
+    assert _installed_hub_identifiers()["clawhub/foo"]["name"] == "foo"
 
 
-def test_hub_search_marks_an_installed_clawhub_result(monkeypatch):
-    # Index-backed results carry ClawHub's bare slug; the dashboard checks installed[identifier].
+def test_hub_search_returns_the_card_id_a_clawhub_hit_is_found_under(monkeypatch):
+    # Index-backed results carry ClawHub's bare slug. The map answers to clawhub/<slug>,
+    # which the dashboard derives from the hit's source (web/src/lib/skill-hub-installed.ts).
     hit = SkillMeta(name="Agent Git Oracle", description="", source="clawhub",
                     identifier="agent-git-oracle", trust_level="community")
     monkeypatch.setattr("tools.skills_hub_search.create_source_router", list)
@@ -65,5 +70,6 @@ def test_hub_search_marks_an_installed_clawhub_result(monkeypatch):
 
     body = asyncio.run(search_skills_hub(q="agent git oracle"))
 
-    assert [r["identifier"] for r in body["results"]] == ["agent-git-oracle"]
-    assert body["installed"]["agent-git-oracle"]["name"] == "agent-git-oracle"
+    assert [(r["source"], r["identifier"]) for r in body["results"]] == [("clawhub", "agent-git-oracle")]
+    assert body["installed"]["clawhub/agent-git-oracle"]["name"] == "agent-git-oracle"
+    assert "agent-git-oracle" not in body["installed"]

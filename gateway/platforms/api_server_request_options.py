@@ -1,13 +1,13 @@
-"""Per-request ``model_options`` decoding, lifted from ``platforms/api_server.py``.
+"""Per-request ``model_options`` and relay-metadata decoding, lifted from ``platforms/api_server.py``.
 
 Keeps the api_server facade under its frozen line cap (root AGENTS.md god-file
 guidance: move code into a topical sibling). ``api_server.py`` re-exports
-``_request_service_tier`` and ``_request_reasoning_config`` so existing importers
-are unaffected; the helpers those two read stay in the facade and are imported
-lazily (call time) to avoid an import cycle.
+``_request_service_tier``, ``_request_reasoning_config`` and
+``_request_relay_metadata`` so existing importers are unaffected; the helpers those
+read stay in the facade and are imported lazily (call time) to avoid an import cycle.
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 
 def _request_reasoning_config(model_options: Any) -> Optional[dict[str, Any]]:
@@ -32,6 +32,16 @@ def _request_reasoning_config(model_options: Any) -> Optional[dict[str, Any]]:
     if enabled is True:
         return {"enabled": True}
     return None
+
+
+def _request_relay_metadata(body: Any) -> dict[str, Any]:
+    """Extract Relay metadata from an OpenAI request body."""
+    if not isinstance(body, dict):
+        return {}
+    metadata = body.get("metadata")
+    if not isinstance(metadata, dict):
+        return {}
+    return dict(metadata)
 
 
 def _request_service_tier(model_options: Any) -> Any:

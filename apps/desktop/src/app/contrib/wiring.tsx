@@ -14,7 +14,7 @@ import { type CSSProperties, lazy, type ReactNode, Suspense, useCallback, useEff
 import { useLocation, useNavigate } from 'react-router'
 
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
-import { BootFailureOverlay } from '@/components/boot-failure-overlay'
+import { StartupOverlay } from '@/components/boot-failure-overlay'
 import { ConfirmHost } from '@/components/confirm-host'
 import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
 import { ExternalOpenFailedDialog } from '@/components/external-open-failed-dialog'
@@ -60,7 +60,6 @@ import {
   type OnboardingRequest,
   type OnboardingResume
 } from '@/store/onboarding-run'
-import { $poolLimitsSettingsRequest } from '@/store/pool-limits'
 import { $previewTarget } from '@/store/preview'
 import {
   $activeGatewayProfile,
@@ -154,9 +153,11 @@ import {
   titlebarControlsPosition,
   titlebarControlsYNudge,
   titlebarToolsRightCss,
-  titlebarToolsWidthCss
+  titlebarToolsWidthCss,
+  TOUCH_TITLEBAR_HEIGHT
 } from '../shell/titlebar'
 import { TitlebarControls } from '../shell/titlebar-controls'
+import { useTouchTitlebar } from '../shell/use-touch-titlebar'
 import { WslgWindowControls } from '../shell/wslg-window-controls'
 import { UpdatesOverlay } from '../updates-overlay'
 
@@ -185,7 +186,6 @@ import {
   useOpenKeybindsListener,
   usePublishRestartPreviewServer
 } from './wiring-effects'
-import { POOL_LIMITS_SETTINGS_ROUTE } from './wiring-routing'
 
 // Overlay views the controller mounts over the shell — lazy, load on demand.
 // The workspace-route full-page views (skills/messaging/artifacts) are the
@@ -243,18 +243,16 @@ function useFirstRunOnboarding(request: OnboardingRequest, open: OnboardingResum
   }, [open])
 }
 
-// Recovery actions raised by toast buttons (Restart Hermes, Open Billing, pool
-// caps, cron review) fire from stores with no router context. Each counter is
+// Recovery actions raised by toast buttons (Restart Hermes, Open Billing, cron
+// review) fire from stores with no router context. Each counter is
 // consumed here: the ref skips the initial mount value, and only a fresh
 // request navigates or recycles the backend.
 function useRecoveryRequestToasts(): void {
   const navigate = useNavigate()
   const billingSettingsRequest = useStore($billingSettingsRequest)
-  const poolLimitsSettingsRequest = useStore($poolLimitsSettingsRequest)
   const backendRestartRequest = useStore($backendRestartRequest)
   const cronReviewRequest = useStore($cronReviewRequest)
   const billingSettingsSeenRef = useRef(0)
-  const poolLimitsSettingsSeenRef = useRef(0)
   const backendRestartSeenRef = useRef(0)
   const cronReviewSeenRef = useRef(0)
 
@@ -292,22 +290,6 @@ function useRecoveryRequestToasts(): void {
     }
   }, [billingSettingsRequest, navigate])
 
-  // Pool-cap recovery is fired by the notification action, which has no router
-  // context. Keep navigation user-initiated: the counter changes only when the
-  // user clicks "Open Advanced Settings" on a pool-slot failure.
-  // eslint-disable-next-line no-restricted-syntax -- one-shot request-seen sentinel, not an atom mirror
-  useEffect(() => {
-    if (poolLimitsSettingsRequest === poolLimitsSettingsSeenRef.current) {
-      return
-    }
-
-    poolLimitsSettingsSeenRef.current = poolLimitsSettingsRequest
-
-    if (poolLimitsSettingsRequest > 0) {
-      navigate(POOL_LIMITS_SETTINGS_ROUTE)
-    }
-  }, [navigate, poolLimitsSettingsRequest])
-
   // eslint-disable-next-line no-restricted-syntax -- one-shot request-seen sentinel, not an atom mirror
   useEffect(() => {
     if (cronReviewRequest === cronReviewSeenRef.current) {
@@ -320,6 +302,23 @@ function useRecoveryRequestToasts(): void {
       navigate(CRON_ROUTE)
     }
   }, [cronReviewRequest, navigate])
+}
+
+// Where the fixed titlebar clusters sit (the same vars AppShell sets). Browser
+// touch chrome pins them flush in its 44px band, at touch-target size.
+function useTitlebarControlsVars(controlsPos: { left: number; top: number }): CSSProperties {
+  const touchTitlebar = useTouchTitlebar()
+
+  return {
+    '--titlebar-controls-left': `${controlsPos.left}px`,
+    '--titlebar-controls-top': `${touchTitlebar ? 0 : controlsPos.top}px`,
+    ...(touchTitlebar
+      ? {
+          '--titlebar-control-size': `${TOUCH_TITLEBAR_HEIGHT}px`,
+          '--titlebar-control-height': `${TOUCH_TITLEBAR_HEIGHT}px`
+        }
+      : {})
+  } as CSSProperties
 }
 
 export function ContribWiring({ children }: { children: ReactNode }) {
@@ -1236,6 +1235,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const rightTitlebarTools = useTitlebarToolContributions('right')
   const connection = useStore($connection)
   const controlsPos = titlebarControlsPosition(connection?.windowButtonPosition, Boolean(connection?.isFullscreen))
+  const controlsVars = useTitlebarControlsVars(controlsPos)
   // Windows/WSLg reserve native min/max/close on the right (AppShell parity:
   // prefer the live WCO measurement, fall back to the static reservation).
   const measuredOverlayWidth = useWindowControlsOverlayWidth()
@@ -1275,8 +1275,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         className="contents"
         style={
           {
-            '--titlebar-controls-left': `${controlsPos.left}px`,
-            '--titlebar-controls-top': `${controlsPos.top}px`,
+            ...controlsVars,
             '--titlebar-controls-width': leftToolsWidth,
             '--titlebar-controls-y-nudge': titlebarControlsYNudge(titlebarChrome),
             '--titlebar-tools-right': titlebarToolsRight,
@@ -1347,7 +1346,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       />
       <UpdatesOverlay />
       <GatewayConnectingOverlay />
-      <BootFailureOverlay />
+      <StartupOverlay />
       <UpdateHoldOverlay />
       <CommandPalette />
       <PluginInstallModal />

@@ -109,9 +109,9 @@ def test_base_adapter_defaults_to_not_owning_access_policy():
     "module_path, class_name",
     [
         ("plugins.platforms.wecom.adapter", "WeComAdapter"),
-        ("gateway.platforms.weixin", "WeixinAdapter"),
-        ("gateway.platforms.yuanbao", "YuanbaoAdapter"),
-        ("gateway.platforms.qqbot.adapter", "QQAdapter"),
+        ("plugins.platforms.weixin.adapter", "WeixinAdapter"),
+        ("plugins.platforms.yuanbao.adapter", "YuanbaoAdapter"),
+        ("plugins.platforms.qqbot.adapter", "QQAdapter"),
         ("plugins.platforms.whatsapp.adapter", "WhatsAppAdapter"),
     ],
 )
@@ -244,8 +244,8 @@ def test_own_policy_open_group_not_authorized_without_allowlist(monkeypatch, pla
     [
         ("plugins.platforms.whatsapp.adapter", "WhatsAppAdapter", "_is_dm_allowed"),
         ("plugins.platforms.wecom.adapter", "WeComAdapter", "_is_dm_allowed"),
-        ("gateway.platforms.weixin", "WeixinAdapter", "_is_dm_allowed"),
-        ("gateway.platforms.qqbot.adapter", "QQAdapter", "_is_dm_allowed"),
+        ("plugins.platforms.weixin.adapter", "WeixinAdapter", "_is_dm_allowed"),
+        ("plugins.platforms.qqbot.adapter", "QQAdapter", "_is_dm_allowed"),
     ],
 )
 def test_pairing_dm_policy_strict_intake_auth_denies_unknown(
@@ -267,7 +267,7 @@ def test_pairing_dm_policy_strict_intake_auth_denies_unknown(
 def test_yuanbao_pairing_dm_intake_denies_blank_principal(monkeypatch, blank_sender):
     """Yuanbao pairing intake must not forward senderless C2C callbacks."""
     _clear_auth_env(monkeypatch)
-    from gateway.platforms.yuanbao import AccessPolicy
+    from plugins.platforms.yuanbao.adapter import AccessPolicy
 
     policy = AccessPolicy(
         dm_policy="pairing",

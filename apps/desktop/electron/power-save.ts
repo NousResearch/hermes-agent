@@ -6,6 +6,9 @@
  * owns the preference (persisted in localStorage) and mirrors it here over
  * IPC; the main process owns the one native blocker, same authority split as
  * translucency/zoom. Electron auto-releases the blocker on quit.
+ *
+ * No Node imports here: the renderer's store imports the modes from this file.
+ * Main's controller, which persists to disk, is in keep-awake-controller.ts.
  */
 
 export type KeepAwakeType = 'prevent-app-suspension' | 'prevent-display-sleep'
@@ -60,6 +63,14 @@ export type KeepAwakeMode = 'always' | 'off' | 'while-working'
 const KEEP_AWAKE_MODES: readonly KeepAwakeMode[] = ['off', 'while-working', 'always']
 
 /**
+ * The mode on a computer where nobody has picked one. A laptop that sleeps
+ * mid-turn freezes the turn and, with a local model, the model server too;
+ * stall timers then cut the request on wake. Holding the blocker only while a
+ * turn runs costs nothing at idle.
+ */
+export const DEFAULT_KEEP_AWAKE_MODE: KeepAwakeMode = 'while-working'
+
+/**
  * Coerce a wire or persisted value to a mode. The pre-mode toggle sent and
  * stored a boolean; `true` meant what 'always' means now, `false` meant 'off'.
  */
@@ -80,12 +91,12 @@ export function parseKeepAwakeMode(value: unknown): KeepAwakeMode | null {
 /** The main process's persisted copy: the `{ mode }` shape, or the legacy `{ on }`. */
 export function readKeepAwakeMode(persisted: unknown): KeepAwakeMode {
   if (typeof persisted !== 'object' || persisted === null) {
-    return 'off'
+    return DEFAULT_KEEP_AWAKE_MODE
   }
 
   const record = persisted as Record<string, unknown>
 
-  return parseKeepAwakeMode(record.mode) ?? parseKeepAwakeMode(record.on) ?? 'off'
+  return parseKeepAwakeMode(record.mode) ?? parseKeepAwakeMode(record.on) ?? DEFAULT_KEEP_AWAKE_MODE
 }
 
 /** Whether the blocker should be held right now, given the mode and the live turn picture. */

@@ -5,7 +5,7 @@ from typing import Any
 
 def add_responses_cache_kwargs(
     kwargs: dict[str, Any], *, model: str, host: str, scope_id: str,
-    is_xai: bool, is_github: bool, extra_body: Any = None,
+    is_xai: bool, prompt_cache_key: bool, extra_body: Any = None,
 ) -> None:
     """Apply the main transport's static-prefix hash and endpoint retention policy."""
     from agent.transports.codex import (
@@ -15,22 +15,26 @@ def add_responses_cache_kwargs(
         _default_prompt_cache_retention_for_request,
     )
 
-    if not is_github and "prompt_cache_key" not in kwargs:
+    cache_key = None
+    if prompt_cache_key and "prompt_cache_key" not in kwargs:
         scope = _cache_scope_from_session_id(scope_id)
         cache_key = _content_cache_key(kwargs["instructions"], kwargs.get("tools"), scope)
-        if is_xai:
-            # xAI reads the routing key from the body. Keep a caller's explicit key,
-            # including an empty opt-out; unscoped aux calls must not share one slot.
-            body = dict(extra_body) if isinstance(extra_body, dict) else {}
-            key = body.get("prompt_cache_key", cache_key if scope else None)
+        if is_xai and not scope:
+            cache_key = None  # Unscoped auxiliary calls must not share one slot.
+        elif not is_xai and cache_key:
+            kwargs["prompt_cache_key"] = cache_key
+    if is_xai:
+        # Endpoint opt-out disables routing, not unrelated caller wire fields.
+        body = dict(extra_body) if isinstance(extra_body, dict) else {}
+        if prompt_cache_key:
+            key = body.get("prompt_cache_key", cache_key)
             if key is not None:
                 body["prompt_cache_key"] = key
             _bound_prompt_cache_key_field(body)
-            # Keep wire fields even when an unscoped or opted-out request has no key.
-            if body:
-                kwargs["extra_body"] = body
-        elif cache_key:
-            kwargs["prompt_cache_key"] = cache_key
+        else:
+            body.pop("prompt_cache_key", None)
+        if body:
+            kwargs["extra_body"] = body
     if "prompt_cache_retention" not in kwargs:
         retention = _default_prompt_cache_retention_for_request(model, host)
         if retention:

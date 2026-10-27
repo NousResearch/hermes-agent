@@ -195,8 +195,8 @@ def prefers_gateway(config_section: str) -> bool:
 NOUS_MANAGED_PROVIDER = "nous"
 # Per-capability keys that also count as "this category has been configured".
 _EXTRA_SELECTION_KEYS = {"web": ("search_backend", "extract_backend")}
-# Key(s) carrying the category's provider selection. ``browser.backend`` is the DRIVER
-# choice (browser-use CLI vs built-in), not the cloud provider — excluded.
+# Key(s) carrying the category's provider selection. A leftover ``browser.backend`` (the
+# pre-v52 driver choice) is not the cloud provider — excluded.
 _SELECTION_NAME_KEYS = {"browser": ("cloud_provider",), "web": ("backend",)}
 _DEFAULT_NAME_KEYS = ("provider", "backend", "cloud_provider")
 

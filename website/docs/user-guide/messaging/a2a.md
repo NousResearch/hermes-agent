@@ -77,6 +77,35 @@ Inbound tasks are injected into a **live gateway session** — the same agent, m
 
 Interoperability is verified against the official Python `a2a-sdk` (card resolution, `SendMessage`, streaming).
 
+## Forwarded profile sessions after the ownership cutover
+
+Forwarding to another local profile now submits to that profile's gateway owner;
+there is no fallback `hermes chat` process writing its session database. New
+forwarded conversations retain the exact agent, tenant, authenticated peer and
+context ID in their owner binding.
+
+Historical forwarded sessions cannot be identified safely from their titles.
+The old adapter used `a2a-{agent}-{sanitized-context}` and omitted peer and tenant
+identity. Different contexts such as `ctx/exact` and `ctx-exact`, even from
+different peers, could already share one transcript. The conversation JSONL log
+also used a lossy filename and did not retain that complete identity. Peer names
+inside user-message text are not ownership metadata.
+
+A matching historical title therefore returns `runtime_coordination_required`
+rather than attaching a peer to potentially unrelated history or silently
+starting a replacement. The historical session ID, title and messages remain
+untouched. Generic CLI resume does not bypass this refusal.
+
+**Automatic migration of these historical forwarded sessions is not yet
+supported.** Recovery needs an explicit local-owner decision about the exact
+session-to-agent/tenant/peer/context binding, particularly for already mixed
+transcripts. It also needs an explicit launch-policy decision: historical rows
+can retain the model and some model parameters without the complete original
+cwd, system prompt or frozen tool/config policy. A title match or current profile
+configuration cannot recover information the old writer never stored. There is
+currently no supported migration command; do not retitle or edit database rows
+to bypass the ownership check.
+
 ## Security model
 
 Secure by default; every widening step is explicit:
@@ -94,7 +123,7 @@ Secure by default; every widening step is explicit:
 |---|---|---|
 | `A2A_PEER_TOKENS` | _(unset)_ | Per-peer credentials `name:token,…` (preferred) |
 | `A2A_BEARER_TOKEN` | _(unset)_ | Shared token; identity falls back to caller IP |
-| `A2A_HOST` | `127.0.0.1` | Bind host — only widens when a token is set |
+| `A2A_HOST` | `127.0.0.1` | Bind host — only widens when a token is set. IPv6 literals such as `::1` or `::` work too, bare or bracketed (`[::1]`) |
 | `A2A_PORT` | `9900` | Inbound port |
 | `A2A_AGENT_NAME` | hostname-derived | Name on the Agent Card |
 | `A2A_PUBLIC_URL` | _(unset)_ | Routable URL advertised on the card (reverse proxies / k8s) |

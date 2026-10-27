@@ -15,7 +15,7 @@ from agent.transports.codex import ResponsesApiTransport, _bounded_prompt_cache_
 
 
 @pytest.fixture
-def auxiliary_wire():
+def auxiliary_wire(request):
     requests = []
 
     def respond(request):
@@ -39,7 +39,7 @@ def auxiliary_wire():
         return httpx.Response(200, headers={"content-type": "text/event-stream"}, text=body)
 
     with OpenAI(
-        api_key="test-only", base_url="https://api.x.ai/v1",
+        api_key="test-only", base_url=getattr(request, "param", "https://api.x.ai/v1"),
         http_client=httpx.Client(transport=httpx.MockTransport(respond)),
     ) as client:
         yield client, requests
@@ -107,3 +107,34 @@ def test_xai_auxiliary_preserves_explicit_cache_routing(auxiliary_wire, key):
         "prompt_cache_key": key, "reasoning": {"enabled": False},
         "metadata": {"task": "title"}, "service_tier": "priority",
     }
+
+
+@pytest.mark.parametrize("auxiliary_wire", ["https://relay.example/v1", "https://other.example/v1", "https://api.x.ai/v1"], indirect=True)
+def test_auxiliary_wire_respects_endpoint_cache_policy(auxiliary_wire):
+    import providers
+    from providers.base import ProviderProfile
+
+    client, requests = auxiliary_wire
+    profile = ProviderProfile(
+        name="aux-cache-test", hostnames=("relay.example", "api.x.ai"), responses_prompt_cache_key=False,
+    )
+    providers.list_providers()
+    providers.register_provider(profile)
+    token = set_runtime_main("openai", "gpt-5.4", session_id="session-test")
+    try:
+        result = _CodexCompletionsAdapter(client, "gpt-5.4").create(
+            messages=[{"role": "user", "content": "Summarize."}],
+            extra_body={"metadata": {"task": "title"}, **(
+                {"prompt_cache_key": "caller-key"} if client.base_url.host == "api.x.ai" else {}
+            )},
+        )
+        assert result.choices[0].message.content == "OK"
+        if client.base_url.host == "api.x.ai":
+            assert requests[0][0]["metadata"] == {"task": "title"}
+        assert bool(requests[0][0].get("prompt_cache_key")) == (client.base_url.host == "other.example")
+    finally:
+        reset_runtime_main(token)
+        providers._REGISTRY.pop(profile.name, None)
+        providers._SOURCES.pop(profile.name, None)
+        providers._PROVIDER_LIST_CACHE = None
+        providers._sync_auth_registry()

@@ -171,15 +171,16 @@ function Start-JourneyChat {
 }
 
 function Invoke-DesktopCheckpoint([string]$ChatPhase, [string]$Commit, [string]$Method) {
+    # Every checkpoint chats through the journey mock. Without it the smoke starts a private mock,
+    # and the detached gateway that checkpoint leaves running keeps that dead URL into later steps;
+    # the journey mock's URL file lets a later step's mock rebind the same port.
+    Start-JourneyChat
     $script:ChatFailure = $true
-    $prevEap = $ErrorActionPreference
-    try {
-        $ErrorActionPreference = 'Continue'
-        & $DriverNode (Join-Path $AssetsDir 'source-desktop-smoke.mjs') `
-            --root $InstallDir --home $HermesHome --user-data $env:HERMES_DESKTOP_USER_DATA_DIR `
-            --out $ProofRoot --phase $ChatPhase --expect-commit $Commit --desktop $script:ExpectedDesktop --method $Method
-        $chatExit = $LASTEXITCODE
-    } finally { $ErrorActionPreference = $prevEap }
+    # The app must be able to detach its gateway, as from a user's launch (see Invoke-OutsideRunnerJob).
+    $chatExit = Invoke-OutsideRunnerJob "desktop-$ChatPhase" $WorkRoot $DriverNode @(
+        (Join-Path $AssetsDir 'source-desktop-smoke.mjs'),
+        '--root', $InstallDir, '--home', $HermesHome, '--user-data', $env:HERMES_DESKTOP_USER_DATA_DIR,
+        '--out', $ProofRoot, '--phase', $ChatPhase, '--expect-commit', $Commit, '--desktop', $script:ExpectedDesktop, '--method', $Method)
     if ($chatExit -ne 0) { throw "Mandatory desktop chat $ChatPhase failed (exit $chatExit)" }
     $script:ChatFailure = $false
 }
@@ -254,6 +255,9 @@ function Set-GitRedirect {
     insteadOf = $RepoUrlSsh
 "@ | Set-Content -LiteralPath $gitCfg -Encoding ASCII
     $env:GIT_CONFIG_GLOBAL = $gitCfg
+    # serve.git publishes commits on main, not releases: HEAD's installer would otherwise
+    # install the latest stable release its tags name. Older installers ignore the variable.
+    $env:HERMES_INSTALL_CHANNEL = 'main'
 
     # check it worked
     $actualGitUrl = Invoke-Git @("-C", $RepoRoot, "remote", "get-url", "origin")

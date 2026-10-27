@@ -382,7 +382,7 @@ def venv_python_version(venv: Path) -> tuple[int, int] | None:
     try:
         for line in (venv / "pyvenv.cfg").read_text(encoding="utf-8-sig").splitlines():
             key, _, value = line.partition("=")
-            if key.strip() != "version":
+            if key.strip() not in ("version", "version_info"):  # venv / uv, virtualenv
                 continue
             major, _, rest = value.strip().partition(".")
             minor, _, _ = rest.partition(".")
@@ -432,6 +432,10 @@ def running_from_selected_environment(project_root: Path) -> bool:
     return any(Path(entry).resolve() == selected for entry in sys.path if entry)
 
 
+class NoCommittedEnvironment(RuntimeError):
+    """PM's store Python with no committed generation: no retry fixes it, only `hermes pm repair`."""
+
+
 def _require_own_dependencies(project_root: Path) -> None:
     """With nothing committed, an interpreter keeps the packages it booted with.
 
@@ -443,7 +447,7 @@ def _require_own_dependencies(project_root: Path) -> None:
     if sys.prefix != sys.base_prefix:
         return  # a venv interpreter (developer .venv, test env) carries its own packages
     if Path(sys.base_prefix).resolve().is_relative_to(store_root(project_root).resolve()):
-        raise RuntimeError("no dependency environment is committed for this install")
+        raise NoCommittedEnvironment("no dependency environment is committed for this install")
 
 
 def activate_dependencies(project_root: Path) -> None:

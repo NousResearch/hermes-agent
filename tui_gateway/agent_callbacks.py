@@ -448,15 +448,13 @@ def _side_agent_session_db(parent_db):
         release_or_close(db)
 
 
-def _preview_restart_history(session: dict, max_messages: int = 24, max_tool_chars: int = 1200) -> list[dict]:
+def _preview_restart_history(messages: list[dict] | None, max_messages: int = 24,
+                             max_tool_chars: int = 1200) -> list[dict]:
     """Distill recent parent history for the ephemeral preview-restart agent (else it guesses
     app/cwd/port from the bare URL): last ``max_messages`` back to the last user turn, tool
-    results truncated to ``max_tool_chars``."""
-    try:
-        with session["history_lock"]:
-            history = list(session.get("history") or [])
-    except Exception:
-        history = list(session.get("history") or [])
+    results truncated to ``max_tool_chars``. ``messages`` is a snapshot the caller owns (the
+    legacy session's history taken under its ``history_lock``, or the owner's stored transcript)."""
+    history = list(messages or [])
     if not history:
         return []
     last_user = next((i for i in range(len(history) - 1, -1, -1) if history[i].get("role") == "user"), None)
@@ -576,6 +574,10 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
         # already closed the agent it saw, so one installed now is never closed (#49852).
         closed_midbuild = bool(session.get("_closing"))
         if not closed_midbuild:
+            # The replacement inherits the raw spawning ids: processes started before a compression rotation keep
+            # their old owner, and the reapers' notify keepalive (and close's kill set) match on it.
+            if inherited := set(getattr(old_agent, "_process_owner_task_ids", ())):
+                agent._process_owner_task_ids = {*inherited, *getattr(agent, "_process_owner_task_ids", ())}
             session.update(agent=agent, config_model_seen=config_model_seen)
             owned = opened or bool(getattr(old_agent, "_owns_session_db", False))
             if owned and _transfer_db_to_agent(agent, session_db):

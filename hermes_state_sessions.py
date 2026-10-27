@@ -43,9 +43,9 @@ def _delegate_from_json(col: str = "model_config") -> str:
 # ("merged config is empty → store NULL").
 _MODEL_CONFIG_ROW_MISSING = object()
 
-# ``lineage(id)``: the compression lineage of the session bound twice as ``(?, ?)`` —
-# ancestors through compression-ended parents plus compression continuations after it.
-_LINEAGE_CTE_SQL = """
+# ``lineage(id)``: the compression lineage of the session bound twice as ``(?, ?)`` — ancestors and
+# continuations over compression edges only (a branch forked from a compressed chat is another chat).
+_LINEAGE_CTE_SQL = f"""
             WITH RECURSIVE
               ancestors(id) AS (
                 SELECT ?
@@ -55,6 +55,7 @@ _LINEAGE_CTE_SQL = """
                 JOIN sessions child ON child.id = a.id
                 JOIN sessions parent ON parent.id = child.parent_session_id
                 WHERE parent.end_reason = 'compression'
+{_non_continuation_child_sql('child.', 'parent.id')}
               ),
               descendants(id) AS (
                 SELECT ?
@@ -64,6 +65,7 @@ _LINEAGE_CTE_SQL = """
                 JOIN sessions parent ON parent.id = d.id
                 JOIN sessions child ON child.parent_session_id = parent.id
                 WHERE parent.end_reason = 'compression'
+{_non_continuation_child_sql('child.', 'parent.id')}
               ),
               lineage(id) AS (
                 SELECT id FROM ancestors
@@ -1114,50 +1116,6 @@ class SessionSessionsMixin:
         combined = " AND ".join(clauses)
         return (f"{where_sql} AND {combined}" if where_sql else f"WHERE {combined}"), params
 
-    def _project_compression_tips(self, sessions: list[dict[str, Any]], compact_rows: bool) -> list[dict[str, Any]]:
-        """Replace each compression root's surfaced fields with its live tip's (root ``started_at`` kept
-        for stable ordering), one batched query. ``_lineage_ids`` carries every chain id (a tile may
-        hold a MIDDLE segment's id)."""
-        chain_by_root: dict[str, list[str]] = {}  # only roots whose tip differs from themselves
-        for s in sessions:
-            if s.get("end_reason") == "compression":
-                chain = self.get_compression_chain(s["id"])
-                if chain and chain[-1] != s["id"]:
-                    chain_by_root[s["id"]] = chain
-        tip_rows = (
-            self._get_session_rich_rows_batch(
-                {chain[-1] for chain in chain_by_root.values()}, compact_rows=compact_rows,
-            ) if chain_by_root else {}
-        )
-        projected = []
-        for s in sessions:
-            chain = chain_by_root.get(s["id"])
-            tip_row = tip_rows.get(chain[-1]) if chain else None
-            if not tip_row:
-                projected.append(s)
-                continue
-            merged = dict(s)
-            for key in (
-                "id", "ended_at", "end_reason", "message_count", "tool_call_count", "title", "last_active",
-                "preview", "model", "system_prompt", "cwd", "git_branch", "git_repo_root",
-            ):
-                if key in tip_row:
-                    merged[key] = tip_row[key]
-            if merged.get("title") is None:
-                # The title is carried root->tip AFTER the publish transaction; a rotation cut off in
-                # between leaves it on the ended root, and exact-title lookups (`hermes peer dm` ->
-                # canonical "Bot Chat") must still see the lineage under its name (#106165).
-                merged["title"] = s.get("title")
-            merged["_lineage_root_id"] = s["id"]
-            merged["_lineage_ids"] = chain
-            # #121148: the projected row IS an automatic continuation, not a fresh conversation and
-            # not a user branch. The server already classifies the edge (_COMPRESSION_CHILD_SQL) but
-            # only ever used it to hide rows — surface the kind so clients can label the provenance
-            # instead of rendering a sealed-and-rotated chat as a brand-new session.
-            merged["continuation_kind"] = "compression"
-            projected.append(merged)
-        return projected
-
     def list_recent_sessions_bounded(
         self,
         *,
@@ -1392,12 +1350,28 @@ class SessionSessionsMixin:
             # rows; MAX over the chain gives effective_last_active in SQL. Do NOT
             # require child.started_at >= parent.ended_at: races insert the
             # continuation before ended_at is written.
-            outer_where, id_params = self._chain_search_where(
-                where_sql, (id_query or "").strip().lower(), (search_query or "").strip().lower(),
-            )
+            #
+            # The page is ranked and cut on ids alone (``page``); only its rows then
+            # pay for the projection. Projecting in the ranked query made SQLite
+            # build every admitted row's full result — s.*, the resolved system
+            # prompt, the preview subquery over message content — before LIMIT:
+            # 4-11s per page at 25k rows, for LIMIT 1 as much as LIMIT 200.
+            #
+            # Unless a search needs every row's chain (it matches a row's own id and
+            # title through it), only rows that HAVE a child seed the walk. A
+            # childless row's chain is itself alone, so its MAX is just its own
+            # last_active, which the outer COALESCE reads directly. Seeding every
+            # admitted row made the CTE + GROUP BY materialise the whole table on
+            # every page: ~12s of a 13s list on a 25k-session store where 1 row had
+            # a child, at LIMIT 1 or 200.
+            id_needle = (id_query or "").strip().lower()
+            search_needle = (search_query or "").strip().lower()
+            seed_where = where_sql if (id_needle or search_needle) else _where_sql(where_clauses + [
+                "EXISTS (SELECT 1 FROM sessions _seed_c WHERE _seed_c.parent_session_id = s.id)"])
+            outer_where, id_params = self._chain_search_where(where_sql, id_needle, search_needle)
             query = f"""
                 WITH RECURSIVE chain(root_id, cur_id) AS (
-                    SELECT s.id, s.id FROM sessions s {where_sql}
+                    SELECT s.id, s.id FROM sessions s {seed_where}
                     UNION ALL
                     SELECT c.root_id, child.id
                     FROM chain c
@@ -1415,15 +1389,23 @@ class SessionSessionsMixin:
                         MAX({_sql_session_last_active_by_id("cur_id")}) AS effective_last_active
                     FROM chain
                     GROUP BY root_id
+                ),
+                page AS (
+                    SELECT s.id AS page_id,
+                        COALESCE(cm.effective_last_active, {_sql_session_last_active("s")},
+                                 {_sql_in_window("s.started_at")}) AS effective_last_active
+                    FROM sessions s
+                    LEFT JOIN chain_max cm ON cm.root_id = s.id
+                    {outer_where}
+                    ORDER BY effective_last_active DESC, s.started_at DESC, s.id DESC
+                    LIMIT ? OFFSET ?
                 )
                 {select_head}{_sql_session_last_active("s")} AS last_active,
-                    COALESCE(cm.effective_last_active, {_sql_in_window("s.started_at")}) AS _effective_last_active
-                FROM sessions s
-                LEFT JOIN chain_max cm ON cm.root_id = s.id
+                    page.effective_last_active AS _effective_last_active
+                FROM page
+                JOIN sessions s ON s.id = page.page_id
                 {prompt_join}
-                {outer_where}
                 ORDER BY _effective_last_active DESC, s.started_at DESC, s.id DESC
-                LIMIT ? OFFSET ?
             """
             params = params + params + id_params + [limit, offset]  # WHERE binds twice (seed + outer)
         else:
@@ -1466,7 +1448,8 @@ class SessionSessionsMixin:
                     seen_ids.add(s["id"])
                     sessions.append(s)
         if project_compression_tips and not include_children:
-            sessions = self._project_compression_tips(sessions, compact_rows)
+            from hermes_state_session_list import project_compression_tips
+            sessions = project_compression_tips(self, sessions, compact_rows)
         if heads:
             from hermes_state_local import annotate_local_lineages
             sessions = annotate_local_lineages(sessions, heads)

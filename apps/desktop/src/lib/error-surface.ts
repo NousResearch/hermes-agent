@@ -53,6 +53,9 @@ export const ERROR_CODE_KEYS = [
   'SESSION_OWNER_BUSY',
   // The chat is a scheduled job's session: it only runs that job, so a typed message never runs there.
   'cron_session_read_only',
+  // Stored history the gateway shows but cannot continue (an old cron run, subagent, imported or
+  // WebUI chat): prompt.submit refuses it with this reason.
+  'session_read_only',
   // The chat's working folder was moved or deleted: nothing ran, and nothing will until it is back
   // or the chat moves to another folder.
   'workspace_unavailable',
@@ -349,6 +352,7 @@ const CODE_PLANS: Partial<Record<ErrorCodeKey, Partial<ErrorRecoveryPlan>>> = {
   SESSION_OWNER_BUSY: { retry: true, startNewSession: false },
   SESSION_OWNER_UNCONFIRMED: { retry: false, startNewSession: false },
   cron_session_read_only: { retry: false, startNewSession: true },
+  session_read_only: { retry: false, startNewSession: true },
   // Retry is the next click once the folder is back or the chat was moved (Move to project).
   workspace_unavailable: { retry: true, startNewSession: true },
   launch_credentials_unavailable: { retry: false, startNewSession: true },

@@ -57,12 +57,17 @@ def _authorize_control(authority, actor, ref, params, owner=None):
                 require_history_claim(authority, conn, actor, ref.session_id)
                 cold_history = authorize_history(conn, actor, ref.session_id)
         if not cold_history:
-            if params.get('operation') == 'delete':
-                # The read gate mounts a cold row first, so the check below sees what it is.
+            operation = params.get('operation')
+            if operation in {'delete', 'archive', 'sidebar'}:
+                # The read gate mounts a cold row first, so the checks below see what it is.
                 authority.authorize(actor, ref, 'session:read')
-            if not (params.get('operation') == 'delete' and authority.sessions[ref.session_id].superseded):
+            if operation == 'delete':
+                from gateway.session_history_mount import require_history_leaf
+                require_history_leaf(authority, ref.session_id)
+            if not (operation in {'delete', 'archive', 'sidebar'} and authority.sessions[ref.session_id].superseded):
                 # An old conversation its chat moved past is read-only, but deleting it retires its
-                # own lineage only (retirement never evicts a read-only mount's route).
+                # own lineage only (retirement never evicts a read-only mount's route), and archiving
+                # or pinning it flags that lineage's rows only, never the route's newer conversation.
                 authority.authorize(actor, ref, 'session:control')
     return cold_history
 
@@ -129,7 +134,8 @@ async def _owned_mutation(authority, actor, ref, params):
                 result = await _mutate_session(authority, actor, ref, params, owner=owner)
             except (RuntimeStoreError, *MUTATION_GUARD_REFUSALS) as exc:
                 # A pick on a running session is for the next turn (the running turn keeps its route).
-                if params.get('operation') != 'model' or getattr(exc, 'reason', 'session_busy') != 'session_busy':
+                if (params.get('operation') not in {'model', 'reasoning'}
+                        or getattr(exc, 'reason', 'session_busy') != 'session_busy'):
                     raise
                 from gateway.session_deferred_pick import defer_pick
                 # Its own BEGIN IMMEDIATE: off the loop, like the receipt commit.

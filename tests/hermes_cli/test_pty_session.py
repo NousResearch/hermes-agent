@@ -5,6 +5,7 @@ import time
 import pytest
 
 from hermes_cli.pty_session import RingBuffer
+from tests.waiting import async_wait_until
 
 
 def test_ringbuffer_keeps_everything_under_capacity():
@@ -57,6 +58,7 @@ class FakeWS:
     def __init__(self):
         self.sent = []               # list of ("bytes"|"text", payload)
         self.close_code = None
+        self.close_reason = None
 
     async def send_bytes(self, data):
         self.sent.append(("bytes", bytes(data)))
@@ -66,6 +68,7 @@ class FakeWS:
 
     async def close(self, code=1000, reason=""):
         self.close_code = code
+        self.close_reason = reason
 
 
 class FailingWS(FakeWS):
@@ -145,6 +148,230 @@ async def test_drain_send_failure_detaches_current_socket_but_not_a_replacement(
     assert s._ws is replacement
     assert s.last_detached_at is None
     await s.close()
+
+
+@pytest.mark.asyncio
+async def test_viewer_that_stops_reading_live_output_is_told_to_reconnect(monkeypatch):
+    """The send limit drops a stalled viewer, not its session. 1011 makes the
+    dashboard chat tab offer a new session; 1001 is the code both it and the
+    Webapp terminal redial on, and the same key then reattaches the same PTY."""
+    from hermes_cli import pty_session
+    from hermes_cli.pty_session import PtySessionRegistry
+
+    monkeypatch.setattr(pty_session, "_VIEWER_SEND_TIMEOUT_SECONDS", 0.1)
+    registry = PtySessionRegistry(ttl=60.0, max_sessions=2, buffer_cap=1024, read_timeout=0.01)
+    bridge = FakeBridge([])
+    session, _ = await registry.attach_or_spawn("k", spawn=lambda: bridge)
+    stalled = FailingWS(hold=True)  # stopped reading: its send never completes
+    assert await session.attach(stalled)  # empty history: no replay frame to send
+    bridge._chunks.append(b"live output")
+    await async_wait_until(lambda: stalled.close_code is not None, timeout=15)
+    assert stalled.close_code == 1001
+    assert session.alive and not session.attached
+    again, created = await registry.attach_or_spawn("k", spawn=lambda: FakeBridge([]))
+    viewer = FakeWS()
+    assert again is session and not created
+    assert await again.attach(viewer)
+    assert viewer.sent == [("bytes", b"live output")]
+    await registry.close_all()
+
+
+class SlowLinkWS(FakeWS):
+    """Carries every frame in ``seconds``: a viewer still reading, over a slow link."""
+
+    def __init__(self, seconds):
+        super().__init__()
+        self._seconds = seconds
+
+    async def send_bytes(self, data):
+        await asyncio.sleep(self._seconds)  # health: allow HX013 -- the link's transfer time is the behaviour under test
+        await super().send_bytes(data)
+
+
+@pytest.mark.asyncio
+async def test_a_full_replay_over_a_slow_link_is_not_a_stalled_viewer(monkeypatch):
+    """The stall limit covers one live frame. A reattach replay of up to the 1 MiB buffer gets time
+    to cross a slow link too, or every redial replays, times out and redials again."""
+    from hermes_cli import pty_session
+    from hermes_cli.pty_session import PtySession
+
+    monkeypatch.setattr(pty_session, "_VIEWER_SEND_TIMEOUT_SECONDS", 0.05)
+    history = b"x" * (1024 * 1024)
+    session = PtySession("k", FakeBridge([]), buffer_cap=len(history), read_timeout=0.01)
+    session.buffer.append(history)
+    viewer = SlowLinkWS(0.5)  # ten stall limits, far inside a full replay's budget
+
+    assert await session.attach(viewer)
+    assert viewer.sent == [("bytes", history)] and viewer.close_code is None
+    assert session._ws is viewer
+
+    # A viewer that stopped reading still gets dropped, within the limit plus its replay's share.
+    small = PtySession("k2", FakeBridge([]), buffer_cap=1024, read_timeout=0.01)
+    small.buffer.append(b"tail")
+    stalled = FailingWS(hold=True)  # the replay never completes
+    try:
+        assert await small.attach(stalled) is False
+        assert small._ws is None
+    finally:
+        stalled.release.set()
+
+
+class NarrowLinkWS(FakeWS):
+    """Carries a frame of up to ``capacity`` bytes within the deadline and never finishes a larger
+    one: a viewer still reading, over a link too slow for the whole replay."""
+
+    def __init__(self, capacity):
+        super().__init__()
+        self._capacity = capacity
+
+    async def send_bytes(self, data):
+        if len(data) > self._capacity:
+            await asyncio.Event().wait()
+        await super().send_bytes(data)
+
+
+@pytest.mark.asyncio
+async def test_redials_over_a_link_too_slow_for_the_whole_replay_reach_a_replay_it_carries(monkeypatch):
+    """A replay that misses its deadline is halved for the session's next attach, so a viewer on a
+    link of any speed gets the newest output it can carry after a few redials instead of timing out
+    on every one. A client that dropped is not a slow link and keeps the whole replay."""
+    from hermes_cli import pty_session
+    from hermes_cli.pty_session import PtySession
+
+    monkeypatch.setattr(pty_session, "_VIEWER_SEND_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(pty_session, "_REPLAY_MIN_BYTES_PER_SECOND", 1024 ** 3)
+    monkeypatch.setattr(pty_session, "_REPLAY_FLOOR_BYTES", 1024, raising=False)
+    history = bytes(range(256)) * 256
+    session = PtySession("k", FakeBridge([]), buffer_cap=len(history), read_timeout=0.01)
+    session.buffer.append(history)
+
+    assert await session.attach(FailingWS()) is False
+    whole = FakeWS()
+    assert await session.attach(whole)
+    assert whole.sent == [("bytes", history)]
+
+    attached = []
+    for _redial in range(12):
+        viewer = NarrowLinkWS(4096)
+        attached.append(await session.attach(viewer))
+        if attached[-1]:
+            break
+    assert attached[-1], attached
+    replay = viewer.sent[0][1]
+    assert 0 < len(replay) <= 4096 and history.endswith(replay)
+    assert session._ws is viewer and viewer.close_code is None
+
+
+@pytest.mark.asyncio
+async def test_a_shrunk_replay_keeps_a_floor(monkeypatch):
+    """Replays that keep timing out shrink the next one only down to a floor, so a reattach still
+    shows the newest output instead of nothing."""
+    from hermes_cli import pty_session
+    from hermes_cli.pty_session import PtySession
+
+    monkeypatch.setattr(pty_session, "_VIEWER_SEND_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(pty_session, "_REPLAY_MIN_BYTES_PER_SECOND", 1024 ** 3)
+    monkeypatch.setattr(pty_session, "_REPLAY_FLOOR_BYTES", 1024, raising=False)
+    history = bytes(range(256)) * 256
+    session = PtySession("k", FakeBridge([]), buffer_cap=len(history), read_timeout=0.01)
+    session.buffer.append(history)
+
+    for _stall in range(20):
+        await session.attach(NarrowLinkWS(0))  # never finishes a frame of output
+
+    viewer = FakeWS()
+    assert await session.attach(viewer)
+    assert viewer.sent == [("bytes", history[-1024:])]
+
+
+@pytest.mark.asyncio
+async def test_a_replay_size_that_timed_out_is_not_replayed_again(monkeypatch):
+    """A replay send returns once the socket's buffers take the frame, so a quick send does not show
+    that the link carries more. After a replay times out, the session never replays that size again:
+    a viewer that keeps redialing over the same slow link gets the replay it carries every time,
+    instead of timing out on every second redial."""
+    from hermes_cli import pty_session
+    from hermes_cli.pty_session import PtySession
+
+    monkeypatch.setattr(pty_session, "_VIEWER_SEND_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(pty_session, "_REPLAY_MIN_BYTES_PER_SECOND", 1024 ** 3)
+    monkeypatch.setattr(pty_session, "_REPLAY_FLOOR_BYTES", 1024)
+    history = bytes(range(256)) * 256
+    session = PtySession("k", FakeBridge([]), buffer_cap=len(history), read_timeout=0.01)
+    session.buffer.append(history)
+
+    attached, replays = [], []
+    for _redial in range(6):
+        # The buffers take half the history at once; the whole of it never crosses in time.
+        viewer = NarrowLinkWS(len(history) // 2)
+        attached.append(await session.attach(viewer))
+        replays.append(viewer.sent[0][1] if viewer.sent else b"")
+
+    assert attached == [False] + [True] * 5
+    assert replays[1:] == [history[len(history) // 2:]] * 5
+
+
+@pytest.mark.asyncio
+async def test_a_reattach_that_replays_part_of_the_history_says_output_was_trimmed(tmp_path, monkeypatch):
+    """The host terminal's metadata frame tells the browser ``truncated: true`` whenever the replay
+    after it leaves out older output, including output the session still holds but a shrunk replay
+    omits, so the "output was trimmed" notice shows. A replay of everything says ``false``."""
+    import json
+    import secrets
+    from types import SimpleNamespace
+
+    from hermes_cli import pty_session
+    from hermes_cli.web_host_terminal import META_PREFIX
+    from hermes_cli.web_host_terminal_sessions import HostOwner, HostTerminalRegistry, host_terminal
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(pty_session, "_VIEWER_SEND_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(pty_session, "_REPLAY_MIN_BYTES_PER_SECOND", 1024 ** 3)
+    history = bytes(range(256)) * 256
+    registry = HostTerminalRegistry()
+    token = secrets.token_urlsafe(32)
+    session = pty_session.PtySession(token, FakeBridge([]), buffer_cap=1024 * 1024, read_timeout=0.01)
+    session.buffer.append(history)
+    registry._sessions[token] = session
+    registry.owners[token] = HostOwner(("local", "owner"), home.resolve(), "sh", str(tmp_path))
+    app = SimpleNamespace(state=SimpleNamespace(host_terminals=registry))
+
+    class Viewer(NarrowLinkWS):
+        """A browser tab reattaching to the shell, then closing."""
+
+        def __init__(self, capacity):
+            super().__init__(capacity)
+            self.app = app
+            self.query_params = {"attach": token}
+            self._hermes_auth_identity = {"user_id": "owner", "provider": "local"}
+
+        async def receive(self):
+            return {"type": "websocket.disconnect"}
+
+    def metadata(viewer):
+        kind, text = viewer.sent[0]
+        assert kind == "text" and text.startswith(META_PREFIX)
+        return json.loads(text.removeprefix(META_PREFIX))
+
+    try:
+        whole = Viewer(len(history))
+        await host_terminal(whole)
+        assert whole.sent[1] == ("bytes", history)
+        assert metadata(whole)["truncated"] is False
+
+        stalled = Viewer(0)
+        await host_terminal(stalled)
+        assert stalled.close_code == 1001 and metadata(stalled)["truncated"] is False
+
+        partial = Viewer(len(history))
+        await host_terminal(partial)
+        kind, replay = partial.sent[1]
+        assert kind == "bytes" and len(replay) < len(history) and history.endswith(replay)
+        assert metadata(partial)["truncated"] is True
+    finally:
+        await registry.close_all()
 
 
 @pytest.mark.asyncio
@@ -409,6 +636,22 @@ async def test_concurrent_reap_idle_is_idempotent():
     await first                               # first reap reaches the taken k1
     assert not reg._sessions
     assert all(b.closed for b in bridges)
+
+
+@pytest.mark.asyncio
+async def test_a_closed_registry_refuses_spawns_until_reopened():
+    """``close_all`` (a lifespan shutting down) refuses new terminals, so none outlives it; the
+    process-wide registry takes spawns again once a new lifespan reopens it (the gateway falling back
+    from the Webapp's listener to its private one in the same process)."""
+    reg = make_registry()
+    await reg.close_all()
+    with pytest.raises(RegistryFull):
+        await reg.attach_or_spawn("tok", spawn=lambda: FakeBridge([]))
+
+    reg.reopen()
+    session, created = await reg.attach_or_spawn("tok", spawn=lambda: FakeBridge([b""]))
+    assert created and session.alive
+    await reg.close_all()
 
 
 @pytest.mark.asyncio

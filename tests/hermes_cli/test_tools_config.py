@@ -314,6 +314,29 @@ def test_first_install_nous_auto_configures_video_gen(monkeypatch):
 class TestPlatformToolsetConsistency:
     """Every platform in tools_config.PLATFORMS must have a matching toolset."""
 
+    def test_sms_platform_registered_with_hermes_sms_toolset(self):
+        from hermes_cli.tools_config import PLATFORMS
+
+        assert "sms" in PLATFORMS
+        assert PLATFORMS["sms"]["default_toolset"] == "hermes-sms"
+
+    def test_get_enabled_platforms_detects_twilio_sms(self, monkeypatch):
+        from hermes_cli import tools_config as tc
+
+        monkeypatch.setattr(
+            tc, "get_env_value",
+            lambda key: "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" if key == "TWILIO_ACCOUNT_SID" else None,
+        )
+        enabled = tc._get_enabled_platforms()
+        assert enabled[0] == "cli"
+        assert enabled.count("sms") == 1
+
+    def test_get_enabled_platforms_skips_sms_without_twilio(self, monkeypatch):
+        from hermes_cli import tools_config as tc
+
+        monkeypatch.setattr(tc, "get_env_value", lambda key: None)
+        assert "sms" not in tc._get_enabled_platforms()
+
     def test_all_platforms_have_toolset_definitions(self):
         """Each platform's default_toolset must exist in TOOLSETS."""
         from hermes_cli.tools_config import PLATFORMS

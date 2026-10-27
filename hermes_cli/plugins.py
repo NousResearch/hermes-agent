@@ -744,15 +744,9 @@ class PluginContext(PluginCapabilityCtxMixin):
             return
         launch_scope = hermes_home_key(get_process_hermes_home())
         if self._manager.scope_key != launch_scope:
-            logger.warning(
-                "Plugin '%s' tried to register dashboard-auth provider %r "
-                "from profile scope %s; ignoring it because dashboard auth "
-                "is owned by launch scope %s.",
-                self.manifest.name,
-                provider.name,
-                self._manager.scope_key,
-                launch_scope,
-            )
+            logger.warning("Plugin '%s' tried to register dashboard-auth provider %r from profile scope %s; "
+                           "ignoring it because dashboard auth is owned by launch scope %s.",
+                           self.manifest.name, provider.name, self._manager.scope_key, launch_scope)
             return
         registry_name = provider.name
         # The auth registry is process-global (lifetime = web server). Disposing it on a routine
@@ -1084,8 +1078,8 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         # matches the key the registries store under (normcase on Windows).
         self.scope_key = hermes_home_key(scope_key)
         self.home_path = Path(self.scope_key)
-        self._discovery_lock = threading.RLock()
-        self._discovered: bool = False
+        self._discovery_lock, self._discovery_state_lock = threading.RLock(), threading.Lock()
+        self._discovered, self._discovery_owner, self._discovery_depth = False, None, 0
         # True once a discovery re-applied plugin secret sources for this home: the per-home snapshot and
         # the installed scope may then hold plugin-supplied names, and a later discovery that finds NO
         # enabled plugin source (plugin removed / disabled) must still reconcile once to drop them.
@@ -1204,7 +1198,6 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         """Scan all plugin sources and load each plugin found; ``force`` unloads first so config
         changes / new bundled backends become visible in long-lived sessions."""
         from agent.safe_worker_policy import safe_worker_enabled
-
         if safe_worker_enabled() or plugin_discovery_suppressed():
             # Safe workers never discover; a config-only read of a profile this process must not
             # load plugins for is suppressed too.
@@ -1217,48 +1210,51 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         with self._discovery_lock, _plugin_home_scope(self.home_path):
             if self._discovered and not force:
                 return
-            # ``on_plugin_loaded`` reports the plugins this sweep loads that the process did not have before
-            # (boot: everything; a mid-run install/enable: just the newcomer), keyed on the pre-sweep set.
-            loaded_before = frozenset(k for k, p in self._plugins.items() if not p.error and not p.deferred)
-            if force:
-                self.unload()  # the ledger owns teardown of process-global registries
-            if env_var_enabled("HERMES_SAFE_MODE"):
-                logger.info("HERMES_SAFE_MODE=1 — plugin discovery skipped")
-                self._discovered = True
-                return
-            # Flag set up front as a re-entrancy guard (register() can trigger discovery again) but
-            # reset on failure so a failed scan is NOT cached as "discovered with an empty registry"
-            # — callers swallow the exception and would be stranded on the early return above.
-            self._discovered = True
+            self._enter_discovery()
             try:
-                self._discover_and_load_inner()
-                # Persistent registrations survived the unload-all; now that plugins re-registered,
-                # dispose the ones whose plugin did not come back.
-                # Now that plugins have had their chance to re-register, dispose the ones whose plugin did
-                # not come back (disabled, removed, or omitted from this discovery pass) so e.g. a disabled
-                # auth plugin's provider does not stay live process-wide until restart. See #91701.
-                self._evict_stale_persistent_registrations()
-                # load_hermes_dotenv() ran at import, before plugin secret sources existed: re-pull.
-                # Plugin secret sources register during discover; the initial load_hermes_dotenv() already
-                # ran at import time. Re-pull so the first process sees plugin backends (tracking #64177).
-                self._refresh_secret_sources_after_discovery()
+                # ``on_plugin_loaded`` reports the plugins this sweep loads that the process did not have before
+                # (boot: everything; a mid-run install/enable: just the newcomer), keyed on the pre-sweep set.
+                loaded_before = frozenset(k for k, p in self._plugins.items() if not p.error and not p.deferred)
                 if force:
-                    # config.yaml shell hooks / outbound webhooks live in ``_hooks`` but are
-                    # config-owned; unload() wiped them and cannot restore them.
-                    # Re-register so force-reload is symmetric (#60036; tracking #64178 — salvaged from PR
-                    # #64188; outbound webhooks added per #92682 review).
-                    self._re_register_config_hooks_after_force()
-            except BaseException:
-                self._discovered = False
-                raise
+                    self.unload()  # the ledger owns teardown of process-global registries
+                if env_var_enabled("HERMES_SAFE_MODE"):
+                    logger.info("HERMES_SAFE_MODE=1 — plugin discovery skipped")
+                    self._discovered = True
+                    return
+                # Flag set up front as a re-entrancy guard (register() can trigger discovery again) but
+                # reset on failure so a failed scan is NOT cached as "discovered with an empty registry"
+                # — callers swallow the exception and would be stranded on the early return above.
+                self._discovered = True
+                try:
+                    self._discover_and_load_inner()
+                    # Persistent registrations survived the unload-all; now that plugins re-registered,
+                    # dispose the ones whose plugin did not come back.
+                    # Now that plugins have had their chance to re-register, dispose the ones whose plugin did
+                    # not come back (disabled, removed, or omitted from this discovery pass) so e.g. a disabled
+                    # auth plugin's provider does not stay live process-wide until restart. See #91701.
+                    self._evict_stale_persistent_registrations()
+                    # load_hermes_dotenv() ran at import, before plugin secret sources existed: re-pull.
+                    # Plugin secret sources register during discover; the initial load_hermes_dotenv() already
+                    # ran at import time. Re-pull so the first process sees plugin backends (tracking #64177).
+                    self._refresh_secret_sources_after_discovery()
+                    if force:
+                        # config.yaml shell hooks / outbound webhooks live in ``_hooks`` but are
+                        # config-owned; unload() wiped them and cannot restore them.
+                        # Re-register so force-reload is symmetric (#60036; tracking #64178 — salvaged from PR
+                        # #64188; outbound webhooks added per #92682 review).
+                        self._re_register_config_hooks_after_force()
+                except BaseException:
+                    self._discovered = False
+                    raise
+            finally:
+                self._exit_discovery()
         # Outside the lock: a listener (the gateway's re-wire) may read the registry from another thread.
         self._notify_plugin_loaded(loaded_before)
 
     def _re_register_config_hooks_after_force(self) -> None:
         """Restore config-owned shell hooks/outbound webhooks after a force clear; each guarded
         independently so one failing does not skip the other."""
-        for label, module_name in (("shell-hook", "agent.shell_hooks"),
-                                   ("outbound-webhook", "agent.outbound_webhooks")):
+        for label, module_name in (("shell-hook", "agent.shell_hooks"), ("outbound-webhook", "agent.outbound_webhooks")):
             try:
                 importlib.import_module(module_name).re_register_config_hooks()
             except Exception as exc:
@@ -1686,7 +1682,6 @@ def discover_plugins(force: bool = False) -> None:
     """Discover and load all plugins (idempotent; ``force=True`` rescans). Joins an in-flight
     background discovery instead of racing a second scan."""
     from agent.safe_worker_policy import safe_worker_enabled
-
     if safe_worker_enabled():
         return
     _join_background_discovery()
@@ -1697,20 +1692,25 @@ _background_discovery_thread: Optional[threading.Thread] = None
 _background_discovery_lock = threading.Lock()
 
 
+def plugin_discovery_in_flight() -> bool:
+    """Return whether background or direct plugin discovery is currently running."""
+    t = _background_discovery_thread
+    return (t is not None and t.is_alive()) or getattr(get_plugin_manager(), "_discovery_is_in_progress", lambda: False)()
+
+
 def start_background_plugin_discovery() -> None:
     """Run discovery in a daemon thread to overlap the rest of CLI startup (~150ms). Every
     synchronous consumer joins it via :func:`discover_plugins`, so no one sees a half-loaded
     registry. No-op when already done or in flight."""
     from agent.safe_worker_policy import safe_worker_enabled
-
     if safe_worker_enabled():
         return
     global _background_discovery_thread
     manager = get_plugin_manager()
-    if manager._discovered:
+    if manager._discovered or manager._discovery_is_in_progress():
         return
     with _background_discovery_lock:
-        if _background_discovery_thread is not None and _background_discovery_thread.is_alive():
+        if manager._discovered or plugin_discovery_in_flight():
             return
 
         def _run() -> None:
@@ -1728,7 +1728,8 @@ def _join_background_discovery(timeout: float = 30.0) -> None:
     """Wait for an in-flight background discovery (no-op from its own thread or a plugin-load worker it
     spawned — that worker's parent is blocked waiting on it)."""
     t = _background_discovery_thread
-    if t is None or not t.is_alive() or t is threading.current_thread() or in_plugin_load_worker():
+    if (t is None or not t.is_alive() or t is threading.current_thread() or in_plugin_load_worker()
+            or getattr(get_plugin_manager(), "_discovery_is_owned_by_current_thread", lambda: False)()):
         return
     t.join(timeout=timeout)
 
@@ -1753,9 +1754,7 @@ def _persist_plugin_toolset_keys() -> None:
 
 def _nowait_plugin_set(cache_field: str, live: Callable[[PluginManager], set[str]]) -> set[str]:
     """Shared body of the ``*_nowait`` probes: live registry, else last launch's cache, else block."""
-    manager = get_plugin_manager()
-    t = _background_discovery_thread
-    in_flight = t is not None and t.is_alive()
+    manager, in_flight = get_plugin_manager(), plugin_discovery_in_flight()
     if manager._discovered and not in_flight:
         return live(manager)
     if in_flight:
@@ -1791,7 +1790,7 @@ def _delivery_manager() -> PluginManager:
     on those surfaces (#50776, #67597, #67890, #50937; tracking #64178 — salvaged from PR #64188).
     """
     manager = get_plugin_manager()
-    if not getattr(manager, "_discovered", True):
+    if not getattr(manager, "_discovered", True) or plugin_discovery_in_flight():
         _join_background_discovery()
         manager.discover_and_load()
     return manager
@@ -1812,9 +1811,10 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> list[Any]:
 
 
 async def ainvoke_hook(hook_name: str, **kwargs: Any) -> list[Any]:
-    """:func:`invoke_hook` for callers on an event loop: ``async def`` callbacks are awaited
-    there instead of bridged through a helper thread (see ``PluginManager.ainvoke_hook``)."""
-    return await _delivery_manager().ainvoke_hook(hook_name, **kwargs)
+    """:func:`invoke_hook` for callers on an event loop (see ``PluginManager.ainvoke_hook``)."""
+    mgr = get_plugin_manager()
+    mgr = await asyncio.to_thread(_delivery_manager) if (not getattr(mgr, "_discovered", True) or plugin_discovery_in_flight()) else mgr
+    return await mgr.ainvoke_hook(hook_name, **kwargs)
 
 
 def render_system_prompt_sections(session_info: Mapping[str, Any]) -> list[RenderedPluginSystemPromptSection]:

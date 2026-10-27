@@ -1,10 +1,13 @@
 """Validation for the ``platform_toolsets`` config section."""
 
 import ast
+import logging
 from typing import Callable, List, Optional
 
 from hermes_cli.platforms import PLATFORMS
 from hermes_cli.toolset_scope import toolset_allowed_for_platform
+
+logger = logging.getLogger(__name__)
 
 _NO_TOOLS = "the agent will have no tools on this platform. Run `hermes tools` to reconfigure."
 
@@ -75,11 +78,47 @@ def saved_toolset_resolver(config: dict) -> Callable[[str], bool]:
     def plugin_names() -> frozenset:
         from hermes_cli.plugins import get_plugin_toolset_keys_nowait, get_portable_mcp_server_names_nowait
 
-        portable = get_portable_mcp_server_names_nowait()
-        return frozenset(get_plugin_toolset_keys_nowait() | portable | {f"mcp-{name}" for name in portable})
+        try:
+            portable = get_portable_mcp_server_names_nowait()
+            keys = get_plugin_toolset_keys_nowait()
+        except Exception:
+            logger.warning(
+                "plugin discovery failed during toolset validation; "
+                "the following toolset warning may misreport valid plugins",
+                exc_info=True,
+            )
+            return frozenset()
+        return frozenset(keys | portable | {f"mcp-{name}" for name in portable})
 
+    @cache
+    def discovered_plugin_names() -> frozenset:
+        from hermes_cli.plugins import (
+            discover_plugins,
+            get_plugin_toolset_keys_nowait,
+            get_portable_mcp_server_names_nowait,
+            plugin_discovery_in_flight,
+        )
+
+        if not plugin_discovery_in_flight():
+            return frozenset()
+        try:
+            discover_plugins()
+            portable = get_portable_mcp_server_names_nowait()
+            keys = get_plugin_toolset_keys_nowait()
+        except Exception:
+            logger.warning(
+                "plugin discovery failed during toolset validation; "
+                "the following toolset warning may misreport valid plugins",
+                exc_info=True,
+            )
+            return frozenset()
+        return frozenset(keys | portable | {f"mcp-{name}" for name in portable})
+
+    # Re-check validate_toolset(name) after discovered_plugin_names() joins in-flight
+    # discovery in case a plugin registered a toolset during the sweep.
     return lambda name: (validate_toolset(name) or name in known
-                         or name in platform_bundles() or name in plugin_names())
+                         or name in platform_bundles() or name in plugin_names()
+                         or name in discovered_plugin_names() or validate_toolset(name))
 
 
 def validate_platform_toolsets(

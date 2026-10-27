@@ -642,7 +642,7 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
         enabled_toolsets = _prune_toolsets_stripped_by_disabled(enabled_toolsets, disabled_names)
 
     if explicitly_configured and toolset_names:
-        _warn_all_invalid_platform_toolsets(platform, toolset_names)
+        _warn_all_invalid_platform_toolsets(platform, toolset_names, plugin_ts_keys)
     return enabled_toolsets
 
 
@@ -753,13 +753,20 @@ def _merge_mcp_servers(
     return result | explicit_mcp_servers
 
 
-def _warn_all_invalid_platform_toolsets(platform: str, explicit: list) -> None:
+def _warn_all_invalid_platform_toolsets(
+    platform: str, explicit: list, plugin_ts_keys: Optional[set[str]] = None
+) -> None:
     """Warn once when an explicit platform list has only invalid names (``hermes`` for ``hermes-cli`` → no
     native tools), at session tool resolution rather than only in update/doctor."""
     from toolsets import validate_toolset
 
+    known_plugins = plugin_ts_keys if plugin_ts_keys is not None else _get_plugin_toolset_keys()
     named = [str(t) for t in explicit if isinstance(t, str) and t]
-    if named and not any(validate_toolset(t) for t in named) and platform not in _warned_invalid_platform_toolsets:
+    if (
+        named
+        and not any(validate_toolset(t) or t in known_plugins for t in named)
+        and platform not in _warned_invalid_platform_toolsets
+    ):
         _warned_invalid_platform_toolsets.add(platform)
         logger.warning(
             "platform '%s' has no valid toolsets configured (unknown "

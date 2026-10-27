@@ -280,6 +280,31 @@ def installed_in_selected_environment(requirements: list[str]) -> bool:
 
 
 class PluginLoaderMixin:
+    def _enter_discovery(self) -> None:
+        """Mark the current thread as the active discovery owner (re-entrant)."""
+        current_thread = threading.get_ident()
+        with self._discovery_state_lock:
+            if self._discovery_owner is None:
+                self._discovery_owner = current_thread
+            self._discovery_depth += 1
+
+    def _exit_discovery(self) -> None:
+        """Release one discovery frame for the current owner."""
+        with self._discovery_state_lock:
+            self._discovery_depth -= 1
+            if self._discovery_depth == 0:
+                self._discovery_owner = None
+
+    def _discovery_is_in_progress(self) -> bool:
+        """Return whether plugin registration is still running."""
+        with self._discovery_state_lock:
+            return self._discovery_owner is not None
+
+    def _discovery_is_owned_by_current_thread(self) -> bool:
+        """Return whether this thread is registering plugins now."""
+        with self._discovery_state_lock:
+            return self._discovery_owner == threading.get_ident()
+
     def on_plugin_loaded(self, callback: Callable[[list[dict[str, Any]]], Any]) -> Callable[[], None]:
         """Subscribe to "a discovery sweep loaded plugins this process did not have": fires from INSIDE
         :meth:`discover_and_load` (never emitted by an install RPC) with one

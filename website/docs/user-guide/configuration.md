@@ -2705,13 +2705,16 @@ hosted_rooms:
 Both keys are optional; omitted keys retain the backward-compatible defaults of
 3 rounds and 10 replies. Values must be positive integers: `0`, negative values,
 `null`, booleans, strings (including quoted numbers or `"unlimited"`), and floats
-are not accepted. For example, set `max_rounds: 6` and `max_messages: 30` for a
-larger, still bounded discussion budget.
+are not accepted. An invalid value is ignored with a warning in the gateway log and
+the defaults apply, so a typo never takes group chat offline. For example, set
+`max_rounds: 6` and `max_messages: 30` for a larger, still bounded discussion budget
+(a 5-member room then gets past the 10-reply stop).
 
-Set these keys in the root owner's `config.yaml` alongside `shared-state.db`, not
-in an individual room member's profile configuration. Each server process reads
-them once at startup. Refresh every participating process sharing that room
-database, not just the service the client connects to, after changing them.
+Set these keys in the `config.yaml` of the Hermes home that holds the room store
+(the root home beside `shared-state.db`), not in an individual room member's profile
+configuration. They apply to rooms served by the gateway and by the Desktop/TUI
+backend alike. Each server process reads them once at startup: restart every
+process sharing that room store after changing them.
 
 These are ceilings, not targets or a guarantee of task completion. Discussions
 can settle early, and Stop and approval gates remain in effect.

@@ -174,15 +174,22 @@ def test_owner_settings_do_not_leak_from_a_member_scope_and_defaults_are_unchang
 
 @pytest.mark.parametrize("key", ["max_rounds", "max_messages"])
 @pytest.mark.parametrize("value", ["0", "-1", "true", "1.5", "'6'", "null", "[]", "{}"])
-def test_invalid_limits_are_rejected_before_any_room_work(tmp_path, key, value):
+def test_an_invalid_limit_keeps_the_defaults_and_names_the_key(tmp_path, caplog, key, value):
+    """A typo in one budget must not take every room on the store offline."""
     (tmp_path / "config.yaml").write_text(f"hosted_rooms:\n  discussion:\n    {key}: {value}\n")
     with pytest.raises(discussion.DiscussionValidationError, match=f"{key} must be a positive integer"):
-        _service(tmp_path)
-    assert not (tmp_path / "state.db").exists()
+        discussion.DiscussionLimits(**{key: yaml_value(value)})
+    service = _service(tmp_path)
+    assert service.discussion_limits == discussion.DiscussionLimits()
+    assert f"hosted_rooms.discussion.{key} must be a positive integer" in caplog.text
 
 
 @pytest.mark.parametrize("section", ["hosted_rooms: []", "hosted_rooms:\n  discussion: []"])
-def test_invalid_config_sections_fail_closed(tmp_path, section):
+def test_an_invalid_config_section_keeps_the_defaults(tmp_path, caplog, section):
     (tmp_path / "config.yaml").write_text(section + "\n")
-    with pytest.raises(discussion.DiscussionValidationError, match="must be a mapping"):
-        _service(tmp_path)
+    assert _service(tmp_path).discussion_limits == discussion.DiscussionLimits()
+    assert "must be a mapping" in caplog.text
+
+
+def yaml_value(text):
+    return {"0": 0, "-1": -1, "true": True, "1.5": 1.5, "'6'": "6", "null": None, "[]": [], "{}": {}}[text]

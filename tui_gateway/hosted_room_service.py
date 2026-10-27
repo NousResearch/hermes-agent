@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import threading
 import time
@@ -35,6 +36,7 @@ _TERMINAL_STATUSES = ("deferred", "settled", "failed", "cancelled")
 _LIVE_STATUSES = ("queued", "running", "stopping")
 _STOPPABLE_STATUSES = ("queued", "running", "indeterminate", "deferred", "stopping")
 _RETRYABLE_STATUSES = ("indeterminate", "deferred")
+logger = logging.getLogger(__name__)
 
 
 def task_member_id(task: Mapping[str, Any]) -> str:
@@ -48,21 +50,26 @@ def attempt_action(kind: str, task: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _discussion_limits(root: Path) -> discussion.DiscussionLimits:
-    """Read the room owner's config, never the current member's profile scope."""
+    """Read the room owner's config, never the current member's profile scope. A malformed value
+    keeps today's defaults (logged) rather than taking every room on this store offline."""
     from gateway.run import _profile_runtime_scope
-    from hermes_cli.config import load_config
+    from hermes_cli.config_effective import load_user_config_effective
 
     with _profile_runtime_scope(root, hydrate_secrets=False):
-        config = load_config()
-    rooms = config.get("hosted_rooms", {})
-    if not isinstance(rooms, Mapping):
-        raise discussion.DiscussionValidationError("hosted_rooms must be a mapping")
-    settings = rooms.get("discussion", {})
-    if not isinstance(settings, Mapping):
-        raise discussion.DiscussionValidationError("hosted_rooms.discussion must be a mapping")
-    return discussion.DiscussionLimits(
-        max_rounds=settings.get("max_rounds", discussion.MAX_DISCUSSION_ROUNDS),
-        max_messages=settings.get("max_messages", discussion.MAX_DISCUSSION_MESSAGES))
+        config = load_user_config_effective()
+    try:
+        rooms = config.get("hosted_rooms", {})
+        if not isinstance(rooms, Mapping):
+            raise discussion.DiscussionValidationError("hosted_rooms must be a mapping")
+        settings = rooms.get("discussion", {})
+        if not isinstance(settings, Mapping):
+            raise discussion.DiscussionValidationError("hosted_rooms.discussion must be a mapping")
+        return discussion.DiscussionLimits(
+            max_rounds=settings.get("max_rounds", discussion.MAX_DISCUSSION_ROUNDS),
+            max_messages=settings.get("max_messages", discussion.MAX_DISCUSSION_MESSAGES))
+    except discussion.DiscussionValidationError as exc:
+        logger.warning("ignoring hosted_rooms.discussion in %s/config.yaml: %s", root, exc)
+        return discussion.DiscussionLimits()
 
 
 def _hosted_room_turn_timeout_seconds() -> float:

@@ -43,3 +43,38 @@ def restore_user_proxy_env(environ: MutableMapping[str, str] | None = None) -> N
         if saved is not None and not users_dotenv_value(key):
             env[key] = saved
     env.pop(MARKER, None)
+
+
+def prefer_dotenv_proxy_env(environ: MutableMapping[str, str] | None = None) -> None:
+    """In ``hermes update``, after its ``.env`` load: the user's ``.env`` proxy beats the system one.
+
+    The Desktop injects every case variant (``HTTPS_PROXY`` and ``https_proxy``) but the ``.env``
+    load replaces only the spelling the file uses, and urllib and curl prefer the lower-case one, so
+    the update would still go through the system proxy. A ``.env`` proxy is an explicit setting the
+    Desktop could not see; had it seen one it would have injected nothing, so everything it added is
+    undone. A ``.env`` NO_PROXY alone replaces the user's own entries in every injected NO_PROXY
+    variant, keeping the entries the Desktop added; a ``*`` in it bypasses every proxy.
+    """
+    from agent.proxy_bypass import no_proxy_entries
+    from hermes_cli.env_loader import dotenv_published_values
+
+    env = os.environ if environ is None else environ
+    if MARKER not in env:
+        return
+    if any(dotenv_published_values(name) for name in ("https_proxy", "http_proxy", "all_proxy")):
+        restore_user_proxy_env(env)
+        return
+    published = dotenv_published_values("no_proxy")
+    users = next((env[key] for key in env if key.lower() == "no_proxy" and env[key] in published), None)
+    if users is None:
+        return
+    if "*" in no_proxy_entries(users):
+        restore_user_proxy_env(env)
+        return
+    own = {e for key in _NO_PROXY_KEYS for e in no_proxy_entries(env.get(SAVED_PREFIX + key, ""))}
+    added = [e for key in _NO_PROXY_KEYS if env.get(key, users) != users
+             for e in no_proxy_entries(env[key]) if e not in own]
+    merged = ",".join(dict.fromkeys([*no_proxy_entries(users), *added]))
+    for key in _NO_PROXY_KEYS:
+        if key in env:
+            env[key] = merged

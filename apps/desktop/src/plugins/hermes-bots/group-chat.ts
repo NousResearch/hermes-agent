@@ -9,7 +9,7 @@
  * store, one writer.
  */
 
-import { atom, host } from '@hermes/plugin-sdk'
+import { atom, host, randomUuid } from '@hermes/plugin-sdk'
 
 import { $botMeta, $lastRoster, botRosterKey } from './data'
 import { groupMemberReferencesConnection, markOrphanedGroupMemberDescriptor } from './hygiene'
@@ -1703,11 +1703,7 @@ export function setGroupChatImage(group: string, image: null | string | undefine
 }
 
 function groupChatEntryId(): string {
-  if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') {
-    return globalThis.crypto.randomUUID()
-  }
-
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+  return randomUuid()
 }
 
 /** The agent loop's "(empty)" terminal sentinel (empty_response_exhausted) is

@@ -7,9 +7,21 @@
 
 import { registry } from '@/contrib/registry'
 import type { Contribution } from '@/contrib/types'
-import { isMacPlatform } from '@/lib/platform'
+import { isBrowserHostedDesktop, isMacPlatform } from '@/lib/platform'
 
 export type KeybindCategory = 'composer' | 'profiles' | 'session' | 'navigation' | 'view'
+
+// A browser tab owns mod+n/t/w (new window, new tab, close tab). On macOS,
+// Control+Cmd keeps the letter without Option's text input; elsewhere
+// Control+Alt is AltGr and Alt+Shift letters are browser commands, so
+// modified function keys stand in.
+function sessionChord(letter: string, functionKey: string): string {
+  if (!isBrowserHostedDesktop()) {
+    return `mod+${letter}`
+  }
+
+  return isMacPlatform() ? `mod+ctrl+${letter}` : `mod+shift+${functionKey}`
+}
 
 // The self-referential opener — bound + dispatched like any action, but shown in
 // the panel subtitle (not as its own row).
@@ -116,10 +128,9 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // ── Session ──────────────────────────────────────────────────────────────
   // `shift+n` was dropped from the defaults (#76185): a bare shifted letter
   // hijacked normal typing — pressing uppercase N outside an input (or via an
-  // IME) created a new session unexpectedly. The deliberate ⌘/Ctrl+N chord
-  // stays; users who liked ⇧N can rebind it in the panel.
-  { id: 'session.new', category: 'session', defaults: ['mod+n'] },
-  { id: 'session.newTab', category: 'session', defaults: ['mod+t'] },
+  // IME) created a new session unexpectedly.
+  { id: 'session.new', category: 'session', defaults: [sessionChord('n', 'f7')] },
+  { id: 'session.newTab', category: 'session', defaults: [sessionChord('t', 'f8')] },
   { id: 'session.newWindow', category: 'session', defaults: ['mod+shift+n'] },
   // ⌃Tab / ⌃⇧Tab — the universal tab-cycle chord. Literally Control, not Cmd
   // (macOS reserves Cmd+Tab for app switching); see `ctrl` in combo.ts.
@@ -204,7 +215,7 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // ⌘W closes the focused zone's active tab — its own tab strip (preview) or
   // the tree tab (session tiles, files, terminal). The uncloseable workspace
   // is a no-op. ⌘⇧T reopens the last closed tab where it was.
-  { id: 'view.closeTab', category: 'view', defaults: ['mod+w'] },
+  { id: 'view.closeTab', category: 'view', defaults: [sessionChord('w', 'f9')] },
   { id: 'view.reopenTab', category: 'view', defaults: ['mod+shift+t'] },
   // ⌘F — open the find-in-page bar. `actionAllowedInInput` lets this action
   // fire from inside a textarea / contenteditable (matches browser behavior

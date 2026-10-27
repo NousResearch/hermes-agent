@@ -231,6 +231,11 @@ export function comboTokens(combo: string): string[] {
   const parts = combo.split('+')
   const base = parts.pop() ?? ''
 
+  // Canonical order keeps `mod` first; macOS writes Control before Command (⌃⌘N).
+  if (IS_MAC && parts[0] === 'mod' && parts[1] === 'ctrl') {
+    parts.splice(0, 2, 'ctrl', 'mod')
+  }
+
   return [...parts.map(formatModifierToken), labelForBase(base)]
 }
 

@@ -132,6 +132,10 @@ export interface KeybindRuntimeDeps {
  *  return value (void, a navigate() promise, …) means it ran. */
 type HandlerMap = Record<string, () => unknown>
 
+function hasWordEraseModifier(event: KeyboardEvent): boolean {
+  return IS_MAC ? event.metaKey && !event.ctrlKey : event.ctrlKey
+}
+
 // Mount once near the top of the app. Owns the single global keydown listener
 // for every rebindable hotkey: it runs the matched action, or — while capture
 // mode is active (edit overlay / panel rebind) — records the pressed combo.
@@ -583,11 +587,12 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
         // dispatcher anyway, plus a chord rebound onto another key with the
         // same bare shape. Returning without preventDefault hands the key to
         // xterm, whose data handler writes the ^W byte to the PTY. Read-only
-        // agent mirrors carry only [data-terminal], so they keep close.
+        // agent mirrors carry only [data-terminal], so they keep close. A
+        // browser tab's ⌃⌘W is the close chord itself, not ^W.
         if (
           actionId === 'view.closeTab' &&
           event.key.toLowerCase() === 'w' &&
-          (IS_MAC ? event.metaKey : event.ctrlKey) &&
+          hasWordEraseModifier(event) &&
           !event.altKey &&
           !event.shiftKey &&
           isFocusWithin('[data-interactive-terminal]')

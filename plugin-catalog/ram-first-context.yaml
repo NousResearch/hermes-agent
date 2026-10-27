@@ -1,0 +1,16 @@
+name: ram-first-context
+repo: https://github.com/ether-btc/ram-first-context
+sha: 29866b26551d6fe1a3200831588caa835178345d
+subdir: "plugin"
+description: Read-only RAM-first context memory — FTS5 keyword recall over the live Mnemosyne SQLite database; no embeddings, no network.
+maintainer: ether-btc
+tier: community
+category: memory
+requires_hermes: ">=0.19"
+version: "0.1.1"
+capabilities:
+  provides_tools:
+    - mnemosyne_fts_recall
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

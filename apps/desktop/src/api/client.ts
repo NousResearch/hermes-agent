@@ -779,12 +779,9 @@ export function setSessionOwnerResolver(resolver: SessionOwnerResolver | null): 
   _sessionOwnerResolver = resolver
 }
 
-/** The connection pin a session-scoped READ must carry for `id`, or {} when
- *  the caller already pinned a connection, no exact owner is known, or the
- *  owner is the ambient connection. Pins 'local' too (the only way back to
- *  this device when the primary is a remote registry source). When the caller
- *  named no profile, the owner's backend-facing profile rides along: the
- *  answering host resolves ?profile= against ITS OWN profiles. */
+/** Exact owner tuple for a session-scoped READ, unless the caller already
+ *  pinned a connection. Never blend an owner's connection with a caller's
+ *  bare profile: the answering host resolves ?profile= in ITS OWN inventory. */
 export function sessionReadOwnerPin(id: string, profile?: ProfileScope): { connectionId?: string; profile?: string } {
   if (profile && typeof profile === 'object' && String(profile.connectionId ?? '').trim()) {
     return {}
@@ -798,7 +795,7 @@ export function sessionReadOwnerPin(id: string, profile?: ProfileScope): { conne
 
   const connectionId = String(owner.connectionId ?? '').trim()
 
-  if (!connectionId || connectionId === (ambientOwnerConnectionId() ?? 'local')) {
+  if (!connectionId) {
     return {}
   }
 
@@ -806,7 +803,7 @@ export function sessionReadOwnerPin(id: string, profile?: ProfileScope): { conne
 
   return {
     connectionId,
-    ...(profile == null && ownerProfile ? { profile: ownerProfile } : {})
+    ...(ownerProfile ? { profile: ownerProfile } : {})
   }
 }
 

@@ -2,7 +2,6 @@ import { mergeUsage } from '@hermes/shared'
 
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
-import { getSession } from '@/hermes'
 import { sameAttachmentTurn, spliceOlderPreservedRows } from '@/lib/chat-messages'
 import {
   assistantTextPart,
@@ -19,7 +18,7 @@ import { isMessagingSource, normalizeSessionSource } from '@/lib/session-source'
 import { isLiveTailReplyId } from '@/lib/spoken-reply'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { pendingSnapshotFence, reconcilePendingSubmissions } from '@/store/pending-submissions'
-import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { $projectTree } from '@/store/projects'
 import {
   $cronSessions,
@@ -76,6 +75,7 @@ import {
   persistedTurnsEquivalent,
   transcriptRowIds
 } from './pending-turn-identity'
+import { probeSessionRoute, type StoredSessionProbe } from './restore-probe'
 import { reconcileOwnerApprovalMode } from './runtime-owner'
 
 export { goneSessionVerdict, isSessionGoneError, resolveResumedBusy } from './resume-verdicts'
@@ -2160,8 +2160,6 @@ export function cachedSessionRow(storedSessionId: string): SessionInfo | undefin
   )
 }
 
-export type StoredSessionProbe = { status: 'found'; session: SessionInfo } | { status: 'gone' | 'inconclusive' }
-
 export async function resolveStoredSession(
   storedSessionId: string,
   ownerRoute?: SessionProfileRoute
@@ -2180,111 +2178,17 @@ export async function probeStoredSession(
   storedSessionId: string,
   ownerRoute?: SessionProfileRoute
 ): Promise<StoredSessionProbe> {
-  let allGone = true
-
-  const recordFailure = (error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error ?? '')
-    allGone &&= /\b404\b/.test(message) && /session not found/i.test(message)
-  }
-
   // Snapshot BEFORE any await: a resolve that started before an archive/delete
   // must reject its own stale response (see upsertResolvedSession).
   const tombstoneGenerationsAtRequestStart = captureSessionTombstoneGenerations()
-
   const cached = cachedSessionRow(storedSessionId)
+  const result = await probeSessionRoute(storedSessionId, cached, ownerRoute)
 
-  if (ownerRoute) {
-    const scope = {
-      connectionId: ownerRoute.connectionId,
-      profile: ownerRoute.targetProfile || ownerRoute.profile
-    }
-
-    const cachedOwnerMatches =
-      cached &&
-      cached.connection_id === ownerRoute.connectionId &&
-      (!cached.profile || normalizeProfileKey(cached.profile) === normalizeProfileKey(ownerRoute.profile))
-
-    if (cached && cachedOwnerMatches) {
-      return { status: 'found', session: cached }
-    }
-
-    try {
-      const session = await getSession(storedSessionId, scope)
-      session.profile = normalizeProfileKey(ownerRoute.profile)
-      session.connection_id = ownerRoute.connectionId
-      upsertResolvedSession(session, storedSessionId, tombstoneGenerationsAtRequestStart)
-
-      return { status: 'found', session }
-    } catch (error) {
-      // An explicit owner is fail-closed. Probing the ambient or another
-      // profile would turn a stale route into a cross-connection open.
-      recordFailure(error)
-
-      return { status: allGone ? 'gone' : 'inconclusive' }
-    }
+  if (result.status === 'found' && result.session !== cached) {
+    upsertResolvedSession(result.session, storedSessionId, tombstoneGenerationsAtRequestStart)
   }
 
-  // A row with no owning profile can't route a resume when more than one
-  // profile exists — a resume without a profile lands on whichever gateway is
-  // active (#67603 family, cross-profile open asymmetry). Treat such a hit as
-  // unresolved and fall through to the by-id lookups, which stamp ownership.
-  const multiProfile = $profiles.get().length > 1
-
-  if (cached && (cached.profile?.trim() || !multiProfile)) {
-    return { status: 'found', session: cached }
-  }
-
-  // Direct by-id on the active profile — one row lookup, no list scan. Electron
-  // routes an unscoped GET to the primary backend, which may not own the
-  // active profile. A 404 there used to skip that profile in the probes below,
-  // so the session was never found.
-  const activeKey = normalizeProfileKey($activeGatewayProfile.get())
-
-  try {
-    const session = await getSession(storedSessionId, activeKey)
-
-    // Older backends can omit `profile`; this request targeted the active
-    // profile, so back-fill that rather than caching an unowned row. A present
-    // stamp is preserved for backend compatibility.
-    session.profile ||= activeKey
-
-    upsertResolvedSession(session, storedSessionId, tombstoneGenerationsAtRequestStart)
-
-    return { status: 'found', session }
-  } catch (error) {
-    // Not on the active profile — fall through to the cross-profile probe.
-    recordFailure(error)
-  }
-
-  // Multi-profile only: probe each remaining profile by id (still one cheap
-  // lookup each) rather than pulling every profile's recent sessions. The
-  // first hit carries its owning `profile`, which routes the resume to the
-  // right backend. The active profile was already tried above.
-  const otherProfiles = $profiles
-    .get()
-    .map(profile => normalizeProfileKey(profile.name))
-    .filter(key => key !== activeKey)
-
-  for (const profile of otherProfiles) {
-    try {
-      const session = await getSession(storedSessionId, profile)
-
-      // Same ownership contract: the DESKTOP profile we explicitly probed is
-      // authoritative, whatever the scoped backend stamped (older backends
-      // omit the field; a per-profile remote override strips the alias before
-      // forwarding, so that backend answers as its own "default").
-      session.profile = profile
-
-      upsertResolvedSession(session, storedSessionId, tombstoneGenerationsAtRequestStart)
-
-      return { status: 'found', session }
-    } catch (error) {
-      // Not on this profile; try the next.
-      recordFailure(error)
-    }
-  }
-
-  return { status: allGone && $profiles.get().length > 0 ? 'gone' : 'inconclusive' }
+  return result
 }
 
 /**

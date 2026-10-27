@@ -8,6 +8,7 @@ import type { HermesNotification } from './notification-types'
 
 const host = vi.hoisted(() => ({ handle: vi.fn(), fromWebContents: vi.fn(), createClient: vi.fn() }))
 vi.mock('electron', () => ({
+  app: { getName: () => 'Hermes Light' },
   BrowserWindow: { fromWebContents: host.fromWebContents },
   ipcMain: { handle: host.handle },
   Notification: class extends EventEmitter {
@@ -347,4 +348,12 @@ it('preserves activation, dedupe and source ownership while fencing daemon ID re
   expect(reused.connection.stream.destroy).toHaveBeenCalled()
   reused.signal('ActionInvoked', [retainedId, 'default'])
   expect(reused.source.webContents.send).toHaveBeenCalledTimes(1)
+})
+
+it('names the running app as the sender and as the title of an untitled notification', async () => {
+  const bus = setup()
+  expect(await bus.notify({ tag: 'untitled', body: 'Done' })).toBe(true)
+  const [sender, , , title] = bus.calls.find(call => call.member === 'Notify')?.body ?? []
+  expect([sender, title]).toEqual(['Hermes Light', 'Hermes Light'])
+  bus.connection.emit('close')
 })

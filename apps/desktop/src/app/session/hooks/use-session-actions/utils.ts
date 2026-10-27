@@ -70,13 +70,13 @@ import type { SessionCreateResponse, SessionInfo, SessionResumeResult, SessionRu
 
 import type { ClientSessionState } from '../../../types'
 
-import { chatMessageArraysEquivalent, chatMessagesEquivalent } from './message-equivalence'
 import {
   committedReplyCovers,
   isStrictAnswerTextExtension,
   pageReplyCommittingLiveRow,
   replyAfterLastTool
 } from './committed-reply'
+import { chatMessageArraysEquivalent, chatMessagesEquivalent } from './message-equivalence'
 import {
   acknowledgedTranscriptBoundary,
   conflictingTranscriptIdentity,

@@ -506,7 +506,7 @@ def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
         from agent.conversation_compression_checkpoint import checkpoint_required_from_config
 
         agent = AIAgent(model=model, **{k: runtime_kwargs.get(k) for k in ("base_url", "api_key", "provider", "api_mode", "credential_pool", "reasoning_config")},
-                        quiet_mode=True, skip_context_files=True, skip_memory=not checkpoint_required_from_config(),
+                        platform="feishu", quiet_mode=True, skip_context_files=True, skip_memory=not checkpoint_required_from_config(),
                         memory_agent_context="subagent", max_iterations=15, enabled_toolsets=["feishu_doc", "feishu_drive"])
         try:
             logger.info("[Feishu-Comment] _run_comment_agent: calling run_conversation (prompt=%d chars, history=%d)", len(prompt), len(history))

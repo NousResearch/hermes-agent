@@ -31,7 +31,8 @@ def test_background_platform_labels_are_machine_paced():
 
 @pytest.mark.parametrize(
     "platform, side_agent, expected",
-    [("cli", False, "1h"), ("telegram", False, "1h"), ("cron", False, "5m"), ("subagent", False, "5m"),
+    [("cli", False, "1h"), ("tui", False, "1h"), ("desktop", False, "1h"),
+     ("acp", False, "1h"), ("telegram", False, "1h"), ("cron", False, "5m"), ("subagent", False, "5m"),
      ("api_server", False, "5m"), ("cli", True, "5m"), ("tui", True, "5m")],
 )
 def test_unconfigured_agent_resolves_tier_from_its_platform(tmp_path, monkeypatch, platform, side_agent, expected):

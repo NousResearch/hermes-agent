@@ -59,3 +59,29 @@ def test_live_agent_compaction_still_rebuilds():
 
     assert _rebuild(agent) == DEGRADED
     assert built == [""]
+
+
+def test_detached_hygiene_agent_selects_short_ttl_at_construction(tmp_path, monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock
+    import hermes_cli.config
+    from agent.agent_init import _init_prompt_cache_config
+    from gateway.run import GatewayRunner, _GATEWAY_HYGIENE_PLATFORM
+
+    monkeypatch.setattr(hermes_cli.config, "load_config_readonly", dict)
+    monkeypatch.setattr(hermes_cli.config, "load_config", dict)
+    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
+    monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION", raising=False)
+    runner = object.__new__(GatewayRunner)
+    runner._session_db = SimpleNamespace(get_session=AsyncMock(return_value=None))
+
+    def build(**kwargs):
+        agent = SimpleNamespace(_anthropic_prompt_cache_policy=lambda: (True, True), **kwargs)
+        _init_prompt_cache_config(agent)
+        return agent
+
+    with patch("run_agent.AIAgent", side_effect=build):
+        agent, _ = asyncio.run(runner._hmwa_hygiene_build_agent(
+            "fixture-model", {}, SimpleNamespace(session_id="hygiene-cache")))
+    assert agent.platform == _GATEWAY_HYGIENE_PLATFORM
+    assert agent._cache_ttl == "5m"

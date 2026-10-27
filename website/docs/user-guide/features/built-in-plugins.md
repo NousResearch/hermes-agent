@@ -82,7 +82,7 @@ Auto-tracks and removes ephemeral files created during sessions — test scripts
 
 | Category | Threshold | Confirmation |
 |---|---|---|
-| `test` | every session end | Never |
+| `test` | end of the turn that created it; another run's file after 7 days | Never |
 | `temp` | >7 days since tracked | Never |
 | `cron-output` | >14 days since tracked | Never |
 | empty dirs under HERMES_HOME | always | Never |

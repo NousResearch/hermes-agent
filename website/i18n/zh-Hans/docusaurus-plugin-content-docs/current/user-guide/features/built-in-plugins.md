@@ -80,7 +80,7 @@ hermes plugins disable disk-cleanup
 
 | 类别 | 阈值 | 确认 |
 |---|---|---|
-| `test` | 每次会话结束 | 从不 |
+| `test` | 创建它的回合结束时；其他运行的文件超过 7 天后 | 从不 |
 | `temp` | 追踪后超过 7 天 | 从不 |
 | `cron-output` | 追踪后超过 14 天 | 从不 |
 | HERMES_HOME 下的空目录 | 始终 | 从不 |

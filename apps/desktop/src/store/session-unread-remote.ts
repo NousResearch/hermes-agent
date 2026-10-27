@@ -73,11 +73,13 @@ export async function markSessionUnread(storedId: string, unread: boolean): Prom
   state.latest = revision
   unreadWrites.set(writeKey, state)
 
+  // Paint before publishing the guard so the guard watcher cannot mistake
+  // this local optimistic row for a confirming backend page.
+  setSessions(rows => rows.map(r => (unreadWriteKey(r) === writeKey ? { ...r, unread } : r)))
+
   const guard = new Map($unreadWriteGuard.get())
   guard.set(writeKey, { at: Date.now(), value: unread })
   $unreadWriteGuard.set(guard)
-
-  setSessions(rows => rows.map(r => (unreadWriteKey(r) === writeKey ? { ...r, unread } : r)))
 
   const write = state.tail.then(() => setSessionUnreadRemote(storedId, unread, scope).then(() => undefined))
 

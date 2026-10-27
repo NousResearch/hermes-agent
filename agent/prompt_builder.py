@@ -1596,9 +1596,13 @@ def _agents_md_directory_chain(cwd_path: Path) -> list[Path]:
     return [root] + [root.joinpath(*parts[: i + 1]) for i in range(len(parts))]
 
 
-def _agents_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
+def _agents_md_candidates(cwd_path: Path, home: Path | None = None) -> list[tuple[str, Path, str]]:
     """AGENTS.md chain from git root down to cwd; per directory the first NON-EMPTY of ``AGENTS.override.md`` /
-    ``AGENTS.md`` / ``agents.md`` wins (empty or unreadable files are listed but fall through)."""
+    ``AGENTS.md`` / ``agents.md`` wins (empty or unreadable files are listed but fall through).
+
+    When that chain has no content, fall back to ``$HERMES_HOME/AGENTS.md`` (or *home*) so profile
+    instructions still load when cwd is not the profile (#66118). Project-chain content always wins.
+    """
     cwd_resolved = cwd_path.resolve()
     found: list[tuple[str, Path, str]] = []
     for directory in _agents_md_directory_chain(cwd_resolved):
@@ -1611,6 +1615,23 @@ def _agents_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
             found.append((label, candidate, content))
             if content:
                 break  # first name match wins per directory
+    if any(content for _label, _path, content in found):
+        return found
+    try:
+        home_path = (Path(home) if home is not None else get_hermes_home()).resolve()
+    except Exception as e:
+        logger.debug("Could not resolve HERMES_HOME for AGENTS.md fallback: %s", e)
+        return found
+    if home_path == cwd_resolved:
+        return found
+    for name in ("AGENTS.md", "agents.md"):
+        candidate = home_path / name
+        if not _exists_or_denied(candidate):
+            continue
+        content = _read_context_file(candidate)
+        found.append((name, candidate, content))
+        if content:
+            break
     return found
 
 
@@ -1648,11 +1669,15 @@ _CONTEXT_FILE_CANDIDATES = {
 }
 
 
-def discover_context_files(cwd_path: Path) -> list[tuple[str, str, Path, str]]:
+def discover_context_files(cwd_path: Path, home: Path | None = None) -> list[tuple[str, str, Path, str]]:
     """Every project-context file on disk as ``(kind, label, path, content)`` in priority order.
-    ``content == ""`` means empty or unreadable — such a file is never loaded."""
-    return [(kind, label, path, content)
-            for kind, finder in _CONTEXT_FILE_CANDIDATES.items() for label, path, content in finder(cwd_path)]
+    ``content == ""`` means empty or unreadable — such a file is never loaded.
+    *home* is the profile home for the AGENTS.md fallback (same as ``build_context_files_prompt``)."""
+    found: list[tuple[str, str, Path, str]] = []
+    for kind, finder in _CONTEXT_FILE_CANDIDATES.items():
+        entries = finder(cwd_path, home=home) if kind == "agents_md" else finder(cwd_path)
+        found.extend((kind, label, path, content) for label, path, content in entries)
+    return found
 
 
 def _project_context_suppressed(cwd: Optional[str], cwd_path: Path, allow_install_tree_fallback: bool) -> bool:
@@ -1673,7 +1698,7 @@ def _load_hermes_md(cwd_path: Path, context_length: Optional[int] = None) -> str
     return ""
 
 
-def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
+def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None, home: Path | None = None) -> str:
     """AGENTS.md — merged directory chain from git root down to cwd.
 
     Each directory on the chain (see ``_agents_md_candidates``) contributes its ``AGENTS.override.md`` /
@@ -1683,10 +1708,14 @@ def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str
     earendil-works/pi#7681). Identical content encountered again further down the chain (copied or symlinked
     files) is deduplicated. With a single match — the common case, and always the case outside a git repo —
     output is identical to the historical single-file behavior.
+
+    When the chain yields nothing, ``_agents_md_candidates`` falls back to the profile
+    ``AGENTS.md`` (*home*, else ``HERMES_HOME``) so instructions still load when cwd is not the
+    profile (#66118). Project-chain content always wins.
     """
     sections: list[str] = []
     seen_content: set = set()
-    for label, candidate, content in _agents_md_candidates(cwd_path):
+    for label, candidate, content in _agents_md_candidates(cwd_path, home=home):
         if content and content not in seen_content:  # else: empty, or an identical copy along the chain
             seen_content.add(content)
             sections.append(_context_section(content, label, label, candidate, context_length))
@@ -1739,7 +1768,8 @@ def build_context_files_prompt(
         )
         sections = []
     else:
-        sections = [_load_hermes_md(cwd_path, context_length) or _load_agents_md(cwd_path, context_length)
+        sections = [_load_hermes_md(cwd_path, context_length)
+                    or _load_agents_md(cwd_path, context_length, home=home_override)
                     or _load_claude_md(cwd_path, context_length) or _load_cursorrules(cwd_path, context_length)]
     if not skip_soul:
         sections.append(load_soul_md(context_length, home_override=home_override))

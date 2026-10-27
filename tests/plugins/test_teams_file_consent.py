@@ -29,6 +29,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from pydantic import BaseModel
 
 from plugins.platforms.teams import adapter as teams_adapter
 from plugins.platforms.teams.adapter import TeamsAdapter
@@ -38,6 +39,10 @@ GROUP = "19:abc@thread.v2"
 PDF = b"%PDF-1.4 hello"
 BF_REJECTION = '{"error":{"code":"BadArgument","message":"Unknown attachment type"}}'
 REJECT_URL = "https://smba.trafficmanager.net/ca/TENANT/v3/conversations/DM/activities"
+
+
+class _PydanticContext(BaseModel):
+    hermes_file_token: str
 
 
 def _run(coro):
@@ -51,7 +56,7 @@ def _adapter(tmp_path, conv_type: str | None = None, chat_id: str = PERSONAL):
     if conv_type:
         inst._conv_refs[chat_id] = SimpleNamespace(conversation=SimpleNamespace(conversation_type=conv_type))
     inst._file_consent_dir = lambda: tmp_path
-    inst._card_action_denied = lambda from_account: None
+    inst._card_action_denied = lambda from_account, **kw: None
     inst.sent_activities = []
     inst.sent_texts = []
 
@@ -99,7 +104,8 @@ def _offer(inst, tmp_path, name="report.pdf", body=PDF):
     return card, card.content["acceptContext"]["hermes_file_token"]
 
 
-def _invoke(token, action="accept", chat_id=PERSONAL, upload_url="https://tenant-my.sharepoint.com/upload/s1"):
+def _invoke(token, action="accept", chat_id=PERSONAL, upload_url="https://tenant-my.sharepoint.com/upload/s1",
+            context=None):
     return SimpleNamespace(
         conversation_ref=SimpleNamespace(conversation=SimpleNamespace(conversation_type="personal")),
         activity=SimpleNamespace(
@@ -107,7 +113,7 @@ def _invoke(token, action="accept", chat_id=PERSONAL, upload_url="https://tenant
             conversation=SimpleNamespace(id=chat_id),
             value=SimpleNamespace(
                 action=action,
-                context={"hermes_file_token": token},
+                context={"hermes_file_token": token} if context is None else context,
                 upload_info=SimpleNamespace(
                     name="report.pdf", upload_url=upload_url,
                     content_url="https://tenant-my.sharepoint.com/personal/x/report.pdf",
@@ -248,7 +254,7 @@ class TestConsentInvoke:
 
     def test_unauthorized_clicker_drops_offer(self, tmp_path, uploads) -> None:
         inst = _adapter(tmp_path, conv_type="personal")
-        inst._card_action_denied = lambda from_account: "Not authorized."
+        inst._card_action_denied = lambda from_account, **kw: "Not authorized."
         _, token = _offer(inst, tmp_path)
         _run(_answer(inst, _invoke(token)))
         assert uploads == [] and not list(tmp_path.glob(f"{token}*"))
@@ -275,6 +281,54 @@ class TestConsentInvoke:
         assert uploads == []
         assert "Could not deliver report.pdf" in inst.sent_texts[-1][1]
         assert not list(tmp_path.glob(f"{token}*"))
+
+    @pytest.mark.parametrize("make_context", [
+        lambda token: SimpleNamespace(hermes_file_token=token),
+        lambda token: _PydanticContext(hermes_file_token=token),
+    ], ids=["namespace", "pydantic"])
+    def test_model_object_context_carries_the_token(self, tmp_path, uploads, make_context) -> None:
+        inst = _adapter(tmp_path, conv_type="personal")
+        _, token = _offer(inst, tmp_path)
+        _run(_answer(inst, _invoke(token, context=make_context(token))))
+        assert uploads == [("bytes 0-13/14", PDF)]
+        assert not list(tmp_path.glob(f"{token}*"))
+
+    @pytest.mark.parametrize("host", ["contoso-my.sharepoint.de", "contoso-my.sharepoint.cn"])
+    def test_sovereign_cloud_upload_host_is_accepted(self, tmp_path, uploads, host) -> None:
+        inst = _adapter(tmp_path, conv_type="personal")
+        _, token = _offer(inst, tmp_path)
+        _run(_answer(inst, _invoke(token, upload_url=f"https://{host}/upload/s1")))
+        assert uploads == [("bytes 0-13/14", PDF)]
+        assert _attachments(inst.sent_activities[-1][1])[0].content_type == teams_adapter._FILE_INFO_CARD_TYPE
+
+    @pytest.mark.parametrize("host", ["contoso.sharepoint.de.attacker.com", "evilsharepoint.cn"])
+    def test_sovereign_look_alike_upload_host_is_refused(self, tmp_path, uploads, host) -> None:
+        inst = _adapter(tmp_path, conv_type="personal")
+        _, token = _offer(inst, tmp_path)
+        _run(_answer(inst, _invoke(token, upload_url=f"https://{host}/upload/s1")))
+        assert uploads == []
+        assert "Could not deliver report.pdf" in inst.sent_texts[-1][1]
+
+    def test_unreadable_metadata_after_claim_tells_the_member(self, tmp_path, uploads, caplog) -> None:
+        inst = _adapter(tmp_path, conv_type="personal")
+        _, token = _offer(inst, tmp_path)
+        (tmp_path / f"{token}.json").write_text("{not json", encoding="utf-8")
+        with caplog.at_level(logging.ERROR):
+            _run(_answer(inst, _invoke(token)))
+        assert uploads == []
+        assert "could not be processed" in inst.sent_texts[-1][1]
+        assert not list(tmp_path.glob(f"{token}*"))
+        assert token not in " ".join(r.getMessage() for r in caplog.records)
+
+    def test_missing_allowlist_refusal_names_file_delivery(self, tmp_path, uploads, monkeypatch) -> None:
+        monkeypatch.setattr(teams_adapter, "_get_scoped_secret", lambda key, default="": "")
+        inst = _adapter(tmp_path, conv_type="personal")
+        del inst._card_action_denied  # the real default-deny gate
+        _, token = _offer(inst, tmp_path)
+        _run(_answer(inst, _invoke(token)))
+        assert uploads == [] and not list(tmp_path.glob(f"{token}*"))
+        assert inst.sent_texts[-1][1] == teams_adapter._FILE_CONSENT_REQUIRES_ALLOWLIST
+        assert "Approval" not in inst.sent_texts[-1][1]
 
     def test_rejected_chunk_reports_failure(self, tmp_path, monkeypatch) -> None:
         real = httpx.AsyncClient

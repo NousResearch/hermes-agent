@@ -344,6 +344,20 @@ def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str, mo
     except ValueError as exc:
         return DecomposeOutcome(task_id, False, f"DB rejected graph: {exc}", mode=mode)
     except Exception as exc:
+        # Size gate: OversizedChildError is a typed failure from the decomposer's
+        # size contract. Surface it as a clear reason, not a crash.
+        from hermes_cli.kanban_size_gate import OversizedChildError
+
+        if isinstance(exc, OversizedChildError):
+            logger.warning(
+                "decompose: task %s refused - child %d (%s) is oversized (score=%d, threshold=%d)",
+                task_id, exc.child_index, exc.child_title, exc.estimate.score, exc.threshold,
+            )
+            return DecomposeOutcome(
+                task_id, False,
+                f"size gate: {exc}",
+                mode=mode,
+            )
         logger.exception("decompose: DB error on task %s", task_id)
         return DecomposeOutcome(task_id, False, f"DB error: {type(exc).__name__}", mode=mode)
     if child_ids is None:

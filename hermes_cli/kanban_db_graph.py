@@ -98,10 +98,18 @@ def decompose_triage_task(
     ``parents`` (indices into this list), optional workspace overrides.
     Returns child ids in input order, or None when the root is missing / not
     in triage, or has already decomposed. Atomic: malformed entries abort fan-out.
+
+    Size gate: every child is measured with the deterministic estimator. If any
+    child exceeds the configured threshold, an OversizedChildError is raised
+    (typed failure, not silent pass-through). The decomposer must break oversized
+    children down further before emitting them.
     """
     from hermes_cli.kanban_db import (
         _canonical_assignee, _link, _append_event, _insert_comment,
         write_txn, recompute_ready,
+    )
+    from hermes_cli.kanban_size_gate import (
+        estimate_card_size, load_size_gate_threshold, OversizedChildError,
     )
 
     if not children:
@@ -109,6 +117,16 @@ def decompose_triage_task(
     if root_assignee is not None:
         root_assignee = _canonical_assignee(root_assignee)
     _validate_children_graph(children)
+
+    # Size gate: measure every child and refuse oversized ones with a typed error.
+    # This runs BEFORE the transaction so the failure is clean (no partial fan-out).
+    threshold = load_size_gate_threshold()
+    for idx, child in enumerate(children):
+        child_title = child.get("title") or ""
+        child_body = child.get("body") or ""
+        estimate = estimate_card_size(child_title, child_body)
+        if estimate.is_oversized(threshold):
+            raise OversizedChildError(idx, child_title, estimate, threshold)
 
     # ONE txn so the fan-out is atomic; helpers that open their own write_txn
     # (create_task, link_tasks, add_comment) must not be called in here.

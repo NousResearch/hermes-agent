@@ -1331,6 +1331,20 @@ def create_task(
             # commit so the dispatcher never sees a half-built graph.
             with write_txn(conn, allow_nested=True):
                 task_status, tenant = initial_task_state(conn, parents, initial_status, triage, tenant)
+                # Size gate: if the card would go straight to ready (bypassing triage) and is
+                # oversized, force it to triage for decomposition. This closes the direct-assignment
+                # bypass where an explicit --assignee skips triage entirely.
+                if task_status == "ready" and not triage:
+                    from hermes_cli.kanban_size_gate import should_route_to_triage, record_size_estimate
+
+                    oversized, estimate = should_route_to_triage(title, body)
+                    if oversized:
+                        task_status = "triage"
+                    # Record the estimate on the card for audits and the dispatcher
+                    # (deferred until after the INSERT so the task row exists)
+                    _pending_size_estimate = estimate
+                else:
+                    _pending_size_estimate = None
                 # Project worktree: fresh dir under the repo + deterministic
                 # branch, instead of the random ``wt/<id>`` worker fallback.
                 if project_obj is not None and workspace_kind == "worktree":
@@ -1407,6 +1421,11 @@ def create_task(
                 # ACK-edge: the originating channel hears a child BLOCK, not just the fan-in.
                 inherit_creator_origin(conn, task_id, creator_task_id, created_at=now)
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
+                # Record the size estimate if we computed one (size gate path)
+                if _pending_size_estimate is not None:
+                    from hermes_cli.kanban_size_gate import record_size_estimate
+
+                    record_size_estimate(conn, task_id, _pending_size_estimate)
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:

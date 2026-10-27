@@ -1974,6 +1974,13 @@ DEFAULT_CONFIG = {
         # On boards that never archive, the notifier GC purges subscriptions for tasks done with no
         # activity for this many days so stale rows aren't scanned forever. 0 = off.
         "done_sub_retention_days": 30,
+        # Size gate threshold for pre-flight card complexity estimation. Cards scoring above this
+        # threshold are routed to triage for decomposition instead of dispatching directly. The
+        # estimator counts acceptance criteria, named files, and deliverables with weighted scoring.
+        # Default 30. Set higher to allow larger cards through without decomposition.
+        "size_gate": {
+            "threshold": 30,
+        },
     },
     # Bot Mode cross-connection relay (tools/bot_relay.py): envelopes queued by message_agent for
     # agents on other connections wait in an on-disk outbox until the Desktop drains them.

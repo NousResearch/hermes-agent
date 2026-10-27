@@ -542,10 +542,13 @@ def _codex_model_provider(agent) -> str | None:
     """codex's ``[model_providers.<id>]`` for a named custom provider (``providers.<name>``); None means codex's
     own provider. Only the stable id is sent and codex resolves base_url/env_key itself, so Hermes' credential
     never enters the JSON-RPC payload (#75186)."""
-    if str(getattr(agent, "provider", "") or "").strip().lower() != "custom":
-        return None
     from hermes_cli.runtime_provider_custom import codex_model_provider_id
-    return codex_model_provider_id(str(getattr(agent, "requested_provider", "") or ""))
+    provider = str(getattr(agent, "provider", "") or "").strip().lower()
+    # Startup leaves ``provider="custom"`` with the name in ``requested_provider``. A delegated child
+    # (``delegation.provider``) and ``/model`` carry the configured name itself (``custom:<name>`` or the
+    # bare key) in ``provider``.
+    name = getattr(agent, "requested_provider", "") if provider == "custom" else provider
+    return codex_model_provider_id(str(name or ""))
 
 
 def _codex_wire_model(agent, model_provider: str | None) -> str | None:

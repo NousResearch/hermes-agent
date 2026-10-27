@@ -148,6 +148,30 @@ def _profile_parses(parser: str, text: str) -> bool:
     return True
 
 
+def _write_and_load(sudo: str, parser: str, target: Path, text: str) -> bool:
+    """Stage the profile beside ``target``, load it, and only then rename it into place, so a
+    failed write or load leaves an already-installed profile intact. The stage is a dotfile,
+    which apparmor_parser skips when it loads the directory at boot."""
+    staged = target.with_name(f".{target.name}.hermes-new")
+    failure = ""
+    written = _run([sudo, "tee", str(staged)], text)
+    if written is None or written.returncode != 0:
+        failure = f"✗ Could not write {target}."
+    else:
+        loaded = _run([sudo, parser, "-r", str(staged)])
+        if loaded is None or loaded.returncode != 0:
+            failure = f"✗ apparmor_parser could not load the profile for {target}."
+        else:
+            moved = _run([sudo, "mv", "-f", str(staged), str(target)])
+            if moved is not None and moved.returncode == 0:
+                return True
+            failure = f"✗ The profile is loaded until reboot, but moving it to {target} failed."
+    removed = _run([sudo, "rm", "-f", str(staged)])
+    print(failure + (" Any profile already there is unchanged."
+                     if removed is not None and removed.returncode == 0 else f" Remove {staged} with sudo rm."))
+    return False
+
+
 def install_profile(packaged_executable: Path) -> bool:
     """Write and load the profile through sudo (prompting on a terminal). Prints the outcome."""
     target = profile_path(packaged_executable)
@@ -175,17 +199,7 @@ def install_profile(packaged_executable: Path) -> bool:
     if not _profile_parses(parser, text):
         return False
     print(f"→ Installing AppArmor profile {target} (sudo required)...")
-    written = _run([sudo, "tee", str(target)], text)
-    if written is None or written.returncode != 0:
-        print(f"✗ Could not write {target}.")
-        return False
-    loaded = _run([sudo, parser, "-r", str(target)])
-    if loaded is None or loaded.returncode != 0:
-        removed = _run([sudo, "rm", "-f", str(target)])
-        if removed is not None and removed.returncode == 0:
-            print(f"✗ apparmor_parser could not load {target}; removed it again.")
-        else:
-            print(f"✗ apparmor_parser could not load {target}, and removing it failed: run sudo rm {target}")
+    if not _write_and_load(sudo, parser, target, text):
         return False
     verdict = chromium_userns_sandbox_verdict(packaged_executable)
     if verdict is False:

@@ -107,3 +107,20 @@ def test_profile_that_fails_to_parse_or_load_leaves_nothing_in_the_profile_dir(t
     # A parse failure never reaches sudo; a load failure wrote the file, then removed it again.
     expected = ["tee", "apparmor_parser", "rm"] if failing_step == "-r" else []
     assert [Path(call.split()[0]).name for call in sudo_calls] == expected
+
+
+def test_a_failed_profile_write_keeps_the_installed_profile(tmp_path, monkeypatch):
+    """A reinstall whose privileged write fails (disk full, I/O error) leaves the profile that was
+    already installed byte-for-byte, and no partial file in the profile directory."""
+    profile_dir, sudo_log = _fake_root_tools(tmp_path, monkeypatch)
+    # The write dies at its first byte, the way a full disk or a file-size limit stops ``tee``.
+    (tmp_path / "fakebin" / "sudo").write_text(
+        f'#!/bin/sh\necho "$*" >> "{sudo_log}"\n[ "$1" = tee ] && ulimit -f 0\nexec "$@"\n', encoding="utf-8")
+    exe = _packaged_app(tmp_path, _ALLOWED)
+    installed = main_desktop_apparmor.profile_path(exe)
+    installed.write_text(main_desktop_apparmor.profile_text(exe), encoding="utf-8")
+    before = installed.read_bytes()
+
+    assert main_desktop_apparmor.install_profile(exe) is False
+    assert installed.read_bytes() == before
+    assert list(profile_dir.iterdir()) == [installed]

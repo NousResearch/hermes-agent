@@ -406,6 +406,12 @@ Manage providers, models, tools, and credentials from a real UI instead of editi
 
 First-run onboarding has been redesigned on a unified overlay design system, and you can pick **Choose provider later** to skip provider setup and get into the app first.
 
+#### Where your display preferences live
+
+Display preferences (theme and light/dark mode, session-list density and sidebar layout, status-bar readouts, transcript and tool display, sounds, keybinds, saved layouts, and model-picker favourites) are stored once per computer, in `ui-preferences.json` in the root Hermes home (`~/.hermes/ui-preferences.json` by default; with a custom `HERMES_HOME`, the root of that home, never a profile folder). The desktop app on that computer and every browser that opens the [Webapp](#use-the-desktop-workspace-from-a-browser) it serves read and write the same file. A change in one reaches the others: the desktop app's windows get it within a couple of seconds and Webapp tabs when they regain focus or within about ten seconds. Theme, mode, density and the other settings an open window already follows across windows repaint at once; the rest apply the next time a window or tab loads. This includes another device, a private window, and another address for the same Webapp (`127.0.0.1`, the LAN address, `webapp.public_url`).
+
+The file belongs to the computer, not to a gateway connection or a profile. A desktop app connected to a remote gateway, or to several gateways, keeps its own computer's preferences. Settings that are already per profile, such as the theme picked for one profile, stay per profile inside the file. Credentials, sign-ins, permission grants, drafts and per-window state (open tabs, pane layout, scroll position, zoom) are never written to it and stay in each window or browser. The first time an app or browser finds no file, it copies its existing settings into a new one. After that it never overwrites the file; it adopts the values already there.
+
 #### Per-profile settings: the "Applies to" scope
 
 When you have two or more [profiles](./profiles.md), the config-backed settings pages — **Model, Workspace, Safety, Memory & Context, Voice, Chat, Advanced, and Tools & Keys** — plus **Providers → Custom Endpoints** and the **Messaging** overlay show a shared **Applies to** chip row at the top. It selects which profile your edits target:

@@ -349,7 +349,7 @@ import { relaunchIfNoSandboxCameTooLate } from './linux-sandbox-relaunch'
 import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
 import { resolveIpcFileReadPath, resolveMediaStreamFile, resolvePreviewTargetPath } from './local-read-path'
 import { resolveDesktopClientVersion } from './local-runtime-version'
-import { localSkinProfileKey, readLocalSkinPayload } from './local-skin'
+import { localSkinProfileKey, registerLocalSkinIpc } from './local-skin'
 import { ACTIVE_LOG_POLL_MS, planLogRotation, reclaimActiveLogIfOversized } from './log-rotation'
 import { registerMachineProfile } from './machine-profile'
 import { createMainProcessLagWatchdog } from './main-process-lag-watchdog'
@@ -589,6 +589,7 @@ import {
   windowOpacityFor,
   windowOpacityOptions
 } from './translucency'
+import { registerMachineUiPreferences } from './ui-preferences-ipc'
 import {
   UPDATE_HANDOFF_DWELL_MS,
   UPDATE_WAIT_POLL_MS,
@@ -17074,18 +17075,10 @@ ipcMain.on('hermes:logs:renderer-error', (_event, report) => {
   flushDesktopLogBufferSync()
 })
 
-// The preload reads this small, sanitized payload synchronously so the renderer
-// can register the local skin before its first theme paint. It stays independent
-// of the selected gateway, which can be an offline remote primary.
-ipcMain.on('hermes:skin:local', event => {
-  // The window route is more specific than the global next-launch preference:
-  // a peer can be booting another profile while that preference changes.
-  event.returnValue = readLocalSkinPayload(
-    HERMES_HOME,
-    windowConnectionRoutes.get(event.sender.id)?.profile,
-    primaryProfileKey()
-  )
-})
+// Pre-paint payloads the preload reads synchronously: the local skin, and this
+// machine's shared UI preferences (#145213) — see local-skin.ts, ui-preferences.ts.
+registerLocalSkinIpc(ipcMain, HERMES_HOME, id => windowConnectionRoutes.get(id)?.profile, primaryProfileKey)
+registerMachineUiPreferences(HERMES_HOME)
 
 // Renderer error toasts (notifyError): the toast shows the summarized copy,
 // so the caller posts the full error here for desktop.log. Fire-and-forget,

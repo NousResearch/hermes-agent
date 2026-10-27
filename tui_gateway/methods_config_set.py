@@ -322,10 +322,19 @@ _REASONING_DISPLAY_WORDS = (
 @_cfgset_guarded
 def _set_reasoning(rid, params, key, value, session):
     from hermes_constants import parse_reasoning_effort
+    from hermes_cli.cli_reasoning import parse_clamp_command
     arg = _word(value)
+    try:
+        clamp_lines = parse_clamp_command(arg)
+    except ValueError as exc:
+        return _err(rid, 4002, str(exc))
+    if clamp_lines is not None:
+        arg = "clamp"
     scope = _word(params.get("scope"))
     for words, reported, fields, thinking, show in _REASONING_DISPLAY_WORDS:
         if arg in words:
+            if clamp_lines is not None:
+                fields = {**fields, "reasoning_clamp_lines": clamp_lines}
             _write_display_sections(sections={"thinking": thinking}, **fields)
             if show is not None and session:
                 session["show_reasoning"] = show

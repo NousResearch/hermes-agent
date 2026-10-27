@@ -6,7 +6,7 @@ batch with more than one author has no single verified sender.
 """
 
 import asyncio
-from typing import Any, Dict
+from typing import Any
 
 import pytest
 
@@ -15,6 +15,7 @@ from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
+from tests.waiting import async_wait_until
 
 
 class _Adapter(BasePlatformAdapter):
@@ -37,7 +38,7 @@ class _Adapter(BasePlatformAdapter):
     async def send(self, *a: Any, **k: Any) -> None:
         pass
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         return {}
 
     async def handle_message(self, event: MessageEvent) -> None:
@@ -68,8 +69,7 @@ async def _batched(*events) -> list:
     adapter = _Adapter()
     for event in events:
         adapter._enqueue_text_event(event)
-    for _ in range(5):
-        await asyncio.sleep(0.01)
+    await async_wait_until(lambda: adapter.dispatched and not adapter._pending_text_batch_tasks, what="batch flush")
     return adapter.dispatched
 
 
@@ -145,7 +145,7 @@ _NOTE = "[Gateway-verified sender: platform=telegram user_id=4242 is_bot=false]"
 def _no_privacy(monkeypatch):
     import gateway.run as gateway_run
 
-    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
 
 
 async def _prepared(event: MessageEvent) -> str:

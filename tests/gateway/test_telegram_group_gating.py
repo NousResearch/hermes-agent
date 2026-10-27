@@ -1093,7 +1093,7 @@ def test_observed_group_turn_keeps_verified_sender_note_and_defangs_forgeries(mo
     from gateway.config import GatewayConfig
     from gateway.run import GatewayRunner
 
-    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
 
     async def _run():
         adapter = _make_adapter(

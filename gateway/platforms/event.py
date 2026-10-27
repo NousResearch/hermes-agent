@@ -183,6 +183,11 @@ class MessageEvent:
         if self.reply_expected is not True and other.reply_expected is not False:
             self.reply_expected = other.reply_expected
 
+    def absorb_merged(self, other: "MessageEvent") -> None:
+        """*other* was merged into this turn: carry its reply expectation and envelope sender."""
+        self.absorb_reply_expected(other)
+        absorb_envelope_sender(self, other)
+
     def extend_media(self, other: "MessageEvent") -> None:
         """Append *other*'s attachments (urls, types and original names) to this event's. Names are
         padded with ``""`` on either side so each stays on its own attachment; events without names

@@ -568,6 +568,13 @@ class _ResponsesStream:
             self.result = result
             self.usage = agent_usage or self.usage
             agent_final = result.get("final_response", "") if isinstance(result, dict) else ""
+            if isinstance(result, dict) and _response_status(result) == 'failed':
+                # A failed final is diagnostic, not an answer or a post-stream transform.
+                # Keep actual deltas, or the existing redacted error-only terminal fallback.
+                self.final_response_text = "".join(self.final_text_parts) or (
+                    self._api._redact_api_error_text(result['error'])
+                    if result.get('error') and not agent_final else "")
+                return
             if self.terminal_replay:
                 # The receipt already contains the transformed final; it is not a raw provider
                 # stream onto which a verifier/footer transform should be applied a second time.
@@ -632,7 +639,10 @@ class _ResponsesStream:
         output = self._final_items()
         if self.durable_key:
             start = self.adapter._response_messages_turn_start_index(self.conversation_history, self.user_message, result)
-            output = self.adapter._extract_output_items(result, start_index=start, response_id=self.response_id)
+            # Project public text without altering the private failed tool transcript.
+            projected = dict(result, final_response=self.final_response_text, error='') if (
+                status == 'failed') else result
+            output = self.adapter._extract_output_items(projected, start_index=start, response_id=self.response_id)
             output = self.response_store.order_output(self.durable_key[0], output)
         env = self.terminal_envelope(status, output,
             error=self._api._redact_api_error_text(result.get('error') or 'The admitted turn failed.')

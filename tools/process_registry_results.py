@@ -9,6 +9,7 @@ import json
 import logging
 import re
 import sqlite3
+import threading
 import time
 from hermes_dir_acl import make_user_dir
 
@@ -127,6 +128,15 @@ def save_completed_result(session) -> bool:
                 for field in OWNERSHIP_FIELDS:
                     setattr(session, field, record[field])
             session.completion_consumed |= record['completion_consumed']
+            if (record['result_complete'] and not session._result_complete
+                    and (session._completion_event.is_set() or session._reader_thread is None
+                         or session._reader_thread is threading.current_thread())):
+                # A read failure can use an actual complete retained payload of this
+                # same immutable job. Copy its data; never promote an empty snapshot.
+                session.output_buffer = record['output']
+                for field in ('exit_code', 'completion_reason', 'termination_source'):
+                    setattr(session, field, record[field])
+                session._result_complete = True
             session._result_persisted_generation = record['ownership_generation'] if record['result_complete'] else -1
             if not record['result_complete']:
                 session._scope_stop_pending = True

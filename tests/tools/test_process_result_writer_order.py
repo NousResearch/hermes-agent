@@ -84,8 +84,10 @@ def test_late_partial_stop_writer_cannot_overwrite_original_final_result(tmp_pat
         assert 'final owned output' in saved['output'] and saved['exit_code'] == 7
         assert saved['result_complete'] is True
         if cached_writer:
-            # A still-partial cached object never becomes a final-output authority.
-            assert not cached._result_complete
+            # Only copying an actual complete retained payload may promote this cache.
+            assert cached._result_complete is (not refuse_final)
+            if cached._result_complete:
+                assert cached.output_buffer.count('final owned output') == 1
             cached.completion_consumed = True
             assert results.save_completed_result(cached)
             saved = json.loads(retained.read_text())

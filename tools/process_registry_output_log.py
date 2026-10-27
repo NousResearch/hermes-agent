@@ -91,15 +91,58 @@ def recorded_exit_code(log) -> Optional[int]:
         return None
 
 
+def complete_log_source(session, stream):
+    """A generic helper binds final regular output to its actual inherited fd."""
+    from tools.process_registry_job import read_job_receipt
+    row = read_job_receipt(session)
+    actual = os.fstat(stream.fileno())
+    if stream.tell() != actual.st_size:
+        return False  # The source shrank or grew beyond the bytes actually collected.
+    if not session.native_job_scope or (row and row.get('unit')):
+        return True  # Existing unit/live readers still require successful original-source EOF.
+    output = row.get('stdout') if row and row.get('quiescent') else None
+    return (isinstance(output, dict)
+            and all(type(output.get(key)) is int and output[key] >= 0 for key in ('device', 'inode', 'bytes'))
+            and (actual.st_dev, actual.st_ino, actual.st_size) ==
+                (output['device'], output['inode'], output['bytes']))
+
+
 class ProcessOutputLogMixin:
-    """The subclass supplies ``_ingest_output``, ``_clean_shell_noise``, ``_finish_reader``,
+    """The subclass supplies ``_ingest_output``, ``_clean_shell_noise``,
     ``_finish_exited`` and ``_detached_host_fate``. See ProcessRegistry."""
+
+    def _finish_reader(self, session, decoder, append, label, wait, exit_code, *, output_complete=True) -> None:
+        """Reader-thread teardown: flush the decoder (a truncated multibyte tail becomes
+        one U+FFFD instead of vanishing), reap the child (no zombies), record the exit.
+
+        A process may close stdout long before it exits.  The reader owns a dedicated
+        daemon thread, so it must keep waiting rather than publish a false completion
+        and discard the only ``Popen`` handle that can reap the child.
+        """
+        try:
+            tail = decoder.decode(b"", final=True)
+            if tail:
+                append(tail)
+        except Exception:
+            output_complete = False
+            logger.debug("%s output finalization failed", label, exc_info=True)
+        try:
+            wait()
+        except Exception as e:
+            # A PTY child reaped by isalive() already has its exitstatus; only an
+            # unknown status must stay tracked for later reconciliation.
+            if exit_code() is None:
+                logger.warning("%s wait failed; leaving process tracked: %s", label, e, exc_info=True)
+                return
+            logger.warning("%s wait failed; recording known exit status: %s", label, e, exc_info=True)
+        self._finish_exited(session, exit_code(), output_complete=output_complete)
 
     def _log_reader_loop(self, session) -> None:
         """Tail ``session.output_log`` until its process ends. The spawner decides the exit from
         its Popen; an adopter (no Popen) from the recorded status, else ``lost`` (-1)."""
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         proc = session.process
+        output_complete = True
         # poll()/wait() reconcile asks this reader to finish instead of reading a pipe itself.
         session._reader_selectable = True
 
@@ -129,21 +172,30 @@ class ProcessOutputLogMixin:
                         if text := decoder.decode(chunk):
                             ingest(text)
                         drained += 0 if alive else len(chunk)
-                        if drained < _FINAL_DRAIN_MAX_BYTES:
+                        from tools.process_registry_job import job_quiescent
+                        if drained < _FINAL_DRAIN_MAX_BYTES or job_quiescent(session):
                             continue
+                        output_complete = False  # A bounded drain is not original-source EOF.
                     if not alive:
                         break
                     time.sleep(_TAIL_SECONDS)
-        except OSError as exc:
-            logger.warning("Process output log %s unreadable: %s", session.output_log, exc)
+                output_complete &= complete_log_source(session, stream)
+        except Exception as exc:
+            output_complete = False
+            logger.warning("Process output log %s unreadable: %s", session.output_log, exc, exc_info=True)
         if proc is not None:
-            self._finish_reader(session, decoder, ingest, "Log", proc.wait, lambda: proc.returncode)
+            self._finish_reader(session, decoder, ingest, "Log", proc.wait, lambda: proc.returncode,
+                                output_complete=output_complete)
             return
-        if tail := decoder.decode(b"", final=True):
-            ingest(tail)
+        try:
+            if tail := decoder.decode(b"", final=True):
+                ingest(tail)
+        except Exception:
+            output_complete = False
+            logger.debug("Process output log decoder flush failed", exc_info=True)
         code = recorded_exit_code(session.output_log)
         if code is None:
             # SIGKILL / exec past the trap: the spawner is gone and no status was recorded.
-            self._finish_exited(session, -1, reason="lost", source="backend_lost")
+            self._finish_exited(session, -1, reason="lost", source="backend_lost", output_complete=output_complete)
         else:
-            self._finish_exited(session, code)
+            self._finish_exited(session, code, output_complete=output_complete)

@@ -322,7 +322,7 @@ class ProcessCheckpointMixin:
                 from tools.process_registry_job import read_job_receipt
                 with self._lock:
                     self._running[session.id] = session
-                self._finish_exited(session, read_job_receipt(entry)['exit_code'])
+                self._finish_exited(session, read_job_receipt(entry)['exit_code'], output_complete=False)
             else:
                 with self._lock:
                     self._running[session.id] = session

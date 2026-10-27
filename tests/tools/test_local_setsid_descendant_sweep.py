@@ -186,7 +186,8 @@ class TestReapUntrackedGroupGuard:
     be recycled onto an unrelated process that leads its own group, and the old
     raw killpg arm would have tree-killed the stranger."""
 
-    def test_termination_delegates_with_recorded_identity(self, monkeypatch):
+    @pytest.mark.parametrize('verified', [False, True])
+    def test_termination_delegates_with_recorded_identity(self, monkeypatch, verified):
         """The shared terminate path receives the pid AND the start time
         recorded at spawn; no group primitive is consulted or signalled."""
         from unittest.mock import MagicMock
@@ -198,6 +199,7 @@ class TestReapUntrackedGroupGuard:
         proc.pid = 999
         session = SimpleNamespace(systemd_unit="", host_start_time=4242)
         calls, forbidden = [], []
+        monkeypatch.setattr(reg, '_host_pid_is_ours', lambda pid, start: verified and (pid, start) == (999, 4242))
         monkeypatch.setattr(
             ProcessRegistry, "_terminate_host_pid",
             classmethod(
@@ -207,7 +209,7 @@ class TestReapUntrackedGroupGuard:
 
         reg._reap_untracked(session, proc)
 
-        assert calls == [(999, 4242)]
+        assert calls == ([(999, 4242)] if verified else [])
         assert forbidden == []
 
     def test_group_leader_child_is_reaped(self, monkeypatch):

@@ -9,7 +9,7 @@ import pytest
 
 from hermes_state_runtime import RuntimeStoreError, list_session_admissions
 from tests.gateway.test_session_authority_cancel_settlement import ACTOR, REF, _authority, _submit
-from tests.waiting import wait_until
+from tests.waiting import async_wait_until, wait_until
 
 
 def live(process):
@@ -34,7 +34,8 @@ async def spawn(registry, root, command, *, parent='s', route='route', pty=False
 @pytest.mark.parametrize('reload_registry', [False, True], ids=['live-owner', 'registry-reload'])
 @pytest.mark.parametrize('primary_exits', [False, True], ids=['active-primary', 'exited-primary'])
 @pytest.mark.parametrize('pty', [False, True], ids=['file-output', 'pty-output'])
-async def test_native_job_scope_quiesces_detached_children_before_fifo(tmp_path, monkeypatch, reload_registry, primary_exits, pty):
+async def test_native_job_scope_quiesces_detached_children_before_fifo(
+        tmp_path, monkeypatch, reload_registry, primary_exits, pty, record_property):
     from gateway.session_ancillary import process_stop_pending
     from tools import process_registry as module
     from tools.process_registry_job import job_quiescent, read_job_receipt, request_job_stop
@@ -85,7 +86,19 @@ async def test_native_job_scope_quiesces_detached_children_before_fifo(tmp_path,
             assert current.get(own.id).native_job_scope
         else:
             current = original
-        await authority.interrupt(ACTOR, REF, authority._handle(REF).execution_generation)
+        try:
+            await authority.interrupt(ACTOR, REF, authority._handle(REF).execution_generation)
+            first_stop = 'quiescent'
+        except RuntimeStoreError as error:
+            assert error.reason == 'process_stop_unknown'
+            first_stop = 'unknown_pending'
+            assert process_stop_pending(db, 's') and executed == []
+        record_property('first_stop_outcome', first_stop)
+        # A truthful bounded refusal is still fenced. The next ordinary input
+        # uses the existing native recovery boundary before its turn can start.
+        await _submit(authority, 'verified human successor')
+        await async_wait_until(lambda: executed == ['verified human successor']
+                              and authority.sessions['s'].task.done(), timeout=15)
         assert process_stop_pending(db, 's') is None
         assert job_quiescent(own) and not live(child)
         assert await asyncio.to_thread(own._completion_event.wait, 10)
@@ -94,8 +107,6 @@ async def test_native_job_scope_quiesces_detached_children_before_fifo(tmp_path,
             assert own.exit_code == 0
         assert all(not neighbor.exited for neighbor in neighbors)
         assert own.id not in {row['session_id'] for row in json.loads(module._checkpoint_path().read_text())}
-        await _submit(authority, 'verified human successor')
-        await asyncio.wait_for(authority.sessions['s'].task, 15)
         assert executed == ['verified human successor'] and not effect.exists()
         assert all(not neighbor.exited for neighbor in neighbors)
     finally:

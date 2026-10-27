@@ -1286,9 +1286,11 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 head_noise = not chunk.strip()
             self._ingest_output(session, chunk)
         _waiter = None
+        output_complete = True
         try:
             proc = session.process
             if proc is None or proc.stdout is None:
+                output_complete = False
                 return
             stdout = proc.stdout
             raw_read = getattr(getattr(stdout, "buffer", None), "read1", None)
@@ -1340,39 +1342,18 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                     # unread. The cap only stops a grandchild that never lets the pipe go empty.
                     drained_after_request += len(chunk)
                     if drained_after_request >= _FINAL_DRAIN_MAX_CHARS:
+                        output_complete = False
                         break
                 idle_after_exit = 0
         except Exception as e:
+            output_complete = False
             logger.debug("Process stdout reader ended: %s", e)
         finally:
             if _waiter is not None:
                 _waiter.close()
             self._finish_reader(
                 session, decoder, _append_chunk, "Process",
-                session.process.wait, lambda: session.process.returncode)
-
-    def _finish_reader(self, session, decoder, append, label, wait, exit_code) -> None:
-        """Reader-thread teardown: flush the decoder (a truncated multibyte tail becomes
-        one U+FFFD instead of vanishing), reap the child (no zombies), record the exit.
-
-        A process may close stdout long before it exits.  The reader owns a dedicated
-        daemon thread, so it must keep waiting rather than publish a false completion
-        and discard the only ``Popen`` handle that can reap the child.
-        """
-        with suppress(Exception):
-            tail = decoder.decode(b"", final=True)
-            if tail:
-                append(tail)
-        try:
-            wait()
-        except Exception as e:
-            # A PTY child reaped by isalive() already has its exitstatus; only an
-            # unknown status must stay tracked for later reconciliation.
-            if exit_code() is None:
-                logger.warning("%s wait failed; leaving process tracked: %s", label, e)
-                return
-            logger.warning("%s wait failed; recording known exit status: %s", label, e)
-        self._finish_exited(session, exit_code())
+                session.process.wait, lambda: session.process.returncode, output_complete=output_complete)
 
     _log_delta_command = staticmethod(log_delta_command)
 
@@ -1381,6 +1362,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         q = shlex.quote
         # Byte offset already read from the log (bytes, not chars: the shell counts bytes).
         prev_output_bytes = 0
+        output_complete = True
         while not session.exited:
             time.sleep(2)
             try:
@@ -1398,8 +1380,12 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                     new_size = None
                     used_offset = None
                     delta = ""
+                    output_complete = False
                 if new_size is not None:
+                    output_complete &= (0 <= used_offset <= new_size
+                                        and len(delta.encode('utf-8')) == new_size - used_offset)
                     if used_offset < prev_output_bytes:
+                        output_complete = False
                         # Log rotated/truncated: what we hold no longer lines up. Restart.
                         with session._lock:
                             if session.exited:
@@ -1428,12 +1414,12 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                         exit_code = int(exit_str.splitlines()[-1].strip())
                     except (ValueError, IndexError):
                         exit_code = -1
-                    self._finish_exited(session, exit_code)
+                    self._finish_exited(session, exit_code, output_complete=output_complete)
                     return
             except Exception:
                 # Environment might be gone (sandbox reaped, etc.). A kill that already
                 # settled the session keeps its result.
-                self._finish_exited(session, -1, reason="lost", source="backend_lost")
+                self._finish_exited(session, -1, reason="lost", source="backend_lost", output_complete=False)
                 return
 
     def _pty_reader_loop(self, session: ProcessSession):
@@ -1448,6 +1434,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         # queries from captured output. POSIX only: Windows ConPTY is a real console host that
         # answers itself (and pywinpty yields str chunks, not bytes).
         responder = None
+        output_complete = True
         if not _IS_WINDOWS:
             from tools.pty_query_responder import PtyQueryResponder
             responder = PtyQueryResponder(rows=30, cols=120)
@@ -1461,11 +1448,13 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         try:
             # A native helper may already be reaped while its PTY still holds
             # buffered output; EOF, rather than isalive(), ends that final drain.
-            while session.native_job_scope or pty.isalive():
+            while True:
                 try:
                     chunk = pty.read(4096)
-                    if not chunk and session.native_job_scope:
-                        break
+                    if not chunk:
+                        if not pty.isalive():
+                            break
+                        continue
                     if chunk:
                         # ptyprocess returns bytes; pywinpty returns str
                         if responder is not None and isinstance(chunk, bytes):
@@ -1481,18 +1470,28 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                         text = chunk if isinstance(chunk, str) else decoder.decode(chunk)
                         if text:
                             ingest(text)
-                except Exception:  # EOFError included
+                except EOFError:
+                    break
+                except Exception:
+                    output_complete = False
+                    logger.debug("PTY output read failed", exc_info=True)
                     break
         except Exception as e:
+            output_complete = False
             logger.debug("PTY stdout reader ended: %s", e)
         if responder is not None:
             # A query prefix split across the final reads is plain output after all.
-            tail = decoder.decode(responder.flush())
-            if tail:
-                ingest(tail)
+            try:
+                tail = decoder.decode(responder.flush())
+                if tail:
+                    ingest(tail)
+            except Exception:
+                output_complete = False
+                logger.debug("PTY output flush failed", exc_info=True)
         self._finish_reader(
             session, decoder, ingest, "PTY",
-            pty.wait, lambda: pty.exitstatus if hasattr(pty, 'exitstatus') else -1)
+            pty.wait, lambda: pty.exitstatus if hasattr(pty, 'exitstatus') else -1,
+            output_complete=output_complete)
 
     def _ingest_output(self, session: ProcessSession, text: str, *, unless_exited: bool = False) -> None:
         """Buffer a freshly-read chunk, then scan watch patterns and stream it live.
@@ -1504,7 +1503,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         self._check_watch_patterns(session, text)
         self._emit_output(session, text)
 
-    def _finish_exited(self, session: ProcessSession, exit_code, reason: str = "exited", source: str = "") -> None:
+    def _finish_exited(self, session: ProcessSession, exit_code, reason: str = "exited", source: str = "", *, output_complete=True) -> None:
         """Mark a reader-observed exit (a raced kill keeps its own code/reason) and finish.
         Under the session lock, like kill_process's commit: otherwise the kill can land between
         mark_exited's ``killed`` check and its writes, and the reader overwrites the kill."""
@@ -1512,7 +1511,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             from tools.process_registry_job import job_exit_result
             exit_code, reason, source = job_exit_result(session, exit_code, reason, source)
             session.mark_exited(exit_code, reason, source)
-            session._result_complete = True  # The original reader has collected its final output/status.
+            session._result_complete = output_complete  # Exit alone cannot certify the original payload.
         self._move_to_finished(session)
 
     def _move_to_finished(self, session: ProcessSession) -> bool:

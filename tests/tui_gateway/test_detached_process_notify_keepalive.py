@@ -149,7 +149,6 @@ def test_unpublished_completion_survives_registry_pruning(server, registry, deta
     sid, session, _ = detached
     proc = _spawn(registry, session["session_key"], notify_on_complete=True)
     proc.started_at = time.time() - FINISHED_TTL_SECONDS - 1
-    proc.mark_exited(0)
     publish = registry._publish_finished
     seen = []
 
@@ -160,7 +159,7 @@ def test_unpublished_completion_survives_registry_pruning(server, registry, deta
         publish(s, was_running)
 
     monkeypatch.setattr(registry, "_publish_finished", prune_mid_publish)
-    registry._move_to_finished(proc)
+    registry._finish_exited(proc, 0)
 
     assert seen == [(True, False)]
     with registry._lock:  # once published, the entry is ordinary history again
@@ -216,8 +215,7 @@ def test_queued_notice_survives_registry_pruning(server, registry, detached):
     sid, session, _ = detached
     proc = _spawn(registry, session["session_key"], notify_on_complete=True)
     proc.started_at = time.time() - FINISHED_TTL_SECONDS - 1
-    proc.mark_exited(0)
-    registry._move_to_finished(proc)
+    registry._finish_exited(proc, 0)
     with registry._lock:
         registry._prune_if_needed()
 

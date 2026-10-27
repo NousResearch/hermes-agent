@@ -192,10 +192,12 @@ def test_normal_primary_exit_preserves_output_and_native_quiescent_receipt(jobs)
     job = jobs("normal")
     receipt = job.evidence(lambda item: item["quiescent"])
     assert job.proc.wait(timeout=5) == 23
-    assert receipt == {
+    assert {key: value for key, value in receipt.items() if key != 'stdout'} == {
         "version": 1, "pid": job.proc.pid, "birth": job.identity["birth"],
         "exit_code": 23, "quiescent": True,
     }
+    output = (job.root / 'output').stat()
+    assert receipt['stdout'] == {'device': output.st_dev, 'inode': output.st_ino, 'bytes': output.st_size}
     assert "PRIMARY-STDOUT" in (job.root / "output").read_text()
     assert "PRIMARY-STDERR" in (job.root / "output").read_text()
 

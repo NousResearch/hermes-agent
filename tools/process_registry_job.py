@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -92,7 +93,7 @@ def job_exit_result(session, exit_code, reason, source):
 
 def finish_detached_scope(registry, session):
     if session.native_job_scope and job_quiescent(session):
-        registry._finish_exited(session, read_job_receipt(session)['exit_code'])
+        registry._finish_exited(session, read_job_receipt(session)['exit_code'], output_complete=session._result_complete)
     else:
         session._scope_stop_pending = True
         registry._close_reused_detached(session)  # No collected status and no PID signal.
@@ -194,12 +195,18 @@ def _main():
     if sys.argv[3] != '--' or not argv:
         raise ValueError('native job argv missing')
     pid = os.getpid()
-    stat = Path('/proc/self/stat').read_text(encoding='utf-8')
-    birth = int(stat[stat.rindex(')') + 2:].split()[19])
+    process_stat = Path('/proc/self/stat').read_text(encoding='utf-8')
+    birth = int(process_stat[process_stat.rindex(')') + 2:].split()[19])
     code, stopped = None, False
 
     def receipt(quiescent):
         row = dict(version=1, pid=pid, birth=birth, exit_code=code, quiescent=quiescent)
+        try:
+            output = os.fstat(1)
+            if stat.S_ISREG(output.st_mode):
+                row['stdout'] = dict(device=output.st_dev, inode=output.st_ino, bytes=output.st_size)
+        except OSError:
+            pass  # Missing output proof never changes the kernel child/quiescence verdict.
         temporary = target.with_name(target.name + '.' + str(pid) + '.tmp')
         fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, 'w', encoding='utf-8') as stream:

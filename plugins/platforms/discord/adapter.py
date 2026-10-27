@@ -215,6 +215,7 @@ _DISCORD_MODEL_SELECT_CAPACITY = (_DISCORD_SELECT_MAX_ROWS - 2) * _DISCORD_SELEC
 _DISCORD_BUTTON_LABEL_LIMIT = 80
 # Embed titles cap at 256 chars.
 _DISCORD_EMBED_TITLE_LIMIT = 256
+_DISCORD_EMBED_FOOTER_LIMIT = 2048
 _DISCORD_ELLIPSIS = "\u2026"
 _DISCORD_NONCONVERSATIONAL_METADATA_KEYS = frozenset({
     "non_conversational", "non_conversational_history",
@@ -321,6 +322,12 @@ from gateway.platforms._shared import (
     extra_or_secret as _extra_or_secret, platform_gate_env as _scoped_gate_env, send_error,
     yaml_env_setter as _yaml_env_setter
 )
+
+
+def _clarify_entry_is_multi(clarify_id: str) -> bool:
+    """True when the pending gateway clarify entry asked for ``multi_select``."""
+    from tools.clarify_gateway import get_pending
+    return bool(getattr(get_pending(clarify_id), "multi_select", False))
 
 
 def _unauthorized() -> str:
@@ -5759,7 +5766,11 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             # 5 buttons × 5 rows = 25; one slot is reserved for "Other".
             clean_choices = [s for s in (_flatten_choice(c) for c in (choices or [])) if s][:24]
             if clean_choices:
-                hint = t("platform.discord.prompt.clarify_hint_buttons")
+                # multi_select lives on the pending gateway entry (the send_clarify signature stays
+                # adapter-compatible): those prompts get a multi-value select instead of buttons.
+                multi = _clarify_entry_is_multi(clarify_id)
+                hint = t("platform.discord.prompt.clarify_hint_multi" if multi
+                         else "platform.discord.prompt.clarify_hint_buttons")
                 # Button labels clip past ~40 columns on mobile with no tooltip (#78115): when
                 # any option is that long, the numbered full text goes in the content too.
                 # Capped at half the 2000-char content so the question keeps the rest; every
@@ -5768,7 +5779,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                                                     escape=lambda s: re.sub(r"([\\*_~`|<>\[\]])", r"\\\1", s))
                 if numbered:
                     hint = f"{numbered}\n\n{hint}"
-                view = ClarifyChoiceView(
+                view = (ClarifyMultiSelectView if multi else ClarifyChoiceView)(
                     choices=clean_choices, clarify_id=clarify_id,
                     allowed_user_ids=self._allowed_user_ids,
                     allowed_role_ids=self._allowed_role_ids,
@@ -6323,7 +6334,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
 def _define_discord_view_classes() -> None:
     """Register Discord UI view classes as module globals.
     Called at module load and after a lazy install so the classes exist whenever DISCORD_AVAILABLE."""
-    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView, ChoicePickerView
+    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView, ChoicePickerView, ClarifyMultiSelectView
 
     class _HermesView(discord.ui.View):
         """Shared plumbing for Hermes component views: allowlist auth, single-use
@@ -6869,6 +6880,65 @@ def _define_discord_view_classes() -> None:
             await self._finish(
                 interaction, discord.Color.blue(),
                 t("platform.discord.prompt.awaiting_typed", user=display_name), log_edit_failure=False)
+
+    class ClarifyMultiSelectView(ClarifyChoiceView):
+        """``multi_select`` clarify: one multi-value select (a checkbox sheet on mobile) plus
+        ``✏️ Other``. Closing the menu submits; the answer is a JSON array of canonical choice
+        texts, the same shape ``clarify_gateway`` produces for a typed ``1,3`` reply. Single-use
+        like the button view (shares ``_finish`` / ``_on_other``)."""
+
+        def __init__(self, choices: list[str], clarify_id: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None):
+            _HermesView.__init__(self, allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
+            self.choices = list(choices)[:24]
+            self.clarify_id = clarify_id
+            options = [
+                discord.SelectOption(label=self._button_label(index, choice), value=str(index))
+                for index, choice in enumerate(self.choices)
+            ]
+            select = discord.ui.Select(
+                placeholder=_t_discord("platform.discord.prompt.clarify_multi_placeholder", _DISCORD_SELECT_PLACEHOLDER_LIMIT),
+                options=options, min_values=1, max_values=max(1, len(options)),
+                custom_id=f"clarify:{clarify_id}:select",
+            )
+            select.callback = self._on_select
+            self.add_item(select)
+            other_btn = discord.ui.Button(
+                label=_t_discord("platform.discord.prompt.other", _DISCORD_BUTTON_LABEL_LIMIT), style=discord.ButtonStyle.secondary,
+                custom_id=f"clarify:{clarify_id}:other",
+            )
+            other_btn.callback = self._on_other
+            self.add_item(other_btn)
+
+        def _selected_indices(self, interaction: discord.Interaction) -> list[int]:
+            """Valid, de-duplicated option indices from the interaction, in choice order."""
+            raw = (getattr(interaction, "data", None) or {}).get("values") or []
+            picked = {int(v) for v in map(str, raw) if v.isdigit() and int(v) < len(self.choices)}
+            return sorted(picked)
+
+        async def _on_select(self, interaction: discord.Interaction) -> None:
+            if not await self._gate(
+                interaction, resolved_msg=t("platform.discord.prompt.clarify_already_answered"),
+                unauth_msg=_unauthorized(),
+            ):
+                return
+            indices = self._selected_indices(interaction)
+            if not indices:
+                with suppress(Exception):
+                    await interaction.response.defer()
+                return
+            # Round-trip the canonical choice text from the entry, not the (possibly clipped) labels.
+            from tools.clarify_gateway import get_pending, resolve_gateway_clarify
+            entry = get_pending(self.clarify_id)
+            canonical = list(entry.choices) if entry and entry.choices else None
+            picked = [canonical[i] if canonical and i < len(canonical) else self.choices[i] for i in indices]
+            display_name = getattr(getattr(interaction, "user", None), "display_name", "user")
+            footer = _truncate_discord_component_text(
+                t("platform.discord.prompt.answered_by", user=display_name,
+                  choice=", ".join(self.choices[i] for i in indices)), _DISCORD_EMBED_FOOTER_LIMIT)
+            await self._finish(interaction, discord.Color.green(), footer, log_edit_failure=True)
+            resolved = resolve_gateway_clarify(self.clarify_id, json.dumps(picked, ensure_ascii=False))
+            logger.info("Discord clarify multi-select resolved (id=%s, picks=%s, ok=%s)",
+                        self.clarify_id, [i + 1 for i in indices], resolved)
 
 if DISCORD_AVAILABLE:
     _define_discord_view_classes()

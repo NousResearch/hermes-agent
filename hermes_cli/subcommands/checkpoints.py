@@ -5,8 +5,10 @@ from __future__ import annotations
 
 def build_checkpoints_parser(subparsers) -> None:
     """Attach the ``checkpoints`` subcommand to ``subparsers``."""
+    from hermes_constants import display_hermes_home
+
     checkpoints_parser = subparsers.add_parser(
-        "checkpoints", help="Inspect / prune / clear ~/.hermes/checkpoints/",
+        "checkpoints", help=f"Inspect / prune / clear {display_hermes_home()}/checkpoints/",
         description="Manage the filesystem checkpoint store — the shadow git "
         "repo hermes uses to snapshot working directories before "
         "write_file/patch/terminal calls. Lets you see how much "

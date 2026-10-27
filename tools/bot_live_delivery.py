@@ -30,15 +30,39 @@ _TERMINAL = frozenset({"settled", "failed", "cancelled", "ambiguous"})
 
 
 def _bot_chat_tip(home: Path) -> str | None:
-    """Current Bot Chat tip id, or None when the profile has no store or no Bot Chat yet."""
+    """Current Bot Chat tip id, or None when the profile has no store or no Bot Chat yet.
+
+    A local reset forks a new segment that ``get_compression_tip`` deliberately does not
+    follow (#114271), so the discovery pin would keep naming the pre-reset creation id
+    while the gateway's routing entry targets the reset child — every delivery then dies
+    on ``admission_conflict``. The owner's receipt lineage is the authoritative tip, so
+    read it first and fall back to the compression walk for profiles without a receipt.
+    """
     from hermes_state import SessionDB
+    from hermes_state_local import POLICY_PREFIX
+    from hermes_state_local_lineage import local_physical_target
 
     if not (home / 'state.db').is_file():
         return None
     db = SessionDB(db_path=home / 'state.db', read_only=True)
     try:
         row = db.get_session_by_title('Bot Chat')
-        return db.get_compression_tip(row['id']) if row else None
+        if row is None:
+            return None
+        sid = row['id']
+        try:
+            with db._read_ctx() as conn:
+                saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
+                                     (POLICY_PREFIX + sid,)).fetchone()
+                if saved is not None:
+                    receipt = json.loads(saved[0])
+                    if receipt.get('session_id') == sid:
+                        return local_physical_target(conn, sid)
+        except Exception:
+            # A damaged or foreign receipt must not break discovery: the compression
+            # walk below is the pre-patch behavior and stays the safe fallback.
+            pass
+        return db.get_compression_tip(sid)
     finally:
         db.close()
 

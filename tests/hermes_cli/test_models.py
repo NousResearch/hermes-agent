@@ -1487,6 +1487,37 @@ class TestOpenRouterCatalogDiskCache:
         assert fetch_openrouter_models() == first
         assert calls == []
 
+    def test_free_live_models_missing_from_manifest_are_appended(self, monkeypatch, tmp_path):
+        """fathah/hermes-desktop#894: free tool-supporting live models must appear
+        even when the curated manifest does not list them."""
+        payload = {"data": [
+            {"id": "a/one", "supported_parameters": ["tools"],
+             "pricing": {"prompt": "0", "completion": "0"}},
+            {"id": "b/two", "supported_parameters": ["tools"],
+             "pricing": {"prompt": "0", "completion": "0"}},
+            {"id": "c/paid", "supported_parameters": ["tools"],
+             "pricing": {"prompt": "1", "completion": "1"}},
+            {"id": "d/notools", "supported_parameters": ["temperature"],
+             "pricing": {"prompt": "0", "completion": "0"}},
+        ]}
+        calls = []
+
+        def fake_index(url, timeout, opener):
+            calls.append(url)
+            return payload["data"], {m["id"]: m for m in payload["data"]}
+
+        monkeypatch.setattr(_models_mod, "_fetch_live_catalog_index", fake_index)
+        monkeypatch.setattr("hermes_cli.model_catalog.get_curated_openrouter_models",
+                            lambda: [("a/one", "")])
+        got = fetch_openrouter_models(force_refresh=True)
+        assert ("a/one", "free") in got
+        # free + tools, absent from manifest: must be appended, not hidden
+        assert ("b/two", "free") in got
+        # paid models stay curated-only
+        assert not any(mid == "c/paid" for mid, _ in got)
+        # no tool support: still hidden
+        assert not any(mid == "d/notools" for mid, _ in got)
+
     def test_expired_or_corrupt_snapshot_falls_through_to_fetch(self, monkeypatch, tmp_path):
         calls = []
         self._install_network(monkeypatch, calls)

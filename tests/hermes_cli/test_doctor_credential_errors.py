@@ -41,6 +41,8 @@ def local_http(monkeypatch):
 
 def _run_probe(route, key, url, monkeypatch):
     monkeypatch.setenv("AUDIT_API_KEY", key)
+    monkeypatch.setenv("FIRECRAWL_API_KEY", key)
+    monkeypatch.setenv("FAL_KEY", key)
     monkeypatch.setenv("OPENROUTER_API_KEY", key)
     monkeypatch.setenv("GITHUB_TOKEN", key)
     monkeypatch.setenv("ELEVENLABS_API_KEY", key)
@@ -50,8 +52,8 @@ def _run_probe(route, key, url, monkeypatch):
         "openrouter": dc._probe_openrouter,
         "anthropic": dc._probe_anthropic,
         "github": dc._probe_github_token,
-        "live-bearer": lambda: live._keyed_probe("Audit", url, "AUDIT_API_KEY", "Bearer", 2),
-        "live-key": lambda: live._keyed_probe("Audit", url, "AUDIT_API_KEY", "Key", 2),
+        "live-bearer": lambda: live._keyed_probe("Audit", url, "FIRECRAWL_API_KEY", "Bearer", 2),
+        "live-key": lambda: live._keyed_probe("Audit", url, "FAL_KEY", "Key", 2),
         "live-xi": lambda: live._probe_audio("tts", {"tts": {"provider": "elevenlabs"}}, 2),
     }
     issues = []
@@ -95,3 +97,27 @@ def test_other_probe_errors_remain_useful_without_credentials(error_type, surfac
     output = capsys.readouterr().out
     assert token not in detail + str(issues) + output
     assert "connection failed" in detail + output
+
+
+@pytest.mark.parametrize("route", ["generic", "openrouter", "anthropic", "github", "live-bearer", "live-key", "live-xi", "live-crash"])
+@pytest.mark.parametrize("escaped", [False, True])
+@pytest.mark.parametrize("error_type", [RuntimeError, TimeoutError])
+def test_known_opaque_credentials_are_removed_from_probe_outputs(route, escaped, error_type, monkeypatch, capsys):
+    token = "OpaqueSyntheticCredential'\\éA1B2\ninvalid"
+    rendered = repr(token) if escaped else token
+
+    def fail(*args, **kwargs):
+        raise error_type(f"connection failed while sending {rendered}")
+
+    monkeypatch.setattr(httpx, "get", fail)
+    if route == "live-crash":
+        monkeypatch.setenv("FIRECRAWL_API_KEY", token)
+        monkeypatch.setattr(live, "run_live_checks", fail)
+        issues = []
+        live.maybe_run_live_checks(argparse.Namespace(live=True), issues)
+        detail = ""
+    else:
+        detail, issues = _run_probe(route, token, "http://unused.invalid", monkeypatch)
+    output = detail + str(issues) + capsys.readouterr().out
+    assert "OpaqueSyntheticCredential" not in output
+    assert "connection failed" in output

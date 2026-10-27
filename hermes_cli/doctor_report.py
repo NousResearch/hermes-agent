@@ -10,8 +10,8 @@ from hermes_cli.colors import Colors, color
 from hermes_cli.debug_redaction import redact_debug_support_text
 
 
-def format_probe_error(error: Exception) -> str:
-    """Keep probe failures useful without echoing rejected authentication headers."""
+def format_probe_error(error: Exception, *secrets: str | None) -> str:
+    """Scrub known probe credentials before applying the shared support redactor."""
     from httpx import LocalProtocolError
 
     message = str(error)
@@ -19,6 +19,11 @@ def format_probe_error(error: Exception) -> str:
     # Opaque API keys therefore cannot reliably be recognized by a text redactor.
     if isinstance(error, LocalProtocolError) and message.startswith("Illegal header value "):
         return "Invalid HTTP header value; check configured credentials for line breaks or other invalid characters"
+    # Exceptions may interpolate the value or its repr. Replace longer forms first
+    # so an overlapping credential cannot leave a suffix of another one visible.
+    values = {value for secret in secrets if secret for value in (secret, repr(secret)[1:-1])}
+    for value in sorted(values, key=len, reverse=True):
+        message = message.replace(value, "[REDACTED]")
     return redact_debug_support_text(message) or type(error).__name__
 
 

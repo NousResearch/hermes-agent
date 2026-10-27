@@ -143,7 +143,7 @@ def _probe_openrouter() -> ProbeResult:
         import httpx
         r = httpx.get(OPENROUTER_MODELS_URL, headers={"Authorization": f"Bearer {key}"}, timeout=10)
     except Exception as e:
-        return _row(name, "fail", f"({format_probe_error(e)})", ["Check network connectivity"])
+        return _row(name, "fail", f"({format_probe_error(e, key)})", ["Check network connectivity"])
     if r.status_code == 200:
         return _row(name, "ok")
     detail, issue = _OPENROUTER_STATUS.get(r.status_code, (f"(HTTP {r.status_code})", None))
@@ -171,7 +171,7 @@ def _probe_anthropic() -> ProbeResult:
             headers["anthropic-beta"] = ",".join([b for b in _COMMON_BETAS if b != _CONTEXT_1M_BETA] + list(_OAUTH_ONLY_BETAS))
             r = httpx.get(url, headers=headers, timeout=10)
     except Exception as e:
-        return _row(name, "warn", f"({format_probe_error(e)})")
+        return _row(name, "warn", f"({format_probe_error(e, key)})")
     return _row(name, *{200: ("ok",), 401: ("fail", "(invalid API key)")}.get(r.status_code, ("warn", "(couldn't verify)")))
 
 
@@ -197,7 +197,7 @@ def _probe_apikey_provider(pname, env_vars, default_url, base_env, supports_heal
         if pname == "Alibaba/DashScope" and not base and r.status_code == 401:
             r = httpx.get("https://dashscope.aliyuncs.com/compatible-mode/v1/models", headers=headers, timeout=10)
     except Exception as e:
-        return _row(pname, "warn", f"({format_probe_error(e)})", label=label)
+        return _row(pname, "warn", f"({format_probe_error(e, key)})", label=label)
     if r.status_code == 401:
         return _row(pname, "fail", "(invalid API key)", [f"Check {env_vars[0]} in .env"], label=label)
     return _row(pname, "ok", label=label) if r.status_code == 200 else _row(pname, "warn", f"(HTTP {r.status_code})", label=label)
@@ -394,13 +394,14 @@ def _probe_github_token() -> ProbeResult:
         return _skip(name)  # the Skills Hub section already reports gh-CLI / no-token state
     from hermes_cli.doctor import _DHH
     where = f"{_DHH}/.env" if var in load_env() else "the environment"
+    key = get_env_value(var)
     try:
         import httpx
         r = httpx.get(GITHUB_API_PROBE_URL, timeout=10, headers={
-            "Authorization": f"Bearer {get_env_value(var)}", "User-Agent": hermes_user_agent(),
+            "Authorization": f"Bearer {key}", "User-Agent": hermes_user_agent(),
             "Accept": "application/vnd.github+json"})
     except Exception as e:
-        return _row(name, "fail", f"({format_probe_error(e)})", ["Check network connectivity"])
+        return _row(name, "fail", f"({format_probe_error(e, key)})", ["Check network connectivity"])
     if r.status_code == 200:
         return _row(name, "ok", f"({var} from {where} accepted by api.github.com)")
     if r.status_code == 401:

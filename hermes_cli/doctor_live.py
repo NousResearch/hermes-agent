@@ -126,6 +126,12 @@ def _probe_audio(kind: str, config: dict, timeout: float) -> ProbeResult:
 _REPORTERS = {"pass": check_ok, "warn": check_warn, "fail": check_fail}
 
 
+def _live_probe_secrets() -> list[str]:
+    """Read the registered probes' keys with the same normalization as their requests."""
+    specs = (*_KEYED_PROBES.values(), *_AUDIO_PROBES.values())
+    return [os.getenv(env_var, "").strip() for _, env_var, _ in specs]
+
+
 def _report(result: ProbeResult, issues: list[str]) -> None:
     reporter = _REPORTERS.get(result.status)
     if reporter is None:  # skip
@@ -141,9 +147,9 @@ def _run_one(name: str, fn: Callable[[], ProbeResult], issues: list[str]) -> Pro
     try:
         result = fn()
     except TimeoutError as exc:
-        result = ProbeResult(name, "fail", f"(timed out: {format_probe_error(exc)})")
+        result = ProbeResult(name, "fail", f"(timed out: {format_probe_error(exc, *_live_probe_secrets())})")
     except Exception as exc:
-        msg = format_probe_error(exc)
+        msg = format_probe_error(exc, *_live_probe_secrets())
         result = ProbeResult(name, "fail", f"(timed out: {msg})" if "time" in msg.lower() else f"({msg})")
     _report(result, issues)
     return result
@@ -189,5 +195,5 @@ def maybe_run_live_checks(args, issues: list[str]):
     try:
         return run_live_checks(issues)
     except Exception as exc:  # catch-all: doctor must survive
-        check_warn("Live backend probes crashed", f"({format_probe_error(exc)})")
+        check_warn("Live backend probes crashed", f"({format_probe_error(exc, *_live_probe_secrets())})")
         return None

@@ -3620,6 +3620,13 @@ def _commit_compaction(
                 # compacted=1. Count against the FINAL list — salvage may have dropped rows.
                 tail_count = sum(1 for m in compressed if id(m) in _tail_tagged_ids)
                 _tail_held = messages[max(0, len(messages) - tail_count):]
+                if tail_count == 0:
+                    # Plugins do not know the built-in private tail marker. Their unchanged
+                    # message_uid values still identify carried durable rows precisely.
+                    from agent.conversation_compression_archive import untagged_carried_messages
+                    inferred_carried = untagged_carried_messages(compressed, messages)
+                    if inferred_carried:
+                        carried_messages = [*(carried_messages or ()), *inferred_carried]
                 # The rewind takes the newest `tail_count` durable rows as the tail's originals, so a tail row
                 # with none (this turn's user row, which the CLI and gateway persist after preflight; unflushed
                 # scaffolding) would flag a summarized row superseded instead: gone from display and search.

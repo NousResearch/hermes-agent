@@ -110,6 +110,16 @@ def test_compress_input_after_a_cold_restore_carries_every_rows_uid(db):
     assert len(active[0]["message_uid"]) == UID_LEN
     # And the live list the caller keeps carries the same uids (what the next compress()/post_llm_call sees).
     assert [m.get("message_uid") for m in compressed] == [r["message_uid"] for r in active]
+    # An untagged plugin tail still carries the durable identities.  Its retired
+    # originals are superseded twins, not compacted history searchable beside
+    # the live copy (#139925).
+    carried_uids = [r["message_uid"] for r in stored[-2:]]
+    retired = [dict(r) for r in db._conn.execute(
+        "SELECT message_uid, active, compacted FROM messages WHERE session_id = ? AND active = 0", (sid,))]
+    assert all(
+        row["compacted"] == 0 for row in retired if row["message_uid"] in carried_uids
+    )
+    assert len(db.search_messages("seed msg 4")) == 1
 
 
 @pytest.mark.parametrize("in_place", [True, False], ids=["in_place", "rotation"])

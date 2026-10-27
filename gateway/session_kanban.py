@@ -50,7 +50,10 @@ def build_kanban_policy(connection, params, config):
         raise RuntimeStoreError('invalid_kanban_claim') from exc
     cwd = task.workspace_path
     params_policy = {'source': 'cli', 'cwd': cwd}
-    for name, value in (('model', task.model_override), ('provider', task.provider_override), ('reasoning', task.reasoning_effort)):
+    # Explicit card pin beats the work-class default, which beats the profile's
+    # own agent.reasoning_effort (None). One resolver with `hermes kanban show`.
+    reasoning_effort = kb.effective_reasoning_effort(task)
+    for name, value in (('model', task.model_override), ('provider', task.provider_override), ('reasoning', reasoning_effort)):
         if value:
             params_policy[name] = value
     private = {}

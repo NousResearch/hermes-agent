@@ -235,6 +235,12 @@ _SPECS = [
                   "Accepts 'none' (thinking off) or one of the validated levels "
                   "(minimal, low, medium, high, xhigh, max, ultra). "
                   "Omit to inherit the profile's own setting."),
+        _arg("--work-class", metavar="CLASS",
+             help="What kind of work this card is; picks the worker's default "
+                  "reasoning effort when --reasoning-effort is unset. Mechanical "
+                  "classes: merge (medium), deploy/approval/qa-handoff/"
+                  "dependency-bump/formatting (low). implementation, design, "
+                  "diagnosis and research inherit the profile. Omit to inherit."),
         _json_flag(help="Emit JSON output"),
     ], help="Create a new task"),
     _cmd("swarm", [

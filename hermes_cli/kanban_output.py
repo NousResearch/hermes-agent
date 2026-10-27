@@ -18,7 +18,7 @@ _TASK_DICT_FIELDS = (
     "workspace_kind", "workspace_path", "branch_name", "project_id",
     "created_by", "created_at", "started_at", "completed_at", "result",
     "skills", "max_runtime_seconds", "max_retries", "model_override", "provider_override",
-    "reasoning_effort",
+    "reasoning_effort", "work_class",
     "session_id", "workflow_template_id", "current_step_key", "completion_contract", "last_failure_error",
 )
 _SHOW_RUN_FIELDS = (
@@ -85,3 +85,20 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
     d = _obj_dict(t, _TASK_DICT_FIELDS)
     d["skills"] = list(t.skills) if t.skills else []
     return d
+
+
+def task_reasoning_label(task: kb.Task) -> str:
+    """One line answering "what effort will this card's worker run at, and why".
+
+    Shares the dispatch resolver (``kanban_db.effective_reasoning_effort``), so the
+    printed answer is the answer the worker gets: an explicit pin, else the
+    work-class default, else the assignee profile's own setting.
+    """
+    effort = kb.effective_reasoning_effort(task)
+    if task.reasoning_effort:
+        return f"{effort} (task)"
+    if effort:
+        return f"{effort} (class: {task.work_class})"
+    if task.work_class:
+        return f"inherit (profile; class: {task.work_class})"
+    return "inherit (profile)"

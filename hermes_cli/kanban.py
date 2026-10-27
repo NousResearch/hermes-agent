@@ -26,7 +26,7 @@ from hermes_cli import kanban_workflow
 from hermes_cli.kanban_output import (
     _ATTACHMENT_FIELDS, _RUNS_RUN_FIELDS, _SHOW_RUN_FIELDS, _bulk_apply, _err,
     _fmt_counts, _fmt_task_line, _fmt_ts, _json_out, _obj_dict, _print_json,
-    _task_to_dict,
+    _task_to_dict, task_reasoning_label,
 )
 from hermes_cli.kanban_boards import _dispatch_boards
 from hermes_cli.kanban_ops import (
@@ -360,6 +360,10 @@ def _cmd_create(args: argparse.Namespace) -> int:
         reasoning_effort = kb.normalize_reasoning_effort(getattr(args, "reasoning_effort", None))
     except ValueError as exc:
         return _err(f"kanban: --reasoning-effort: {exc}", 2)
+    try:
+        work_class = kb.normalize_work_class(getattr(args, "work_class", None))
+    except ValueError as exc:
+        return _err(f"kanban: --work-class: {exc}", 2)
     max_retries = getattr(args, "max_retries", None)
     if max_retries is not None and max_retries < 1:
         return _err(f"kanban: --max-retries must be >= 1 (got {max_retries}); "
@@ -376,6 +380,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             max_retries=max_retries, model_override=getattr(args, "model_override", None),
             provider_override=getattr(args, "provider_override", None),
             reasoning_effort=reasoning_effort,
+            work_class=work_class,
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             completion_contract=getattr(args, "completion_contract", None),
@@ -521,8 +526,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
     if task.model_override:
         _prov = f" (provider: {task.provider_override})" if task.provider_override else ""
         field("model", f"{task.model_override}{_prov}")
-    if task.reasoning_effort:
-        field("reasoning", task.reasoning_effort)
+    field("reasoning", task_reasoning_label(task))
     # Effective retry threshold (task > config > default) explains auto-blocks.
     if task.max_retries is not None:
         print(f"  max-retries: {task.max_retries} (task)")

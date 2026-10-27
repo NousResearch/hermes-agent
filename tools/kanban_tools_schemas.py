@@ -533,6 +533,14 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "max, ultra). Omit to inherit the profile's own "
                 "setting."
         )),
+        "work_class": _prop("string", (
+                "What kind of work this card is; supplies the worker's "
+                "default reasoning effort when 'reasoning_effort' is "
+                "omitted. Mechanical classes run cheaper: merge (medium); "
+                "deploy, approval, qa-handoff, dependency-bump, formatting "
+                "(low). implementation, design, diagnosis and research "
+                "inherit the assignee profile's setting. Omit to inherit."
+        )),
     },
     ["title", "assignee"],
 )

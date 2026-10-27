@@ -59,6 +59,7 @@ export function ComposerControls({
   hasComposerPayload,
   hideModelPill = false,
   minimal = false,
+  showVoiceControls = true,
   state,
   voiceStatus,
   onDictate,
@@ -79,6 +80,8 @@ export function ComposerControls({
   hasComposerPayload: boolean
   hideModelPill?: boolean
   minimal?: boolean
+  /** Hide the dictation hub / folded voice menu entirely (`voice.show_controls: false`). */
+  showVoiceControls?: boolean
   state: ChatBarState
   voiceStatus: VoiceStatus
   onDictate: () => void
@@ -151,7 +154,7 @@ export function ComposerControls({
               {compactModelPill ? null : <ReasoningPill disabled={disabled} model={state.model} />}
             </>
           )}
-          {voiceControls}
+          {showVoiceControls ? voiceControls : null}
         </>
       )}
       {renderSteerButton(busy, busyAction, onSteer, disabled, c.steer)}

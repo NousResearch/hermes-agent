@@ -478,18 +478,21 @@ python -m pm.build_env --source . --out .venv --group dev --group test
 ```
 
 The output must not exist. To regenerate it, stop its processes and intentionally
-remove only that disposable environment first. The runner never discovers this
-fresh build on its own — select its interpreter explicitly:
+remove only that disposable environment first. The runner never selects this
+fresh build on its own, and `HERMES_PYTHON` is honored only in an unactivated
+shell: an activated one keeps using the managed test environment above. Run the
+supported `deactivate` first, or use a terminal not started from an activated
+shell (a nested shell or editor launched from one inherits the activation but
+not `deactivate`), rather than hand-editing activation's exports. Then select
+the interpreter explicitly:
 
 - POSIX: `export HERMES_PYTHON="$PWD/.venv/bin/python"`
-- PowerShell: `$env:HERMES_PYTHON = 'C:\absolute\path\to\.venv\Scripts\python.exe'`
+- PowerShell: `$env:HERMES_PYTHON = "$PWD\.venv\Scripts\python.exe"`
 
-`HERMES_PYTHON` is honored only in an unactivated shell. An already activated
-shell keeps using the managed test environment above; run the supported
-`deactivate` or open a fresh shell rather than hand-editing activation's
-exports. Then run `scripts/run_tests.sh` (through Bash on Windows). The test
-dependency group includes native launcher tests and never enters a packaged
-runtime.
+Run `scripts/run_tests.sh` (through Bash on Windows). It prints
+`▶ not activated — using HERMES_PYTHON: …` when the override applies; without
+that line it ran under the managed environment. The test dependency group
+includes native launcher tests and never enters a packaged runtime.
 
 For editor debugging, select that independent interpreter, set the working
 directory to this checkout, and launch `hermes` as the script. Keep its

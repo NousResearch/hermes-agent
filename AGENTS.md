@@ -62,11 +62,10 @@ unreachable otherwise).
 
 `source ./activate` (fish: `activate.fish`, PowerShell: `activate.ps1`) provisions and activates the
 PM environment; pick an isolated `HERMES_HOME`/`HERMES_RUNTIME_DIR` first
-(`website/docs/reference/package-management.md#developer-workflow`). Tests run under the
-activation-managed test environment, or an independent interpreter selected via `HERMES_PYTHON`
-in an unactivated shell (details: `CONTRIBUTING.md`). **`python scripts/check`** runs every blocking lint check CI
-runs, with CI's pinned tools; `--install-hook pre-push` runs it on every push (re-run after
-pulling to refresh the hook). `# noqa` does not waive a ratchet finding:
+(`website/docs/reference/package-management.md#developer-workflow`). Tests need no manual
+environment; `HERMES_PYTHON` rules are in `CONTRIBUTING.md`. **`python scripts/check`** runs every
+blocking lint check CI runs, with CI's pinned tools; `--install-hook pre-push` runs it on every push
+(re-run after pulling to refresh the hook). `# noqa` does not waive a ratchet finding:
 `# health: allow <RULE> -- <why>` does.
 
 ## Project Structure

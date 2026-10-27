@@ -189,8 +189,9 @@ managed test environment from the locked `dev` and `test` dependency groups,
 and `scripts/run_tests.sh` selects it automatically, re-activating when the
 checkout or its dependency inputs changed. The steps below instead build an
 **independent** test interpreter — useful for editors, or for setups where
-activation is unavailable (for example, the Nix dev shell). It is never
-selected automatically.
+activation is unavailable. It is never selected automatically. (The Nix dev
+shell needs none of this: it already exports its own interpreter as
+`HERMES_PYTHON`.)
 
 Use the [PM developer workflow](../reference/package-management.md#developer-workflow) to prepare Python 3.14 first.
 Run these commands from that checkout with its prepared Python. Keep the same
@@ -215,21 +216,25 @@ that disposable environment first. PM does not delete an existing destination.
 Do not run raw pip or uv commands to change a PM-built environment.
 
 The output can live in the checkout (`.venv`) or outside it at a fresh absolute
-path; the runner never discovers either on its own. Select the independent
+path; the runner never selects either on its own. Select the independent
 interpreter explicitly through `HERMES_PYTHON` in an **unactivated** shell, and
 the runner uses it when it contains pytest:
 
 - POSIX: `export HERMES_PYTHON="$PWD/.venv/bin/python"` (or the external environment's `bin/python`)
-- PowerShell: `$env:HERMES_PYTHON = 'C:\absolute\path\to\.venv\Scripts\python.exe'`
+- PowerShell: `$env:HERMES_PYTHON = "$PWD\.venv\Scripts\python.exe"` (or the external environment's `Scripts\python.exe`)
 
 An activated shell keeps the managed test environment: the activation-provided
 test interpreter wins over `HERMES_PYTHON`. To switch to the independent one,
-use a fresh shell or run `deactivate` first — do not hand-edit activation's
-exports. The runner clears `PYTHONPATH`, so pytest must be installed in the
-interpreter's own environment; an explicit interpreter without pytest is
-ignored in favor of the managed environment. This test environment does not
-replace PM's application selection or tool store. Do not point a bundled app at
-it or install into an MSIX payload.
+run `deactivate` first, or use a terminal not started from an activated shell —
+a nested shell, tmux session or editor launched from one inherits the
+activation but not `deactivate`. Do not hand-edit activation's exports. The
+runner clears `PYTHONPATH`, so pytest must be installed in the interpreter's
+own environment; an explicit interpreter without pytest is ignored in favor of
+the managed environment. The override applied only if the runner printed
+`▶ not activated — using HERMES_PYTHON: …`; without that line it ran under the
+managed environment. This test environment does not replace PM's application
+selection or tool store. Do not point a bundled app at it or install into an
+MSIX payload.
 
 For an isolated development instance, select a disposable `HERMES_HOME` before
 starting the source command. Use `hermes setup` to configure it rather
@@ -362,7 +367,7 @@ refactor/description   # Code restructuring
 
 ### Before Submitting
 
-1. **Run tests**: `scripts/run_tests.sh` for CI parity. Always use the wrapper — bare `pytest` skips the credential scrub and `HERMES_HOME` isolation.
+1. **Run tests**: always use `scripts/run_tests.sh`, never bare `pytest`, for the same environment and per-file isolation as CI.
 2. **Test manually**: Run `hermes` and exercise the code path you changed
 3. **Check cross-platform impact**: Consider macOS, Linux, WSL2, and native Windows. If you touch file I/O, process management, terminal handling, subprocesses, or signals, run `scripts/check-windows-footguns.py`.
 4. **Keep PRs focused**: One logical change per PR

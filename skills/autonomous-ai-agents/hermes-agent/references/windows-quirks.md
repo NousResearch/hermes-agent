@@ -48,10 +48,11 @@ Run the canonical runner through Git Bash:
 scripts/run_tests.sh tests/foo/test_bar.py -v --tb=short
 ```
 
-The runner selects the activation-managed test environment automatically and
-clears credentials and `PYTHONPATH` per test file. To use an independent test
-environment (`.venv` or external), set `HERMES_PYTHON` to its Python executable
-in an unactivated shell; an activated shell keeps the managed environment.
+The runner selects the activation-managed test environment automatically,
+clears credentials and `PYTHONPATH`, and isolates each test file. To use an
+independent test environment (`.venv` or external), set `HERMES_PYTHON` to its
+Python executable in an unactivated shell; an activated shell keeps the managed
+environment.
 
 ### Path / Filesystem
 

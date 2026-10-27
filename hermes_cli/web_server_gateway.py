@@ -690,6 +690,44 @@ def _restart_gateway_after(profile: Optional[str], *, what: str, label: str) -> 
     return {"restart_started": True, "restart_action": "gateway-restart", "restart_pid": proc.pid}
 
 
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+_RESTART_REASON_MAX = 300
+
+
+def _last_restart_log_line() -> str:
+    """The last line the newest ``gateway-restart`` child wrote to its log, or ``""``. Each spawn
+    starts its section with ``=== gateway-restart started ... ===`` (``_spawn_hermes_action``)."""
+    log_path = _ACTION_LOG_DIR / _ACTION_LOG_FILES["gateway-restart"]
+    try:
+        with log_path.open("rb") as log:
+            log.seek(max(0, log.seek(0, os.SEEK_END) - 64 * 1024))
+            tail = log.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+    section = tail.rsplit("=== gateway-restart started", 1)[-1].split("\n", 1)[-1]
+    lines = [_ANSI_ESCAPE.sub("", line).strip() for line in section.splitlines()]
+    last = next((line for line in reversed(lines) if line), "")
+    return last[:_RESTART_REASON_MAX]
+
+
+def gateway_restart_failure(profile: Optional[str]) -> Optional[dict[str, Any]]:
+    """Why the newest restart of the *profile* gateway failed, or ``None`` while it runs, after it
+    succeeded, or when this process started none. A child that exits nonzero leaves the old
+    gateway serving the old config, so a UI waiting for the new one learns here that none is coming.
+    ``pid`` is the ``restart_pid`` the restart answered, so the UI ignores an older restart."""
+    from hermes_cli import web_server
+    recent = web_server._LAST_GATEWAY_RESTART
+    if recent is None:
+        return None
+    _spawned_at, proc, command = recent
+    if tuple(arg for arg in command if arg != "--interrupt") != tuple(_gateway_subcommand(profile, "restart")):
+        return None
+    exit_code = proc.poll()
+    if not exit_code:
+        return None
+    return {"pid": proc.pid, "exit_code": exit_code, "reason": _last_restart_log_line() or f"exit code {exit_code}"}
+
+
 def _split_text_for_speak_stream(text: str, cap: int) -> list:
     """Split *text* into provider-cap-sized pieces on sentence boundaries.
 

@@ -245,6 +245,39 @@ describe('WebAccessSettings', () => {
     expect(toast.message).toBe("The gateway didn't stop serving the web app within 90 seconds.")
   })
 
+  it('names the cause when the restart exits without replacing the gateway', async () => {
+    // The restart answered `restart_started` with its pid, then exited at once: the old gateway keeps
+    // serving the old config. An older restart's failure (another pid) is not this one's.
+    const pending: WebAccessStatus = { ...OFF, enabled: true, mode: 'lan' }
+    const failure = (pid: number, reason: string) => ({ exit_code: 1, pid, reason })
+    mocked.startWebAccess.mockResolvedValue({ ...pending, restart_pid: 4242, restart_started: true })
+    renderPane(OFF)
+    const start = await screen.findByRole('button', { name: 'Start' })
+    mocked.getWebAccessStatus
+      .mockResolvedValueOnce({ ...pending, restart_failure: failure(1111, 'an older restart') })
+      .mockResolvedValue({ ...pending, restart_failure: failure(4242, 'run `hermes pm repair`') })
+
+    fireEvent.click(start)
+
+    await waitFor(() => expect($notifications.get()).toHaveLength(1), { timeout: 8000 })
+    const [toast] = $notifications.get()
+    expect(toast.kind).toBe('error')
+    expect(toast.message).toBe("The gateway couldn't restart: run `hermes pm repair`")
+  }, 15_000)
+
+  it('shows no LAN address under My own URL while the URL is empty', async () => {
+    renderPane(OFF)
+    fireEvent.click(await screen.findByRole('button', { name: 'My own URL' }))
+
+    expect(screen.queryByText(/192\.168\.1\.50/)).toBeNull()
+
+    fireEvent.change(screen.getByPlaceholderText('https://hermes.example.com'), {
+      target: { value: 'https://hermes.tail.ts.net' }
+    })
+
+    expect(screen.getByText('https://hermes.tail.ts.net')).toBeTruthy()
+  })
+
   it('says that network access is not encrypted', async () => {
     // LAN mode is plain HTTP: anyone on the network can read the traffic.
     renderPane(OFF)

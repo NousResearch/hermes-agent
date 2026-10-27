@@ -997,6 +997,7 @@ export const zhHantSettings = {
         unavailableDetail: reason => `閘道無法提供網頁應用程式：${reason}`,
         restartBusy: '已儲存。有對話正在進行，因此閘道沒有重新啟動。對話結束後請選擇「重新啟動閘道」。',
         restartFailed: '已儲存，但閘道無法重新啟動。請選擇「重新啟動閘道」重試。',
+        restartFailedBecause: reason => `閘道無法重新啟動：${reason}`,
         startTimedOut: '閘道未能在 90 秒內提供網頁應用程式。',
         stopTimedOut: '閘道未能在 90 秒內停止提供網頁應用程式。',
         start: '啟動',

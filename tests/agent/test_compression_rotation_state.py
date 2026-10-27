@@ -838,6 +838,48 @@ class TestRotationChildFlushDedup:
             == 1
         )
 
+    def test_no_real_user_anchor_guard_not_entered(self, tmp_path: Path):
+        """Negative regression: no_user_turn/already_present must not
+        enter the anchor-source guard branch — no exception, rotation happens,
+        no live row outside the handoff carries the marker."""
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_ROT_NO_REAL_ANCHOR"
+        db.create_session(parent, source="cli")
+
+        # All-user-synthetic transcript with NO real user. The rows carry
+        # enough content that compression shrinks the transcript (a single
+        # short synthetic row trips the would-grow gate and aborts rotation,
+        # which would make this a fixture failure, not a regression).
+        messages = [
+            {
+                "role": "user",
+                "content": f"synthetic scaffolding block {i} with enough "
+                f"content to keep the compressed transcript smaller",
+                "_todo_snapshot_synthetic": True,
+            }
+            for i in range(6)
+        ]
+
+        agent = _build_agent_with_db(db, parent)
+        agent.context_compressor.compress.return_value = [
+            {"role": "assistant", "content": "[CONTEXT COMPACTION] summary"},
+        ]
+
+        with patch.object(
+            agent,
+            "_flush_messages_to_session_db",
+            side_effect=RuntimeError("simulated parent flush failure"),
+        ):
+            _returned, _ = agent._compress_context(
+                messages,
+                "sys",
+                approx_tokens=120_000,
+                commit_fence=CompressionCommitFence(),
+            )
+
+        # Rotation happened; no live row carries the marker.
+        assert agent.session_id != parent
+        assert _DB_PERSISTED_MARKER not in messages[0]
 
     def test_list_content_merged_outcome_still_stamps_live_question(
         self, tmp_path: Path

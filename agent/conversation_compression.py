@@ -2342,7 +2342,7 @@ def _merge_anchor_into_user_message(target: dict, anchor: dict) -> None:
     record_absorbed_message(target, anchor, dropped_leads=True)
 
 
-CompressedUserTurnOutcome = Literal["inserted", "merged", "already_present", "placeholder_appended"]
+CompressedUserTurnOutcome = Literal["inserted", "merged", "already_present", "no_user_turn"]
 
 
 def _insert_real_user_anchor(messages: list, anchor: dict) -> CompressedUserTurnOutcome:
@@ -2389,7 +2389,7 @@ def _ensure_compressed_has_user_turn(original_messages: list, compressed: list) 
     # walk treats the whole compacted transcript as unpersisted and re-INSERTs it — the live set doubles on
     # every compaction (~58K → ~512K tokens in production).
     from agent.context_compressor import (
-        ContextCompressor, COMPRESSION_CONTINUATION_USER_CONTENT, _fresh_compaction_message_copy,
+        ContextCompressor, _fresh_compaction_message_copy,
     )
     if any(ContextCompressor._has_merged_inflight_replay(message) for message in compressed):
         # The in-flight request was restated onto the summary carrier (#100818); an anchor would duplicate it.
@@ -2407,9 +2407,7 @@ def _ensure_compressed_has_user_turn(original_messages: list, compressed: list) 
         steer_text = _extract_steer_text_from_message(message)
         if steer_text:
             return _insert_real_user_anchor(compressed, {"role": "user", "content": steer_text})
-    from agent.message_metadata import append_message
-    append_message(compressed, {"role": "user", "content": COMPRESSION_CONTINUATION_USER_CONTENT})
-    return "placeholder_appended"
+    return "no_user_turn"
 
 
 def _messages_match_scoped_identity(left: Any, right: Any) -> bool:

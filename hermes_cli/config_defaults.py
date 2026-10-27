@@ -2092,10 +2092,10 @@ DEFAULT_CONFIG = {
                 "service.name": "hermes-gateway", "deployment.environment.name": "production"
             },
         },
-        # OTLP destination. headers_env maps header names to ENVIRONMENT VARIABLE NAMES (never
-        # secret values); values are read from the environment at export time.
+        # OTLP destination; headers_env maps header names to ENV VAR NAMES (never secrets), read at export.
         "export": {"otlp": {"enabled": False, "endpoint": "", "headers_env": {}}},
     },
+    "bots": {"force_private": False},  # True: every agent leaves the teammate mesh (root config only)
     "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
         "unmanaged_idle_exit_seconds": 600,  # client-auto-started gateway only; 0 disables
         # Seconds a SIGTERM-interrupted agent unwinds before teardown (short: service stop budgets).

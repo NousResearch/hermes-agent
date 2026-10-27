@@ -92,6 +92,10 @@ export type BotsMessages = {
     noHiddenMatch: string
     hiddenFromRoster: string
     pinned: string
+    makePrivate: string
+    makePublic: string
+    madePrivate: string
+    madePublic: string
     needsAttention: string
     needsInput: string
     /** The kind filter's three options, in menu order. */

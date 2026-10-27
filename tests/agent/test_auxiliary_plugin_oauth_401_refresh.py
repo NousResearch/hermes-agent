@@ -153,6 +153,7 @@ def test_vision_and_approval_401_refresh(env, task):
     (403, "rejected its sign-in (403)", "429"),
     (402, "billing error (402)", "429"),
     (429, "rate limit / quota error (429)", "sign-in"),
+    (None, "failed request or token refresh", "429"),
 ])
 def test_cooldown_message_names_the_recorded_error(env, code, expected, absent):
     """A benched credential's message comes from its own ``last_error_code``: a sign-in the provider
@@ -168,3 +169,26 @@ def test_cooldown_message_names_the_recorded_error(env, code, expected, absent):
     assert absent not in message
     if code in (401, 403):
         assert "Sign in again with `hermes auth add solstice`" in message
+
+
+@pytest.mark.parametrize("session_key", [None, "ya29.revoked"])
+def test_a_token_rejected_again_after_refresh_is_benched_not_refreshed_on_every_call(env, monkeypatch, session_key):
+    """When Google rejects the freshly refreshed token too, the row is benched with the 401, so the
+    next auxiliary call does not spend another refresh (the broker allows 30 per 5 minutes per user)."""
+    home, grants, _seen = env
+    monkeypatch.setattr(httpx.Client, "post", lambda self, url, **kw: httpx.Response(
+        401, request=httpx.Request("POST", str(url)),
+        json={"error": {"code": 401, "status": "UNAUTHENTICATED", "message": "invalid credentials"}}))
+    _write(home, _row("ya29.revoked", _now_ms() + 3_000_000))
+    runtime = {"provider": "solstice", "model": "gemini-3.1-pro", "base_url": BASE_URL, "api_mode": "chat_completions"}
+    if session_key:
+        runtime["api_key"] = session_key
+
+    for _ in range(3):
+        with pytest.raises(Exception):
+            _title(runtime)
+
+    assert len(grants) == 1
+    row = _disk_row(home)
+    assert row["last_status"] == "exhausted" and row["last_error_code"] == 401
+    assert "rejected its sign-in (401)" in pool_cooldown_message("solstice")

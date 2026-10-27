@@ -102,14 +102,17 @@ def decompose_triage_task(
     Size gate: every child is measured with the deterministic estimator. If any
     child exceeds the configured threshold, an OversizedChildError is raised
     (typed failure, not silent pass-through). The decomposer must break oversized
-    children down further before emitting them.
+    children down further before emitting them. Every accepted child records its
+    estimate (``allowed``/``decompose``) and carries the budget line as the first
+    line of its body, so the worker sees the budget it was sized for.
     """
     from hermes_cli.kanban_db import (
         _canonical_assignee, _link, _append_event, _insert_comment,
         write_txn, recompute_ready,
     )
     from hermes_cli.kanban_size_gate import (
-        estimate_card_size, load_size_gate_threshold, OversizedChildError,
+        estimate_card_size, load_size_gate_threshold, record_size_estimate,
+        stamp_budget_estimate, OversizedChildError,
     )
 
     if not children:
@@ -120,13 +123,22 @@ def decompose_triage_task(
 
     # Size gate: measure every child and refuse oversized ones with a typed error.
     # This runs BEFORE the transaction so the failure is clean (no partial fan-out).
+    # Measure the UNSTAMPED body; the budget stamp is estimator-neutral and is
+    # applied afterwards, so re-measuring a stamped child returns the same score.
     threshold = load_size_gate_threshold()
+    measurements: list = []
+    stamped_children: list[dict] = []
     for idx, child in enumerate(children):
         child_title = child.get("title") or ""
         child_body = child.get("body") or ""
         estimate = estimate_card_size(child_title, child_body)
         if estimate.is_oversized(threshold):
             raise OversizedChildError(idx, child_title, estimate, threshold)
+        measurements.append(estimate)
+        measured = dict(child)
+        if isinstance(child.get("body"), str):
+            measured["body"] = stamp_budget_estimate(child["body"], estimate, threshold)
+        stamped_children.append(measured)
 
     # ONE txn so the fan-out is atomic; helpers that open their own write_txn
     # (create_task, link_tasks, add_comment) must not be called in here.
@@ -147,8 +159,15 @@ def decompose_triage_task(
             return None
         child_ids = [
             _insert_decomposed_child(conn, task_id, root_row, child, author, now)
-            for child in children
+            for child in stamped_children
         ]
+        # Record each child's budget estimate in the same txn as its row: a child
+        # that exists without an estimate is the hole this pass closes.
+        for child_id, estimate in zip(child_ids, measurements):
+            record_size_estimate(
+                conn, child_id, estimate,
+                decision="allowed", path="decompose", threshold=threshold,
+            )
         # Sibling edges within the decomposed graph.
         for idx, child in enumerate(children):
             for p_idx in child.get("parents") or []:

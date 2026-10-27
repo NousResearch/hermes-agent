@@ -4,11 +4,20 @@ This module provides a cheap, deterministic estimator that does NOT invoke an LL
 It measures card complexity using structural signals: acceptance criteria count,
 distinct files/subsystems named, and distinct deliverables.
 
-The gate hooks into two paths:
-1. **Card creation** (kanban_db.create_task): if a card is oversized and triage=False,
-   it is routed to triage for decomposition instead of going straight to ready.
-2. **Decomposition** (kanban_db_graph.decompose_triage_task): every emitted child
-   is measured, and oversized children are rejected with a typed error.
+The gate hooks into every path that can land a card on ``ready``:
+
+1. **Card creation** (``kanban_db.create_task``): every created card carries one
+   ``size_estimate`` event. A card that would go straight to ``ready`` while
+   oversized is diverted to ``triage``; one parked in ``todo``/``blocked`` gets an
+   ``advisory`` estimate that :func:`gate_ready_entry` re-decides at promotion.
+2. **Promotion** (``kanban_db.recompute_ready``, ``unblock_task``,
+   ``reopen_review_task``, ``promote_task``): one decision point,
+   :func:`gate_ready_entry`, so a card parked behind an open parent cannot reach
+   ``ready`` unmeasured.
+3. **Decomposition** (``kanban_db_graph.decompose_triage_task``): every emitted
+   child is measured, oversized children are rejected with a typed error, and
+   every accepted child records its estimate plus a one-line budget stamp in its
+   body so the worker sees the budget it was sized for.
 
 Estimator formula:
     score = (ac_count * 3) + (file_count * 2) + (deliverable_count * 1)
@@ -29,9 +38,13 @@ before dispatch.
 
 from __future__ import annotations
 
+import json
+import logging
 import re
 from dataclasses import dataclass
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 # Default threshold for the size gate. Cards scoring above this are oversized.
@@ -42,6 +55,14 @@ DEFAULT_SIZE_GATE_THRESHOLD = 30
 WEIGHT_ACCEPTANCE_CRITERIA = 3
 WEIGHT_FILE = 2
 WEIGHT_DELIVERABLE = 1
+
+# One-line budget stamp prepended to a decomposed child's body. Estimator-neutral
+# ON PURPOSE: no ``##`` header, no bullet/numbered-list lead and no filename, so
+# re-measuring a stamped body returns the score that was measured before stamping.
+BUDGET_ESTIMATE_STAMP = (
+    "Budget estimate (size gate): score {score}/{threshold} - single-worker unit, "
+    "measured at decomposition."
+)
 
 
 @dataclass
@@ -56,6 +77,16 @@ class SizeEstimate:
     def is_oversized(self, threshold: int) -> bool:
         """Return True if this estimate exceeds the threshold."""
         return self.score > threshold
+
+
+@dataclass(frozen=True)
+class SizeGatePolicy:
+    """Resolved size gate configuration (read once per call site, never per row)."""
+
+    threshold: int = DEFAULT_SIZE_GATE_THRESHOLD
+
+    def is_oversized(self, estimate: SizeEstimate) -> bool:
+        return estimate.is_oversized(self.threshold)
 
 
 class OversizedChildError(Exception):
@@ -77,6 +108,20 @@ class OversizedChildError(Exception):
         )
 
 
+def _as_text(value: object) -> str:
+    """Coerce a stored title/body to text.
+
+    ``body`` is a TEXT column but a hand-written or tool-written row can carry a
+    BLOB (one card on the live board did), and ``re.search`` raises on bytes.
+    Decoding lossily keeps such a card measurable instead of silently unmeasured.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return bytes(value).decode("utf-8", "replace")
+    return value if isinstance(value, str) else str(value)
+
+
 def estimate_card_size(title: Optional[str], body: Optional[str]) -> SizeEstimate:
     """Estimate the size of a card from its title and body.
 
@@ -87,11 +132,11 @@ def estimate_card_size(title: Optional[str], body: Optional[str]) -> SizeEstimat
 
     Returns a SizeEstimate with the computed score and breakdown.
     """
-    if not body:
+    text = _as_text(body)
+    if not text:
         # Minimal card with just a title
         return SizeEstimate(score=0, acceptance_criteria_count=0, file_count=0, deliverable_count=0)
 
-    text = body
     ac_count = 0
     file_count = 0
     deliverable_count = 0
@@ -143,10 +188,13 @@ def estimate_card_size(title: Optional[str], body: Optional[str]) -> SizeEstimat
     )
 
 
-def load_size_gate_threshold() -> int:
-    """Load the size gate threshold from config, falling back to the default.
+def load_size_gate_policy() -> SizeGatePolicy:
+    """Load the size gate policy from config, falling back to the default.
 
     Config key: kanban.size_gate.threshold
+
+    Call sites that loop over many cards load this ONCE per sweep: the reader
+    parses config.yaml, which must not happen per row on a dispatcher tick.
     """
     try:
         from hermes_cli.config import load_config_readonly
@@ -155,10 +203,18 @@ def load_size_gate_threshold() -> int:
         kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
         threshold = kanban_cfg.get("size_gate", {}).get("threshold")
         if isinstance(threshold, (int, float)) and threshold > 0:
-            return int(threshold)
+            return SizeGatePolicy(threshold=int(threshold))
     except Exception:
         pass
-    return DEFAULT_SIZE_GATE_THRESHOLD
+    return SizeGatePolicy(threshold=DEFAULT_SIZE_GATE_THRESHOLD)
+
+
+def load_size_gate_threshold() -> int:
+    """Load the size gate threshold from config, falling back to the default.
+
+    Config key: kanban.size_gate.threshold
+    """
+    return load_size_gate_policy().threshold
 
 
 def should_route_to_triage(title: Optional[str], body: Optional[str]) -> tuple[bool, SizeEstimate]:
@@ -172,13 +228,49 @@ def should_route_to_triage(title: Optional[str], body: Optional[str]) -> tuple[b
     return estimate.is_oversized(threshold), estimate
 
 
-def record_size_estimate(conn, task_id: str, estimate: SizeEstimate) -> None:
+def _event_payload(raw: object) -> dict:
+    """Parse a stored event payload into a dict (empty on anything unexpected)."""
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _has_event(conn, task_id: str, kind: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM task_events WHERE task_id = ? AND kind = ? LIMIT 1", (task_id, kind),
+    ).fetchone() is not None
+
+
+def latest_size_estimate(conn, task_id: str) -> Optional[dict]:
+    """Newest ``size_estimate`` event payload for a card, or None when it has none."""
+    row = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'size_estimate' "
+        "ORDER BY id DESC LIMIT 1", (task_id,),
+    ).fetchone()
+    return None if row is None else _event_payload(row["payload"])
+
+
+def record_size_estimate(
+    conn, task_id: str, estimate: SizeEstimate, *,
+    decision: str = "allowed", path: str = "creation",
+    reason: Optional[str] = None, threshold: Optional[int] = None,
+) -> None:
     """Record the size estimate on the card as a task event.
 
-    This makes the estimate machine-readable for later audits and the dispatcher.
+    ``decision`` (final for the card), ``path`` (which surface decided) and
+    ``reason`` make the estimate machine-readable for later audits, the
+    dispatcher and :func:`gate_ready_entry`.
     """
     from hermes_cli import kanban_db as kb
 
+    if threshold is None:
+        threshold = load_size_gate_threshold()
     try:
         kb._append_event(
             conn,
@@ -189,8 +281,102 @@ def record_size_estimate(conn, task_id: str, estimate: SizeEstimate) -> None:
                 "acceptance_criteria_count": estimate.acceptance_criteria_count,
                 "file_count": estimate.file_count,
                 "deliverable_count": estimate.deliverable_count,
+                "threshold": threshold,
+                "decision": decision,
+                "path": path,
+                "reason": reason,
             },
         )
     except Exception:
         # Recording failure should not block the card
         pass
+
+
+def stamp_budget_estimate(body: Optional[str], estimate: SizeEstimate, threshold: int) -> str:
+    """Prepend the one-line budget stamp to ``body`` (first line, blank line, body).
+
+    Measure the UNSTAMPED body and stamp afterwards: the stamp is
+    estimator-neutral, and a test pins that re-measuring it changes nothing.
+    """
+    line = BUDGET_ESTIMATE_STAMP.format(score=estimate.score, threshold=threshold)
+    remainder = _as_text(body)
+    return f"{line}\n\n{remainder}" if remainder else f"{line}\n"
+
+
+def gate_ready_entry(
+    conn, task_id: str, *, title: Optional[str], body: Optional[str],
+    policy: Optional[SizeGatePolicy] = None, path: str = "promotion",
+    record: bool = True,
+) -> str:
+    """Decide whether a card may land on ``ready``: ``"ready"`` or ``"triage"``.
+
+    THE single decision point for every writer that parks a card on ``ready``
+    (creation, ``recompute_ready``, ``unblock_task``, ``reopen_review_task``,
+    ``promote_task``), so the rule cannot drift between surfaces. Rules, in order:
+
+    1. The card has a ``claimed`` event -> ``"ready"``. A card that already ran is
+       never re-litigated; this is what keeps review-reopen and dispatch-requeue
+       safe.
+    2. The newest ``size_estimate`` event decides:
+       - ``triage`` / ``allowed`` are final -> ``"ready"``.
+       - no event at all (legacy, pre-gate card) -> measure, record
+         ``allowed``/``legacy`` -> ``"ready"``. Grandfathered ON PURPOSE: the live
+         board's parked cards are not retro-diverted; every card this code creates
+         carries an estimate from creation, so the hole closes forward.
+       - ``advisory`` (created while parked) -> decide now: oversized and never
+         decomposed -> record ``triage``/``oversized`` and return ``"triage"``;
+         else record ``allowed`` (``epic_root`` when the card has a ``decomposed``
+         event, else ``fits``) and return ``"ready"``. The epic-root exemption is
+         load-bearing: an epic root is intentionally oversized and MUST wake so its
+         orchestrator can judge completion, and a second decomposition is refused,
+         so re-triaging it would strand it forever.
+    3. Never raises: a gate bug must not stop a promotion. Falls back to
+       ``"ready"`` with a logged warning.
+
+    ``record=False`` is the dry-run switch (``promote_task(dry_run=True)``): the
+    identical decision is reported and nothing is persisted.
+    """
+    try:
+        if policy is None:
+            policy = load_size_gate_policy()
+        if _has_event(conn, task_id, "claimed"):
+            return "ready"
+        payload = latest_size_estimate(conn, task_id)
+        if not payload:
+            # Legacy / pre-gate card: measure it, but grandfather the decision.
+            estimate = estimate_card_size(title, body)
+            if record:
+                record_size_estimate(
+                    conn, task_id, estimate, decision="allowed", path=path,
+                    reason="legacy", threshold=policy.threshold,
+                )
+            return "ready"
+        decision = payload.get("decision")
+        if decision in ("triage", "allowed", None):
+            # Already final (``None`` = an estimate recorded before decisions
+            # existed, i.e. the base gate's creation event).
+            return "ready"
+        if decision != "advisory":
+            # Unknown decision value: never loop a card through triage forever.
+            return "ready"
+        estimate = estimate_card_size(title, body)
+        decomposed = _has_event(conn, task_id, "decomposed")
+        if estimate.is_oversized(policy.threshold) and not decomposed:
+            if record:
+                record_size_estimate(
+                    conn, task_id, estimate, decision="triage", path=path,
+                    reason="oversized", threshold=policy.threshold,
+                )
+            return "triage"
+        if record:
+            record_size_estimate(
+                conn, task_id, estimate, decision="allowed", path=path,
+                reason="epic_root" if decomposed else "fits", threshold=policy.threshold,
+            )
+        return "ready"
+    except Exception:
+        logger.warning(
+            "size gate: ready-entry gate failed for task %s (path=%s); allowing the promotion",
+            task_id, path, exc_info=True,
+        )
+        return "ready"

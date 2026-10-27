@@ -1316,6 +1316,18 @@ def create_task(
 
     now = int(time.time())
 
+    # Size gate inputs, resolved ONCE before the write txn: the estimator is a
+    # deterministic text pass, the policy read parses config.yaml. Every created
+    # card records one estimate; the decision depends on the status it actually
+    # lands in (see the decision table inside the txn).
+    from hermes_cli.kanban_size_gate import (
+        estimate_card_size, load_size_gate_policy, record_size_estimate,
+    )
+
+    gate_policy = load_size_gate_policy()
+    gate_estimate = estimate_card_size(title, body)
+    gate_oversized = gate_estimate.is_oversized(gate_policy.threshold)
+
     # Only persistent kinds inherit the board ``default_workdir``: a scratch
     # task inheriting it would point cleanup at the user's source tree.
     if workspace_path is None and project_repo is None and workspace_kind in {"dir", "worktree"}:
@@ -1331,20 +1343,26 @@ def create_task(
             # commit so the dispatcher never sees a half-built graph.
             with write_txn(conn, allow_nested=True):
                 task_status, tenant = initial_task_state(conn, parents, initial_status, triage, tenant)
-                # Size gate: if the card would go straight to ready (bypassing triage) and is
-                # oversized, force it to triage for decomposition. This closes the direct-assignment
-                # bypass where an explicit --assignee skips triage entirely.
-                if task_status == "ready" and not triage:
-                    from hermes_cli.kanban_size_gate import should_route_to_triage, record_size_estimate
-
-                    oversized, estimate = should_route_to_triage(title, body)
-                    if oversized:
-                        task_status = "triage"
-                    # Record the estimate on the card for audits and the dispatcher
-                    # (deferred until after the INSERT so the task row exists)
-                    _pending_size_estimate = estimate
+                # Size gate decision table, keyed on the status the card ACTUALLY
+                # lands in. Every branch records exactly one ``size_estimate``
+                # event after the INSERT (below):
+                #   triage  - status unchanged; recorded so a later audit sees why.
+                #   ready   - oversized diverts to triage, else allowed.
+                #   parked  - advisory only: ``recompute_ready`` re-decides at
+                #             promotion, which is what closes the todo->ready hole.
+                if task_status == "ready" and gate_oversized:
+                    task_status = "triage"
+                    gate_decision = ("triage", "creation", "oversized")
+                elif task_status == "ready":
+                    gate_decision = ("allowed", "creation", "fits")
+                elif task_status == "triage":
+                    gate_decision = (
+                        "triage", "creation_triage", "oversized" if gate_oversized else "fits",
+                    )
                 else:
-                    _pending_size_estimate = None
+                    gate_decision = (
+                        "advisory", "creation_parked", "oversized" if gate_oversized else "fits",
+                    )
                 # Project worktree: fresh dir under the repo + deterministic
                 # branch, instead of the random ``wt/<id>`` worker fallback.
                 if project_obj is not None and workspace_kind == "worktree":
@@ -1421,11 +1439,13 @@ def create_task(
                 # ACK-edge: the originating channel hears a child BLOCK, not just the fan-in.
                 inherit_creator_origin(conn, task_id, creator_task_id, created_at=now)
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
-                # Record the size estimate if we computed one (size gate path)
-                if _pending_size_estimate is not None:
-                    from hermes_cli.kanban_size_gate import record_size_estimate
-
-                    record_size_estimate(conn, task_id, _pending_size_estimate)
+                # Record this card's ONE creation-time size estimate (see the
+                # decision table above; the row must exist first).
+                record_size_estimate(
+                    conn, task_id, gate_estimate,
+                    decision=gate_decision[0], path=gate_decision[1],
+                    reason=gate_decision[2], threshold=gate_policy.threshold,
+                )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -2013,6 +2033,12 @@ def _task_status(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
     return row["status"] if row else None
 
 
+def _task_title_body(conn: sqlite3.Connection, task_id: str) -> tuple[Optional[str], Optional[str]]:
+    """``(title, body)`` for the size gate's measurement of ``task_id``."""
+    row = conn.execute("SELECT title, body FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    return (row["title"], row["body"]) if row else (None, None)
+
+
 def _current_run_id(conn: sqlite3.Connection, task_id: str) -> Optional[int]:
     row = conn.execute("SELECT current_run_id FROM tasks WHERE id = ?", (task_id,)).fetchone()
     return int(row["current_run_id"]) if row and row["current_run_id"] else None
@@ -2150,10 +2176,15 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
+    # The gate below runs over every todo/blocked row on every dispatcher tick and
+    # the policy reader parses config.yaml: load it ONCE, never per row.
+    from hermes_cli.kanban_size_gate import gate_ready_entry, load_size_gate_policy
+
+    gate_policy = load_size_gate_policy()
     promoted = 0
     with write_txn(conn):
         todo_rows = conn.execute(
-            "SELECT id, status, consecutive_failures, max_retries "
+            "SELECT id, status, consecutive_failures, max_retries, title, body "
             "FROM tasks WHERE status IN ('todo', 'blocked')"
         ).fetchall()
         for row in todo_rows:
@@ -2169,6 +2200,17 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
             ).fetchall()
             if all(p["status"] in ("done", "archived") for p in parents):
                 resume_status = _resume_status_from_events(conn, task_id)
+                if resume_status == "ready" and gate_ready_entry(
+                    conn, task_id, title=row["title"], body=row["body"],
+                    policy=gate_policy, path="promotion",
+                ) == "triage":
+                    # Diverted, so this row gets NO ``promoted`` event and is not
+                    # counted: the returned total stays the truth about what moved.
+                    conn.execute(
+                        "UPDATE tasks SET status = 'triage' "
+                        "WHERE id = ? AND status IN ('todo', 'blocked')", (task_id,),
+                    )
+                    continue
                 if cur_status == "blocked":
                     # At the breaker limit, no auto-recovery (else block ->
                     # recover -> respawn -> exhaust -> block forever). The
@@ -3677,9 +3719,48 @@ def promote_task(
         )
 
     if dry_run:
+        # Report the gate's verdict without writing: a dry run must not record an
+        # estimate, so it takes the same decision path with ``record=False``.
+        from hermes_cli.kanban_size_gate import (
+            estimate_card_size, gate_ready_entry, load_size_gate_policy,
+        )
+
+        title, body = _task_title_body(conn, task_id)
+        gate_policy = load_size_gate_policy()
+        if gate_ready_entry(
+            conn, task_id, title=title, body=body, policy=gate_policy,
+            path="promote", record=False,
+        ) == "triage":
+            estimate = estimate_card_size(title, body)
+            return False, (
+                f"size gate: card is oversized (score {estimate.score} > threshold "
+                f"{gate_policy.threshold}); would route to triage for decomposition"
+            )
         return True, None
 
     with write_txn(conn):
+        # Size gate BEFORE the status write, same txn: an oversized parked card is
+        # routed to triage here instead of being promoted into the dispatch lane.
+        from hermes_cli.kanban_size_gate import (
+            estimate_card_size, gate_ready_entry, load_size_gate_policy,
+        )
+
+        title, body = _task_title_body(conn, task_id)
+        gate_policy = load_size_gate_policy()
+        if gate_ready_entry(
+            conn, task_id, title=title, body=body, policy=gate_policy, path="promote",
+        ) == "triage":
+            upd = conn.execute(
+                "UPDATE tasks SET status = 'triage' "
+                "WHERE id = ? AND status IN ('todo', 'blocked')", (task_id,),
+            )
+            if upd.rowcount != 1:
+                return False, f"task {task_id} status changed during promotion"
+            estimate = estimate_card_size(title, body)
+            return False, (
+                f"size gate: card is oversized (score {estimate.score} > threshold "
+                f"{gate_policy.threshold}); routed to triage for decomposition"
+            )
         upd = conn.execute(
             "UPDATE tasks SET status = 'ready' "
             "WHERE id = ? AND status IN ('todo', 'blocked')", (task_id,),
@@ -3725,6 +3806,11 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """``blocked``/``scheduled`` -> its resumable phase (parent re-gated; ``review``
     when that is where it left off), closing any leaked run first."""
     now = int(time.time())
+    # Gate policy read outside the write txn (it parses config.yaml); the gate
+    # itself runs inside, before the status write.
+    from hermes_cli.kanban_size_gate import gate_ready_entry, load_size_gate_policy
+
+    gate_policy = load_size_gate_policy()
     with write_txn(conn):
         resume_status = (
             _resume_status_from_events(conn, task_id)
@@ -3742,6 +3828,12 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
             if landing_status == "ready" and resume_status == "review"
             else landing_status
         )
+        if new_status == "ready":
+            title, body = _task_title_body(conn, task_id)
+            if gate_ready_entry(
+                conn, task_id, title=title, body=body, policy=gate_policy, path="unblock",
+            ) == "triage":
+                new_status = "triage"
         # ``block_kind``/``block_recurrences`` deliberately survive the unblock:
         # resetting them is the amnesia that let cron-unblock <-> re-block loop
         # unbounded; only complete_task clears them. ``consecutive_failures``
@@ -3771,12 +3863,25 @@ def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
     Preserves ``consecutive_failures`` and the block loop counter (review is
     not a block; only :func:`complete_task` clears them)."""
     now = int(time.time())
+    # Gate policy read outside the write txn (it parses config.yaml); the gate
+    # itself runs inside, before the status write. A card in review has been
+    # claimed, so the gate's claimed short-circuit returns "ready" here - it is
+    # called for completeness, not as a re-litigation.
+    from hermes_cli.kanban_size_gate import gate_ready_entry, load_size_gate_policy
+
+    gate_policy = load_size_gate_policy()
     with write_txn(conn):
         _reclaim_dangling_run(
             conn, task_id, statuses=("review",), now=now,
             note="invariant recovery on review reopen",
         )
         new_status = _landing_status_after_parents(conn, task_id)
+        if new_status == "ready":
+            title, body = _task_title_body(conn, task_id)
+            if gate_ready_entry(
+                conn, task_id, title=title, body=body, policy=gate_policy, path="review_reopen",
+            ) == "triage":
+                new_status = "triage"
         review_event = _latest_event(conn, task_id, "review_requested")
         handoff = _json_dict(_row_get(review_event, "payload"))
         implementer = _nonblank_str(handoff.get("implementer"))

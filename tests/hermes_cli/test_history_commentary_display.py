@@ -162,7 +162,8 @@ def test_rest_pages_bind_the_history_owner_for_messages_and_around(
     monkeypatch.setattr(
         sessions, "_with_db", lambda profile, fn, read_only: fn(FakeDB())
     )
-    monkeypatch.setattr(sessions, "_timeline_session_id", lambda db, sid, owner: sid)
+    monkeypatch.setattr(sessions, "_history_session_target", lambda db, sid: (sid, sid))
+    monkeypatch.setattr(sessions, "_timeline_session_target", lambda db, sid, owner: (sid, sid))
     monkeypatch.setattr(
         hermes_state_timeline,
         "get_session_messages_around",
@@ -226,7 +227,8 @@ def test_unscoped_rest_history_uses_custom_home_of_its_database(monkeypatch, tmp
     monkeypatch.setattr(
         sessions, "_with_db", lambda profile, fn, read_only: fn(FakeDB())
     )
-    monkeypatch.setattr(sessions, "_timeline_session_id", lambda db, sid, owner: sid)
+    monkeypatch.setattr(sessions, "_history_session_target", lambda db, sid: (sid, sid))
+    monkeypatch.setattr(sessions, "_timeline_session_target", lambda db, sid, owner: (sid, sid))
     monkeypatch.setattr(
         hermes_state_timeline,
         "get_session_messages_around",

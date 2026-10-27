@@ -66,6 +66,11 @@ _HOUSEKEEPING_MAX_WORKERS = 4
 # End reasons meaning the USER deliberately closed this thread. Shared by _classify_completion_target and
 # _resolve_async_delegation_session so they never disagree (else a "delivered" reason is acked, then lost).
 _USER_BOUNDARY_END_REASONS = ("session_reset", "user_exit", "session_switch", "new_session")
+# Background-result DELIVERY narrows that set: `session_switch` is the chat's
+# route rotating to a fresh session — the conversation lives on and must still
+# receive its finished subagents' results. Classifying it as a user discard
+# dropped completed reports while their chats kept talking (Luke, 2026-10-26).
+_DELIVERY_DISCARD_END_REASONS = ("session_reset", "user_exit", "new_session")
 # Bounds one stall-notify send so a wedged transport can't block the watcher; on timeout the next tick retries.
 _STALL_NOTIFY_SEND_TIMEOUT_SECONDS = 15.0
 _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS = 16 * 1024 * 1024

@@ -265,7 +265,7 @@ class GatewayNotificationsMixin:
         late completion override an unrelated /new or restored route. Unknown ownership fails
         closed; the result stays in the delegation records.
         """
-        from gateway.run import _USER_BOUNDARY_END_REASONS
+        from gateway.run import _DELIVERY_DISCARD_END_REASONS
         session_db = cast(Any, self._session_db)
         if session_db is None:
             logger.warning(
@@ -291,7 +291,11 @@ class GatewayNotificationsMixin:
         follows_compression = False
         if pinned_row.get("ended_at"):
             _end_reason = str(pinned_row.get("end_reason") or "")
-            if _end_reason in _USER_BOUNDARY_END_REASONS:
+            # `session_switch` retargets like an idle end: the route rotated but
+            # the chat lives on, so the result goes to its current session —
+            # dropping here is how a finished subagent's report vanished while
+            # the chat kept going (Luke, 2026-10-26).
+            if _end_reason in _DELIVERY_DISCARD_END_REASONS:
                 logger.warning(
                     "Async-delegation completion pinned to user-closed session %s "
                     "(end_reason=%r); dropping injection instead of resurrecting it "
@@ -1408,7 +1412,7 @@ class GatewayNotificationsMixin:
         session live or compression-rotated with a live continuation; the resolver still retargets),
         ``"terminal"`` (parent gone for good — unknown / user boundary like /new; drop the durable row
         rather than falsely ack), ``"retry"`` (DB unavailable / rotation mid-flight; release the claim)."""
-        from gateway.run import _USER_BOUNDARY_END_REASONS
+        from gateway.run import _DELIVERY_DISCARD_END_REASONS
         session_db = getattr(self, "_session_db", None)
         if session_db is None:
             return "retry"
@@ -1423,9 +1427,10 @@ class GatewayNotificationsMixin:
             return "deliver"
         end_reason = str(parent.get("end_reason") or "")
         if end_reason != "compression":
-            # Only a USER-closed session (/new, user_exit, session_switch) is unreachable; idle/timeout
+            # Only a USER-closed session (/new, user_exit, session_reset) is unreachable;
+            # idle/timeout and `session_switch` route rotation retarget below.
             # ends stay routable and the resolver retargets. Boundary set shared with the resolver.
-            return "terminal" if end_reason in _USER_BOUNDARY_END_REASONS else "deliver"
+            return "terminal" if end_reason in _DELIVERY_DISCARD_END_REASONS else "deliver"
         try:
             tip_session_id = await session_db.get_compression_tip(parent_session_id)
             if not tip_session_id or tip_session_id == parent_session_id:

@@ -5,6 +5,11 @@ Three invariants on the messaging-gateway surface, mirroring the TUI rules:
 1. Completions are pinned to the spawning session (contributor commit).
 2. A dead/ended spawning session is never resurrected: the injection is
    dropped, fail-closed (never rerouted to the peer's current session).
+   Narrowed (2026-10-26): the discards are the explicit ones — `session_reset`,
+   `user_exit`, `new_session`. `session_switch` is route rotation while the chat
+   lives on (stamped by `_replace_route_locked`), so it retargets to the route's
+   current session — dropping it discarded 11 completed reports whose chats kept
+   talking.
 3. /new interrupts the old conversation's in-flight async delegations.
 """
 
@@ -116,6 +121,49 @@ class TestGatewayPinningFailsClosed:
         getattr(runner.session_store, "switch_session").assert_called_once_with(
             current.session_key, "sess_live", expected_session_id=current.session_id,
         )
+
+    @pytest.mark.asyncio
+    async def test_session_switch_parent_retargets_to_route_current(self):
+        """`session_switch` is route rotation, not a user discard: the chat
+        lives on and its current session receives the result (Luke, 2026-10-26 —
+        completed reports were dropped while their chats kept talking)."""
+        current = self._entry("sess_rotated")
+        runner = self._make_runner(
+            {
+                "sess_old": {
+                    "id": "sess_old",
+                    "ended_at": "2026-10-26T03:36:28",
+                    "end_reason": "session_switch",
+                }
+            }
+        )
+
+        resolved = await runner._resolve_async_delegation_session(
+            current, "sess_old"
+        )
+
+        assert resolved is current
+        self._assert_no_route_change(runner)
+
+    @pytest.mark.asyncio
+    async def test_pre_flight_verdicts_narrowed_to_explicit_discards(self):
+        runner = self._make_runner(
+            {
+                "sess_switched": {
+                    "id": "sess_switched",
+                    "ended_at": "2026-10-26T03:36:28",
+                    "end_reason": "session_switch",
+                },
+                "sess_new": {
+                    "id": "sess_new",
+                    "ended_at": "2026-10-26T03:36:28",
+                    "end_reason": "new_session",
+                },
+            }
+        )
+
+        assert await runner._classify_completion_target("sess_switched") == "deliver"
+        assert await runner._classify_completion_target("sess_new") == "terminal"
 
     @pytest.mark.asyncio
     async def test_non_compression_ended_parent_drops(self):

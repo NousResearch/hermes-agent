@@ -1,0 +1,43 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: ellora
+description: Check drafts against your voice profile and writing brief, and cut the AI slop before you publish.
+source: https://github.com/getellora/agent-skills
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (verified live: RFC 9728 protected-resource metadata at
+# https://api.getellora.com/.well-known/oauth-protected-resource/v1/external/mcp
+# -> AS metadata at https://api.getellora.com/.well-known/oauth-authorization-server
+# with registration_endpoint, PKCE S256, loopback redirect URIs accepted);
+# Hermes's MCP client + mcp_oauth_manager handle discovery, PKCE, token
+# exchange, and refresh.
+
+transport:
+  type: http
+  url: https://api.getellora.com/v1/external/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - ellora
+    - brand voice
+    - voice profile
+    - writing brief
+  hosts:
+    - getellora.com
+  examples:
+    - Review this draft against my Ellora voice profile before I post it
+    - Check this blog post against our writing brief and list what to fix
+    - Show my active Ellora voice profiles and writing briefs
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  Ellora (or run `hermes mcp login ellora`). Sign in and approve
+  access, then restart the session so tools load. The free plan
+  covers one person and one voice.

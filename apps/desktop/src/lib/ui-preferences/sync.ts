@@ -1,5 +1,5 @@
 import type { UiPreferencesSnapshot, UiPreferencesWrite } from '../../../electron/ui-preferences'
-import { onPersistenceEvent } from '../storage'
+import { markProvisionalPreference, onPersistenceEvent, provisionalPreferenceKeys } from '../storage'
 
 import { isSharedPreferenceKey } from './keys'
 
@@ -28,13 +28,6 @@ const TAB_KEY = 'hermes:ui-preferences:tab'
 // Until then a key the store lacks is never removed here: it may be this
 // client's data the store has not received yet, not a peer's deletion.
 const JOINED_KEY = 'hermes:ui-preferences:generation'
-// Shared keys whose value here is provisional: one this client stored for
-// itself (a migration from its own config, a default), not a user's choice.
-// Such a value never enters the store, by seed or by write: a fresh browser's
-// default would otherwise sit there first and the client with the real value
-// (native Desktop's) could not import it. It stays here until the store has a
-// value for the key, or the user makes a real change.
-const PROVISIONAL_KEY = 'hermes:ui-preferences:provisional'
 const RETRY_DELAY_MS = 5000
 const MAX_RETRY_DELAY_MS = 60_000
 
@@ -49,47 +42,21 @@ let ownKeys: null | ReadonlySet<string> = null
 
 /** Record this window's own shared keys; boot.ts calls it before anything loads. */
 export function captureOwnPreferences(): void {
-  const provisional = readProvisional()
+  const provisional = provisionalPreferenceKeys()
 
   ownKeys = new Set(localSharedKeys().filter(key => !provisional.has(key)))
-}
-
-function readProvisional(): Set<string> {
-  try {
-    const parsed = JSON.parse(readRaw(PROVISIONAL_KEY) ?? '[]') as unknown
-
-    return new Set(Array.isArray(parsed) ? parsed.filter((key): key is string => typeof key === 'string') : [])
-  } catch {
-    return new Set()
-  }
-}
-
-function markProvisional(key: string, provisional: boolean) {
-  const keys = readProvisional()
-
-  if (keys.has(key) === provisional) {
-    return
-  }
-
-  if (provisional) {
-    keys.add(key)
-  } else {
-    keys.delete(key)
-  }
-
-  writeRaw(PROVISIONAL_KEY, keys.size === 0 ? null : JSON.stringify([...keys]))
 }
 
 /** Cache one store value here. A key the store lacks is removed only once
  *  this origin joined (`prune`), and never while its value here is
  *  provisional; a value the store has replaces a provisional one for good. */
 function adopt(key: string, value: null | string, prune: boolean, live: boolean) {
-  if (value === null && (!prune || readProvisional().has(key))) {
+  if (value === null && (!prune || provisionalPreferenceKeys().has(key))) {
     return
   }
 
   if (value !== null) {
-    markProvisional(key, false)
+    markProvisionalPreference(key, false)
   }
 
   const previous = readRaw(key)
@@ -372,9 +339,7 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
       return
     }
 
-    // Provisional or not, the latest write decides what this value is.
-    markProvisional(event.key, Boolean(event.provisional) && event.op === 'write')
-
+    // A provisional value (storage.ts keeps the mark) never leaves this origin.
     if (event.provisional) {
       return
     }
@@ -395,7 +360,7 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
       return snapshot
     }
 
-    const provisional = readProvisional()
+    const provisional = provisionalPreferenceKeys()
 
     const values = Object.fromEntries(
       localSharedKeys()

@@ -1,6 +1,6 @@
 import { atom } from 'nanostores'
 
-import { persistBoolean, storedBoolean } from '@/lib/storage'
+import { persistBoolean, persistStore, storedBoolean } from '@/lib/storage'
 import { modeBound } from '@/store/interface-mode'
 import type { HermesConfig } from '@/types/hermes'
 
@@ -10,7 +10,9 @@ const REASONING_COLLAPSED_BY_DEFAULT_STORAGE_KEY = 'hermes.desktop.reasoning.col
  *  Simple mode rests reasoning collapsed without touching this preference. */
 const $reasoningCollapsedByDefaultPref = atom(storedBoolean(REASONING_COLLAPSED_BY_DEFAULT_STORAGE_KEY, false))
 
-$reasoningCollapsedByDefaultPref.subscribe(value => persistBoolean(REASONING_COLLAPSED_BY_DEFAULT_STORAGE_KEY, value))
+persistStore($reasoningCollapsedByDefaultPref, (value, options) =>
+  persistBoolean(REASONING_COLLAPSED_BY_DEFAULT_STORAGE_KEY, value, options)
+)
 
 export const $reasoningCollapsedByDefault = modeBound(
   'reasoningCollapsedByDefault',

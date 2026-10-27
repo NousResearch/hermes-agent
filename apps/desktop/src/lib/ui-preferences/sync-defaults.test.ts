@@ -20,6 +20,22 @@ import type { UiPreferencesBridge } from './sync'
 const TRANSLUCENCY = 'hermes.desktop.translucency.v2'
 const AUTO_SPEAK = 'hermes.desktop.autoSpeakReplies'
 const THEME = 'hermes-desktop-theme-v2'
+const KEYBINDS = 'hermes.desktop.keybinds'
+const HAPTICS_MUTED = 'hermes.desktop.hapticsMuted'
+
+// Every store that writes its value the moment its module evaluates.
+const LOAD_WRITERS = [
+  () => import('@/store/backdrop'),
+  () => import('@/store/completion-sound'),
+  () => import('@/store/external-links'),
+  () => import('@/store/haptics'),
+  () => import('@/store/keybinds'),
+  () => import('@/store/profile'),
+  () => import('@/store/reasoning-disclosure'),
+  () => import('@/store/thread-timeline'),
+  () => import('@/store/tool-view')
+]
+
 const dirs: string[] = []
 const tick = (ms = 400) => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -58,6 +74,22 @@ async function load(file: string, app: () => Promise<void>) {
   await tick()
 
   return { push, stop }
+}
+
+/** One page load in production order: the app's stores evaluate before main.tsx starts the sync. */
+async function boot(file: string) {
+  vi.resetModules()
+  const sync = await import('./sync')
+  sync.captureOwnPreferences()
+  sync.hydrateFromSnapshot(readUiPreferences(file))
+
+  for (const load of LOAD_WRITERS) {
+    await load()
+  }
+
+  const stop = sync.startUiPreferencesSync(realBridge(file).bridge)
+  await tick()
+  stop()
 }
 
 /** Native Desktop's localStorage is another origin's: switch to it. */
@@ -134,4 +166,21 @@ it('a migrated auto-speak value stays put here while the store lacks it, and a r
   native.stop()
 
   expect(readUiPreferences(file).values).toEqual({ [AUTO_SPEAK]: 'false', [THEME]: 'mono' })
+})
+
+it('a fresh browser that reloads before native connects never fills the store with its defaults', async () => {
+  const file = storeFile()
+  await boot(file)
+  await boot(file)
+
+  expect(window.localStorage.getItem(KEYBINDS)).toBe('{}')
+  expect(readUiPreferences(file).values).toEqual({})
+
+  const keybinds = JSON.stringify({ 'composer.modelPicker': ['mod+shift+k'] })
+  becomeNative({ [HAPTICS_MUTED]: 'true', [KEYBINDS]: keybinds })
+  await boot(file)
+
+  expect(window.localStorage.getItem(KEYBINDS)).toBe(keybinds)
+  expect(window.localStorage.getItem(HAPTICS_MUTED)).toBe('true')
+  expect(readUiPreferences(file).values).toEqual({ [HAPTICS_MUTED]: 'true', [KEYBINDS]: keybinds })
 })

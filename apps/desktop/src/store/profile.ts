@@ -9,6 +9,7 @@ import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import {
   arraysEqual,
   persistBoolean,
+  persistStore,
   persistStringArray,
   persistStringRecord,
   storedBoolean,
@@ -221,7 +222,7 @@ const PROFILE_COLORS_STORAGE_KEY = 'hermes.desktop.profileColors'
 
 export const $profileColors = atom<Record<string, string>>(storedStringRecord(PROFILE_COLORS_STORAGE_KEY))
 
-$profileColors.subscribe(value => persistStringRecord(PROFILE_COLORS_STORAGE_KEY, value))
+persistStore($profileColors, (value, options) => persistStringRecord(PROFILE_COLORS_STORAGE_KEY, value, options))
 
 // Set (or, with null, clear) a profile's color override.
 export function setProfileColor(name: string, color: null | string): void {
@@ -958,7 +959,7 @@ const SHOW_ALL_PROFILES_STORAGE_KEY = 'hermes.desktop.showAllProfiles'
 // single-profile users (who never see the switcher) are completely unaffected.
 export const $showAllProfiles = atom<boolean>(storedBoolean(SHOW_ALL_PROFILES_STORAGE_KEY, false))
 
-$showAllProfiles.subscribe(value => persistBoolean(SHOW_ALL_PROFILES_STORAGE_KEY, value))
+persistStore($showAllProfiles, (value, options) => persistBoolean(SHOW_ALL_PROFILES_STORAGE_KEY, value, options))
 
 // The profile context the sidebar is currently showing: a concrete profile key,
 // or ALL_PROFILES for the unified grouped view. Concrete scope is tied to the

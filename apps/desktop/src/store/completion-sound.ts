@@ -1,6 +1,6 @@
 import { atom } from 'nanostores'
 
-import { persistString, storedString } from '@/lib/storage'
+import { persistStore, persistString, storedString } from '@/lib/storage'
 
 const STORAGE_KEY = 'hermes.desktop.completionSoundVariantId'
 
@@ -29,7 +29,7 @@ function load(): number {
 
 export const $completionSoundVariantId = atom(load())
 
-$completionSoundVariantId.subscribe(id => persistString(STORAGE_KEY, String(id)))
+persistStore($completionSoundVariantId, (id, options) => persistString(STORAGE_KEY, String(id), options))
 
 export function setCompletionSoundVariantId(variantId: number) {
   $completionSoundVariantId.set(resolveCompletionSoundVariantId(variantId))

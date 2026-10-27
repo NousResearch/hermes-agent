@@ -3,6 +3,8 @@
 // single subscriber (telemetry, cross-window sync, an audit log) can observe all
 // of it without instrumenting each call site. No listeners by default → no cost.
 
+import { isSharedPreferenceKey } from './ui-preferences/keys'
+
 export interface PersistenceEvent {
   key: string
   op: 'read' | 'remove' | 'write'
@@ -44,8 +46,29 @@ export function readKey(key: string): null | string {
   return value
 }
 
-/** Raw write. A null value removes the key. Best-effort. */
-export function writeKey(key: string, value: null | string, { provisional = false } = {}) {
+export interface WriteOptions {
+  /** A value this client derives for itself (a default, a heal, a migration
+   *  that only fills a default), not a choice the user made. */
+  provisional?: boolean
+}
+
+// Shared preference keys whose value here is provisional. Kept at the choke
+// point, not in the sync, because stores write their load-time value while
+// their module evaluates, before the sync is listening: the machine's shared
+// store never takes such a value, by seed or by write, so a fresh client's
+// defaults cannot fill it ahead of the client that holds the user's choices
+// (#145536 review). Not a shared key itself.
+export const PROVISIONAL_PREFERENCES_KEY = 'hermes:ui-preferences:provisional'
+
+function rawRead(key: string): null | string {
+  try {
+    return window.localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
+function rawWrite(key: string, value: null | string) {
   try {
     if (value === null) {
       window.localStorage.removeItem(key)
@@ -55,8 +78,70 @@ export function writeKey(key: string, value: null | string, { provisional = fals
   } catch {
     // Storage is best-effort; never let a quota/permission error break the UI.
   }
+}
+
+export function provisionalPreferenceKeys(): Set<string> {
+  try {
+    const parsed = JSON.parse(rawRead(PROVISIONAL_PREFERENCES_KEY) ?? '[]') as unknown
+
+    return new Set(Array.isArray(parsed) ? parsed.filter((key): key is string => typeof key === 'string') : [])
+  } catch {
+    return new Set()
+  }
+}
+
+export function markProvisionalPreference(key: string, provisional: boolean) {
+  const keys = provisionalPreferenceKeys()
+
+  if (keys.has(key) === provisional) {
+    return
+  }
+
+  if (provisional) {
+    keys.add(key)
+  } else {
+    keys.delete(key)
+  }
+
+  rawWrite(PROVISIONAL_PREFERENCES_KEY, keys.size === 0 ? null : JSON.stringify([...keys]))
+}
+
+/** Raw write. A null value removes the key. Best-effort. A provisional write
+ *  that changes nothing is skipped, and one that rewrites the user's own value
+ *  (a heal, a migration from a real value) keeps it theirs. */
+export function writeKey(key: string, value: null | string, { provisional = false }: WriteOptions = {}) {
+  const shared = isSharedPreferenceKey(key)
+
+  if (provisional) {
+    const previous = rawRead(key)
+
+    if (previous === value) {
+      return
+    }
+
+    provisional = value !== null && (!shared || previous === null || provisionalPreferenceKeys().has(key))
+  }
+
+  rawWrite(key, value)
+
+  if (shared) {
+    markProvisionalPreference(key, provisional)
+  }
 
   emitPersistence({ key, op: value === null ? 'remove' : 'write', value, ...(provisional && { provisional }) })
+}
+
+/** Persist a store: the value it loads with (its default, or a heal of what
+ *  was stored) as provisional, every later change as the user's. */
+export function persistStore<T>(
+  store: { subscribe(listener: (value: T) => void): () => void },
+  persist: (value: T, options: WriteOptions) => void
+): () => void {
+  let loading = true
+  const stop = store.subscribe(value => persist(value, { provisional: loading }))
+  loading = false
+
+  return stop
 }
 
 /** Parsed JSON read. Returns null on absence, unavailable storage, OR malformed
@@ -86,7 +171,7 @@ export function storedBoolean(key: string, fallback: boolean): boolean {
   return value === null ? fallback : value === 'true'
 }
 
-export function persistBoolean(key: string, value: boolean, options?: { provisional?: boolean }) {
+export function persistBoolean(key: string, value: boolean, options?: WriteOptions) {
   writeKey(key, String(value), options)
 }
 
@@ -94,8 +179,8 @@ export function storedString(key: string): null | string {
   return readKey(key)
 }
 
-export function persistString(key: string, value: null | string) {
-  writeKey(key, value)
+export function persistString(key: string, value: null | string, options?: WriteOptions) {
+  writeKey(key, value, options)
 }
 
 export function storedStringArray(key: string): string[] {
@@ -144,8 +229,8 @@ export function storedStringRecord(key: string): Record<string, string> {
   }
 }
 
-export function persistStringRecord(key: string, value: Record<string, string>) {
-  writeKey(key, JSON.stringify(value))
+export function persistStringRecord(key: string, value: Record<string, string>, options?: WriteOptions) {
+  writeKey(key, JSON.stringify(value), options)
 }
 
 export function arraysEqual(left: string[], right: string[]) {

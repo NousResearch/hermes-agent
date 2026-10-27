@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import subprocess  # tests monkeypatch ``op.subprocess.run``; production goes through run_cli
+import tempfile
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -147,21 +148,21 @@ def _op_child_env(token_value: str) -> dict[str, str]:
 # Sentinel-delimited rather than KEY=value: a secret may legitimately contain '=', '#',
 # quotes or newlines, any of which would corrupt a line-oriented parse.
 _INJECT_RECORD = re.compile(
-    r"\x01OPK:(?P<name>[A-Za-z_][A-Za-z0-9_]*):OPV\x01(?P<value>.*?)\x01OPEND\x01", re.S)
+    r"\x01OPK:(?P<name>[A-Za-z_][A-Za-z0-9_]*):OPV\x01(?P<value>.*?)\x01OPEND\x01", re.DOTALL)
 _OP_INJECT_TIMEOUT = 60
 
 
-def _build_inject_template(references: Dict[str, str]) -> str:
+def _build_inject_template(references: dict[str, str]) -> str:
     return "".join(f"\x01OPK:{n}:OPV\x01{{{{ {references[n]} }}}}\x01OPEND\x01\n"
                    for n in sorted(references))
 
 
-def _parse_inject_output(text: str) -> Dict[str, str]:
+def _parse_inject_output(text: str) -> dict[str, str]:
     return {m.group("name"): m.group("value") for m in _INJECT_RECORD.finditer(text)}
 
 
-def _run_op_inject(op: Path, references: Dict[str, str], *, account: str = "",
-                   token_value: str = "") -> Tuple[Dict[str, str], Optional[str]]:
+def _run_op_inject(op: Path, references: dict[str, str], *, account: str = "",
+                   token_value: str = "") -> tuple[dict[str, str], Optional[str]]:
     """Resolve every reference in ONE `op inject` call → ``(secrets, error)``.
 
     ``error`` is non-None when the batch did not fully resolve; `op inject` is
@@ -176,7 +177,7 @@ def _run_op_inject(op: Path, references: Dict[str, str], *, account: str = "",
     tpl, out = Path(tmpdir, "in.tpl"), Path(tmpdir, "out.txt")
     try:
         tpl.write_text(_build_inject_template(references), encoding="utf-8")
-        cmd: List[str] = [str(op), "inject", "-i", str(tpl), "-o", str(out), "-f"]
+        cmd: list[str] = [str(op), "inject", "-i", str(tpl), "-o", str(out), "-f"]
         if account:
             cmd += ["--account", account]
 

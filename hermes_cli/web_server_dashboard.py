@@ -265,6 +265,8 @@ def mount_spa(application: FastAPI):
             asset_files[directory] = _ImmutableAssetFiles(directory=directory, check_dir=False)
         await asset_files[directory](scope, receive, send)
 
+    from hermes_cli.webapp_previews import mount_preview_assets
+    mount_preview_assets(application)
     application.mount("/assets", serve_assets, name="assets")
 
     @application.get("/{full_path:path}")

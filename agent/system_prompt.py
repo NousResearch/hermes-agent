@@ -83,14 +83,22 @@ def _tui_embedded_pane_clarifier(hint: str) -> str:
     return hint + _TUI_EMBEDDED_PANE_CLARIFIER
 
 
-def _plugin_session_info(agent: Any) -> dict[str, str]:
+def _plugin_session_info(agent: Any) -> dict[str, Any]:
     """Return immutable-at-render-time metadata exposed to prompt sections."""
     try:
         cwd = str(resolve_context_cwd() or "")
     except Exception:
         cwd = ""
-    info = {k: str(getattr(agent, k, None) or "") for k in ("session_id", "model", "provider", "platform")}
-    info.update(profile_name=_active_profile_name(agent, _ambient_plugin_profile_name), cwd=cwd)
+    info: Dict[str, Any] = {
+        k: str(getattr(agent, k, None) or "")
+        for k in ("session_id", "model", "provider", "platform")
+    }
+    info.update(
+        profile_name=_active_profile_name(agent, _ambient_plugin_profile_name),
+        cwd=cwd,
+        valid_tool_names=tuple(sorted(getattr(agent, "valid_tool_names", ()) or ())),
+        skill_graph_mode=bool(getattr(agent, "_skill_graph_mode", False)),
+    )
     return info
 
 
@@ -135,6 +143,16 @@ def _frozen_plugin_prompt_sections(agent: Any) -> tuple:
     return rendered
 
 
+# The renderer-owned bytes that may follow the plugin frame: the blank-line
+# separator, an optional active-profile line (upstream f29163388c moved it into
+# the volatile tier directly after the plugin frame; both default and named
+# shapes are a single line starting "Active Hermes profile: "), another blank
+# line, then the session-start anchor. Anything else between frame and anchor
+# is not the canonical container and must fail closed.
+_FRAME_TAIL_RE = re.compile(
+    r"\n\n(?:Active Hermes profile: [^\n]*\n\n)?Conversation started: "
+)
+
 def _restore_plugin_prompt_sections(prompt: str) -> tuple:
     """Recover frozen section bytes from the persisted full prompt.  Only the
     exact canonical container emitted by core is accepted — user/project text
@@ -148,7 +166,11 @@ def _restore_plugin_prompt_sections(prompt: str) -> tuple:
     if end < 0:
         return ()
     after_end = end + len(PLUGIN_SECTIONS_END)
-    if not prompt[after_end:].startswith("\n\nConversation started:"):
+    # Only the renderer-owned bytes may sit between the frame and the session-start
+    # anchor: an optional active-profile line (upstream f29163388c moved it into the
+    # volatile tier directly after the plugin frame). Anything else is not the exact
+    # canonical container and must keep failing closed.
+    if not _FRAME_TAIL_RE.match(prompt[after_end:]):
         return ()
     framed = prompt[start:after_end]
     restored = []
@@ -301,6 +323,11 @@ def _tool_guidance_block(agent: Any) -> Optional[str]:
 def _skills_prompt(agent: Any) -> str:
     """Skills index (empty without skills tools).  Focus mode demotes non-coding
     categories to names-only — never hidden, every name stays visible."""
+    if (
+        getattr(agent, "_skill_graph_mode", False)
+        and {"skill_graph_search", "skill_load"}.issubset(agent.valid_tool_names)
+    ):
+        return ""
     if not any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage']):
         return ""
     import model_tools

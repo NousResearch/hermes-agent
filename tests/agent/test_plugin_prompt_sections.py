@@ -209,3 +209,40 @@ def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tm
     assert outputs[1]["rebuilt_equal"] is False
     assert outputs[1]["rebuilt_has_changed"] is True
     assert outputs[1]["calls_after_rebuild"] == 2
+
+
+def test_restore_accepts_optional_profile_line_between_frame_and_anchor():
+    """Upstream f29163388c moved the active-profile line into the volatile tier
+    directly after the plugin frame. ``_restore_plugin_prompt_sections`` must
+    accept that renderer-owned line (default and named shapes) while still
+    rejecting any other bytes between the frame and the session-start anchor."""
+    from agent.system_prompt import _restore_plugin_prompt_sections
+    from hermes_cli.plugins import (
+        RenderedPluginSystemPromptSection,
+        format_system_prompt_sections,
+    )
+
+    section = RenderedPluginSystemPromptSection(
+        id="skill-graph.discovery", content="original bytes",
+        position="after_memory", plugin="skill-graph",
+    )
+    frame = format_system_prompt_sections([section])
+    anchor = "Conversation started: Monday, October 27, 2026 (UTC+08:00)"
+
+    def restored(prompt: str) -> int:
+        return len(_restore_plugin_prompt_sections(prompt))
+
+    # Renderer-owned profile line (default shape) is accepted.
+    assert restored(
+        f"{frame}\n\nActive Hermes profile: default. Other profiles live under /root/x.\n\n{anchor}"
+    ) == 1
+    # Renderer-owned profile line (named shape) is accepted.
+    assert restored(
+        f"{frame}\n\nActive Hermes profile: work. This session reads /root/profiles/work.\n\n{anchor}"
+    ) == 1
+    # No profile line (line absent) keeps working.
+    assert restored(f"{frame}\n\n{anchor}") == 1
+    # Foreign bytes between frame and anchor still fail closed.
+    assert restored(f"{frame}\n\nINJECTED EVIL TEXT\n\n{anchor}") == 0
+    # Missing anchor fails closed even with a profile line present.
+    assert restored(f"{frame}\n\nActive Hermes profile: default.\n\nno anchor here") == 0

@@ -61,12 +61,16 @@ def bench_pooled_row(provider: str, exc: Exception) -> None:
     key = getattr(exc, "hermes_aux_api_key", None)
     if not isinstance(key, str) or not key or not is_plugin_oauth_pool(provider) or not aux._is_auth_error(exc):
         return
-    pool = aux._load_pool_with_credentials(provider, " (bench after refresh)")
-    if pool is None or not pool.entry_id_for_api_key(key):
-        return
+    from hermes_cli.auth import _auth_store_lock
+
     status = getattr(exc, "status_code", None)
-    pool.mark_exhausted_and_rotate(status_code=status if isinstance(status, int) else 401,
-                                   error_context={"message": str(exc)}, api_key_hint=key)
+    # Check and write under the auth-store lock, which a peer's refresh also holds: otherwise a token a peer
+    # persists between our read and our write inherits this stale bearer's cooldown on disk.
+    with contextlib.suppress(TimeoutError), _auth_store_lock():
+        pool = aux._load_pool_with_credentials(provider, " (bench after refresh)")
+        if pool is not None and pool.entry_id_for_api_key(key):
+            pool.mark_exhausted_and_rotate(status_code=status if isinstance(status, int) else 401,
+                                           error_context={"message": str(exc)}, api_key_hint=key)
 
 
 def pool_superseded_key(provider: str, api_key: Any) -> bool:

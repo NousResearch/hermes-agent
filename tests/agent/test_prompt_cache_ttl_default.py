@@ -30,11 +30,13 @@ def test_background_platform_labels_are_machine_paced():
 
 
 @pytest.mark.parametrize(
-    "platform, expected",
-    [("cli", "1h"), ("telegram", "1h"), ("cron", "5m"), ("subagent", "5m"), ("api_server", "5m")],
+    "platform, side_agent, expected",
+    [("cli", False, "1h"), ("telegram", False, "1h"), ("cron", False, "5m"), ("subagent", False, "5m"),
+     ("api_server", False, "5m"), ("cli", True, "5m"), ("tui", True, "5m")],
 )
-def test_unconfigured_agent_resolves_tier_from_its_platform(tmp_path, monkeypatch, platform, expected):
-    """A real AIAgent on a config.yaml with no ``prompt_caching`` section at all."""
+def test_unconfigured_agent_resolves_tier_from_its_platform(tmp_path, monkeypatch, platform, side_agent, expected):
+    """A real AIAgent on a config.yaml with no ``prompt_caching`` section at all. A side agent
+    (CLI/TUI ``/background``, ``/btw``) runs one finite task under its parent's transport label."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     for var in ("HERMES_SESSION_SOURCE", "HERMES_SESSION_SOURCE_EXPLICIT", "HERMES_SINGLE_QUERY_SESSION"):
         monkeypatch.delenv(var, raising=False)
@@ -42,7 +44,7 @@ def test_unconfigured_agent_resolves_tier_from_its_platform(tmp_path, monkeypatc
     from run_agent import AIAgent
 
     agent = AIAgent(
-        session_id=f"default-{platform}", platform=platform, api_key="k", base_url="https://openrouter.ai/api/v1",
+        session_id=f"default-{platform}-{side_agent}", platform=platform, side_agent=side_agent, api_key="k", base_url="https://openrouter.ai/api/v1",
         provider="openrouter", api_mode="chat_completions", model="anthropic/claude-sonnet-4.6", quiet_mode=True,
         skip_context_files=True, skip_memory=True, save_trajectories=False, enabled_toolsets=["file"])
     try:

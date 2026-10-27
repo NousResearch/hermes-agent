@@ -6,6 +6,9 @@
 export interface PersistenceEvent {
   key: string
   op: 'read' | 'remove' | 'write'
+  /** A value this client stored for itself (a migration or a default), not a
+   *  choice the user made: the machine's shared preferences never take it. */
+  provisional?: boolean
   value: null | string
 }
 
@@ -42,7 +45,7 @@ export function readKey(key: string): null | string {
 }
 
 /** Raw write. A null value removes the key. Best-effort. */
-export function writeKey(key: string, value: null | string) {
+export function writeKey(key: string, value: null | string, { provisional = false } = {}) {
   try {
     if (value === null) {
       window.localStorage.removeItem(key)
@@ -53,7 +56,7 @@ export function writeKey(key: string, value: null | string) {
     // Storage is best-effort; never let a quota/permission error break the UI.
   }
 
-  emitPersistence({ key, op: value === null ? 'remove' : 'write', value })
+  emitPersistence({ key, op: value === null ? 'remove' : 'write', value, ...(provisional && { provisional }) })
 }
 
 /** Parsed JSON read. Returns null on absence, unavailable storage, OR malformed
@@ -83,8 +86,8 @@ export function storedBoolean(key: string, fallback: boolean): boolean {
   return value === null ? fallback : value === 'true'
 }
 
-export function persistBoolean(key: string, value: boolean) {
-  writeKey(key, String(value))
+export function persistBoolean(key: string, value: boolean, options?: { provisional?: boolean }) {
+  writeKey(key, String(value), options)
 }
 
 export function storedString(key: string): null | string {

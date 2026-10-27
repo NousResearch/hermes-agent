@@ -366,9 +366,19 @@ if (typeof window !== 'undefined') {
   // setOpacity in clear mode and nothing at all under glass.
   let storageTimer: null | number = null
 
+  // Only an edit is written. The book this window loaded, or adopted from a
+  // sibling or the machine's shared preferences, already resolves from
+  // storage: writing it back would push this window's default or its
+  // normalisation (no glass in a browser) into the shared store over the
+  // value the user set in native Desktop (#145213). A v1 state still lands in
+  // v2 on first load, since v2 does not resolve to it yet.
   const persist = () => {
     storageTimer = null
-    writeJson(KEY, $translucencyBook.get())
+    const book = $translucencyBook.get()
+
+    if (JSON.stringify(book) !== JSON.stringify(normalizeBook(readJson<unknown>(KEY), GLASS_SUPPORTED))) {
+      writeJson(KEY, book)
+    }
   }
 
   // The RESOLVED state drives paint and IPC — main only ever cares about the

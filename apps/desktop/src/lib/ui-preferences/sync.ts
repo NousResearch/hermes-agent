@@ -28,6 +28,13 @@ const TAB_KEY = 'hermes:ui-preferences:tab'
 // Until then a key the store lacks is never removed here: it may be this
 // client's data the store has not received yet, not a peer's deletion.
 const JOINED_KEY = 'hermes:ui-preferences:generation'
+// Shared keys whose value here is provisional: one this client stored for
+// itself (a migration from its own config, a default), not a user's choice.
+// Such a value never enters the store, by seed or by write: a fresh browser's
+// default would otherwise sit there first and the client with the real value
+// (native Desktop's) could not import it. It stays here until the store has a
+// value for the key, or the user makes a real change.
+const PROVISIONAL_KEY = 'hermes:ui-preferences:provisional'
 const RETRY_DELAY_MS = 5000
 const MAX_RETRY_DELAY_MS = 60_000
 
@@ -42,7 +49,54 @@ let ownKeys: null | ReadonlySet<string> = null
 
 /** Record this window's own shared keys; boot.ts calls it before anything loads. */
 export function captureOwnPreferences(): void {
-  ownKeys = new Set(localSharedKeys())
+  const provisional = readProvisional()
+
+  ownKeys = new Set(localSharedKeys().filter(key => !provisional.has(key)))
+}
+
+function readProvisional(): Set<string> {
+  try {
+    const parsed = JSON.parse(readRaw(PROVISIONAL_KEY) ?? '[]') as unknown
+
+    return new Set(Array.isArray(parsed) ? parsed.filter((key): key is string => typeof key === 'string') : [])
+  } catch {
+    return new Set()
+  }
+}
+
+function markProvisional(key: string, provisional: boolean) {
+  const keys = readProvisional()
+
+  if (keys.has(key) === provisional) {
+    return
+  }
+
+  if (provisional) {
+    keys.add(key)
+  } else {
+    keys.delete(key)
+  }
+
+  writeRaw(PROVISIONAL_KEY, keys.size === 0 ? null : JSON.stringify([...keys]))
+}
+
+/** Cache one store value here. A key the store lacks is removed only once
+ *  this origin joined (`prune`), and never while its value here is
+ *  provisional; a value the store has replaces a provisional one for good. */
+function adopt(key: string, value: null | string, prune: boolean, live: boolean) {
+  if (value === null && (!prune || readProvisional().has(key))) {
+    return
+  }
+
+  if (value !== null) {
+    markProvisional(key, false)
+  }
+
+  const previous = readRaw(key)
+
+  if (writeRaw(key, value) && live) {
+    announce(key, previous, value)
+  }
 }
 
 /** This tab's outbox key, claimed once per page load. The previous load of this
@@ -148,16 +202,8 @@ export function hydrateFromSnapshot(snapshot: null | undefined | UiPreferencesSn
   const prune = hasJoined(snapshot)
 
   for (const key of new Set([...localSharedKeys(), ...Object.keys(snapshot.values)])) {
-    const value = snapshot.values[key] ?? null
-
-    if (!isSharedPreferenceKey(key) || outbox.has(key) || (value === null && !prune)) {
-      continue
-    }
-
-    const previous = readRaw(key)
-
-    if (writeRaw(key, value)) {
-      announce(key, previous, value)
+    if (isSharedPreferenceKey(key) && !outbox.has(key)) {
+      adopt(key, snapshot.values[key] ?? null, prune, true)
     }
   }
 }
@@ -206,7 +252,8 @@ function announce(key: string, oldValue: null | string, newValue: null | string)
  *   overwritten); until then no local key is removed for being absent there;
  * - a local change to a shared key is merged into the store per key, last
  *   write wins, debounced and retried while the store is unreachable;
- * - a change another window, tab or device made lands here live.
+ * - a change another window, tab or device made lands here live;
+ * - a provisional value (a write marked `provisional`) never leaves this origin.
  */
 export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | undefined): () => void {
   if (!bridge) {
@@ -252,14 +299,8 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
       known.set(key, value)
 
       // A change made here and not yet stored outranks an older store value.
-      if (pending.has(key) || (refused.has(key) && refused.get(key) === readRaw(key)) || (value === null && !prune)) {
-        continue
-      }
-
-      const previous = readRaw(key)
-
-      if (writeRaw(key, value) && live) {
-        announce(key, previous, value)
+      if (!pending.has(key) && !(refused.has(key) && refused.get(key) === readRaw(key))) {
+        adopt(key, value, prune, live)
       }
     }
 
@@ -331,6 +372,13 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
       return
     }
 
+    // Provisional or not, the latest write decides what this value is.
+    markProvisional(event.key, Boolean(event.provisional) && event.op === 'write')
+
+    if (event.provisional) {
+      return
+    }
+
     if (!pending.has(event.key) && known.has(event.key) && known.get(event.key) === event.value) {
       return
     }
@@ -347,9 +395,11 @@ export function startUiPreferencesSync(bridge: null | UiPreferencesBridge | unde
       return snapshot
     }
 
+    const provisional = readProvisional()
+
     const values = Object.fromEntries(
       localSharedKeys()
-        .filter(key => !ownKeys || ownKeys.has(key))
+        .filter(key => (!ownKeys || ownKeys.has(key)) && !provisional.has(key))
         .map(key => [key, readRaw(key)])
     )
 

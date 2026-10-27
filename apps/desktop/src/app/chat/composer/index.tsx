@@ -51,6 +51,7 @@ import {
   acceptsTriggerCompletion,
   COMPOSER_FADE_BACKGROUND,
   composerInputWidthClass,
+  consumesUnresolvedTriggerKey,
   implicitSlashAcceptIndex,
   liveComposerDraft,
   type QueueEditState,
@@ -848,7 +849,7 @@ export function ChatBar({
           return
         }
 
-        if (event.key === 'Tab') {
+        if (consumesUnresolvedTriggerKey(event, trigger)) {
           event.preventDefault()
           triggerKeyConsumedRef.current = true
 

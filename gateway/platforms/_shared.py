@@ -168,10 +168,10 @@ def _supplied_by_operator(name: str) -> bool:
     cannot tell it from the bridge's own leftover — this is the one case it must not clobber.
     """
     try:
-        from hermes_cli.env_loader import launch_dotenv_keys, managed_dotenv_keys
+        from hermes_cli.env_loader import has_nonblank_dotenv_value
     except ImportError:  # bridging must not fail because the loader is unavailable
         return False
-    return name in launch_dotenv_keys() or name in managed_dotenv_keys()
+    return has_nonblank_dotenv_value(name)
 
 
 @dataclass

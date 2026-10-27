@@ -164,6 +164,18 @@ def dotenv_published_values(name: str) -> frozenset[str]:
         return frozenset(value for key, (_base, value, _pass) in _DOTENV_PUBLISHED.items() if key.upper() == folded)
 
 
+def has_nonblank_dotenv_value(name: str) -> bool:
+    """Whether dotenv supplied an override, not merely an empty assignment later filled by YAML.
+
+    A known key without a publication receipt is conservatively treated as explicit provenance.
+    """
+    with _DOTENV_LOCK:
+        if name not in _LOADED_DOTENV_KEYS and name not in _MANAGED_DOTENV_KEYS:
+            return False
+        published = _DOTENV_PUBLISHED.get(name)
+        return published is None or bool(published[1].strip())
+
+
 def managed_dotenv_keys() -> frozenset[str]:
     """KEY names the administrator-managed ``.env`` loaded (see ``_MANAGED_DOTENV_KEYS``). Policy for
     every profile: never stripped from a routed child, and re-applied over the routed scope."""

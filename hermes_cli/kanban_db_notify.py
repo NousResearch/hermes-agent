@@ -64,6 +64,34 @@ def _decode_notify_delivery_metadata(raw: Any) -> dict[str, Any]:
     return {str(key): value for key, value in data.items() if isinstance(value, _SCALAR_TYPES)}
 
 
+def _normalize_kinds(value: str | Iterable[str] | None) -> Optional[tuple]:
+    """Normalize an event-kind allowlist to a deduped lowercase tuple.
+
+    Accepts ``None``, a single comma-separated string, or any iterable of
+    names. Returns ``None`` for `no filter at all`: a ``None`` input, the
+    literal name ``"all"``, or an empty collection all normalize to ``None``
+    — callers tri-state on ``value is None`` (leave row untouched) versus
+    ``value is not None`` and a ``None`` result (reset the row to
+    unfiltered). Blank fragments are dropped.
+    """
+    if value is None:
+        return None
+    parts = value.split(",") if isinstance(value, str) else [str(p) for p in value]
+    norm: list[str] = []
+    for part in parts:
+        name = part.strip().lower()
+        if name == "all":
+            return None
+        if name and name not in norm:
+            norm.append(name)
+    return tuple(norm) or None
+
+
+def _decode_kinds(raw: Any) -> Optional[tuple]:
+    """Decode a subscription row's stored ``kinds`` column (or passthrough)."""
+    return _normalize_kinds(raw) if isinstance(raw, (str, list, tuple)) else None
+
+
 def add_notify_sub(
     conn: sqlite3.Connection,
     *,
@@ -77,6 +105,7 @@ def add_notify_sub(
     notifier_profile: Optional[str] = None,
     delivery_mode: Optional[str] = None,
     delivery_metadata: Optional[Mapping[str, Any]] = None,
+    kinds: str | Iterable[str] | None = None,
 ) -> None:
     """Register a gateway source wanting terminal-state notifications for
     ``task_id``; idempotent on (task, platform, chat, thread).
@@ -88,14 +117,25 @@ def add_notify_sub(
     untouched, an explicit valid value is last-write-wins, unknown falls back
     to ``"notify"``. ``delivery_metadata`` merges supplied routing anchors
     into an existing row so re-subscribing never discards them. New subs start
-    caught up (``last_event_id`` =
-    ``MAX(task_events.id)``) so the notifier never replays history at boot.
+    caught up (``last_event_id`` = ``MAX(task_events.id)``) so the notifier
+    never replays history at boot.
+
+    ``kinds`` narrows which event kinds this row is delivered: a
+    comma-separated string or iterable of event kind names
+    (:func:`unseen_events_for_sub` intersects it with the kinds the caller
+    claims, so a subscription can opt out of routine ``completed`` events
+    while keeping actionable ones like ``blocked`` / ``gave_up``). ``None``
+    leaves an existing row's filter untouched; a new sub starts unfiltered;
+    the literal ``"all"`` — or any empty collection — resets the row back to
+    unfiltered (last-write-wins like ``delivery_mode``).
     """
     valid_mode = delivery_mode if delivery_mode in _NOTIFY_DELIVERY_MODES else None
     # api_server is stateless: the adapter has no send(), the wake self-post IS
     # the delivery. A plain 'notify' default would leave those subs with no
     # delivery mechanism at all. Explicit modes still win.
     insert_mode = valid_mode or ("notify+wake" if platform == "api_server" else "notify")
+    kinds_norm = _normalize_kinds(kinds)
+    _kinds_value = ",".join(kinds_norm) if kinds_norm else None
     key = _sub_key(task_id, platform, chat_id, thread_id)
     with _kb.write_txn(conn):
         existing = conn.execute(
@@ -112,13 +152,13 @@ def add_notify_sub(
             INSERT OR IGNORE INTO kanban_notify_subs
                 (task_id, platform, chat_id, thread_id, user_id, user_id_alt,
                  chat_type, notifier_profile, delivery_mode, delivery_metadata,
-                 created_at, last_event_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                 kinds, created_at, last_event_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                     COALESCE((SELECT MAX(id) FROM task_events WHERE task_id = ?), 0))
             """,
             (
                 *key, user_id, user_id_alt, chat_type or "dm", notifier_profile,
-                insert_mode, metadata_json, int(time.time()), task_id,
+                insert_mode, metadata_json, _kinds_value, int(time.time()), task_id,
             ),
         )
         # chat_type / delivery_mode are last-write-wins; delivery metadata
@@ -139,6 +179,55 @@ def add_notify_sub(
                 f"UPDATE kanban_notify_subs SET {column} = ? " + _SUB_KEY_WHERE + guard,
                 (value, *key),
             )
+        # kinds is last-write-wins too, but its "clear" value is NULL, which
+        # the truthiness-guarded loop above cannot express — an explicit
+        # request (anything not None, including "all"/empty -> reset) always
+        # writes, a plain omission never does.
+        if kinds is not None:
+            conn.execute(
+                "UPDATE kanban_notify_subs SET kinds = ? " + _SUB_KEY_WHERE,
+                (_kinds_value, *key),
+            )
+
+
+def _inherit_notify_subs(
+    conn: sqlite3.Connection, child_id: str, parents: Iterable[str], *,
+    created_at: Optional[int] = None,
+) -> None:
+    """Copy parents' notify subscriptions to a child, cursor caught up to the
+    child's current event so a late ``link_tasks`` never replays history.
+
+    Single owner of inheritance (create_task, link_tasks, decompose). It must
+    copy EVERY routing/delivery column: dropping ``chat_type`` made DM-originated
+    completions wake a fresh group session instead of the originating DM.
+
+    Omitting columns here silently degrades routing: a DM-originated child completion falls back to
+    chat_type='group' and wakes a fresh group-scoped session instead of the originating DM (issue #73030).
+    ``kinds`` rides along too, so an inherited row keeps the parent's event-kind
+    allowlist instead of silently reverting to unfiltered.
+    """
+    parent_ids = tuple(dict.fromkeys(p for p in parents if p))
+    if not parent_ids:
+        return
+    row = conn.execute(
+        "SELECT COALESCE(MAX(id), 0) AS cursor FROM task_events WHERE task_id = ?", (child_id,),
+    ).fetchone()
+    cursor = int(row["cursor"] if row is not None else 0)
+    placeholders = ",".join("?" * len(parent_ids))
+    conn.execute(
+        f"""
+        INSERT OR IGNORE INTO kanban_notify_subs
+            (task_id, platform, chat_id, thread_id, user_id, user_id_alt,
+             chat_type, notifier_profile, delivery_mode, delivery_metadata,
+             kinds, created_at, last_event_id)
+        SELECT ?, platform, chat_id, thread_id, user_id, user_id_alt,
+               COALESCE(chat_type, 'dm'), notifier_profile,
+               COALESCE(delivery_mode, 'notify'), delivery_metadata, kinds, ?, ?
+          FROM kanban_notify_subs
+         WHERE task_id IN ({placeholders})
+        """,
+        (child_id, int(created_at if created_at is not None else time.time()), cursor, *parent_ids),
+    )
 
 
 def _notify_profile_filter(
@@ -195,6 +284,7 @@ def list_notify_subs(
         item = dict(row)
         if "delivery_metadata" in item:
             item["delivery_metadata"] = _decode_notify_delivery_metadata(item.get("delivery_metadata"))
+        item["kinds"] = list(_decode_kinds(item.get("kinds")) or [])
         out.append(item)
     return out
 
@@ -310,13 +400,18 @@ def purge_stale_done_notify_subs(conn: sqlite3.Connection, *, max_age_days: int 
 
 def _notify_cursor(
     conn: sqlite3.Connection, task_id: str, platform: str, chat_id: str, thread_id: Optional[str],
-) -> Optional[int]:
-    """``last_event_id`` of one subscription row, or ``None`` when unsubscribed."""
+) -> Optional[tuple[int, Optional[tuple]]]:
+    """``(last_event_id, kinds)`` of one subscription row, or ``None`` when
+    unsubscribed. ``kinds`` is the row's persisted event-kind allowlist —
+    ``None`` when unset means the row is unfiltered.
+    """
     row = conn.execute(
-        "SELECT last_event_id FROM kanban_notify_subs " + _SUB_KEY_WHERE,
+        "SELECT last_event_id, kinds FROM kanban_notify_subs " + _SUB_KEY_WHERE,
         _sub_key(task_id, platform, chat_id, thread_id),
     ).fetchone()
-    return None if row is None else int(row["last_event_id"])
+    if row is None:
+        return None
+    return int(row["last_event_id"]), _decode_kinds(row["kinds"])
 
 
 def unseen_events_for_sub(
@@ -330,14 +425,26 @@ def unseen_events_for_sub(
 ) -> tuple[int, list[Event]]:
     """Return ``(new_cursor, events)`` with ``id > last_event_id``. The cursor
     is NOT advanced here; call :func:`advance_notify_cursor` after delivery.
+
+    The row's persisted ``kinds`` allowlist (:func:`add_notify_sub`) narrows
+    the caller's claim: the effective filter is the caller's ``kinds``
+    intersected with the row's (the row's list alone when the caller passes
+    none, everything when the row is unfiltered). An empty result matches
+    nothing — an explicit allowlist can never widen back to "all events".
     """
-    cursor = _notify_cursor(conn, task_id, platform, chat_id, thread_id)
-    if cursor is None:
+    row_info = _notify_cursor(conn, task_id, platform, chat_id, thread_id)
+    if row_info is None:
         return 0, []
-    kind_list = list(kinds) if kinds else None
+    cursor, row_kinds = row_info
+    requested = [k for k in kinds] if kinds is not None else None
+    if row_kinds is not None:
+        kind_list = list(row_kinds) if requested is None else [k for k in row_kinds if k in set(requested)]
+    else:
+        kind_list = requested
     q = (
         "SELECT * FROM task_events WHERE task_id = ? AND id > ? "
-        + ("AND kind IN (" + ",".join("?" * len(kind_list)) + ") " if kind_list else "")
+        + ("AND kind IN (" + ",".join("?" * len(kind_list)) + ") " if kind_list
+           else "AND 1=0 " if kind_list is not None else "")
         + "ORDER BY id ASC"
     )
     params: list[Any] = [task_id, cursor]
@@ -360,6 +467,10 @@ def claim_unseen_events_for_sub(
 ) -> tuple[int, int, list[Event]]:
     """Atomically claim unseen events for one subscription.
 
+    The row's persisted ``kinds`` (:func:`add_notify_sub`) apply here too:
+    :func:`unseen_events_for_sub` intersects them with the caller's ``kinds``,
+    so a row can opt out of event kinds the notifier would otherwise deliver.
+
     Returns ``(old_cursor, new_cursor, events)``; when events are returned the
     row's ``last_event_id`` has already been advanced inside ``BEGIN IMMEDIATE``,
     so concurrent gateway watchers on the same board DB serialize on SQLite's
@@ -368,9 +479,10 @@ def claim_unseen_events_for_sub(
     delivery failure.
     """
     with _kb.write_txn(conn):
-        old_cursor = _notify_cursor(conn, task_id, platform, chat_id, thread_id)
-        if old_cursor is None:
+        row_info = _notify_cursor(conn, task_id, platform, chat_id, thread_id)
+        if row_info is None:
             return 0, 0, []
+        old_cursor, _row_kinds = row_info
         new_cursor, events = unseen_events_for_sub(
             conn, task_id=task_id, platform=platform, chat_id=chat_id,
             thread_id=thread_id, kinds=kinds,

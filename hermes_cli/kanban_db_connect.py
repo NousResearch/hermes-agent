@@ -898,6 +898,9 @@ _NOTIFY_SUB_COLUMNS = (
     # (which prefers ``user_id_alt``). NULL is inert.
     ("user_id_alt", "user_id_alt TEXT"),
     ("delivery_metadata", "delivery_metadata TEXT"),
+    # Optional comma-separated event-kind allowlist for this subscription
+    # row; NULL = unfiltered (see add_notify_sub / unseen_events_for_sub).
+    ("kinds", "kinds TEXT"),
 )
 
 _TASK_RUN_COLUMNS = (
@@ -1096,7 +1099,7 @@ _REBUILD_SPECS = {
         " thread_id TEXT NOT NULL DEFAULT '', user_id TEXT, user_id_alt TEXT,"
         " chat_type TEXT,"
         " notifier_profile TEXT, delivery_mode TEXT NOT NULL DEFAULT 'notify',"
-        " delivery_metadata TEXT, created_at INTEGER NOT NULL,"
+        " delivery_metadata TEXT, kinds TEXT, created_at INTEGER NOT NULL,"
         " last_event_id INTEGER NOT NULL DEFAULT 0,"
         " last_ping_event_id INTEGER NOT NULL DEFAULT 0,"
         " PRIMARY KEY (task_id, platform, chat_id, thread_id))",

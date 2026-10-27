@@ -952,8 +952,11 @@ CREATE TABLE IF NOT EXISTS task_attachments (
 
 -- Subscription from a gateway source (platform + chat + thread) to a
 -- task. The gateway's kanban-notifier watcher tails task_events and
--- pushes ``completed`` / ``blocked`` / ``spawn_auto_blocked`` events to
+-- pushes ``completed`` / ``blocked`` / ``gave_up`` events to
 -- the original requester so human-in-the-loop workflows close the loop.
+-- ``kinds`` optionally narrows which event kinds this row is delivered:
+-- NULL = unfiltered (every kind the notifier claims); a comma-separated
+-- allowlist means the row only claims events whose kind is listed.
 CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     task_id       TEXT NOT NULL,
     platform      TEXT NOT NULL,
@@ -965,6 +968,7 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     notifier_profile TEXT,
     delivery_mode TEXT NOT NULL DEFAULT 'notify',
     delivery_metadata TEXT,
+    kinds TEXT,
     created_at    INTEGER NOT NULL,
     last_event_id INTEGER NOT NULL DEFAULT 0,
     last_ping_event_id INTEGER NOT NULL DEFAULT 0,
@@ -1359,44 +1363,6 @@ def _missing_task_ids(conn: sqlite3.Connection, ids: Iterable[str]) -> list[str]
     rows = conn.execute(f"SELECT id FROM tasks WHERE id IN ({placeholders})", ids).fetchall()
     present = {r["id"] for r in rows}
     return [p for p in ids if p not in present]
-
-
-def _inherit_notify_subs(
-    conn: sqlite3.Connection, child_id: str, parents: Iterable[str], *,
-    created_at: Optional[int] = None,
-) -> None:
-    """Copy parents' notify subscriptions to a child, cursor caught up to the
-    child's current event so a late ``link_tasks`` never replays history.
-
-    Single owner of inheritance (create_task, link_tasks, decompose). It must
-    copy EVERY routing/delivery column: dropping ``chat_type`` made DM-originated
-    completions wake a fresh group session instead of the originating DM.
-
-    Omitting columns here silently degrades routing: a DM-originated child completion falls back to
-    chat_type='group' and wakes a fresh group-scoped session instead of the originating DM (issue #73030).
-    """
-    parent_ids = tuple(dict.fromkeys(p for p in parents if p))
-    if not parent_ids:
-        return
-    row = conn.execute(
-        "SELECT COALESCE(MAX(id), 0) AS cursor FROM task_events WHERE task_id = ?", (child_id,),
-    ).fetchone()
-    cursor = int(row["cursor"] if row is not None else 0)
-    placeholders = ",".join("?" * len(parent_ids))
-    conn.execute(
-        f"""
-        INSERT OR IGNORE INTO kanban_notify_subs
-            (task_id, platform, chat_id, thread_id, user_id, user_id_alt,
-             chat_type, notifier_profile, delivery_mode, delivery_metadata,
-             created_at, last_event_id)
-        SELECT ?, platform, chat_id, thread_id, user_id, user_id_alt,
-               COALESCE(chat_type, 'dm'), notifier_profile,
-               COALESCE(delivery_mode, 'notify'), delivery_metadata, ?, ?
-          FROM kanban_notify_subs
-         WHERE task_id IN ({placeholders})
-        """,
-        (child_id, int(created_at if created_at is not None else time.time()), cursor, *parent_ids),
-    )
 
 
 def get_task(conn: sqlite3.Connection, task_id: str) -> Optional[Task]:
@@ -4232,4 +4198,7 @@ from hermes_cli.kanban_db_dispatch import (
     _worker_alive,
     _worker_survived_termination,
     _worker_terminal_timeout_env,
+)
+from hermes_cli.kanban_db_notify import (
+    _inherit_notify_subs,
 )

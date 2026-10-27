@@ -119,9 +119,9 @@ def _reinstall(agent: Any, state: dict[str, Any]) -> None:
         setattr(agent, name, state[name])
 
 
-def _warn_once(agent: Any, target: dict[str, Any], reason: str) -> None:
-    logger.warning("auxiliary.%s route %s/%s not used: %s; the voice turn runs on %s/%s",
-                   TASK, target["provider"], target["model"], reason, agent.provider, agent.model)
+def _warn_once(agent: Any, target: dict[str, Any], reason: str, task: str = TASK) -> None:
+    logger.warning("%s route %s/%s not used: %s; the turn runs on %s/%s",
+                   task, target["provider"], target["model"], reason, agent.provider, agent.model)
     if getattr(agent, "_warned_voice_route", False):
         return
     agent._warned_voice_route = True
@@ -131,14 +131,53 @@ def _warn_once(agent: Any, target: dict[str, Any], reason: str) -> None:
              f"using {agent.model}.")
 
 
+PLUGIN_TASK = "plugin_route"
+
+
+def _plugin_route(agent: Any, messages: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """The route entry a ``select_turn_route`` plugin picked for this turn, or None (use the main model).
+
+    Same entry shape as an ``auxiliary.*`` slot (``provider``, ``model``, optional ``base_url``,
+    ``api_key``, ``reasoning_effort``). Hook failures and malformed answers mean "no route".
+    """
+    if getattr(agent, "is_subagent", False):
+        return None
+    from hermes_cli.plugins import has_hook, invoke_hook
+    if not has_hook("select_turn_route"):
+        return None
+    last = next((m for m in reversed(messages) if m.get("role") == "user"), None) or {}
+    text = last.get("content")
+    try:
+        answers = invoke_hook(
+            "select_turn_route",
+            session_id=str(getattr(agent, "session_id", "") or ""),
+            platform=str(getattr(agent, "platform", "") or ""),
+            user_message=text if isinstance(text, str) else "",
+            has_attachments=not isinstance(text, str),
+            message_count=len(messages),
+            session_provider=str(agent.provider or ""),
+            session_model=str(agent.model or ""),
+        )
+    except Exception:  # health: allow BLE001 -- a broken plugin must not fail the turn
+        logger.warning("select_turn_route hook failed; the turn runs on the main model", exc_info=True)
+        return None
+    route = next((a for a in answers if isinstance(a, dict) and a.get("model")), None)
+    return dict(route) if route else None
+
+
 def begin_voice_turn_route(agent: Any, messages: list[dict[str, Any]], system_prompt: Any) -> Any:
-    """Bind the voice route for a marked turn; returns the system prompt the turn should send."""
-    if not getattr(agent, "_voice_turn_pending", False):
-        return system_prompt
-    agent._voice_turn_pending = False
+    """Bind this turn's route (a marked voice turn, else a ``select_turn_route`` plugin's pick);
+    returns the system prompt the turn should send."""
     from agent.auxiliary_task_config import _get_auxiliary_task_config
     from hermes_constants import parse_reasoning_effort
-    cfg = _get_auxiliary_task_config(TASK)
+    if getattr(agent, "_voice_turn_pending", False):
+        agent._voice_turn_pending = False
+        task = TASK
+        cfg = _get_auxiliary_task_config(TASK)
+    else:
+        task, cfg = PLUGIN_TASK, _plugin_route(agent, messages)
+        if cfg is None:
+            return system_prompt
     effort = parse_reasoning_effort(cfg.get("reasoning_effort"))
     target = _route_target(agent, cfg)
     if target is None and effort is None:
@@ -158,15 +197,15 @@ def begin_voice_turn_route(agent: Any, messages: list[dict[str, Any]], system_pr
             reason = "the conversation is larger than its context window"
         if reason:
             _reinstall(agent, state)
-            _warn_once(agent, target, reason)
+            _warn_once(agent, target, reason, task)
             agent._voice_route_state = {"reasoning_config": state["reasoning_config"]}
             return agent._cached_system_prompt or system_prompt
         from agent.chat_completion_helpers import rewrite_prompt_model_identity
         rewrite_prompt_model_identity(agent, agent.model, agent.provider)
         for name in _REJECTION_FIELDS:
             setattr(agent, name, False)
-        agent._turn_route_task = TASK
-        logger.info("Voice turn routed to %s (%s)", agent.model, agent.provider)
+        agent._turn_route_task = task
+        logger.info("Turn routed to %s (%s)", agent.model, agent.provider)
     if effort is not None:
         agent.reasoning_config = _voice_reasoning(agent, effort)
     return agent._cached_system_prompt or system_prompt

@@ -1,6 +1,6 @@
 ---
 name: shopify
-description: Shopify Admin & Storefront GraphQL APIs via curl. Products, orders, customers, inventory, metafields.
+description: Query Shopify Admin/Storefront GraphQL APIs via curl.
 version: 1.0.0
 author: community
 license: MIT

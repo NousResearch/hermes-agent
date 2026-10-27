@@ -10,7 +10,7 @@ Two data sources:
 2. The unified Hermes Skills Index at ``website/static/api/skills-index.json``,
    built twice daily by ``scripts/build_skills_index.py`` (workflow
    ``.github/workflows/skills-index.yml``). Covers skills.sh, ClawHub, browse.sh,
-   LobeHub, Claude Marketplace, well-known endpoints, and the GitHub taps
+   LobeHub, well-known endpoints, and the GitHub taps
    (openai/skills, anthropics/skills, huggingface/skills, VoltAgent, etc.).
 
 Legacy fallback: if the unified index is missing AND ``skills/index-cache/``
@@ -20,12 +20,14 @@ the unified index existed).
 
 import json
 import os
+import sys
 from collections import Counter
-from datetime import datetime, timezone
-
-import yaml
+from datetime import datetime, timezone, UTC
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, REPO_ROOT)
+import hermes_yaml as yaml
+
 LOCAL_SKILL_DIRS = [
     ("skills", "built-in"),
     ("optional-skills", "optional"),
@@ -37,6 +39,9 @@ LEGACY_INDEX_CACHE_DIR = os.path.join(REPO_ROOT, "skills", "index-cache")
 # bundled payload was ~26 MB; lazy-fetch keeps the initial page load
 # fast and shrinks the JS chunk back to a few hundred KB.
 OUTPUT = os.path.join(REPO_ROOT, "website", "static", "api", "skills.json")
+# Curated artwork ships in website/static/img/catalog/, which the docs site serves
+# from its own host (docusaurus `url` + `baseUrl`); one place to change if it moves.
+CATALOG_ART_URL = "https://hermes-agent.nousresearch.com/docs/img/catalog/"
 META_OUTPUT = os.path.join(REPO_ROOT, "website", "static", "api", "skills-meta.json")
 
 CATEGORY_LABELS = {
@@ -82,7 +87,6 @@ UNIFIED_SOURCE_LABELS = {
     "clawhub": "ClawHub",
     "browse-sh": "browse.sh",
     "lobehub": "LobeHub",
-    "claude-marketplace": "Claude Marketplace",
     "well-known": "Well-Known",
     "github": "GitHub",  # default for non-named GitHub taps
 }
@@ -106,7 +110,6 @@ GITHUB_TAP_LABELS = {
 LEGACY_SOURCE_LABELS = {
     "anthropics_skills": "Anthropic",
     "openai_skills": "OpenAI",
-    "claude_marketplace": "Claude Marketplace",
     "lobehub": "LobeHub",
 }
 
@@ -184,8 +187,6 @@ def _install_command(source: str, identifier: str, name: str) -> str:
         return f"hermes skills install {identifier}"
     if src == "lobehub":
         return f"hermes skills install {identifier}"
-    if src == "claude-marketplace":
-        return f"hermes skills install {identifier}"
     if src == "github":
         return f"hermes skills install {identifier}"
     if src == "well-known":
@@ -215,8 +216,7 @@ def _source_url(source: str, identifier: str, extra: dict) -> str:
     # GitHub-backed taps (openai/anthropic/nvidia/hf/gstack/VoltAgent/...):
     # identifier is "owner/repo/<path...>" — link to the directory on GitHub.
     if src in {"github", "openai", "anthropic", "huggingface", "nvidia",
-               "gstack", "voltagent", "minimax", "claude marketplace",
-               "claude-marketplace"}:
+               "gstack", "voltagent", "minimax"}:
         parts = [p for p in identifier.split("/") if p]
         if len(parts) >= 2:
             owner, repo = parts[0], parts[1]
@@ -226,22 +226,28 @@ def _source_url(source: str, identifier: str, extra: dict) -> str:
         return ""
 
     if src == "clawhub":
-        # identifier is a bare slug (the "clawhub/" prefix is added at install time)
-        slug = identifier[len("clawhub/"):] if identifier.startswith("clawhub/") else identifier
-        return f"https://clawhub.ai/skills/{slug}"
+        # identifier is a bare slug (the "clawhub/" prefix is added at install time).
+        # ClawHub URLs require the owner handle: https://clawhub.ai/{owner}/skills/{slug}.
+        # Without the owner we cannot build a valid URL — return "" rather than
+        # a broken link (the card will simply omit the "View source" button).
+        slug = identifier.removeprefix("clawhub/")
+        owner = extra.get("owner", "") if isinstance(extra, dict) else ""
+        if owner:
+            return f"https://clawhub.ai/{owner}/skills/{slug}"
+        return ""
 
     if src in {"skills.sh", "skills-sh"}:
         # "skills-sh/owner/repo/skill" -> the skills.sh detail page
-        rest = identifier[len("skills-sh/"):] if identifier.startswith("skills-sh/") else identifier
+        rest = identifier.removeprefix("skills-sh/")
         return f"https://skills.sh/skills/{rest}"
 
     if src == "lobehub":
-        slug = identifier[len("lobehub/"):] if identifier.startswith("lobehub/") else identifier
+        slug = identifier.removeprefix("lobehub/")
         return f"https://lobehub.com/agent/{slug}"
 
     if src in {"browse.sh", "browse-sh"}:
         # "browse-sh/<hostname>/<task-id>" -> browse.sh task page
-        rest = identifier[len("browse-sh/"):] if identifier.startswith("browse-sh/") else identifier
+        rest = identifier.removeprefix("browse-sh/")
         return f"https://browse.sh/skills/{rest}"
 
     return ""
@@ -249,6 +255,14 @@ def _source_url(source: str, identifier: str, extra: dict) -> str:
 
 def extract_local_skills():
     skills = []
+    try:
+        with open(os.path.join(REPO_ROOT, "apps/shared/src/catalog-curation.json"), encoding="utf-8") as curation_file:
+            curation = json.load(curation_file)
+    except FileNotFoundError:
+        # Curation is optional; a skills-only checkout still produces a catalog.
+        curation = {}
+    artwork = curation.get("artwork", {}).get("skills", {})
+    featured = curation.get("featured", {}).get("skills", [])
 
     for base_dir, source_label in LOCAL_SKILL_DIRS:
         base_path = os.path.join(REPO_ROOT, base_dir)
@@ -310,6 +324,11 @@ def extract_local_skills():
                 elif isinstance(cmds, str) and cmds.strip():
                     commands = [cmds.strip()]
 
+            rel_id = rel.replace(os.sep, "/")
+            install_identifier = (
+                f"official/{rel_id}" if source_label == "optional"
+                else f"NousResearch/hermes-agent/skills/{rel_id}"
+            )
             skills.append({
                 "name": fm.get("name", os.path.basename(root)),
                 "description": fm.get("description", ""),
@@ -325,6 +344,11 @@ def extract_local_skills():
                 "envVars": env_vars,
                 "commands": commands,
                 "docsPath": _docs_page_path(rel, source_label),
+                **({"image": CATALOG_ART_URL + artwork[rel_id]} if rel_id in artwork else {}),
+                # 1-based curated hero rank; the site and the app rotate through these.
+                **({"featured": featured.index(rel_id) + 1} if rel_id in featured else {}),
+                "installIdentifier": install_identifier,
+                "installCmd": f"hermes skills install {install_identifier}",
             })
 
     return skills
@@ -435,6 +459,7 @@ def extract_unified_index_skills():
             "docsPath": "",
             "identifier": identifier,
             "installCmd": install_cmd,
+            "installIdentifier": install_cmd.removeprefix("hermes skills install "),
             "sourceUrl": source_url,
         })
 
@@ -655,7 +680,7 @@ def main():
     # without changing the shape of skills.json.
     by_source = Counter(s["source"] for s in all_skills)
     meta = {
-        "extractedAt": datetime.now(timezone.utc).isoformat(),
+        "extractedAt": datetime.now(UTC).isoformat(),
         "totalSkills": len(all_skills),
         "localSkills": len(local),
         "externalSkills": len(external),

@@ -31,9 +31,11 @@ consumer calls `get_provider_profile()` or `list_providers()`. See
 The registry is populated on first access. After that, every downstream
 layer reads from it:
 
-- `hermes_cli/auth.py` extends `PROVIDER_REGISTRY` with every api-key
-  profile it sees (skipping `copilot`, `kimi-coding`, `kimi-coding-cn`,
-  `zai`, `openrouter`, `custom` — those need bespoke token resolution).
+- `hermes_cli/auth_plugin_providers.py` mirrors every profile it sees into
+  `PROVIDER_REGISTRY` under its `registry_auth_type` (default `auth_type`),
+  placed after `registry_after` when set (skipping `kimi-coding`,
+  `kimi-coding-cn`, `zai`, `openrouter`, `custom` — those need bespoke token
+  resolution).
 - `hermes_cli/models.py` extends `CANONICAL_PROVIDERS` and calls
   `profile.fetch_models()` inside `provider_model_ids()`.
 - `hermes_cli/doctor.py` adds a `/models` health check for each
@@ -69,6 +71,7 @@ under `$HERMES_HOME/plugins/model-providers/` for a private plugin).
 | `prepare_messages(msgs)` | Provider-specific message preprocessing (Qwen normalises to list-of-parts, injects `cache_control`). |
 | `build_extra_body(**ctx)` | Provider-specific `extra_body` (OpenRouter provider prefs, Gemini `thinking_config`). |
 | `build_api_kwargs_extras(**ctx)` | `(extra_body_additions, top_level_kwargs)` — Kimi puts reasoning_effort top-level, Qwen splits `enable_thinking`/`thinking_budget`. |
+| `supported_reasoning_efforts(model)` | Declared per-model reasoning-effort vocabulary for gateways that 400 on unknown levels (Ramp Router reads its live catalog). `None` = defer to transport defaults, `()` = model takes no reasoning params, tuple = clamp target. Must be cache-only — called on the request hot path. |
 | `fetch_models(*, api_key)` | Live catalog fetch — default hits `{models_url or base_url}/models` with Bearer auth. Override for no-REST providers (Bedrock), OAuth catalogs (Anthropic), or public catalogs (OpenRouter). |
 
 ---

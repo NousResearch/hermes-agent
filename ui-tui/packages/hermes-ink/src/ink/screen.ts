@@ -1,5 +1,6 @@
-import { type AnsiCode, ansiCodesToString, diffAnsiCodes } from '@alcalzone/ansi-tokenize'
+import { type AnsiCode, ansiCodesToString } from '@alcalzone/ansi-tokenize'
 
+import { transitionAnsiCodes } from './ansi-transition.js'
 import { type Point, type Rectangle, type Size, unionRect } from './layout/geometry.js'
 import { BEL, ESC, SEP } from './termio/ansi.js'
 import * as warn from './warn.js'
@@ -179,7 +180,7 @@ export class StylePool {
         this.transitionCache.clear()
       }
 
-      str = ansiCodesToString(diffAnsiCodes(this.get(fromId), this.get(toId)))
+      str = ansiCodesToString(transitionAnsiCodes(this.get(fromId), this.get(toId)))
       this.transitionCache.set(key, str)
     }
 

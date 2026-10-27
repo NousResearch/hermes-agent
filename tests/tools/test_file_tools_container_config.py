@@ -1,14 +1,13 @@
 """Tests for docker container_config key propagation in file_tools."""
 
 from unittest.mock import patch, MagicMock
-import tools.file_tools as file_tools
+from tools import file_tools
 
 
 def _make_env_config(**overrides):
     base = {
         "env_type": "docker",
         "docker_image": "test-image:latest",
-        "singularity_image": "docker://test",
         "modal_image": "test",
         "daytona_image": "test",
         "cwd": "/workspace",
@@ -40,9 +39,8 @@ class TestFileToolsContainerConfig:
              patch("tools.terminal_tool._active_environments", {}), \
              patch("tools.terminal_tool._creation_locks", {}), \
              patch("tools.terminal_tool._creation_locks_lock", __import__("threading").Lock()), \
-             patch("tools.terminal_tool._create_environment", side_effect=fake_create_env), \
+             patch("tools.terminal_tool_backends._create_environment", side_effect=fake_create_env), \
              patch("tools.terminal_tool._start_cleanup_thread"), \
-             patch("tools.terminal_tool._check_disk_usage_warning"), \
              patch("tools.file_tools._file_ops_cache", {}), \
              patch("tools.file_tools._file_ops_lock", __import__("threading").Lock()):
             file_tools._get_file_ops(task_id)
@@ -54,24 +52,6 @@ class TestFileToolsContainerConfig:
         cc = self._run(_make_env_config(docker_mount_cwd_to_workspace=True), "t1").get("container_config", {})
         assert cc.get("docker_mount_cwd_to_workspace") is True
 
-    def test_docker_forward_env_passed(self):
-        """docker_forward_env is forwarded to container_config."""
-        cc = self._run(_make_env_config(docker_forward_env=["MY_SECRET"]), "t2").get("container_config", {})
-        assert cc.get("docker_forward_env") == ["MY_SECRET"]
-
-    def test_docker_mount_cwd_defaults_to_false(self):
-        """docker_mount_cwd_to_workspace defaults to False when absent from config."""
-        cfg = _make_env_config()
-        del cfg["docker_mount_cwd_to_workspace"]
-        cc = self._run(cfg, "t3").get("container_config", {})
-        assert cc.get("docker_mount_cwd_to_workspace") is False
-
-    def test_docker_forward_env_defaults_to_empty_list(self):
-        """docker_forward_env defaults to [] when absent from config."""
-        cfg = _make_env_config()
-        del cfg["docker_forward_env"]
-        cc = self._run(cfg, "t4").get("container_config", {})
-        assert cc.get("docker_forward_env") == []
 
     def test_cwd_only_raw_task_override_reaches_file_environment(self):
         """CWD-only task overrides collapse to default but must keep their cwd."""

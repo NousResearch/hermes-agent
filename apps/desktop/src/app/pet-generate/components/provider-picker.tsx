@@ -31,9 +31,9 @@ export function ProviderPicker() {
           <ChevronDown className="size-3" />
         </button>
       </DropdownMenuTrigger>
-      {/* The picker lives inside the pet-gen Dialog (z-130) and portals to body,
-          so lift its menu above the dialog or it opens behind it. */}
-      <DropdownMenuContent align="start" className="z-[140]">
+      {/* The picker lives inside the pet-gen Dialog and portals to body, so its
+          menu needs the rung above the modal or it opens behind the dialog. */}
+      <DropdownMenuContent align="start" className="z-(--z-modal-popover)">
         {providers.map(provider => (
           <DropdownMenuItem
             className="flex items-center gap-1.5"

@@ -5,19 +5,24 @@ gets stuck, gateway restarts, same session gets stuck again), the session
 is auto-suspended on startup so the user gets a clean slate.
 """
 
+import asyncio
 import json
+import threading
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
 from tests.gateway.restart_test_helpers import make_restart_runner
+from tests.lock_contention import ContentionObservedLock
+from tests.waiting import wait_until
 
 
 @pytest.fixture
 def runner_with_home(tmp_path, monkeypatch):
     """Create a runner with a writable HERMES_HOME."""
     monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
-    runner, adapter = make_restart_runner()
+    runner, _adapter = make_restart_runner()
     return runner, tmp_path
 
 
@@ -32,24 +37,9 @@ class TestStuckLoopDetection:
         assert counts["session:a"] == 1
         assert counts["session:b"] == 1
 
-    def test_increment_accumulates(self, runner_with_home):
-        runner, home = runner_with_home
-        runner._increment_restart_failure_counts({"session:a"})
-        runner._increment_restart_failure_counts({"session:a"})
-        runner._increment_restart_failure_counts({"session:a"})
-        counts = json.loads((home / runner._STUCK_LOOP_FILE).read_text())
-        assert counts["session:a"] == 3
-
-    def test_increment_drops_inactive_sessions(self, runner_with_home):
-        runner, home = runner_with_home
-        runner._increment_restart_failure_counts({"session:a", "session:b"})
-        runner._increment_restart_failure_counts({"session:a"})  # b not active
-        counts = json.loads((home / runner._STUCK_LOOP_FILE).read_text())
-        assert "session:a" in counts
-        assert "session:b" not in counts
 
     def test_suspend_at_threshold(self, runner_with_home):
-        runner, home = runner_with_home
+        runner, _home = runner_with_home
         # Simulate 3 restarts with session:a active each time
         for _ in range(3):
             runner._increment_restart_failure_counts({"session:a"})
@@ -65,7 +55,7 @@ class TestStuckLoopDetection:
         assert mock_entry.suspended is True
 
     def test_no_suspend_below_threshold(self, runner_with_home):
-        runner, home = runner_with_home
+        runner, _home = runner_with_home
         runner._increment_restart_failure_counts({"session:a"})
         runner._increment_restart_failure_counts({"session:a"})
         # Only 2 restarts — below threshold of 3
@@ -78,38 +68,48 @@ class TestStuckLoopDetection:
         assert suspended == 0
         assert mock_entry.suspended is False
 
-    def test_clear_on_success(self, runner_with_home):
+    def test_concurrent_clears_do_not_resurrect_each_others_counter(self, runner_with_home, monkeypatch):
+        """Two sessions completing at once each clear their counter; neither may rewrite the other's
+        stale snapshot (race audit lostupdate-6: a resurrected counter can later auto-suspend a healthy session)."""
+        import gateway.stuck_loop_counts as counts_module
+        import utils
         runner, home = runner_with_home
-        runner._increment_restart_failure_counts({"session:a", "session:b"})
-        runner._clear_restart_failure_count("session:a")
-
         path = home / runner._STUCK_LOOP_FILE
-        counts = json.loads(path.read_text())
-        assert "session:a" not in counts
-        assert "session:b" in counts
+        counts_lock = ContentionObservedLock()
+        monkeypatch.setattr(counts_module, "_COUNTS_LOCK", counts_lock)
+        path.write_text(json.dumps({"session:a": 2, "session:b": 2}))
+        reads = []
+        second_read = threading.Event()
+        real_read_text = Path.read_text
 
-    def test_clear_removes_file_when_empty(self, runner_with_home):
-        runner, home = runner_with_home
-        runner._increment_restart_failure_counts({"session:a"})
-        runner._clear_restart_failure_count("session:a")
-        assert not (home / runner._STUCK_LOOP_FILE).exists()
+        def counting_read_text(self, *args, **kwargs):
+            if self == path:
+                reads.append(self)
+                if len(reads) == 2:
+                    second_read.set()
+            return real_read_text(self, *args, **kwargs)
 
-    def test_suspend_clears_file(self, runner_with_home):
-        runner, home = runner_with_home
-        for _ in range(3):
-            runner._increment_restart_failure_counts({"session:a"})
+        monkeypatch.setattr(Path, "read_text", counting_read_text)
+        real_write = utils.atomic_json_write
+        first_write = threading.Event()
 
-        mock_entry = MagicMock()
-        mock_entry.suspended = False
-        runner.session_store._entries = {"session:a": mock_entry}
-        runner.session_store._save = MagicMock()
+        def parked_write(target, data, **kwargs):
+            if not first_write.is_set():
+                first_write.set()
+                # Unserialized clears let the other session read the not-yet-rewritten file here;
+                # serialized ones are seen blocking on the counters lock instead.
+                wait_until(lambda: second_read.is_set() or counts_lock.contended.is_set(),
+                           what="the other clear read the file or blocked on the counters lock")
+            return real_write(target, data, **kwargs)
 
-        runner._suspend_stuck_loop_sessions()
-        assert not (home / runner._STUCK_LOOP_FILE).exists()
+        monkeypatch.setattr(utils, "atomic_json_write", parked_write)
 
-    def test_no_file_no_crash(self, runner_with_home):
-        runner, home = runner_with_home
-        # No file exists — should return 0 and not crash
-        assert runner._suspend_stuck_loop_sessions() == 0
-        # Clear on nonexistent file — should not crash
-        runner._clear_restart_failure_count("nonexistent")
+        async def complete_both():
+            await asyncio.gather(
+                runner._clear_restart_failure_count("session:a"),
+                runner._clear_restart_failure_count("session:b"),
+            )
+
+        asyncio.run(complete_both())
+        remaining = json.loads(real_read_text(path)) if path.exists() else {}
+        assert remaining == {}

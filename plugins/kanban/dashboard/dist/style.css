@@ -175,6 +175,7 @@
 .hermes-kanban-dot-ready    { background: #d4b348; }  /* amber */
 .hermes-kanban-dot-running  { background: #3fb97d; }  /* green */
 .hermes-kanban-dot-blocked  { background: var(--color-destructive, #d14a4a); }
+.hermes-kanban-dot-review   { background: #48b0c4; }  /* cyan — awaiting review */
 .hermes-kanban-dot-done     { background: #4a8cd1; }  /* blue */
 .hermes-kanban-dot-archived { background: var(--color-border); }
 
@@ -292,6 +293,20 @@
   padding: 0.05rem 0.3rem !important;
 }
 
+/* Board-level project binding readout in the board switcher; the × unbinds. */
+.hermes-kanban-board-project-unbind {
+  margin-left: 0.25rem;
+  line-height: 1;
+  padding: 0 0.15rem;
+  border-radius: 0.2rem;
+  color: var(--color-muted-foreground, #888);
+  cursor: pointer;
+}
+.hermes-kanban-board-project-unbind:hover {
+  color: var(--color-destructive, #d44);
+  background: color-mix(in srgb, var(--color-destructive, #d44) 15%, transparent);
+}
+
 .hermes-kanban-needs-assignee {
   font-size: 0.6rem !important;
   padding: 0.05rem 0.3rem !important;
@@ -311,22 +326,12 @@
   margin-left: auto;
 }
 
-/* ---- Inline create --------------------------------------------------- */
+/* ---- Create-task dialog ----------------------------------------------- */
 
-.hermes-kanban-inline-create {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  padding: 0.5rem;
-  margin-bottom: 0.5rem;
-  background: color-mix(in srgb, var(--color-card) 70%, transparent);
-  border: 1px dashed var(--color-border);
-  border-radius: var(--radius-sm, 0.25rem);
-}
-
-.hermes-kanban-inline-create > .flex.gap-2:last-child > button:first-of-type {
-  flex: 1;
-  min-width: 0;
+/* Wider than the base dialog so the workspace/parent selectors and the
+   labeled two-column rows breathe; still clamped to the viewport. */
+.hermes-kanban-create-dialog {
+  width: 36rem;
 }
 
 /* ---- Drawer (task detail side panel) --------------------------------- */
@@ -576,6 +581,18 @@
   max-width: 280px;
 }
 
+/* Comment footer = workflow hint + input row. The border-top lives on the
+   wrapper so the hint sits inside the same visual block as the input. */
+.hermes-kanban-drawer-comment-foot {
+  border-top: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-card) 90%, transparent);
+}
+
+.hermes-kanban-comment-hint {
+  padding: 0.45rem 0.75rem 0;
+  cursor: help;
+}
+
 .hermes-kanban-drawer-comment-row {
   display: flex;
   gap: 0.4rem;
@@ -583,8 +600,6 @@
   /* Keep the comment input clear of the mobile browser nav bar / home
      indicator by extending the bottom padding with the safe-area inset. */
   padding-bottom: max(0.55rem, calc(0.55rem + env(safe-area-inset-bottom)));
-  border-top: 1px solid var(--color-border);
-  background: color-mix(in srgb, var(--color-card) 90%, transparent);
 }
 
 .hermes-kanban-count {
@@ -1338,14 +1353,18 @@
 /* ---------------------------------------------------------------------- */
 
 /* Severity token variables so every diagnostic-coloured surface uses the */
-/* same palette. */
+/* same palette. Chained through the host's theme tokens (the dashboard    */
+/* theme engine writes --color-* on <html>) so the rungs follow the active  */
+/* theme like every other colour here; the literals are only the fallback  */
+/* for hosts that define no tokens. Declared on the consuming elements, not */
+/* .hermes-kanban: diagnostic nodes can render outside that container.     */
 .hermes-kanban-diag,
 .hermes-kanban-attention,
 .hermes-kanban-warning-badge,
 .hermes-kanban-attention-row {
-  --hermes-diag-warning: #ff9e3b;
-  --hermes-diag-error:   #ff6b3d;
-  --hermes-diag-critical: #ff4d4d;
+  --hermes-diag-warning:  var(--color-warning, #ff9e3b);
+  --hermes-diag-error:    var(--color-destructive, #ff6b3d);
+  --hermes-diag-critical: var(--color-destructive, #ff4d4d);
 }
 
 /* Warning-badge severity variants (overrides the base colour). */

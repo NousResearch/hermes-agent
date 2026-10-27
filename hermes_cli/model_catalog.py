@@ -298,12 +298,14 @@ def refresh_catalogs() -> bool:
     clear_fetch_backoff()  # provider overrides are re-asked too, not only the forced manifest
     catalog = get_catalog(force_refresh=True)
     try:
+        from agent.secret_scope import get_secret
         from hermes_cli.anon_auth import current_nous_state, is_guest_state
         from hermes_cli.auth import read_credential_pool
         from hermes_cli.models import _resolve_nous_portal_url, fetch_nous_recommended_models, fetch_openrouter_models
 
         fetch_openrouter_models(force_refresh=True)
-        if any(e and not is_guest_state(e) for e in [current_nous_state(), *read_credential_pool("nous")]):
+        logins = [current_nous_state(), *read_credential_pool("nous")]
+        if any(e and not is_guest_state(e) for e in logins) or get_secret("NOUS_API_KEY"):
             fetch_nous_recommended_models(_resolve_nous_portal_url(), force_refresh=True)
     except Exception:
         logger.debug("provider catalog refresh failed", exc_info=True)

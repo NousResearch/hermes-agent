@@ -347,6 +347,7 @@ def check_nous_free_tier(*, force_fresh: bool = False, cached_only: bool = False
 # ---------------------------------------------------------------------------
 
 NOUS_RECOMMENDED_MODELS_MIRROR = "https://web-assets.nousresearch.com/dynamic"
+_NOUS_MIRROR_TIMEOUT: float = 2.0  # seconds: a hanging mirror delays the Portal fallback by at most this
 _NOUS_RECOMMENDED_CACHE_TTL: int = 600  # seconds (10 minutes)
 # (result_dict, monotonic timestamp), scoped to the profile and portal.
 _nous_recommended_cache: dict[tuple[str, str], tuple[dict[str, Any], float]] = {}
@@ -403,10 +404,11 @@ def fetch_nous_recommended_models(
         _nous_recommended_cache[cache_key] = (data, now - age)
         return data
     parts = urllib.parse.urlsplit(base)
-    mirror = [] if is_loopback_host(parts.hostname) else [f"{NOUS_RECOMMENDED_MODELS_MIRROR}/{parts.netloc}"]
-    for origin in [*mirror, base]:  # the Portal itself when its mirror is missing (404) or failing
+    mirror = [] if is_loopback_host(parts.hostname) else [
+        (f"{NOUS_RECOMMENDED_MODELS_MIRROR}/{parts.netloc}", min(timeout, _NOUS_MIRROR_TIMEOUT))]
+    for origin, origin_timeout in [*mirror, (base, timeout)]:  # the Portal itself when its mirror is missing (404) or failing
         try:
-            data = _get_json(f"{origin}/api/nous/recommended-models", timeout=timeout,
+            data = _get_json(f"{origin}/api/nous/recommended-models", timeout=origin_timeout,
                              headers={"Accept": "application/json", "Accept-Encoding": "gzip"})
         except Exception:
             continue

@@ -40,8 +40,19 @@ function connectionCacheKey(connection: HermesConnection | null) {
   return `${connection.mode || 'local'}:${connection.remoteKind || ''}:${connection.profile || ''}:${target}`
 }
 
-export function desktopFsCacheKey(connection: HermesConnection | null = $connection.get()) {
-  return connectionCacheKey(connection)
+export function desktopFsCacheKey(
+  connection: HermesConnection | null = $connection.get(),
+  scope?: DesktopFsSessionScope
+) {
+  const key = connectionCacheKey(connection)
+
+  if (!scope?.sessionId) {
+    return key
+  }
+
+  const route = fsRoute(scope)
+
+  return JSON.stringify([key, scope.sessionId, route.owner, route.sessionId])
 }
 
 export function isDesktopFsRemoteMode() {
@@ -189,26 +200,51 @@ export async function createRemoteDir(path: string): Promise<string> {
   return result.path || path
 }
 
-export async function readDesktopFileDataUrl(path: string, scope?: DesktopFsSessionScope): Promise<string> {
-  if (!isDesktopFsRemoteMode()) {
-    const result = await bridge().readFileDataUrl(path)
+export interface DesktopFsDataUrlScope extends DesktopFsSessionScope {
+  maxBytes?: number
+  relativeToFile?: string
+}
 
-    if (isReadFileErrorResult(result)) {
-      throwForReadErrorResult(result)
+export async function readDesktopFileDataUrl(
+  path: string,
+  scope?: DesktopFsDataUrlScope | string,
+  maxBytes?: number
+): Promise<string> {
+  const options = typeof scope === 'string' ? { maxBytes, relativeToFile: scope } : { maxBytes, ...scope }
+  const relativeToFile = options.relativeToFile
+  const limit = options.maxBytes
+  let dataUrl: string | HermesReadFileErrorResult
+
+  if (!isDesktopFsRemoteMode()) {
+    if (relativeToFile) {
+      dataUrl = await bridge().readFileDataUrl(path, relativeToFile, limit)
+    } else if (limit !== undefined) {
+      dataUrl = await bridge().readFileDataUrl(path, undefined, limit)
+    } else {
+      dataUrl = await bridge().readFileDataUrl(path)
     }
 
-    return result
+    if (isReadFileErrorResult(dataUrl)) {
+      throwForReadErrorResult(dataUrl)
+    }
+  } else {
+    const route = fsRoute(typeof scope === 'string' ? undefined : scope)
+    const relativeScope = relativeToFile ? `&relative_to_file=${encodeURIComponent(relativeToFile)}` : ''
+    const byteLimit = limit ? `&max_bytes=${encodeURIComponent(Math.floor(limit))}` : ''
+    const result = await remoteFsApi<string | { dataUrl?: string }>(
+      `${fsPath('read-data-url', path, route.sessionId)}${relativeScope}${byteLimit}`,
+      undefined,
+      route.owner
+    )
+
+    dataUrl = typeof result === 'string' ? result : result.dataUrl || ''
   }
 
-  const route = fsRoute(scope)
+  if (!dataUrl) {
+    throw new Error('Filesystem bridge returned an empty data URL')
+  }
 
-  const result = await remoteFsApi<string | { dataUrl?: string }>(
-    fsPath('read-data-url', path, route.sessionId),
-    undefined,
-    route.owner
-  )
-
-  return typeof result === 'string' ? result : result.dataUrl || ''
+  return dataUrl
 }
 
 /**

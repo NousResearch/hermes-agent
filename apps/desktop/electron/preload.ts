@@ -341,7 +341,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   claimStartupLatency: () => ipcRenderer.invoke('hermes:startup-latency:claim'),
   requestMicrophoneAccess: () => ipcRenderer.invoke('hermes:requestMicrophoneAccess'),
   readWindowBelow: () => ipcRenderer.invoke('hermes:window:readBelow'),
-  readFileDataUrl: filePath => ipcRenderer.invoke('hermes:readFileDataUrl', filePath),
+  readFileDataUrl: (filePath, relativeToFile, maxBytes) =>
+    ipcRenderer.invoke('hermes:readFileDataUrl', filePath, relativeToFile, maxBytes),
   readFileDataUrlForAttach: filePath => ipcRenderer.invoke('hermes:readFileDataUrlForAttach', filePath),
   dataUrlReadMax: {
     get: () => ipcRenderer.invoke('hermes:data-url-read-max:get'),

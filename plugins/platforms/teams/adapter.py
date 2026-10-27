@@ -346,8 +346,12 @@ _FILE_CONSENT_TOKEN_RE = re.compile(r"^[A-Za-z0-9_\-]{16,64}$")
 # of 320 KiB (and at most 60 MiB).
 _FILE_UPLOAD_CHUNK_BYTES = 320 * 1024 * 32
 # The consent upload URL is a OneDrive-for-Business session on the user's
-# SharePoint host (commercial, GCC High, DoD); never PUT a snapshot elsewhere.
-_FILE_UPLOAD_HOST_SUFFIXES = (".sharepoint.com", ".sharepoint.us", ".sharepoint-mil.us")
+# SharePoint host (commercial, GCC High, DoD, Germany, China/21Vianet); never PUT a
+# snapshot elsewhere. The leading dot keeps this a domain match, not a substring one.
+_FILE_UPLOAD_HOST_SUFFIXES = (
+    ".sharepoint.com", ".sharepoint.us", ".sharepoint-mil.us", ".sharepoint.de", ".sharepoint.cn",
+)
+_FILE_CONSENT_REQUIRES_ALLOWLIST = "⛔ File delivery requires TEAMS_ALLOWED_USERS to be configured."
 
 
 def _is_personal_chat_id(chat_id: str) -> bool:
@@ -756,10 +760,11 @@ class TeamsAdapter(BasePlatformAdapter):
         return self._invoke_card(body)
 
     @staticmethod
-    def _card_action_denied(from_account: Any) -> Optional[str]:
-        """Default-deny gate for approval clicks: require TEAMS_ALLOWED_USERS or an explicit
+    def _card_action_denied(from_account: Any, requires_allowlist_text: Optional[str] = None) -> Optional[str]:
+        """Default-deny gate for card clicks: require TEAMS_ALLOWED_USERS or an explicit
         TEAMS_ALLOW_ALL_USERS=true opt-in, else anyone who can message the bot could approve.
-        Returns the user-facing denial text, or ``None`` when allowed."""
+        Returns the user-facing denial text, or ``None`` when allowed; ``requires_allowlist_text``
+        replaces the approval-button wording when no allowlist is configured."""
         # Scoped reads: under multiplex os.environ is the DEFAULT profile's allow-all/allowlist.
         if _get_scoped_secret("TEAMS_ALLOW_ALL_USERS", "").strip().lower() in {"1", "true", "yes"}:
             return None
@@ -768,7 +773,7 @@ class TeamsAdapter(BasePlatformAdapter):
             logger.warning(
                 "[teams] card action rejected: TEAMS_ALLOWED_USERS not configured "
                 "and TEAMS_ALLOW_ALL_USERS not set — default deny")
-            return t("platform.teams.approval.requires_allowlist")
+            return requires_allowlist_text or t("platform.teams.approval.requires_allowlist")
         clicker_id = getattr(from_account, "aad_object_id", None) or getattr(from_account, "id", "")
         allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
         if "*" not in allowed_ids and clicker_id not in allowed_ids:
@@ -918,7 +923,9 @@ class TeamsAdapter(BasePlatformAdapter):
         activity = ctx.activity
         value = activity.value
         context = getattr(value, "context", None)
-        token = str(context.get("hermes_file_token") or "") if isinstance(context, dict) else ""
+        if not isinstance(context, dict):
+            context = getattr(context, "__dict__", None) or {}
+        token = str(context.get("hermes_file_token") or "")
         if not _FILE_CONSENT_TOKEN_RE.match(token):
             logger.warning("[teams] file consent invoke without a Hermes token; ignoring")
             return
@@ -955,7 +962,7 @@ class TeamsAdapter(BasePlatformAdapter):
                     await self.send(conv_id, f"⚠️ Could not deliver {declined}: "
                                              "the file consent card was declined.")
             return
-        denied = self._card_action_denied(activity.from_)
+        denied = self._card_action_denied(activity.from_, requires_allowlist_text=_FILE_CONSENT_REQUIRES_ALLOWLIST)
         if denied:
             self._drop_file_consent(token)
             if conv_id:
@@ -965,7 +972,13 @@ class TeamsAdapter(BasePlatformAdapter):
         try:
             meta = json.loads(claimed.read_text(encoding="utf-8"))
         except (OSError, ValueError) as e:
-            logger.error("[teams] file consent %s metadata unreadable: %s", token[:8], e)
+            # An OSError's message carries the token-bearing path; log the type and errno only.
+            logger.error("[teams] file consent %s metadata unreadable: %s (errno %s)",
+                         token[:8], type(e).__name__, getattr(e, "errno", None))
+            if conv_id:
+                with suppress(Exception):
+                    await self.send(conv_id, "That file offer could not be processed right now. "
+                                             "Please ask for the file again.")
             self._drop_file_consent(token)
             return
         if meta.get("chat_id") != conv_id:

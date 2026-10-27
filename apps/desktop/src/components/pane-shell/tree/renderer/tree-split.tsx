@@ -721,6 +721,25 @@ export function TreeSplit({
     return -1
   }
 
+  // A minimized rail neither donates nor takes (startSash skips it in preview
+  // and commit), so a seam whose leading neighbor is a rail pairs with the
+  // first real track BEHIND the rails: the pane behind a collapsed zone stays
+  // resizable at its own seam and the rail just rides along. With no real
+  // track behind there is nothing to trade pixels with — the seam stays inert.
+  const seamLead = (partner: number): number => {
+    let lead = partner
+
+    while (lead >= 0 && tracks[lead].minimized) {
+      lead -= 1
+
+      while (lead >= 0 && tracks[lead].collapsed) {
+        lead -= 1
+      }
+    }
+
+    return lead
+  }
+
   // Which half of this row a visible child sits in — a minimized zone's rail
   // hugs the app edge it collapsed toward, so its divider stroke must face
   // the content side (left rail → stroke right, right rail → stroke left).
@@ -740,6 +759,7 @@ export function TreeSplit({
     >
       {tracks.map(({ child, collapsed, minimized, narrowCollapsed, sizing, track }, i) => {
         const partner = collapsed ? -1 : seamPartner(i)
+        const lead = partner >= 0 ? seamLead(partner) : -1
         const absorbs = i === absorberIndex
 
         return (
@@ -772,10 +792,10 @@ export function TreeSplit({
           >
             {partner >= 0 && (
               <Sash
-                disabled={minimized || tracks[partner].minimized}
+                disabled={minimized || lead < 0}
                 horizontal={horizontal}
-                onDoubleClick={() => resetBoundary(partner, i)}
-                onPointerDown={e => startSash(partner, i, e)}
+                onDoubleClick={() => resetBoundary(lead, i)}
+                onPointerDown={e => startSash(lead, i, e)}
               />
             )}
             {!narrowCollapsed && (

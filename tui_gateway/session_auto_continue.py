@@ -17,10 +17,14 @@ from .method_ctx import bind_module
 # done this for restart-interrupted sessions since #27856); if it's stale, clear the marker and let the
 # recovered partial transcript speak for itself — the user can ask to continue manually.
 _AUTO_CONTINUE_FRESHNESS_MINUTES_DEFAULT = 15
+# Hard ceiling on auto-continues spent on ONE interruption. ``max_attempts`` bounds *consecutive*
+# runs that produced nothing (crash loop); this bounds the total, so a turn that keeps producing work
+# but keeps getting killed by restarts still hands back to the user instead of respawning forever.
+_AUTO_CONTINUE_MAX_RESUMES_DEFAULT = 6
 
 
-def _auto_continue_config() -> tuple[bool, float, int]:
-    """(enabled, freshness window in seconds, max attempts) from ``desktop.auto_continue`` in config.yaml."""
+def _auto_continue_config() -> tuple[bool, float, int, int]:
+    """(enabled, freshness window in seconds, max attempts, max resumes) from ``desktop.auto_continue``."""
     desktop = _load_cfg().get("desktop")
     cfg = desktop.get("auto_continue") if isinstance(desktop, dict) else None
     cfg = cfg if isinstance(cfg, dict) else {}
@@ -29,7 +33,8 @@ def _auto_continue_config() -> tuple[bool, float, int]:
     except (TypeError, ValueError):
         minutes = float(_AUTO_CONTINUE_FRESHNESS_MINUTES_DEFAULT)
     return (is_truthy_value(cfg.get("enabled"), default=True), max(0.0, minutes) * 60.0,
-            _coerce_int_config_value(cfg.get("max_attempts"), 2, min_value=0))
+            _coerce_int_config_value(cfg.get("max_attempts"), 2, min_value=0),
+            _coerce_int_config_value(cfg.get("max_resumes"), _AUTO_CONTINUE_MAX_RESUMES_DEFAULT, min_value=0))
 
 
 def _session_home(session: dict) -> Path:
@@ -44,6 +49,15 @@ def _retire_turn_marker(session: dict, *keys: str) -> None:
     home = _session_home(session)
     for key in dict.fromkeys((*keys, str(session.get("session_key") or ""))):
         if key:
+            # Keep the diagnostic: when a marker vanishes after a restart, we must be able to see who retired it.
+            try:
+                import sys as _sys
+                _caller = _sys._getframe(1).f_code.co_name
+            except Exception:
+                _caller = "?"
+            import logging as _logging          # bind_module rebinds this module; logger may not be visible
+            _logging.getLogger(__name__).info(
+                "auto-continue: retire marker key=%s caller=%s", key, _caller)
             clear_turn_marker(home, key)
 
 
@@ -77,15 +91,28 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
                     "marker is ownership evidence and the owner clears it", session_key,
                     marker.get("writer_pid"), os.getpid())
         return None
-    enabled, freshness_secs, max_attempts = _auto_continue_config()
+    enabled, freshness_secs, max_attempts, max_resumes = _auto_continue_config()
     age = time.time() - marker["started_at"]
-    if not enabled or age > freshness_secs or marker["attempts"] >= max_attempts:
-        clear_turn_marker(home, session_key)  # stale/disabled/crash-looping: a manual message continues
+    if not enabled or age > freshness_secs:
+        clear_turn_marker(home, session_key)  # stale/disabled: a manual message continues
+        return None
+    if marker["attempts"] >= max_attempts:
+        logger.warning("auto-continue for %s exhausted: %d consecutive continuations produced no progress "
+                       "(max_attempts=%d); clearing the marker, a manual message continues",
+                       session_key, marker["attempts"], max_attempts)
+        clear_turn_marker(home, session_key)
+        return None
+    if marker["resumes"] >= max_resumes:
+        logger.warning("auto-continue for %s exhausted: %d continuations spent on this interruption "
+                       "(max_resumes=%d); clearing the marker, a manual message continues",
+                       session_key, marker["resumes"], max_resumes)
+        clear_turn_marker(home, session_key)
         return None
     if session.get("_auto_continue_scheduled"):
         return None
     session["_auto_continue_scheduled"] = True
     attempt, text = marker["attempts"] + 1, _auto_continue_note(marker["prompt"])
+    resumes = marker["resumes"] + 1
 
     def kickoff() -> None:
         rid = f"__auto_continue__{int(time.time() * 1000)}"
@@ -115,9 +142,11 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
                 session["_auto_continue_scheduled"] = False
             return
         with session["history_lock"]:
-            # Marker inputs read back by _run_prompt_submit: attempt count (crash breaker) and the ORIGINAL prompt (no
-            # nested notes). Set here, not at schedule time, so a bail above leaves nothing for a racing user turn.
+            # Marker inputs read back by _run_prompt_submit: attempt count (crash breaker), total resumes
+            # (hard ceiling) and the ORIGINAL prompt (no nested notes). Set here, not at schedule time, so a
+            # bail above leaves nothing for a racing user turn.
             session["_auto_continue_attempt"], session["_auto_continue_prompt"] = attempt, marker["prompt"]
+            session["_auto_continue_resumes"] = resumes
         try:
             from gateway.warning_notifications import render_notification
             diagnostic = marker.get("notification_category") == "diagnostic"
@@ -134,9 +163,10 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
     if _start_session_work(kickoff, name=f"auto-continue-{sid}") is None:
         session["_auto_continue_scheduled"] = False
         return None
-    logger.info("auto-continue scheduled for session %s (attempt %d, interrupted %.0fs ago, writer pid %s: %s, "
-                "reader pid %s)", session_key, attempt, age, marker.get("writer_pid"), writer_state, os.getpid())
-    return {"attempt": attempt, "interrupted_at": marker["started_at"]}
+    logger.info("auto-continue scheduled for session %s (attempt %d, resume %d, interrupted %.0fs ago, "
+                "writer pid %s: %s, reader pid %s)", session_key, attempt, resumes, age,
+                marker.get("writer_pid"), writer_state, os.getpid())
+    return {"attempt": attempt, "resumes": resumes, "interrupted_at": marker["started_at"]}
 
 
 def _ac_inflight_original(session: dict) -> str:

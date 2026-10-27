@@ -36,6 +36,7 @@ from tui_gateway import server
 from tui_gateway.turn_marker import (
     clear_turn_marker,
     marker_writer_state,
+    note_turn_progress,
     read_turn_marker,
     record_turn_start,
 )
@@ -114,16 +115,30 @@ def turn_env(monkeypatch, tmp_path, marker_home):
 
 
 def test_marker_roundtrip(tmp_path):
-    record_turn_start(tmp_path, "abc", "fix the bug", attempts=1)
+    record_turn_start(tmp_path, "abc", "fix the bug", attempts=1, resumes=3)
 
     marker = read_turn_marker(tmp_path, "abc")
     assert marker is not None
     assert marker["prompt"] == "fix the bug"
     assert marker["attempts"] == 1
+    assert marker["resumes"] == 3
     assert marker["started_at"] == pytest.approx(time.time(), abs=5)
 
     clear_turn_marker(tmp_path, "abc")
     assert read_turn_marker(tmp_path, "abc") is None
+
+
+def test_marker_without_resumes_reads_as_zero(tmp_path):
+    """Markers written by an older build carry no ``resumes`` key — read as 0, not as an error."""
+    path = tmp_path / "desktop" / "interrupted_turns.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(f'{{"abc": {{"prompt": "old marker", "started_at": {time.time()}}}}}')
+
+    marker = read_turn_marker(tmp_path, "abc")
+
+    assert marker is not None
+    assert marker["attempts"] == 0
+    assert marker["resumes"] == 0
 
 
 def test_marker_survives_corrupt_sidecar(tmp_path):
@@ -220,12 +235,13 @@ def test_interrupt_racing_marker_write_cannot_leave_recovery_state(
     session = _session(agent=agent, running=True)
     _patch_local_interrupt(monkeypatch, session)
 
-    def write_after_stop(home, key, prompt, *, attempts=0, auto_continue=True):
+    def write_after_stop(home, key, prompt, *, attempts=0, resumes=0, auto_continue=True):
         response = server._methods["session.interrupt"](
             "stop-during-write", {"session_id": "runtime-race"}
         )
         assert response["result"]["status"] == "interrupted"
-        record_turn_start(home, key, prompt, attempts=attempts, auto_continue=auto_continue)
+        record_turn_start(home, key, prompt, attempts=attempts, resumes=resumes,
+                          auto_continue=auto_continue)
 
     monkeypatch.setattr(server, "record_turn_start", write_after_stop)
 
@@ -654,3 +670,128 @@ def test_second_backend_defers_to_a_live_marker_writer(emits, schedule_env, mark
         if child.poll() is None:
             child.kill()
         child.wait(timeout=10)
+
+
+# ── Attempt budget: only *failed* continuations may charge it ───────────
+#
+# ``attempts`` answers "did resuming keep failing?", not "how many times did the
+# backend die?". A continuation that ran for minutes and was then killed by the
+# NEXT restart is a successful resume; charging it exhausted the budget of a long
+# task after three restarts and it was dropped mid-flight (2026-10-21). A
+# continuation that produces nothing before dying still charges ``attempts``, and
+# every interruption stays bounded by ``resumes`` (never reset).
+
+
+def test_note_turn_progress_resets_attempts_and_keeps_resumes(tmp_path):
+    record_turn_start(tmp_path, "abc", "long task", attempts=2, resumes=2)
+
+    assert note_turn_progress(tmp_path, "abc") == 2
+
+    marker = read_turn_marker(tmp_path, "abc")
+    assert marker["attempts"] == 0        # budget handed back …
+    assert marker["resumes"] == 2         # … but the hard ceiling still counts this interruption
+    assert marker["prompt"] == "long task"
+    # Idempotent: already-reset or vanished markers are a no-op, never an error.
+    assert note_turn_progress(tmp_path, "abc") == 0
+    clear_turn_marker(tmp_path, "abc")
+    assert note_turn_progress(tmp_path, "abc") is None
+
+
+def _interrupted_agent(history_sink, *, produce: bool):
+    """Agent stub whose turn ends interrupted, optionally after appending output."""
+
+    def _run(message, **kwargs):
+        if produce:
+            history_sink.append({"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]})
+            history_sink.append({"role": "tool", "content": "ok"})
+        return {"interrupted": True, "messages": list(history_sink), "final_response": ""}
+
+    return types.SimpleNamespace(
+        session_id="session-key", run_conversation=_run, clear_interrupt=lambda: None
+    )
+
+
+def test_interrupted_turn_with_progress_hands_the_attempt_budget_back(
+    emits, turn_env, marker_home
+):
+    """The 2026-10-21 shape: continuation ran, produced work, was killed by the next restart."""
+    history: list = []
+    agent = _interrupted_agent(history, produce=True)
+    session = _session(agent=agent, running=True)
+    session["history"] = history
+
+    server._run_prompt_submit("rid", "sid", session, "long task")
+
+    marker = read_turn_marker(marker_home, "session-key")
+    assert marker is not None               # process-death evidence kept for the sweep
+    assert marker["attempts"] == 0          # a productive resume does not charge the crash breaker
+
+
+def test_interrupted_turn_without_progress_charges_an_attempt(emits, turn_env, marker_home):
+    """Negative control: a continuation that dies before producing anything IS a failure."""
+    history: list = []
+    agent = _interrupted_agent(history, produce=False)
+    session = _session(agent=agent, running=True)
+    session["history"] = history
+    session["_auto_continue_attempt"] = 1   # this WAS a continuation (marker written with 1)
+    session["_auto_continue_prompt"] = "long task"
+
+    server._run_prompt_submit("rid", "sid", session, "long task")
+
+    marker = read_turn_marker(marker_home, "session-key")
+    assert marker is not None
+    assert marker["attempts"] == 1          # unchanged — the crash-loop breaker still works
+
+
+def test_continuation_turn_carries_resume_count(emits, turn_env, marker_home):
+    seen: list = []
+
+    def _run(message, **kwargs):
+        seen.append(read_turn_marker(marker_home, "session-key"))
+        return {"final_response": "done"}
+
+    agent = types.SimpleNamespace(
+        session_id="session-key", run_conversation=_run, clear_interrupt=lambda: None
+    )
+    session = _session(
+        agent=agent, running=True,
+        _auto_continue_attempt=1, _auto_continue_resumes=4,
+        _auto_continue_prompt="the original prompt",
+    )
+
+    server._run_prompt_submit("rid", "sid", session, server._auto_continue_note("the original prompt"))
+
+    assert [(m["attempts"], m["resumes"]) for m in seen] == [(1, 4)]
+    assert "_auto_continue_resumes" not in session
+
+
+def test_total_resume_ceiling_stops_the_loop(schedule_env, marker_home, monkeypatch):
+    """Productive-but-unkillable turns still hand back to the user at ``max_resumes``."""
+    record_turn_start(marker_home, "session-key", "long task", attempts=0, resumes=6)
+
+    result = server._maybe_schedule_auto_continue("sid", _session(), "session-key")
+
+    assert result is None
+    assert not schedule_env
+    assert read_turn_marker(marker_home, "session-key") is None
+
+
+def test_continuation_reports_both_counters(emits, schedule_env, marker_home):
+    record_turn_start(marker_home, "session-key", "long task", attempts=0, resumes=3)
+
+    result = server._maybe_schedule_auto_continue("sid", _session(), "session-key")
+
+    assert result is not None
+    assert (result["attempt"], result["resumes"]) == (1, 4)
+    assert len(schedule_env) == 1
+
+
+def test_max_resumes_is_configurable(schedule_env, marker_home, monkeypatch):
+    record_turn_start(marker_home, "session-key", "long task", resumes=3)
+    monkeypatch.setattr(
+        server, "_load_cfg",
+        lambda: {"desktop": {"auto_continue": {"max_resumes": 3}}},
+    )
+
+    assert server._maybe_schedule_auto_continue("sid", _session(), "session-key") is None
+    assert read_turn_marker(marker_home, "session-key") is None

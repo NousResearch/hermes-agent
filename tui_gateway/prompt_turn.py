@@ -184,11 +184,13 @@ def _record_turn_marker(session: dict, text: Any, *, auto_continue: bool = True,
     marker_home = _session_home(session)
     marker_key = str(session.get("session_key") or "")
     marker_attempt = int(session.pop("_auto_continue_attempt", 0) or 0)
+    marker_resumes = int(session.pop("_auto_continue_resumes", 0) or 0)
     marker_text = session.pop("_auto_continue_prompt", None) or text
     if isinstance(marker_text, str) and marker_text.strip():
         with session["history_lock"]:
             session["_active_turn_marker_key"] = marker_key
         record_turn_start(marker_home, marker_key, marker_text, attempts=marker_attempt,
+                          resumes=marker_resumes,
                           auto_continue=auto_continue,
                           **({"notification_category": "diagnostic"}
                              if notification_category == "diagnostic" else {}))
@@ -197,6 +199,56 @@ def _record_turn_marker(session: dict, text: Any, *, auto_continue: bool = True,
         if marker_cancelled:
             clear_turn_marker(marker_home, marker_key)
     return marker_key
+
+
+def _turn_made_progress(session: dict, st: _TurnRun) -> bool:
+    """Did this turn produce anything at all — a message row, a tool call, a compression?
+
+    The auto-continue attempt counter exists to stop a *crash loop*, so it may only count runs that
+    died on their feet. A continuation killed after minutes of work by the NEXT backend restart did
+    its job and must not spend that budget (`turn_marker.note_turn_progress`). Undecidable cases
+    answer True: one extra resume is cheaper than abandoning a live task."""
+    try:
+        with session["history_lock"]:
+            history = session.get("history") or []
+        baseline = len(st.history or ())
+        if len(history) > baseline:
+            return True
+        messages = getattr(st.agent, "_session_messages", None)
+        if isinstance(messages, list) and len(messages) > baseline:
+            return True
+        # Compression only runs after a lot of fresh output — and it shrinks the transcript, so the
+        # length comparison above can read as "no progress" on exactly the turns that worked hardest.
+        compressor = getattr(st.agent, "context_compressor", None)
+        if (isinstance(st.compression_count, int)
+                and int(getattr(compressor, "compression_count", 0) or 0) > st.compression_count):
+            return True
+        return False
+    except Exception:
+        return True
+
+
+def _keep_interrupted_marker(session: dict, st: _TurnRun, status: str, where: str) -> None:
+    """Keep the crash marker of a process-death interrupt, handing back the attempt budget when this
+    turn actually did work.
+
+    Without the reset a long task is abandoned mid-flight as "crash-looping" whenever restarts keep
+    landing inside its turn: continuations that ran for minutes count as failures, so a couple of
+    backend restarts exhaust ``max_attempts`` (2026-10-21: three restarts from a sibling session
+    killed one long turn 2/2 and it was dropped). Total resumes per interruption stay bounded by
+    ``desktop.auto_continue.max_resumes``."""
+    import logging as _logging          # bind_module rebinds this module into server globals; logger may not be visible
+    _logger = _logging.getLogger(__name__)
+    _logger.info("auto-continue: keeping crash marker for %s (%s, status=%s)", st.marker_key, where, status)
+    try:
+        if not _turn_made_progress(session, st):
+            return
+        previous = note_turn_progress(_session_home(session), st.marker_key)
+        if previous:
+            _logger.info("auto-continue: marker %s attempts %d→0 (this interrupted turn made progress)",
+                         st.marker_key, previous)
+    except Exception:
+        _logger.debug("auto-continue: progress bookkeeping failed for %s", st.marker_key, exc_info=True)
 
 
 @dataclasses.dataclass(slots=True)
@@ -974,8 +1026,15 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
             "text": raw if isinstance(raw, str) else str(raw),
             **({"error": str(error_value or raw)} if status == "error" else {})})
         st.receipt_committed = True
-    if st.receipt_committed:
+    if st.receipt_committed and status != "interrupted":
+        # A graceful shutdown interrupts the turn as status="interrupted"; retiring the marker here
+        # would destroy the only evidence that the session was cut off, and an unattended host would
+        # never resume it (#127919 / #135286). A user-initiated stop already retires the marker in
+        # methods_session_interrupt.py (that path must never be auto-resumed), so only
+        # "interrupted by process death/shutdown" keeps its marker here.
         _retire_turn_marker(session, st.marker_key)
+    elif st.receipt_committed:
+        _keep_interrupted_marker(session, st, status, "terminal frame")
     return payload, raw, status
 
 
@@ -1001,7 +1060,13 @@ def _recover_turn_exception(sid: str, session: dict, st: _TurnRun, e: BaseExcept
             logger.exception("hosted room terminal receipt commit failed")
     try:
         # Same terminal error frame shape as the returned-error path.
-        _emit_terminal_turn_error(sid, session, e, retire_marker=st.receipt_committed)
+        # A cancelled (shutdown/restart-interrupted) turn must not retire its marker either —
+        # otherwise nothing is left to resume and every restart needs a manual nudge
+        # (#135286 / #127919). User-initiated stops still retire in methods_session_interrupt.
+        retire_marker = st.receipt_committed and not session.get("_turn_cancel_requested")
+        _emit_terminal_turn_error(sid, session, e, retire_marker=retire_marker)
+        if not retire_marker:
+            _keep_interrupted_marker(session, st, "error", "exception path")
         st.error_retained = True
         st.error_detail = _turn_failure_detail(e, type(e).__name__, st.prompt_text)
     except Exception as emit_exc:
@@ -1202,12 +1267,17 @@ def _run_prompt_submit(
                     status, st.error_retained, time.monotonic() - _turn_started_monotonic,
                     st.error_detail)
                 # Backstop for turns that never reached a terminal frame.
-                if st.receipt_committed:
+                # Same rule as the terminal-frame path: a turn interrupted by shutdown/kill keeps
+                # its marker, otherwise nothing can be resumed after a restart (#135286 / #127919).
+                # User-initiated stops still retire via methods_session_interrupt.
+                if st.receipt_committed and status != "interrupted":
                     _retire_turn_marker(session, st.marker_key)
                     with session["history_lock"]:
                         if session.get("_active_turn_marker_key") == st.marker_key:
                             session.pop("_active_turn_marker_key", None)
                         session.pop("_hosted_room_task", None)
+                elif st.receipt_committed:
+                    _keep_interrupted_marker(session, st, status, "turn-thread end")
                 session.pop("_auto_continue_scheduled", None)
                 _emit_settled_session_info(sid, session, st.agent)
             finally:

@@ -98,21 +98,39 @@ export function restoreUserProxyEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return env
 }
 
+/**
+ * Every value set under ``name`` in any letter case. Python's urllib lowercases env names on
+ * every OS, and Windows env names are case-insensitive, so `Https_Proxy` / `No_Proxy` are real
+ * settings even though a copied `process.env` is an ordinary, case-sensitive object.
+ */
+function valuesAnyCase(env: NodeJS.ProcessEnv, name: string): string[] {
+  return Object.keys(env)
+    .filter((key: string): boolean => key.toLowerCase() === name)
+    .map((key: string): string => env[key] ?? '')
+}
+
 /** The user's own NO_PROXY entries, extended (never replaced) by the local bypass and DIRECT update hosts. */
-function noProxyEnv(userEnv: NodeJS.ProcessEnv, direct: string[]): { env: NodeJS.ProcessEnv; added: string[] } {
-  const user = `${userEnv.no_proxy ?? ''},${userEnv.NO_PROXY ?? ''}`
-  const entries = user.split(',').map((entry: string): string => entry.trim())
+function noProxyEnv(
+  userEnv: NodeJS.ProcessEnv,
+  direct: string[],
+  isWindows: boolean
+): { env: NodeJS.ProcessEnv; added: string[] } {
+  const userValues = valuesAnyCase(userEnv, 'no_proxy')
+  const entries = userValues.join(',').split(',').map((entry: string): string => entry.trim())
   const value = [...new Set([...entries.filter(Boolean), ...LOCAL_BYPASS, ...direct])].join(',')
   const env: NodeJS.ProcessEnv = {}
   const added: string[] = []
 
   for (const key of NO_PROXY_KEYS) {
     env[key] = value
+    // On Windows a `No_Proxy` IS `NO_PROXY` to the child and to the relaunched app's restore, so
+    // it is saved like an exact match; marked as added, the restore would delete the user's value.
+    const own = userEnv[key] ?? (isWindows ? valuesAnyCase(userEnv, 'no_proxy')[0] : undefined)
 
-    if (userEnv[key] === undefined) {
+    if (own === undefined) {
       added.push(key)
     } else {
-      env[`${SAVED_PREFIX}${key}`] = userEnv[key]
+      env[`${SAVED_PREFIX}${key}`] = own
     }
   }
 
@@ -123,12 +141,14 @@ export async function systemProxyEnv(
   env: NodeJS.ProcessEnv,
   resolveProxy: (url: string) => Promise<string>,
   hosts: string[] = UPDATE_HOSTS,
-  note: (message: string) => void = () => {}
+  note: (message: string) => void = () => {},
+  isWindows: boolean = process.platform === 'win32'
 ): Promise<NodeJS.ProcessEnv> {
   // A value an earlier update marked as the Desktop's is never the user's own.
   const userEnv = restoreUserProxyEnv({ ...env })
+  const explicitNames = new Set(PROXY_ENV_KEYS.map((key: string): string => key.toLowerCase()))
 
-  if (PROXY_ENV_KEYS.some((key: string): boolean => Boolean(userEnv[key]?.trim()))) {
+  if ([...explicitNames].some((name: string): boolean => valuesAnyCase(userEnv, name).some(value => value.trim()))) {
     return {}
   }
 
@@ -161,7 +181,7 @@ export async function systemProxyEnv(
 
   const proxy = routed[0].proxy as string
   const direct = answers.filter(answer => answer.kind === 'DIRECT').map(answer => answer.host)
-  const noProxy = noProxyEnv(userEnv, direct)
+  const noProxy = noProxyEnv(userEnv, direct, isWindows)
 
   return {
     ...Object.fromEntries(PROXY_SET_KEYS.map((key: string) => [key, proxy])),

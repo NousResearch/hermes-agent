@@ -84,4 +84,21 @@ describe('update child proxy env from the system proxy (#123387)', () => {
 
     expect(next.HTTPS_PROXY).toBe('http://10.0.0.42:8080')
   })
+
+  it('reads proxy settings in any letter case, as urllib and Windows do', async () => {
+    const github = pac({ 'github.com': 'PROXY 10.0.0.7:7890' })
+
+    expect(await systemProxyEnv({ Https_Proxy: 'http://explicit.corp:3128' }, github, ['github.com'])).toEqual({})
+
+    // Windows hands the child one variable per case-insensitive name: the user's No_Proxy entries
+    // must survive in the value the update sets, and come back alone after the relaunch restore.
+    const user = { No_Proxy: 'corp.internal' }
+    const env = await systemProxyEnv(user, github, ['github.com'], () => {}, true)
+    const restored = restoreUserProxyEnv({ ...user, ...env })
+
+    expect(env.NO_PROXY?.split(',')).toContain('corp.internal')
+    expect(env.HERMES_UPDATE_SYSTEM_PROXY?.split(',')).not.toContain('NO_PROXY')
+    expect(new Set(Object.entries(restored).filter(([key]) => key.toLowerCase() === 'no_proxy').map(([, v]) => v)))
+      .toEqual(new Set(['corp.internal']))
+  })
 })

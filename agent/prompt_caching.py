@@ -150,9 +150,12 @@ def is_qwen_model(model: str) -> bool:
 # seconds until they finish and never collect the retention, so they stay on 5m.
 # Measured on one install (2 days of per-call logs): 63% of interactive cache-write tokens
 # were cold re-writes after a 5–60 min idle gap (1h saves ~42% of write cost there), while
-# 1h on subagents/cron would have cost ~49% more.
+# 1h on subagents/cron would have cost ~49% more. ``auto`` is the shipped default
+# (hermes_cli/config_defaults.py). ``api_server`` is the API server's platform label and
+# ``curator`` the background skill curator (tens of back-to-back calls); both are machine-paced.
 AUTO_CACHE_TTL = "auto"
-MACHINE_PACED_SOURCES = frozenset({"subagent", "cron", "oneshot", "webhook", "kanban", "api", "tool", "batch"})
+MACHINE_PACED_SOURCES = frozenset({
+    "subagent", "cron", "oneshot", "webhook", "kanban", "api", "api_server", "tool", "batch", "curator"})
 
 
 def auto_cache_ttl_for_source(source: str | None) -> str:

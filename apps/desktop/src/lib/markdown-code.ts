@@ -273,6 +273,26 @@ function codeSignals(body: string): CodeSignals {
   }
 }
 
+// A complete Markdown document with YAML frontmatter is structured text even
+// when the frontmatter contains list-valued fields. Without this signal, the
+// generic bullet-list heuristic below unwraps note previews such as inventory
+// records, causing their YAML and body to be rendered as ordinary Markdown.
+function hasYamlFrontmatter(body: string): boolean {
+  const lines = body.trim().split('\n')
+
+  if (lines[0]?.trim() !== '---') {
+    return false
+  }
+
+  const closingIndex = lines.findIndex((line, index) => index > 0 && line.trim() === '---')
+
+  if (closingIndex < 2) {
+    return false
+  }
+
+  return lines.slice(1, closingIndex).some(line => CONFIG_SEPARATOR_LINE_RE.test(line.trim()))
+}
+
 // A sentence-ending punctuation mark followed by whitespace or end-of-line.
 // Real wrapped prose has these; config/structured listings almost never do.
 const SENTENCE_PUNCTUATION_RE = /[.!?](?:\s|$)/
@@ -383,6 +403,10 @@ export function isLikelyProseCodeBlock(language: string | undefined, code: strin
   const signals = codeSignals(code || '')
 
   if (!signals.trimmed || signals.codeSignals >= 3) {
+    return false
+  }
+
+  if (hasYamlFrontmatter(signals.trimmed)) {
     return false
   }
 

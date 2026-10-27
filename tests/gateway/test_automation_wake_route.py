@@ -286,6 +286,36 @@ async def test_thread_wake_rebuilt_from_the_session_key_is_the_committed_route(t
 
 
 @pytest.mark.asyncio
+async def test_thread_wake_rebuild_keeps_its_parent_channel_profile_route(tmp_path, monkeypatch):
+    """``match_profile_route`` matches a ``chat_id`` route against a thread's parent channel, so a
+    rebuilt source that dropped ``parent_chat_id`` matches no profile route at all and the wake
+    would run under the wrong profile. The anchor has to survive the rebuild for that match to hold."""
+    from gateway.profile_routing import ProfileRoute, match_profile_route
+    runner, authority, adapter = await _thread_owner(tmp_path, monkeypatch)
+    try:
+        route = runner.session_store._generate_session_key(adapter.build_source(**_THREAD))
+        routes = [ProfileRoute(name='thread-parent', platform='discord', profile='code', chat_id='800')]
+        entry = runner.session_store.lookup_by_session_key(route)
+        assert entry is not None
+        committed = entry.origin
+        assert committed is not None
+        assert match_profile_route(routes, platform='discord', guild_id=committed.guild_id,
+                                   chat_id=committed.chat_id, thread_id=committed.thread_id,
+                                   parent_chat_id=committed.parent_chat_id,
+                                   user_id=committed.user_id) is not None
+        _drop_the_stored_origin(runner, route)
+        rebuilt = runner._build_process_event_source(_thread_completion_event(
+            route, runner.session_store.peek_session_id(route)))
+        assert rebuilt is not None
+        assert match_profile_route(routes, platform='discord', guild_id=rebuilt.guild_id,
+                                   chat_id=rebuilt.chat_id, thread_id=rebuilt.thread_id,
+                                   parent_chat_id=rebuilt.parent_chat_id,
+                                   user_id=rebuilt.user_id) is not None
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
 async def test_thread_wake_rebuild_reports_the_parent_the_event_carries(tmp_path, monkeypatch):
     """The rebuild copies the anchors, it never derives them: a parent the event names is reported
     verbatim, so a route whose parent really drifted stays visibly drifted rather than silently

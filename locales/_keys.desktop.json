@@ -3550,6 +3550,7 @@
     "settings.gateway.webAccess.pendingOn",
     "settings.gateway.webAccess.restartBusy",
     "settings.gateway.webAccess.restartFailed",
+    "settings.gateway.webAccess.restartFailedBecause",
     "settings.gateway.webAccess.restartGateway",
     "settings.gateway.webAccess.restartNeeded",
     "settings.gateway.webAccess.running",

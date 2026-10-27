@@ -18,9 +18,10 @@ from utils import normalize_proxy_env_vars
 
 from agent.anthropic_credentials import _is_oauth_token, anthropic_route_is_oauth, is_native_anthropic_host
 from agent.anthropic_endpoints import (
-    _base_url_needs_context_1m_beta, _is_azure_anthropic_endpoint, _is_kimi_coding_endpoint,
-    _is_minimax_anthropic_endpoint, _is_nous_portal_endpoint, _is_opencode_endpoint,
-    _is_third_party_anthropic_endpoint, _model_name_is_kimi_family, _normalize_base_url_text,
+    _base_url_needs_context_1m_beta, _is_azure_anthropic_endpoint, _is_glm_anthropic_endpoint,
+    _is_kimi_coding_endpoint, _is_minimax_anthropic_endpoint, _is_nous_portal_endpoint,
+    _is_opencode_endpoint, _is_third_party_anthropic_endpoint, _glm_model_has_token,
+    _model_name_is_glm_family, _model_name_is_kimi_family, _normalize_base_url_text,
     _requires_bearer_auth,
 )
 from agent.anthropic_message_convert import (
@@ -69,6 +70,11 @@ def _require_sdk(purpose: str, verb: str = "Install it with"):
 
 
 logger = logging.getLogger(__name__)
+
+# GLM-5.2/5.3 alias spellings (official dotted ids plus relay forms that drop the dots:
+# Fireworks ``glm-5p2``, ``zai-org-glm-5-2``…).
+_GLM_5_3_TOKENS = ("glm-5.3", "glm-5-3", "glm-5p3")
+_GLM_5_2_TOKENS = ("glm-5.2", "glm-5-2", "glm-5p2") + _GLM_5_3_TOKENS
 
 THINKING_BUDGET = {"xhigh": 32000, "high": 16000, "medium": 8000, "low": 4000}
 # Hermes effort -> Anthropic adaptive-thinking effort (output_config.effort). 4.7+ exposes
@@ -127,6 +133,9 @@ _ANTHROPIC_OUTPUT_LIMITS = {
     "claude-opus-4": 32_000, "claude-sonnet-4": 64_000, "claude-3-7-sonnet": 128_000,
     "claude-3-5-sonnet": 8_192, "claude-3-5-haiku": 8_192, "claude-3-opus": 4_096,
     "claude-3-sonnet": 4_096, "claude-3-haiku": 4_096, "minimax": 131_072, "qwen3": 65_536,
+    # GLM Coding Plan slugs. Keys use the hyphen-normalized form ``_get_anthropic_max_output``
+    # matches on (``glm-5.2[1m]`` -> ``glm-5-2[1m]``).
+    "glm-5-3": 128_000, "glm-5-2": 128_000, "glm-5": 64_000, "glm-4": 64_000,
 }
 # Unknown models get the highest current limit: future models are unlikely to have *less*.
 _ANTHROPIC_DEFAULT_OUTPUT_LIMIT = 128_000
@@ -167,6 +176,37 @@ def _resolve_anthropic_messages_max_tokens(requested, model: str, context_length
         f"Anthropic Messages adapter requires a positive max_tokens value for "
         f"model {model!r}; got {requested!r} and no model default resolved."
     )
+
+
+def _glm_thinking_kwargs(reasoning_config: dict[str, Any], model: str) -> dict[str, Any]:
+    """GLM's Anthropic Messages wire (GLM Coding Plan): a ``thinking.type`` toggle plus
+    ``output_config.effort`` for GLM-5.2/5.3 depth — NOT the manual ``budget_tokens`` contract
+    (docs.z.ai/devpack/latest-model; the endpoint serves only Coding Plan slugs, GLM-5.3 /
+    GLM-5.3-Flash today). GLM-5.3 always reasons: ``disabled`` is answered with ``enabled`` +
+    ``low`` because the server rejects the disable; GLM-5.2 accepts a real ``disabled`` (its
+    ``nothink``). An unset effort leaves the server default (``max``) in charge."""
+    from agent.reasoning_effort import (
+        GLM52_EFFORTS, GLM52_OVERRIDES, GLM53_ANTHROPIC_EFFORTS, GLM53_ANTHROPIC_OVERRIDES,
+        clamp_effort, requested_effort,
+    )
+    is_53 = _glm_model_has_token(model, _GLM_5_3_TOKENS)
+    is_52 = is_53 or _glm_model_has_token(model, _GLM_5_2_TOKENS)
+    if reasoning_config.get("enabled") is False or requested_effort(reasoning_config) == "none":
+        if is_53:
+            return {"thinking": {"type": "enabled"}, "output_config": {"effort": "low"}}
+        return {"thinking": {"type": "disabled"}}
+    if is_52:
+        effort = requested_effort(reasoning_config)
+        if effort is None:
+            return {"thinking": {"type": "enabled"}}  # server default (max)
+        clamped = clamp_effort(
+            effort,
+            GLM53_ANTHROPIC_EFFORTS if is_53 else GLM52_EFFORTS,
+            GLM53_ANTHROPIC_OVERRIDES if is_53 else GLM52_OVERRIDES,
+        )
+        return {"thinking": {"type": "enabled"}, "output_config": {"effort": clamped}}
+    # Older GLM families (4.5–5.1): plain thinking toggle, no effort knob.
+    return {"thinking": {"type": "enabled"}}
 
 
 def _supports_adaptive_thinking(model: str) -> bool:
@@ -619,6 +659,11 @@ def _thinking_kwargs(reasoning_config: dict[str, Any], model: str, effective_max
     manual-only compat endpoints (MiniMax) get budget_tokens. Haiku through 4.5 gets none. On
     4.7+ ``thinking.display`` defaults to "omitted", hiding the reasoning Hermes shows in its CLI,
     so "summarized" is requested to keep the activity feed populated."""
+    if _model_name_is_glm_family(model):
+        # GLM Coding Plan wire: thinking toggle + output_config.effort (never budget_tokens).
+        # Handles its own disable semantics: 5.3 converts disabled -> enabled+low (the server
+        # rejects the disable), 5.2 sends a real disabled (its "nothink").
+        return _glm_thinking_kwargs(reasoning_config, model)
     if reasoning_config.get("enabled") is False:
         # Adaptive models think by DEFAULT, so omitting the parameter is not a disable — the user
         # silently keeps paying. Mandatory-thinking models 400 on the disable, so they keep the

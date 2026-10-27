@@ -122,3 +122,29 @@ def test_marker_from_a_seedless_image_does_not_block_a_later_seed(payload_cache,
     seedless.rename(seed)
     packages.uv_cache_dir()
     assert (payload_cache / "archive-v0" / "bucket" / "module.py").is_file()
+
+
+@pytest.mark.parametrize("relpath", ["sdists-v9/pypi/pkg/1.0/revision.http", "top-level.bin"])
+def test_merge_replaces_a_stale_file_of_the_same_size(payload_cache, relpath):
+    """A failed sdist build leaves its own ``revision.http`` in the machine cache. The seed's copy
+    points at the revision holding the built wheel and has the same size; keeping the stale one
+    made the next sync rebuild the sdist, which fails on hosts without a compiler toolchain."""
+    seed_file = paths.store_root().parent / "uv-cache" / relpath
+    seed_file.parent.mkdir(parents=True, exist_ok=True)
+    seed_file.write_bytes(b"revision-built")
+    stale = payload_cache / relpath
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_bytes(b"revision-stale")
+
+    packages.uv_cache_dir()
+    assert stale.read_bytes() == b"revision-built"
+
+
+def test_merge_leaves_an_identical_file_in_place(payload_cache):
+    done = payload_cache / "archive-v0" / "bucket" / "module.py"
+    done.parent.mkdir(parents=True)
+    done.write_text("seeded = True\n", encoding="utf-8")
+    inode = done.stat().st_ino
+
+    packages.uv_cache_dir()
+    assert done.stat().st_ino == inode

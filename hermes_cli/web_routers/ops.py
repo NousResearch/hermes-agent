@@ -325,7 +325,7 @@ async def stop_gateway(profile: Optional[str] = None, interrupt: bool = False):
 # --- Credential pool (auth.json -> credential_pool.<provider>[]): secrets are
 # redacted on read; only the agent sees raw values at session start.
 #
-# load_pool() may hit the network synchronously (Copilot token exchange over raw
+# load_pool() may hit the network synchronously (a provider token exchange over raw
 # urllib, whose timeout does NOT bound DNS resolution) — on a networkless host it
 # once froze the uvicorn loop for 17 minutes. Every pool load below runs off-loop.
 

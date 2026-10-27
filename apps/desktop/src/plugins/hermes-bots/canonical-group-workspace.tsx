@@ -1,4 +1,4 @@
-import { Button, host } from '@hermes/plugin-sdk'
+import { Button, host, randomUuid } from '@hermes/plugin-sdk'
 import { type ClipboardEvent, type DragEvent, useEffect, useRef, useState } from 'react'
 
 import { type CanonicalDriverActivity, CanonicalGroupWorkingLine, canonicalMemberPhases } from './canonical-group-activity'
@@ -164,11 +164,11 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     mutate(() => actCanonicalGroup(binding, action, choice))
 
   const rename = (name: string) =>
-    void mutate(() => canonicalGroupRequest(binding, 'groups.rename', { room_id: binding.roomId, event_id: crypto.randomUUID(), name }))
+    void mutate(() => canonicalGroupRequest(binding, 'groups.rename', { room_id: binding.roomId, event_id: randomUuid(), name }))
 
   // Rejects so ConfirmDialog stays open with the error; a disbanded room no longer reads back, so leave it.
   const end = async () => {
-    await canonicalGroupRequest(binding, 'groups.disband', { room_id: binding.roomId, cancel_id: crypto.randomUUID() })
+    await canonicalGroupRequest(binding, 'groups.disband', { room_id: binding.roomId, cancel_id: randomUuid() })
 
     if (alive.current) {onBack?.()}
     forgetCanonicalGroup(binding)
@@ -191,7 +191,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
 
   return <section className="flex h-full min-h-0 flex-col gap-3 p-3">
     <CanonicalGroupHeader busy={busy} canStop={!!state?.driver_status} onBack={onBack} onDisband={end} onRename={rename}
-      onStop={() => void mutate(() => canonicalGroupRequest(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: crypto.randomUUID() }))} phases={phases} room={state?.room} />
+      onStop={() => void mutate(() => canonicalGroupRequest(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: randomUuid() }))} phases={phases} room={state?.room} />
     {readError && <div role="alert">{readError}<Button onClick={() => void refresh().catch(e => setReadError(String(e)))}>{labels.refresh}</Button></div>}
     {error && <div role="alert">{error}</div>}
     {state && !state.driver_status && <p>{labels.driverUnavailable}</p>}

@@ -46,7 +46,7 @@ description: "调试 Node"
 
 - Node 测试失败，需要查看中间状态
 - ui-tui 崩溃或行为异常，需要在渲染前检查 React/Ink 状态
-- tui_gateway 子进程（`_SlashWorker`、PTY bridge workers）行为异常
+- TUI 的 Node 侧行为异常（`tui_gateway` 及其 `_SlashWorker`、PTY bridge workers 是 Python 进程，请使用 `python-debugpy`）
 - 需要检查闭包中某个值，而不打补丁就无法用 `console.log` 获取
 - 性能分析：附加到运行中的进程以采集 CPU profile 或堆快照
 
@@ -90,7 +90,7 @@ node --inspect-brk $(which tsx) path/to/script.ts
 
 ## 附加到运行中的进程
 
-当进程已在运行时（例如长期运行的开发服务器或 TUI gateway）：
+当你自己启动的 Node 进程已在运行、且你知道它的 PID 时（例如长期运行的开发服务器）。`hermes --tui` 请参阅下文“调试运行中的 `hermes --tui`”。
 
 ```bash
 # 1. Send SIGUSR1 to enable the inspector on an existing process
@@ -99,8 +99,8 @@ kill -SIGUSR1 <pid>
 
 # 2. Attach the debugger CLI
 node inspect -p <pid>
-# or by URL
-node inspect ws://127.0.0.1:9229/<uuid>
+# or by host:port (node inspect does not take the ws:// URL; it would run it as a script)
+node inspect 127.0.0.1:9229
 ```
 
 从一开始就启动带 inspector 的进程：
@@ -219,22 +219,27 @@ cont
 
 ### 调试运行中的 `hermes --tui`
 
-TUI 由 Python CLI 启动 Node。最简路径：
+launcher 以 Node 子进程运行 TUI（`node --expose-gc <tui-dir>/dist/entry.js`）。不要用 `pgrep -f … | head -1` 加 `kill -SIGUSR1` 去找它：机器上所有 TUI 都会匹配，命令行中包含该模式的 `bash -c` shell（即 agent 终端执行查找命令的那个 shell）同样会匹配，因此你可能给错误的进程发信号或附加到错误的进程。应改为让本次启动一开始就打开 inspector。当 `$HERMES_NODE` 指向一个可执行文件时，launcher 会通过它运行 Node，因此一个小包装脚本即可只给本次 TUI 的 Node 进程加上 `--inspect-brk`：
 
 ```bash
-# 1. Launch TUI
-hermes --tui &
-TUI_PID=$(pgrep -f 'ui-tui/dist/entry' | head -1)
+# 1. Wrapper: run the real node with the inspector on an OS-assigned loopback port
+REAL_NODE=${HERMES_NODE:-$(command -v node)}
+mkdir -p ~/.hermes/cache/scratch
+printf '#!/bin/sh\nunset HERMES_NODE\nexec "%s" --inspect-brk=127.0.0.1:0 "$@"\n' "${REAL_NODE:?node not found}" > ~/.hermes/cache/scratch/node-inspect-tui.sh
+chmod 700 ~/.hermes/cache/scratch/node-inspect-tui.sh
 
-# 2. Enable inspector on that Node PID
-kill -SIGUSR1 "$TUI_PID"
-
-# 3. Find the WS URL
-curl -s http://127.0.0.1:9229/json/list | jq -r '.[0].webSocketDebuggerUrl'
-
-# 4. Attach
-node inspect ws://127.0.0.1:9229/<uuid>
+# 2. Launch the TUI through it, in its own terminal (in Hermes: terminal(background=true, pty=true))
+HERMES_NODE=~/.hermes/cache/scratch/node-inspect-tui.sh hermes --tui
 ```
+
+在 UI 绘制之前，该终端会打印 `Debugger listening on ws://127.0.0.1:<port>/<uuid>`，TUI 会等待调试器。在另一个终端用该端口附加（不是 `ws://` URL）：
+
+```bash
+node inspect 127.0.0.1:<port>
+# debug> set breakpoints with sb(...), then cont
+```
+
+如果没有 `Debugger listening` 这一行，说明本次启动没有经过包装脚本：launcher 先重建了 checkout 中的 TUI（该路径使用构建环境的 `node`；先正常运行一次 `hermes --tui`，退出后再重新启动），或使用了 `--dev`，或打包的 launcher（Nix、Termux）自行设置了 `HERMES_NODE`。包装脚本使用的 `node` 必须满足 TUI 的 `engines.node` 要求；包装脚本会 unset `HERMES_NODE`，因此 gateway 以及 TUI 启动的其他进程都会正常运行。该端口仅在本次启动存活期间有效；请重新启动，而不是重新附加到旧端口号。任何能连接到该端口的程序都能在 TUI 内执行代码（包括读取 provider 密钥），因此用完后请退出 TUI 并删除包装脚本。
 
 在 TUI 窗口中交互（输入内容）会继续推进执行；调试器可以在任意 `sb(...)` 处暂停它。
 
@@ -283,9 +288,9 @@ require('fs').writeFileSync('/tmp/heap.heapsnapshot', chunks.join(''));
 
 2. **`--inspect` 与 `--inspect-brk` 的区别。** `--inspect` 启动 inspector 但不暂停；如果附加太晚，脚本会在你设置第一个断点之前就跑完。需要在任何代码运行前设置断点时，使用 `--inspect-brk`。
 
-3. **端口冲突。** 默认端口为 `9229`。如果多个 Node 进程同时开启 inspector，传入 `--inspect=0`（随机端口）并从 `/json/list` 读取实际 URL：
+3. **端口冲突。** 默认端口为 `9229`。如果多个 Node 进程同时开启 inspector，传入 `--inspect=127.0.0.1:0`（由操作系统分配端口），并从该进程打印到 stderr 的 `Debugger listening on ws://127.0.0.1:<port>/…` 行读取端口。`/json/list` 只描述你所查询的那个端点，而不是宿主机上的所有目标：
    ```bash
-   curl -s http://127.0.0.1:9229/json/list   # lists all inspectable targets on the host
+   curl -s http://127.0.0.1:<port>/json/list   # targets behind this one port
    ```
 
 4. **子进程。** 父进程上的 `--inspect` 不会 inspect 其子进程。使用 `NODE_OPTIONS='--inspect-brk' node parent.js` 将其传播到每个子进程；注意它们都需要唯一端口（继承 `NODE_OPTIONS='--inspect'` 时 Node 会自动递增端口号）。
@@ -300,7 +305,7 @@ require('fs').writeFileSync('/tmp/heap.heapsnapshot', chunks.join(''));
 
 建立调试会话后，验证以下内容：
 
-- [ ] `curl -s http://127.0.0.1:9229/json/list` 返回的正是预期目标
+- [ ] `curl -s http://127.0.0.1:<port>/json/list`（使用进程打印的端口）返回的正是预期目标
 - [ ] 第一个断点确实命中（若未命中，可能是漏加了 `--inspect-brk`，或附加时执行已完成）
 - [ ] 暂停时的源码列表显示正确文件（不匹配 = sourcemap 问题，见陷阱 1）
 - [ ] 在 `repl` 中执行 `exec process.pid` 返回你想附加的 PID

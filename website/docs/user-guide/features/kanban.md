@@ -88,10 +88,10 @@ login. A login that cannot see the repository is rejected with
 retryable infra failure.
 
 Gitea authentication is optional for public repositories. Private instances must
-set `GITEA_TOKEN` in the **assignee profile's** `.env` (or configured secret
-source), with read access to the repository, pull request, branch protection and
-commit statuses. Tokens are sent only to the exact PR origin, are stripped on
-cross-origin redirects, and are never persisted in receipts or error details.
+set `GITEA_TOKEN` in the **assignee profile's** `.env`, with read access to the
+repository, pull request, branch protection and commit statuses. Tokens are
+sent only to the exact PR origin, are stripped on cross-origin redirects, and are
+never persisted in receipts or error details.
 The instance URL comes from the exact completion contract; no token or host is
 hard-coded.
 

@@ -230,6 +230,11 @@ _SPECS = [
              help="Initial card status. Use 'blocked' for cards "
                   "that require immediate human ops (R3 gate) "
                   "to skip the brief running-to-blocked transition."),
+        _arg("--reasoning-effort",
+             help="Override the worker's reasoning effort for this task. "
+                  "Accepts 'none' (thinking off) or one of the validated levels "
+                  "(minimal, low, medium, high, xhigh, max, ultra). "
+                  "Omit to inherit the profile's own setting."),
         _json_flag(help="Emit JSON output"),
     ], help="Create a new task"),
     _cmd("swarm", [

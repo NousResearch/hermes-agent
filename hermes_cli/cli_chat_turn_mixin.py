@@ -23,6 +23,12 @@ from agent.i18n import t
 from hermes_cli.cli_agent_setup_mixin import _retire_agent
 
 
+def is_wait_interrupt_metadata(text) -> bool:
+    """Whether *text* is the local "waiting for model response" cancellation sentinel."""
+    from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+    return isinstance(text, str) and text.strip().startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX)
+
+
 class CLIChatTurnMixin:
     """chat() and its per-turn phase helpers."""
 
@@ -541,13 +547,26 @@ class CLIChatTurnMixin:
         """
         from cli import _DIM, _RST, _cprint, _suspend_output_history
         response = turn.result.get("final_response", "") if turn.result else ""
+        # A turn cancelled before any assistant bytes streamed returns the local
+        # "Operation interrupted: waiting for model response (...)" timing line as
+        # final_response. It is cancellation metadata, not prose: the gateway,
+        # ACP and TUI already suppress it, so the CLI must not render, speak, or
+        # convert it into an error panel either. Real partial text is untouched.
+        _wait_interrupt_metadata = bool(
+            turn.result and turn.result.get("interrupted")
+            and is_wait_interrupt_metadata(response))
+        if _wait_interrupt_metadata:
+            response = ""
         if getattr(turn, "mute_notification_reply", False):
             pending, _ = self._chat_resolve_interrupt(turn, agent_thread, interrupt_msg, response)
             if pending:
                 self._pending_input.put(pending)
             return None
         # "failed"/"partial" with an empty final_response: no usable answer.
-        if turn.result and (turn.result.get("failed") or turn.result.get("partial")) and not response:
+        # A genuine failure still surfaces; only the metadata-only "partial" is not an error.
+        if turn.result and not response and (
+                turn.result.get("failed")
+                or (turn.result.get("partial") and not _wait_interrupt_metadata)):
             from hermes_cli.cli_chat_error_copy import chat_error_response
             response = chat_error_response(
                 str(turn.result.get("error") or t("cli.chat.unknown_error")),

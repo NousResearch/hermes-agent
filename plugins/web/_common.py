@@ -18,7 +18,7 @@ SEARCH_LIMIT_CAP = 20  # every vendor here caps max_results at 20 server-side
 
 
 def provider_env(name: str) -> str:
-    """Config-aware env lookup (os.environ, then ~/.hermes/.env)."""
+    """Config-aware env lookup (~/.hermes/.env preferred over process env)."""
     from agent.web_search_provider import get_provider_env
     return get_provider_env(name)
 

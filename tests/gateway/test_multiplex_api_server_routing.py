@@ -8,6 +8,9 @@ from __future__ import annotations
 
 from typing import Any, cast
 
+import pytest
+
+from agent import secret_scope as ss
 from gateway.config import GatewayConfig, PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
@@ -73,6 +76,43 @@ class TestApiServerModelsUnderProfile:
             assert adapter._resolve_model_name("") == "coder"
         finally:
             _api_request_profile.reset(token_prof)
+
+    @pytest.mark.asyncio
+    async def test_models_uses_profile_model_name_override(self, tmp_path, monkeypatch):
+        """A multiplexed profile exposes its configured API model alias."""
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+
+        profile_home = tmp_path / "profiles" / "worker"
+        profile_home.mkdir(parents=True)
+        profile_key = "worker-profile-api-key-123456"
+        (profile_home / ".env").write_text(
+            f"API_SERVER_KEY={profile_key}\nAPI_SERVER_MODEL_NAME=worker-api\n",
+            encoding="utf-8",
+        )
+        adapter = _make_adapter(multiplex=True)
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda multiplex: [("default", tmp_path), ("worker", profile_home)],
+        )
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_profile_dir",
+            lambda name: tmp_path if name == "default" else profile_home,
+        )
+        ss.set_multiplex_active(True)
+
+        app = web.Application(middlewares=[adapter._make_profile_prefix_middleware()])
+        app.router.add_get("/p/{profile}/v1/models", adapter._handle_models)
+        try:
+            async with TestClient(TestServer(app)) as client:
+                response = await client.get(
+                    "/p/worker/v1/models",
+                    headers={"Authorization": f"Bearer {profile_key}"},
+                )
+                assert response.status == 200
+                assert (await response.json())["data"][0]["id"] == "worker-api"
+        finally:
+            ss.set_multiplex_active(False)
 
 
 class TestApiServerSessionProfileBinding:

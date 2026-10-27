@@ -2250,12 +2250,8 @@ class FeishuAdapter(BasePlatformAdapter):
             return "*" in allowed_ids or bool(operator_ids & allowed_ids)
         # SessionSource.user_id is the tenant user_id, else open_id (_resolve_sender_profile).
         principal = str(user_id or "").strip() or normalized
-        # getattr: object.__new__ test doubles never ran BasePlatformAdapter.__init__. Feishu chat
-        # ids don't say DM vs group; "group" is the check's own default.
-        verdict = (
-            self._is_sender_authorized(principal, "group", str(chat_id or "") or None)
-            if getattr(self, "_authorization_check", None) is not None else None
-        )
+        # Feishu chat ids don't say DM vs group; "group" is the check's own default.
+        verdict = self._is_sender_authorized(principal, "group", str(chat_id or "") or None)
         if verdict is None:
             logger.debug("[Feishu] No gateway authorization check for card operator %s; denying", normalized)
             return False

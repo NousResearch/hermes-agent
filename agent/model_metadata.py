@@ -350,11 +350,11 @@ DEFAULT_CONTEXT_LENGTHS = {
     "solar-open2": 262144, "solar-pro3": 131072, "solar-pro2": 65536, "solar-mini": 32768, "solar-": 524288,
     # Tencent Hunyuan (262144 = 256 × 1024, aligned with OpenRouter live metadata)
     "hy4-preview": 1_048_576, "hy3-preview": 262144, "hy3": 262144,
-    # "Ox Alpha" stealth model (OpenCode Zen / OpenRouter slugs); "Union Alpha" stealth model
-    # (OpenRouter ``stealth/union-alpha``, 262144 per /api/v1/models); NVIDIA Nemotron (128K
-    # except 3.5 Lightning and 3.5 Super); Poolside Laguna 2.1 (:free / -free slugs); Arcee; OpenRouter.
+    # "Ox Alpha" (OpenCode Zen / OpenRouter slugs) and "Union Alpha" (OpenRouter ``stealth/union-alpha``, 262144 per /api/v1/models)
+    # stealth models; NVIDIA Nemotron (OpenRouter + Nous Portal); Poolside Laguna 2.1 (:free / -free slugs); Arcee; OpenRouter.
     "x-preview-f": 1_048_576, "ox-alpha": 1_048_576, "union-alpha": 262144,
-    "nemotron-3.5-lightning": 1_000_000, "nemotron-3.5-super-vl": 1_000_000, "nemotron": 131072,
+    "nemotron-3-ultra-550b-a55b:free": 1_000_000, "nemotron-3.5-lightning:free": 1_000_000, "nemotron-3.5-super-vl": 1_000_000,
+    "nemotron-3.5-content-safety": 131072, "nemotron-3-nano-omni": 256000, "nemotron": 262144,
     "laguna-s-2.1": 262144, "laguna-xs-2.1": 262144, "trinity": 262144, "elephant": 262144,
     # Hugging Face Inference Providers — model IDs use org/name format
     "Qwen/Qwen3.5-397B-A17B": 131072, "Qwen/Qwen3.5-35B-A3B": 131072, "deepseek-ai/DeepSeek-V3.2": 65536,

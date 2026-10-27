@@ -1,3 +1,5 @@
+import type * as childProcess from 'node:child_process'
+import { type ChildProcess, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -7,6 +9,26 @@ import { describe, expect, it, vi } from 'vitest'
 import { createLinuxGpuBootWindow } from './linux-gpu-fallback'
 import { createNvidiaEglRecovery } from './linux-nvidia-egl-recovery'
 import { linuxNoSandboxRelaunch } from './linux-sandbox-relaunch'
+
+vi.mock('node:child_process', async importOriginal => {
+  const actual = await importOriginal<typeof childProcess>()
+
+  return { ...actual, spawn: vi.fn(actual.spawn) }
+})
+
+// The next relaunch's spawn, recorded instead of run: under vitest the target
+// would be node itself.
+function recordNextSpawn(): { env?: NodeJS.ProcessEnv } {
+  const seen: { env?: NodeJS.ProcessEnv } = {}
+
+  vi.mocked(spawn).mockImplementationOnce(((_file: string, _args: string[], options: { env?: NodeJS.ProcessEnv }) => {
+    seen.env = options.env
+
+    return { on: () => undefined, unref: () => undefined } as unknown as ChildProcess
+  }) as typeof spawn)
+
+  return seen
+}
 
 const argv = ['/opt/Hermes/hermes', '--ozone-platform=x11', 'hermes://session/abc']
 
@@ -32,7 +54,7 @@ describe('Linux runtime --no-sandbox relaunch', () => {
 
     expect(relaunch).toEqual({
       args: ['--ozone-platform=x11', 'hermes://session/abc', '--no-sandbox'],
-      strategy: { kind: 'electron' }
+      target: process.execPath
     })
 
     // The relaunched process started unsandboxed, so it never restarts again.
@@ -90,14 +112,11 @@ describe('Linux runtime --no-sandbox relaunch', () => {
       process.env.TMPDIR = longDir
       delete process.env.HERMES_DESKTOP_TMPDIR
 
-      let relaunchEnv: NodeJS.ProcessEnv = {}
+      const relaunch = recordNextSpawn()
 
       const relaunched = relaunchIfNoSandboxCameTooLate(
         {
           commandLine: { hasSwitch: name => name === 'no-sandbox' },
-          relaunch: () => {
-            relaunchEnv = { ...process.env }
-          },
           releaseSingleInstanceLock: () => undefined,
           exit: () => undefined
         },
@@ -105,8 +124,8 @@ describe('Linux runtime --no-sandbox relaunch', () => {
       )
 
       expect(relaunched).toBe(true)
-      expect(relaunchEnv.TMPDIR).toBe(shortDir)
-      expect(relaunchEnv.HERMES_DESKTOP_TMPDIR).toBe(longDir)
+      expect(relaunch.env?.TMPDIR).toBe(shortDir)
+      expect(relaunch.env?.HERMES_DESKTOP_TMPDIR).toBe(longDir)
     } finally {
       restoreEnv(saved)
     }
@@ -139,11 +158,11 @@ describe('Linux runtime --no-sandbox relaunch', () => {
       vi.resetModules()
       const { relaunchIfNoSandboxCameTooLate } = await import('./linux-sandbox-relaunch')
       const recovery = launch()
+      recordNextSpawn()
 
       const relaunched = relaunchIfNoSandboxCameTooLate(
         {
           commandLine: { hasSwitch: name => name === 'no-sandbox' },
-          relaunch: () => undefined,
           releaseSingleInstanceLock: () => undefined,
           exit: () => undefined
         },
@@ -157,6 +176,60 @@ describe('Linux runtime --no-sandbox relaunch', () => {
       fs.rmSync(userData, { recursive: true, force: true })
     }
   })
+
+  // Electron's relauncher execs with PR_SET_NO_NEW_PRIVS, inherited by the
+  // backend and the agent's terminal: sudo and pkexec would stop working for
+  // good. An unpacked app restarts as an ordinary child instead.
+  it.skipIf(process.platform !== 'linux')(
+    'restarts an unpacked app as an ordinary child that can still gain privileges',
+    async () => {
+      const saved = { ...process.env }
+      const savedArgv = process.argv
+      const savedExecPath = process.execPath
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-unpacked-relaunch-'))
+      const report = path.join(dir, 'report')
+      const exe = path.join(dir, 'hermes')
+      const events: string[] = []
+
+      fs.writeFileSync(
+        exe,
+        `#!/bin/sh\nprintf '%s\\n' "$*" "$(grep NoNewPrivs /proc/self/status | tr -d ' \\t')" > "${report}.part"\nmv "${report}.part" "${report}"\n`,
+        { mode: 0o755 }
+      )
+
+      try {
+        delete process.env.ELECTRON_DISABLE_SANDBOX
+        delete process.env.APPIMAGE
+        delete process.env.APPDIR
+        process.argv = [exe, 'hermes://session/abc']
+        process.execPath = exe
+        vi.resetModules()
+        const { relaunchIfNoSandboxCameTooLate } = await import('./linux-sandbox-relaunch')
+
+        relaunchIfNoSandboxCameTooLate(
+          {
+            commandLine: { hasSwitch: name => name === 'no-sandbox' },
+            relaunch: () => events.push('electron-relaunch'),
+            releaseSingleInstanceLock: () => events.push('release'),
+            exit: () => events.push('exit')
+          } as Parameters<typeof relaunchIfNoSandboxCameTooLate>[0],
+          () => undefined
+        )
+
+        await vi.waitFor(() => expect(fs.existsSync(report)).toBe(true), { timeout: 5000 })
+        const [args, noNewPrivs] = fs.readFileSync(report, 'utf8').split('\n')
+
+        expect(events).toEqual(['release', 'exit'])
+        expect(args).toBe('hermes://session/abc --no-sandbox')
+        expect(noNewPrivs).toBe(fs.readFileSync('/proc/self/status', 'utf8').match(/NoNewPrivs:\s*(\d)/)?.[0].replace(/\s/g, ''))
+      } finally {
+        process.argv = savedArgv
+        process.execPath = savedExecPath
+        restoreEnv(saved)
+        fs.rmSync(dir, { recursive: true, force: true })
+      }
+    }
+  )
 
   // Electron's relauncher execs its target with PR_SET_NO_NEW_PRIVS: the image's
   // runtime then cannot FUSE-mount, and the old mount dies with this process.
@@ -192,7 +265,6 @@ describe('Linux runtime --no-sandbox relaunch', () => {
         relaunchIfNoSandboxCameTooLate(
           {
             commandLine: { hasSwitch: name => name === 'no-sandbox' },
-            relaunch: () => events.push('relaunch'),
             releaseSingleInstanceLock: () => events.push('release'),
             exit: () => events.push('exit')
           },
@@ -230,7 +302,7 @@ describe('Linux runtime --no-sandbox relaunch', () => {
         env: { APPIMAGE: '/home/u/Apps/Hermes.AppImage', APPDIR: appDir },
         launchedWithoutSandbox: false
       })
-    ).toEqual({ args: ['--no-sandbox'], strategy: { kind: 'electron' } })
+    ).toEqual({ args: ['--no-sandbox'], target: `${appDir}/hermes` })
   })
 
   it('relaunches the AppImage itself rather than its vanishing mount', () => {
@@ -245,7 +317,7 @@ describe('Linux runtime --no-sandbox relaunch', () => {
 
     expect(relaunch).toEqual({
       args: ['--no-sandbox'],
-      strategy: { kind: 'appimage', image: '/home/u/Apps/Hermes.AppImage' }
+      target: '/home/u/Apps/Hermes.AppImage'
     })
   })
 
@@ -263,7 +335,7 @@ describe('Linux runtime --no-sandbox relaunch', () => {
 
     expect(relaunch).toEqual({
       args: ['--no-sandbox'],
-      strategy: { kind: 'appimage', image: '/home/u/Apps/Hermes.AppImage' }
+      target: '/home/u/Apps/Hermes.AppImage'
     })
   })
 
@@ -286,7 +358,7 @@ describe('Linux runtime --no-sandbox relaunch', () => {
         })
       ).toEqual({
         args: ['--ozone-platform=x11', 'hermes://session/abc', '--no-sandbox'],
-        strategy: { kind: 'electron' }
+        target: '/opt/Hermes/hermes'
       })
     }
   })

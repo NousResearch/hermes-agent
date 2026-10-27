@@ -57,59 +57,40 @@ export function ownAppImage(execPath: string, env: NodeJS.ProcessEnv): string | 
   return realAppDir && realExe && isInside(realAppDir, realExe) ? appImage : undefined
 }
 
-export type RelaunchStrategy =
-  /** Electron's app.relaunch(): process.execPath again once this process exits. */
-  | { kind: 'electron' }
-  /** A FUSE-mounted AppImage: the image file again, started now as a detached child. */
-  | { kind: 'appimage'; image: string }
-
 /**
- * How this app starts itself again.
+ * The file that starts this app again.
  *
- * Electron's relauncher execs its target with PR_SET_NO_NEW_PRIVS, so a
- * relaunched AppImage runtime cannot mount through the setuid fusermount
- * (EPERM, exit 127), and process.execPath lives in this process's FUSE mount,
- * which the runtime unmounts as soon as we exit. A mounted AppImage therefore
- * starts its image file as an ordinary child. Under --appimage-extract-and-run
- * APPDIR is a plain directory and the image would need the FUSE those users
- * lack, so the executable in it is relaunched as usual.
+ * process.execPath of a FUSE-mounted AppImage lives in this process's mount,
+ * which the runtime unmounts as soon as we exit, so a mounted image relaunches
+ * its image file. Under --appimage-extract-and-run APPDIR is a plain directory
+ * and the image would need the FUSE those users lack, so the executable in it
+ * is relaunched as usual.
  */
-export function relaunchStrategy(
-  execPath: string = process.execPath,
-  env: NodeJS.ProcessEnv = process.env
-): RelaunchStrategy {
+export function relaunchTarget(execPath: string = process.execPath, env: NodeJS.ProcessEnv = process.env): string {
   const image = ownAppImage(execPath, env)
+  const extracted = env.APPDIR && posix.basename(posix.resolve(env.APPDIR)).startsWith('appimage_extracted_')
 
-  if (!image || (env.APPDIR && posix.basename(posix.resolve(env.APPDIR)).startsWith('appimage_extracted_'))) {
-    return { kind: 'electron' }
-  }
-
-  return { kind: 'appimage', image }
+  return image && !extracted ? image : execPath
 }
 
 export interface RelaunchHost {
-  relaunch(options: { args: string[] }): void
   releaseSingleInstanceLock(): void
 }
 
 /**
- * Whether `strategy` can start this app again. A spawn failure is reported
- * asynchronously, after the caller has already exited, so the image is
+ * Whether `target` can start this app again. A spawn failure is reported
+ * asynchronously, after the caller has already exited, so the target is
  * checked up front and a refusal is logged now; the caller then keeps running
  * in place of the relaunch.
  */
-export function canRelaunch(strategy: RelaunchStrategy): boolean {
-  if (strategy.kind === 'electron') {
-    return true
-  }
-
+export function canRelaunch(target: string): boolean {
   try {
-    fs.accessSync(strategy.image, fs.constants.X_OK)
+    fs.accessSync(target, fs.constants.X_OK)
 
     return true
   } catch (error) {
     const reason = (error as NodeJS.ErrnoException).code ?? String(error)
-    console.error(`[hermes] cannot start ${strategy.image} again (${reason}); continuing without the relaunch`)
+    console.error(`[hermes] cannot start ${target} again (${reason}); continuing without the relaunch`)
 
     return false
   }
@@ -173,31 +154,33 @@ function withoutMountEntries(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 }
 
 /**
- * Start this app again with `args`; the caller exits right after.
- * Check `canRelaunch(strategy)` first. The detached child outlives this
- * process (and its mount) and takes the single-instance lock itself, so the
- * lock is dropped first.
+ * Start `target` with `args` as an ordinary detached child; the caller exits
+ * right after. Electron's relauncher (app.relaunch) execs with
+ * PR_SET_NO_NEW_PRIVS, which every descendant inherits: sudo, pkexec and any
+ * setuid helper stop working in the backend and the agent's terminal, and a
+ * relaunched AppImage runtime cannot mount through the setuid fusermount.
+ * Check `canRelaunch(target)` first. The child takes the single-instance lock
+ * itself, so the lock is dropped first.
  */
 export function relaunchNow(
   host: RelaunchHost,
   args: string[],
-  strategy: RelaunchStrategy = relaunchStrategy(),
+  target: string = relaunchTarget(),
   env: NodeJS.ProcessEnv = process.env
 ): void {
-  if (strategy.kind === 'electron') {
-    host.relaunch({ args })
-
-    return
-  }
-
   host.releaseSingleInstanceLock()
 
-  const child = spawn('/bin/sh', ['-c', EXEC_WITH_STDIO_ONLY, strategy.image, ...args], {
+  // The executable of an unpacked or extracted app lives in a directory that
+  // outlives this process and that no AppRun re-enters: keep its environment.
+  const appDir = env.APPDIR && posix.resolve(env.APPDIR)
+  const childEnv = appDir && isInside(appDir, posix.resolve(target)) ? env : withoutMountEntries(env)
+
+  const child = spawn('/bin/sh', ['-c', EXEC_WITH_STDIO_ONLY, target, ...args], {
     detached: true,
     stdio: 'ignore',
-    env: withoutMountEntries(env)
+    env: childEnv
   })
 
-  child.on('error', error => console.error(`[hermes] relaunching ${strategy.image} failed: ${error.message}`))
+  child.on('error', error => console.error(`[hermes] relaunching ${target} failed: ${error.message}`))
   child.unref()
 }

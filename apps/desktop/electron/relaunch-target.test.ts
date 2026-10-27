@@ -71,7 +71,6 @@ describe('relaunchNow', () => {
           relaunchIfNoSandboxCameTooLate(
             {
               commandLine: { hasSwitch: name => name === 'no-sandbox' },
-              relaunch: () => events.push('relaunch'),
               releaseSingleInstanceLock: () => events.push('release'),
               exit: () => events.push('exit')
             },
@@ -98,9 +97,9 @@ describe('relaunchNow', () => {
         // This mount's AppRun prepended it to PATH; the mount is gone soon after the child starts.
         const mount = path.join(dir, '.mount_HermesQ7x2Lp')
         relaunchNow(
-          { relaunch: () => events.push('relaunch'), releaseSingleInstanceLock: () => events.push('release') },
+          { releaseSingleInstanceLock: () => events.push('release') },
           [],
-          { kind: 'appimage', image },
+          image,
           { ...process.env, APPDIR: mount, PATH: `${mount}:${mount}/usr/sbin:/usr/bin:/bin` }
         )
 

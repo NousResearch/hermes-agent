@@ -23,6 +23,61 @@ _QUEUE_SIZE = 1024
 _STOP = object()
 
 
+class StreamInterruptRequest:
+    """A plugin's request to cut the current stream.
+
+    A plugin can only ASK. The core decides: it reads :meth:`requested` between chunks (a plain
+    flag read, never a wait), and whether an answer is honoured at all is the core's business —
+    honouring also needs ``plugins.stream_interrupt_requests`` in the config. Callbacks run on
+    their own worker thread, so nothing here may block the token path: :meth:`request` only sets
+    a flag and returns.
+
+    One object per model response; the reason survives the cut so the turn can say why it ended.
+    """
+
+    __slots__ = ("_lock", "_reason", "_requested")
+
+    def __init__(self) -> None:
+        self._requested = threading.Event()
+        self._reason = ""
+        self._lock = threading.Lock()
+
+    def request(self, reason: str = "", *, source: str = "") -> bool:
+        """Ask the core to cut this stream. Returns False when a request is already pending.
+
+        ``source`` names the plugin so a log line names who asked; it is not trusted for anything.
+        """
+        if self._requested.is_set():
+            return False
+        with self._lock:
+            if self._requested.is_set():
+                return False
+            text = (reason or "").strip()
+            name = (source or "").strip()
+            self._reason = f"{name}: {text}" if name and text else (name or text)
+            self._requested.set()
+        return True
+
+    def requested(self) -> bool:
+        """True once a plugin has asked for the cut. Cheap; safe on the token path."""
+        return self._requested.is_set()
+
+    def reason(self) -> str:
+        return self._reason
+
+
+def request_stream_interrupt(interrupt: StreamInterruptRequest | None, reason: str = "", *,
+                             source: str = "") -> bool:
+    """Module-level helper so a plugin can call ``request_stream_interrupt(payload["interrupt"], ...)``.
+
+    ``None`` (a hook fired outside a stream) is a no-op returning False rather than an exception:
+    a plugin observing something odd outside a stream must never break the turn.
+    """
+    if interrupt is None:
+        return False
+    return interrupt.request(reason, source=source)
+
+
 @dataclass
 class _ConsumerDispatcher:
     hook_name: str
@@ -164,6 +219,22 @@ def stream_reasoning_deltas_enabled() -> bool:
         return bool(config_mod.cfg_get(config, "plugins", "stream_reasoning_deltas", default=False))
     except Exception:
         logger.debug("failed to read plugins.stream_reasoning_deltas", exc_info=True)
+        return False
+
+
+def stream_interrupt_requests_enabled() -> bool:
+    """Return True only when the user lets plugins ask the core to cut a stream.
+
+    Same read-only scalar lookup as ``stream_reasoning_deltas_enabled``; the token path caches it
+    per response. Default False: a plugin asking to end a response early is a policy the user
+    grants, never one a plugin grants itself.
+    """
+    try:
+        from hermes_cli import config as config_mod
+        config = config_mod.load_config_readonly()
+        return bool(config_mod.cfg_get(config, "plugins", "stream_interrupt_requests", default=False))
+    except Exception:
+        logger.debug("failed to read plugins.stream_interrupt_requests", exc_info=True)
         return False
 
 

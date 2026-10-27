@@ -498,8 +498,6 @@ def board_exists(board: Optional[str] = None) -> bool:
     return _dir_holds_board(board_dir(slug))
 
 
-
-
 def _explicit_board_slug(board: Optional[str]) -> Optional[str]:
     """Explicit caller intent: a direct ``board=`` argument, else the scoped
     ``--board`` context (CLI ``hermes kanban --board``, dashboard plugin_api);
@@ -1481,22 +1479,6 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
         )
     # Observer fires AFTER commit so subscribers see durable state.
     notify_task_updated(conn, task_id, ("assignee",))
-    return True
-
-
-def unguard_task(conn: sqlite3.Connection, task_id: str, *, actor: str) -> bool:
-    """Lift the ``active_pr`` respawn guard explicitly (``hermes kanban unguard <id>``).
-
-    Records an ``unguarded`` event, which ``check_respawn_guard`` treats as a
-    handoff: the sanctioned lever when a card cannot be reassigned to a different
-    profile (a single-owner card, or a report/notify card) and the referenced PR
-    has merged or closed without the dispatcher's lookup seeing it. Returns
-    ``False`` for an unknown id.
-    """
-    with write_txn(conn):
-        if conn.execute("SELECT 1 FROM tasks WHERE id = ?", (task_id,)).fetchone() is None:
-            return False
-        _append_event(conn, task_id, "unguarded", {"by": actor})
     return True
 
 
@@ -4249,3 +4231,4 @@ from hermes_cli.kanban_db_dispatch import (
     _worker_survived_termination,
     _worker_terminal_timeout_env,
 )
+from hermes_cli.kanban_db_pr_guard import unguard_task

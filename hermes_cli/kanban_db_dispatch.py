@@ -27,11 +27,10 @@ from typing import Optional
 from typing import TYPE_CHECKING
 
 from hermes_cli.kanban_db_pr_guard import (
-    _pr_url_parts,
+    _pr_guard_reason,
     _reset_pr_state_cache,  # re-export: tests isolate the lookup cache on the dispatcher
     _resolve_pr_state,
     _resolve_respawn_guard_pr_window_seconds,
-    _task_publishes_pr,
 )
 from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
 
@@ -83,13 +82,8 @@ _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 # ``HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS``.
 DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
 
-# Within this window a GitHub PR URL in a comment blocks re-spawn. The window,
-# the bounded ``gh`` PR-state lookup and the card-lane heuristic live in
-# ``kanban_db_pr_guard``; ``check_respawn_guard`` wires them in.
-_RESPAWN_GUARD_PR_URL_RE = re.compile(
-    r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
-    re.IGNORECASE,
-)
+# The ``active_pr`` window, the bounded ``gh`` PR-state lookup, the card-lane
+# heuristic and the handoff rule live in ``kanban_db_pr_guard``.
 
 
 @dataclass
@@ -1582,15 +1576,11 @@ def check_respawn_guard(
     handoff. Stale / dead claim locks are NOT a guard reason — the reclaim
     passes own those.
 
-    ``active_pr`` is lane-aware: it applies only to cards that can publish a PR
-    (see :func:`_task_publishes_pr`) — an explicit ``local-only`` contract with
-    no run that recorded ``published_pr`` is a report/notify card, which never
-    opens a PR and therefore costs zero ``gh`` lookups. It is also PR-state
-    aware: once every referenced PR is merged or closed the duplicate-PR risk is
-    gone and the card spawns; an open PR (or an unresolved lookup) still holds
-    it. The window comes from :func:`_resolve_respawn_guard_pr_window_seconds`
-    (``0`` disables the step), and an operator ``unguarded`` event lifts it
-    explicitly — ``hermes kanban unguard <id>``.
+    ``active_pr`` is lane- and PR-state aware (``kanban_db_pr_guard``): a
+    ``local-only`` report card is never guarded, every referenced PR being
+    merged or closed lifts it, an unresolved lookup fails closed, the window
+    comes from ``kanban.respawn_guard_pr_window_seconds`` (``0`` disables the
+    step) and ``hermes kanban unguard <id>`` is the operator lever.
     """
     row = conn.execute(
         "SELECT last_failure_error, completion_contract FROM tasks WHERE id = ?",
@@ -1656,45 +1646,13 @@ def check_respawn_guard(
         return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
-    #    Exception: a handoff AFTER the newest PR comment (operator reassign,
-    #    reviewer changes_requested, review reopen, explicit ``unguard``) names
-    #    the profile that must now work on THAT PR — a closer or the implementer
-    #    finishing it, not a duplicate implementation (#111910). A crash/reclaim
-    #    is not a handoff, so the worker that opened the PR is still not
-    #    re-spawned against it.
-    #
-    #    Only cards that can publish a PR are guarded (``local-only`` report
-    #    cards are exempt and never reach ``gh``), and only while a referenced PR
-    #    is still open: once every distinct PR URL is merged or closed there is
-    #    no duplicate-PR risk left, so the card spawns. An unresolved lookup
-    #    fails closed.
+    #    ``_pr_guard_reason`` owns the handoff exception (#111910), the report
+    #    lane exemption, PR-state awareness and the ``unguarded`` operator lever.
     window = _resolve_respawn_guard_pr_window_seconds()
     if window > 0:
-        pr_times: list[int] = []
-        pr_urls: dict[tuple[str, str, int], str] = {}
-        for t, c in _rows_since(conn, "task_comments", task_id, now - window,
-                                cols=", body", unreadable=now):  # duplicate-PR risk: fail closed
-            body = _kb._lossy_text(c["body"]) or ""
-            matches = list(_RESPAWN_GUARD_PR_URL_RE.finditer(body))
-            if not matches:
-                continue
-            pr_times.append(t)
-            for match in matches:
-                parts = _pr_url_parts(match.group(0))
-                if parts is not None:
-                    pr_urls.setdefault(parts, match.group(0))
-        if pr_times:
-            # Strictly after: a same-second tie stays guarded (fail closed).
-            if any(_is_handoff_event(e["kind"], e["payload"]) for _, e in _rows_since(
-                    conn, "task_events", task_id, max(pr_times),
-                    "AND kind IN ('assigned', 'changes_requested', 'review_reopened', 'unguarded')",
-                    cols=", kind, payload", strict=True)):
-                return None
-            if not _task_publishes_pr(conn, task_id, row):
-                return None
-            if pr_urls and all(_resolve_pr_state(url) in ("MERGED", "CLOSED") for url in pr_urls.values()):
-                return None
-            return "active_pr"
+        reason = _pr_guard_reason(conn, task_id, row, now, window, _resolve_pr_state)
+        if reason is not None:
+            return reason
 
     return None
 
@@ -1715,31 +1673,6 @@ def _rows_since(conn: sqlite3.Connection, table: str, task_id: str, since: int, 
         t = unreadable if t is None else t
         if t is not None and (t > since if strict else t >= since):
             yield t, row
-
-
-def _is_handoff_event(kind: str, payload: Optional[str]) -> bool:
-    """Only an ``assigned`` event that moves the card to a DIFFERENT profile is
-    a handoff. A no-op re-assign (dev→dev via CLI/dashboard/``reassign
-    --reclaim``), an unassign, or the dispatcher's own
-    ``kanban.default_assignee`` write would otherwise lift ``active_pr`` for
-    the very implementer that opened the PR. Events without ``from`` (written
-    before it was recorded) are not trusted as handoffs — fail closed.
-
-    Every other kind in the guard's filter is a handoff by construction:
-    ``changes_requested`` / ``review_reopened`` come from the review lane, and
-    ``unguarded`` is an explicit operator action (``hermes kanban unguard``) —
-    the sanctioned lever for a single-owner or report card that cannot be
-    reassigned.
-    """
-    if kind == "unguarded":
-        return True
-    if kind != "assigned":
-        return True
-    data = _kb._json_or(payload, {})
-    if not isinstance(data, dict) or data.get("source") == "kanban.default_assignee":
-        return False
-    to = data.get("assignee")
-    return bool(to) and "from" in data and data["from"] != to
 
 
 def _profile_exists_fn() -> Optional[Callable[[str], bool]]:

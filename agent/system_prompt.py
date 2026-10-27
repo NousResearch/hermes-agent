@@ -143,6 +143,16 @@ def _frozen_plugin_prompt_sections(agent: Any) -> tuple:
     return rendered
 
 
+# The renderer-owned bytes that may follow the plugin frame: the blank-line
+# separator, an optional active-profile line (upstream f29163388c moved it into
+# the volatile tier directly after the plugin frame; both default and named
+# shapes are a single line starting "Active Hermes profile: "), another blank
+# line, then the session-start anchor. Anything else between frame and anchor
+# is not the canonical container and must fail closed.
+_FRAME_TAIL_RE = re.compile(
+    r"\n\n(?:Active Hermes profile: [^\n]*\n\n)?Conversation started: "
+)
+
 def _restore_plugin_prompt_sections(prompt: str) -> tuple:
     """Recover frozen section bytes from the persisted full prompt.  Only the
     exact canonical container emitted by core is accepted — user/project text
@@ -156,7 +166,11 @@ def _restore_plugin_prompt_sections(prompt: str) -> tuple:
     if end < 0:
         return ()
     after_end = end + len(PLUGIN_SECTIONS_END)
-    if not prompt[after_end:].startswith("\n\nConversation started:"):
+    # Only the renderer-owned bytes may sit between the frame and the session-start
+    # anchor: an optional active-profile line (upstream f29163388c moved it into the
+    # volatile tier directly after the plugin frame). Anything else is not the exact
+    # canonical container and must keep failing closed.
+    if not _FRAME_TAIL_RE.match(prompt[after_end:]):
         return ()
     framed = prompt[start:after_end]
     restored = []

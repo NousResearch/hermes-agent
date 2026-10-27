@@ -3,8 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopUpdateStatus, DesktopVersionInfo, HermesConnection } from '@/global'
 import { en } from '@/i18n/en'
+import { $confirmRequest, settleConfirm } from '@/store/confirm'
 import type * as SessionStore from '@/store/session'
 import { $connection } from '@/store/session'
+import type * as UpdatesStore from '@/store/updates'
 import {
   $backendUpdateStatus,
   $desktopVersion,
@@ -12,6 +14,7 @@ import {
   checkBackendUpdates,
   checkUpdates,
   refreshDesktopVersion,
+  setUpdateChannel,
   startActiveUpdate,
   type UpdateApplyState
 } from '@/store/updates'
@@ -49,6 +52,9 @@ vi.mock('@/store/updates', async (): Promise<Record<string, unknown>> => {
     checkBackendUpdates: vi.fn<() => Promise<DesktopUpdateStatus | null>>().mockResolvedValue(null),
     checkUpdates: vi.fn<() => Promise<DesktopUpdateStatus | null>>().mockResolvedValue(null),
     refreshDesktopVersion: vi.fn<() => Promise<DesktopVersionInfo | null>>().mockResolvedValue(null),
+    setUpdateChannel: vi.fn<() => Promise<DesktopUpdateStatus | null>>().mockResolvedValue(null),
+    sourceUpdateChannel: (await vi.importActual<typeof UpdatesStore>('@/store/updates')).sourceUpdateChannel,
+    sourceUpdateTrack: (await vi.importActual<typeof UpdatesStore>('@/store/updates')).sourceUpdateTrack,
     openUpdateOverlayFor: vi.fn(),
     openUpdatesWindow: vi.fn(),
     startActiveUpdate: vi.fn()
@@ -117,6 +123,51 @@ describe('AboutSettings', (): void => {
     render(<AboutSettings />)
     expect(screen.getByText(`${en.updates.version('1.2.3')} · ${en.updates.channels.canary}`)).toBeTruthy()
     expect(screen.queryByRole('combobox')).toBeNull()
+  })
+
+  it('lets a source checkout pick its channel and confirms the move to stable releases', async (): Promise<void> => {
+    const about = en.settings.about.channel
+    const source = { supported: true, behind: 0, mechanism: 'posix-handoff', channelSelectable: true } as const
+    // The save resolves only when released, so the in-flight paint is observable.
+    let release!: () => void
+    vi.mocked(setUpdateChannel).mockImplementationOnce(
+      () => new Promise(resolve => (release = () => resolve({ ...source, channel: 'stable' })))
+    )
+    $updateStatus.set({ ...source, branch: 'main' })
+    render(<AboutSettings />)
+    expect(screen.getByRole('button', { name: about.main }).getAttribute('aria-pressed')).toBe('true')
+
+    fireEvent.click(screen.getByRole('button', { name: about.stable }))
+    await waitFor((): void => {
+      expect($confirmRequest.get()?.title).toBe(about.stableConfirmTitle)
+    })
+    expect(setUpdateChannel).not.toHaveBeenCalled()
+    settleConfirm(true)
+    await waitFor((): void => {
+      expect(setUpdateChannel).toHaveBeenCalledWith('stable')
+    })
+    // The confirmed choice shows while the save + check is still running.
+    expect(screen.getByRole('button', { name: about.stable }).getAttribute('aria-pressed')).toBe('true')
+    release()
+
+    // Back to every commit is never older code, so it needs no confirmation.
+    $updateStatus.set({ ...source, channel: 'stable' })
+    await waitFor((): void => {
+      expect(screen.getByRole('button', { name: about.stable }).getAttribute('aria-pressed')).toBe('true')
+    })
+    fireEvent.click(screen.getByRole('button', { name: about.main }))
+    await waitFor((): void => {
+      expect(setUpdateChannel).toHaveBeenCalledWith('main')
+    })
+    expect($confirmRequest.get()).toBeNull()
+
+    // An older runtime cannot save a channel, and a packaged install owns its own.
+    $updateStatus.set({ ...source, channel: 'stable', channelSelectable: undefined })
+    await waitFor((): void => {
+      expect(screen.queryByText(about.title)).toBeNull()
+    })
+    $updateStatus.set({ ...source, mechanism: 'electron-updater', channel: 'stable' })
+    expect(screen.queryByText(about.title)).toBeNull()
   })
 
   it('a commit client refuses updates without hiding an unrelated backend update', (): void => {

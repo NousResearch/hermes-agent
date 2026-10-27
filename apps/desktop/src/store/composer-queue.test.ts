@@ -231,6 +231,16 @@ describe('migrateQueuedPrompts', () => {
     expect(migrateQueuedPrompts('rt-old', 'rt-new')).toBe(false)
     expect(migrateQueuedPrompts('rt-x', 'rt-x')).toBe(false)
   })
+
+  it('migrating the same submission twice keeps one entry (#138934)', () => {
+    enqueueQueuedPrompt('rt-old', { attachments: [], id: 'sub-1', text: 'once' })
+    migrateQueuedPrompts('rt-old', 'rt-new')
+    enqueueQueuedPrompt('rt-old', { attachments: [], id: 'sub-1', text: 'once' })
+    migrateQueuedPrompts('rt-old', 'rt-new')
+
+    expect(getQueuedPrompts('rt-new').map(e => e.id)).toEqual(['sub-1'])
+    expect(getQueuedPrompts('rt-old')).toEqual([])
+  })
 })
 
 describe('shouldAutoDrain', () => {

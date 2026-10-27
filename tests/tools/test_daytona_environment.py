@@ -64,7 +64,7 @@ def make_env(daytona_sdk, monkeypatch):
     # Prevent is_interrupted from interfering — patch where it's used (base.py)
     monkeypatch.setattr("tools.environments.base.is_interrupted", lambda: False)
     # Prevent skills/credential sync from consuming mock exec calls
-    monkeypatch.setattr("tools.credential_files.get_credential_file_mounts", lambda: [])
+    monkeypatch.setattr("tools.credential_files.get_credential_file_mounts", list)
     monkeypatch.setattr("tools.credential_files.get_skills_directory_mount", lambda **kw: None)
     monkeypatch.setattr("tools.credential_files.iter_skills_files", lambda **kw: [])
 
@@ -205,12 +205,12 @@ class TestResourceConversion:
         return daytona_sdk.Resources.call_args.kwargs
 
     def test_memory_converted_to_gib(self, make_env, daytona_sdk):
-        env = make_env(memory=5120)
+        make_env(memory=5120)
         assert self._get_resources_kwargs(daytona_sdk)["memory"] == 5
 
 
     def test_small_values_clamped_to_1(self, make_env, daytona_sdk):
-        env = make_env(memory=100, disk=100)
+        make_env(memory=100, disk=100)
         kw = self._get_resources_kwargs(daytona_sdk)
         assert kw["memory"] == 1
         assert kw["disk"] == 1

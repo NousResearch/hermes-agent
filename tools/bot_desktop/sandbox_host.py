@@ -1,4 +1,4 @@
-"""Bot Desktop hosted INSIDE the configured terminal backend (docker / ssh / singularity).
+"""Bot Desktop hosted INSIDE the configured terminal backend (docker / ssh / a plugin backend with streams).
 
 Same launcher, same lease, same pane: only WHERE Xvnc + Xfce run changes. ``runtime`` decides between the
 gateway host and this module via ``placement()``; callers keep using ``runtime.start/stop/status/desktop_env``.
@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from agent.deadline import poll_until
 from hermes_constants import get_hermes_home
 from tools.environments import streams
 
@@ -52,21 +53,31 @@ _RELAY = (
 )
 
 
+def plugin_image_advice(backend: Optional[str]) -> Optional[str]:
+    """How to get the desktop stack into a plugin backend's sandbox, or None for a built-in backend: a plugin
+    picks its image through its own settings, so there is no ``terminal.<plugin>_image`` key to name."""
+    from tools.terminal_tool_config import _BUILTIN_BACKENDS
+    if not backend or backend in _BUILTIN_BACKENDS:
+        return None
+    return (f"give the {backend} plugin's sandbox the desktop stack through the plugin's own image setting "
+            f"({SANDBOX_IMAGE_HINT} has it)")
+
+
 def _marker() -> Path:
     return get_hermes_home() / "bot-desktop" / "sandbox.json"
 
 
-def _read_marker() -> Dict[str, Any]:
+def _read_marker() -> dict[str, Any]:
     try:
         return json.loads(_marker().read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return {}
 
 
-def _owner_identity(env: Any) -> Dict[str, Any]:
+def _owner_identity(env: Any) -> dict[str, Any]:
     """What the marker records about the sandbox hosting the screen, so a restarted gateway (empty terminal
     registry) can tell a still-running sandbox from one that was removed."""
-    ident: Dict[str, Any] = {"backend": type(env).__name__}
+    ident: dict[str, Any] = {"backend": type(env).__name__}
     container = getattr(env, "_container_id", None)
     if container:
         ident["container"] = container
@@ -74,10 +85,10 @@ def _owner_identity(env: Any) -> Dict[str, Any]:
     return ident
 
 
-_ALIVE_CACHE: Dict[str, tuple[float, bool]] = {}
+_ALIVE_CACHE: dict[str, tuple[float, bool]] = {}
 
 
-def marker_sandbox_alive(marker: Dict[str, Any]) -> bool:
+def marker_sandbox_alive(marker: dict[str, Any]) -> bool:
     """Whether the sandbox a marker names still exists. Docker: ``docker inspect`` on the recorded container
     (cached a few seconds; this sits on the browser's per-command path). Other backends (ssh host, apptainer
     instance) cannot be probed from here without their environment object: the re-attach's own
@@ -100,7 +111,7 @@ def marker_sandbox_alive(marker: Dict[str, Any]) -> bool:
 
 
 def _remote_dir(env: Any, profile: str) -> str:
-    return f"{env.get_temp_dir().rstrip('/')}/hermes-bot-desktop/{profile}"
+    return f"{streams.sandbox_temp_dir(env).rstrip('/')}/hermes-bot-desktop/{profile}"
 
 
 def desktop_home(env: Any) -> str:
@@ -120,7 +131,7 @@ def desktop_home(env: Any) -> str:
 
 
 def browser_profile_dir(env: Any) -> str:
-    """The ONE ``--user-data-dir`` the agent's agent-browser and the dock's Browser icon share inside the
+    """The ONE ``--user-data-dir`` the agent's browser and the dock's Browser icon share inside the
     sandbox (same rule as the host: two profiles would mean the human logs into a jar the bot never sees)."""
     return f"{desktop_home(env).rstrip('/')}/.hermes/bot-desktop/browser-profile"
 
@@ -134,7 +145,7 @@ _CHROMIUM_PROBE = (
 
 
 def chromium_executable(env: Any) -> Optional[str]:
-    """Path of the Playwright Chromium agent-browser uses inside ``env`` (the dock's Browser icon must run
+    """Path of the Playwright Chromium the agent's browser uses inside ``env`` (the dock's Browser icon must run
     the same binary), or None when the image has none. Cached on the env."""
     cached = getattr(env, "_bd_chromium", "unset")
     if cached != "unset":
@@ -156,7 +167,7 @@ sys.stdout.buffer.write(buf.getvalue())
 """
 
 
-def grab_jpeg(env: Any, published: Dict[str, str], max_size: tuple[int, int], quality: int) -> Optional[bytes]:
+def grab_jpeg(env: Any, published: dict[str, str], max_size: tuple[int, int], quality: int) -> Optional[bytes]:
     """One JPEG of the sandbox screen, grabbed INSIDE the sandbox (the X socket and its cookie live there).
     Needs Pillow in the image (the published desktop image ships it); None when the grab fails."""
     display = published.get("DISPLAY")
@@ -192,13 +203,13 @@ def missing_binaries(env: Any) -> list[str]:
     return [b for b in proc.stdout.decode("utf-8", "replace").split() if b]
 
 
-def _published(env: Any, rdir: str) -> Dict[str, str]:
+def _published(env: Any, rdir: str) -> dict[str, str]:
     proc = streams.run_in(env, ["bash", "-c", f"kill -0 $(cat {shlex.quote(rdir)}/launcher.pid 2>/dev/null) 2>/dev/null "
                                              f"&& test -S {shlex.quote(rdir)}/rfb.sock && cat {shlex.quote(rdir)}/env"],
                           user=_user_for(env), timeout=15)
     if proc.returncode != 0:
         return {}
-    out: Dict[str, str] = {}
+    out: dict[str, str] = {}
     for line in proc.stdout.decode("utf-8", "replace").splitlines():
         k, sep, v = line.partition("=")
         if sep:
@@ -206,12 +217,12 @@ def _published(env: Any, rdir: str) -> Dict[str, str]:
     return out
 
 
-def published_env(env: Any, profile: str) -> Dict[str, str]:
+def published_env(env: Any, profile: str) -> dict[str, str]:
     return _published(env, _remote_dir(env, profile))
 
 
 def start(env: Any, profile: str, *, geometry: str, wait_seconds: float = 20.0,
-          browser_exec: Optional[str] = None, browser_exec_line: Optional[str] = None) -> Dict[str, str]:
+          browser_exec: Optional[str] = None, browser_exec_line: Optional[str] = None) -> dict[str, str]:
     """Bring the screen up inside ``env`` (idempotent); returns the published env. Raises RuntimeError naming
     the blocker."""
     rdir = _remote_dir(env, profile)
@@ -223,10 +234,12 @@ def start(env: Any, profile: str, *, geometry: str, wait_seconds: float = 20.0,
     stop(env, profile)  # a dead launcher may have left Xvnc holding :20; the relaunch needs it gone
     missing = missing_binaries(env)
     if missing:
+        advice = plugin_image_advice(getattr(env, "_hermes_backend_name", None)) or (
+            f"use {SANDBOX_IMAGE_HINT} (the default sandbox base plus the desktop stack) as "
+            f"terminal.docker_image / modal_image")
         raise RuntimeError(
             f"Bot Desktop needs {', '.join(missing)} inside the terminal backend's sandbox. The configured image "
-            f"does not have them; use {SANDBOX_IMAGE_HINT} (the default sandbox base plus the desktop stack) as "
-            f"terminal.docker_image / modal_image / singularity_image, or set bot_desktop.placement: gateway.")
+            f"does not have them; {advice}, or set bot_desktop.placement: gateway.")
     user = _user_for(env)
     launcher = (Path(__file__).with_name("launcher.sh").read_bytes())
     wallpaper = Path(__file__).with_name("wallpaper.png").read_bytes()
@@ -257,20 +270,21 @@ def start(env: Any, profile: str, *, geometry: str, wait_seconds: float = 20.0,
     proc = streams.run_in(env, ["bash", "-c", spawn], child_env=child_env, user=user, timeout=30)
     if proc.returncode != 0:
         raise RuntimeError(f"sandbox desktop launcher did not start: {proc.stderr.decode('utf-8', 'replace')[-500:]}")
-    deadline = time.monotonic() + wait_seconds
-    while time.monotonic() < deadline:
+    def _live_display() -> dict[str, str] | None:
         live = _published(env, rdir)
-        if live.get("DISPLAY"):
-            logger.info("Bot Desktop for profile %s up inside %s on %s", profile, type(env).__name__, live["DISPLAY"])
-            return _record(env, rdir, profile, live)
-        time.sleep(0.25)
+        return live if live.get("DISPLAY") else None
+
+    live = poll_until(_live_display, wait_seconds, 0.25)
+    if live:
+        logger.info("Bot Desktop for profile %s up inside %s on %s", profile, type(env).__name__, live["DISPLAY"])
+        return _record(env, rdir, profile, live)
     tail = streams.run_in(env, ["tail", "-c", "2000", f"{rdir}/launcher.log"], user=user, timeout=10).stdout
     stop(env, profile)
     raise RuntimeError(f"sandbox desktop did not publish its display within {wait_seconds:.0f}s:\n"
                        f"{tail.decode('utf-8', 'replace')}")
 
 
-def _record(env: Any, rdir: str, profile: str, live: Dict[str, str]) -> Dict[str, str]:
+def _record(env: Any, rdir: str, profile: str, live: dict[str, str]) -> dict[str, str]:
     _marker().parent.mkdir(parents=True, exist_ok=True)
     _marker().write_text(json.dumps({"display": live["DISPLAY"], "dir": rdir, "profile": profile,
                                      **_owner_identity(env)}), encoding="utf-8")
@@ -304,7 +318,7 @@ def open_rfb_stream(env: Any, profile: str) -> subprocess.Popen:
     return streams.open_stream(env, ["python3", "-c", _RELAY, f"{rdir}/rfb.sock"], user=_user_for(env))
 
 
-def cua_mcp_invocation(env: Any, profile: str, published: Dict[str, str]) -> tuple[str, list[str]]:
+def cua_mcp_invocation(env: Any, profile: str, published: dict[str, str]) -> tuple[str, list[str]]:
     """``(command, args)`` for ``StdioServerParameters``: the backend's exec prefix running ``cua-driver mcp`` on
     the sandbox display."""
     argv = streams.remote_command(env, ["cua-driver", "mcp", "--no-overlay"], child_env=published,

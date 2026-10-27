@@ -38,7 +38,7 @@ def secondary_profile(monkeypatch, tmp_path):
 
 
 def test_secondary_profile_memory_identity_never_inherits_default_environ(secondary_profile):
-    import plugins.memory.retaindb as retaindb
+    from plugins.memory import retaindb
 
     provider = retaindb.RetainDBMemoryProvider()
     provider.initialize("s1", hermes_home=str(secondary_profile))

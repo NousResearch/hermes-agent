@@ -1,6 +1,7 @@
+import type { ModelOptionsResult } from '@hermes/shared'
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { invalidateProfileScopedQueries, queryClient } from './query-client'
+import { invalidateProfileScopedQueries, keepWarmNousRow, queryClient } from './query-client'
 
 function invalidated(key: unknown[]): boolean {
   return queryClient.getQueryState(key)?.isInvalidated ?? false
@@ -54,5 +55,55 @@ describe('invalidateProfileScopedQueries', () => {
 
     expect(invalidated(['some-future-profile-query'])).toBe(true)
     expect(invalidated([{ scope: 'weird' }])).toBe(true)
+  })
+})
+
+const warm: ModelOptionsResult = {
+  providers: [
+    {
+      models: ['example/model-a', 'example/model-free:free'],
+      name: 'Nous Portal',
+      slug: 'nous',
+      unavailable_models: [],
+      usage_levels: { 'example/model-a': 'top_tier', 'example/model-free:free': 'free' }
+    }
+  ]
+}
+
+const pending: ModelOptionsResult = {
+  providers: [
+    {
+      free_tier_pending: true,
+      models: ['example/model-a', 'example/model-free:free'],
+      name: 'Nous Portal',
+      slug: 'nous',
+      unavailable_models: ['example/model-a', 'example/model-free:free']
+    }
+  ]
+}
+
+describe('keepWarmNousRow', () => {
+  it('keeps the last warm Large / Free tags while a cache-only read is still pending', () => {
+    const merged = keepWarmNousRow(warm, pending) as ModelOptionsResult
+    const row = merged.providers?.[0]
+
+    expect(row?.usage_levels).toEqual(warm.providers?.[0].usage_levels)
+    expect(row?.unavailable_models).toEqual([])
+    // Still pending, so the menu keeps re-reading until the warm row lands.
+    expect(row?.free_tier_pending).toBe(true)
+  })
+
+  it('takes a warm reply as is, and leaves a first pending reply alone', () => {
+    expect(keepWarmNousRow(pending, warm)).toEqual(warm)
+    expect(keepWarmNousRow(undefined, pending)).toEqual(pending)
+  })
+
+  it('keeps the warm tags across several pending replies in a row', () => {
+    const once = keepWarmNousRow(warm, pending)
+    const twice = keepWarmNousRow(once, structuredClone(pending)) as ModelOptionsResult
+    const row = twice.providers?.[0]
+
+    expect(row?.usage_levels).toEqual(warm.providers?.[0].usage_levels)
+    expect(row?.unavailable_models).toEqual([])
   })
 })

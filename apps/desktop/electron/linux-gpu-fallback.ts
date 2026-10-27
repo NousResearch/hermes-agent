@@ -36,6 +36,44 @@ export const LINUX_GPU_FALLBACK_MARKER_FILENAME = 'linux-gpu-fallback.json'
 export const BOOT_ABORTS_BEFORE_LINUX_GPU_FALLBACK = 2
 
 /**
+ * How long after the first window reveals a GPU-child death still counts as
+ * this launch failing to bring the GPU up. Later deaths (session logout or OOM
+ * killing the GPU child, a driver reset after suspend) are runtime events that
+ * Chromium recovers from itself; pinning every future launch to software
+ * rendering for them turned healthy hosts into 4-9 core CPU burns (#131321, #141753).
+ */
+export const LINUX_GPU_DEATH_WITNESS_GRACE_MS = 60_000
+
+export interface LinuxGpuBootWindow {
+  /** The first window is on screen. Only the first call counts. */
+  revealed: () => void
+  /** A GPU death now is a runtime event: no recovery ladder may relaunch or write a fallback for it. */
+  afterBootWindow: () => boolean
+}
+
+/**
+ * One boot clock per Linux launch, whatever the GPU vendor: the `--disable-gpu`
+ * ladder (Mesa, AMD, Intel, NVIDIA) and the NVIDIA ANGLE ladder both read it,
+ * so a late crash pins neither.
+ */
+export function createLinuxGpuBootWindow(
+  options: { platform?: NodeJS.Platform | string; now?: () => number } = {}
+): LinuxGpuBootWindow {
+  const linux = (options.platform ?? process.platform) === 'linux'
+  const now = options.now ?? Date.now
+  let revealedAt: number | null = null
+
+  return {
+    revealed: () => {
+      if (linux) {
+        revealedAt ??= now()
+      }
+    },
+    afterBootWindow: () => revealedAt !== null && now() - revealedAt > LINUX_GPU_DEATH_WITNESS_GRACE_MS
+  }
+}
+
+/**
  * Seconds after the main window reveals before the #124843 silent-retry check
  * looks for a GPU child: long enough that a healthy host's GPU child exists,
  * short enough that a sub-zygote spinning at ~350% CPU gets bounded fast.
@@ -43,7 +81,16 @@ export const BOOT_ABORTS_BEFORE_LINUX_GPU_FALLBACK = 2
 export const LINUX_GPU_SILENT_RETRY_GRACE_S = 30
 
 /** `child-process-gone` reasons that witness a broken GPU child. */
-const GPU_FAILURE_REASONS = new Set(['crashed', 'launch-failure'])
+// `launch-failed` is the reason Electron actually emits (`Details['reason']`);
+// `launch-failure` never arrives but stays so a legacy spelling still matches.
+const GPU_FAILURE_REASONS = new Set(['crashed', 'launch-failed', 'launch-failure'])
+
+/** Marker reason for a GPU-child death, keyed on Electron's real reason spelling. */
+export function linuxGpuFallbackReasonForDeath(reason: unknown): LinuxGpuFallbackReason {
+  const normalized = String(reason || '').toLowerCase()
+
+  return normalized === 'launch-failed' || normalized === 'launch-failure' ? 'gpu-launch-failure' : 'gpu-crash'
+}
 
 export type LinuxGpuMarkerState = 'booting' | 'fallback' | 'ok'
 
@@ -331,8 +378,10 @@ export function linuxGpuChildDeathPath(options: {
   alreadySoftware?: boolean
   sandboxRelaunchAttempted?: boolean
   softwareRelaunchAttempted?: boolean
+  /** The GPU survived this boot's witness window; Chromium recovers a later death itself. */
+  runtimeDeath?: boolean
 }): LinuxGpuDeathPath {
-  if ((options.platform ?? process.platform) !== 'linux') {
+  if ((options.platform ?? process.platform) !== 'linux' || options.runtimeDeath) {
     return null
   }
 

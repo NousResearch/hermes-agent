@@ -143,7 +143,7 @@ def test_dispatch_rechecks_admission(runtime, monkeypatch, pause_at, change):
 
 @pytest.mark.parametrize("fail_action", [False, True])
 def test_release_waits_without_blocking_another_profile_or_replaying(runtime, monkeypatch, fail_action):
-    homes, created = runtime
+    homes, _created = runtime
     action_entered, finish_action, stop_attempted = (threading.Event() for _ in range(3))
     threads = []
     with _profile(homes[0]):

@@ -1,3 +1,4 @@
+// health: allow FILE_LINES -- the copy contract for the usage-window plan keys every locale adds (allowance gauges, Large/Free tags, the limit card)
 // Desktop i18n type contract.
 //
 // `Translations` is the single source of truth for every translatable string
@@ -8,15 +9,30 @@
 import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
 
-import type { AppTourTranslations, HandoffTourTranslations } from './types_app_tour'
-import type { AuxTaskCopyMap } from './types_aux_tasks'
+import type { AppTourTranslations } from './types_app_tour'
 import type { BillingTranslations } from './types_billing'
 import type { BootTranslations } from './types_boot'
+import type { CatalogTranslations } from './types_catalog'
 import type { CatalogInstallTranslations } from './types_catalog_install'
+import type { ClarifyCopy } from './types_clarify'
+import type { ConnectorAccountsTranslations, ConnectorCardTranslations } from './types_connectors'
+import type { GatewayGroupOpenCopy, SkillDeepLinkCopy } from './types_deep_links'
+import type { ExternalOpenFailedCopy } from './types_external_open'
+import type { FirstRunCopy } from './types_first_run'
+import type { GatewayHostTranslations } from './types_gateway_host'
 import type { ModelMenuTranslations } from './types_model_menu'
+import type { ModelSettingsTranslations } from './types_model_settings'
 import type { NoticeTranslations } from './types_notices'
+import type { NotificationSettingsTranslations } from './types_notifications'
+import type { OnboardingTranslations } from './types_onboarding'
+import type { PluginPreviewAccessTranslations } from './types_plugin_preview_access'
+import type { PluginUpdateTranslations } from './types_plugin_update'
+import type { SidebarProjectsTranslations } from './types_projects'
+import type { RightSidebarTranslations } from './types_right_sidebar'
 import type { SharedMetricsTranslations } from './types_shared_metrics'
+import type { ThemePickerCopy } from './types_theme_picker'
 import type { UninstallSectionTranslations } from './types_uninstall_section'
+import type { UpdateChannelCopy } from './types_update_channel'
 
 /** The locales compiled into the app (`TRANSLATIONS`). */
 export type BundledLocale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru' | 'fr' | 'de' | 'es'
@@ -74,52 +90,14 @@ export interface Translations extends NoticeTranslations {
   /** Shared-metrics consent: first-run dialog + Settings › Safety toggles. */
   sharedMetrics: SharedMetricsTranslations
   appTour: AppTourTranslations
-  externalOpenFailed: {
-    title: string
-    message: string
-    copyUrl: string
-    close: string
-    missing: {
-      title: string
-      message: string
-    }
-  }
+  firstRun: FirstRunCopy
+  externalOpenFailed: ExternalOpenFailedCopy
   intro: {
     stock: Record<string, string[]>
     custom: (label: string) => string[]
   }
-  connectors: {
-    title: string
-    connect: string
-    skip: string
-    cancel: string
-    retry: string
-    grant: string
-    connected: string
-    checking: string
-    notConnected: string
-    skipped: string
-    disabled: string
-    failed: string
-    needsAuth: string
-    opening: string
-    waiting: string
-    timeout: string
-    refresh: string
-    connectError: string
-    connectErrorFor: (app: string) => string
-    unavailable: string
-    ownerMissing: string
-    search: string
-    empty: string
-    disclaimer: string
-    execution: string
-    setup: (server: string) => string
-    openInBrowser: string
-    setupCancel: string
-    authorizedToolsUnavailable: string
-    required: string
-  }
+  connectors: ConnectorCardTranslations
+catalog: CatalogTranslations
   connectorsPage: {
     title: string
     searchPlaceholder: (count: number) => string
@@ -273,6 +251,7 @@ export interface Translations extends NoticeTranslations {
       advanced: string
       advancedHint: string
     }
+    accounts: ConnectorAccountsTranslations
     tools: {
       title: string
       notInstalledBody: string
@@ -502,6 +481,7 @@ export interface Translations extends NoticeTranslations {
       microphoneConstraintsUnsupported: string
       microphoneFailed: string
       microphoneInUse: string
+      microphoneNeedsHttps: string
       microphonePermissionDenied: string
       microphoneStartFailed: string
       microphoneUnsupported: string
@@ -651,6 +631,8 @@ export interface Translations extends NoticeTranslations {
       openFolder: string
       rescan: string
       reveal: string
+      enable: string
+      disable: string
       failed: string
       kinds: { bundled: string; disk: string; runtime: string }
       installModal: {
@@ -660,15 +642,22 @@ export interface Translations extends NoticeTranslations {
         title: string
         description: string
         repoLabel: string
+        verified: string
+        unverified: string
+        reviewedByNous: string
+        installsAndEnables: (profile: string) => string
+        installsOnly: (profile: string) => string
+        advanced: string
+        versionLabel: string
+        reviewedPin: (sha: string) => string
+        latestCommit: string
+        nothingToInstall: string
         includesHeading: string
         agentLabel: string
         desktopLabel: string
         profileLabel: string
         agentTargetLocal: (profile: string, dir: string) => string
         agentTargetRemote: (profile: string) => string
-        catalogPinned: (name: string, sha: string) => string
-        reviewedHeading: string
-        reviewedIntro: string
         toolsConnected: (n: number) => string
         skillsReady: (names: string[]) => string
         nextChat: string
@@ -679,12 +668,10 @@ export interface Translations extends NoticeTranslations {
         desktopTargetFromPackage: string
         desktopOnlyNote: string
         insecureWarning: string
-        securityHeading: string
         securityIntro: string
         sourceHeading: string
         viewRepository: string
         viewPluginFiles: string
-        gitCloneLabel: string
         enableAgent: string
         forceReinstall: string
         pinToCommit: string
@@ -775,25 +762,7 @@ export interface Translations extends NoticeTranslations {
         masterPasswordPlaceholder: string
       }
     }
-    notifications: {
-      title: string
-      intro: string
-      enableAll: string
-      enableAllDesc: string
-      focusedHint: string
-      kinds: Record<
-        'approval' | 'backgroundDone' | 'credits' | 'input' | 'plugin' | 'turnDone' | 'turnError',
-        { label: string; description: string }
-      >
-      test: string
-      testTitle: string
-      testBody: string
-      testSent: string
-      testUnsupported: string
-      completionSoundTitle: string
-      completionSoundDesc: string
-      completionSoundPreview: string
-    }
+    notifications: NotificationSettingsTranslations
     sections: Record<string, string>
     searchPlaceholder: Record<'about' | 'config' | 'gateway' | 'keys' | 'mcp' | 'sessions', string>
     modeOptions: Record<'light' | 'dark' | 'system', ModeOptionCopy>
@@ -946,12 +915,6 @@ export interface Translations extends NoticeTranslations {
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>
     uninstallSection: UninstallSectionTranslations
-    poolLimits: {
-      warmBotBackendsAria: string
-      warmBotBackendsTitle: string
-      backendIdleTimeoutAria: string
-      backendIdleTimeoutTitle: string
-    }
     customEndpoints: {
       active: string
       apiKeySet: string
@@ -998,9 +961,7 @@ export interface Translations extends NoticeTranslations {
       screenRecording: string
       driverHealth: string
     }
-    about: {
-      updates: string
-    }
+    about: { updates: string; channel: UpdateChannelCopy }
     config: {
       minimizeToTrayTitle: string
       minimizeToTrayDesc: string
@@ -1171,10 +1132,8 @@ export interface Translations extends NoticeTranslations {
       scopesRestored: (profiles: string) => string
       scopeNotRestored: (profile: string, error: string) => string
     }
-    gateway: {
+    gateway: GatewayHostTranslations & {
       loading: string
-      unavailableTitle: string
-      unavailableDesc: string
       title: string
       envOverride: string
       intro: string
@@ -1357,63 +1316,7 @@ export interface Translations extends NoticeTranslations {
       deepLinkErrorUrl: string
       deepLinkErrorTooLarge: string
     }
-    model: {
-      setupProviderFallback: string
-      setUpProvider: (name: string) => string
-      staleAuxBefore: (count: number, names: string) => string
-      staleAuxAfter: string
-      staleAuxOtherProviders: string
-      moaEnabled: string
-      moaSetDefault: string
-      moaNewPresetPlaceholder: string
-      moaAddPreset: string
-      customModel: string
-      customModelPlaceholder: string
-      chooseFromList: string
-      moaDefault: string
-      moaReferenceToggle: (enabled: boolean, index: number) => string
-      moaReferenceTitle: (index: number) => string
-      moaAddReference: string
-      loading: string
-      appliesDesc: string
-      provider: string
-      model: string
-      applying: string
-      mainAppliedTitle: string
-      mainAppliedMessage: (model: string) => string
-      defaultsLabel: string
-      reasoning: string
-      reasoningOff: string
-      speed: string
-      speedStandard: string
-      defaultsFailed: string
-      loadFailed: string
-      restartRequired: string
-      restartBackend: string
-      restartingBackend: string
-      restartFailed: string
-      auxiliaryTitle: string
-      resetAllToMain: string
-      staleAuxDismiss: string
-      auxiliaryDesc: string
-      setToMain: string
-      change: string
-      autoUseMain: string
-      inheritMainEffort: string
-      inheritsFrom: (task: string) => string
-      followTask: (task: string) => string
-      providerDefault: string
-      fallbackAdd: string
-      fallbackEmpty: string
-      notInCatalog: string
-      moaTitle: string
-      moaPreset: string
-      moaDescription: string
-      moaAggregator: string
-      moaAggregatorBilled: string
-      moaReferenceHint: string
-      tasks: AuxTaskCopyMap
-    }
+    model: ModelSettingsTranslations
     localModels: {
       connectionChanged: string
       title: string
@@ -1628,6 +1531,17 @@ export interface Translations extends NoticeTranslations {
         cancel: string
         effectScheduled: (targetName: string, effectiveAt: string, creditsDelta: string) => string
       }
+      keepGoingOnCredits: {
+        title: string
+        description: string
+        /** Shown under the switch while the Remote Spending approval is open in the browser. */
+        approveInBrowser: string
+        openAgain: string
+        cancel: string
+        /** Approved, but the change was still refused: shown with a Try again button. */
+        approvedRetry: string
+        tryAgain: string
+      }
       autoReload: {
         threshold: string
         thresholdAria: string
@@ -1695,6 +1609,20 @@ export interface Translations extends NoticeTranslations {
             captionDefault: string
             captionSpending: string
             valueUsed: (spent: string, limit: string) => string
+          }
+          window: {
+            today: string
+            week: string
+            month: string
+            topTier: string
+            barLabel: (title: string) => string
+            captionPaused: string
+            captionPausedOther: string
+            captionTopTierUsedUp: string
+            captionTopTierUsedUpKeepGoingOff: string
+            captionResetsIn: (duration: string) => string
+            captionIncluded: string
+            valueUsed: (percent: string) => string
           }
         }
         planCard: {
@@ -1910,17 +1838,7 @@ export interface Translations extends NoticeTranslations {
     }
   }
 
-  skillDeepLink: {
-    installTitle: (name: string) => string
-    installDescription: string
-    installTo: string
-    thisComputer: string
-    installing: string
-    installComplete: (name: string) => string
-    destinationChanged: string
-    installed: string
-    source: string
-  }
+  skillDeepLink: SkillDeepLinkCopy
   skills: {
     tabSkills: string
     tabToolsets: string
@@ -1972,7 +1890,8 @@ export interface Translations extends NoticeTranslations {
     skillArchivedTitle: string
     skillArchivedMessage: string
     tabPlugins: string
-    plugins: {
+    plugins: PluginUpdateTranslations &
+      PluginPreviewAccessTranslations & {
       agentTitle: string
       agentBlurb: string
       pageBlurb: string
@@ -2012,22 +1931,10 @@ export interface Translations extends NoticeTranslations {
         unsupported_gpu: string
         unknown: string
       }
-      catalogTitle: string
-      catalogBrowse: string
-      catalogHide: string
-      catalogHint: string
       alreadyInstalled: (name: string) => string
       catalogProvenance: (sha: string) => string
       pinnedProvenance: (sha: string) => string
       pinnedBadge: (sha: string) => string
-      tierOfficial: string
-      tierCommunity: string
-      updateToPin: (sha: string) => string
-      updateFailed: (name: string) => string
-      updated: (name: string) => string
-      updateConsentTitle: (name: string) => string
-      updateConsentBody: (name: string, sha: string) => string
-      updateConsentConfirm: string
       uninstall: string
       uninstallTip: (name: string, profile: string) => string
       uninstallConfirmTitle: (name: string) => string
@@ -2047,6 +1954,7 @@ export interface Translations extends NoticeTranslations {
         saved: (name: string) => string
         saveFailed: (name: string) => string
         required: string
+        optional: string
         secretSet: string
         secretStoredAs: (env: string) => string
       }
@@ -2134,6 +2042,7 @@ export interface Translations extends NoticeTranslations {
     importedBadge: string
     resetToMine: string
   }
+  gatewayGroupOpen: GatewayGroupOpenCopy
   agents: {
     extendedTranscript: string
     transcriptTruncated: string
@@ -2530,8 +2439,10 @@ export interface Translations extends NoticeTranslations {
     exported: string
     failedImport: string
     failedExport: string
+    exportNeedsHost: (name: string) => string
     allProfiles: string
     showAllProfiles: string
+    notServedHere: string
     switchToProfile: (name: string) => string
     switchToConnection: (name: string) => string
     switchConnectionFailed: (name: string) => string
@@ -2904,81 +2815,7 @@ export interface Translations extends NoticeTranslations {
       guide: string
     }
     noFilterMatches: string
-    projects: {
-      showAllSessions: string
-      sectionLabel: string
-      home: string
-      autoDiscovered: string
-      newButton: string
-      createTitle: string
-      createDesc: string
-      renameTitle: string
-      addFolderTitle: string
-      namePlaceholder: string
-      foldersLabel: string
-      ideaLabel: string
-      ideaPlaceholder: string
-      ideaGenerate: string
-      ideaGenerating: string
-      ideaShuffle: string
-      noFolders: string
-      addFolder: string
-      primaryBadge: string
-      removeFolder: string
-      create: string
-      menu: string
-      menuRename: string
-      menuAppearance: string
-      noColor: string
-      menuAddFolder: string
-      menuSetActive: string
-      menuDelete: string
-      moveToProject: string
-      movedTo: (name: string) => string
-      moveFailed: string
-      moveNoFolder: string
-      moveNoProjects: string
-      reveal: string
-      copyPath: string
-      removeFromSidebar: string
-      createdInPreviousContext: string
-      createFailed: string
-      staleBackend: string
-      deleteConfirm: string
-      startWork: string
-      newWorktreeTitle: string
-      newWorktreeDesc: string
-      branchPlaceholder: string
-      branchOff: () => { after: string; before: string }
-      baseBranchPlaceholder: string
-      baseBranchNone: string
-      startWorkFailed: string
-      worktreeStaleBackend: string
-      worktreeProjectLabel: string
-      worktreeProjectPlaceholder: string
-      worktreeProjectNone: string
-      convertBranch: string
-      convertBranchTitle: string
-      convertBranchDesc: string
-      convertBranchPlaceholder: string
-      convertBranchInstead: string
-      branchOpenExisting: string
-      branchSwitchHome: string
-      branchCreateWorktree: string
-      branchTrackRemote: string
-      branchesLoading: string
-      noBranches: string
-      removeWorktree: string
-      removeWorktreeFailed: string
-      removeWorktreeConfirm: string
-      removeWorktreeDirty: string
-      forceRemove: string
-      enter: (label: string) => string
-      reorder: (label: string) => string
-      toggle: (label: string, open: boolean) => string
-      showAllCount: (count: number) => string
-      back: string
-    }
+    projects: SidebarProjectsTranslations
     newSessionIn: (label: string) => string
     showMoreIn: (count: number, label: string) => string
     loading: string
@@ -3057,6 +2894,7 @@ export interface Translations extends NoticeTranslations {
     openDirective: string
     queueMessage: string
     steer: string
+    redirect: string
     stop: string
     send: string
     speaking: string
@@ -3111,6 +2949,7 @@ export interface Translations extends NoticeTranslations {
     editingQueuedInComposer: string
     restoredDraftNotice: string
     restoredDraftUndo: string
+    /** The local-setup offer above the input after the first finished task. */
     queueEdit: string
     queueExpand: string
     queueCollapse: string
@@ -3118,6 +2957,11 @@ export interface Translations extends NoticeTranslations {
     queueSend: string
     queueSteer: string
     queueDelete: string
+    queueLostNote: string
+    restoreImageDraft: string
+    queueCancelFailed: string
+    queueLostDiscard: string
+    queueLostDiscardTip: string
     queueResume: string
     queueResumeTip: string
     queueStuckTitle: string
@@ -3153,43 +2997,6 @@ export interface Translations extends NoticeTranslations {
     snippets: Record<string, { label: string; description: string; text: string }>
     dropFiles: string
     dropSession: string
-    mcpSuggestions: {
-      label: (server: string) => string
-      tip: (keyword: string) => string
-      connecting: (server: string) => string
-      cancelTip: string
-      added: (server: string) => string
-      addedTip: string
-      connectFailed: (server: string) => string
-    }
-    skillSuggestions: {
-      label: (skill: string) => string
-      tip: (skill: string) => string
-      done: (skill: string) => string
-      doneTip: string
-    }
-    githubSuggestions: {
-      label: string
-      tip: string
-      done: string
-      doneTip: string
-    }
-    repairSuggestions: {
-      label: (server: string) => string
-      tip: (server: string) => string
-      working: (server: string) => string
-      workingTip: string
-      done: (server: string) => string
-      doneTip: string
-      failed: (server: string) => string
-    }
-    cronSuggestions: {
-      label: string
-      tip: (phrase: string) => string
-      prefix: string
-      done: string
-      doneTip: string
-    }
   }
 
   statusStack: {
@@ -3279,7 +3086,7 @@ export interface Translations extends NoticeTranslations {
       heartbeatEveryHours: (hours: number) => string
       heartbeatEverySeconds: (seconds: number) => string
       heartbeatNext: (time: string) => string
-      heartbeatDueWaitingForIdle: string
+      dueWaitingForIdle: string
       heartbeatActions: string
       pauseHeartbeat: string
       resumeHeartbeat: string
@@ -3482,16 +3289,6 @@ export interface Translations extends NoticeTranslations {
     versionDetailsUncommittedChanges: string
   }
 
-  handoffTour: HandoffTourTranslations
-  /** The guided first run's pre-written opening line — banked, not generated,
-   *  so the first paint costs no model time. Translated per locale because the
-   *  model is told to speak the user's language from its first real turn, and
-   *  an English opener above a Japanese reply reads as two different agents.
-   *  `nameSuggestion` offers the OS account name as a default. */
-  guidedGreeting: {
-    line: string
-    nameSuggestion: (name: string) => string
-  }
   install: {
     stageStates: Record<string, string>
     oneTimeTitle: string
@@ -3561,68 +3358,7 @@ export interface Translations extends NoticeTranslations {
     openLogs: string
   }
 
-  onboarding: {
-    headerTitle: string
-    headerDesc: string
-    preparingInstall: string
-    starting: string
-    lookingUpProviders: string
-    collapse: string
-    otherProviders: string
-    haveApiKey: string
-    chooseLater: string
-    recommended: string
-    connected: string
-    featuredPitch: string
-    fireworksPitch: string
-    localModelsTitle: string
-    localModelsPitch: string
-    openRouterPitch: string
-    apiKeyOptions: Record<string, { short: string; description: string }>
-    backToSignIn: string
-    getKey: string
-    replaceCurrent: string
-    pasteApiKey: string
-    localApiKeyPlaceholder: string
-    localModelNamePlaceholder: string
-    couldNotSave: string
-    connecting: string
-    update: string
-    flowSubtitles: Record<string, string>
-    startingSignIn: (provider: string) => string
-    verifyingCode: (provider: string) => string
-    connectedProvider: (provider: string) => string
-    connectedPicking: (provider: string) => string
-    signInFailed: string
-    signInExpired: string
-    signInDidNotFinish: (provider: string) => string
-    tryAgain: string
-    useApiKeyInstead: string
-    errorDetails: string
-    pickDifferentProvider: string
-    signInWith: (provider: string) => string
-    openedBrowser: (provider: string) => string
-    authorizeThere: string
-    copyAuthCode: string
-    pasteAuthCode: string
-    reopenAuthPage: string
-    autoBrowser: (provider: string) => string
-    reopenSignInPage: string
-    waitingAuthorize: string
-    externalPending: (provider: string) => string
-    signedIn: string
-    deviceCodeOpened: (provider: string) => string
-    reopenVerification: string
-    copy: string
-    defaultModel: string
-    freeTier: string
-    pro: string
-    free: string
-    price: (input: string, output: string) => string
-    change: string
-    startChatting: string
-    docs: (provider: string) => string
-  }
+  onboarding: OnboardingTranslations
 
   freeTier: {
     /** Settings › Providers row title while the Nous identity is the free tier. */
@@ -3647,27 +3383,27 @@ export interface Translations extends NoticeTranslations {
     signIn: string
     signInHeading: string
     settingUp: string
-    codeBody: string
-    copyLink: string
+    finishInBrowser: string
     doNotShare: string
+    openPageAgain: string
     waiting: string
     finishingHeading: string
     finishingBody: string
-    signedInAs: (email: string) => string
+    /** Over the account email on the completed screen. */
+    signedInAsLabel: string
     signedIn: string
     completedBody: string
+    /** The free tier's apps: reconnect the ones that did not move; open Connectors to check. */
+    reconnect: string
+    openConnectors: string
     defaultModel: string
     change: string
     done: string
     notNow: string
     tryAgain: string
-    startAgain: string
     didNotComplete: string
-    rejectedBody: string
-    supersededBody: string
     timedOutHeading: string
     timedOutBody: string
-    retiredBody: string
     errorBody: string
     /** The account service asked for a short wait mid sign-in (a busy account, a rate limit, the ops pause). */
     busyHeading: string
@@ -3676,6 +3412,13 @@ export interface Translations extends NoticeTranslations {
     unreachableBody: string
     alreadySignedInHeading: string
     alreadySignedInBody: string
+    /** The "keep going" offer the backend times after a finished task (repeats, backing off). */
+    offer: {
+      heading: string
+      body: string
+      signIn: string
+      notNow: string
+    }
     // First-launch set-up failure notice: the free tier could not be created at boot.
     // One sentence per backend code (`hermes_cli/anon_auth.py::ANON_*`); the copy never says
     // the free MODEL is off — what is unavailable is using Hermes without signing in.
@@ -3716,6 +3459,29 @@ export interface Translations extends NoticeTranslations {
     customModel: string
     addCustomModelAction: string
     customModelPlaceholder: string
+    today: string
+    week: string
+    month: string
+    topTier: string
+    included: string
+    pausedRenewal: string
+    pausedOther: string
+    includedUsedUp: string
+    /** Row note: past its included usage, this model bills top-up credits (pay as you go). */
+    /** "Weekly limit reached" from a limit name ("weekly"). */
+    limitReached: (name: string) => string
+    limitNames: { day: string; month: string; top_tier: string; week: string }
+    limitThenCredits: string
+    limitThenCreditsLarge: string
+    limitThenWait: string
+    limitThenWaitLarge: string
+    percentUsed: (percent: string) => string
+    resetsIn: (duration: string) => string
+    /** Window plans: the gateway's per-model word (free / low / medium / top_tier). */
+    usageLevels: { free: string; top_tier: string }
+    sectionRecommended: string
+    sectionOther: string
+    largeFootnote: string
   }
 
   modelVisibility: {
@@ -3834,6 +3600,8 @@ export interface Translations extends NoticeTranslations {
       toggleWorkspace: string
       cacheHitRateTitle: string
       tokensPerSecondTitle: string
+      togglePlanUsage: string
+      planUsageTitle: (used: string, resetsIn: string) => string
       agents: string
       closeAgents: string
       openAgents: string
@@ -3889,52 +3657,7 @@ export interface Translations extends NoticeTranslations {
     }
   }
 
-  rightSidebar: {
-    aria: string
-    panelsAria: string
-    files: string
-    terminal: string
-    noFolderSelected: string
-    changeCwdTitle: string
-    remotePickerTitle: string
-    remotePickerDescription: string
-    remotePickerSelect: string
-    remotePickerNewFolder: string
-    remotePickerFolderName: string
-    remotePickerCreateFolder: string
-    remotePickerInvalidFolderName: string
-    remotePickerCreateFolderFailed: (error: string) => string
-    folderTip: (cwd: string) => string
-    openFolder: string
-    refreshTree: string
-    collapseAll: string
-    showIgnored: string
-    hideIgnored: string
-    previewUnavailable: string
-    couldNotPreview: (path: string) => string
-    noProjectTitle: string
-    noProjectBody: string
-    noProjectOpen: string
-    noDiffs: string
-    unreadableTitle: string
-    unreadableBody: (error: string) => string
-    emptyTitle: string
-    emptyBody: string
-    treeErrorTitle: string
-    treeErrorBody: string
-    tryAgain: string
-    loadingTree: string
-    loadingFiles: string
-    terminalHide: string
-    terminalsAria: string
-    terminalNew: string
-    terminalReadOnly: string
-    terminalReadOnlyHelp: string
-    terminalOpenInteractive: string
-    terminalCloseOthers: string
-    terminalCloseAll: string
-    addToChat: string
-  }
+  rightSidebar: RightSidebarTranslations
 
   preview: {
     tab: string
@@ -3997,6 +3720,7 @@ export interface Translations extends NoticeTranslations {
       sentMessage: (count: number) => string
     }
     web: {
+      embeddedPreviewHint: string
       appFailedToBoot: string
       serverNotFound: string
       remoteLoopback: string
@@ -4202,6 +3926,17 @@ export interface Translations extends NoticeTranslations {
       errorStartNewSession: string
       errorSwitchProvider: string
       errorChooseModel: string
+      /** usage_window: one click to the plan's recommended model; `note` is "free" / "included". */
+      errorSwitchToModel: (model: string, note: string) => string
+      errorSwitchModelFailed: string
+      /** usage_window: turn on Keep going on credits, then re-run the turn. */
+      errorUseCredits: string
+      errorUseCreditsFailed: string
+      /** usage_window with no balance: opens Settings → Billing to add credits. */
+      errorAddCredits: string
+      /** Error card button: opens Settings → Billing in-app (Keep going, buy credits). */
+      errorOpenBillingSettings: string
+      /** Error card body when a Nous account is out of credits (its button opens Settings → Billing). */
       errorCompressConversation: string
       errorCompressFailed: string
       errorOpenHermesFolder: string
@@ -4261,22 +3996,8 @@ export interface Translations extends NoticeTranslations {
       alwaysDescription: (pattern: string) => string
       alwaysAllow: string
     }
-    clarify: {
-      notReady: string
-      gatewayDisconnected: string
-      sendFailed: string
-      loadingQuestion: string
-      other: string
-      placeholder: string
-      skip: string
-      skipped: string
-      noAnswer: string
-      confirmAndContinueLabel: string
-      singleSelectHint: string
-      multiSelectHint: string
-      questionProgress: (answered: number, total: number) => string
-      notDelivered: string
-    }
+    clarify: ClarifyCopy
+    themePicker: ThemePickerCopy
     catalogInstall: CatalogInstallTranslations
     mcpSetup: {
       installTitle: string
@@ -4476,6 +4197,7 @@ export interface Translations extends NoticeTranslations {
     imageAttach: string
     imageWriteFailed: string
     imageAttachFailed: string
+    attachFailed: string,
     pastedContent: string
     pasteAttachFailed: string
     attachImages: string
@@ -4483,6 +4205,7 @@ export interface Translations extends NoticeTranslations {
     noClipboardImage: string
     clipboardPasteFailed: string
     dropFiles: string
+    dropFilesMore: (count: number) => string
     handoff: {
       pickPlatform: string
       success: (platform: string) => string
@@ -4500,7 +4223,6 @@ export interface Translations extends NoticeTranslations {
      *  a button, and `action` is its label. */
     items: Record<TipId, { title: string; text: string }> & {
       'local-runtime-update': { title: string; text: string; action: string }
-      'local-setup': { title: string; text: string; action: string }
     }
   }
 

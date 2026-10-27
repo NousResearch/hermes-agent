@@ -19,15 +19,16 @@ import {
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { sessionListFingerprint, sessionMessagesSignature } from '@/lib/session-signatures'
 import { latestSessionTodos, latestSessionTodoSnapshot } from '@/lib/todos'
-import { pendingSessionReplay } from '@/store/gateway'
+import { pendingSessionReplay, sharedPrimaryRoute } from '@/store/gateway'
 import { $sidebarShowArchived } from '@/store/layout'
 import { $changeEventsAvailable, $cronChangeTick, $projectsChangeTick, $sessionsChangeTick } from '@/store/live-sync'
 import { $onBattery, batteryPollInterval } from '@/store/power'
-import { refreshActiveProfile } from '@/store/profile'
+import { normalizeProfileKey, refreshActiveProfile } from '@/store/profile'
 import { refreshProjects, refreshProjectTree } from '@/store/projects'
 import {
   $activeSessionId,
   $busy,
+  $connection,
   $currentCwd,
   $messagingSessions,
   $selectedStoredSessionId,
@@ -37,6 +38,7 @@ import {
   sessionMatchesStoredId,
   setCurrentCwd
 } from '@/store/session'
+import { $focusedStoredSessionId } from '@/store/session-focus'
 import type { SessionOwnerRoute } from '@/store/session-request-router'
 import {
   $sessionStates,
@@ -48,6 +50,7 @@ import {
   setLiveTurnBackend,
   setSessionStalled
 } from '@/store/session-states'
+import { noteLiveSessionSource } from '@/store/session-unread'
 import { loadArchivedSessions } from '@/store/sidebar-archive'
 import {
   clearActiveSessionTodos,
@@ -79,6 +82,19 @@ export function profileScopeForTranscriptSession(stored: ActiveTranscriptSession
   }
 
   return stored.profile
+}
+
+/** Dedupe key for one active transcript's last published page signature. */
+function transcriptSignatureKey(stored: ActiveTranscriptSession, storedSessionId: string): string {
+  return stored.ownerRoute
+    ? JSON.stringify([
+        stored.ownerRoute.connectionId,
+        stored.ownerRoute.profile,
+        stored.ownerRoute.targetProfile ?? '',
+        stored.ownerRoute.mode ?? '',
+        storedSessionId
+      ])
+    : `${stored.profile ?? 'default'}:${storedSessionId}`
 }
 
 /** Only a runtime-matched explicit tile owner overrides visible rows; unique hints are the last fallback. */
@@ -522,7 +538,24 @@ export async function reconcileActiveTranscript({
   const storedSessionId = selectedStoredSessionIdRef.current
   const runtimeSessionId = activeSessionIdRef.current
 
-  if (!storedSessionId || !runtimeSessionId || busyRef.current || tileRuntimeOwnsLiveState(runtimeSessionId)) {
+  // The two refs move separately on a switch (resumeSession names the new
+  // stored id before the active runtime changes). A runtime already hosting a
+  // different stored session is mid-switch: writing under the selected id
+  // would re-key it, and its next session.info would read as a compression
+  // rotation that drags the route back.
+  const hostsOtherSession = () => {
+    const hosted = runtimeSessionId ? $sessionStates.get()[runtimeSessionId]?.storedSessionId : null
+
+    return Boolean(hosted && hosted !== storedSessionId)
+  }
+
+  if (
+    !storedSessionId ||
+    !runtimeSessionId ||
+    busyRef.current ||
+    tileRuntimeOwnsLiveState(runtimeSessionId) ||
+    hostsOtherSession()
+  ) {
     return
   }
 
@@ -578,7 +611,8 @@ export async function reconcileActiveTranscript({
       tileRuntimeOwnsLiveState(runtimeSessionId) ||
       transcriptChangedDuringRead(messagesAtRequest, $sessionStates.get()[runtimeSessionId]?.messages) ||
       selectedStoredSessionIdRef.current !== storedSessionId ||
-      activeSessionIdRef.current !== runtimeSessionId
+      activeSessionIdRef.current !== runtimeSessionId ||
+      hostsOtherSession()
 
     const current = $sessionStates.get()[runtimeSessionId]
 
@@ -586,15 +620,7 @@ export async function reconcileActiveTranscript({
       return
     }
 
-    const signatureKey = stored.ownerRoute
-      ? JSON.stringify([
-          stored.ownerRoute.connectionId,
-          stored.ownerRoute.profile,
-          stored.ownerRoute.targetProfile ?? '',
-          stored.ownerRoute.mode ?? '',
-          storedSessionId
-        ])
-      : `${stored.profile ?? 'default'}:${storedSessionId}`
+    const signatureKey = transcriptSignatureKey(stored, storedSessionId)
 
     // Same rule as the warm-activation guard (use-session-actions/index.ts):
     // publishing the page would blank the thread and trip the routed loading
@@ -693,6 +719,7 @@ interface LiveSessionStatusItem {
   id?: string
   last_active?: number
   session_key?: string
+  source?: null | string
   status?: 'idle' | 'starting' | 'waiting' | 'working'
 }
 
@@ -765,6 +792,7 @@ export function rehydrateLiveSessionStatuses(
     }
 
     seen.add(runtimeSessionId)
+    noteLiveSessionSource(storedSessionId, session.source, profileKey)
 
     if (working) {
       workingStoredIds.add(storedSessionId)
@@ -879,6 +907,38 @@ export function rehydrateLiveSessionStatuses(
   // over, whether or not an earlier poll ever saw its runtime (a turn that
   // started just before the drop was never polled).
   confirmReconnectSettlesExcept(workingStoredIds)
+}
+
+/** Params for the live-status poll. With a session open the session RPC
+ *  dispatcher routes it to that session's owner, so it names nothing. With none
+ *  open it rides the active socket, and a profile that shares the primary socket
+ *  (a Webapp tab's live pick, a native local profile, a global remote) is only
+ *  reached by naming it: the socket answers an unnamed request for its own
+ *  profile, and the sidebar would paint that profile's turns instead of the
+ *  selected one's.
+ *
+ *  The published descriptor is not enough on its own: a reconnect republishes
+ *  the primary's own descriptor (sharedPrimary false, local or remote) while the
+ *  picked profile stays selected. So a descriptor that isn't the selected
+ *  profile's own asks main for the selected profile's route, the check
+ *  requestGatewayForProfile routes by. The selected profile's own descriptor
+ *  asks nothing. */
+async function liveStatusParams(activeGatewayProfile: string): Promise<Record<string, unknown>> {
+  const connection = $connection.get()
+
+  if ($focusedStoredSessionId.get() || !connection) {
+    return {}
+  }
+
+  if (connection.sharedPrimary === true) {
+    return { profile: activeGatewayProfile }
+  }
+
+  const ownSocket =
+    Boolean(connection.profile?.trim()) &&
+    normalizeProfileKey(connection.profile) === normalizeProfileKey(activeGatewayProfile)
+
+  return !ownSocket && (await sharedPrimaryRoute(activeGatewayProfile)) ? { profile: activeGatewayProfile } : {}
 }
 
 /** Forget every profile's live-runtime bookkeeping. A gateway wipe already
@@ -1252,7 +1312,10 @@ export function useBackgroundSync({
       const stateAtRequest = $sessionStates.get()
 
       try {
-        const response = await requestGateway<LiveSessionStatusResponse>('session.active_list', {})
+        const response = await requestGateway<LiveSessionStatusResponse>(
+          'session.active_list',
+          await liveStatusParams(activeGatewayProfile)
+        )
 
         if (!cancelled) {
           rehydrateLiveSessionStatuses(response, Date.now(), activeGatewayProfile, stateAtRequest)

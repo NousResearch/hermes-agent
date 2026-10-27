@@ -5,12 +5,14 @@ import { setApiRequestLocalMode } from '@/api/client'
 import { lastVisibleMessageIsUser } from '@/app/chat/thread-loading'
 import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
+import { browserPageBasePath, readBrowserDefaultProjectDir } from '@/lib/browser-settings'
 import type { ChatMessage } from '@/lib/chat-messages'
 import {
   activeConnectionScopeSuffix,
   connectionScopeSuffix,
   rescopeConnectionScopedStores
 } from '@/lib/connection-scoped'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { isMessagingSource } from '@/lib/session-source'
 import type { TileSessionFocusStamp } from '@/lib/session-timer-since'
 import { persistBoolean, persistString, readJson, storedBoolean, storedString, writeJson } from '@/lib/storage'
@@ -37,7 +39,12 @@ type Updater<T> = T | ((current: T) => T)
  *   shipped a stale `provider` beside the profile-default model and minted
  *   sessions on a route nobody chose (#134677).
  */
-export type ComposerModelSource = '' | 'default' | 'manual' | 'manual-effort'
+// Single source of truth for the union: getCurrentModelSource()'s stored-string
+// whitelist is derived from this, so adding a flavor cannot silently degrade to
+// '' in the getter (a miss there reads as "nothing picked" and drops the
+// effort shield).
+const COMPOSER_MODEL_SOURCES = ['', 'default', 'manual', 'manual-effort'] as const
+export type ComposerModelSource = (typeof COMPOSER_MODEL_SOURCES)[number]
 
 const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
 
@@ -1182,6 +1189,7 @@ export const $awaitingResponse = atom(false)
 // Null whenever the active route has a healthy (or in-flight) resume.
 export const $resumeFailedSessionId = atom<string | null>(null)
 export interface SessionResumeRequest {
+  authoritativeSnapshot?: boolean
   ownerRoute?: SessionOwnerRoute
   sequence: number
   sessionId: string
@@ -1598,8 +1606,14 @@ export const markSessionRead = (storedSessionId: string | null | undefined) => {
     return
   }
 
-  const sessions = $sessions.get()
-  const familyIds = new Set<string>(lineageAliases(storedSessionId, sessions))
+  // The family is the opened session's own profile's rows: another profile's same-id session is a
+  // different conversation. Its owner is the first matching row, recents first as selection reads them.
+  // (Local normalize: importing @/store/profile here would be circular.)
+  const profileOf = (row: SessionInfo) => (row.profile ?? '').trim() || 'default'
+  const rows = [...$sessions.get(), ...$messagingSessions.get(), ...$cronSessions.get()]
+  const opened = rows.find(row => sessionMatchesStoredId(row, storedSessionId))
+  const own = opened ? rows.filter(row => profileOf(row) === profileOf(opened)) : rows
+  const familyIds = new Set<string>(lineageAliases(storedSessionId, own))
 
   const lastReadAt = Date.now()
   const nextReadMap = { ...$lastReadAtBySessionId.get() }
@@ -1622,7 +1636,11 @@ export { $freshDraftKey, rotateFreshDraftKey } from './composer'
 
 export const setResumeFailedSessionId = (next: Updater<string | null>) => updateAtom($resumeFailedSessionId, next)
 
-export const requestSessionResume = (sessionId: string, ownerRoute?: SessionOwnerRoute) => {
+export const requestSessionResume = (
+  sessionId: string,
+  ownerRoute?: SessionOwnerRoute,
+  options?: { authoritativeSnapshot?: boolean }
+) => {
   const id = sessionId.trim()
 
   if (!id) {
@@ -1644,6 +1662,7 @@ export const requestSessionResume = (sessionId: string, ownerRoute?: SessionOwne
   }
 
   $sessionResumeRequest.set({
+    ...(options?.authoritativeSnapshot ? { authoritativeSnapshot: true } : {}),
     ...(ownerRoute ? { ownerRoute: { ...ownerRoute } } : {}),
     sequence: ++sessionResumeRequestSequence,
     sessionId: id
@@ -1704,13 +1723,17 @@ export const setCurrentProviderTransient = (next: Updater<string>) => updateAtom
 export const getCurrentModelSource = (): ComposerModelSource => {
   const source = storedComposerString(COMPOSER_MODEL_SOURCE_KEY)
 
-  return source === 'default' || source === 'manual' || source === 'manual-effort' ? source : ''
+  return source !== null && (COMPOSER_MODEL_SOURCES as readonly string[]).includes(source)
+    ? (source as ComposerModelSource)
+    : ''
 }
+
+const MANUAL_MODEL_SOURCES: readonly ComposerModelSource[] = ['manual', 'manual-effort']
 
 /** True for either manual flavor — config reseeds treat both as composer
  *  intent and stand down (see useHermesConfig / refreshCurrentModel). */
 export const isComposerSourceManual = (source: ComposerModelSource): boolean =>
-  source === 'manual' || source === 'manual-effort'
+  MANUAL_MODEL_SOURCES.includes(source)
 
 // Reactive mirror of the persisted source so UI (the composer pill's
 // override badge) can subscribe. The getter above stays storage-backed —
@@ -1747,7 +1770,10 @@ export const markComposerSelectionManual = (): void => {
  *  after picking a model would drop the pick from session.create. */
 export const markComposerEffortManual = (): void => {
   composerSelectionGeneration += 1
-  if (getCurrentModelSource() !== 'manual') setCurrentModelSource('manual-effort')
+
+  if (getCurrentModelSource() !== 'manual') {
+    setCurrentModelSource('manual-effort')
+  }
 }
 
 export const setCurrentReasoningEffort = (next: Updater<string>) => {
@@ -1870,7 +1896,7 @@ export const $currentCwdExplicit = atom(false)
 
 export const setCurrentCwdExplicit = (next: Updater<boolean>) => updateAtom($currentCwdExplicit, next)
 
-export const workspaceCwdForNewSession = (): string => {
+export const workspaceCwdForNewSession = (profile?: string): string => {
   // A bare new chat starts DETACHED — no inherited cwd, so the composer's coding
   // rail (which keys off $currentCwd) shows no branch and the first message runs
   // in the gateway's default rather than silently in the last repo you touched.
@@ -1884,6 +1910,17 @@ export const workspaceCwdForNewSession = (): string => {
   // the wrong workspace was the #57911 symptom. Resume/restore still reads
   // the remembered cwd via ensureDefaultWorkspaceCwd (where it remains
   // remote-keyed and intentionally sticky).
+  //
+  // A browser host stores that default folder per profile. The process cache
+  // holds the folder of the profile the window last synced (boot, a connection
+  // apply, Settings), and a rail switch does not refill it, so a browser new
+  // chat reads its own profile's key and stays detached when it never chose one.
+  const owner = profile?.trim()
+
+  if (owner && isBrowserHostedDesktop()) {
+    return readBrowserDefaultProjectDir(browserPageBasePath(), owner)
+  }
+
   return getConfiguredDefaultProjectDir()
 }
 

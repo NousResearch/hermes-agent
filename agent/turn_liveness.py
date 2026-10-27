@@ -58,8 +58,8 @@ def _resolve_finite_seconds(raw: Any, *, default: float, key: str) -> float:
 
 
 def resolve_turn_liveness_settings(
-    config: Optional[Dict[str, Any]] = None,
-) -> Tuple[Optional[float], float]:
+    config: Optional[dict[str, Any]] = None,
+) -> tuple[Optional[float], float]:
     """Resolve ``(timeout_s, poll_s)``; ``timeout_s <= 0`` opts out (``None``).
 
     Invalid values (typo, NaN, Inf, non-positive poll) warn and fall back to
@@ -67,7 +67,7 @@ def resolve_turn_liveness_settings(
     """
     agent_cfg = config.get("agent") if isinstance(config, dict) else None
     raw_section = agent_cfg.get("turn_liveness") if isinstance(agent_cfg, dict) else None
-    section: Dict[str, Any] = raw_section if isinstance(raw_section, dict) else {}
+    section: dict[str, Any] = raw_section if isinstance(raw_section, dict) else {}
     if raw_section is not None and not isinstance(raw_section, dict):
         _warn_invalid_value("agent.turn_liveness", raw_section, DEFAULT_TURN_LIVENESS_TIMEOUT_S)
 

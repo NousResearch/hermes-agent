@@ -5,10 +5,21 @@ The CN profile checks its own key first and keeps the shared vars as ordered
 fallbacks so existing CN users configured with the shared key keep working.
 """
 
+from typing import Any
+
+from agent.reasoning_effort import dashscope_preserve_thinking_extras
 from providers import register_provider
 from providers.base import ProviderProfile
 
-alibaba_coding_plan = ProviderProfile(
+
+class DashScopeProfile(ProviderProfile):
+    """DashScope compatible-mode: ask the server to keep replayed prior-turn reasoning."""
+
+    def build_api_kwargs_extras(self, *, model: str | None = None, **context: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+        return dashscope_preserve_thinking_extras(model), {}
+
+
+alibaba_coding_plan = DashScopeProfile(
     name="alibaba-coding-plan", aliases=("alibaba_coding", "alibaba-coding", "dashscope-coding"),
     display_name="Alibaba Cloud (Coding Plan)",
     description="Alibaba Cloud Coding Plan (Dedicated coding tier)",
@@ -17,7 +28,7 @@ alibaba_coding_plan = ProviderProfile(
     base_url="https://coding-intl.dashscope.aliyuncs.com/v1", auth_type="api_key",
 )
 
-alibaba_coding_plan_cn = ProviderProfile(
+alibaba_coding_plan_cn = DashScopeProfile(
     name="alibaba-coding-plan-cn", aliases=("alibaba-coding-cn", "dashscope-coding-cn"),
     display_name="Alibaba Cloud (Coding Plan, China)",
     description="Alibaba Cloud Coding Plan, mainland-China endpoint",

@@ -39,6 +39,7 @@ def _run(argv: list[str], cwd: str, timeout: int, env: dict) -> subprocess.Compl
         return subprocess.run(
             argv, cwd=cwd, capture_output=True, text=True, encoding='utf-8',
             errors='replace', timeout=timeout, stdin=subprocess.DEVNULL, env=env,
+            check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -522,7 +523,7 @@ def _own_pr(key: str, field: dict) -> dict | None:
     return next((n for n in (field.get("nodes") or []) if n and not n.get("isCrossRepository")), None)
 
 
-def review_pr_list(cwd: str, branches: list[str], numbers: list[int] = None) -> dict:
+def review_pr_list(cwd: str, branches: list[str], numbers: list[int] | None = None) -> dict:
     """PRs on the given branches (plus any asked for by number) — queried per branch
     rather than paging the repo's newest PRs and hoping ours are in the page."""
     not_ready = {"ghReady": False, "prs": []}
@@ -717,7 +718,11 @@ def worktree_add(cwd: str, options: dict) -> dict:
     root = _main_root(cwd)
     options = options or {}
     if options.get("existingBranch"):
-        return _worktree_for_existing(root, options["existingBranch"])
+        result = _worktree_for_existing(root, options["existingBranch"])
+        if result.get("path") != root:  # a new checkout, not a switch of the main tree
+            from hermes_cli.worktree_registry import record_worktree_repo
+            record_worktree_repo(root)
+        return result
 
     slug = _slugify(options.get("name") or f"work-{os.urandom(4).hex()}")
     branch = _sanitize_branch(options.get("branch") or "") or f"hermes/{slug}"
@@ -743,6 +748,8 @@ def worktree_add(cwd: str, options: dict) -> dict:
         if "already exists" not in (err or "").lower():
             raise RuntimeError(err.strip() or "git worktree add failed")
         _git_ok(root, ["worktree", "add", target, branch])
+    from hermes_cli.worktree_registry import record_worktree_repo
+    record_worktree_repo(root)
     return {"path": target, "branch": branch, "repoRoot": root}
 
 

@@ -5,7 +5,7 @@ from unittest.mock import Mock
 import pytest
 
 from hermes_cli import main, main_web_build, update_cmd, update_cmd_zip, update_cmd_maint
-from tests.compat.old_updater_support import fresh_child, no_external_work  # noqa: F401
+from tests.compat.old_updater_support import fresh_child, no_external_work
 
 
 @pytest.mark.parametrize("hook,args,kwargs", [

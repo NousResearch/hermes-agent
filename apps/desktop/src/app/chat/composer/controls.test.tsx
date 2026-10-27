@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatBarState } from '@/app/chat/composer/types'
+import { registry } from '@/contrib/registry'
 import { I18nProvider } from '@/i18n'
 import { $hudMode } from '@/store/hud'
 import { applyWakeStartResult, applyWakeStatus, resetWakeWordState } from '@/store/wake-word'
@@ -171,6 +172,49 @@ describe('ComposerControls shortcut tooltips', () => {
     renderControls({ busy: true, busyAction: 'interrupt' })
 
     await expectShortcutTooltip('Queue message', 'Ctrl+↵')
+  })
+
+  it('shows the Enter queue + Ctrl+Enter steer pair in steer mode when a behavior plugin remaps the chords', async () => {
+    const removeBehavior = registry.register({
+      id: 'controls-key-fixture',
+      source: 'plugin:neo-next-prompt',
+      area: 'composer.behavior.v2',
+      data: {
+        protocol: 2,
+        create: () => ({}),
+        keyAction: (e: { key: string; busy: boolean; ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) =>
+          e.key === 'Enter' && e.busy && !e.shiftKey ? (e.ctrlKey || e.metaKey ? 'steer' : 'queue') : undefined
+      }
+    })
+
+    try {
+      renderControls({ busy: true, busyAction: 'steer' })
+
+      fireEvent.pointerMove(screen.getByLabelText('Queue message'), { pointerType: 'mouse' })
+
+      const tooltip = await screen.findByRole('tooltip')
+
+      expect(tooltip.textContent).toContain('Queue message')
+      expect(tooltip.textContent).toContain('Steer')
+      // Remap: the lone Enter keycap advertises the queue and precedes the
+      // Ctrl+Enter steer cap.
+      expect(tooltip.textContent?.startsWith('↵Queue')).toBe(true)
+    } finally {
+      removeBehavior()
+    }
+  })
+
+  it('shows the native Ctrl+Enter queue + Enter steer pair in steer mode without a remap', async () => {
+    renderControls({ busy: true, busyAction: 'steer' })
+
+    fireEvent.pointerMove(screen.getByLabelText('Queue message'), { pointerType: 'mouse' })
+
+    const tooltip = await screen.findByRole('tooltip')
+
+    expect(tooltip.textContent).toContain('Queue message')
+    expect(tooltip.textContent).toContain('Steer')
+    // Native policy: Ctrl+Enter queues first, Enter steers second.
+    expect(tooltip.textContent?.startsWith('Ctrl↵Queue')).toBe(true)
   })
 
   it('hides Queue while idle even if the composer has a payload', () => {

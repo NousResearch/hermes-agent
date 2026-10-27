@@ -2,12 +2,14 @@ import { useStore } from '@nanostores/react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { KbdCombo } from '@/components/ui/kbd'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Ear, EarOff, iconSize, Layers3, Loader2, Square } from '@/lib/icons'
 import { isBrowserHostedDesktop } from '@/lib/platform'
 import { cn } from '@/lib/utils'
+import { behaviorKeyAction } from '@/store/composer-behavior'
 import { recordAction } from '@/store/desktop-metrics'
 import { $hudMode, closeHud, resetHudLayout } from '@/store/hud'
 import { $wakeWord, toggleWakeWord } from '@/store/wake-word'
@@ -44,6 +46,27 @@ interface ConversationProps {
   onStart: () => void
   onStopTurn: () => void
   onToggleMute: () => void
+}
+
+export function voiceControlsProps(
+  conversation: Pick<ConversationProps, 'level' | 'muted' | 'status'> & {
+    stopTurn: () => void
+    toggleMute: () => void
+  },
+  active: boolean,
+  onStart: () => void,
+  onEnd: () => void
+): ConversationProps {
+  return {
+    active,
+    level: conversation.level,
+    muted: conversation.muted,
+    onEnd,
+    onStart,
+    onStopTurn: conversation.stopTurn,
+    onToggleMute: conversation.toggleMute,
+    status: conversation.status
+  }
 }
 
 export function ComposerControls({
@@ -156,7 +179,34 @@ export function ComposerControls({
       )}
       {renderSteerButton(busy, busyAction, onSteer, disabled, c.steer)}
       {showQueueButton ? (
-        <Tip label={<TipKeybindLabel actionId="composer.queue" text={c.queueMessage} />} placement="control">
+        <Tip
+          label={
+            busyAction === 'steer' ? (
+              // Steer mode has two live-turn chords. The composer-behavior
+              // extension may remap them (Enter queues, Ctrl+Enter steers);
+              // natively Enter steers and Ctrl+Enter queues. Advertise the
+              // live pair instead of the native queue keybind alone.
+              behaviorKeyAction({ key: 'Enter', busy: true, ctrlKey: true, metaKey: true }) === 'steer' ? (
+                <span className="flex items-center gap-1">
+                  <KbdCombo combo="enter" size="sm" />
+                  <span>{c.queueMessage}</span>
+                  <KbdCombo combo="mod+enter" size="sm" />
+                  <span>{c.steer}</span>
+                </span>
+              ) : (
+                <span className="flex items-center gap-1">
+                  <KbdCombo combo="mod+enter" size="sm" />
+                  <span>{c.queueMessage}</span>
+                  <KbdCombo combo="enter" size="sm" />
+                  <span>{c.steer}</span>
+                </span>
+              )
+            ) : (
+              <TipKeybindLabel actionId="composer.queue" text={c.queueMessage} />
+            )
+          }
+          placement="control"
+        >
           <Button
             aria-label={c.queueMessage}
             className={GHOST_ICON_BTN}

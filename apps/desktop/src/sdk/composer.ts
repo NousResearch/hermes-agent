@@ -8,6 +8,7 @@ import {
   requestComposerSubmit
 } from '@/app/chat/composer/focus'
 import { freshDraftScope, takeSessionDraft } from '@/store/composer'
+import { COMPOSER_BEHAVIOR_VERSION } from '@/store/composer-behavior'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
 
@@ -63,6 +64,7 @@ const resolveComposerAddress = (
  *  resolves to no live surface returns `null`/`false` (or is dropped, for
  *  `focus`) — it never broadcasts and never throws. */
 export const composerHost = {
+  behaviorVersion: COMPOSER_BEHAVIOR_VERSION,
   /** The live draft text of one composer, or null when nothing holds it.
    *  Mounted surfaces answer with their in-DOM text (current, incl.
    *  unsaved keystrokes); an unmounted session falls back to its debounced

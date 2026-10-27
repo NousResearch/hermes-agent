@@ -19,8 +19,25 @@
  * their rows entirely; those users keep working unchanged.
  */
 import { hasRegistryTopology } from './connection-registry-state'
-import { $profiles } from './profile'
+import { $profiles, normalizeProfileKey } from './profile'
 import { isSessionOwnerRoute, type SessionOwnerScope } from './session-request-router'
+
+export function sameSessionOwner(left: SessionOwnerScope, right: SessionOwnerScope): boolean {
+  if (isSessionOwnerRoute(left) && isSessionOwnerRoute(right)) {
+    return (
+      left.connectionId.trim() === right.connectionId.trim() &&
+      normalizeProfileKey(left.profile) === normalizeProfileKey(right.profile) &&
+      normalizeProfileKey(left.targetProfile ?? left.profile) ===
+        normalizeProfileKey(right.targetProfile ?? right.profile)
+    )
+  }
+
+  if (typeof left === 'string' && typeof right === 'string') {
+    return normalizeProfileKey(left) === normalizeProfileKey(right)
+  }
+
+  return false
+}
 
 export class SessionOwnerResolutionError extends Error {
   constructor(

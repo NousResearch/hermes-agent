@@ -248,15 +248,16 @@ def _take_reapable_pids(include_active: bool, server_name: Optional[str]) -> tup
         return {pid: owner for pid, owner in entries.items() if server_name is None or owner == server_name}
 
     with _core._lock:
-        pids = _owned({opid: _orphan_stdio_pid_servers.get(opid, "orphan") for opid in _orphan_stdio_pids})
-        _orphan_stdio_pids.difference_update(pids)
-        for opid in pids:
-            _orphan_stdio_pid_servers.pop(opid, None)
+        pids = _owned({opid: _orphan_stdio_pid_servers.get(opid, "orphan") for opid in _orphan_stdio_pids
+                       if opid not in _stdio_pids})
         if include_active:
             active = _owned(_stdio_pids)
             pids.update(active)
             for pid in active:
                 _stdio_pids.pop(pid, None)
+        _orphan_stdio_pids.difference_update(pids)
+        for opid in pids:
+            _orphan_stdio_pid_servers.pop(opid, None)
         pgids = {pid: _stdio_pgids.pop(pid) for pid in pids if pid in _stdio_pgids}
         starts = {pid: _stdio_starttimes.pop(pid) for pid in pids if pid in _stdio_starttimes}
     return pids, pgids, starts

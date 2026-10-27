@@ -46,3 +46,28 @@ def _request_service_tier(model_options: Any) -> Any:
     if "fast" in model_options:
         return "priority" if _coerce_request_bool(model_options.get("fast"), default=False) else None
     return _REQUEST_OPTION_MISSING
+
+
+def _request_skip_memory(model_options: Any) -> bool:
+    """True when the request opts this run out of the external memory provider
+    (``{"memory": false}`` or ``{"skip_memory": true}``): no prefetch, no memory-context
+    injection and no turn sync for that run. Built-in MEMORY.md/USER.md stay. Anything
+    else (absent, malformed) keeps memory on."""
+    if not isinstance(model_options, dict):
+        return False
+    from gateway.platforms.api_server import _coerce_request_bool
+
+    if "skip_memory" in model_options and _coerce_request_bool(model_options.get("skip_memory"), default=False):
+        return True
+    if "memory" in model_options:
+        return not _coerce_request_bool(model_options.get("memory"), default=True)
+    return False
+
+
+def _request_memory_kwargs(model_options: Any, memory_sessions: Any, session_id: str) -> dict[str, Any]:
+    """The run's ``skip_memory``/``memory_manager`` agent kwargs. An opted-out run gets no manager and
+    leaves the session's parked one in *memory_sessions* untouched for the next normal turn; otherwise
+    the parked manager is checked out (#120116) so its queued recall reaches this turn."""
+    if _request_skip_memory(model_options):
+        return {"skip_memory": True, "memory_manager": None}
+    return {"skip_memory": False, "memory_manager": memory_sessions.checkout(session_id)}

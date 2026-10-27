@@ -144,3 +144,30 @@ def test_per_profile_isolation(tmp_path):
         b.close()
 
 
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "CI: blocking slim integration cell (PHP 8.4 + WP latest) and fix stale develop line",
+        "Fix a.lock",
+        "x..y.",
+        "!!!",
+        "Résumé: ünï",
+        "a" * 80 + ".",
+        "dots.at.the.cut.point.x." + "b" * 30,
+    ],
+)
+def test_branch_name_for_is_always_a_valid_git_ref(title):
+    """A kanban card's branch comes from its title; an invalid ref strands the card at spawn."""
+    import subprocess
+    import types
+
+    project = types.SimpleNamespace(slug="proj", name="Proj")
+    branch = pdb.branch_name_for(project, "t_abc12345", title=title)
+
+    assert branch.startswith("proj/t_abc12345")
+    result = subprocess.run(
+        ["git", "check-ref-format", "--branch", branch], capture_output=True, check=False
+    )
+    assert result.returncode == 0, branch

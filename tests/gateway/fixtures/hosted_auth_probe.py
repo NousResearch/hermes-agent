@@ -1,7 +1,8 @@
 """Loopback OIDC/model boundaries; daemon, auth, tickets and room controls are real.
 
-Hermes is single-user: every signed-in Webapp tab is the machine owner, so two tabs share one
-Group Chat list and either may stop or approve, while a second IdP account cannot sign in at all.
+Hermes is single-user: every signed-in Webapp tab is the machine owner, whichever IdP account it
+signed in with, so two tabs share one Group Chat list and either may stop or approve. Who may sign in
+is the login provider's app configuration, not Hermes's.
 """
 import asyncio
 import base64
@@ -24,7 +25,7 @@ from tests.gateway.fixtures.local_recovery_probe import child_env, daemon, rpc
 from tests.waiting import async_wait_until
 
 
-#: Two signed-in Webapp tabs of the same owner account (Hermes is single-user).
+#: Two signed-in Webapp tabs, each acting as the machine owner (Hermes is single-user).
 TABS = ('tab1', 'tab2')
 
 
@@ -53,7 +54,7 @@ class OIDC(BaseHTTPRequestHandler):
             params = {k: v[0] for k, v in parse_qs(url.query).items()}
             assert params['client_id'] == 'room-fixture'
             assert params['code_challenge_method'] == 'S256'
-            assert params['subject'] in ('alice', 'mallory')
+            assert params['subject'] in ('alice', 'bob')
             code = secrets.token_urlsafe(24)
             self.server.codes[code] = params
             self.send_response(302)
@@ -120,7 +121,7 @@ class Model(BaseHTTPRequestHandler):
             pass
 
 
-def callback(client, issuer, actor):
+def login(client, issuer, actor):
     response = client.get('/auth/login', params={'provider': 'self-hosted'})
     assert response.status_code == 302, response.text
     authorize = response.headers['location']
@@ -129,11 +130,7 @@ def callback(client, issuer, actor):
     assert response.status_code == 302, response.text
     # public_url enables the gate; route its callback to the owned loopback listener.
     redirect = urlsplit(response.headers['location'])
-    return client.get(redirect.path + '?' + redirect.query)
-
-
-def login(client, issuer, actor):
-    response = callback(client, issuer, actor)
+    response = client.get(redirect.path + '?' + redirect.query)
     assert response.status_code == 302, response.text
     identity = client.get('/api/auth/me')
     assert identity.status_code == 200, identity.text
@@ -276,11 +273,9 @@ def probe(tmp_path):
             for credential in ('', 'Bearer invalid'):
                 rejected = clients[0].post('/api/auth/ws-ticket', headers={'Authorization': credential})
                 assert rejected.status_code == 401, rejected.text
-            tickets = [login(clients[0], oidc.issuer, 'alice')]
-            # Owner-only sign-in: another account of the same IdP is refused, not a second owner.
-            refused = callback(clients[1], oidc.issuer, 'mallory')
-            assert refused.status_code != 302 and 'not the owner' in refused.text, refused.text
-            tickets.append(login(clients[1], oidc.issuer, 'alice'))
+            # A second IdP account is admitted like on main and acts as the same machine owner.
+            tickets = [login(client, oidc.issuer, actor)
+                       for client, actor in zip(clients, ('alice', 'bob'))]
             return asyncio.run(exercise(desc, tickets))
     finally:
         model.release.set()

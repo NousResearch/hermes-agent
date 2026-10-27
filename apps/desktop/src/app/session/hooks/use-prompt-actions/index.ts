@@ -42,7 +42,7 @@ import {
 } from '@/store/session'
 import { $sessionStates, isLiveTurnAwaitingEvents, isSessionRemote } from '@/store/session-states'
 import { flushStreamDeltas } from '@/store/stream-delta-flush'
-import { clearSessionSubagents } from '@/store/subagents'
+import { pruneFinishedSessionSubagents } from '@/store/subagents'
 import { runGatewayRestart } from '@/store/system-actions'
 import { clearSessionTodos } from '@/store/todos'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
@@ -800,8 +800,14 @@ export function usePromptActions({
     })
 
     clearSessionTodos(sessionId)
-    clearSessionSubagents(sessionId)
-    resetSessionBackground(sessionId)
+    // Stop ends this turn only: background subagents keep running and keep their rows; the
+    // stopped turn's own children drop out of the next roster snapshot.
+    pruneFinishedSessionSubagents(sessionId)
+    // No resetSessionBackground() here. A plain interrupt (Stop, or "send now"
+    // on a queued message while busy) keeps the timeline, and the gateway's
+    // session.interrupt deliberately leaves terminal(background=true) processes
+    // running. Killing them belongs only to the rewind paths (reload / restore /
+    // edit), where the spawning turns are discarded.
     setSessionDraftingTool(sessionId, '')
     // Auto-compaction sets a per-session flag that only clears on message.start
     // / message.complete / error. A hung compaction emits none of those, so the
@@ -1105,6 +1111,13 @@ export function usePromptActions({
       if (!plan || isStaleAfterConfirm(sessionId, messages)) {
         return
       }
+
+      // Regenerate truncates history (prompt.submit truncate_before_*) just like
+      // restore/edit, so the discarded turns' todos and background processes
+      // belong to an abandoned timeline — drop them before the re-run.
+      clearSessionTodos(sessionId)
+      resetSessionBackground(sessionId)
+      clearPreviewArtifacts(sessionId)
 
       clearNotifications()
       updateSessionState(sessionId, state => applyReloadOptimistic(state, plan))

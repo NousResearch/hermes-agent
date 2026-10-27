@@ -475,6 +475,7 @@ export const arChrome = {
     }
   },
   rightSidebar: {
+    terminalDropUnquotable: (shell, paths) => `لا يمكن كتابة هذه الأسماء بأمان في ${shell}: ${paths}`,
     terminalReadOnly: 'مخرجات للقراءة فقط',
     terminalReadOnlyHelp:
       'للرد على المطالبات، أوقف الأمر الذي يعمل في الخلفية وشغّله في طرفية جديدة. تفتح الطرفية الجديدة صدفة منفصلة ولا تتصل بهذه العملية.',

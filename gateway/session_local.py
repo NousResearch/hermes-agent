@@ -24,6 +24,9 @@ class LocalSessionAdapter(BasePlatformAdapter):
     def __init__(self, authority):
         super().__init__(PlatformConfig(enabled=True), Platform.LOCAL)
         self.authority = authority
+        # Built outside ``_create_adapter``: without its runner a push wake skips the authority FIFO
+        # and falls to a message handler this adapter never has (``deliver_wake``).
+        self.gateway_runner = getattr(authority, 'runner', None)
         self.sources = {}
         self.policies = {}
 

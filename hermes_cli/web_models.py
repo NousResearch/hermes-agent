@@ -184,6 +184,8 @@ class MoaConfigPayload(_MoaReferenceControls):
 class FsWriteText(BaseModel):
     path: str
     content: str
+    #: The session the file was read for: its /workspace is that session's sandbox.
+    session_id: Optional[str] = None
 
 class GitPathBody(BaseModel):
     path: str

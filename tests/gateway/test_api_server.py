@@ -785,6 +785,16 @@ class TestRunEventCallback:
 # ---------------------------------------------------------------------------
 
 
+def test_previous_response_id_rejects_bad_shape():
+    from gateway.platforms.api_server import MAX_PREVIOUS_RESPONSE_ID_LENGTH, invalid_previous_response_id
+
+    assert invalid_previous_response_id(None) is None
+    assert invalid_previous_response_id("resp_ok") is None
+    for bad in (12, "", "x" * (MAX_PREVIOUS_RESPONSE_ID_LENGTH + 1)):
+        response = invalid_previous_response_id(bad)
+        assert response is not None and response.status == 400
+
+
 class TestHealthEndpoint:
     @pytest.mark.asyncio
     async def test_security_headers_present(self, adapter):

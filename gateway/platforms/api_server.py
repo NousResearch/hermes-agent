@@ -753,6 +753,23 @@ def _error_response(
     return web.json_response(_openai_error(message, err_type, param, code), status=status, headers=headers)
 
 
+MAX_PREVIOUS_RESPONSE_ID_LENGTH = 128
+
+
+def invalid_previous_response_id(value: Any) -> Optional[web.Response]:
+    """400 when ``previous_response_id`` is present but not a short non-empty string."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        return _error_response(
+            "Invalid 'previous_response_id' value", 400, param="previous_response_id")
+    if len(value) > MAX_PREVIOUS_RESPONSE_ID_LENGTH:
+        return _error_response(
+            "previous_response_id is too long.", 400,
+            param="previous_response_id", code="previous_response_id_too_long")
+    return None
+
+
 def _invalid_request(message: str) -> web.Response:
     """400 with the bare ``{message, type}`` envelope the OpenAI-compatible validators use."""
     return web.json_response({"error": {"message": message, "type": "invalid_request_error"}}, status=400)

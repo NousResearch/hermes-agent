@@ -151,6 +151,9 @@ async def prepare_context(adapter, request, body, gateway_session_key, durable_k
         if admitted is not None:
             return admitted_context(admitted, replay=True), None
     previous = body.get('previous_response_id')
+    from gateway.platforms.api_server import invalid_previous_response_id
+    if (rejected := invalid_previous_response_id(previous)) is not None:
+        return None, rejected
     if body.get('conversation'):
         previous = adapter._current_response_store().get_conversation(body['conversation'])
     messages, error = _parse_responses_input(body['input'])

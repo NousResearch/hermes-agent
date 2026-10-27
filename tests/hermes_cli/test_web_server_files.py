@@ -245,7 +245,7 @@ def test_browser_file_urls_authenticate_only_with_route_and_path_bound_tickets(
     forced_files_client, monkeypatch,
 ):
     """A ticket admits exactly the URL it was minted for: reusable for media
-    Range requests, single-use for a download, useless for any other file."""
+    Range requests, a few retries of that same download, useless for any other file."""
     from hermes_cli import web_server_file_tickets
 
     client, root = forced_files_client
@@ -284,7 +284,8 @@ def test_browser_file_urls_authenticate_only_with_route_and_path_bound_tickets(
 
     once = {"path": str(video), "ticket": download}
     assert client.get("/api/files/stream", params=once).status_code == 401
-    assert client.get(download_route, params=once).content == b"hello"
+    for _ in range(web_server_file_tickets.DOWNLOAD_MAX_REDEMPTIONS):
+        assert client.get(download_route, params=once).content == b"hello"
     assert client.get(download_route, params=once).status_code == 401
 
 

@@ -1,8 +1,8 @@
 name: epistemic-harness
 repo: https://github.com/quangphucqp/epistemic-harness
-sha: 2cba9a6396970d55448949a0a6dec6867956d60d
+sha: ce1595adc02eeae5fb8c4e88460d8a581995acf9
 subdir: ""
-version: "1.4.0"
+version: "1.4.1"
 description: Bounded, session-scoped inquiry workflow with explicit probe capture, conservative presentation detail, and mandatory-when-enabled hosted method consultation.
 maintainer: quangphucqp
 tier: community

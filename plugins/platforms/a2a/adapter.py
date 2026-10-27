@@ -163,8 +163,11 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
         listener and could otherwise read its served-agent list and Agent Card."""
         if not super().parse_request():
             return False
-        if self.adapter._security_context.localhost_only() and not security.is_loopback_host_header(self.headers.get("Host")):
-            self._error(403, None, protocol.ERR_UNAUTHORIZED, "Host must be localhost, 127.0.0.1 or [::1] (no A2A token configured)")
+        adapter = self.adapter
+        if adapter._security_context.localhost_only() and not security.is_loopback_host_header(
+                self.headers.get("Host"), adapter._public_url):
+            self._error(403, None, protocol.ERR_UNAUTHORIZED,
+                        "Host must be a loopback name or the A2A_PUBLIC_URL host (no A2A token configured)")
             return False
         return True
 

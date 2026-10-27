@@ -204,21 +204,21 @@ _BLOCKED_PREFIXES = ("169.254.", "127.", "10.", *(f"172.{i}." for i in range(16,
                      "0.0.0.0", "::1", "fe80:", "fc00:", "fd00:")
 
 
-_LOOPBACK_HOST_NAMES = frozenset({"localhost", "127.0.0.1", "::1"})
-
-
-def is_loopback_host_header(host_header: Optional[str]) -> bool:
-    """True when an HTTP ``Host`` value names a loopback address (any port); malformed fails closed."""
+def is_loopback_host_header(host_header: Optional[str], public_url: str = "") -> bool:
+    """True when an HTTP ``Host`` value names a loopback address or the ``A2A_PUBLIC_URL`` host
+    (any port); malformed fails closed."""
     value = (host_header or "").strip()
     if not value or any(c in value for c in "@/\\?# \t"):
         return False
     try:
         parts = urllib.parse.urlsplit("//" + value)
-        parts.port  # noqa: B018 -- raises ValueError on a malformed port
+        parts.port  # raises ValueError on a malformed port
+        public_host = (urllib.parse.urlsplit(public_url or "").hostname or "").lower().rstrip(".")
     except ValueError:
         return False
     # ``localhost.`` is the absolute form of ``localhost``; a rebound name stays foreign either way.
-    return (parts.hostname or "").lower().rstrip(".") in _LOOPBACK_HOST_NAMES
+    host = (parts.hostname or "").lower().rstrip(".")
+    return is_loopback_host(host) or (bool(public_host) and host == public_host)
 
 
 def is_safe_callback_url(url: str, *, localhost_mode: Optional[bool] = None) -> bool:

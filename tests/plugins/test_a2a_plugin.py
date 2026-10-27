@@ -1333,6 +1333,7 @@ class TestInboundRoundTrip:
     ("localhost", True),
     ("[::1]", True),
     ("localhost.", True),          # absolute form of localhost
+    ("127.0.0.2", True),           # any loopback literal
     ("rebound.example", False),
     ("rebound.example.", False),    # a page's hostname re-resolved to 127.0.0.1
 ])
@@ -1363,6 +1364,30 @@ def test_no_token_listener_serves_only_loopback_host_names(monkeypatch, host, se
 
     assert asyncio.run(run()) == [200 if served else 403] * 3
     assert bool(seen) is served
+
+
+def test_no_token_listener_serves_its_public_url_host(monkeypatch):
+    """A local reverse proxy forwarding the ``A2A_PUBLIC_URL`` host is served; other names stay refused."""
+    monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+    monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+    monkeypatch.setenv("A2A_PUBLIC_URL", "https://agent.example.test/")
+    adapter, base = _make_live_adapter(monkeypatch)
+
+    def status(host):
+        try:
+            _get_json(base + "/health", {"Host": host})
+            return 200
+        except urllib.error.HTTPError as exc:
+            return exc.code
+
+    async def run():
+        assert await adapter.connect() is True
+        try:
+            return [await asyncio.to_thread(status, host) for host in ("agent.example.test", "rebound.example")]
+        finally:
+            await adapter.disconnect()
+
+    assert asyncio.run(run()) == [200, 403]
 
 
 # --------------------------------------------------------------------------

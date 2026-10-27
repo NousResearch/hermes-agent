@@ -24,6 +24,19 @@ def _server(name, cfg):
                            _resolved_identity=_adopter_identity_digest(name, cfg))
 
 
+def _live_server(name, cfg):
+    """In-process stand-in with the real lifecycle methods but no transport or child process."""
+    from tools.mcp_tool import MCPServerTask
+    from tools.mcp_tool_registration import _adopter_identity_digest
+
+    server = MCPServerTask(name)
+    server.session = object()
+    server._config = cfg
+    server._tools = [_tool()]
+    server._resolved_identity = _adopter_identity_digest(name, cfg)
+    return server
+
+
 @pytest.fixture
 def two_profiles(tmp_path, monkeypatch):
     """Multiplex on, clean MCP ledgers, a scope switcher for homes A and B; restores everything."""
@@ -243,6 +256,87 @@ def test_owner_reload_reregisters_profiles_that_adopted_its_connection(two_profi
     two_profiles("b")
     assert registry.get_tool_names_for_toolset("mcp-x") == ["mcp__x__t"]
     assert disc.get_mcp_status({"x": cfg})[0]["status"] == "connected"
+
+
+def test_adopter_unload_removes_only_its_overlay_a_b_a(two_profiles, monkeypatch):
+    """B removing an adopted server revokes B's tools without touching A's live connection."""
+    import tools.mcp_tool as core
+    from tools import mcp_tool_config as config_mod
+    from tools import mcp_tool_discovery as disc
+    from tools import mcp_tool_registration as reg
+    from tools.registry import registry
+
+    cfg = {"url": "https://mcp.example/x", "headers": {"Authorization": "Bearer shared"}}
+    scope_a = two_profiles("a")
+    server = _live_server("x", cfg)
+    disc._adopt_server("x", server)
+    server._registered_tool_names = reg._register_server_tools("x", server, cfg)
+
+    scope_b = two_profiles("b")
+    assert reg.register_connected_into_current_scope({"x": cfg}) == 1
+    assert registry.get_tool_names_for_toolset("mcp-x") == ["mcp__x__t"]
+
+    monkeypatch.setattr(config_mod, "_load_mcp_config", lambda: {})
+    result = disc.reconcile_mcp_servers_with_config()
+
+    assert result == {"removed": ["x"], "added": [], "pending": []}
+    assert registry.get_tool_names_for_toolset("mcp-x") == []
+    assert core._servers[(scope_a, "x")] is server
+    assert server.session is not None
+    assert scope_b not in core._server_tool_scopes[(scope_a, "x")]
+
+    two_profiles("a")
+    assert registry.get_tool_names_for_toolset("mcp-x") == ["mcp__x__t"]
+    assert disc.get_mcp_status({"x": cfg})[0]["status"] == "connected"
+
+
+def test_owner_unload_rehomes_adopter_a_b_a(two_profiles, monkeypatch):
+    """A removing its owned shared connection makes B its own owner; A stays unloaded."""
+    import tools.mcp_tool as core
+    from tools import mcp_tool_config as config_mod
+    from tools import mcp_tool_discovery as disc
+    from tools import mcp_tool_lifecycle as lifecycle
+    from tools import mcp_tool_loop as loop
+    from tools import mcp_tool_registration as reg
+    from tools.registry import registry
+
+    cfg = {"url": "https://mcp.example/x", "headers": {"Authorization": "Bearer shared"}}
+    scope_a = two_profiles("a")
+    server_a = _live_server("x", cfg)
+    disc._adopt_server("x", server_a)
+    server_a._registered_tool_names = reg._register_server_tools("x", server_a, cfg)
+
+    scope_b = two_profiles("b")
+    assert reg.register_connected_into_current_scope({"x": cfg}) == 1
+    assert registry.get_tool_names_for_toolset("mcp-x") == ["mcp__x__t"]
+
+    configured = {scope_a: {}, scope_b: {"x": cfg}}
+    monkeypatch.setattr(config_mod, "_load_mcp_config",
+                        lambda: dict(configured[core._mcp_registry_scope()]))
+
+    def fake_pass(new_servers):
+        for name, server_cfg in new_servers.items():
+            server = _live_server(name, server_cfg)
+            disc._adopt_server(name, server)
+            server._registered_tool_names = reg._register_server_tools(name, server, server_cfg)
+
+    monkeypatch.setattr(disc, "_run_discovery_pass", fake_pass)
+    loop._ensure_mcp_loop()
+    try:
+        two_profiles("a")
+        result = disc.reconcile_mcp_servers_with_config()
+        assert result == {"removed": ["x"], "added": [], "pending": []}
+
+        two_profiles("b")
+        assert core._servers[(scope_b, "x")].session is not None
+        assert registry.get_tool_names_for_toolset("mcp-x") == ["mcp__x__t"]
+        assert disc.get_mcp_status({"x": cfg})[0]["status"] == "connected"
+
+        two_profiles("a")
+        assert registry.get_tool_names_for_toolset("mcp-x") == []
+        assert disc.get_mcp_status({}) == []
+    finally:
+        lifecycle.shutdown_mcp_servers()
 
 
 def test_untrusted_adopter_of_a_full_profiles_connection_keeps_its_own_trust_gate(two_profiles, monkeypatch):

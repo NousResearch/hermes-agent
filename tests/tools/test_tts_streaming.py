@@ -64,6 +64,20 @@ class TestSentenceChunker:
             assert noise not in joined.lower()
         assert "real answer" in joined
 
+    def test_truncated_open_marker_held_then_silenced_on_flush(self):
+        # A stream that ends mid-opening-tag (no closing ``>``) is invisible to the tag regex. feed()
+        # still holds it via the open-marker check; flush() must silence it rather than speak the raw
+        # marker and the reasoning it begins.
+        c = ts.SentenceChunker()
+        assert c.feed('<think private="half-formed reas') == []
+        assert c.flush() == []
+
+    def test_truncated_open_marker_keeps_visible_prefix_on_flush(self):
+        # The spoken text before a truncated opening marker must survive the flush.
+        c = ts.SentenceChunker()
+        assert c.feed('The spoken part. <reasoning data="half-formed') == []
+        assert c.flush() == ["The spoken part."]
+
 
     def test_paragraph_break_is_a_boundary(self):
         c = ts.SentenceChunker()

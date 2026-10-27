@@ -250,10 +250,15 @@ def smooth_whitespace_for_tts(text: str) -> str:
 # still silenced. See #34213. ``<think>`` only here, by design — ``<thinking>``/``<reasoning>`` are
 # not stripped on this whole-message path (the streaming chunker covers the full tag list).
 _THINK_TAG_RE = re.compile(r"<(/?)think\b[^>]*>", flags=re.IGNORECASE)
+# A trailing opening marker cut off before its ``>`` (a stream that ends mid-tag, or a message
+# truncated there — e.g. ``<think attr="``) never matches _THINK_TAG_RE, so the depth scanner
+# cannot see it. This detects one so an unterminated-drop caller silences the reasoning instead of
+# speaking the raw marker. ``<think`` only here, matching this surface's tag scope.
+_THINK_OPEN_RE = re.compile(r"<think(?=[\s>]|$)", flags=re.IGNORECASE)
 
 
 def _strip_tag_blocks(text: str, tag_re: re.Pattern[str], *, separator: str,
-                      drop_unterminated: bool) -> str:
+                      drop_unterminated: bool, open_re: re.Pattern[str] | None = None) -> str:
     """Remove outermost ``<tag>...</tag>`` blocks depth-aware, replacing each with *separator*.
 
     *tag_re* matches one opening or closing tag; its group 1 is the optional leading ``/`` that
@@ -262,6 +267,11 @@ def _strip_tag_blocks(text: str, tag_re: re.Pattern[str], *, separator: str,
     unterminated trailing block (an open with no close — e.g. a stream cut off) is dropped when
     *drop_unterminated* (the whole-message cleaner silences partial reasoning) and otherwise handed
     back verbatim so a streaming caller can hold it until the closing tag arrives.
+
+    *open_re*, given only by a *drop_unterminated* caller, matches an opening marker that lacks its
+    closing ``>`` so tag_re missed it entirely; a trailing one is silenced like an unterminated
+    block, keeping the visible text before it. feed() passes none (it hands the marker back inline
+    so its own open-tag check holds the buffer until the ``>`` arrives).
     """
     out: list[str] = []
     pos = depth = block_start = 0
@@ -281,7 +291,12 @@ def _strip_tag_blocks(text: str, tag_re: re.Pattern[str], *, separator: str,
             out.append(separator)
             pos = match.end()
     if depth == 0:
-        out.append(text[pos:])
+        tail = text[pos:]
+        if drop_unterminated and open_re is not None and (m := open_re.search(tail)):
+            out.append(tail[:m.start()])  # keep visible text before the truncated marker
+            out.append(separator)  # silence the marker and the reasoning it begins
+        else:
+            out.append(tail)
     elif not drop_unterminated:
         out.append(text[block_start:])  # hand the unterminated block back for the caller to hold
     return "".join(out)
@@ -296,7 +311,8 @@ def strip_nonspoken_blocks(text: str) -> str:
     """Remove ``<think>`` reasoning blocks (nesting-aware) and the file-mutation verifier footer."""
     if not text:
         return ""
-    text = _strip_tag_blocks(text, _THINK_TAG_RE, separator=" ", drop_unterminated=True)
+    text = _strip_tag_blocks(text, _THINK_TAG_RE, separator=" ", drop_unterminated=True,
+                             open_re=_THINK_OPEN_RE)
     return _VERIFIER_FOOTER_RE.sub(" ", text)
 
 

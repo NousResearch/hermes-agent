@@ -61,6 +61,16 @@ class TestThinkBlockStrip:
             assert noise not in inner
         assert "Before" in spoken and "After" in spoken
 
+    def test_truncated_open_marker_removed(self):
+        # A message cut off mid-opening-tag (no closing ``>``) is invisible to the tag regex, so a
+        # depth-only scan would speak the raw marker and the reasoning it begins. The visible text
+        # before it must survive; the marker and everything after it must not.
+        raw = 'Answer first. <think private="truncated reasoning'
+        spoken = strip_nonspoken_blocks(raw)
+        assert "truncated reasoning" not in spoken
+        assert "think" not in spoken.lower()
+        assert "Answer first" in spoken
+
 
 class TestVerifierFooterStrip:
     FOOTER = (

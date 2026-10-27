@@ -118,7 +118,8 @@ class SentenceChunker:
         """Drain the tail (end-of-text or long-idle flush)."""
         # End of stream: silence any unterminated block too (leaking partial reasoning is worse
         # than a truncated answer), so drop_unterminated here where feed() held it back.
-        tail = _strip_tag_blocks(self.buf, _THINK_TAG_RE, separator="", drop_unterminated=True)
+        tail = _strip_tag_blocks(self.buf, _THINK_TAG_RE, separator="", drop_unterminated=True,
+                                 open_re=_THINK_OPEN_RE)
         self.buf = ""
         tail = tail.strip()
         return [tail] if tail else []

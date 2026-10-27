@@ -3203,6 +3203,55 @@ def _deliver_crash_failure(
     return delivery_error, delivery_outcome
 
 
+def _build_scheduler_failure_output(job: dict, exc: BaseException) -> str:
+    """Build a redacted markdown artifact for a crash before the save phase.
+
+    Called from _run_one_job_body's except BaseException branch when the
+    save/compose/deliver phase was never entered. The artifact is saved via
+    save_job_output so it lands in cron/output/<job_id>/.
+
+    The document contains: job id, job name, run time (local timezone), exception
+    type + message (redacted), and traceback (redacted, bounded to 8KB). Secrets
+    and credentials are stripped by redact_sensitive_text(force=True).
+    """
+    import traceback
+    from agent.redact import redact_sensitive_text
+
+    job_id = job.get("id") or "unknown"
+    job_name = job.get("name") or job_id
+    run_time = safe_strftime(_hermes_now(), "%Y-%m-%d %H:%M:%S %Z")
+    exc_type = type(exc).__name__
+    exc_msg = str(exc) or "(no message)"
+
+    # Redact the exception message
+    redacted_msg = redact_sensitive_text(exc_msg, force=True)
+
+    # Format the traceback
+    tb_lines = traceback.format_exception(type(exc), exc, exc.__traceback__)
+    tb_text = "".join(tb_lines)
+    redacted_tb = redact_sensitive_text(tb_text, force=True)
+
+    # Bound the traceback to prevent huge artifacts
+    if len(redacted_tb) > 8000:
+        redacted_tb = redacted_tb[:8000] + "\n... (truncated)"
+
+    doc = f"""# Scheduler failure artifact
+
+**Job ID:** `{job_id}`
+**Job name:** {job_name}
+**Run time:** {run_time}
+**Exception type:** `{exc_type}`
+**Exception message:** {redacted_msg}
+
+## Traceback
+
+```
+{redacted_tb}
+```
+"""
+    return doc
+
+
 
 def _install_fire_secret_scope() -> tuple[contextvars.Token, Optional[contextvars.Token]]:
     """Install the firing profile's secret scope for the span ``_run_one_job_body`` runs, delivery
@@ -3293,6 +3342,7 @@ def _run_one_job_body(
     job = dict(job, execution_id=execution_id)
     delivery_attempted = False
     delivery_error = None
+    save_phase_entered = False
 
     _fire_scope_tokens = None
     _terminal_scope_token = None
@@ -3371,6 +3421,7 @@ def _run_one_job_body(
         # Agent is still live through delivery; wrap ALL of save/compose/deliver in try/finally so a
         # raise anywhere still tears the deferred agent down.
         d = _RunDelivery(job=job, success=success, error=error, agent_declared=agent_declared)
+        save_phase_entered = True
         try:
             _save_compose_deliver(
                 d, fence, final_response, output, adapters=adapters, loop=loop, verbose=verbose,
@@ -3445,6 +3496,21 @@ def _run_one_job_body(
             _err_text,
             exc_info=(type(e), e, e.__traceback__))
         delivery_outcome = "suppressed"
+        # Save a failure artifact when the crash happened before the save phase.
+        # Only for Exception (not KeyboardInterrupt/SystemExit), only when the save
+        # phase was never entered, and only when the job is not being self-removed.
+        if (
+            isinstance(e, Exception)
+            and not save_phase_entered
+            and not self_removal_delivery_allowed(job["id"])
+        ):
+            try:
+                failure_output = _build_scheduler_failure_output(job, e)
+                save_job_output(job["id"], failure_output)
+            except Exception as save_err:
+                logger.error(
+                    "Failed to save failure artifact for job %s: %s",
+                    job["id"], save_err)
         # Owner fencing: a stale worker whose claim was taken over (or transport-cancelled) must not
         # send a failure alert on top of the replacement run's; fall through to fenced bookkeeping.
         if (

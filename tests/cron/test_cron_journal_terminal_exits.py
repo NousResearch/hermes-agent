@@ -58,7 +58,21 @@ def test_firer_booked_exit_is_not_replayed_by_receipt_recovery(tmp_path, monkeyp
         scheduler_authority.reconcile_pending()
         after = jobs.get_job(job['id'])
         assert calls == []
-        assert not list(jobs._job_output_dir(job['id']).glob('*.md'))
+        artifacts = list(jobs._job_output_dir(job['id']).glob('*.md'))
+        if firer_exit is _crashed_tail:
+            # _run_one_job_body crashed before the save phase, so the failure-artifact path
+            # writes exactly one document. A receipt-recovery replay would reuse the same
+            # second-granularity filename (save_job_output names by wall-clock second) and
+            # overwrite it, so the count alone cannot witness the anti-replay invariant —
+            # the artifact's own text has to: it must be the crash document, never the
+            # owner's replayed result (output='document', final_response='answer').
+            assert len(artifacts) == 1
+            text = artifacts[0].read_text(encoding='utf-8')
+            assert text.splitlines()[0] == '# Scheduler failure artifact'
+            assert 'the firing tail crashed after the owner finished' in text
+            assert 'document' not in text and 'answer' not in text
+        else:
+            assert not artifacts
         assert (after['last_run_at'], after['last_status'], after['repeat']) == (
             booked['last_run_at'], booked['last_status'], booked['repeat'])
         assert executions.get_execution(fire)['status'] == 'failed'

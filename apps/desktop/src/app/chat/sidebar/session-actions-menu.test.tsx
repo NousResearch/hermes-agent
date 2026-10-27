@@ -6,7 +6,15 @@ import { refreshProjectTree } from '@/store/projects'
 
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 
-afterEach(cleanup)
+afterEach(async () => {
+  cleanup()
+  // The mocked stores are module-level atoms; reset them so a seeded tree or
+  // session list cannot leak into the next test.
+  const { $projectTree } = await import('@/store/projects')
+  const { $sessions } = await import('@/store/session')
+  $projectTree.set([])
+  $sessions.set([])
+})
 
 // Exercises the real SessionActionsMenu end-to-end (no DropdownMenu mock) so
 // a broken asChild composition on the kebab trigger fails here — the menu
@@ -41,6 +49,7 @@ vi.mock('@/i18n', () => ({
           menuAppearance: 'Appearance',
           moveFailed: 'Could not move session',
           moveNoProjects: 'No other projects',
+          moveCreateNew: 'New project…',
           movedTo: (name: string) => `Moved to ${name}`,
           moveToProject: 'Move to project',
           noColor: 'No color'
@@ -81,6 +90,7 @@ vi.mock('@/store/notifications', () => ({ notify: vi.fn(), notifyError: vi.fn() 
 vi.mock('@/store/projects', () => ({
   $projectTree: atom<unknown[]>([]),
   moveSessionToProject: vi.fn(),
+  openProjectCreate: vi.fn(),
   projectIdForCwd: vi.fn(() => null),
   projectRootCwd: vi.fn(() => ''),
   refreshProjectTree: vi.fn(() => Promise.resolve())
@@ -94,7 +104,7 @@ vi.mock('@/store/session', () => ({
   $sessions: atom<unknown[]>([]),
   $unreadFinishedSessionIds: atom<string[]>([]),
   markSessionRead: vi.fn(),
-  sessionMatchesStoredId: vi.fn(() => false),
+  sessionMatchesStoredId: vi.fn((session: { id: string }, id: string) => session.id === id),
   sessionPinId: vi.fn((s: { id: string }) => s.id),
   setSessions: vi.fn()
 }))
@@ -395,5 +405,46 @@ describe('SessionActionsMenu', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Move to project' }))
 
     await waitFor(() => expect(refreshProjectTree).toHaveBeenCalledTimes(1))
+  })
+
+  // #86000: the "Move to project" submenu used to dead-end on a disabled
+  // "No other projects" item when the sidebar only exposed the synthetic
+  // Home bucket. It now surfaces a real action that opens the project-create
+  // dialog with the session's cwd prefilled and chains back to
+  // moveSessionToProject on success.
+  it('offers "New project…" in the move submenu when only the Home bucket exists', async () => {
+    const { $projectTree, openProjectCreate } = await import('@/store/projects')
+    const { $sessions } = await import('@/store/session')
+
+    // The mocked stores expose real nanostores atoms (upstream replaced the
+    // vi.fn()-shaped mocks with atoms), so seed them through .set() rather
+    // than a mock return value.
+    $projectTree.set([
+      { id: '__no_project__', isNoProject: true, label: 'Home', path: null, repos: [] }
+    ] as unknown as never)
+    $sessions.set([{ id: 's1', cwd: '/Users/me/proj' }] as unknown as never)
+
+    renderMenu()
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    await screen.findByRole('menu')
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Move to project' }))
+
+    const newProjectItem = await screen.findByRole('menuitem', { name: /new project/i })
+
+    expect(newProjectItem.getAttribute('aria-disabled')).not.toBe('true')
+
+    fireEvent.pointerDown(newProjectItem, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(newProjectItem, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(newProjectItem)
+
+    expect(vi.mocked(openProjectCreate)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(openProjectCreate)).toHaveBeenCalledWith(
+      expect.objectContaining({ prefillFolder: '/Users/me/proj' })
+    )
   })
 })

@@ -37,6 +37,7 @@ import {
   $projectTree,
   applyRenamedSessionTitle,
   moveSessionToProject,
+  openProjectCreate,
   projectIdForCwd,
   projectRootCwd,
   refreshProjectTree
@@ -235,12 +236,44 @@ function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; session
     void refreshProjectTree()
   }, [])
 
-  if (targets.length === 0) {
+  // Open the project-create dialog with the session's cwd preloaded and a
+  // follow-up that moves the session into the new project. We do NOT call
+  // `moveSessionToProject` against a synthetic Home (NO_PROJECT_ID) — the
+  // session's cwd IS the new project folder either way, and the move
+  // re-anchors the live agent to it.
+  const openCreateAndMove = () => {
+    triggerHaptic('selection')
+
+    const prefill = cwd
+
+    openProjectCreate({
+      prefillFolder: prefill || undefined,
+      onCreated: async (project: { id: string; name: string }) => {
+        await moveSessionToProject(sessionId, project.id, profile)
+        notify({ durationMs: 2_000, kind: 'success', message: p.movedTo(project.name || project.id) })
+      }
+    })
+  }
+
+  // Suppress the "New project…" entry when the session is already inside a
+  // *real* project (not Home) AND no other project exists to move to — that
+  // case means the user is looking at a single-project workspace where the
+  // only meaningful action is creating+renaming, not creating-and-moving.
+  // Home sessions (no current project) always get the entry, since "move"
+  // out of Home is the whole point of the menu.
+  const canCreateAndMove = !currentProjectId || targets.length > 0
+
+  if (targets.length === 0 && !canCreateAndMove) {
     return <kit.Item disabled>{p.moveNoProjects}</kit.Item>
   }
 
   return (
     <>
+      {canCreateAndMove && (
+        <kit.Item onSelect={openCreateAndMove}>
+          {p.moveCreateNew}
+        </kit.Item>
+      )}
       {targets.map(node => (
         <kit.Item
           key={node.id}

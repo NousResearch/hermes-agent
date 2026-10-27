@@ -12,6 +12,7 @@ from gateway.platforms.helpers import (
     balance_fences_across_chunks,
     greedy_pack_blocks,
     infer_block_separator,
+    is_fence_atom,
     merge_streaming_fences,
     split_at_paragraph_boundary,
     split_markdown_atoms,
@@ -96,10 +97,32 @@ def test_split_at_paragraph_boundary_head_plus_tail(text):
 
 def test_atoms_fence_kept_whole():
     atoms = split_markdown_atoms(FENCED)
-    fence_atoms = [a for a in atoms if a.lstrip().startswith("```")]
+    fence_atoms = [a for a in atoms if is_fence_atom(a)]
     assert len(fence_atoms) == 1
     assert fence_atoms[0].rstrip().endswith("```")
 
+
+@pytest.mark.parametrize("indent", ["", " ", "  ", "   "])
+def test_gfm_fence_indentation_is_kept_atomic(indent):
+    code = f"{indent}```python\n{indent}x = 1\n\n{indent}y = 2\n{indent}```"
+    text = f"intro\n\n{code}\n\noutro"
+
+    atoms = split_markdown_atoms(text)
+
+    assert atoms == ["intro", code, "outro"]
+    assert is_fence_atom(code)
+    assert not text_has_unclosed_fence(code)
+    assert split_text_fence_aware(code, 20, prefer_paragraphs=True) == [code]
+
+
+def test_four_space_indentation_is_not_a_gfm_fence():
+    code = "    ```python\n    x = 1\n    ```"
+
+    assert not is_fence_atom(code)
+    assert not text_has_unclosed_fence("    ```python\n    x = 1")
+    # Four spaces are an indented code block in GFM, not a fenced delimiter.
+    # The chunker therefore must not grant it the oversized-fence exemption.
+    assert all(len(chunk) <= 20 for chunk in split_text_fence_aware(code, 20, prefer_paragraphs=True))
 
 # ── streaming merge + separators ─────────────────────────────────────────────
 
@@ -113,7 +136,9 @@ def test_merge_streaming_fences_rejoins_split_fence():
 
 def test_infer_block_separator_rules():
     assert infer_block_separator("text\n```", "next") == "\n"
-    assert infer_block_separator("text", "```py\nx") == "\n"
+    assert infer_block_separator("text", "   ```py\nx") == "\n"
+    assert infer_block_separator("text", "    ```py\nx") == "\n\n"
+    assert infer_block_separator("plain```", "next") == "\n\n"
     assert infer_block_separator("| a | b |", "| c | d |") == "\n"
     assert infer_block_separator("plain", "plain") == "\n\n"
 

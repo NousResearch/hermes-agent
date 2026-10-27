@@ -574,10 +574,10 @@ export const CatalogBrowser = memo(function CatalogBrowser({
                             {pageFlatRows.length > 0 && cardGrid(pageFlatRows)}
                           </div>
                         ) : CATALOG_MASONRY ? (
-                          <Masonry data-catalog-hover-group>{filtered.slice(0, limit).map(card)}</Masonry>
+                          <Masonry data-catalog-hover-group>{filtered.slice(0, limit).map((entry, index) => card(entry, index))}</Masonry>
                         ) : (
                           <div className="catalog-grid" data-catalog-hover-group>
-                            {filtered.slice(0, limit).map(card)}
+                            {filtered.slice(0, limit).map((entry, index) => card(entry, index))}
                           </div>
                         )}
                         {filtered.length > limit && (

@@ -268,7 +268,7 @@ export function ToolsetsTab({ hints, onQueryChange, profile, query, toolsets }: 
         layout: 'list' as const,
         action: (
           <CatalogSwitch
-            aria-label={t.skills.groupEnableAll(t.skills.toolsetGroupName(group), state?.size ?? rows.length)}
+            aria-label={t.skills.toolsetGroupName(group)}
             checked={state?.anyEnabled ?? false}
             disabled={bulkBusy}
             onCheckedChange={checked => void bulkApplyGroup(group, checked)}

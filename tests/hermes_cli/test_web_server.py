@@ -3252,7 +3252,7 @@ class TestNewEndpoints:
         config["platform_toolsets"].setdefault("cli", []).append("yuanbao")
         save_config(config)
 
-        shown = ["cronjob", "homeassistant", "spotify"]
+        shown = ["cronjob", "connections"]
         resp = self.client.put(
             "/api/tools/toolsets/bulk",
             json={"group": "integrations", "enabled": False, "names": shown})

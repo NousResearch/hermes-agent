@@ -208,6 +208,7 @@ export const hu: Translations = {
   },
 
   models: {
+    lastUsedModels: "Last 5 Models",
     modelsUsed: "Használt modellek",
     estimatedCost: "Becsült költség",
     tokens: "tokenek",

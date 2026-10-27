@@ -208,6 +208,7 @@ export const ja: Translations = {
   },
 
   models: {
+    lastUsedModels: "最近使用した5つのモデル",
     modelsUsed: "使用モデル",
     estimatedCost: "推定コスト",
     tokens: "トークン",

@@ -1316,17 +1316,14 @@ def create_task(
 
     now = int(time.time())
 
-    # Size gate inputs, resolved ONCE before the write txn: the estimator is a
-    # deterministic text pass, the policy read parses config.yaml. Every created
-    # card records one estimate; the decision depends on the status it actually
-    # lands in (see the decision table inside the txn).
+    # Size gate, phase 1 (policy + measurement), resolved ONCE outside the write
+    # txn: the policy reader parses config.yaml. Phase 2 (the decision table on
+    # the resolved status) runs inside it; the estimate is recorded after INSERT.
     from hermes_cli.kanban_size_gate import (
-        estimate_card_size, load_size_gate_policy, record_size_estimate,
+        creation_size_decision, prepare_creation_gate, record_creation_gate,
     )
 
-    gate_policy = load_size_gate_policy()
-    gate_estimate = estimate_card_size(title, body)
-    gate_oversized = gate_estimate.is_oversized(gate_policy.threshold)
+    gate = prepare_creation_gate(title, body)
 
     # Only persistent kinds inherit the board ``default_workdir``: a scratch
     # task inheriting it would point cleanup at the user's source tree.
@@ -1343,26 +1340,12 @@ def create_task(
             # commit so the dispatcher never sees a half-built graph.
             with write_txn(conn, allow_nested=True):
                 task_status, tenant = initial_task_state(conn, parents, initial_status, triage, tenant)
-                # Size gate decision table, keyed on the status the card ACTUALLY
-                # lands in. Every branch records exactly one ``size_estimate``
-                # event after the INSERT (below):
-                #   triage  - status unchanged; recorded so a later audit sees why.
-                #   ready   - oversized diverts to triage, else allowed.
-                #   parked  - advisory only: ``recompute_ready`` re-decides at
-                #             promotion, which is what closes the todo->ready hole.
-                if task_status == "ready" and gate_oversized:
-                    task_status = "triage"
-                    gate_decision = ("triage", "creation", "oversized")
-                elif task_status == "ready":
-                    gate_decision = ("allowed", "creation", "fits")
-                elif task_status == "triage":
-                    gate_decision = (
-                        "triage", "creation_triage", "oversized" if gate_oversized else "fits",
-                    )
-                else:
-                    gate_decision = (
-                        "advisory", "creation_parked", "oversized" if gate_oversized else "fits",
-                    )
+                # Size gate, phase 2: the decision table keyed on the status the card
+                # ACTUALLY lands in (triage keeps it, ready diverts when oversized, a
+                # parked card is advisory so promotion re-decides).
+                task_status, gate_record = creation_size_decision(
+                    task_status, oversized=gate.oversized,
+                )
                 # Project worktree: fresh dir under the repo + deterministic
                 # branch, instead of the random ``wt/<id>`` worker fallback.
                 if project_obj is not None and workspace_kind == "worktree":
@@ -1441,11 +1424,7 @@ def create_task(
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
                 # Record this card's ONE creation-time size estimate (see the
                 # decision table above; the row must exist first).
-                record_size_estimate(
-                    conn, task_id, gate_estimate,
-                    decision=gate_decision[0], path=gate_decision[1],
-                    reason=gate_decision[2], threshold=gate_policy.threshold,
-                )
+                record_creation_gate(conn, task_id, gate, gate_record)
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -2033,12 +2012,6 @@ def _task_status(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
     return row["status"] if row else None
 
 
-def _task_title_body(conn: sqlite3.Connection, task_id: str) -> tuple[Optional[str], Optional[str]]:
-    """``(title, body)`` for the size gate's measurement of ``task_id``."""
-    row = conn.execute("SELECT title, body FROM tasks WHERE id = ?", (task_id,)).fetchone()
-    return (row["title"], row["body"]) if row else (None, None)
-
-
 def _current_run_id(conn: sqlite3.Connection, task_id: str) -> Optional[int]:
     row = conn.execute("SELECT current_run_id FROM tasks WHERE id = ?", (task_id,)).fetchone()
     return int(row["current_run_id"]) if row and row["current_run_id"] else None
@@ -2178,13 +2151,13 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
         failure_limit = DEFAULT_FAILURE_LIMIT
     # The gate below runs over every todo/blocked row on every dispatcher tick and
     # the policy reader parses config.yaml: load it ONCE, never per row.
-    from hermes_cli.kanban_size_gate import gate_ready_entry, load_size_gate_policy
+    from hermes_cli.kanban_size_gate import divert_promotion_to_triage, load_size_gate_policy
 
     gate_policy = load_size_gate_policy()
     promoted = 0
     with write_txn(conn):
         todo_rows = conn.execute(
-            "SELECT id, status, consecutive_failures, max_retries, title, body "
+            "SELECT id, status, consecutive_failures, max_retries "
             "FROM tasks WHERE status IN ('todo', 'blocked')"
         ).fetchall()
         for row in todo_rows:
@@ -2200,16 +2173,11 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
             ).fetchall()
             if all(p["status"] in ("done", "archived") for p in parents):
                 resume_status = _resume_status_from_events(conn, task_id)
-                if resume_status == "ready" and gate_ready_entry(
-                    conn, task_id, title=row["title"], body=row["body"],
-                    policy=gate_policy, path="promotion",
-                ) == "triage":
+                if resume_status == "ready" and divert_promotion_to_triage(
+                    conn, task_id, policy=gate_policy, path="promotion",
+                ):
                     # Diverted, so this row gets NO ``promoted`` event and is not
                     # counted: the returned total stays the truth about what moved.
-                    conn.execute(
-                        "UPDATE tasks SET status = 'triage' "
-                        "WHERE id = ? AND status IN ('todo', 'blocked')", (task_id,),
-                    )
                     continue
                 if cur_status == "blocked":
                     # At the breaker limit, no auto-recovery (else block ->
@@ -3684,94 +3652,6 @@ def request_changes(
     return True, implementer
 
 
-def promote_task(
-    conn: sqlite3.Connection, task_id: str, *, actor: str, reason: Optional[str] = None,
-    dry_run: bool = False,
-) -> tuple[bool, Optional[str]]:
-    """Operator promotion ``todo``/``blocked`` -> ``ready`` with an audit event.
-    Refused while a parent is unfinished; ``dry_run`` only validates.
-    Returns ``(ok, reason)``."""
-    cur_status = _task_status(conn, task_id)
-    if cur_status is None:
-        return False, f"task {task_id} not found"
-
-    if cur_status not in ("todo", "blocked"):
-        return False, (
-            f"task {task_id} is {cur_status!r}; promote only applies to "
-            f"'todo' or 'blocked'"
-        )
-
-    # No override: claim_task demotes ready -> todo on an undone parent whichever
-    # writer set 'ready', so a forced promotion would only report a success the
-    # first claim silently reverts (#106195). The dependency itself is the knob.
-    parents = conn.execute(
-        "SELECT t.id, t.status FROM tasks t "
-        "JOIN task_links l ON l.parent_id = t.id "
-        "WHERE l.child_id = ?", (task_id,),
-    ).fetchall()
-    unsatisfied = [p["id"] for p in parents if p["status"] not in ("done", "archived")]
-    if unsatisfied:
-        return False, (
-            f"unsatisfied parent dependencies: {', '.join(unsatisfied)} "
-            f"(the ready -> running claim re-checks parents, so promotion cannot "
-            f"bypass them; complete the parents or drop the link with "
-            f"`hermes kanban unlink <parent_id> {task_id}`)"
-        )
-
-    if dry_run:
-        # Report the gate's verdict without writing: a dry run must not record an
-        # estimate, so it takes the same decision path with ``record=False``.
-        from hermes_cli.kanban_size_gate import (
-            estimate_card_size, gate_ready_entry, load_size_gate_policy,
-        )
-
-        title, body = _task_title_body(conn, task_id)
-        gate_policy = load_size_gate_policy()
-        if gate_ready_entry(
-            conn, task_id, title=title, body=body, policy=gate_policy,
-            path="promote", record=False,
-        ) == "triage":
-            estimate = estimate_card_size(title, body)
-            return False, (
-                f"size gate: card is oversized (score {estimate.score} > threshold "
-                f"{gate_policy.threshold}); would route to triage for decomposition"
-            )
-        return True, None
-
-    with write_txn(conn):
-        # Size gate BEFORE the status write, same txn: an oversized parked card is
-        # routed to triage here instead of being promoted into the dispatch lane.
-        from hermes_cli.kanban_size_gate import (
-            estimate_card_size, gate_ready_entry, load_size_gate_policy,
-        )
-
-        title, body = _task_title_body(conn, task_id)
-        gate_policy = load_size_gate_policy()
-        if gate_ready_entry(
-            conn, task_id, title=title, body=body, policy=gate_policy, path="promote",
-        ) == "triage":
-            upd = conn.execute(
-                "UPDATE tasks SET status = 'triage' "
-                "WHERE id = ? AND status IN ('todo', 'blocked')", (task_id,),
-            )
-            if upd.rowcount != 1:
-                return False, f"task {task_id} status changed during promotion"
-            estimate = estimate_card_size(title, body)
-            return False, (
-                f"size gate: card is oversized (score {estimate.score} > threshold "
-                f"{gate_policy.threshold}); routed to triage for decomposition"
-            )
-        upd = conn.execute(
-            "UPDATE tasks SET status = 'ready' "
-            "WHERE id = ? AND status IN ('todo', 'blocked')", (task_id,),
-        )
-        if upd.rowcount != 1:
-            return False, f"task {task_id} status changed during promotion"
-        _append_event(conn, task_id, "promoted_manual", {"actor": actor, "reason": reason})
-
-    return True, None
-
-
 def _reclaim_dangling_run(
     conn: sqlite3.Connection, task_id: str, *, statuses, now: int, note: str,
 ) -> None:
@@ -3808,9 +3688,8 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     now = int(time.time())
     # Gate policy read outside the write txn (it parses config.yaml); the gate
     # itself runs inside, before the status write.
-    from hermes_cli.kanban_size_gate import gate_ready_entry, load_size_gate_policy
+    from hermes_cli.kanban_size_gate import divert_promotion_to_triage
 
-    gate_policy = load_size_gate_policy()
     with write_txn(conn):
         resume_status = (
             _resume_status_from_events(conn, task_id)
@@ -3828,12 +3707,8 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
             if landing_status == "ready" and resume_status == "review"
             else landing_status
         )
-        if new_status == "ready":
-            title, body = _task_title_body(conn, task_id)
-            if gate_ready_entry(
-                conn, task_id, title=title, body=body, policy=gate_policy, path="unblock",
-            ) == "triage":
-                new_status = "triage"
+        if new_status == "ready" and divert_promotion_to_triage(conn, task_id, path="unblock"):
+            new_status = "triage"
         # ``block_kind``/``block_recurrences`` deliberately survive the unblock:
         # resetting them is the amnesia that let cron-unblock <-> re-block loop
         # unbounded; only complete_task clears them. ``consecutive_failures``
@@ -3867,21 +3742,18 @@ def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
     # itself runs inside, before the status write. A card in review has been
     # claimed, so the gate's claimed short-circuit returns "ready" here - it is
     # called for completeness, not as a re-litigation.
-    from hermes_cli.kanban_size_gate import gate_ready_entry, load_size_gate_policy
+    from hermes_cli.kanban_size_gate import divert_promotion_to_triage
 
-    gate_policy = load_size_gate_policy()
     with write_txn(conn):
         _reclaim_dangling_run(
             conn, task_id, statuses=("review",), now=now,
             note="invariant recovery on review reopen",
         )
         new_status = _landing_status_after_parents(conn, task_id)
-        if new_status == "ready":
-            title, body = _task_title_body(conn, task_id)
-            if gate_ready_entry(
-                conn, task_id, title=title, body=body, policy=gate_policy, path="review_reopen",
-            ) == "triage":
-                new_status = "triage"
+        if new_status == "ready" and divert_promotion_to_triage(
+            conn, task_id, path="review_reopen",
+        ):
+            new_status = "triage"
         review_event = _latest_event(conn, task_id, "review_requested")
         handoff = _json_dict(_row_get(review_event, "payload"))
         implementer = _nonblank_str(handoff.get("implementer"))
@@ -4565,3 +4437,4 @@ from hermes_cli.kanban_db_dispatch import (
     _worker_survived_termination,
     _worker_terminal_timeout_env,
 )
+from hermes_cli.kanban_db_promote import promote_task

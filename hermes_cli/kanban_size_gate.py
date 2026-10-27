@@ -205,7 +205,12 @@ def load_size_gate_policy() -> SizeGatePolicy:
         if isinstance(threshold, (int, float)) and threshold > 0:
             return SizeGatePolicy(threshold=int(threshold))
     except Exception:
-        pass
+        # Config-read boundary: any failure must fall back to the shipped default
+        # rather than block card creation, but it must not be a silent pass.
+        logger.warning(
+            "size gate: could not read kanban.size_gate.threshold; using the default %d",
+            DEFAULT_SIZE_GATE_THRESHOLD, exc_info=True,
+        )
     return SizeGatePolicy(threshold=DEFAULT_SIZE_GATE_THRESHOLD)
 
 
@@ -288,8 +293,12 @@ def record_size_estimate(
             },
         )
     except Exception:
-        # Recording failure should not block the card
-        pass
+        # The estimate is audit metadata: a failed event write must not block the
+        # card, but it must not vanish silently either (a hole an audit would miss).
+        logger.warning(
+            "size gate: could not record the estimate for task %s (decision=%s)",
+            task_id, decision, exc_info=True,
+        )
 
 
 def stamp_budget_estimate(body: Optional[str], estimate: SizeEstimate, threshold: int) -> str:
@@ -380,3 +389,113 @@ def gate_ready_entry(
             task_id, path, exc_info=True,
         )
         return "ready"
+
+
+# --- Call-site wiring --------------------------------------------------------
+# ``kanban_db`` is a facade at its line cap, so each writer of ``ready`` keeps
+# ONE line of gate code here and the decision logic stays in this module. Every
+# helper below delegates to :func:`gate_ready_entry` - never a second rule.
+
+
+@dataclass(frozen=True)
+class CreationGate:
+    """Creation-time gate inputs: the resolved policy, the measurement, the verdict."""
+
+    policy: SizeGatePolicy
+    estimate: SizeEstimate
+    oversized: bool
+
+
+def prepare_creation_gate(title: Optional[str], body: Optional[str]) -> CreationGate:
+    """Resolve the policy and measure the card ONCE per creation."""
+    policy = load_size_gate_policy()
+    estimate = estimate_card_size(title, body)
+    return CreationGate(policy=policy, estimate=estimate, oversized=policy.is_oversized(estimate))
+
+
+def creation_size_decision(status: str, *, oversized: bool) -> tuple[str, dict]:
+    """Creation-time decision table, keyed on the status the card ACTUALLY lands in.
+
+    Returns ``(status_after, record_kwargs)``: the status to insert, plus the
+    ``decision``/``path``/``reason`` to record once the row exists.
+    ``triage`` keeps its status (measured for a later audit), a ``ready`` card is
+    diverted when oversized, and a parked card gets an ``advisory`` decision that
+    :func:`gate_ready_entry` re-decides at promotion.
+    """
+    if status == "ready":
+        if oversized:
+            return "triage", {"decision": "triage", "path": "creation", "reason": "oversized"}
+        return status, {"decision": "allowed", "path": "creation", "reason": "fits"}
+    if status == "triage":
+        return status, {
+            "decision": "triage", "path": "creation_triage",
+            "reason": "oversized" if oversized else "fits",
+        }
+    return status, {
+        "decision": "advisory", "path": "creation_parked",
+        "reason": "oversized" if oversized else "fits",
+    }
+
+
+def record_creation_gate(conn, task_id: str, gate: CreationGate, record_kwargs: dict) -> None:
+    """Record the creation estimate under the decision table's verdict."""
+    record_size_estimate(
+        conn, task_id, gate.estimate, threshold=gate.policy.threshold, **record_kwargs,
+    )
+
+
+def divert_promotion_to_triage(
+    conn, task_id: str, *, policy: Optional[SizeGatePolicy] = None, path: str = "promotion",
+) -> bool:
+    """Gate a promotion; True when the card was diverted to ``triage``.
+
+    Callers must skip their own status write when this returns True: the gate
+    already recorded ``decision=triage`` and this flipped the row. Measures the
+    card's CURRENT title/body, which is also what the creation gate measured.
+    """
+    if policy is None:
+        policy = load_size_gate_policy()
+    title, body = _task_title_body(conn, task_id)
+    if gate_ready_entry(
+        conn, task_id, title=title, body=body, policy=policy, path=path,
+    ) != "triage":
+        return False
+    conn.execute(
+        "UPDATE tasks SET status = 'triage' WHERE id = ? AND status IN ('todo', 'blocked')",
+        (task_id,),
+    )
+    return True
+
+
+def promote_gate_verdict(
+    conn, task_id: str, *, policy: Optional[SizeGatePolicy] = None, record: bool = True,
+) -> Optional[str]:
+    """Manual-promotion gate: ``None`` to promote, else the operator-facing refusal.
+
+    When it diverts it moves the card to ``triage`` and says so; when it refuses
+    it names the score and the threshold so the operator can act on the number.
+    """
+    if policy is None:
+        policy = load_size_gate_policy()
+    title, body = _task_title_body(conn, task_id)
+    if gate_ready_entry(
+        conn, task_id, title=title, body=body, policy=policy, path="promote", record=record,
+    ) != "triage":
+        return None
+    if record:
+        conn.execute(
+            "UPDATE tasks SET status = 'triage' WHERE id = ? AND status IN ('todo', 'blocked')",
+            (task_id,),
+        )
+    score = estimate_card_size(title, body).score
+    verb = "routed" if record else "would route"
+    return (
+        f"size gate: card is oversized (score {score} > threshold "
+        f"{policy.threshold}); {verb} to triage for decomposition"
+    )
+
+
+def _task_title_body(conn, task_id: str) -> tuple[Optional[str], Optional[str]]:
+    """``(title, body)`` for measuring ``task_id`` (missing row -> ``(None, None)``)."""
+    row = conn.execute("SELECT title, body FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    return (row["title"], row["body"]) if row else (None, None)

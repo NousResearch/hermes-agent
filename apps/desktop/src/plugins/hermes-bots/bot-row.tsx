@@ -24,7 +24,6 @@ import {
   host,
   queryClient,
   RowButton,
-  SessionStatusDot,
   SidebarRowLead,
   Tip,
   useI18n,
@@ -43,11 +42,9 @@ import {
 } from './bot-state'
 import { ensureBotMetadata } from './canonical-chat'
 import {
-  $botAttention,
   $botMeta,
   $lastRoster,
   botActivitySession,
-  botAttentionHint,
   botHandle,
   botRosterKey,
   botSelectionKey,
@@ -67,10 +64,13 @@ import { displayName, stripPreviewMarkdown } from './labels'
 import { duplicateBot } from './profile-ops'
 import { botRecentSession, openBotRecentSession } from './recent-session'
 import { openRosterBot } from './roster-actions'
+import type { BotStatus } from './roster-status'
+import { RosterStatusGlyph } from './roster-status-glyph'
 import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
+
+const IDLE_STATUS: BotStatus = { kind: 'idle', lifts: false, stale: false }
 import {
   A2A_PREFIX_RE,
-  botCanonicalSessionId,
   botRowOwnsWorkspace,
   botWorkingMood,
   previewKind,
@@ -111,9 +111,24 @@ interface BotRowProps {
   /** Opens the New section dialog; the bot is filed into it on create. */
   onNewSection: (bot: RosterRow) => void
   showHandle?: boolean
+  /** The row's one status (roster-status.ts), resolved by the pane so the
+   *  Needs you band and this glyph read the same answer. A row mounted
+   *  outside the pane has no band to agree with and reads idle. */
+  status?: BotStatus
+  /** False inside the Needs you band, which files nothing. */
+  draggable?: boolean
 }
 
-export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandle }: BotRowProps) {
+export function BotRow({
+  bot,
+  draggable = true,
+  onDelete,
+  onEdit,
+  onGroup,
+  onNewSection,
+  showHandle,
+  status = IDLE_STATUS
+}: BotRowProps) {
   const { t } = useI18n()
   const b = useBots()
   const focusedOwner = focusedRosterOwner(useValue($focusedBotOwner))
@@ -164,23 +179,6 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
 
   const groupKeys = useValue($activeGroupMemberKeys)
   const botMood = botWorkingMood(bot, focusedOwner, turnBusy, activeConnectionId, Date.now(), groupKeys)
-  // Status keys off the canonical Bot Chat — the very session this row opens,
-  // so the dot and the click can never describe different conversations.
-  const canonicalSessionId = botCanonicalSessionId(bot)
-  // Needs-attention badge (#93091 item 3): background failures record under
-  // the selection key (group turns) or the route key (relay deliveries) —
-  // check both. Local/unannotated rows carry no connectionId, so their relay
-  // failures live under `<activeConnectionId>::<name>` — resolve that shape
-  // too or active-gateway bots never badge. Hidden bots keep their entry;
-  // hiding is display-only.
-  const attentionByKey = useValue($botAttention)
-
-  const attention =
-    attentionByKey[botSelectionKey(bot)] ||
-    attentionByKey[botRosterKey(bot)] ||
-    attentionByKey[`${bot?.connectionId || activeConnectionId}::${bot?.name || 'default'}`] ||
-    null
-
   // WHO sent the last message (bot-to-bot DM vs human) — the full stored
   // history lives in the canonical chat, not inline.
   // Preview identity must match click identity (#88200): when the backend
@@ -254,10 +252,14 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
         dragging && 'opacity-40'
       )}
       data-roster-key={rosterKey}
-      draggable
+      draggable={draggable}
       onClick={open}
       onDragEnd={() => $draggingBot.set(null)}
       onDragStart={event => {
+        if (!draggable) {
+          return
+        }
+
         event.dataTransfer.setData(BOT_DRAG_MIME, rosterKey)
         event.dataTransfer.effectAllowed = 'move'
         $draggingBot.set(rosterKey)
@@ -279,8 +281,11 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
           <div className="flex min-w-0 items-center gap-1.5">
             {/* The session row's own lead cell, so a bot's name sits on the
                 same left edge as every session name above it in the rail. */}
+            {/* Exactly one status glyph per row: needs you > routine >
+                working > failed > unread > idle (roster-status.ts). It keys
+                off the canonical Bot Chat — the session this row opens. */}
             <SidebarRowLead>
-              <SessionStatusDot storedSessionId={canonicalSessionId} />
+              <RosterStatusGlyph b={b} status={status} />
             </SidebarRowLead>
             {pinned ? (
               <Tip label={b.roster.pinned}>
@@ -296,15 +301,6 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
               <span className="min-w-0 truncate text-[0.8125rem] font-medium">{displayName(bot, meta)}</span>
             </Tip>
           </div>
-          {attention ? (
-            <Tip label={botAttentionHint(attention.reason)}>
-              <Codicon
-                aria-label={b.roster.needsAttention}
-                className="shrink-0 text-[0.6875rem] text-amber-600 dark:text-amber-300"
-                name="warning"
-              />
-            </Tip>
-          ) : null}
           {isOpening ? (
             <GlyphSpinner ariaLabel={b.bot.openingChat} className="shrink-0 text-xs text-(--ui-text-secondary)" />
           ) : null}
@@ -334,7 +330,9 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
       <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
       <ContextMenuContent>
         <ContextMenuItem onSelect={() => void openRosterBot(bot)}>{b.bot.openBotChat}</ContextMenuItem>
-        <ContextMenuItem onSelect={() => void openRosterBot(bot, { intent: 'tab' })}>{b.bot.openBotChatInNewTab}</ContextMenuItem>
+        <ContextMenuItem onSelect={() => void openRosterBot(bot, { intent: 'tab' })}>
+          {b.bot.openBotChatInNewTab}
+        </ContextMenuItem>
         <ContextMenuItem onSelect={() => openBotScreen(bot, meta)}>{b.screen.menu}</ContextMenuItem>
         <ContextMenuCheckboxItem
           checked={Boolean(meta?.screenAutoOpen)}
@@ -505,14 +503,26 @@ interface GroupRowProps {
   active: boolean
   group: string
   members: GroupMember[]
-  needsYou: boolean
+  /** The room's one status (roster-status.ts::deriveGroupStatus). */
+  status: BotStatus
+  /** False inside the Needs you band. */
+  draggable?: boolean
   onDisband: (room: { members: GroupMember[]; name: string }) => void
   /** Opens the New section dialog; the group is filed into it on create. */
   onNewSection: (group: string) => void
   onOpen: (group: string) => void
 }
 
-export function GroupRow({ active, group, members, needsYou, onOpen, onDisband, onNewSection }: GroupRowProps) {
+export function GroupRow({
+  active,
+  draggable = true,
+  group,
+  members,
+  status,
+  onOpen,
+  onDisband,
+  onNewSection
+}: GroupRowProps) {
   const { t } = useI18n()
   const b = useBots()
   const rooms = useValue($groupChats)
@@ -556,13 +566,17 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband, 
         active && 'bg-(--ui-row-active-background)',
         dragging && 'opacity-40'
       )}
-      draggable
+      draggable={draggable}
       onClick={() => {
         haptic('tap')
         onOpen(group)
       }}
       onDragEnd={() => $draggingBot.set(null)}
       onDragStart={event => {
+        if (!draggable) {
+          return
+        }
+
         event.dataTransfer.setData(BOT_DRAG_MIME, dragKey)
         event.dataTransfer.effectAllowed = 'move'
         $draggingBot.set(dragKey)
@@ -607,11 +621,7 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband, 
               <Codicon className="shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)" name="pinned" />
             </Tip>
           ) : null}
-          {needsYou ? (
-            <Tip label={b.group.needsYourInput}>
-              <Codicon aria-label={b.roster.needsInput} className="shrink-0 text-(--ui-accent)" name="question" />
-            </Tip>
-          ) : null}
+          {status.kind === 'idle' ? null : <RosterStatusGlyph b={b} status={status} />}
           {lastAt ? (
             <span className="shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)">
               {rowAge(lastAt, t.sidebar.row)}

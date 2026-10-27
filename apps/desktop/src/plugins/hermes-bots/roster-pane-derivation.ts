@@ -1,5 +1,7 @@
+import type { RosterSessionSignals } from '@hermes/plugin-sdk'
+
 import { botActivitySession } from './data'
-import { botRosterKey, filterBots, preferReachableSameNameRows } from './data'
+import { botRosterKey, botSelectionKey, filterBots, preferReachableSameNameRows } from './data'
 import type { $groupChats } from './group-chat'
 import { groupChatMemberBots, groupChatNames, groupLastActivity } from './group-membership'
 import { sortGroupRosterRows } from './group-order'
@@ -7,10 +9,11 @@ import { isBotPinned } from './hidden-bots'
 import { isBotHidden } from './hidden-bots'
 import { filterBotsByGateway, groupMatchesRosterFilters, rosterGatewaySections } from './roster-sections'
 import type { rosterGatewayOptions } from './roster-sections'
+import { type BotStatus, deriveBotStatus, deriveGroupStatus } from './roster-status'
 import { botRosterMeta } from './routing'
 import { BOT_ROSTER_SEARCH_THRESHOLD } from './row-helpers'
 import { ACTIVE_WINDOW_S, rosterActivityMatches } from './row-helpers'
-import type { BotMeta, GroupMember, RosterActivityFilter, RosterKindFilter, RosterRow } from './types'
+import type { BotMeta, GroupMember, GroupPrompt, RosterActivityFilter, RosterKindFilter, RosterRow } from './types'
 /** The two row shapes the roster sorts together — `kind` is the discriminant. */
 interface RosterBotRow {
   active: boolean
@@ -40,7 +43,14 @@ interface RosterRowsInput {
   gatewayOptions: ReturnType<typeof rosterGatewayOptions>
   activityOf: (bot: RosterRow) => number
   isPinned: (bot: RosterRow) => boolean
+  /** Row status (see roster-status.ts); a lifted row leaves its section for
+   *  the Needs you band. Absent = nothing lifts. */
+  statusOfBot?: (bot: RosterRow) => BotStatus
+  statusOfGroup?: (name: string) => BotStatus
 }
+
+/** One row in the Needs you band, in the same two shapes the sections use. */
+export type NeedsYouRow = { bot: RosterRow; kind: 'bot' } | { kind: 'group'; members: GroupMember[]; name: string }
 
 export function deriveRosterRows({
   roster,
@@ -53,8 +63,12 @@ export function deriveRosterRows({
   activeRosterKeys,
   gatewayOptions,
   activityOf,
-  isPinned
+  isPinned,
+  statusOfBot,
+  statusOfGroup
 }: RosterRowsInput) {
+  const botLifts = (bot: RosterRow): boolean => Boolean(statusOfBot?.(bot).lifts)
+  const groupLifts = (name: string): boolean => Boolean(statusOfGroup?.(name).lifts)
   const activeSourceRoster = roster.filter(bot => !bot.remoteSource)
   // Hidden rows remain fully alive and recoverable at the bottom. Every
   // non-display consumer continues to receive the complete roster.
@@ -72,7 +86,7 @@ export function deriveRosterRows({
     )
   )
 
-  const filteredHiddenBots = filterBots(filterBotsByGateway(hiddenBots, gatewayFilter), allMeta, query).filter(
+  const matchedHiddenBots = filterBots(filterBotsByGateway(hiddenBots, gatewayFilter), allMeta, query).filter(
     (bot: RosterRow) =>
       rosterActivityMatches(
         {
@@ -83,6 +97,9 @@ export function deriveRosterRows({
       )
   )
 
+  // Hidden rows lift only while the reveal toggle is on; statusOfBot already
+  // folds that in, so a lifted hidden row simply leaves the Hidden list.
+  const filteredHiddenBots = matchedHiddenBots.filter(bot => !botLifts(bot))
   const groupNames = groupChatNames(allMeta, groupRooms)
 
   const groupRows = groupNames
@@ -116,10 +133,24 @@ export function deriveRosterRows({
           active: activeRosterKeys.has(botRosterKey(bot))
         }))
 
-  const rosterRows = sortGroupRosterRows([...botRows, ...groupRows], groupRooms)
-  const sortedGroupRows = sortGroupRosterRows(groupRows, groupRooms)
-  const gatewaySections = rosterGatewaySections(botRows, gatewayOptions, gatewayFilter)
-  const showGatewaySections = gatewaySections.sectioned && botRows.length > 0
+  // The band is a view over the SAME filtered rows: a row the search or a
+  // filter hides does not resurface in it. Rooms first (a blocked room stalls
+  // every member), then bots in roster order; nothing in the band drags.
+  const needsYouRows: NeedsYouRow[] = [
+    ...sortGroupRosterRows(groupRows, groupRooms)
+      .filter(row => groupLifts(row.name))
+      .map((row): NeedsYouRow => ({ kind: 'group', name: row.name, members: row.members })),
+    ...[...botRows.map(row => row.bot), ...(rowKindFilter === 'groups' ? [] : matchedHiddenBots)]
+      .filter(botLifts)
+      .map((bot): NeedsYouRow => ({ kind: 'bot', bot }))
+  ]
+
+  const sectionBotRows = botRows.filter(row => !botLifts(row.bot))
+  const sectionGroupRows = groupRows.filter(row => !groupLifts(row.name))
+  const rosterRows = sortGroupRosterRows([...sectionBotRows, ...sectionGroupRows], groupRooms)
+  const sortedGroupRows = sortGroupRosterRows(sectionGroupRows, groupRooms)
+  const gatewaySections = rosterGatewaySections(sectionBotRows, gatewayOptions, gatewayFilter)
+  const showGatewaySections = gatewaySections.sectioned && sectionBotRows.length > 0
 
   return {
     activeSourceRoster,
@@ -127,6 +158,7 @@ export function deriveRosterRows({
     visibleRoster,
     filteredHiddenBots,
     groupNames,
+    needsYouRows,
     rosterRows,
     sortedGroupRows,
     gatewaySections,
@@ -234,4 +266,115 @@ export function sortRosterBots(sourceWithSelectedOwner: RosterRow[], allMeta: Re
   })
 
   return { roster, activityOf, isPinned }
+}
+
+/** The signal snapshots one paint reads. Everything here already exists on
+ *  the Desktop: no field needs a new RPC. */
+export interface RosterStatusInput {
+  /** `$rosterSessionSignals` from the SDK. */
+  signals: RosterSessionSignals
+  attention: Record<string, { message: string; reason: string }>
+  /** Roster keys whose face reads working (focused turn, live worker, room turn). */
+  workingKeys: ReadonlySet<string>
+  activeConnectionId: string
+  allMeta: Record<string, BotMeta>
+  revealHidden: boolean
+  groupClarify: Record<string, GroupPrompt>
+  groupNeedsYou: Record<string, boolean>
+  groupRooms: ReturnType<typeof $groupChats.get>
+}
+
+function promptText(prompt: GroupPrompt): string {
+  if (prompt.kind === 'approval') {
+    return String(prompt.command || prompt.question || '').trim()
+  }
+
+  const first = (prompt.questions || []).find(q => typeof q?.question === 'string' && q.question.trim())
+
+  return first ? String(first.question).trim() : ''
+}
+
+/** Per-row status resolvers for one paint, memoized by key so the band and
+ *  every row read the same answer. */
+export function rosterStatusResolvers(input: RosterStatusInput) {
+  const { signals, attention, workingKeys, activeConnectionId, allMeta, revealHidden } = input
+  const bots = new Map<string, BotStatus>()
+  const groups = new Map<string, BotStatus>()
+
+  const routineFor = (bot: RosterRow): boolean => {
+    const own = String(bot.connectionId || '').trim()
+    // Cron rows from the active gateway may carry no connection id.
+    const onActive = !own || own === 'local' || own === activeConnectionId
+
+    return signals.routines.some(scope => {
+      const split = scope.indexOf('::')
+      const connection = scope.slice(0, split)
+
+      return scope.slice(split + 2) === (bot.name || 'default') && (connection ? connection === own : onActive)
+    })
+  }
+
+  const statusOfBot = (bot: RosterRow): BotStatus => {
+    const key = botRosterKey(bot)
+    const cached = bots.get(key)
+
+    if (cached) {
+      return cached
+    }
+
+    const ids = [bot.canonical_session?.resolved_id, bot.canonical_session?.id].filter(Boolean) as string[]
+    const dot = ids.map(id => signals.dots[id]).find(Boolean) ?? null
+    const prompt = ids.map(id => signals.prompts[id]).find(Boolean) ?? null
+
+    const failure =
+      attention[botSelectionKey(bot)] ||
+      attention[key] ||
+      attention[`${bot.connectionId || activeConnectionId}::${bot.name || 'default'}`] ||
+      null
+
+    const status = deriveBotStatus({
+      dot,
+      prompt,
+      failure,
+      routineRunning: routineFor(bot),
+      working: workingKeys.has(key),
+      stale: bot.sourceReachable === false || Boolean(bot.ghost),
+      hidden: isBotHidden(bot, allMeta),
+      revealHidden
+    })
+
+    bots.set(key, status)
+
+    return status
+  }
+
+  const statusOfGroup = (name: string): BotStatus => {
+    const cached = groups.get(name)
+
+    if (cached) {
+      return cached
+    }
+
+    const pending = Object.values(input.groupClarify).filter(entry => entry?.group === name)
+    const first = pending.map(entry => ({ kind: entry.kind, text: promptText(entry) })).find(entry => entry.text)
+    const room = input.groupRooms[name]
+    const log = Array.isArray(room?.log) ? room.log : []
+    const mention = [...log]
+      .reverse()
+      .find(entry => entry?.from?.kind === 'member' && /@user\b/i.test(entry.text || ''))
+
+    const status = deriveGroupStatus({
+      // A pending prompt with no quotable text still blocks the round.
+      prompt: first ?? (pending.length ? { kind: pending[0].kind, text: '' } : null),
+      mentioned: Boolean(input.groupNeedsYou[name]),
+      mentionText: mention?.text,
+      running: Boolean(room?.running)
+    })
+
+    groups.set(name, status)
+
+    return status
+  }
+
+  return { statusOfBot, statusOfGroup }
 }

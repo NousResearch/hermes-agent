@@ -1891,18 +1891,16 @@ export {
 } from '@/lib/transcript-directives'
 export { cn } from '@/lib/utils'
 export { gatewayActivationEpoch } from '@/store/gateway'
+/** Read-only per-session status, blocking-prompt quote and live cron scopes, for roster rows. */
+export { $rosterSessionSignals, type RosterSessionSignals, routineScopeKey } from '@/store/roster-session-signals'
 /** THE unread store behind `SessionStatusDot`'s emerald dot. A plugin that
- *  learns out-of-band that a session produced something the user hasn't seen
- *  (a roster poll's activity watermark, say) writes HERE rather than keeping
- *  its own unread map — core's dot only paints what this store claims, and a
- *  parallel map means a second badge that drifts. Works for sessions core
- *  cannot see: a hidden session is never in the session list, so the backend
- *  watermark can never claim it, but the transient marker resolves to the id
- *  you pass. Key every call by the SAME stored id you hand the dot.
- *  `markSessionUnreadFinished` lights it, `ackStoredSessionId` clears it when
- *  the user opens the session, `forgetSessionUnread` drops it when the session
- *  is gone. Pass the owning profile — a hidden session has no row to read it
- *  from, and the persisted half is bucketed per profile. */
+ *  learns out-of-band that a session produced something unseen (a roster poll's
+ *  watermark) writes HERE, never a parallel map that drifts. Works for hidden
+ *  sessions too: the transient marker resolves to the stored id you pass (the
+ *  same id you hand the dot). `markSessionUnreadFinished` lights it,
+ *  `ackStoredSessionId` clears it on open, `forgetSessionUnread` drops it when
+ *  the session is gone. Pass the owning profile: the persisted half is
+ *  bucketed per profile. */
 export { ackStoredSessionId, forgetSessionUnread, markSessionUnreadFinished } from '@/store/session-unread'
 /** `sidebarNav.prefs`: hide / re-order the sidebar's nav rows by CONTRIBUTING a
  *  preference (union of hides, `capabilities` never hidden; the first order

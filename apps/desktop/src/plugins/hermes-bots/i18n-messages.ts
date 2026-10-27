@@ -3,9 +3,12 @@
  */
 
 import { type CanonicalGroupMessages } from './canonical-group-locales'
+import { type RosterStatusMessages } from './roster-status-locales'
 
 export type BotsMessages = {
   canonical: { [K in keyof CanonicalGroupMessages]: string }
+  /** The Needs you band and each roster row's one status glyph. */
+  status: { [K in keyof RosterStatusMessages]: string }
   /** Left rail: the bot + group-chat roster. */
   editor: {
     fullConfigHint: string

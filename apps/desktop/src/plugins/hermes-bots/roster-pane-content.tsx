@@ -4,9 +4,10 @@ import type { ReactNode, RefObject } from 'react'
 import type { useRoster } from './data'
 import { $showHiddenBots } from './hidden-bots'
 import type { useBots } from './i18n'
-import type { deriveRosterPresentation, deriveRosterRows } from './roster-pane-derivation'
+import type { deriveRosterPresentation, deriveRosterRows, NeedsYouRow } from './roster-pane-derivation'
 import type { rosterSectionRenderers } from './roster-pane-sections'
 import type { rosterGatewayOptions } from './roster-sections'
+import { NeedsYouBand } from './roster-status-glyph'
 import type { RosterRow } from './types'
 
 interface RosterContentProps {
@@ -21,6 +22,8 @@ interface RosterContentProps {
   allBotsHidden: boolean
   hiddenExpanded: boolean
   rosterRows: ReturnType<typeof deriveRosterRows>['rosterRows']
+  needsYouRows: NeedsYouRow[]
+  renderNeedsYouRow: (row: NeedsYouRow) => ReactNode
   matchingHiddenBots: RosterRow[]
   query: string
   selectedGateway: ReturnType<typeof rosterGatewayOptions>[number] | undefined
@@ -52,6 +55,8 @@ export function renderRosterContent({
   allBotsHidden,
   hiddenExpanded,
   rosterRows,
+  needsYouRows,
+  renderNeedsYouRow,
   matchingHiddenBots,
   query,
   selectedGateway,
@@ -110,7 +115,7 @@ export function renderRosterContent({
             {b.roster.showHidden}
           </Button>
         </div>
-      ) : rosterRows.length === 0 && matchingHiddenBots.length === 0 ? (
+      ) : rosterRows.length + matchingHiddenBots.length + needsYouRows.length === 0 ? (
         <div aria-live="polite" className="flex min-h-0 flex-1 flex-col" role="status">
           <PanelEmpty
             description={
@@ -128,6 +133,9 @@ export function renderRosterContent({
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain" data-slot="bots-roster">
           <div className="grid w-full min-w-0 gap-0.5 px-1.5 pb-2">
+            <NeedsYouBand b={b} count={needsYouRows.length}>
+              {needsYouRows.map(renderNeedsYouRow)}
+            </NeedsYouBand>
             {showGatewaySections
               ? [
                   sortedGroupRows.length ? renderGroupChatSection() : null,

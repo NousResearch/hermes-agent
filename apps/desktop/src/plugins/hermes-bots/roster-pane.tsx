@@ -1,7 +1,7 @@
-import { host, useI18n, useValue } from '@hermes/plugin-sdk'
+import { $rosterSessionSignals, host, useI18n, useValue } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
-import { BotRow } from './bot-row'
+import { BotRow, GroupRow } from './bot-row'
 import {
   $botChatFocused,
   $botsPaneVisible,
@@ -25,6 +25,7 @@ import { CanonicalGroupList } from './canonical-group-registry'
  * the dialogs; nothing in Bot Mode imports it except the plugin entry point.
  */
 import {
+  $botAttention,
   $botMeta,
   $lastRoster,
   annotateBotSource,
@@ -42,7 +43,13 @@ import { $showHiddenBots, isBotHidden } from './hidden-bots'
 import { useBots } from './i18n'
 import { $activityToasts } from './roster-actions'
 import { renderRosterContent } from './roster-pane-content'
-import { deriveRosterPresentation, deriveRosterRows, sortRosterBots } from './roster-pane-derivation'
+import {
+  deriveRosterPresentation,
+  deriveRosterRows,
+  type NeedsYouRow,
+  rosterStatusResolvers,
+  sortRosterBots
+} from './roster-pane-derivation'
 import { renderRosterDialogs } from './roster-pane-dialogs'
 import { RosterGroupRowView } from './roster-pane-groups'
 import { $lastSources, usePublishRosterSnapshot } from './roster-pane-lifecycle'
@@ -50,7 +57,7 @@ import { rosterSectionRenderers } from './roster-pane-sections'
 import { renderRosterToolbar } from './roster-pane-toolbar'
 import { botNeedsHandleLabel, rosterGatewayOptions } from './roster-sections'
 import { botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
-import { activeBots, useTurnBusy } from './row-helpers'
+import { activeBots, botWorkingMood, useTurnBusy } from './row-helpers'
 import type { BotMeta, GatewaySource, GroupMember, RosterActivityFilter, RosterKindFilter, RosterRow } from './types'
 import {
   $botSections,
@@ -329,6 +336,28 @@ export function BotsPane() {
     }
   }, [gatewayFilterExists])
   const hiddenExpanded = useValue($showHiddenBots)
+  const sessionSignals = useValue($rosterSessionSignals)
+  const attention = useValue($botAttention)
+  const now = Date.now()
+
+  const workingKeys = new Set(
+    roster
+      .filter(bot => botWorkingMood(bot, workingOwner, turnBusy, activeConnectionId, now, groupKeys) !== 'idle')
+      .map(botRosterKey)
+  )
+
+  // One resolver per paint: the band and every row read the same answer.
+  const { statusOfBot, statusOfGroup } = rosterStatusResolvers({
+    signals: sessionSignals,
+    attention,
+    workingKeys,
+    activeConnectionId,
+    allMeta,
+    revealHidden: hiddenExpanded,
+    groupClarify,
+    groupNeedsYou,
+    groupRooms
+  })
 
   const {
     activeSourceRoster,
@@ -336,6 +365,7 @@ export function BotsPane() {
     visibleRoster,
     filteredHiddenBots,
     groupNames,
+    needsYouRows,
     rosterRows,
     sortedGroupRows,
     gatewaySections,
@@ -351,7 +381,9 @@ export function BotsPane() {
     activeRosterKeys,
     gatewayOptions,
     activityOf,
-    isPinned
+    isPinned,
+    statusOfBot,
+    statusOfGroup
   })
 
   const {
@@ -421,28 +453,49 @@ export function BotsPane() {
   const groupChatMembers = groupChatName ? groupChatMemberBots(groupChatName, roster, allMeta) : []
 
   if (shouldRenderGroupChatInPane(groupChatName) && groupChatMembers.length) {
-    return <GroupChatWorkspace group={groupChatName} members={groupChatMembers} origin={groupOpenOrigin(groupChatName)} />
+    return (
+      <GroupChatWorkspace group={groupChatName} members={groupChatMembers} origin={groupOpenOrigin(groupChatName)} />
+    )
   }
 
-  const renderBotRow = (bot: RosterRow, keyPrefix = '') => (
+  const renderBotRow = (bot: RosterRow, keyPrefix = '', draggable = true) => (
     <BotRow
       bot={bot}
+      draggable={draggable}
       key={`${keyPrefix}${botRosterKey(bot)}`}
       onDelete={setDeleting}
       onEdit={setEditing}
       onGroup={setGrouping}
       onNewSection={target => setSectionDialog({ bot: target, mode: 'create' })}
       showHandle={botNeedsHandleLabel(bot, roster, allMeta)}
+      status={statusOfBot(bot)}
     />
   )
+
+  // Band rows keep their click and menu; they never drag (the band files
+  // nothing), and rooms drop the reorder arrows for the same reason.
+  const renderNeedsYouRow = (row: NeedsYouRow) =>
+    row.kind === 'bot' ? (
+      renderBotRow(row.bot, 'needs-you:', false)
+    ) : (
+      <GroupRow
+        active={groupChatName === row.name}
+        draggable={false}
+        group={row.name}
+        key={`needs-you:group:${row.name}`}
+        members={row.members}
+        onDisband={setDeletingGroup}
+        onNewSection={target => setSectionDialog({ group: target, mode: 'create' })}
+        onOpen={group => openGroupChat(group, 'name')}
+        status={statusOfGroup(row.name)}
+      />
+    )
 
   const renderGroupRow = (row: { members: GroupMember[]; name: string }) => (
     <RosterGroupRowView
       active={groupChatName === row.name}
       b={b}
       group={row.name}
-      groupClarify={groupClarify}
-      groupNeedsYou={groupNeedsYou}
       groupRooms={groupRooms}
       key={`group:${row.name}`}
       members={row.members}
@@ -450,6 +503,7 @@ export function BotsPane() {
       onNewSection={target => setSectionDialog({ group: target, mode: 'create' })}
       onOpen={group => openGroupChat(group, 'name')}
       sortedGroupRows={sortedGroupRows}
+      status={statusOfGroup(row.name)}
     />
   )
 
@@ -506,6 +560,8 @@ export function BotsPane() {
         allBotsHidden,
         hiddenExpanded,
         rosterRows,
+        needsYouRows,
+        renderNeedsYouRow,
         matchingHiddenBots,
         query,
         selectedGateway,

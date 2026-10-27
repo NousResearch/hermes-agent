@@ -4,29 +4,18 @@ import type { ComponentProps } from 'react'
 import { GroupRow } from './bot-row'
 import { $botMeta } from './data'
 import { $groupChats, updateGroupChat } from './group-chat'
-import type { $groupClarify, $groupNeedsYou } from './group-chat'
 import { groupChatNames, groupLastActivity } from './group-membership'
 import { reorderGroupRows, sortGroupRosterRows } from './group-order'
-import { groupHasPendingClarify } from './group-turns'
 import type { useBots } from './i18n'
 import type { RosterGroupRow } from './roster-pane-derivation'
 
-interface RosterGroupRowViewProps extends Omit<ComponentProps<typeof GroupRow>, 'needsYou'> {
+interface RosterGroupRowViewProps extends ComponentProps<typeof GroupRow> {
   b: ReturnType<typeof useBots>
-  groupClarify: ReturnType<typeof $groupClarify.get>
-  groupNeedsYou: ReturnType<typeof $groupNeedsYou.get>
   groupRooms: ReturnType<typeof $groupChats.get>
   sortedGroupRows: RosterGroupRow[]
 }
 
-export function RosterGroupRowView({
-  b,
-  groupClarify,
-  groupNeedsYou,
-  groupRooms,
-  sortedGroupRows,
-  ...rowProps
-}: RosterGroupRowViewProps) {
+export function RosterGroupRowView({ b, groupRooms, sortedGroupRows, ...rowProps }: RosterGroupRowViewProps) {
   const moveRoom = (name: string, delta: -1 | 1) => {
     // Read at the gesture, not the last render: a sync or disband may have
     // replaced this room in the meantime. Ordering never writes bot metadata.
@@ -57,10 +46,7 @@ export function RosterGroupRowView({
 
   return (
     <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center">
-      <GroupRow
-        {...rowProps}
-        needsYou={Boolean(groupNeedsYou[rowProps.group]) || groupHasPendingClarify(groupClarify, rowProps.group)}
-      />
+      <GroupRow {...rowProps} />
       <div className="flex flex-col">
         {([-1, 1] as const).map(delta => (
           <Tip key={delta} label={delta === -1 ? b.sections.moveUp : b.sections.moveDown}>

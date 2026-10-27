@@ -46,6 +46,7 @@ import { isSecondaryWindow } from '@/store/windows'
 import { MessageRenderBoundary } from '../message-render-boundary'
 import { PendingApprovalStack } from '../tool/approval'
 
+import { DaySeparator } from './day-separator'
 import { responseMessageRole, ResponseMessages } from './response-group'
 import { holdSessionSwitching } from './session-switching'
 import { resolveShowEarlierAction, shouldAutoShowEarlier, useTranscriptWindow } from './transcript-window'
@@ -414,6 +415,7 @@ export function liveTailStart(
 interface TurnRowProps {
   components: ThreadMessageComponents
   group: MessageGroup
+  previousIndex?: number
   resetKey: string
   virtualized: boolean
 }
@@ -440,7 +442,7 @@ interface TurnRowProps {
 // The live tail (newest turns) is exempt: virtualizing a turn whose final
 // size hasn't been remembered yet snaps it to a stale height when it scrolls
 // off, drifting stick-to-bottom up over old turns. See liveTailStart.
-const TurnRow = memo(function TurnRow({ components, group, resetKey, virtualized }: TurnRowProps) {
+const TurnRow = memo(function TurnRow({ components, group, previousIndex, resetKey, virtualized }: TurnRowProps) {
   return (
     <div
       className={cn(
@@ -449,6 +451,7 @@ const TurnRow = memo(function TurnRow({ components, group, resetKey, virtualized
       )}
       data-slot="aui_message-group"
     >
+      <DaySeparator index={group.kind === 'turn' ? group.indices[0] : group.index} previousIndex={previousIndex} />
       <MessageRenderBoundary resetKey={resetKey}>
         {group.kind === 'turn' ? (
           <div
@@ -1547,15 +1550,20 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // bails out on element identity and a scroll flip re-renders nothing below.
   const rows = useMemo(
     () =>
-      visibleGroups.map((group, indexInVisible) => (
-        <TurnRow
-          components={components}
-          group={group}
-          key={group.id}
-          resetKey={structuralSignature}
-          virtualized={indexInVisible < tailStart}
-        />
-      )),
+      visibleGroups.map((group, indexInVisible) => {
+        const previous = visibleGroups[indexInVisible - 1]
+
+        return (
+          <TurnRow
+            components={components}
+            group={group}
+            key={group.id}
+            previousIndex={previous?.kind === 'turn' ? previous.indices[0] : previous?.index}
+            resetKey={structuralSignature}
+            virtualized={indexInVisible < tailStart}
+          />
+        )
+      }),
     [visibleGroups, components, structuralSignature, tailStart]
   )
 

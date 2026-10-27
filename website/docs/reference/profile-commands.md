@@ -444,6 +444,15 @@ directory and re-run.
 `config.yaml` is preserved by default to keep your local overrides.
 Pass `--force-config` to reset it to the distribution's shipped config.
 
+After a successful update, Hermes prints a change summary: the version it moved
+from and to, the author's release notes for each version in between (any
+`changelogs/<version>.md` the distribution ships — see
+[Profile Distributions](../user-guide/profile-distributions.md#step-6--ship-release-notes-with-changelogs-optional)),
+and an **environment-variable delta** — the variables this version adds, removes,
+or changes — so you know what to set in `.env` before the next run. Nothing extra
+is printed when the distribution ships no changelogs and its env requirements are
+unchanged.
+
 ### `hermes profile info`
 
 ```bash

@@ -55,3 +55,52 @@ def test_nested_profile_archive_is_also_rejected(tmp_path):
 
     assert result.returncode == 1
     assert "fixtures/fixture.tar.gz" in result.stdout
+
+
+def _git_root(root: Path, ignores: str) -> None:
+    """A checkout whose ``.gitignore`` is *ignores*. Nothing is committed, so every file on disk
+    is "others" and only the ignore rules decide what the walk skips."""
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
+    (root / ".gitignore").write_text(ignores, encoding="utf-8")
+
+
+def test_archives_inside_a_gitignored_directory_are_local_state_not_offenders(tmp_path):
+    """The desktop packager unpacks its build inputs under ``.cache/`` - gitignored, and absent
+    from the image build context. Those archives never were profile exports."""
+    _git_root(tmp_path, "*.tar.gz\n.cache/\n")
+    builder = tmp_path / ".cache" / "desktop-inputs" / "packager" / "builder"
+    builder.mkdir(parents=True)
+    (builder / "7zip-darwin-arm64.tar.gz").write_bytes(b"packager input")
+
+    result = _run(tmp_path)
+
+    assert result.returncode == 0
+    assert "7zip-darwin-arm64.tar.gz" not in result.stdout
+
+
+def test_archive_matching_an_ignore_pattern_is_still_rejected(tmp_path):
+    """``.gitignore`` also ignores ``*.tar.gz`` repo-wide. Honouring that would switch the guard
+    off entirely: only a whole ignored DIRECTORY is local state, while a stray export sitting in
+    the checkout is precisely the incident (#92457) this check is the boundary for."""
+    _git_root(tmp_path, "*.tar.gz\n")
+    (tmp_path / "profile-export.tar.gz").write_bytes(b"profile webhook secret must never be printed")
+
+    result = _run(tmp_path)
+
+    assert result.returncode == 1
+    assert "profile-export.tar.gz" in result.stdout
+    assert "profile webhook secret" not in result.stdout
+
+
+def test_force_added_archive_inside_a_gitignored_directory_is_still_rejected(tmp_path):
+    """The bypass this guard exists for: ``git add -f`` puts the archive in the index, so it is no
+    longer "others" and the ignore set must not hide it."""
+    _git_root(tmp_path, ".cache/\n")
+    (tmp_path / ".cache").mkdir()
+    (tmp_path / ".cache" / "export.tgz").write_bytes(b"forced")
+    subprocess.run(["git", "add", "-f", ".cache/export.tgz"], cwd=tmp_path, check=True, capture_output=True)
+
+    result = _run(tmp_path)
+
+    assert result.returncode == 1
+    assert ".cache/export.tgz" in result.stdout

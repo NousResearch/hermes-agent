@@ -1,6 +1,7 @@
 """scripts/check_no_tmp_literals.py: literal /tmp paths are flagged; idioms, comments, markers and tests are not."""
 
 import importlib.util
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -110,6 +111,43 @@ def test_scan_skips_tests_lockfiles_ci_and_translations(tmp_path):
     hits = mod.scan(root=tmp_path)
     assert sorted(hits) == ["app/src/a.ts", "skills/x/SKILL.md", "tools/a.py", "website/docs/guide.md"]
     assert all(len(v) == 1 for v in hits.values())
+
+def _git_root(root: Path, ignores: str) -> None:
+    """A checkout whose ``.gitignore`` is *ignores*. Nothing is committed, so every file on disk
+    is "others" and only the ignore rules decide what a walk skips."""
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
+    (root / ".gitignore").write_text(ignores, encoding="utf-8")
+
+
+def test_gitignored_directory_holding_a_nested_repo_is_never_scanned(tmp_path):
+    """A treehouse-style slot is a repository of its own, so git reports it as ONE directory
+    entry (``.../repo/``) and never as its files. A file-path membership test therefore matched
+    nothing inside it, and a whole embedded checkout was scanned as if it were source."""
+    mod = _load()
+    _git_root(tmp_path, ".treehouse/\n")
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "a.py").write_text('X = "/tmp/a"\n', encoding="utf-8")
+    embedded = tmp_path / ".treehouse" / "slot-4" / "repo"
+    embedded.mkdir(parents=True)
+    (embedded / "checkout.py").write_text('SCRATCH = "/tmp/scratch"\n', encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=embedded, check=True, capture_output=True)
+
+    assert sorted(mod.scan(root=tmp_path)) == ["tools/a.py"]
+
+
+def test_force_added_file_inside_a_gitignored_directory_is_still_scanned(tmp_path):
+    """The skip is scoped by ``--others``, i.e. by what git does NOT track: a file in the index is
+    not local tool state, whatever directory it sits in. Git refuses to collapse such a directory
+    to a bare entry (it lists only the ignored siblings), which is what keeps the prune safe."""
+    mod = _load()
+    _git_root(tmp_path, ".cache/\n")
+    (tmp_path / ".cache").mkdir()
+    (tmp_path / ".cache" / "forced.py").write_text('X = "/tmp/forced"\n', encoding="utf-8")
+    (tmp_path / ".cache" / "local-state.py").write_text('X = "/tmp/local-state"\n', encoding="utf-8")
+    subprocess.run(["git", "add", "-f", ".cache/forced.py"], cwd=tmp_path, check=True, capture_output=True)
+
+    assert sorted(mod.scan(root=tmp_path)) == [".cache/forced.py"]
+
 
 def test_baseline_entries_are_burned_down_not_grown(tmp_path, monkeypatch, capsys):
     mod = _load()

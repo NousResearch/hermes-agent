@@ -34,7 +34,9 @@ Scope: every first-party ``.py .sh .ts .tsx .js .mjs .cjs .md .mdx .txt .yaml .y
 file except tests (``tests/``, ``tests-js/``, ``__tests__/``, ``e2e/``, ``test_*.py``,
 ``*.test.ts`` ...), ``evals/``, CI workflows (``.github/`` runs on Linux runners), container
 build files (``Dockerfile*``, ``docker/``), generated lockfiles and the translated docs mirror
-(``website/i18n/``, regenerated from the English source).
+(``website/i18n/``, regenerated from the English source). Gitignored paths are out of scope too:
+a ``.gitignore`` match is another tool's local state (test scratch, a treehouse worktree slot,
+build output), and an embedded checkout under one is a foreign repository, not source.
 
 Run: python scripts/check_no_tmp_literals.py [--all] [--print-baseline] [paths...]
   --all              ignore ``_BASELINE`` and report every hit (burn-down view)
@@ -46,7 +48,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import subprocess
 import re
 import sys
 import warnings
@@ -54,6 +55,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SELF = Path(__file__).resolve()
+# `scripts/` is a namespace package, so a guard run directly has only `scripts/` on the path;
+# the checkout root has to be added to reach the helpers shared with the other disk-walking guards.
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from scripts.ci.gitignored import ignored_paths
 
 MARKER = "no-tmp: ok"
 
@@ -164,33 +170,25 @@ def _skip_file(path: Path) -> bool:
     return any(p.search(path.name) for p in SKIP_FILE_PATTERNS)
 
 
-def _git_ignored(root: Path) -> set[Path]:
-    """Ignored/untracked-by-.gitignore paths (runner artifacts such as ``test_durations.json``)
-    are build products, not sources; a scan that reads them fails on whatever the last test
-    run wrote. Empty when *root* is not a git checkout."""
-    try:
-        out = subprocess.run(
-            ["git", "-C", str(root), "ls-files", "--others", "--ignored", "--exclude-standard", "-z"],
-            capture_output=True, text=True, check=True, stdin=subprocess.DEVNULL,
-        ).stdout
-    except (OSError, subprocess.CalledProcessError):
-        return set()
-    return {root / rel for rel in out.split("\0") if rel}
-
-
 def iter_files(root: Path | None = None):
     root = (root or ROOT).resolve()
-    ignored = _git_ignored(root)
+    ignored = ignored_paths(root)
     for dirpath, dirnames, filenames in os.walk(root):
         here = Path(dirpath)
         rel_here = here.relative_to(root) if here != root else Path()
         excluded = SKIP_DIRS | (ROOT_SKIP_DIRS if here == root else set())
         dirnames[:] = sorted(
-            d for d in dirnames if d not in excluded and (rel_here / d) not in SKIP_REL_DIRS
+            d for d in dirnames
+            if d not in excluded
+            and (rel_here / d) not in SKIP_REL_DIRS
+            # A gitignored subtree is local state, not source. Pruned by directory because git
+            # reports an embedded repository as one bare directory entry and never as its files:
+            # testing only file paths lets a whole foreign checkout through.
+            and (here / d) not in ignored.directories
         )
         for filename in sorted(filenames):
             path = here / filename
-            if path not in ignored and not _skip_file(path):
+            if path not in ignored.files and not _skip_file(path):
                 yield path
 
 

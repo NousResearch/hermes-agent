@@ -501,7 +501,7 @@ def atomic_roundtrip_yaml_update(path: str | Path, key_path: str, value: Any) ->
     # blind splitting — same navigation as ``hermes config set``'s ``_set_nested``; otherwise
     # /model + TUI persistence wrote ``glm-5: {'3': ...}`` phantom siblings.
     # See #91607.
-    from hermes_cli.config import _greedy_literal_match, _split_key_path
+    from hermes_cli.config import _greedy_literal_match, _phantom_sibling, _split_key_path
 
     path = Path(path)
     from hermes_constants import mkdir_under_hermes_home
@@ -513,7 +513,8 @@ def atomic_roundtrip_yaml_update(path: str | Path, key_path: str, value: Any) ->
     i = 0
     while True:
         remaining = keys[i:]
-        seg, consumed = _greedy_literal_match(dict(current), remaining) or (remaining[0], 1)
+        match = _greedy_literal_match(dict(current), remaining)
+        seg, consumed = match or (remaining[0], 1)
         if i + consumed == len(keys):
             if value is None:
                 current.pop(seg, None)
@@ -524,6 +525,17 @@ def atomic_roundtrip_yaml_update(path: str | Path, key_path: str, value: Any) ->
         if not isinstance(next_value, CommentedMap):
             if value is None:
                 return  # nothing to remove under a missing/scalar parent
+            if match is None:
+                # Same phantom-sibling refusal as ``_set_nested`` (#84064): a fallback
+                # segment is absent by definition, so creating its intermediate mapping
+                # beside an existing dotted literal key would shadow that key.
+                shadowed = _phantom_sibling(dict(current), seg)
+                if shadowed is not None:
+                    escaped = shadowed.replace(".", "\\.")
+                    raise ValueError(
+                        f"Refusing to create nested key {seg!r} in {key_path!r}: the mapping "
+                        f"already contains a literal key {shadowed!r} that contains a dot. If you "
+                        f"meant that key, escape its dots with a backslash (e.g. {escaped}).")
             next_value = CommentedMap()
             current[seg] = next_value
         current = next_value

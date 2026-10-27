@@ -6,6 +6,7 @@ to ``docker run`` fails every container start with OCI runtime error / exit 126.
 ``_cgroup_limits_available`` probes once and the resource flags are gated on it,
 so the sandbox degrades gracefully instead of failing.
 """
+import os
 import subprocess
 
 import pytest
@@ -77,30 +78,126 @@ def test_probe_definitive_cgroup_failure_is_cached(monkeypatch):
     assert len(calls) == 1
 
 
+def _storage_opt_run(monkeypatch, *, driver="overlay2", backing="ext4",
+                     root="/var/lib/docker", mounts=None, create=None):
+    """Fake ``docker`` for the --storage-opt decision; returns the argv list it saw.
+
+    ``docker info`` is rendered per requested ``--format`` the way the real daemon does, so
+    the fake answers the old single-field format and the fingerprint format alike. Any
+    ``docker create`` when *create* is None fails the test: on the hosts that can answer from
+    ``docker info`` and the mount table there must be no throwaway container at all (#137493).
+    """
+    calls = []
+
+    def _render_info(fmt):
+        if fmt == "{{.Driver}}":
+            return f"{driver}\n"
+        if fmt == "{{.Driver}}|{{.DockerRootDir}}|{{json .DriverStatus}}":
+            # `{{json .DriverStatus}}` marshals Go's [][]string: a list of [key, value] pairs.
+            status = f'[["Backing Filesystem","{backing}"]]' if backing is not None else "[]"
+            return f"{driver}|{root}|{status}\n"
+        raise AssertionError(f"unsupported docker info format: {fmt}")
+
+    def _run(cmd, *a, **k):
+        calls.append(cmd)
+        if isinstance(cmd, list) and len(cmd) > 1 and cmd[1] == "info":
+            fmt = cmd[cmd.index("--format") + 1] if "--format" in cmd else "{{.Driver}}"
+            return subprocess.CompletedProcess(cmd, 0, stdout=_render_info(fmt), stderr="")
+        if isinstance(cmd, list) and len(cmd) > 1 and cmd[1] == "rm":
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if create is not None:
+            rc, out, err = create
+            return subprocess.CompletedProcess(cmd, rc, stdout=out, stderr=err)
+        raise AssertionError(f"unexpected docker call: {cmd}")
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    monkeypatch.setattr(docker_env, "_proc_mounts", lambda: mounts)
+    return calls
+
+
+def _created(calls):
+    return [c for c in calls if isinstance(c, list) and len(c) > 1 and c[1] == "create"]
+
+
 @pytest.mark.parametrize(
     "info, create, cached",
     [
         # `docker info` failing (daemon cold-start) is transient: not "not overlay2".
         ((1, "", "Cannot connect to the Docker daemon"), None, None),
         # The daemon rejecting --storage-opt is a host property: cached False.
-        ((0, "overlay2\n", ""), (125, "", "Error response from daemon: --storage-opt is "
-                                          "supported only for overlay2 with pquota"), False),
+        ((0, "", ""), (125, "", "Error response from daemon: --storage-opt is "
+                                "supported only for overlay over xfs with 'pquota' mount option"), False),
         # A create failure that never reached the storage check (pull error) is transient.
-        ((0, "overlay2\n", ""), (125, "", "Unable to find image 'hello-world:latest'"), None),
+        ((0, "", ""), (125, "", "Unable to find image 'hello-world:latest'"), None),
     ],
 )
 def test_storage_opt_probe_caches_only_definitive_answers(monkeypatch, info, create, cached):
     """``_storage_opt_supported`` must not latch disk quota off for the process on a
-    failure that says nothing about pquota support (#116162)."""
-    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    failure that says nothing about pquota support (#116162). An xfs-root daemon with no
+    local mount covering it is the one case that still has to ask the daemon."""
+    calls = _storage_opt_run(monkeypatch, backing="xfs", root="/var/lib/docker", create=create)
+    monkeypatch.setattr(docker_env, "_proc_mounts", lambda: None)
+    info_rc, info_out, info_err = info
+    if info_rc:  # the daemon is unreachable: `docker info` itself fails
+        def _run(cmd, *a, **k):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, info_rc, stdout=info_out, stderr=info_err)
 
-    def _run(cmd, *a, **k):
-        rc, out, err = info if cmd[1] == "info" else create
-        return subprocess.CompletedProcess(cmd, rc, stdout=out, stderr=err)
+        monkeypatch.setattr(docker_env.subprocess, "run", _run)
 
-    monkeypatch.setattr(docker_env.subprocess, "run", _run)
     assert docker_env.DockerEnvironment._storage_opt_supported() is False
     assert docker_env._storage_opt_ok is cached
+
+
+def test_storage_opt_ext4_backing_is_decided_without_creating_a_container(monkeypatch):
+    """The default Linux install — overlay2 on ext4 — rejects every ``docker create
+    --storage-opt``, which is what spammed the daemon journal and left a dying container per
+    worker process (#137493). The backing filesystem already answers, so nothing is created."""
+    calls = _storage_opt_run(monkeypatch, backing="ext4")
+    assert docker_env.DockerEnvironment._storage_opt_supported() is False
+    assert docker_env._storage_opt_ok is False
+    assert _created(calls) == []
+
+
+def test_storage_opt_non_overlay2_driver_is_decided_without_creating_a_container(monkeypatch):
+    """A driver that is not overlay2 answers on its own, with no probe."""
+    calls = _storage_opt_run(monkeypatch, driver="vfs", backing="xfs")
+    assert docker_env.DockerEnvironment._storage_opt_supported() is False
+    assert docker_env._storage_opt_ok is False
+    assert _created(calls) == []
+
+
+@pytest.mark.parametrize("options, supported", [
+    ("rw,pquota", True),
+    ("rw,prjquota", True),  # what /proc/mounts actually spells for project quotas
+    ("rw,relatime", False),
+])
+def test_storage_opt_xfs_mount_options_decide_without_creating_a_container(
+        monkeypatch, tmp_path, options, supported):
+    """overlay2 on xfs: the local mount options decide, so the daemon is never asked to
+    create anything."""
+    root = tmp_path / "docker"
+    root.mkdir()
+    mounts = f"/dev/sda1 {os.path.realpath(str(root))} xfs {options} 0 0\n"
+    calls = _storage_opt_run(monkeypatch, backing="xfs", root=str(root), mounts=mounts)
+    assert docker_env.DockerEnvironment._storage_opt_supported() is supported
+    assert docker_env._storage_opt_ok is supported
+    assert _created(calls) == []
+
+
+def test_storage_opt_xfs_root_without_a_local_mount_still_asks_the_daemon(monkeypatch, tmp_path):
+    """A daemon whose xfs root no local mount covers (remote/SSH, exotic bind layouts) is the
+    only case left to the container probe, and its container is still removed."""
+    root = tmp_path / "docker"
+    root.mkdir()
+    calls = _storage_opt_run(monkeypatch, backing="xfs", root=str(root),
+                             mounts="/dev/sda1 / ext4 rw 0 0\n",
+                             create=(0, "deadbeefcafe\n", ""))
+    assert docker_env.DockerEnvironment._storage_opt_supported() is True
+    assert docker_env._storage_opt_ok is True
+    assert len(_created(calls)) == 1
+    assert any(c[1] == "rm" and "deadbeefcafe" in c for c in calls)
 
 
 def test_transient_probe_failure_recovers_on_next_spawn(monkeypatch):

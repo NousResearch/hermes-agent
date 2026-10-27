@@ -131,6 +131,7 @@ export {
   reconnectBackoffDelayMs,
   type ReconnectBackoffOptions
 } from './reconnect-backoff'
+export { randomUuid } from './session-http-mutations'
 export { skillInvocationText } from './skill-scaffold'
 export {
   type HermesSkin,

@@ -234,6 +234,26 @@ def test_cron_pause_resume_and_run_require_confirmation(_isolate_hermes_home):
     assert "Triggered job" in triggered.output
 
 
+def test_project_state_write_requires_confirmation(_isolate_hermes_home):
+    from hermes_cli import projects_db as pdb
+
+    with pdb.connect_closing() as conn:
+        pid = pdb.create_project(conn, name="Demo")
+    engine = HermesConsoleEngine()
+
+    pending = engine.execute("project state demo --set --now x")
+    assert pending.status == "confirm_required", pending.output
+    with pdb.connect_closing() as conn:
+        assert pdb.get_project_state(conn, pid) is None
+
+    recorded = engine.execute("project state demo --set --now x", confirmed=True)
+    assert recorded.status == "ok", recorded.output
+    with pdb.connect_closing() as conn:
+        stored = pdb.get_project_state(conn, pid)
+    assert stored is not None
+    assert stored["now"] == "x"
+
+
 def test_repl_runs_non_interactive_lines_without_prompts(_isolate_hermes_home):
     stdin = io.StringIO("help\nexit\n")
     stdout = io.StringIO()

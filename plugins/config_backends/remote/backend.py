@@ -27,7 +27,8 @@ from hermes_cli.config_backend import (
 
 from . import client
 from .credentials import PLANE_CREDENTIAL_ENV_NAMES, PlaneCredentialError
-from .diff import _get_path, apply_intent, diff, encode_changes, intent_diff, json_equal, strip_locked, write_check
+from .diff import (_get_path, _pop_path, _set_path, apply_intent, diff, encode_changes, intent_diff, json_equal,
+                   strip_locked, write_check)
 from .paths import Path as KeyPath
 from .paths import PathError, covers, decode, encode, from_dotted
 from .values import secret_literal_path, to_wire
@@ -851,19 +852,3 @@ def _first_change(path: KeyPath, sent: Any, found: bool, got: Any) -> Optional[K
     except ConfigValueError:
         return path
 
-
-def _set_path(doc: dict[str, Any], path: KeyPath, value: Any) -> None:
-    node = doc
-    for seg in path[:-1]:
-        if not isinstance(node.get(seg), dict):
-            node[seg] = {}
-        node = node[seg]
-    node[path[-1]] = value
-
-
-def _pop_path(doc: dict[str, Any], path: KeyPath) -> None:
-    node: Any = doc
-    for seg in path[:-1]:
-        node = node.get(seg) if isinstance(node, dict) else None
-    if isinstance(node, dict):
-        node.pop(path[-1], None)

@@ -375,6 +375,17 @@ def test_poll_interval_is_a_constant_no_env_tunes(monkeypatch):
     assert not any("POLL" in n for n in names)
 
 
+def test_backend_edits_paths_with_the_diff_helpers():
+    # teknium1 P2-3: one _set_path/_pop_path pair (diff.py's), not a second copy in backend.py.
+    from plugins.config_backends.remote import diff as diff_mod
+    assert backend_mod._set_path is diff_mod._set_path
+    assert backend_mod._pop_path is diff_mod._pop_path
+    doc = {"a": {"b": 1}}
+    assert backend_mod._pop_path(doc, ("a", "b")) is True and doc == {"a": {}}
+    assert backend_mod._pop_path(doc, ("a", "b")) is False
+    assert backend_mod._pop_path(doc, ("x", "y")) is False
+
+
 def test_named_profile_fetches_its_own_layer(plane):
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 

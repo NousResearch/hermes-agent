@@ -404,3 +404,36 @@ async def test_failure_after_delivered_chunks_is_never_resent_whole():
     assert not result.success
     assert result.raw_response["partial_overflow"] and result.raw_response["delivered_chunks"] == 2
     assert all("".join(bodies).count(f"para {i:02d} ") <= 1 for i in range(20)), "a delivered chunk was re-sent"
+
+
+@pytest.mark.asyncio
+async def test_replayed_signed_webhook_is_acknowledged_without_a_second_dispatch():
+    """Twilio's signature has no nonce: the same signed POST resent must not start a second turn."""
+    import asyncio
+    import urllib.parse
+    from plugins.platforms.sms.adapter import SmsAdapter
+
+    url = "https://example.com/webhooks/twilio"
+    env = {"TWILIO_ACCOUNT_SID": "ACtest", "TWILIO_AUTH_TOKEN": "test_token_secret",
+           "TWILIO_PHONE_NUMBER": "+15550001111", "SMS_WEBHOOK_URL": url}
+    with patch.dict(os.environ, env):
+        adapter = SmsAdapter(PlatformConfig(enabled=True, api_key="test_token_secret"))
+    handled = []
+
+    async def fake_handle_message(event):
+        handled.append(event.message_id)
+
+    adapter.handle_message = fake_handle_message
+    params = {"From": "+15551234567", "To": "+15550001111", "Body": "hello", "MessageSid": "SM123"}
+    headers = {"X-Twilio-Signature": _compute_twilio_signature("test_token_secret", url, params)}
+    statuses = []
+    for _ in range(2):
+        request = MagicMock()
+        request.read = AsyncMock(return_value=urllib.parse.urlencode(params).encode())
+        request.headers = headers
+        request.content_length = None
+        statuses.append((await adapter._handle_webhook(request)).status)
+    await asyncio.gather(*adapter._background_tasks)
+
+    assert statuses == [200, 200]
+    assert handled == ["SM123"]

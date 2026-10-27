@@ -236,3 +236,26 @@ async def test_oversized_cron_output_is_split_under_the_2048_byte_text_limit():
     assert result.success
     assert len(sent) > 1 and max(len(s.encode()) for s in sent) <= 2048
     assert "第39段" in sent[-1]
+
+
+def test_callback_signature_is_compared_in_constant_time(monkeypatch):
+    """A forged msg_signature is rejected through hmac.compare_digest, not a short-circuiting ``!=``."""
+    import hmac
+
+    from plugins.platforms.wecom.wecom_crypto import SignatureError
+
+    compared = []
+    real_compare = hmac.compare_digest
+
+    def spy(a, b):
+        compared.append((a, b))
+        return real_compare(a, b)
+
+    monkeypatch.setattr(hmac, "compare_digest", spy)
+    app = _app()
+    crypt = WXBizMsgCrypt(app["token"], app["encoding_aes_key"], app["corp_id"])
+    root = ET.fromstring(crypt.encrypt("<xml><Content>hi</Content></xml>", nonce="n", timestamp="1"))
+    with pytest.raises(SignatureError):
+        crypt.decrypt("\u00e9" + "0" * 39, "1", "n", root.findtext("Encrypt", default=""))
+
+    assert len(compared) == 1

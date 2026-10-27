@@ -134,6 +134,7 @@ def _session_search(agent, args: dict, ctx: InlineToolContext) -> Any:
             ("window", "window", 5), ("sort", "sort"), ("profile", "profile"),
             ("detail", "detail", "adaptive"), ("after", "after"), ("before", "before"),
             ("exclude_session_ids", "exclude_session_ids"),
+            ("scope", "scope"),
         ),
         db=session_db, current_session_id=agent.session_id,
     )

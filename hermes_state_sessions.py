@@ -24,6 +24,7 @@ from hermes_state_common import (
     _source_match_clause, emit_session_deleted, launch_stub_filter_sql,
 )
 from hermes_state_compression import _CHAIN_CAP, _UNSET_CREATED_SQL
+import hermes_state_workspace_filters as workspace_filters
 
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
@@ -84,74 +85,13 @@ def _parse_model_config(raw: Any) -> dict[str, Any]:
     return dict(raw) if isinstance(raw, dict) else {}
 
 
-def _cwd_prefix_clause(cwd_prefix: str) -> tuple[str, list[str]]:
-    prefix = cwd_prefix.rstrip("/\\") or cwd_prefix
-    # ``_``/``%`` are LIKE wildcards but ordinary path characters: unescaped, a
-    # prefix also matches sibling directories. The ``=`` arm keeps the raw prefix.
-    esc = _escape_like(prefix)
-    return (
-        "(s.cwd = ? OR s.cwd LIKE ? ESCAPE '\\' OR s.cwd LIKE ? ESCAPE '\\')",
-        [prefix, f"{esc}/%", f"{esc}\\\\%"],
-    )
 
 
-def _workspace_key_clause(key: str) -> tuple[str, list[str]]:
-    """WHERE for ``workspace_key(row) == key``: git_repo_root equals ``key``, or (rows predating
-    per-session git metadata) cwd is at/under ``key``."""
-    prefix = key.rstrip("/\\") or key
-    cwd_clause, cwd_params = _cwd_prefix_clause(prefix)
-    return (
-        f"(s.git_repo_root = ? OR (COALESCE(s.git_repo_root, '') = '' AND {cwd_clause}))",
-        [prefix, *cwd_params],
-    )
 
 
 def _where_sql(clauses: list[str], lead: str = "") -> str:
     """``WHERE a AND b`` (with *lead* prefix) or "" when there are no clauses."""
     return f"{lead}WHERE {' AND '.join(clauses)}" if clauses else ""
-
-
-def _session_filter_where(
-    *, exclude_children: bool = False, source: str | None = None, sources: list[str] | None = None,
-    session_key: str | None = None, exclude_sources: list[str] | None = None, cwd_prefix: str | None = None,
-    min_message_count: int = 0, archived_only: bool = False, include_archived: bool = False,
-    include_subagents: bool = False, local_created_sources: Sequence[str] | None = None,
-) -> tuple[list[str], list[Any]]:
-    """Shared ``sessions s`` WHERE builder so counts line up with listed rows. ``exclude_children``
-    hides sub-agent runs and compression continuations but keeps branch/reset children
-    (``_LISTABLE_CHILD_SQL``); ``include_subagents`` re-admits the sub-agent runs only
-    (``sessions.show_subagents``). Clause order is part of the SQL text contract."""
-    where: list[str] = []
-    params: list[Any] = []
-    if exclude_children and include_subagents:
-        where.append(f"({_LISTABLE_CHILD_SQL} OR {_delegate_from_json('s.model_config')} IS NOT NULL)")
-    elif exclude_children:
-        where += [_LISTABLE_CHILD_SQL, f"{_delegate_from_json('s.model_config')} IS NULL"]
-    # Show roots and user-visible branch/reset sessions, while still hiding sub-agent runs and compression
-    # continuations. All four carry parent_session_id, so the shared predicate classifies the edge from
-    # stable markers plus legacy-compatible parent metadata. Branch sessions are identified two ways, OR'd
-    # for robustness: 1. A stable ``_branched_from`` marker in model_config, written by /branch at creation
-    # time. This survives the parent being reopened and re-ended with a different end_reason (e.g.
-    # tui_shutdown overwriting 'branched'), which otherwise hides the branch — see issue #20856. 2. The
-    # legacy heuristic (parent ended with 'branched' before the child started), covering branch sessions
-    # created before the marker existed.
-    include_sources = [source] if source else list(sources or [])
-    source_clause, source_params = _source_match_clause(include_sources, local_created_sources)
-    for clause, values in (
-        (source_clause, source_params),
-        ("s.session_key = ?", [session_key] if session_key else []),
-        (f"s.source NOT IN ({_session_ids_placeholders(exclude_sources or ())})", exclude_sources or []),
-        (_cwd_prefix_clause(cwd_prefix) if cwd_prefix else ("", [])),
-        ("s.message_count >= ?", [min_message_count] if min_message_count > 0 else []),
-    ):
-        if values:
-            where.append(clause)
-            params.extend(values)
-    if archived_only:
-        where.append("s.archived = 1")
-    elif not include_archived:
-        where.append("s.archived = 0")
-    return where, params
 
 
 def _expand_compression_lineage_ids(conn, frontier: list[str]) -> list[str]:
@@ -1116,19 +1056,22 @@ class SessionSessionsMixin:
         combined = " AND ".join(clauses)
         return (f"{where_sql} AND {combined}" if where_sql else f"WHERE {combined}"), params
 
-    def _project_compression_tips(self, sessions: list[dict[str, Any]], compact_rows: bool) -> list[dict[str, Any]]:
+    def _project_compression_tips(
+        self, sessions: list[dict[str, Any]], compact_rows: bool, recall_scope: object = None,
+    ) -> list[dict[str, Any]]:
         """Replace each compression root's surfaced fields with its live tip's (root ``started_at`` kept
         for stable ordering), one batched query. ``_lineage_ids`` carries every chain id (a tile may
         hold a MIDDLE segment's id)."""
         chain_by_root: dict[str, list[str]] = {}  # only roots whose tip differs from themselves
         for s in sessions:
             if s.get("end_reason") == "compression":
-                chain = self.get_compression_chain(s["id"])
+                chain = self.get_compression_chain(s["id"], recall_scope=recall_scope)
                 if chain and chain[-1] != s["id"]:
                     chain_by_root[s["id"]] = chain
         tip_rows = (
             self._get_session_rich_rows_batch(
                 {chain[-1] for chain in chain_by_root.values()}, compact_rows=compact_rows,
+                recall_scope=recall_scope,
             ) if chain_by_root else {}
         )
         projected = []
@@ -1168,6 +1111,7 @@ class SessionSessionsMixin:
         timeout_seconds: float = 3.0,
         candidate_limit: int | None = None,
         lineage_limit: int | None = None,
+        recall_scope: object = None,
     ) -> list[dict[str, Any]]:
         """Latency-bounded recent-conversation browse (``session_search()``): preselect a small candidate set
         from the indexed durable activity timestamp (fallback ``started_at``), resolve only those across
@@ -1198,6 +1142,18 @@ class SessionSessionsMixin:
             candidate_params.extend(exclude_sources)
         candidate_where = " AND ".join(candidate_clauses)
 
+        # One scope-filtered relation feeds candidates, both lineage directions,
+        # and final projection. This keeps a mismatched compression child from
+        # contributing even an id/title/preview to the browse result.
+        scope_sql, scope_params = self._recall_scope_sql("s", recall_scope)
+        session_table = "sessions"
+        scope_cte = ""
+        if scope_sql:
+            session_table = "scoped_sessions"
+            scope_cte = (
+                f"scoped_sessions AS (SELECT s.* FROM sessions s WHERE {scope_sql}),"
+            )
+
         # A compression continuation is an implementation edge, unlike /new
         # reset and /branch children which are independent user-visible
         # conversations.  The same predicate is used in both directions so a
@@ -1215,9 +1171,10 @@ class SessionSessionsMixin:
 
         query = f"""
             WITH RECURSIVE
+            {scope_cte}
             recent_candidates(id) AS (
                 SELECT s.id
-                FROM sessions s
+                FROM {session_table} s
                 WHERE {candidate_where}
                 ORDER BY COALESCE(s.last_activity_at, s.started_at) DESC,
                          s.started_at DESC, s.id DESC
@@ -1228,17 +1185,17 @@ class SessionSessionsMixin:
                 UNION
                 SELECT a.candidate_id, parent.id
                 FROM ancestors a
-                JOIN sessions child ON child.id = a.cur_id
-                JOIN sessions parent ON {compression_parent_edge}
+                JOIN {session_table} child ON child.id = a.cur_id
+                JOIN {session_table} parent ON {compression_parent_edge}
                 LIMIT ?
             ),
             candidate_roots(root_id) AS (
                 SELECT DISTINCT a.cur_id
                 FROM ancestors a
-                JOIN sessions child ON child.id = a.cur_id
+                JOIN {session_table} child ON child.id = a.cur_id
                 WHERE NOT EXISTS (
                     SELECT 1
-                    FROM sessions parent
+                    FROM {session_table} parent
                     WHERE {compression_parent_edge}
                 )
             ),
@@ -1247,8 +1204,8 @@ class SessionSessionsMixin:
                 UNION
                 SELECT c.root_id, child.id
                 FROM chain c
-                JOIN sessions parent ON parent.id = c.cur_id
-                JOIN sessions child ON {compression_parent_edge}
+                JOIN {session_table} parent ON parent.id = c.cur_id
+                JOIN {session_table} child ON {compression_parent_edge}
                 LIMIT ?
             ),
             chain_rows AS (
@@ -1258,8 +1215,8 @@ class SessionSessionsMixin:
                     {_sql_session_last_active_by_id('c.cur_id')} AS activity,
                     CASE WHEN EXISTS (
                         SELECT 1
-                        FROM sessions parent
-                        JOIN sessions child ON {compression_parent_edge}
+                        FROM {session_table} parent
+                        JOIN {session_table} child ON {compression_parent_edge}
                         WHERE parent.id = c.cur_id
                     ) THEN 0 ELSE 1 END AS is_tip
                 FROM chain c
@@ -1288,8 +1245,8 @@ class SessionSessionsMixin:
                 CASE WHEN s.id != tip.id THEN s.id ELSE NULL END
                     AS _lineage_root_id
             FROM ranked_tips rt
-            JOIN sessions s ON s.id = rt.root_id
-            JOIN sessions tip ON tip.id = rt.cur_id
+            JOIN {session_table} s ON s.id = rt.root_id
+            JOIN {session_table} tip ON tip.id = rt.cur_id
             WHERE rt.rank_in_root = 1
               AND s.archived = 0
               AND s.hidden = 0
@@ -1298,7 +1255,7 @@ class SessionSessionsMixin:
             ORDER BY rt.activity DESC, s.started_at DESC, tip.id DESC
             LIMIT ?
         """
-        params = candidate_params + [
+        params = scope_params + candidate_params + [
             candidate_limit,
             lineage_limit,
             lineage_limit,
@@ -1352,6 +1309,7 @@ class SessionSessionsMixin:
         id_query: str | None = None, search_query: str | None = None, compact_rows: bool = False,
         include_pinned: bool = False, session_key: str | None = None, include_hidden: bool = False,
         include_subagents: bool = False, local_created_sources: Sequence[str] | None = None,
+        recall_scope: object = None,
     ) -> list[dict[str, Any]]:
         """List sessions with preview and ``last_active`` in one query. ``order_by_last_active`` sorts
         by the chain TIP via a recursive CTE (the only path honouring ``id_query`` / ``search_query``);
@@ -1360,7 +1318,7 @@ class SessionSessionsMixin:
         archived must still return. ``local_created_sources`` restricts ``source='local'``
         rows to those surfaces before LIMIT/OFFSET."""
         self.flush_token_counts()  # rows carry token/cost totals
-        where_clauses, params = _session_filter_where(
+        where_clauses, params = workspace_filters.session_filter_where(
             exclude_children=not include_children, source=source, sources=sources, session_key=session_key,
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
             archived_only=archived_only, include_archived=include_archived, include_subagents=include_subagents,
@@ -1372,11 +1330,13 @@ class SessionSessionsMixin:
         # it back (#90946).
         if not include_hidden and not archived_only:
             where_clauses.append("s.hidden = 0")
+        scope_sql, scope_params = self._recall_scope_sql("s", recall_scope)
+        if scope_sql:
+            where_clauses.append(scope_sql)
+            params.extend(scope_params)
         heads = {}
         from hermes_state_local import exclude_superseded_segments
         if not include_children:
-            # A local reset lineage is one conversation (hermes_state_local.local_lineage_index):
-            # earlier segments leave the page in SQL, before LIMIT/OFFSET, not after it.
             heads = exclude_superseded_segments(self, where_clauses, params)
         where_sql = _where_sql(where_clauses)
         # Shared projection head of the three list queries (whitespace is part of the SQL text).
@@ -1397,6 +1357,8 @@ class SessionSessionsMixin:
             outer_where, id_params = self._chain_search_where(
                 where_sql, (id_query or "").strip().lower(), (search_query or "").strip().lower(),
             )
+            child_scope_sql, child_scope_params = self._recall_scope_sql("child", recall_scope)
+            child_scope_clause = f" AND {child_scope_sql}" if child_scope_sql else ""
             query = f"""
                 WITH RECURSIVE chain(root_id, cur_id) AS (
                     SELECT s.id, s.id FROM sessions s {where_sql}
@@ -1410,6 +1372,7 @@ class SessionSessionsMixin:
                       AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
                       AND NOT ({_RESET_CHILD_SQL.format(a='child')})
                       AND COALESCE(child.source, '') != 'tool'
+                      {child_scope_clause}
                 ),
                 chain_max AS (
                     SELECT
@@ -1427,7 +1390,9 @@ class SessionSessionsMixin:
                 ORDER BY _effective_last_active DESC, s.started_at DESC, s.id DESC
                 LIMIT ? OFFSET ?
             """
-            params = params + params + id_params + [limit, offset]  # WHERE binds twice (seed + outer)
+            # WHERE binds twice (seed + outer); the recursive edge's scoped
+            # child predicate sits between them in SQL parameter order.
+            params = params + child_scope_params + params + id_params + [limit, offset]
         else:
             query = f"""
                 {select_head}{_sql_session_last_active("s")} AS last_active
@@ -1444,7 +1409,7 @@ class SessionSessionsMixin:
         # must stay reachable even when that row is also archived.
         if include_pinned:
             seen_ids = {s["id"] for s in sessions}
-            pinned_clauses, pinned_params = _session_filter_where(
+            pinned_clauses, pinned_params = workspace_filters.session_filter_where(
                 exclude_children=not include_children, source=source, sources=sources,
                 session_key=session_key, exclude_sources=exclude_sources, cwd_prefix=cwd_prefix,
                 min_message_count=min_message_count, archived_only=False, include_archived=True,
@@ -1468,7 +1433,8 @@ class SessionSessionsMixin:
                     seen_ids.add(s["id"])
                     sessions.append(s)
         if project_compression_tips and not include_children:
-            sessions = self._project_compression_tips(sessions, compact_rows)
+            sessions = self._project_compression_tips(
+                sessions, compact_rows, recall_scope=recall_scope)
         if heads:
             from hermes_state_local import annotate_local_lineages
             sessions = annotate_local_lineages(sessions, heads)
@@ -1575,7 +1541,7 @@ class SessionSessionsMixin:
             where_clauses.append(clause)
             params.extend(bound)
         if workspace_key:
-            ws_clause, ws_params = _workspace_key_clause(workspace_key)
+            ws_clause, ws_params = workspace_filters._workspace_key_clause(workspace_key)
             where_clauses.append(ws_clause)
             params.extend(ws_params)
         return [self._session_row_dict(row) for row in self._read_all(
@@ -1594,7 +1560,7 @@ class SessionSessionsMixin:
         local_created_sources: Sequence[str] | None = None,
     ) -> int:
         """Count sessions with list_sessions_rich's filters so a paired "load more" total matches."""
-        where_clauses, params = _session_filter_where(
+        where_clauses, params = workspace_filters.session_filter_where(
             exclude_children=exclude_children, source=source, sources=sources,
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
             archived_only=archived_only, include_archived=include_archived, include_subagents=include_subagents,
@@ -1614,7 +1580,7 @@ class SessionSessionsMixin:
         exclude_children: bool = False,
     ) -> dict[str, int]:
         """``{source: count}`` via one GROUP BY; ``exclude_children`` mirrors listing visibility."""
-        where_clauses, params = _session_filter_where(
+        where_clauses, params = workspace_filters.session_filter_where(
             exclude_children=exclude_children, archived_only=archived_only,
             include_archived=include_archived,
         )

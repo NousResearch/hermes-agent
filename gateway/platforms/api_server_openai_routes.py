@@ -824,6 +824,20 @@ class OpenAICompatRoutesMixin:
 
     async def _handle_chat_completions(self, request: web.Request) -> web.Response:
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
+        return await self._handle_chat_completions_impl(
+            request, gateway_proxy_route=False)
+
+    async def _handle_gateway_proxy_chat_completions(
+        self, request: "web.Request",
+    ) -> "web.Response":
+        """Dedicated authenticated ingress for native gateway proxy turns."""
+        return await self._handle_chat_completions_impl(
+            request, gateway_proxy_route=True)
+
+    async def _handle_chat_completions_impl(
+        self, request: "web.Request", *, gateway_proxy_route: bool,
+    ) -> "web.Response":
+        """Shared OpenAI payload handling after route identity is fixed."""
         from gateway.platforms.api_server import (
             ThreadSafeAsyncQueue, _api_request_profile, _chat_usage_payload, _coerce_request_bool,
             _content_has_visible_payload, _derive_chat_session_id, _error_response, _invalid_request,
@@ -832,71 +846,16 @@ class OpenAICompatRoutesMixin:
         limited = self._concurrency_limited_response()
         if limited is not None:
             return limited
-        try:
-            body = await request.json()
-        except Exception:
-            return _error_response("Invalid JSON in request body", 400)
-        from gateway.platforms.api_server import _request_relay_metadata
-        relay_metadata = _request_relay_metadata(body)
-        messages = body.get("messages")
-        if not messages or not isinstance(messages, list):
-            return _invalid_request("Missing or invalid 'messages' field")
-        stream = _coerce_request_bool(body.get("stream"), default=False)
 
-        system_prompt, conversation_messages, messages_err = _parse_chat_messages(messages)
-        if messages_err is not None:
-            return messages_err
-        user_message: Any = (conversation_messages[-1].get("content", "") if conversation_messages else "")
-        history = conversation_messages[:-1]
-        if not _content_has_visible_payload(user_message):
-            return _invalid_request("No user message found in messages")
-
-        # X-Hermes-Session-Key scopes long-term memory per channel; independent of
-        # X-Hermes-Session-Id (the key persists across transcripts, the id rotates on /new).
-        gateway_session_key, key_err = self._parse_session_key_header(request)
-        if key_err is not None:
-            return key_err
-        # X-Hermes-Session-Id continues an existing session (history from state.db, not the body);
-        # requires a configured API key or any client could read history by guessing ids.
-        provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
-        if provided_session_id:
-            if not self._api_key:
-                logger.warning(
-                    "Session continuation via X-Hermes-Session-Id rejected: "
-                    "no API key configured.  Set API_SERVER_KEY to enable "
-                    "session continuity.")
-                return _error_response("Session continuation requires API key authentication. "
-                        "Configure API_SERVER_KEY to enable this feature.", 403)
-            # Same guard as the native gateway: ids are interpolated into on-disk filenames.
-            from gateway.session import _is_path_unsafe
-            if re.search(r'[\r\n\x00]', provided_session_id) or _is_path_unsafe(provided_session_id):
-                return _invalid_request("Invalid session ID")
-            if len(provided_session_id) > self._MAX_SESSION_HEADER_LEN:
-                return _invalid_request("Session ID too long")
-            session_id = provided_session_id
-            try:
-                db = await self._ensure_session_db_async()
-                if db is not None:
-                    # #98619/#13437: a client-addressed id from before a compression rotation
-                    # must adopt the live continuation tip — history loads from it, the turn and
-                    # the wake target bind it, and a detached delegation delivery row persisted
-                    # on the tip is what this continuation consumes. Same canonical resolution
-                    # the delivery writer (gateway/wake.py) and /v1/runs use; fails open.
-                    from gateway.platforms.api_server_runs import _resolve_live_session_id
-                    session_id = await _resolve_live_session_id(self, provided_session_id)
-                    history = await asyncio.to_thread(db.get_messages_as_conversation, session_id)
-            except Exception as e:
-                logger.warning("Failed to load session history for %s: %s", session_id, e)
-                history = []
-        else:
-            # Stable id from the conversation fingerprint so Open WebUI-style clients map onto
-            # one Hermes session; namespaced by the routed profile (#123989).
-            first_user = next(
-                (cm.get("content", "") for cm in conversation_messages if cm.get("role") == "user"), "")
-            session_id = _derive_chat_session_id(system_prompt, first_user, _api_request_profile.get())
-            session_id, lookup_error = await self._implicit_chat_session(request, session_id)
-            if lookup_error is not None:
-                return lookup_error
+        from gateway.platforms.api_server_gateway_context import ChatRequestContext
+        resolved = await self._resolve_gateway_chat_request(request, gateway_proxy_route=gateway_proxy_route)
+        if not isinstance(resolved, ChatRequestContext):
+            return resolved
+        body, stream, system_prompt = resolved.body, resolved.stream, resolved.system_prompt
+        user_message, history, session_id = resolved.user_message, resolved.history, resolved.session_id
+        provided_session_id = resolved.provided_session_id
+        gateway_session_key, gateway_proxy_origin = resolved.gateway_session_key, resolved.gateway_proxy_origin
+        relay_metadata = resolved.relay_metadata
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
         model_name = body.get("model", self._model_name)
         created = int(time.time())
@@ -908,7 +867,7 @@ class OpenAICompatRoutesMixin:
         run_kwargs = dict(
             user_message=user_message, conversation_history=history,
             ephemeral_system_prompt=system_prompt, session_id=session_id,
-            gateway_session_key=gateway_session_key, **agent_overrides, route=route,
+            gateway_session_key=gateway_session_key, gateway_origin=gateway_proxy_origin, **agent_overrides, route=route,
             relay_metadata=relay_metadata,
             # #98619: only an explicitly provided X-Hermes-Session-Id is wake-capable (the
             # header is 403-gated on API_SERVER_KEY, so the wake self-post can authenticate
@@ -967,10 +926,16 @@ class OpenAICompatRoutesMixin:
 
         async def _compute_completion():
             return await self._run_agent(**run_kwargs)
+        fingerprint_body = dict(body)
+        fingerprint_keys = [
+            "model", "provider", "model_options", "messages", "tools", "tool_choice", "stream",
+            "hermes_notification_category"]
+        if gateway_proxy_origin is not None:
+            fingerprint_body["_hermes_gateway_origin"] = gateway_proxy_origin
+            fingerprint_keys.append("_hermes_gateway_origin")
         outcome, err = await self._run_idempotent(
-            request, body, _compute_completion, log_label="chat completions",
-            fingerprint_keys=["model", "provider", "model_options", "messages", "tools", "tool_choice", "stream",
-                              "hermes_notification_category"],
+            request, fingerprint_body, _compute_completion, log_label="chat completions",
+            fingerprint_keys=fingerprint_keys,
             route="chat_completions",
         )
         if err is not None:

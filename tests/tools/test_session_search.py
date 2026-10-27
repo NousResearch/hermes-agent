@@ -146,7 +146,9 @@ class TestBrowseShape:
             lambda _profile: profile_db,
         )
 
-        result = json.loads(session_search(db=shared_db, profile="work"))
+        result = json.loads(
+            session_search(db=shared_db, profile="work", scope="all")
+        )
 
         assert result["success"] is True
         assert profile_db.closed == 1

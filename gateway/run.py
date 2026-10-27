@@ -3326,7 +3326,11 @@ def _instantiate_builtin_adapter(platform: Platform, config: Any) -> Optional[Ba
 from gateway.run_runtime_init import GatewayRuntimeInitMixin
 
 
+from gateway.run_session_context import GatewaySessionContextMixin
+
+
 class GatewayRunner(
+    GatewaySessionContextMixin,
     GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin,
     GatewayVoiceMixin, GatewayAdapterLifecycleMixin, GatewayTopicThreadsMixin, GatewayTurnMixin,
     GatewayShutdownMixin, GatewayBusySessionMixin, GatewayConfigLoadersMixin, GatewayStartupMixin,
@@ -3961,38 +3965,6 @@ class GatewayRunner(
         Platform.EMAIL, Platform.SMS, Platform.DINGTALK,
         Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.WEIXIN, Platform.BLUEBUBBLES, Platform.QQBOT, Platform.LOCAL,
     })
-
-    def _set_session_env(self, context: SessionContext) -> list:
-        """Set session context variables (contextvars, not os.environ, so concurrent messages can't
-        overwrite each other). Returns reset tokens for ``_clear_session_env`` in a ``finally``."""
-        from gateway.session_context import set_session_vars
-        # Async-delivery capability tells async tools whether this channel can wake a later turn. Default
-        # True keeps CLI/unknown paths working; stateless adapters (api_server) declare False.
-        _adapter = (getattr(self, "adapters", None) or {}).get(context.source.platform)
-        _async_delivery = getattr(_adapter, "supports_async_delivery", True)
-        # #98619: an admitted API turn carries its session-id provenance in the admission settings;
-        # every other platform leaves it undeclared.
-        from gateway.session_api_turn import api_session_vars
-        _history_delivery = api_session_vars().get("session_history_delivery")
-        return set_session_vars(
-            platform=context.source.platform.value,
-            chat_id=context.source.chat_id,
-            chat_type=str(context.source.chat_type) if context.source.chat_type else "",
-            chat_name=context.source.chat_name or "",
-            thread_id=str(context.source.thread_id) if context.source.thread_id else "",
-            user_id=str(context.source.user_id) if context.source.user_id else "",
-            user_id_alt=str(context.source.user_id_alt) if context.source.user_id_alt else "",
-            user_name=str(context.source.user_name) if context.source.user_name else "",
-            scope_id=str(getattr(context.source, "scope_id", "") or ""),
-            parent_chat_id=str(getattr(context.source, "parent_chat_id", "") or ""),
-            session_key=context.session_key,
-            # A cached agent binds HERMES_SESSION_ID only on the turn that built it; every later turn
-            # (and a command it yields to the background) must still see its own session.
-            session_id=context.session_id or "",
-            message_id=str(context.source.message_id) if context.source.message_id else "",
-            profile=getattr(context.source, "profile", "") or "",
-            async_delivery=_async_delivery,
-            cron_session="", session_history_delivery=_history_delivery)
 
     def _clear_session_env(self, tokens: list) -> None:
         """Restore session context variables to their pre-handler values."""

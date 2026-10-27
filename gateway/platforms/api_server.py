@@ -1,6 +1,7 @@
 """OpenAI-compatible API server platform adapter (aiohttp).
 
-Serves /v1/chat/completions, /v1/responses, /v1/models, /v1/capabilities, /api/sessions,
+Serves /v1/chat/completions, the dedicated authenticated gateway-proxy chat route,
+/v1/responses, /v1/models, /v1/capabilities, /api/sessions,
 /v1/runs, /api/jobs and /health* (full table: ``APIServerAdapter._http_route_table``); any
 OpenAI-compatible frontend connects at http://localhost:8642/v1 with API_SERVER_KEY. Under
 ``gateway.multiplex_profiles`` secondary profiles live at ``/p/<profile>/...``.
@@ -24,7 +25,7 @@ import time
 import uuid
 from datetime import datetime, timezone, UTC
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 # _resolve_request_profile result for a /p/<profile>/ prefix this gateway does not serve (-> 404);
 # distinct from None (no prefix / multiplexing off -> default profile).
@@ -1033,7 +1034,10 @@ def _run_route_delegate(name: str):
     return _handler
 
 
-class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
+from gateway.platforms.api_server_gateway_context import GatewayContextMixin
+
+
+class APIServerAdapter(GatewayContextMixin, OpenAICompatRoutesMixin, BasePlatformAdapter):
     """aiohttp server routing OpenAI-format requests through hermes-agent's AIAgent."""
 
     # Stateless request/response (``send()`` is a stub): async-delivery tools must not promise
@@ -1051,6 +1055,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     # Admission-gated OpenAI-compatible entry points (bodies live in the mixin).
     _handle_chat_completions = _admit_api_agent_request(OpenAICompatRoutesMixin._handle_chat_completions)
+    _handle_gateway_proxy_chat_completions = _admit_api_agent_request(
+        OpenAICompatRoutesMixin._handle_gateway_proxy_chat_completions)
     _handle_responses = _admit_api_agent_request(OpenAICompatRoutesMixin._handle_responses)
 
     def __init__(self, config: PlatformConfig):
@@ -1377,16 +1383,6 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         fields = [f"{key}={value!r}" for key, value in ctx.items() if value]
         return " ".join(fields) if fields else "source='unknown'"
 
-    def _cron_origin_from_request(self, request: web.Request) -> dict[str, str]:
-        """Persist safe API source metadata on cron jobs created over HTTP."""
-        ctx = self._request_audit_context(request)
-        origin = {"platform": "api_server", "chat_id": "api"}
-        for ctx_key, origin_key in (("remote", "source_ip"), ("peer_ip", "peer_ip"),
-                                    ("forwarded_for", "forwarded_for"), ("real_ip", "real_ip"),
-                                    ("user_agent", "user_agent")):
-            if ctx.get(ctx_key):
-                origin[origin_key] = ctx[ctx_key]
-        return origin
 
     def _expected_api_key(self) -> str:
         """Return the API key authorized for the URL-selected profile."""
@@ -1565,6 +1561,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _http_route_table(self) -> list[tuple]:
         """(method, path, handler) rows registered by ``connect()`` (a method so multiplex tests
         can assert the /p/<profile>/ mirrors without a listener)."""
+        from gateway.recall_scope import GATEWAY_PROXY_CHAT_COMPLETIONS_PATH
+
         routes: list[tuple] = [
             ("GET", "/health", self._handle_health),
             ("GET", "/health/detailed", self._handle_health_detailed),
@@ -1584,6 +1582,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("POST", "/api/sessions/{session_id}/chat", self._handle_session_chat),
             ("POST", "/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream),
             ("POST", "/api/sessions/{session_id}/model", self._handle_session_model_lock),
+            ("POST", GATEWAY_PROXY_CHAT_COMPLETIONS_PATH,
+             self._handle_gateway_proxy_chat_completions),
             ("POST", "/v1/chat/completions", self._handle_chat_completions),
             ("POST", "/v1/responses", self._handle_responses),
             ("GET", "/v1/responses/{response_id}", self._handle_get_response),
@@ -1666,26 +1666,6 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             logger.debug(
                 "[%s] declared-conversation bind failed for %s", self.name, sid, exc_info=True)
 
-    def _parse_session_key_header(
-        self, request: web.Request) -> tuple[Optional[str], Optional[web.Response]]:
-        """Validate ``X-Hermes-Session-Key`` (per-channel memory scope) -> ``(key_or_None, None)``
-        or ``(None, error)``. Requires API-key auth so a client can't guess another scope."""
-        raw = request.headers.get("X-Hermes-Session-Key", "").strip()
-        if not raw:
-            return None, None
-        if not self._api_key:
-            logger.warning(
-                "X-Hermes-Session-Key rejected: no API key configured. "
-                "Set API_SERVER_KEY to enable long-term memory scoping.")
-            return None, _error_response(
-                "X-Hermes-Session-Key requires API key authentication. "
-                "Configure API_SERVER_KEY to enable this feature.", 403)
-        # Control characters could enable header injection on the echo path.
-        if re.search(r'[\r\n\x00]', raw):
-            return None, _invalid_request("Invalid session key")
-        if len(raw) > self._MAX_SESSION_HEADER_LEN:
-            return None, _invalid_request("Session key too long")
-        return raw, None
 
     # -- Responses state ----------------------------------------------------------------
 
@@ -3584,8 +3564,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     @staticmethod
     def _bind_api_server_session(
         *, chat_id: str = "", session_key: str = "", session_id: str = "", profile: str = "",
-        session_history_delivery: str = "") -> list:
+        session_history_delivery: str = "",
+        gateway_origin: Optional[Mapping[str, str]] = None) -> list:
         """Bind an API turn with push disabled and history delivery default-denied.
+
+        Ordinary API requests have no messaging-recall capability. The dedicated
+        authenticated proxy binds its verified gateway origin.
 
         Only routes whose continuation reads SessionDB may pass "1". An omitted
         declaration or fingerprint-derived identity keeps delegation synchronous.
@@ -3594,9 +3578,21 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         reach ``HERMES_SESSION_PROFILE``: the persistent-Docker container key is derived from it, so an
         unbound profile collapses every profile's turns onto the default sandbox (#96370)."""
         from gateway.session_context import set_session_vars
+        origin = dict(gateway_origin or {})
         return set_session_vars(
-            platform="api_server", chat_id=chat_id, session_key=session_key, session_id=session_id,
-            profile=profile, async_delivery=False, cron_session="", session_history_delivery=session_history_delivery)
+            platform=str(origin.get("platform") or "api_server"),
+            chat_id=str(origin.get("chat_id") or chat_id),
+            parent_chat_id=str(origin.get("parent_chat_id") or ""),
+            prospective_thread_id=str(origin.get("prospective_thread_id") or ""),
+            chat_type=str(origin.get("chat_type") or ""),
+            thread_id=str(origin.get("thread_id") or ""),
+            user_id=str(origin.get("user_id") or ""),
+            user_id_alt=str(origin.get("user_id_alt") or ""),
+            scope_id=str(origin.get("scope_id") or origin.get("guild_id") or ""),
+            profile=str(origin.get("profile") or profile),
+            session_key=session_key, session_id=session_id,
+            async_delivery=False, cron_session="", gateway_context=bool(origin),
+            session_history_delivery=session_history_delivery)
 
     def _turn_runtime_metadata(
         self, agent: Any, *, route: Optional[dict[str, Any]], requested_runtime: Optional[dict[str, Any]],
@@ -3682,7 +3678,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         session_history_delivery: str = "", turn_author: Optional[dict[str, Any]] = None,
         relay_metadata: Optional[dict[str, Any]] = None, notification_category: str = "result",
         resume_unanswered_turn: bool = False, approval_notify_callback=None,
-        approval_session_key: Optional[str] = None, walked_from: Optional[str] = None) -> tuple:
+        approval_session_key: Optional[str] = None, walked_from: Optional[str] = None,
+        gateway_origin: Optional[Mapping[str, str]] = None) -> tuple:
         """Create an agent and run one turn in a thread executor -> ``(result, usage)``.
         ``approval_notify_callback`` (with ``approval_session_key``) routes dangerous-command
         approval requests to the caller's stream, keyed like ``/v1/runs`` approvals (#51871).
@@ -3716,6 +3713,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         loop = asyncio.get_running_loop()
         # ContextVars do not follow run_in_executor threads: capture here, re-enter in _run().
         request_profile = _api_request_profile.get()
+        request_gateway_origin = dict(gateway_origin or {})
 
         def _run():
             from gateway.session_context import clear_session_vars
@@ -3723,6 +3721,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 tokens = self._bind_api_server_session(
                     chat_id=session_id or "", session_key=gateway_session_key or session_id or "",
                     session_id=session_id or "", profile=request_profile or "",
+                    gateway_origin=request_gateway_origin or None,
                     session_history_delivery=session_history_delivery)
                 agent = None
                 from agent.notification_presentation import notification_turn

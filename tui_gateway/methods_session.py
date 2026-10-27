@@ -1520,13 +1520,22 @@ def _(rid, params: dict) -> dict:
                      "spritesheetRevision": _pet_sheet_revision(pet.spritesheet)})
 
 
-def _pet_kitty_cells(pet, pet_cfg: dict, state: str, scale: float) -> dict | None:
-    """kitty payload for a TTY that speaks it (dashboard PTY falls through); only kitty is grid-safe in Ink."""
+def _pet_graphics_cells(pet, pet_cfg: dict, state: str, scale: float) -> dict | None:
+    """Return an explicitly selected terminal-graphics payload for the standalone TUI."""
     from agent.pet import constants, render
     from agent.pet.render import PetRenderer
     configured = str(pet_cfg.get("render_mode", "auto") or "auto").lower()
-    if (render.detect_terminal_graphics() if configured in ("", "auto") else configured) != "kitty":
+    mode = render.detect_terminal_graphics() if configured in ("", "auto") else configured
+    if mode not in ("kitty", "sixel"):
         return None
+    if mode == "sixel":
+        renderer = PetRenderer(str(pet.spritesheet), mode="sixel", scale=scale)
+        count = renderer.frame_count(state)
+        frames = [renderer.frame(state, index) for index in range(count)]
+        if not frames or not all(frames):
+            return None
+        return {"graphics": "sixel", "frames": frames,
+                "frameMs": constants.LOOP_MS / max(1, len(frames)), "scale": scale}
     image_id = render.kitty_image_id(pet.slug)
     # kitty sizes from scaled pixels, so unicode_cols is moot here.
     payload = PetRenderer(str(pet.spritesheet), mode="kitty", scale=scale).kitty_payload(state, image_id=image_id)
@@ -1553,8 +1562,8 @@ def _(rid, params: dict) -> dict:
     scale = float(pet_cfg.get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE)
     cols = int(params.get("cols") or 0) or constants.resolve_cols(scale, pet_cfg.get("unicode_cols", 0))
     base = {"enabled": True, "slug": pet.slug, "displayName": pet.display_name, "state": state}
-    if params.get("graphics") and (kitty := _pet_kitty_cells(pet, pet_cfg, state, scale)):
-        return _ok(rid, {**base, **kitty})
+    if params.get("graphics") and (graphics := _pet_graphics_cells(pet, pet_cfg, state, scale)):
+        return _ok(rid, {**base, **graphics})
     renderer = PetRenderer(str(pet.spritesheet), mode="unicode", scale=scale, unicode_cols=cols)
     count = renderer.frame_count(state) or 1
     frames = [[[[*top, *bottom] for (top, bottom) in row] for row in renderer.cells(state, i, cols=cols)]

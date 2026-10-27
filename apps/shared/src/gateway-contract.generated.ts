@@ -2656,14 +2656,14 @@ export interface PetInfoMetaResult {
   scale?: number | null
   spritesheetRevision?: string | null
 }
-/** ``graphics`` opts into the kitty payload when the TTY speaks it; ``cols`` overrides the width. */
+/** ``graphics`` opts into kitty or explicitly configured sixel payloads; ``cols`` overrides the width. */
 export interface PetCellsParams {
   profile?: string | null
   state?: string | null
   cols?: number | null
   graphics?: boolean
 }
-/** Unicode: ``frames`` is frame → row → cell ``[tr,tg,tb,ta, br,bg,bb,ba]``; kitty (``graphics`` set): ``frames`` are transmit escapes and ``placeholder`` the text grid. */
+/** Unicode: ``frames`` is frame → row → cell ``[tr,tg,tb,ta, br,bg,bb,ba]``; kitty and sixel (``graphics`` set): ``frames`` are terminal-protocol escapes (kitty also has a text ``placeholder``). */
 export interface PetCellsResult {
   enabled: boolean
   slug?: string | null

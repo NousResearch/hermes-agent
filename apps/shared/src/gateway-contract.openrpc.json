@@ -25441,7 +25441,7 @@
       },
       "PetCellsParams": {
         "additionalProperties": false,
-        "description": "``graphics`` opts into the kitty payload when the TTY speaks it; ``cols`` overrides the width.",
+        "description": "``graphics`` opts into kitty or explicitly configured sixel payloads; ``cols`` overrides the width.",
         "properties": {
           "profile": {
             "anyOf": [
@@ -25490,7 +25490,7 @@
       },
       "PetCellsResult": {
         "additionalProperties": false,
-        "description": "Unicode: ``frames`` is frame \u2192 row \u2192 cell ``[tr,tg,tb,ta, br,bg,bb,ba]``; kitty (``graphics``\nset): ``frames`` are transmit escapes and ``placeholder`` the text grid.",
+        "description": "Unicode: ``frames`` is frame \u2192 row \u2192 cell ``[tr,tg,tb,ta, br,bg,bb,ba]``; kitty and sixel\n(``graphics`` set): ``frames`` are terminal-protocol escapes (kitty also has a text ``placeholder``).",
         "properties": {
           "enabled": {
             "title": "Enabled",
